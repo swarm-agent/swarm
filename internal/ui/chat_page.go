@@ -161,6 +161,7 @@ type ChatToolStreamStyle struct {
 
 type chatMessageItem struct {
 	MessageID string
+	GlobalSeq uint64
 	Role      string
 	Text      string
 	CreatedAt int64
@@ -171,11 +172,13 @@ type chatMessageItem struct {
 type pendingLocalUserMessage struct {
 	Content                 string
 	CreatedAt               int64
+	AfterAuthoritativeSeq   uint64
 	AfterAuthoritativeCount int
 }
 
 type chatToolStreamEntry struct {
 	EntryKey           string
+	GlobalSeq          uint64
 	ToolName           string
 	CallID             string
 	Output             string
@@ -318,6 +321,7 @@ type ChatPage struct {
 	toolStream                []chatToolStreamEntry
 	timelineScroll            int
 	pendingLocalUserMessages  []pendingLocalUserMessage
+	authoritativeMessageSeq   uint64
 	authoritativeMessageCount int
 
 	timelineRenderGeneration uint64
@@ -1994,7 +1998,7 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 			if strings.TrimSpace(event.RunID) == strings.TrimSpace(p.ownedRunID) && strings.TrimSpace(p.ownedRunID) != "" {
 				return
 			}
-			p.appendStoredMessageWithMetadata(msg.ID, role, msg.Content, msg.Metadata, msg.CreatedAt)
+			p.appendStoredMessageWithMetadata(msg.ID, msg.GlobalSeq, role, msg.Content, msg.Metadata, msg.CreatedAt)
 		case "assistant":
 			text := msg.Content
 			if strings.TrimSpace(text) != "" {
@@ -2010,7 +2014,7 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 				}
 				p.completeThinkingTimeline("done", msg.CreatedAt, "")
 				p.liveAssistant = ""
-				p.appendStoredMessageWithMetadata(msg.ID, role, text, msg.Metadata, msg.CreatedAt)
+				p.appendStoredMessageWithMetadata(msg.ID, msg.GlobalSeq, role, text, msg.Metadata, msg.CreatedAt)
 			}
 		case "reasoning":
 			rawSummary := canonicalThinkingText(msg.Content)
@@ -2022,7 +2026,7 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 			if strings.TrimSpace(event.RunID) == strings.TrimSpace(p.ownedRunID) && strings.TrimSpace(p.ownedRunID) != "" && p.busy {
 				return
 			}
-			p.upsertStoredMessageWithMetadata(msg.ID, role, rawSummary, msg.Metadata, msg.CreatedAt)
+			p.upsertStoredMessageWithMetadata(msg.ID, msg.GlobalSeq, role, rawSummary, msg.Metadata, msg.CreatedAt)
 		case "tool":
 			if isSyntheticThinkingMetadata(msg.Metadata) {
 				entry := parseToolStreamEntry(msg.Content, msg.CreatedAt)
@@ -2030,7 +2034,7 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 				if normalized := normalizeThinkingSummary(summary); normalized != "" {
 					p.thinkingSummary = normalized
 					if strings.TrimSpace(event.RunID) != strings.TrimSpace(p.ownedRunID) || strings.TrimSpace(p.ownedRunID) == "" || !p.busy {
-						p.upsertStoredMessageWithMetadata(msg.ID, "reasoning", canonicalThinkingText(summary), msg.Metadata, msg.CreatedAt)
+						p.upsertStoredMessageWithMetadata(msg.ID, msg.GlobalSeq, "reasoning", canonicalThinkingText(summary), msg.Metadata, msg.CreatedAt)
 					}
 				}
 				return
@@ -2052,7 +2056,7 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 		switch role {
 		case "assistant":
 			if text := strings.TrimSpace(msg.Content); text != "" {
-				p.upsertStoredMessageWithMetadata(msg.ID, role, text, msg.Metadata, msg.CreatedAt)
+				p.upsertStoredMessageWithMetadata(msg.ID, msg.GlobalSeq, role, text, msg.Metadata, msg.CreatedAt)
 			}
 		case "reasoning":
 			rawSummary := canonicalThinkingText(msg.Content)
@@ -2064,9 +2068,9 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 			if strings.TrimSpace(event.RunID) == strings.TrimSpace(p.ownedRunID) && strings.TrimSpace(p.ownedRunID) != "" && p.busy {
 				return
 			}
-			p.upsertStoredMessageWithMetadata(msg.ID, role, rawSummary, msg.Metadata, msg.CreatedAt)
+			p.upsertStoredMessageWithMetadata(msg.ID, msg.GlobalSeq, role, rawSummary, msg.Metadata, msg.CreatedAt)
 		case "tool":
-			p.upsertStoredMessageWithMetadata(msg.ID, role, msg.Content, msg.Metadata, msg.CreatedAt)
+			p.upsertStoredMessageWithMetadata(msg.ID, msg.GlobalSeq, role, msg.Content, msg.Metadata, msg.CreatedAt)
 		}
 	case "turn.error":
 		msg := strings.TrimSpace(event.Error)
@@ -3038,19 +3042,23 @@ func (p *ChatPage) ingestMessageRecord(message ChatMessageRecord) {
 
 	switch role {
 	case "assistant", "user":
-		p.appendStoredMessageWithMetadata(message.ID, role, message.Content, message.Metadata, createdAt)
+		p.appendStoredMessageWithMetadata(message.ID, message.GlobalSeq, role, message.Content, message.Metadata, createdAt)
+		if role == "user" && message.GlobalSeq == 0 {
+			p.insertPendingLocalTimelineItem()
+		}
 	case "system":
 		if isToolDBDebugMessage(message.Content) {
 			return
 		}
-		p.appendStoredMessageWithMetadata(message.ID, role, message.Content, nil, createdAt)
+		p.appendStoredMessageWithMetadata(message.ID, message.GlobalSeq, role, message.Content, nil, createdAt)
 	case "reasoning":
 		if summary := canonicalThinkingText(message.Content); summary != "" {
 			p.thinkingSummary = normalizeThinkingSummary(summary)
-			p.upsertStoredMessageWithMetadata(message.ID, role, summary, message.Metadata, createdAt)
+			p.upsertStoredMessageWithMetadata(message.ID, message.GlobalSeq, role, summary, message.Metadata, createdAt)
 		}
 	case "tool":
 		entry := parseToolStreamEntry(message.Content, createdAt)
+		entry.GlobalSeq = message.GlobalSeq
 		if shouldSuppressHistoricalToolEntry(entry) {
 			return
 		}
@@ -3074,7 +3082,7 @@ func (p *ChatPage) ingestMessageRecord(message ChatMessageRecord) {
 		p.streamedTools[callKey] = struct{}{}
 		return
 	default:
-		p.appendStoredMessageWithMetadata(message.ID, "system", message.Content, nil, createdAt)
+		p.appendStoredMessageWithMetadata(message.ID, message.GlobalSeq, "system", message.Content, nil, createdAt)
 	}
 }
 
@@ -3120,10 +3128,10 @@ func (p *ChatPage) appendMessage(role, text string, createdAt int64) {
 }
 
 func (p *ChatPage) appendMessageWithMetadata(role, text string, metadata map[string]any, createdAt int64) {
-	p.appendStoredMessageWithMetadata("", role, text, metadata, createdAt)
+	p.appendStoredMessageWithMetadata("", 0, role, text, metadata, createdAt)
 }
 
-func (p *ChatPage) upsertStoredMessageWithMetadata(messageID, role, text string, metadata map[string]any, createdAt int64) {
+func (p *ChatPage) upsertStoredMessageWithMetadata(messageID string, globalSeq uint64, role, text string, metadata map[string]any, createdAt int64) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
@@ -3138,8 +3146,12 @@ func (p *ChatPage) upsertStoredMessageWithMetadata(messageID, role, text string,
 			if role == "" {
 				role = "system"
 			}
+			if globalSeq == 0 {
+				globalSeq = p.timeline[i].GlobalSeq
+			}
 			p.timeline[i] = chatMessageItem{
 				MessageID: messageID,
+				GlobalSeq: globalSeq,
 				Role:      role,
 				Text:      text,
 				CreatedAt: createdAt,
@@ -3149,10 +3161,10 @@ func (p *ChatPage) upsertStoredMessageWithMetadata(messageID, role, text string,
 			return
 		}
 	}
-	p.appendStoredMessageWithMetadata(messageID, role, text, metadata, createdAt)
+	p.appendStoredMessageWithMetadata(messageID, globalSeq, role, text, metadata, createdAt)
 }
 
-func (p *ChatPage) appendStoredMessageWithMetadata(messageID, role, text string, metadata map[string]any, createdAt int64) {
+func (p *ChatPage) appendStoredMessageWithMetadata(messageID string, globalSeq uint64, role, text string, metadata map[string]any, createdAt int64) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
@@ -3168,6 +3180,7 @@ func (p *ChatPage) appendStoredMessageWithMetadata(messageID, role, text string,
 
 	p.timeline = append(p.timeline, chatMessageItem{
 		MessageID: messageID,
+		GlobalSeq: globalSeq,
 		Role:      role,
 		Text:      text,
 		CreatedAt: createdAt,
@@ -3193,6 +3206,48 @@ func (p *ChatPage) hasTimelineMessageID(messageID string) bool {
 		}
 	}
 	return false
+}
+
+func (p *ChatPage) insertPendingLocalTimelineItem() {
+	if p == nil || len(p.timeline) == 0 {
+		return
+	}
+	pendingIndex := len(p.timeline) - 1
+	pending := p.timeline[pendingIndex]
+	afterSeq := metadataUint64(pending.Metadata, chatPendingAfterAuthoritativeSeqMetadataKey)
+	if afterSeq == 0 {
+		return
+	}
+	for i, item := range p.timeline[:pendingIndex] {
+		if item.GlobalSeq > afterSeq {
+			copy(p.timeline[i+1:pendingIndex+1], p.timeline[i:pendingIndex])
+			p.timeline[i] = pending
+			return
+		}
+	}
+}
+
+func metadataUint64(metadata map[string]any, key string) uint64 {
+	value := metadata[key]
+	switch typed := value.(type) {
+	case uint64:
+		return typed
+	case uint:
+		return uint64(typed)
+	case int:
+		if typed > 0 {
+			return uint64(typed)
+		}
+	case int64:
+		if typed > 0 {
+			return uint64(typed)
+		}
+	case float64:
+		if typed > 0 {
+			return uint64(typed)
+		}
+	}
+	return 0
 }
 
 func cloneMetadataMap(metadata map[string]any) map[string]any {
@@ -3366,6 +3421,7 @@ func (p *ChatPage) upsertManagedToolTimelineMessage(entry chatToolStreamEntry, c
 		state = "pending"
 	}
 	message := chatMessageItem{
+		GlobalSeq: entry.GlobalSeq,
 		Role:      "tool",
 		Text:      text,
 		CreatedAt: createdAt,
@@ -3906,6 +3962,9 @@ func (p *ChatPage) upsertToolStreamEntry(entry chatToolStreamEntry) {
 				}
 			}
 			p.toolStream[i].CreatedAt = entry.CreatedAt
+			if entry.GlobalSeq > 0 && (p.toolStream[i].GlobalSeq == 0 || entry.GlobalSeq < p.toolStream[i].GlobalSeq) {
+				p.toolStream[i].GlobalSeq = entry.GlobalSeq
+			}
 			p.toolStream[i].EntryKey = targetEntryKey
 
 			switch state {
@@ -3980,6 +4039,9 @@ func (p *ChatPage) upsertToolStreamEntry(entry chatToolStreamEntry) {
 				}
 			}
 			p.toolStream[i].CreatedAt = entry.CreatedAt
+			if entry.GlobalSeq > 0 && (p.toolStream[i].GlobalSeq == 0 || entry.GlobalSeq < p.toolStream[i].GlobalSeq) {
+				p.toolStream[i].GlobalSeq = entry.GlobalSeq
+			}
 
 			switch state {
 			case "running":
@@ -5275,10 +5337,15 @@ func (p *ChatPage) rebuildToolLifecycleViews() {
 		p.upsertToolStreamEntry(entry)
 	}
 	sort.SliceStable(p.toolStream, func(i, j int) bool {
-		if p.toolStream[i].CreatedAt == p.toolStream[j].CreatedAt {
-			return toolStreamEntryKey(p.toolStream[i]) < toolStreamEntryKey(p.toolStream[j])
+		left := chatMessageItem{GlobalSeq: p.toolStream[i].GlobalSeq, CreatedAt: toolTimelineCreatedAt(p.toolStream[i])}
+		right := chatMessageItem{GlobalSeq: p.toolStream[j].GlobalSeq, CreatedAt: toolTimelineCreatedAt(p.toolStream[j])}
+		if timelineItemBefore(left, right) {
+			return true
 		}
-		return p.toolStream[i].CreatedAt < p.toolStream[j].CreatedAt
+		if timelineItemBefore(right, left) {
+			return false
+		}
+		return toolStreamEntryKey(p.toolStream[i]) < toolStreamEntryKey(p.toolStream[j])
 	})
 	if len(p.toolStream) > chatMaxToolEntries {
 		drop := len(p.toolStream) - chatMaxToolEntries
@@ -5299,6 +5366,7 @@ func (p *ChatPage) rebuildToolLifecycleViews() {
 			continue
 		}
 		tools = append(tools, chatMessageItem{
+			GlobalSeq: entry.GlobalSeq,
 			Role:      "tool",
 			Text:      text,
 			CreatedAt: toolTimelineCreatedAt(entry),
@@ -5322,13 +5390,20 @@ func mergeToolTimelineMessages(messages, tools []chatMessageItem) []chatMessageI
 	out := make([]chatMessageItem, 0, len(messages)+len(tools))
 	toolIndex := 0
 	for _, message := range messages {
-		for toolIndex < len(tools) && tools[toolIndex].CreatedAt < message.CreatedAt {
+		for toolIndex < len(tools) && timelineItemBefore(tools[toolIndex], message) {
 			out = append(out, tools[toolIndex])
 			toolIndex++
 		}
 		out = append(out, message)
 	}
 	return append(out, tools[toolIndex:]...)
+}
+
+func timelineItemBefore(left, right chatMessageItem) bool {
+	if left.GlobalSeq > 0 && right.GlobalSeq > 0 {
+		return left.GlobalSeq < right.GlobalSeq
+	}
+	return left.CreatedAt < right.CreatedAt
 }
 
 func (p *ChatPage) ensurePermissionSelection() {

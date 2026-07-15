@@ -25,6 +25,68 @@ func TestSetMessagesPreservesPendingSecondUserTurnUntilDurableSnapshot(t *testin
 	}
 }
 
+func TestSetMessagesKeepsPendingResumedTurnInSequenceWhenTailWindowRotates(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-1"})
+	page.SetMessages([]ChatMessageRecord{
+		{ID: "u1", GlobalSeq: 10, Role: "user", Content: "first", CreatedAt: 1},
+		{ID: "a1", GlobalSeq: 12, Role: "assistant", Content: "partial before stop", CreatedAt: 2},
+	})
+	page.trackPendingLocalUserMessage("continue", 3)
+	page.appendMessage("user", "continue", 3)
+
+	// The tail snapshot has rotated u1 out before the resumed assistant record
+	// arrives. The pending turn still belongs between the two authoritative seqs.
+	page.SetMessages([]ChatMessageRecord{
+		{ID: "a1", GlobalSeq: 12, Role: "assistant", Content: "partial before stop", CreatedAt: 2},
+		{ID: "a2", GlobalSeq: 14, Role: "assistant", Content: "resumed stream", CreatedAt: 4},
+	})
+	assertTimelineTurns(t, page, []string{
+		"assistant:partial before stop",
+		"user:continue",
+		"assistant:resumed stream",
+	})
+
+	page.SetMessages([]ChatMessageRecord{
+		{ID: "a1", GlobalSeq: 12, Role: "assistant", Content: "partial before stop", CreatedAt: 2},
+		{ID: "u2", GlobalSeq: 13, Role: "user", Content: "continue", CreatedAt: 3},
+		{ID: "a2", GlobalSeq: 14, Role: "assistant", Content: "resumed stream", CreatedAt: 4},
+	})
+	assertTimelineTurns(t, page, []string{
+		"assistant:partial before stop",
+		"user:continue",
+		"assistant:resumed stream",
+	})
+	if len(page.pendingLocalUserMessages) != 0 {
+		t.Fatalf("pending local messages = %d, want 0", len(page.pendingLocalUserMessages))
+	}
+}
+
+func TestSetMessagesKeepsPendingResumedTurnAheadOfEveryLaterTimelineObject(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-1"})
+	page.SetMessages([]ChatMessageRecord{
+		{ID: "a1", GlobalSeq: 10, Role: "assistant", Content: "before stop", CreatedAt: 100},
+	})
+	page.trackPendingLocalUserMessage("continue", 200)
+
+	page.SetMessages([]ChatMessageRecord{
+		{ID: "a1", GlobalSeq: 10, Role: "assistant", Content: "before stop", CreatedAt: 100},
+		{ID: "tool-start", GlobalSeq: 12, Role: "tool", Content: `{"type":"session.tool.started","tool_name":"read","call_id":"call-read","tool_instance_id":"step-1:call-read","status":"started"}`, Metadata: map[string]any{"v3_tool_event": true}, CreatedAt: 150},
+		{ID: "reasoning", GlobalSeq: 13, Role: "reasoning", Content: "checking", CreatedAt: 160},
+		{ID: "system", GlobalSeq: 14, Role: "system", Content: "status", CreatedAt: 170},
+		{ID: "assistant", GlobalSeq: 15, Role: "assistant", Content: "after tool", CreatedAt: 180},
+		{ID: "tool-done", GlobalSeq: 16, Role: "tool", Content: `{"type":"session.tool.completed","tool_name":"read","call_id":"call-read","tool_instance_id":"step-1:call-read","output":"done","status":"completed"}`, Metadata: map[string]any{"v3_tool_event": true}, CreatedAt: 190},
+	})
+
+	assertTimelineItems(t, page, []string{
+		"assistant:before stop",
+		"user:continue",
+		"tool",
+		"reasoning:checking",
+		"system:status",
+		"assistant:after tool",
+	})
+}
+
 func TestSetMessagesPreservesProjectionOrderWhenMessageTimestampsAreGrouped(t *testing.T) {
 	page := NewChatPage(ChatPageOptions{SessionID: "session-1"})
 	page.SetMessages([]ChatMessageRecord{
@@ -43,6 +105,28 @@ func TestSetMessagesPreservesProjectionOrderWhenMessageTimestampsAreGrouped(t *t
 		"assistant:yes",
 		"user:great",
 		"assistant:thumbs up",
+	})
+}
+
+func TestMergeToolTimelineMessagesUsesGlobalSequenceForHeterogeneousChronology(t *testing.T) {
+	messages := []chatMessageItem{
+		{GlobalSeq: 1, Role: "user", Text: "first", CreatedAt: 100},
+		{GlobalSeq: 3, Role: "reasoning", Text: "checking", CreatedAt: 100},
+		{GlobalSeq: 5, Role: "system", Text: "status", CreatedAt: 100},
+		{GlobalSeq: 6, Role: "assistant", Text: "done", CreatedAt: 100},
+	}
+	got := mergeToolTimelineMessages(messages, []chatMessageItem{
+		{GlobalSeq: 2, Role: "tool", Text: "first tool", CreatedAt: 500},
+		{GlobalSeq: 4, Role: "tool", Text: "second tool", CreatedAt: 50},
+	})
+
+	assertTimelineItemSlice(t, got, []string{
+		"user:first",
+		"tool:first tool",
+		"reasoning:checking",
+		"tool:second tool",
+		"system:status",
+		"assistant:done",
 	})
 }
 
@@ -88,6 +172,40 @@ func TestSetMessagesReconcilesRepeatedIdenticalUserPromptsInOrder(t *testing.T) 
 	assertTimelineTurns(t, page, []string{"user:repeat", "assistant:first reply", "user:repeat"})
 	if len(page.pendingLocalUserMessages) != 0 {
 		t.Fatalf("pending local messages = %d, want 0", len(page.pendingLocalUserMessages))
+	}
+}
+
+func assertTimelineItems(t *testing.T, page *ChatPage, want []string) {
+	t.Helper()
+	got := make([]string, 0, len(page.timeline))
+	for _, item := range page.timeline {
+		if item.Role == "tool" {
+			got = append(got, "tool")
+			continue
+		}
+		got = append(got, item.Role+":"+item.Text)
+	}
+	assertStringSlice(t, got, want)
+}
+
+func assertTimelineItemSlice(t *testing.T, items []chatMessageItem, want []string) {
+	t.Helper()
+	got := make([]string, 0, len(items))
+	for _, item := range items {
+		got = append(got, item.Role+":"+item.Text)
+	}
+	assertStringSlice(t, got, want)
+}
+
+func assertStringSlice(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("timeline = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("timeline[%d] = %q, want %q (all: %#v)", i, got[i], want[i], got)
+		}
 	}
 }
 
