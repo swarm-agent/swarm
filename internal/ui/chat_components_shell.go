@@ -41,9 +41,12 @@ func (p *ChatPage) drawHeader(s tcell.Screen, rect Rect) {
 	}
 
 	todoBadge := formatAgentTodoBadge(p.meta)
-	rightParts := make([]string, 0, 2)
+	rightParts := make([]string, 0, 3)
 	if todoBadge != "" {
 		rightParts = append(rightParts, todoBadge)
+	}
+	if branch := chatHeaderBranchLabel(p.meta.Branch); branch != "" {
+		rightParts = append(rightParts, branch)
 	}
 	if status != "" {
 		rightParts = append(rightParts, status)
@@ -59,6 +62,14 @@ func (p *ChatPage) drawHeader(s tcell.Screen, rect Rect) {
 	if rightW > 0 && textW > rightW+2 {
 		DrawTextRight(s, textX+textW-1, rect.Y, rightW, statusStyle, right)
 	}
+}
+
+func chatHeaderBranchLabel(branch string) string {
+	branch = strings.TrimSpace(branch)
+	if branch == "" || branch == "-" {
+		return ""
+	}
+	return "branch " + clampEllipsis(branch, 32)
 }
 
 func formatAgentTodoBadge(meta ChatSessionMeta) string {
@@ -221,10 +232,7 @@ func (p *ChatPage) chatFooterState() FooterState {
 }
 
 func (p *ChatPage) chatFooterRightFacts() []string {
-	segments := make([]string, 0, 2)
-	if p.meta.WorktreeEnabled {
-		segments = append(segments, "wt on")
-	}
+	segments := make([]string, 0, 1)
 	if usage := strings.TrimSpace(p.footerContextUsageLabel()); usage != "" {
 		segments = append(segments, usage)
 	}
@@ -262,9 +270,6 @@ func (p *ChatPage) footerWorkspaceLine(maxWidth int) string {
 	cwd := clampTail(emptyValue(strings.TrimSpace(p.meta.Path), "."), 42)
 
 	segments := []string{fmt.Sprintf("workspace %s", workspace)}
-	if p.meta.WorktreeEnabled {
-		segments = append(segments, "wt on")
-	}
 	if p.meta.BypassPermissions {
 		segments = append(segments, "bypass permissions")
 	}
@@ -291,9 +296,6 @@ func (p *ChatPage) footerInfoLine(maxWidth int) string {
 		if plan != "" {
 			segments = append(segments, clampEllipsis(plan, 22))
 		}
-		if p.meta.WorktreeEnabled {
-			segments = append(segments, "wt:on")
-		}
 		segments = append(segments, branch, cwd)
 		line := strings.Join(segments, "  |  ")
 		return clampEllipsis(line, maxWidth)
@@ -302,9 +304,6 @@ func (p *ChatPage) footerInfoLine(maxWidth int) string {
 	segments := []string{swarmName, fmt.Sprintf("mode %s", mode), fmt.Sprintf("workspace %s", workspace)}
 	if p.meta.BypassPermissions {
 		segments = append(segments, "bypass permissions")
-	}
-	if p.meta.WorktreeEnabled {
-		segments = append(segments, "wt on")
 	}
 	segments = append(segments, fmt.Sprintf("branch %s", branch), fmt.Sprintf("cwd %s", cwd))
 	line := strings.Join(segments, "  |  ")

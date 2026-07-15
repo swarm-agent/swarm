@@ -135,7 +135,7 @@ func TestHomeBottomStatusUsesAvailableWidth(t *testing.T) {
 	}
 }
 
-func TestHomeBottomStatusShowsWorktreeIndicatorWhenEnabled(t *testing.T) {
+func TestHomeBottomStatusOmitsObsoleteWorktreeIndicator(t *testing.T) {
 	page := NewHomePage(model.HomeModel{WorktreesEnabled: true, ServerMode: "local", ActiveAgent: "swarm"})
 
 	screen := tcell.NewSimulationScreen("")
@@ -151,12 +151,12 @@ func TestHomeBottomStatusShowsWorktreeIndicatorWhenEnabled(t *testing.T) {
 	if !strings.Contains(text, " local ") || !strings.Contains(text, " plan ") || !strings.Contains(text, " [a:swarm] ") {
 		t.Fatalf("expected footer metadata to include runtime/mode/agent chips, got:\n%s", text)
 	}
-	if !strings.Contains(text, " wt on ") {
-		t.Fatalf("expected footer metadata to show worktree indicator when enabled, got:\n%s", text)
+	if strings.Contains(text, " wt on ") {
+		t.Fatalf("expected footer metadata to omit obsolete worktree indicator, got:\n%s", text)
 	}
 }
 
-func TestHomeBottomStatusShowsWorktreeThenCompactUsageWhenSelectedSessionHasSummary(t *testing.T) {
+func TestHomeBottomStatusShowsCompactUsageWithoutWorktreeMode(t *testing.T) {
 	page := NewHomePage(model.HomeModel{
 		WorktreesEnabled: true,
 		ServerMode:       "local",
@@ -181,8 +181,8 @@ func TestHomeBottomStatusShowsWorktreeThenCompactUsageWhenSelectedSessionHasSumm
 	page.Draw(screen)
 
 	text := dumpScreenText(screen, 120, 24)
-	if !strings.Contains(text, "wt on  80% left") {
-		t.Fatalf("expected home footer to render worktree before compact usage on the right, got:\n%s", text)
+	if strings.Contains(text, "wt on") || !strings.Contains(text, "80% left") {
+		t.Fatalf("expected home footer to render usage without obsolete worktree mode, got:\n%s", text)
 	}
 }
 

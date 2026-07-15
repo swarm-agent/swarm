@@ -173,8 +173,8 @@ func TestHomeAndChatFootersShareActionSlots(t *testing.T) {
 func TestFooterStateKeepsPageSpecificRightFacts(t *testing.T) {
 	home := NewHomePage(model.HomeModel{WorktreesEnabled: true, Version: "1.2.3"})
 	homeState := home.homeFooterState()
-	if got := strings.Join(homeState.RightFacts, "|"); !strings.Contains(got, "wt on") || !strings.Contains(got, "v 1.2.3") {
-		t.Fatalf("home footer right facts = %#v, want worktree and version facts", homeState.RightFacts)
+	if got := strings.Join(homeState.RightFacts, "|"); strings.Contains(got, "wt on") || !strings.Contains(got, "v 1.2.3") {
+		t.Fatalf("home footer right facts = %#v, want version without obsolete worktree mode", homeState.RightFacts)
 	}
 
 	chat := NewChatPage(ChatPageOptions{SessionID: "session-test", AuthConfigured: true, Meta: ChatSessionMeta{WorktreeEnabled: true}})
@@ -182,7 +182,7 @@ func TestFooterStateKeepsPageSpecificRightFacts(t *testing.T) {
 	chat.contextWindow = 1000
 	chat.contextRemain = 250
 	chatState := chat.chatFooterState()
-	if got := strings.Join(chatState.RightFacts, "|"); !strings.Contains(got, "wt on") || !strings.Contains(got, "25% left") {
-		t.Fatalf("chat footer right facts = %#v, want worktree and context facts", chatState.RightFacts)
+	if got := strings.Join(chatState.RightFacts, "|"); strings.Contains(got, "wt on") || !strings.Contains(got, "25% left") {
+		t.Fatalf("chat footer right facts = %#v, want context without obsolete worktree mode", chatState.RightFacts)
 	}
 }

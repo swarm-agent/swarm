@@ -30,6 +30,9 @@ func TestWorktreeCreateTitleSuggestsEditableBranch(t *testing.T) {
 		page.handleWorktreesModalKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
 	}
 	page.handleWorktreesModalKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	if !page.WorktreeCreateModalVisible() {
+		t.Fatal("create modal should remain visible while session creation is pending")
+	}
 
 	action, ok := page.PopWorktreesModalAction()
 	if !ok {

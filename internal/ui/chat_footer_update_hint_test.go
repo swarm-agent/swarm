@@ -69,8 +69,8 @@ func TestChatFooterRightLineHidesVersionAndUpdateHint(t *testing.T) {
 	})
 
 	got := p.footerRightLine(1000)
-	if got != "wt on  75% left" {
-		t.Fatalf("footerRightLine = %q, want only agentic chat metadata", got)
+	if got != "75% left" {
+		t.Fatalf("footerRightLine = %q, want only context usage metadata", got)
 	}
 	if strings.Contains(got, "v0.4") || strings.Contains(got, "update") {
 		t.Fatalf("footerRightLine = %q, did not expect version/update metadata", got)

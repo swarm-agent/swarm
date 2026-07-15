@@ -134,7 +134,8 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/vault", Hint: "Vault status, export, or import guidance"},
 		{Command: "/voice", Hint: "Open voice modal (profiles + devices + STT/TTS + test)", QuickTips: []string{"/voice open", "/voice devices", "/voice device <id>", "/voice profile list", "/voice test 4"}},
 		{Command: "/workspace", Hint: "Open workspace manager", QuickTips: []string{"/workspaces", "/workspace save", "/workspace scan [query]"}},
-		{Command: "/worktrees", Hint: "Open worktrees menu for the active workspace", QuickTips: []string{"/wt", "/worktrees on", "/worktrees off", "/worktrees status", "/worktrees branch <name|current>"}},
+		{Command: "/worktrees new", Hint: "Create a new session in its own worktree"},
+		{Command: "/wt new", Hint: "Create a new worktree session (short alias)"},
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		return strings.ToLower(items[i].Command) < strings.ToLower(items[j].Command)
@@ -5415,22 +5416,6 @@ func (a *App) handleWorktreesModalAction(action ui.WorktreesModalAction) {
 	switch action.Kind {
 	case ui.WorktreesModalActionRefresh:
 		a.refreshWorktreesModalData("Refreshing worktrees settings...")
-	case ui.WorktreesModalActionSetMode:
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		enabled := action.Enabled
-		useCurrentBranch := true
-		settings, err := a.api.UpdateWorktreeSettings(ctx, client.WorktreeSettingsUpdateRequest{WorkspacePath: a.activeContextPath(), Enabled: &enabled, UseCurrentBranch: &useCurrentBranch})
-		if err != nil {
-			a.home.SetWorktreesModalLoading(false)
-			a.home.SetWorktreesModalError(fmt.Sprintf("worktrees update failed: %v", err))
-			a.showToast(ui.ToastError, fmt.Sprintf("worktrees update failed: %v", err))
-			return
-		}
-		a.home.SetWorktreesModalData(mapWorktreesModalData(settings, a.currentWorktreeResolvedBranch()))
-		a.home.SetWorktreesModalLoading(false)
-		a.home.SetWorktreesModalStatus(a.worktreesStatusSummary(settings))
-		a.showToast(ui.ToastSuccess, a.worktreesStatusSummary(settings))
 	case ui.WorktreesModalActionSetCreatedBranch:
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
@@ -5461,6 +5446,9 @@ func (a *App) handleWorktreesModalAction(action ui.WorktreesModalAction) {
 			}
 			return
 		}
+		// The HomePage persists behind chat, so explicitly clear the accepted
+		// modal after navigation instead of leaving it open on the next home view.
+		a.home.HideWorktreesModal()
 	case ui.WorktreesModalActionSetBranchSource:
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
@@ -6169,10 +6157,6 @@ func (a *App) openWorkspaceModal() ([]client.WorkspaceEntry, error) {
 	return a.loadWorkspaceModalEntries("Loading workspace manager...")
 }
 
-func (a *App) openWorktreesModal() {
-	a.openWorktreesModalWithCreate(false)
-}
-
 func (a *App) openWorktreesModalWithCreate(create bool) {
 	a.home.ClearCommandOverlay()
 	a.home.HideSessionsModal()
@@ -6190,7 +6174,11 @@ func (a *App) openWorktreesModalWithCreate(create bool) {
 		a.home.ShowWorktreesModal()
 	}
 	if a.api != nil {
-		a.refreshWorktreesModalData("Loading worktrees settings...")
+		statusHint := "Loading worktrees settings..."
+		if create {
+			statusHint = ""
+		}
+		a.refreshWorktreesModalData(statusHint)
 	}
 }
 
@@ -6873,151 +6861,13 @@ func (a *App) handleWorktreesCommand(args []string) {
 	if a.home == nil {
 		return
 	}
-	if len(args) == 0 {
-		a.openWorktreesModal()
+	if len(args) == 1 && strings.EqualFold(strings.TrimSpace(args[0]), "new") {
+		a.openWorktreesModalWithCreate(true)
 		return
 	}
 
-	sub := strings.ToLower(strings.TrimSpace(args[0]))
-	switch sub {
-	case "open":
-		a.openWorktreesModal()
-	case "new":
-		a.openWorktreesModalWithCreate(true)
-	case "status":
-		a.home.ClearCommandOverlay()
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		settings, err := a.api.GetWorktreeSettings(ctx, a.activeContextPath())
-		if err != nil {
-			message := fmt.Sprintf("worktrees status failed: %v", err)
-			a.home.SetStatus(message)
-			a.showToast(ui.ToastError, message)
-			return
-		}
-		message := a.worktreesStatusSummary(settings)
-		if a.home.WorktreesModalVisible() {
-			a.home.SetWorktreesModalData(mapWorktreesModalData(settings, a.currentWorktreeResolvedBranch()))
-			a.home.SetWorktreesModalStatus(message)
-		}
-		a.home.SetStatus(message)
-		if !a.home.WorktreesModalVisible() {
-			a.showToast(ui.ToastInfo, message)
-		}
-	case "enable":
-		a.home.ClearCommandOverlay()
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		enabled := true
-		useCurrentBranch := true
-		settings, err := a.api.UpdateWorktreeSettings(ctx, client.WorktreeSettingsUpdateRequest{WorkspacePath: a.activeContextPath(), Enabled: &enabled, UseCurrentBranch: &useCurrentBranch})
-		if err != nil {
-			message := fmt.Sprintf("worktrees enable failed: %v", err)
-			if a.home.WorktreesModalVisible() {
-				a.home.SetWorktreesModalError(message)
-			}
-			a.home.SetStatus(message)
-			a.showToast(ui.ToastError, message)
-			return
-		}
-		message := a.worktreesStatusSummary(settings)
-		if a.home.WorktreesModalVisible() {
-			a.home.SetWorktreesModalData(mapWorktreesModalData(settings, a.currentWorktreeResolvedBranch()))
-			a.home.SetWorktreesModalStatus(message)
-		}
-		a.home.SetStatus(message)
-		a.showToast(ui.ToastSuccess, message)
-	case "off", "disable":
-		a.home.ClearCommandOverlay()
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		enabled := false
-		useCurrentBranch := true
-		settings, err := a.api.UpdateWorktreeSettings(ctx, client.WorktreeSettingsUpdateRequest{WorkspacePath: a.activeContextPath(), Enabled: &enabled, UseCurrentBranch: &useCurrentBranch})
-		if err != nil {
-			message := fmt.Sprintf("worktrees disable failed: %v", err)
-			if a.home.WorktreesModalVisible() {
-				a.home.SetWorktreesModalError(message)
-			}
-			a.home.SetStatus(message)
-			a.showToast(ui.ToastError, message)
-			return
-		}
-		message := a.worktreesStatusSummary(settings)
-		if a.home.WorktreesModalVisible() {
-			a.home.SetWorktreesModalData(mapWorktreesModalData(settings, a.currentWorktreeResolvedBranch()))
-			a.home.SetWorktreesModalStatus(message)
-		}
-		a.home.SetStatus(message)
-		a.showToast(ui.ToastSuccess, message)
-	case "branch", "base":
-		a.home.ClearCommandOverlay()
-		if len(args) < 2 {
-			message := "usage: /worktrees branch <name|current>"
-			if a.home.WorktreesModalVisible() {
-				a.home.SetWorktreesModalStatus(message)
-			}
-			a.home.SetStatus(message)
-			return
-		}
-		targetBranch := strings.TrimSpace(strings.Join(args[1:], " "))
-		baseBranch, useCurrentBranch := normalizeWorktreeSettingsBranchInput(targetBranch)
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		settings, err := a.api.UpdateWorktreeSettings(ctx, client.WorktreeSettingsUpdateRequest{WorkspacePath: a.activeContextPath(), UseCurrentBranch: &useCurrentBranch, BaseBranch: baseBranch})
-		if err != nil {
-			message := fmt.Sprintf("worktrees branch-off source update failed: %v", err)
-			if a.home.WorktreesModalVisible() {
-				a.home.SetWorktreesModalError(message)
-			}
-			a.home.SetStatus(message)
-			a.showToast(ui.ToastError, message)
-			return
-		}
-		message := a.worktreesStatusSummary(settings)
-		if a.home.WorktreesModalVisible() {
-			a.home.SetWorktreesModalData(mapWorktreesModalData(settings, a.currentWorktreeResolvedBranch()))
-			a.home.SetWorktreesModalStatus(message)
-		}
-		a.home.SetStatus(message)
-		a.showToast(ui.ToastSuccess, message)
-	case "created-branch":
-		a.home.ClearCommandOverlay()
-		if len(args) < 2 {
-			message := "usage: /worktrees created-branch <prefix>"
-			if a.home.WorktreesModalVisible() {
-				a.home.SetWorktreesModalStatus(message)
-			}
-			a.home.SetStatus(message)
-			return
-		}
-		branchName := normalizeWorktreeBranchPrefix(strings.TrimSpace(strings.Join(args[1:], " ")))
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		settings, err := a.api.UpdateWorktreeSettings(ctx, client.WorktreeSettingsUpdateRequest{WorkspacePath: a.activeContextPath(), BranchName: stringPtr(branchName)})
-		if err != nil {
-			message := fmt.Sprintf("worktrees created branch update failed: %v", err)
-			if a.home.WorktreesModalVisible() {
-				a.home.SetWorktreesModalError(message)
-			}
-			a.home.SetStatus(message)
-			a.showToast(ui.ToastError, message)
-			return
-		}
-		message := a.worktreesStatusSummary(settings)
-		if a.home.WorktreesModalVisible() {
-			a.home.SetWorktreesModalData(mapWorktreesModalData(settings, a.currentWorktreeResolvedBranch()))
-			a.home.SetWorktreesModalStatus(message)
-		}
-		a.home.SetStatus(message)
-		a.showToast(ui.ToastSuccess, message)
-	default:
-		message := "usage: /worktrees [new|open|off|status|branch <name|current>|created-branch <prefix>]"
-		if a.home.WorktreesModalVisible() {
-			a.home.SetWorktreesModalStatus(message)
-		}
-		a.home.SetStatus(message)
-	}
+	a.home.ClearCommandOverlay()
+	a.home.SetStatus("usage: /worktrees new (alias: /wt new)")
 }
 
 func (a *App) scanWorkspaceTree(query string) {

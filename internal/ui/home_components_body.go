@@ -462,10 +462,7 @@ func (p *HomePage) homeFooterState() FooterState {
 }
 
 func (p *HomePage) homeFooterRightFacts() []string {
-	segments := make([]string, 0, 3)
-	if p.model.WorktreesEnabled {
-		segments = append(segments, "wt on")
-	}
+	segments := make([]string, 0, 2)
 	version := strings.TrimSpace(p.model.Version)
 	if version != "" {
 		segments = append(segments, "v "+version)
