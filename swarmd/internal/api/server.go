@@ -134,7 +134,6 @@ type Server struct {
 	identitySessions          *identity.SessionService
 	gitRealtime               *gitRealtimeManager
 	swarmTargetHealth         swarmTargetHealthCache
-	authorityConnections      AuthorityConnectionRegistry
 	swarmStore                *pebblestore.SwarmStore
 }
 
@@ -257,7 +256,6 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		codexOAuthSessions:   make(map[string]*codexOAuthSession),
 		desktopLocalSessions: newDesktopLocalSessionManager(),
 		gitRealtime:          nil,
-		authorityConnections: newAuthorityConnectionRegistry(),
 		runCtx:               runCtx,
 		runCancel:            runCancel,
 	}
