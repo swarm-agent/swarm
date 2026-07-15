@@ -40,11 +40,15 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/swarm/targets", s.handleSwarmTargets)
 	mux.HandleFunc("/v1/swarm/target/current", s.handleSwarmCurrentTarget)
 	mux.HandleFunc("/v1/swarm/target/select", s.handleSwarmSelectTarget)
+	mux.HandleFunc("/v1/swarm/groups", s.handleSwarmGroups)
+	mux.HandleFunc("/v1/swarm/groups/upsert", s.handleSwarmGroupUpsert)
+	mux.HandleFunc("/v1/swarm/groups/current", s.handleSwarmCurrentGroup)
+	mux.HandleFunc("/v1/swarm/groups/member/delete", s.handleSwarmGroupMemberDelete)
+	mux.HandleFunc("/v1/swarm/containers/profiles", s.handleSwarmContainerProfiles)
+	mux.HandleFunc("/v1/swarm/containers/profiles/upsert", s.handleSwarmContainerProfileUpsert)
+	mux.HandleFunc("/v1/swarm/containers/profiles/delete", s.handleSwarmContainerProfileDelete)
 	mux.HandleFunc("/v1/swarm/topology", s.handleSwarmTopologySnapshot)
-	mux.HandleFunc("/v1/swarm/topology/host-containers", s.handleSwarmTopologyHostContainers)
-	mux.HandleFunc("/v1/swarm/topology/runtime-owner", s.handleSwarmTopologyRuntimeOwner)
 	mux.HandleFunc("/v1/swarm/topology/workspace-bindings", s.handleSwarmTopologyWorkspaceBindings)
-	mux.HandleFunc("/v1/swarm/topology/session-route", s.handleSwarmTopologySessionRoute)
 }
 
 func (s *Server) registerDeployRoutes(mux *http.ServeMux) {
