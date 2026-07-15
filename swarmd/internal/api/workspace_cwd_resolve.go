@@ -211,9 +211,7 @@ func (s *Server) workspaceCWDRoutesForScope(principal identity.Principal, swarmT
 			continue
 		}
 		if !runtimeTarget.Online || !runtimeTarget.Selectable {
-			if !s.topologyRouteOwnerHostSelectable(runtimeTarget, runtimeRecord, runtimeTargets) {
-				continue
-			}
+			continue
 		}
 		route, ok := s.workspaceOverviewTopologyRouteForBinding(binding, runtimeTarget, runtimeRecord, runtimeTargets, workspacePath, workspacePath, strings.TrimSpace(scope.WorkspaceName))
 		if !ok {

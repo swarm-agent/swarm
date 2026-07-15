@@ -329,108 +329,64 @@ func TestWorkspaceOverviewSkipsStaleTopologyBindings(t *testing.T) {
 	}
 }
 
-func TestWorkspaceOverviewIncludesManagedChildLoopbackRouteViaOwnerHost(t *testing.T) {
-	server, _, store := newWorkspaceOverviewTopologyTestServer(t)
-	managedWorkspacePath := filepath.Join(t.TempDir(), "swarm-go")
-	if err := os.MkdirAll(managedWorkspacePath, 0o755); err != nil {
-		t.Fatalf("mkdir managed workspace: %v", err)
-	}
-	if _, err := server.workspace.AddForPrincipal(testPrincipal(), managedWorkspacePath, "swarm-go", "", true); err != nil {
-		t.Fatalf("add managed workspace: %v", err)
-	}
+func TestWorkspaceOverviewSkipsOfflineChildEvenWhenOwnerHostIsSelectable(t *testing.T) {
+	server, workspacePath, store := newWorkspaceOverviewTopologyTestServer(t)
 	setReplicateFakeSwarmState(server, swarmruntime.LocalState{
 		Node:           swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"},
 		CurrentGroupID: "group-1",
-		TrustedPeers: []swarmruntime.TrustedPeer{{
-			SwarmID:      "managed-swarm-1",
-			Name:         "managed-host",
-			Role:         swarmruntime.RelationshipManaged,
-			Relationship: swarmruntime.RelationshipManaged,
-			RendezvousTransports: []swarmruntime.TransportSummary{{
-				Kind:    startupconfig.NetworkModeTailscale,
-				Primary: "https://managed.example.test",
-				All:     []string{"https://managed.example.test"},
-			}},
-		}},
+		TrustedPeers: []swarmruntime.TrustedPeer{
+			{SwarmID: "owner-swarm", Name: "Owner", Role: swarmruntime.RelationshipChild, Relationship: swarmruntime.RelationshipChild, RendezvousTransports: []swarmruntime.TransportSummary{{Kind: startupconfig.NetworkModeTailscale, Primary: "https://owner.example.test", All: []string{"https://owner.example.test"}}}},
+			{SwarmID: "offline-child", Name: "Offline Child", Role: swarmruntime.RelationshipChild, Relationship: swarmruntime.RelationshipChild},
+		},
 		Groups: []swarmruntime.GroupState{{
 			Group: swarmruntime.Group{ID: "group-1", Name: "Primary Group", HostSwarmID: "host-swarm-id"},
 			Members: []swarmruntime.GroupMember{
 				{GroupID: "group-1", SwarmID: "host-swarm-id", Name: "host-swarm", SwarmRole: "master", MembershipRole: swarmruntime.GroupMembershipRoleHost},
-				{GroupID: "group-1", SwarmID: "managed-swarm-1", Name: "managed-host", SwarmRole: swarmruntime.RelationshipManaged, MembershipRole: swarmruntime.GroupMembershipRoleMember},
+				{GroupID: "group-1", SwarmID: "owner-swarm", Name: "Owner", SwarmRole: swarmruntime.RelationshipChild, MembershipRole: swarmruntime.GroupMembershipRoleMember},
+				{GroupID: "group-1", SwarmID: "offline-child", Name: "Offline Child", SwarmRole: swarmruntime.RelationshipChild, MembershipRole: swarmruntime.GroupMembershipRoleMember},
 			},
 		}},
 	})
 	topologyStore := pebblestore.NewTopologyStore(store)
-	workspaceEntry, ok, err := pebblestore.NewWorkspaceStore(store).GetForAccount(testPrincipal().AccountScopeID, managedWorkspacePath)
+	workspaceEntry, ok, err := pebblestore.NewWorkspaceStore(store).GetForAccount(testPrincipal().AccountScopeID, workspacePath)
 	if err != nil || !ok {
-		t.Fatalf("get managed workspace entry ok=%t err=%v", ok, err)
+		t.Fatalf("get workspace entry ok=%t err=%v", ok, err)
 	}
-	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "managed-swarm-1", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "managed-host", Relationship: "managed", BackendURL: "https://managed.example.test"}); err != nil {
-		t.Fatalf("upsert host runtime: %v", err)
-	}
-	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "child-swarm-1", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "heytest", Relationship: "child", BackendURL: "http://127.0.0.1:7782", OwnerHostSwarmID: "managed-swarm-1", OwnerHostContainerID: "managed-swarm-1:container-1", Status: "attached"}); err != nil {
-		t.Fatalf("upsert child runtime: %v", err)
-	}
-	if _, err := topologyStore.PutRuntimePlacementForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: "child-swarm-1", AccountScopeID: testPrincipal().AccountScopeID, AuthorityHostSwarmID: "managed-swarm-1", AuthorityContainerID: "managed-swarm-1:container-1", RuntimeKind: pebblestore.TopologyRuntimeKindContainer, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
-		t.Fatalf("put child runtime placement: %v", err)
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "offline-child", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "Offline Child", Relationship: "child", BackendURL: "http://127.0.0.1:7782", OwnerHostSwarmID: "owner-swarm"}); err != nil {
+		t.Fatalf("upsert offline child runtime: %v", err)
 	}
 	if _, err := topologyStore.PutWorkspaceBindingForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
-		BindingID:                       "binding-managed-child",
+		BindingID:                       "binding-offline-child",
 		UserID:                          testPrincipal().UserID,
 		AccountScopeID:                  testPrincipal().AccountScopeID,
 		SourceWorkspaceID:               workspaceEntry.WorkspaceID,
 		SourceWorkspaceGeneration:       workspaceEntry.WorkspaceGeneration,
-		SourceWorkspacePath:             managedWorkspacePath,
-		SourceWorkspaceName:             "swarm-go",
-		DestinationRuntimeSwarmID:       "child-swarm-1",
-		DestinationAuthorityHostSwarmID: "managed-swarm-1",
+		SourceWorkspacePath:             workspacePath,
+		DestinationRuntimeSwarmID:       "offline-child",
+		DestinationAuthorityHostSwarmID: "owner-swarm",
 		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
-		DestinationHostSwarmID:          "managed-swarm-1",
-		DestinationContainerID:          "managed-swarm-1:container-1",
-		DestinationWorkspacePath:        "/workspaces/swarm-go",
-		PlacementGeneration:             1,
-		BindingGeneration:               1,
+		DestinationHostSwarmID:          "owner-swarm",
+		DestinationContainerID:          "container-1",
+		DestinationWorkspacePath:        "/workspaces/offline-child",
 		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
-		AttestedByHostSwarmID:           "managed-swarm-1",
-		AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
-		MaterializationKind:             pebblestore.TopologyWorkspaceBindingMaterializationSource,
 		Writable:                        true,
 	}); err != nil {
-		t.Fatalf("upsert binding: %v", err)
+		t.Fatalf("put offline child binding: %v", err)
 	}
-	recorder := httptest.NewRecorder()
-	request := withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/workspace/overview?limit=25&discover_limit=1", nil))
-	server.Handler().ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-	var response workspaceOverviewResponse
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode overview: %v", err)
-	}
-	if len(response.Workspaces) != 2 {
-		t.Fatalf("workspace count=%d response=%+v", len(response.Workspaces), response)
-	}
-	var route workspaceOverviewTopologyRoute
+
+	response := getWorkspaceOverviewForTest(t, server)
+	var matched bool
 	for _, workspace := range response.Workspaces {
-		if workspace.Path == managedWorkspacePath {
-			if len(workspace.TopologyRoutes) != 1 {
-				t.Fatalf("managed workspace route count=%d routes=%+v", len(workspace.TopologyRoutes), workspace.TopologyRoutes)
-			}
-			route = workspace.TopologyRoutes[0]
+		if workspace.Path != workspacePath {
+			continue
+		}
+		matched = true
+		if len(workspace.TopologyRoutes) != 0 {
+			t.Fatalf("offline child route must remain hidden even when owner is selectable: %+v", workspace.TopologyRoutes)
 		}
 	}
-	if route.RouteID == "" {
-		t.Fatalf("managed workspace route not found in response=%+v", response)
-	}
-	if route.RuntimeSwarmID != "child-swarm-1" || route.RuntimeSwarmName != "heytest" {
-		t.Fatalf("runtime route fields = %+v", route)
-	}
-	if route.AuthorityHostSwarmID != "managed-swarm-1" || route.HostSwarmID != "managed-swarm-1" || route.HostSwarmName != "managed-host" || route.RuntimeKind != pebblestore.TopologyRuntimeKindContainer {
-		t.Fatalf("host route fields = %+v", route)
-	}
-	if route.HostWorkspacePath != managedWorkspacePath || route.HostWorkspaceName != "swarm-go" {
-		t.Fatalf("managed workspace fields = %+v", route)
+	if !matched {
+		t.Fatalf("workspace %q missing from response", workspacePath)
 	}
 }
 

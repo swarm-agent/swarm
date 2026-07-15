@@ -404,9 +404,7 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(principal identity.P
 			continue
 		}
 		if !runtimeTarget.Online || !runtimeTarget.Selectable {
-			if !s.topologyRouteOwnerHostSelectable(runtimeTarget, runtimeRecord, runtimeTargets) {
-				continue
-			}
+			continue
 		}
 		workspaceRoute, ok := s.workspaceOverviewTopologyRouteForBinding(binding, runtimeTarget, runtimeRecord, runtimeTargets, workspacePath, workspacePath, workspaceNameByID[workspaceID])
 		if ok {
@@ -505,15 +503,6 @@ func appendWorkspaceOverviewTopologyRoute(out map[string][]workspaceOverviewTopo
 	}
 	seenByWorkspace[workspacePath][route.RouteID] = struct{}{}
 	out[workspacePath] = append(out[workspacePath], route)
-}
-
-func (s *Server) topologyRouteOwnerHostSelectable(runtimeTarget swarmTarget, runtimeRecord pebblestore.TopologyRuntimeRecord, runtimeTargets map[string]swarmTarget) bool {
-	hostSwarmID := firstNonEmpty(strings.TrimSpace(runtimeTarget.HostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID))
-	if hostSwarmID == "" || s.isLocalSwarmID(hostSwarmID) || !isLoopbackBackendURL(runtimeTarget.BackendURL) {
-		return false
-	}
-	hostTarget, ok := runtimeTargets[strings.ToLower(hostSwarmID)]
-	return ok && hostTarget.Online && hostTarget.Selectable && strings.TrimSpace(hostTarget.BackendURL) != ""
 }
 
 func workspaceOverviewTopologyRouteID(runtimeSwarmID, workspaceBindingID string) string {
