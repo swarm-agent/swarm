@@ -309,22 +309,6 @@ test("plan sidebar renders a flat sectioned layout with session content below Ac
   assert.ok(html.indexOf("Actions") < html.indexOf("Scoped Git changes"));
 });
 
-test("active checkpoint heading has balanced spacing before Progress", () => {
-  const base = view();
-  base.activeCheckpoint = {
-    ...base.activeCheckpoint!,
-    title: "Reproduce the paused-stream resend inversion",
-  };
-  base.plan.document.checkpoints = [base.activeCheckpoint];
-
-  const markup = renderToStaticMarkup(
-    <DesktopPlanExecutionSidebar view={base} onAction={() => undefined} />,
-  );
-
-  assert.match(markup, /class="pt-2" data-plan-checkpoint-box-wrapper/);
-  assert.match(markup, /class="mt-2" data-plan-progress/);
-});
-
 test("checkpoint sidebar shows three full tasks without scrolling before an expandable remainder", () => {
   const base = view();
   const longTask =

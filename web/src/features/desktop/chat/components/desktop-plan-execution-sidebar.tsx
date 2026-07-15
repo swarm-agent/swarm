@@ -258,7 +258,7 @@ function CurrentCheckpointTitle({
   title: string;
 }) {
   return (
-    <div className="pt-2" data-plan-checkpoint-box-wrapper>
+    <div className="pt-3" data-plan-checkpoint-box-wrapper>
       <h3
         className={cn(
           "min-w-0 line-clamp-3 break-words text-sm font-semibold leading-5 text-[var(--app-text)] [overflow-wrap:anywhere]",
@@ -371,7 +371,7 @@ function ActiveCheckpointSection({
         tone={tone}
       />
 
-      <div className="mt-2" data-plan-progress>
+      <div className="mt-3" data-plan-progress>
         <div className="mb-1 flex items-center justify-between text-[10px] text-[var(--app-text-subtle)]">
           <span>Progress</span>
           <span className="font-medium text-[var(--app-text-muted)]">
