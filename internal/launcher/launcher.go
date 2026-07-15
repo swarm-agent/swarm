@@ -359,12 +359,6 @@ func rejectLegacyStartupConfig(targetPath string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat legacy startup config %q: %w", legacyPath, err)
 	}
-	legacySecret := startupconfig.RemoteDeployBootstrapSecretPath(legacyPath)
-	if _, err := os.Stat(legacySecret); err == nil {
-		return legacyStorageError("startup secret", legacySecret, startupconfig.RemoteDeployBootstrapSecretPath(targetPath))
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("stat legacy startup secret %q: %w", legacySecret, err)
-	}
 	return nil
 }
 
