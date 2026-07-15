@@ -67,9 +67,13 @@ func TestSwarmTargetsForRequestIncludesTopologyRuntime(t *testing.T) {
 	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "runtime-1", AccountScopeID: testPrincipal().AccountScopeID, UserID: testPrincipal().UserID, Name: "Runtime One", Relationship: "child", Status: "online"}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
 	}
+	swarmSvc := swarmruntime.NewService(pebblestore.NewSwarmStore(store, topologyStore), nil, nil)
+	if _, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{Name: "local", Role: "master"}); err != nil {
+		t.Fatalf("ensure local swarm: %v", err)
+	}
 	server := &Server{
 		startupConfigPath: filepath.Join(t.TempDir(), "swarm.conf"),
-		swarm:             fakeRoutedSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "local-swarm", Name: "local", Role: "master"}}},
+		swarm:             swarmSvc,
 		topology:          topologyruntime.NewService(topologyStore, nil),
 	}
 	targets, _, err := server.swarmTargetsForRequest(requestWithTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/swarm/targets", nil)))

@@ -16,7 +16,7 @@ import (
 
 func TestSessionsV3TUIDirectoryCreateOpenAndWorkset(t *testing.T) {
 	t.Setenv("SWARM_V3_DIAGNOSTICS", "0")
-	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	seedSessionsV3PrimaryAuthority(t, server, "/workspace/known")
 	cwd := filepath.Join(t.TempDir(), "cwd-only")
 
@@ -37,9 +37,7 @@ func TestSessionsV3TUIDirectoryCreateOpenAndWorkset(t *testing.T) {
 		t.Fatalf("projection/mutation = %+v %+v", created.Projection, created.Mutation)
 	}
 
-	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
-		t.Fatalf("routes = %+v err=%v, want none", routes, err)
-	}
+	assertNoRetiredSessionRouteMetadata(t, sessionSvc, created.Session.ID)
 
 	openReq := httptest.NewRequest(http.MethodGet, "/v3/tui/sessions/"+created.Session.ID+"?cwd_path="+cwd, nil)
 	openRec := httptest.NewRecorder()
@@ -122,7 +120,7 @@ func TestSessionsV3TUIDirectoryRebindsToWorkspaceIntentionally(t *testing.T) {
 
 func TestSessionsV3TUIDirectoryCreateRejectsProtectedMetadataAndNonCanonicalPath(t *testing.T) {
 	t.Setenv("SWARM_V3_DIAGNOSTICS", "0")
-	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	seedSessionsV3PrimaryAuthority(t, server, "/workspace/known")
 
 	for _, tc := range []struct {
@@ -150,9 +148,7 @@ func TestSessionsV3TUIDirectoryCreateRejectsProtectedMetadataAndNonCanonicalPath
 	if sessions, err := sessionSvc.ListSessionsForAccount(testPrincipal().AccountScopeID, 10); err != nil || len(sessions) != 0 {
 		t.Fatalf("sessions = %+v err=%v, want none", sessions, err)
 	}
-	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
-		t.Fatalf("routes = %+v err=%v, want none", routes, err)
-	}
+	assertNoSessionsForAccount(t, sessionSvc)
 }
 
 type sessionsV3TUIDirectoryCreatePayload struct {

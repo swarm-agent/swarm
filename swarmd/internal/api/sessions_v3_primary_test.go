@@ -305,10 +305,10 @@ func TestSessionsV3PrimaryCreateResponseIsMinimalMutationResult(t *testing.T) {
 }
 
 func TestSessionsV3PrimaryWorktreeOnRequiresExplicitBranch(t *testing.T) {
-	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
-	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-v3-worktree", "/host/swarm-go")
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV3PrimaryAuthority(t, server, "/host/swarm-go")
 
-	body := `{"client_request_id":"v3-wt-missing-branch","swarm_id":"host-swarm-id","workspace_binding_id":"binding-v3-worktree","title":"v3 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
+	body := `{"client_request_id":"v3-wt-missing-branch","swarm_id":"host-swarm-id","workspace_binding_id":"binding-v3-primary-host-swarm-go","title":"v3 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
@@ -321,12 +321,12 @@ func TestSessionsV3PrimaryWorktreeOnRequiresExplicitBranch(t *testing.T) {
 }
 
 func TestSessionsV3PrimaryWorktreeOnCreatesRequestedBranchSession(t *testing.T) {
-	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
-	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-v3-worktree", "/host/swarm-go")
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV3PrimaryAuthority(t, server, "/host/swarm-go")
 	fake := &fakeWorktreeService{allocation: worktreeruntime.Allocation{WorkspacePath: "/data/swarm/worktrees/swarm-go/ws_v3wtcreate", RepoRoot: "/host/swarm-go", BaseBranch: "main", BranchName: "agent/v3-requested", WorkspaceID: "ws_v3wtcreate"}}
 	server.SetWorktreeService(fake)
 
-	body := `{"session_id":"v3-wt-create","client_request_id":"v3-wt-create","swarm_id":"host-swarm-id","workspace_binding_id":"binding-v3-worktree","title":"v3 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_base_branch":"dev","worktree_branch_name":"agent/v3-requested","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
+	body := `{"session_id":"v3-wt-create","client_request_id":"v3-wt-create","swarm_id":"host-swarm-id","workspace_binding_id":"binding-v3-primary-host-swarm-go","title":"v3 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_base_branch":"dev","worktree_branch_name":"agent/v3-requested","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
@@ -351,11 +351,11 @@ func TestSessionsV3PrimaryWorktreeOnCreatesRequestedBranchSession(t *testing.T) 
 }
 
 func TestSessionsV3PrimaryWorktreeCreateReplayDoesNotReallocate(t *testing.T) {
-	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
-	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-v3-worktree", "/host/swarm-go")
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV3PrimaryAuthority(t, server, "/host/swarm-go")
 	fake := &fakeWorktreeService{allocation: worktreeruntime.Allocation{WorkspacePath: "/data/swarm/worktrees/swarm-go/ws_v3wtreplay", RepoRoot: "/host/swarm-go", BaseBranch: "main", BranchName: "agent/v3-replay", WorkspaceID: "ws_v3wtreplay"}}
 	server.SetWorktreeService(fake)
-	body := `{"session_id":"v3-wt-replay","client_request_id":"v3-wt-replay","swarm_id":"host-swarm-id","workspace_binding_id":"binding-v3-worktree","title":"v3 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_branch_name":"agent/v3-replay","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
+	body := `{"session_id":"v3-wt-replay","client_request_id":"v3-wt-replay","swarm_id":"host-swarm-id","workspace_binding_id":"binding-v3-primary-host-swarm-go","title":"v3 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_branch_name":"agent/v3-replay","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
 
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/v3/sessions", strings.NewReader(body))
@@ -521,7 +521,7 @@ func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
 }
 
 func TestSessionsV3PrimaryCreateListHydrateUsesPrimaryStoreOnly(t *testing.T) {
-	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 
 	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/v3")
 	body := `{"client_request_id":"create-v3-1","workspace_path":"/workspace/v3","workspace_name":"v3","swarm_id":"host-swarm-id","workspace_binding_id":"` + bindingID + `","target_kind":"host","target_relationship":"self","title":"V3 Primary","mode":"auto","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"},"metadata":{"purpose":"cp3"}}`
@@ -573,14 +573,7 @@ func TestSessionsV3PrimaryCreateListHydrateUsesPrimaryStoreOnly(t *testing.T) {
 	if _, ok, err := sessionSvc.GetSessionProjection(createPayload.Session.ID); err != nil || !ok {
 		t.Fatalf("stored projection ok=%t err=%v", ok, err)
 	}
-	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
-		t.Fatalf("routes = %+v err=%v, want none", routes, err)
-	}
-	if _, ok, err := server.topology.GetSessionRouteForAccount(testPrincipal().AccountScopeID, createPayload.Session.ID); err != nil {
-		t.Fatalf("get topology route: %v", err)
-	} else if ok {
-		t.Fatalf("unexpected topology session route for V3 primary session")
-	}
+	assertNoRetiredSessionRouteMetadata(t, sessionSvc, createPayload.Session.ID)
 
 	hydrateReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+createPayload.Session.ID, nil)
 	hydrateRec := httptest.NewRecorder()
@@ -674,7 +667,7 @@ func TestSessionsV3PrimaryCreateRejectsProtectedAuthorityMetadata(t *testing.T) 
 		{name: "agent spoof", body: `{"client_request_id":"protected-agent-metadata","workspace_path":"/workspace/v3","agent_name":"swarm","metadata":{"agent_name":"spoof"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
+			server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 			req := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(tc.body))
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
@@ -685,18 +678,13 @@ func TestSessionsV3PrimaryCreateRejectsProtectedAuthorityMetadata(t *testing.T) 
 			if !strings.Contains(rec.Body.String(), "reserved") {
 				t.Fatalf("body = %s, want reserved metadata error", rec.Body.String())
 			}
-			if sessions, err := sessionSvc.ListSessionsForAccount(testPrincipal().AccountScopeID, 10); err != nil || len(sessions) != 0 {
-				t.Fatalf("sessions = %+v err=%v, want none", sessions, err)
-			}
-			if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
-				t.Fatalf("routes = %+v err=%v, want none", routes, err)
-			}
+			assertNoSessionsForAccount(t, sessionSvc)
 		})
 	}
 }
 
 func TestSessionsV3PrimaryMessagesCommitUserMessageAndPendingExecutorIntent(t *testing.T) {
-	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/cp4")
 	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-create","workspace_path":"/workspace/cp4","swarm_id":"host-swarm-id","workspace_binding_id":"`+bindingID+`","target_kind":"host","target_relationship":"self","title":"CP4","agent_name":"swarm"}`))
 	create.Header.Set("Content-Type", "application/json")
@@ -750,9 +738,7 @@ func TestSessionsV3PrimaryMessagesCommitUserMessageAndPendingExecutorIntent(t *t
 	if payload.Mutation.FirstSeq != 2 || payload.Mutation.Message == nil || payload.Mutation.RunIntent == nil || payload.Mutation.Session != nil || payload.Mutation.Event.EventType != "session.message.appended" {
 		t.Fatalf("mutation = %+v", payload.Mutation)
 	}
-	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
-		t.Fatalf("routes = %+v err=%v, want none", routes, err)
-	}
+	assertNoRetiredSessionRouteMetadata(t, sessionSvc, created.Session.ID)
 	messages, err := sessionSvc.ListSessionMessages(created.Session.ID, 0, 10)
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
@@ -779,7 +765,7 @@ func TestSessionsV3PrimaryMessagesCommitUserMessageAndPendingExecutorIntent(t *t
 }
 
 func TestSessionsV3PrimaryMessageWithInvalidDispatchAuthorityStillCommitsAndBlocks(t *testing.T) {
-	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/cp4")
 	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-invalid-authority-create","workspace_path":"/workspace/cp4","swarm_id":"host-swarm-id","workspace_binding_id":"`+bindingID+`","target_kind":"host","target_relationship":"self","title":"CP4","agent_name":"swarm"}`))
 	create.Header.Set("Content-Type", "application/json")
@@ -822,13 +808,12 @@ func TestSessionsV3PrimaryMessageWithInvalidDispatchAuthorityStillCommitsAndBloc
 	if len(messages) != 1 || messages[0].Content != "durable despite invalid authority" {
 		t.Fatalf("messages = %+v", messages)
 	}
-	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
-		t.Fatalf("routes = %+v err=%v, want none", routes, err)
-	}
+	assertNoRetiredSessionRouteMetadata(t, sessionSvc, created.Session.ID)
 }
 
 func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutBlockingMessage(t *testing.T) {
-	baseAuthority := `"runtime_swarm_id":"host-swarm-id","runtime_kind":"host","workspace_binding_id":"binding-primary-v2","authority_host_swarm_id":"host-swarm-id","placement_generation":1,"binding_generation":1,"source_workspace_path":"/workspace/cp8","runtime_workspace_path":"/workspace/cp8"`
+	const bindingID = "binding-v3-primary-workspace-cp8"
+	baseAuthority := `"runtime_swarm_id":"host-swarm-id","runtime_kind":"host","workspace_binding_id":"` + bindingID + `","authority_host_swarm_id":"host-swarm-id","placement_generation":1,"binding_generation":1,"source_workspace_path":"/workspace/cp8","runtime_workspace_path":"/workspace/cp8"`
 	tests := []struct {
 		name       string
 		authority  string
@@ -845,7 +830,7 @@ func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutB
 			name:      "stale binding generation",
 			authority: baseAuthority,
 			mutate: func(t *testing.T, server *Server) {
-				mutateSessionsV2WorkspaceBinding(t, server, "binding-primary-v2", func(binding *pebblestore.TopologyWorkspaceBindingRecord) {
+				mutateSessionsV3WorkspaceBinding(t, server, bindingID, func(binding *pebblestore.TopologyWorkspaceBindingRecord) {
 					binding.BindingGeneration = 2
 				})
 			},
@@ -873,7 +858,7 @@ func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutB
 		},
 		{
 			name:      "missing executor runtime",
-			authority: `"workspace_binding_id":"binding-primary-v2"`,
+			authority: `"workspace_binding_id":"` + bindingID + `"`,
 			want:      "missing executor runtime",
 		},
 	}
@@ -884,8 +869,10 @@ func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutB
 			if wantStatus == "" {
 				wantStatus = sessionruntime.RunIntentDispatchBlocked
 			}
-			server, sessionSvc, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
-			seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/workspace/cp8")
+			server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+			if got := seedSessionsV3PrimaryAuthority(t, server, "/workspace/cp8"); got != bindingID {
+				t.Fatalf("seed binding id = %q, want %q", got, bindingID)
+			}
 			if tt.mutate != nil {
 				tt.mutate(t, server)
 			}
@@ -918,9 +905,7 @@ func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutB
 			if len(messages) != 1 || messages[0].Content != "cp8 durable" {
 				t.Fatalf("messages = %+v", messages)
 			}
-			if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
-				t.Fatalf("routes = %+v err=%v, want none", routes, err)
-			}
+			assertNoRetiredSessionRouteMetadata(t, sessionSvc, created.ID)
 		})
 	}
 }
@@ -3165,7 +3150,7 @@ func TestSessionsV3PrimaryStreamDisambiguatesReusedProviderToolCallIDs(t *testin
 }
 
 func TestSessionsV3PrimaryPlanModeStartCheckpointPreflightIsPrimaryOnlyAndAtomic(t *testing.T) {
-	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	server.v3SessionExecutor = newSessionV3Executor(server)
 	created := createSessionsV3PrimaryTestSession(t, server, "plan-mode-primary-preflight-create", "plan mode primary preflight")
 
@@ -3183,12 +3168,7 @@ func TestSessionsV3PrimaryPlanModeStartCheckpointPreflightIsPrimaryOnlyAndAtomic
 	if err := sessionSvc.Store().UpdateSession(stored); err != nil {
 		t.Fatalf("store routed-looking v3 primary session metadata: %v", err)
 	}
-	if _, ok, err := routeStore.Get(created.ID); err != nil || ok {
-		t.Fatalf("legacy route store lookup ok=%t err=%v, want absent route", ok, err)
-	}
-	if _, ok, err := server.topology.GetSessionRouteForAccount(testPrincipal().AccountScopeID, created.ID); err != nil || ok {
-		t.Fatalf("topology route lookup ok=%t err=%v, want absent route", ok, err)
-	}
+	assertNoRetiredSessionRouteMetadata(t, sessionSvc, created.ID)
 
 	initialDoc := &pebblestore.SessionPlanDocument{
 		ID:     "plan-primary-preflight",
@@ -3261,12 +3241,7 @@ func TestSessionsV3PrimaryPlanModeStartCheckpointPreflightIsPrimaryOnlyAndAtomic
 	if checkpoint.Status != sessionruntime.PlanCheckpointStatusInProgress || checkpoint.AttemptID == "" || len(checkpoint.Attempts) != 1 {
 		t.Fatalf("successful primary preflight did not save checkpoint start: %+v", checkpoint)
 	}
-	if _, ok, err := routeStore.Get(created.ID); err != nil || ok {
-		t.Fatalf("legacy route store lookup after primary start ok=%t err=%v, want absent route", ok, err)
-	}
-	if _, ok, err := server.topology.GetSessionRouteForAccount(testPrincipal().AccountScopeID, created.ID); err != nil || ok {
-		t.Fatalf("topology route lookup after primary start ok=%t err=%v, want absent route", ok, err)
-	}
+	assertNoRetiredSessionRouteMetadata(t, sessionSvc, created.ID)
 }
 
 func TestSessionsV3PrimaryNextMessageUsesActiveFollowupCheckpointFreshContext(t *testing.T) {
@@ -3501,6 +3476,49 @@ func seedSessionsV3PrimaryAuthority(t *testing.T, server *Server, workspacePath 
 		t.Fatalf("upsert v3 binding: %v", err)
 	}
 	return bindingID
+}
+
+func assertNoSessionsForAccount(t *testing.T, sessionSvc *sessionruntime.Service) {
+	t.Helper()
+	sessions, err := sessionSvc.ListSessionsForAccount(testPrincipal().AccountScopeID, 10)
+	if err != nil || len(sessions) != 0 {
+		t.Fatalf("sessions = %+v err=%v, want none", sessions, err)
+	}
+}
+
+func assertNoRetiredSessionRouteMetadata(t *testing.T, sessionSvc *sessionruntime.Service, sessionID string) {
+	t.Helper()
+	session, ok, err := sessionSvc.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("get session %q: %v", sessionID, err)
+	}
+	if !ok {
+		t.Fatalf("session %q not found", sessionID)
+	}
+	for key := range session.Metadata {
+		parts := strings.Split(strings.ToLower(strings.TrimSpace(key)), "_")
+		if len(parts) > 1 && parts[0] == "swarm" && parts[1] == "routed" {
+			t.Fatalf("session %q contains retired route metadata %q", sessionID, key)
+		}
+	}
+}
+
+func mutateSessionsV3WorkspaceBinding(t *testing.T, server *Server, bindingID string, mutate func(*pebblestore.TopologyWorkspaceBindingRecord)) {
+	t.Helper()
+	if server == nil || server.topology == nil {
+		t.Fatal("server topology is required")
+	}
+	binding, ok, err := server.topology.GetWorkspaceBindingForAccount(testPrincipal().AccountScopeID, bindingID)
+	if err != nil {
+		t.Fatalf("get workspace binding %q: %v", bindingID, err)
+	}
+	if !ok {
+		t.Fatalf("workspace binding %q not found", bindingID)
+	}
+	mutate(&binding)
+	if _, err := server.topology.UpsertWorkspaceBinding(binding); err != nil {
+		t.Fatalf("upsert workspace binding %q: %v", bindingID, err)
+	}
 }
 
 func createSessionsV3PrimaryTestSession(t *testing.T, server *Server, clientRequestID, title string) pebblestore.SessionSnapshot {
