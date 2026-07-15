@@ -3448,6 +3448,58 @@ test('pending user message is ordered after the active stream timeline', () => {
   assert.equal(state.pendingUserByClientRequestId['client-next-turn']?.timelineSeq, 12)
 })
 
+test('pending run association floors every existing live item after its initiating user only', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.liveRunsBySession[sessionA.id] = {
+    'run-old': {
+      sessionId: sessionA.id,
+      runId: 'run-old',
+      status: 'running',
+      assistantDraft: { content: 'old output', updatedAt: 1, timelineSeq: 8 },
+      toolCallsByCallId: {},
+    },
+    'run-new': {
+      sessionId: sessionA.id,
+      runId: 'run-new',
+      status: 'running',
+      assistantDraft: { content: 'new output', updatedAt: 2, timelineSeq: 4 },
+      assistantSegments: [{ id: 'segment-new', content: 'segment', createdAt: 2, updatedAt: 2, timelineSeq: 5 }],
+      toolCallsByCallId: { call: { callId: 'call', updatedAt: 2, timelineSeq: 6 } },
+      reasoning: {
+        key: 'reasoning', state: 'running', summary: '', text: 'thinking',
+        startedAt: 2, updatedAt: 2, timelineSeq: 7,
+      },
+      reasoningByKey: {
+        reasoning: {
+          key: 'reasoning', state: 'running', summary: '', text: 'thinking',
+          startedAt: 2, updatedAt: 2, timelineSeq: 7,
+        },
+      },
+    },
+  }
+
+  upsertPendingUserMessage(state, {
+    sessionId: sessionA.id,
+    clientRequestId: 'client-new-run',
+    messageId: 'message-new-run',
+    content: 'new turn',
+    runId: 'run-new',
+    createdAt: 3,
+  })
+
+  const pending = state.pendingUserByClientRequestId['client-new-run']
+  const newRun = state.liveRunsBySession[sessionA.id]['run-new']
+  assert.equal(pending.runId, 'run-new')
+  assert.equal(pending.timelineSeq, 9)
+  assert.equal(newRun.timelineFloor, 10)
+  assert.equal(newRun.assistantDraft?.timelineSeq, 10)
+  assert.equal(newRun.assistantSegments?.[0]?.timelineSeq, 10)
+  assert.equal(newRun.toolCallsByCallId.call.timelineSeq, 10)
+  assert.equal(newRun.reasoning?.timelineSeq, 10)
+  assert.equal(newRun.reasoningByKey?.reasoning.timelineSeq, 10)
+  assert.equal(state.liveRunsBySession[sessionA.id]['run-old'].assistantDraft?.timelineSeq, 8)
+})
+
 test('message mutation reconciles pending by client request and message id', () => {
   const state = createEmptyDesktopV3CacheState()
   upsertPendingUserMessage(state, {

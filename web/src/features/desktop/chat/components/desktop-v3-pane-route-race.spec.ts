@@ -382,7 +382,8 @@ test('Desktop V3 final checkpoint handoff renders separately after lifecycle bre
     }))
     assert.match(markup, /aria-label="At a glance"/)
     assert.equal((markup.match(/>At a glance</g) ?? []).length, 1)
-    assert.match(markup, /<strong>Done<\/strong> — ready to review/)
+    assert.match(markup, /<strong><span>Done<\/span><\/strong>/)
+    assert.match(markup, /ready to review/)
     assert.equal((markup.match(/data-testid="desktop-v3-plan-final-handoff-summary"/g) ?? []).length, 1)
   }
 })
@@ -484,6 +485,7 @@ test('Desktop V3 new user message follows the active stream instead of sorting b
       sessionId: 'session-a',
       role: 'user',
       content: 'next turn',
+      runId: 'run-next-turn',
       createdAt: 1_000_000,
       timelineSeq: 6,
       status: 'pending',
@@ -518,6 +520,7 @@ test('Desktop V3 paused run resend stays ordered through commit and delayed stal
     sessionId: 'session-a',
     role: 'user' as const,
     content: 'continue after pause',
+    runId: 'run-after-pause',
     createdAt: 30,
     timelineSeq: 3,
     status: 'pending' as const,
@@ -585,6 +588,7 @@ test('Desktop V3 pending user keeps its render key when the canonical message ar
       sessionId: 'session-a',
       role: 'user',
       content: 'next turn',
+      runId: 'run-next-turn',
       createdAt: 10,
       timelineSeq: 2,
       status: 'pending',

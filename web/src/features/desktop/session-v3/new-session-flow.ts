@@ -392,6 +392,7 @@ export async function startNewDesktopV3Session(input: {
       sessionId: operation.sessionId,
       content: operation.firstMessageRequest.content,
       metadata: operation.firstMessageRequest.metadata,
+      runId: operation.firstMessageRequest.run_id,
       createdAt: operation.createdAt,
     },
   })

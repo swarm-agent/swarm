@@ -155,6 +155,9 @@ test('continueDesktopV3Conversation appends message through canonical mutation a
       'dispatch:mutation.messageResult',
     ])
     assert.equal(actions[0]?.type, 'pendingUser.upsert')
+    if (actions[0]?.type === 'pendingUser.upsert') {
+      assert.equal(actions[0].input.runId, operation.request.run_id)
+    }
     assert.equal(actions[1]?.type, 'mutation.messageResult')
   } finally {
     restore()
@@ -256,6 +259,10 @@ test('continueDesktopV3Conversation accepts terminal replay so retained operatio
   try {
     const response = await continueDesktopV3Conversation(operation)
     assert.equal(response.run_intent?.status, 'cancelled')
+    assert.equal(actions[0]?.type, 'pendingUser.upsert')
+    if (actions[0]?.type === 'pendingUser.upsert') {
+      assert.equal(actions[0].input.runId, operation.request.run_id)
+    }
     assert.equal(actions.at(-1)?.type, 'mutation.messageResult')
   } finally {
     restore()

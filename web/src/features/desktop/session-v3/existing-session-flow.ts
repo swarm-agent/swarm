@@ -161,6 +161,7 @@ export async function continueDesktopV3Conversation(
       sessionId,
       content: operation.request.content,
       metadata: operation.request.metadata,
+      runId: operation.request.run_id,
       createdAt: operation.createdAt,
     },
   })

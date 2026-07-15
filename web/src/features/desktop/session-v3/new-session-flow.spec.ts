@@ -341,6 +341,11 @@ test('startNewDesktopV3Session creates, appends first message, selects, and appl
       `navigate:${operation.sessionId}`,
     ])
     assert.deepEqual(capturedRequest, operation.createRequest)
+    const pendingAction = actions.find((action) => action.type === 'pendingUser.upsert')
+    assert.equal(pendingAction?.type, 'pendingUser.upsert')
+    if (pendingAction?.type === 'pendingUser.upsert') {
+      assert.equal(pendingAction.input.runId, operation.firstMessageRequest.run_id)
+    }
     assert.equal(actions.find((action) => action.type === 'session.select')?.sessionId, operation.sessionId)
   } finally {
     restore()
@@ -408,12 +413,17 @@ test('startNewDesktopV3Session primes sidebar bootstrap before create on first d
       'dispatch:mutation.sessionCreateResult',
       'dispatch:session.select',
       `connect:${operation.sessionId}`,
+      'release',
       'dispatch:pendingUser.upsert',
       `message:${operation.sessionId}:${operation.firstMessageRequest.message_id}`,
       'dispatch:mutation.messageResult',
-      'release',
     ])
     assert.equal(actions.find((action) => action.type === 'mutation.sessionCreateResult')?.sidebarScopeId, 'scope-primed')
+    const pendingAction = actions.find((action) => action.type === 'pendingUser.upsert')
+    assert.equal(pendingAction?.type, 'pendingUser.upsert')
+    if (pendingAction?.type === 'pendingUser.upsert') {
+      assert.equal(pendingAction.input.runId, operation.firstMessageRequest.run_id)
+    }
   } finally {
     restore()
   }

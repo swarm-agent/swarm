@@ -1007,6 +1007,7 @@ export function upsertPendingUserMessage(
     messageId: string
     content: string
     metadata?: Record<string, unknown>
+    runId?: string
     createdAt: number
   },
 ): DesktopV3CacheState {
@@ -1044,6 +1045,7 @@ export function upsertPendingUserMessage(
     role: 'user',
     content: input.content,
     metadata: input.metadata,
+    runId: input.runId?.trim() || undefined,
     createdAt: input.createdAt,
     timelineSeq: Math.max(
       latestProjectionSeq,
@@ -1054,7 +1056,53 @@ export function upsertPendingUserMessage(
     status: 'pending',
   }
   state.pendingUserByClientRequestId[input.clientRequestId] = pending
+  if (pending.runId) {
+    applyPendingUserRunTimelineFloor(state, pending.sessionId, pending.runId, (pending.timelineSeq ?? 0) + 1)
+  }
   return state
+}
+
+function applyPendingUserRunTimelineFloor(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  runId: string,
+  timelineFloor: number,
+): void {
+  if (timelineFloor <= 0) return
+  const run = state.liveRunsBySession[sessionId]?.[runId]
+  if (!run) return
+  applyRunTimelineFloor(run, timelineFloor)
+}
+
+function applyPendingUserRunTimelineFloorToRun(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  run: LiveRunOverlay,
+): void {
+  for (const pending of Object.values(state.pendingUserByClientRequestId)) {
+    if (pending.sessionId !== sessionId || pending.runId !== run.runId) continue
+    applyRunTimelineFloor(run, (pending.timelineSeq ?? 0) + 1)
+  }
+}
+
+function applyRunTimelineFloor(run: LiveRunOverlay, timelineFloor: number): void {
+  if (timelineFloor <= 0) return
+  run.timelineFloor = Math.max(run.timelineFloor ?? 0, timelineFloor)
+  if (run.assistantDraft) {
+    run.assistantDraft.timelineSeq = Math.max(run.assistantDraft.timelineSeq ?? 0, run.timelineFloor)
+  }
+  for (const segment of run.assistantSegments ?? []) {
+    segment.timelineSeq = Math.max(segment.timelineSeq ?? 0, run.timelineFloor)
+  }
+  for (const tool of Object.values(run.toolCallsByCallId)) {
+    tool.timelineSeq = Math.max(tool.timelineSeq ?? 0, run.timelineFloor)
+  }
+  for (const reasoning of Object.values(run.reasoningByKey ?? {})) {
+    reasoning.timelineSeq = Math.max(reasoning.timelineSeq ?? 0, run.timelineFloor)
+  }
+  if (run.reasoning) {
+    run.reasoning.timelineSeq = Math.max(run.reasoning.timelineSeq ?? 0, run.timelineFloor)
+  }
 }
 
 export function applyCacheEvent(
@@ -1573,6 +1621,7 @@ export function upsertRunIntent(
 
   const liveRuns = state.liveRunsBySession[sessionId] ?? {}
   const liveRun = liveRuns[enrichedRunIntent.run_id] ?? createLiveRunOverlay(sessionId, enrichedRunIntent.run_id)
+  applyPendingUserRunTimelineFloorToRun(state, sessionId, liveRun)
   liveRun.status = normalizeLiveRunStatus(enrichedRunIntent.status)
   liveRuns[enrichedRunIntent.run_id] = liveRun
   state.liveRunsBySession[sessionId] = liveRuns
@@ -2772,6 +2821,7 @@ function applyLiveRunOverlayFromEvent(
   }
 
   const liveRun = ensureLiveRunOverlay(state, sessionId, runId)
+  applyPendingUserRunTimelineFloorToRun(state, sessionId, liveRun)
   const priorEventSeq = liveRun.lastEventSeqSeen ?? 0
   if (eventSeq > 0 && eventSeq <= priorEventSeq) {
     return
@@ -2814,7 +2864,7 @@ function applyLiveRunOverlayFromEvent(
       liveRun.assistantDraft = {
         content: `${liveRun.assistantDraft?.content ?? ''}${delta}`,
         updatedAt,
-        timelineSeq: liveRun.assistantDraft?.timelineSeq || eventSeq,
+        timelineSeq: Math.max(liveRun.assistantDraft?.timelineSeq ?? 0, eventSeq, liveRun.timelineFloor ?? 0),
       }
       return
     }
@@ -2900,7 +2950,10 @@ function applyLiveRunOverlayFromEvent(
       tool.durationMs = numberValue(payload.duration_ms) || tool.durationMs
       tool.status = stringValue(payload.status) || (isFailed ? 'failed' : isCancelled ? 'cancelled' : isTerminal ? 'completed' : 'running')
       tool.updatedAt = updatedAt
-      tool.timelineSeq = isTerminal && eventSeq > 0 ? eventSeq : tool.timelineSeq || eventSeq
+      tool.timelineSeq = Math.max(
+        isTerminal && eventSeq > 0 ? eventSeq : tool.timelineSeq || eventSeq,
+        liveRun.timelineFloor ?? 0,
+      )
 
       liveRun.toolCallsByCallId[callId] = tool
       return
@@ -2943,7 +2996,7 @@ function applyStreamAwareDurableAssistantDelta(
     liveRun.assistantDraft = {
       content: input.delta,
       updatedAt: input.updatedAt,
-      timelineSeq: input.eventSeq,
+      timelineSeq: Math.max(input.eventSeq, liveRun.timelineFloor ?? 0),
       streamId: input.streamId,
       streamStep: input.step,
       stepId: input.stepId,
@@ -2972,7 +3025,7 @@ function applyStreamAwareDurableAssistantDelta(
     updateAssistantStreamNode(liveRun, existing, {
       durableOffsetEnd: Math.max(node.durableOffsetEnd ?? 0, input.offsetEnd),
       updatedAt: input.updatedAt,
-      timelineSeq: node.timelineSeq || input.eventSeq,
+      timelineSeq: Math.max(node.timelineSeq || input.eventSeq, liveRun.timelineFloor ?? 0),
       streamStep: input.step ?? node.streamStep,
       stepId: input.stepId || node.stepId,
     })
@@ -2997,7 +3050,7 @@ function applyStreamAwareDurableAssistantDelta(
   updateAssistantStreamNode(liveRun, existing, {
     content: `${node.content}${suffix}`,
     updatedAt: input.updatedAt,
-    timelineSeq: node.timelineSeq || input.eventSeq,
+    timelineSeq: Math.max(node.timelineSeq || input.eventSeq, liveRun.timelineFloor ?? 0),
     streamStep: input.step ?? node.streamStep,
     stepId: input.stepId || node.stepId,
     offsetEnd: input.offsetEnd,
@@ -3101,6 +3154,13 @@ export function applyDesktopV3LivePatchBatch(
           ...existing,
           assistantDraft: existing.assistantDraft ? { ...existing.assistantDraft } : undefined,
           assistantSegments: existing.assistantSegments ? existing.assistantSegments.map((segment) => ({ ...segment })) : undefined,
+          toolCallsByCallId: Object.fromEntries(
+            Object.entries(existing.toolCallsByCallId).map(([callId, tool]) => [callId, { ...tool }]),
+          ),
+          reasoning: existing.reasoning ? { ...existing.reasoning } : undefined,
+          reasoningByKey: existing.reasoningByKey ? Object.fromEntries(
+            Object.entries(existing.reasoningByKey).map(([key, reasoning]) => [key, { ...reasoning }]),
+          ) : undefined,
         }
         : {
           sessionId,
@@ -3115,6 +3175,7 @@ export function applyDesktopV3LivePatchBatch(
 
   for (const patch of patches) {
     const run = ensureMutableRun(patch.session_id, patch.run_id)
+    applyPendingUserRunTimelineFloorToRun(nextState, patch.session_id, run)
     applyLivePatchToRun(nextState, run, patch)
   }
 
@@ -3179,16 +3240,20 @@ function resolveLiveAssistantTimelineSeq(state: DesktopV3CacheState, run: LiveRu
     latestCommittedSeq = Math.max(latestCommittedSeq, finiteNumberValue(message.global_seq) ?? 0)
   }
   const runIntentSeq = state.runIntentsBySession[sessionId]?.[run.runId]?.event_seq ?? 0
-  const currentRunIntentSeq = state.currentRunIntentBySession[sessionId]?.event_seq ?? 0
+  const currentRunIntent = state.currentRunIntentBySession[sessionId]
+  const currentRunIntentSeq = currentRunIntent?.run_id === run.runId ? currentRunIntent.event_seq ?? 0 : 0
   const projection = state.projectionsBySession[sessionId]
   return Math.max(
-    latestCommittedSeq,
-    runIntentSeq,
-    currentRunIntentSeq,
-    projection?.last_event_seq ?? 0,
-    projection?.projection_high_watermark_seq ?? 0,
-    run.lastEventSeqSeen ?? 0,
-  ) + 1
+    Math.max(
+      latestCommittedSeq,
+      runIntentSeq,
+      currentRunIntentSeq,
+      projection?.last_event_seq ?? 0,
+      projection?.projection_high_watermark_seq ?? 0,
+      run.lastEventSeqSeen ?? 0,
+    ) + 1,
+    run.timelineFloor ?? 0,
+  )
 }
 
 function upsertLiveAssistantSegment(
@@ -3264,7 +3329,7 @@ function applyLiveReasoningOverlay(
     startedAt: updatedAt,
     completedAt: null,
     updatedAt,
-    timelineSeq: eventSeq,
+    timelineSeq: Math.max(eventSeq, liveRun.timelineFloor ?? 0),
     updatedSeq: eventSeq,
   }
   const isStarted = eventType === 'session.reasoning.started'
@@ -3294,7 +3359,7 @@ function applyLiveReasoningOverlay(
     startedAt: current.startedAt ?? updatedAt,
     completedAt: isCompleted || isError ? updatedAt : current.completedAt ?? null,
     updatedAt,
-    timelineSeq: current.timelineSeq || eventSeq,
+    timelineSeq: Math.max(current.timelineSeq || eventSeq, liveRun.timelineFloor ?? 0),
     updatedSeq: eventSeq,
   }
   if (isStarted && existing) {

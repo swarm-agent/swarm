@@ -673,6 +673,7 @@ export interface PendingUserMessage {
   role: 'user'
   content: string
   metadata?: Record<string, unknown>
+  runId?: string
   createdAt: number
   timelineSeq?: number
   status: 'pending' | 'failed'
@@ -753,6 +754,7 @@ export interface LiveRunOverlay {
   >
   reasoning?: LiveRunReasoningOverlay
   reasoningByKey?: Record<string, LiveRunReasoningOverlay>
+  timelineFloor?: number
   lastEventSeqSeen?: number
 }
 
