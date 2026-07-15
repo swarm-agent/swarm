@@ -42,7 +42,6 @@ type Service struct {
 	permissionRealtimePublish        func(sessionID string, record pebblestore.PermissionRecord) error
 	sessions                         sessionLookup
 	followupCheckpointPolicyResolver func(accountScopeID string) (string, error)
-	hosted                           HostedPermissionSync
 	notifications                    *notification.Service
 	localSwarmIDResolver             func() string
 	principalID                      string
@@ -143,15 +142,6 @@ type PendingPlanProposalEditResult struct {
 	ProposalRevision int64
 }
 
-type HostedPermissionSync interface {
-	CreatePending(ctx context.Context, descriptor sessionruntime.HostedSessionDescriptor, input CreateInput) (pebblestore.PermissionRecord, error)
-	WaitForResolution(ctx context.Context, descriptor sessionruntime.HostedSessionDescriptor, sessionID, permissionID string) (pebblestore.PermissionRecord, error)
-	Resolve(ctx context.Context, descriptor sessionruntime.HostedSessionDescriptor, input ResolveInput) (ResolveResult, error)
-	CancelRunPending(ctx context.Context, descriptor sessionruntime.HostedSessionDescriptor, sessionID, runID, reason string) ([]pebblestore.PermissionRecord, error)
-	MarkToolStarted(ctx context.Context, descriptor sessionruntime.HostedSessionDescriptor, sessionID, runID, callID string, step int, startedAt int64) (pebblestore.PermissionRecord, bool, error)
-	MarkToolCompleted(ctx context.Context, descriptor sessionruntime.HostedSessionDescriptor, sessionID, runID, callID string, step int, result tool.Result, completedAt int64) (pebblestore.PermissionRecord, bool, error)
-}
-
 func NewService(store *pebblestore.PermissionStore, events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) *Service {
 	return &Service{
 		store:                store,
@@ -189,13 +179,6 @@ func (s *Service) SetSummaryRealtimePublisher(publish func(sessionID string, sum
 		return
 	}
 	s.summaryRealtimePublish = publish
-}
-
-func (s *Service) SetHostedSync(sync HostedPermissionSync) {
-	if s == nil {
-		return
-	}
-	s.hosted = sync
 }
 
 func (s *Service) SetLocalSwarmIDResolver(resolver func() string) {
@@ -579,19 +562,6 @@ func (s *Service) CreatePending(input CreateInput) (pebblestore.PermissionRecord
 	if sessionID == "" {
 		return pebblestore.PermissionRecord{}, errors.New("session id is required")
 	}
-	if descriptor, hosted, err := s.hostedDescriptorForSession(sessionID); err != nil {
-		return pebblestore.PermissionRecord{}, err
-	} else if hosted {
-		record, err := s.hosted.CreatePending(context.Background(), descriptor, input)
-		if err != nil {
-			return pebblestore.PermissionRecord{}, err
-		}
-		if err := s.storeMirroredPermission(record); err != nil {
-			return pebblestore.PermissionRecord{}, err
-		}
-		s.syncNotification(record, descriptor.HostSwarmID, strings.TrimSpace(descriptor.ChildSwarmID), "permission.requested")
-		return record, nil
-	}
 	runID := strings.TrimSpace(input.RunID)
 	now := time.Now().UnixMilli()
 
@@ -903,19 +873,6 @@ func (s *Service) WaitForResolution(ctx context.Context, sessionID, permissionID
 	if permissionID == "" {
 		return pebblestore.PermissionRecord{}, errors.New("permission id is required")
 	}
-	if descriptor, hosted, err := s.hostedDescriptorForSession(sessionID); err != nil {
-		return pebblestore.PermissionRecord{}, err
-	} else if hosted {
-		record, err := s.hosted.WaitForResolution(ctx, descriptor, sessionID, permissionID)
-		if err != nil {
-			return pebblestore.PermissionRecord{}, err
-		}
-		if err := s.storeMirroredPermission(record); err != nil {
-			return pebblestore.PermissionRecord{}, err
-		}
-		return record, nil
-	}
-
 	for {
 		record, ok, err := s.store.GetPermission(sessionID, permissionID)
 		if err != nil {
@@ -963,21 +920,6 @@ func (s *Service) CancelRunPending(sessionID, runID, reason string) ([]pebblesto
 	runID = strings.TrimSpace(runID)
 	if sessionID == "" || runID == "" {
 		return nil, nil
-	}
-	if descriptor, hosted, err := s.hostedDescriptorForSession(sessionID); err != nil {
-		return nil, err
-	} else if hosted {
-		records, err := s.hosted.CancelRunPending(context.Background(), descriptor, sessionID, runID, reason)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.storeMirroredPermissions(records); err != nil {
-			return nil, err
-		}
-		for _, record := range records {
-			s.syncNotification(record, descriptor.HostSwarmID, strings.TrimSpace(descriptor.ChildSwarmID), "permission.updated")
-		}
-		return records, nil
 	}
 	if strings.TrimSpace(reason) == "" {
 		reason = "run terminated before permission resolution"
@@ -1331,19 +1273,6 @@ func (s *Service) MarkToolStarted(sessionID, runID, callID string, step int, sta
 	if sessionID == "" || runID == "" || callID == "" {
 		return pebblestore.PermissionRecord{}, false, nil
 	}
-	if descriptor, hosted, err := s.hostedDescriptorForSession(sessionID); err != nil {
-		return pebblestore.PermissionRecord{}, false, err
-	} else if hosted {
-		record, ok, err := s.hosted.MarkToolStarted(context.Background(), descriptor, sessionID, runID, callID, step, startedAt)
-		if err != nil || !ok {
-			return record, ok, err
-		}
-		if err := s.storeMirroredPermission(record); err != nil {
-			return pebblestore.PermissionRecord{}, false, err
-		}
-		s.syncNotification(record, descriptor.HostSwarmID, strings.TrimSpace(descriptor.ChildSwarmID), "permission.updated")
-		return record, true, nil
-	}
 	if startedAt <= 0 {
 		startedAt = time.Now().UnixMilli()
 	}
@@ -1387,19 +1316,6 @@ func (s *Service) MarkToolCompleted(sessionID, runID, callID string, step int, r
 	callID = strings.TrimSpace(callID)
 	if sessionID == "" || runID == "" || callID == "" {
 		return pebblestore.PermissionRecord{}, false, nil
-	}
-	if descriptor, hosted, err := s.hostedDescriptorForSession(sessionID); err != nil {
-		return pebblestore.PermissionRecord{}, false, err
-	} else if hosted {
-		record, ok, err := s.hosted.MarkToolCompleted(context.Background(), descriptor, sessionID, runID, callID, step, result, completedAt)
-		if err != nil || !ok {
-			return record, ok, err
-		}
-		if err := s.storeMirroredPermission(record); err != nil {
-			return pebblestore.PermissionRecord{}, false, err
-		}
-		s.syncNotification(record, descriptor.HostSwarmID, strings.TrimSpace(descriptor.ChildSwarmID), "permission.updated")
-		return record, true, nil
 	}
 	if completedAt <= 0 {
 		completedAt = time.Now().UnixMilli()
@@ -2074,45 +1990,6 @@ func permissionStoredError(raw string) string {
 	return privacy.SanitizeText(raw)
 }
 
-func (s *Service) hostedDescriptorForSession(sessionID string) (sessionruntime.HostedSessionDescriptor, bool, error) {
-	if s == nil || s.hosted == nil || s.sessions == nil {
-		return sessionruntime.HostedSessionDescriptor{}, false, nil
-	}
-	session, ok, err := s.sessions.GetSession(sessionID)
-	if err != nil {
-		return sessionruntime.HostedSessionDescriptor{}, false, err
-	}
-	if !ok {
-		return sessionruntime.HostedSessionDescriptor{}, false, nil
-	}
-	descriptor, hosted := sessionruntime.HostedSessionFromMetadata(session.Metadata)
-	if !hosted {
-		return sessionruntime.HostedSessionDescriptor{}, false, nil
-	}
-	localSwarmID := ""
-	if s.localSwarmIDResolver != nil {
-		localSwarmID = strings.TrimSpace(s.localSwarmIDResolver())
-	}
-	if localSwarmID != "" && strings.EqualFold(strings.TrimSpace(descriptor.HostSwarmID), localSwarmID) {
-		return sessionruntime.HostedSessionDescriptor{}, false, nil
-	}
-	return descriptor, true, nil
-}
-
-func (s *Service) storeMirroredPermissions(records []pebblestore.PermissionRecord) error {
-	if len(records) == 0 {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, record := range records {
-		if err := s.storeMirroredPermissionLocked(record); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (s *Service) StoreMirroredPermission(record pebblestore.PermissionRecord) error {
 	return s.storeMirroredPermission(record)
 }
@@ -2229,19 +2106,11 @@ func (s *Service) localSwarmID() string {
 	return strings.TrimSpace(s.localSwarmIDResolver())
 }
 
-func (s *Service) originSwarmIDForSession(sessionID string) string {
-	descriptor, hosted, err := s.hostedDescriptorForSession(sessionID)
-	if err == nil && hosted && strings.TrimSpace(descriptor.ChildSwarmID) != "" {
-		return strings.TrimSpace(descriptor.ChildSwarmID)
-	}
+func (s *Service) originSwarmIDForSession(string) string {
 	return s.localSwarmID()
 }
 
-func (s *Service) hostSwarmIDForSession(sessionID string) string {
-	descriptor, hosted, err := s.hostedDescriptorForSession(sessionID)
-	if err == nil && hosted && strings.TrimSpace(descriptor.HostSwarmID) != "" {
-		return strings.TrimSpace(descriptor.HostSwarmID)
-	}
+func (s *Service) hostSwarmIDForSession(string) string {
 	return s.localSwarmID()
 }
 

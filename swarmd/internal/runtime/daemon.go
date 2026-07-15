@@ -170,14 +170,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("migrate v3 run-state index: %w", err)
 	}
-	sessionSvc.SetHostedSync(sessionruntime.NewHostedSyncClient(cfg.ConfigPath, swarmStore))
-	sessionSvc.SetLocalSwarmIDResolver(func() string {
-		localNode, ok, err := swarmStore.GetLocalNode()
-		if err != nil || !ok {
-			return ""
-		}
-		return strings.TrimSpace(localNode.SwarmID)
-	})
 	permissionSvc := permission.NewService(pebblestore.NewPermissionStore(store), events, hub.Publish)
 	notificationSvc := notification.NewService(pebblestore.NewNotificationStore(store), events, hub.Publish)
 	webPushRepository, err := webpush.NewPebbleRepository(secretStore)
@@ -201,7 +193,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("initialize web push VAPID key: %w", err)
 	}
 	permissionSvc.SetSessionResolver(sessionSvc)
-	permissionSvc.SetHostedSync(permission.NewHostedSyncClient(cfg.ConfigPath, swarmStore))
 	permissionSvc.SetLocalSwarmIDResolver(func() string {
 		localNode, ok, err := swarmStore.GetLocalNode()
 		if err != nil || !ok {

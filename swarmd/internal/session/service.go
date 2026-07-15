@@ -1,7 +1,6 @@
 package session
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -21,8 +20,6 @@ import (
 type Service struct {
 	store                *pebblestore.SessionStore
 	events               *pebblestore.EventLog
-	hosted               HostedSessionSync
-	localSwarmIDResolver func() string
 	mu                   sync.Mutex
 	counter              atomic.Uint64
 }
@@ -140,35 +137,6 @@ func (s *Service) GetV3SessionRunIntent(sessionID, runID string) (pebblestore.V3
 		return pebblestore.V3SessionRunIntent{}, false, errors.New("session service is not configured")
 	}
 	return s.store.GetV3SessionRunIntent(sessionID, runID)
-}
-
-func (s *Service) SetHostedSync(sync HostedSessionSync) {
-	if s == nil {
-		return
-	}
-	s.hosted = sync
-}
-
-func (s *Service) SetLocalSwarmIDResolver(resolver func() string) {
-	if s == nil {
-		return
-	}
-	s.localSwarmIDResolver = resolver
-}
-
-func (s *Service) hostedDescriptor(metadata map[string]any) (HostedSessionDescriptor, bool) {
-	if s == nil {
-		return HostedSessionDescriptor{}, false
-	}
-	localSwarmID := ""
-	if s.localSwarmIDResolver != nil {
-		localSwarmID = strings.TrimSpace(s.localSwarmIDResolver())
-	}
-	return HostedSessionFromMetadataForLocal(metadata, localSwarmID)
-}
-
-func (s *Service) HostedDescriptor(metadata map[string]any) (HostedSessionDescriptor, bool) {
-	return s.hostedDescriptor(metadata)
 }
 
 func (s *Service) CreateSession(title, workspacePath, workspaceName string) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error) {
@@ -310,12 +278,16 @@ func (s *Service) StoreMirroredSessionWithEvent(session pebblestore.SessionSnaps
 	if existing, ok, err := s.store.GetSession(session.ID); err != nil {
 		return pebblestore.SessionSnapshot{}, nil, err
 	} else if ok {
-		session = s.preserveHostedMirroredSession(existing, session)
+		if session.UserID == "" {
+			session.UserID = existing.UserID
+		}
+		if session.AccountScopeID == "" {
+			session.AccountScopeID = existing.AccountScopeID
+		}
 		if err := s.store.UpdateSession(session); err != nil {
 			return pebblestore.SessionSnapshot{}, nil, err
 		}
 	} else {
-		session = adaptHostedSessionForLocalRuntime(session, s.localSwarmID())
 		if err := s.store.CreateSession(session); err != nil {
 			return pebblestore.SessionSnapshot{}, nil, err
 		}
@@ -329,73 +301,6 @@ func (s *Service) StoreMirroredSessionWithEvent(session pebblestore.SessionSnaps
 		return pebblestore.SessionSnapshot{}, nil, err
 	}
 	return session, env, nil
-}
-
-func (s *Service) SyncHostedMirrorOpenState(sessionID string, source pebblestore.SessionSnapshot) (pebblestore.SessionSnapshot, error) {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return pebblestore.SessionSnapshot{}, errors.New("session id is required")
-	}
-	source.ID = strings.TrimSpace(source.ID)
-	if source.ID != "" && !strings.EqualFold(source.ID, sessionID) {
-		return pebblestore.SessionSnapshot{}, fmt.Errorf("session %q does not match sync source %q", sessionID, source.ID)
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	session, ok, err := s.store.GetSession(sessionID)
-	if err != nil {
-		return pebblestore.SessionSnapshot{}, err
-	}
-	if !ok {
-		return pebblestore.SessionSnapshot{}, fmt.Errorf("session %q not found", sessionID)
-	}
-
-	next := session
-	if mode := NormalizeMode(source.Mode); mode != "" {
-		next.Mode = mode
-	}
-	if preference, prefErr := normalizeSessionPreferenceValue(normalizeSessionPreference(&source.Preference)); prefErr == nil && strings.TrimSpace(preference.Provider) != "" && strings.TrimSpace(preference.Model) != "" && strings.TrimSpace(preference.Thinking) != "" {
-		next.Preference = preference
-	}
-	next.WorktreeEnabled = source.WorktreeEnabled
-	if next.WorktreeEnabled {
-		if strings.TrimSpace(source.WorktreeRootPath) == "" || strings.TrimSpace(source.WorktreeBranch) == "" || strings.TrimSpace(source.WorkspacePath) == "" {
-			return pebblestore.SessionSnapshot{}, errors.New("worktree session is missing canonical worktree state")
-		}
-		next.WorktreeRootPath = strings.TrimSpace(source.WorktreeRootPath)
-		next.WorktreeBaseBranch = strings.TrimSpace(source.WorktreeBaseBranch)
-		next.WorktreeBranch = strings.TrimSpace(source.WorktreeBranch)
-		if descriptor, hosted := HostedSessionFromMetadata(next.Metadata); hosted {
-			runtimeWorkspacePath := strings.TrimSpace(source.WorkspacePath)
-			if sourceDescriptor, sourceHosted := HostedSessionFromMetadata(source.Metadata); sourceHosted && strings.TrimSpace(sourceDescriptor.RuntimeWorkspacePath) != "" {
-				runtimeWorkspacePath = strings.TrimSpace(sourceDescriptor.RuntimeWorkspacePath)
-			}
-			descriptor.RuntimeWorkspacePath = runtimeWorkspacePath
-			next.Metadata = descriptor.WithMetadata(next.Metadata)
-		}
-	} else {
-		if strings.TrimSpace(source.WorktreeRootPath) != "" || strings.TrimSpace(source.WorktreeBranch) != "" {
-			return pebblestore.SessionSnapshot{}, errors.New("regular session returned partial worktree state")
-		}
-		next.WorktreeRootPath = ""
-		next.WorktreeBaseBranch = ""
-		next.WorktreeBranch = ""
-	}
-	updatedAt := time.Now().UnixMilli()
-	if source.UpdatedAt > updatedAt {
-		updatedAt = source.UpdatedAt
-	}
-	if session.UpdatedAt > updatedAt {
-		updatedAt = session.UpdatedAt
-	}
-	next.UpdatedAt = updatedAt
-
-	if err := s.store.UpdateSession(next); err != nil {
-		return pebblestore.SessionSnapshot{}, err
-	}
-	return next, nil
 }
 
 func (s *Service) StoreMirroredMessage(session pebblestore.SessionSnapshot, message pebblestore.MessageSnapshot) (pebblestore.SessionSnapshot, error) {
@@ -441,13 +346,6 @@ func (s *Service) StoreMirroredLifecycle(snapshot pebblestore.SessionLifecycleSn
 		}
 	}
 	return s.store.UpsertSessionLifecycle(snapshot)
-}
-
-func (s *Service) PublishHostedEvent(ctx context.Context, descriptor HostedSessionDescriptor, sessionID, eventType string, payload map[string]any, causationID, correlationID string) (pebblestore.EventEnvelope, error) {
-	if s == nil || s.hosted == nil {
-		return pebblestore.EventEnvelope{}, errors.New("hosted sync client is not configured")
-	}
-	return s.hosted.PublishEvent(ctx, descriptor, sessionID, eventType, payload, causationID, correlationID)
 }
 
 func (s *Service) StoreMirroredEvent(sessionID, eventType string, payload map[string]any, causationID, correlationID string) (pebblestore.EventEnvelope, error) {
@@ -801,21 +699,6 @@ func (s *Service) updateMetadata(sessionID string, metadata map[string]any, pres
 	if !ok {
 		return pebblestore.SessionSnapshot{}, nil, fmt.Errorf("session %q not found", sessionID)
 	}
-	if s.hosted != nil && !preserveUpdatedAt {
-		if descriptor, hosted := s.hostedDescriptor(session.Metadata); hosted {
-			updated, err := s.hosted.UpdateMetadata(context.Background(), descriptor, sessionID, metadata)
-			if err != nil {
-				return pebblestore.SessionSnapshot{}, nil, err
-			} else {
-				mirrored, mirrorErr := s.StoreMirroredSession(updated)
-				if mirrorErr != nil {
-					return pebblestore.SessionSnapshot{}, nil, mirrorErr
-				}
-				return mirrored, nil, nil
-			}
-		}
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -967,27 +850,7 @@ func (s *Service) UpsertLifecycle(snapshot pebblestore.SessionLifecycleSnapshot)
 	if snapshot.SessionID == "" {
 		return errors.New("session id is required")
 	}
-	session, ok, err := s.store.GetSession(snapshot.SessionID)
-	if err != nil {
-		return err
-	}
-	var hostedDescriptor HostedSessionDescriptor
-	shouldSyncHosted := false
-	if ok && s.hosted != nil {
-		if descriptor, hosted := s.hostedDescriptor(session.Metadata); hosted {
-			hostedDescriptor = descriptor
-			shouldSyncHosted = true
-		}
-	}
-	if err := s.store.UpsertSessionLifecycle(snapshot); err != nil {
-		return err
-	}
-	if shouldSyncHosted {
-		if err := s.hosted.UpsertLifecycle(context.Background(), hostedDescriptor, snapshot); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.store.UpsertSessionLifecycle(snapshot)
 }
 
 func (s *Service) ListActiveLifecycles(limit int) ([]pebblestore.SessionLifecycleSnapshot, error) {
@@ -1269,21 +1132,6 @@ func (s *Service) SetMode(sessionID, mode string) (pebblestore.SessionSnapshot, 
 	if !ok {
 		return pebblestore.SessionSnapshot{}, nil, fmt.Errorf("session %q not found", sessionID)
 	}
-	if s.hosted != nil {
-		if descriptor, hosted := s.hostedDescriptor(session.Metadata); hosted {
-			updated, err := s.hosted.SetMode(context.Background(), descriptor, sessionID, mode)
-			if err != nil {
-				return pebblestore.SessionSnapshot{}, nil, err
-			} else {
-				mirrored, mirrorErr := s.StoreMirroredSession(updated)
-				if mirrorErr != nil {
-					return pebblestore.SessionSnapshot{}, nil, mirrorErr
-				}
-				return mirrored, nil, nil
-			}
-		}
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1427,21 +1275,6 @@ func (s *Service) SetTitle(sessionID, title string) (pebblestore.SessionSnapshot
 	if !ok {
 		return pebblestore.SessionSnapshot{}, nil, fmt.Errorf("session %q not found", sessionID)
 	}
-	if s.hosted != nil {
-		if descriptor, hosted := s.hostedDescriptor(session.Metadata); hosted {
-			updated, err := s.hosted.SetTitle(context.Background(), descriptor, sessionID, title)
-			if err != nil {
-				return pebblestore.SessionSnapshot{}, nil, err
-			} else {
-				mirrored, mirrorErr := s.StoreMirroredSession(updated)
-				if mirrorErr != nil {
-					return pebblestore.SessionSnapshot{}, nil, mirrorErr
-				}
-				return mirrored, nil, nil
-			}
-		}
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1542,21 +1375,6 @@ func (s *Service) AppendMessage(sessionID, role, content string, metadata map[st
 	if !ok {
 		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, fmt.Errorf("session %q not found", sessionID)
 	}
-	if s.hosted != nil {
-		if descriptor, hosted := s.hostedDescriptor(session.Metadata); hosted {
-			message, updated, err := s.hosted.AppendMessage(context.Background(), descriptor, sessionID, role, content, metadata)
-			if err != nil {
-				return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, err
-			} else {
-				mirrored, mirrorErr := s.StoreMirroredMessage(updated, message)
-				if mirrorErr != nil {
-					return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, mirrorErr
-				}
-				return message, mirrored, nil, nil
-			}
-		}
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1715,33 +1533,6 @@ func mapsEqualJSON(left, right map[string]any) bool {
 		return false
 	}
 	return string(leftBytes) == string(rightBytes)
-}
-
-func (s *Service) localSwarmID() string {
-	if s == nil || s.localSwarmIDResolver == nil {
-		return ""
-	}
-	return strings.TrimSpace(s.localSwarmIDResolver())
-}
-
-func (s *Service) preserveHostedMirroredSession(existing, incoming pebblestore.SessionSnapshot) pebblestore.SessionSnapshot {
-	if strings.TrimSpace(incoming.UserID) == "" {
-		incoming.UserID = existing.UserID
-	}
-	if strings.TrimSpace(incoming.AccountScopeID) == "" {
-		incoming.AccountScopeID = existing.AccountScopeID
-	}
-	localSwarmID := s.localSwarmID()
-	if descriptor, hosted := HostedSessionFromMetadata(existing.Metadata); hosted {
-		if _, incomingHosted := HostedSessionFromMetadata(incoming.Metadata); !incomingHosted {
-			incoming.Metadata = descriptor.WithMetadata(incoming.Metadata)
-		}
-		hostWorkspacePath := strings.TrimSpace(descriptor.HostWorkspacePath)
-		if localSwarmID == "" && hostWorkspacePath != "" && strings.TrimSpace(existing.WorkspacePath) == hostWorkspacePath {
-			incoming.WorkspacePath = hostWorkspacePath
-		}
-	}
-	return adaptHostedSessionForLocalRuntime(incoming, localSwarmID)
 }
 
 func cloneSessionMetadataValue(value any) any {
