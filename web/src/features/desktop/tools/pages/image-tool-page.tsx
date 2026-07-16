@@ -1436,14 +1436,14 @@ export function ImageToolPage() {
                       <div className="grid grid-cols-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1 text-[10px] font-bold uppercase tracking-[0.14em]">
                         <button
                           type="button"
-                          className={['rounded-lg px-3 py-1.5 transition', generationControlMode === 'manual' ? 'bg-[var(--app-primary)] text-white shadow-sm' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]'].join(' ')}
+                          className={['rounded-lg px-3 py-1.5 transition', generationControlMode === 'manual' ? 'bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-sm' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]'].join(' ')}
                           onClick={() => setGenerationControlMode('manual')}
                         >
                           Manual
                         </button>
                         <button
                           type="button"
-                          className={['rounded-lg px-3 py-1.5 transition', generationControlMode === 'ai' ? 'bg-[var(--app-primary)] text-white shadow-sm' : 'text-[var(--app-text-subtle)] opacity-70'].join(' ')}
+                          className={['rounded-lg px-3 py-1.5 transition', generationControlMode === 'ai' ? 'bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-sm' : 'text-[var(--app-text-subtle)] opacity-70'].join(' ')}
                           disabled
                           title="AI prompt mode coming soon"
                         >
@@ -1545,7 +1545,7 @@ export function ImageToolPage() {
                     ) : null}
 
                     <div className="mt-auto pt-1">
-                      <Button className="h-11 w-full rounded-xl bg-[var(--app-primary)] text-white shadow-sm transition hover:bg-[var(--app-primary)]/90 disabled:bg-[var(--app-surface-hover)] disabled:text-[var(--app-text-muted)]" disabled={!canGenerateImage} onClick={() => void handleGenerateImage()}>
+                      <Button className="h-11 w-full rounded-xl bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-sm transition hover:bg-[var(--app-primary)]/90 disabled:bg-[var(--app-surface-hover)] disabled:text-[var(--app-text-muted)]" disabled={!canGenerateImage} onClick={() => void handleGenerateImage()}>
                         <Sparkles size={14} className="mr-2" />
                         <b>{generatingImage ? 'GENERATING…' : `GENERATE ${selectedFinalImageCount}`}</b>
                       </Button>

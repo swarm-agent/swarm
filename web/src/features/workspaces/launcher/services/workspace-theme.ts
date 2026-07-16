@@ -477,12 +477,47 @@ function isLightHex(hex: string): boolean {
   return luminance > 0.62
 }
 
+function relativeLuminance(hex: string): number | null {
+  const rgb = parseHex(hex)
+  if (!rgb) {
+    return null
+  }
+
+  const [red, green, blue] = rgb.map((channel) => {
+    const value = channel / 255
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+}
+
+function contrastRatio(left: string, right: string): number {
+  const leftLuminance = relativeLuminance(left)
+  const rightLuminance = relativeLuminance(right)
+  if (leftLuminance === null || rightLuminance === null) {
+    return 1
+  }
+
+  return (Math.max(leftLuminance, rightLuminance) + 0.05) / (Math.min(leftLuminance, rightLuminance) + 0.05)
+}
+
+function resolveAccentText(accentColors: string[]): string {
+  const candidates = ['#020617', '#F8FAFC']
+  return candidates.reduce((best, candidate) => {
+    const candidateContrast = Math.min(...accentColors.map((accent) => contrastRatio(candidate, accent)))
+    const bestContrast = Math.min(...accentColors.map((accent) => contrastRatio(best, accent)))
+    return candidateContrast > bestContrast ? candidate : best
+  })
+}
+
 function completePalette(base: WorkspaceThemeBasePalette): WorkspaceThemePalette {
   const lightBackground = isLightHex(base.background)
   const accentAnchor = lightBackground ? '#000000' : '#ffffff'
   const textInverse = lightBackground ? '#0F172A' : '#F8FAFC'
   const success = lightBackground ? '#1F7A4D' : '#4ADE80'
   const info = mixHex(base.primary, textInverse, lightBackground ? 0.08 : 0.12)
+  const accentHover = mixHex(base.primary, accentAnchor, lightBackground ? 0.16 : 0.2)
+  const accentActive = mixHex(base.primary, accentAnchor, lightBackground ? 0.28 : 0.32)
+  const accentText = resolveAccentText([base.primary, accentHover, accentActive])
 
   return {
     background: base.background,
@@ -505,9 +540,9 @@ function completePalette(base: WorkspaceThemeBasePalette): WorkspaceThemePalette
     textInverse,
     textAccent: base.primary,
     accent: base.primary,
-    accentHover: mixHex(base.primary, accentAnchor, lightBackground ? 0.16 : 0.2),
-    accentActive: mixHex(base.primary, accentAnchor, lightBackground ? 0.28 : 0.32),
-    accentText: isLightHex(base.primary) ? '#111827' : '#F8FAFC',
+    accentHover,
+    accentActive,
+    accentText,
     selection: mixHex(base.panel, base.primary, 0.18),
     focusRing: mixHex(base.primary, accentAnchor, lightBackground ? 0.1 : 0.16),
     warning: base.warning,

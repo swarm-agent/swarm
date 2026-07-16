@@ -488,7 +488,7 @@ export function AgentModelControl({
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Default session mode</div>
                   <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Choose how new sessions start for this agent. Plan can still be toggled in the composer.</div>
                 </div>
-                <div role="group" aria-label="Default session mode" className="grid grid-cols-2 rounded-md border border-[var(--app-border-strong)] bg-[var(--app-bg)] p-1">
+                <div role="group" aria-label="Default session mode" className="grid grid-cols-2 gap-1 rounded-lg bg-transparent p-1">
                   <CompactChoice selected={draftSessionMode === 'plan'} label="Plan" onClick={() => setDraftSessionMode('plan')} />
                   <CompactChoice selected={draftSessionMode === 'auto'} label="Action" onClick={() => setDraftSessionMode('auto')} />
                 </div>
@@ -502,7 +502,7 @@ export function AgentModelControl({
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
                   <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Use one model everywhere or separate plan and action models.</div>
                 </div>
-                <div role="group" aria-label="Agent model policy" className="grid w-full shrink-0 grid-cols-2 rounded-md border border-[var(--app-border-strong)] bg-[var(--app-bg)] p-1 sm:w-64">
+                <div role="group" aria-label="Agent model policy" className="grid w-full shrink-0 grid-cols-2 gap-1 rounded-lg bg-transparent p-1 sm:w-64">
                   <CompactChoice selected={effectiveDraftMode === 'single'} label="Single" onClick={() => setDraftMode('single')} />
                   <CompactChoice selected={effectiveDraftMode === 'split'} label="Split" onClick={() => { if (splitModeAllowed) setDraftMode('split') }} disabled={!splitModeAllowed} />
                 </div>
@@ -530,7 +530,7 @@ export function AgentModelControl({
 
         <div className="flex items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4">
           <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Cancel</button>
-          <button type="button" disabled={busy || saving || !draftProfile || draftProfile.name === CLONE_AGENT_NAME} onClick={() => { void confirm() }} className="rounded-lg bg-[var(--app-primary)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-60">
+          <button type="button" disabled={busy || saving || !draftProfile || draftProfile.name === CLONE_AGENT_NAME} onClick={() => { void confirm() }} className="rounded-lg border border-[var(--app-primary)] bg-transparent px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60">
             {saving || busy ? 'Saving…' : 'Confirm changes'}
           </button>
         </div>
@@ -576,7 +576,7 @@ function CompactChoice({ selected, label, onClick, disabled = false }: { selecte
       aria-pressed={selected}
       onClick={onClick}
       disabled={disabled}
-      className={`rounded px-4 py-2 text-sm font-semibold capitalize transition disabled:cursor-not-allowed disabled:opacity-45 ${selected ? 'bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-sm' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}
+      className={`rounded-lg border px-4 py-2 text-sm font-semibold capitalize transition disabled:cursor-not-allowed disabled:opacity-45 ${selected ? 'border-[var(--app-primary)] bg-transparent text-[var(--app-primary)]' : 'border-transparent bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:text-[var(--app-text)]'}`}
     >
       {label}
     </button>

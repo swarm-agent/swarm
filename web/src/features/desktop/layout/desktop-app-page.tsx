@@ -2189,7 +2189,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
               <>
                 <span>{input.selectedRootIDs.size} selected</span>
                 <button type="button" onClick={input.onClearSelection}>Clear</button>
-                <button type="button" disabled={input.bulkArchivePending || input.selectedRootIDs.size === 0} className="rounded bg-[var(--app-primary)] px-1.5 py-0.5 text-[var(--app-background)] disabled:opacity-50" onClick={input.onBulkArchive}>Archive</button>
+                <button type="button" disabled={input.bulkArchivePending || input.selectedRootIDs.size === 0} className="rounded bg-[var(--app-primary)] px-1.5 py-0.5 text-[var(--app-primary-text)] disabled:opacity-50" onClick={input.onBulkArchive}>Archive</button>
               </>
             ) : null}
           </div>
@@ -3835,7 +3835,7 @@ export function DesktopAppPage() {
           {notificationAttentionVisible ? (
             <Button variant="ghost" className={cn('relative h-12 w-12 min-w-12 p-0', notificationUnreadCount > 0 && 'text-[var(--app-primary)]')} onClick={handleOpenNotifications} aria-label="Open notifications" title={notificationUnreadCount > 0 ? `${notificationUnreadCount} unread notification${notificationUnreadCount === 1 ? '' : 's'}` : 'Notifications'}>
               <Bell size={24} className="shrink-0" />
-              {notificationUnreadCount > 0 ? <span aria-hidden="true" className="absolute right-2 top-2 grid h-4 min-w-4 place-items-center rounded-full bg-[var(--app-primary)] px-1 text-[9px] font-semibold text-[var(--app-background)]">{notificationUnreadCount > 99 ? '99+' : notificationUnreadCount}</span> : null}
+              {notificationUnreadCount > 0 ? <span aria-hidden="true" className="absolute right-2 top-2 grid h-4 min-w-4 place-items-center rounded-full bg-[var(--app-primary)] px-1 text-[9px] font-semibold text-[var(--app-primary-text)]">{notificationUnreadCount > 99 ? '99+' : notificationUnreadCount}</span> : null}
             </Button>
           ) : null}
           {updateAttentionVisible ? (
@@ -3921,7 +3921,7 @@ export function DesktopAppPage() {
                         title={notificationUnreadCount > 0 ? `${notificationUnreadCount} unread notification${notificationUnreadCount === 1 ? '' : 's'}` : 'Notifications'}
                       >
                         <Bell size={14} strokeWidth={1.8} className="shrink-0" />
-                        {notificationUnreadCount > 0 ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 grid h-3 min-w-3 place-items-center rounded-full bg-[var(--app-primary)] px-0.5 text-[7px] font-semibold leading-none text-[var(--app-background)]">{notificationUnreadCount > 9 ? '9+' : notificationUnreadCount}</span> : null}
+                        {notificationUnreadCount > 0 ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 grid h-3 min-w-3 place-items-center rounded-full bg-[var(--app-primary)] px-0.5 text-[7px] font-semibold leading-none text-[var(--app-primary-text)]">{notificationUnreadCount > 9 ? '9+' : notificationUnreadCount}</span> : null}
                       </button>
                     ) : null}
                     {updateAttentionVisible ? (
