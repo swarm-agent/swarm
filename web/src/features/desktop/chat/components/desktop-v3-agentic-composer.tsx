@@ -146,6 +146,9 @@ export interface DesktopV3AgenticComposerProps {
   thinkingTagsEnabled?: boolean
   onThinkingTagsToggle?: (enabled: boolean) => void
   thinkingTagsBusy?: boolean
+  showCompactButton?: boolean
+  onShowCompactButtonToggle?: (enabled: boolean) => void
+  showCompactButtonBusy?: boolean
   contextLabel?: string
   contextTooltip?: string
   contextUsagePercent?: number
@@ -198,6 +201,9 @@ export function DesktopV3AgenticComposer({
   thinkingTagsEnabled,
   onThinkingTagsToggle,
   thinkingTagsBusy = false,
+  showCompactButton = false,
+  onShowCompactButtonToggle,
+  showCompactButtonBusy = false,
   contextLabel,
   contextTooltip,
   contextUsagePercent,
@@ -656,7 +662,7 @@ export function DesktopV3AgenticComposer({
                     Needs auth!
                   </button>
                 ) : null}
-                {compactButton()}
+                {showCompactButton && onCompact ? compactButton() : null}
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
@@ -670,12 +676,12 @@ export function DesktopV3AgenticComposer({
                 {showModePicker ? (
                   <>
                     <ModePicker mode={mode} onSelect={(nextMode) => onModeSelect?.(nextMode)} disabled={!onModeSelect || composerDisabled} />
-                    <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} thinkingTagsEnabled={thinkingTagsEnabled} onThinkingTagsToggle={onThinkingTagsToggle} thinkingTagsBusy={thinkingTagsBusy} disabled={composerDisabled || agentModelControlBusy} />
+                    <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} thinkingTagsEnabled={thinkingTagsEnabled} onThinkingTagsToggle={onThinkingTagsToggle} thinkingTagsBusy={thinkingTagsBusy} disabled={composerDisabled || agentModelControlBusy} compactThinkingLabel />
                   </>
                 ) : (
                   <span className="min-w-0 truncate font-medium text-[var(--app-text-muted)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
                 )}
-                {compactButton()}
+                {showCompactButton && onCompact ? compactButton() : null}
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
@@ -696,6 +702,12 @@ export function DesktopV3AgenticComposer({
         selectedServiceTier={selectedServiceTier}
         selectedThinking={selectedThinking}
         modelOptions={modelOptions}
+        thinkingTagsEnabled={thinkingTagsEnabled}
+        onThinkingTagsToggle={onThinkingTagsToggle}
+        thinkingTagsBusy={thinkingTagsBusy}
+        showCompactButton={showCompactButton}
+        onShowCompactButtonToggle={onShowCompactButtonToggle}
+        showCompactButtonBusy={showCompactButtonBusy}
         modelLocked={modelPickerDisabled || Boolean(modelLockNotice.trim())}
         modelLockNotice={modelPickerDisabledReason || modelLockNotice}
         triggerDetail={modelControlDetail}

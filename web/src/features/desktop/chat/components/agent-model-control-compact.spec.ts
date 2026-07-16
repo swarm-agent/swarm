@@ -12,3 +12,5 @@ assert.match(source, /saveSystemAgentSettings\([\s\S]*provider:[\s\S]*model:[\s\
 assert.match(source, /identity, prompt, runtime, and tool contract remain code-owned/, 'setup modal must explain immutable system-agent fields')
 assert.match(source, /Clone has no independent model controls[\s\S]*inherits its parent session[\s\S]*service tier/, 'setup modal must explain Clone model and priority inheritance')
 assert.doesNotMatch(source, /system-plan-sidechat|system-ai-sidechat/, 'setup modal must hide reserved sidechat agents')
+assert.match(source, /Shows thinking responses[\s\S]*Show compact button/, 'compact button switch must appear directly below thinking tags')
+assert.match(source, /aria-label="Show compact button"[\s\S]*onShowCompactButtonToggle\(!showCompactButton\)/, 'compact button switch must toggle the persisted preference')

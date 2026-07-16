@@ -1164,6 +1164,7 @@ type UIChatToolStreamSettings struct {
 type UIChatSettings struct {
 	ShowHeader             bool                     `json:"show_header"`
 	ThinkingTags           bool                     `json:"thinking_tags"`
+	ShowCompactButton      bool                     `json:"show_compact_button"`
 	DefaultNewSessionMode  string                   `json:"default_new_session_mode,omitempty"`
 	DefaultWorkspaceRoutes map[string]string        `json:"default_workspace_routes,omitempty"`
 	ToolStream             UIChatToolStreamSettings `json:"tool_stream,omitempty"`

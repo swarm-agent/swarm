@@ -45,6 +45,7 @@ export type FollowupCheckpointPolicyDefault = 'require_approval' | 'auto_start'
 export interface UIChatSettingsWire {
   show_header?: boolean
   thinking_tags?: boolean
+  show_compact_button?: boolean
   default_new_session_mode?: DesktopSessionMode
   followup_checkpoint_policy_default?: FollowupCheckpointPolicyDefault
   sidebar_hide_inactive_hours?: number | null
@@ -120,6 +121,10 @@ export function normalizeGlobalThemeSettings(payload?: UISettingsWire | null): G
 
 export function normalizeThinkingTagsEnabled(payload?: UISettingsWire | null): boolean {
   return typeof payload?.chat?.thinking_tags === 'boolean' ? payload.chat.thinking_tags : true
+}
+
+export function normalizeShowCompactButton(payload?: UISettingsWire | null): boolean {
+  return payload?.chat?.show_compact_button === true
 }
 
 export function normalizeDefaultWorkspaceRoutes(payload?: UISettingsWire | null): Record<string, string> {

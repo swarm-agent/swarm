@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { saveDefaultNewSessionMode } from './save-default-new-session-mode'
 import { saveThinkingTagsSetting } from './save-thinking-tags-setting'
+import { saveShowCompactButtonSetting } from './save-show-compact-button-setting'
 import { saveSwarmSettings } from './save-swarm-settings'
 import { saveDefaultWorkspaceRoute } from './save-default-workspace-route'
 
@@ -28,6 +29,25 @@ test('saveThinkingTagsSetting sends only thinking_tags patch', async () => {
     const response = await saveThinkingTagsSetting(false)
     assert.equal(response.chat?.thinking_tags, false)
     assert.deepEqual(JSON.parse(capturedBody), { chat: { thinking_tags: false } })
+  } finally {
+    restore()
+  }
+})
+
+test('saveShowCompactButtonSetting sends only show_compact_button patch', async () => {
+  let capturedBody = ''
+  const restore = installFetchMock(async (_input, init) => {
+    capturedBody = String(init?.body ?? '')
+    return new Response(JSON.stringify({ chat: { show_compact_button: true } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+
+  try {
+    const response = await saveShowCompactButtonSetting(true)
+    assert.equal(response.chat?.show_compact_button, true)
+    assert.deepEqual(JSON.parse(capturedBody), { chat: { show_compact_button: true } })
   } finally {
     restore()
   }

@@ -42,6 +42,7 @@ type StartupConfig struct {
 type ChatConfig struct {
 	ShowHeader             bool
 	ThinkingTags           bool
+	ShowCompactButton      bool
 	DefaultNewSessionMode  string
 	DefaultWorkspaceRoutes map[string]string
 	ToolStream             ChatToolStreamConfig
@@ -91,6 +92,7 @@ func defaultAppConfig() AppConfig {
 		Chat: ChatConfig{
 			ShowHeader:            true,
 			ThinkingTags:          true,
+			ShowCompactButton:     false,
 			DefaultNewSessionMode: "auto",
 			ToolStream: ChatToolStreamConfig{
 				ShowAnchor:    true,
@@ -278,6 +280,7 @@ func appConfigFromUISettings(settings client.UISettings) AppConfig {
 
 	cfg.Chat.ShowHeader = settings.Chat.ShowHeader
 	cfg.Chat.ThinkingTags = settings.Chat.ThinkingTags
+	cfg.Chat.ShowCompactButton = settings.Chat.ShowCompactButton
 	cfg.Chat.DefaultNewSessionMode = emptyFallback(strings.TrimSpace(settings.Chat.DefaultNewSessionMode), "auto")
 	cfg.Chat.DefaultWorkspaceRoutes = sanitizeConfigStringMap(settings.Chat.DefaultWorkspaceRoutes)
 	cfg.Chat.ToolStream.ShowAnchor = settings.Chat.ToolStream.ShowAnchor
@@ -312,6 +315,7 @@ func uiSettingsFromAppConfig(cfg AppConfig) client.UISettings {
 		Chat: client.UIChatSettings{
 			ShowHeader:             cfg.Chat.ShowHeader,
 			ThinkingTags:           cfg.Chat.ThinkingTags,
+			ShowCompactButton:      cfg.Chat.ShowCompactButton,
 			DefaultNewSessionMode:  emptyFallback(strings.TrimSpace(cfg.Chat.DefaultNewSessionMode), "auto"),
 			DefaultWorkspaceRoutes: sanitizeConfigStringMap(cfg.Chat.DefaultWorkspaceRoutes),
 			ToolStream: client.UIChatToolStreamSettings{

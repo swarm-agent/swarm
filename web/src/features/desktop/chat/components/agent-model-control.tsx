@@ -54,6 +54,12 @@ interface AgentModelControlProps {
   busy?: boolean
   showTrigger?: boolean
   initialAgentName?: string
+  thinkingTagsEnabled?: boolean
+  onThinkingTagsToggle?: (enabled: boolean) => void
+  thinkingTagsBusy?: boolean
+  showCompactButton?: boolean
+  onShowCompactButtonToggle?: (enabled: boolean) => void
+  showCompactButtonBusy?: boolean
 }
 
 type DraftMode = 'single' | 'split'
@@ -265,6 +271,12 @@ export function AgentModelControl({
   busy = false,
   showTrigger = true,
   initialAgentName = '',
+  thinkingTagsEnabled,
+  onThinkingTagsToggle,
+  thinkingTagsBusy = false,
+  showCompactButton = false,
+  onShowCompactButtonToggle,
+  showCompactButtonBusy = false,
 }: AgentModelControlProps) {
   const queryClient = useQueryClient()
   const { data: uiSettings = {} } = useQuery(uiSettingsQueryOptions())
@@ -521,6 +533,38 @@ export function AgentModelControl({
                 <ModelDraftEditor title="Action model" draft={autoDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('auto', provider)} onModelChange={(model) => selectModel('auto', model)} onThinkingChange={(thinking) => setAutoDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setAutoDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
               </div>
             )}
+            {thinkingTagsEnabled !== undefined && onThinkingTagsToggle ? (
+              <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--app-border)] pt-4 text-sm text-[var(--app-text-muted)]">
+                <span>Shows thinking responses</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={thinkingTagsEnabled}
+                  aria-label="Shows thinking responses"
+                  disabled={thinkingTagsBusy}
+                  onClick={() => onThinkingTagsToggle(!thinkingTagsEnabled)}
+                  className={`relative h-6 w-11 shrink-0 rounded-full border transition disabled:cursor-not-allowed disabled:opacity-60 ${thinkingTagsEnabled ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border-strong)] bg-[var(--app-surface)]'}`}
+                >
+                  <span className={`absolute left-1 top-1 h-4 w-4 rounded-full shadow-sm transition-transform ${thinkingTagsEnabled ? 'translate-x-5 bg-[var(--app-primary-text)]' : 'translate-x-0 bg-[var(--app-text-muted)]'}`} />
+                </button>
+              </div>
+            ) : null}
+            {onShowCompactButtonToggle ? (
+              <div className="flex items-center justify-between gap-3 border-t border-[var(--app-border)] py-4 text-sm text-[var(--app-text-muted)]">
+                <span>Show compact button</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={showCompactButton}
+                  aria-label="Show compact button"
+                  disabled={showCompactButtonBusy}
+                  onClick={() => onShowCompactButtonToggle(!showCompactButton)}
+                  className={`relative h-6 w-11 shrink-0 rounded-full border transition disabled:cursor-not-allowed disabled:opacity-60 ${showCompactButton ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border-strong)] bg-[var(--app-surface)]'}`}
+                >
+                  <span className={`absolute left-1 top-1 h-4 w-4 rounded-full shadow-sm transition-transform ${showCompactButton ? 'translate-x-5 bg-[var(--app-primary-text)]' : 'translate-x-0 bg-[var(--app-text-muted)]'}`} />
+                </button>
+              </div>
+            ) : null}
             {error ? <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
           </div>
         </div>

@@ -3469,6 +3469,7 @@ type uiChatToolStreamSettingsPatchPresence struct {
 type uiChatSettingsPatchPresence struct {
 	ShowHeader                      *bool                                  `json:"show_header"`
 	ThinkingTags                    *bool                                  `json:"thinking_tags"`
+	ShowCompactButton               *bool                                  `json:"show_compact_button"`
 	DefaultNewSessionMode           *string                                `json:"default_new_session_mode"`
 	FollowupCheckpointPolicyDefault *string                                `json:"followup_checkpoint_policy_default"`
 	SidebarHideInactiveHours        *int                                   `json:"sidebar_hide_inactive_hours"`
@@ -3534,6 +3535,9 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 		}
 		if raw.Chat.ThinkingTags != nil {
 			settings.Chat.ThinkingTags = patch.Chat.ThinkingTags
+		}
+		if raw.Chat.ShowCompactButton != nil {
+			settings.Chat.ShowCompactButton = patch.Chat.ShowCompactButton
 		}
 		if raw.Chat.DefaultNewSessionMode != nil {
 			settings.Chat.DefaultNewSessionMode = patch.Chat.DefaultNewSessionMode

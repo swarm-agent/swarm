@@ -17,13 +17,14 @@ interface AgentPickerProps {
   thinkingTagsBusy?: boolean
   disabled?: boolean
   triggerClassName?: string
+  compactThinkingLabel?: boolean
 }
 
 const DROPDOWN_VIEWPORT_GUTTER = 8
 const MOBILE_DROPDOWN_BREAKPOINT = 640
 const DESKTOP_DROPDOWN_WIDTH = 480
 
-export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode = 'auto', onSelect, onOpenSettings, thinkingTagsEnabled, onThinkingTagsToggle, thinkingTagsBusy = false, disabled = false, triggerClassName = '' }: AgentPickerProps) {
+export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode = 'auto', onSelect, onOpenSettings, thinkingTagsEnabled, onThinkingTagsToggle, thinkingTagsBusy = false, disabled = false, triggerClassName = '', compactThinkingLabel = false }: AgentPickerProps) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
@@ -65,6 +66,9 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
       ]
     : [activeProfileModelLabel(profile)]
   const selectedAgentDetail = currentProfile ? activeProfileModelLabel(currentProfile) : ''
+  const selectedAgentTriggerDetail = compactThinkingLabel
+    ? selectedAgentDetail.replace(/(^| · )medium(?= · |$)/i, '$1med')
+    : selectedAgentDetail
 
   const updatePosition = useCallback(() => {
     if (!triggerRef.current || typeof window === 'undefined') {
@@ -300,7 +304,7 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
         className={`inline-flex min-h-9 min-w-0 items-center gap-2 rounded-lg border-0 bg-transparent px-3 py-2 text-xs font-medium text-[var(--app-text-muted)] transition-all hover:-translate-y-0.5 hover:text-[var(--app-text)] hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none ${triggerClassName}`}
       >
         <span data-testid="selected-agent-detail" className="min-w-0 max-w-[320px] truncate text-[11px] font-normal text-[var(--app-text-subtle)]">
-          {selectedAgentDetail || 'Default model'}
+          {selectedAgentTriggerDetail || 'Default model'}
         </span>
         <ChevronDown size={14} className={`shrink-0 ${open ? 'rotate-180 transition-transform' : 'transition-transform'}`} />
       </button>

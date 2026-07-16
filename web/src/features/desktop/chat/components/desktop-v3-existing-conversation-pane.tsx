@@ -66,9 +66,11 @@ import {
 import {
   normalizeSessionMode,
   normalizeThinkingTagsEnabled,
+  normalizeShowCompactButton,
   type DesktopSessionMode,
 } from "../../settings/swarm/types/swarm-settings";
 import { saveThinkingTagsSetting } from "../../settings/swarm/mutations/save-thinking-tags-setting";
+import { saveShowCompactButtonSetting } from "../../settings/swarm/mutations/save-show-compact-button-setting";
 import {
   formatContextWindow,
   effectiveContextWindow,
@@ -1326,6 +1328,7 @@ export function DesktopV3ExistingConversationPane({
   const thinkingTagsEnabled = normalizeThinkingTagsEnabled(
     uiSettingsQuery.data,
   );
+  const showCompactButton = normalizeShowCompactButton(uiSettingsQuery.data);
   const selectPlanExecutionViewForSession = useCallback(
     (state: DesktopV3CacheState) =>
       selectDesktopPlanExecutionView(state, normalizedSessionId),
@@ -1427,6 +1430,7 @@ export function DesktopV3ExistingConversationPane({
   const [sending, setSending] = useState(false);
   const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null);
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false);
+  const [showCompactButtonSaving, setShowCompactButtonSaving] = useState(false);
   const [agentModelSaving, setAgentModelSaving] = useState(false);
   const [planExecutionBusyAction, setPlanExecutionBusyAction] = useState<
     string | null
@@ -2135,6 +2139,22 @@ export function DesktopV3ExistingConversationPane({
     }
   }
 
+  async function handleShowCompactButtonToggle(enabled: boolean) {
+    if (showCompactButtonSaving) return;
+    setShowCompactButtonSaving(true);
+    setSendError(null);
+    try {
+      const updated = await saveShowCompactButtonSetting(enabled);
+      queryClient.setQueryData(uiSettingsQueryKey(), updated);
+    } catch (error) {
+      if (mountedRef.current) {
+        setSendError(error instanceof Error ? error.message : "Failed to update compact button setting");
+      }
+    } finally {
+      if (mountedRef.current) setShowCompactButtonSaving(false);
+    }
+  }
+
   async function handlePlanExecutionAction(
     input: DesktopPlanExecutionSidebarActionInput,
   ) {
@@ -2500,6 +2520,9 @@ export function DesktopV3ExistingConversationPane({
               void handleThinkingTagsToggle(enabled);
             }}
             thinkingTagsBusy={thinkingTagsSaving}
+            showCompactButton={showCompactButton}
+            onShowCompactButtonToggle={(enabled) => { void handleShowCompactButtonToggle(enabled) }}
+            showCompactButtonBusy={showCompactButtonSaving}
             contextLabel={contextLabel}
             contextTooltip={contextTooltip}
             contextUsagePercent={contextUsagePercent}

@@ -63,6 +63,7 @@ type ChatToolStreamSettings struct {
 type ChatSettings struct {
 	ShowHeader                      bool                   `json:"show_header"`
 	ThinkingTags                    bool                   `json:"thinking_tags"`
+	ShowCompactButton               bool                   `json:"show_compact_button"`
 	DefaultNewSessionMode           string                 `json:"default_new_session_mode,omitempty"`
 	FollowupCheckpointPolicyDefault string                 `json:"followup_checkpoint_policy_default,omitempty"`
 	SidebarHideInactiveHours        int                    `json:"sidebar_hide_inactive_hours"`
@@ -219,6 +220,7 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 		Chat: ChatSettings{
 			ShowHeader:                      record.Chat.ShowHeader,
 			ThinkingTags:                    record.Chat.ThinkingTags,
+			ShowCompactButton:               record.Chat.ShowCompactButton,
 			DefaultNewSessionMode:           strings.TrimSpace(record.Chat.DefaultNewSessionMode),
 			FollowupCheckpointPolicyDefault: strings.TrimSpace(record.Chat.FollowupCheckpointPolicyDefault),
 			SidebarHideInactiveHours:        *record.Chat.SidebarHideInactiveHours,
@@ -309,6 +311,7 @@ func chatRecordFromSettings(settings ChatSettings) *pebblestore.UIChatSettingsRe
 		ShowHeaderSet:                   true,
 		ThinkingTags:                    settings.ThinkingTags,
 		ThinkingTagsSet:                 true,
+		ShowCompactButton:               settings.ShowCompactButton,
 		DefaultNewSessionMode:           strings.TrimSpace(settings.DefaultNewSessionMode),
 		FollowupCheckpointPolicyDefault: strings.TrimSpace(settings.FollowupCheckpointPolicyDefault),
 		SidebarHideInactiveHours:        intPointer(settings.SidebarHideInactiveHours),

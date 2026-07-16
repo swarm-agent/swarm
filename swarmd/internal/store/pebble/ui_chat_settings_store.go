@@ -62,6 +62,7 @@ type UIChatSettingsRecord struct {
 	ShowHeaderSet                   bool                           `json:"-"`
 	ThinkingTags                    bool                           `json:"thinking_tags"`
 	ThinkingTagsSet                 bool                           `json:"-"`
+	ShowCompactButton               bool                           `json:"show_compact_button"`
 	DefaultNewSessionMode           string                         `json:"default_new_session_mode,omitempty"`
 	FollowupCheckpointPolicyDefault string                         `json:"followup_checkpoint_policy_default,omitempty"`
 	SidebarHideInactiveHours        *int                           `json:"sidebar_hide_inactive_hours"`
@@ -223,6 +224,7 @@ func DefaultUISettingsRecord() UISettingsRecord {
 			ShowHeaderSet:                   true,
 			ThinkingTags:                    true,
 			ThinkingTagsSet:                 true,
+			ShowCompactButton:               false,
 			DefaultNewSessionMode:           "auto",
 			FollowupCheckpointPolicyDefault: "auto_start",
 			SidebarHideInactiveHours:        intPointer(12),
