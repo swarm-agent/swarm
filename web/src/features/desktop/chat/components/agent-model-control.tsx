@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronDown, GitBranch, Lightbulb, Lock, Settings2, Zap, ZapOff } from 'lucide-react'
+import { Check, ChevronDown, Cpu, GitBranch, Lightbulb, Lock, Settings2, Zap, ZapOff } from 'lucide-react'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
@@ -51,9 +51,6 @@ interface AgentModelControlProps {
   openSignal?: number
   onOpenAgentSettings?: () => void
   onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
-  thinkingTagsEnabled?: boolean
-  onThinkingTagsToggle?: (enabled: boolean) => void
-  thinkingTagsBusy?: boolean
   busy?: boolean
   showTrigger?: boolean
   initialAgentName?: string
@@ -265,9 +262,6 @@ export function AgentModelControl({
   openSignal = 0,
   onOpenAgentSettings,
   onConfirmAgentSettings,
-  thinkingTagsEnabled,
-  onThinkingTagsToggle,
-  thinkingTagsBusy = false,
   busy = false,
   showTrigger = true,
   initialAgentName = '',
@@ -314,7 +308,6 @@ export function AgentModelControl({
   const [planDraft, setPlanDraft] = useState<ModelDraft>(() => splitDraftFromProfile(activeProfile, 'plan', selectedModel, selectedServiceTier, selectedThinking))
   const [autoDraft, setAutoDraft] = useState<ModelDraft>(() => splitDraftFromProfile(activeProfile, 'auto', selectedModel, selectedServiceTier, selectedThinking))
   const providers = useMemo(() => providerOptions(modelOptions), [modelOptions])
-  const selectedSingleOption = modelOptionFor(singleDraft.provider, singleDraft.model, modelOptions)
   const splitModeAllowed = isPlanCapableAgent(draftProfile)
   const effectiveDraftMode: DraftMode = draftMode === 'split' && !splitModeAllowed ? 'single' : draftMode
   const agentSections = useMemo(() => {
@@ -367,22 +360,14 @@ export function AgentModelControl({
   }
 
   function selectProvider(target: 'single' | 'plan' | 'auto', provider: string) {
-    const update = (current: ModelDraft): ModelDraft => ({ ...current, provider, model: '', thinking: '', serviceTier: '' })
+    const update = (current: ModelDraft): ModelDraft => ({ ...current, provider, model: '', serviceTier: '' })
     if (target === 'single') setSingleDraft(update)
     else if (target === 'plan') setPlanDraft(update)
     else setAutoDraft(update)
   }
 
   function selectModel(target: 'single' | 'plan' | 'auto', model: string) {
-    const update = (current: ModelDraft): ModelDraft => {
-      const option = modelOptionFor(current.provider, model, modelOptions)
-      return {
-        ...current,
-        model,
-        thinking: defaultThinkingForOption(option),
-        serviceTier: modelSupportsServiceTier(current.provider, model, modelOptions, current.serviceTier) ? current.serviceTier : '',
-      }
-    }
+    const update = (current: ModelDraft): ModelDraft => ({ ...current, model, serviceTier: modelSupportsServiceTier(current.provider, model, modelOptions, current.serviceTier) ? current.serviceTier : '' })
     if (target === 'single') setSingleDraft(update)
     else if (target === 'plan') setPlanDraft(update)
     else setAutoDraft(update)
@@ -477,12 +462,6 @@ export function AgentModelControl({
           </div>
 
           <div className="min-h-0 overflow-y-auto p-5">
-            {draftProfile?.name !== CLONE_AGENT_NAME && effectiveDraftMode === 'single' ? (
-              <>
-                <SingleModelSummary option={selectedSingleOption} draft={singleDraft} modelOptions={modelOptions} />
-                {draftProfile ? <ActiveAgentCard profile={draftProfile} /> : null}
-              </>
-            ) : null}
             {draftProfile?.name === CLONE_AGENT_NAME ? (
               <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
                 <div className="font-semibold text-[var(--app-text)]">Compiled system agent</div>
@@ -500,9 +479,6 @@ export function AgentModelControl({
                 splitModeAllowed={splitModeAllowed}
                 onSessionModeChange={setDraftSessionMode}
                 onModelModeChange={setDraftMode}
-                thinkingTagsEnabled={thinkingTagsEnabled}
-                onThinkingTagsToggle={onThinkingTagsToggle}
-                thinkingTagsBusy={thinkingTagsBusy}
               />
             ) : <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
               <div className="grid gap-4 lg:grid-cols-2">
@@ -609,18 +585,12 @@ function PrimaryAgentControlRow({
   splitModeAllowed,
   onSessionModeChange,
   onModelModeChange,
-  thinkingTagsEnabled,
-  onThinkingTagsToggle,
-  thinkingTagsBusy,
 }: {
   sessionMode: DesktopSessionMode
   modelMode: DraftMode
   splitModeAllowed: boolean
   onSessionModeChange: (value: DesktopSessionMode) => void
   onModelModeChange: (value: DraftMode) => void
-  thinkingTagsEnabled?: boolean
-  onThinkingTagsToggle?: (enabled: boolean) => void
-  thinkingTagsBusy: boolean
 }) {
   return (
     <div className="flex min-w-[640px] items-center gap-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3">
@@ -635,26 +605,6 @@ function PrimaryAgentControlRow({
         <div className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">One model or split by mode</div>
       </div>
       <ModelPolicyChoices value={modelMode} splitModeAllowed={splitModeAllowed} onChange={onModelModeChange} className="min-w-[176px]" />
-      {thinkingTagsEnabled !== undefined && onThinkingTagsToggle ? (
-        <>
-          <div aria-hidden="true" className="h-8 w-px shrink-0 bg-[var(--app-border)]" />
-          <div className="min-w-0 flex-1">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Thinking responses</div>
-            <div className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">Shows thinking responses</div>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={thinkingTagsEnabled}
-            aria-label="Shows thinking responses"
-            disabled={thinkingTagsBusy}
-            onClick={() => onThinkingTagsToggle(!thinkingTagsEnabled)}
-            className={`relative h-6 w-11 shrink-0 rounded-full border transition disabled:cursor-not-allowed disabled:opacity-60 ${thinkingTagsEnabled ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border-strong)] bg-[var(--app-surface)]'}`}
-          >
-            <span className={`absolute left-1 top-1 h-4 w-4 rounded-full shadow-sm transition-transform ${thinkingTagsEnabled ? 'translate-x-5 bg-[var(--app-primary-text)]' : 'translate-x-0 bg-[var(--app-text-muted)]'}`} />
-          </button>
-        </>
-      ) : null}
     </div>
   )
 }
@@ -701,18 +651,16 @@ function ModelDraftEditor({
   const normalizedServiceTier = serviceTierSupported ? normalizeDraftServiceTier(draft.provider, draft.serviceTier) : ''
   const thinkingOptions = thinkingOptionsForOption(selectedOption)
   const normalizedThinking = thinkingOptions.includes(normalizeThinking(draft.thinking)) ? normalizeThinking(draft.thinking) : defaultThinkingForOption(selectedOption)
-  const thinkingSupported = Boolean(selectedOption && selectedOption.thinkingOptions.length > 0 && thinkingOptions.length > 1)
   return (
-    <div className="mt-4 border-t border-[var(--app-border)] pt-4">
+    <div className="mt-4 rounded-xl border border-[var(--app-border)] p-4">
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]"><GitBranch size={14} />{title}</div>
-      <div className="grid gap-3 lg:grid-cols-[minmax(140px,0.75fr)_minmax(220px,1.5fr)_minmax(150px,0.75fr)]">
+      <div className="grid gap-3 lg:grid-cols-[180px_minmax(0,1fr)]">
         <SelectField label="Provider" value={draft.provider} onChange={onProviderChange} options={providers.map((provider) => ({ label: provider, value: provider }))} placeholder="Choose provider" />
         <ModelSelectField label="Model" value={draft.model} onChange={onModelChange} options={choices} placeholder="Choose model" disabled={!draft.provider.trim()} />
+        <SelectField label="Thinking" value={normalizedThinking} onChange={onThinkingChange} options={thinkingOptions.map((option) => ({ label: option, value: option }))} />
         {showServiceTier ? <SelectField label="Service tier" value={normalizedServiceTier} onChange={(value) => onServiceTierChange?.(normalizeDraftServiceTier(draft.provider, value))} options={serviceTierOptions} disabled={!serviceTierSupported} /> : null}
       </div>
-      {thinkingSupported ? (
-        <ThinkingLevelSlider options={thinkingOptions} value={normalizedThinking} onChange={onThinkingChange} />
-      ) : null}
+      {selectedOption ? <ModelInfoPanel option={selectedOption} /> : null}
     </div>
   )
 }
@@ -738,59 +686,35 @@ function ModelSelectField({ label, value, options, placeholder = '', disabled = 
   )
 }
 
-function ActiveAgentCard({ profile }: { profile: AgentProfileRecord }) {
+function ModelInfoPanel({ option }: { option: ModelOptionRecord }) {
+  const contextLabel = modelContextLabel(option)
+  const pricingLabel = formatModelPricing(option.pricing)
+  const serviceTiers = option.serviceTiers.map((tier) => tier.trim()).filter(Boolean)
+  const details = [
+    { label: 'Provider', value: option.provider },
+    { label: 'Context', value: contextLabel || 'Unknown' },
+    { label: 'Price', value: pricingLabel || 'Not listed' },
+    { label: 'Thinking', value: option.thinking || 'default' },
+    serviceTiers.length > 0 ? { label: 'Tiers', value: serviceTiers.join(', ') } : null,
+  ].filter(Boolean) as Array<{ label: string; value: string }>
   return (
-    <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-[var(--app-primary)] bg-[var(--app-surface-subtle)] px-3 py-2">
-      <div className="min-w-0">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Active agent</div>
-        <div className="truncate text-sm font-semibold text-[var(--app-text)]">{agentLabel(profile)}</div>
+    <div className="mt-4 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
+      <div className="flex items-start gap-2">
+        <Cpu size={14} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-semibold text-[var(--app-text)]">{displayModelName(option.provider, option.model, option.contextMode)}</div>
+          <div className="mt-1 break-words text-[11px] text-[var(--app-text-muted)]">{option.label || option.model}</div>
+        </div>
       </div>
-      <span className="shrink-0 text-[11px] text-[var(--app-text-muted)]">{agentModeLabel(profile)}</span>
-    </div>
-  )
-}
-
-function SingleModelSummary({ option, draft, modelOptions }: { option: ModelOptionRecord | null; draft: ModelDraft; modelOptions: ModelOptionRecord[] }) {
-  const summary = option ? [
-    modelContextLabel(option) ? `Context ${modelContextLabel(option)}` : '',
-    formatModelPricing(option.pricing),
-    `Thinking ${normalizeDraftThinking(draft.provider, draft.model, modelOptions, draft.thinking)}`,
-    modelSupportsServiceTier(draft.provider, draft.model, modelOptions) ? `Service ${serviceTierLabel(draft.provider, draft.model, modelOptions, draft.serviceTier)}` : '',
-  ].filter(Boolean) : ['Choose a provider and model to configure this agent.']
-  return (
-    <div className="mb-4 border-b border-[var(--app-border)] pb-3">
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Single model</div>
-      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--app-text-muted)]">
-        {summary.map((item) => <span key={item}>{item}</span>)}
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {details.map((detail) => (
+          <div key={detail.label} className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{detail.label}</div>
+            <div className="mt-1 break-words text-[11px] text-[var(--app-text)]">{detail.value}</div>
+          </div>
+        ))}
       </div>
     </div>
-  )
-}
-
-function ThinkingLevelSlider({ options, value, onChange }: { options: string[]; value: string; onChange: (value: string) => void }) {
-  const selectedIndex = Math.max(0, options.indexOf(value))
-  return (
-    <label className="mt-5 grid gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
-      <span className="flex items-center justify-between gap-3">
-        <span>Thinking</span>
-        <span className="normal-case tracking-normal text-[var(--app-text)]">{options[selectedIndex]}</span>
-      </span>
-      <input
-        type="range"
-        min={0}
-        max={options.length - 1}
-        step={1}
-        value={selectedIndex}
-        aria-label="Thinking level"
-        aria-valuetext={options[selectedIndex]}
-        onChange={(event) => onChange(options[Number(event.target.value)] ?? options[0])}
-        className="w-full accent-[var(--app-primary)]"
-      />
-      <span className="flex justify-between text-[10px] font-medium normal-case tracking-normal text-[var(--app-text-subtle)]">
-        <span>{options[0]}</span>
-        <span>{options[options.length - 1]}</span>
-      </span>
-    </label>
   )
 }
 

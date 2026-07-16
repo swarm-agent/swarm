@@ -652,7 +652,7 @@ export function DesktopV3AgenticComposer({
                 {showModePicker ? (
                   <>
                     <ModePicker mode={mode} onSelect={(nextMode) => onModeSelect?.(nextMode)} disabled={!onModeSelect || composerDisabled} />
-                    <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} disabled={composerDisabled || agentModelControlBusy} />
+                    <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} thinkingTagsEnabled={thinkingTagsEnabled} onThinkingTagsToggle={onThinkingTagsToggle} thinkingTagsBusy={thinkingTagsBusy} disabled={composerDisabled || agentModelControlBusy} />
                   </>
                 ) : executionLabel ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
@@ -681,7 +681,7 @@ export function DesktopV3AgenticComposer({
                   {showModePicker ? (
                     <>
                       <ModePicker mode={mode} onSelect={(nextMode) => onModeSelect?.(nextMode)} disabled={!onModeSelect || composerDisabled} triggerClassName="h-full shrink-0 px-2" />
-                      <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} disabled={composerDisabled || agentModelControlBusy} triggerClassName="w-full justify-between px-1.5 py-1.5" />
+                      <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} thinkingTagsEnabled={thinkingTagsEnabled} onThinkingTagsToggle={onThinkingTagsToggle} thinkingTagsBusy={thinkingTagsBusy} disabled={composerDisabled || agentModelControlBusy} triggerClassName="w-full justify-between px-1.5 py-1.5" />
                     </>
                   ) : (
                     <span className="min-w-0 truncate px-2 text-[11px] font-semibold text-[var(--app-text)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
@@ -713,9 +713,6 @@ export function DesktopV3AgenticComposer({
         initialAgentName={effectiveAgentSetupInitialAgent}
         onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSetupInitialAgent || currentAgent) : undefined}
         onConfirmAgentSettings={onConfirmAgentSettings}
-        thinkingTagsEnabled={thinkingTagsEnabled}
-        onThinkingTagsToggle={onThinkingTagsToggle}
-        thinkingTagsBusy={thinkingTagsBusy}
         busy={agentModelControlBusy}
         showTrigger={false}
       />
