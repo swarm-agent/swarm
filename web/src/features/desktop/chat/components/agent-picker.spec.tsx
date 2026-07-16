@@ -74,7 +74,7 @@ test('agent picker is separate from mode and keeps canonical switching and setti
   assert.match(newPaneSource, /handleAgentSelect\(nextAgentName: string\)[\s\S]*setSelectedAgent\(normalizedAgentName\)/)
 })
 
-test('agent trigger shows text-only thinking and active priority metadata to the right of its name', () => {
+test('agent trigger shows only active model, thinking, and priority metadata', () => {
   const markup = renderToStaticMarkup(
     <AgentPicker
       currentAgent="swarm"
@@ -85,13 +85,13 @@ test('agent trigger shows text-only thinking and active priority metadata to the
       onOpenSettings={() => {}}
     />,
   )
-  assert.match(markup, /Agent: Swarm, codex\/gpt-5.4 · high · priority/)
-  assert.match(markup, />Swarm</)
+  assert.match(markup, /Model: codex\/gpt-5.4 · high · priority/)
+  assert.doesNotMatch(markup, />Swarm</)
   assert.match(markup, /data-testid="selected-agent-detail"[^>]*text-\[var\(--app-text-subtle\)\][^>]*>codex\/gpt-5.4 · high · priority</)
   assert.doesNotMatch(markup, /💡|⚡|font-variant-emoji|plan mode|auto mode/)
 })
 
-test('compiled system-agent identities keep their canonical values but render without the redundant prefix', () => {
+test('agent trigger falls back to the default model label without exposing the agent identity', () => {
   const markup = renderToStaticMarkup(
     <AgentPicker
       currentAgent="system-explorer"
@@ -101,9 +101,9 @@ test('compiled system-agent identities keep their canonical values but render wi
     />,
   )
 
-  assert.match(markup, /Agent: Explorer/)
-  assert.match(markup, />Explorer</)
-  assert.doesNotMatch(markup, />system-explorer</)
+  assert.match(markup, /Model: Default model/)
+  assert.match(markup, />Default model</)
+  assert.doesNotMatch(markup, />Explorer<|>system-explorer</)
 })
 
 test('agent trigger uses the active mode details for a split profile', () => {
@@ -122,7 +122,8 @@ test('agent trigger uses the active mode details for a split profile', () => {
     <AgentPicker currentAgent="reviewer" selectedPrimaryAgent="reviewer" agents={[split]} mode="plan" onSelect={() => {}} />,
   )
 
-  assert.match(markup, /reviewer[\s\S]*anthropic\/claude-sonnet-5 · high · priority/)
+  assert.match(markup, /Model: anthropic\/claude-sonnet-5 · high · priority/)
+  assert.doesNotMatch(markup, />reviewer</)
   assert.doesNotMatch(markup, /codex\/gpt-5.4 · medium · fast|💡|⚡/)
 })
 

@@ -41,7 +41,6 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
   const selectedProfile = agents.find((agent) => agent.name === selectedPrimaryAgent)
   const currentProfile = agents.find((agent) => agent.name === currentAgent) ?? selectedProfile
   const selectedAgentName = currentProfile?.name || currentAgent || selectedPrimaryAgent
-  const displayLabel = currentProfile ? profileLabel(currentProfile) : displayAgentName(currentAgent || selectedPrimaryAgent) || 'Agent'
   const settingLabel = (provider: string, model: string, thinking: string, serviceTier: string) => {
     const normalizedServiceTier = serviceTier.trim().toLowerCase()
     const priorityActive = Boolean(normalizedServiceTier && !['standard', 'default', 'off', 'none'].includes(normalizedServiceTier))
@@ -297,18 +296,12 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
         disabled={disabled}
         aria-expanded={open}
         aria-haspopup="menu"
-        aria-label={`Agent: ${displayLabel}${selectedAgentDetail ? `, ${selectedAgentDetail}` : ''}`}
+        aria-label={`Model: ${selectedAgentDetail || 'Default model'}`}
         className={`inline-flex min-h-9 min-w-0 items-center gap-2 rounded-lg border-0 bg-transparent px-3 py-2 text-xs font-medium text-[var(--app-text-muted)] transition-all hover:-translate-y-0.5 hover:text-[var(--app-text)] hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none ${triggerClassName}`}
       >
-        <span className="max-w-[100px] shrink-0 truncate font-semibold text-[var(--app-text)]">{displayLabel}</span>
-        {selectedAgentDetail ? (
-          <>
-            <span aria-hidden="true" className="shrink-0 text-[var(--app-text-subtle)]">·</span>
-            <span data-testid="selected-agent-detail" className="min-w-0 max-w-[320px] truncate text-[11px] font-normal text-[var(--app-text-subtle)]">
-              {selectedAgentDetail}
-            </span>
-          </>
-        ) : null}
+        <span data-testid="selected-agent-detail" className="min-w-0 max-w-[320px] truncate text-[11px] font-normal text-[var(--app-text-subtle)]">
+          {selectedAgentDetail || 'Default model'}
+        </span>
         <ChevronDown size={14} className={`shrink-0 ${open ? 'rotate-180 transition-transform' : 'transition-transform'}`} />
       </button>
       {dropdown}
