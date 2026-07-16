@@ -516,7 +516,7 @@ export function AgentModelControl({
             {draftProfile?.name === CLONE_AGENT_NAME ? null : effectiveDraftMode === 'single' ? (
               <ModelDraftEditor title={draftProfile && isSystemUtility(draftProfile.name) ? 'Explorer model' : 'Single model'} draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
             ) : (
-              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+              <div className="mt-4 grid gap-3">
                 <ModelDraftEditor title="Plan model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('plan', provider)} onModelChange={(model) => selectModel('plan', model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
                 <ModelDraftEditor title="Action model" draft={autoDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('auto', provider)} onModelChange={(model) => selectModel('auto', model)} onThinkingChange={(thinking) => setAutoDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setAutoDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
               </div>
@@ -659,42 +659,13 @@ function ModelDraftEditor({
   return (
     <div className="mt-4 rounded-xl border border-[var(--app-border)] p-4">
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]"><GitBranch size={14} />{title}</div>
-      <div className="grid gap-3 md:grid-cols-[minmax(140px,0.75fr)_minmax(220px,1.5fr)_minmax(140px,0.75fr)]">
+      <div className="grid gap-3 md:grid-cols-[minmax(130px,0.7fr)_minmax(220px,1.4fr)_minmax(130px,0.7fr)_minmax(130px,0.7fr)]">
         <SelectField label="Provider" value={draft.provider} onChange={onProviderChange} options={providers.map((provider) => ({ label: provider, value: provider }))} placeholder="Choose provider" />
         <ModelSelectField label="Model" value={draft.model} onChange={onModelChange} options={choices} placeholder="Choose model" disabled={!draft.provider.trim()} />
+        <SelectField label="Thinking" value={normalizedThinking} onChange={onThinkingChange} options={thinkingOptions.map((option) => ({ label: option, value: option }))} disabled={!selectedOption || thinkingOptions.length <= 1} />
         {showServiceTier ? <SelectField label="Service tier" value={normalizedServiceTier} onChange={(value) => onServiceTierChange?.(normalizeDraftServiceTier(draft.provider, value))} options={serviceTierOptions} disabled={!serviceTierSupported} /> : <div />}
       </div>
-      <div className="mx-auto mt-4 w-full max-w-lg">
-        <ThinkingSlider value={normalizedThinking} options={thinkingOptions} disabled={!selectedOption} onChange={onThinkingChange} />
-      </div>
     </div>
-  )
-}
-
-function ThinkingSlider({ value, options, disabled = false, onChange }: { value: string; options: string[]; disabled?: boolean; onChange: (value: string) => void }) {
-  const selectedIndex = Math.max(0, options.indexOf(value))
-  const sliderDisabled = disabled || options.length <= 1
-  return (
-    <label className="grid gap-2 text-center text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
-      Thinking
-      <input
-        type="range"
-        min={0}
-        max={Math.max(0, options.length - 1)}
-        step={1}
-        value={selectedIndex}
-        disabled={sliderDisabled}
-        aria-label="Thinking"
-        aria-valuetext={options[selectedIndex] ?? ''}
-        onChange={(event) => onChange(options[Number(event.target.value)] ?? value)}
-        className="w-full cursor-pointer accent-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50"
-      />
-      <div className="flex justify-between gap-2 text-[10px] font-medium normal-case tracking-normal text-[var(--app-text-subtle)]">
-        {options.map((option, index) => (
-          <span key={option} className={index === selectedIndex ? 'text-[var(--app-primary)]' : ''}>{option}</span>
-        ))}
-      </div>
-    </label>
   )
 }
 
