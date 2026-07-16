@@ -33,12 +33,13 @@ const (
 // SystemAgentDefinition is the immutable, code-owned identity and security
 // contract for a system agent. System definitions are never agent-store rows.
 type SystemAgentDefinition struct {
-	ID           string
-	DisplayName  string
-	SidechatKind string
-	UserVisible  bool
-	Materialize  func(pebblestore.AgentProfile) pebblestore.AgentProfile
-	Reconcile    func(pebblestore.AgentProfile) pebblestore.AgentProfile
+	ID                       string
+	DisplayName              string
+	SidechatKind             string
+	RequiresSidechatMetadata bool
+	UserVisible              bool
+	Materialize              func(pebblestore.AgentProfile) pebblestore.AgentProfile
+	Reconcile                func(pebblestore.AgentProfile) pebblestore.AgentProfile
 }
 
 // SystemAgentRegistry is an immutable lookup table built from compiled
@@ -67,6 +68,9 @@ func NewSystemAgentRegistry(definitions []SystemAgentDefinition) (*SystemAgentRe
 		}
 		if definition.Materialize == nil || definition.Reconcile == nil {
 			return nil, fmt.Errorf("system agent %q requires materialize and reconcile functions", definition.ID)
+		}
+		if definition.RequiresSidechatMetadata && definition.SidechatKind == "" {
+			return nil, fmt.Errorf("system agent %q requires a sidechat kind when sidechat metadata is mandatory", definition.ID)
 		}
 		if _, exists := registry.byID[definition.ID]; exists {
 			return nil, fmt.Errorf("duplicate system agent id %q", definition.ID)
@@ -184,25 +188,28 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Reconcile:   reconcileSwarmAgentProfile,
 	},
 	{
-		ID:           PlanSidechatAgentID,
-		DisplayName:  PlanSidechatAgentName,
-		SidechatKind: SystemSidechatKindPlan,
-		Materialize:  PlanSidechatAgentProfileForParent,
-		Reconcile:    reconcilePlanSidechatAgentProfile,
+		ID:                       PlanSidechatAgentID,
+		DisplayName:              PlanSidechatAgentName,
+		SidechatKind:             SystemSidechatKindPlan,
+		RequiresSidechatMetadata: true,
+		Materialize:              PlanSidechatAgentProfileForParent,
+		Reconcile:                reconcilePlanSidechatAgentProfile,
 	},
 	{
-		ID:           AISidechatAgentID,
-		DisplayName:  AISidechatAgentName,
-		SidechatKind: SystemSidechatKindAI,
-		Materialize:  AISidechatAgentProfileForParent,
-		Reconcile:    reconcileAISidechatAgentProfile,
+		ID:                       AISidechatAgentID,
+		DisplayName:              AISidechatAgentName,
+		SidechatKind:             SystemSidechatKindAI,
+		RequiresSidechatMetadata: true,
+		Materialize:              AISidechatAgentProfileForParent,
+		Reconcile:                reconcileAISidechatAgentProfile,
 	},
 	{
-		ID:           CompactAgentID,
-		DisplayName:  CompactAgentName,
-		SidechatKind: SystemSidechatKindCompact,
-		Materialize:  CompactAgentProfileForParent,
-		Reconcile:    reconcileCompactAgentProfile,
+		ID:                       CompactAgentID,
+		DisplayName:              CompactAgentName,
+		SidechatKind:             SystemSidechatKindCompact,
+		RequiresSidechatMetadata: true,
+		Materialize:              CompactAgentProfileForParent,
+		Reconcile:                reconcileCompactAgentProfile,
 	},
 	{
 		ID:           ExplorerAgentID,
@@ -394,7 +401,16 @@ func IsReservedSystemAgentName(name string) bool {
 }
 
 func IsReservedSidechatAgentName(name string) bool {
-	return IsReservedSystemAgentName(name)
+	id, ok := CanonicalSystemAgentID(name)
+	if !ok {
+		return false
+	}
+	registry, err := BuiltinSystemAgentRegistry()
+	if err != nil {
+		return false
+	}
+	definition, ok := registry.DefinitionByID(id)
+	return ok && definition.RequiresSidechatMetadata
 }
 
 func PlanSidechatAgentToolContract() *pebblestore.AgentToolContract {

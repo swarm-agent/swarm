@@ -169,15 +169,55 @@ func TestSessionV3SystemSidechatResolutionUsesRegistryAndRejectsSpoofing(t *test
 		want     string
 	}{
 		{name: "reserved name without authority", metadata: nil, snapshot: plan, want: "requires authenticated system sidechat metadata"},
-		{name: "unknown reserved name without authority", metadata: nil, snapshot: pebblestore.AgentProfile{Name: "system-future", Enabled: true}, want: "requires authenticated system sidechat metadata"},
+		{name: "unknown reserved name without authority", metadata: nil, snapshot: pebblestore.AgentProfile{Name: "system-future", Enabled: true}, want: "unknown reserved system agent"},
 		{name: "kind and name mismatch", metadata: sessionsV3SystemSidechatMetadata("parent-1", "plan", ai), snapshot: ai, want: "metadata mismatch"},
 		{name: "unknown future kind", metadata: sessionsV3SystemSidechatMetadata("parent-1", "future", pebblestore.AgentProfile{Name: "system-future", Enabled: true}), snapshot: pebblestore.AgentProfile{Name: "system-future", Enabled: true}, want: "unknown system sidechat kind"},
+		{name: "visible system agent cannot spoof sidechat", metadata: sessionsV3SystemSidechatMetadata("parent-1", "explorer", pebblestore.AgentProfile{Name: agentruntime.ExplorerAgentID, Enabled: true}), snapshot: pebblestore.AgentProfile{Name: agentruntime.ExplorerAgentID, Enabled: true}, want: "not authorized for system sidechat metadata"},
 		{name: "partial metadata", metadata: map[string]any{"system_sidechat": true, "system_sidechat_kind": "plan"}, snapshot: plan, want: "invalid system sidechat metadata"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := exec.resolveSessionV3CurrentAgentToolContract("account-1", test.metadata, test.snapshot)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestSessionV3VisibleSystemAgentResolutionDoesNotRequireSidechatMetadata(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "visible-system-agent-resolution.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("event log: %v", err)
+	}
+	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	exec := &sessionV3Executor{server: &Server{agents: agents}}
+
+	for _, test := range []struct {
+		name string
+		id   string
+	}{
+		{name: "Swarm", id: agentruntime.SwarmAgentID},
+		{name: "Explorer", id: agentruntime.ExplorerAgentID},
+		{name: "Clone", id: agentruntime.CloneAgentID},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot, err := agents.ResolveSystemAgent(test.id, pebblestore.AgentProfile{Provider: "codex", Model: "parent-model"})
+			if err != nil {
+				t.Fatalf("materialize %s: %v", test.id, err)
+			}
+			snapshot.Prompt = "tampered"
+			snapshot.Enabled = false
+			resolved, err := exec.resolveSessionV3CurrentAgentToolContract("account-1", nil, snapshot)
+			if err != nil {
+				t.Fatalf("resolve ordinary system agent: %v", err)
+			}
+			if resolved.Name != test.id || !resolved.Enabled || resolved.Prompt == "tampered" {
+				t.Fatalf("resolved system profile = %+v", resolved)
 			}
 		})
 	}

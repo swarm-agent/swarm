@@ -26,6 +26,18 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 			t.Fatalf("kind %q resolved to %+v, ok=%v", kind, definition, ok)
 		}
 	}
+	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, CompactAgentID} {
+		definition, _ := registry.DefinitionByID(id)
+		if !definition.RequiresSidechatMetadata || !IsReservedSidechatAgentName(id) {
+			t.Fatalf("sidechat-only system agent %q is not protected: %+v", id, definition)
+		}
+	}
+	for _, id := range []string{SwarmAgentID, ExplorerAgentID, CloneAgentID} {
+		definition, _ := registry.DefinitionByID(id)
+		if definition.RequiresSidechatMetadata || IsReservedSidechatAgentName(id) {
+			t.Fatalf("ordinary/task system agent %q was classified as sidechat-only: %+v", id, definition)
+		}
+	}
 }
 
 func TestBuiltinSystemAgentRegistryUserVisibleIDs(t *testing.T) {
@@ -54,6 +66,12 @@ func TestSystemAgentRegistryRejectsMissingDuplicateAndInvalidDefinitions(t *test
 	missing.Materialize = nil
 	if _, err := NewSystemAgentRegistry([]SystemAgentDefinition{missing}); err == nil || !strings.Contains(err.Error(), "materialize") {
 		t.Fatalf("missing materializer error = %v", err)
+	}
+	missingSidechatKind := valid
+	missingSidechatKind.SidechatKind = ""
+	missingSidechatKind.RequiresSidechatMetadata = true
+	if _, err := NewSystemAgentRegistry([]SystemAgentDefinition{missingSidechatKind}); err == nil || !strings.Contains(err.Error(), "requires a sidechat kind") {
+		t.Fatalf("missing mandatory sidechat kind error = %v", err)
 	}
 	duplicateID := valid
 	duplicateID.SidechatKind = "other"

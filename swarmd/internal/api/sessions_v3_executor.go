@@ -3185,6 +3185,9 @@ func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScop
 		if !ok {
 			return pebblestore.AgentProfile{}, fmt.Errorf("unknown system sidechat kind %q", kind)
 		}
+		if !definition.RequiresSidechatMetadata {
+			return pebblestore.AgentProfile{}, fmt.Errorf("system agent %q is not authorized for system sidechat metadata", definition.ID)
+		}
 		for key, value := range map[string]string{
 			"agent profile":       name,
 			"agent_name":          sessionsV3MetadataString(metadata, "agent_name"),
@@ -3198,8 +3201,14 @@ func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScop
 		}
 		return e.server.agents.ReconcileSystemAgentSnapshot(definition.ID, snapshot)
 	}
-	if agentruntime.IsReservedSidechatAgentName(name) || strings.HasPrefix(strings.ToLower(name), "system-") {
+	if agentruntime.IsReservedSidechatAgentName(name) {
 		return pebblestore.AgentProfile{}, fmt.Errorf("reserved system agent %q requires authenticated system sidechat metadata", name)
+	}
+	if systemID, ok := agentruntime.CanonicalSystemAgentID(name); ok {
+		return e.server.agents.ReconcileSystemAgentSnapshot(systemID, snapshot)
+	}
+	if strings.HasPrefix(strings.ToLower(name), "system-") {
+		return pebblestore.AgentProfile{}, fmt.Errorf("unknown reserved system agent %q", name)
 	}
 
 	accountScopeID = strings.TrimSpace(accountScopeID)
