@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1378,6 +1379,9 @@ func TestApprovedExplorerWaveManifestDigestSurvivesPermissionRoundTrip(t *testin
 		}
 		if row.ProfileSnapshot == nil {
 			t.Fatalf("Explorer manifest launch %d missing trusted profile snapshot", i)
+		}
+		if row.ResolvedTools == nil || !slices.Contains(row.ResolvedTools.AllowedTools, "read") || slices.Contains(row.ResolvedTools.AllowedTools, "write") {
+			t.Fatalf("Explorer manifest launch %d resolved tools = %#v, want compiled read-only system contract", i, row.ResolvedTools)
 		}
 	}
 	raw, err := json.Marshal(manifest.ApprovedArguments)

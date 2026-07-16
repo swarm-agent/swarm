@@ -1605,7 +1605,10 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		var toolContract ResolvedAgentToolContract
 		var profileDisabledTools map[string]bool
 		var toolErr error
-		if virtualTarget {
+		if virtualTarget || agentruntime.IsExplorerAgentName(resolvedName) {
+			// Virtual Clone profiles and the compiled Explorer profile are trusted
+			// launch snapshots, not persisted agent rows. Compile their immutable
+			// contracts directly instead of looking them up in the agent store.
 			toolContract, _, profileDisabledTools, toolErr = s.compileResolvedAgentToolContract(parentSession.AccountScopeID, subagentProfile)
 		} else {
 			toolContract, _, profileDisabledTools, toolErr = s.ResolveAgentToolContractForAccount(parentSession.AccountScopeID, subagentProfile)
