@@ -373,6 +373,9 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 	if err := s.cleanupBuiltInMemoryForAccountLocked(accountScopeID); err != nil {
 		return err
 	}
+	if err := s.cleanupBuiltInExplorerForAccountLocked(accountScopeID); err != nil {
+		return err
+	}
 	if current, ok, err := s.getProfileForAccountLocked(accountScopeID, "commit"); err != nil {
 		return err
 	} else if ok && shouldRemoveBuiltInCommit(current) {
@@ -439,7 +442,7 @@ func normalizeDefaultUtilityAgentNames(values []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		name := normalizeName(value)
-		if name != "" && name != "memory" && name != "compact" && name != CompactAgentID {
+		if name != "" && name != "memory" && name != "compact" && name != CompactAgentID && !IsExplorerAgentName(name) {
 			out[name] = struct{}{}
 		}
 	}
@@ -482,10 +485,6 @@ func defaultSwarmToolContract() *pebblestore.AgentToolContract {
 			"exit_plan_mode":      {Enabled: pebblestore.BoolPtr(true)},
 		},
 	}
-}
-
-func defaultExplorerToolContract() *pebblestore.AgentToolContract {
-	return &pebblestore.AgentToolContract{Preset: "read_only"}
 }
 
 func defaultReadWriteSubagentToolContract() *pebblestore.AgentToolContract {
@@ -531,8 +530,6 @@ func builtInDefaultToolContract(name string) *pebblestore.AgentToolContract {
 	switch normalizeName(name) {
 	case "swarm":
 		return defaultSwarmToolContract()
-	case "explorer":
-		return defaultExplorerToolContract()
 	case "memory":
 		return defaultMemoryToolContract()
 	case "clone":
@@ -628,6 +625,44 @@ func (s *Service) cleanupBuiltInMemoryForAccountLocked(accountScopeID string) er
 		}
 	}
 	return s.deleteProfileForAccountLocked(accountScopeID, "memory")
+}
+
+func shouldRemoveBuiltInExplorer(profile pebblestore.AgentProfile) bool {
+	if normalizeName(profile.Name) != "explorer" || profile.Mode != ModeSubagent {
+		return false
+	}
+	prompt := strings.TrimSpace(profile.Prompt)
+	managedPrompt := prompt == "" || prompt == defaultExplorerPrompt()
+	description := strings.TrimSpace(profile.Description)
+	managedDescription := description == "" || description == "Repository explorer"
+	managedContract := profile.ToolContract == nil || strings.TrimSpace(profile.ToolContract.Preset) == "read_only"
+	return managedPrompt && managedDescription && managedContract
+}
+
+func (s *Service) cleanupBuiltInExplorerForAccountLocked(accountScopeID string) error {
+	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, "explorer")
+	if err != nil || !ok || !shouldRemoveBuiltInExplorer(profile) {
+		return err
+	}
+	activeSubagents, err := s.getActiveSubagentsForAccountLocked(accountScopeID, 200)
+	if err != nil {
+		return err
+	}
+	for purpose, assigned := range activeSubagents {
+		if IsExplorerAgentName(purpose) || IsExplorerAgentName(assigned) {
+			if err := s.deleteActiveSubagentForAccountLocked(accountScopeID, purpose); err != nil {
+				return err
+			}
+		}
+	}
+	return s.deleteProfileForAccountLocked(accountScopeID, "explorer")
+}
+
+func defaultExplorerPrompt() string {
+	return strings.TrimSpace("" +
+		"You are Explorer, a subagent focused on repository inspection and evidence collection.\n" +
+		"Map files, summarize architecture and execution flow, and surface likely attack points.\n" +
+		"Provide precise findings with path/line evidence, then end with a `Relevant filepaths:` list and why each file matters.")
 }
 
 func oldDefaultMemoryPrompt() string {
@@ -1673,6 +1708,9 @@ func (s *Service) restoreDefaultsForAccount(accountScopeID string) (State, int64
 	if err := s.cleanupBuiltInMemoryForAccountLocked(accountScopeID); err != nil {
 		return State{}, 0, nil, err
 	}
+	if err := s.cleanupBuiltInExplorerForAccountLocked(accountScopeID); err != nil {
+		return State{}, 0, nil, err
+	}
 
 	version, err := s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
@@ -1787,6 +1825,9 @@ func (s *Service) resetDefaultsForAccount(accountScopeID string) (State, int64, 
 		}
 	}
 	if err := s.cleanupBuiltInMemoryForAccountLocked(accountScopeID); err != nil {
+		return State{}, 0, nil, err
+	}
+	if err := s.cleanupBuiltInExplorerForAccountLocked(accountScopeID); err != nil {
 		return State{}, 0, nil, err
 	}
 
@@ -2148,6 +2189,9 @@ func (s *Service) resolveSubagentForAccount(accountScopeID, nameOrPurpose string
 	if IsIntegrationBuilderAgentName(key) {
 		return pebblestore.AgentProfile{}, fmt.Errorf("subagent %q not found", strings.TrimSpace(nameOrPurpose))
 	}
+	if IsExplorerAgentName(key) {
+		return s.ResolveSystemAgent(ExplorerAgentID, pebblestore.AgentProfile{})
+	}
 
 	if profile, ok, err := s.getProfileForAccountLocked(accountScopeID, key); err != nil {
 		return pebblestore.AgentProfile{}, err
@@ -2243,21 +2287,6 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			UpdatedAt:    now,
 		},
 		{
-			Name:             "explorer",
-			Mode:             ModeSubagent,
-			Description:      "Repository explorer",
-			Provider:         "",
-			RuntimeMode:      pebblestore.AgentRuntimeModeRead,
-			ExecutionSetting: pebblestore.AgentExecutionSettingRead,
-			Prompt: strings.TrimSpace("" +
-				"You are Explorer, a subagent focused on repository inspection and evidence collection.\n" +
-				"Map files, summarize architecture and execution flow, and surface likely attack points.\n" +
-				"Provide precise findings with path/line evidence, then end with a `Relevant filepaths:` list and why each file matters."),
-			ToolContract: defaultExplorerToolContract(),
-			Enabled:      true,
-			UpdatedAt:    now,
-		},
-		{
 			Name:                "clone",
 			Mode:                ModeSubagent,
 			Description:         "Copies the current parent agent's settings for each launch",
@@ -2274,8 +2303,7 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 
 func defaultSubagentAssignments() map[string]string {
 	return map[string]string{
-		"explorer": "explorer",
-		"clone":    "clone",
+		"clone": "clone",
 	}
 }
 

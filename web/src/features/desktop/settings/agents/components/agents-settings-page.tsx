@@ -17,8 +17,8 @@ import {
   restoreAgentDefaults,
 } from "../../../../desktop/chat/queries/chat-queries";
 import { refreshAgentModelMutationCaches } from "../../../chat/queries/agent-preference-mutations";
-import { saveCompactAgentSettings } from "../../swarm/mutations/save-compact-agent-settings";
-import { normalizeCompactAgentSettings } from "../../swarm/types/swarm-settings";
+import { saveSystemUtilitySettings } from "../../swarm/mutations/save-system-agent-settings";
+import { normalizeCompactAgentSettings, normalizeExplorerAgentSettings } from "../../swarm/types/swarm-settings";
 import type {
   AgentProfileRecord,
   AgentStateRecord,
@@ -1980,11 +1980,12 @@ export function AgentsSettingsPage() {
 
   const handleOpenUtilityAI = () => {
     const compact = normalizeCompactAgentSettings(uiSettings);
+    const explorer = normalizeExplorerAgentSettings(uiSettings);
     const baseline = utilityAIForProfiles(profiles, providerDefaultsPreview);
     setUtilityForm({
-      provider: compact.provider || baseline.provider,
-      model: compact.model || baseline.model,
-      thinking: compact.thinking || baseline.thinking,
+      provider: explorer.provider || compact.provider || baseline.provider,
+      model: explorer.model || compact.model || baseline.model,
+      thinking: explorer.thinking || compact.thinking || baseline.thinking,
     });
     setUtilityError(null);
     setError(null);
@@ -2026,9 +2027,9 @@ export function AgentsSettingsPage() {
           utilityThinking,
           overwriteExplicit,
         }),
-        saveCompactAgentSettings({
+        saveSystemUtilitySettings({
           current: uiSettings,
-          compact: { provider: utilityProvider, model: utilityModel, thinking: utilityThinking },
+          settings: { provider: utilityProvider, model: utilityModel, thinking: utilityThinking },
         }),
       ]);
       queryClient.setQueryData(uiSettingsQueryOptions().queryKey, savedUISettings);
@@ -2131,11 +2132,12 @@ export function AgentsSettingsPage() {
   const customUtilityAgentsLabel = customUtilityAgents.join(", ");
   const staleInheritedTargets = providerDefaultsPreview?.staleInheritedAgents ?? [];
   const savedCompactAI = normalizeCompactAgentSettings(uiSettings);
+  const savedExplorerAI = normalizeExplorerAgentSettings(uiSettings);
   const inheritedUtilityAI = utilityAIForProfiles(profiles, providerDefaultsPreview);
   const currentUtilityAI = {
-    provider: savedCompactAI.provider || inheritedUtilityAI.provider,
-    model: savedCompactAI.model || inheritedUtilityAI.model,
-    thinking: savedCompactAI.thinking || inheritedUtilityAI.thinking,
+    provider: savedExplorerAI.provider || savedCompactAI.provider || inheritedUtilityAI.provider,
+    model: savedExplorerAI.model || savedCompactAI.model || inheritedUtilityAI.model,
+    thinking: savedExplorerAI.thinking || savedCompactAI.thinking || inheritedUtilityAI.thinking,
   };
   const allUtilityAgentsHaveOverrides =
     customUtilityAgents.length > 0 && baselineUtilityAgents.length === 0;

@@ -6,8 +6,8 @@ import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
 import { uiSettingsQueryOptions } from '../../../queries/query-options'
-import { saveCompactAgentSettings } from '../../settings/swarm/mutations/save-compact-agent-settings'
-import { normalizeCompactAgentSettings } from '../../settings/swarm/types/swarm-settings'
+import { saveSystemAgentSettings } from '../../settings/swarm/mutations/save-system-agent-settings'
+import { normalizeCompactAgentSettings, normalizeExplorerAgentSettings } from '../../settings/swarm/types/swarm-settings'
 
 export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
   | 'defaultSessionMode'
@@ -57,6 +57,11 @@ interface AgentModelControlProps {
 
 type DraftMode = 'single' | 'split'
 const COMPACT_AGENT_NAME = 'system-compact'
+const EXPLORER_AGENT_NAME = 'system-explorer'
+
+function isSystemUtility(name: string): boolean {
+  return name === COMPACT_AGENT_NAME || name === EXPLORER_AGENT_NAME
+}
 export type ModelDraft = { provider: string; model: string; thinking: string; serviceTier: string }
 
 function agentMode(profile: AgentProfileRecord): string {
@@ -268,6 +273,7 @@ export function AgentModelControl({
   const queryClient = useQueryClient()
   const { data: uiSettings = {} } = useQuery(uiSettingsQueryOptions())
   const compactSettings = normalizeCompactAgentSettings(uiSettings)
+  const explorerSettings = normalizeExplorerAgentSettings(uiSettings)
   const compactProfile = useMemo<AgentProfileRecord>(() => ({
     name: COMPACT_AGENT_NAME,
     mode: 'subagent',
@@ -283,10 +289,25 @@ export function AgentModelControl({
     toolContract: { preset: 'custom', inheritPolicy: false, tools: {} },
     enabled: true, protected: true, updatedAt: 0,
   }), [compactSettings.model, compactSettings.provider, compactSettings.thinking])
+  const explorerProfile = useMemo<AgentProfileRecord>(() => ({
+    name: EXPLORER_AGENT_NAME,
+    mode: 'subagent',
+    description: 'Compiled repository and web research subagent',
+    provider: explorerSettings.provider,
+    model: explorerSettings.model,
+    thinking: explorerSettings.thinking,
+    modelMode: 'single',
+    planProvider: '', planModel: '', planThinking: '', planServiceTier: '',
+    autoProvider: '', autoModel: '', autoThinking: '', autoServiceTier: '',
+    prompt: '', runtimeMode: 'read', defaultSessionMode: 'auto', executionSetting: 'read',
+    exitPlanModeEnabled: false, toolScope: null,
+    toolContract: { preset: 'custom', inheritPolicy: false, tools: { read: { enabled: true, bashPrefixes: [] }, search: { enabled: true, bashPrefixes: [] }, list: { enabled: true, bashPrefixes: [] }, websearch: { enabled: true, bashPrefixes: [] }, webfetch: { enabled: true, bashPrefixes: [] } } },
+    enabled: true, protected: true, updatedAt: 0,
+  }), [explorerSettings.model, explorerSettings.provider, explorerSettings.thinking])
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false), compactProfile], [agents, compactProfile])
+  const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'explorer'), compactProfile, explorerProfile], [agents, compactProfile, explorerProfile])
   const activeProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? selectableAgents.find((agent) => agent.name === currentAgent) ?? null
   const [draftAgentName, setDraftAgentName] = useState(activeProfile?.name ?? selectedPrimaryAgent)
   const draftProfile = selectableAgents.find((agent) => agent.name === draftAgentName) ?? activeProfile
@@ -301,11 +322,11 @@ export function AgentModelControl({
   const agentSections = useMemo(() => {
     const sections = [
       { label: 'Primary agents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'primary') },
-      { label: 'Subagents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'subagent' && agent.name !== COMPACT_AGENT_NAME) },
-      { label: 'System utilities', profiles: selectableAgents.filter((agent) => agent.name === COMPACT_AGENT_NAME) },
+      { label: 'Subagents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'subagent' && !isSystemUtility(agent.name)) },
+      { label: 'System utilities', profiles: selectableAgents.filter((agent) => isSystemUtility(agent.name)) },
       { label: 'Other agents', profiles: selectableAgents.filter((agent) => {
         const profileMode = agentMode(agent)
-        return profileMode !== 'primary' && profileMode !== 'subagent' && agent.name !== COMPACT_AGENT_NAME
+        return profileMode !== 'primary' && profileMode !== 'subagent' && !isSystemUtility(agent.name)
       }) },
     ]
     return sections.filter((section) => section.profiles.length > 0)
@@ -383,10 +404,11 @@ export function AgentModelControl({
     setSaving(true)
     setError(null)
     try {
-      if (profile.name === COMPACT_AGENT_NAME) {
-        const saved = await saveCompactAgentSettings({
+      if (isSystemUtility(profile.name)) {
+        const saved = await saveSystemAgentSettings({
           current: uiSettings,
-          compact: {
+          agent: profile.name === COMPACT_AGENT_NAME ? 'compact' : 'explorer',
+          settings: {
             provider: String(action.agentPatch.provider ?? '').trim(),
             model: String(action.agentPatch.model ?? '').trim(),
             thinking: String(action.agentPatch.thinking ?? '').trim(),
@@ -448,10 +470,10 @@ export function AgentModelControl({
           </div>
 
           <div className="min-h-0 overflow-y-auto p-5">
-            {draftProfile?.name === COMPACT_AGENT_NAME ? (
+            {draftProfile && isSystemUtility(draftProfile.name) ? (
               <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
                 <div className="font-semibold text-[var(--app-text)]">Compiled system utility</div>
-                <div className="mt-1">Only Compact&apos;s provider, model, and thinking level are configurable. Its identity, prompt, runtime, and empty tool contract remain code-owned.</div>
+                <div className="mt-1">Only {draftProfile.name === COMPACT_AGENT_NAME ? 'Compact' : 'Explorer'}&apos;s provider, model, and thinking level are configurable. Its identity, prompt, runtime, and tool contract remain code-owned.</div>
               </div>
             ) : <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
               <div className="grid gap-4 lg:grid-cols-2">
@@ -467,7 +489,7 @@ export function AgentModelControl({
               <div className="mt-3 text-[11px] text-[var(--app-text-subtle)]">Runtime: {runtimeLabel(draftProfile)}. Current session: {mode}.</div>
             </div>}
 
-            {draftProfile?.name !== COMPACT_AGENT_NAME ? <div className="mt-4 border-y border-[var(--app-border)] py-3">
+            {!draftProfile || !isSystemUtility(draftProfile.name) ? <div className="mt-4 border-y border-[var(--app-border)] py-3">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
@@ -488,7 +510,7 @@ export function AgentModelControl({
             </div> : null}
 
             {effectiveDraftMode === 'single' ? (
-              <ModelDraftEditor title={draftProfile?.name === COMPACT_AGENT_NAME ? 'Compact utility model' : 'Single model'} draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier={draftProfile?.name !== COMPACT_AGENT_NAME} />
+              <ModelDraftEditor title={draftProfile && isSystemUtility(draftProfile.name) ? `${draftProfile.name === COMPACT_AGENT_NAME ? 'Compact' : 'Explorer'} utility model` : 'Single model'} draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier={!draftProfile || !isSystemUtility(draftProfile.name)} />
             ) : (
               <div className="mt-4 grid gap-3 lg:grid-cols-2">
                 <ModelDraftEditor title="Plan model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('plan', provider)} onModelChange={(model) => selectModel('plan', model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showServiceTier />

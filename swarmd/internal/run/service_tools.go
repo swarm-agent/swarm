@@ -12,11 +12,13 @@ import (
 	"sync"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	"swarm/packages/swarmd/internal/uisettings"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
@@ -3453,6 +3455,51 @@ func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose st
 	}
 	if s == nil || s.agents == nil {
 		return pebblestore.AgentProfile{}, errors.New("saved agent service is not configured")
+	}
+	if agentruntime.IsExplorerAgentName(nameOrPurpose) {
+		if s.model == nil {
+			return pebblestore.AgentProfile{}, errors.New("Explorer model service is not configured")
+		}
+		preference, err := s.model.GetPreferenceForAccount(strings.TrimSpace(accountScopeID))
+		if err != nil {
+			return pebblestore.AgentProfile{}, fmt.Errorf("read Explorer model preference: %w", err)
+		}
+		providerID := strings.ToLower(strings.TrimSpace(preference.Provider))
+		override := uisettings.CompactAgentSettings{}
+		if s.uiSettings != nil {
+			if settings, settingsErr := s.uiSettings.GetForAccount(strings.TrimSpace(accountScopeID)); settingsErr == nil {
+				override = settings.Agents.Explorer
+			}
+		}
+		if override.Provider != "" {
+			providerID = strings.ToLower(strings.TrimSpace(override.Provider))
+		}
+		if providerID == "" {
+			return pebblestore.AgentProfile{}, errors.New("Explorer utility provider is empty")
+		}
+		_, _, utility, ok, err := s.model.RecommendedCatalogDefaults(providerID)
+		if err != nil {
+			return pebblestore.AgentProfile{}, fmt.Errorf("resolve Explorer utility recommendation: %w", err)
+		}
+		if !ok || strings.TrimSpace(utility.Model) == "" {
+			return pebblestore.AgentProfile{}, fmt.Errorf("Explorer utility recommendation for provider %q is unavailable", providerID)
+		}
+		modelName := strings.TrimSpace(override.Model)
+		if modelName == "" {
+			modelName = strings.TrimSpace(utility.Model)
+		}
+		thinking := strings.TrimSpace(override.Thinking)
+		for _, recommendation := range utility.Recommendations {
+			if thinking == "" && strings.EqualFold(strings.TrimSpace(recommendation.Role), "utility") {
+				thinking = strings.TrimSpace(recommendation.Thinking)
+				break
+			}
+		}
+		resolved, err := s.model.ResolvePreference(pebblestore.ModelPreference{Provider: providerID, Model: modelName, Thinking: thinking, ContextMode: preference.ContextMode})
+		if err != nil {
+			return pebblestore.AgentProfile{}, fmt.Errorf("resolve Explorer utility preference: %w", err)
+		}
+		return s.agents.ResolveSystemAgent(agentruntime.ExplorerAgentID, pebblestore.AgentProfile{Provider: resolved.Preference.Provider, Model: resolved.Preference.Model, Thinking: resolved.Preference.Thinking})
 	}
 	if strings.TrimSpace(accountScopeID) != "" {
 		return s.agents.ResolveSubagentForAccount(accountScopeID, nameOrPurpose)

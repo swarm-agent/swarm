@@ -3505,7 +3505,8 @@ type uiCompactAgentSettingsPatchPresence struct {
 }
 
 type uiAgentSettingsPatchPresence struct {
-	Compact *uiCompactAgentSettingsPatchPresence `json:"compact"`
+	Compact  *uiCompactAgentSettingsPatchPresence `json:"compact"`
+	Explorer *uiCompactAgentSettingsPatchPresence `json:"explorer"`
 }
 
 func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPatchPresence) uisettings.UISettings {
@@ -3596,6 +3597,17 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 		}
 		if raw.Agents.Compact.Thinking != nil {
 			settings.Agents.Compact.Thinking = patch.Agents.Compact.Thinking
+		}
+	}
+	if raw.Agents != nil && raw.Agents.Explorer != nil {
+		if raw.Agents.Explorer.Provider != nil {
+			settings.Agents.Explorer.Provider = patch.Agents.Explorer.Provider
+		}
+		if raw.Agents.Explorer.Model != nil {
+			settings.Agents.Explorer.Model = patch.Agents.Explorer.Model
+		}
+		if raw.Agents.Explorer.Thinking != nil {
+			settings.Agents.Explorer.Thinking = patch.Agents.Explorer.Thinking
 		}
 	}
 	return settings

@@ -35,6 +35,7 @@ export interface UICompactAgentSettingsWire {
 
 export interface UIAgentSettingsWire {
   compact?: UICompactAgentSettingsWire
+  explorer?: UICompactAgentSettingsWire
 }
 
 export type DesktopSessionMode = 'auto' | 'plan'
@@ -200,6 +201,14 @@ export function normalizeCompactAgentSettings(payload?: UISettingsWire | null): 
   }
 }
 
+export function normalizeExplorerAgentSettings(payload?: UISettingsWire | null): Required<UICompactAgentSettingsWire> {
+  return {
+    provider: typeof payload?.agents?.explorer?.provider === 'string' ? payload.agents.explorer.provider.trim().toLowerCase() : '',
+    model: typeof payload?.agents?.explorer?.model === 'string' ? payload.agents.explorer.model.trim() : '',
+    thinking: typeof payload?.agents?.explorer?.thinking === 'string' ? payload.agents.explorer.thinking.trim() : '',
+  }
+}
+
 export function withCompactAgentSettings(current: UISettingsWire, compact: UICompactAgentSettingsWire): UISettingsWire {
   return {
     ...current,
@@ -209,6 +218,20 @@ export function withCompactAgentSettings(current: UISettingsWire, compact: UICom
         provider: compact.provider?.trim().toLowerCase() ?? '',
         model: compact.model?.trim() ?? '',
         thinking: compact.thinking?.trim() ?? '',
+      },
+    },
+  }
+}
+
+export function withExplorerAgentSettings(current: UISettingsWire, explorer: UICompactAgentSettingsWire): UISettingsWire {
+  return {
+    ...current,
+    agents: {
+      ...(current.agents ?? {}),
+      explorer: {
+        provider: explorer.provider?.trim().toLowerCase() ?? '',
+        model: explorer.model?.trim() ?? '',
+        thinking: explorer.thinking?.trim() ?? '',
       },
     },
   }

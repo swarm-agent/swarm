@@ -10,6 +10,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
 	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -1483,7 +1484,17 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 		cleanup()
 		t.Fatalf("create parent session: %v", err)
 	}
-	return NewService(sessions, nil, nil, tool.NewRuntime(1), nil, agents, nil, events), parent.ID, cleanup
+	catalog := model.NewCatalogService(pebblestore.NewModelCatalogStore(store))
+	models := model.NewService(pebblestore.NewModelStore(store), events, catalog)
+	if err := models.EnsureBootDefaults(); err != nil {
+		cleanup()
+		t.Fatalf("ensure model defaults: %v", err)
+	}
+	if _, _, err := models.SetPreferenceForAccount("test-account", "test-user", "codex", "gpt-5.4", "high"); err != nil {
+		cleanup()
+		t.Fatalf("set account model preference: %v", err)
+	}
+	return NewService(sessions, models, nil, tool.NewRuntime(1), nil, agents, nil, events), parent.ID, cleanup
 }
 
 func TestGateToolCallsRejectsMalformedXMLToolArgumentsWithoutPermissionService(t *testing.T) {

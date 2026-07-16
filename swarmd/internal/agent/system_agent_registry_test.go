@@ -16,11 +16,11 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{AISidechatAgentID, CompactAgentID, PlanSidechatAgentID}
+	want := []string{AISidechatAgentID, CompactAgentID, ExplorerAgentID, PlanSidechatAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
-	for kind, id := range map[string]string{SystemSidechatKindPlan: PlanSidechatAgentID, SystemSidechatKindAI: AISidechatAgentID, SystemSidechatKindCompact: CompactAgentID} {
+	for kind, id := range map[string]string{SystemSidechatKindPlan: PlanSidechatAgentID, SystemSidechatKindAI: AISidechatAgentID, SystemSidechatKindCompact: CompactAgentID, SystemSidechatKindExplorer: ExplorerAgentID} {
 		definition, ok := registry.DefinitionBySidechatKind(kind)
 		if !ok || definition.ID != id {
 			t.Fatalf("kind %q resolved to %+v, ok=%v", kind, definition, ok)
@@ -141,6 +141,18 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if compact.ToolContract == nil || compact.ToolContract.Preset != "custom" || len(compact.ToolContract.Tools) != 0 {
 		t.Fatalf("Compact must have an immutable empty custom tool contract: %+v", compact.ToolContract)
 	}
+	explorer, err := registry.ReconcileSnapshot(ExplorerAgentID, pebblestore.AgentProfile{Name: ExplorerAgentID, Provider: "codex", Model: "utility-model", Thinking: "high", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explorer.Prompt != ExplorerAgentPrompt() || explorer.RuntimeMode != pebblestore.AgentRuntimeModeRead || explorer.ToolContract == nil || explorer.ToolContract.Preset != "custom" {
+		t.Fatalf("Explorer immutable contract was not restored: %+v", explorer)
+	}
+	for _, allowed := range []string{"read", "search", "list", "websearch", "webfetch"} {
+		if cfg := explorer.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Explorer locked tool %q unavailable: %+v", allowed, explorer.ToolContract)
+		}
+	}
 	if _, err := registry.ReconcileSnapshot(PlanSidechatAgentID, pebblestore.AgentProfile{Name: AISidechatAgentID}); err == nil || !strings.Contains(err.Error(), "metadata mismatch") {
 		t.Fatalf("metadata mismatch error = %v", err)
 	}
@@ -155,7 +167,7 @@ func TestEnsureSystemAgentRegistryDoesNotPersistOrExposeMutableProfiles(t *testi
 	if err != nil {
 		t.Fatalf("list agent state: %v", err)
 	}
-	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, CompactAgentID} {
+	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, CompactAgentID, ExplorerAgentID} {
 		if _, ok, err := agents.GetProfile(id); err != nil || ok {
 			t.Fatalf("system profile %q persisted ok=%v err=%v", id, ok, err)
 		}

@@ -241,9 +241,9 @@ func agentProfilesByName(profiles []pebblestore.AgentProfile) map[string]pebbles
 }
 
 func builtinUtilityAgentNames() []string {
-	// Compact is compiled and resolved from the catalog utility recommendation;
-	// it is intentionally absent from persisted/default utility agent rows.
-	return []string{"explorer"}
+	// Compact and Explorer are compiled system agents resolved from account-scoped
+	// utility settings; neither is a persisted/default agent row.
+	return nil
 }
 
 func utilityAgentNames(providerDefaults defaults.ProviderDefaults) []string {

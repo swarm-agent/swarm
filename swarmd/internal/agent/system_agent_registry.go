@@ -16,10 +16,13 @@ const (
 	AISidechatAgentName   = "AI"
 	CompactAgentID        = "system-compact"
 	CompactAgentName      = "Compact"
+	ExplorerAgentID       = "system-explorer"
+	ExplorerAgentName     = "Explorer"
 
-	SystemSidechatKindPlan    = "plan"
-	SystemSidechatKindAI      = "ai"
-	SystemSidechatKindCompact = "compact"
+	SystemSidechatKindPlan     = "plan"
+	SystemSidechatKindAI       = "ai"
+	SystemSidechatKindCompact  = "compact"
+	SystemSidechatKindExplorer = "explorer"
 )
 
 // SystemAgentDefinition is the immutable, code-owned identity and security
@@ -168,6 +171,13 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Materialize:  CompactAgentProfileForParent,
 		Reconcile:    reconcileCompactAgentProfile,
 	},
+	{
+		ID:           ExplorerAgentID,
+		DisplayName:  ExplorerAgentName,
+		SidechatKind: SystemSidechatKindExplorer,
+		Materialize:  ExplorerAgentProfileForParent,
+		Reconcile:    reconcileExplorerAgentProfile,
+	},
 }
 
 func BuiltinSystemAgentRegistry() (*SystemAgentRegistry, error) {
@@ -215,6 +225,28 @@ func CompactAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{}}
 }
 
+func ExplorerAgentPrompt() string {
+	return strings.TrimSpace(`You are Explorer, Swarm's compiled research subagent.
+Map files, summarize architecture and execution flow, and surface likely attack points.
+Use only the locked read and research tools. Provide precise findings with path/line evidence, then end with a Relevant filepaths list and why each file matters.`)
+}
+
+func ExplorerAgentToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
+		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)},
+	}}
+}
+
+func IsExplorerAgentName(name string) bool {
+	switch normalizeName(name) {
+	case "explorer", ExplorerAgentID:
+		return true
+	default:
+		return false
+	}
+}
+
 func IsPlanSidechatAgentName(name string) bool {
 	switch normalizeName(name) {
 	case PlanSidechatAgentID, "plan agent":
@@ -231,7 +263,7 @@ func IsReservedSidechatAgentName(name string) bool {
 			return true
 		}
 	}
-	return IsPlanSidechatAgentName(name) || name == AISidechatAgentID || name == "ai sidechat"
+	return IsPlanSidechatAgentName(name) || IsExplorerAgentName(name) || name == AISidechatAgentID || name == "ai sidechat"
 }
 
 func PlanSidechatAgentToolContract() *pebblestore.AgentToolContract {
@@ -267,6 +299,15 @@ func CompactAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.A
 		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: CompactAgentToolContract(), Enabled: true,
 	})
 	return profile
+}
+
+func ExplorerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: ExplorerAgentID, Mode: ModeSubagent, Description: "Compiled repository and web research subagent",
+		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking),
+		Prompt: ExplorerAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: ExplorerAgentToolContract(), Enabled: true,
+	})
 }
 
 func AISidechatAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
@@ -312,6 +353,12 @@ func reconcileAISidechatAgentProfile(snapshot pebblestore.AgentProfile) pebblest
 
 func reconcileCompactAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := CompactAgentProfileForParent(snapshot)
+	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
+	return profile
+}
+
+func reconcileExplorerAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := ExplorerAgentProfileForParent(snapshot)
 	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
 	return profile
 }
