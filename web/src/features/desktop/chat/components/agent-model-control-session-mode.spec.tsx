@@ -9,7 +9,8 @@ const settingsSource = readFileSync(new URL('./agent-model-control.tsx', import.
 
 test('plan is a toggle control rather than a desktop mode picker', () => {
   assert.match(composerSource, /<ModePicker mode=\{mode\}[\s\S]*<AgentPicker/)
-  assert.match(composerSource, /triggerClassName="h-full shrink-0 px-2"/)
+  assert.doesNotMatch(composerSource, /triggerClassName="h-full shrink-0 px-2"/)
+  assert.doesNotMatch(composerSource, /compactButton\(true\)|rounded-full bg-\[var\(--app-bg-alt\)\]/)
   assert.match(modePickerSource, /aria-label=\{`\$\{planEnabled \? 'Disable' : 'Enable'\} plan mode`\}/)
   assert.match(modePickerSource, /aria-pressed=\{planEnabled\}/)
   assert.match(modePickerSource, /hover:-translate-y-0\.5 hover:shadow-sm/)
@@ -18,7 +19,8 @@ test('plan is a toggle control rather than a desktop mode picker', () => {
   assert.doesNotMatch(modePickerSource, /border-b-2|hover:border-\[var\(--app-border-accent\)\]/)
   assert.doesNotMatch(pickerSource, /border-b-2|hover:border-\[var\(--app-border-accent\)\]/)
   assert.doesNotMatch(composerSource, /border-b-2|hover:border-\[var\(--app-border-accent\)\]/)
-  assert.match(modePickerSource, />plan<\/span>/)
+  assert.doesNotMatch(modePickerSource, />plan<\/span>/)
+  assert.match(modePickerSource, /<NotepadText size=\{15\} className="shrink-0" \/>/)
   assert.match(modePickerSource, /onClick=\{\(\) => onSelect\(nextMode\)\}/)
   assert.doesNotMatch(modePickerSource, /createPortal|ChevronDown|ChevronsUp|setOpen|>\{mode\}<\/span>|PlanHoverPreview|hoverPreview/)
   assert.doesNotMatch(pickerSource, /DesktopSessionMode|onModeSelect|Session mode for/)

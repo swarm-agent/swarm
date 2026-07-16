@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
 import { AlertTriangle, ArrowUp, LoaderCircle, Mic, Minimize2, Square } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
@@ -562,10 +562,9 @@ export function DesktopV3AgenticComposer({
 
   const hasContextUsagePercent = typeof contextUsagePercent === 'number' && Number.isFinite(contextUsagePercent)
   const normalizedContextUsagePercent = clampContextUsagePercent(contextUsagePercent)
-  const mobileContextUsageLabel = hasContextUsagePercent ? `${Math.round(normalizedContextUsagePercent)}%` : 'ctx'
-  const mobileContextProgressStyle: CSSProperties = {
-    background: `conic-gradient(var(--app-primary) ${normalizedContextUsagePercent * 3.6}deg, var(--app-border) 0deg)`,
-  }
+  const contextButtonLabel = hasContextUsagePercent
+    ? `${Math.round(normalizedContextUsagePercent)}%`
+    : contextLabel?.replace(/\s*ctx$/i, '') || ''
   const dictationButton = () => showDictationButton ? (
     <button
       type="button"
@@ -582,26 +581,17 @@ export function DesktopV3AgenticComposer({
     </button>
   ) : null
 
-  const compactButton = (mobile = false) => (
+  const compactButton = () => (
     <button
       type="button"
       onClick={() => { void onCompact?.(draft) }}
       disabled={compactDisabled || !onCompact}
       title={contextTooltip || 'Compact conversation'}
       aria-label={contextTooltip || 'Compact conversation'}
-      style={mobile ? mobileContextProgressStyle : undefined}
-      className={mobile
-        ? 'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border-0 p-[2px] text-[9px] font-semibold uppercase tracking-wide text-[var(--app-primary)] shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0'
-        : 'inline-flex min-h-7 min-w-0 items-center gap-1 rounded-lg border-0 bg-transparent px-2 text-[11px] font-medium tabular-nums text-[var(--app-text)] transition-all hover:-translate-y-0.5 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none'}
+      className="inline-flex min-h-7 min-w-0 shrink-0 items-center gap-1 rounded-lg border-0 bg-transparent px-2 text-[11px] font-medium tabular-nums text-[var(--app-text)] transition-all hover:-translate-y-0.5 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none"
     >
-      {mobile ? (
-        <span className="flex h-full w-full items-center justify-center rounded-full bg-[var(--app-bg-alt)]">{mobileContextUsageLabel}</span>
-      ) : (
-        <>
-          <span>{contextLabel || 'ctx'}</span>
-          <Minimize2 size={12} className="text-[var(--app-text-subtle)]" />
-        </>
-      )}
+      <span>{contextButtonLabel}</span>
+      <Minimize2 size={12} className="text-[var(--app-text-subtle)]" />
     </button>
   )
 
@@ -666,7 +656,7 @@ export function DesktopV3AgenticComposer({
                     Needs auth!
                   </button>
                 ) : null}
-                {compactButton(false)}
+                {compactButton()}
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
@@ -675,19 +665,19 @@ export function DesktopV3AgenticComposer({
                 </Button>
               </div>
             </div>
-            <div className="flex w-full min-w-0 min-[1000px]:hidden">
-              <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_36px_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_36px_40px] sm:gap-2">
-                <div className="flex h-10 min-w-0 items-center overflow-hidden rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] px-1.5 shadow-sm">
-                  {showModePicker ? (
-                    <>
-                      <ModePicker mode={mode} onSelect={(nextMode) => onModeSelect?.(nextMode)} disabled={!onModeSelect || composerDisabled} triggerClassName="h-full shrink-0 px-2" />
-                      <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} thinkingTagsEnabled={thinkingTagsEnabled} onThinkingTagsToggle={onThinkingTagsToggle} thinkingTagsBusy={thinkingTagsBusy} disabled={composerDisabled || agentModelControlBusy} triggerClassName="w-full justify-between px-1.5 py-1.5" />
-                    </>
-                  ) : (
-                    <span className="min-w-0 truncate px-2 text-[11px] font-semibold text-[var(--app-text)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
-                  )}
-                </div>
-                {compactButton(true)}
+            <div className="flex w-full min-w-0 items-center justify-between gap-2 min-[1000px]:hidden">
+              <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                {showModePicker ? (
+                  <>
+                    <ModePicker mode={mode} onSelect={(nextMode) => onModeSelect?.(nextMode)} disabled={!onModeSelect || composerDisabled} />
+                    <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} thinkingTagsEnabled={thinkingTagsEnabled} onThinkingTagsToggle={onThinkingTagsToggle} thinkingTagsBusy={thinkingTagsBusy} disabled={composerDisabled || agentModelControlBusy} />
+                  </>
+                ) : (
+                  <span className="min-w-0 truncate font-medium text-[var(--app-text-muted)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
+                )}
+                {compactButton()}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
                 <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <ArrowUp size={22} strokeWidth={2.25} className="shrink-0" />}

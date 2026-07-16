@@ -1745,10 +1745,46 @@ func (s *PlanLifecycleService) loadPlanForLifecycle(sessionID, planID, action st
 	if strings.TrimSpace(doc.Title) == "" {
 		doc.Title = strings.TrimSpace(plan.Title)
 	}
-	if err := ValidatePlanDocument(doc); err != nil {
+	if err := validatePlanDocumentForLifecycleAction(doc, action); err != nil {
 		return planLifecycleState{}, err
 	}
 	return planLifecycleState{session: session, plan: plan, doc: doc}, nil
+}
+
+func validatePlanDocumentForLifecycleAction(doc *pebblestore.SessionPlanDocument, action string) error {
+	err := ValidatePlanDocument(doc)
+	if err == nil || action != "request_followup_checkpoint" || doc == nil {
+		return err
+	}
+
+	// A cancelled run can be reconciled after a later checkpoint was already
+	// selected, leaving the paused checkpoint before active_checkpoint_id. A
+	// follow-up request is the repair boundary for that state: it closes the
+	// paused checkpoint before inserting and selecting the new checkpoint.
+	activeIndex := findPlanCheckpointIndex(doc.Checkpoints, strings.TrimSpace(doc.ActiveCheckpointID))
+	if activeIndex <= 0 {
+		return err
+	}
+	repairCandidate := clonePlanLifecycleDocument(doc)
+	repaired := false
+	for i := 0; i < activeIndex; i++ {
+		checkpoint := &repairCandidate.Checkpoints[i]
+		if normalizePlanCheckpointStatusForSave(checkpoint.Status) != PlanCheckpointStatusPaused {
+			continue
+		}
+		checkpoint.Status = PlanCheckpointStatusCompleted
+		if checkpoint.Review != nil {
+			checkpoint.Review.Status = PlanCheckpointReviewStatusApproved
+		}
+		repaired = true
+	}
+	if !repaired {
+		return err
+	}
+	if repairErr := ValidatePlanDocument(repairCandidate); repairErr != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *PlanLifecycleService) saveLifecyclePlan(state planLifecycleState, checkpointID, updateKind, updateSummary string) (PlanLifecycleResult, error) {

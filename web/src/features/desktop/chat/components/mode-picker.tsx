@@ -21,10 +21,9 @@ export function ModePicker({ mode, onSelect, disabled = false, triggerClassName 
         aria-label={`${planEnabled ? 'Disable' : 'Enable'} plan mode`}
         aria-pressed={planEnabled}
         title={`${planEnabled ? 'Disable' : 'Enable'} plan mode`}
-        className={`inline-flex min-h-9 min-w-0 items-center gap-2 rounded-lg border-0 bg-transparent px-3 py-2 text-xs font-medium transition-all hover:-translate-y-0.5 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none ${planEnabled ? 'text-[var(--app-text)]' : 'text-[var(--app-text-muted)] opacity-60 hover:text-[var(--app-text)] hover:opacity-100'} ${triggerClassName}`}
+        className={`inline-flex min-h-9 min-w-9 items-center justify-center rounded-lg border-0 bg-transparent p-2 transition-all hover:-translate-y-0.5 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none ${planEnabled ? 'text-[var(--app-text)]' : 'text-[var(--app-text-muted)] opacity-60 hover:text-[var(--app-text)] hover:opacity-100'} ${triggerClassName}`}
       >
         <NotepadText size={15} className="shrink-0" />
-        <span className="font-semibold tracking-wide">plan</span>
       </button>
     </div>
   )

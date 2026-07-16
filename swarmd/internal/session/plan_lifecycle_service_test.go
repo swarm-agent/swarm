@@ -1073,6 +1073,34 @@ func TestPlanLifecycleRequestFollowupCheckpointResolvesBlockedAndAutoStartsInser
 	assertCheckpointOrdersNormalized(t, result.Plan.Document)
 }
 
+func TestValidatePlanDocumentForFollowupAllowsPausedCheckpointBeforeActive(t *testing.T) {
+	doc := &pebblestore.SessionPlanDocument{
+		ID: "plan-paused-before-active", Title: "Paused Before Active",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed,
+		},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStatePaused, LastCheckpointID: "followup-5", LastOutcome: PlanCheckpointStatusPaused},
+		ActiveCheckpointID: "followup-6",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "followup-5", Title: "Paused", Status: PlanCheckpointStatusPaused},
+			{ID: "followup-6", Title: "Selected", Status: PlanCheckpointStatusPending},
+		},
+	}
+
+	if err := ValidatePlanDocument(doc); err == nil || !strings.Contains(err.Error(), `checkpoint "followup-5" status "paused" is before active_checkpoint_id "followup-6"`) {
+		t.Fatalf("ordinary validation error = %v", err)
+	}
+	if err := validatePlanDocumentForLifecycleAction(doc, "request_followup_checkpoint"); err != nil {
+		t.Fatalf("follow-up repair validation: %v", err)
+	}
+	if err := validatePlanDocumentForLifecycleAction(doc, "start_checkpoint"); err == nil {
+		t.Fatal("non-follow-up lifecycle action accepted discontinuous document")
+	}
+	if doc.Checkpoints[0].Status != PlanCheckpointStatusPaused {
+		t.Fatalf("validation mutated source checkpoint = %#v", doc.Checkpoints[0])
+	}
+}
+
 func TestPlanLifecycleRequestFollowupCheckpointSupersedesPausedAndAutoStartsInsertedCheckpoint(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()
