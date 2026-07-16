@@ -87,16 +87,6 @@ function agentModeLabel(profile: AgentProfileRecord): string {
   }
 }
 
-function runtimeLabel(profile: AgentProfileRecord | null): string {
-  const raw = profile?.exitPlanModeEnabled ? 'plan_auto' : profile?.runtimeMode || profile?.executionSetting || ''
-  switch (raw) {
-    case 'plan_auto': return 'starts in plan'
-    case 'read': return 'read-only'
-    case 'readwrite': return 'auto-capable'
-    default: return 'runtime default'
-  }
-}
-
 function modelBehaviorLabel(profile: AgentProfileRecord | null): string {
   if (!profile) return 'Single model'
   if (profile.modelMode === 'split' && isPlanCapableAgent(profile)) return 'Split plan/action models'
@@ -307,7 +297,6 @@ export function AgentModelControl({
   }), [])
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [primaryLayoutVariant, setPrimaryLayoutVariant] = useState(1)
   const [error, setError] = useState<string | null>(null)
   const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'explorer' && (!isCompiledSystemAgent(agent.name) || agent.name === SWARM_AGENT_NAME)), explorerProfile, cloneProfile], [agents, cloneProfile, explorerProfile])
   const activeProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? selectableAgents.find((agent) => agent.name === currentAgent) ?? null
@@ -439,23 +428,6 @@ export function AgentModelControl({
             <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Changes are staged here and saved to the agent profile only when confirmed.</div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {draftProfile && agentMode(draftProfile) === 'primary' ? (
-              <div role="group" aria-label="Primary agent control layout" className="flex items-center gap-0.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-0.5">
-                <span className="px-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Layout</span>
-                {[1, 2, 3, 4, 5].map((variant) => (
-                  <button
-                    key={variant}
-                    type="button"
-                    aria-label={`Show primary agent control layout ${variant}`}
-                    aria-pressed={primaryLayoutVariant === variant}
-                    onClick={() => setPrimaryLayoutVariant(variant)}
-                    className={`h-6 w-6 rounded-md text-[11px] font-semibold transition ${primaryLayoutVariant === variant ? 'bg-[var(--app-primary)] text-[var(--app-primary-text)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}
-                  >
-                    {variant}
-                  </button>
-                ))}
-              </div>
-            ) : null}
             {onOpenAgentSettings ? (
               <button type="button" onClick={() => { setOpen(false); onOpenAgentSettings() }} className="rounded-lg border border-[var(--app-border)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
                 Close
@@ -502,7 +474,6 @@ export function AgentModelControl({
               </div>
             ) : draftProfile && agentMode(draftProfile) === 'primary' ? (
               <PrimaryAgentControlRow
-                variant={primaryLayoutVariant}
                 sessionMode={draftSessionMode}
                 modelMode={effectiveDraftMode}
                 splitModeAllowed={splitModeAllowed}
@@ -517,12 +488,7 @@ export function AgentModelControl({
                 </div>
                 <SessionModeChoices value={draftSessionMode} onChange={setDraftSessionMode} />
               </div>
-              <div className="mt-3 text-[11px] text-[var(--app-text-subtle)]">Runtime: {runtimeLabel(draftProfile)}. Current action: {mode === 'plan' ? 'Plan' : 'Action'}.</div>
             </div>}
-
-            {draftProfile && agentMode(draftProfile) === 'primary' ? (
-              <div className="mt-2 text-[11px] text-[var(--app-text-subtle)]">Runtime: {runtimeLabel(draftProfile)}. Current action: {mode === 'plan' ? 'Plan' : 'Action'}.</div>
-            ) : null}
 
             {!draftProfile || (!isSystemUtility(draftProfile.name) && agentMode(draftProfile) !== 'primary') ? <div className="mt-4 border-y border-[var(--app-border)] py-3">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -535,10 +501,10 @@ export function AgentModelControl({
               {!splitModeAllowed ? <div className="mt-2 text-[11px] text-[var(--app-text-subtle)]">Split policy is available only for plan-capable agents.</div> : null}
             </div> : null}
             {!splitModeAllowed && draftProfile && agentMode(draftProfile) === 'primary' ? <div className="mt-2 text-[11px] text-[var(--app-text-subtle)]">Split policy is available only for plan-capable agents.</div> : null}
-            {modelLocked && draftProfile?.name !== CLONE_AGENT_NAME && !isSystemUtility(draftProfile?.name ?? '') ? (
+            {modelLocked && modelLockNotice && draftProfile?.name !== CLONE_AGENT_NAME && !isSystemUtility(draftProfile?.name ?? '') ? (
               <div className="mt-3 flex gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-[11px] text-[var(--app-text-muted)]">
                 <Lock size={13} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
-                <span>{modelLockNotice || 'The current session is resolved from the selected agent profile.'}</span>
+                <span>{modelLockNotice}</span>
               </div>
             ) : null}
 
@@ -614,87 +580,31 @@ function ModelPolicyChoices({ value, splitModeAllowed, onChange, className = '' 
 }
 
 function PrimaryAgentControlRow({
-  variant,
   sessionMode,
   modelMode,
   splitModeAllowed,
   onSessionModeChange,
   onModelModeChange,
 }: {
-  variant: number
   sessionMode: DesktopSessionMode
   modelMode: DraftMode
   splitModeAllowed: boolean
   onSessionModeChange: (value: DesktopSessionMode) => void
   onModelModeChange: (value: DraftMode) => void
 }) {
-  const sessionChoices = <SessionModeChoices value={sessionMode} onChange={onSessionModeChange} className="min-w-[176px]" />
-  const policyChoices = <ModelPolicyChoices value={modelMode} splitModeAllowed={splitModeAllowed} onChange={onModelModeChange} className="min-w-[176px]" />
-
-  if (variant === 2) {
-    return (
-      <div data-primary-layout="2" className="flex min-w-[640px] items-center gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3">
-        <span className="shrink-0 text-xs font-semibold text-[var(--app-text)]">New sessions</span>
-        {sessionChoices}
-        <span className="h-7 w-px bg-[var(--app-border)]" />
-        <span className="shrink-0 text-xs font-semibold text-[var(--app-text)]">Models</span>
-        {policyChoices}
-        <span className="ml-auto text-[10px] uppercase tracking-wider text-[var(--app-text-subtle)]">Mode · Policy</span>
-      </div>
-    )
-  }
-  if (variant === 3) {
-    return (
-      <div data-primary-layout="3" className="flex min-w-[640px] items-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-2">
-        <div className="flex flex-1 items-center gap-2 border-r border-[var(--app-border)] pr-3">
-          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Start</span>
-          {sessionChoices}
-        </div>
-        <div className="flex flex-1 items-center justify-end gap-2 pl-3">
-          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Model use</span>
-          {policyChoices}
-        </div>
-      </div>
-    )
-  }
-  if (variant === 4) {
-    return (
-      <div data-primary-layout="4" className="flex min-w-[640px] items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2">
-        <span className="shrink-0 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Defaults</span>
-        <span className="shrink-0 text-xs text-[var(--app-text-muted)]">Session</span>
-        {sessionChoices}
-        <span className="mx-1 text-[var(--app-text-subtle)]">/</span>
-        <span className="shrink-0 text-xs text-[var(--app-text-muted)]">Model</span>
-        {policyChoices}
-      </div>
-    )
-  }
-  if (variant === 5) {
-    return (
-      <div data-primary-layout="5" className="flex min-w-[640px] items-center gap-4 border-y border-[var(--app-border)] py-3">
-        <div className="min-w-0 flex-1">
-          <div className="text-xs font-semibold text-[var(--app-text)]">Primary agent defaults</div>
-          <div className="text-[10px] text-[var(--app-text-subtle)]">Session start and model routing</div>
-        </div>
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Session</span>
-        {sessionChoices}
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Policy</span>
-        {policyChoices}
-      </div>
-    )
-  }
   return (
-    <div data-primary-layout="1" className="flex min-w-[640px] items-center gap-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3">
+    <div className="flex min-w-[640px] items-center gap-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3">
       <div className="min-w-0 flex-1">
         <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Default session mode</div>
         <div className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">How new sessions start</div>
       </div>
-      {sessionChoices}
+      <SessionModeChoices value={sessionMode} onChange={onSessionModeChange} className="min-w-[176px]" />
+      <div aria-hidden="true" className="h-8 w-px shrink-0 bg-[var(--app-border)]" />
       <div className="min-w-0 flex-1">
         <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
         <div className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">One model or split by mode</div>
       </div>
-      {policyChoices}
+      <ModelPolicyChoices value={modelMode} splitModeAllowed={splitModeAllowed} onChange={onModelModeChange} className="min-w-[176px]" />
     </div>
   )
 }

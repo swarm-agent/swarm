@@ -66,7 +66,6 @@ export function resolveDesktopV3AgentModelLock(
         serviceTier: profile?.autoServiceTier.trim() ?? '',
       }
   const locked = Boolean(preference.provider && preference.model)
-  const modeLabel = splitModelActive ? `${normalizedMode} ` : ''
   return {
     profile,
     locked,
@@ -77,9 +76,7 @@ export function resolveDesktopV3AgentModelLock(
     thinking: preference.thinking,
     serviceTier: preference.serviceTier,
     mode: normalizedMode,
-    disabledReason: locked && agentName
-      ? `To change models for ${agentName}, update the ${modeLabel}model in Settings → Agents.`
-      : '',
+    disabledReason: '',
   }
 }
 

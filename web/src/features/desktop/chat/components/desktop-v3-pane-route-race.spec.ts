@@ -718,7 +718,7 @@ test('Desktop V3 agent model lock is derived synchronously from loaded agent pro
   assert.equal(locked.model, 'gpt-5.4')
   assert.equal(locked.thinking, 'high')
   assert.equal(locked.serviceTier, 'fast')
-  assert.match(locked.disabledReason, /update the model in Settings → Agents/)
+  assert.equal(locked.disabledReason, '')
 
   const unlocked = resolveDesktopV3AgentModelLock([
     agentProfile({ name: 'default-agent', provider: '', model: '', thinking: '' }),
@@ -750,7 +750,7 @@ test('Desktop V3 split agent model lock resolves by composer mode', () => {
   assert.equal(plan.model, 'gpt-5.4')
   assert.equal(plan.thinking, 'high')
   assert.equal(plan.serviceTier, 'fast')
-  assert.match(plan.disabledReason, /update the plan model in Settings → Agents/)
+  assert.equal(plan.disabledReason, '')
 
   const auto = resolveDesktopV3AgentModelLock(profiles, 'swarm', 'auto')
   assert.equal(auto.locked, true)
@@ -758,5 +758,5 @@ test('Desktop V3 split agent model lock resolves by composer mode', () => {
   assert.equal(auto.model, 'gpt-5.5')
   assert.equal(auto.thinking, 'medium')
   assert.equal(auto.serviceTier, '')
-  assert.match(auto.disabledReason, /update the auto model in Settings → Agents/)
+  assert.equal(auto.disabledReason, '')
 })
