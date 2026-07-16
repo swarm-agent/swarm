@@ -16,7 +16,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{AISidechatAgentID, CloneAgentID, CompactAgentID, ExplorerAgentID, PlanSidechatAgentID}
+	want := []string{SwarmAgentID, AISidechatAgentID, CloneAgentID, CompactAgentID, ExplorerAgentID, PlanSidechatAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
@@ -153,6 +153,20 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("Explorer locked tool %q unavailable: %+v", allowed, explorer.ToolContract)
 		}
 	}
+	swarm, err := registry.ReconcileSnapshot(SwarmAgentID, pebblestore.AgentProfile{
+		Name: SwarmAgentID, Mode: ModeSubagent, Provider: "codex", Model: "mutable", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeRead,
+		ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}, Enabled: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if swarm.Name != SwarmAgentID || swarm.Mode != ModePrimary || swarm.Prompt != SwarmAgentPrompt() || swarm.RuntimeMode != pebblestore.AgentRuntimeModePlanAuto || !swarm.Enabled || !swarm.Protected || swarm.ExitPlanModeEnabled == nil || !*swarm.ExitPlanModeEnabled {
+		t.Fatalf("Swarm immutable contract was not restored: %+v", swarm)
+	}
+	if !reflect.DeepEqual(swarm.ToolContract, SwarmAgentToolContract()) {
+		t.Fatalf("Swarm exact tool contract mismatch: got %+v want %+v", swarm.ToolContract, SwarmAgentToolContract())
+	}
+
 	clone, err := registry.ReconcileSnapshot(CloneAgentID, pebblestore.AgentProfile{
 		Name: CloneAgentID, Provider: "codex", Model: "parent-model", Thinking: "high", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeRead,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"bash": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: false,
@@ -181,31 +195,25 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	}
 }
 
-func TestEnsureSystemAgentRegistryDoesNotPersistOrExposeMutableProfiles(t *testing.T) {
+func TestEnsureSystemAgentRegistryExposesImmutableProfilesWithoutPersistingThem(t *testing.T) {
 	svc, agents := newTestService(t)
 	if err := svc.EnsureSystemAgentRegistry(); err != nil {
 		t.Fatalf("ensure registry: %v", err)
 	}
-	state, err := svc.ListState(100)
-	if err != nil {
-		t.Fatalf("list agent state: %v", err)
-	}
-	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, CompactAgentID, ExplorerAgentID, CloneAgentID, "clone"} {
-		if _, ok, err := agents.GetProfile(id); err != nil || ok {
-			t.Fatalf("system profile %q persisted ok=%v err=%v", id, ok, err)
-		}
-		for _, profile := range state.Profiles {
-			if normalizeName(profile.Name) == id {
-				t.Fatalf("system profile %q was exposed in ordinary agent state", id)
+	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, CompactAgentID, ExplorerAgentID, CloneAgentID, SwarmAgentID} {
+		if id != SwarmAgentID {
+			if _, ok, err := agents.GetProfile(id); err != nil || ok {
+				t.Fatalf("system profile %q persisted ok=%v err=%v", id, ok, err)
 			}
 		}
+
 		if _, err := svc.ResolveSystemAgent(id, pebblestore.AgentProfile{}); err != nil {
 			t.Fatalf("resolve %q: %v", id, err)
 		}
 		if _, _, _, err := svc.Upsert(UpsertInput{Name: id, Mode: ModeSubagent, Prompt: "replace"}); err == nil || !strings.Contains(err.Error(), "reserved") {
 			t.Fatalf("system profile %q mutation error = %v, want reserved rejection", id, err)
 		}
-		if _, _, _, err := svc.Delete(id); err == nil || (!strings.Contains(err.Error(), "reserved") && !strings.Contains(err.Error(), "transient")) {
+		if _, _, _, err := svc.Delete(id); err == nil || !strings.Contains(err.Error(), "reserved") {
 			t.Fatalf("system profile %q delete error = %v, want immutable-system rejection", id, err)
 		}
 	}

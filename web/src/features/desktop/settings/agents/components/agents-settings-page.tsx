@@ -2253,6 +2253,24 @@ export function AgentsSettingsPage() {
                 System Agents
               </h3>
               <div className="flex flex-col gap-3">
+                {(() => {
+                  const swarm = primaryAgents.find((profile) => profile.name.toLowerCase() === "swarm" && profile.protected);
+                  if (!swarm) return null;
+                  const isActive = swarm.name === activePrimary;
+                  return (
+                    <div className="relative flex flex-col items-start overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-left shadow-sm">
+                      <span className="flex w-full items-center justify-between gap-2">
+                        <span className="font-semibold text-[var(--app-text)]">Swarm</span>
+                        <span className="flex items-center gap-2">
+                          {isActive ? <span className="h-2 w-2 rounded-full bg-[var(--app-success)]" title="Active Primary" /> : null}
+                          <span className="rounded-full border border-[var(--app-primary)]/30 bg-[var(--app-primary)]/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[var(--app-primary)]">System primary</span>
+                        </span>
+                      </span>
+                      <span className="mt-1 text-xs font-medium leading-5 text-[var(--app-text-muted)]">{agentProviderModelSummary(swarm)}</span>
+                      <span className="mt-1 text-[11px] text-[var(--app-text-muted)] opacity-80">Immutable built-in primary · create and activate another primary to override it</span>
+                    </div>
+                  );
+                })()}
                 <button
                   type="button"
                   onClick={handleOpenUtilityAI}
@@ -2293,7 +2311,7 @@ export function AgentsSettingsPage() {
                 Primary Agents
               </h3>
               <div className="flex flex-col gap-3">
-                {primaryAgents.map((profile) => {
+                {primaryAgents.filter((profile) => !(profile.name.toLowerCase() === "swarm" && profile.protected)).map((profile) => {
                   const isActive = profile.name === activePrimary;
                   return (
                     <button

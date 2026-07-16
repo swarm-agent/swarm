@@ -20,6 +20,8 @@ const (
 	ExplorerAgentName     = "Explorer"
 	CloneAgentID          = "system-clone"
 	CloneAgentName        = "Clone"
+	SwarmAgentID          = "swarm"
+	SwarmAgentName        = "Swarm"
 
 	SystemSidechatKindPlan     = "plan"
 	SystemSidechatKindAI       = "ai"
@@ -59,8 +61,8 @@ func NewSystemAgentRegistry(definitions []SystemAgentDefinition) (*SystemAgentRe
 		definition.ID = normalizeName(definition.ID)
 		definition.DisplayName = strings.TrimSpace(definition.DisplayName)
 		definition.SidechatKind = strings.ToLower(strings.TrimSpace(definition.SidechatKind))
-		if definition.ID == "" || definition.DisplayName == "" || definition.SidechatKind == "" {
-			return nil, fmt.Errorf("system agent definition %d requires id, display name, and sidechat kind", index)
+		if definition.ID == "" || definition.DisplayName == "" {
+			return nil, fmt.Errorf("system agent definition %d requires id and display name", index)
 		}
 		if definition.Materialize == nil || definition.Reconcile == nil {
 			return nil, fmt.Errorf("system agent %q requires materialize and reconcile functions", definition.ID)
@@ -68,18 +70,25 @@ func NewSystemAgentRegistry(definitions []SystemAgentDefinition) (*SystemAgentRe
 		if _, exists := registry.byID[definition.ID]; exists {
 			return nil, fmt.Errorf("duplicate system agent id %q", definition.ID)
 		}
-		if existing, exists := registry.byKind[definition.SidechatKind]; exists {
-			return nil, fmt.Errorf("duplicate system sidechat kind %q for %q and %q", definition.SidechatKind, existing.ID, definition.ID)
+		if definition.SidechatKind != "" {
+			if existing, exists := registry.byKind[definition.SidechatKind]; exists {
+				return nil, fmt.Errorf("duplicate system sidechat kind %q for %q and %q", definition.SidechatKind, existing.ID, definition.ID)
+			}
 		}
 		profile := definition.Materialize(pebblestore.AgentProfile{})
-		if normalizeName(profile.Name) != definition.ID || profile.Mode != ModeSubagent || !profile.Enabled {
+		if normalizeName(profile.Name) != definition.ID || !profile.Enabled || (profile.Mode != ModePrimary && profile.Mode != ModeSubagent) {
 			return nil, fmt.Errorf("system agent %q materializes an invalid identity", definition.ID)
 		}
-		if profile.ExitPlanModeEnabled == nil || *profile.ExitPlanModeEnabled {
-			return nil, fmt.Errorf("system agent %q must disable exit plan mode", definition.ID)
+		if profile.Mode == ModeSubagent && (profile.ExitPlanModeEnabled == nil || *profile.ExitPlanModeEnabled) {
+			return nil, fmt.Errorf("system subagent %q must disable exit plan mode", definition.ID)
+		}
+		if profile.Mode == ModePrimary && (pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModePlanAuto || profile.ExitPlanModeEnabled == nil || !*profile.ExitPlanModeEnabled) {
+			return nil, fmt.Errorf("system primary %q must use plan_auto runtime", definition.ID)
 		}
 		registry.byID[definition.ID] = definition
-		registry.byKind[definition.SidechatKind] = definition
+		if definition.SidechatKind != "" {
+			registry.byKind[definition.SidechatKind] = definition
+		}
 		registry.ids = append(registry.ids, definition.ID)
 	}
 	sort.Strings(registry.ids)
@@ -154,6 +163,12 @@ func (r *SystemAgentRegistry) ReconcileSnapshot(id string, snapshot pebblestore.
 
 var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 	{
+		ID:          SwarmAgentID,
+		DisplayName: SwarmAgentName,
+		Materialize: SwarmAgentProfileForContext,
+		Reconcile:   reconcileSwarmAgentProfile,
+	},
+	{
 		ID:           PlanSidechatAgentID,
 		DisplayName:  PlanSidechatAgentName,
 		SidechatKind: SystemSidechatKindPlan,
@@ -195,6 +210,46 @@ func BuiltinSystemAgentRegistry() (*SystemAgentRegistry, error) {
 	// explicit startup reconciliation) gets the complete registry shipped by
 	// its current binary, without account migrations or persisted agent rows.
 	return NewSystemAgentRegistry(builtinSystemAgentDefinitions)
+}
+
+func SwarmAgentPrompt() string {
+	return strings.TrimSpace("" +
+		"You are Swarm, the primary orchestration agent.\n" +
+		"Drive the user task to completion with clear progress, explicit decisions, and concrete outputs.\n" +
+		"Match execution depth to request scope: handle narrow asks directly, escalate to deeper investigation/delegation only when scope is broad or unclear.\n" +
+		"Delegate specialized work when needed, then merge results into one coherent answer.\n" +
+		"Keep responses concise, factual, and implementation-focused.\n" +
+		"Respect workspace boundaries and permission outcomes at all times.")
+}
+
+func SwarmAgentToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{
+		Preset: "custom",
+		Tools: map[string]pebblestore.AgentToolConfig{
+			"read":                {Enabled: pebblestore.BoolPtr(true)},
+			"search":              {Enabled: pebblestore.BoolPtr(true)},
+			"list":                {Enabled: pebblestore.BoolPtr(true)},
+			"write":               {Enabled: pebblestore.BoolPtr(true)},
+			"edit":                {Enabled: pebblestore.BoolPtr(true)},
+			"bash":                {Enabled: pebblestore.BoolPtr(true)},
+			"websearch":           {Enabled: pebblestore.BoolPtr(true)},
+			"webfetch":            {Enabled: pebblestore.BoolPtr(true)},
+			"webdownload":         {Enabled: pebblestore.BoolPtr(true)},
+			"task":                {Enabled: pebblestore.BoolPtr(true)},
+			"skill_use":           {Enabled: pebblestore.BoolPtr(true)},
+			"manage_skill":        {Enabled: pebblestore.BoolPtr(true)},
+			"manage_agent":        {Enabled: pebblestore.BoolPtr(true)},
+			"manage_integrations": {Enabled: pebblestore.BoolPtr(true)},
+			"manage_image":        {Enabled: pebblestore.BoolPtr(true)},
+			"manage_theme":        {Enabled: pebblestore.BoolPtr(true)},
+			"manage_sessions":     {Enabled: pebblestore.BoolPtr(true)},
+			"manage_worktree":     {Enabled: pebblestore.BoolPtr(true)},
+			"manage_todos":        {Enabled: pebblestore.BoolPtr(true)},
+			"plan_manage":         {Enabled: pebblestore.BoolPtr(true)},
+			"ask_user":            {Enabled: pebblestore.BoolPtr(true)},
+			"exit_plan_mode":      {Enabled: pebblestore.BoolPtr(true)},
+		},
+	}
 }
 
 func PlanSidechatAgentPrompt() string {
@@ -261,6 +316,10 @@ func CloneAgentToolContract() *pebblestore.AgentToolContract {
 		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)}, "webdownload": {Enabled: pebblestore.BoolPtr(true)},
 		"git_status": {Enabled: pebblestore.BoolPtr(true)}, "git_diff": {Enabled: pebblestore.BoolPtr(true)},
 		"git_add": {Enabled: pebblestore.BoolPtr(true)}, "git_commit": {Enabled: pebblestore.BoolPtr(true)},
+		"bash": {Enabled: pebblestore.BoolPtr(false)}, "task": {Enabled: pebblestore.BoolPtr(false)},
+		"manage_sessions": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)},
+		"manage_todos": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)},
+		"ask_user": {Enabled: pebblestore.BoolPtr(false)}, "exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)},
 	}}
 }
 
@@ -291,14 +350,30 @@ func IsPlanSidechatAgentName(name string) bool {
 	}
 }
 
-func IsReservedSystemAgentName(name string) bool {
+func CanonicalSystemAgentID(name string) (string, bool) {
 	name = normalizeName(name)
 	if registry, err := BuiltinSystemAgentRegistry(); err == nil {
-		if _, ok := registry.DefinitionByID(name); ok {
-			return true
+		if definition, ok := registry.DefinitionByID(name); ok {
+			return definition.ID, true
 		}
 	}
-	return IsPlanSidechatAgentName(name) || IsExplorerAgentName(name) || IsCloneAgentName(name) || name == AISidechatAgentID || name == "ai sidechat"
+	switch {
+	case IsPlanSidechatAgentName(name):
+		return PlanSidechatAgentID, true
+	case IsExplorerAgentName(name):
+		return ExplorerAgentID, true
+	case IsCloneAgentName(name):
+		return CloneAgentID, true
+	case name == "ai sidechat":
+		return AISidechatAgentID, true
+	default:
+		return "", false
+	}
+}
+
+func IsReservedSystemAgentName(name string) bool {
+	_, ok := CanonicalSystemAgentID(name)
+	return ok
 }
 
 func IsReservedSidechatAgentName(name string) bool {
@@ -313,6 +388,19 @@ func PlanSidechatAgentToolContract() *pebblestore.AgentToolContract {
 		"task": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)}, "ask_user": {Enabled: pebblestore.BoolPtr(false)},
 		"exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)},
 	}}
+}
+
+func SwarmAgentProfileForContext(context pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: SwarmAgentID, Mode: ModePrimary, Description: "Compiled primary orchestrator",
+		Provider: strings.TrimSpace(context.Provider), Model: strings.TrimSpace(context.Model), Thinking: strings.TrimSpace(context.Thinking),
+		ModelMode: context.ModelMode, PlanProvider: context.PlanProvider, PlanModel: context.PlanModel, PlanThinking: context.PlanThinking, PlanServiceTier: context.PlanServiceTier,
+		AutoProvider: context.AutoProvider, AutoModel: context.AutoModel, AutoThinking: context.AutoThinking, AutoServiceTier: context.AutoServiceTier,
+		Prompt: SwarmAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, DefaultSessionMode: pebblestore.AgentDefaultSessionModePlan,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: SwarmAgentToolContract(), Enabled: true, Protected: true, UpdatedAt: context.UpdatedAt,
+	})
+	profile.Protected = true
+	return profile
 }
 
 func PlanSidechatAgentProfile() pebblestore.AgentProfile {
@@ -380,6 +468,10 @@ func AISidechatAgentProfileForParent(parent pebblestore.AgentProfile) pebblestor
 	profile = pebblestore.NormalizeAgentProfile(profile)
 	profile.AutoServiceTier = firstNonEmptyProfileValue(parent.AutoServiceTier)
 	return profile
+}
+
+func reconcileSwarmAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	return SwarmAgentProfileForContext(snapshot)
 }
 
 func reconcilePlanSidechatAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {

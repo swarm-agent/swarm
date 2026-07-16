@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -136,7 +137,7 @@ func TestServicePublishesCustomToolMutationEvents(t *testing.T) {
 	}
 }
 
-func TestEnsureDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
+func TestEnsureDefaultsExposesCompiledSwarmAndPersistsOnlyModelContext(t *testing.T) {
 	svc, agents := newTestService(t)
 	if err := svc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
@@ -145,8 +146,15 @@ func TestEnsureDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("GetProfile(swarm) ok=%v err=%v", ok, err)
 	}
-	if swarm.ToolContract == nil || swarm.ToolContract.Preset != "custom" {
-		t.Fatalf("swarm tool contract = %+v", swarm.ToolContract)
+	if swarm.ToolContract != nil || swarm.Prompt != "" || swarm.Protected {
+		t.Fatalf("persisted swarm row retained mutable system fields: %+v", swarm)
+	}
+	resolved, ok, err := svc.GetProfile("swarm")
+	if err != nil || !ok {
+		t.Fatalf("service GetProfile(swarm) ok=%v err=%v", ok, err)
+	}
+	if resolved.Mode != ModePrimary || resolved.Prompt != SwarmAgentPrompt() || !resolved.Protected || !reflect.DeepEqual(resolved.ToolContract, SwarmAgentToolContract()) {
+		t.Fatalf("compiled swarm = %+v", resolved)
 	}
 	for _, name := range []string{"clone", CloneAgentID, "memory", "explorer"} {
 		if _, ok, err := agents.GetProfile(name); err != nil || ok {
@@ -342,40 +350,32 @@ func TestActivatePrimaryIsIdempotentForCurrentPrimary(t *testing.T) {
 	}
 }
 
-func TestDeleteSwarmRequiresAnotherPrimary(t *testing.T) {
+func TestSwarmIsImmutableAndUsersCanActivateReplacementPrimary(t *testing.T) {
 	svc, _ := newTestService(t)
 	if err := svc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
 	}
-
-	if _, _, _, err := svc.Delete("swarm"); err == nil || !strings.Contains(err.Error(), "last primary") {
-		t.Fatalf("Delete(swarm) with no other primary error = %v, want last primary", err)
+	if _, _, _, err := svc.Delete("swarm"); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("Delete(swarm) error = %v, want immutable-system rejection", err)
+	}
+	if _, _, _, err := svc.Upsert(UpsertInput{Name: "swarm", Mode: ModePrimary, Prompt: "mutable"}); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("Upsert(swarm) error = %v, want immutable-system rejection", err)
 	}
 
 	enabled := true
 	if _, _, _, err := svc.Upsert(UpsertInput{
-		Name:         "replacement",
-		Mode:         ModePrimary,
-		Description:  "replacement primary",
-		Prompt:       "Handle primary tasks.",
-		ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"},
-		Enabled:      &enabled,
+		Name: "replacement", Mode: ModePrimary, Description: "replacement primary", Prompt: "Handle primary tasks.",
+		RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+		ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}, Enabled: &enabled,
 	}); err != nil {
 		t.Fatalf("create replacement primary: %v", err)
 	}
-
-	result, _, _, err := svc.Delete("swarm")
-	if err != nil {
-		t.Fatalf("Delete(swarm) with replacement primary error = %v", err)
+	active, _, _, err := svc.ActivatePrimary("replacement")
+	if err != nil || active != "replacement" {
+		t.Fatalf("ActivatePrimary(replacement) active=%q err=%v", active, err)
 	}
-	if result.Deleted != "swarm" {
-		t.Fatalf("deleted = %q, want swarm", result.Deleted)
-	}
-	if result.ActivePrimary != "replacement" {
-		t.Fatalf("active primary after deleting swarm = %q, want replacement", result.ActivePrimary)
-	}
-	if _, ok, err := svc.GetProfile("swarm"); err != nil || ok {
-		t.Fatalf("GetProfile(swarm) after delete ok=%v err=%v, want missing", ok, err)
+	if _, ok, err := svc.GetProfile("swarm"); err != nil || !ok {
+		t.Fatalf("compiled swarm disappeared after override ok=%v err=%v", ok, err)
 	}
 }
 

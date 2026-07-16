@@ -145,6 +145,11 @@ func (s *Server) handleAgentsV2(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	state.Profiles, err = s.publicAgentProfiles(state.Profiles)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("view")), "summary") {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":    true,
@@ -165,6 +170,35 @@ func (s *Server) handleAgentsV2(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) publicAgentProfiles(profiles []pebblestore.AgentProfile) ([]pebblestore.AgentProfile, error) {
+	out := make([]pebblestore.AgentProfile, 0, len(profiles)+8)
+	contexts := make(map[string]pebblestore.AgentProfile, len(profiles))
+	for _, profile := range profiles {
+		name := strings.ToLower(strings.TrimSpace(profile.Name))
+		contexts[name] = profile
+		if !agentruntime.IsReservedSystemAgentName(name) {
+			out = append(out, profile)
+		}
+	}
+	registry, err := s.agents.SystemAgentRegistry()
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range registry.IDs() {
+		context := pebblestore.AgentProfile{}
+		if id == agentruntime.SwarmAgentID {
+			context = contexts[agentruntime.SwarmAgentID]
+		}
+		profile, err := registry.Materialize(id, context)
+		if err != nil {
+			return nil, err
+		}
+		profile.Protected = true
+		out = append(out, profile)
+	}
+	return out, nil
+}
+
 func compactAgentStateForDesktop(state agentruntime.State) map[string]any {
 	profiles := make([]compactAgentProfileForDesktop, 0, len(state.Profiles))
 	for _, profile := range state.Profiles {
@@ -172,6 +206,7 @@ func compactAgentStateForDesktop(state agentruntime.State) map[string]any {
 		profiles = append(profiles, compactAgentProfileForDesktop{
 			Name:               profile.Name,
 			Mode:               profile.Mode,
+			Protected:          profile.Protected,
 			Provider:           profile.Provider,
 			Model:              profile.Model,
 			Thinking:           profile.Thinking,
@@ -200,6 +235,7 @@ func compactAgentStateForDesktop(state agentruntime.State) map[string]any {
 type compactAgentProfileForDesktop struct {
 	Name               string `json:"name"`
 	Mode               string `json:"mode"`
+	Protected          bool   `json:"protected,omitempty"`
 	Provider           string `json:"provider"`
 	Model              string `json:"model"`
 	Thinking           string `json:"thinking"`
@@ -475,6 +511,9 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			writeError(w, http.StatusNotFound, errors.New("agent not found"))
 			return
+		}
+		if _, system := agentruntime.CanonicalSystemAgentID(profile.Name); system {
+			profile.Protected = true
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":      true,

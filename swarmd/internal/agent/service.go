@@ -285,6 +285,9 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input 
 		}
 		seen[name] = struct{}{}
 	}
+	if err := s.cleanupCompiledSwarmContextForAccountLocked(accountScopeID); err != nil {
+		return DefaultModelHydrationResult{}, err
+	}
 	if _, ok := seen["swarm"]; !ok {
 		return DefaultModelHydrationResult{}, errors.New("hydrated default agents missing swarm profile")
 	}
@@ -363,6 +366,9 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 		if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
 			return err
 		}
+		if err := s.cleanupCompiledSwarmContextForAccountLocked(accountScopeID); err != nil {
+			return err
+		}
 		return s.setVersionForAccountLocked(accountScopeID, 1)
 	}
 
@@ -377,6 +383,9 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 		return err
 	}
 	if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
+		return err
+	}
+	if err := s.cleanupCompiledSwarmContextForAccountLocked(accountScopeID); err != nil {
 		return err
 	}
 	if current, ok, err := s.getProfileForAccountLocked(accountScopeID, "commit"); err != nil {
@@ -449,33 +458,7 @@ func defaultMemoryPrompt() string {
 }
 
 func defaultSwarmToolContract() *pebblestore.AgentToolContract {
-	return &pebblestore.AgentToolContract{
-		Preset: "custom",
-		Tools: map[string]pebblestore.AgentToolConfig{
-			"read":                {Enabled: pebblestore.BoolPtr(true)},
-			"search":              {Enabled: pebblestore.BoolPtr(true)},
-			"list":                {Enabled: pebblestore.BoolPtr(true)},
-			"write":               {Enabled: pebblestore.BoolPtr(true)},
-			"edit":                {Enabled: pebblestore.BoolPtr(true)},
-			"bash":                {Enabled: pebblestore.BoolPtr(true)},
-			"websearch":           {Enabled: pebblestore.BoolPtr(true)},
-			"webfetch":            {Enabled: pebblestore.BoolPtr(true)},
-			"webdownload":         {Enabled: pebblestore.BoolPtr(true)},
-			"task":                {Enabled: pebblestore.BoolPtr(true)},
-			"skill_use":           {Enabled: pebblestore.BoolPtr(true)},
-			"manage_skill":        {Enabled: pebblestore.BoolPtr(true)},
-			"manage_agent":        {Enabled: pebblestore.BoolPtr(true)},
-			"manage_integrations": {Enabled: pebblestore.BoolPtr(true)},
-			"manage_image":        {Enabled: pebblestore.BoolPtr(true)},
-			"manage_theme":        {Enabled: pebblestore.BoolPtr(true)},
-			"manage_sessions":     {Enabled: pebblestore.BoolPtr(true)},
-			"manage_worktree":     {Enabled: pebblestore.BoolPtr(true)},
-			"manage_todos":        {Enabled: pebblestore.BoolPtr(true)},
-			"plan_manage":         {Enabled: pebblestore.BoolPtr(true)},
-			"ask_user":            {Enabled: pebblestore.BoolPtr(true)},
-			"exit_plan_mode":      {Enabled: pebblestore.BoolPtr(true)},
-		},
-	}
+	return pebblestore.CloneAgentToolContract(SwarmAgentToolContract())
 }
 
 func defaultReadWriteSubagentToolContract() *pebblestore.AgentToolContract {
@@ -647,6 +630,20 @@ func (s *Service) cleanupBuiltInCloneForAccountLocked(accountScopeID string) err
 		}
 	}
 	return nil
+}
+
+func (s *Service) cleanupCompiledSwarmContextForAccountLocked(accountScopeID string) error {
+	stored, ok, err := s.getProfileForAccountLocked(accountScopeID, SwarmAgentID)
+	if err != nil || !ok {
+		return err
+	}
+	context := pebblestore.AgentProfile{
+		Name: SwarmAgentID, Mode: ModePrimary, Provider: stored.Provider, Model: stored.Model, Thinking: stored.Thinking,
+		ModelMode: stored.ModelMode, PlanProvider: stored.PlanProvider, PlanModel: stored.PlanModel, PlanThinking: stored.PlanThinking, PlanServiceTier: stored.PlanServiceTier,
+		AutoProvider: stored.AutoProvider, AutoModel: stored.AutoModel, AutoThinking: stored.AutoThinking, AutoServiceTier: stored.AutoServiceTier,
+		UpdatedAt: stored.UpdatedAt,
+	}
+	return s.putProfileForAccountLocked(accountScopeID, context)
 }
 
 func defaultExplorerPrompt() string {
@@ -1169,6 +1166,9 @@ func (s *Service) assignCustomToolForAccount(accountScopeID, agentName, toolName
 	if agentName == "" {
 		return pebblestore.AgentProfile{}, 0, nil, errors.New("agent name is required")
 	}
+	if IsReservedSystemAgentName(agentName) {
+		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q is a compiled system agent and cannot be modified", agentName)
+	}
 	toolName = pebblestore.NormalizeAgentCustomToolName(toolName)
 	if toolName == "" {
 		return pebblestore.AgentProfile{}, 0, nil, errors.New("custom tool name is required")
@@ -1250,6 +1250,9 @@ func (s *Service) unassignCustomToolForAccount(accountScopeID, agentName, toolNa
 	agentName = normalizeName(agentName)
 	if agentName == "" {
 		return pebblestore.AgentProfile{}, 0, nil, errors.New("agent name is required")
+	}
+	if IsReservedSystemAgentName(agentName) {
+		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q is a compiled system agent and cannot be modified", agentName)
 	}
 	toolName = pebblestore.NormalizeAgentCustomToolName(toolName)
 	if toolName == "" {
@@ -1340,8 +1343,22 @@ func (s *Service) getProfileForAccount(accountScopeID, name string) (pebblestore
 	if name == "" {
 		return pebblestore.AgentProfile{}, false, errors.New("agent name is required")
 	}
-	if IsIntegrationBuilderAgentName(name) || IsReservedSidechatAgentName(name) {
+	if IsIntegrationBuilderAgentName(name) {
 		return pebblestore.AgentProfile{}, false, nil
+	}
+	if id, ok := CanonicalSystemAgentID(name); ok {
+		context := pebblestore.AgentProfile{}
+		if id == SwarmAgentID {
+			stored, found, err := s.getProfileForAccountLocked(accountScopeID, SwarmAgentID)
+			if err != nil {
+				return pebblestore.AgentProfile{}, false, err
+			}
+			if found {
+				context = stored
+			}
+		}
+		profile, err := s.ResolveSystemAgent(id, context)
+		return profile, err == nil, err
 	}
 	return s.getProfileForAccountLocked(accountScopeID, name)
 }
@@ -1513,10 +1530,10 @@ func (s *Service) activatePrimaryForAccount(accountScopeID, name string) (string
 	if name == "" {
 		return "", 0, nil, errors.New("agent name is required")
 	}
-	if IsReservedSystemAgentName(name) {
+	if IsReservedSystemAgentName(name) && name != SwarmAgentID {
 		return "", 0, nil, fmt.Errorf("agent %q is reserved and cannot be activated", name)
 	}
-	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
+	profile, ok, err := s.getProfileForAccount(accountScopeID, name)
 	if err != nil {
 		return "", 0, nil, err
 	}
@@ -1714,6 +1731,9 @@ func (s *Service) restoreDefaultsForAccount(accountScopeID string) (State, int64
 	if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
 		return State{}, 0, nil, err
 	}
+	if err := s.cleanupCompiledSwarmContextForAccountLocked(accountScopeID); err != nil {
+		return State{}, 0, nil, err
+	}
 
 	version, err := s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
@@ -1834,6 +1854,9 @@ func (s *Service) resetDefaultsForAccount(accountScopeID string) (State, int64, 
 		return State{}, 0, nil, err
 	}
 	if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
+		return State{}, 0, nil, err
+	}
+	if err := s.cleanupCompiledSwarmContextForAccountLocked(accountScopeID); err != nil {
 		return State{}, 0, nil, err
 	}
 
@@ -2168,10 +2191,10 @@ func (s *Service) resolveProfileForAccount(accountScopeID, name string) (pebbles
 	if name == "" {
 		name = "swarm"
 	}
-	if IsIntegrationBuilderAgentName(name) || IsReservedSidechatAgentName(name) {
+	if IsIntegrationBuilderAgentName(name) || (IsReservedSystemAgentName(name) && name != SwarmAgentID) {
 		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q not found", name)
 	}
-	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
+	profile, ok, err := s.getProfileForAccount(accountScopeID, name)
 	if err != nil {
 		return pebblestore.AgentProfile{}, err
 	}
@@ -2282,29 +2305,7 @@ func (s *Service) resolveBackgroundForAccount(accountScopeID, name string) (pebb
 }
 
 func defaultProfiles(now int64) []pebblestore.AgentProfile {
-	return []pebblestore.AgentProfile{
-		{
-			Name:                "swarm",
-			Mode:                ModePrimary,
-			RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
-			DefaultSessionMode:  pebblestore.AgentDefaultSessionModePlan,
-			Description:         "Primary orchestrator",
-			Provider:            "",
-			Model:               "",
-			Thinking:            "",
-			ExitPlanModeEnabled: pebblestore.BoolPtr(true),
-			Prompt: strings.TrimSpace("" +
-				"You are Swarm, the primary orchestration agent.\n" +
-				"Drive the user task to completion with clear progress, explicit decisions, and concrete outputs.\n" +
-				"Match execution depth to request scope: handle narrow asks directly, escalate to deeper investigation/delegation only when scope is broad or unclear.\n" +
-				"Delegate specialized work when needed, then merge results into one coherent answer.\n" +
-				"Keep responses concise, factual, and implementation-focused.\n" +
-				"Respect workspace boundaries and permission outcomes at all times."),
-			ToolContract: defaultSwarmToolContract(),
-			Enabled:      true,
-			UpdatedAt:    now,
-		},
-	}
+	return []pebblestore.AgentProfile{SwarmAgentProfileForContext(pebblestore.AgentProfile{UpdatedAt: now})}
 }
 
 func defaultSubagentAssignments() map[string]string {
@@ -2598,7 +2599,7 @@ func (s *Service) activePrimaryValidForAccountLocked(accountScopeID, name string
 	if name == "" {
 		return false, nil
 	}
-	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
+	profile, ok, err := s.getProfileForAccount(accountScopeID, name)
 	if err != nil {
 		return false, err
 	}
@@ -2632,6 +2633,9 @@ func (s *Service) nextPrimaryForAccountLocked(accountScopeID, exclude string) (s
 			continue
 		}
 		return strings.TrimSpace(profile.Name), nil
+	}
+	if exclude != SwarmAgentID {
+		return SwarmAgentID, nil
 	}
 	return "", nil
 }

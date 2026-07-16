@@ -91,7 +91,7 @@ func TestBuiltInManageSessionsDefaultIsSwarmOnly(t *testing.T) {
 		t.Fatalf("swarm manage_sessions = %+v, want enabled", cfg)
 	}
 	for name, contract := range map[string]*pebblestore.AgentToolContract{
-		"explorer":   defaultExplorerToolContract(),
+		"explorer":   ExplorerAgentToolContract(),
 		"memory":     defaultMemoryToolContract(),
 		"read_write": defaultReadWriteSubagentToolContract(),
 	} {
