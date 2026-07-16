@@ -768,7 +768,7 @@ func allowsEmptyValue(key string) bool {
 
 func isLegacyIgnoredKey(key string) bool {
 	switch key {
-	case "webauth_enabled", "onboarding_state", "swarm_id", "swarm" + "_mode", "local_transport_port", "tailscale_transport_port":
+	case "webauth_enabled", "onboarding_state", "swarm_id", "swarm_role", "swarm" + "_mode", "local_transport_port", "tailscale_transport_port":
 		return true
 	default:
 		return false

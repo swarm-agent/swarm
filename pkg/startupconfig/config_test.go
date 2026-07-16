@@ -34,6 +34,16 @@ func TestProviderAPIDiagnosticsConfigParsesAndFormats(t *testing.T) {
 	}
 }
 
+func TestLegacySwarmRoleIsIgnoredBeforeEmptyValueValidation(t *testing.T) {
+	cfg, _, err := parseEntries("swarm_role =\n", Default(t.TempDir()+"/swarm.conf"))
+	if err != nil {
+		t.Fatalf("parseEntries: %v", err)
+	}
+	if cfg.Child {
+		t.Fatalf("Child = true, want false; legacy swarm_role must not control topology")
+	}
+}
+
 func containsLine(text, want string) bool {
 	for _, line := range strings.Split(text, "\n") {
 		if line == want {
