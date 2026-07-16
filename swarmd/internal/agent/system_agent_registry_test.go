@@ -16,11 +16,11 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{AISidechatAgentID, CompactAgentID, ExplorerAgentID, PlanSidechatAgentID}
+	want := []string{AISidechatAgentID, CloneAgentID, CompactAgentID, ExplorerAgentID, PlanSidechatAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
-	for kind, id := range map[string]string{SystemSidechatKindPlan: PlanSidechatAgentID, SystemSidechatKindAI: AISidechatAgentID, SystemSidechatKindCompact: CompactAgentID, SystemSidechatKindExplorer: ExplorerAgentID} {
+	for kind, id := range map[string]string{SystemSidechatKindPlan: PlanSidechatAgentID, SystemSidechatKindAI: AISidechatAgentID, SystemSidechatKindCompact: CompactAgentID, SystemSidechatKindExplorer: ExplorerAgentID, SystemSidechatKindClone: CloneAgentID} {
 		definition, ok := registry.DefinitionBySidechatKind(kind)
 		if !ok || definition.ID != id {
 			t.Fatalf("kind %q resolved to %+v, ok=%v", kind, definition, ok)
@@ -153,6 +153,29 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("Explorer locked tool %q unavailable: %+v", allowed, explorer.ToolContract)
 		}
 	}
+	clone, err := registry.ReconcileSnapshot(CloneAgentID, pebblestore.AgentProfile{
+		Name: CloneAgentID, Provider: "codex", Model: "parent-model", Thinking: "high", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeRead,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"bash": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clone.Name != CloneAgentID || clone.Prompt != CloneAgentPrompt() || clone.Provider != "codex" || clone.Model != "parent-model" || clone.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || !clone.Enabled || clone.ExitPlanModeEnabled == nil || *clone.ExitPlanModeEnabled {
+		t.Fatalf("Clone immutable contract was not restored: %+v", clone)
+	}
+	for _, allowed := range []string{"read", "search", "list", "write", "edit", "websearch", "webfetch", "webdownload", "git_status", "git_diff", "git_add", "git_commit"} {
+		if cfg := clone.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Clone locked tool %q unavailable: %+v", allowed, clone.ToolContract)
+		}
+	}
+	for _, denied := range []string{"bash", "task", "manage_sessions", "manage_agent", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
+		if cfg := clone.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
+			t.Fatalf("Clone mandatory denial %q was not restored: %+v", denied, clone.ToolContract)
+		}
+	}
+	if _, err := registry.ReconcileSnapshot(CloneAgentID, pebblestore.AgentProfile{Name: "clone"}); err == nil || !strings.Contains(err.Error(), "metadata mismatch") {
+		t.Fatalf("Clone alias metadata mismatch error = %v", err)
+	}
 	if _, err := registry.ReconcileSnapshot(PlanSidechatAgentID, pebblestore.AgentProfile{Name: AISidechatAgentID}); err == nil || !strings.Contains(err.Error(), "metadata mismatch") {
 		t.Fatalf("metadata mismatch error = %v", err)
 	}
@@ -167,7 +190,7 @@ func TestEnsureSystemAgentRegistryDoesNotPersistOrExposeMutableProfiles(t *testi
 	if err != nil {
 		t.Fatalf("list agent state: %v", err)
 	}
-	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, CompactAgentID, ExplorerAgentID} {
+	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, CompactAgentID, ExplorerAgentID, CloneAgentID, "clone"} {
 		if _, ok, err := agents.GetProfile(id); err != nil || ok {
 			t.Fatalf("system profile %q persisted ok=%v err=%v", id, ok, err)
 		}

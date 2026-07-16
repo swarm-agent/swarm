@@ -55,6 +55,21 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 	if err != nil {
 		return nil, fmt.Errorf("create hydrated agent defaults: %w", err)
 	}
+	if s.uiSettings != nil {
+		settings, settingsErr := s.uiSettings.GetForAccount(accountScopeID)
+		if settingsErr != nil {
+			return nil, fmt.Errorf("read onboarding system-agent model settings: %w", settingsErr)
+		}
+		settings.Agents.Compact.Provider = providerID
+		settings.Agents.Compact.Model = providerDefaults.UtilityModel
+		settings.Agents.Compact.Thinking = providerDefaults.UtilityThinking
+		settings.Agents.Explorer.Provider = providerID
+		settings.Agents.Explorer.Model = providerDefaults.UtilityModel
+		settings.Agents.Explorer.Thinking = providerDefaults.UtilityThinking
+		if _, settingsErr = s.uiSettings.SetForAccount(accountScopeID, settings); settingsErr != nil {
+			return nil, fmt.Errorf("set onboarding system-agent model settings: %w", settingsErr)
+		}
+	}
 	if event != nil && s.hub != nil {
 		s.hub.Publish(*event)
 	}

@@ -267,9 +267,6 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input 
 			profile.AutoModel = input.AutoModel
 			profile.AutoThinking = input.AutoThinking
 			result.Agents = append(result.Agents, name)
-		case "clone":
-			result.Agents = append(result.Agents, name)
-			result.Subagents = append(result.Subagents, name)
 		default:
 			if _, ok := utilityNames[name]; !ok {
 				continue
@@ -300,7 +297,7 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input 
 		return DefaultModelHydrationResult{}, err
 	}
 	for purpose, profileName := range defaultSubagentAssignments() {
-		if _, ok := utilityNames[normalizeName(profileName)]; !ok && !strings.EqualFold(profileName, "clone") {
+		if _, ok := utilityNames[normalizeName(profileName)]; !ok {
 			continue
 		}
 		if err := s.setActiveSubagentForAccountLocked(accountScopeID, purpose, profileName); err != nil {
@@ -363,6 +360,9 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 				return err
 			}
 		}
+		if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
+			return err
+		}
 		return s.setVersionForAccountLocked(accountScopeID, 1)
 	}
 
@@ -376,6 +376,9 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 	if err := s.cleanupBuiltInExplorerForAccountLocked(accountScopeID); err != nil {
 		return err
 	}
+	if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
+		return err
+	}
 	if current, ok, err := s.getProfileForAccountLocked(accountScopeID, "commit"); err != nil {
 		return err
 	} else if ok && shouldRemoveBuiltInCommit(current) {
@@ -386,18 +389,6 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 	if err := s.cleanupBuiltInParallelForAccountLocked(accountScopeID); err != nil {
 		return err
 	}
-	if current, ok, err := s.getProfileForAccountLocked(accountScopeID, "clone"); err != nil {
-		return err
-	} else if !ok || current.Mode != ModeSubagent || !current.Enabled {
-		profile, _ := defaultProfileByName("clone", now)
-		if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
-			return err
-		}
-	}
-	if err := s.setActiveSubagentForAccountLocked(accountScopeID, "clone", "clone"); err != nil {
-		return err
-	}
-
 	if !hasVersion {
 		version = 1
 		if err := s.setVersionForAccountLocked(accountScopeID, version); err != nil {
@@ -442,7 +433,7 @@ func normalizeDefaultUtilityAgentNames(values []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		name := normalizeName(value)
-		if name != "" && name != "memory" && name != "compact" && name != CompactAgentID && !IsExplorerAgentName(name) {
+		if name != "" && name != "memory" && name != "compact" && name != CompactAgentID && !IsExplorerAgentName(name) && !IsCloneAgentName(name) {
 			out[name] = struct{}{}
 		}
 	}
@@ -491,19 +482,6 @@ func defaultReadWriteSubagentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "read_write"}
 }
 
-func defaultCloneToolContract() *pebblestore.AgentToolContract {
-	return &pebblestore.AgentToolContract{
-		Preset: "read_write",
-		Tools: map[string]pebblestore.AgentToolConfig{
-			"git_status": {Enabled: pebblestore.BoolPtr(true)},
-			"git_diff":   {Enabled: pebblestore.BoolPtr(true)},
-			"git_add":    {Enabled: pebblestore.BoolPtr(true)},
-			"git_commit": {Enabled: pebblestore.BoolPtr(true)},
-			"bash":       {Enabled: pebblestore.BoolPtr(false)},
-		},
-	}
-}
-
 func defaultMemoryToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{
 		Preset: "background_commit",
@@ -532,8 +510,6 @@ func builtInDefaultToolContract(name string) *pebblestore.AgentToolContract {
 		return defaultSwarmToolContract()
 	case "memory":
 		return defaultMemoryToolContract()
-	case "clone":
-		return defaultCloneToolContract()
 	default:
 		return nil
 	}
@@ -556,11 +532,6 @@ func (s *Service) backfillBuiltInToolContractsForAccountLocked(accountScopeID st
 		if current.ToolContract == nil {
 			current.ToolContract = contract
 			changed = true
-		} else if normalizeName(current.Name) == "clone" && isLegacyDefaultCloneToolContract(current.ToolContract) {
-			// Existing built-ins used the bare read_write preset. Upgrade only that
-			// exact managed default so explicit user tool overrides remain authoritative.
-			current.ToolContract = contract
-			changed = true
 		} else if normalizeName(current.Name) == "swarm" {
 			if current.ToolContract.Tools == nil {
 				current.ToolContract.Tools = make(map[string]pebblestore.AgentToolConfig)
@@ -579,10 +550,6 @@ func (s *Service) backfillBuiltInToolContractsForAccountLocked(accountScopeID st
 		}
 	}
 	return nil
-}
-
-func isLegacyDefaultCloneToolContract(contract *pebblestore.AgentToolContract) bool {
-	return contract != nil && strings.TrimSpace(contract.Preset) == "read_write" && len(contract.Tools) == 0
 }
 
 func requireAgentToolContract(profile pebblestore.AgentProfile) error {
@@ -656,6 +623,30 @@ func (s *Service) cleanupBuiltInExplorerForAccountLocked(accountScopeID string) 
 		}
 	}
 	return s.deleteProfileForAccountLocked(accountScopeID, "explorer")
+}
+
+func (s *Service) cleanupBuiltInCloneForAccountLocked(accountScopeID string) error {
+	for _, name := range []string{"clone", CloneAgentID} {
+		if _, ok, err := s.getProfileForAccountLocked(accountScopeID, name); err != nil {
+			return err
+		} else if ok {
+			if err := s.deleteProfileForAccountLocked(accountScopeID, name); err != nil {
+				return err
+			}
+		}
+	}
+	activeSubagents, err := s.getActiveSubagentsForAccountLocked(accountScopeID, 200)
+	if err != nil {
+		return err
+	}
+	for purpose, assigned := range activeSubagents {
+		if IsCloneAgentName(purpose) || IsCloneAgentName(assigned) {
+			if err := s.deleteActiveSubagentForAccountLocked(accountScopeID, purpose); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func defaultExplorerPrompt() string {
@@ -820,6 +811,9 @@ func (s *Service) replaceManagedStateForAccount(accountScopeID string, state Sta
 			if name == "" {
 				continue
 			}
+			if IsReservedSystemAgentName(name) {
+				return State{}, 0, nil, fmt.Errorf("agent %q is reserved and cannot be persisted", name)
+			}
 			profile.UpdatedAt = time.Now().UnixMilli()
 			if _, ok := desiredProfiles[name]; ok {
 				continue
@@ -858,10 +852,13 @@ func (s *Service) replaceManagedStateForAccount(accountScopeID string, state Sta
 			}
 		}
 		assignmentKeys := make([]string, 0, len(state.ActiveSubagent))
-		for purpose := range state.ActiveSubagent {
+		for purpose, assigned := range state.ActiveSubagent {
 			purpose = normalizeName(purpose)
 			if purpose == "" {
 				continue
+			}
+			if IsCloneAgentName(purpose) || IsCloneAgentName(assigned) {
+				return State{}, 0, nil, errors.New("Clone is a compiled system agent and cannot be remapped")
 			}
 			assignmentKeys = append(assignmentKeys, purpose)
 		}
@@ -1372,8 +1369,8 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 	if IsIntegrationBuilderAgentName(profile.Name) {
 		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q is reserved for the transient integration builder", profile.Name)
 	}
-	if IsReservedSidechatAgentName(profile.Name) {
-		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q is reserved for system sidechats", profile.Name)
+	if IsReservedSystemAgentName(profile.Name) {
+		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q is reserved for compiled system agents", profile.Name)
 	}
 	existing, ok, err := s.getProfileForAccountLocked(accountScopeID, profile.Name)
 	if err != nil {
@@ -1516,6 +1513,9 @@ func (s *Service) activatePrimaryForAccount(accountScopeID, name string) (string
 	if name == "" {
 		return "", 0, nil, errors.New("agent name is required")
 	}
+	if IsReservedSystemAgentName(name) {
+		return "", 0, nil, fmt.Errorf("agent %q is reserved and cannot be activated", name)
+	}
 	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
 	if err != nil {
 		return "", 0, nil, err
@@ -1585,8 +1585,8 @@ func (s *Service) deleteForAccount(accountScopeID, name string) (DeleteResult, i
 	if name == "" {
 		return DeleteResult{}, 0, nil, errors.New("agent name is required")
 	}
-	if IsIntegrationBuilderAgentName(name) || IsReservedSidechatAgentName(name) {
-		return DeleteResult{}, 0, nil, fmt.Errorf("agent %q is transient and cannot be deleted", name)
+	if IsIntegrationBuilderAgentName(name) || IsReservedSystemAgentName(name) {
+		return DeleteResult{}, 0, nil, fmt.Errorf("agent %q is reserved and cannot be deleted", name)
 	}
 	target, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
 	if err != nil {
@@ -1711,6 +1711,9 @@ func (s *Service) restoreDefaultsForAccount(accountScopeID string) (State, int64
 	if err := s.cleanupBuiltInExplorerForAccountLocked(accountScopeID); err != nil {
 		return State{}, 0, nil, err
 	}
+	if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
+		return State{}, 0, nil, err
+	}
 
 	version, err := s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
@@ -1830,6 +1833,9 @@ func (s *Service) resetDefaultsForAccount(accountScopeID string) (State, int64, 
 	if err := s.cleanupBuiltInExplorerForAccountLocked(accountScopeID); err != nil {
 		return State{}, 0, nil, err
 	}
+	if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
+		return State{}, 0, nil, err
+	}
 
 	version, err := s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
@@ -1878,6 +1884,9 @@ func (s *Service) previewUpsertForAccount(accountScopeID string, input UpsertInp
 	name := normalizeName(profile.Name)
 	if name == "" {
 		return PreviewUpsertResult{}, errors.New("agent name is required")
+	}
+	if IsReservedSystemAgentName(name) {
+		return PreviewUpsertResult{}, fmt.Errorf("agent %q is reserved for compiled system agents", name)
 	}
 	before, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
 	if err != nil {
@@ -1972,6 +1981,9 @@ func (s *Service) setActiveSubagentForAccount(accountScopeID, purpose, name stri
 	if name == "" {
 		return nil, 0, nil, errors.New("agent name is required")
 	}
+	if IsCloneAgentName(purpose) || IsCloneAgentName(name) {
+		return nil, 0, nil, errors.New("Clone is a compiled system agent and cannot be remapped")
+	}
 	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
 	if err != nil {
 		return nil, 0, nil, err
@@ -2033,6 +2045,9 @@ func (s *Service) deleteActiveSubagentForAccount(accountScopeID, purpose string)
 	purpose = normalizeName(purpose)
 	if purpose == "" {
 		return nil, 0, nil, errors.New("subagent purpose is required")
+	}
+	if IsCloneAgentName(purpose) {
+		return nil, 0, nil, errors.New("Clone is a compiled system agent and has no mutable assignment")
 	}
 	if err := s.deleteActiveSubagentForAccountLocked(accountScopeID, purpose); err != nil {
 		return nil, 0, nil, err
@@ -2192,6 +2207,9 @@ func (s *Service) resolveSubagentForAccount(accountScopeID, nameOrPurpose string
 	if IsExplorerAgentName(key) {
 		return s.ResolveSystemAgent(ExplorerAgentID, pebblestore.AgentProfile{})
 	}
+	if IsCloneAgentName(key) {
+		return s.ResolveSystemAgent(CloneAgentID, pebblestore.AgentProfile{})
+	}
 
 	if profile, ok, err := s.getProfileForAccountLocked(accountScopeID, key); err != nil {
 		return pebblestore.AgentProfile{}, err
@@ -2286,25 +2304,11 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			Enabled:      true,
 			UpdatedAt:    now,
 		},
-		{
-			Name:                "clone",
-			Mode:                ModeSubagent,
-			Description:         "Copies the current parent agent's settings for each launch",
-			RuntimeMode:         pebblestore.AgentRuntimeModeReadWrite,
-			ExecutionSetting:    pebblestore.AgentExecutionSettingReadWrite,
-			ExitPlanModeEnabled: pebblestore.BoolPtr(false),
-			Prompt:              "Clone mirrors the current parent agent at launch time.",
-			ToolContract:        defaultCloneToolContract(),
-			Enabled:             true,
-			UpdatedAt:           now,
-		},
 	}
 }
 
 func defaultSubagentAssignments() map[string]string {
-	return map[string]string{
-		"clone": "clone",
-	}
+	return nil
 }
 
 func DefaultProfileByName(name string) (pebblestore.AgentProfile, bool) {

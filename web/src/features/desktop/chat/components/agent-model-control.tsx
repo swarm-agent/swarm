@@ -58,9 +58,14 @@ interface AgentModelControlProps {
 type DraftMode = 'single' | 'split'
 const COMPACT_AGENT_NAME = 'system-compact'
 const EXPLORER_AGENT_NAME = 'system-explorer'
+const CLONE_AGENT_NAME = 'system-clone'
 
 function isSystemUtility(name: string): boolean {
   return name === COMPACT_AGENT_NAME || name === EXPLORER_AGENT_NAME
+}
+
+function isCompiledSystemAgent(name: string): boolean {
+  return isSystemUtility(name) || name === CLONE_AGENT_NAME
 }
 export type ModelDraft = { provider: string; model: string; thinking: string; serviceTier: string }
 
@@ -304,10 +309,21 @@ export function AgentModelControl({
     toolContract: { preset: 'custom', inheritPolicy: false, tools: { read: { enabled: true, bashPrefixes: [] }, search: { enabled: true, bashPrefixes: [] }, list: { enabled: true, bashPrefixes: [] }, websearch: { enabled: true, bashPrefixes: [] }, webfetch: { enabled: true, bashPrefixes: [] } } },
     enabled: true, protected: true, updatedAt: 0,
   }), [explorerSettings.model, explorerSettings.provider, explorerSettings.thinking])
+  const cloneProfile = useMemo<AgentProfileRecord>(() => ({
+    name: CLONE_AGENT_NAME,
+    mode: 'subagent',
+    description: 'Compiled task-only implementation subagent',
+    provider: '', model: '', thinking: '', modelMode: 'single',
+    planProvider: '', planModel: '', planThinking: '', planServiceTier: '',
+    autoProvider: '', autoModel: '', autoThinking: '', autoServiceTier: '',
+    prompt: '', runtimeMode: 'readwrite', defaultSessionMode: 'auto', executionSetting: 'readwrite',
+    exitPlanModeEnabled: false, toolScope: null, toolContract: null,
+    enabled: true, protected: true, updatedAt: 0,
+  }), [])
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'explorer'), compactProfile, explorerProfile], [agents, compactProfile, explorerProfile])
+  const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'explorer' && !isCompiledSystemAgent(agent.name)), compactProfile, explorerProfile, cloneProfile], [agents, cloneProfile, compactProfile, explorerProfile])
   const activeProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? selectableAgents.find((agent) => agent.name === currentAgent) ?? null
   const [draftAgentName, setDraftAgentName] = useState(activeProfile?.name ?? selectedPrimaryAgent)
   const draftProfile = selectableAgents.find((agent) => agent.name === draftAgentName) ?? activeProfile
@@ -322,11 +338,11 @@ export function AgentModelControl({
   const agentSections = useMemo(() => {
     const sections = [
       { label: 'Primary agents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'primary') },
-      { label: 'Subagents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'subagent' && !isSystemUtility(agent.name)) },
-      { label: 'System utilities', profiles: selectableAgents.filter((agent) => isSystemUtility(agent.name)) },
+      { label: 'Subagents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'subagent' && !isCompiledSystemAgent(agent.name)) },
+      { label: 'System agents', profiles: selectableAgents.filter((agent) => isCompiledSystemAgent(agent.name)) },
       { label: 'Other agents', profiles: selectableAgents.filter((agent) => {
         const profileMode = agentMode(agent)
-        return profileMode !== 'primary' && profileMode !== 'subagent' && !isSystemUtility(agent.name)
+        return profileMode !== 'primary' && profileMode !== 'subagent' && !isCompiledSystemAgent(agent.name)
       }) },
     ]
     return sections.filter((section) => section.profiles.length > 0)
@@ -384,7 +400,7 @@ export function AgentModelControl({
 
   async function confirm() {
     const profile = draftProfile
-    if (!profile || saving || busy) return
+    if (!profile || saving || busy || profile.name === CLONE_AGENT_NAME) return
     const normalizedDraftMode: DraftMode = draftMode === 'split' && !isPlanCapableAgent(profile) ? 'single' : draftMode
     const agentPatch = {
       ...buildPatch(normalizedDraftMode, singleDraft, planDraft, autoDraft, modelOptions),
@@ -470,10 +486,15 @@ export function AgentModelControl({
           </div>
 
           <div className="min-h-0 overflow-y-auto p-5">
-            {draftProfile && isSystemUtility(draftProfile.name) ? (
+            {draftProfile?.name === CLONE_AGENT_NAME ? (
               <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
-                <div className="font-semibold text-[var(--app-text)]">Compiled system utility</div>
-                <div className="mt-1">Only {draftProfile.name === COMPACT_AGENT_NAME ? 'Compact' : 'Explorer'}&apos;s provider, model, and thinking level are configurable. Its identity, prompt, runtime, and tool contract remain code-owned.</div>
+                <div className="font-semibold text-[var(--app-text)]">Compiled system agent</div>
+                <div className="mt-1">Clone has no independent model controls. Every task launch inherits its parent session&apos;s provider, model, thinking, and service tier, while its identity, prompt, runtime, tools, worktree isolation, and commit handoff remain code-owned.</div>
+              </div>
+            ) : draftProfile && isSystemUtility(draftProfile.name) ? (
+              <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
+                <div className="font-semibold text-[var(--app-text)]">Compiled system agent</div>
+                <div className="mt-1">Only {draftProfile.name === COMPACT_AGENT_NAME ? 'Compact' : 'Explorer'}&apos;s provider, model, and thinking level are configurable. Priority/service tier is not independently configurable for system utilities; their identity, prompt, runtime, and tool contract remain code-owned.</div>
               </div>
             ) : <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
               <div className="grid gap-4 lg:grid-cols-2">
@@ -509,7 +530,7 @@ export function AgentModelControl({
               ) : null}
             </div> : null}
 
-            {effectiveDraftMode === 'single' ? (
+            {draftProfile?.name === CLONE_AGENT_NAME ? null : effectiveDraftMode === 'single' ? (
               <ModelDraftEditor title={draftProfile && isSystemUtility(draftProfile.name) ? `${draftProfile.name === COMPACT_AGENT_NAME ? 'Compact' : 'Explorer'} utility model` : 'Single model'} draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier={!draftProfile || !isSystemUtility(draftProfile.name)} />
             ) : (
               <div className="mt-4 grid gap-3 lg:grid-cols-2">
@@ -523,7 +544,7 @@ export function AgentModelControl({
 
         <div className="flex items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4">
           <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Cancel</button>
-          <button type="button" disabled={busy || saving || !draftProfile} onClick={() => { void confirm() }} className="rounded-lg bg-[var(--app-primary)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-60">
+          <button type="button" disabled={busy || saving || !draftProfile || draftProfile.name === CLONE_AGENT_NAME} onClick={() => { void confirm() }} className="rounded-lg bg-[var(--app-primary)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-60">
             {saving || busy ? 'Saving…' : 'Confirm changes'}
           </button>
         </div>

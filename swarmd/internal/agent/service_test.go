@@ -141,113 +141,48 @@ func TestEnsureDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
 	if err := svc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
 	}
-
-	wantPresets := map[string]string{
-		"swarm":    "custom",
-		"explorer": "read_only",
-		"clone":    "read_write",
-	}
-	for name, wantPreset := range wantPresets {
-		profile, ok, err := agents.GetProfile(name)
-		if err != nil {
-			t.Fatalf("GetProfile(%s) error = %v", name, err)
-		}
-		if !ok {
-			t.Fatalf("GetProfile(%s) missing", name)
-		}
-		if profile.ToolContract == nil {
-			t.Fatalf("%s missing tool contract", name)
-		}
-		if profile.ToolContract.Preset != wantPreset {
-			t.Fatalf("%s tool contract preset = %q, want %q", name, profile.ToolContract.Preset, wantPreset)
-		}
-	}
-
 	swarm, ok, err := agents.GetProfile("swarm")
 	if err != nil || !ok {
 		t.Fatalf("GetProfile(swarm) ok=%v err=%v", ok, err)
 	}
-	for _, toolName := range []string{"read", "search", "list", "write", "edit", "bash", "task", "manage_agent", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
-		cfg, ok := swarm.ToolContract.Tools[toolName]
-		if !ok || cfg.Enabled == nil || !*cfg.Enabled {
-			t.Fatalf("swarm tool %s = %+v, want explicitly enabled", toolName, cfg)
-		}
+	if swarm.ToolContract == nil || swarm.ToolContract.Preset != "custom" {
+		t.Fatalf("swarm tool contract = %+v", swarm.ToolContract)
 	}
-
-	if _, ok, err := agents.GetProfile("memory"); err != nil || ok {
-		t.Fatalf("persisted memory profile ok=%v err=%v, want absent", ok, err)
+	for _, name := range []string{"clone", CloneAgentID, "memory", "explorer"} {
+		if _, ok, err := agents.GetProfile(name); err != nil || ok {
+			t.Fatalf("persisted compiled/retired profile %q ok=%v err=%v, want absent", name, ok, err)
+		}
 	}
 }
 
-func TestRestoreDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
+func TestRestoreDefaultsDoesNotPersistOrAssignClone(t *testing.T) {
 	svc, agents := newTestService(t)
 	state, _, _, err := svc.RestoreDefaults()
 	if err != nil {
 		t.Fatalf("RestoreDefaults() error = %v", err)
 	}
-	if len(state.Profiles) == 0 {
-		t.Fatalf("RestoreDefaults() returned no profiles")
+	if _, exists := state.ActiveSubagent["clone"]; exists {
+		t.Fatalf("RestoreDefaults() returned mutable Clone assignment: %+v", state.ActiveSubagent)
 	}
-	if got := state.ActiveSubagent["clone"]; got != "clone" {
-		t.Fatalf("active subagent clone = %q, want clone", got)
-	}
-
-	for _, name := range []string{"swarm", "explorer", "clone"} {
-		profile, ok, err := agents.GetProfile(name)
-		if err != nil {
-			t.Fatalf("GetProfile(%s) error = %v", name, err)
-		}
-		if !ok {
-			t.Fatalf("GetProfile(%s) missing", name)
-		}
-		if profile.ToolContract == nil {
-			t.Fatalf("%s missing tool contract after RestoreDefaults", name)
+	for _, name := range []string{"clone", CloneAgentID} {
+		if _, ok, err := agents.GetProfile(name); err != nil || ok {
+			t.Fatalf("GetProfile(%q) ok=%v err=%v, want absent", name, ok, err)
 		}
 	}
-	if profile, ok, err := agents.GetProfile("clone"); err != nil || !ok {
-		t.Fatalf("GetProfile(clone) ok=%v error=%v", ok, err)
-	} else if profile.Description != "Copies the current parent agent's settings for each launch" {
-		t.Fatalf("clone description = %q", profile.Description)
-	}
-}
-
-func TestEnsureDefaultsBackfillsDeletedBuiltInClone(t *testing.T) {
-	svc, agents := newTestService(t)
-	if err := svc.EnsureDefaults(); err != nil {
-		t.Fatalf("EnsureDefaults() error = %v", err)
-	}
-	if err := agents.DeleteProfile("clone"); err != nil {
-		t.Fatalf("DeleteProfile(clone) err=%v", err)
-	}
-	if err := svc.EnsureDefaults(); err != nil {
-		t.Fatalf("EnsureDefaults() after delete error = %v", err)
-	}
-	if _, ok, err := agents.GetProfile("clone"); err != nil || !ok {
-		t.Fatalf("backfilled clone missing: ok=%v err=%v", ok, err)
-	}
-	assignments, err := agents.GetActiveSubagents(20)
+	clone, err := svc.ResolveSystemAgent(CloneAgentID, pebblestore.AgentProfile{Provider: "codex", Model: "parent-model"})
 	if err != nil {
-		t.Fatalf("GetActiveSubagents() error = %v", err)
+		t.Fatalf("ResolveSystemAgent(Clone) error = %v", err)
 	}
-	if got := assignments["clone"]; got != "clone" {
-		t.Fatalf("clone assignment = %q, want clone", got)
+	if clone.Name != CloneAgentID || clone.Provider != "codex" || clone.Model != "parent-model" || !clone.Enabled {
+		t.Fatalf("compiled Clone = %+v", clone)
 	}
 }
 
-func TestEnsureDefaultsDoesNotRewriteExistingCloneProfileAndAssignments(t *testing.T) {
+func TestEnsureDefaultsCleansLegacyCloneRowsAndAssignments(t *testing.T) {
 	svc, agents := newTestService(t)
-	if err := svc.EnsureDefaults(); err != nil {
-		t.Fatalf("EnsureDefaults() error = %v", err)
-	}
 	if err := agents.PutProfile(pebblestore.AgentProfile{
-		Name:             "clone",
-		Mode:             ModeSubagent,
-		Description:      "Swarm clone",
-		RuntimeMode:      pebblestore.AgentRuntimeModeReadWrite,
-		ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
-		Prompt:           oldDefaultClonePrompt(),
-		ToolContract:     defaultReadWriteSubagentToolContract(),
-		Enabled:          true,
+		Name: "clone", Mode: ModeSubagent, Prompt: oldDefaultClonePrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite,
+		ToolContract: defaultReadWriteSubagentToolContract(), Enabled: true,
 	}); err != nil {
 		t.Fatalf("put legacy clone: %v", err)
 	}
@@ -257,109 +192,42 @@ func TestEnsureDefaultsDoesNotRewriteExistingCloneProfileAndAssignments(t *testi
 	if err := agents.SetActiveSubagent("helper", "clone"); err != nil {
 		t.Fatalf("set helper assignment: %v", err)
 	}
-
 	if err := svc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() cleanup error = %v", err)
 	}
-	if profile, ok, err := agents.GetProfile("clone"); err != nil || !ok {
-		t.Fatalf("existing clone missing: ok=%v err=%v", ok, err)
-	} else if profile.Description != "Swarm clone" {
-		t.Fatalf("existing clone changed: %+v", profile)
+	if _, ok, err := agents.GetProfile("clone"); err != nil || ok {
+		t.Fatalf("legacy Clone row ok=%v err=%v, want removed", ok, err)
 	}
 	assignments, err := agents.GetActiveSubagents(20)
 	if err != nil {
 		t.Fatalf("GetActiveSubagents() error = %v", err)
 	}
-	if got := assignments["clone"]; got != "clone" {
-		t.Fatalf("clone assignment = %q, want clone", got)
+	if _, ok := assignments["clone"]; ok {
+		t.Fatalf("legacy Clone purpose survived: %+v", assignments)
 	}
-	if got := assignments["helper"]; got != "clone" {
-		t.Fatalf("helper assignment = %q, want clone", got)
+	if _, ok := assignments["helper"]; ok {
+		t.Fatalf("legacy Clone target survived: %+v", assignments)
 	}
 }
 
-func TestEnsureDefaultsUpgradesLegacyCloneToolContract(t *testing.T) {
-	svc, agents := newTestService(t)
-	if err := svc.EnsureDefaults(); err != nil {
-		t.Fatalf("EnsureDefaults() error = %v", err)
-	}
-	profile, ok, err := agents.GetProfile("clone")
-	if err != nil || !ok {
-		t.Fatalf("GetProfile(clone) ok=%v err=%v", ok, err)
-	}
-	profile.ToolContract = defaultReadWriteSubagentToolContract()
-	if err := agents.PutProfile(profile); err != nil {
-		t.Fatalf("put legacy clone: %v", err)
-	}
-
-	if err := svc.EnsureDefaults(); err != nil {
-		t.Fatalf("EnsureDefaults() migration error = %v", err)
-	}
-	profile, ok, err = agents.GetProfile("clone")
-	if err != nil || !ok {
-		t.Fatalf("GetProfile(clone) after migration ok=%v err=%v", ok, err)
-	}
-	for _, name := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
-		cfg, exists := profile.ToolContract.Tools[name]
-		if !exists || cfg.Enabled == nil || !*cfg.Enabled {
-			t.Fatalf("migrated clone tool %s = %+v, want explicitly enabled", name, cfg)
+func TestCloneAliasesRejectUserMutationsAndRemapping(t *testing.T) {
+	svc, _ := newTestService(t)
+	for _, name := range []string{"clone", CloneAgentID} {
+		if _, _, _, err := svc.Upsert(UpsertInput{Name: name, ToolContract: defaultReadWriteSubagentToolContract()}); err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Fatalf("Upsert(%q) error = %v, want reserved", name, err)
+		}
+		if _, _, _, err := svc.Delete(name); err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Fatalf("Delete(%q) error = %v, want reserved", name, err)
+		}
+		if _, _, _, err := svc.ActivatePrimary(name); err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Fatalf("ActivatePrimary(%q) error = %v, want reserved", name, err)
 		}
 	}
-	if cfg := profile.ToolContract.Tools["bash"]; cfg.Enabled == nil || *cfg.Enabled {
-		t.Fatalf("migrated clone bash = %+v, want explicitly disabled", cfg)
+	if _, _, _, err := svc.SetActiveSubagent("clone", "helper"); err == nil || !strings.Contains(err.Error(), "cannot be remapped") {
+		t.Fatalf("SetActiveSubagent clone purpose error = %v", err)
 	}
-}
-
-func TestEnsureDefaultsPreservesCustomizedCloneProfile(t *testing.T) {
-	svc, agents := newTestService(t)
-	if err := svc.EnsureDefaults(); err != nil {
-		t.Fatalf("EnsureDefaults() error = %v", err)
-	}
-	if err := agents.PutProfile(pebblestore.AgentProfile{
-		Name:             "clone",
-		Mode:             ModeSubagent,
-		Description:      "Custom clone",
-		Provider:         "codex",
-		Model:            "gpt-5.5",
-		RuntimeMode:      pebblestore.AgentRuntimeModeReadWrite,
-		ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
-		Prompt:           "custom clone prompt",
-		ToolContract: &pebblestore.AgentToolContract{
-			Preset: "read_write",
-			Tools: map[string]pebblestore.AgentToolConfig{
-				"git_commit": {Enabled: pebblestore.BoolPtr(false)},
-			},
-		},
-		Enabled: true,
-	}); err != nil {
-		t.Fatalf("put custom clone: %v", err)
-	}
-	if err := agents.SetActiveSubagent("clone", "clone"); err != nil {
-		t.Fatalf("set clone assignment: %v", err)
-	}
-
-	if err := svc.EnsureDefaults(); err != nil {
-		t.Fatalf("EnsureDefaults() cleanup error = %v", err)
-	}
-	profile, ok, err := agents.GetProfile("clone")
-	if err != nil {
-		t.Fatalf("GetProfile(clone) error = %v", err)
-	}
-	if !ok {
-		t.Fatalf("custom clone profile should be preserved")
-	}
-	if profile.Description != "Custom clone" || profile.Provider != "codex" || profile.Model != "gpt-5.5" {
-		t.Fatalf("custom clone profile was changed: %+v", profile)
-	}
-	if cfg := profile.ToolContract.Tools["git_commit"]; cfg.Enabled == nil || *cfg.Enabled {
-		t.Fatalf("custom clone git_commit override was changed: %+v", profile.ToolContract)
-	}
-	assignments, err := agents.GetActiveSubagents(20)
-	if err != nil {
-		t.Fatalf("GetActiveSubagents() error = %v", err)
-	}
-	if got := assignments["clone"]; got != "clone" {
-		t.Fatalf("clone assignment = %q, want clone", got)
+	if _, _, _, err := svc.SetActiveSubagent("helper", CloneAgentID); err == nil || !strings.Contains(err.Error(), "cannot be remapped") {
+		t.Fatalf("SetActiveSubagent Clone target error = %v", err)
 	}
 }
 

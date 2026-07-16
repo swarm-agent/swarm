@@ -18,6 +18,7 @@ import (
 	"swarm/packages/swarmd/internal/provider/registry"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
+	"swarm/packages/swarmd/internal/uisettings"
 )
 
 type onboardingProviderTestAdapter struct {
@@ -141,6 +142,18 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 	}
 	if pref.Provider != "openai" || pref.Model != "snapshot-main-model" || pref.Thinking != "high" {
 		t.Fatalf("composer/global preference not hydrated from snapshot: %+v", pref)
+	}
+	uiSettings, err := server.uiSettings.GetForAccount(principal.AccountScopeID)
+	if err != nil {
+		t.Fatalf("get onboarding system-agent settings: %v", err)
+	}
+	for name, configured := range map[string]uisettings.CompactAgentSettings{
+		"compact":  uiSettings.Agents.Compact,
+		"explorer": uiSettings.Agents.Explorer,
+	} {
+		if configured.Provider != "openai" || configured.Model != "snapshot-utility-model" || configured.Thinking != "medium" {
+			t.Fatalf("%s system-agent settings not hydrated from snapshot: %+v", name, configured)
+		}
 	}
 }
 
@@ -313,6 +326,7 @@ func newOnboardingProviderCredentialTestServerWithCatalog(t *testing.T, adapter 
 	providers.RegisterRunner(adapter)
 	hub := stream.NewHub(eventLog)
 	server := NewServer(authSvc, agentSvc, modelSvc, nil, nil, nil, nil, nil, providers, nil, nil, eventLog, hub)
+	server.uiSettings = uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user_onboarding_test", AccountScopeID: "acct_onboarding_test", AccountScopeSource: identity.AccountScopeSourceServerState}
 	return server, principal
 }

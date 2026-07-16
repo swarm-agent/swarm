@@ -1304,8 +1304,11 @@ func TestClonePermissionSnapshotsCurrentCaller(t *testing.T) {
 	if len(manifest.Launches) != 1 || !manifest.Launches[0].ParentCopy || manifest.Launches[0].SourceAgentName != "swarm" {
 		t.Fatalf("Clone manifest = %#v", manifest.Launches)
 	}
-	if manifest.Launches[0].ProfileSnapshot == nil || manifest.Launches[0].ProfileSnapshot.Prompt != "trusted parent prompt" || manifest.Launches[0].InheritedRuntimeMode != pebblestore.AgentRuntimeModePlanAuto {
+	if manifest.Launches[0].ProfileSnapshot == nil || manifest.Launches[0].ProfileSnapshot.Name != agentruntime.CloneAgentID || manifest.Launches[0].ProfileSnapshot.Prompt != agentruntime.CloneAgentPrompt() || manifest.Launches[0].InheritedRuntimeMode != pebblestore.AgentRuntimeModeReadWrite {
 		t.Fatalf("Clone snapshot = %#v", manifest.Launches[0])
+	}
+	if manifest.Launches[0].ProfileSnapshot.Provider != parent.Preference.Provider || manifest.Launches[0].ProfileSnapshot.Model != parent.Preference.Model || manifest.Launches[0].SubagentThinking != parent.Preference.Thinking || manifest.Launches[0].SubagentServiceTier != parent.Preference.ServiceTier {
+		t.Fatalf("Clone did not inherit parent launch preference and service tier: %#v", manifest.Launches[0])
 	}
 	cloneTools := manifest.Launches[0].ProfileSnapshot.ToolContract.Tools
 	for _, name := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
@@ -1321,37 +1324,18 @@ func TestClonePermissionSnapshotsCurrentCaller(t *testing.T) {
 	}
 }
 
-func TestCloneLaunchRequiresEnabledSavedCloneProfile(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		prepare func(t *testing.T, svc *Service)
-		want    string
-	}{
-		{name: "absent", prepare: func(t *testing.T, svc *Service) {
-			if result, _, _, err := svc.agents.DeleteForAccount("test-account", "clone"); err != nil || result.Deleted != "clone" {
-				t.Fatalf("delete clone: result=%+v err=%v", result, err)
-			}
-		}, want: `subagent "clone" not found`},
-		{name: "disabled", prepare: func(t *testing.T, svc *Service) {
-			profile, ok, err := svc.agents.GetProfileForAccount("test-account", "clone")
-			if err != nil || !ok {
-				t.Fatalf("get clone: ok=%v err=%v", ok, err)
-			}
-			profile.Enabled = false
-			if _, _, _, err := svc.agents.UpsertForAccount("test-account", agentruntime.UpsertInput{Name: "clone", Enabled: pebblestore.BoolPtr(false)}); err != nil {
-				t.Fatalf("disable clone: %v", err)
-			}
-		}, want: `agent "clone" is disabled`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
-			defer cleanup()
-			tc.prepare(t, svc)
-			_, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: `{"prompt":"x","subagent_type":"clone","meta_prompt":"y"}`})
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error = %v, want %q", err, tc.want)
-			}
-		})
+func TestCloneLaunchDoesNotRequirePersistedProfile(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	if _, ok, err := svc.agents.GetProfileForAccount("test-account", "clone"); err != nil || ok {
+		t.Fatalf("persisted Clone profile ok=%v err=%v, want absent", ok, err)
+	}
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: `{"prompt":"x","subagent_type":"clone","meta_prompt":"y"}`})
+	if err != nil {
+		t.Fatalf("build compiled Clone manifest: %v", err)
+	}
+	if len(manifest.Launches) != 1 || manifest.Launches[0].ProfileSnapshot == nil || manifest.Launches[0].ProfileSnapshot.Name != agentruntime.CloneAgentID || !manifest.Launches[0].ParentCopy {
+		t.Fatalf("compiled Clone manifest = %#v", manifest.Launches)
 	}
 }
 

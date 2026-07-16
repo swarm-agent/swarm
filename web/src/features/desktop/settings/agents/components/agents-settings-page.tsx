@@ -2109,7 +2109,6 @@ export function AgentsSettingsPage() {
     !Boolean(selectedProfile?.protected) &&
     (selectedMode !== "primary" || primaryAgents.length > 1);
   const busy = saving || isFetching || modelOptionsFetching;
-  const isCloneProfile = selectedProfile?.name.trim().toLowerCase() === "clone";
 
   const subAgents = profiles.filter(
     (p) => (p.mode || "primary").toLowerCase() === "subagent",
@@ -2249,6 +2248,46 @@ export function AgentsSettingsPage() {
           </div>
 
           <div className="flex flex-col gap-8">
+            <div className="flex flex-col gap-4">
+              <h3 className="text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)] m-0">
+                System Agents
+              </h3>
+              <div className="flex flex-col gap-3">
+                <button
+                  type="button"
+                  onClick={handleOpenUtilityAI}
+                  className="group relative flex flex-col items-start overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-left transition-colors hover:border-[var(--app-primary)] hover:bg-[var(--app-bg)] shadow-sm"
+                >
+                  <span className="flex w-full items-center justify-between gap-2">
+                    <span className="font-semibold text-[var(--app-text)]">Compact</span>
+                    <span className="rounded-full border border-[var(--app-primary)]/30 bg-[var(--app-primary)]/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[var(--app-primary)]">System agent</span>
+                  </span>
+                  <span className="mt-1 text-xs font-medium leading-5 text-[var(--app-text-muted)]">{currentUtilityAI.provider && currentUtilityAI.model ? `${currentUtilityAI.provider}/${currentUtilityAI.model} · Thinking: ${currentUtilityAI.thinking || "off"}` : "Uses the registry utility recommendation"}</span>
+                  <span className="mt-1 text-[11px] text-[var(--app-text-muted)] opacity-80">Provider, model, and thinking configurable · service tier code-owned</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOpenUtilityAI}
+                  className="group relative flex flex-col items-start overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-left transition-colors hover:border-[var(--app-primary)] hover:bg-[var(--app-bg)] shadow-sm"
+                >
+                  <span className="flex w-full items-center justify-between gap-2">
+                    <span className="font-semibold text-[var(--app-text)]">Explorer</span>
+                    <span className="rounded-full border border-[var(--app-primary)]/30 bg-[var(--app-primary)]/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[var(--app-primary)]">System agent</span>
+                  </span>
+                  <span className="mt-1 text-xs font-medium leading-5 text-[var(--app-text-muted)]">{currentUtilityAI.provider && currentUtilityAI.model ? `${currentUtilityAI.provider}/${currentUtilityAI.model} · Thinking: ${currentUtilityAI.thinking || "off"}` : "Uses the registry utility recommendation"}</span>
+                  <span className="mt-1 text-[11px] text-[var(--app-text-muted)] opacity-80">Provider, model, and thinking configurable · service tier code-owned</span>
+                </button>
+                <div className="relative flex flex-col items-start overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-left shadow-sm">
+                  <span className="flex w-full items-center justify-between gap-2">
+                    <span className="font-semibold text-[var(--app-text)]">Clone</span>
+                    <span className="rounded-full border border-[var(--app-primary)]/30 bg-[var(--app-primary)]/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[var(--app-primary)]">System agent</span>
+                  </span>
+                  <span className="mt-1 text-xs font-medium leading-5 text-[var(--app-text-muted)]">Inherits the parent session provider, model, thinking, and service tier at launch.</span>
+                  <span className="mt-1 text-[11px] text-[var(--app-text-muted)] opacity-80">No independent model or priority override</span>
+                </div>
+              </div>
+            </div>
+
             <div className="flex flex-col gap-4">
               <h3 className="text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)] m-0">
                 Primary Agents
@@ -2454,32 +2493,19 @@ export function AgentsSettingsPage() {
                   Delete
                 </button>
               )}
-              {!isCloneProfile ? (
-                <button
-                  type="button"
-                  onClick={() => void handleSave()}
-                  disabled={busy}
-                  className="rounded-md border border-[var(--app-primary)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--app-primary)] transition-colors hover:bg-[var(--app-surface-subtle)] disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {saving ? "Saving…" : "Save agent"}
-                </button>
-              ) : null}
+              <button
+                type="button"
+                onClick={() => void handleSave()}
+                disabled={busy}
+                className="rounded-md border border-[var(--app-primary)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--app-primary)] transition-colors hover:bg-[var(--app-surface-subtle)] disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {saving ? "Saving…" : "Save agent"}
+              </button>
             </div>
           </div>
 
           <div className="p-0">
-            {isCloneProfile ? (
-              <div className="px-4 py-5 text-sm leading-6 text-[var(--app-text-muted)]">
-                <div className="font-semibold text-[var(--app-text)]">Clone mirrors its parent</div>
-                <p className="mt-1">
-                  Every Clone launch copies the current parent agent&apos;s provider, model,
-                  prompt, runtime, and tool settings, then applies mandatory child safety
-                  limits. Clone has no independent execution settings. Delete it to disable
-                  Clone launches; Delete all &amp; reset restores it.
-                </p>
-              </div>
-            ) : null}
-            <div className={isCloneProfile ? "hidden" : "border-b border-[var(--app-border)]"}>
+            <div className="border-b border-[var(--app-border)]">
               <div className="flex items-center border-b border-[var(--app-border)] px-4 py-3">
                 <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
                   Name

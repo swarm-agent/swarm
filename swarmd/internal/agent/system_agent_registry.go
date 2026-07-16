@@ -18,11 +18,14 @@ const (
 	CompactAgentName      = "Compact"
 	ExplorerAgentID       = "system-explorer"
 	ExplorerAgentName     = "Explorer"
+	CloneAgentID          = "system-clone"
+	CloneAgentName        = "Clone"
 
 	SystemSidechatKindPlan     = "plan"
 	SystemSidechatKindAI       = "ai"
 	SystemSidechatKindCompact  = "compact"
 	SystemSidechatKindExplorer = "explorer"
+	SystemSidechatKindClone    = "clone"
 )
 
 // SystemAgentDefinition is the immutable, code-owned identity and security
@@ -178,6 +181,13 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Materialize:  ExplorerAgentProfileForParent,
 		Reconcile:    reconcileExplorerAgentProfile,
 	},
+	{
+		ID:           CloneAgentID,
+		DisplayName:  CloneAgentName,
+		SidechatKind: SystemSidechatKindClone,
+		Materialize:  CloneAgentProfileForParent,
+		Reconcile:    reconcileCloneAgentProfile,
+	},
 }
 
 func BuiltinSystemAgentRegistry() (*SystemAgentRegistry, error) {
@@ -238,6 +248,31 @@ func ExplorerAgentToolContract() *pebblestore.AgentToolContract {
 	}}
 }
 
+func CloneAgentPrompt() string {
+	return strings.TrimSpace(`You are Clone, Swarm's compiled implementation subagent.
+Execute only the dependency-ready implementation scope assigned by the parent. Work exclusively in the isolated worktree allocated for this launch, preserve parent lineage metadata, and do not orchestrate other agents or change plans, agents, settings, or user-owned todos.
+Finish successful work with one scoped commit and a clean worktree. If permission is denied or work cannot be completed, report the exact uncommitted or failed state instead of claiming a successful handoff.`)
+}
+
+func CloneAgentToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
+		"write": {Enabled: pebblestore.BoolPtr(true)}, "edit": {Enabled: pebblestore.BoolPtr(true)},
+		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)}, "webdownload": {Enabled: pebblestore.BoolPtr(true)},
+		"git_status": {Enabled: pebblestore.BoolPtr(true)}, "git_diff": {Enabled: pebblestore.BoolPtr(true)},
+		"git_add": {Enabled: pebblestore.BoolPtr(true)}, "git_commit": {Enabled: pebblestore.BoolPtr(true)},
+	}}
+}
+
+func IsCloneAgentName(name string) bool {
+	switch normalizeName(name) {
+	case "clone", CloneAgentID:
+		return true
+	default:
+		return false
+	}
+}
+
 func IsExplorerAgentName(name string) bool {
 	switch normalizeName(name) {
 	case "explorer", ExplorerAgentID:
@@ -256,14 +291,18 @@ func IsPlanSidechatAgentName(name string) bool {
 	}
 }
 
-func IsReservedSidechatAgentName(name string) bool {
+func IsReservedSystemAgentName(name string) bool {
 	name = normalizeName(name)
 	if registry, err := BuiltinSystemAgentRegistry(); err == nil {
 		if _, ok := registry.DefinitionByID(name); ok {
 			return true
 		}
 	}
-	return IsPlanSidechatAgentName(name) || IsExplorerAgentName(name) || name == AISidechatAgentID || name == "ai sidechat"
+	return IsPlanSidechatAgentName(name) || IsExplorerAgentName(name) || IsCloneAgentName(name) || name == AISidechatAgentID || name == "ai sidechat"
+}
+
+func IsReservedSidechatAgentName(name string) bool {
+	return IsReservedSystemAgentName(name)
 }
 
 func PlanSidechatAgentToolContract() *pebblestore.AgentToolContract {
@@ -307,6 +346,15 @@ func ExplorerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.
 		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking),
 		Prompt: ExplorerAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: ExplorerAgentToolContract(), Enabled: true,
+	})
+}
+
+func CloneAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: CloneAgentID, Mode: ModeSubagent, Description: "Compiled task-only implementation subagent",
+		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking),
+		Prompt: CloneAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: CloneAgentToolContract(), Enabled: true,
 	})
 }
 
@@ -359,6 +407,12 @@ func reconcileCompactAgentProfile(snapshot pebblestore.AgentProfile) pebblestore
 
 func reconcileExplorerAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := ExplorerAgentProfileForParent(snapshot)
+	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
+	return profile
+}
+
+func reconcileCloneAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := CloneAgentProfileForParent(snapshot)
 	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
 	return profile
 }

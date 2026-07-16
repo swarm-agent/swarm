@@ -1487,50 +1487,30 @@ func cloneTaskAgentProfile(profile pebblestore.AgentProfile) (pebblestore.AgentP
 }
 
 func (s *Service) resolveTaskLaunchProfile(parentSession pebblestore.SessionSnapshot, requested string) (pebblestore.AgentProfile, bool, string, error) {
-	if !strings.EqualFold(strings.TrimSpace(requested), "clone") {
+	if !agentruntime.IsCloneAgentName(requested) {
 		profile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested)
 		return profile, false, "", err
 	}
-	cloneProfile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, "clone")
-	if err != nil {
-		return pebblestore.AgentProfile{}, true, "", err
-	}
-	if !strings.EqualFold(strings.TrimSpace(cloneProfile.Name), "clone") {
-		return pebblestore.AgentProfile{}, true, "", fmt.Errorf("clone availability profile resolved to %q", cloneProfile.Name)
-	}
-	profile, err := sessionV3AgentProfileFromMetadataMap(parentSession.Metadata)
+	parentProfile, err := sessionV3AgentProfileFromMetadataMap(parentSession.Metadata)
 	if err != nil {
 		sourceName := strings.TrimSpace(mapString(parentSession.Metadata, "agent_name"))
 		if sourceName == "" {
 			return pebblestore.AgentProfile{}, true, "", fmt.Errorf("clone requires trusted parent agent profile snapshot: %w", err)
 		}
-		profile, err = s.resolveAgentProfileForAccount(parentSession.AccountScopeID, sourceName, RunTargetKindAgent, false)
+		parentProfile, err = s.resolveAgentProfileForAccount(parentSession.AccountScopeID, sourceName, RunTargetKindAgent, false)
 		if err != nil {
-			return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("clone cannot resolve trusted parent agent %q: %w", sourceName, err)
+			return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("Clone cannot resolve trusted parent agent %q: %w", sourceName, err)
 		}
 	}
-	sourceName := strings.TrimSpace(profile.Name)
-	profile, err = cloneTaskAgentProfile(profile)
+	sourceName := strings.TrimSpace(parentProfile.Name)
+	profile, err := s.agents.ResolveSystemAgent(agentruntime.CloneAgentID, pebblestore.AgentProfile{
+		Provider: strings.TrimSpace(parentSession.Preference.Provider),
+		Model:    strings.TrimSpace(parentSession.Preference.Model),
+		Thinking: strings.TrimSpace(parentSession.Preference.Thinking),
+	})
 	if err != nil {
-		return pebblestore.AgentProfile{}, true, sourceName, err
+		return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("resolve compiled Clone: %w", err)
 	}
-	profile.Name = "clone"
-	profile.Mode = "subagent"
-	profile.Description = "Built-in parent-copying subagent launched from " + sourceName
-	// A Clone gets the parent's implementation tools plus only the dedicated Git
-	// operations needed to inspect, stage, and commit in its session-bound worktree.
-	// Generic bash and orchestration remain disabled by the launch overlay.
-	if profile.ToolContract == nil {
-		profile.ToolContract = &pebblestore.AgentToolContract{Preset: "read_write"}
-	}
-	if profile.ToolContract.Tools == nil {
-		profile.ToolContract.Tools = make(map[string]pebblestore.AgentToolConfig)
-	}
-	for _, name := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
-		profile.ToolContract.Tools[name] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
-	}
-	profile.ToolContract.Tools["bash"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(false)}
-	profile.ToolContract.Tools["manage_sessions"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(false)}
 	return profile, true, sourceName, nil
 }
 
@@ -1607,8 +1587,8 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		var profileDisabledTools map[string]bool
 		var toolErr error
 		if virtualTarget || agentruntime.IsExplorerAgentName(resolvedName) {
-			// Virtual Clone profiles and the compiled Explorer profile are trusted
-			// launch snapshots, not persisted agent rows. Compile their immutable
+			// Compiled Clone and Explorer profiles are trusted launch snapshots, not
+			// persisted agent rows. Compile their immutable
 			// contracts directly instead of looking them up in the agent store.
 			toolContract, _, profileDisabledTools, toolErr = s.compileResolvedAgentToolContract(parentSession.AccountScopeID, subagentProfile)
 		} else {

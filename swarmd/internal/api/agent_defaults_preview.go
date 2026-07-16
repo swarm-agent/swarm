@@ -52,6 +52,9 @@ func (s *Server) providerDefaultsPreviewForState(state agentruntime.State) *prov
 	}
 	profilesByName := agentProfilesByName(state.Profiles)
 	for _, name := range utilityAgents {
+		if agentruntime.IsCloneAgentName(name) {
+			continue
+		}
 		profile, found := profilesByName[strings.ToLower(strings.TrimSpace(name))]
 		if !found {
 			preview.StaleInheritedAgents = append(preview.StaleInheritedAgents, name)
@@ -118,6 +121,9 @@ func (s *Server) applyUtilityAIToBuiltInsForAccount(accountScopeID string, state
 	}
 	updated := false
 	for _, name := range builtinUtilityAgentNames() {
+		if agentruntime.IsCloneAgentName(name) {
+			continue
+		}
 		key := strings.ToLower(strings.TrimSpace(name))
 		if !overwriteExplicit {
 			if _, ok := baselineKeys[key]; !ok {
@@ -247,7 +253,13 @@ func builtinUtilityAgentNames() []string {
 }
 
 func utilityAgentNames(providerDefaults defaults.ProviderDefaults) []string {
-	return uniqueNamesInOrder(providerDefaults.UtilitySubagents)
+	names := make([]string, 0, len(providerDefaults.UtilitySubagents))
+	for _, name := range providerDefaults.UtilitySubagents {
+		if !agentruntime.IsCloneAgentName(name) {
+			names = append(names, name)
+		}
+	}
+	return uniqueNamesInOrder(names)
 }
 
 func agentProfileInheritsModel(profile pebblestore.AgentProfile) bool {

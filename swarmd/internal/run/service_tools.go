@@ -2882,15 +2882,26 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			if err != nil {
 				return "", err
 			}
+			if agentruntime.IsCloneAgentName(launchSpecs[i].RequestedSubagentType) {
+				if !row.ParentCopy || !agentruntime.IsCloneAgentName(row.ResolvedAgentName) {
+					return "", fmt.Errorf("approved task manifest launch %d does not identify compiled Clone", i)
+				}
+				profile, err = s.agents.ReconcileSystemAgentSnapshot(agentruntime.CloneAgentID, profile)
+				if err != nil {
+					return "", fmt.Errorf("reconcile compiled Clone launch snapshot: %w", err)
+				}
+				trustedVirtualTargets[i] = true
+			} else {
+				trustedVirtualTargets[i] = row.ParentCopy
+			}
 			trustedProfiles[i] = &profile
-			trustedVirtualTargets[i] = row.ParentCopy
 			trustedSources[i] = strings.TrimSpace(row.SourceAgentName)
 		}
 	}
 
 	cloneIndexes := make([]int, 0, len(launchSpecs))
 	for i := range launchSpecs {
-		if strings.EqualFold(strings.TrimSpace(launchSpecs[i].RequestedSubagentType), "clone") {
+		if agentruntime.IsCloneAgentName(launchSpecs[i].RequestedSubagentType) {
 			cloneIndexes = append(cloneIndexes, i)
 		}
 	}
