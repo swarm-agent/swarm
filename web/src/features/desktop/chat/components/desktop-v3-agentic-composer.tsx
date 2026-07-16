@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
-import { AlertTriangle, LoaderCircle, Mic, Minimize2, Send, Square } from 'lucide-react'
+import { AlertTriangle, ArrowUp, LoaderCircle, Mic, Minimize2, Square } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
@@ -575,8 +575,8 @@ export function DesktopV3AgenticComposer({
       aria-label={dictationEnabled ? 'Stop microphone dictation' : 'Start microphone dictation'}
       title={dictationSupported ? (dictationEnabled ? 'Stop dictation' : 'Start dictation') : 'Speech recognition is not available in this browser'}
       className={dictationEnabled
-        ? 'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-sm transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0'
-        : 'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-surface)] text-[var(--app-text-muted)] shadow-sm transition-all hover:-translate-y-0.5 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0'}
+        ? 'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border-0 bg-transparent text-[var(--app-primary)] transition-colors hover:text-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-50'
+        : 'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border-0 bg-transparent text-[var(--app-text-muted)] transition-colors hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50'}
     >
       <Mic size={15} className={dictationListening ? 'animate-pulse' : undefined} />
     </button>
@@ -646,7 +646,7 @@ export function DesktopV3AgenticComposer({
               Use ↑/↓ to choose a subagent, Tab or Enter to insert, then continue typing your task.
             </div>
           ) : null}
-          <div className="min-w-0 overflow-hidden border-y border-[var(--app-border-strong)] bg-transparent px-4 py-2 text-[11px]">
+          <div className="min-w-0 overflow-hidden bg-transparent px-4 py-3 text-[11px]">
             <div className="hidden min-w-0 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {showModePicker ? (
@@ -670,13 +670,13 @@ export function DesktopV3AgenticComposer({
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
-                <Button size="sm" className="h-9 w-9 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
-                  {canStop ? <Square size={16} /> : busy ? <LoaderCircle size={16} className="animate-spin" /> : <Send size={17} />}
+                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                  {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <ArrowUp size={22} strokeWidth={2.25} className="shrink-0" />}
                 </Button>
               </div>
             </div>
             <div className="flex w-full min-w-0 min-[1000px]:hidden">
-              <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_36px_36px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_36px_36px] sm:gap-2">
+              <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_36px_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_36px_40px] sm:gap-2">
                 <div className="flex h-10 min-w-0 items-center overflow-hidden rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] px-1.5 shadow-sm">
                   {showModePicker ? (
                     <>
@@ -689,8 +689,8 @@ export function DesktopV3AgenticComposer({
                 </div>
                 {compactButton(true)}
                 {dictationButton()}
-                <Button size="sm" className="h-9 w-9 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
-                  {canStop ? <Square size={16} /> : busy ? <LoaderCircle size={16} className="animate-spin" /> : <Send size={17} />}
+                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                  {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <ArrowUp size={22} strokeWidth={2.25} className="shrink-0" />}
                 </Button>
               </div>
             </div>
