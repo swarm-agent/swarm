@@ -271,12 +271,13 @@ export function DesktopPlanAgentSidecar({
           {onClose ? <Button type="button" variant="ghost" size="sm" className={embedded ? "h-9 w-9 px-0 xl:hidden" : "h-9 w-9 px-0"} aria-label="Close Plan" onClick={onClose}><X size={18} /></Button> : null}
         </header>
         <div className="relative min-h-0 flex-1 overflow-hidden">
-          <div ref={scrollContainerRef} className="h-full min-h-0 overflow-x-hidden overflow-y-auto p-4 [scrollbar-gutter:stable]" data-testid="desktop-plan-agent-scroller">
-            <div ref={contentRef} className="flex min-h-full min-w-0 flex-col gap-5">
+          <div ref={scrollContainerRef} className="h-full min-h-0 overflow-x-hidden overflow-y-auto p-4 [scrollbar-gutter:stable]" data-testid="desktop-plan-agent-scroller" tabIndex={0}>
+            <div ref={contentRef} className="flex min-h-full min-w-0 flex-col gap-5 [&>*:not(:last-child)]:[overflow-anchor:none]">
               <div className="rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-3 text-sm leading-5">Ask about the plan or request changes conversationally. Saved edits update the parent approval card live.</div>
               {sidechat.busy && renderItems.length === 0 ? <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><Loader2 className="animate-spin" size={16} />Opening durable Plan sidechat…</div> : null}
               {renderItems.map((item, index) => <DesktopV3RenderItemView key={`${item.type}:${"id" in item ? item.id : item.type === "pending-user" ? item.message.clientRequestId : "message" in item ? item.message.id : index}`} item={item} thinkingTagsEnabled timerNow={Date.now()} index={index} />)}
               {sidechat.error ? <div role="alert" className="rounded-lg border border-[var(--app-danger)] p-3 text-sm text-[var(--app-danger)]">{sidechat.error}</div> : null}
+              <div aria-hidden="true" data-testid="desktop-plan-agent-tail-anchor" className="h-px shrink-0 [overflow-anchor:auto]" />
             </div>
           </div>
           {!isAtBottom ? <button type="button" aria-label="Jump to latest Plan message" title="Jump to latest Plan message" onClick={() => scrollToBottom("smooth")} className="absolute bottom-3 right-3 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] shadow-lg"><ArrowDown size={18} aria-hidden="true" /></button> : null}

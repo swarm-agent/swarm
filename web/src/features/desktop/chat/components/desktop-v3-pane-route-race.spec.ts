@@ -564,37 +564,38 @@ test('Desktop V3 paused run resend stays ordered through commit and delayed stal
   assert.equal(committedItems.at(-1)?.type, 'message')
 })
 
-test('Desktop V3 sticky-bottom attachment uses a buffered release zone with hysteresis', () => {
-  const resolve = (bottomDistance: number, wasAttached: boolean) =>
-    resolveDesktopV3StickyBottomAttachment({ bottomDistance, wasAttached, bottomBufferPx: 140 })
+test('Desktop V3 sticky-bottom attachment requires upward intent to cross the buffered release zone', () => {
+  const resolve = (bottomDistance: number, wasAttached: boolean, userEscapeIntent = false) =>
+    resolveDesktopV3StickyBottomAttachment({ bottomDistance, wasAttached, userEscapeIntent, bottomBufferPx: 140 })
 
   assert.equal(resolve(0, true), true)
-  assert.equal(resolve(140, true), true)
-  assert.equal(resolve(141, true), false)
+  assert.equal(resolve(140, true, true), true)
+  assert.equal(resolve(141, true, true), false)
+  assert.equal(resolve(500, true), true, 'layout growth cannot release an attached transcript')
   assert.equal(resolve(140, false), false)
   assert.equal(resolve(2, false), false)
   assert.equal(resolve(0, false), true)
-  assert.equal(resolveDesktopV3StickyBottomAttachment({
-    bottomDistance: 500,
-    wasAttached: true,
-    smoothFollowActive: true,
-    bottomBufferPx: 140,
-  }), true)
 })
 
-test('Desktop V3 sticky-bottom lifecycle is distance-driven and released state controls jump-to-latest', () => {
+test('Desktop V3 sticky-bottom lifecycle is intent-aware and released state controls jump-to-latest', () => {
   const hookStart = conversationPaneSource.indexOf('export function useDesktopV3StickyBottomScroll')
   const hookEnd = conversationPaneSource.indexOf('function numericTimelineSeq', hookStart)
   assert.ok(hookStart >= 0 && hookEnd > hookStart, 'expected sticky-bottom hook source')
   const hookSource = conversationPaneSource.slice(hookStart, hookEnd)
 
-  assert.doesNotMatch(hookSource, /forceFollow|ACTIVITY_FOLLOW_MS|userDetachedRef|detachForUserScrollIntent/)
-  assert.doesNotMatch(hookSource, /addEventListener\("(?:wheel|pointerdown|touchstart|touchmove)"/)
-  assert.match(hookSource, /wasAttached: autoFollowRef\.current/)
+  assert.doesNotMatch(hookSource, /forceFollow|ACTIVITY_FOLLOW_MS|userDetachedRef|smoothFollowUntilRef/)
+  assert.match(hookSource, /userEscapeIntent: userEscapeIntentRef\.current/)
+  assert.match(hookSource, /addEventListener\("wheel"/)
+  assert.match(hookSource, /addEventListener\("touchmove"/)
+  assert.match(hookSource, /addEventListener\("pointerdown"/)
+  assert.match(hookSource, /addEventListener\("keydown"/)
+  assert.match(hookSource, /element\.scrollTo\(\{ top: element\.scrollTop, behavior: "auto" \}\)/)
   assert.match(hookSource, /autoFollowRef\.current = false/)
   assert.match(hookSource, /cancelScheduledScroll\(\)/)
   assert.match(conversationPaneSource, /scrollToBottom\("smooth"\)/)
   assert.match(conversationPaneSource, /preserveScrollPositionForPrepend\(\)/)
+  assert.match(conversationPaneSource, /data-testid="desktop-chat-tail-anchor"/)
+  assert.match(conversationPaneSource, /\[overflow-anchor:none\]/)
   assert.match(conversationPaneSource, /\{!isAtBottom \? \(/)
   assert.doesNotMatch(conversationPaneSource, /!isAtBottom && hasUnseenLatest/)
 })

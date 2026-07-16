@@ -466,6 +466,54 @@ test('desktop streaming markdown finalizes without a last-frame position jitter'
       }
     }
 
+    await page.evaluate(({ runId }) => {
+      const output = Array.from({ length: 80 }, (_, index) => `tool row ${index}: ${'x'.repeat(80)}`).join('\n')
+      ;(window as any).__emitRunFrame({
+        type: 'session.tool.started', run_id: runId, seq: 300,
+        call_id: 'call-growing-card', tool_instance_id: 'tool-growing-card', tool_name: 'search', status: 'running', output,
+      })
+    }, { runId: RUN_ID })
+    await page.waitForFunction(() => {
+      const scroller = document.querySelector('[data-testid="desktop-chat-scroller"]') as HTMLElement | null
+      return Boolean(scroller && Math.abs(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight) <= 2)
+    })
+
+    await page.evaluate(() => {
+      const scroller = document.querySelector('[data-testid="desktop-chat-scroller"]') as HTMLElement
+      scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, bubbles: true }))
+      scroller.scrollTop = Math.max(0, scroller.scrollTop - 400)
+    })
+    await page.getByRole('button', { name: 'Jump to latest message' }).waitFor({ state: 'visible' })
+    const releasedScrollTop = await page.getByTestId('desktop-chat-scroller').evaluate((node) => node.scrollTop)
+
+    await page.evaluate(({ runId }) => {
+      const output = Array.from({ length: 160 }, (_, index) => `expanded tool row ${index}: ${'y'.repeat(80)}`).join('\n')
+      ;(window as any).__emitRunFrame({
+        type: 'session.tool.delta', run_id: runId, seq: 301,
+        call_id: 'call-growing-card', tool_instance_id: 'tool-growing-card', tool_name: 'search', status: 'running', output,
+      })
+    }, { runId: RUN_ID })
+    await page.waitForTimeout(100)
+    const releasedAfterGrowth = await page.getByTestId('desktop-chat-scroller').evaluate((node) => node.scrollTop)
+    assert.ok(Math.abs(releasedAfterGrowth - releasedScrollTop) <= 2, 'tool-card growth moved a released reader viewport')
+
+    await page.getByRole('button', { name: 'Jump to latest message' }).click()
+    await page.waitForFunction(() => {
+      const scroller = document.querySelector('[data-testid="desktop-chat-scroller"]') as HTMLElement | null
+      return Boolean(scroller && Math.abs(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight) <= 2)
+    })
+    await page.evaluate(({ runId }) => {
+      const output = Array.from({ length: 220 }, (_, index) => `reattached tool row ${index}: ${'z'.repeat(80)}`).join('\n')
+      ;(window as any).__emitRunFrame({
+        type: 'session.tool.delta', run_id: runId, seq: 302,
+        call_id: 'call-growing-card', tool_instance_id: 'tool-growing-card', tool_name: 'search', status: 'running', output,
+      })
+    }, { runId: RUN_ID })
+    await page.waitForFunction(() => {
+      const scroller = document.querySelector('[data-testid="desktop-chat-scroller"]') as HTMLElement | null
+      return Boolean(scroller && Math.abs(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight) <= 2)
+    })
+
     await waitForSample(page)
     await page.waitForFunction(() => {
       const rows = Array.from(document.querySelectorAll('[data-testid="desktop-chat-row"]')) as HTMLElement[]

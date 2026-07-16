@@ -583,7 +583,6 @@ type DesktopV3ScrollBehavior = "auto" | "smooth";
 const DESKTOP_V3_BOTTOM_BUFFER_PX = 140;
 const DESKTOP_V3_HISTORY_AUTOLOAD_TOP_PX = 320;
 const DESKTOP_V3_EXACT_BOTTOM_PX = 1;
-const DESKTOP_V3_SMOOTH_FOLLOW_MS = 1_200;
 
 function desktopV3BottomDistance(element: HTMLElement): number {
   return Math.max(
@@ -595,14 +594,14 @@ function desktopV3BottomDistance(element: HTMLElement): number {
 export function resolveDesktopV3StickyBottomAttachment(options: {
   bottomDistance: number;
   wasAttached: boolean;
-  smoothFollowActive?: boolean;
+  userEscapeIntent?: boolean;
   bottomBufferPx?: number;
 }): boolean {
-  if (options.smoothFollowActive) return true;
   if (options.bottomDistance <= DESKTOP_V3_EXACT_BOTTOM_PX) return true;
-  return (
-    options.wasAttached &&
-    options.bottomDistance <=
+  if (!options.wasAttached) return false;
+  return !(
+    options.userEscapeIntent &&
+    options.bottomDistance >
       (options.bottomBufferPx ?? DESKTOP_V3_BOTTOM_BUFFER_PX)
   );
 }
@@ -618,7 +617,10 @@ export function useDesktopV3StickyBottomScroll(options: {
   const contentRef = useRef<HTMLDivElement | null>(null);
   const autoFollowRef = useRef(true);
   const suppressAutoFollowOnceRef = useRef(false);
-  const smoothFollowUntilRef = useRef(0);
+  const userEscapeIntentRef = useRef(false);
+  const pointerScrollIntentRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
+  const touchYRef = useRef<number | null>(null);
   const frameRef = useRef<number | null>(null);
   const preserveTopAnchorRef = useRef<{
     scrollHeight: number;
@@ -638,10 +640,13 @@ export function useDesktopV3StickyBottomScroll(options: {
       const attached = resolveDesktopV3StickyBottomAttachment({
         bottomDistance,
         wasAttached: autoFollowRef.current,
-        smoothFollowActive: smoothFollowUntilRef.current > Date.now(),
+        userEscapeIntent: userEscapeIntentRef.current,
         bottomBufferPx,
       });
       autoFollowRef.current = attached;
+      if (!attached || bottomDistance <= DESKTOP_V3_EXACT_BOTTOM_PX) {
+        userEscapeIntentRef.current = false;
+      }
       setIsAtBottom(attached);
       return attached;
     },
@@ -654,14 +659,14 @@ export function useDesktopV3StickyBottomScroll(options: {
       autoFollowRef.current = true;
       setIsAtBottom(true);
       if (!element) return;
+      userEscapeIntentRef.current = false;
+      pointerScrollIntentRef.current = false;
       if (options.behavior === "smooth") {
-        smoothFollowUntilRef.current =
-          Date.now() + DESKTOP_V3_SMOOTH_FOLLOW_MS;
         element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
         return;
       }
-      smoothFollowUntilRef.current = 0;
       element.scrollTop = element.scrollHeight;
+      lastScrollTopRef.current = element.scrollTop;
     },
     [],
   );
@@ -682,7 +687,7 @@ export function useDesktopV3StickyBottomScroll(options: {
     };
     suppressAutoFollowOnceRef.current = true;
     autoFollowRef.current = false;
-    smoothFollowUntilRef.current = 0;
+    userEscapeIntentRef.current = false;
     cancelScheduledScroll();
     setIsAtBottom(false);
   }, [cancelScheduledScroll]);
@@ -707,17 +712,68 @@ export function useDesktopV3StickyBottomScroll(options: {
   useEffect(() => {
     const element = scrollContainerRef.current;
     if (!element) return;
-    const handleScroll = () => setPinnedStateFromElement(element);
+    lastScrollTopRef.current = element.scrollTop;
+    const markUpwardIntent = () => {
+      userEscapeIntentRef.current = true;
+      cancelScheduledScroll();
+      element.scrollTo({ top: element.scrollTop, behavior: "auto" });
+    };
+    const handleWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) markUpwardIntent();
+    };
+    const handleTouchStart = (event: TouchEvent) => {
+      touchYRef.current = event.touches[0]?.clientY ?? null;
+    };
+    const handleTouchMove = (event: TouchEvent) => {
+      const nextY = event.touches[0]?.clientY ?? null;
+      if (nextY !== null && touchYRef.current !== null && nextY > touchYRef.current) {
+        markUpwardIntent();
+      }
+      touchYRef.current = nextY;
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      pointerScrollIntentRef.current = event.pointerType === "mouse";
+    };
+    const handlePointerUp = () => {
+      pointerScrollIntentRef.current = false;
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) {
+        markUpwardIntent();
+      }
+    };
+    const handleScroll = () => {
+      if (pointerScrollIntentRef.current && element.scrollTop < lastScrollTopRef.current) {
+        markUpwardIntent();
+      }
+      lastScrollTopRef.current = element.scrollTop;
+      setPinnedStateFromElement(element);
+    };
     handleScroll();
+    element.addEventListener("wheel", handleWheel, { passive: true });
+    element.addEventListener("touchstart", handleTouchStart, { passive: true });
+    element.addEventListener("touchmove", handleTouchMove, { passive: true });
+    element.addEventListener("pointerdown", handlePointerDown, { passive: true });
+    window.addEventListener("pointerup", handlePointerUp, { passive: true });
+    element.addEventListener("keydown", handleKeyDown);
     element.addEventListener("scroll", handleScroll, { passive: true });
-    return () => element.removeEventListener("scroll", handleScroll);
-  }, [setPinnedStateFromElement]);
+    return () => {
+      element.removeEventListener("wheel", handleWheel);
+      element.removeEventListener("touchstart", handleTouchStart);
+      element.removeEventListener("touchmove", handleTouchMove);
+      element.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("pointerup", handlePointerUp);
+      element.removeEventListener("keydown", handleKeyDown);
+      element.removeEventListener("scroll", handleScroll);
+    };
+  }, [cancelScheduledScroll, setPinnedStateFromElement]);
 
   useEffect(() => {
     autoFollowRef.current = true;
     preserveTopAnchorRef.current = null;
     suppressAutoFollowOnceRef.current = false;
-    smoothFollowUntilRef.current = 0;
+    userEscapeIntentRef.current = false;
+    pointerScrollIntentRef.current = false;
     setIsAtBottom(true);
     scrollToBottom("auto");
   }, [options.resetKey, scrollToBottom]);
@@ -2394,10 +2450,11 @@ export function DesktopV3ExistingConversationPane({
               ref={scrollContainerRef}
               className="h-full min-h-0 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable]"
               data-testid="desktop-chat-scroller"
+              tabIndex={0}
             >
               <div
                 ref={contentRef}
-                className="mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 px-8 sm:px-12"
+                className="mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 px-8 [&>*:not(:last-child)]:[overflow-anchor:none] sm:px-12"
               >
                 {showConversationLoading ? (
                   <DesktopV3ConversationLoadingSpinner />
@@ -2446,7 +2503,11 @@ export function DesktopV3ExistingConversationPane({
                     onResolve={resolvePermission}
                   />
                 ))}
-                <div aria-hidden="true" />
+                <div
+                  aria-hidden="true"
+                  data-testid="desktop-chat-tail-anchor"
+                  className="h-px shrink-0 [overflow-anchor:auto]"
+                />
               </div>
             </div>
             {pendingPlanDocument && pendingPlanPermission && !planAgentMobileOpen ? (
