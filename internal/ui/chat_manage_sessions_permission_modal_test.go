@@ -8,6 +8,27 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+func TestManageSessionsPermissionModalOpensBeforeApprovedArgumentsBackfill(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-1", SessionMode: "auto", AuthConfigured: true})
+	record := ChatPermissionRecord{
+		ID: "perm-archive", SessionID: "session-1", RunID: "run-1", ToolName: "manage_sessions",
+		Requirement: "session_archive", Status: "pending", ToolArguments: `{"action":"archive","sessions":[{"session_id":"child-1","title":"Child"}]}`,
+	}
+	page.ApplyPermissionRecords([]ChatPermissionRecord{record})
+	if !page.manageSessionsPermissionModalActive() {
+		t.Fatal("missing approved_arguments hid the pending manage-sessions permission")
+	}
+	if got := page.manageSessionsPermissionApprovedArguments(); got != "" {
+		t.Fatalf("approval unexpectedly available before canonical backfill: %q", got)
+	}
+	record.UpdatedAt = 20
+	record.ApprovedArguments = `{"action":"archive","session_ids":["child-1"]}`
+	page.ApplyPermissionRecords([]ChatPermissionRecord{record})
+	if got := page.manageSessionsPermissionApprovedArguments(); got == "" {
+		t.Fatal("visible modal did not adopt later canonical approved arguments")
+	}
+}
+
 func TestManageSessionsPermissionModalRoutesAllCanonicalRequirements(t *testing.T) {
 	for _, requirement := range []string{"session_deploy", "session_commit", "session_archive", "session_unarchive"} {
 		t.Run(requirement, func(t *testing.T) {

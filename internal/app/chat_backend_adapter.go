@@ -288,6 +288,17 @@ func convertClientMessage(message client.SessionMessage) ui.ChatMessageRecord {
 	}
 }
 
+func convertClientPermissions(records []client.PermissionRecord) []ui.ChatPermissionRecord {
+	if len(records) == 0 {
+		return nil
+	}
+	out := make([]ui.ChatPermissionRecord, 0, len(records))
+	for _, record := range records {
+		out = append(out, convertClientPermission(record))
+	}
+	return out
+}
+
 func convertClientPermission(record client.PermissionRecord) ui.ChatPermissionRecord {
 	return ui.ChatPermissionRecord{
 		ID:                    record.ID,

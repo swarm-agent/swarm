@@ -512,6 +512,7 @@ func (a *App) applyTUISessionStoreToChat(sessionID string) {
 		a.chat.SetContextWindow(snapshot.AgentModelPolicy.ContextWindow)
 	}
 	a.chat.SetMessages(chatMessagesFromClient(snapshot.Messages, snapshot.Events))
+	a.chat.ApplyPermissionRecords(convertClientPermissions(snapshot.PendingPerms))
 	a.chat.SetUsageSummary(convertClientUsageSummary(snapshot.UsageSummary))
 	var activePlan client.SessionPlan
 	for _, plan := range snapshot.Plans {

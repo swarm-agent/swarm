@@ -1,6 +1,9 @@
 package ui
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type chatPermissionDestination uint8
 
@@ -38,6 +41,33 @@ func isPlanApprovalRequirement(requirement string) bool {
 	default:
 		return false
 	}
+}
+
+func canonicalPermissionApprovedArguments(record ChatPermissionRecord) string {
+	approved := strings.TrimSpace(record.ApprovedArguments)
+	if approved != "" {
+		var object map[string]any
+		if json.Unmarshal([]byte(approved), &object) == nil && object != nil {
+			return approved
+		}
+	}
+	payload := decodePermissionArguments(record.ToolArguments)
+	if payload == nil {
+		return ""
+	}
+	value, ok := payload["approved_arguments"]
+	if !ok {
+		return ""
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	var object map[string]any
+	if json.Unmarshal(raw, &object) != nil || object == nil {
+		return ""
+	}
+	return string(raw)
 }
 
 func isManageSessionsApprovalRequirement(requirement string) bool {

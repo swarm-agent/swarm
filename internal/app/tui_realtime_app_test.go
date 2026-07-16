@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gdamore/tcell/v2"
+
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 	"swarm-refactor/swarmtui/internal/ui"
@@ -123,6 +125,93 @@ func TestTUIRealtimeLivePatchUpdatesAssistantWithoutDurableTurnBoundary(t *testi
 	if len(snapshot.Messages) != 0 {
 		t.Fatalf("live patch incorrectly mutated durable messages: %#v", snapshot.Messages)
 	}
+}
+
+func TestTUIHydratedPendingPermissionBecomesVisibleInChat(t *testing.T) {
+	store := newTUISessionStore()
+	store.MergeHydrated(client.SessionV3Hydrated{
+		Session: client.SessionSummary{ID: "session-1", SessionAPI: "v3", Mode: "auto"},
+		PendingPermissions: []client.PermissionRecord{{
+			ID: "perm-bash", SessionID: "session-1", RunID: "run-1", CallID: "call-bash",
+			ToolName: "bash", ToolArguments: `{"command":"git status"}`, Requirement: "bash", Status: "pending",
+		}},
+	})
+	app := &App{tuiSessionStore: store, homeModel: model.EmptyHome()}
+	app.chat = ui.NewChatPage(ui.ChatPageOptions{SessionID: "session-1", SessionMode: "auto", AuthConfigured: true})
+
+	app.applyTUISessionStoreToChat("session-1")
+
+	if !app.chat.OrdinaryPermissionComposerVisible() {
+		t.Fatal("hydrated pending Bash permission did not activate the visible inline composer")
+	}
+	text := renderedChatScreenText(t, app.chat, 100, 32)
+	for _, want := range []string{"permission", "bash", "git status"} {
+		if !strings.Contains(strings.ToLower(text), strings.ToLower(want)) {
+			t.Fatalf("hydrated permission UI missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestTUIRealtimeManageSessionsPermissionBecomesVisibleInChat(t *testing.T) {
+	store := newTUISessionStore()
+	store.MergeHydrated(client.SessionV3Hydrated{
+		Session:    client.SessionSummary{ID: "session-1", SessionAPI: "v3", Mode: "auto"},
+		Projection: client.SessionV3Projection{SessionID: "session-1"},
+	})
+	app := &App{tuiSessionStore: store, homeModel: model.EmptyHome()}
+	app.chat = ui.NewChatPage(ui.ChatPageOptions{SessionID: "session-1", SessionMode: "auto", AuthConfigured: true})
+
+	payload, err := json.Marshal(map[string]any{
+		"permission": client.PermissionRecord{
+			ID: "perm-archive", SessionID: "session-1", RunID: "run-1", CallID: "call-archive",
+			ToolName: "manage_sessions", Requirement: "session_archive", Status: "pending",
+			ToolArguments: `{"action":"archive","sessions":[{"session_id":"child-1","title":"Child session","workspace_name":"Workspace","state":"inactive"}],"approved_arguments":{"action":"archive","session_ids":["child-1"],"expected_updated_at_by_id":{"child-1":10}}}`,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := client.V3RealtimeFrame{
+		Kind: "event", SessionID: "session-1", LastSeq: 1,
+		Event: &client.SessionV3Event{ID: "event-permission", SessionID: "session-1", Seq: 1, EventType: "permission.requested", Payload: payload, TsUnixMS: 10},
+	}
+	if !app.applyTUIRealtimeFrame(frame) {
+		t.Fatal("realtime permission frame did not update chat")
+	}
+	if !app.chat.PermissionModalVisible() {
+		t.Fatal("realtime manage-sessions permission did not activate an approval surface")
+	}
+	text := renderedChatScreenText(t, app.chat, 100, 32)
+	for _, want := range []string{"Archive sessions?", "Child session", "Approve", "Deny"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("realtime manage-sessions UI missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func renderedChatScreenText(t *testing.T, page *ui.ChatPage, width, height int) string {
+	t.Helper()
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(width, height)
+	page.Draw(screen)
+	screen.Show()
+	cells, screenWidth, _ := screen.GetContents()
+	var out strings.Builder
+	for i, cell := range cells {
+		if i > 0 && i%screenWidth == 0 {
+			out.WriteByte('\n')
+		}
+		if len(cell.Runes) > 0 {
+			out.WriteRune(cell.Runes[0])
+		} else {
+			out.WriteByte(' ')
+		}
+	}
+	return out.String()
 }
 
 func TestTUIRealtimeModePreferenceSurvivesPendingResponseProjection(t *testing.T) {

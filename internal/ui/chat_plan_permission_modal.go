@@ -40,21 +40,7 @@ func (p *ChatPage) OpenPlanPermissionModal(record ChatPermissionRecord) bool {
 	info := planPermissionObject(document["info"])
 	goal := strings.TrimSpace(planPermissionString(info, "goal"))
 
-	approved := strings.TrimSpace(record.ApprovedArguments)
-	if approved == "" {
-		if value, ok := payload["approved_arguments"]; ok {
-			if raw, err := json.Marshal(value); err == nil {
-				approved = string(raw)
-			}
-		}
-	}
-	if approved == "" {
-		return false
-	}
-	var approvedObject map[string]any
-	if json.Unmarshal([]byte(approved), &approvedObject) != nil || approvedObject == nil {
-		return false
-	}
+	approved := canonicalPermissionApprovedArguments(record)
 	if p.planEditorModalActive() {
 		p.closePlanEditorModal()
 	}

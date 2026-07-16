@@ -29,18 +29,7 @@ func (p *ChatPage) OpenManageSessionsPermissionModal(record ChatPermissionRecord
 		return false
 	}
 	payload := decodePermissionArguments(record.ToolArguments)
-	approved := strings.TrimSpace(record.ApprovedArguments)
-	if approved == "" && payload != nil {
-		if value, ok := payload["approved_arguments"]; ok {
-			if raw, err := json.Marshal(value); err == nil {
-				approved = string(raw)
-			}
-		}
-	}
-	var approvedObject map[string]any
-	if json.Unmarshal([]byte(approved), &approvedObject) != nil || approvedObject == nil {
-		return false
-	}
+	approved := canonicalPermissionApprovedArguments(record)
 
 	action := manageSessionsActionForRequirement(record.Requirement)
 	proposals := parseManageSessionsProposals(payload)

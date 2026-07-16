@@ -8,6 +8,31 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+func TestPlanPermissionModalOpensBeforeApprovedArgumentsBackfill(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-1", SessionMode: "auto", AuthConfigured: true})
+	record := ChatPermissionRecord{
+		ID: "perm-plan", SessionID: "session-1", RunID: "run-1", ToolName: "plan_manage",
+		Requirement: "plan_new_request", Status: "pending", ToolArguments: `{"title":"Plan","document":{"title":"Plan","checkpoints":[{"id":"cp-1","title":"Do it","status":"pending","order":1,"tasks":["Do it"],"acceptance_criteria":["Done"]}]}}`,
+	}
+	page.ApplyPermissionRecords([]ChatPermissionRecord{record})
+	if !page.planPermissionModalActive() {
+		t.Fatal("missing approved_arguments hid the pending plan permission")
+	}
+	if got := page.planPermissionApprovedArguments(); got != "" {
+		t.Fatalf("approval unexpectedly available before canonical backfill: %q", got)
+	}
+	page.planPermissionManual = true
+	record.UpdatedAt = 20
+	record.ApprovedArguments = `{"action":"request_new_plan","document":{"title":"Plan"}}`
+	page.ApplyPermissionRecords([]ChatPermissionRecord{record})
+	if got := page.planPermissionApprovedArguments(); got == "" {
+		t.Fatal("visible modal did not adopt later canonical approved arguments")
+	}
+	if !page.planPermissionManual {
+		t.Fatal("canonical backfill reset the user's continuation choice")
+	}
+}
+
 func TestPlanPermissionModalRoutesAllCanonicalPlanRequirements(t *testing.T) {
 	for _, requirement := range []string{"plan_new_request", "plan_revision_request", "plan_amendment_request", "plan_followup_request"} {
 		t.Run(requirement, func(t *testing.T) {

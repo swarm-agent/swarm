@@ -209,6 +209,19 @@ func (p *ChatPage) SetMessages(messages []ChatMessageRecord) {
 	}
 }
 
+// ApplyPermissionRecords merges authoritative V3 permission records into the
+// chat page and immediately synchronizes the visible approval surface. This is
+// used by the TUI hydration/realtime store in addition to ChatPage's direct
+// permission backfill so a missed legacy event cannot hide a durable pending
+// permission.
+func (p *ChatPage) ApplyPermissionRecords(records []ChatPermissionRecord) {
+	if p == nil || len(records) == 0 {
+		return
+	}
+	p.permissions = mergePermissionHistory(p.permissions, records)
+	p.rebuildToolLifecycleViews()
+}
+
 func (p *ChatPage) SetUsageSummary(summary *ChatUsageSummary) {
 	if p == nil {
 		return

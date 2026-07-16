@@ -5511,13 +5511,20 @@ func indexOfInt(items []int, target int) int {
 
 func (p *ChatPage) syncSpecialPermissionModals() {
 	if strings.TrimSpace(p.planPermission) != "" {
-		if _, ok := p.pendingPermissionByID(p.planPermission); !ok {
+		if record, ok := p.pendingPermissionByID(p.planPermission); !ok {
 			p.closePlanPermissionModal()
+		} else if strings.TrimSpace(p.planPermissionApproved) == "" && canonicalPermissionApprovedArguments(record) != "" {
+			manual, scroll := p.planPermissionManual, p.planPermissionScroll
+			p.OpenPlanPermissionModal(record)
+			p.planPermissionManual = manual
+			p.planPermissionScroll = scroll
 		}
 	}
 	if strings.TrimSpace(p.manageSessionsPermission) != "" {
-		if _, ok := p.pendingPermissionByID(p.manageSessionsPermission); !ok {
+		if record, ok := p.pendingPermissionByID(p.manageSessionsPermission); !ok {
 			p.closeManageSessionsPermissionModal()
+		} else if strings.TrimSpace(p.manageSessionsApproved) == "" && canonicalPermissionApprovedArguments(record) != "" {
+			p.OpenManageSessionsPermissionModal(record)
 		}
 	}
 	if strings.TrimSpace(p.planUpdatePermission) != "" {
