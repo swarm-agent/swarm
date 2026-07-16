@@ -114,6 +114,7 @@ import {
   acceptAndContinueDesktopPlanCheckpoint,
   archiveDesktopV3Sessions,
   resolveDesktopPlanBlockedCheckpoint,
+  restartDesktopPlanCheckpoint,
   resumeDesktopPlanAutomatic,
   resumeDesktopPlanCheckpointed,
 } from "../../session-v3/plan-execution-api";
@@ -431,6 +432,7 @@ function planExecutionViewsEqual(
     left.currentSessionId === right.currentSessionId &&
     left.freshContext === right.freshContext &&
     left.reviewRequired === right.reviewRequired &&
+    left.paused === right.paused &&
     left.blocked === right.blocked &&
     left.failed === right.failed &&
     left.completed === right.completed &&
@@ -2168,6 +2170,14 @@ export function DesktopV3ExistingConversationPane({
         case "archive_plan":
           await archiveDesktopV3Sessions([normalizedSessionId]);
           onArchivePlanSession?.(normalizedSessionId);
+          break;
+        case "restart_checkpoint":
+          if (!input.checkpointId)
+            throw new Error("Restart checkpoint requires checkpoint_id");
+          await restartDesktopPlanCheckpoint(
+            normalizedSessionId,
+            input.checkpointId,
+          );
           break;
         case "resolve_blocked_checkpoint":
           if (!input.checkpointId)

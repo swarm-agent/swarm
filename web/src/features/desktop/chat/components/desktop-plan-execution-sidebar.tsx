@@ -6,6 +6,7 @@ import type { DesktopSessionPlanCheckpoint } from "../types/chat";
 import type { DesktopPlanExecutionView } from "../../state/desktop-v3-cache-selectors";
 type DesktopPlanExecutionSidebarAction =
   | "accept_checkpoint"
+  | "restart_checkpoint"
   | "resolve_blocked_checkpoint"
   | "resolve_blocked_only"
   | "resume_automatic"
@@ -120,6 +121,7 @@ function statusLabel(
 ): string {
   if (view.reviewRequired) return "Waiting review";
   if (view.completed) return "Completed";
+  if (view.paused) return "Paused";
   if (view.blocked) return "Blocked";
   if (view.failed) return "Failed";
   return humanize(checkpoint?.status || view.status || "Ready");
@@ -459,6 +461,8 @@ function ActionsSection({
   const automatic = view.policyMode === "automatic";
   const acceptBusy =
     busyAction === actionBusyKey("accept_checkpoint", checkpointId);
+  const restartBusy =
+    busyAction === actionBusyKey("restart_checkpoint", checkpointId);
   const automaticBusy = busyAction === actionBusyKey("resume_automatic");
   const checkpointedBusy = busyAction === actionBusyKey("resume_checkpointed");
   const archiveBusy = busyAction === actionBusyKey("archive_plan");
@@ -500,6 +504,36 @@ function ActionsSection({
       ? "Backend policy is automatic. All checkpoints are complete and waiting for final review."
       : "Backend policy is automatic. Execution is paused for review before another checkpoint can start."
     : "Backend policy is checkpoint-by-checkpoint. The next completed checkpoint pauses for review unless you switch back to automatic.";
+
+  if (view.paused) {
+    return (
+      <section className="min-w-0 pt-0.5" data-plan-section="actions">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
+          Actions
+        </div>
+        <div className="mt-2 border-y border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-2.5 py-2" data-plan-system-message>
+          <div className="text-xs font-semibold text-[var(--app-text)]">
+            Checkpoint paused
+          </div>
+          <p className="mt-0.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
+            Resume the same checkpoint with a fresh attempt. No new checkpoint is added.
+          </p>
+        </div>
+        <div className="mt-3 grid gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            variant="primary"
+            className={cn("rounded-lg", restartBusy ? "animate-pulse" : "")}
+            onClick={() => void onAction?.({ action: "restart_checkpoint", checkpointId })}
+            disabled={!onAction || !checkpointId || restartBusy}
+          >
+            Resume checkpoint
+          </Button>
+        </div>
+      </section>
+    );
+  }
 
   if (view.blocked) {
     return (

@@ -74,6 +74,7 @@ export interface DesktopPlanExecutionView {
   currentSessionId: string
   freshContext: boolean
   reviewRequired: boolean
+  paused: boolean
   blocked: boolean
   failed: boolean
   completed: boolean
@@ -418,6 +419,7 @@ export function selectDesktopPlanExecutionView(state: DesktopV3CacheState, sessi
     currentSessionId: document.executionState?.currentSessionId || activeCheckpoint?.sessionId || '',
     freshContext: Boolean(document.executionState?.activeAttemptId || activeCheckpoint?.attemptId || document.executionState?.currentRunId || activeCheckpoint?.runId),
     reviewRequired: normalizedStatus === 'waiting_review' || checkpointStatus === 'needs_review' || activeCheckpoint?.review?.status === 'pending',
+    paused: normalizedStatus === 'paused' || checkpointStatus === 'paused',
     blocked: normalizedStatus === 'blocked' || checkpointStatus === 'blocked',
     failed: normalizedStatus === 'failed' || checkpointStatus === 'failed',
     completed: normalizedStatus === 'completed' || document.checkpoints.length > 0 && document.checkpoints.every((checkpoint) => checkpoint.status.toLowerCase() === 'completed'),

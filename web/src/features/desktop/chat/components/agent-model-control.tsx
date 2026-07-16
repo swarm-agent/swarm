@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronDown, Cpu, GitBranch, Lightbulb, Lock, Settings2, Zap, ZapOff } from 'lucide-react'
+import { Check, ChevronDown, GitBranch, Lightbulb, Lock, Settings2, Zap, ZapOff } from 'lucide-react'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
@@ -360,14 +360,19 @@ export function AgentModelControl({
   }
 
   function selectProvider(target: 'single' | 'plan' | 'auto', provider: string) {
-    const update = (current: ModelDraft): ModelDraft => ({ ...current, provider, model: '', serviceTier: '' })
+    const update = (current: ModelDraft): ModelDraft => ({ ...current, provider, model: '', thinking: '', serviceTier: '' })
     if (target === 'single') setSingleDraft(update)
     else if (target === 'plan') setPlanDraft(update)
     else setAutoDraft(update)
   }
 
   function selectModel(target: 'single' | 'plan' | 'auto', model: string) {
-    const update = (current: ModelDraft): ModelDraft => ({ ...current, model, serviceTier: modelSupportsServiceTier(current.provider, model, modelOptions, current.serviceTier) ? current.serviceTier : '' })
+    const update = (current: ModelDraft): ModelDraft => ({
+      ...current,
+      model,
+      thinking: normalizeDraftThinking(current.provider, model, modelOptions, current.thinking),
+      serviceTier: modelSupportsServiceTier(current.provider, model, modelOptions, current.serviceTier) ? current.serviceTier : '',
+    })
     if (target === 'single') setSingleDraft(update)
     else if (target === 'plan') setPlanDraft(update)
     else setAutoDraft(update)
@@ -654,14 +659,42 @@ function ModelDraftEditor({
   return (
     <div className="mt-4 rounded-xl border border-[var(--app-border)] p-4">
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]"><GitBranch size={14} />{title}</div>
-      <div className="grid gap-3 lg:grid-cols-[180px_minmax(0,1fr)]">
+      <div className="grid gap-3 md:grid-cols-[minmax(140px,0.75fr)_minmax(220px,1.5fr)_minmax(140px,0.75fr)]">
         <SelectField label="Provider" value={draft.provider} onChange={onProviderChange} options={providers.map((provider) => ({ label: provider, value: provider }))} placeholder="Choose provider" />
         <ModelSelectField label="Model" value={draft.model} onChange={onModelChange} options={choices} placeholder="Choose model" disabled={!draft.provider.trim()} />
-        <SelectField label="Thinking" value={normalizedThinking} onChange={onThinkingChange} options={thinkingOptions.map((option) => ({ label: option, value: option }))} />
-        {showServiceTier ? <SelectField label="Service tier" value={normalizedServiceTier} onChange={(value) => onServiceTierChange?.(normalizeDraftServiceTier(draft.provider, value))} options={serviceTierOptions} disabled={!serviceTierSupported} /> : null}
+        {showServiceTier ? <SelectField label="Service tier" value={normalizedServiceTier} onChange={(value) => onServiceTierChange?.(normalizeDraftServiceTier(draft.provider, value))} options={serviceTierOptions} disabled={!serviceTierSupported} /> : <div />}
       </div>
-      {selectedOption ? <ModelInfoPanel option={selectedOption} /> : null}
+      <div className="mx-auto mt-4 w-full max-w-lg">
+        <ThinkingSlider value={normalizedThinking} options={thinkingOptions} disabled={!selectedOption} onChange={onThinkingChange} />
+      </div>
     </div>
+  )
+}
+
+function ThinkingSlider({ value, options, disabled = false, onChange }: { value: string; options: string[]; disabled?: boolean; onChange: (value: string) => void }) {
+  const selectedIndex = Math.max(0, options.indexOf(value))
+  const sliderDisabled = disabled || options.length <= 1
+  return (
+    <label className="grid gap-2 text-center text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
+      Thinking
+      <input
+        type="range"
+        min={0}
+        max={Math.max(0, options.length - 1)}
+        step={1}
+        value={selectedIndex}
+        disabled={sliderDisabled}
+        aria-label="Thinking"
+        aria-valuetext={options[selectedIndex] ?? ''}
+        onChange={(event) => onChange(options[Number(event.target.value)] ?? value)}
+        className="w-full cursor-pointer accent-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50"
+      />
+      <div className="flex justify-between gap-2 text-[10px] font-medium normal-case tracking-normal text-[var(--app-text-subtle)]">
+        {options.map((option, index) => (
+          <span key={option} className={index === selectedIndex ? 'text-[var(--app-primary)]' : ''}>{option}</span>
+        ))}
+      </div>
+    </label>
   )
 }
 
@@ -683,38 +716,6 @@ function ModelSelectField({ label, value, options, placeholder = '', disabled = 
         <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
       </span>
     </label>
-  )
-}
-
-function ModelInfoPanel({ option }: { option: ModelOptionRecord }) {
-  const contextLabel = modelContextLabel(option)
-  const pricingLabel = formatModelPricing(option.pricing)
-  const serviceTiers = option.serviceTiers.map((tier) => tier.trim()).filter(Boolean)
-  const details = [
-    { label: 'Provider', value: option.provider },
-    { label: 'Context', value: contextLabel || 'Unknown' },
-    { label: 'Price', value: pricingLabel || 'Not listed' },
-    { label: 'Thinking', value: option.thinking || 'default' },
-    serviceTiers.length > 0 ? { label: 'Tiers', value: serviceTiers.join(', ') } : null,
-  ].filter(Boolean) as Array<{ label: string; value: string }>
-  return (
-    <div className="mt-4 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
-      <div className="flex items-start gap-2">
-        <Cpu size={14} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold text-[var(--app-text)]">{displayModelName(option.provider, option.model, option.contextMode)}</div>
-          <div className="mt-1 break-words text-[11px] text-[var(--app-text-muted)]">{option.label || option.model}</div>
-        </div>
-      </div>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-        {details.map((detail) => (
-          <div key={detail.label} className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{detail.label}</div>
-            <div className="mt-1 break-words text-[11px] text-[var(--app-text)]">{detail.value}</div>
-          </div>
-        ))}
-      </div>
-    </div>
   )
 }
 

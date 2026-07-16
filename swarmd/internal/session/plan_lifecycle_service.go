@@ -1240,7 +1240,7 @@ func followupCheckpointInsertionPointForDocument(doc *pebblestore.SessionPlanDoc
 			return followupCheckpointInsertionPoint{Index: i, CheckpointID: id}
 		case PlanCheckpointStatusInProgress:
 			return followupCheckpointInsertionPoint{Index: i, CheckpointID: id, ResolveCheckpoint: true}
-		case PlanCheckpointStatusBlocked:
+		case PlanCheckpointStatusPaused, PlanCheckpointStatusBlocked:
 			return followupCheckpointInsertionPoint{Index: i + 1, CheckpointID: id, StopReason: status, ResolveCheckpoint: true}
 		case PlanCheckpointStatusFailed:
 			return followupCheckpointInsertionPoint{Index: i, CheckpointID: id, StopReason: status, ResolveCheckpoint: false}
@@ -1273,6 +1273,31 @@ func resolveFollowupInsertionPoint(doc *pebblestore.SessionPlanDocument, point f
 	status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
 	if status == PlanCheckpointStatusInProgress {
 		return resolveCurrentInProgressCheckpointForFollowup(doc, followupID, resolvedAt), nil
+	}
+	if status == PlanCheckpointStatusPaused {
+		checkpoint.Status = PlanCheckpointStatusCompleted
+		checkpoint.Result = "superseded_by_followup"
+		checkpoint.Report = firstNonBlank(strings.TrimSpace(checkpoint.Report), fmt.Sprintf("Paused checkpoint superseded by session checkpoint %q.", followupID))
+		if resolvedAt > 0 && checkpoint.CompletedAt == 0 {
+			checkpoint.CompletedAt = resolvedAt
+		}
+		if checkpoint.Review == nil {
+			checkpoint.Review = &pebblestore.SessionPlanCheckpointReview{}
+		}
+		checkpoint.Review.Status = PlanCheckpointReviewStatusApproved
+		checkpoint.Review.Result = "superseded_by_followup"
+		checkpoint.Review.Notes = firstNonBlank(strings.TrimSpace(checkpoint.Review.Notes), fmt.Sprintf("Paused checkpoint was closed because session checkpoint %q superseded it.", followupID))
+		if resolvedAt > 0 && checkpoint.Review.ReviewedAt == 0 {
+			checkpoint.Review.ReviewedAt = resolvedAt
+		}
+		if doc.ExecutionState == nil {
+			doc.ExecutionState = &pebblestore.SessionPlanExecutionState{}
+		}
+		doc.ExecutionState.LastCheckpointID = checkpointID
+		doc.ExecutionState.LastAttemptID = strings.TrimSpace(checkpoint.AttemptID)
+		doc.ExecutionState.LastOutcome = PlanCheckpointStatusCompleted
+		doc.ExecutionState.UpdatedAt = resolvedAt
+		return checkpointID, nil
 	}
 	if status == PlanCheckpointStatusBlocked {
 		if _, err := ApplyPlanCheckpointBlockResolution(doc, PlanCheckpointBlockResolutionOptions{

@@ -1073,6 +1073,112 @@ func TestPlanLifecycleRequestFollowupCheckpointResolvesBlockedAndAutoStartsInser
 	assertCheckpointOrdersNormalized(t, result.Plan.Document)
 }
 
+func TestPlanLifecycleRequestFollowupCheckpointSupersedesPausedAndAutoStartsInsertedCheckpoint(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	pausedAttempt := pebblestore.SessionPlanCheckpointAttempt{
+		ID: "followup-4:attempt-1", CheckpointID: "followup-4", Status: PlanCheckpointStatusPaused,
+		Outcome: PlanCheckpointStatusPaused, RunID: "run-paused", SessionID: "child-paused",
+		ParentSessionID: sessionID, StartedAt: 100, CompletedAt: 200, Report: "user stopped the run", Result: "run_paused",
+	}
+	doc := &pebblestore.SessionPlanDocument{
+		ID: "plan-paused-followup", Title: "Paused Follow-up Plan", Status: "approved",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed,
+			FollowupCheckpointPolicy: PlanFollowupCheckpointPolicyAutoStart,
+		},
+		ExecutionState: &pebblestore.SessionPlanExecutionState{
+			Status: PlanExecutionStatePaused, LastCheckpointID: "followup-4", LastAttemptID: pausedAttempt.ID,
+			LastOutcome: PlanCheckpointStatusPaused, ParentSessionID: sessionID,
+		},
+		ActiveCheckpointID: "followup-4",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Done", Status: PlanCheckpointStatusCompleted},
+			{ID: "followup-4", Title: "Paused", Status: PlanCheckpointStatusPaused, AttemptID: pausedAttempt.ID, RunID: pausedAttempt.RunID, SessionID: pausedAttempt.SessionID, StartedAt: 100, CompletedAt: 200, Report: pausedAttempt.Report, Result: pausedAttempt.Result, Attempts: []pebblestore.SessionPlanCheckpointAttempt{pausedAttempt}},
+			{ID: "followup-5", Title: "Later", Status: PlanCheckpointStatusPending},
+		},
+	}
+	plan, _, err := svc.SavePlanWithMetadata(sessionID, doc.ID, doc.Title, "# Paused Follow-up Plan", "approved", "approved", true, PlanSaveMetadata{Document: doc})
+	if err != nil {
+		t.Fatalf("save paused plan: %v", err)
+	}
+
+	result, err := NewPlanLifecycleService(svc).RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{
+		SessionID: sessionID, PlanID: plan.ID, ChangeRequest: "Supersede the paused work.",
+		RunID: "run-followup", RunSessionID: "child-followup", ParentSessionID: sessionID, StartedAt: 300,
+	})
+	if err != nil {
+		t.Fatalf("request follow-up for paused plan: %v", err)
+	}
+	if got := strings.Join(checkpointIDs(result.Plan.Document.Checkpoints), ","); got != "cp-1,followup-4,followup-4.5,followup-5" {
+		t.Fatalf("checkpoint order = %s", got)
+	}
+	resolved := result.Plan.Document.Checkpoints[1]
+	if resolved.Status != PlanCheckpointStatusCompleted || resolved.Result != "superseded_by_followup" || resolved.Review == nil || resolved.Review.Status != PlanCheckpointReviewStatusApproved {
+		t.Fatalf("resolved paused checkpoint = %#v", resolved)
+	}
+	if len(resolved.Attempts) != 1 || resolved.Attempts[0].ID != pausedAttempt.ID || resolved.Attempts[0].Status != PlanCheckpointStatusPaused || resolved.Attempts[0].Outcome != PlanCheckpointStatusPaused || resolved.Attempts[0].Result != "run_paused" || resolved.Attempts[0].CompletedAt != 200 {
+		t.Fatalf("paused attempt changed: %#v", resolved.Attempts)
+	}
+	followup := result.Plan.Document.Checkpoints[2]
+	if result.CheckpointID != "followup-4.5" || result.AttemptID != "followup-4.5:attempt-1" || result.Plan.Document.ActiveCheckpointID != "followup-4.5" || followup.Status != PlanCheckpointStatusInProgress || followup.RunID != "run-followup" {
+		t.Fatalf("follow-up execution = result %#v checkpoint %#v", result, followup)
+	}
+	if state := result.Plan.Document.ExecutionState; state == nil || state.Status != PlanExecutionStateInProgress || state.LastCheckpointID != "followup-4" || state.LastAttemptID != pausedAttempt.ID || state.LastOutcome != PlanCheckpointStatusCompleted {
+		t.Fatalf("execution state = %#v", state)
+	}
+	assertCheckpointOrdersNormalized(t, result.Plan.Document)
+}
+
+func TestPlanLifecycleRestartPausedCheckpointCreatesFreshAttempt(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	pausedAttempt := pebblestore.SessionPlanCheckpointAttempt{
+		ID: "cp-1:attempt-1", CheckpointID: "cp-1", Status: PlanCheckpointStatusPaused,
+		Outcome: PlanCheckpointStatusPaused, RunID: "run-paused", SessionID: "child-paused",
+		ParentSessionID: sessionID, StartedAt: 100, CompletedAt: 200, Result: "run_paused",
+	}
+	doc := &pebblestore.SessionPlanDocument{
+		ID: "plan-restart-paused", Title: "Restart Paused Plan", Status: "approved",
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStatePaused, LastCheckpointID: "cp-1", LastAttemptID: pausedAttempt.ID, LastOutcome: PlanCheckpointStatusPaused},
+		ActiveCheckpointID: "cp-1",
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Paused", Status: PlanCheckpointStatusPaused, AttemptID: pausedAttempt.ID, RunID: pausedAttempt.RunID, SessionID: pausedAttempt.SessionID, StartedAt: 100, CompletedAt: 200, Result: pausedAttempt.Result, Attempts: []pebblestore.SessionPlanCheckpointAttempt{pausedAttempt}}},
+	}
+	plan, _, err := svc.SavePlanWithMetadata(sessionID, doc.ID, doc.Title, "# Restart Paused Plan", "approved", "approved", true, PlanSaveMetadata{Document: doc})
+	if err != nil {
+		t.Fatalf("save paused plan: %v", err)
+	}
+
+	result, err := NewPlanLifecycleService(svc).RestartCheckpointRun(PlanLifecycleExecutionInput{
+		SessionID: sessionID, PlanID: plan.ID, CheckpointID: "cp-1", RunID: "run-restarted",
+		RunSessionID: "child-restarted", ParentSessionID: sessionID, StartedAt: 300,
+	})
+	if err != nil {
+		t.Fatalf("restart paused checkpoint: %v", err)
+	}
+	checkpoint := result.Plan.Document.Checkpoints[0]
+	if result.CheckpointID != "cp-1" || result.AttemptID != "cp-1:attempt-2" || checkpoint.Status != PlanCheckpointStatusInProgress || checkpoint.RunID != "run-restarted" || len(checkpoint.Attempts) != 2 {
+		t.Fatalf("restarted checkpoint = result %#v checkpoint %#v", result, checkpoint)
+	}
+	if checkpoint.Attempts[0].Status != PlanCheckpointStatusPaused || checkpoint.Attempts[0].Outcome != PlanCheckpointStatusPaused || checkpoint.Attempts[0].Result != "run_paused" || checkpoint.Attempts[1].Status != PlanCheckpointStatusInProgress {
+		t.Fatalf("restart attempt history = %#v", checkpoint.Attempts)
+	}
+	if state := result.Plan.Document.ExecutionState; state == nil || state.Status != PlanExecutionStateInProgress || state.ActiveAttemptID != "cp-1:attempt-2" || state.CurrentRunID != "run-restarted" {
+		t.Fatalf("restart execution state = %#v", state)
+	}
+}
+
 func TestPlanLifecycleRequestFollowupCheckpointDoesNotClearFailedCheckpoint(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()

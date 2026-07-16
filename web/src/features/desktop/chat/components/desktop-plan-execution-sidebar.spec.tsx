@@ -275,6 +275,7 @@ function view(
     currentSessionId: "session-1",
     freshContext: true,
     reviewRequired: false,
+    paused: false,
     blocked: false,
     failed: false,
     completed: false,
@@ -531,6 +532,34 @@ test("accepted plan sidebar restores the original execution view without AI help
   assert.doesNotMatch(markup, /Plan Agent/);
   assert.doesNotMatch(markup, /New Auto Agent chat/);
   assert.doesNotMatch(markup, /AI helper/);
+});
+
+test("paused checkpoint sidebar exposes only the canonical restart action", () => {
+  const base = view({ paused: true, status: "paused" });
+  base.activeCheckpoint = { ...base.activeCheckpoint!, status: "paused" };
+  base.plan.document.checkpoints = [base.activeCheckpoint];
+  const actions: DesktopPlanExecutionSidebarActionInput[] = [];
+  const element = (
+    <DesktopPlanExecutionSidebar
+      view={base}
+      onAction={(input) => {
+        actions.push(input);
+      }}
+    />
+  );
+  const markup = renderToStaticMarkup(element);
+  const resumeButton = findSidebarButton(element, "Resume checkpoint");
+
+  assert.match(markup, /Checkpoint paused/);
+  assert.match(markup, /fresh attempt/);
+  assert.match(markup, /No new checkpoint is added/);
+  assert.doesNotMatch(markup, /Resolve blocker/);
+  assert.doesNotMatch(markup, /Switch to checkpoint-by-checkpoint/);
+  assert.equal(resumeButton.props.disabled, false);
+  resumeButton.props.onClick?.();
+  assert.deepEqual(actions, [
+    { action: "restart_checkpoint", checkpointId: "cp-1" },
+  ]);
 });
 
 test("blocked checkpoint sidebar shows unblock controls without automatic pause controls", () => {
