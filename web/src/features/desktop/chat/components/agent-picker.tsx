@@ -12,9 +12,6 @@ interface AgentPickerProps {
   mode?: DesktopSessionMode
   onSelect: (agent: string) => void | Promise<void>
   onOpenSettings?: (agent: string) => void
-  thinkingTagsEnabled?: boolean
-  onThinkingTagsToggle?: (enabled: boolean) => void
-  thinkingTagsBusy?: boolean
   disabled?: boolean
   triggerClassName?: string
 }
@@ -23,7 +20,7 @@ const DROPDOWN_VIEWPORT_GUTTER = 8
 const MOBILE_DROPDOWN_BREAKPOINT = 640
 const DESKTOP_DROPDOWN_WIDTH = 480
 
-export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode = 'auto', onSelect, onOpenSettings, thinkingTagsEnabled, onThinkingTagsToggle, thinkingTagsBusy = false, disabled = false, triggerClassName = '' }: AgentPickerProps) {
+export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode = 'auto', onSelect, onOpenSettings, disabled = false, triggerClassName = '' }: AgentPickerProps) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
@@ -266,22 +263,6 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
               </section>
             ))}
           </div>
-          {thinkingTagsEnabled !== undefined && onThinkingTagsToggle ? (
-            <div className="flex shrink-0 items-center justify-between gap-3 border-t border-[var(--app-border)] px-3 py-3 text-[11px] font-medium text-[var(--app-text-muted)]">
-              <span>Shows thinking responses</span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={thinkingTagsEnabled}
-                aria-label="Shows thinking responses"
-                disabled={thinkingTagsBusy}
-                onClick={() => onThinkingTagsToggle(!thinkingTagsEnabled)}
-                className={`relative h-6 w-11 shrink-0 rounded-full border transition disabled:cursor-not-allowed disabled:opacity-60 ${thinkingTagsEnabled ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border-strong)] bg-[var(--app-surface)]'}`}
-              >
-                <span className={`absolute left-1 top-1 h-4 w-4 rounded-full shadow-sm transition-transform ${thinkingTagsEnabled ? 'translate-x-5 bg-[var(--app-primary-text)]' : 'translate-x-0 bg-[var(--app-text-muted)]'}`} />
-              </button>
-            </div>
-          ) : null}
         </div>
       </div>
     </div>,
