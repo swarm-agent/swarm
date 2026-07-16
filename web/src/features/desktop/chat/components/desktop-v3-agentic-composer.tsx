@@ -652,7 +652,7 @@ export function DesktopV3AgenticComposer({
                 {showModePicker ? (
                   <>
                     <ModePicker mode={mode} onSelect={(nextMode) => onModeSelect?.(nextMode)} disabled={!onModeSelect || composerDisabled} />
-                    <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} thinkingTagsEnabled={thinkingTagsEnabled} onThinkingTagsToggle={onThinkingTagsToggle} thinkingTagsBusy={thinkingTagsBusy} disabled={composerDisabled || agentModelControlBusy} />
+                    <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} disabled={composerDisabled || agentModelControlBusy} />
                   </>
                 ) : executionLabel ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
@@ -664,6 +664,11 @@ export function DesktopV3AgenticComposer({
                   <button type="button" onClick={onOpenAuthSettings} disabled={!onOpenAuthSettings} className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1 text-[11px] font-semibold text-[var(--app-warning)] transition-all hover:-translate-y-0.5 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-none" title="Open auth settings to add a provider credential">
                     <AlertTriangle size={13} className="shrink-0" />
                     Needs auth!
+                  </button>
+                ) : null}
+                {thinkingTagsEnabled !== undefined && onThinkingTagsToggle ? (
+                  <button type="button" onClick={() => onThinkingTagsToggle(!thinkingTagsEnabled)} disabled={thinkingTagsBusy} className="inline-flex h-6 items-center rounded-full border border-[var(--app-border)] px-2 text-[10px] font-semibold text-[var(--app-text-muted)] transition-all hover:-translate-y-0.5 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-none">
+                    tags {thinkingTagsEnabled ? 'on' : 'off'}
                   </button>
                 ) : null}
                 {compactButton(false)}
@@ -681,7 +686,7 @@ export function DesktopV3AgenticComposer({
                   {showModePicker ? (
                     <>
                       <ModePicker mode={mode} onSelect={(nextMode) => onModeSelect?.(nextMode)} disabled={!onModeSelect || composerDisabled} triggerClassName="h-full shrink-0 px-2" />
-                      <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} thinkingTagsEnabled={thinkingTagsEnabled} onThinkingTagsToggle={onThinkingTagsToggle} thinkingTagsBusy={thinkingTagsBusy} disabled={composerDisabled || agentModelControlBusy} triggerClassName="w-full justify-between px-1.5 py-1.5" />
+                      <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} disabled={composerDisabled || agentModelControlBusy} triggerClassName="w-full justify-between px-1.5 py-1.5" />
                     </>
                   ) : (
                     <span className="min-w-0 truncate px-2 text-[11px] font-semibold text-[var(--app-text)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
