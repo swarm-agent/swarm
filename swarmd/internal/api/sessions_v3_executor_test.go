@@ -408,7 +408,7 @@ func providerToolResultRecordJSON(toolName, completedOutput string) string {
 	return string(payload)
 }
 
-func TestSessionV3CancelRunReconcilesMatchingPlanFromDurableIntentAndPublishes(t *testing.T) {
+func TestSessionV3CancelRunPausesMatchingPlanFromDurableIntentAndPublishes(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "cancel-plan-create", "cancel plan")
 	const runID = "run-cancel-plan"
@@ -445,10 +445,10 @@ func TestSessionV3CancelRunReconcilesMatchingPlanFromDurableIntentAndPublishes(t
 		t.Fatalf("get reconciled plan: ok=%t err=%v plan=%#v", ok, err, active)
 	}
 	checkpoint := active.Document.Checkpoints[0]
-	if active.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateFailed || checkpoint.Status != sessionruntime.PlanCheckpointStatusFailed || checkpoint.Attempts[0].Status != sessionruntime.PlanCheckpointStatusFailed || checkpoint.Result != "run_cancelled" {
+	if active.Document.ExecutionState.Status != sessionruntime.PlanExecutionStatePaused || checkpoint.Status != sessionruntime.PlanCheckpointStatusPaused || checkpoint.Attempts[0].Status != sessionruntime.PlanCheckpointStatusPaused || checkpoint.Result != "run_paused" {
 		t.Fatalf("reconciled plan = %#v", active.Document)
 	}
-	assertSessionsV3PlanSavedOutboxState(t, sessionSvc, created.ID, sessionruntime.PlanExecutionStateFailed)
+	assertSessionsV3PlanSavedOutboxState(t, sessionSvc, created.ID, sessionruntime.PlanExecutionStatePaused)
 
 	version := active.Version
 	if _, cancelled, err := exec.CancelRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: created.ID, RunID: runID}, "user stopped"); err != nil || !cancelled {

@@ -270,9 +270,10 @@ func TestValidatePlanDocumentRejectsUnresolvedCheckpointsBeforeActive(t *testing
 	}
 }
 
-func TestPlanCheckpointCancellationRequiresExactRunOwnershipAndPreservesRetryability(t *testing.T) {
+func TestPlanCheckpointCancellationPausesExactOwnedRunAndRestartResumes(t *testing.T) {
 	doc := &pebblestore.SessionPlanDocument{
 		ID:                 "plan-cancel",
+		Title:              "Cancellation plan",
 		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
 		ActiveCheckpointID: "cp-1",
 		ExecutionState: &pebblestore.SessionPlanExecutionState{
@@ -297,20 +298,27 @@ func TestPlanCheckpointCancellationRequiresExactRunOwnershipAndPreservesRetryabi
 		t.Fatalf("matching cancellation: decision=%#v err=%v", decision, err)
 	}
 	checkpoint := doc.Checkpoints[0]
-	if checkpoint.Status != PlanCheckpointStatusFailed || checkpoint.Result != "run_cancelled" || checkpoint.Attempts[0].Status != PlanCheckpointStatusFailed || checkpoint.Attempts[0].Outcome != PlanCheckpointStatusFailed {
-		t.Fatalf("cancelled checkpoint/attempt = %#v", checkpoint)
+	if checkpoint.Status != PlanCheckpointStatusPaused || checkpoint.Result != "run_paused" || checkpoint.Attempts[0].Status != PlanCheckpointStatusPaused || checkpoint.Attempts[0].Outcome != PlanCheckpointStatusPaused {
+		t.Fatalf("paused checkpoint/attempt = %#v", checkpoint)
 	}
-	if doc.ExecutionState.Status != PlanExecutionStateFailed || doc.ExecutionState.ActiveAttemptID != "" || doc.ExecutionState.CurrentRunID != "" || doc.ExecutionState.LastOutcome != PlanCheckpointStatusFailed {
-		t.Fatalf("cancelled execution state = %#v", doc.ExecutionState)
+	if doc.ExecutionState.Status != PlanExecutionStatePaused || doc.ExecutionState.ActiveAttemptID != "" || doc.ExecutionState.CurrentRunID != "" || doc.ExecutionState.LastOutcome != PlanCheckpointStatusPaused {
+		t.Fatalf("paused execution state = %#v", doc.ExecutionState)
+	}
+	if summary := SummarizePlanExecution(doc); !summary.Paused || summary.Failed || summary.StopReason != PlanCheckpointStatusPaused || summary.AutoAdvanceAllowed {
+		t.Fatalf("paused execution summary = %#v", summary)
 	}
 	if checkpoint.Subtasks[0].Status != PlanSubtaskStatusPending || checkpoint.ActiveSubtaskID != "" {
 		t.Fatalf("cancellation did not return active subtask to retryable pending state: %#v", checkpoint.Subtasks)
 	}
 	if _, err := ApplyPlanCheckpointReset(doc, PlanCheckpointResetOptions{CheckpointID: "cp-1"}); err != nil {
-		t.Fatalf("cancelled checkpoint is not retryable: %v", err)
+		t.Fatalf("paused checkpoint is not restartable: %v", err)
 	}
 	if doc.Checkpoints[0].Status != PlanCheckpointStatusPending || doc.ExecutionState.Status != PlanExecutionStateIdle {
-		t.Fatalf("reset cancelled checkpoint = %#v state=%#v", doc.Checkpoints[0], doc.ExecutionState)
+		t.Fatalf("reset paused checkpoint = %#v state=%#v", doc.Checkpoints[0], doc.ExecutionState)
+	}
+	started, err := ApplyPlanCheckpointStart(doc, PlanCheckpointStartOptions{PlanID: "plan-cancel", CheckpointID: "cp-1", RunID: "run-2", SessionID: "session-1", ParentSessionID: "parent-1", StartedAt: 43})
+	if err != nil || started.Status != PlanCheckpointStatusInProgress || doc.ExecutionState.Status != PlanExecutionStateInProgress || doc.ExecutionState.CurrentRunID != "run-2" {
+		t.Fatalf("restart paused checkpoint: decision=%#v err=%v state=%#v", started, err, doc.ExecutionState)
 	}
 }
 

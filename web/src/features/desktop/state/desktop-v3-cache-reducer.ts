@@ -1549,6 +1549,12 @@ export function upsertCommittedMessage(
   const inserted = idIndex === undefined && seqIndex === undefined
 
   if (idIndex !== undefined) {
+    const existing = nextItems[idIndex]
+    const existingSeq = Number(existing.global_seq ?? 0)
+    const incomingSeq = Number(message.global_seq ?? 0)
+    if (existingSeq > 0 && incomingSeq < existingSeq) {
+      return
+    }
     nextItems[idIndex] = message
   } else if (seqIndex !== undefined) {
     nextItems[seqIndex] = message

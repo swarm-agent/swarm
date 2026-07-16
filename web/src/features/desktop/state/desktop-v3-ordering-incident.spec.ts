@@ -10,6 +10,7 @@ import {
   buildMessageListCache,
   createEmptyDesktopV3CacheState,
   desktopV3CacheReducer,
+  upsertCommittedMessage,
   upsertPendingUserMessage,
   upsertRunIntent,
 } from './desktop-v3-cache-reducer'
@@ -182,6 +183,31 @@ test('Desktop V3 causally orders a paused-stream resend after its pending user a
   })
   assert.ok(pausedTrace.pendingUserIndex < pausedTrace.newLiveIndex)
 
+  const realtimeCommittedMessage: MessageSnapshot = {
+    id: pendingMessageId,
+    session_id: sessionId,
+    global_seq: 3,
+    role: 'user',
+    content: 'continue after pause',
+    metadata: { run_id: newRunId },
+    created_at: 20,
+  }
+  applyCacheEvent(pausedState, {
+    source: 'realtime',
+    sessionId,
+    eventType: 'session.message.appended',
+    sessionEvent: {
+      id: 'event-restart-user',
+      session_id: sessionId,
+      seq: 3,
+      event_type: 'session.message.appended',
+      payload: { message: realtimeCommittedMessage },
+      ts_unix_ms: 20,
+    },
+    projection: projection(3),
+    payload: { message: realtimeCommittedMessage },
+  })
+
   applyMessageMutationResult(pausedState, {
     ok: true,
     session_id: sessionId,
@@ -189,16 +215,22 @@ test('Desktop V3 causally orders a paused-stream resend after its pending user a
     message: {
       id: pendingMessageId,
       session_id: sessionId,
-      global_seq: 3,
+      global_seq: 0,
       role: 'user',
-      content: 'continue after pause',
+      content: 'malformed response must not replace realtime snapshot',
       metadata: { run_id: newRunId },
-      created_at: 20,
+      created_at: 40,
     },
     run_intent: runIntent(newRunId, 'pending_executor', 4),
     mutation: { realtime_outbox: null },
     realtime_outbox: null,
   }, clientRequestId, pendingMessageId)
+  upsertCommittedMessage(pausedState, sessionId, {
+    ...realtimeCommittedMessage,
+    global_seq: 2,
+    content: 'older response must not replace realtime snapshot',
+    created_at: 50,
+  })
 
   const committedTrace = {
     projectionLastEventSeq: pausedState.projectionsBySession[sessionId]?.last_event_seq,
@@ -219,6 +251,7 @@ test('Desktop V3 causally orders a paused-stream resend after its pending user a
     newLiveIndex: 4,
   })
   assert.ok(committedTrace.committedUserIndex < committedTrace.newLiveIndex)
+  assert.deepEqual(pausedState.messagesBySession[sessionId]?.items.find((message) => message.id === pendingMessageId), realtimeCommittedMessage)
 
   let durableCancellationState = initialState()
   durableCancellationState = applyDesktopV3LivePatchBatch(durableCancellationState, [

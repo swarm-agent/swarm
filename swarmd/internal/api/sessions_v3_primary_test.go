@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -6424,6 +6425,44 @@ func TestSessionsV3PlanModeRunInputSkipsDurableRunIDCollision(t *testing.T) {
 	}
 	if input.AttemptID != "followup-2:attempt-2" || input.RunID == oldRunID {
 		t.Fatalf("run input reused durable identity: %#v", input)
+	}
+}
+
+func TestSessionsV3WaitingReviewFollowupReturnsCanonicalDurableTriggerMessage(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "waiting-review-followup-create", "waiting review followup")
+	_, _, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-waiting-review", "Plan: waiting review", "## Plan", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:  &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateWaitingReview, LastCheckpointID: "cp-1", LastAttemptID: "cp-1:attempt-1", ParentSessionID: created.ID, CurrentSessionID: created.ID},
+		Checkpoints:     []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Final", Status: sessionruntime.PlanCheckpointStatusCompleted}},
+	}})
+	if err != nil {
+		t.Fatalf("save waiting-review plan: %v", err)
+	}
+
+	req := sessionsV3MessageRequest{ClientRequestID: "waiting-review-followup-message", MessageID: "canonical-followup-message", RunID: "waiting-review-followup-run", Role: "user", Content: "continue after final handoff"}
+	result, _, err := server.acceptSessionsV3Message(testPrincipal(), created.ID, req)
+	if err != nil {
+		t.Fatalf("accept waiting-review followup: %v", err)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list durable messages: %v", err)
+	}
+	if len(messages) != 1 || result.Message == nil {
+		t.Fatalf("followup result/message count = %#v/%d", result.Message, len(messages))
+	}
+	persisted := messages[0]
+	if !reflect.DeepEqual(*result.Message, persisted) || result.Message.ID != req.MessageID || result.Message.SessionID != created.ID || result.Message.CreatedAt == 0 || result.Message.GlobalSeq == 0 || result.Message.GlobalSeq != result.Event.Seq {
+		t.Fatalf("response message is not canonical durable trigger: response=%#v persisted=%#v event=%#v", result.Message, persisted, result.Event)
+	}
+
+	replayed, _, err := server.acceptSessionsV3Message(testPrincipal(), created.ID, req)
+	if err != nil {
+		t.Fatalf("replay waiting-review followup: %v", err)
+	}
+	if !replayed.Replayed || replayed.Message == nil || !reflect.DeepEqual(*replayed.Message, persisted) || replayed.Message.GlobalSeq != replayed.Event.Seq {
+		t.Fatalf("replay did not return canonical durable trigger: replay=%#v persisted=%#v", replayed, persisted)
 	}
 }
 

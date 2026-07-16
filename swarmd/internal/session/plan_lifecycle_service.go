@@ -929,7 +929,7 @@ func (s *PlanLifecycleService) ReconcileCancelledRun(input PlanLifecycleExecutio
 		return PlanLifecycleResult{}, false, nil
 	}
 	state := planLifecycleState{session: session, plan: plan, doc: doc}
-	result, err := s.saveLifecyclePlan(state, decision.CheckpointID, "run_cancelled", "Reconciled cancelled run with active checkpoint attempt")
+	result, err := s.saveLifecyclePlan(state, decision.CheckpointID, "run_paused", "Reconciled user-cancelled run as a paused checkpoint attempt")
 	if err != nil {
 		return PlanLifecycleResult{}, false, err
 	}

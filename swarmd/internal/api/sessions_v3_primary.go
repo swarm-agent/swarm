@@ -1219,7 +1219,7 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	var result sessionruntime.SessionMutationResult
 	if followupEpoch != nil {
 		epochResult := *followupEpoch
-		if epochResult.TriggerEvent == nil || epochResult.TriggerOutbox == nil {
+		if epochResult.TriggerMessage == nil || epochResult.TriggerEvent == nil || epochResult.TriggerOutbox == nil {
 			return result, nil, errors.New("execution epoch replay is missing its compound trigger message")
 		}
 		intent, ok, intentErr := s.sessions.GetV3SessionRunIntent(sessionID, runIntent.RunID)
@@ -1229,7 +1229,7 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 		if !ok {
 			return result, nil, errors.New("execution epoch did not persist its trigger run intent")
 		}
-		result = sessionruntime.SessionMutationResult{SessionID: sessionID, PrimarySeq: epochResult.TriggerEvent.Seq, FirstSeq: epochResult.TriggerEvent.Seq, LastSeq: epochResult.TriggerEvent.Seq, EventIDs: []string{epochResult.TriggerEvent.ID}, PayloadHash: payloadHash, Event: *epochResult.TriggerEvent, Message: &message, RunIntent: &intent, Projection: epochResult.Projection, RealtimeOutbox: epochResult.TriggerOutbox, Replayed: epochResult.Replayed}
+		result = sessionruntime.SessionMutationResult{SessionID: sessionID, PrimarySeq: epochResult.TriggerEvent.Seq, FirstSeq: epochResult.TriggerEvent.Seq, LastSeq: epochResult.TriggerEvent.Seq, EventIDs: []string{epochResult.TriggerEvent.ID}, PayloadHash: payloadHash, Event: *epochResult.TriggerEvent, Message: epochResult.TriggerMessage, RunIntent: &intent, Projection: epochResult.Projection, RealtimeOutbox: epochResult.TriggerOutbox, Replayed: epochResult.Replayed}
 	} else {
 		result, err = s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 			SessionID:       sessionID,

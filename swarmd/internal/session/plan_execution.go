@@ -27,6 +27,7 @@ const (
 	PlanExecutionStateIdle          = "idle"
 	PlanExecutionStateInProgress    = "in_progress"
 	PlanExecutionStateWaitingReview = "waiting_review"
+	PlanExecutionStatePaused        = "paused"
 	PlanExecutionStateBlocked       = "blocked"
 	PlanExecutionStateFailed        = "failed"
 	PlanExecutionStateCompleted     = "completed"
@@ -35,6 +36,7 @@ const (
 	PlanCheckpointStatusInProgress  = "in_progress"
 	PlanCheckpointStatusNeedsReview = "needs_review"
 	PlanCheckpointStatusCompleted   = "completed"
+	PlanCheckpointStatusPaused      = "paused"
 	PlanCheckpointStatusBlocked     = "blocked"
 	PlanCheckpointStatusFailed      = "failed"
 
@@ -54,6 +56,7 @@ type PlanExecutionSummary struct {
 	NextCheckpointID     string `json:"next_checkpoint_id,omitempty"`
 	NextCheckpointStatus string `json:"next_checkpoint_status,omitempty"`
 	ReviewRequired       bool   `json:"review_required"`
+	Paused               bool   `json:"paused"`
 	Blocked              bool   `json:"blocked"`
 	Failed               bool   `json:"failed"`
 	PlanComplete         bool   `json:"plan_complete"`
@@ -377,6 +380,8 @@ func normalizePlanExecutionStateStatus(status string) string {
 		return PlanExecutionStateInProgress
 	case "review", "needs_review", "waiting_review", "awaiting_review":
 		return PlanExecutionStateWaitingReview
+	case "pause", "paused", "stopped", "cancelled", "canceled":
+		return PlanExecutionStatePaused
 	case "blocked":
 		return PlanExecutionStateBlocked
 	case "failed", "failure", "error":
@@ -407,6 +412,8 @@ func normalizePlanCheckpointStatus(status string) string {
 		return PlanCheckpointStatusNeedsReview
 	case "done", "complete", "completed", "success":
 		return PlanCheckpointStatusCompleted
+	case "pause", "paused", "stopped", "cancelled", "canceled":
+		return PlanCheckpointStatusPaused
 	case "blocked":
 		return PlanCheckpointStatusBlocked
 	case "failed", "failure", "error":
@@ -424,6 +431,8 @@ func normalizePlanCheckpointOutcome(outcome string) string {
 		return PlanCheckpointStatusNeedsReview
 	case "done", "complete", "completed", "success":
 		return PlanCheckpointStatusCompleted
+	case "pause", "paused", "stopped", "cancelled", "canceled":
+		return PlanCheckpointStatusPaused
 	case "blocked":
 		return PlanCheckpointStatusBlocked
 	case "failed", "failure", "error":
@@ -482,7 +491,7 @@ func validatePlanExecutionState(state *pebblestore.SessionPlanExecutionState) er
 		return nil
 	}
 	switch state.Status {
-	case "", PlanExecutionStateIdle, PlanExecutionStateInProgress, PlanExecutionStateWaitingReview, PlanExecutionStateBlocked, PlanExecutionStateFailed, PlanExecutionStateCompleted:
+	case "", PlanExecutionStateIdle, PlanExecutionStateInProgress, PlanExecutionStateWaitingReview, PlanExecutionStatePaused, PlanExecutionStateBlocked, PlanExecutionStateFailed, PlanExecutionStateCompleted:
 	default:
 		return fmt.Errorf("plan document execution_state.status %q is not supported", state.Status)
 	}
@@ -564,7 +573,7 @@ func validatePlanCheckpointReview(review pebblestore.SessionPlanCheckpointReview
 
 func isValidPlanCheckpointStatus(status string) bool {
 	switch status {
-	case PlanCheckpointStatusPending, PlanCheckpointStatusInProgress, PlanCheckpointStatusNeedsReview, PlanCheckpointStatusCompleted, PlanCheckpointStatusBlocked, PlanCheckpointStatusFailed:
+	case PlanCheckpointStatusPending, PlanCheckpointStatusInProgress, PlanCheckpointStatusNeedsReview, PlanCheckpointStatusCompleted, PlanCheckpointStatusPaused, PlanCheckpointStatusBlocked, PlanCheckpointStatusFailed:
 		return true
 	default:
 		return false
@@ -573,7 +582,7 @@ func isValidPlanCheckpointStatus(status string) bool {
 
 func isValidPlanCheckpointOutcome(outcome string) bool {
 	switch outcome {
-	case PlanCheckpointStatusNeedsReview, PlanCheckpointStatusCompleted, PlanCheckpointStatusBlocked, PlanCheckpointStatusFailed:
+	case PlanCheckpointStatusNeedsReview, PlanCheckpointStatusCompleted, PlanCheckpointStatusPaused, PlanCheckpointStatusBlocked, PlanCheckpointStatusFailed:
 		return true
 	default:
 		return false
@@ -704,6 +713,13 @@ func SummarizePlanExecution(doc *pebblestore.SessionPlanDocument) PlanExecutionS
 				summary.ReviewRequired = true
 				summary.StopReason = PlanCheckpointStatusNeedsReview
 				return summary
+			case PlanCheckpointStatusPaused:
+				summary.NextCheckpointID = strings.TrimSpace(checkpoint.ID)
+				summary.NextCheckpointStatus = status
+				summary.Paused = true
+				summary.AutoAdvanceAllowed = false
+				summary.StopReason = PlanCheckpointStatusPaused
+				return summary
 			case PlanCheckpointStatusBlocked:
 				summary.NextCheckpointID = strings.TrimSpace(checkpoint.ID)
 				summary.NextCheckpointStatus = status
@@ -743,6 +759,13 @@ func SummarizePlanExecution(doc *pebblestore.SessionPlanDocument) PlanExecutionS
 			summary.NextCheckpointStatus = status
 			summary.ReviewRequired = true
 			summary.StopReason = PlanCheckpointStatusNeedsReview
+			return summary
+		case PlanCheckpointStatusPaused:
+			summary.NextCheckpointID = strings.TrimSpace(checkpoint.ID)
+			summary.NextCheckpointStatus = status
+			summary.Paused = true
+			summary.AutoAdvanceAllowed = false
+			summary.StopReason = PlanCheckpointStatusPaused
 			return summary
 		case PlanCheckpointStatusBlocked:
 			summary.NextCheckpointID = strings.TrimSpace(checkpoint.ID)
@@ -833,7 +856,7 @@ func planCheckpointReviewPending(policy pebblestore.SessionPlanExecutionPolicy, 
 
 func SelectNextPlanCheckpoint(doc *pebblestore.SessionPlanDocument) (pebblestore.SessionPlanCheckpoint, PlanExecutionSummary, bool) {
 	summary := SummarizePlanExecution(doc)
-	if doc == nil || summary.NextCheckpointID == "" || summary.ReviewRequired || summary.Blocked || summary.Failed {
+	if doc == nil || summary.NextCheckpointID == "" || summary.ReviewRequired || summary.Paused || summary.Blocked || summary.Failed {
 		return pebblestore.SessionPlanCheckpoint{}, summary, false
 	}
 	idx := findPlanCheckpointIndex(doc.Checkpoints, summary.NextCheckpointID)
@@ -874,7 +897,7 @@ func ApplyPlanCheckpointStart(doc *pebblestore.SessionPlanDocument, options Plan
 		return PlanCheckpointStartDecision{CheckpointID: checkpointID, Status: status, NextCheckpointID: checkpointID, ReviewRequired: true, StopReason: PlanCheckpointStatusNeedsReview}, fmt.Errorf("checkpoint %q is waiting for review", checkpointID)
 	}
 	switch status {
-	case PlanCheckpointStatusBlocked, PlanCheckpointStatusFailed:
+	case PlanCheckpointStatusPaused, PlanCheckpointStatusBlocked, PlanCheckpointStatusFailed:
 		return PlanCheckpointStartDecision{CheckpointID: checkpointID, Status: status, NextCheckpointID: checkpointID, StopReason: status}, fmt.Errorf("checkpoint %q is %s", checkpointID, status)
 	case PlanCheckpointStatusCompleted:
 		if summary.NextCheckpointID != checkpointID {
@@ -971,7 +994,7 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 	if currentStatus == PlanCheckpointStatusCompleted && outcome == PlanCheckpointStatusCompleted && currentSummary.ReviewRequired && currentSummary.StopReason == PlanCheckpointStatusNeedsReview && allPlanCheckpointsCompleted(doc.Checkpoints) {
 		return PlanCheckpointOutcomeDecision{}, errors.New("plan is already waiting for final review; accept review or request_followup_checkpoint instead of completing the checkpoint again")
 	}
-	if currentStatus == PlanCheckpointStatusCompleted || currentStatus == PlanCheckpointStatusBlocked || currentStatus == PlanCheckpointStatusFailed {
+	if currentStatus == PlanCheckpointStatusCompleted || currentStatus == PlanCheckpointStatusPaused || currentStatus == PlanCheckpointStatusBlocked || currentStatus == PlanCheckpointStatusFailed {
 		if currentStatus != outcome {
 			return PlanCheckpointOutcomeDecision{}, fmt.Errorf("checkpoint %q is already terminal with status %q", checkpointID, currentStatus)
 		}
@@ -1229,10 +1252,9 @@ func ApplyPlanCheckpointReset(doc *pebblestore.SessionPlanDocument, options Plan
 	return SummarizePlanExecution(doc), nil
 }
 
-// ApplyPlanCheckpointCancellation terminalizes only the active checkpoint attempt
-// owned by the cancelled run. A cancelled checkpoint is failed rather than
-// completed so cancellation never invents successful work and the existing
-// checkpoint restart transition remains the explicit retry path.
+// ApplyPlanCheckpointCancellation pauses only the active checkpoint attempt
+// owned by the user-cancelled run. It never invents successful work, and the
+// existing checkpoint restart transition remains the explicit retry path.
 func ApplyPlanCheckpointCancellation(doc *pebblestore.SessionPlanDocument, options PlanCheckpointCancellationOptions) (PlanCheckpointCancellationDecision, error) {
 	if doc == nil {
 		return PlanCheckpointCancellationDecision{}, errors.New("plan document is required")
@@ -1295,9 +1317,9 @@ func ApplyPlanCheckpointCancellation(doc *pebblestore.SessionPlanDocument, optio
 	if reason == "" {
 		reason = "Run cancelled. Restart the checkpoint to retry."
 	}
-	checkpoint.Status = PlanCheckpointStatusFailed
+	checkpoint.Status = PlanCheckpointStatusPaused
 	checkpoint.Report = reason
-	checkpoint.Result = "run_cancelled"
+	checkpoint.Result = "run_paused"
 	for i := range checkpoint.Subtasks {
 		if checkpoint.Subtasks[i].Status == PlanSubtaskStatusInProgress {
 			checkpoint.Subtasks[i].Status = PlanSubtaskStatusPending
@@ -1309,17 +1331,17 @@ func ApplyPlanCheckpointCancellation(doc *pebblestore.SessionPlanDocument, optio
 		checkpoint.CompletedAt = cancelledAt
 	}
 	attempt := &checkpoint.Attempts[attemptIdx]
-	attempt.Status = PlanCheckpointStatusFailed
-	attempt.Outcome = PlanCheckpointStatusFailed
+	attempt.Status = PlanCheckpointStatusPaused
+	attempt.Outcome = PlanCheckpointStatusPaused
 	attempt.Report = reason
-	attempt.Result = "run_cancelled"
+	attempt.Result = "run_paused"
 	if cancelledAt > 0 {
 		attempt.CompletedAt = cancelledAt
 	}
-	state.Status = PlanExecutionStateFailed
+	state.Status = PlanExecutionStatePaused
 	state.LastCheckpointID = checkpointID
 	state.LastAttemptID = attemptID
-	state.LastOutcome = PlanCheckpointStatusFailed
+	state.LastOutcome = PlanCheckpointStatusPaused
 	state.ActiveAttemptID = ""
 	state.CurrentRunID = ""
 	state.CurrentSessionID = ""

@@ -116,14 +116,15 @@ type BeginExecutionEpochInput struct {
 }
 
 type BeginExecutionEpochResult struct {
-	Epoch         ExecutionEpoch          `json:"epoch"`
-	Predecessor   ExecutionEpoch          `json:"predecessor"`
-	Event         V3SessionEvent          `json:"event"`
-	Projection    V3SessionProjection     `json:"projection"`
-	Outbox        V3RealtimeOutboxRecord  `json:"realtime_outbox"`
-	TriggerEvent  *V3SessionEvent         `json:"trigger_event,omitempty"`
-	TriggerOutbox *V3RealtimeOutboxRecord `json:"trigger_realtime_outbox,omitempty"`
-	Replayed      bool                    `json:"replayed,omitempty"`
+	Epoch          ExecutionEpoch          `json:"epoch"`
+	Predecessor    ExecutionEpoch          `json:"predecessor"`
+	Event          V3SessionEvent          `json:"event"`
+	Projection     V3SessionProjection     `json:"projection"`
+	Outbox         V3RealtimeOutboxRecord  `json:"realtime_outbox"`
+	TriggerMessage *MessageSnapshot        `json:"trigger_message,omitempty"`
+	TriggerEvent   *V3SessionEvent         `json:"trigger_event,omitempty"`
+	TriggerOutbox  *V3RealtimeOutboxRecord `json:"trigger_realtime_outbox,omitempty"`
+	Replayed       bool                    `json:"replayed,omitempty"`
 }
 
 // SealExecutionEpochInput names the epoch being sealed so a delayed executor
@@ -469,6 +470,7 @@ func (s *SessionStore) BeginExecutionEpoch(input BeginExecutionEpochInput) (Begi
 		}
 		committedOutbox := []uint64{outbox.EndpointSeq}
 		projection := outbox.Projection
+		var triggerMessage *MessageSnapshot
 		var triggerEvent *V3SessionEvent
 		var triggerOutbox *V3RealtimeOutboxRecord
 		if record.Result.LastSeq > record.Result.FirstSeq {
@@ -484,6 +486,11 @@ func (s *SessionStore) BeginExecutionEpoch(input BeginExecutionEpochInput) (Begi
 			if triggerErr != nil || triggerRecord.Event.Seq != trigger.Seq || triggerRecord.Projection.LastEventSeq != trigger.Seq {
 				return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch trigger outbox is inconsistent: %w", triggerErr)
 			}
+			messages, triggerErr := listV3SessionMessagesRangeFromReader(s.store.db, input.SessionID, trigger.Seq, trigger.Seq, 1)
+			if triggerErr != nil || len(messages) != 1 || messages[0].SessionID != input.SessionID || messages[0].GlobalSeq != trigger.Seq {
+				return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch trigger message is unavailable or inconsistent: %w", triggerErr)
+			}
+			triggerMessage = &messages[0]
 			triggerEvent = &trigger
 			triggerOutbox = &triggerRecord
 			projection = triggerRecord.Projection
@@ -492,7 +499,7 @@ func (s *SessionStore) BeginExecutionEpoch(input BeginExecutionEpochInput) (Begi
 		if err := s.store.sessionMutations.commitOutbox(s.store, committedOutbox); err != nil {
 			return BeginExecutionEpochResult{}, err
 		}
-		return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox, TriggerEvent: triggerEvent, TriggerOutbox: triggerOutbox, Replayed: true}, nil
+		return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox, TriggerMessage: triggerMessage, TriggerEvent: triggerEvent, TriggerOutbox: triggerOutbox, Replayed: true}, nil
 	}
 	return s.beginFreshExecutionEpoch(input, idemKey)
 }
@@ -779,7 +786,11 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 	if err := s.store.sessionMutations.commitOutbox(s.store, reserved); err != nil {
 		return BeginExecutionEpochResult{}, err
 	}
-	return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox, TriggerEvent: triggerEvent, TriggerOutbox: triggerOutbox}, nil
+	var committedTriggerMessage *MessageSnapshot
+	if triggerProvided {
+		committedTriggerMessage = &triggerMessage
+	}
+	return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox, TriggerMessage: committedTriggerMessage, TriggerEvent: triggerEvent, TriggerOutbox: triggerOutbox}, nil
 }
 
 func (s *SessionStore) readLegacyEpochPrefix(sessionID string, seq uint64) (*ExecutionEpochLegacyPrefix, error) {
