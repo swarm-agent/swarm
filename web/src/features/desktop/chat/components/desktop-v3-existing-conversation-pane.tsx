@@ -2792,7 +2792,7 @@ function DesktopV3UserMessage({
   pendingLabel?: string;
 }) {
   return (
-    <div className="flex justify-end pr-0">
+    <div className="flex translate-x-[15px] justify-end pr-0">
       <div className="max-w-[70%] rounded-xl bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)] shadow-sm">
         <div className="whitespace-pre-wrap break-words">{content}</div>
         {pendingLabel ? (
@@ -2847,7 +2847,7 @@ function DesktopV3AssistantMessage({
   role: string;
 }) {
   return (
-    <div className="flex justify-start">
+    <div className="flex translate-x-[5px] justify-start">
       <div className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)]">
         {role === "reasoning" ? (
           <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
@@ -2872,7 +2872,12 @@ function DesktopV3ToolMessage({
   const toolName = toolMessage?.tool.trim().toLowerCase();
   const usesFullWidthCard = toolName === "bash" || toolName === "task";
   return (
-    <div className="flex justify-start">
+    <div
+      className={cn(
+        "flex justify-start",
+        toolName === "bash" && "translate-x-[5px]",
+      )}
+    >
       <div
         className={cn(
           "min-w-0",
