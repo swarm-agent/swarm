@@ -8,6 +8,7 @@ import { defaultModelThinking, displayModelName, effectiveContextWindow, formatC
 import { uiSettingsQueryOptions } from '../../../queries/query-options'
 import { saveSystemAgentSettings } from '../../settings/swarm/mutations/save-system-agent-settings'
 import { normalizeExplorerAgentSettings } from '../../settings/swarm/types/swarm-settings'
+import { displayAgentName } from '../services/agent-display'
 
 export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
   | 'defaultSessionMode'
@@ -74,7 +75,7 @@ function agentMode(profile: AgentProfileRecord): string {
 }
 
 function agentLabel(profile: AgentProfileRecord): string {
-  return profile.name === 'swarm' ? 'Swarm' : profile.name
+  return displayAgentName(profile.name)
 }
 
 function agentModeLabel(profile: AgentProfileRecord): string {
@@ -432,7 +433,7 @@ export function AgentModelControl({
         <div className="flex items-start justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4">
           <div className="min-w-0">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent setup</div>
-            <div className="mt-1 truncate text-sm font-semibold text-[var(--app-text)]">{draftProfile ? agentLabel(draftProfile) : currentAgent === 'swarm' ? 'Swarm' : currentAgent || 'Agent'}</div>
+            <div className="mt-1 truncate text-sm font-semibold text-[var(--app-text)]">{draftProfile ? agentLabel(draftProfile) : displayAgentName(currentAgent) || 'Agent'}</div>
             <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Changes are staged here and saved to the agent profile only when confirmed.</div>
           </div>
           <div className="flex shrink-0 items-center gap-2">

@@ -84,6 +84,21 @@ test('agent trigger shows text-only thinking and active priority metadata to the
   assert.doesNotMatch(markup, /💡|⚡|font-variant-emoji|plan mode|auto mode/)
 })
 
+test('compiled system-agent identities keep their canonical values but render without the redundant prefix', () => {
+  const markup = renderToStaticMarkup(
+    <AgentPicker
+      currentAgent="system-explorer"
+      selectedPrimaryAgent="swarm"
+      agents={[profile('system-explorer', { mode: 'subagent', protected: true })]}
+      onSelect={() => {}}
+    />,
+  )
+
+  assert.match(markup, /Agent: Explorer/)
+  assert.match(markup, />Explorer</)
+  assert.doesNotMatch(markup, />system-explorer</)
+})
+
 test('agent trigger uses the active mode details for a split profile', () => {
   const split = profile('reviewer', {
     modelMode: 'split',

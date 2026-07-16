@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { ChevronDown, Check, Settings2 } from 'lucide-react'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import type { AgentProfileRecord } from '../types/chat'
+import { displayAgentName } from '../services/agent-display'
 
 interface AgentPickerProps {
   currentAgent: string
@@ -26,7 +27,7 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
   const pointerAnchorRef = useRef<{ x: number; y: number } | null>(null)
   const [position, setPosition] = useState<{ top?: number; bottom?: number; left?: number; right?: number; minWidth: number; width?: number; maxWidth: number; maxHeight: number } | null>(null)
 
-  const profileLabel = (profile: AgentProfileRecord) => profile.name === 'swarm' ? 'Swarm' : profile.name
+  const profileLabel = (profile: AgentProfileRecord) => displayAgentName(profile.name)
   const agentMode = (profile: AgentProfileRecord) => (profile.mode || 'primary').trim().toLowerCase()
   const primaryAgents = agents.filter((profile) => agentMode(profile) === 'primary')
   const subagentAgents = agents.filter((profile) => agentMode(profile) === 'subagent')
@@ -37,7 +38,7 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
   const selectedProfile = agents.find((agent) => agent.name === selectedPrimaryAgent)
   const currentProfile = agents.find((agent) => agent.name === currentAgent) ?? selectedProfile
   const selectedAgentName = currentProfile?.name || currentAgent || selectedPrimaryAgent
-  const displayLabel = currentProfile ? profileLabel(currentProfile) : (currentAgent === 'swarm' ? 'Swarm' : currentAgent || selectedPrimaryAgent || 'Agent')
+  const displayLabel = currentProfile ? profileLabel(currentProfile) : displayAgentName(currentAgent || selectedPrimaryAgent) || 'Agent'
   const settingLabel = (provider: string, model: string, thinking: string, serviceTier: string) => {
     const normalizedServiceTier = serviceTier.trim().toLowerCase()
     const priorityActive = Boolean(normalizedServiceTier && !['standard', 'default', 'off', 'none'].includes(normalizedServiceTier))
