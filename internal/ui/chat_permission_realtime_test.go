@@ -8,20 +8,24 @@ import (
 func TestChatPermissionRealtimeUpdateDismissesResolvedSpecialModal(t *testing.T) {
 	page := NewChatPage(ChatPageOptions{SessionID: "session-1", SessionMode: "plan", AuthConfigured: true})
 	requested := ChatPermissionRecord{
-		ID:        "perm-exit",
-		SessionID: "session-1",
-		RunID:     "run-1",
-		ToolName:  "exit_plan_mode",
-		Status:    "pending",
-		CreatedAt: 10,
-		UpdatedAt: 10,
+		ID:            "perm-exit",
+		SessionID:     "session-1",
+		RunID:         "run-1",
+		ToolName:      "exit_plan_mode",
+		ToolArguments: `{"path_id":"permission.exit-plan-mode.v1","document":{"title":"Plan","info":{"goal":"Approve"},"checkpoints":[{"id":"cp-1","title":"Run","status":"pending","order":1}]},"approved_arguments":{"document":{"title":"Plan","checkpoints":[{"id":"cp-1","title":"Run","status":"pending","order":1}]}}}`,
+		Status:        "pending",
+		CreatedAt:     10,
+		UpdatedAt:     10,
 	}
 
 	if !page.ApplySharedStreamEvent(ChatRunStreamEvent{Type: "permission.requested", SessionID: "session-1", RunID: "run-1", Permission: &requested}, 10) {
 		t.Fatal("permission.requested was not applied")
 	}
-	if !page.planExitModalActive() {
-		t.Fatal("exit plan permission modal did not open for pending realtime permission")
+	if !page.planPermissionModalActive() {
+		t.Fatal("plan permission modal did not open for pending realtime permission")
+	}
+	if page.planExitModalActive() || page.planUpdateModalActive() || page.planEditorModalActive() {
+		t.Fatal("realtime V3 plan permission activated a legacy plan modal")
 	}
 	if len(page.pendingPerms) != 1 || page.pendingPerms[0].ID != requested.ID {
 		t.Fatalf("pending permissions = %#v, want requested permission", page.pendingPerms)
@@ -35,14 +39,14 @@ func TestChatPermissionRealtimeUpdateDismissesResolvedSpecialModal(t *testing.T)
 	if !page.ApplySharedStreamEvent(ChatRunStreamEvent{Type: "permission.updated", SessionID: "session-1", RunID: "run-1", Permission: &updated}, 20) {
 		t.Fatal("permission.updated was not applied")
 	}
-	if page.planExitModalActive() {
-		t.Fatal("resolved permission did not dismiss exit plan permission modal")
+	if page.planPermissionModalActive() {
+		t.Fatal("resolved permission did not dismiss plan permission modal")
 	}
 	if len(page.pendingPerms) != 0 {
 		t.Fatalf("pending permissions = %#v, want none after resolved update", page.pendingPerms)
 	}
-	if got := page.statusLine; got != "exit plan mode approved" {
-		t.Fatalf("statusLine = %q, want exit plan mode approved", got)
+	if got := page.statusLine; got != "plan approved" {
+		t.Fatalf("statusLine = %q, want plan approved", got)
 	}
 }
 
@@ -74,21 +78,28 @@ func TestChatRealtimeSessionModeUpdateSwitchesFooterOutOfPlanMode(t *testing.T) 
 	}
 }
 
-func TestChatPermissionRealtimeUpdateDismissesGenericModal(t *testing.T) {
+func TestChatPermissionRealtimeRoutesBashToInlineComposer(t *testing.T) {
 	page := NewChatPage(ChatPageOptions{SessionID: "session-1", SessionMode: "auto", AuthConfigured: true})
 	requested := ChatPermissionRecord{
 		ID:        "perm-tool",
 		SessionID: "session-1",
 		RunID:     "run-1",
-		ToolName:  "bash",
+		ToolName:  "functions.bash",
 		Status:    "pending",
 		CreatedAt: 10,
 		UpdatedAt: 10,
 	}
 
 	page.ApplySharedStreamEvent(ChatRunStreamEvent{Type: "permission.requested", SessionID: "session-1", RunID: "run-1", Permission: &requested}, 10)
-	if !page.PermissionModalVisible() {
-		t.Fatal("generic permission modal did not open for pending realtime permission")
+	if !page.OrdinaryPermissionComposerVisible() {
+		t.Fatal("inline permission composer did not open for pending realtime Bash permission")
+	}
+	if page.planExitModalActive() || page.planUpdateModalActive() {
+		t.Fatal("ordinary Bash permission activated a centered plan modal")
+	}
+	indexes := page.ordinaryPermissionIndexes()
+	if len(indexes) != 1 || page.pendingPerms[indexes[0]].ID != requested.ID {
+		t.Fatalf("ordinary permission indexes = %#v, want realtime Bash permission", indexes)
 	}
 
 	updated := requested
@@ -97,8 +108,8 @@ func TestChatPermissionRealtimeUpdateDismissesGenericModal(t *testing.T) {
 	updated.ResolvedAt = 20
 	updated.UpdatedAt = 20
 	page.ApplySharedStreamEvent(ChatRunStreamEvent{Type: "permission.updated", SessionID: "session-1", RunID: "run-1", Permission: &updated}, 20)
-	if page.PermissionModalVisible() {
-		t.Fatal("resolved generic permission modal stayed visible")
+	if page.OrdinaryPermissionComposerVisible() {
+		t.Fatal("resolved Bash permission stayed in the inline composer")
 	}
 	if len(page.pendingPerms) != 0 {
 		t.Fatalf("pending permissions = %#v, want none after denied update", page.pendingPerms)

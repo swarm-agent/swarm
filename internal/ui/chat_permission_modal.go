@@ -15,7 +15,7 @@ import (
 )
 
 func (p *ChatPage) permissionComposerDesiredHeight(width int) int {
-	indexes := p.genericPermissionIndexes()
+	indexes := p.ordinaryPermissionIndexes()
 	if len(indexes) == 0 {
 		return 0
 	}
@@ -433,7 +433,7 @@ func (p *ChatPage) drawPermissionComposer(s tcell.Screen, rect Rect) {
 	p.alwaysAllowRect = Rect{}
 	p.alwaysDenyRect = Rect{}
 
-	indexes := p.genericPermissionIndexes()
+	indexes := p.ordinaryPermissionIndexes()
 	if len(indexes) == 0 {
 		p.permDetailMaxScroll = 0
 		p.permDetailScroll = 0
@@ -632,6 +632,8 @@ func normalizePermissionToolName(raw string) string {
 		return "exit_plan_mode"
 	case "managetodos":
 		return "manage_todos"
+	case "managesessions":
+		return "manage_sessions"
 	case "planmanage":
 		return "plan_manage"
 	case "managetheme":
@@ -870,7 +872,7 @@ func permissionParserDebugf(format string, args ...any) {
 }
 
 func (p *ChatPage) permissionPanelHeight(width int) int {
-	count := p.genericPermissionCount()
+	count := p.ordinaryPermissionCount()
 	if width < 24 || count == 0 {
 		return 0
 	}
@@ -887,7 +889,7 @@ func (p *ChatPage) drawPermissionPanel(s tcell.Screen, rect Rect) {
 	p.permIndexes = p.permIndexes[:0]
 	p.alwaysAllowRect = Rect{}
 	p.alwaysDenyRect = Rect{}
-	indexes := p.genericPermissionIndexes()
+	indexes := p.ordinaryPermissionIndexes()
 	if rect.W < 18 || rect.H < 3 || len(indexes) == 0 {
 		return
 	}

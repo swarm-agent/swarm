@@ -17,7 +17,7 @@ func (p *ChatPage) OpenSessionsPalette(items []ChatSessionPaletteItem, query str
 	if p == nil {
 		return false
 	}
-	if p.planEditorModalActive() || p.planUpdateModalActive() || p.planExitModalActive() || p.askUserModalActive() || p.workspaceScopeModalActive() || p.permissionModalActive() || p.skillChangeModalActive() {
+	if p.planPermissionModalActive() || p.manageSessionsPermissionModalActive() || p.planEditorModalActive() || p.planUpdateModalActive() || p.planExitModalActive() || p.askUserModalActive() || p.workspaceScopeModalActive() || p.ordinaryPermissionComposerActive() || p.skillChangeModalActive() {
 		return false
 	}
 	p.sessionsPaletteItems = append([]ChatSessionPaletteItem(nil), items...)

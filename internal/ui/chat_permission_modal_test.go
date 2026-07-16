@@ -1,10 +1,46 @@
 package ui
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
 )
+
+func TestClassifyChatPermissionRoutesCanonicalDestinations(t *testing.T) {
+	tests := []struct {
+		name   string
+		record ChatPermissionRecord
+		want   chatPermissionDestination
+	}{
+		{name: "bash", record: ChatPermissionRecord{ToolName: "functions.bash", Requirement: "bash"}, want: chatPermissionDestinationOrdinaryInline},
+		{name: "bash cannot spoof plan", record: ChatPermissionRecord{ToolName: "bash", Requirement: "plan_new_request"}, want: chatPermissionDestinationOrdinaryInline},
+		{name: "exit plan", record: ChatPermissionRecord{ToolName: "exit-plan-mode", Requirement: "tool"}, want: chatPermissionDestinationPlanModal},
+		{name: "plan lifecycle", record: ChatPermissionRecord{ToolName: "plan_manage", Requirement: "plan_revision_request"}, want: chatPermissionDestinationPlanModal},
+		{name: "manage sessions", record: ChatPermissionRecord{ToolName: "functions.manage-sessions", Requirement: "session_deploy"}, want: chatPermissionDestinationManageSessionsModal},
+		{name: "manage sessions read action", record: ChatPermissionRecord{ToolName: "manage_sessions", Requirement: "manage_sessions"}, want: chatPermissionDestinationOrdinaryInline},
+		{name: "task launch", record: ChatPermissionRecord{ToolName: "task", Requirement: "task_launch"}, want: chatPermissionDestinationSpecialized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyChatPermission(tt.record); got != tt.want {
+				t.Fatalf("classifyChatPermission(%#v) = %v, want %v", tt.record, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOrdinaryPermissionIndexesExcludePlanAndManageSessions(t *testing.T) {
+	page := &ChatPage{pendingPerms: []ChatPermissionRecord{
+		{ID: "bash", ToolName: "bash", Requirement: "bash", Status: "pending"},
+		{ID: "plan", ToolName: "plan_manage", Requirement: "plan_new_request", Status: "pending"},
+		{ID: "sessions", ToolName: "manage_sessions", Requirement: "session_archive", Status: "pending"},
+		{ID: "read", ToolName: "read", Requirement: "read", Status: "pending"},
+	}}
+	if got, want := page.ordinaryPermissionIndexes(), []int{0, 3}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ordinaryPermissionIndexes() = %#v, want %#v", got, want)
+	}
+}
 
 func TestFilterPermissionArgumentFieldsDropsBashCommandWhenRequestSummaryRendered(t *testing.T) {
 	fields := []permissionArgumentField{

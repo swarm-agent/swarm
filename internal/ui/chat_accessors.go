@@ -233,7 +233,11 @@ func (p *ChatPage) SetVoiceInputState(state VoiceInputState) {
 }
 
 func (p *ChatPage) PermissionModalVisible() bool {
-	return p.permissionModalActive() || p.planUpdateModalActive() || p.workspaceScopeModalActive() || p.taskLaunchModalActive() || p.themeChangeModalActive() || p.agentChangeModalActive() || p.skillChangeModalActive()
+	return p.ordinaryPermissionComposerActive() || p.planPermissionModalActive() || p.manageSessionsPermissionModalActive() || p.planUpdateModalActive() || p.workspaceScopeModalActive() || p.taskLaunchModalActive() || p.themeChangeModalActive() || p.agentChangeModalActive() || p.skillChangeModalActive()
+}
+
+func (p *ChatPage) OrdinaryPermissionComposerVisible() bool {
+	return p.ordinaryPermissionComposerActive()
 }
 
 func (p *ChatPage) AgentChangeModalVisible() bool {
@@ -285,7 +289,7 @@ func (p *ChatPage) OpenCurrentPlanModalWithPlans(plan ChatSessionPlan, plans []C
 	if p == nil {
 		return false
 	}
-	if p.planUpdateModalActive() || p.permissionModalActive() || p.askUserModalActive() || p.workspaceScopeModalActive() || p.taskLaunchModalActive() || p.themeChangeModalActive() || p.agentChangeModalActive() || p.skillChangeModalActive() || p.sessionsPaletteActive() {
+	if p.planPermissionModalActive() || p.manageSessionsPermissionModalActive() || p.planUpdateModalActive() || p.ordinaryPermissionComposerActive() || p.askUserModalActive() || p.workspaceScopeModalActive() || p.taskLaunchModalActive() || p.themeChangeModalActive() || p.agentChangeModalActive() || p.skillChangeModalActive() || p.sessionsPaletteActive() {
 		return false
 	}
 	if p.planExitModalActive() {
@@ -393,7 +397,7 @@ func (p *ChatPage) ConsumeQuitScrollbackJump() bool {
 	if p == nil {
 		return false
 	}
-	if p.planEditorModalActive() || p.planUpdateModalActive() || p.planExitModalActive() || p.askUserModalActive() || p.workspaceScopeModalActive() || p.taskLaunchModalActive() || p.themeChangeModalActive() || p.agentChangeModalActive() || p.skillChangeModalActive() || p.permissionModalActive() {
+	if p.planPermissionModalActive() || p.manageSessionsPermissionModalActive() || p.planEditorModalActive() || p.planUpdateModalActive() || p.planExitModalActive() || p.askUserModalActive() || p.workspaceScopeModalActive() || p.taskLaunchModalActive() || p.themeChangeModalActive() || p.agentChangeModalActive() || p.skillChangeModalActive() || p.ordinaryPermissionComposerActive() {
 		return false
 	}
 	if p.timelineScroll <= 0 {

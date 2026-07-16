@@ -445,6 +445,31 @@ type ChatPage struct {
 	skillChangeApproveRect Rect
 	skillChangeDenyRect    Rect
 
+	planPermission            string
+	planPermissionTitle       string
+	planPermissionSummary     string
+	planPermissionGoal        string
+	planPermissionDocument    map[string]any
+	planPermissionApproved    string
+	planPermissionScroll      int
+	planPermissionMaxScroll   int
+	planPermissionManual      bool
+	planPermissionApproveRect Rect
+	planPermissionDenyRect    Rect
+
+	manageSessionsPermission      string
+	manageSessionsAction          string
+	manageSessionsApproved        string
+	manageSessionsProposals       []chatManageSessionsProposal
+	manageSessionsSelected        []bool
+	manageSessionsFocus           int
+	manageSessionsScroll          int
+	manageSessionsMaxScroll       int
+	manageSessionsApproveRect     Rect
+	manageSessionsDenyRect        Rect
+	manageSessionsProposalRects   []Rect
+	manageSessionsProposalIndexes []int
+
 	planUpdatePermission   string
 	planUpdateTitle        string
 	planUpdatePlanID       string
@@ -835,6 +860,12 @@ func (p *ChatPage) HandleMouse(ev *tcell.EventMouse) {
 	if ev == nil {
 		return
 	}
+	if p.handlePlanPermissionModalMouse(ev) {
+		return
+	}
+	if p.handleManageSessionsPermissionModalMouse(ev) {
+		return
+	}
 	if p.handlePlanEditorModalMouse(ev) {
 		return
 	}
@@ -910,7 +941,7 @@ func (p *ChatPage) HandleMouse(ev *tcell.EventMouse) {
 		p.cycleAssistantVariant(-1)
 		return
 	}
-	if p.permissionModalActive() {
+	if p.ordinaryPermissionComposerActive() {
 		if buttons&tcell.Button1 != 0 {
 			p.ensurePermissionSelection()
 			reason := p.permissionReason()
@@ -964,6 +995,12 @@ func (p *ChatPage) HandleKey(ev *tcell.EventKey) {
 	}
 	if p.keybinds == nil {
 		p.keybinds = NewDefaultKeyBindings()
+	}
+	if p.handlePlanPermissionModalKey(ev) {
+		return
+	}
+	if p.handleManageSessionsPermissionModalKey(ev) {
+		return
 	}
 	if p.handlePlanEditorModalKey(ev) {
 		return
@@ -1176,6 +1213,13 @@ func (p *ChatPage) HandleEscape() bool {
 		p.statusLine = "bash output closed"
 		return true
 	}
+	if p.planPermissionModalActive() {
+		return true
+	}
+	if p.manageSessionsPermissionModalActive() {
+		p.resolveManageSessionsPermissionModal(false)
+		return true
+	}
 	if p.planEditorModalActive() {
 		p.resolvePlanEditorModal(chatPlanEditorActionCancel)
 		return true
@@ -1218,7 +1262,7 @@ func (p *ChatPage) HandleEscape() bool {
 		p.statusLine = "sessions palette closed"
 		return true
 	}
-	if p.permissionModalActive() {
+	if p.ordinaryPermissionComposerActive() {
 		return false
 	}
 	if p.effectiveRunActive() {
@@ -1254,7 +1298,7 @@ func (p *ChatPage) abortAgenticLoop() {
 }
 
 func (p *ChatPage) handlePermissionModalKey(ev *tcell.EventKey) bool {
-	if ev == nil || !p.permissionModalActive() {
+	if ev == nil || !p.ordinaryPermissionComposerActive() {
 		return false
 	}
 	if p.keybinds == nil {
@@ -1327,7 +1371,7 @@ func (p *ChatPage) handlePermissionModalKey(ev *tcell.EventKey) bool {
 }
 
 func (p *ChatPage) shiftPermissionSelection(delta int) {
-	indexes := p.genericPermissionIndexes()
+	indexes := p.ordinaryPermissionIndexes()
 	if delta == 0 || len(indexes) == 0 {
 		return
 	}
@@ -1425,8 +1469,8 @@ func (p *ChatPage) permissionReason() string {
 	return strings.TrimSpace(p.permInput)
 }
 
-func (p *ChatPage) permissionModalActive() bool {
-	return !p.planUpdateModalActive() && !p.planExitModalActive() && !p.askUserModalActive() && !p.workspaceScopeModalActive() && !p.taskLaunchModalActive() && !p.agentChangeModalActive() && !p.skillChangeModalActive() && p.genericPermissionCount() > 0
+func (p *ChatPage) ordinaryPermissionComposerActive() bool {
+	return !p.planPermissionModalActive() && !p.manageSessionsPermissionModalActive() && !p.planUpdateModalActive() && !p.planExitModalActive() && !p.askUserModalActive() && !p.workspaceScopeModalActive() && !p.taskLaunchModalActive() && !p.agentChangeModalActive() && !p.skillChangeModalActive() && p.ordinaryPermissionCount() > 0
 }
 
 func (p *ChatPage) Draw(s tcell.Screen) {
@@ -1477,7 +1521,7 @@ func (p *ChatPage) Draw(s tcell.Screen) {
 		availableMainH = 1
 	}
 
-	permissionModal := p.permissionModalActive()
+	permissionModal := p.ordinaryPermissionComposerActive()
 	runIndicatorH := 0
 	if !permissionModal && availableMainH >= 6 && p.liveRunVisible() {
 		runIndicatorH = 1
@@ -1599,7 +1643,11 @@ func (p *ChatPage) Draw(s tcell.Screen) {
 		p.drawMentionPalette(s, inputRect, headerH, footerRect.Y)
 	}
 	p.drawFooterBar(s, footerRect)
-	if p.planEditorModalActive() {
+	if p.planPermissionModalActive() {
+		p.drawPlanPermissionModal(s, Rect{X: 0, Y: 0, W: w, H: h})
+	} else if p.manageSessionsPermissionModalActive() {
+		p.drawManageSessionsPermissionModal(s, Rect{X: 0, Y: 0, W: w, H: h})
+	} else if p.planEditorModalActive() {
 		p.drawPlanEditorModal(s, Rect{X: 0, Y: 0, W: w, H: h})
 	} else if p.planUpdateModalActive() {
 		p.drawPlanUpdateModal(s, Rect{X: 0, Y: 0, W: w, H: h})
@@ -2102,12 +2150,14 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 		status := strings.ToLower(strings.TrimSpace(record.Status))
 		switch status {
 		case "approved":
-			if isExitPlanPermission(record) {
-				p.statusLine = "exit plan mode approved"
-				p.queueRefreshSessionMode()
-				p.SetAgentRuntime(p.meta.Agent, p.meta.AgentExecutionSetting, true, true)
-			} else if isPlanUpdatePermission(record) {
-				p.statusLine = "plan update approved"
+			if classifyChatPermission(record) == chatPermissionDestinationPlanModal {
+				p.statusLine = "plan approved"
+				if normalizePermissionToolName(record.ToolName) == "exit_plan_mode" {
+					p.queueRefreshSessionMode()
+					p.SetAgentRuntime(p.meta.Agent, p.meta.AgentExecutionSetting, true, true)
+				}
+			} else if classifyChatPermission(record) == chatPermissionDestinationManageSessionsModal {
+				p.statusLine = "session action approved"
 			} else if isManageTodosPermission(record) {
 				p.statusLine = "todo changes approved"
 			} else if isWorkspaceScopePermission(record) {
@@ -2665,10 +2715,10 @@ func (p *ChatPage) drainPermissionActions() bool {
 				status := strings.ToLower(strings.TrimSpace(result.Permission.Status))
 				switch status {
 				case "approved":
-					if isExitPlanPermission(result.Permission) {
-						p.statusLine = "exit plan mode approved -> mode " + p.sessionMode
-					} else if isPlanUpdatePermission(result.Permission) {
-						p.statusLine = "plan update approved"
+					if classifyChatPermission(result.Permission) == chatPermissionDestinationPlanModal {
+						p.statusLine = "plan approved"
+					} else if classifyChatPermission(result.Permission) == chatPermissionDestinationManageSessionsModal {
+						p.statusLine = "session action approved"
 					} else if isManageTodosPermission(result.Permission) {
 						p.statusLine = "todo changes approved"
 					} else if isAskUserPermission(result.Permission) {
@@ -2827,7 +2877,7 @@ func (p *ChatPage) queueResolveAll(action, reason string) {
 	if p.backend == nil || strings.TrimSpace(p.sessionID) == "" {
 		return
 	}
-	indexes := p.genericPermissionIndexes()
+	indexes := p.ordinaryPermissionIndexes()
 	if len(indexes) == 0 {
 		p.statusLine = "no pending permissions"
 		return
@@ -2888,7 +2938,7 @@ func (p *ChatPage) queueResolveSelected(action, reason string) {
 	if p.backend == nil || strings.TrimSpace(p.sessionID) == "" {
 		return
 	}
-	if p.genericPermissionCount() == 0 {
+	if p.ordinaryPermissionCount() == 0 {
 		p.statusLine = "no pending permissions"
 		return
 	}
@@ -5419,7 +5469,7 @@ func (p *ChatPage) ensurePermissionSelection() {
 	if p.permSelected >= len(p.pendingPerms) {
 		p.permSelected = len(p.pendingPerms) - 1
 	}
-	indexes := p.genericPermissionIndexes()
+	indexes := p.ordinaryPermissionIndexes()
 	if len(indexes) == 0 {
 		p.askUserOption = 0
 		p.syncPermissionDetailTarget()
@@ -5432,24 +5482,17 @@ func (p *ChatPage) ensurePermissionSelection() {
 	p.syncPermissionDetailTarget()
 }
 
-func (p *ChatPage) genericPermissionCount() int {
-	count := 0
-	for i := range p.pendingPerms {
-		if isPlanUpdatePermission(p.pendingPerms[i]) || isExitPlanPermission(p.pendingPerms[i]) || isManageTodosPermission(p.pendingPerms[i]) || isAskUserPermission(p.pendingPerms[i]) || isWorkspaceScopePermission(p.pendingPerms[i]) || isTaskLaunchPermission(p.pendingPerms[i]) || isThemeChangePermission(p.pendingPerms[i]) || isAgentChangePermission(p.pendingPerms[i]) || isSkillChangePermission(p.pendingPerms[i]) {
-			continue
-		}
-		count++
-	}
-	return count
+func (p *ChatPage) ordinaryPermissionCount() int {
+	return len(p.ordinaryPermissionIndexes())
 }
 
-func (p *ChatPage) genericPermissionIndexes() []int {
+func (p *ChatPage) ordinaryPermissionIndexes() []int {
 	if len(p.pendingPerms) == 0 {
 		return nil
 	}
 	indexes := make([]int, 0, len(p.pendingPerms))
 	for i := range p.pendingPerms {
-		if isPlanUpdatePermission(p.pendingPerms[i]) || isExitPlanPermission(p.pendingPerms[i]) || isManageTodosPermission(p.pendingPerms[i]) || isAskUserPermission(p.pendingPerms[i]) || isWorkspaceScopePermission(p.pendingPerms[i]) || isTaskLaunchPermission(p.pendingPerms[i]) || isThemeChangePermission(p.pendingPerms[i]) || isSkillChangePermission(p.pendingPerms[i]) {
+		if classifyChatPermission(p.pendingPerms[i]) != chatPermissionDestinationOrdinaryInline {
 			continue
 		}
 		indexes = append(indexes, i)
@@ -5467,6 +5510,16 @@ func indexOfInt(items []int, target int) int {
 }
 
 func (p *ChatPage) syncSpecialPermissionModals() {
+	if strings.TrimSpace(p.planPermission) != "" {
+		if _, ok := p.pendingPermissionByID(p.planPermission); !ok {
+			p.closePlanPermissionModal()
+		}
+	}
+	if strings.TrimSpace(p.manageSessionsPermission) != "" {
+		if _, ok := p.pendingPermissionByID(p.manageSessionsPermission); !ok {
+			p.closeManageSessionsPermissionModal()
+		}
+	}
 	if strings.TrimSpace(p.planUpdatePermission) != "" {
 		if _, ok := p.pendingPermissionByID(p.planUpdatePermission); !ok {
 			p.closePlanUpdateModal()
@@ -5512,6 +5565,12 @@ func (p *ChatPage) syncSpecialPermissionModals() {
 			p.closeThemeChangeModal()
 		}
 	}
+	if p.planPermissionModalActive() {
+		return
+	}
+	if p.manageSessionsPermissionModalActive() {
+		return
+	}
 	if p.planEditorModalActive() {
 		return
 	}
@@ -5549,85 +5608,77 @@ func (p *ChatPage) syncSpecialPermissionModals() {
 	if len(p.pendingPerms) == 0 {
 		return
 	}
-	selected := ChatPermissionRecord{}
-	found := false
 	for i := range p.pendingPerms {
-		if !isPlanUpdatePermission(p.pendingPerms[i]) {
+		if classifyChatPermission(p.pendingPerms[i]) != chatPermissionDestinationPlanModal {
 			continue
 		}
-		p.OpenPlanUpdatePermissionModal(p.pendingPerms[i])
+		p.OpenPlanPermissionModal(p.pendingPerms[i])
 		return
 	}
 	for i := range p.pendingPerms {
-		if !isExitPlanPermission(p.pendingPerms[i]) {
+		record := p.pendingPerms[i]
+		if classifyChatPermission(record) != chatPermissionDestinationManageSessionsModal {
 			continue
 		}
-		p.permSelected = i
-		selected = p.pendingPerms[i]
-		found = true
-		break
-	}
-	if !found {
-		for i := range p.pendingPerms {
-			record := p.pendingPerms[i]
-			if !isManageTodosPermission(record) {
-				continue
-			}
-			p.OpenManageTodosPermissionModal(record)
-			return
-		}
-		for i := range p.pendingPerms {
-			record := p.pendingPerms[i]
-			if !isAskUserPermission(record) {
-				continue
-			}
-			p.OpenAskUserPermissionModal(record)
-			return
-		}
-		for i := range p.pendingPerms {
-			record := p.pendingPerms[i]
-			if !isWorkspaceScopePermission(record) {
-				continue
-			}
-			p.OpenWorkspaceScopePermissionModal(record)
-			return
-		}
-		for i := range p.pendingPerms {
-			record := p.pendingPerms[i]
-			if !isTaskLaunchPermission(record) {
-				continue
-			}
-			p.OpenTaskLaunchPermissionModal(record)
-			return
-		}
-		for i := range p.pendingPerms {
-			record := p.pendingPerms[i]
-			if !isThemeChangePermission(record) {
-				continue
-			}
-			p.OpenThemeChangePermissionModal(record)
-			return
-		}
-		for i := range p.pendingPerms {
-			record := p.pendingPerms[i]
-			if !isAgentChangePermission(record) {
-				continue
-			}
-			p.OpenAgentChangePermissionModal(record)
-			return
-		}
-		for i := range p.pendingPerms {
-			record := p.pendingPerms[i]
-			if !isSkillChangePermission(record) {
-				continue
-			}
-			p.OpenSkillChangePermissionModal(record)
-			return
-		}
+		p.OpenManageSessionsPermissionModal(record)
 		return
 	}
-	title, body, planID, documentText, approvedArguments := exitPlanPermissionPayload(selected)
-	p.OpenExitPlanModePermissionModal(selected.ID, planID, title, body, documentText, approvedArguments)
+	for i := range p.pendingPerms {
+		record := p.pendingPerms[i]
+		if !isManageTodosPermission(record) {
+			continue
+		}
+		p.OpenManageTodosPermissionModal(record)
+		return
+	}
+	for i := range p.pendingPerms {
+		record := p.pendingPerms[i]
+		if !isAskUserPermission(record) {
+			continue
+		}
+		p.OpenAskUserPermissionModal(record)
+		return
+	}
+	for i := range p.pendingPerms {
+		record := p.pendingPerms[i]
+		if !isWorkspaceScopePermission(record) {
+			continue
+		}
+		p.OpenWorkspaceScopePermissionModal(record)
+		return
+	}
+	for i := range p.pendingPerms {
+		record := p.pendingPerms[i]
+		if !isTaskLaunchPermission(record) {
+			continue
+		}
+		p.OpenTaskLaunchPermissionModal(record)
+		return
+	}
+	for i := range p.pendingPerms {
+		record := p.pendingPerms[i]
+		if !isThemeChangePermission(record) {
+			continue
+		}
+		p.OpenThemeChangePermissionModal(record)
+		return
+	}
+	for i := range p.pendingPerms {
+		record := p.pendingPerms[i]
+		if !isAgentChangePermission(record) {
+			continue
+		}
+		p.OpenAgentChangePermissionModal(record)
+		return
+	}
+	for i := range p.pendingPerms {
+		record := p.pendingPerms[i]
+		if !isSkillChangePermission(record) {
+			continue
+		}
+		p.OpenSkillChangePermissionModal(record)
+		return
+	}
 }
 
 func (p *ChatPage) pendingPermissionByID(permissionID string) (ChatPermissionRecord, bool) {

@@ -585,8 +585,7 @@ func (p *ChatPage) planExitApprovedArguments() string {
 }
 
 func isExitPlanPermission(record ChatPermissionRecord) bool {
-	name := normalizePermissionToolName(record.ToolName)
-	return name == "exit_plan_mode"
+	return classifyChatPermission(record) == chatPermissionDestinationPlanModal && normalizePermissionToolName(record.ToolName) == "exit_plan_mode"
 }
 
 func exitPlanPermissionPayload(record ChatPermissionRecord) (string, string, string, string, string) {
