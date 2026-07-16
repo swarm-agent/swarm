@@ -50,6 +50,7 @@ filter_allowed() {
   # - container entrypoint unsets XDG variables and rejects /root, /home, /workspaces, and /tmp storage paths.
   # - appstorage.go intentionally resolves XDG_DATA_HOME/UserHomeDir only for user-owned git worktree checkout storage.
   # - local deploy workspace strings are mount targets or API route names, not Swarm-owned daemon storage roots.
+  # Workspace path tokens require a lexical boundary so schema identifiers such as workspace_path are not mistaken for filesystem paths.
   grep -Ev \
     -e '^pkg/storagecontract/storagecontract\.go:.*(HOME|XDG_|\.local|\.config|Library|Desktop|Documents|Downloads|forbidden|reject|~|home-relative|WorkspaceRoots)' \
     -e '^internal/launcher/launcher\.go:.*(legacy|Legacy|XDG_STATE_HOME|XDG_DATA_HOME|UserHomeDir|UserConfigDir|\.local|\.config|resolve legacy|stat legacy|startupCWD|Getwd)' \
@@ -86,7 +87,7 @@ if [[ -n "${forbidden_home_hits}" ]]; then
   echo "${forbidden_home_hits}"
 fi
 
-forbidden_workspace_hits="$(run_scan '(/workspaces|/workspace|\./tmp|tmp/flows|startupCWD|WorkingDirectory=\$|WorkingDirectory=\.|MkdirTemp\(""|CreateTemp\(""|os\.TempDir\(\))')"
+forbidden_workspace_hits="$(run_scan '(/workspaces?([^[:alnum:]_]|$)|\./tmp|tmp/flows|startupCWD|WorkingDirectory=\$|WorkingDirectory=\.|MkdirTemp\(""|CreateTemp\(""|os\.TempDir\(\))')"
 if [[ -n "${forbidden_workspace_hits}" ]]; then
   has_failures=1
   echo "[storage-path-check] FAIL: daemon/runtime storage code references workspace, OS temp, or relative temp defaults outside the explicit allowlist:"
@@ -124,7 +125,28 @@ SWARMD_LOCK_PATH="${SWARMD_DATA_DIR}/swarmd.lock"
 EOF
   if "${BASH_SOURCE[0]}" "${fixture}" >/tmp/swarm-storage-gate-self-test.out 2>&1; then
     cat /tmp/swarm-storage-gate-self-test.out >&2 || true
-    echo "[storage-path-check] FAIL: negative fixture unexpectedly passed" >&2
+    echo "[storage-path-check] FAIL: home-path negative fixture unexpectedly passed" >&2
+    exit 1
+  fi
+  workspace_identifier_fixture="${tmp_dir}/allowed-workspace-identifier.go"
+  cat >"${workspace_identifier_fixture}" <<'EOF'
+package fixture
+
+const workspace_path = "schema field"
+EOF
+  if ! "${BASH_SOURCE[0]}" "${workspace_identifier_fixture}" >/tmp/swarm-storage-gate-self-test.out 2>&1; then
+    cat /tmp/swarm-storage-gate-self-test.out >&2 || true
+    echo "[storage-path-check] FAIL: workspace identifier fixture was mistaken for a filesystem path" >&2
+    exit 1
+  fi
+  workspace_fixture="${tmp_dir}/bad-workspace-storage.sh"
+  cat >"${workspace_fixture}" <<'EOF'
+#!/usr/bin/env bash
+SWARMD_DATA_DIR="/workspace/swarmd"
+EOF
+  if "${BASH_SOURCE[0]}" "${workspace_fixture}" >/tmp/swarm-storage-gate-self-test.out 2>&1; then
+    cat /tmp/swarm-storage-gate-self-test.out >&2 || true
+    echo "[storage-path-check] FAIL: workspace-path negative fixture unexpectedly passed" >&2
     exit 1
   fi
   rm -f /tmp/swarm-storage-gate-self-test.out

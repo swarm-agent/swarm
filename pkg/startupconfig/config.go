@@ -799,4 +799,3 @@ func normalizeAdvertiseHost(value string) (string, error) {
 	}
 	return value, nil
 }
-

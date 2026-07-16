@@ -18,10 +18,10 @@ import (
 )
 
 type Service struct {
-	store                *pebblestore.SessionStore
-	events               *pebblestore.EventLog
-	mu                   sync.Mutex
-	counter              atomic.Uint64
+	store   *pebblestore.SessionStore
+	events  *pebblestore.EventLog
+	mu      sync.Mutex
+	counter atomic.Uint64
 }
 
 type CreateSessionOptions struct {

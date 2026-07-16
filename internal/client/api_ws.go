@@ -31,14 +31,14 @@ const (
 )
 
 type StreamEventEnvelope struct {
-	GlobalSeq     uint64             `json:"global_seq"`
-	Stream        string             `json:"stream"`
-	EventType     string             `json:"event_type"`
-	EntityID      string             `json:"entity_id"`
-	Payload       json.RawMessage    `json:"payload"`
-	TsUnixMs      int64              `json:"ts_unix_ms"`
-	CausationID   string             `json:"causation_id,omitempty"`
-	CorrelationID string             `json:"correlation_id,omitempty"`
+	GlobalSeq     uint64          `json:"global_seq"`
+	Stream        string          `json:"stream"`
+	EventType     string          `json:"event_type"`
+	EntityID      string          `json:"entity_id"`
+	Payload       json.RawMessage `json:"payload"`
+	TsUnixMs      int64           `json:"ts_unix_ms"`
+	CausationID   string          `json:"causation_id,omitempty"`
+	CorrelationID string          `json:"correlation_id,omitempty"`
 }
 
 type wsOutboundMessage struct {

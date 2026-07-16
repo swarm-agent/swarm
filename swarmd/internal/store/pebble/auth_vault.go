@@ -33,18 +33,18 @@ const (
 var ErrVaultLocked = errors.New(vaultUnlockRequiredMessage)
 
 type VaultMetadata struct {
-	Version           int    `json:"version"`
-	KDF               string `json:"kdf,omitempty"`
-	SaltBase64        string `json:"salt_base64,omitempty"`
-	MemoryKiB         uint32 `json:"memory_kib,omitempty"`
-	TimeCost          uint32 `json:"time_cost,omitempty"`
-	Parallelism       uint8  `json:"parallelism,omitempty"`
-	WrappedDEK        string `json:"wrapped_dek,omitempty"`
-	LocalWrappedDEK   string `json:"local_wrapped_dek,omitempty"`
-	UpdatedAt         int64  `json:"updated_at"`
-	Enabled           bool   `json:"enabled"`
-	StorageMode       string `json:"storage_mode"`
-	UnlockWarning     string `json:"unlock_warning,omitempty"`
+	Version         int    `json:"version"`
+	KDF             string `json:"kdf,omitempty"`
+	SaltBase64      string `json:"salt_base64,omitempty"`
+	MemoryKiB       uint32 `json:"memory_kib,omitempty"`
+	TimeCost        uint32 `json:"time_cost,omitempty"`
+	Parallelism     uint8  `json:"parallelism,omitempty"`
+	WrappedDEK      string `json:"wrapped_dek,omitempty"`
+	LocalWrappedDEK string `json:"local_wrapped_dek,omitempty"`
+	UpdatedAt       int64  `json:"updated_at"`
+	Enabled         bool   `json:"enabled"`
+	StorageMode     string `json:"storage_mode"`
+	UnlockWarning   string `json:"unlock_warning,omitempty"`
 }
 
 type VaultStatus struct {
@@ -113,17 +113,17 @@ func (s *AuthStore) EnableVault(password string) (VaultStatus, error) {
 	}
 	now := time.Now().UnixMilli()
 	nextMeta := &VaultMetadata{
-		Version:           vaultVersion,
-		KDF:               "argon2id",
-		SaltBase64:        base64.StdEncoding.EncodeToString(salt),
-		MemoryKiB:         vaultArgon2MemoryKiB,
-		TimeCost:          vaultArgon2Time,
-		Parallelism:       vaultArgon2Parallelism,
-		WrappedDEK:        base64.StdEncoding.EncodeToString(wrappedDEK),
-		UpdatedAt:         now,
-		Enabled:           true,
-		StorageMode:       storageModePebbleVault,
-		UnlockWarning:     vaultEnableWarning,
+		Version:       vaultVersion,
+		KDF:           "argon2id",
+		SaltBase64:    base64.StdEncoding.EncodeToString(salt),
+		MemoryKiB:     vaultArgon2MemoryKiB,
+		TimeCost:      vaultArgon2Time,
+		Parallelism:   vaultArgon2Parallelism,
+		WrappedDEK:    base64.StdEncoding.EncodeToString(wrappedDEK),
+		UpdatedAt:     now,
+		Enabled:       true,
+		StorageMode:   storageModePebbleVault,
+		UnlockWarning: vaultEnableWarning,
 	}
 
 	batch := s.secretStore.NewBatch()
@@ -283,17 +283,17 @@ func (s *AuthStore) EnableVaultForAccount(accountScopeID, password string) (Vaul
 		return VaultStatus{}, err
 	}
 	nextMeta := &VaultMetadata{
-		Version:           vaultVersion,
-		KDF:               "argon2id",
-		SaltBase64:        base64.StdEncoding.EncodeToString(salt),
-		MemoryKiB:         vaultArgon2MemoryKiB,
-		TimeCost:          vaultArgon2Time,
-		Parallelism:       vaultArgon2Parallelism,
-		WrappedDEK:        base64.StdEncoding.EncodeToString(wrappedDEK),
-		UpdatedAt:         time.Now().UnixMilli(),
-		Enabled:           true,
-		StorageMode:       storageModePebbleVault,
-		UnlockWarning:     vaultEnableWarning,
+		Version:       vaultVersion,
+		KDF:           "argon2id",
+		SaltBase64:    base64.StdEncoding.EncodeToString(salt),
+		MemoryKiB:     vaultArgon2MemoryKiB,
+		TimeCost:      vaultArgon2Time,
+		Parallelism:   vaultArgon2Parallelism,
+		WrappedDEK:    base64.StdEncoding.EncodeToString(wrappedDEK),
+		UpdatedAt:     time.Now().UnixMilli(),
+		Enabled:       true,
+		StorageMode:   storageModePebbleVault,
+		UnlockWarning: vaultEnableWarning,
 	}
 	if err := s.resealCredentialsForAccount(accountScopeID, nextMeta, dek, storageModePebbleVault); err != nil {
 		return VaultStatus{}, err

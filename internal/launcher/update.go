@@ -39,24 +39,24 @@ const (
 )
 
 var (
-	stopBackendForUpdate                             = StopBackend
-	applyReleaseUpdateForUpdate                      = ApplyReleaseUpdate
-	startBackendForUpdate                            = StartBackend
-	runTUIWithExtraEnvForUpdate                      = RunTUIWithExtraEnv
-	resolveLifecycleManagerForUpdate                 = resolveLifecycleManager
-	serviceActiveForUpdate                           = serviceActiveForScope
-	stopSystemdServiceForUpdate                      = stopSystemdService
-	restartSystemdServiceForUpdate                   = restartSystemdService
-	preflightDevUpdateForUpdate                      = PreflightDevUpdate
-	buildSwarmdBinariesForUpdate                     = BuildSwarmdBinaries
-	forceBuildToolBinariesForUpdate                  = ForceBuildToolBinaries
-	buildSwarmTUIForUpdate                           = BuildSwarmTUI
-	devFrontendAssetsNeedRebuildForUpdate            = DevFrontendAssetsNeedRebuild
-	buildAndInstallWebAssetsForUpdate                = BuildAndInstallWebAssets
-	syncDevContainerImagesWithFingerprintForUpdate   = SyncDevContainerImagesWithFingerprint
-	installLaunchersForUpdate                        = InstallLaunchers
-	ensureSystemdServiceUnitForUpdate                = EnsureSystemdServiceUnit
-	rollbackPendingUpdateAndRestartForUpdate         = rollbackPendingUpdateAndRestart
+	stopBackendForUpdate                           = StopBackend
+	applyReleaseUpdateForUpdate                    = ApplyReleaseUpdate
+	startBackendForUpdate                          = StartBackend
+	runTUIWithExtraEnvForUpdate                    = RunTUIWithExtraEnv
+	resolveLifecycleManagerForUpdate               = resolveLifecycleManager
+	serviceActiveForUpdate                         = serviceActiveForScope
+	stopSystemdServiceForUpdate                    = stopSystemdService
+	restartSystemdServiceForUpdate                 = restartSystemdService
+	preflightDevUpdateForUpdate                    = PreflightDevUpdate
+	buildSwarmdBinariesForUpdate                   = BuildSwarmdBinaries
+	forceBuildToolBinariesForUpdate                = ForceBuildToolBinaries
+	buildSwarmTUIForUpdate                         = BuildSwarmTUI
+	devFrontendAssetsNeedRebuildForUpdate          = DevFrontendAssetsNeedRebuild
+	buildAndInstallWebAssetsForUpdate              = BuildAndInstallWebAssets
+	syncDevContainerImagesWithFingerprintForUpdate = SyncDevContainerImagesWithFingerprint
+	installLaunchersForUpdate                      = InstallLaunchers
+	ensureSystemdServiceUnitForUpdate              = EnsureSystemdServiceUnit
+	rollbackPendingUpdateAndRestartForUpdate       = rollbackPendingUpdateAndRestart
 )
 
 type runtimeBootStatus struct {

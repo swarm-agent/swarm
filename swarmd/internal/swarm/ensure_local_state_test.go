@@ -1,8 +1,8 @@
 package swarm
 
 import (
-	"testing"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"testing"
 )
 
 func TestEnsureLocalStateUsesInputNameOnlyForInitialBootstrap(t *testing.T) {

@@ -76,8 +76,8 @@ type SwarmingConfig struct {
 // - SwarmConfig stores the user-editable machine name used by /swarm and desktop identity UI.
 // This separation is intentional so future AI edits do not conflate run-state copy with machine identity.
 type SwarmConfig struct {
-	Name             string
-	Role             string
+	Name string
+	Role string
 }
 
 type CustomThemeConfig struct {

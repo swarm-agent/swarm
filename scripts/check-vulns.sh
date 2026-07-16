@@ -63,8 +63,30 @@ ensure_govulncheck() {
 
 run_govuln_module() {
   local module_dir="$1"
-  local label="$2"
-  local govuln_bin="$3"
+  local module_prefix="$2"
+  local excluded_prefix="$3"
+  local label="$4"
+  local govuln_bin="$5"
+  local -a package_dirs=()
+  mapfile -t package_dirs < <(
+    git -C "${ROOT_DIR}" ls-files --cached --others --exclude-standard -- "${module_prefix}*.go" \
+      | awk -v prefix="${module_prefix}" -v excluded="${excluded_prefix}" '
+          $0 !~ /_test\.go$/ && (excluded == "" || index($0, excluded) != 1) {
+            sub("^" prefix, "")
+            if ($0 !~ /\//) {
+              print "."
+            } else {
+              sub(/\/[^/]+$/, "")
+              print "./" $0
+            }
+          }
+        ' \
+      | sort -u
+  )
+  if (( ${#package_dirs[@]} == 0 )); then
+    echo "[vuln-check] FAIL: no non-test Go packages found for ${label}" >&2
+    return 1
+  fi
   echo "[vuln-check] running govulncheck (${label})"
   if ! (
     cd "${module_dir}"
@@ -72,7 +94,7 @@ run_govuln_module() {
     GOMODCACHE="${GOMODCACHE_DIR}" \
     GOPATH="${GOPATH_DIR}" \
     GOTOOLCHAIN="${GOTOOLCHAIN}" \
-    "${govuln_bin}" ./...
+    "${govuln_bin}" "${package_dirs[@]}"
   ); then
     echo "[vuln-check] FAIL: govulncheck failed for ${label}" >&2
     return 1
@@ -99,8 +121,8 @@ if ! command -v pnpm > /dev/null 2>&1 && ! command -v corepack > /dev/null 2>&1;
   exit 1
 fi
 GOVULN_BIN="$(ensure_govulncheck)"
-run_govuln_module "${ROOT_DIR}" "root module" "${GOVULN_BIN}"
-run_govuln_module "${ROOT_DIR}/swarmd" "swarmd module" "${GOVULN_BIN}"
+run_govuln_module "${ROOT_DIR}" "" "swarmd/" "root module" "${GOVULN_BIN}"
+run_govuln_module "${ROOT_DIR}/swarmd" "swarmd/" "" "swarmd module" "${GOVULN_BIN}"
 run_pnpm_audit
 
 echo "[vuln-check] PASS"
