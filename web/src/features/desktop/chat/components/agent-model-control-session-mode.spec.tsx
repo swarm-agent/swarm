@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs'
 const composerSource = readFileSync(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
 const pickerSource = readFileSync(new URL('./agent-picker.tsx', import.meta.url), 'utf8')
 const modePickerSource = readFileSync(new URL('./mode-picker.tsx', import.meta.url), 'utf8')
-const settingsSource = readFileSync(new URL('../../settings/agents/components/agents-settings-page.tsx', import.meta.url), 'utf8')
+const settingsSource = readFileSync(new URL('./agent-model-control.tsx', import.meta.url), 'utf8')
 
 test('Auto/Plan is a separate left-side control rather than part of the agent picker', () => {
   assert.match(composerSource, /<ModePicker mode=\{mode\}[\s\S]*<AgentPicker/)
@@ -16,12 +16,11 @@ test('Auto/Plan is a separate left-side control rather than part of the agent pi
   assert.doesNotMatch(pickerSource, /DesktopSessionMode|onModeSelect|Session mode for/)
 })
 
-test('single agent settings view exposes canonical thinking and fast values', () => {
-  assert.match(settingsSource, /useQuery\(agentSettingsStateQueryOptions\(\)\)/)
-  assert.match(settingsSource, /const \[viewMode, setViewMode\] = useState<"list" \| "edit">\("list"\)/)
-  assert.doesNotMatch(settingsSource, /initialAgentName|requestedInitialAgentName/)
-  assert.match(settingsSource, /Thinking: \$\{thinking\.trim\(\) \|\| "off"\}/)
-  assert.match(settingsSource, /Fast: \$\{fastLabel\}/)
-  assert.match(settingsSource, /profile\.thinking/)
-  assert.match(settingsSource, /profile\.autoServiceTier/)
+test('Agent Setup owns default mode and single/split model policy', () => {
+  assert.match(settingsSource, /Default session mode/)
+  assert.match(settingsSource, /Agent model policy/)
+  assert.match(settingsSource, /label="Single"/)
+  assert.match(settingsSource, /label="Split"/)
+  assert.match(settingsSource, /Plan model/)
+  assert.match(settingsSource, /Auto model/)
 })

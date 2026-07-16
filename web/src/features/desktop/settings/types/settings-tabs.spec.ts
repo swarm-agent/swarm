@@ -8,4 +8,6 @@ test('account settings is the first/default settings tab', () => {
   assert.equal(normalizeSettingsTabID(undefined), 'account')
   assert.equal(normalizeSettingsTabID('not-a-tab'), 'account')
   assert.equal(normalizeSettingsTabID('notifications'), 'notifications')
+  assert.equal(SETTINGS_TABS.includes('agents' as never), false)
+  assert.equal(normalizeSettingsTabID('agents'), 'account')
 })

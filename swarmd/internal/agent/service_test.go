@@ -163,6 +163,35 @@ func TestEnsureDefaultsExposesCompiledSwarmAndPersistsOnlyModelContext(t *testin
 	}
 }
 
+func TestCompiledSwarmAllowsConfigurationOnlyUpdates(t *testing.T) {
+	svc, agents := newTestService(t)
+	if err := svc.EnsureDefaults(); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+	profile, _, _, err := svc.Upsert(UpsertInput{
+		Name: SwarmAgentID, Mode: ModeSubagent, Description: "mutable", Prompt: "mutable",
+		ModelMode: "split", PlanProvider: "codex", PlanModel: "plan-model", PlanThinking: "high", PlanProviderSet: true, PlanModelSet: true, PlanThinkingSet: true,
+		AutoProvider: "codex", AutoModel: "auto-model", AutoThinking: "medium", AutoProviderSet: true, AutoModelSet: true, AutoThinkingSet: true,
+		DefaultSessionMode: pebblestore.AgentDefaultSessionModeAuto, RuntimeMode: pebblestore.AgentRuntimeModeRead,
+	})
+	if err != nil {
+		t.Fatalf("Upsert(swarm) error = %v", err)
+	}
+	if profile.Mode != ModePrimary || profile.Description != "Compiled primary orchestrator" || profile.Prompt != SwarmAgentPrompt() || profile.RuntimeMode != pebblestore.AgentRuntimeModePlanAuto || !profile.Enabled || !profile.Protected {
+		t.Fatalf("compiled Swarm identity/runtime changed: %+v", profile)
+	}
+	if profile.ModelMode != "split" || profile.PlanModel != "plan-model" || profile.AutoModel != "auto-model" || profile.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto {
+		t.Fatalf("Swarm configuration was not applied: %+v", profile)
+	}
+	stored, ok, err := agents.GetProfile(SwarmAgentID)
+	if err != nil || !ok {
+		t.Fatalf("stored Swarm context ok=%v err=%v", ok, err)
+	}
+	if stored.Prompt != "" || stored.ToolContract != nil || stored.Mode != ModePrimary || stored.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto {
+		t.Fatalf("persisted Swarm row escaped configuration-only shape: %+v", stored)
+	}
+}
+
 func TestRestoreDefaultsDoesNotPersistOrAssignClone(t *testing.T) {
 	svc, agents := newTestService(t)
 	state, _, _, err := svc.RestoreDefaults()

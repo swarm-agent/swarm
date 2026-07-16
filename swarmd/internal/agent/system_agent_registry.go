@@ -36,6 +36,7 @@ type SystemAgentDefinition struct {
 	ID           string
 	DisplayName  string
 	SidechatKind string
+	UserVisible  bool
 	Materialize  func(pebblestore.AgentProfile) pebblestore.AgentProfile
 	Reconcile    func(pebblestore.AgentProfile) pebblestore.AgentProfile
 }
@@ -126,6 +127,19 @@ func (r *SystemAgentRegistry) DefinitionByID(id string) (SystemAgentDefinition, 
 	return definition, ok
 }
 
+func (r *SystemAgentRegistry) UserVisibleIDs() []string {
+	if r == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(r.ids))
+	for _, id := range r.ids {
+		if definition, ok := r.byID[id]; ok && definition.UserVisible {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 func (r *SystemAgentRegistry) DefinitionBySidechatKind(kind string) (SystemAgentDefinition, bool) {
 	if r == nil {
 		return SystemAgentDefinition{}, false
@@ -165,6 +179,7 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 	{
 		ID:          SwarmAgentID,
 		DisplayName: SwarmAgentName,
+		UserVisible: true,
 		Materialize: SwarmAgentProfileForContext,
 		Reconcile:   reconcileSwarmAgentProfile,
 	},
@@ -192,6 +207,7 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 	{
 		ID:           ExplorerAgentID,
 		DisplayName:  ExplorerAgentName,
+		UserVisible:  true,
 		SidechatKind: SystemSidechatKindExplorer,
 		Materialize:  ExplorerAgentProfileForParent,
 		Reconcile:    reconcileExplorerAgentProfile,
@@ -199,6 +215,7 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 	{
 		ID:           CloneAgentID,
 		DisplayName:  CloneAgentName,
+		UserVisible:  true,
 		SidechatKind: SystemSidechatKindClone,
 		Materialize:  CloneAgentProfileForParent,
 		Reconcile:    reconcileCloneAgentProfile,
@@ -396,7 +413,7 @@ func SwarmAgentProfileForContext(context pebblestore.AgentProfile) pebblestore.A
 		Provider: strings.TrimSpace(context.Provider), Model: strings.TrimSpace(context.Model), Thinking: strings.TrimSpace(context.Thinking),
 		ModelMode: context.ModelMode, PlanProvider: context.PlanProvider, PlanModel: context.PlanModel, PlanThinking: context.PlanThinking, PlanServiceTier: context.PlanServiceTier,
 		AutoProvider: context.AutoProvider, AutoModel: context.AutoModel, AutoThinking: context.AutoThinking, AutoServiceTier: context.AutoServiceTier,
-		Prompt: SwarmAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, DefaultSessionMode: pebblestore.AgentDefaultSessionModePlan,
+		Prompt: SwarmAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, DefaultSessionMode: firstNonEmptyProfileValue(pebblestore.NormalizeAgentDefaultSessionMode(context.DefaultSessionMode), pebblestore.AgentDefaultSessionModePlan),
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: SwarmAgentToolContract(), Enabled: true, Protected: true, UpdatedAt: context.UpdatedAt,
 	})
 	profile.Protected = true

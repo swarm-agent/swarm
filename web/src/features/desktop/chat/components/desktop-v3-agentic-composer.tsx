@@ -131,6 +131,7 @@ export interface DesktopV3AgenticComposerProps {
   selectedModelKey: string
   selectedServiceTier?: string
   agentSettingsOpenSignal?: number
+  agentSettingsInitialAgent?: string
   modelPickerDisabled?: boolean
   modelPickerDisabledReason?: string
   modelLockNotice?: string
@@ -182,6 +183,7 @@ export function DesktopV3AgenticComposer({
   selectedModelKey,
   selectedServiceTier = '',
   agentSettingsOpenSignal = 0,
+  agentSettingsInitialAgent = '',
   modelPickerDisabled = false,
   modelPickerDisabledReason = '',
   modelLockNotice = '',
@@ -242,6 +244,7 @@ export function DesktopV3AgenticComposer({
   const selectedModel = useMemo(() => modelOptions.find((option) => option.key === selectedModelKey) ?? null, [modelOptions, selectedModelKey])
   const selectedThinking = thinking.trim() || 'off'
   const effectiveAgentSetupOpenSignal = agentSettingsOpenSignal + agentSetupOpenSignal
+  const effectiveAgentSetupInitialAgent = agentSetupInitialAgent || agentSettingsInitialAgent
   const openAgentSetup = useCallback((agent?: string) => {
     setAgentSetupInitialAgent(agent?.trim() || currentAgent)
     setAgentSetupOpenSignal((current) => current + 1)
@@ -712,7 +715,7 @@ export function DesktopV3AgenticComposer({
         modelLockNotice={modelPickerDisabledReason || modelLockNotice}
         triggerDetail={modelControlDetail}
         openSignal={effectiveAgentSetupOpenSignal}
-        initialAgentName={agentSetupInitialAgent}
+        initialAgentName={effectiveAgentSetupInitialAgent}
         onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSetupInitialAgent || currentAgent) : undefined}
         onConfirmAgentSettings={onConfirmAgentSettings}
         busy={agentModelControlBusy}

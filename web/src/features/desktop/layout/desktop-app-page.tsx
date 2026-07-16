@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode, ChangeEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
+import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
 import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, LayoutGrid, LoaderCircle, Menu, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
@@ -2235,6 +2235,10 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
 export function DesktopAppPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const search = useSearch({ strict: false }) as { agentSetup?: unknown; agent?: unknown }
+  const requestedAgentSetup = search.agentSetup === '1'
+  const requestedAgentName = typeof search.agent === 'string' ? search.agent.trim() : 'swarm'
+  const agentSettingsOpenSignal = requestedAgentSetup ? 1 : 0
   const matchRoute = useMatchRoute()
   const workspaceSessionMatch = matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
   const workspaceMatch = matchRoute({ to: '/$workspaceSlug', fuzzy: false })
@@ -3297,7 +3301,16 @@ export function DesktopAppPage() {
     }
   }, [planModal?.sessionId, planModalPlan?.id])
 
-  const handleOpenSettingsTab = useCallback((tab: SettingsTabID) => {
+  const handleOpenSettingsTab = useCallback((tab: SettingsTabID | 'agents') => {
+    if (tab === 'agents') {
+      const search = { agentSetup: '1', agent: 'swarm' }
+      if (routeSessionId && routeWorkspaceSlug) {
+        void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: routeSessionId }, search })
+      } else if (routeWorkspaceSlug) {
+        void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug }, search })
+      }
+      return
+    }
     setQuickSettingsTab(null)
     setQuickActionsOpen(false)
     setMobileSidebarOpen(false)
@@ -4236,6 +4249,8 @@ export function DesktopAppPage() {
               if (routeSession && workspacePath) handleStartNewSessionInWorkspace(workspacePath, routeSession.workspaceName)
             }}
             onSlashCommand={handleSlashCommand}
+            agentSettingsOpenSignal={agentSettingsOpenSignal}
+            agentSettingsInitialAgent={requestedAgentName}
             onOpenPlan={() => openPlanModalForSession(routeSessionId)}
             planSidebarBelowActions={planSidebarGitPanel}
           />
@@ -4268,6 +4283,8 @@ export function DesktopAppPage() {
             onOpenChats={() => setMobileSidebarOpen(true)}
             mobileSessionQuickMenu={mobileSessionQuickMenu}
             onSlashCommand={handleSlashCommand}
+            agentSettingsOpenSignal={agentSettingsOpenSignal}
+            agentSettingsInitialAgent={requestedAgentName}
           />
         ) : (
           <div className="flex h-full flex-1 items-center justify-center px-6">

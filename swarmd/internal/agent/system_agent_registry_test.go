@@ -28,6 +28,17 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	}
 }
 
+func TestBuiltinSystemAgentRegistryUserVisibleIDs(t *testing.T) {
+	registry, err := BuiltinSystemAgentRegistry()
+	if err != nil {
+		t.Fatalf("BuiltinSystemAgentRegistry() error = %v", err)
+	}
+	want := []string{SwarmAgentID, CloneAgentID, ExplorerAgentID}
+	if got := registry.UserVisibleIDs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("UserVisibleIDs() = %v, want %v", got, want)
+	}
+}
+
 func TestSystemAgentRegistryRejectsMissingDuplicateAndInvalidDefinitions(t *testing.T) {
 	valid := SystemAgentDefinition{
 		ID: "system-future", DisplayName: "Future", SidechatKind: "future",

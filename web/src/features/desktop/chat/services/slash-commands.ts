@@ -3,7 +3,7 @@ import type { SettingsTabID } from '../../settings/types/settings-tabs'
 export type DesktopSlashCommandState = 'ready' | 'coming-soon'
 
 export type DesktopSlashCommandAction =
-  | { kind: 'open-settings'; tab: SettingsTabID }
+  | { kind: 'open-settings'; tab: SettingsTabID | 'agents' }
   | { kind: 'open-quick-settings'; tab: Extract<SettingsTabID, 'permissions' | 'themes' | 'worktrees'> }
   | { kind: 'open-permissions' }
   | { kind: 'open-workspace-launcher' }
@@ -101,9 +101,9 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     id: 'agents',
     command: '/agents',
     aliases: [],
-    hint: 'Open agent settings',
-    actionLabel: 'Open Settings → Agents',
-    tips: ['/agents', 'Manage shared agent profiles', 'Set the active primary agent'],
+    hint: 'Open Agent Setup',
+    actionLabel: 'Open Agent Setup',
+    tips: ['/agents', 'Configure Swarm and user-facing system agents'],
     state: 'ready',
     action: { kind: 'open-settings', tab: 'agents' },
   },

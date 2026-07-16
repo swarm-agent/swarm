@@ -89,6 +89,8 @@ export interface DesktopV3NewSessionPaneProps {
   onOpenChats?: () => void
   mobileSessionQuickMenu?: ReactNode
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
+  agentSettingsOpenSignal?: number
+  agentSettingsInitialAgent?: string
 }
 
 export function completeDesktopV3NewSessionStarted(input: {
@@ -120,6 +122,8 @@ export function DesktopV3NewSessionPane({
   onOpenChats,
   mobileSessionQuickMenu,
   onSlashCommand,
+  agentSettingsOpenSignal = 0,
+  agentSettingsInitialAgent = '',
 }: DesktopV3NewSessionPaneProps) {
   const navigate = useNavigate()
   const matchRoute = useMatchRoute()
@@ -360,15 +364,6 @@ export function DesktopV3NewSessionPane({
     }
   }
 
-  function handleOpenAgentSettings() {
-    const search = { tab: 'agents' }
-    if (routeWorkspaceSlug) {
-      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search })
-      return
-    }
-    void navigate({ to: '/settings', search })
-  }
-
   function handleOpenAuthSettings() {
     if (routeWorkspaceSlug) {
       void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: { tab: 'auth' } })
@@ -515,11 +510,12 @@ export function DesktopV3NewSessionPane({
         modelOptions={modelOptions}
         selectedModelKey={selectedModelKey}
         selectedServiceTier={preference.serviceTier}
+        agentSettingsOpenSignal={agentSettingsOpenSignal}
+        agentSettingsInitialAgent={agentSettingsInitialAgent}
         modelPickerDisabled={selectedAgentModelLock.locked}
         modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
         modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
         modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, serviceTier: serviceTierFromPreference(preference) })}
-        onOpenAgentSettings={handleOpenAgentSettings}
         onAgentSelect={handleAgentSelect}
         needsAuth={needsAuth}
         onOpenAuthSettings={handleOpenAuthSettings}

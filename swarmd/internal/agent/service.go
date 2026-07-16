@@ -641,7 +641,7 @@ func (s *Service) cleanupCompiledSwarmContextForAccountLocked(accountScopeID str
 		Name: SwarmAgentID, Mode: ModePrimary, Provider: stored.Provider, Model: stored.Model, Thinking: stored.Thinking,
 		ModelMode: stored.ModelMode, PlanProvider: stored.PlanProvider, PlanModel: stored.PlanModel, PlanThinking: stored.PlanThinking, PlanServiceTier: stored.PlanServiceTier,
 		AutoProvider: stored.AutoProvider, AutoModel: stored.AutoModel, AutoThinking: stored.AutoThinking, AutoServiceTier: stored.AutoServiceTier,
-		UpdatedAt: stored.UpdatedAt,
+		DefaultSessionMode: stored.DefaultSessionMode, UpdatedAt: stored.UpdatedAt,
 	}
 	return s.putProfileForAccountLocked(accountScopeID, context)
 }
@@ -1386,8 +1386,11 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 	if IsIntegrationBuilderAgentName(profile.Name) {
 		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q is reserved for the transient integration builder", profile.Name)
 	}
-	if IsReservedSystemAgentName(profile.Name) {
+	if IsReservedSystemAgentName(profile.Name) && profile.Name != SwarmAgentID {
 		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q is reserved for compiled system agents", profile.Name)
+	}
+	if profile.Name == SwarmAgentID {
+		return s.upsertSwarmConfigurationForAccountLocked(accountScopeID, input)
 	}
 	existing, ok, err := s.getProfileForAccountLocked(accountScopeID, profile.Name)
 	if err != nil {
@@ -1499,6 +1502,90 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 	}
 
 	env, err := s.appendEventLocked(eventType, profile.Name, map[string]any{
+		"account_scope_id": strings.TrimSpace(accountScopeID),
+		"profile":          profile,
+		"state":            state,
+		"version":          version,
+	})
+	if err != nil {
+		return pebblestore.AgentProfile{}, 0, nil, err
+	}
+	return profile, version, &env, nil
+}
+
+func (s *Service) upsertSwarmConfigurationForAccountLocked(accountScopeID string, input UpsertInput) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error) {
+	stored, exists, err := s.getProfileForAccountLocked(accountScopeID, SwarmAgentID)
+	if err != nil {
+		return pebblestore.AgentProfile{}, 0, nil, err
+	}
+	context := stored
+	context.Name, context.Mode = SwarmAgentID, ModePrimary
+	if stringFieldProvided(input.ProviderSet, input.Provider) {
+		context.Provider = strings.ToLower(strings.TrimSpace(input.Provider))
+	}
+	if stringFieldProvided(input.ModelSet, input.Model) {
+		context.Model = strings.TrimSpace(input.Model)
+	}
+	if stringFieldProvided(input.ThinkingSet, input.Thinking) {
+		context.Thinking = strings.ToLower(strings.TrimSpace(input.Thinking))
+	}
+	if strings.TrimSpace(input.ModelMode) != "" {
+		context.ModelMode = pebblestore.NormalizeAgentModelMode(input.ModelMode)
+	}
+	if stringFieldProvided(input.PlanProviderSet, input.PlanProvider) {
+		context.PlanProvider = strings.ToLower(strings.TrimSpace(input.PlanProvider))
+	}
+	if stringFieldProvided(input.PlanModelSet, input.PlanModel) {
+		context.PlanModel = strings.TrimSpace(input.PlanModel)
+	}
+	if stringFieldProvided(input.PlanThinkingSet, input.PlanThinking) {
+		context.PlanThinking = strings.ToLower(strings.TrimSpace(input.PlanThinking))
+	}
+	if stringFieldProvided(input.PlanServiceTierSet, input.PlanServiceTier) {
+		context.PlanServiceTier = pebblestore.NormalizeModelServiceTier(input.PlanServiceTier)
+	}
+	if stringFieldProvided(input.AutoProviderSet, input.AutoProvider) {
+		context.AutoProvider = strings.ToLower(strings.TrimSpace(input.AutoProvider))
+	}
+	if stringFieldProvided(input.AutoModelSet, input.AutoModel) {
+		context.AutoModel = strings.TrimSpace(input.AutoModel)
+	}
+	if stringFieldProvided(input.AutoThinkingSet, input.AutoThinking) {
+		context.AutoThinking = strings.ToLower(strings.TrimSpace(input.AutoThinking))
+	}
+	if stringFieldProvided(input.AutoServiceTierSet, input.AutoServiceTier) {
+		context.AutoServiceTier = pebblestore.NormalizeModelServiceTier(input.AutoServiceTier)
+	}
+	if strings.TrimSpace(input.DefaultSessionMode) != "" {
+		context.DefaultSessionMode = pebblestore.NormalizeAgentDefaultSessionMode(input.DefaultSessionMode)
+	}
+	if pebblestore.AgentModelMode(context) == "split" {
+		context.Provider, context.Model, context.Thinking = "", "", ""
+	} else {
+		context.PlanProvider, context.PlanModel, context.PlanThinking, context.PlanServiceTier = "", "", "", ""
+		context.AutoProvider, context.AutoModel, context.AutoThinking = "", "", ""
+	}
+	context.UpdatedAt = time.Now().UnixMilli()
+	if err := s.putProfileForAccountLocked(accountScopeID, context); err != nil {
+		return pebblestore.AgentProfile{}, 0, nil, err
+	}
+	version, err := s.bumpVersionForAccountLocked(accountScopeID)
+	if err != nil {
+		return pebblestore.AgentProfile{}, 0, nil, err
+	}
+	profile, err := s.ResolveSystemAgent(SwarmAgentID, context)
+	if err != nil {
+		return pebblestore.AgentProfile{}, 0, nil, err
+	}
+	state, err := s.currentStateForAccountLocked(accountScopeID, 2000)
+	if err != nil {
+		return pebblestore.AgentProfile{}, 0, nil, err
+	}
+	eventType := "agent.profile.updated"
+	if !exists {
+		eventType = "agent.profile.created"
+	}
+	env, err := s.appendEventLocked(eventType, SwarmAgentID, map[string]any{
 		"account_scope_id": strings.TrimSpace(accountScopeID),
 		"profile":          profile,
 		"state":            state,

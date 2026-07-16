@@ -184,7 +184,7 @@ func (s *Server) publicAgentProfiles(profiles []pebblestore.AgentProfile) ([]peb
 	if err != nil {
 		return nil, err
 	}
-	for _, id := range registry.IDs() {
+	for _, id := range registry.UserVisibleIDs() {
 		context := pebblestore.AgentProfile{}
 		if id == agentruntime.SwarmAgentID {
 			context = contexts[agentruntime.SwarmAgentID]
@@ -203,6 +203,9 @@ func compactAgentStateForDesktop(state agentruntime.State) map[string]any {
 	profiles := make([]compactAgentProfileForDesktop, 0, len(state.Profiles))
 	for _, profile := range state.Profiles {
 		profile = pebblestore.NormalizeAgentProfile(profile)
+		if agentruntime.IsReservedSystemAgentName(profile.Name) && profile.Name != agentruntime.SwarmAgentID {
+			continue
+		}
 		profiles = append(profiles, compactAgentProfileForDesktop{
 			Name:               profile.Name,
 			Mode:               profile.Mode,

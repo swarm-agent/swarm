@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMatchRoute, useNavigate, useSearch } from '@tanstack/react-router'
-import { Bell, Bot, GitBranch, Home, Keyboard, Key, Palette, Shield, UserRound, type LucideIcon } from 'lucide-react'
+import { Bell, GitBranch, Home, Keyboard, Key, Palette, Shield, UserRound, type LucideIcon } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Select } from '../../../../components/ui/select'
 import { AccountSettingsPage } from '../account/components/account-settings-page'
-import { AgentsSettingsPage } from '../agents/components/agents-settings-page'
 import { AuthSettingsPage } from '../auth/components/auth-settings-page'
 import { PermissionsSettingsPage } from '../permissions/components/permissions-settings-page'
 import { NotificationsSettingsPage } from '../notifications/components/notifications-settings-page'
@@ -17,7 +16,6 @@ import { normalizeSettingsTabID, type SettingsTabID } from '../types/settings-ta
 
 const settingsTabs: Array<{ id: SettingsTabID; label: string; icon: LucideIcon }> = [
   { id: 'account', label: 'Account', icon: UserRound },
-  { id: 'agents', label: 'Agents', icon: Bot },
   { id: 'auth', label: 'Auth', icon: Key },
   { id: 'permissions', label: 'Permissions', icon: Shield },
   { id: 'notifications', label: 'Notifications', icon: Bell },
@@ -32,6 +30,8 @@ const tabs = settingsTabs
 interface SettingsSearchParams {
   tab?: unknown
   returnSessionId?: unknown
+  agentSetup?: unknown
+  agent?: unknown
 }
 
 export function DesktopSettingsPage() {
@@ -42,13 +42,26 @@ export function DesktopSettingsPage() {
   const routeWorkspaceSlug = workspaceSettingsMatch ? workspaceSettingsMatch.workspaceSlug.trim() : ''
   const search = useSearch({ strict: false }) as SettingsSearchParams
   const returnSessionId = typeof search.returnSessionId === 'string' ? search.returnSessionId.trim() : ''
+  const openAgentSetup = search.tab === 'agents' || search.agentSetup === '1'
+  const requestedAgent = typeof search.agent === 'string' ? search.agent.trim() : 'swarm'
   const [activeTab, setActiveTab] = useState<SettingsTabID>(() => normalizeSettingsTabID(search.tab))
 
   useEffect(() => {
     setActiveTab(normalizeSettingsTabID(search.tab))
   }, [search.tab])
 
-  const agentsPageKey = useMemo(() => (activeTab === 'agents' ? `agents-${Date.now()}` : 'agents-closed'), [activeTab])
+  useEffect(() => {
+    if (!openAgentSetup) return
+    if (routeWorkspaceSlug && returnSessionId) {
+      void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: returnSessionId }, search: { agentSetup: '1', agent: requestedAgent } })
+      return
+    }
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug }, search: { agentSetup: '1', agent: requestedAgent } })
+      return
+    }
+    void navigate({ to: '/' })
+  }, [navigate, openAgentSetup, requestedAgent, returnSessionId, routeWorkspaceSlug])
 
   const handleBack = useMemo(() => {
     if (routeWorkspaceSlug && returnSessionId) {
@@ -143,7 +156,6 @@ export function DesktopSettingsPage() {
         <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-4 py-5 md:px-6 md:py-8">
           <div className="w-full max-w-4xl">
             {activeTab === 'account' ? <AccountSettingsPage /> : null}
-            {activeTab === 'agents' ? <AgentsSettingsPage key={agentsPageKey} /> : null}
             {activeTab === 'auth' ? <AuthSettingsPage /> : null}
             {activeTab === 'permissions' ? <PermissionsSettingsPage /> : null}
             {activeTab === 'notifications' ? <NotificationsSettingsPage /> : null}

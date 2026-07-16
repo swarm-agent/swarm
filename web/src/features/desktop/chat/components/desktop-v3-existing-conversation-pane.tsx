@@ -1256,6 +1256,8 @@ export interface DesktopV3ExistingConversationPaneProps {
     command: DesktopSlashCommand,
     draft: string,
   ) => void | Promise<void>;
+  agentSettingsOpenSignal?: number;
+  agentSettingsInitialAgent?: string;
   onCompactingChange?: (sessionId: string, startedAt: number | null) => void;
   onArchivePlanSession?: (sessionId: string) => void;
   onOpenPlan?: () => void;
@@ -1294,6 +1296,8 @@ export function DesktopV3ExistingConversationPane({
   onNewSession,
   sessionActions = null,
   onSlashCommand,
+  agentSettingsOpenSignal = 0,
+  agentSettingsInitialAgent = "",
   onCompactingChange,
   onArchivePlanSession,
   onOpenPlan,
@@ -1752,19 +1756,6 @@ export function DesktopV3ExistingConversationPane({
     onModeChange?.(nextMode);
     onModeCommandHandled?.();
   }, [mode, modeCommand, onModeChange, onModeCommandHandled]);
-
-  function handleOpenAgentSettings() {
-    const search = { tab: "agents", ...(normalizedSessionId ? { returnSessionId: normalizedSessionId } : {}) };
-    if (routeWorkspaceSlug) {
-      void navigate({
-        to: "/$workspaceSlug/settings",
-        params: { workspaceSlug: routeWorkspaceSlug },
-        search,
-      });
-      return;
-    }
-    void navigate({ to: "/settings", search });
-  }
 
   function handleOpenAuthSettings() {
     if (routeWorkspaceSlug) {
@@ -2472,6 +2463,8 @@ export function DesktopV3ExistingConversationPane({
             modelOptions={modelOptions}
             selectedModelKey={selectedModelKey}
             selectedServiceTier={preference.serviceTier}
+            agentSettingsOpenSignal={agentSettingsOpenSignal}
+            agentSettingsInitialAgent={agentSettingsInitialAgent}
             modelPickerDisabled={selectedAgentModelLock.locked}
             modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
             modelLockNotice={
@@ -2486,7 +2479,6 @@ export function DesktopV3ExistingConversationPane({
               thinking: preference.thinking,
               serviceTier: serviceTierFromPreference(preference),
             })}
-            onOpenAgentSettings={handleOpenAgentSettings}
             onAgentSelect={handleAgentSelect}
             needsAuth={needsAuth}
             onOpenAuthSettings={handleOpenAuthSettings}

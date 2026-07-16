@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronDown, Cpu, ExternalLink, GitBranch, Lightbulb, Lock, Settings2, Zap, ZapOff } from 'lucide-react'
+import { Check, ChevronDown, Cpu, GitBranch, Lightbulb, Lock, Settings2, Zap, ZapOff } from 'lucide-react'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
 import { uiSettingsQueryOptions } from '../../../queries/query-options'
 import { saveSystemAgentSettings } from '../../settings/swarm/mutations/save-system-agent-settings'
-import { normalizeCompactAgentSettings, normalizeExplorerAgentSettings } from '../../settings/swarm/types/swarm-settings'
+import { normalizeExplorerAgentSettings } from '../../settings/swarm/types/swarm-settings'
 
 export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
   | 'defaultSessionMode'
@@ -56,16 +56,16 @@ interface AgentModelControlProps {
 }
 
 type DraftMode = 'single' | 'split'
-const COMPACT_AGENT_NAME = 'system-compact'
 const EXPLORER_AGENT_NAME = 'system-explorer'
 const CLONE_AGENT_NAME = 'system-clone'
+const SWARM_AGENT_NAME = 'swarm'
 
 function isSystemUtility(name: string): boolean {
-  return name === COMPACT_AGENT_NAME || name === EXPLORER_AGENT_NAME
+  return name === EXPLORER_AGENT_NAME
 }
 
 function isCompiledSystemAgent(name: string): boolean {
-  return isSystemUtility(name) || name === CLONE_AGENT_NAME
+  return isSystemUtility(name) || name === CLONE_AGENT_NAME || name === SWARM_AGENT_NAME
 }
 export type ModelDraft = { provider: string; model: string; thinking: string; serviceTier: string }
 
@@ -277,23 +277,7 @@ export function AgentModelControl({
 }: AgentModelControlProps) {
   const queryClient = useQueryClient()
   const { data: uiSettings = {} } = useQuery(uiSettingsQueryOptions())
-  const compactSettings = normalizeCompactAgentSettings(uiSettings)
   const explorerSettings = normalizeExplorerAgentSettings(uiSettings)
-  const compactProfile = useMemo<AgentProfileRecord>(() => ({
-    name: COMPACT_AGENT_NAME,
-    mode: 'subagent',
-    description: 'Compiled tool-free context compaction and titling utility',
-    provider: compactSettings.provider,
-    model: compactSettings.model,
-    thinking: compactSettings.thinking,
-    modelMode: 'single',
-    planProvider: '', planModel: '', planThinking: '', planServiceTier: '',
-    autoProvider: '', autoModel: '', autoThinking: '', autoServiceTier: '',
-    prompt: '', runtimeMode: 'read', defaultSessionMode: 'auto', executionSetting: 'read',
-    exitPlanModeEnabled: false, toolScope: null,
-    toolContract: { preset: 'custom', inheritPolicy: false, tools: {} },
-    enabled: true, protected: true, updatedAt: 0,
-  }), [compactSettings.model, compactSettings.provider, compactSettings.thinking])
   const explorerProfile = useMemo<AgentProfileRecord>(() => ({
     name: EXPLORER_AGENT_NAME,
     mode: 'subagent',
@@ -323,7 +307,7 @@ export function AgentModelControl({
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'explorer' && !isCompiledSystemAgent(agent.name)), compactProfile, explorerProfile, cloneProfile], [agents, cloneProfile, compactProfile, explorerProfile])
+  const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'explorer' && (!isCompiledSystemAgent(agent.name) || agent.name === SWARM_AGENT_NAME)), explorerProfile, cloneProfile], [agents, cloneProfile, explorerProfile])
   const activeProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? selectableAgents.find((agent) => agent.name === currentAgent) ?? null
   const [draftAgentName, setDraftAgentName] = useState(activeProfile?.name ?? selectedPrimaryAgent)
   const draftProfile = selectableAgents.find((agent) => agent.name === draftAgentName) ?? activeProfile
@@ -337,7 +321,7 @@ export function AgentModelControl({
   const effectiveDraftMode: DraftMode = draftMode === 'split' && !splitModeAllowed ? 'single' : draftMode
   const agentSections = useMemo(() => {
     const sections = [
-      { label: 'Primary agents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'primary') },
+      { label: 'Primary agents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'primary' && !isCompiledSystemAgent(agent.name)) },
       { label: 'Subagents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'subagent' && !isCompiledSystemAgent(agent.name)) },
       { label: 'System agents', profiles: selectableAgents.filter((agent) => isCompiledSystemAgent(agent.name)) },
       { label: 'Other agents', profiles: selectableAgents.filter((agent) => {
@@ -423,7 +407,7 @@ export function AgentModelControl({
       if (isSystemUtility(profile.name)) {
         const saved = await saveSystemAgentSettings({
           current: uiSettings,
-          agent: profile.name === COMPACT_AGENT_NAME ? 'compact' : 'explorer',
+          agent: 'explorer',
           settings: {
             provider: String(action.agentPatch.provider ?? '').trim(),
             model: String(action.agentPatch.model ?? '').trim(),
@@ -453,8 +437,8 @@ export function AgentModelControl({
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {onOpenAgentSettings ? (
-              <button type="button" onClick={() => { setOpen(false); onOpenAgentSettings() }} className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-                Agents <ExternalLink size={12} />
+              <button type="button" onClick={() => { setOpen(false); onOpenAgentSettings() }} className="rounded-lg border border-[var(--app-border)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+                Close
               </button>
             ) : null}
             <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-[var(--app-border)] px-3 py-1 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Close</button>
@@ -494,7 +478,7 @@ export function AgentModelControl({
             ) : draftProfile && isSystemUtility(draftProfile.name) ? (
               <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
                 <div className="font-semibold text-[var(--app-text)]">Compiled system agent</div>
-                <div className="mt-1">Only {draftProfile.name === COMPACT_AGENT_NAME ? 'Compact' : 'Explorer'}&apos;s provider, model, and thinking level are configurable. Priority/service tier is not independently configurable for system utilities; their identity, prompt, runtime, and tool contract remain code-owned.</div>
+                <div className="mt-1">Only Explorer&apos;s provider, model, and thinking level are configurable. Priority/service tier is not independently configurable; its identity, prompt, runtime, and tool contract remain code-owned.</div>
               </div>
             ) : <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
               <div className="grid gap-4 lg:grid-cols-2">
@@ -531,7 +515,7 @@ export function AgentModelControl({
             </div> : null}
 
             {draftProfile?.name === CLONE_AGENT_NAME ? null : effectiveDraftMode === 'single' ? (
-              <ModelDraftEditor title={draftProfile && isSystemUtility(draftProfile.name) ? `${draftProfile.name === COMPACT_AGENT_NAME ? 'Compact' : 'Explorer'} utility model` : 'Single model'} draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier={!draftProfile || !isSystemUtility(draftProfile.name)} />
+              <ModelDraftEditor title={draftProfile && isSystemUtility(draftProfile.name) ? 'Explorer model' : 'Single model'} draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier={!draftProfile || !isSystemUtility(draftProfile.name)} />
             ) : (
               <div className="mt-4 grid gap-3 lg:grid-cols-2">
                 <ModelDraftEditor title="Plan model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('plan', provider)} onModelChange={(model) => selectModel('plan', model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showServiceTier />

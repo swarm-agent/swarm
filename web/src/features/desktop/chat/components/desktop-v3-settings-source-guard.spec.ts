@@ -7,7 +7,7 @@ test('Desktop V3 chat switches agents canonically and keeps mode separate', asyn
   const newSessionSource = await readFile(new URL('./desktop-v3-new-session-pane.tsx', import.meta.url), 'utf8')
   const composerSource = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
   const pickerSource = await readFile(new URL('./agent-picker.tsx', import.meta.url), 'utf8')
-  const settingsSource = await readFile(new URL('../../settings/agents/components/agents-settings-page.tsx', import.meta.url), 'utf8')
+  const settingsSource = await readFile(new URL('./agent-model-control.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /useQuery\(agentStateQueryOptions\(\)\)/)
   assert.match(source, /handleAgentSelect\(nextAgentName: string\)[\s\S]*await updateSessionV3Agent\([\s\S]*normalizedAgentName[\s\S]*setSelectedAgent\(normalizedAgentName\)/)
@@ -17,7 +17,7 @@ test('Desktop V3 chat switches agents canonically and keeps mode separate', asyn
 
   assert.match(composerSource, /<ModePicker mode=\{mode\}[\s\S]*<AgentPicker/)
   assert.doesNotMatch(pickerSource, /onModeSelect|Session mode for/)
-  assert.match(settingsSource, /useQuery\(agentSettingsStateQueryOptions\(\)\)/)
-  assert.match(settingsSource, /Thinking: \$\{thinking\.trim\(\) \|\| "off"\}/)
-  assert.match(settingsSource, /Fast: \$\{fastLabel\}/)
+  assert.match(settingsSource, /Default session mode/)
+  assert.match(settingsSource, /Agent model policy/)
+  assert.match(settingsSource, /System agents/)
 })
