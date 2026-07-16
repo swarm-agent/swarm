@@ -7,20 +7,27 @@ const pickerSource = readFileSync(new URL('./agent-picker.tsx', import.meta.url)
 const modePickerSource = readFileSync(new URL('./mode-picker.tsx', import.meta.url), 'utf8')
 const settingsSource = readFileSync(new URL('./agent-model-control.tsx', import.meta.url), 'utf8')
 
-test('Auto/Plan is a separate left-side control rather than part of the agent picker', () => {
+test('plan is a toggle control rather than a desktop mode picker', () => {
   assert.match(composerSource, /<ModePicker mode=\{mode\}[\s\S]*<AgentPicker/)
   assert.match(composerSource, /triggerClassName="h-full shrink-0 px-2"/)
-  assert.match(modePickerSource, /aria-label=\{`Session mode: \$\{mode\}\. Switch to \$\{nextMode\}`\}/)
+  assert.match(modePickerSource, /aria-label=\{`\$\{planEnabled \? 'Disable' : 'Enable'\} plan mode`\}/)
+  assert.match(modePickerSource, /aria-pressed=\{planEnabled\}/)
+  assert.match(modePickerSource, /planEnabled \? 'border-transparent bg-transparent text-\[var\(--app-text\)\] hover:border-\[var\(--app-border-accent\)\]'/)
+  assert.match(modePickerSource, /: 'border-transparent bg-transparent text-\[var\(--app-text-muted\)\] opacity-60/)
+  assert.doesNotMatch(modePickerSource, /app-primary|shadow-sm/)
+  assert.match(modePickerSource, />plan<\/span>/)
   assert.match(modePickerSource, /onClick=\{\(\) => onSelect\(nextMode\)\}/)
-  assert.doesNotMatch(modePickerSource, /createPortal|ChevronDown|setOpen/)
+  assert.doesNotMatch(modePickerSource, /createPortal|ChevronDown|ChevronsUp|setOpen|>\{mode\}<\/span>/)
   assert.doesNotMatch(pickerSource, /DesktopSessionMode|onModeSelect|Session mode for/)
 })
 
-test('Agent Setup owns default mode and single/split model policy', () => {
+test('Agent Setup presents the default auto value as Action and owns model policy', () => {
   assert.match(settingsSource, /Default session mode/)
   assert.match(settingsSource, /Agent model policy/)
   assert.match(settingsSource, /label="Single"/)
   assert.match(settingsSource, /label="Split"/)
+  assert.match(settingsSource, /label="Action" onClick=\{\(\) => setDraftSessionMode\('auto'\)\}/)
   assert.match(settingsSource, /Plan model/)
-  assert.match(settingsSource, /Auto model/)
+  assert.match(settingsSource, /Action model/)
+  assert.doesNotMatch(settingsSource, /label="Auto"|Auto model|Plan\/Auto/)
 })

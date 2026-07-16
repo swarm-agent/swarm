@@ -99,7 +99,7 @@ function runtimeLabel(profile: AgentProfileRecord | null): string {
 
 function modelBehaviorLabel(profile: AgentProfileRecord | null): string {
   if (!profile) return 'Single model'
-  if (profile.modelMode === 'split' && isPlanCapableAgent(profile)) return 'Split plan/auto models'
+  if (profile.modelMode === 'split' && isPlanCapableAgent(profile)) return 'Split plan/action models'
   return 'Single model'
 }
 
@@ -486,21 +486,21 @@ export function AgentModelControl({
               <div className="grid gap-4 lg:grid-cols-2">
                 <div>
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Default session mode</div>
-                  <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Choose how new sessions start for this agent. You can still switch Plan/Auto in the composer.</div>
+                  <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Choose how new sessions start for this agent. Plan can still be toggled in the composer.</div>
                 </div>
                 <div role="group" aria-label="Default session mode" className="grid grid-cols-2 rounded-md border border-[var(--app-border-strong)] bg-[var(--app-bg)] p-1">
                   <CompactChoice selected={draftSessionMode === 'plan'} label="Plan" onClick={() => setDraftSessionMode('plan')} />
-                  <CompactChoice selected={draftSessionMode === 'auto'} label="Auto" onClick={() => setDraftSessionMode('auto')} />
+                  <CompactChoice selected={draftSessionMode === 'auto'} label="Action" onClick={() => setDraftSessionMode('auto')} />
                 </div>
               </div>
-              <div className="mt-3 text-[11px] text-[var(--app-text-subtle)]">Runtime: {runtimeLabel(draftProfile)}. Current session: {mode}.</div>
+              <div className="mt-3 text-[11px] text-[var(--app-text-subtle)]">Runtime: {runtimeLabel(draftProfile)}. Current action: {mode === 'plan' ? 'Plan' : 'Action'}.</div>
             </div>}
 
             {!draftProfile || !isSystemUtility(draftProfile.name) ? <div className="mt-4 border-y border-[var(--app-border)] py-3">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
-                  <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Use one model everywhere or separate plan and auto models.</div>
+                  <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Use one model everywhere or separate plan and action models.</div>
                 </div>
                 <div role="group" aria-label="Agent model policy" className="grid w-full shrink-0 grid-cols-2 rounded-md border border-[var(--app-border-strong)] bg-[var(--app-bg)] p-1 sm:w-64">
                   <CompactChoice selected={effectiveDraftMode === 'single'} label="Single" onClick={() => setDraftMode('single')} />
@@ -521,7 +521,7 @@ export function AgentModelControl({
             ) : (
               <div className="mt-4 grid gap-3 lg:grid-cols-2">
                 <ModelDraftEditor title="Plan model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('plan', provider)} onModelChange={(model) => selectModel('plan', model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
-                <ModelDraftEditor title="Auto model" draft={autoDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('auto', provider)} onModelChange={(model) => selectModel('auto', model)} onThinkingChange={(thinking) => setAutoDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setAutoDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
+                <ModelDraftEditor title="Action model" draft={autoDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('auto', provider)} onModelChange={(model) => selectModel('auto', model)} onThinkingChange={(thinking) => setAutoDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setAutoDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
               </div>
             )}
             {error ? <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
