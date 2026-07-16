@@ -8,6 +8,7 @@ import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thi
 import { getDesktopSessionCreateTarget, type DesktopChatRoute } from '../services/chat-routing'
 import { formatContextWindow, effectiveContextWindow } from '../services/model-options'
 import { preferenceFromAgentModelLock, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
+import { resolveDesktopV3StartupAgent } from '../services/desktop-startup-agent'
 import type { AgentStateRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
 import { refreshAgentModelMutationCaches, updateAgentProfile } from '../queries/agent-preference-mutations'
 import type { AgentModelControlConfirmInput } from './agent-model-control'
@@ -180,7 +181,7 @@ export function DesktopV3NewSessionPane({
   const [agentModelSaving, setAgentModelSaving] = useState(false)
   const [timerNow, setTimerNow] = useState(() => Date.now())
   const [mode, setMode] = useState<DesktopSessionMode>(initialMode)
-  const [selectedAgent, setSelectedAgent] = useState(agentNameProp.trim() || agentState.activePrimary || '')
+  const [selectedAgent, setSelectedAgent] = useState(() => resolveDesktopV3StartupAgent(agentState, agentNameProp))
   const modeManuallySelectedRef = useRef(false)
   const agentManuallySelectedRef = useRef(false)
   const preferenceManuallyChangedRef = useRef(false)
@@ -207,13 +208,13 @@ export function DesktopV3NewSessionPane({
   }, [initialMode])
 
   useEffect(() => {
-    const active = agentNameProp.trim() || agentState.activePrimary || ''
+    const active = resolveDesktopV3StartupAgent(agentState, agentNameProp)
     if (!active) return
     setSelectedAgent((current) => {
       if (agentManuallySelectedRef.current) return current
       return current === active ? current : active
     })
-  }, [agentNameProp, agentState.activePrimary])
+  }, [agentNameProp, agentState.activePrimary, agentState.profiles])
 
   useEffect(() => {
     if (modeManuallySelectedRef.current) return
@@ -326,7 +327,8 @@ export function DesktopV3NewSessionPane({
       setMode(nextProfile.defaultSessionMode)
       onModeChange?.(nextProfile.defaultSessionMode)
     }
-    const nextLock = resolveDesktopV3AgentModelLock(agentState.profiles, normalizedAgentName, mode)
+    const nextMode = nextProfile?.defaultSessionMode ?? mode
+    const nextLock = resolveDesktopV3AgentModelLock(agentState.profiles, normalizedAgentName, nextMode)
     if (nextLock.locked) {
       setPreference((current) => preferenceFromAgentModelLock(nextLock, current, modelOptions))
     }

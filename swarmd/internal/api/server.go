@@ -3499,9 +3499,10 @@ type uiToolSettingsPatchPresence struct {
 }
 
 type uiCompactAgentSettingsPatchPresence struct {
-	Provider *string `json:"provider"`
-	Model    *string `json:"model"`
-	Thinking *string `json:"thinking"`
+	Provider    *string `json:"provider"`
+	Model       *string `json:"model"`
+	Thinking    *string `json:"thinking"`
+	ServiceTier *string `json:"service_tier"`
 }
 
 type uiAgentSettingsPatchPresence struct {
@@ -3598,6 +3599,9 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 		if raw.Agents.Compact.Thinking != nil {
 			settings.Agents.Compact.Thinking = patch.Agents.Compact.Thinking
 		}
+		if raw.Agents.Compact.ServiceTier != nil {
+			settings.Agents.Compact.ServiceTier = patch.Agents.Compact.ServiceTier
+		}
 	}
 	if raw.Agents != nil && raw.Agents.Explorer != nil {
 		if raw.Agents.Explorer.Provider != nil {
@@ -3608,6 +3612,9 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 		}
 		if raw.Agents.Explorer.Thinking != nil {
 			settings.Agents.Explorer.Thinking = patch.Agents.Explorer.Thinking
+		}
+		if raw.Agents.Explorer.ServiceTier != nil {
+			settings.Agents.Explorer.ServiceTier = patch.Agents.Explorer.ServiceTier
 		}
 	}
 	return settings

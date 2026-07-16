@@ -288,12 +288,12 @@ export function AgentModelControl({
     thinking: explorerSettings.thinking,
     modelMode: 'single',
     planProvider: '', planModel: '', planThinking: '', planServiceTier: '',
-    autoProvider: '', autoModel: '', autoThinking: '', autoServiceTier: '',
+    autoProvider: '', autoModel: '', autoThinking: '', autoServiceTier: explorerSettings.service_tier,
     prompt: '', runtimeMode: 'read', defaultSessionMode: 'auto', executionSetting: 'read',
     exitPlanModeEnabled: false, toolScope: null,
     toolContract: { preset: 'custom', inheritPolicy: false, tools: { read: { enabled: true, bashPrefixes: [] }, search: { enabled: true, bashPrefixes: [] }, list: { enabled: true, bashPrefixes: [] }, websearch: { enabled: true, bashPrefixes: [] }, webfetch: { enabled: true, bashPrefixes: [] } } },
     enabled: true, protected: true, updatedAt: 0,
-  }), [explorerSettings.model, explorerSettings.provider, explorerSettings.thinking])
+  }), [explorerSettings.model, explorerSettings.provider, explorerSettings.service_tier, explorerSettings.thinking])
   const cloneProfile = useMemo<AgentProfileRecord>(() => ({
     name: CLONE_AGENT_NAME,
     mode: 'subagent',
@@ -413,6 +413,7 @@ export function AgentModelControl({
             provider: String(action.agentPatch.provider ?? '').trim(),
             model: String(action.agentPatch.model ?? '').trim(),
             thinking: String(action.agentPatch.thinking ?? '').trim(),
+            service_tier: String(action.agentPatch.autoServiceTier ?? '').trim(),
           },
         })
         queryClient.setQueryData(uiSettingsQueryOptions().queryKey, saved)
@@ -479,7 +480,7 @@ export function AgentModelControl({
             ) : draftProfile && isSystemUtility(draftProfile.name) ? (
               <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
                 <div className="font-semibold text-[var(--app-text)]">Compiled system agent</div>
-                <div className="mt-1">Only Explorer&apos;s provider, model, and thinking level are configurable. Priority/service tier is not independently configurable; its identity, prompt, runtime, and tool contract remain code-owned.</div>
+                <div className="mt-1">Explorer&apos;s provider, model, thinking level, and priority/service tier are configurable. Its identity, prompt, runtime, and tool contract remain code-owned.</div>
               </div>
             ) : <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
               <div className="grid gap-4 lg:grid-cols-2">
@@ -516,7 +517,7 @@ export function AgentModelControl({
             </div> : null}
 
             {draftProfile?.name === CLONE_AGENT_NAME ? null : effectiveDraftMode === 'single' ? (
-              <ModelDraftEditor title={draftProfile && isSystemUtility(draftProfile.name) ? 'Explorer model' : 'Single model'} draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier={!draftProfile || !isSystemUtility(draftProfile.name)} />
+              <ModelDraftEditor title={draftProfile && isSystemUtility(draftProfile.name) ? 'Explorer model' : 'Single model'} draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
             ) : (
               <div className="mt-4 grid gap-3 lg:grid-cols-2">
                 <ModelDraftEditor title="Plan model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('plan', provider)} onModelChange={(model) => selectModel('plan', model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showServiceTier />

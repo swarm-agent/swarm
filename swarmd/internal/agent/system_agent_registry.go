@@ -464,7 +464,7 @@ func CompactAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.A
 func ExplorerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
 	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: ExplorerAgentID, Mode: ModeSubagent, Description: "Compiled repository and web research subagent",
-		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking),
+		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
 		Prompt: ExplorerAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: ExplorerAgentToolContract(), Enabled: true,
 	})
@@ -533,6 +533,7 @@ func reconcileCompactAgentProfile(snapshot pebblestore.AgentProfile) pebblestore
 func reconcileExplorerAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := ExplorerAgentProfileForParent(snapshot)
 	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
+	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
 	return profile
 }
 

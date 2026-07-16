@@ -98,9 +98,10 @@ type ToolSettings struct {
 }
 
 type CompactAgentSettings struct {
-	Provider string `json:"provider,omitempty"`
-	Model    string `json:"model,omitempty"`
-	Thinking string `json:"thinking,omitempty"`
+	Provider    string `json:"provider,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Thinking    string `json:"thinking,omitempty"`
+	ServiceTier string `json:"service_tier,omitempty"`
 }
 
 type AgentSettings struct {
@@ -248,14 +249,16 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 		},
 		Agents: AgentSettings{
 			Compact: CompactAgentSettings{
-				Provider: strings.ToLower(strings.TrimSpace(record.Agents.Compact.Provider)),
-				Model:    strings.TrimSpace(record.Agents.Compact.Model),
-				Thinking: strings.TrimSpace(record.Agents.Compact.Thinking),
+				Provider:    strings.ToLower(strings.TrimSpace(record.Agents.Compact.Provider)),
+				Model:       strings.TrimSpace(record.Agents.Compact.Model),
+				Thinking:    strings.TrimSpace(record.Agents.Compact.Thinking),
+				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Compact.ServiceTier)),
 			},
 			Explorer: CompactAgentSettings{
-				Provider: strings.ToLower(strings.TrimSpace(record.Agents.Explorer.Provider)),
-				Model:    strings.TrimSpace(record.Agents.Explorer.Model),
-				Thinking: strings.TrimSpace(record.Agents.Explorer.Thinking),
+				Provider:    strings.ToLower(strings.TrimSpace(record.Agents.Explorer.Provider)),
+				Model:       strings.TrimSpace(record.Agents.Explorer.Model),
+				Thinking:    strings.TrimSpace(record.Agents.Explorer.Thinking),
+				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Explorer.ServiceTier)),
 			},
 		},
 		UpdatedAt: record.UpdatedAt,
@@ -355,14 +358,16 @@ func toolRecordFromSettings(settings ToolSettings) *pebblestore.UIToolSettingsRe
 func agentRecordFromSettings(settings AgentSettings) *pebblestore.UIAgentSettingsRecord {
 	return &pebblestore.UIAgentSettingsRecord{
 		Compact: pebblestore.UICompactAgentSettingsRecord{
-			Provider: strings.ToLower(strings.TrimSpace(settings.Compact.Provider)),
-			Model:    strings.TrimSpace(settings.Compact.Model),
-			Thinking: strings.TrimSpace(settings.Compact.Thinking),
+			Provider:    strings.ToLower(strings.TrimSpace(settings.Compact.Provider)),
+			Model:       strings.TrimSpace(settings.Compact.Model),
+			Thinking:    strings.TrimSpace(settings.Compact.Thinking),
+			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Compact.ServiceTier)),
 		},
 		Explorer: pebblestore.UICompactAgentSettingsRecord{
-			Provider: strings.ToLower(strings.TrimSpace(settings.Explorer.Provider)),
-			Model:    strings.TrimSpace(settings.Explorer.Model),
-			Thinking: strings.TrimSpace(settings.Explorer.Thinking),
+			Provider:    strings.ToLower(strings.TrimSpace(settings.Explorer.Provider)),
+			Model:       strings.TrimSpace(settings.Explorer.Model),
+			Thinking:    strings.TrimSpace(settings.Explorer.Thinking),
+			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Explorer.ServiceTier)),
 		},
 	}
 }

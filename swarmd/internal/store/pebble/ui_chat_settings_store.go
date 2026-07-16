@@ -98,9 +98,10 @@ type UIToolSettingsRecord struct {
 }
 
 type UICompactAgentSettingsRecord struct {
-	Provider string `json:"provider,omitempty"`
-	Model    string `json:"model,omitempty"`
-	Thinking string `json:"thinking,omitempty"`
+	Provider    string `json:"provider,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Thinking    string `json:"thinking,omitempty"`
+	ServiceTier string `json:"service_tier,omitempty"`
 }
 
 type UIAgentSettingsRecord struct {
@@ -295,9 +296,11 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	record.Agents.Compact.Provider = strings.ToLower(strings.TrimSpace(record.Agents.Compact.Provider))
 	record.Agents.Compact.Model = strings.TrimSpace(record.Agents.Compact.Model)
 	record.Agents.Compact.Thinking = strings.TrimSpace(record.Agents.Compact.Thinking)
+	record.Agents.Compact.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Compact.ServiceTier))
 	record.Agents.Explorer.Provider = strings.ToLower(strings.TrimSpace(record.Agents.Explorer.Provider))
 	record.Agents.Explorer.Model = strings.TrimSpace(record.Agents.Explorer.Model)
 	record.Agents.Explorer.Thinking = strings.TrimSpace(record.Agents.Explorer.Thinking)
+	record.Agents.Explorer.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Explorer.ServiceTier))
 	return record
 }
 

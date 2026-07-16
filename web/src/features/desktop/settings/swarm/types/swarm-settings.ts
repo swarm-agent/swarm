@@ -31,6 +31,7 @@ export interface UICompactAgentSettingsWire {
   provider?: string
   model?: string
   thinking?: string
+  service_tier?: string
 }
 
 export interface UIAgentSettingsWire {
@@ -198,6 +199,7 @@ export function normalizeCompactAgentSettings(payload?: UISettingsWire | null): 
     provider: typeof payload?.agents?.compact?.provider === 'string' ? payload.agents.compact.provider.trim().toLowerCase() : '',
     model: typeof payload?.agents?.compact?.model === 'string' ? payload.agents.compact.model.trim() : '',
     thinking: typeof payload?.agents?.compact?.thinking === 'string' ? payload.agents.compact.thinking.trim() : '',
+    service_tier: typeof payload?.agents?.compact?.service_tier === 'string' ? payload.agents.compact.service_tier.trim().toLowerCase() : '',
   }
 }
 
@@ -206,6 +208,7 @@ export function normalizeExplorerAgentSettings(payload?: UISettingsWire | null):
     provider: typeof payload?.agents?.explorer?.provider === 'string' ? payload.agents.explorer.provider.trim().toLowerCase() : '',
     model: typeof payload?.agents?.explorer?.model === 'string' ? payload.agents.explorer.model.trim() : '',
     thinking: typeof payload?.agents?.explorer?.thinking === 'string' ? payload.agents.explorer.thinking.trim() : '',
+    service_tier: typeof payload?.agents?.explorer?.service_tier === 'string' ? payload.agents.explorer.service_tier.trim().toLowerCase() : '',
   }
 }
 
@@ -218,6 +221,7 @@ export function withCompactAgentSettings(current: UISettingsWire, compact: UICom
         provider: compact.provider?.trim().toLowerCase() ?? '',
         model: compact.model?.trim() ?? '',
         thinking: compact.thinking?.trim() ?? '',
+        service_tier: compact.service_tier?.trim().toLowerCase() ?? '',
       },
     },
   }
@@ -232,6 +236,7 @@ export function withExplorerAgentSettings(current: UISettingsWire, explorer: UIC
         provider: explorer.provider?.trim().toLowerCase() ?? '',
         model: explorer.model?.trim() ?? '',
         thinking: explorer.thinking?.trim() ?? '',
+        service_tier: explorer.service_tier?.trim().toLowerCase() ?? '',
       },
     },
   }

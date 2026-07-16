@@ -490,6 +490,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
   const finishWithWorkspace = async (resolution: WorkspaceResolution, fallbackPath: string) => {
     const next = await finalizeOnboarding()
+    await refreshAuthDependentQueries()
     if (next.needsOnboarding) {
       throw new Error('Swarm is still finishing onboarding. Try opening the workspace again in a moment.')
     }

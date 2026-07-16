@@ -63,3 +63,21 @@ assert.doesNotMatch(
   /const FALLBACK_THINKING_OPTIONS = \['off', 'low', 'medium', 'high', 'xhigh'\]/,
   'agent model control must not keep its own low/medium thinking fallback that bypasses catalog thinking_options',
 )
+
+assert.match(
+  source,
+  /autoServiceTier: explorerSettings\.service_tier/,
+  'Explorer setup must initialize its editable priority from canonical UI settings',
+)
+
+assert.match(
+  source,
+  /service_tier: String\(action\.agentPatch\.autoServiceTier \?\? ''\)\.trim\(\)/,
+  'Explorer setup must persist priority through the canonical UI settings mutation',
+)
+
+assert.match(
+  source,
+  /Explorer model[\s\S]*showServiceTier/,
+  'Explorer setup must expose the service-tier selector',
+)

@@ -3510,7 +3510,11 @@ func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose st
 		if err != nil {
 			return pebblestore.AgentProfile{}, fmt.Errorf("resolve Explorer utility preference: %w", err)
 		}
-		return s.agents.ResolveSystemAgent(agentruntime.ExplorerAgentID, pebblestore.AgentProfile{Provider: resolved.Preference.Provider, Model: resolved.Preference.Model, Thinking: resolved.Preference.Thinking})
+		serviceTier := strings.TrimSpace(override.ServiceTier)
+		if serviceTier == "" {
+			serviceTier = strings.TrimSpace(preference.ServiceTier)
+		}
+		return s.agents.ResolveSystemAgent(agentruntime.ExplorerAgentID, pebblestore.AgentProfile{Provider: resolved.Preference.Provider, Model: resolved.Preference.Model, Thinking: resolved.Preference.Thinking, AutoServiceTier: serviceTier})
 	}
 	if strings.TrimSpace(accountScopeID) != "" {
 		return s.agents.ResolveSubagentForAccount(accountScopeID, nameOrPurpose)

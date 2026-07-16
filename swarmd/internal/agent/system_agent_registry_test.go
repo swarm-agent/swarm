@@ -170,9 +170,12 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if compact.ToolContract == nil || compact.ToolContract.Preset != "custom" || len(compact.ToolContract.Tools) != 0 {
 		t.Fatalf("Compact must have an immutable empty custom tool contract: %+v", compact.ToolContract)
 	}
-	explorer, err := registry.ReconcileSnapshot(ExplorerAgentID, pebblestore.AgentProfile{Name: ExplorerAgentID, Provider: "codex", Model: "utility-model", Thinking: "high", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
+	explorer, err := registry.ReconcileSnapshot(ExplorerAgentID, pebblestore.AgentProfile{Name: ExplorerAgentID, Provider: "codex", Model: "utility-model", Thinking: "high", AutoServiceTier: "priority", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if explorer.AutoServiceTier != "priority" {
+		t.Fatalf("Explorer service tier was not preserved: %+v", explorer)
 	}
 	if explorer.Prompt != ExplorerAgentPrompt() || explorer.RuntimeMode != pebblestore.AgentRuntimeModeRead || explorer.ToolContract == nil || explorer.ToolContract.Preset != "custom" {
 		t.Fatalf("Explorer immutable contract was not restored: %+v", explorer)

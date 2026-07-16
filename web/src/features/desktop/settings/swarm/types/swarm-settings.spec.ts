@@ -6,10 +6,12 @@ import {
   DEFAULT_SIDEBAR_HIDE_INACTIVE_HOURS,
   normalizeFollowupCheckpointPolicyDefault,
   normalizeGlobalThemeSettings,
+  normalizeExplorerAgentSettings,
   normalizeSessionMode,
   normalizeSidebarHideInactiveHours,
   normalizeSwarmSettings,
   withDefaultNewSessionMode,
+  withExplorerAgentSettings,
   withSidebarHideInactiveHours,
   type UISettingsWire,
 } from './swarm-settings'
@@ -55,6 +57,12 @@ test('follow-up checkpoint policy default normalizes missing and unknown values 
   assert.equal(normalizeFollowupCheckpointPolicyDefault(''), 'auto_start')
   assert.equal(normalizeFollowupCheckpointPolicyDefault('unexpected'), 'auto_start')
   assert.equal(normalizeSwarmSettings({}).followupCheckpointPolicyDefault, 'auto_start')
+})
+
+test('Explorer priority normalizes and persists through its canonical settings path', () => {
+  const current: UISettingsWire = { agents: { explorer: { provider: 'codex', model: 'gpt-5.4', thinking: 'high' } } }
+  const saved = withExplorerAgentSettings(current, { provider: 'CODEX', model: 'gpt-5.4', thinking: 'high', service_tier: 'PRIORITY' })
+  assert.equal(normalizeExplorerAgentSettings(saved).service_tier, 'priority')
 })
 
 test('follow-up checkpoint policy default preserves ask-first aliases', () => {

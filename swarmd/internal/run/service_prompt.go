@@ -177,6 +177,8 @@ func applyAgentPreferenceOverridesForMode(base pebblestore.ModelPreference, agen
 				base.ServiceTier = serviceTierOverride
 			}
 		}
+	} else if serviceTierOverride := strings.TrimSpace(agentProfile.AutoServiceTier); serviceTierOverride != "" {
+		base.ServiceTier = serviceTierOverride
 	}
 
 	switch {
