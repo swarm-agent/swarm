@@ -277,7 +277,7 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={`Agent: ${displayLabel}${selectedAgentDetail ? `, ${selectedAgentDetail}` : ''}`}
-        className={`inline-flex min-h-9 min-w-0 items-center gap-2 rounded-none border-0 border-b-2 border-transparent bg-transparent px-3 py-2 text-xs font-medium text-[var(--app-text-muted)] transition hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50 ${triggerClassName}`}
+        className={`inline-flex min-h-9 min-w-0 items-center gap-2 rounded-lg border-0 bg-transparent px-3 py-2 text-xs font-medium text-[var(--app-text-muted)] transition-all hover:-translate-y-0.5 hover:text-[var(--app-text)] hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none ${triggerClassName}`}
       >
         <span className="max-w-[100px] shrink-0 truncate font-semibold text-[var(--app-text)]">{displayLabel}</span>
         {selectedAgentDetail ? (

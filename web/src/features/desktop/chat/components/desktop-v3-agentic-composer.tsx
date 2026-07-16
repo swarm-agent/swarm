@@ -575,8 +575,8 @@ export function DesktopV3AgenticComposer({
       aria-label={dictationEnabled ? 'Stop microphone dictation' : 'Start microphone dictation'}
       title={dictationSupported ? (dictationEnabled ? 'Stop dictation' : 'Start dictation') : 'Speech recognition is not available in this browser'}
       className={dictationEnabled
-        ? 'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-sm transition hover:bg-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-50'
-        : 'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-surface)] text-[var(--app-text-muted)] shadow-sm transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50'}
+        ? 'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-sm transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0'
+        : 'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-surface)] text-[var(--app-text-muted)] shadow-sm transition-all hover:-translate-y-0.5 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0'}
     >
       <Mic size={15} className={dictationListening ? 'animate-pulse' : undefined} />
     </button>
@@ -591,8 +591,8 @@ export function DesktopV3AgenticComposer({
       aria-label={contextTooltip || 'Compact conversation'}
       style={mobile ? mobileContextProgressStyle : undefined}
       className={mobile
-        ? 'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-none border-b-2 border-[var(--app-border-accent)] p-[2px] text-[9px] font-semibold uppercase tracking-wide text-[var(--app-primary)] shadow-sm transition hover:scale-[1.03] disabled:cursor-not-allowed disabled:opacity-50'
-        : 'inline-flex min-h-7 min-w-0 items-center gap-1 rounded-none border-0 border-b-2 border-transparent bg-transparent px-2 text-[11px] font-medium tabular-nums text-[var(--app-text)] transition hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50'}
+        ? 'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border-0 p-[2px] text-[9px] font-semibold uppercase tracking-wide text-[var(--app-primary)] shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0'
+        : 'inline-flex min-h-7 min-w-0 items-center gap-1 rounded-lg border-0 bg-transparent px-2 text-[11px] font-medium tabular-nums text-[var(--app-text)] transition-all hover:-translate-y-0.5 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none'}
     >
       {mobile ? (
         <span className="flex h-full w-full items-center justify-center rounded-full bg-[var(--app-bg-alt)]">{mobileContextUsageLabel}</span>
@@ -661,13 +661,13 @@ export function DesktopV3AgenticComposer({
                   </span>
                 ) : null}
                 {needsAuth ? (
-                  <button type="button" onClick={onOpenAuthSettings} disabled={!onOpenAuthSettings} className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1 text-[11px] font-semibold text-[var(--app-warning)] transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60" title="Open auth settings to add a provider credential">
+                  <button type="button" onClick={onOpenAuthSettings} disabled={!onOpenAuthSettings} className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1 text-[11px] font-semibold text-[var(--app-warning)] transition-all hover:-translate-y-0.5 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-none" title="Open auth settings to add a provider credential">
                     <AlertTriangle size={13} className="shrink-0" />
                     Needs auth!
                   </button>
                 ) : null}
                 {thinkingTagsEnabled !== undefined && onThinkingTagsToggle ? (
-                  <button type="button" onClick={() => onThinkingTagsToggle(!thinkingTagsEnabled)} disabled={thinkingTagsBusy} className="inline-flex h-6 items-center rounded-full border border-[var(--app-border)] px-2 text-[10px] font-semibold text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-60">
+                  <button type="button" onClick={() => onThinkingTagsToggle(!thinkingTagsEnabled)} disabled={thinkingTagsBusy} className="inline-flex h-6 items-center rounded-full border border-[var(--app-border)] px-2 text-[10px] font-semibold text-[var(--app-text-muted)] transition-all hover:-translate-y-0.5 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-none">
                     tags {thinkingTagsEnabled ? 'on' : 'off'}
                   </button>
                 ) : null}
@@ -675,7 +675,7 @@ export function DesktopV3AgenticComposer({
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
-                <Button size="sm" className="h-9 w-9 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] hover:border-[var(--app-border-accent)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                <Button size="sm" className="h-9 w-9 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={16} /> : busy ? <LoaderCircle size={16} className="animate-spin" /> : <Send size={17} />}
                 </Button>
               </div>
@@ -694,7 +694,7 @@ export function DesktopV3AgenticComposer({
                 </div>
                 {compactButton(true)}
                 {dictationButton()}
-                <Button size="sm" className="h-9 w-9 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] hover:border-[var(--app-border-accent)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                <Button size="sm" className="h-9 w-9 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={16} /> : busy ? <LoaderCircle size={16} className="animate-spin" /> : <Send size={17} />}
                 </Button>
               </div>
