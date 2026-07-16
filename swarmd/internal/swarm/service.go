@@ -234,7 +234,6 @@ func (s *Service) EnsureLocalState(input EnsureLocalStateInput) (LocalState, err
 	if s == nil || s.store == nil {
 		return LocalState{}, errors.New("swarm service is not configured")
 	}
-	swarmID := strings.TrimSpace(input.SwarmID)
 	nodeRecord, ok, err := s.store.GetLocalNode()
 	if err != nil {
 		return LocalState{}, err
@@ -242,8 +241,12 @@ func (s *Service) EnsureLocalState(input EnsureLocalStateInput) (LocalState, err
 	if !ok {
 		nodeRecord = pebblestore.SwarmLocalNodeRecord{}
 	}
+	// Once minted, the persisted local swarm ID is canonical for this daemon.
+	// Callers may supply an ID only while initializing an empty store (for
+	// explicit restore/migration paths); they cannot remap an existing daemon.
+	swarmID := strings.TrimSpace(nodeRecord.SwarmID)
 	if swarmID == "" {
-		swarmID = strings.TrimSpace(nodeRecord.SwarmID)
+		swarmID = strings.TrimSpace(input.SwarmID)
 	}
 	if swarmID == "" {
 		generated, err := GenerateSwarmID()

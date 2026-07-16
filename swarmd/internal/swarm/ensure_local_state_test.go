@@ -52,6 +52,13 @@ func TestEnsureLocalStateUsesInputNameOnlyForInitialBootstrap(t *testing.T) {
 	if reloaded.Node.SwarmID != initial.Node.SwarmID {
 		t.Fatalf("swarm id changed after re-ensure: got %q want %q", reloaded.Node.SwarmID, initial.Node.SwarmID)
 	}
+	remapAttempt, err := svc.EnsureLocalState(EnsureLocalStateInput{SwarmID: "replacement-swarm-id"})
+	if err != nil {
+		t.Fatalf("ensure local state with replacement id: %v", err)
+	}
+	if remapAttempt.Node.SwarmID != initial.Node.SwarmID {
+		t.Fatalf("persisted canonical swarm id was remapped: got %q want %q", remapAttempt.Node.SwarmID, initial.Node.SwarmID)
+	}
 	if len(reloaded.Groups) != 0 || reloaded.CurrentGroupID != "" {
 		t.Fatalf("reloaded local state created groups unexpectedly: current=%q groups=%d", reloaded.CurrentGroupID, len(reloaded.Groups))
 	}

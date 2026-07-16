@@ -211,6 +211,14 @@ func New(cfg config.Config) (*Daemon, error) {
 	permissionSvc.SetNotificationService(notificationSvc)
 	discoverySvc := discovery.NewService()
 	swarmSvc := swarmruntime.NewService(swarmStore, events, hub.Publish)
+	// The local swarm ID is daemon identity, not onboarding state. Mint and
+	// durably store it before topology or any V3 session path can resolve self.
+	if _, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{}); err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("ensure canonical local swarm identity: %w", err)
+	}
 	workspaceSvc := workspace.NewService(pebblestore.NewWorkspaceStore(store))
 	workspaceSvc.SetEventPublisher(events, hub.Publish)
 	identityStore := pebblestore.NewIdentityStore(store)
