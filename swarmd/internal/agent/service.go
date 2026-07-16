@@ -232,10 +232,10 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input 
 	if input.Provider == "" || input.PrimaryModel == "" || input.PlanModel == "" || input.AutoModel == "" || input.UtilityModel == "" {
 		return DefaultModelHydrationResult{}, errors.New("hydrated default agents require provider and main, plan, auto, utility models")
 	}
+	// Compact and Explorer are compiled system agents whose snapshot-selected
+	// utility model is persisted through UI settings by the onboarding caller.
+	// Hydration therefore remains valid when there are no mutable utility rows.
 	utilityNames := normalizeDefaultUtilityAgentNames(input.UtilityAgentNames)
-	if len(utilityNames) == 0 {
-		return DefaultModelHydrationResult{}, errors.New("hydrated default agents require utility agents")
-	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

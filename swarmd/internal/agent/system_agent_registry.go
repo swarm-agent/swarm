@@ -429,7 +429,7 @@ func SwarmAgentProfileForContext(context pebblestore.AgentProfile) pebblestore.A
 		Provider: strings.TrimSpace(context.Provider), Model: strings.TrimSpace(context.Model), Thinking: strings.TrimSpace(context.Thinking),
 		ModelMode: context.ModelMode, PlanProvider: context.PlanProvider, PlanModel: context.PlanModel, PlanThinking: context.PlanThinking, PlanServiceTier: context.PlanServiceTier,
 		AutoProvider: context.AutoProvider, AutoModel: context.AutoModel, AutoThinking: context.AutoThinking, AutoServiceTier: context.AutoServiceTier,
-		Prompt: SwarmAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, DefaultSessionMode: firstNonEmptyProfileValue(pebblestore.NormalizeAgentDefaultSessionMode(context.DefaultSessionMode), pebblestore.AgentDefaultSessionModePlan),
+		Prompt: SwarmAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, DefaultSessionMode: firstNonEmptyProfileValue(pebblestore.NormalizeAgentDefaultSessionMode(context.DefaultSessionMode), pebblestore.AgentDefaultSessionModeAuto),
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: SwarmAgentToolContract(), Enabled: true, Protected: true, UpdatedAt: context.UpdatedAt,
 	})
 	profile.Protected = true

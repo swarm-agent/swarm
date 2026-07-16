@@ -124,8 +124,11 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 	if swarmProfile == nil {
 		t.Fatalf("hydrated agents missing swarm profile: %+v", agents.Profiles)
 	}
-	if swarmProfile.PlanProvider != "openai" || swarmProfile.PlanModel != "snapshot-plan-model" || swarmProfile.PlanThinking != "xhigh" || swarmProfile.AutoProvider != "openai" || swarmProfile.AutoModel != "snapshot-main-model" || swarmProfile.AutoThinking != "high" {
+	if swarmProfile.ModelMode != "split" || swarmProfile.PlanProvider != "openai" || swarmProfile.PlanModel != "snapshot-plan-model" || swarmProfile.PlanThinking != "xhigh" || swarmProfile.AutoProvider != "openai" || swarmProfile.AutoModel != "snapshot-main-model" || swarmProfile.AutoThinking != "high" {
 		t.Fatalf("swarm split model defaults not hydrated from snapshot: %+v", *swarmProfile)
+	}
+	if swarmProfile.RuntimeMode != pebblestore.AgentRuntimeModePlanAuto || swarmProfile.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto {
+		t.Fatalf("swarm plan/auto runtime defaults not restored: %+v", *swarmProfile)
 	}
 	for _, profile := range agents.Profiles {
 		name := strings.ToLower(strings.TrimSpace(profile.Name))

@@ -192,7 +192,7 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if swarm.Name != SwarmAgentID || swarm.Mode != ModePrimary || swarm.Prompt != SwarmAgentPrompt() || swarm.RuntimeMode != pebblestore.AgentRuntimeModePlanAuto || !swarm.Enabled || !swarm.Protected || swarm.ExitPlanModeEnabled == nil || !*swarm.ExitPlanModeEnabled {
+	if swarm.Name != SwarmAgentID || swarm.Mode != ModePrimary || swarm.Prompt != SwarmAgentPrompt() || swarm.RuntimeMode != pebblestore.AgentRuntimeModePlanAuto || swarm.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto || !swarm.Enabled || !swarm.Protected || swarm.ExitPlanModeEnabled == nil || !*swarm.ExitPlanModeEnabled {
 		t.Fatalf("Swarm immutable contract was not restored: %+v", swarm)
 	}
 	if !reflect.DeepEqual(swarm.ToolContract, SwarmAgentToolContract()) {
