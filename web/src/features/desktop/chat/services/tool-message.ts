@@ -1067,6 +1067,18 @@ function extractPreviewLines(
     }
     case "read":
       return [];
+    case "list": {
+      const entries = jsonObjectSlice(outputJson, "entries");
+      if (entries.length === 0) return [];
+      const visible = entries.slice(0, 12).flatMap((entry) => {
+        const path = firstNonEmpty(jsonStr(entry, "path"), jsonStr(entry, "relative_path"));
+        if (!path) return [];
+        const type = jsonStr(entry, "type").toLowerCase();
+        return [type === "dir" && !path.endsWith("/") ? `${path}/` : path];
+      });
+      if (entries.length > 12) visible.push(`+${entries.length - 12} more`);
+      return visible;
+    }
     case "grep": {
       const out: string[] = [];
       const matches = outputJson?.matches;

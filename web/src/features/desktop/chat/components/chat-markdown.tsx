@@ -273,6 +273,17 @@ function BashToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToo
   );
 }
 
+function FilePathLine({ path, meta }: { path: string; meta?: string }) {
+  return (
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-baseline gap-3">
+      <span className="min-w-0 break-words font-mono text-[12px] font-medium text-[var(--app-text)] [overflow-wrap:anywhere]">
+        {path}
+      </span>
+      {meta ? <span className="shrink-0 text-[10px] text-[var(--app-text-subtle)]">{meta}</span> : null}
+    </div>
+  );
+}
+
 function EditDiffView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
   const diff = toolMessage.editDiff;
   if (!diff) return null;
@@ -285,40 +296,41 @@ function EditDiffView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
   const addedCount = hunks.reduce((sum, hunk) => sum + hunk.newLines.length, 0);
 
   return (
-    <div className="mt-2 space-y-2 font-mono text-[12px] leading-5">
-      <div className="flex items-center gap-2 font-sans text-[11px] text-[var(--app-text-subtle)]">
-        <span className="rounded-md bg-[color-mix(in_srgb,var(--app-danger)_12%,transparent)] px-1.5 py-0.5 font-semibold text-[var(--app-danger)]">
-          -{removedCount}
-        </span>
-        <span className="rounded-md bg-[color-mix(in_srgb,var(--app-success)_12%,transparent)] px-1.5 py-0.5 font-semibold text-[var(--app-success)]">
-          +{addedCount}
-        </span>
+    <div className="mt-3 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-code-bg)] font-mono text-[12px] leading-5">
+      <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 font-sans text-[11px]">
+        <span className="font-medium text-[var(--app-text-muted)]">Changes</span>
+        <span className="ml-auto font-mono font-semibold text-[var(--app-danger)]">−{removedCount}</span>
+        <span className="font-mono font-semibold text-[var(--app-success)]">+{addedCount}</span>
       </div>
-      {hunks.map((hunk, hunkIndex) => (
-        <div key={`hunk-${hunk.index}-${hunkIndex}`} className="overflow-hidden rounded-md">
-          {showHunkLabels ? (
-            <div className="font-sans text-[11px] uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
-              edit {hunk.index}
-            </div>
-          ) : null}
-          {hunk.oldLines.map((line, i) => (
-            <div
-              key={`old-${hunk.index}-${i}`}
-              className="whitespace-pre-wrap break-all bg-[color-mix(in_srgb,var(--app-danger)_8%,transparent)] px-2 text-[var(--app-danger)]"
-            >
-              <span className="mr-2 select-none opacity-70">-</span><ToolSyntaxLine text={line} language={language} />
-            </div>
-          ))}
-          {hunk.newLines.map((line, i) => (
-            <div
-              key={`new-${hunk.index}-${i}`}
-              className="whitespace-pre-wrap break-all bg-[color-mix(in_srgb,var(--app-success)_8%,transparent)] px-2 text-[var(--app-success)]"
-            >
-              <span className="mr-2 select-none opacity-70">+</span><ToolSyntaxLine text={line} language={language} />
-            </div>
-          ))}
-        </div>
-      ))}
+      <div className="max-h-[28rem] overflow-auto py-1">
+        {hunks.map((hunk, hunkIndex) => (
+          <div key={`hunk-${hunk.index}-${hunkIndex}`} className={cn(hunkIndex > 0 && "border-t border-[var(--app-border)] pt-1")}>
+            {showHunkLabels ? (
+              <div className="px-3 py-1 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+                Edit {hunk.index}
+              </div>
+            ) : null}
+            {hunk.oldLines.map((line, i) => (
+              <div
+                key={`old-${hunk.index}-${i}`}
+                className="grid min-w-0 grid-cols-[1.75rem_minmax(0,1fr)] border-l-2 border-[color-mix(in_srgb,var(--app-danger)_55%,transparent)] bg-[color-mix(in_srgb,var(--app-danger)_7%,transparent)] px-2 text-[var(--app-code-text)]"
+              >
+                <span className="select-none text-center text-[var(--app-danger)] opacity-70">−</span>
+                <span className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]"><ToolSyntaxLine text={line} language={language} /></span>
+              </div>
+            ))}
+            {hunk.newLines.map((line, i) => (
+              <div
+                key={`new-${hunk.index}-${i}`}
+                className="grid min-w-0 grid-cols-[1.75rem_minmax(0,1fr)] border-l-2 border-[color-mix(in_srgb,var(--app-success)_55%,transparent)] bg-[color-mix(in_srgb,var(--app-success)_7%,transparent)] px-2 text-[var(--app-code-text)]"
+              >
+                <span className="select-none text-center text-[var(--app-success)] opacity-70">+</span>
+                <span className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]"><ToolSyntaxLine text={line} language={language} /></span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -357,7 +369,7 @@ function PreviewLinesView({
         <div
           key={i}
           className={compact
-            ? "whitespace-pre-wrap break-words rounded-sm px-1.5 py-0.5 [overflow-wrap:anywhere] odd:bg-[color-mix(in_srgb,var(--app-text-muted)_6%,transparent)]"
+            ? "whitespace-pre-wrap break-words border-t border-[var(--app-border)] px-3 py-1.5 first:border-t-0 [overflow-wrap:anywhere]"
             : "whitespace-pre-wrap break-words rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-[12px] leading-5 text-[var(--app-text)] [overflow-wrap:anywhere]"}
         >
           <ToolSyntaxLine text={line} language={language} shell={shell} plain={plain} />
@@ -887,17 +899,13 @@ function SearchFileSection({
   mode: string;
 }) {
   return (
-    <div className="min-w-0 border-t border-[var(--app-border)] py-2 first:border-t-0 first:pt-0 last:pb-0">
-      <div className="grid min-w-0 gap-1 text-[12px] sm:flex sm:items-baseline sm:gap-2">
-        <span className="min-w-0 break-words font-mono text-[var(--app-text)] [overflow-wrap:anywhere]">
-          {file.path}
-        </span>
-        <span className="text-[10px] text-[var(--app-text-subtle)]">
-          {mode === "files"
-            ? `${file.matchCount} ${file.matchCount === 1 ? "hit" : "hits"}`
-            : `${file.matchCount} ${file.matchCount === 1 ? "match" : "matches"}`}
-        </span>
-      </div>
+    <div className="min-w-0 border-t border-[var(--app-border)] px-3 py-2.5 first:border-t-0">
+      <FilePathLine
+        path={file.path}
+        meta={mode === "files"
+          ? `${file.matchCount} ${file.matchCount === 1 ? "hit" : "hits"}`
+          : `${file.matchCount} ${file.matchCount === 1 ? "match" : "matches"}`}
+      />
       <div className="mt-1.5 space-y-1">
         {file.queryGroups.map((group, index) => (
           <SearchLineList
@@ -1109,10 +1117,10 @@ function SearchToolView({
   const sections = useMemo(() => data.files, [data.files]);
 
   return (
-    <div className="mt-2 min-w-0">
+    <div className="min-w-0">
       <SearchSummaryLine toolMessage={toolMessage} />
       {sections.length > 0 ? (
-        <div className="mt-2 min-w-0 font-mono">
+        <div className="mt-3 min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] font-mono">
           {sections.map((file, index) => (
             <SearchFileSection
               key={`${file.path}:${index}`}
@@ -1148,6 +1156,7 @@ export function ToolMessageView({
       : state === "running"
         ? LoaderCircle
         : CheckCircle2;
+  const normalizedTool = toolMessage.tool.trim().toLowerCase();
   const label = toolTheme.label || toolMessage.tool || "tool";
   const isTaskSwarm = toolMessage.tool === "task" && toolMessage.taskRows.length > TASK_SWARM_THRESHOLD;
   const todoCounts = formatTodoCounts(toolMessage.todoData?.summary ?? null);
@@ -1158,49 +1167,79 @@ export function ToolMessageView({
   const previewLanguage = inferToolSyntaxLanguage(toolMessage.target || pathFromToolSummary(toolMessage.summary));
   const shellPreview = false;
   const plainPreview = shouldRenderPreviewAsPlain(toolMessage.tool);
-  const isManageSessions = ["manage-sessions", "manage_sessions"].includes(toolMessage.tool.trim().toLowerCase());
-  const showPreview = toolMessage.tool.trim().toLowerCase() !== 'thinking' || thinkingTagsEnabled;
+  const isManageSessions = ["manage-sessions", "manage_sessions"].includes(normalizedTool);
+  const isFileAction = ["read", "list", "search", "edit"].includes(normalizedTool);
+  const fileSummary = isFileAction && toolMessage.target
+    ? summary.replace(toolMessage.target, "").replace(/\s+in\s+(?=\()/, " ").trim()
+    : summary;
+  const showPreview = normalizedTool !== 'thinking' || thinkingTagsEnabled;
   const isWindup = state === "running" && !toolMessage.output.trim() && !toolMessage.error.trim();
+  const hasBody = Boolean(
+    toolMessage.error
+    || toolMessage.editDiff
+    || (normalizedTool === "task" && toolMessage.taskRows.length > 0)
+    || (normalizedTool === "search" && toolMessage.searchData)
+    || (showPreview && !isManageSessions && (toolMessage.previewLines.length > 0 || toolMessage.commandText))
+    || normalizedTool === "manage-image"
+    || normalizedTool === "manage_image"
+    || isManageSessions,
+  );
 
   return (
-    <div className={isGroupItem ? "py-2" : "mb-2 min-w-0 py-2"}>
-      <div className="flex min-w-0 items-center gap-2 text-xs">
-        <span
-          className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md px-1.5 font-semibold"
-          style={{ color: toolTheme.color, backgroundColor: accentWash }}
-        >
-          <ToolIcon size={12} className="shrink-0" />
-          {label}
-        </span>
-        {summary ? (
-          <span className="min-w-0 flex-1 break-words font-medium text-[var(--app-text)] [overflow-wrap:anywhere]">
-            {summary}
+    <div className={cn(isGroupItem ? "py-1.5" : "mb-2 min-w-0 py-1.5", isFileAction && "w-full")}>
+      <div className={cn(
+        "min-w-0",
+        isFileAction && "overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]",
+      )}>
+        <div className={cn(
+          "flex min-w-0 items-start gap-2 text-xs",
+          isFileAction ? "px-3 py-2.5" : "items-center",
+        )}>
+          <span
+            className={cn(
+              "inline-flex shrink-0 items-center justify-center font-semibold",
+              isFileAction ? "h-7 w-7 rounded-lg" : "h-5 gap-1 rounded-md px-1.5",
+            )}
+            style={{ color: toolTheme.color, backgroundColor: accentWash }}
+          >
+            <ToolIcon size={isFileAction ? 13 : 12} className="shrink-0" />
+            {!isFileAction ? label : null}
           </span>
-        ) : null}
-        {isWindup ? (
-          <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[var(--app-text-subtle)]">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ backgroundColor: toolTheme.color }} />
-            starting…
-          </span>
-        ) : null}
-        {toolMessage.durationMs > 0 ? (
-          <span className="shrink-0 text-[var(--app-text-subtle)] text-[11px]">
-            {formatDuration(toolMessage.durationMs)}
-          </span>
-        ) : null}
-        <StateIcon
-          size={12}
-          className={cn(
-            "shrink-0",
-            state === "running"
-              ? "animate-spin text-[var(--app-primary)]"
-              : state === "error"
-                ? "text-[var(--app-danger)]"
-                : "text-[var(--app-text-subtle)]",
-          )}
-        />
-      </div>
-      <div className="min-w-0">
+          <div className="min-w-0 flex-1">
+            {isFileAction ? (
+              <div className="font-semibold capitalize leading-4 text-[var(--app-text)]">{label}</div>
+            ) : null}
+            {fileSummary ? (
+              <div className={cn(
+                "min-w-0 break-words [overflow-wrap:anywhere]",
+                isFileAction ? "mt-0.5 text-[11px] font-normal leading-4 text-[var(--app-text-muted)]" : "font-medium text-[var(--app-text)]",
+              )}>
+                {fileSummary}
+              </div>
+            ) : null}
+            {isFileAction && toolMessage.target ? (
+              <div className="mt-2 min-w-0 break-words border-t border-[var(--app-border)] pt-2 font-mono text-[11px] leading-4 text-[var(--app-text)] [overflow-wrap:anywhere]">
+                {toolMessage.target}
+              </div>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5 pt-0.5 text-[10px] text-[var(--app-text-subtle)]">
+            {isWindup ? <span>starting…</span> : null}
+            {toolMessage.durationMs > 0 ? <span>{formatDuration(toolMessage.durationMs)}</span> : null}
+            <StateIcon
+              size={12}
+              className={cn(
+                "shrink-0",
+                state === "running"
+                  ? "animate-spin text-[var(--app-primary)]"
+                  : state === "error"
+                    ? "text-[var(--app-danger)]"
+                    : "text-[var(--app-text-subtle)]",
+              )}
+            />
+          </div>
+        </div>
+        <div className={cn("min-w-0", isFileAction && hasBody && "border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5")}>
         {toolMessage.error ? (
           <div className="mt-1 break-words text-[12px] text-[var(--app-danger)]">
             {toolMessage.error}
@@ -1240,6 +1279,7 @@ export function ToolMessageView({
         {isManageSessions ? (
           <ManageSessionsCard toolMessage={toolMessage} />
         ) : null}
+        </div>
       </div>
     </div>
   );
@@ -1259,24 +1299,24 @@ export function ToolGroupView({
 
   return (
     <div className="mb-2 py-2">
-      <div className="mb-1.5 flex items-center gap-2 text-xs text-[var(--app-text-muted)]">
+      <div className="mb-2 flex items-center gap-2 text-xs text-[var(--app-text-muted)]">
         <span
-          className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md px-1.5 font-semibold"
+          className="inline-flex h-6 shrink-0 items-center gap-1.5 rounded-lg px-2 font-semibold"
           style={{ color: toolTheme.color, backgroundColor: accentWash }}
         >
           <ToolIcon size={12} className="shrink-0" />
           {toolTheme.label || toolName}
         </span>
         <span className="text-[11px] text-[var(--app-text-subtle)]">
-          ×{messages.length}
+          {messages.length} actions
         </span>
         {hasErrors ? (
-          <span className="text-[var(--app-danger)] ml-2 text-[10px] font-bold uppercase">
-            Errors
+          <span className="ml-auto text-[10px] font-semibold text-[var(--app-danger)]">
+            Needs attention
           </span>
         ) : null}
       </div>
-      <div className="grid gap-0">
+      <div className="flex min-w-0 flex-col gap-2">
         {messages.map((msg, i) => (
           <ToolMessageView
             key={msg.toolInstanceId || msg.callId || i}

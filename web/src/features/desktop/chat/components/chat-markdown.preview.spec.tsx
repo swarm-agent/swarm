@@ -256,6 +256,42 @@ function testManageSessionsListRendersCardsWithoutRawJson(): void {
   assert(!markup.includes("&quot;items&quot;"), "raw JSON preview must be hidden behind the card");
 }
 
+function testFileActionsUseThemeAwareCards(): void {
+  const readMessage = buildStructuredToolMessage({
+    tool: "read",
+    outputText: JSON.stringify({ path: "web/src/app.tsx", count: 18, line_start: 1 }),
+  });
+  const listMessage = buildStructuredToolMessage({
+    tool: "list",
+    outputText: JSON.stringify({
+      path: "web/src",
+      count: 2,
+      total_found: 2,
+      entries: [
+        { path: "web/src/app.tsx", type: "file" },
+        { path: "web/src/features", type: "dir" },
+      ],
+    }),
+  });
+  const editMessage = buildStructuredToolMessage({
+    tool: "edit",
+    argumentsText: JSON.stringify({ path: "web/src/app.tsx" }),
+    outputText: JSON.stringify({
+      path: "web/src/app.tsx",
+      old_string_preview: "const oldValue = true",
+      new_string_preview: "const newValue = true",
+    }),
+  });
+  assert(Boolean(readMessage && listMessage && editMessage), "expected file action messages");
+
+  const readMarkup = renderToolMarkup(readMessage!);
+  const listMarkup = renderToolMarkup(listMessage!);
+  const editMarkup = renderToolMarkup(editMessage!);
+  assert(readMarkup.includes("rounded-xl") && readMarkup.includes("web/src/app.tsx"), "read should render a themed file card");
+  assert(listMarkup.includes("web/src/features/") && listMarkup.includes("border-t"), "list should place files in a vertical list");
+  assert(editMarkup.includes("Changes") && editMarkup.includes("−1") && editMarkup.includes("+1"), "edit should render a restrained diff card");
+}
+
 function testTaskHeaderDoesNotShiftBetweenLaunchAssignments(): void {
   const description = "Map backend and UI task stream behavior";
   const firstMessage = buildStructuredToolMessage({
@@ -326,6 +362,7 @@ function main(): void {
   testManageSessionsUsesRelativeDesktopNavigation();
   testManageSessionsDeployRendersNavigableResultsAndHonestFailures();
   testManageSessionsListRendersCardsWithoutRawJson();
+  testFileActionsUseThemeAwareCards();
   testTaskHeaderDoesNotShiftBetweenLaunchAssignments();
   console.log("chat-markdown preview tests passed");
 }

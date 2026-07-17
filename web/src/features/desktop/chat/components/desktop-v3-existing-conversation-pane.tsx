@@ -2489,6 +2489,7 @@ export function DesktopV3ExistingConversationPane({
                   return (
                     <div
                       key={itemKey}
+                      className="min-w-0"
                       data-testid="desktop-chat-row"
                       data-render-item-type={item.type}
                       data-render-item-key={itemKey}
@@ -2931,7 +2932,7 @@ function DesktopV3ToolMessage({
   thinkingTagsEnabled?: boolean;
 }) {
   const toolName = toolMessage?.tool.trim().toLowerCase();
-  const usesFullWidthCard = toolName === "bash" || toolName === "task";
+  const usesFullWidthCard = toolName === "bash" || toolName === "task" || ["read", "list", "search", "edit"].includes(toolName ?? "");
   return (
     <div
       className={cn(
