@@ -2930,8 +2930,9 @@ function applyLiveRunOverlayFromEvent(
     case 'session.reasoning.completed':
     case 'session.reasoning.failed':
     case 'session.reasoning.error':
+      raiseSameStepSpeculativeAssistantAfterReasoning(liveRun, payload, eventSeq)
       if (liveRun.assistantDraft?.content) {
-        flushLiveAssistantDraftToSegment(liveRun, eventSeq)
+        flushLiveAssistantDraftToSegment(liveRun)
       }
       applyLiveReasoningOverlay(liveRun, payload, event.eventType, eventSeq, updatedAt)
       return
@@ -3367,6 +3368,36 @@ function reasoningOverlayKey(payload: Record<string, unknown>): string {
   return `step-${step > 0 ? step : 1}:reasoning`
 }
 
+function findCompatibleLiveReasoningOverlay(
+  liveRun: LiveRunOverlay,
+  payload: Record<string, unknown>,
+  proposedKey: string,
+): LiveRunReasoningOverlay | undefined {
+  const byKey = liveRun.reasoningByKey ?? {}
+  if (byKey[proposedKey]) return byKey[proposedKey]
+
+  const reasoningId = stringValue(payload.reasoning_id).trim()
+  const reasoningKey = stringValue(payload.reasoning_key).trim()
+  const stepId = stringValue(payload.step_id).trim()
+  const step = finiteNumberValue(payload.step)
+  const compatible = Object.values(byKey).find((candidate) => {
+    if (reasoningId && candidate.reasoningId) return reasoningId === candidate.reasoningId
+    if (stepId && candidate.stepId) return stepId === candidate.stepId
+    if (reasoningKey && candidate.reasoningKey) return reasoningKey === candidate.reasoningKey
+    if (step !== undefined && candidate.step !== undefined) return step === candidate.step
+    return false
+  })
+  if (compatible) return compatible
+
+  const current = liveRun.reasoning
+  if (!current) return undefined
+  if (reasoningId && current.reasoningId && reasoningId !== current.reasoningId) return undefined
+  if (stepId && current.stepId && stepId !== current.stepId) return undefined
+  if (reasoningKey && current.reasoningKey && reasoningKey !== current.reasoningKey) return undefined
+  if (step !== undefined && current.step !== undefined && step !== current.step) return undefined
+  return current
+}
+
 function applyLiveReasoningOverlay(
   liveRun: LiveRunOverlay,
   payload: Record<string, unknown>,
@@ -3374,9 +3405,10 @@ function applyLiveReasoningOverlay(
   eventSeq: number,
   updatedAt: number,
 ): void {
-  const key = reasoningOverlayKey(payload)
+  const proposedKey = reasoningOverlayKey(payload)
   const byKey = liveRun.reasoningByKey ?? {}
-  const existing = byKey[key] ?? (liveRun.reasoning?.key === key ? liveRun.reasoning : undefined)
+  const existing = findCompatibleLiveReasoningOverlay(liveRun, payload, proposedKey)
+  const key = existing?.key || proposedKey
   const current: LiveRunReasoningOverlay = existing ?? {
     key,
     state: 'running',
@@ -3489,20 +3521,46 @@ function appendLiveAssistantOverlaySegment(
   ]
 }
 
-function flushLiveAssistantDraftToSegment(liveRun: LiveRunOverlay, precedingReasoningSeq?: number): void {
-  let draft = liveRun.assistantDraft
-  if (!draft?.content.trim()) return
-  // Live patches are intentionally low-latency and can arrive before the durable
-  // reasoning event that authoritatively precedes them. Until the first durable
-  // assistant checkpoint, keep that speculative text after the reasoning event
-  // instead of freezing its provisional projection-derived sequence ahead of it.
-  if (precedingReasoningSeq && draft.streamId && (draft.durableOffsetEnd ?? 0) === 0) {
-    draft = {
-      ...draft,
-      timelineSeq: Math.max(draft.timelineSeq ?? 0, precedingReasoningSeq + 1),
-    }
+function raiseSameStepSpeculativeAssistantAfterReasoning(
+  liveRun: LiveRunOverlay,
+  reasoningPayload: Record<string, unknown>,
+  reasoningSeq: number,
+): void {
+  if (reasoningSeq <= 0) return
+  const reasoningStepId = stringValue(reasoningPayload.step_id) || undefined
+  const reasoningStep = finiteNumberValue(reasoningPayload.step)
+  const timelineSeq = reasoningSeq + 1
+  const raise = <T extends LiveAssistantStreamNode>(node: T): T => {
+    if (!node.streamId || (node.durableOffsetEnd ?? 0) > 0) return node
+    if (!assistantNodeMatchesReasoningStep(node, reasoningStepId, reasoningStep)) return node
+    if ((node.timelineSeq ?? 0) >= timelineSeq) return node
+    return { ...node, timelineSeq }
   }
-  liveRun.assistantSegments = appendLiveAssistantOverlaySegment(liveRun, draft)
+
+  if (liveRun.assistantDraft) liveRun.assistantDraft = raise(liveRun.assistantDraft)
+  if (liveRun.assistantSegments) liveRun.assistantSegments = liveRun.assistantSegments.map(raise)
+}
+
+function assistantNodeMatchesReasoningStep(
+  node: LiveAssistantStreamNode,
+  reasoningStepId: string | undefined,
+  reasoningStep: number | undefined,
+): boolean {
+  if (reasoningStepId && node.stepId) return reasoningStepId === node.stepId
+  if (reasoningStep !== undefined && node.streamStep !== undefined) return reasoningStep === node.streamStep
+  // Missing metadata cannot establish a different provider step. Preserve the
+  // low-latency ordering correction unless an explicit step mismatch disproves it.
+  if (reasoningStepId && node.stepId !== undefined) return false
+  if (reasoningStep !== undefined && node.streamStep !== undefined) return false
+  return true
+}
+
+function flushLiveAssistantDraftToSegment(liveRun: LiveRunOverlay): void {
+  const draft = liveRun.assistantDraft
+  if (!draft?.content.trim()) return
+  liveRun.assistantSegments = draft.streamId
+    ? upsertLiveAssistantSegment(liveRun, draft)
+    : appendLiveAssistantOverlaySegment(liveRun, draft)
   delete liveRun.assistantDraft
 }
 

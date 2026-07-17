@@ -2245,6 +2245,98 @@ test('realtime reasoning deltas append suffixes and replace correction snapshots
   assert.equal(reasoning?.updatedSeq, 8)
 })
 
+test('distinct reasoning identities remain separate live reasoning rows', () => {
+  const state = bootstrappedState()
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.delta', {
+      reasoning_key: 'reasoning-step-1',
+      step: 1,
+      step_id: 'step-1',
+      delta: 'first reasoning',
+      delta_mode: 'replace',
+    }, 5, 'cursor-reasoning-step-1'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.delta', {
+      reasoning_key: 'reasoning-step-2',
+      step: 2,
+      step_id: 'step-2',
+      delta: 'second reasoning',
+      delta_mode: 'replace',
+    }, 6, 'cursor-reasoning-step-2'),
+  })
+
+  const run = state.liveRunsBySession[sessionA.id]['run-live']
+  assert.equal(Object.keys(run.reasoningByKey ?? {}).length, 2)
+  const rendered = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+    .filter((item) => item.type === 'live-reasoning')
+    .map((item) => item.text)
+  assert.deepEqual(rendered, ['first reasoning', 'second reasoning'])
+})
+
+test('progressive live answer prefixes reconcile to one assistant row and one reasoning row', () => {
+  let state = bootstrappedState()
+  const first = 'You'
+  const second = '’re right to challenge'
+  const third = ' this.'
+
+  state = applyDesktopV3LivePatchBatch(state, [livePatch({
+    text: first,
+    offset_start: 0,
+    offset_end: byteLength(first),
+    step: 1,
+    step_id: 'step-1',
+  })])
+  const speculativeSeq = state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft?.timelineSeq ?? 0
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.delta', {
+      reasoning_key: 'provider-reasoning-1',
+      delta: 'Thinking',
+      delta_mode: 'replace',
+    }, speculativeSeq + 1, 'cursor-progressive-reasoning-1'),
+  })
+  state = applyDesktopV3LivePatchBatch(state, [livePatch({
+    text: second,
+    live_seq_start: 2,
+    live_seq_end: 2,
+    offset_start: byteLength(first),
+    offset_end: byteLength(first + second),
+    step: 1,
+    step_id: 'step-1',
+  })])
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.delta', {
+      reasoning_key: 'provider-reasoning-1',
+      step: 1,
+      step_id: 'step-1',
+      delta: 'Thinking about the answer',
+      delta_mode: 'replace',
+    }, speculativeSeq + 2, 'cursor-progressive-reasoning-2'),
+  })
+  state = applyDesktopV3LivePatchBatch(state, [livePatch({
+    text: third,
+    live_seq_start: 3,
+    live_seq_end: 3,
+    offset_start: byteLength(first + second),
+    offset_end: byteLength(first + second + third),
+    step: 1,
+    step_id: 'step-1',
+  })])
+
+  const run = state.liveRunsBySession[sessionA.id]['run-live']
+  assert.equal(run.assistantSegments?.length, 1)
+  assert.equal(Object.keys(run.reasoningByKey ?? {}).length, 1)
+  const rendered = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+    .filter((item) => item.type === 'live-assistant' || item.type === 'live-reasoning')
+    .map((item) => item.type === 'live-assistant' ? `assistant:${item.content}` : `reasoning:${item.text}`)
+  assert.deepEqual(rendered, [
+    'reasoning:Thinking about the answer',
+    'assistant:You’re right to challenge this.',
+  ])
+})
+
 test('realtime stream objects retain backend ordering sequence on live overlays', () => {
   const state = bootstrappedState()
 
@@ -2338,6 +2430,106 @@ test('late same-step reasoning precedes an assistant patch already flushed acros
     { type: 'live-assistant', content: 'STREAM_ORDER_FINAL', timelineSeq: speculativeSeq + 6 },
   ])
   assert.deepEqual(renderedEvidence, timelineEvidence)
+})
+
+test('late same-step reasoning raises speculative draft from an equal provisional sequence', () => {
+  let state = bootstrappedState()
+  state = applyDesktopV3LivePatchBatch(state, [livePatch({
+    text: 'same-step draft',
+    offset_start: 0,
+    offset_end: byteLength('same-step draft'),
+    step: 2,
+    step_id: 'step-2',
+  })])
+  const draft = state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft
+  assert.ok(draft)
+  const reasoningSeq = draft.timelineSeq ?? 0
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.delta', {
+      reasoning_key: 'step:step-2',
+      step: 2,
+      step_id: 'step-2',
+      delta: 'same-step reasoning',
+      delta_mode: 'replace',
+    }, reasoningSeq, 'cursor-equal-provisional-reasoning'),
+  })
+
+  const run = state.liveRunsBySession[sessionA.id]['run-live']
+  assert.equal(run.assistantDraft, undefined)
+  assert.equal(run.reasoning?.timelineSeq, reasoningSeq)
+  assert.equal(run.assistantSegments?.[0]?.timelineSeq, reasoningSeq + 1)
+})
+
+test('late reasoning does not move speculative assistant output from an earlier provider step', () => {
+  let state = bootstrappedState()
+  state = applyDesktopV3LivePatchBatch(state, [livePatch({
+    text: 'earlier-step answer',
+    offset_start: 0,
+    offset_end: byteLength('earlier-step answer'),
+    step: 1,
+    step_id: 'step-1',
+  })])
+  const assistantSeq = state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft?.timelineSeq ?? 0
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.delta', {
+      reasoning_key: 'step:step-2',
+      step: 2,
+      step_id: 'step-2',
+      delta: 'later-step reasoning',
+      delta_mode: 'replace',
+    }, assistantSeq + 5, 'cursor-later-step-reasoning'),
+  })
+
+  const run = state.liveRunsBySession[sessionA.id]['run-live']
+  assert.equal(run.assistantSegments?.[0]?.timelineSeq, assistantSeq)
+  assert.equal(run.reasoning?.timelineSeq, assistantSeq + 5)
+  const rendered = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+    .filter((item) => item.type === 'live-assistant' || item.type === 'live-reasoning')
+    .map((item) => item.type)
+  assert.deepEqual(rendered, ['live-assistant', 'live-reasoning'])
+})
+
+test('late same-step reasoning does not move assistant text with a durable checkpoint', () => {
+  let state = bootstrappedState()
+  state = applyDesktopV3LivePatchBatch(state, [livePatch({
+    text: 'durable assistant',
+    offset_start: 0,
+    offset_end: byteLength('durable assistant'),
+    step: 1,
+    step_id: 'step-1',
+  })])
+  const assistantSeq = state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft?.timelineSeq ?? 0
+  applyCacheEvent(state, cacheEvent({
+    id: 'evt-durable-before-reasoning',
+    session_id: sessionA.id,
+    seq: assistantSeq + 5,
+    event_type: 'session.assistant.delta',
+    payload: {
+      run_id: 'run-live',
+      stream_id: 'assistant:run-live:step:1',
+      step: 1,
+      step_id: 'step-1',
+      delta: 'durable assistant',
+      offset_start: 0,
+      offset_end: byteLength('durable assistant'),
+    },
+    ts_unix_ms: assistantSeq + 1,
+  }))
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.delta', {
+      reasoning_key: 'step:step-1',
+      step: 1,
+      step_id: 'step-1',
+      delta: 'late reasoning after checkpoint',
+      delta_mode: 'replace',
+    }, assistantSeq + 10, 'cursor-after-durable-checkpoint'),
+  })
+
+  const run = state.liveRunsBySession[sessionA.id]['run-live']
+  assert.equal(run.assistantSegments?.[0]?.durableOffsetEnd, byteLength('durable assistant'))
+  assert.equal(run.assistantSegments?.[0]?.timelineSeq, assistantSeq)
 })
 
 test('realtime provider tool construction events create live tool overlay while arguments stream', () => {
