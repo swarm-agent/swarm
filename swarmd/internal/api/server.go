@@ -260,6 +260,7 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	if sessionSvc != nil {
 		server.v3SessionExecutor = newSessionV3Executor(server)
 		server.planLifecycle = sessionruntime.NewPlanLifecycleService(sessionSvc)
+		go server.runSessionsV3ReviewAutoArchive(runCtx)
 	}
 	server.gitRealtime = newGitRealtimeManager(server)
 	return server

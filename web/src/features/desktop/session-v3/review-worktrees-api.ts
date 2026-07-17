@@ -1,0 +1,97 @@
+import { requestJson } from '../../../app/api'
+import { dispatchDesktopV3Cache } from '../state/desktop-v3-cache-store'
+
+export type ReviewWorktreeReason =
+  | 'uncommitted_work'
+  | 'current_checkout_uncommitted_work'
+  | 'current_checkout_clean'
+  | 'commits_missing_from_target'
+  | 'clean_and_integrated'
+  | 'managed_worktree_metadata_missing'
+  | 'worktree_unavailable'
+  | 'target_branch_unavailable'
+  | 'done_timestamp_missing'
+
+export interface ReviewWorktreeCandidate {
+  session_id: string
+  title: string
+  updated_at: number
+  worktree_branch?: string
+  worktree_path?: string
+  target_branch?: string
+  classification: 'retained' | 'done'
+  reason: ReviewWorktreeReason
+  dirty_count?: number
+  missing_commit_count?: number
+  equivalent_commit_count?: number
+  done_at?: number
+  archive_after?: number
+  archive_ready: boolean
+  current_checkout?: boolean
+  commit_eligible?: boolean
+  integrate_eligible?: boolean
+}
+
+export interface RecentlyArchivedReviewSession {
+  session_id: string
+  title: string
+  updated_at: number
+  worktree_branch?: string
+  worktree_path?: string
+  target_branch?: string
+}
+
+export interface ReviewWorktreesResponse {
+  ok: boolean
+  target_detection: string
+  current_target_branch?: string
+  comparison: string
+  retained: ReviewWorktreeCandidate[]
+  done: ReviewWorktreeCandidate[]
+  archived_session_ids: string[]
+  recently_archived: RecentlyArchivedReviewSession[]
+  grace_period_ms: number
+  checkout_dirty: boolean
+  checkout_dirty_count: number
+  blocked_by_checkout_count: number
+  complete: boolean
+}
+
+export async function unarchiveDesktopV3ReviewSessions(versions: Record<string, number>): Promise<{ ok: boolean; unarchived_session_ids: string[] }> {
+  const sessionIds = Object.keys(versions)
+  if (sessionIds.length === 0) throw new Error('Select at least one archived session')
+  return requestJson('/v3/sessions:unarchive', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_ids: sessionIds, expected_updated_at_by_id: versions }),
+  })
+}
+
+export async function reviewDesktopV3Worktrees(input: {
+  workspacePath?: string
+  archiveSessionIds?: string[]
+  archiveAll?: boolean
+  integrateSessionIds?: string[]
+  automatic?: boolean
+  graceHours?: number
+} = {}): Promise<ReviewWorktreesResponse> {
+  const response = await requestJson<ReviewWorktreesResponse>('/v3/sessions:review-worktrees', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      workspace_path: input.workspacePath?.trim() || undefined,
+      archive_session_ids: input.archiveSessionIds,
+      archive_all: input.archiveAll,
+      integrate_session_ids: input.integrateSessionIds,
+      automatic: input.automatic,
+      grace_hours: input.graceHours ? String(input.graceHours) : undefined,
+    }),
+  })
+  for (const sessionId of response.archived_session_ids ?? []) {
+    dispatchDesktopV3Cache({
+      type: 'mutation.sessionArchiveResult',
+      raw: { ok: true, session_id: sessionId, archived: true, tombstone: { session_id: sessionId, kind: 'archived', archived: true } },
+    })
+  }
+  return response
+}

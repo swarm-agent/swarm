@@ -38,7 +38,7 @@ import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
 import { normalizeDefaultNewSessionMode, normalizeSidebarHideInactiveHours, type DesktopSessionMode, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { saveSidebarHideInactiveHours } from '../settings/swarm/mutations/save-sidebar-hide-inactive-hours'
-import { fetchSwarmTargets, type SwarmTarget } from '../swarm/api/swarm-targets'
+import { fetchSwarmTargets } from '../swarm/api/swarm-targets'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
 import { createDesktopV3CreateOnlySessionOperation, startDesktopV3CreateOnlySession } from '../session-v3/new-session-flow'
@@ -72,6 +72,8 @@ import { SearchChatsModal } from '../session-search/search-chats-modal'
 import type { DesktopSessionSearchItem } from '../session-search/session-search-api'
 import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortcuts/components/desktop-quick-actions-modal'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
+import { NeedsReviewCleanupPanel, NEEDS_REVIEW_AUTO_CLEANUP_EVENT, NEEDS_REVIEW_AUTO_CLEANUP_KEY } from './needs-review-cleanup-panel'
+import { reviewDesktopV3Worktrees } from '../session-v3/review-worktrees-api'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
@@ -2098,6 +2100,8 @@ interface RenderSidebarSessionGroupsInput {
   thresholdSaving: boolean
   bulkArchivePending: boolean
   masterSelectionGroup: SidebarSessionGroupID | null
+  reviewCleanupOpen: boolean
+  onToggleReviewCleanup: () => void
   onEnterSelectionMode: (group: SidebarSessionGroupID) => void
   onClearSelection: () => void
   onBulkArchive: () => void
@@ -2167,6 +2171,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
       <section key={group.id} className="group/section grid content-start gap-1.5">
         <div className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
           <span>{group.label}</span>
+          {group.id === 'needs_review' ? <button type="button" className="rounded border border-[var(--app-border)] px-1.5 py-0.5 normal-case tracking-normal" aria-expanded={input.reviewCleanupOpen} onClick={input.onToggleReviewCleanup}>Review</button> : null}
           <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
             {group.showInactiveThreshold ? (
               <label className="flex items-center gap-1 font-normal">
@@ -2294,10 +2299,12 @@ export function DesktopAppPage() {
   const [selectedSidebarRootIDs, setSelectedSidebarRootIDs] = useState<Set<string>>(() => new Set())
   const [lastSelectedSidebarRootID, setLastSelectedSidebarRootID] = useState<string | null>(null)
   const [bulkArchivePending, setBulkArchivePending] = useState(false)
+  const [needsReviewCleanupOpen, setNeedsReviewCleanupOpen] = useState(false)
   const [sidebarThresholdSaving, setSidebarThresholdSaving] = useState(false)
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
   const [previousChatSessionId, setPreviousChatSessionId] = useState<string | null>(null)
   const activeChatSessionIdRef = useRef<string | null>(null)
+  const reviewCleanupLastRunRef = useRef(0)
   const previousSidebarRouteSessionIdRef = useRef(routeSessionId)
   const aiTaskPollersRef = useRef(new Map<string, AbortController>())
   const aiTaskTerminalToastRef = useRef(new Set<string>())
@@ -3853,6 +3860,27 @@ export function DesktopAppPage() {
     mobileSidebarSwipeRef.current = null
   }, [])
 
+  useEffect(() => {
+    const maybeRunCleanup = () => {
+      const enabled = window.localStorage.getItem(NEEDS_REVIEW_AUTO_CLEANUP_KEY) === '1'
+      const now = Date.now()
+      if (!enabled || document.visibilityState !== 'visible' || now - reviewCleanupLastRunRef.current < 15 * 60_000) return
+      reviewCleanupLastRunRef.current = now
+      void reviewDesktopV3Worktrees({ automatic: true, graceHours: 1 }).catch(() => undefined)
+    }
+    const handleSettingChange = () => maybeRunCleanup()
+    const handleVisibility = () => maybeRunCleanup()
+    window.addEventListener(NEEDS_REVIEW_AUTO_CLEANUP_EVENT, handleSettingChange)
+    window.addEventListener('focus', handleVisibility)
+    document.addEventListener('visibilitychange', handleVisibility)
+    maybeRunCleanup()
+    return () => {
+      window.removeEventListener(NEEDS_REVIEW_AUTO_CLEANUP_EVENT, handleSettingChange)
+      window.removeEventListener('focus', handleVisibility)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [])
+
   const handlePrefetchSession = useCallback((sessionId: string) => {
     void sessionId
   }, [])
@@ -3883,6 +3911,8 @@ export function DesktopAppPage() {
           thresholdSaving: sidebarThresholdSaving,
           bulkArchivePending,
           masterSelectionGroup: sidebarMasterSelectionGroup,
+          reviewCleanupOpen: needsReviewCleanupOpen,
+          onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
           onEnterSelectionMode: handleEnterSidebarSelectionMode,
           onClearSelection: handleClearSidebarSelection,
           onBulkArchive: () => { void handleBulkArchiveSidebar() },
@@ -4274,6 +4304,7 @@ export function DesktopAppPage() {
                       <GitBranch size={13} strokeWidth={1.8} className="shrink-0" />
                     </button>
                   </div>
+                  {needsReviewCleanupOpen ? <NeedsReviewCleanupPanel workspacePath={topWorkspacePath || undefined} onClose={() => setNeedsReviewCleanupOpen(false)} /> : null}
                   {renderSidebarSessionGroups({
                     nodes: globalFlattenedSessionNodes,
                     routeSessionId,
@@ -4290,6 +4321,8 @@ export function DesktopAppPage() {
                     thresholdSaving: sidebarThresholdSaving,
                     bulkArchivePending,
                     masterSelectionGroup: sidebarMasterSelectionGroup,
+                    reviewCleanupOpen: needsReviewCleanupOpen,
+                    onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
                     onEnterSelectionMode: handleEnterSidebarSelectionMode,
                     onClearSelection: handleClearSidebarSelection,
                     onBulkArchive: () => { void handleBulkArchiveSidebar() },
