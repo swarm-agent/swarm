@@ -69,8 +69,13 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		"Use plan_manage as the only checkpoint lifecycle surface",
 		"Do not use manage_todos for agent self-tracking",
 		"Do not call plan_manage update_checkpoint",
+		"interleave implementation with complete_subtask immediately after each task is concretely complete",
+		"durable transition advances the next task and makes live client state visible",
+		"Do not call complete_subtask for discovery-only activity or for a single-step checkpoint",
 		"Do not call start_session_checkpoint or request_followup_checkpoint from this checkpoint run",
 		"Always include the current checkpoint_id from the payload",
+		"complete_checkpoint is the single successful terminal checkpoint outcome",
+		"safety fallback, not a substitute for task-by-task progress updates",
 		"complete_checkpoint may continue to the next checkpoint only if backend execution policy allows it",
 		"Keep implementing until every acceptance criterion is met whenever the remaining gap is resolvable",
 		"a missing interface or API, scope growth, uncertainty, or an incomplete/failed first approach is implementation work",
@@ -103,6 +108,14 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("final checkpoint prompt missing %q: %s", want, text)
+		}
+	}
+	for _, unwanted := range []string{
+		"do not issue repeated complete_subtask calls first",
+		"do not call complete_subtask repeatedly first",
+	} {
+		if strings.Contains(strings.ToLower(text), unwanted) {
+			t.Fatalf("prompt retained contradictory subtask suppression %q: %s", unwanted, text)
 		}
 	}
 	if strings.Contains(text, "old chat that must not appear") {

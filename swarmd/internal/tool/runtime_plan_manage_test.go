@@ -105,7 +105,7 @@ func TestPlanManageDefinitionDirectsBlockedFollowupsToAtomicRecovery(t *testing.
 
 func TestToolDefinitionsRouteAgentProgressToPlanManageNotManageTodos(t *testing.T) {
 	planDefinition := mustFindDefinition(t, "plan_manage")
-	if !containsAll(planDefinition.Description, "agent execution progress", "canonical agent checklist/progress surface", "do not use manage_todos") {
+	if !containsAll(planDefinition.Description, "agent execution progress", "canonical agent checklist/progress surface", "Do not use manage_todos") {
 		t.Fatalf("plan_manage description %q does not advertise canonical agent progress tracking", planDefinition.Description)
 	}
 	planParams, ok := planDefinition.Parameters["properties"].(map[string]any)
@@ -113,12 +113,17 @@ func TestToolDefinitionsRouteAgentProgressToPlanManageNotManageTodos(t *testing.
 		t.Fatalf("plan_manage properties type = %T", planDefinition.Parameters["properties"])
 	}
 	planActionDescription, _ := planParams["action"].(map[string]any)["description"].(string)
-	if !containsAll(planActionDescription, "update_checkpoint", "agent progress/checklist", "mark_failed") {
-		t.Fatalf("plan_manage action description %q does not point progress updates at update_checkpoint", planActionDescription)
+	if !containsAll(planActionDescription, "complete_subtask immediately after each genuinely completed typed subtask", "discovery-only work", "single-step checkpoints", "complete_checkpoint is the single successful terminal outcome", "safety fallback", "not routine agent progress/checklist transitions") {
+		t.Fatalf("plan_manage action description %q does not define task-by-task progress transitions", planActionDescription)
 	}
 	checkpointDescription, _ := planParams["checkpoint"].(map[string]any)["description"].(string)
 	if !containsAll(checkpointDescription, "tasks", "notes", "agent progress/checklist") {
 		t.Fatalf("plan_manage checkpoint description %q does not advertise checkpoint progress fields", checkpointDescription)
+	}
+	for _, unwanted := range []string{"do not call complete_subtask repeatedly first", "so do not call complete_subtask repeatedly first"} {
+		if strings.Contains(strings.ToLower(planDefinition.Description), unwanted) || strings.Contains(strings.ToLower(planActionDescription), unwanted) {
+			t.Fatalf("plan_manage contract retained contradictory subtask suppression %q", unwanted)
+		}
 	}
 
 	todoDefinition := mustFindDefinition(t, "manage_todos")
