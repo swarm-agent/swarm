@@ -5317,6 +5317,11 @@ func normalizeManageTodoOwnerKind(raw string) (string, error) {
 	return normalized, nil
 }
 
+func mergeManageTodoAccountScope(options todoruntime.ListOptions, accountScopeID string) todoruntime.ListOptions {
+	options.AccountScopeID = strings.TrimSpace(accountScopeID)
+	return options
+}
+
 func manageTodoListScope(ownerKind, sessionID string) todoruntime.ListOptions {
 	ownerKind = strings.TrimSpace(ownerKind)
 	sessionID = strings.TrimSpace(sessionID)
@@ -5950,7 +5955,7 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 
 	switch action {
 	case "list":
-		listOptions := manageTodoListScope(ownerKind, scope.SessionID)
+		listOptions := mergeManageTodoAccountScope(manageTodoListScope(ownerKind, scope.SessionID), scope.Principal.AccountScopeID)
 		items, summary, err := r.todos.List(workspacePath, listOptions)
 		if err != nil {
 			return "", err
@@ -5958,7 +5963,7 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		response["items"] = items
 		response["summary"] = summary
 	case "summary":
-		listOptions := manageTodoListScope(ownerKind, scope.SessionID)
+		listOptions := mergeManageTodoAccountScope(manageTodoListScope(ownerKind, scope.SessionID), scope.Principal.AccountScopeID)
 		_, summary, err := r.todos.List(workspacePath, listOptions)
 		if err != nil {
 			return "", err
@@ -5974,15 +5979,15 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 			sessionID = strings.TrimSpace(scope.SessionID)
 		}
 		item, summary, _, err := r.todos.Create(todoruntime.CreateInput{
-			WorkspacePath: workspacePath,
-			OwnerKind:     ownerKind,
-			Text:          text,
-			Priority:      asString(args["priority"]),
-			Group:         asString(args["group"]),
-			Tags:          asStringSlice(args["tags"]),
-			InProgress:    asBool(args["in_progress"]),
-			SessionID:     sessionID,
-			ParentID:      asString(args["parent_id"]),
+			AccountScopeID: scope.Principal.AccountScopeID, WorkspacePath: workspacePath,
+			OwnerKind:  ownerKind,
+			Text:       text,
+			Priority:   asString(args["priority"]),
+			Group:      asString(args["group"]),
+			Tags:       asStringSlice(args["tags"]),
+			InProgress: asBool(args["in_progress"]),
+			SessionID:  sessionID,
+			ParentID:   asString(args["parent_id"]),
 		})
 		if err != nil {
 			return "", err
@@ -6040,17 +6045,17 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 			updateSessionID = strings.TrimSpace(scope.SessionID)
 		}
 		item, summary, _, err := r.todos.Update(todoruntime.UpdateInput{
-			WorkspacePath: workspacePath,
-			ID:            id,
-			Text:          text,
-			Done:          done,
-			Priority:      priority,
-			Group:         group,
-			Tags:          tags,
-			InProgress:    inProgress,
-			SessionID:     sessionID,
-			ParentID:      parentID,
-		}, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: updateSessionID})
+			AccountScopeID: scope.Principal.AccountScopeID, WorkspacePath: workspacePath,
+			ID:         id,
+			Text:       text,
+			Done:       done,
+			Priority:   priority,
+			Group:      group,
+			Tags:       tags,
+			InProgress: inProgress,
+			SessionID:  sessionID,
+			ParentID:   parentID,
+		}, todoruntime.ListOptions{AccountScopeID: scope.Principal.AccountScopeID, OwnerKind: ownerKind, SessionID: updateSessionID})
 		if err != nil {
 			return "", err
 		}
@@ -6061,21 +6066,21 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		if id == "" {
 			return "", errors.New("id is required")
 		}
-		summary, _, err := r.todos.Delete(workspacePath, id, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
+		summary, _, err := r.todos.Delete(workspacePath, id, todoruntime.ListOptions{AccountScopeID: scope.Principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
 		response["id"] = id
 		response["summary"] = summary
 	case "delete_done":
-		items, summary, _, err := r.todos.DeleteDone(workspacePath, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
+		items, summary, _, err := r.todos.DeleteDone(workspacePath, todoruntime.ListOptions{AccountScopeID: scope.Principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
 		response["items"] = items
 		response["summary"] = summary
 	case "delete_all":
-		items, summary, _, err := r.todos.DeleteAll(workspacePath, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
+		items, summary, _, err := r.todos.DeleteAll(workspacePath, todoruntime.ListOptions{AccountScopeID: scope.Principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
@@ -6086,7 +6091,7 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		if len(orderedIDs) == 0 {
 			return "", errors.New("ordered_ids is required")
 		}
-		items, summary, _, err := r.todos.Reorder(todoruntime.ReorderInput{WorkspacePath: workspacePath, OwnerKind: ownerKind, OrderedIDs: orderedIDs}, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
+		items, summary, _, err := r.todos.Reorder(todoruntime.ReorderInput{AccountScopeID: scope.Principal.AccountScopeID, WorkspacePath: workspacePath, OwnerKind: ownerKind, OrderedIDs: orderedIDs}, todoruntime.ListOptions{AccountScopeID: scope.Principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
@@ -6097,7 +6102,7 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		if id == "" {
 			return "", errors.New("id is required")
 		}
-		item, summary, _, err := r.todos.SetInProgress(workspacePath, id, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
+		item, summary, _, err := r.todos.SetInProgress(workspacePath, id, todoruntime.ListOptions{AccountScopeID: scope.Principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
@@ -6108,7 +6113,7 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		if err != nil {
 			return "", err
 		}
-		results, items, summary, _, err := r.todos.ApplyBatch(workspacePath, operations, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
+		results, items, summary, _, err := r.todos.ApplyBatch(workspacePath, operations, todoruntime.ListOptions{AccountScopeID: scope.Principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}

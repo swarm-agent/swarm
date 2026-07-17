@@ -12,6 +12,7 @@ a temporary DB copy without stopping a running local Swarm service.
 Examples:
   scripts/local-session-db-inspect.sh --latest 5
   scripts/local-session-db-inspect.sh --session <session-id> --dump
+  scripts/local-session-db-inspect.sh --ai-task <task-id> --dump
   scripts/local-session-db-inspect.sh --session <session-id> --copy-db --dump
   scripts/local-session-db-inspect.sh --session-url https://<provider-host>/<workspace>/<session-id>
   scripts/local-session-db-inspect.sh --query "session.diagnostic.provider" --events 40
@@ -29,6 +30,7 @@ Selection/search:
   --latest <n>          Inspect latest n sessions. Default: 5
   --session <id|url>    Inspect one exact session id. A URL uses its last path segment.
   --session-url <url>    Extract session id from URL, stop service, dump JSON to /tmp without copying DB.
+  --ai-task <task-id>    Resolve account-scoped task, audit, preparation session, and final session.
   --query <text>        Search session id/title/workspace/metadata/messages/events.
   --all                 Inspect all sessions scanned by --scan-limit.
   --scan-limit <n>      Max sessions to scan from newest first. Default: 1000
@@ -90,6 +92,7 @@ COPY_ATTEMPTS="3"
 KEEP_COPY="false"
 LATEST="5"
 SESSION_ID=""
+AI_TASK_ID=""
 SESSION_URL_MODE="false"
 QUERY=""
 ALL="false"
@@ -150,6 +153,12 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || fail "--session-url requires a value"
       SESSION_URL_MODE="true"
       SESSION_ID="$(extract_session_id "$2")"
+      shift 2
+      ;;
+    --ai-task)
+      [[ $# -ge 2 ]] || fail "--ai-task requires a value"
+      AI_TASK_ID="$2"
+      DUMP="true"
       shift 2
       ;;
     --query)
@@ -347,6 +356,15 @@ type report struct {
 	MatchedCount      int           `json:"matched_count"`
 	Selection         selection     `json:"selection"`
 	Sessions          []sessionDump `json:"sessions"`
+	AITask            *aiTaskDump   `json:"ai_task,omitempty"`
+}
+
+type aiTaskDump struct {
+	Task               pebblestore.WorkspaceTodoItem  `json:"task"`
+	Audit              []pebblestore.AITaskAuditRecord `json:"audit"`
+	PreparationSession *sessionDump                    `json:"preparation_session,omitempty"`
+	FinalSession       *sessionDump                    `json:"final_session,omitempty"`
+	FieldPolicy        string                          `json:"field_policy"`
 }
 
 type selection struct {
@@ -378,6 +396,7 @@ func main() {
 	sourceDBPath := flag.String("source-db", "", "original source DB path when inspecting a copy")
 	latest := flag.Int("latest", 5, "latest sessions to inspect when no search is provided")
 	sessionID := flag.String("session", "", "exact session id")
+	aiTaskID := flag.String("ai-task", "", "exact AI task id")
 	query := flag.String("query", "", "case-insensitive search text")
 	all := flag.Bool("all", false, "include all scanned sessions")
 	scanLimit := flag.Int("scan-limit", 1000, "max newest sessions to scan")
@@ -404,13 +423,41 @@ func main() {
 	sessions := pebblestore.NewSessionStore(store)
 	permissions := pebblestore.NewPermissionStore(store)
 	selected := make([]sessionDump, 0)
+	var selectedAITask *aiTaskDump
 	needle := strings.ToLower(strings.TrimSpace(*query))
 	exactSessionID := strings.TrimSpace(*sessionID)
 	latestLimit := positive(*latest, 5)
+	if taskID := strings.TrimSpace(*aiTaskID); taskID != "" {
+		todoStore := pebblestore.NewWorkspaceTodoStore(store)
+		var task pebblestore.WorkspaceTodoItem
+		found := false
+		err := store.IteratePrefix(pebblestore.KeyWorkspaceTodoItemAccountPrefix, 100000, func(_ string, value []byte) error {
+			var candidate pebblestore.WorkspaceTodoItem
+			if err := json.Unmarshal(value, &candidate); err != nil { return err }
+			if candidate.ID == taskID {
+				if found && candidate.AccountScopeID != task.AccountScopeID { return fmt.Errorf("AI task id %q is ambiguous across accounts", taskID) }
+				task, found = candidate, true
+			}
+			return nil
+		})
+		if err != nil { fmt.Fprintf(os.Stderr, "scan AI tasks: %v\n", err); os.Exit(1) }
+		if !found { fmt.Fprintf(os.Stderr, "AI task not found: %s\n", taskID); os.Exit(1) }
+		audit, err := todoStore.ListAITaskAudit(task.AccountScopeID, task.ID, 10000)
+		if err != nil { fmt.Fprintf(os.Stderr, "list AI task audit: %v\n", err); os.Exit(1) }
+		selectedAITask = &aiTaskDump{Task: task, Audit: audit, FieldPolicy: "credential fields and hidden reasoning are not emitted; message/event text is operator-visible and may be truncated unless --dump"}
+		for _, ref := range []struct{id string; target **sessionDump}{{task.PreparationSessionID, &selectedAITask.PreparationSession}, {task.ManagedSessionID, &selectedAITask.FinalSession}} {
+			if strings.TrimSpace(ref.id) == "" { continue }
+			snapshot, ok, err := sessions.GetSession(ref.id)
+			if err != nil { fmt.Fprintf(os.Stderr, "get linked session %s: %v\n", ref.id, err); os.Exit(1) }
+			if ok { dump := buildSessionDump(sessions, permissions, snapshot, "AI task linkage", nil, nil, nil, false, *messageLimit, *eventLimit, *dump, *includeOutbox); *ref.target = &dump; selected = append(selected, dump) }
+		}
+	}
 	allSessions := []pebblestore.SessionSnapshot{}
 	scanned := []pebblestore.SessionSnapshot{}
 
-	if exactSessionID != "" {
+	if selectedAITask != nil {
+		// AI-task selection above resolves only the two correlated sessions.
+	} else if exactSessionID != "" {
 		session, ok, err := sessions.GetSession(exactSessionID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "get session %s: %v\n", exactSessionID, err)
@@ -476,6 +523,7 @@ func main() {
 			Dump:         *dump,
 		},
 		Sessions: selected,
+		AITask: selectedAITask,
 	}
 
 	if *jsonOutput {
@@ -574,6 +622,12 @@ func printText(r report) {
 	}
 	fmt.Printf(" sessions=%d scanned=%d matched=%d\n", r.SessionCount, r.ScannedCount, r.MatchedCount)
 	fmt.Printf("selection latest=%d session_id=%q query=%q all=%t dump=%t\n", r.Selection.Latest, r.Selection.SessionID, r.Selection.Query, r.Selection.All, r.Selection.Dump)
+	if r.AITask != nil {
+		t := r.AITask.Task
+		fmt.Printf("\n=== AI TASK AUTHORITY ===\nid=%s account_scope_id=%s workspace_id=%s workspace=%q state=%s version=%d preparation_session=%s preparation_run=%s final_session=%s final_run=%s\n", t.ID, t.AccountScopeID, t.WorkspaceID, t.WorkspacePath, t.AIState, t.AIStateVersion, t.PreparationSessionID, t.PreparationRunID, t.ManagedSessionID, t.FinalRunID)
+		fmt.Printf("field_policy=%s\naudit_timeline=%d\n", r.AITask.FieldPolicy, len(r.AITask.Audit))
+		for _, a := range r.AITask.Audit { fmt.Printf("- stage_key=%s stage=%s state=%s version=%d disposition=%s attempt=%s preparation_session=%s preparation_run=%s final_session=%s final_run=%s error_sanitized=%s\n", a.StageKey, a.Stage, a.State, a.StateVersion, a.Disposition, a.AttemptID, a.PreparationSessionID, a.PreparationRunID, a.FinalSessionID, a.FinalRunID, oneLine(a.Error, 260)) }
+	}
 	for index, item := range r.Sessions {
 		s := item.Session
 		fmt.Printf("\n=== SESSION %d matched_by=%s ===\n", index+1, item.MatchedReason)
@@ -746,6 +800,7 @@ EOF_GO
 
 cmd=("${GO_BIN}" run -mod=mod "." --db "${INSPECT_DB_PATH}" --source-db "${DB_PATH}" --latest "${LATEST}" --scan-limit "${SCAN_LIMIT}" --messages "${MESSAGE_LIMIT}" --events "${EVENT_LIMIT}")
 if [[ -n "${SESSION_ID}" ]]; then cmd+=(--session "${SESSION_ID}"); fi
+if [[ -n "${AI_TASK_ID}" ]]; then cmd+=(--ai-task "${AI_TASK_ID}"); fi
 if [[ -n "${QUERY}" ]]; then cmd+=(--query "${QUERY}"); fi
 if [[ "${ALL}" == "true" ]]; then cmd+=(--all); fi
 if [[ "${DUMP}" == "true" ]]; then cmd+=(--dump); fi

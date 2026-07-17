@@ -86,6 +86,7 @@ type Daemon struct {
 	bgCancel                  context.CancelFunc
 	copilot                   *copilot.Manager
 	toolRuntime               *tool.Runtime
+	aiTaskWorker              *run.AITaskWorker
 	localTransportRuntimeName string
 	localTransportBaseURL     string
 	localTransportSocketPath  string
@@ -381,6 +382,8 @@ func New(cfg config.Config) (*Daemon, error) {
 	runSvc.SetSessionDeployCanonicalizer(apiServer.CanonicalizeSessionDeploy)
 	runSvc.SetSessionDeployEnqueuer(apiServer.EnqueueSessionDeployRun)
 	runSvc.SetAITaskBinder(todoSvc)
+	aiTaskWorker := runSvc.StartAITaskWorker(bgCtx, aiTaskQueueAdapter{service: todoSvc}, sessionSvc.ApplySessionMutation)
+	todoSvc.SetAITaskWake(aiTaskWorker.Wake)
 	toolRuntime.SetManageSessionRealtimePublisher(apiServer.PublishCommittedV3RealtimeOutbox)
 	apiServer.SetCodexAccountClient(codexClient)
 	apiServer.SetWebPushService(webPushSvc)
@@ -424,6 +427,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		stopCh:                    make(chan string, 1),
 		copilot:                   copilotManager,
 		toolRuntime:               toolRuntime,
+		aiTaskWorker:              aiTaskWorker,
 		localTransportRuntimeName: localTransportRuntimeName,
 	}
 	apiServer.SetShutdownHandler(func(reason string) {
@@ -532,6 +536,10 @@ func (d *Daemon) cleanup() error {
 		if d.bgCancel != nil {
 			d.bgCancel()
 			d.bgCancel = nil
+		}
+		if d.aiTaskWorker != nil {
+			d.aiTaskWorker.Wait()
+			d.aiTaskWorker = nil
 		}
 		if d.toolRuntime != nil {
 			if err := d.toolRuntime.Close(); err != nil {

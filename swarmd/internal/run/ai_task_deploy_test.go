@@ -98,7 +98,7 @@ func TestExecutePreparedAITaskCreatesManagedWorktreeSessionAndDurableLinkage(t *
 		t.Fatalf("open todo event log: %v", err)
 	}
 	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(todoStore), todoEvents, nil, svc.sessions)
-	queued, _, _, err := todoSvc.CreateAITask(todo.CreateAITaskInput{WorkspacePath: workspacePath, Request: "Fix the queued task", IdempotencyKey: "request-1"})
+	queued, _, _, err := todoSvc.CreateAITask(todo.CreateAITaskInput{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath, Request: "Fix the queued task", IdempotencyKey: "request-1"})
 	if err != nil {
 		t.Fatalf("create queued AI task: %v", err)
 	}
@@ -131,11 +131,14 @@ func TestExecutePreparedAITaskCreatesManagedWorktreeSessionAndDurableLinkage(t *
 	})
 
 	preparation := AITaskPreparation{Title: "Fix queued task", Prompt: "Implement the narrow fix", Mode: sessionruntime.ModeAuto, Worktree: true}
-	if _, err := svc.ExecutePreparedAITask(context.Background(), parent.ID, workspacePath, queued.ID, preparation, svc.sessions.ApplySessionMutation); err != nil {
+	if err := todoSvc.BindAITask(parent.AccountScopeID, workspacePath, queued.ID, "queued", "preparing", "", false, "", ""); err != nil {
+		t.Fatalf("claim queued AI task: %v", err)
+	}
+	if _, err := svc.ExecutePreparedAITask(context.Background(), parent.ID, parent.AccountScopeID, workspacePath, queued.ID, preparation, svc.sessions.ApplySessionMutation); err != nil {
 		t.Fatalf("execute prepared AI task: %v", err)
 	}
 
-	linked, ok, err := pebblestore.NewWorkspaceTodoStore(todoStore).Get(workspacePath, queued.ID)
+	linked, ok, err := pebblestore.NewWorkspaceTodoStore(todoStore).GetForAccount(parent.AccountScopeID, workspacePath, queued.ID)
 	if err != nil || !ok {
 		t.Fatalf("load linked task: ok=%t err=%v", ok, err)
 	}

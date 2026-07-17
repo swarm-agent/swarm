@@ -1960,7 +1960,7 @@ func (s *Server) handleWorkspaceTodos(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
-		items, summary, err := s.todos.List(workspacePath, todo.ListOptions{OwnerKind: ownerKind, SessionID: sessionID})
+		items, summary, err := s.todos.List(workspacePath, todo.ListOptions{AccountScopeID: principal.AccountScopeID, OwnerKind: ownerKind, SessionID: sessionID})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -2027,11 +2027,20 @@ func (s *Server) handleWorkspaceTodos(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, errors.New("AI tasks must be user-owned"))
 				return
 			}
-			item, summary, _, err := s.todos.CreateAITask(todo.CreateAITaskInput{
-				WorkspacePath:  workspacePath,
-				Request:        req.Text,
-				IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key")),
-			})
+			workspaceScope, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, workspacePath)
+			if scopeErr != nil || strings.TrimSpace(workspaceScope.WorkspaceID) == "" {
+				writeError(w, http.StatusBadRequest, errors.New("canonical workspace identity is required"))
+				return
+			}
+			originSessionID := strings.TrimSpace(req.SessionID)
+			if originSessionID != "" {
+				origin, found, originErr := s.sessions.GetSession(originSessionID)
+				if originErr != nil || !found || strings.TrimSpace(origin.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) || strings.TrimSpace(origin.UserID) != strings.TrimSpace(principal.UserID) || strings.TrimSpace(origin.WorkspacePath) != workspacePath {
+					writeError(w, http.StatusBadRequest, errors.New("origin session must belong to the request principal and canonical workspace"))
+					return
+				}
+			}
+			item, summary, _, err := s.todos.CreateAITask(todo.CreateAITaskInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspaceID: workspaceScope.WorkspaceID, WorkspacePath: workspacePath, OriginSessionID: originSessionID, Request: req.Text, IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key"))})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -2039,15 +2048,16 @@ func (s *Server) handleWorkspaceTodos(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "item": item, "summary": summary, "status": item.AIState})
 		case "create":
 			item, summary, _, err := s.todos.Create(todo.CreateInput{
-				WorkspacePath: workspacePath,
-				OwnerKind:     ownerKind,
-				Text:          req.Text,
-				Priority:      req.Priority,
-				Group:         req.Group,
-				Tags:          req.Tags,
-				InProgress:    req.InProgress != nil && *req.InProgress,
-				SessionID:     req.SessionID,
-				ParentID:      req.ParentID,
+				AccountScopeID: principal.AccountScopeID,
+				WorkspacePath:  workspacePath,
+				OwnerKind:      ownerKind,
+				Text:           req.Text,
+				Priority:       req.Priority,
+				Group:          req.Group,
+				Tags:           req.Tags,
+				InProgress:     req.InProgress != nil && *req.InProgress,
+				SessionID:      req.SessionID,
+				ParentID:       req.ParentID,
 			})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
@@ -2062,52 +2072,53 @@ func (s *Server) handleWorkspaceTodos(w http.ResponseWriter, r *http.Request) {
 				sessionID = req.SessionID
 			}
 			item, summary, _, err := s.todos.Update(todo.UpdateInput{
-				WorkspacePath: workspacePath,
-				ID:            req.ID,
-				Text:          stringPointerIfPresent(req.Text),
-				Done:          req.Done,
-				Priority:      stringPointerIfPresent(priority),
-				Group:         stringPointerIfPresent(group),
-				Tags:          req.Tags,
-				InProgress:    req.InProgress,
-				SessionID:     stringPointerIfPresent(sessionID),
-				ParentID:      stringPointerIfPresent(req.ParentID),
-			}, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(sessionID)})
+				AccountScopeID: principal.AccountScopeID,
+				WorkspacePath:  workspacePath,
+				ID:             req.ID,
+				Text:           stringPointerIfPresent(req.Text),
+				Done:           req.Done,
+				Priority:       stringPointerIfPresent(priority),
+				Group:          stringPointerIfPresent(group),
+				Tags:           req.Tags,
+				InProgress:     req.InProgress,
+				SessionID:      stringPointerIfPresent(sessionID),
+				ParentID:       stringPointerIfPresent(req.ParentID),
+			}, todo.ListOptions{AccountScopeID: principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(sessionID)})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "item": item, "summary": summary})
 		case "delete":
-			summary, _, err := s.todos.Delete(workspacePath, req.ID, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
+			summary, _, err := s.todos.Delete(workspacePath, req.ID, todo.ListOptions{AccountScopeID: principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": strings.TrimSpace(req.ID), "summary": summary})
 		case "delete_done":
-			items, summary, _, err := s.todos.DeleteDone(workspacePath, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
+			items, summary, _, err := s.todos.DeleteDone(workspacePath, todo.ListOptions{AccountScopeID: principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "items": items, "summary": summary})
 		case "delete_all":
-			items, summary, _, err := s.todos.DeleteAll(workspacePath, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
+			items, summary, _, err := s.todos.DeleteAll(workspacePath, todo.ListOptions{AccountScopeID: principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "items": items, "summary": summary})
 		case "reorder":
-			items, summary, _, err := s.todos.Reorder(todo.ReorderInput{WorkspacePath: workspacePath, OwnerKind: ownerKind, OrderedIDs: req.OrderedIDs}, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
+			items, summary, _, err := s.todos.Reorder(todo.ReorderInput{AccountScopeID: principal.AccountScopeID, WorkspacePath: workspacePath, OwnerKind: ownerKind, OrderedIDs: req.OrderedIDs}, todo.ListOptions{AccountScopeID: principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "items": items, "summary": summary})
 		case "in_progress":
-			item, summary, _, err := s.todos.SetInProgress(workspacePath, req.ID, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
+			item, summary, _, err := s.todos.SetInProgress(workspacePath, req.ID, todo.ListOptions{AccountScopeID: principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -2135,7 +2146,7 @@ func (s *Server) handleWorkspaceTodos(w http.ResponseWriter, r *http.Request) {
 					OrderedIDs: rawOp.OrderedIDs,
 				})
 			}
-			results, items, summary, _, err := s.todos.ApplyBatch(workspacePath, operations, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
+			results, items, summary, _, err := s.todos.ApplyBatch(workspacePath, operations, todo.ListOptions{AccountScopeID: principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return

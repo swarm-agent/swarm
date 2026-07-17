@@ -2285,6 +2285,61 @@ test('late durable reasoning keeps an earlier speculative assistant patch after 
   ])
 })
 
+test('late same-step reasoning precedes an assistant patch already flushed across a durable boundary', () => {
+  let state = bootstrappedState()
+  state = applyDesktopV3LivePatchBatch(state, [livePatch({
+    text: 'STREAM_ORDER_FINAL',
+    offset_start: 0,
+    offset_end: byteLength('STREAM_ORDER_FINAL'),
+    step: 1,
+    step_id: 'step-1',
+  })])
+
+  const speculativeSeq = state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft?.timelineSeq ?? 0
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.started', {
+      call_id: 'call-boundary',
+      step_id: 'step-1',
+      tool_name: 'boundary',
+    }, speculativeSeq + 2, 'cursor-boundary'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.delta', {
+      reasoning_key: 'step:step-1',
+      step_id: 'step-1',
+      delta: 'STREAM_ORDER_REASONING',
+      delta_mode: 'replace',
+    }, speculativeSeq + 5, 'cursor-reasoning-after-boundary'),
+  })
+
+  const run = state.liveRunsBySession[sessionA.id]['run-live']
+  const timelineEvidence = [
+    ...(run.assistantSegments ?? []).map((segment) => ({
+      type: 'live-assistant',
+      content: segment.content,
+      timelineSeq: segment.timelineSeq,
+    })),
+    ...Object.values(run.reasoningByKey ?? {}).map((reasoning) => ({
+      type: 'live-reasoning',
+      content: reasoning.text,
+      timelineSeq: reasoning.timelineSeq,
+    })),
+  ].sort((left, right) => left.timelineSeq - right.timelineSeq)
+  const renderedEvidence = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+    .filter((item) => item.type === 'live-assistant' || item.type === 'live-reasoning')
+    .map((item) => ({
+      type: item.type,
+      content: item.type === 'live-assistant' ? item.content : item.text,
+      timelineSeq: item.timelineSeq,
+    }))
+
+  assert.deepEqual(timelineEvidence, [
+    { type: 'live-reasoning', content: 'STREAM_ORDER_REASONING', timelineSeq: speculativeSeq + 5 },
+    { type: 'live-assistant', content: 'STREAM_ORDER_FINAL', timelineSeq: speculativeSeq + 6 },
+  ])
+  assert.deepEqual(renderedEvidence, timelineEvidence)
+})
+
 test('realtime provider tool construction events create live tool overlay while arguments stream', () => {
   const state = bootstrappedState()
 

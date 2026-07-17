@@ -19,8 +19,11 @@ import (
 )
 
 type AITaskDeployBinding struct {
-	WorkspacePath string
-	TaskID        string
+	AccountScopeID       string
+	WorkspacePath        string
+	TaskID               string
+	PreparationSessionID string
+	PreparationRunID     string
 }
 
 type manageSessionsDeployApproved struct {
@@ -224,6 +227,8 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 		if aiTask != nil {
 			lineageMetadata["ai_task_id"] = strings.TrimSpace(aiTask.TaskID)
 			lineageMetadata["ai_task_workspace_path"] = strings.TrimSpace(aiTask.WorkspacePath)
+			lineageMetadata["ai_task_preparation_session_id"] = strings.TrimSpace(aiTask.PreparationSessionID)
+			lineageMetadata["ai_task_preparation_run_id"] = strings.TrimSpace(aiTask.PreparationRunID)
 		}
 		canonical, canonicalErr := s.sessionDeployCanonicalize(SessionDeployCanonicalizeInput{Principal: principal, WorkspacePath: scope.WorkspacePath, WorkspaceBindingID: proposal.WorkspaceBindingID, AgentProfile: profile, RuntimeMode: proposal.RuntimeMode, Metadata: lineageMetadata})
 		if canonicalErr != nil {
@@ -259,6 +264,9 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 		results[i] = manageSessionsDeployResult{ProposalID: item.proposal.ID, SessionID: item.session.ID, Title: item.session.Title, Mode: item.proposal.Mode, Agent: item.profile.Name, Workspace: item.session.WorkspacePath, Worktree: item.proposal.ManagedWorktree, Status: "created", Navigation: deploySessionNavigation(item.session)}
 		createKey := "session-deploy:create:" + digest + ":" + item.proposal.ID
 		_, createErr := apply(sessionruntime.SessionMutationInput{SessionID: item.session.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: createKey, IdempotencyKey: createKey, PayloadHash: createKey, RequestHash: createKey, Kind: sessionruntime.SessionMutationCreateSession, Session: &item.session, NowUnixMs: time.Now().UnixMilli()})
+		if createErr == nil && aiTask != nil && s.aiTaskBinder != nil {
+			_ = s.aiTaskBinder.AppendAITaskAudit(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID, pebblestore.AITaskAuditRecord{StageKey: "000002_final_session", Stage: "final_session", FinalSessionID: item.session.ID, FinalRunID: item.runID, Disposition: "created_or_reused", CreatedAt: time.Now().UnixMilli()})
+		}
 		if createErr != nil {
 			results[i].Status = "error"
 			results[i].Error = createErr.Error()
@@ -268,6 +276,9 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 		intent := sessionDeployRunIntent(item.session.ID, item.runID, parent.ID, parent.UserID, parent.AccountScopeID)
 		messageKey := "session-deploy:message:" + digest + ":" + item.proposal.ID
 		appended, appendErr := apply(sessionruntime.SessionMutationInput{SessionID: item.session.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: messageKey, IdempotencyKey: messageKey, PayloadHash: messageKey, RequestHash: messageKey, Kind: sessionruntime.SessionMutationAppendMessage, Message: &message, RunIntent: &intent, NowUnixMs: time.Now().UnixMilli()})
+		if appendErr == nil && aiTask != nil && s.aiTaskBinder != nil {
+			_ = s.aiTaskBinder.AppendAITaskAudit(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID, pebblestore.AITaskAuditRecord{StageKey: "000002_final_run_intent", Stage: "final_run_intent", FinalSessionID: item.session.ID, FinalRunID: item.runID, Disposition: "created_or_reused", CreatedAt: time.Now().UnixMilli()})
+		}
 		if appendErr != nil {
 			results[i].Status = "error"
 			results[i].Error = appendErr.Error()
@@ -287,11 +298,21 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 			continue
 		}
 		if aiTask != nil {
+			parentMetadata := cloneStringAnyMap(parent.Metadata)
+			parentMetadata["ai_task_final_session_id"] = item.session.ID
+			parentMetadata["ai_task_final_run_id"] = item.runID
+			linkedParent := parent
+			linkedParent.Metadata = parentMetadata
+			linkKey := "ai-task:preparation:link:" + strings.TrimSpace(aiTask.TaskID)
+			if _, linkErr := apply(sessionruntime.SessionMutationInput{SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: linkKey, IdempotencyKey: linkKey, PayloadHash: linkKey, RequestHash: linkKey, Kind: sessionruntime.SessionMutationUpdateMetadata, Session: &linkedParent, NowUnixMs: time.Now().UnixMilli()}); linkErr != nil {
+				results[i].Status, results[i].Error = "error", linkErr.Error()
+				continue
+			}
 			if s.aiTaskBinder == nil {
 				results[i].Status, results[i].Error = "error", "AI task binder is not configured"
 				continue
 			}
-			if bindErr := s.aiTaskBinder.BindAITask(aiTask.WorkspacePath, aiTask.TaskID, "preparing", "in_progress", item.proposal.Mode, item.proposal.ManagedWorktree, item.session.ID, ""); bindErr != nil {
+			if bindErr := s.aiTaskBinder.BindAITask(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID, "preparing", "in_progress", item.proposal.Mode, item.proposal.ManagedWorktree, item.session.ID, ""); bindErr != nil {
 				results[i].Status, results[i].Error = "error", bindErr.Error()
 				continue
 			}
@@ -303,15 +324,26 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 			results[i].Status = "error"
 			results[i].Error = "canonical V3 session executor rejected the deployed run"
 			if aiTask != nil && s.aiTaskBinder != nil {
-				_ = s.aiTaskBinder.BindAITask(aiTask.WorkspacePath, aiTask.TaskID, "in_progress", "failed", item.proposal.Mode, item.proposal.ManagedWorktree, item.session.ID, results[i].Error)
+				_ = s.aiTaskBinder.BindAITask(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID, "in_progress", "failed", item.proposal.Mode, item.proposal.ManagedWorktree, item.session.ID, results[i].Error)
 			}
 			continue
 		}
 		results[i].Status = "started"
+		if aiTask != nil && s.aiTaskBinder != nil {
+			_ = s.aiTaskBinder.AppendAITaskAudit(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID, pebblestore.AITaskAuditRecord{StageKey: "000003_executor_enqueued", Stage: "executor_enqueued", FinalSessionID: item.session.ID, FinalRunID: item.runID, Disposition: "started", CreatedAt: time.Now().UnixMilli()})
+		}
 	}
 	payload := map[string]any{"tool": "manage_sessions", "action": "deploy", "manifest_digest": digest, "selected_count": len(results), "results": results}
 	raw, err := json.Marshal(payload)
 	return string(raw), err
+}
+
+func cloneStringAnyMap(input map[string]any) map[string]any {
+	out := make(map[string]any, len(input)+2)
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
 }
 
 func sessionDeployCreationMetadata(parentSessionID, workspacePath, digest, proposalID string) map[string]any {

@@ -1,6 +1,8 @@
 package todo
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -24,10 +26,11 @@ type derivedSessionMetadataStore interface {
 }
 
 type Service struct {
-	store    *pebblestore.WorkspaceTodoStore
-	events   *pebblestore.EventLog
-	publish  func(pebblestore.EventEnvelope)
-	sessions SessionMetadataStore
+	store      *pebblestore.WorkspaceTodoStore
+	events     *pebblestore.EventLog
+	publish    func(pebblestore.EventEnvelope)
+	sessions   SessionMetadataStore
+	wakeAITask func(TodoItem)
 }
 
 type TodoItem = pebblestore.WorkspaceTodoItem
@@ -35,56 +38,71 @@ type TodoItem = pebblestore.WorkspaceTodoItem
 type TodoSummary = pebblestore.WorkspaceTodoSummary
 
 type CreateInput struct {
-	WorkspacePath string
-	OwnerKind     string
-	Text          string
-	Priority      string
-	Group         string
-	Tags          []string
-	InProgress    bool
-	SessionID     string
-	ParentID      string
+	AccountScopeID string
+	WorkspacePath  string
+	OwnerKind      string
+	Text           string
+	Priority       string
+	Group          string
+	Tags           []string
+	InProgress     bool
+	SessionID      string
+	ParentID       string
 }
 
 type UpdateInput struct {
-	WorkspacePath string
-	ID            string
-	Text          *string
-	Done          *bool
-	Priority      *string
-	Group         *string
-	Tags          []string
-	InProgress    *bool
-	SessionID     *string
-	ParentID      *string
+	AccountScopeID string
+	WorkspacePath  string
+	ID             string
+	Text           *string
+	Done           *bool
+	Priority       *string
+	Group          *string
+	Tags           []string
+	InProgress     *bool
+	SessionID      *string
+	ParentID       *string
 }
 
 type CreateAITaskInput struct {
-	WorkspacePath  string
-	Request        string
-	IdempotencyKey string
+	AccountScopeID  string
+	UserID          string
+	WorkspaceID     string
+	WorkspacePath   string
+	OriginSessionID string
+	Request         string
+	IdempotencyKey  string
 }
 
 type AITaskTransitionInput struct {
-	WorkspacePath    string
-	ID               string
-	ExpectedState    string
-	State            string
-	Mode             string
-	Worktree         bool
-	ManagedSessionID string
-	Error            string
+	AccountScopeID       string
+	WorkspacePath        string
+	ID                   string
+	ExpectedState        string
+	State                string
+	Mode                 string
+	Worktree             bool
+	ManagedSessionID     string
+	Error                string
+	ExpectedVersion      uint64
+	PreparationSessionID string
+	PreparationRunID     string
+	PreparationAttemptID string
+	FinalRunID           string
+	Disposition          string
 }
 
 type ReorderInput struct {
-	WorkspacePath string
-	OwnerKind     string
-	OrderedIDs    []string
+	AccountScopeID string
+	WorkspacePath  string
+	OwnerKind      string
+	OrderedIDs     []string
 }
 
 type ListOptions struct {
-	OwnerKind string
-	SessionID string
+	AccountScopeID string
+	OwnerKind      string
+	SessionID      string
 }
 
 type BatchOperation struct {
@@ -114,12 +132,32 @@ func NewService(store *pebblestore.WorkspaceTodoStore, events *pebblestore.Event
 	return &Service{store: store, events: events, publish: publish, sessions: sessions}
 }
 
+func (s *Service) SetAITaskWake(fn func(TodoItem)) { s.wakeAITask = fn }
+
+func (s *Service) ListActiveAITasks(accountScopeID string, limit int) ([]TodoItem, error) {
+	return s.store.ListActiveAITasksForAccount(strings.TrimSpace(accountScopeID), limit)
+}
+
+func (s *Service) AppendAITaskAudit(accountScopeID, workspacePath, taskID string, record pebblestore.AITaskAuditRecord) error {
+	return s.store.AppendAITaskAudit(strings.TrimSpace(accountScopeID), strings.TrimSpace(workspacePath), strings.TrimSpace(taskID), record)
+}
+
+func (s *Service) GetAITask(accountScopeID, workspacePath, taskID string) (TodoItem, bool, error) {
+	return s.store.GetForAccount(strings.TrimSpace(accountScopeID), strings.TrimSpace(workspacePath), strings.TrimSpace(taskID))
+}
+
 func (s *Service) List(workspacePath string, options ...ListOptions) ([]TodoItem, TodoSummary, error) {
-	items, err := s.store.List(strings.TrimSpace(workspacePath), 100000)
+	resolved := firstListOptions(options)
+	var items []TodoItem
+	var err error
+	if resolved.AccountScopeID != "" {
+		items, err = s.store.ListForAccount(resolved.AccountScopeID, strings.TrimSpace(workspacePath), 100000)
+	} else {
+		items, err = s.store.List(strings.TrimSpace(workspacePath), 100000)
+	}
 	if err != nil {
 		return nil, TodoSummary{}, err
 	}
-	resolved := firstListOptions(options)
 	filtered := filterItemsByOptions(items, resolved)
 	if hasListOptionsFilter(resolved) {
 		return filtered, summarizeForOptions(items, resolved), nil
@@ -132,12 +170,23 @@ func (s *Service) Summaries(workspacePaths []string) (map[string]TodoSummary, er
 }
 
 func (s *Service) Create(input CreateInput) (TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
+	return s.create(input, nil)
+}
+
+func (s *Service) create(input CreateInput, initialize func(*TodoItem)) (TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
 	workspacePath := strings.TrimSpace(input.WorkspacePath)
+	accountScopeID := strings.TrimSpace(input.AccountScopeID)
 	if workspacePath == "" {
 		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("workspace path is required")
 	}
 	ownerKind := pebblestore.NormalizeWorkspaceTodoOwnerKind(input.OwnerKind)
-	items, err := s.store.List(workspacePath, 100000)
+	var items []TodoItem
+	var err error
+	if accountScopeID != "" {
+		items, err = s.store.ListForAccount(accountScopeID, workspacePath, 100000)
+	} else {
+		items, err = s.store.List(workspacePath, 100000)
+	}
 	if err != nil {
 		return TodoItem{}, TodoSummary{}, nil, err
 	}
@@ -147,19 +196,23 @@ func (s *Service) Create(input CreateInput) (TodoItem, TodoSummary, *pebblestore
 	}
 	now := time.Now().UnixMilli()
 	item := TodoItem{
-		ID:            fmt.Sprintf("todo_%d_%d", now, len(items)),
-		WorkspacePath: workspacePath,
-		OwnerKind:     ownerKind,
-		Text:          strings.TrimSpace(input.Text),
-		Priority:      strings.TrimSpace(input.Priority),
-		Group:         strings.TrimSpace(input.Group),
-		Tags:          append([]string(nil), input.Tags...),
-		InProgress:    input.InProgress,
-		SessionID:     strings.TrimSpace(input.SessionID),
-		ParentID:      strings.TrimSpace(input.ParentID),
-		SortIndex:     len(items),
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:             fmt.Sprintf("todo_%d_%d", now, len(items)),
+		WorkspacePath:  workspacePath,
+		AccountScopeID: accountScopeID,
+		OwnerKind:      ownerKind,
+		Text:           strings.TrimSpace(input.Text),
+		Priority:       strings.TrimSpace(input.Priority),
+		Group:          strings.TrimSpace(input.Group),
+		Tags:           append([]string(nil), input.Tags...),
+		InProgress:     input.InProgress,
+		SessionID:      strings.TrimSpace(input.SessionID),
+		ParentID:       strings.TrimSpace(input.ParentID),
+		SortIndex:      len(items),
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if initialize != nil {
+		initialize(&item)
 	}
 	items = append(items, item)
 	items = normalizeSortOrder(items)
@@ -188,42 +241,46 @@ func (s *Service) Create(input CreateInput) (TodoItem, TodoSummary, *pebblestore
 // CreateAITask persists an AI request as an ordinary user-owned todo. A stable
 // idempotency key lets callers safely retry without creating a second authority.
 func (s *Service) CreateAITask(input CreateAITaskInput) (TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
-	workspacePath := strings.TrimSpace(input.WorkspacePath)
-	request := strings.TrimSpace(input.Request)
-	if workspacePath == "" || request == "" {
-		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("workspace path and AI task request are required")
+	accountScopeID, userID := strings.TrimSpace(input.AccountScopeID), strings.TrimSpace(input.UserID)
+	workspacePath, workspaceID := strings.TrimSpace(input.WorkspacePath), strings.TrimSpace(input.WorkspaceID)
+	request, key := strings.TrimSpace(input.Request), strings.TrimSpace(input.IdempotencyKey)
+	if accountScopeID == "" || userID == "" || workspacePath == "" || workspaceID == "" || request == "" || key == "" {
+		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("account, user, canonical workspace, request, and idempotency key are required")
 	}
-	items, err := s.store.List(workspacePath, 100000)
+	now := time.Now().UnixMilli()
+	keyHash, requestHash := hashAITaskValue(key), hashAITaskValue(request)
+	idSeed := hashAITaskValue(accountScopeID + "\x00" + workspaceID + "\x00" + keyHash)
+	item := TodoItem{ID: "ai_task_" + idSeed[:24], AccountScopeID: accountScopeID, UserID: userID, WorkspaceID: workspaceID, WorkspacePath: workspacePath, OriginSessionID: strings.TrimSpace(input.OriginSessionID), OwnerKind: pebblestore.WorkspaceTodoOwnerKindUser, Text: request, AIState: pebblestore.WorkspaceTodoAIStateQueued, AIRequest: request, CreatedAt: now, UpdatedAt: now}
+	created, replayed, err := s.store.CreateAITask(pebblestore.CreateAITaskStoreInput{Item: item, IdempotencyHash: keyHash, RequestHash: requestHash, Audit: pebblestore.AITaskAuditRecord{StageKey: "000001_queued", Stage: "queued", Disposition: "created", CreatedAt: now}})
 	if err != nil {
 		return TodoItem{}, TodoSummary{}, nil, err
 	}
-	key := strings.TrimSpace(input.IdempotencyKey)
-	if key != "" {
-		for _, item := range items {
-			if item.OwnerKind == pebblestore.WorkspaceTodoOwnerKindUser && item.AIRequest == request && item.Group == "ai-task:"+key {
-				return item, pebblestore.SummarizeWorkspaceTodos(items), nil, nil
-			}
-		}
-	}
-	created, summary, event, err := s.Create(CreateInput{WorkspacePath: workspacePath, OwnerKind: pebblestore.WorkspaceTodoOwnerKindUser, Text: request, Group: "ai-task:" + key})
+	items, err := s.store.ListForAccount(accountScopeID, workspacePath, 100000)
 	if err != nil {
 		return TodoItem{}, TodoSummary{}, nil, err
 	}
-	created.AIState, created.AIRequest = pebblestore.WorkspaceTodoAIStateQueued, request
-	created.UpdatedAt = time.Now().UnixMilli()
-	created, err = s.store.Save(created)
-	if err != nil {
-		return TodoItem{}, TodoSummary{}, nil, err
+	summary := pebblestore.SummarizeWorkspaceTodos(items)
+	if replayed {
+		return created, summary, nil, nil
 	}
-	return created, summary, event, nil
+	event, err := s.appendEventForAccount(accountScopeID, workspacePath, "workspace.todo.created", created.ID, map[string]any{"account_scope_id": accountScopeID, "workspace_path": workspacePath, "item": created, "summary": summary})
+	if err == nil && s.wakeAITask != nil {
+		s.wakeAITask(created)
+	}
+	return created, summary, event, err
+}
+
+func hashAITaskValue(value string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(value)))
+	return hex.EncodeToString(sum[:])
 }
 
 // TransitionAITask is the only mutation available to the bound AI-task
 // orchestrator. It requires the exact workspace, todo id, user ownership, and
 // optional expected state; it cannot address arbitrary todos or sessions.
 func (s *Service) TransitionAITask(input AITaskTransitionInput) (TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
-	workspacePath, itemID := strings.TrimSpace(input.WorkspacePath), strings.TrimSpace(input.ID)
-	item, ok, err := s.store.Get(workspacePath, itemID)
+	accountScopeID, workspacePath, itemID := strings.TrimSpace(input.AccountScopeID), strings.TrimSpace(input.WorkspacePath), strings.TrimSpace(input.ID)
+	item, ok, err := s.store.GetForAccount(accountScopeID, workspacePath, itemID)
 	if err != nil || !ok {
 		if err == nil {
 			err = fmt.Errorf("AI task %q not found", itemID)
@@ -233,9 +290,6 @@ func (s *Service) TransitionAITask(input AITaskTransitionInput) (TodoItem, TodoS
 	if item.OwnerKind != pebblestore.WorkspaceTodoOwnerKindUser || item.AIState == "" {
 		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("todo %q is not a user AI task", itemID)
 	}
-	if expected := pebblestore.NormalizeWorkspaceTodoAIState(input.ExpectedState); expected != "" && item.AIState != expected {
-		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("AI task %q state is %q, expected %q", itemID, item.AIState, expected)
-	}
 	next := pebblestore.NormalizeWorkspaceTodoAIState(input.State)
 	if !validAITaskTransition(item.AIState, next) {
 		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("invalid AI task transition %q to %q", item.AIState, next)
@@ -244,42 +298,45 @@ func (s *Service) TransitionAITask(input AITaskTransitionInput) (TodoItem, TodoS
 	if mode != "" && mode != "plan" && mode != "auto" {
 		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("AI task mode must be plan or auto")
 	}
-	item.AIState, item.AIError, item.UpdatedAt = next, strings.TrimSpace(input.Error), time.Now().UnixMilli()
-	if mode != "" {
-		item.AIMode = mode
-	}
-	item.AIWorktree = input.Worktree
-	if sessionID := strings.TrimSpace(input.ManagedSessionID); sessionID != "" {
-		item.ManagedSessionID = sessionID
-	}
-	item.InProgress = next == pebblestore.WorkspaceTodoAIStateInProgress
-	if item.InProgress && (item.AIMode == "" || item.ManagedSessionID == "") {
+	if next == pebblestore.WorkspaceTodoAIStateInProgress && (mode == "" && item.AIMode == "" || strings.TrimSpace(input.ManagedSessionID) == "" && item.ManagedSessionID == "") {
 		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("AI task requires mode and managed session linkage before in progress")
 	}
-	item, err = s.store.Save(item)
+	stage := fmt.Sprintf("%06d_%s", item.AIStateVersion+1, next)
+	claimedAt := item.AIClaimedAt
+	if next == pebblestore.WorkspaceTodoAIStatePreparing && claimedAt == 0 {
+		claimedAt = time.Now().UnixMilli()
+	}
+	item, err = s.store.TransitionAITask(pebblestore.AITaskTransitionStoreInput{AccountScopeID: accountScopeID, WorkspacePath: workspacePath, TaskID: itemID, ExpectedState: input.ExpectedState, ExpectedVersion: input.ExpectedVersion, NextState: next, Mode: mode, Worktree: input.Worktree, ManagedSessionID: input.ManagedSessionID, FinalRunID: input.FinalRunID, PreparationSessionID: input.PreparationSessionID, PreparationRunID: input.PreparationRunID, PreparationAttemptID: input.PreparationAttemptID, Error: input.Error, ClaimedAt: claimedAt, Audit: pebblestore.AITaskAuditRecord{StageKey: stage, Stage: next, Disposition: strings.TrimSpace(input.Disposition), CreatedAt: time.Now().UnixMilli()}})
 	if err != nil {
 		return TodoItem{}, TodoSummary{}, nil, err
 	}
-	summary, err := s.store.Summary(workspacePath)
+	items, err := s.store.ListForAccount(accountScopeID, workspacePath, 100000)
 	if err != nil {
 		return TodoItem{}, TodoSummary{}, nil, err
 	}
-	event, err := s.appendEvent(workspacePath, "workspace.todo.ai_state_updated", item.ID, map[string]any{"workspace_path": workspacePath, "item": item, "summary": summary})
-	if err != nil {
-		return TodoItem{}, TodoSummary{}, nil, err
-	}
-	return item, summary, event, nil
+	summary := pebblestore.SummarizeWorkspaceTodos(items)
+	event, err := s.appendEventForAccount(accountScopeID, workspacePath, "workspace.todo.ai_state_updated", item.ID, map[string]any{"account_scope_id": accountScopeID, "workspace_path": workspacePath, "item": item, "summary": summary})
+	return item, summary, event, err
 }
 
 // BindAITask satisfies run.AITaskBinder without importing run (and creating a
 // package cycle). The run service can therefore update only its pre-bound task.
-func (s *Service) BindAITask(workspacePath, taskID, expectedState, state, mode string, worktree bool, managedSessionID, errorText string) error {
+func (s *Service) BindAITask(accountScopeID, workspacePath, taskID, expectedState, state, mode string, worktree bool, managedSessionID, errorText string) error {
 	_, _, _, err := s.TransitionAITask(AITaskTransitionInput{
-		WorkspacePath: workspacePath, ID: taskID, ExpectedState: expectedState,
+		AccountScopeID: accountScopeID, WorkspacePath: workspacePath, ID: taskID, ExpectedState: expectedState,
 		State: state, Mode: mode, Worktree: worktree,
 		ManagedSessionID: managedSessionID, Error: errorText,
 	})
 	return err
+}
+
+func (s *Service) TransitionAITaskAuthority(input AITaskTransitionInput) (TodoItem, error) {
+	item, _, _, err := s.TransitionAITask(input)
+	return item, err
+}
+
+func (s *Service) ListAITaskAccounts(limit int) ([]string, error) {
+	return s.store.ListAITaskAccounts(limit)
 }
 
 func validAITaskTransition(current, next string) bool {
@@ -302,6 +359,9 @@ func validAITaskTransition(current, next string) bool {
 
 func (s *Service) Update(input UpdateInput, options ...ListOptions) (TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
 	workspacePath := strings.TrimSpace(input.WorkspacePath)
+	if input.AccountScopeID != "" && len(options) == 0 {
+		options = []ListOptions{{AccountScopeID: input.AccountScopeID}}
+	}
 	itemID := strings.TrimSpace(input.ID)
 	if workspacePath == "" {
 		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("workspace path is required")
@@ -309,18 +369,27 @@ func (s *Service) Update(input UpdateInput, options ...ListOptions) (TodoItem, T
 	if itemID == "" {
 		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("todo id is required")
 	}
-	items, err := s.store.List(workspacePath, 100000)
+	resolved := firstListOptions(options)
+	var items []TodoItem
+	var err error
+	if resolved.AccountScopeID != "" {
+		items, err = s.store.ListForAccount(resolved.AccountScopeID, workspacePath, 100000)
+	} else {
+		items, err = s.store.List(workspacePath, 100000)
+	}
 	if err != nil {
 		return TodoItem{}, TodoSummary{}, nil, err
 	}
 	originalItems := append([]TodoItem(nil), items...)
-	resolved := firstListOptions(options)
 	index := indexOfItemWithOptions(items, itemID, resolved)
 	if index < 0 {
 		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("todo %q not found", itemID)
 	}
 	now := time.Now().UnixMilli()
 	item := items[index]
+	if item.AIState != "" && (input.Text != nil || input.Done != nil || input.Group != nil || input.Tags != nil || input.InProgress != nil || input.SessionID != nil || input.ParentID != nil) {
+		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("active AI task lifecycle fields may only be changed by the AI-task authority")
+	}
 	if input.Text != nil {
 		item.Text = strings.TrimSpace(*input.Text)
 	}
@@ -395,15 +464,24 @@ func (s *Service) Delete(workspacePath, itemID string, options ...ListOptions) (
 	if itemID == "" {
 		return TodoSummary{}, nil, fmt.Errorf("todo id is required")
 	}
-	items, err := s.store.List(workspacePath, 100000)
+	resolved := firstListOptions(options)
+	var items []TodoItem
+	var err error
+	if resolved.AccountScopeID != "" {
+		items, err = s.store.ListForAccount(resolved.AccountScopeID, workspacePath, 100000)
+	} else {
+		items, err = s.store.List(workspacePath, 100000)
+	}
 	if err != nil {
 		return TodoSummary{}, nil, err
 	}
 	originalItems := append([]TodoItem(nil), items...)
-	resolved := firstListOptions(options)
 	index := indexOfItemWithOptions(items, itemID, resolved)
 	if index < 0 {
 		return TodoSummary{}, nil, fmt.Errorf("todo %q not found", itemID)
+	}
+	if items[index].AIState == pebblestore.WorkspaceTodoAIStateQueued || items[index].AIState == pebblestore.WorkspaceTodoAIStatePreparing || items[index].AIState == pebblestore.WorkspaceTodoAIStateInProgress {
+		return TodoSummary{}, nil, fmt.Errorf("active AI task cannot be deleted")
 	}
 	items = append(items[:index], items[index+1:]...)
 	items = normalizeSortOrder(items)
@@ -454,12 +532,18 @@ func (s *Service) deleteMatching(workspacePath, eventType string, shouldDelete f
 	if workspacePath == "" {
 		return nil, TodoSummary{}, nil, fmt.Errorf("workspace path is required")
 	}
-	items, err := s.store.List(workspacePath, 100000)
+	resolved := firstListOptions(options)
+	var items []TodoItem
+	var err error
+	if resolved.AccountScopeID != "" {
+		items, err = s.store.ListForAccount(resolved.AccountScopeID, workspacePath, 100000)
+	} else {
+		items, err = s.store.List(workspacePath, 100000)
+	}
 	if err != nil {
 		return nil, TodoSummary{}, nil, err
 	}
 	originalItems := append([]TodoItem(nil), items...)
-	resolved := firstListOptions(options)
 	remaining := make([]TodoItem, 0, len(items))
 	deletedIDs := make([]string, 0)
 	for _, item := range items {
@@ -475,8 +559,14 @@ func (s *Service) deleteMatching(workspacePath, eventType string, shouldDelete f
 	if len(deletedIDs) == 0 {
 		return filterItemsByOptions(remaining, resolved), summary, nil, nil
 	}
-	if err := s.store.ReplaceWorkspaceItems(workspacePath, remaining); err != nil {
-		return nil, TodoSummary{}, nil, err
+	var replaceErr error
+	if resolved.AccountScopeID != "" {
+		replaceErr = s.store.ReplaceWorkspaceItemsForAccount(resolved.AccountScopeID, workspacePath, remaining)
+	} else {
+		replaceErr = s.store.ReplaceWorkspaceItems(workspacePath, remaining)
+	}
+	if replaceErr != nil {
+		return nil, TodoSummary{}, nil, replaceErr
 	}
 	if err := s.syncAgentTodoSessionMetadata(originalItems, remaining); err != nil {
 		return nil, TodoSummary{}, nil, err
@@ -505,12 +595,18 @@ func (s *Service) Reorder(input ReorderInput, options ...ListOptions) ([]TodoIte
 	if workspacePath == "" {
 		return nil, TodoSummary{}, nil, fmt.Errorf("workspace path is required")
 	}
-	items, err := s.store.List(workspacePath, 100000)
+	resolved := mergeListOptions(firstListOptions(options), ListOptions{AccountScopeID: input.AccountScopeID, OwnerKind: input.OwnerKind})
+	var items []TodoItem
+	var err error
+	if resolved.AccountScopeID != "" {
+		items, err = s.store.ListForAccount(resolved.AccountScopeID, workspacePath, 100000)
+	} else {
+		items, err = s.store.List(workspacePath, 100000)
+	}
 	if err != nil {
 		return nil, TodoSummary{}, nil, err
 	}
 	originalItems := append([]TodoItem(nil), items...)
-	resolved := mergeListOptions(firstListOptions(options), ListOptions{OwnerKind: input.OwnerKind})
 	ordered := reorderItemsForOptions(items, resolved, input.OrderedIDs)
 	ordered = normalizeSortOrder(ordered)
 	if err := s.persistItems(ordered); err != nil {
@@ -551,12 +647,18 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation, 
 	if len(operations) == 0 {
 		return nil, nil, TodoSummary{}, nil, fmt.Errorf("operations is required")
 	}
-	items, err := s.store.List(workspacePath, 100000)
+	resolved := firstListOptions(options)
+	var items []TodoItem
+	var err error
+	if resolved.AccountScopeID != "" {
+		items, err = s.store.ListForAccount(resolved.AccountScopeID, workspacePath, 100000)
+	} else {
+		items, err = s.store.List(workspacePath, 100000)
+	}
 	if err != nil {
 		return nil, nil, TodoSummary{}, nil, err
 	}
 	originalItems := append([]TodoItem(nil), items...)
-	resolved := firstListOptions(options)
 	working := append([]TodoItem(nil), items...)
 	results := make([]BatchResult, 0, len(operations))
 	ownerKindsUsed := make(map[string]struct{})
@@ -624,6 +726,9 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation, 
 			}
 			now := time.Now().UnixMilli()
 			item := working[itemIndex]
+			if item.AIState != "" && (op.Text != nil || op.Done != nil || op.Group != nil || op.Tags != nil || op.InProgress != nil || op.SessionID != nil || op.ParentID != nil) {
+				return nil, nil, TodoSummary{}, nil, fmt.Errorf("active AI task lifecycle fields may only be changed by the AI-task authority")
+			}
 			if op.Text != nil {
 				item.Text = strings.TrimSpace(*op.Text)
 			}
@@ -672,6 +777,10 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation, 
 			deletedCount := 0
 			for _, item := range working {
 				if item.Done && itemMatchesListOptions(item, effectiveOptions) {
+					if item.AIState == pebblestore.WorkspaceTodoAIStateQueued || item.AIState == pebblestore.WorkspaceTodoAIStatePreparing || item.AIState == pebblestore.WorkspaceTodoAIStateInProgress {
+						remaining = append(remaining, item)
+						continue
+					}
 					deletedCount++
 					continue
 				}
@@ -686,6 +795,10 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation, 
 			deletedCount := 0
 			for _, item := range working {
 				if itemMatchesListOptions(item, effectiveOptions) {
+					if item.AIState == pebblestore.WorkspaceTodoAIStateQueued || item.AIState == pebblestore.WorkspaceTodoAIStatePreparing || item.AIState == pebblestore.WorkspaceTodoAIStateInProgress {
+						remaining = append(remaining, item)
+						continue
+					}
 					deletedCount++
 					continue
 				}
@@ -703,6 +816,9 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation, 
 			itemIndex := indexOfItemWithOptions(working, itemID, effectiveOptions)
 			if itemIndex < 0 {
 				return nil, nil, TodoSummary{}, nil, fmt.Errorf("todo %q not found", itemID)
+			}
+			if state := working[itemIndex].AIState; state == pebblestore.WorkspaceTodoAIStateQueued || state == pebblestore.WorkspaceTodoAIStatePreparing || state == pebblestore.WorkspaceTodoAIStateInProgress {
+				return nil, nil, TodoSummary{}, nil, fmt.Errorf("active AI task cannot be deleted")
 			}
 			working = append(working[:itemIndex], working[itemIndex+1:]...)
 			working = normalizeSortOrder(working)
@@ -725,6 +841,9 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation, 
 			if itemIndex < 0 {
 				return nil, nil, TodoSummary{}, nil, fmt.Errorf("todo %q not found", itemID)
 			}
+			if working[itemIndex].AIState != "" {
+				return nil, nil, TodoSummary{}, nil, fmt.Errorf("active AI task lifecycle fields may only be changed by the AI-task authority")
+			}
 			clearInProgressForScope(working, working[itemIndex].OwnerKind, working[itemIndex].SessionID, itemID)
 			working[itemIndex].InProgress = true
 			working[itemIndex].UpdatedAt = time.Now().UnixMilli()
@@ -740,8 +859,14 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation, 
 		}
 		results = append(results, result)
 	}
-	if err := s.store.ReplaceWorkspaceItems(workspacePath, working); err != nil {
-		return nil, nil, TodoSummary{}, nil, err
+	var replaceErr error
+	if resolved.AccountScopeID != "" {
+		replaceErr = s.store.ReplaceWorkspaceItemsForAccount(resolved.AccountScopeID, workspacePath, working)
+	} else {
+		replaceErr = s.store.ReplaceWorkspaceItems(workspacePath, working)
+	}
+	if replaceErr != nil {
+		return nil, nil, TodoSummary{}, nil, replaceErr
 	}
 	if err := s.syncAgentTodoSessionMetadata(originalItems, working); err != nil {
 		return nil, nil, TodoSummary{}, nil, err
@@ -773,11 +898,21 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation, 
 
 func (s *Service) persistItems(items []TodoItem) error {
 	for _, item := range items {
-		if _, err := s.store.Save(item); err != nil {
+		var err error
+		if item.AccountScopeID != "" {
+			_, err = s.store.SaveForAccount(item.AccountScopeID, item)
+		} else {
+			_, err = s.store.Save(item)
+		}
+		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *Service) appendEventForAccount(accountScopeID, workspacePath, eventType, entityID string, payload any) (*pebblestore.EventEnvelope, error) {
+	return s.appendEvent(strings.TrimSpace(accountScopeID)+":"+strings.TrimSpace(workspacePath), eventType, entityID, payload)
 }
 
 func (s *Service) appendEvent(workspacePath, eventType, entityID string, payload any) (*pebblestore.EventEnvelope, error) {
@@ -912,13 +1047,17 @@ func firstListOptions(options []ListOptions) ListOptions {
 		return ListOptions{}
 	}
 	return ListOptions{
-		OwnerKind: normalizeOptionalOwnerKind(options[0].OwnerKind),
-		SessionID: strings.TrimSpace(options[0].SessionID),
+		AccountScopeID: strings.TrimSpace(options[0].AccountScopeID),
+		OwnerKind:      normalizeOptionalOwnerKind(options[0].OwnerKind),
+		SessionID:      strings.TrimSpace(options[0].SessionID),
 	}
 }
 
 func mergeListOptions(base, override ListOptions) ListOptions {
 	merged := base
+	if accountScopeID := strings.TrimSpace(override.AccountScopeID); accountScopeID != "" {
+		merged.AccountScopeID = accountScopeID
+	}
 	if ownerKind := normalizeOptionalOwnerKind(override.OwnerKind); ownerKind != "" {
 		merged.OwnerKind = ownerKind
 	}

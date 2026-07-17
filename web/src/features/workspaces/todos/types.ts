@@ -29,6 +29,14 @@ export interface WorkspaceTodoItem {
   aiRequest: string
   aiError: string
   managedSessionId: string
+  accountScopeId: string
+  workspaceId: string
+  originSessionId: string
+  preparationSessionId: string
+  preparationRunId: string
+  preparationAttemptId: string
+  finalRunId: string
+  aiStateVersion: number
   sortIndex: number
   createdAt: number
   updatedAt: number
@@ -61,6 +69,14 @@ interface WorkspaceTodoItemWire {
   ai_request?: string
   ai_error?: string
   managed_session_id?: string
+  account_scope_id?: string
+  workspace_id?: string
+  origin_session_id?: string
+  preparation_session_id?: string
+  preparation_run_id?: string
+  preparation_attempt_id?: string
+  final_run_id?: string
+  ai_state_version?: number
   sort_index: number
   created_at: number
   updated_at: number
@@ -163,6 +179,14 @@ export function mapWorkspaceTodoItem(item: WorkspaceTodoItemWire): WorkspaceTodo
     aiRequest: (item.ai_request ?? '').trim(),
     aiError: (item.ai_error ?? '').trim(),
     managedSessionId: (item.managed_session_id ?? '').trim(),
+    accountScopeId: (item.account_scope_id ?? '').trim(),
+    workspaceId: (item.workspace_id ?? '').trim(),
+    originSessionId: (item.origin_session_id ?? '').trim(),
+    preparationSessionId: (item.preparation_session_id ?? '').trim(),
+    preparationRunId: (item.preparation_run_id ?? '').trim(),
+    preparationAttemptId: (item.preparation_attempt_id ?? '').trim(),
+    finalRunId: (item.final_run_id ?? '').trim(),
+    aiStateVersion: typeof item.ai_state_version === 'number' ? item.ai_state_version : 0,
     sortIndex: item.sort_index,
     createdAt: item.created_at,
     updatedAt: item.updated_at,
@@ -185,7 +209,7 @@ export function mapWorkspaceTodoSummary(summary: WorkspaceTodoSummaryWire | unde
   }
 }
 
-export async function fetchWorkspaceTodos(workspacePath: string, ownerKind?: WorkspaceTodoOwnerKind, sessionId?: string): Promise<{ items: WorkspaceTodoItem[]; summary: WorkspaceTodoSummary }> {
+export async function fetchWorkspaceTodos(workspacePath: string, ownerKind?: WorkspaceTodoOwnerKind, sessionId?: string, signal?: AbortSignal): Promise<{ items: WorkspaceTodoItem[]; summary: WorkspaceTodoSummary }> {
   const search = new URLSearchParams({ workspace_path: workspacePath })
   if (ownerKind) {
     search.set('owner_kind', ownerKind)
@@ -193,26 +217,30 @@ export async function fetchWorkspaceTodos(workspacePath: string, ownerKind?: Wor
   if (sessionId?.trim()) {
     search.set('session_id', sessionId.trim())
   }
-  const response = await requestJson<WorkspaceTodosResponseWire>(`/v1/workspace/todos?${search.toString()}`)
+  const response = await requestJson<WorkspaceTodosResponseWire>(`/v1/workspace/todos?${search.toString()}`, { signal })
   return {
     items: Array.isArray(response.items) ? response.items.map(mapWorkspaceTodoItem) : [],
     summary: mapWorkspaceTodoSummary(response.summary),
   }
 }
 
-export async function createWorkspaceAITask(workspacePath: string, request: string): Promise<{ item: WorkspaceTodoItem; summary: WorkspaceTodoSummary; status: string }> {
+export async function createWorkspaceAITask(workspacePath: string, request: string, idempotencyKey: string, originSessionId?: string): Promise<{ item: WorkspaceTodoItem; summary: WorkspaceTodoSummary; status: string }> {
   const normalizedRequest = request.trim()
   if (!normalizedRequest) {
     throw new Error('Enter a task request after /task.')
   }
+  if (!idempotencyKey.trim()) {
+    throw new Error('AI task idempotency key is required')
+  }
   const response = await requestJson<WorkspaceAITaskResponseWire>('/v1/workspace/todos', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey.trim() },
     body: JSON.stringify({
       action: 'ai_task',
       workspace_path: workspacePath,
       owner_kind: 'user',
       text: normalizedRequest,
+      session_id: originSessionId?.trim() || undefined,
     }),
   })
   if (!response.item) {

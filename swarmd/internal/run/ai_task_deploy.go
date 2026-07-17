@@ -53,7 +53,7 @@ func ParseAITaskPreparation(raw string) (AITaskPreparation, error) {
 // ResolveAITaskPreparer compiles the reserved preparer from the account's
 // configured Swarm profile. Missing or disabled Swarm/model configuration fails
 // explicitly instead of falling back to browser or provider defaults.
-func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, workspacePath, taskID string, preparation AITaskPreparation, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
+func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, accountScopeID, workspacePath, taskID string, preparation AITaskPreparation, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
 	if s == nil || s.aiTaskBinder == nil {
 		return "", fmt.Errorf("AI task binder is not configured")
 	}
@@ -64,22 +64,15 @@ func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, wo
 	if _, err := ParseAITaskPreparation(marshalAITaskPreparation(preparation)); err != nil {
 		return "", err
 	}
-	if err := s.aiTaskBinder.BindAITask(workspacePath, taskID, "queued", "preparing", preparation.Mode, preparation.Worktree, "", ""); err != nil {
-		return "", err
-	}
 	arguments, _ := json.Marshal(map[string]any{"action": "deploy", "proposals": []map[string]any{{"title": preparation.Title, "prompt": preparation.Prompt, "mode": preparation.Mode, "agent": agentruntime.SwarmAgentID, "workspace_path": workspacePath, "worktree": preparation.Worktree}}})
 	call := tool.Call{Name: "manage_sessions", Arguments: string(arguments)}
 	manifest, err := s.buildManageSessionsDeployManifest(parentSessionID, call)
 	if err != nil {
-		_ = s.aiTaskBinder.BindAITask(workspacePath, taskID, "preparing", "failed", preparation.Mode, preparation.Worktree, "", err.Error())
 		return "", err
 	}
 	approved, _ := json.Marshal(manifest.ApprovedArguments)
-	result, err := s.executeManageSessionsDeployBound(ctx, parentSessionID, call, string(approved), apply, &AITaskDeployBinding{WorkspacePath: workspacePath, TaskID: taskID})
-	if err != nil {
-		_ = s.aiTaskBinder.BindAITask(workspacePath, taskID, "preparing", "failed", preparation.Mode, preparation.Worktree, "", err.Error())
-	}
-	return result, err
+	parent, _, _ := s.sessions.GetSession(parentSessionID)
+	return s.executeManageSessionsDeployBound(ctx, parentSessionID, call, string(approved), apply, &AITaskDeployBinding{AccountScopeID: accountScopeID, WorkspacePath: workspacePath, TaskID: taskID, PreparationSessionID: parentSessionID, PreparationRunID: mapString(parent.Metadata, "ai_task_preparation_run_id")})
 }
 
 func marshalAITaskPreparation(value any) string { raw, _ := json.Marshal(value); return string(raw) }

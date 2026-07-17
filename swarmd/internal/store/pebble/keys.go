@@ -49,7 +49,10 @@ const (
 	KeyWorkspaceEntryPrefix                        = "workspace/entry/" // legacy global entry prefix; retained for explicit migration only.
 	KeyWorkspaceEntryAccountPrefix                 = "workspace/entry_by_account/"
 	KeyWorkspaceEntryByIDAccountPrefix             = "workspace/entry_by_id_by_account/"
-	KeyWorkspaceTodoItemPrefix                     = "workspace_todo/item/"
+	KeyWorkspaceTodoItemPrefix                     = "workspace_todo/item/" // legacy unscoped records; recovery must terminalize active AI tasks.
+	KeyWorkspaceTodoItemAccountPrefix              = "workspace_todo/item_by_account/"
+	KeyAITaskIdempotencyAccountPrefix              = "ai_task/idempotency_by_account/"
+	KeyAITaskAuditAccountPrefix                    = "ai_task/audit_by_account/"
 	KeyVideoThreadPrefix                           = "video/thread/"
 	KeyImageThreadPrefix                           = "image/thread/" // legacy global image thread prefix; retained for explicit migration only.
 	KeyImageThreadAccountPrefix                    = "image/thread_by_account/"
@@ -667,6 +670,26 @@ func WorkspaceEntryPrefix() string {
 
 func KeyWorkspaceTodoItem(workspacePath, itemID string) string {
 	return fmt.Sprintf("%s%s/%s", KeyWorkspaceTodoItemPrefix, keyPart(workspacePath), keyPart(itemID))
+}
+
+func KeyWorkspaceTodoItemForAccount(accountScopeID, workspacePath, itemID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyWorkspaceTodoItemAccountPrefix, keyPart(accountScopeID), keyPart(workspacePath), keyPart(itemID))
+}
+
+func WorkspaceTodoPrefixForAccount(accountScopeID, workspacePath string) string {
+	return fmt.Sprintf("%s%s/%s/", KeyWorkspaceTodoItemAccountPrefix, keyPart(accountScopeID), keyPart(workspacePath))
+}
+
+func KeyAITaskIdempotencyForAccount(accountScopeID, workspacePath, idempotencyHash string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyAITaskIdempotencyAccountPrefix, keyPart(accountScopeID), keyPart(workspacePath), keyPart(idempotencyHash))
+}
+
+func KeyAITaskAuditForAccount(accountScopeID, taskID, stageKey string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyAITaskAuditAccountPrefix, keyPart(accountScopeID), keyPart(taskID), keyPart(stageKey))
+}
+
+func AITaskAuditPrefixForAccount(accountScopeID, taskID string) string {
+	return fmt.Sprintf("%s%s/%s/", KeyAITaskAuditAccountPrefix, keyPart(accountScopeID), keyPart(taskID))
 }
 
 func WorkspaceTodoPrefix(workspacePath string) string {
