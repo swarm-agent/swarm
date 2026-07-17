@@ -226,7 +226,9 @@ type PlanDocumentPatch struct {
 	CheckpointOrder    []string                                         `json:"checkpoint_order,omitempty"`
 	Subtask            *pebblestore.SessionPlanSubtask                  `json:"subtask,omitempty"`
 	SubtaskID          string                                           `json:"subtask_id,omitempty"`
+	SubtaskIDs         []string                                         `json:"subtask_ids,omitempty"`
 	SubtaskOrder       []string                                         `json:"subtask_order,omitempty"`
+	CompleteCheckpoint bool                                             `json:"complete_checkpoint,omitempty"`
 	ActiveCheckpointID string                                           `json:"active_checkpoint_id,omitempty"`
 	Status             string                                           `json:"status,omitempty"`
 	AttemptID          string                                           `json:"attempt_id,omitempty"`
@@ -291,7 +293,7 @@ func (p *PlanDocumentPatch) UnmarshalJSON(raw []byte) error {
 }
 
 func (p PlanDocumentPatch) IsZero() bool {
-	return strings.TrimSpace(p.Operation) == "" && p.Info == nil && len(p.InfoFields) == 0 && p.ExecutionPolicy == nil && p.ExecutionState == nil && p.Checkpoint == nil && len(p.CheckpointFields) == 0 && strings.TrimSpace(p.CheckpointID) == "" && len(p.CheckpointOrder) == 0 && p.Subtask == nil && strings.TrimSpace(p.SubtaskID) == "" && len(p.SubtaskOrder) == 0 && strings.TrimSpace(p.ActiveCheckpointID) == "" && strings.TrimSpace(p.Status) == "" && strings.TrimSpace(p.AttemptID) == "" && strings.TrimSpace(p.RunID) == "" && strings.TrimSpace(p.RunSessionID) == "" && strings.TrimSpace(p.ParentSessionID) == "" && p.StartedAt == 0 && p.CompletedAt == 0 && strings.TrimSpace(p.Notes) == "" && strings.TrimSpace(p.Report) == "" && strings.TrimSpace(p.Result) == "" && len(p.ChangedFiles) == 0 && len(p.Validation) == 0 && len(p.Operations) == 0
+	return strings.TrimSpace(p.Operation) == "" && p.Info == nil && len(p.InfoFields) == 0 && p.ExecutionPolicy == nil && p.ExecutionState == nil && p.Checkpoint == nil && len(p.CheckpointFields) == 0 && strings.TrimSpace(p.CheckpointID) == "" && len(p.CheckpointOrder) == 0 && p.Subtask == nil && strings.TrimSpace(p.SubtaskID) == "" && len(p.SubtaskIDs) == 0 && len(p.SubtaskOrder) == 0 && !p.CompleteCheckpoint && strings.TrimSpace(p.ActiveCheckpointID) == "" && strings.TrimSpace(p.Status) == "" && strings.TrimSpace(p.AttemptID) == "" && strings.TrimSpace(p.RunID) == "" && strings.TrimSpace(p.RunSessionID) == "" && strings.TrimSpace(p.ParentSessionID) == "" && p.StartedAt == 0 && p.CompletedAt == 0 && strings.TrimSpace(p.Notes) == "" && strings.TrimSpace(p.Report) == "" && strings.TrimSpace(p.Result) == "" && len(p.ChangedFiles) == 0 && len(p.Validation) == 0 && len(p.Operations) == 0
 }
 
 func ApplyPlanDocumentPatch(planID, title string, existing *pebblestore.SessionPlanDocument, patch PlanDocumentPatch) (*pebblestore.SessionPlanDocument, error) {

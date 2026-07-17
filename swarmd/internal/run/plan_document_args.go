@@ -108,7 +108,7 @@ func planManageApprovedArgumentKeys(action string) map[string]bool {
 		}
 	}
 	if planManageActionUsesDocumentPatch(action) {
-		add("plan", "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "subtask", "subtask_id", "subtask_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "recommendation")
+		add("plan", "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "subtask", "subtask_id", "subtask_ids", "subtask_order", "complete_checkpoint", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "recommendation")
 		return keys
 	}
 	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(action)), "-", "_") {
@@ -150,7 +150,9 @@ func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumen
 		CheckpointID:       strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_id"), mapString(args, "id"))),
 		CheckpointOrder:    mapStringSlice(args, "checkpoint_order"),
 		SubtaskID:          strings.TrimSpace(mapString(args, "subtask_id")),
+		SubtaskIDs:         mapStringSlice(args, "subtask_ids"),
 		SubtaskOrder:       mapStringSlice(args, "subtask_order"),
+		CompleteCheckpoint: mapBool(args, "complete_checkpoint"),
 		ActiveCheckpointID: strings.TrimSpace(firstNonEmptyString(mapString(args, "active_checkpoint_id"), mapString(args, "active_checkpoint"))),
 		Status:             strings.TrimSpace(firstNonEmptyString(mapString(args, "status"), mapString(args, "outcome"))),
 		AttemptID:          strings.TrimSpace(mapString(args, "attempt_id")),
@@ -253,7 +255,7 @@ func planDocumentActionUsesStatusForDocument(action string) bool {
 }
 
 func planDocumentPatchArgsPresent(args map[string]any) bool {
-	keys := []string{"document_patch", "document_operation", "info", "execution_policy", "execution_state", "checkpoint", "checkpoint_id", "checkpoint_order", "subtask", "subtask_id", "subtask_order", "active_checkpoint_id", "active_checkpoint", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "notes", "report", "result", "changed_files", "validation", "operations"}
+	keys := []string{"document_patch", "document_operation", "info", "execution_policy", "execution_state", "checkpoint", "checkpoint_id", "checkpoint_order", "subtask", "subtask_id", "subtask_ids", "subtask_order", "complete_checkpoint", "active_checkpoint_id", "active_checkpoint", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "notes", "report", "result", "changed_files", "validation", "operations"}
 	for _, key := range keys {
 		value, ok := args[key]
 		if !ok {

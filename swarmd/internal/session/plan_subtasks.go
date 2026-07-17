@@ -142,19 +142,53 @@ func completePlanCheckpointSubtask(doc *pebblestore.SessionPlanDocument, op Plan
 	if err != nil {
 		return err
 	}
-	id := strings.TrimSpace(firstNonBlank(op.SubtaskID, subtaskID(op.Subtask), checkpoint.ActiveSubtaskID))
-	idx := findPlanSubtaskIndex(checkpoint, id)
-	if idx < 0 {
-		return fmt.Errorf("checkpoint %q subtask %q was not found", checkpoint.ID, id)
+	ids := append([]string(nil), op.SubtaskIDs...)
+	if len(ids) == 0 {
+		ids = []string{firstNonBlank(op.SubtaskID, subtaskID(op.Subtask), checkpoint.ActiveSubtaskID)}
 	}
-	checkpoint.Subtasks[idx].Status = PlanSubtaskStatusCompleted
-	checkpoint.Subtasks[idx].CompletedAt = op.CompletedAt
-	if strings.TrimSpace(op.Result) != "" {
-		checkpoint.Subtasks[idx].Result = strings.TrimSpace(op.Result)
+	indexes := make([]int, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, rawID := range ids {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			return errors.New("complete_subtask requires subtask_id, subtask_ids, or active_subtask_id")
+		}
+		if seen[id] {
+			return fmt.Errorf("complete_subtask subtask_ids contains duplicate %q", id)
+		}
+		seen[id] = true
+		idx := findPlanSubtaskIndex(checkpoint, id)
+		if idx < 0 {
+			return fmt.Errorf("checkpoint %q subtask %q was not found", checkpoint.ID, id)
+		}
+		indexes = append(indexes, idx)
+	}
+	if op.CompleteCheckpoint {
+		for _, subtask := range checkpoint.Subtasks {
+			if subtask.Status == PlanSubtaskStatusCompleted || seen[subtask.ID] {
+				continue
+			}
+			return fmt.Errorf("cannot complete checkpoint %q while subtask %q is %q; include every finished subtask in subtask_ids or keep checkpoint progress open", checkpoint.ID, subtask.ID, subtask.Status)
+		}
+	}
+	for _, idx := range indexes {
+		checkpoint.Subtasks[idx].Status = PlanSubtaskStatusCompleted
+		checkpoint.Subtasks[idx].CompletedAt = op.CompletedAt
+		if strings.TrimSpace(op.Result) != "" {
+			checkpoint.Subtasks[idx].Result = strings.TrimSpace(op.Result)
+		}
 	}
 	checkpoint.ActiveSubtaskID = ""
-	for offset := 1; offset < len(checkpoint.Subtasks); offset++ {
-		i := (idx + offset) % len(checkpoint.Subtasks)
+	if op.CompleteCheckpoint {
+		_, err := ApplyPlanCheckpointOutcome(doc, PlanCheckpointOutcomeOptions{
+			CheckpointID: checkpoint.ID, Outcome: PlanCheckpointStatusCompleted,
+			AttemptID: op.AttemptID, RunID: op.RunID, SessionID: op.RunSessionID, ParentSessionID: op.ParentSessionID,
+			Report: op.Report, Result: op.Result, ChangedFiles: op.ChangedFiles, Validation: op.Validation,
+			Recommendation: op.Recommendation, StartedAt: op.StartedAt, CompletedAt: op.CompletedAt,
+		})
+		return err
+	}
+	for i := range checkpoint.Subtasks {
 		if checkpoint.Subtasks[i].Status == PlanSubtaskStatusPending {
 			checkpoint.Subtasks[i].Status = PlanSubtaskStatusInProgress
 			checkpoint.Subtasks[i].StartedAt = op.CompletedAt

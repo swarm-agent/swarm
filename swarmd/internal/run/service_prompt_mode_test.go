@@ -123,10 +123,10 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 	prompt := masterHarnessPrompt("/workspace")
 
 	for _, want := range []string{
-		"For multi-step implementation work, use plan_manage complete_subtask immediately after each genuinely completed typed subtask",
-		"interleave implementation with one complete_subtask call at each genuine task boundary",
-		"must not substitute for those visible intermediate transitions",
-		"safety fallback, not the normal multi-task progress path",
+		"For multi-step implementation work, keep durable task state current",
+		"batch all tasks completed since the last update with subtask_ids",
+		"combine the final task transitions and checkpoint completion via complete_subtask complete_checkpoint=true",
+		"do not waste a second tool call",
 		"discovery do not count as completed task progress by themselves",
 		"single concrete task, skip intermediate progress churn",
 		"Preserve manage_todos as the user-owned workspace todo surface",

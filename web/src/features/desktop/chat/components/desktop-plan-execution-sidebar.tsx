@@ -162,8 +162,10 @@ function CheckpointDetails({
     return null;
   }
 
-  const primaryTasks = tasks.slice(0, 3);
-  const additionalTasks = tasks.slice(3);
+  const activeTasks = tasks.filter((task) => task.active && task.checked !== true);
+  const pendingTasks = tasks.filter((task) => !task.active && task.checked !== true);
+  const completedTasks = tasks.filter((task) => task.checked === true);
+  const visibleTasks = [...activeTasks, ...pendingTasks];
   const renderTask = (task: (typeof tasks)[number], index: number) => (
     <li
       key={`${index}:${task.text}`}
@@ -198,23 +200,27 @@ function CheckpointDetails({
       <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">
         Tasks
       </div>
-      <div className="mt-1.5" data-plan-task-list>
-        <ul className="grid gap-1.5">
-          {primaryTasks.map(renderTask)}
-        </ul>
-        {additionalTasks.length > 0 ? (
-          <details className="group mt-1.5" data-plan-task-expansion>
+      <div className="mt-1.5" data-plan-task-list data-plan-task-mode="smart">
+        {visibleTasks.length > 0 ? (
+          <ul className="grid gap-1.5">
+            {visibleTasks.map(renderTask)}
+          </ul>
+        ) : (
+          <div className="text-[var(--app-text-subtle)]">All tasks completed</div>
+        )}
+        {completedTasks.length > 0 ? (
+          <details className="group mt-2 border-t border-[var(--app-border)] pt-1.5" data-plan-task-expansion data-plan-completed-tasks>
             <summary className="flex cursor-pointer list-none items-center gap-1 py-1 text-[10px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text-muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)] [&::-webkit-details-marker]:hidden">
               <ChevronDown
                 aria-hidden="true"
                 className="size-3 shrink-0 transition-transform group-open:rotate-180"
                 data-plan-task-chevron
               />
-              Show {additionalTasks.length} more
+              {completedTasks.length} completed
             </summary>
             <ul className="mt-1 grid gap-1.5">
-              {additionalTasks.map((task, index) =>
-                renderTask(task, index + primaryTasks.length),
+              {completedTasks.map((task, index) =>
+                renderTask(task, index + visibleTasks.length),
               )}
             </ul>
           </details>

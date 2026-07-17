@@ -62,21 +62,22 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	if !strings.Contains(text, "Execute exactly one checkpoint: cp-2") {
 		t.Fatalf("prompt missing one-checkpoint assignment: %s", text)
 	}
-	if !strings.Contains(text, "complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed") {
+	if !strings.Contains(text, "a final complete_subtask call with complete_checkpoint=true, mark_needs_review, mark_blocked, or mark_failed") {
 		t.Fatalf("prompt missing terminal outcome instruction: %s", text)
 	}
 	for _, want := range []string{
 		"Use plan_manage as the only checkpoint lifecycle surface",
 		"Do not use manage_todos for agent self-tracking",
 		"Do not call plan_manage update_checkpoint",
-		"interleave implementation with complete_subtask immediately after each task is concretely complete",
-		"durable transition advances the next task and makes live client state visible",
+		"pass subtask_ids to atomically record every task completed since the last progress call",
+		"transition advances the next task and makes live client state visible",
 		"Do not call complete_subtask for discovery-only activity or for a single-step checkpoint",
 		"Do not call start_session_checkpoint or request_followup_checkpoint from this checkpoint run",
 		"Always include the current checkpoint_id from the payload",
-		"complete_checkpoint is the single successful terminal checkpoint outcome",
-		"safety fallback, not a substitute for task-by-task progress updates",
-		"complete_checkpoint may continue to the next checkpoint only if backend execution policy allows it",
+		"setting complete_checkpoint=true on the final complete_subtask call",
+		"use it to avoid a redundant second tool call",
+		"If the checkpoint is not done, record only the completed subset and keep working",
+		"The backend alone decides whether completion continues to a next checkpoint",
 		"Keep implementing until every acceptance criterion is met whenever the remaining gap is resolvable",
 		"a missing interface or API, scope growth, uncertainty, or an incomplete/failed first approach is implementation work",
 		"Use mark_needs_review only when user or audit judgment is inherently required",

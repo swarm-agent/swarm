@@ -84,11 +84,8 @@ function bashOutputText(toolMessage: StructuredToolMessage): string {
   return joinBashOutputParts(parts) || data.outputText || data.completedOutput || toolMessage.output || toolMessage.completedOutput || "";
 }
 
-function bashCopyText(command: string, output: string): string {
-  const parts: string[] = [];
-  if (command) parts.push(`$ ${command}`);
-  if (output) parts.push(output);
-  return parts.join("\n\n");
+export function bashCopyText(output: string): string {
+  return output;
 }
 
 function bashStatusLabel(state: ToolState): string {
@@ -126,7 +123,7 @@ function BashToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToo
   const StateIcon = state === "error" ? XCircle : state === "running" ? LoaderCircle : CheckCircle2;
   const command = toolMessage.bashData?.command || toolMessage.commandText;
   const output = useMemo(() => bashOutputText(toolMessage), [toolMessage]);
-  const copyPayload = useMemo(() => bashCopyText(command, output), [command, output]);
+  const copyPayload = useMemo(() => bashCopyText(output), [output]);
   const outputRef = useRef<HTMLDivElement | null>(null);
   const userScrolledAwayRef = useRef(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -226,7 +223,7 @@ function BashToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToo
               className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--app-border)] px-2 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface)] disabled:cursor-not-allowed disabled:opacity-50"
               onClick={handleCopy}
               disabled={!copyPayload}
-              aria-label="Copy Bash command and output"
+              aria-label="Copy Bash output"
             >
               <Copy size={12} className="shrink-0" />
               <span className="hidden sm:inline">{copied ? "Copied" : "Copy"}</span>

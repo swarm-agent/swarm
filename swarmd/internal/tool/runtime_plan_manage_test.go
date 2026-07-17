@@ -113,8 +113,13 @@ func TestToolDefinitionsRouteAgentProgressToPlanManageNotManageTodos(t *testing.
 		t.Fatalf("plan_manage properties type = %T", planDefinition.Parameters["properties"])
 	}
 	planActionDescription, _ := planParams["action"].(map[string]any)["description"].(string)
-	if !containsAll(planActionDescription, "complete_subtask immediately after each genuinely completed typed subtask", "discovery-only work", "single-step checkpoints", "complete_checkpoint is the single successful terminal outcome", "safety fallback", "not routine agent progress/checklist transitions") {
-		t.Fatalf("plan_manage action description %q does not define task-by-task progress transitions", planActionDescription)
+	if !containsAll(planActionDescription, "pass subtask_ids to batch every task completed since the last update", "discovery-only work", "single-step checkpoints", "set complete_checkpoint=true", "instead of making a second call", "not routine agent progress/checklist transitions") {
+		t.Fatalf("plan_manage action description %q does not define smart batched progress transitions", planActionDescription)
+	}
+	for _, name := range []string{"subtask_id", "subtask_ids", "complete_checkpoint"} {
+		if _, ok := planParams[name].(map[string]any); !ok {
+			t.Fatalf("plan_manage %s property missing or wrong type: %T", name, planParams[name])
+		}
 	}
 	checkpointDescription, _ := planParams["checkpoint"].(map[string]any)["description"].(string)
 	if !containsAll(checkpointDescription, "tasks", "notes", "agent progress/checklist") {

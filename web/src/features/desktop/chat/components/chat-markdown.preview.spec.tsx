@@ -1,6 +1,6 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TASK_ELAPSED_TICK_MS, ToolMessageView } from "./chat-markdown";
+import { TASK_ELAPSED_TICK_MS, ToolMessageView, bashCopyText } from "./chat-markdown";
 import { buildStructuredToolMessage } from "../services/tool-message";
 
 function assert(condition: boolean, message: string): void {
@@ -157,6 +157,13 @@ function testTaskTerminalTimerUsesFinalElapsed(): void {
   assert(!markup.includes("child child-visible"), "task rows should not render child session ids");
 }
 
+function testBashCopyUsesOutputOnly(): void {
+  const output = "public-result\nsecond-line";
+
+  const copyPayload = bashCopyText(output);
+  assert(copyPayload === output, "bash copy should preserve only the exact command output");
+}
+
 function testBashToolUsesDedicatedFullWidthCard(): void {
   const command = "for i in {1..80}; do echo line-$i; done";
   const output = Array.from({ length: 80 }, (_, index) => `line-${index + 1}`).join("\n");
@@ -171,6 +178,7 @@ function testBashToolUsesDedicatedFullWidthCard(): void {
 
   const markup = renderToolMarkup(message!);
   assert(markup.includes("Copy"), "bash card should include copy control");
+  assert(markup.includes('aria-label="Copy Bash output"'), "bash copy control should identify output as its only payload");
   assert(markup.includes("max-height"), "bash output should render in a bounded scroll container");
   assert(markup.includes("overflow-auto"), "bash output should be scrollable");
   assert(markup.includes("line-80"), "bash card should render final output line without data truncation");
@@ -313,6 +321,7 @@ function main(): void {
   testTaskRunningTimerUsesStartTimestamp();
   testTaskTerminalTimerUsesFinalElapsed();
   testTaskElapsedClockUsesDisplayCadence();
+  testBashCopyUsesOutputOnly();
   testBashToolUsesDedicatedFullWidthCard();
   testManageSessionsUsesRelativeDesktopNavigation();
   testManageSessionsDeployRendersNavigableResultsAndHonestFailures();

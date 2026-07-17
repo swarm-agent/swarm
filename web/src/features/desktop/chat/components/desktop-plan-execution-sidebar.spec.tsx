@@ -326,19 +326,20 @@ test("active checkpoint heading has balanced spacing before Progress", () => {
   assert.match(markup, /class="mt-2" data-plan-progress/);
 });
 
-test("checkpoint sidebar shows three full tasks without scrolling before an expandable remainder", () => {
+test("checkpoint sidebar smart ordering keeps current work visible and completed tasks collapsed at the bottom", () => {
   const base = view();
   const longTask =
     "Render the complete task text even when it is long enough that the old sidebar would have truncated it";
   base.activeCheckpoint = {
     ...base.activeCheckpoint!,
-    tasks: [
-      "[x] Persist task changes",
-      "[ ] Render sidebar state",
-      "Keep the layout compact",
-      longTask,
-      "Reveal the fifth task",
-      "Reveal the sixth task",
+    activeSubtaskId: "task-2",
+    subtasks: [
+      { id: "task-1", title: "Persist task changes", status: "completed", notes: "", result: "", startedAt: 1, completedAt: 2, order: 1 },
+      { id: "task-2", title: "Render sidebar state", status: "in_progress", notes: "", result: "", startedAt: 2, completedAt: 0, order: 2 },
+      { id: "task-3", title: "Keep the layout compact", status: "pending", notes: "", result: "", startedAt: 0, completedAt: 0, order: 3 },
+      { id: "task-4", title: longTask, status: "pending", notes: "", result: "", startedAt: 0, completedAt: 0, order: 4 },
+      { id: "task-5", title: "Reveal the fifth task", status: "pending", notes: "", result: "", startedAt: 0, completedAt: 0, order: 5 },
+      { id: "task-6", title: "Reveal the sixth task", status: "pending", notes: "", result: "", startedAt: 0, completedAt: 0, order: 6 },
     ],
   };
   base.plan.document.checkpoints = [base.activeCheckpoint];
@@ -351,18 +352,19 @@ test("checkpoint sidebar shows three full tasks without scrolling before an expa
     />,
   );
 
-  assert.match(markup, /Tasks/);
+  assert.match(markup, />Tasks</);
   assert.match(markup, /Persist task changes/);
   assert.match(markup, /Render sidebar state/);
   assert.match(markup, new RegExp(longTask));
-  assert.match(markup, /data-plan-task-list=""/);
+  assert.match(markup, /data-plan-task-list="" data-plan-task-mode="smart"/);
   assert.doesNotMatch(markup, /data-plan-task-list=""[^>]*(?:overflow-y-auto|max-h-)/);
-  assert.match(markup, /data-plan-task-expansion=""/);
+  assert.match(markup, /data-plan-task-expansion="" data-plan-completed-tasks=""/);
   assert.match(markup, /data-plan-task-chevron=""/);
-  assert.match(markup, /<summary[^>]*>.*Show 3 more.*<\/summary>/);
+  assert.match(markup, /<summary[^>]*>.*1 completed.*<\/summary>/);
   assert.ok(
-    markup.indexOf(longTask) > markup.indexOf("Show 3 more"),
-    "expected the fourth task only inside the collapsed expansion",
+    markup.indexOf("Render sidebar state") < markup.indexOf("1 completed") &&
+      markup.indexOf("Persist task changes") > markup.indexOf("1 completed"),
+    "expected incomplete work above the bottom completed-task collapse",
   );
   assert.match(markup, /Reveal the fifth task/);
   assert.match(markup, /Reveal the sixth task/);

@@ -2236,7 +2236,14 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 				payload["validation"] = trimStringSliceForPrompt(documentPatch.Validation)
 			}
 		}
-		addPlanExecutionPayloadFields(payload, action, plan.Document)
+		executionAction := action
+		if action == "complete_subtask" && documentPatch != nil && documentPatch.CompleteCheckpoint {
+			executionAction = "complete_checkpoint"
+			payload["requested_action"] = action
+			payload["action"] = executionAction
+			payload["checkpoint_completed"] = true
+		}
+		addPlanExecutionPayloadFields(payload, executionAction, plan.Document)
 		return marshalPlanManagePayload(payload)
 	case "new":
 		if document, err := planDocumentFromArgs(args); err != nil {
