@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/cockroachdb/pebble"
 )
@@ -16,6 +17,7 @@ type Store struct {
 	db               *pebble.DB
 	path             string
 	sessionMutations *sessionMutationCoordinator
+	modelProfilesMu  sync.Mutex
 }
 
 func Open(path string) (*Store, error) {

@@ -40,6 +40,8 @@ const (
 	KeyModelPrefAccountPrefix                      = "model_pref/account/"
 	KeyModelFavoritePrefix                         = "model_favorite/" // legacy global favorite prefix; retained for explicit migration only.
 	KeyModelFavoriteAccountPrefix                  = "model_favorite/account/"
+	KeyModelProfileAccountPrefix                   = "model_profile/account/"
+	KeyModelProfileNameAccountPrefix               = "model_profile/name_by_account/"
 	KeyWorktreeGlobalConfig                        = "worktree/global/config"
 	KeyWorktreeConfigPrefix                        = "worktree/config/" // legacy single-workspace config prefix; retained for migration.
 	KeyWorktreeConfigAccountPrefix                 = "worktree/config_by_account/"
@@ -188,6 +190,30 @@ func ModelFavoritePrefixForAccount(accountScopeID, providerID string) string {
 		return fmt.Sprintf("%s%s/", KeyModelFavoriteAccountPrefix, accountPart)
 	}
 	return fmt.Sprintf("%s%s/%s/", KeyModelFavoriteAccountPrefix, accountPart, providerPart)
+}
+
+func KeyModelProfileForAccount(accountScopeID, profileID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyModelProfileAccountPrefix, keyPart(accountScopeID), keyPart(profileID))
+}
+
+func ModelProfilePrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyModelProfileAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyModelProfileAccountPrefix, accountPart)
+}
+
+func KeyModelProfileNameForAccount(accountScopeID, normalizedName string) string {
+	return fmt.Sprintf("%s%s/%s", KeyModelProfileNameAccountPrefix, keyPart(accountScopeID), keyPart(normalizedName))
+}
+
+func ModelProfileNamePrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyModelProfileNameAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyModelProfileNameAccountPrefix, accountPart)
 }
 
 func IdentityPrefix() string {
