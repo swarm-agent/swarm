@@ -33,6 +33,7 @@ const document = normalizeStructuredPlanDocument({
 });
 if (!document) throw new Error("expected normalized plan document");
 
+const source = readFileSync(fileURLToPath(new URL("./desktop-plan-agent-sidecar.tsx", import.meta.url)), "utf8");
 const markup = renderToStaticMarkup(
   <DesktopPlanAgentSidecar
     parentSessionId="parent-1"
@@ -58,15 +59,16 @@ assert.match(markup, /aria-label="Send to Plan"/, "idle real session should expo
 assert.match(markup, /aria-label="Start microphone dictation"/, "Plan composer should expose the canonical microphone affordance");
 assert.match(markup, /aria-label="Context window unavailable"/, "Plan composer should expose the real compact/context control before usage arrives");
 assert.match(markup, /data-testid="desktop-plan-composer"/, "expected dedicated Plan composer wrapper");
-assert.match(markup, /border-t[^\"]*bg-\[var\(--app-surface\)\][^\"]*data-testid="desktop-plan-composer"/, "Plan composer should share the canonical chat composer boundary");
+assert.match(markup, /class="[^\"]*border-t[^\"]*bg-\[var\(--app-surface\)\]" data-testid="desktop-plan-composer"/, "Plan composer should share the canonical chat composer boundary");
 assert.doesNotMatch(markup, /data-testid="desktop-plan-composer"[^>]*pb-1\.5/, "Plan composer should not be taller than the canonical chat composer");
-assert.match(markup, /border-y border-\[var\(--app-border-strong\)\][^\"]*px-4 py-2/, "Plan composer control separator should align with the canonical chat composer control line");
+assert.match(markup, /min-w-0 items-center justify-between gap-2 overflow-hidden bg-transparent px-4 py-3 text-\[11px\]/, "Plan control row should use the canonical chat padding for the matched 311×144 geometry");
+assert.doesNotMatch(markup, /border-y border-\[var\(--app-border-strong\)\]/, "Plan control row should not add a separator absent from the canonical chat composer");
+assert.match(source, /className=\{dictationEnabled[\s\S]*inline-flex h-9 w-9[\s\S]*className="h-10 w-10 shrink-0 rounded-lg p-0"/, "Plan microphone and send controls should match the canonical chat control heights");
 assert.match(markup, /!min-h-\[32px\][\s\S]*sm:!min-h-\[56px\][\s\S]*lg:!min-h-\[52px\]/, "Plan input should use canonical chat baseline heights");
 assert.match(markup, /max-h-\[50vh\][\s\S]*resize-none[\s\S]*overflow-y-hidden/, "Plan input should grow upward before scrolling");
 assert.doesNotMatch(markup, /ChatMarkdown/, "sidechat must reuse canonical Desktop V3 render items rather than a custom message renderer");
 assert.doesNotMatch(markup, /Parent conversation context for this plan review/, "raw parent context must not render");
 
-const source = readFileSync(fileURLToPath(new URL("./desktop-plan-agent-sidecar.tsx", import.meta.url)), "utf8");
 assert.match(source, /event\.key !== "Enter" \|\| event\.shiftKey \|\| event\.nativeEvent\.isComposing/, "Enter should submit while Shift+Enter and IME composition preserve multiline input");
 assert.match(source, /if \(!textarea\.value\)[\s\S]*removeProperty\("height"\)[\s\S]*textarea\.style\.height = "auto"[\s\S]*Math\.min\(textarea\.scrollHeight, viewportMaxHeight\)/, "Plan textarea should keep its baseline while empty and auto-grow only from typed content");
 assert.match(source, /speechRecognitionConstructor\(\)[\s\S]*recognition\.onresult[\s\S]*setDraft\(appendDictation/, "Plan microphone should feed browser dictation into the draft");

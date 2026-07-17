@@ -333,7 +333,7 @@ export function DesktopPlanAgentSidecar({
                   />
                 </div>
               </div>
-              <div className="flex items-center justify-between gap-2 border-y border-[var(--app-border-strong)] px-4 py-2">
+              <div className="flex min-w-0 items-center justify-between gap-2 overflow-hidden bg-transparent px-4 py-3 text-[11px]">
                 <DesktopV3CompactButton
                   contextLabel={contextLabel}
                   contextTooltip={contextTooltip}
@@ -350,7 +350,7 @@ export function DesktopPlanAgentSidecar({
                     title={dictationSupported ? (dictationEnabled ? "Stop dictation" : "Start dictation") : "Speech recognition is not available in this browser"}
                     className={dictationEnabled ? "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-primary-text)]" : "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-surface)] text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"}
                   ><Mic size={15} className={dictationEnabled ? "animate-pulse" : undefined} /></button>
-                  <Button type="button" size="sm" className="h-9 w-9 shrink-0 rounded-lg p-0" disabled={activeRun ? !sidechat.runtimeSwarmId : sidechat.busy || !draft.trim() || !sidechat.sessionId} aria-label={activeRun ? "Stop Plan" : "Send to Plan"} onClick={() => activeRun ? void stop() : void send()}>
+                  <Button type="button" size="sm" className="h-10 w-10 shrink-0 rounded-lg p-0" disabled={activeRun ? !sidechat.runtimeSwarmId : sidechat.busy || !draft.trim() || !sidechat.sessionId} aria-label={activeRun ? "Stop Plan" : "Send to Plan"} onClick={() => activeRun ? void stop() : void send()}>
                     {activeRun ? <Square size={16} /> : sidechat.busy ? <Loader2 size={16} className="animate-spin" /> : <Send size={17} />}
                   </Button>
                 </div>
