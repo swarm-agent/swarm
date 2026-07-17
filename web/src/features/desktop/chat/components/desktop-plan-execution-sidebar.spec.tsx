@@ -3,6 +3,7 @@ import type { ReactElement, ReactNode } from "react";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 
 import { DesktopPlanExecutionSidebar } from "./desktop-plan-execution-sidebar";
 import type { DesktopPlanExecutionSidebarActionInput } from "./desktop-plan-execution-sidebar";
@@ -299,12 +300,13 @@ test("plan sidebar renders a flat sectioned layout with session content below Ac
   assert.match(html, /data-plan-scroll-region=""/);
   assert.match(
     html,
-    /class="border-t[^\"]*flex min-h-0 flex-col overflow-hidden" data-plan-section="session"/,
+    /class="border-t[^\"]*flex min-h-\[160px\] flex-1 flex-col overflow-hidden" data-plan-section="session"/,
   );
-  assert.doesNotMatch(
+  assert.match(
     html,
-    /class="border-t[^\"]*flex min-h-0 flex-1 flex-col overflow-hidden" data-plan-section="session"/,
+    /data-plan-scroll-region=""/,
   );
+  assert.match(html, /shrink basis-auto overflow-y-auto/);
   assert.doesNotMatch(html, /max-h-\[40%\]/);
   assert.doesNotMatch(html, /shadow-\[0_12px_34px/);
   assert.ok(html.indexOf("Actions") < html.indexOf("Scoped Git changes"));
@@ -326,7 +328,7 @@ test("active checkpoint heading has balanced spacing before Progress", () => {
   assert.match(markup, /class="mt-2" data-plan-progress/);
 });
 
-test("checkpoint sidebar smart ordering keeps current work visible and completed tasks collapsed at the bottom", () => {
+test("checkpoint sidebar bounds overflow while prioritizing active work and preserving full task text", () => {
   const base = view();
   const longTask =
     "Render the complete task text even when it is long enough that the old sidebar would have truncated it";
@@ -353,27 +355,74 @@ test("checkpoint sidebar smart ordering keeps current work visible and completed
   );
 
   assert.match(markup, />Tasks</);
-  assert.match(markup, /Persist task changes/);
   assert.match(markup, /Render sidebar state/);
   assert.match(markup, new RegExp(longTask));
-  assert.match(markup, /data-plan-task-list="" data-plan-task-mode="smart"/);
-  assert.doesNotMatch(markup, /data-plan-task-list=""[^>]*(?:overflow-y-auto|max-h-)/);
+  assert.match(markup, /data-plan-task-mode="bounded"/);
+  assert.match(markup, /data-plan-task-viewport=""/);
+  assert.match(markup, /style="max-height:88px"/);
+  assert.match(markup, /data-plan-visible-tasks=""/);
+  assert.match(markup, /data-plan-task-active="true"/);
   assert.match(markup, /data-plan-task-expansion="" data-plan-completed-tasks=""/);
   assert.match(markup, /data-plan-task-chevron=""/);
-  assert.match(markup, /<summary[^>]*>.*1 completed.*<\/summary>/);
+  assert.match(markup, /aria-expanded="false"/);
+  assert.match(markup, /aria-controls="desktop-plan-overflow-tasks"/);
+  assert.match(markup, /Show 3 more tasks and 1 completed/);
   assert.ok(
-    markup.indexOf("Render sidebar state") < markup.indexOf("1 completed") &&
-      markup.indexOf("Persist task changes") > markup.indexOf("1 completed"),
-    "expected incomplete work above the bottom completed-task collapse",
+    markup.indexOf("Render sidebar state") < markup.indexOf("Keep the layout compact"),
+    "expected active work before pending work",
   );
-  assert.match(markup, /Reveal the fifth task/);
-  assert.match(markup, /Reveal the sixth task/);
-  assert.match(markup, /checked=""/);
-  assert.match(markup, /type="checkbox"/);
+  assert.match(markup, /overflow-y-auto/);
   assert.match(markup, /break-words \[overflow-wrap:anywhere\]/);
   assert.doesNotMatch(markup, /\[x\] Persist task changes/);
   assert.doesNotMatch(markup, /\[ \] Render sidebar state/);
-  assert.doesNotMatch(markup, /more in full plan/);
+  assert.match(markup, /Open full plan/);
+});
+
+test("pending-only overflow always exposes a keyboard-accessible chevron disclosure", () => {
+  const base = view();
+  base.activeCheckpoint = {
+    ...base.activeCheckpoint!,
+    activeSubtaskId: "task-3",
+    subtasks: [1, 2, 3, 4, 5, 6].map((order) => ({
+      id: `task-${order}`,
+      title: order === 3 ? "Active task must stay visible" : `Pending task ${order}`,
+      status: order === 3 ? "in_progress" : "pending",
+      notes: "",
+      result: "",
+      startedAt: order === 3 ? 1 : 0,
+      completedAt: 0,
+      order,
+    })),
+  };
+  base.plan.document.checkpoints = [base.activeCheckpoint];
+
+  const markup = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar view={base} onAction={() => undefined} />,
+  );
+
+  assert.match(markup, /Active task must stay visible/);
+  assert.match(markup, /data-plan-task-active="true"/);
+  assert.match(markup, /data-plan-task-expansion=""/);
+  assert.doesNotMatch(markup, /data-plan-completed-tasks/);
+  assert.match(markup, /<button[^>]*type="button"[^>]*aria-expanded="false"/);
+  assert.match(markup, /data-plan-task-chevron=""/);
+  assert.match(markup, /Show 4 more tasks/);
+});
+
+test("Git integration reserves a visible bounded region below the plan", () => {
+  const sidebarSource = readFileSync(
+    new URL("./desktop-v3-existing-conversation-pane.tsx", import.meta.url),
+    "utf8",
+  );
+  const appPageSource = readFileSync(
+    new URL("../../layout/desktop-app-page.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(sidebarSource, /data-plan-sidebar-column/);
+  assert.match(sidebarSource, /hidden min-h-0 min-w-0 overflow-hidden xl:flex xl:flex-col/);
+  assert.match(appPageSource, /data-plan-git-layout="protected"/);
+  assert.match(appPageSource, /min-h-\[160px\][^'\"]*flex-1[^'\"]*overflow-hidden/);
 });
 
 test("automatic checkpointed mode sidebar actions section explains continuation and exposes backend policy toggle", () => {

@@ -1,4 +1,11 @@
-import { memo, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { ChevronDown } from "lucide-react";
 import { cn } from "../../../../lib/cn";
 import { Button } from "../../../../components/ui/button";
@@ -142,37 +149,154 @@ function checkpointTaskView(value: string): CheckpointTaskView {
   };
 }
 
+const DEFAULT_VISIBLE_PENDING_TASKS = 1;
+const MIN_TASK_VIEWPORT_HEIGHT = 88;
+const MAX_TASK_VIEWPORT_HEIGHT = 240;
+
+type SidebarTask = CheckpointTaskView & { active: boolean };
+
+function taskViewportHeight(sidebarHeight: number): number {
+  return Math.max(
+    MIN_TASK_VIEWPORT_HEIGHT,
+    Math.min(MAX_TASK_VIEWPORT_HEIGHT, Math.floor(sidebarHeight * 0.28)),
+  );
+}
+
 function CheckpointDetails({
   checkpoint,
 }: {
   checkpoint?: DesktopSessionPlanCheckpoint;
 }) {
-  if (!checkpoint) return null;
-  const tasks = (checkpoint.subtasks?.length ?? 0) > 0
-    ? checkpoint.subtasks!.map((subtask) => ({
-        text: subtask.title,
-        checked: subtask.status.toLowerCase() === "completed",
-        active: subtask.id === checkpoint.activeSubtaskId || subtask.status.toLowerCase() === "in_progress",
-      }))
-    : checkpoint.tasks
-        .map(checkpointTaskView)
-        .filter((task) => task.text.length > 0)
-        .map((task) => ({ ...task, active: false }));
-  if (tasks.length === 0) {
-    return null;
-  }
+  const taskSectionRef = useRef<HTMLElement | null>(null);
+  const taskViewportRef = useRef<HTMLDivElement | null>(null);
+  const taskProbeRef = useRef<HTMLUListElement | null>(null);
+  const previousViewportHeightRef = useRef(0);
+  const [expanded, setExpanded] = useState(false);
+  const [viewportHeight, setViewportHeight] = useState(MIN_TASK_VIEWPORT_HEIGHT);
+  const [visiblePendingCount, setVisiblePendingCount] = useState(
+    DEFAULT_VISIBLE_PENDING_TASKS,
+  );
 
+  const tasks: SidebarTask[] = checkpoint
+    ? (checkpoint.subtasks?.length ?? 0) > 0
+      ? checkpoint.subtasks!.map((subtask) => ({
+          text: subtask.title,
+          checked: subtask.status.toLowerCase() === "completed",
+          active:
+            subtask.id === checkpoint.activeSubtaskId ||
+            subtask.status.toLowerCase() === "in_progress",
+        }))
+      : checkpoint.tasks
+          .map(checkpointTaskView)
+          .filter((task) => task.text.length > 0)
+          .map((task) => ({ ...task, active: false }))
+    : [];
+
+  const taskSignature = tasks
+    .map((task) => `${task.active}:${task.checked}:${task.text}`)
+    .join("\u0000");
   const activeTasks = tasks.filter((task) => task.active && task.checked !== true);
   const pendingTasks = tasks.filter((task) => !task.active && task.checked !== true);
   const completedTasks = tasks.filter((task) => task.checked === true);
-  const visibleTasks = [...activeTasks, ...pendingTasks];
-  const renderTask = (task: (typeof tasks)[number], index: number) => (
+  const reservedPendingCount = Math.min(
+    visiblePendingCount,
+    Math.max(0, pendingTasks.length - 1),
+  );
+  const visiblePendingTasks = pendingTasks.slice(0, reservedPendingCount);
+  const overflowPendingTasks = pendingTasks.slice(reservedPendingCount);
+  const visibleTasks = [...activeTasks, ...visiblePendingTasks];
+  const disclosureCount = overflowPendingTasks.length + completedTasks.length;
+
+  const updateTaskFit = useCallback(() => {
+    const viewport = taskViewportRef.current;
+    const probe = taskProbeRef.current;
+    if (!viewport || !probe) return;
+
+    const sidebar = viewport.closest<HTMLElement>(
+      '[data-testid="desktop-plan-execution-sidebar"]',
+    );
+    const sidebarHeight = sidebar?.clientHeight || window.innerHeight;
+    const sectionTop = taskSectionRef.current?.getBoundingClientRect().top ?? 0;
+    const sidebarTop = sidebar?.getBoundingClientRect().top ?? 0;
+    const availableBelowSection = Math.max(
+      MIN_TASK_VIEWPORT_HEIGHT,
+      sidebarHeight - Math.max(0, sectionTop - sidebarTop) - 60,
+    );
+    const nextViewportHeight = Math.min(
+      taskViewportHeight(sidebarHeight),
+      availableBelowSection,
+    );
+    if (
+      previousViewportHeightRef.current > 0 &&
+      nextViewportHeight < previousViewportHeightRef.current &&
+      expanded
+    ) {
+      setExpanded(false);
+    }
+    previousViewportHeightRef.current = nextViewportHeight;
+    setViewportHeight(nextViewportHeight);
+
+    const rows = Array.from(
+      probe.querySelectorAll<HTMLElement>("[data-plan-task-probe-row]"),
+    );
+    const activeHeight = rows
+      .slice(0, activeTasks.length)
+      .reduce((height, row) => height + row.getBoundingClientRect().height + 6, 0);
+    const disclosureHeight =
+      pendingTasks.length > 0 || completedTasks.length > 0 ? 30 : 0;
+    const availablePendingHeight = Math.max(
+      0,
+      nextViewportHeight - activeHeight - disclosureHeight,
+    );
+    let usedHeight = 0;
+    let nextVisiblePendingCount = 0;
+    for (const row of rows.slice(activeTasks.length)) {
+      const rowHeight = row.getBoundingClientRect().height + 6;
+      if (usedHeight + rowHeight > availablePendingHeight) break;
+      usedHeight += rowHeight;
+      nextVisiblePendingCount += 1;
+    }
+    if (activeTasks.length === 0 && pendingTasks.length > 0) {
+      nextVisiblePendingCount = Math.max(1, nextVisiblePendingCount);
+    }
+    setVisiblePendingCount(
+      Math.min(pendingTasks.length, nextVisiblePendingCount),
+    );
+  }, [
+    activeTasks.length,
+    expanded,
+    completedTasks.length,
+    pendingTasks.length,
+    taskSignature,
+    tasks.length,
+  ]);
+
+  useLayoutEffect(() => {
+    updateTaskFit();
+    const viewport = taskViewportRef.current;
+    const sidebar = viewport?.closest<HTMLElement>(
+      '[data-testid="desktop-plan-execution-sidebar"]',
+    );
+    const scrollRegion = viewport?.closest<HTMLElement>("[data-plan-scroll-region]");
+    if (!viewport || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(updateTaskFit);
+    observer.observe(viewport);
+    if (sidebar) observer.observe(sidebar);
+    if (scrollRegion) observer.observe(scrollRegion);
+    return () => observer.disconnect();
+  }, [updateTaskFit]);
+
+  if (tasks.length === 0) return null;
+
+  const renderTask = (task: SidebarTask, index: number, probe = false) => (
     <li
       key={`${index}:${task.text}`}
       className={cn(
         "flex min-w-0 items-start gap-2 leading-4",
         task.active && "font-medium text-[var(--app-primary)]",
       )}
+      data-plan-task-active={task.active ? "true" : undefined}
+      data-plan-task-probe-row={probe ? "" : undefined}
     >
       {task.checked === null ? (
         <span
@@ -195,36 +319,109 @@ function CheckpointDetails({
     </li>
   );
 
+  const disclosureLabel = expanded
+    ? "Hide additional tasks"
+    : overflowPendingTasks.length > 0
+      ? `Show ${overflowPendingTasks.length} more task${overflowPendingTasks.length === 1 ? "" : "s"}${completedTasks.length > 0 ? ` and ${completedTasks.length} completed` : ""}`
+      : `Show ${completedTasks.length} completed task${completedTasks.length === 1 ? "" : "s"}`;
+
   return (
-    <section className="mt-3 border-t border-[var(--app-border)] pt-3 text-xs text-[var(--app-text-muted)]">
+    <section
+      ref={taskSectionRef}
+      className="mt-3 min-h-0 border-t border-[var(--app-border)] pt-3 text-xs text-[var(--app-text-muted)]"
+    >
       <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">
         Tasks
       </div>
-      <div className="mt-1.5" data-plan-task-list data-plan-task-mode="smart">
+      <div
+        ref={taskViewportRef}
+        className="relative mt-1.5 flex min-h-0 flex-col overflow-hidden"
+        style={{ maxHeight: viewportHeight }}
+        data-plan-task-list
+        data-plan-task-mode="bounded"
+        data-plan-task-viewport
+      >
         {visibleTasks.length > 0 ? (
-          <ul className="grid gap-1.5">
-            {visibleTasks.map(renderTask)}
+          <ul
+            className={cn(
+              "grid min-h-0 gap-1.5 pr-1 [scrollbar-gutter:stable]",
+              activeTasks.length > 0 && visiblePendingTasks.length === 0
+                ? "overflow-y-auto"
+                : "shrink-0 overflow-hidden",
+            )}
+            data-plan-visible-tasks
+          >
+            {visibleTasks.map((task, index) => renderTask(task, index))}
           </ul>
         ) : (
-          <div className="text-[var(--app-text-subtle)]">All tasks completed</div>
+          <div className="shrink-0 text-[var(--app-text-subtle)]">
+            All tasks completed
+          </div>
         )}
-        {completedTasks.length > 0 ? (
-          <details className="group mt-2 border-t border-[var(--app-border)] pt-1.5" data-plan-task-expansion data-plan-completed-tasks>
-            <summary className="flex cursor-pointer list-none items-center gap-1 py-1 text-[10px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text-muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)] [&::-webkit-details-marker]:hidden">
+        {disclosureCount > 0 ? (
+          <div
+            className="mt-1.5 flex min-h-0 shrink-0 flex-col border-t border-[var(--app-border)] pt-1"
+            data-plan-task-expansion
+            data-plan-completed-tasks={completedTasks.length > 0 ? "" : undefined}
+          >
+            <button
+              type="button"
+              className="flex shrink-0 items-center gap-1 py-1 text-left text-[10px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text-muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)]"
+              aria-expanded={expanded}
+              aria-controls="desktop-plan-overflow-tasks"
+              onClick={() => setExpanded((current) => !current)}
+            >
               <ChevronDown
                 aria-hidden="true"
-                className="size-3 shrink-0 transition-transform group-open:rotate-180"
+                className={cn(
+                  "size-3 shrink-0 transition-transform",
+                  expanded && "rotate-180",
+                )}
                 data-plan-task-chevron
               />
-              {completedTasks.length} completed
-            </summary>
-            <ul className="mt-1 grid gap-1.5">
-              {completedTasks.map((task, index) =>
-                renderTask(task, index + visibleTasks.length),
-              )}
-            </ul>
-          </details>
+              {disclosureLabel}
+            </button>
+            {expanded ? (
+              <div
+                id="desktop-plan-overflow-tasks"
+                className="min-h-0 overflow-y-auto pb-1 pr-1 [scrollbar-gutter:stable]"
+                data-plan-task-overflow
+              >
+                {overflowPendingTasks.length > 0 ? (
+                  <ul className="mt-1 grid gap-1.5">
+                    {overflowPendingTasks.map((task, index) =>
+                      renderTask(task, index + visibleTasks.length),
+                    )}
+                  </ul>
+                ) : null}
+                {completedTasks.length > 0 ? (
+                  <div className="mt-2 border-t border-[var(--app-border)] pt-1.5">
+                    <div className="mb-1 text-[10px] font-medium text-[var(--app-text-subtle)]">
+                      {completedTasks.length} completed
+                    </div>
+                    <ul className="grid gap-1.5">
+                      {completedTasks.map((task, index) =>
+                        renderTask(
+                          task,
+                          index + visibleTasks.length + overflowPendingTasks.length,
+                        ),
+                      )}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         ) : null}
+        <ul
+          ref={taskProbeRef}
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 top-0 -z-10 grid gap-1.5 opacity-0"
+        >
+          {[...activeTasks, ...pendingTasks].map((task, index) =>
+            renderTask(task, index, true),
+          )}
+        </ul>
       </div>
     </section>
   );
@@ -775,7 +972,7 @@ export const DesktopPlanExecutionSidebar = memo(
       <aside
         className={embedded
           ? "min-h-0 min-w-0 w-full overflow-visible bg-[var(--app-surface)]"
-          : "hidden min-h-0 min-w-0 w-[360px] max-w-[360px] overflow-hidden border-l border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4 xl:flex xl:flex-col"}
+          : "hidden h-full min-h-0 min-w-0 w-[360px] max-w-[360px] flex-1 overflow-hidden border-l border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4 xl:flex xl:flex-col"}
         aria-label="Plan execution sidebar"
         data-testid="desktop-plan-execution-sidebar"
       >
@@ -795,7 +992,8 @@ export const DesktopPlanExecutionSidebar = memo(
           <div
             className={cn(
               "grid content-start gap-4",
-              !embedded && "shrink-0",
+              !embedded &&
+                "min-h-0 shrink basis-auto overflow-y-auto [scrollbar-gutter:stable]",
             )}
             data-plan-scroll-region
           >
@@ -819,7 +1017,8 @@ export const DesktopPlanExecutionSidebar = memo(
             <div
               className={cn(
                 "border-t border-[var(--app-border)] pt-4",
-                !embedded && "flex min-h-0 flex-col overflow-hidden",
+                !embedded &&
+                  "flex min-h-[160px] flex-1 flex-col overflow-hidden",
               )}
               data-plan-section="session"
             >
