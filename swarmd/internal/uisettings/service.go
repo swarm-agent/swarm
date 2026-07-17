@@ -66,6 +66,7 @@ type ChatSettings struct {
 	ShowCompactButton               bool                   `json:"show_compact_button"`
 	DefaultNewSessionMode           string                 `json:"default_new_session_mode,omitempty"`
 	FollowupCheckpointPolicyDefault string                 `json:"followup_checkpoint_policy_default,omitempty"`
+	ReviewAutoArchiveMinutes        int                    `json:"review_auto_archive_minutes"`
 	SidebarHideInactiveHours        int                    `json:"sidebar_hide_inactive_hours"`
 	DefaultWorkspaceRoutes          map[string]string      `json:"default_workspace_routes,omitempty"`
 	ToolStream                      ChatToolStreamSettings `json:"tool_stream,omitempty"`
@@ -223,6 +224,7 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 			ShowCompactButton:               record.Chat.ShowCompactButton,
 			DefaultNewSessionMode:           strings.TrimSpace(record.Chat.DefaultNewSessionMode),
 			FollowupCheckpointPolicyDefault: strings.TrimSpace(record.Chat.FollowupCheckpointPolicyDefault),
+			ReviewAutoArchiveMinutes:        record.Chat.ReviewAutoArchiveMinutes,
 			SidebarHideInactiveHours:        *record.Chat.SidebarHideInactiveHours,
 			DefaultWorkspaceRoutes:          cloneMap(record.Chat.DefaultWorkspaceRoutes),
 			ToolStream: ChatToolStreamSettings{
@@ -314,6 +316,7 @@ func chatRecordFromSettings(settings ChatSettings) *pebblestore.UIChatSettingsRe
 		ShowCompactButton:               settings.ShowCompactButton,
 		DefaultNewSessionMode:           strings.TrimSpace(settings.DefaultNewSessionMode),
 		FollowupCheckpointPolicyDefault: strings.TrimSpace(settings.FollowupCheckpointPolicyDefault),
+		ReviewAutoArchiveMinutes:        settings.ReviewAutoArchiveMinutes,
 		SidebarHideInactiveHours:        intPointer(settings.SidebarHideInactiveHours),
 		DefaultWorkspaceRoutes:          cloneMap(settings.DefaultWorkspaceRoutes),
 		ToolStream: pebblestore.UIChatToolStreamSettingsRecord{

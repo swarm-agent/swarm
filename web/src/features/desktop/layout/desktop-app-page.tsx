@@ -72,8 +72,7 @@ import { SearchChatsModal } from '../session-search/search-chats-modal'
 import type { DesktopSessionSearchItem } from '../session-search/session-search-api'
 import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortcuts/components/desktop-quick-actions-modal'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
-import { ReviewWorktreesModal, NEEDS_REVIEW_AUTO_CLEANUP_EVENT, NEEDS_REVIEW_AUTO_CLEANUP_KEY } from './review-worktrees-modal'
-import { reviewDesktopV3Worktrees } from '../session-v3/review-worktrees-api'
+import { ReviewWorktreesModal } from './review-worktrees-modal'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
@@ -2317,7 +2316,6 @@ export function DesktopAppPage() {
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
   const [previousChatSessionId, setPreviousChatSessionId] = useState<string | null>(null)
   const activeChatSessionIdRef = useRef<string | null>(null)
-  const reviewCleanupLastRunRef = useRef(0)
   const previousSidebarRouteSessionIdRef = useRef(routeSessionId)
   const aiTaskPollersRef = useRef(new Map<string, AbortController>())
   const aiTaskTerminalToastRef = useRef(new Set<string>())
@@ -3876,27 +3874,6 @@ export function DesktopAppPage() {
 
   const handleMobileSidebarTouchEnd = useCallback(() => {
     mobileSidebarSwipeRef.current = null
-  }, [])
-
-  useEffect(() => {
-    const maybeRunCleanup = () => {
-      const enabled = window.localStorage.getItem(NEEDS_REVIEW_AUTO_CLEANUP_KEY) === '1'
-      const now = Date.now()
-      if (!enabled || document.visibilityState !== 'visible' || now - reviewCleanupLastRunRef.current < 15 * 60_000) return
-      reviewCleanupLastRunRef.current = now
-      void reviewDesktopV3Worktrees({ automatic: true, graceHours: 1 }).catch(() => undefined)
-    }
-    const handleSettingChange = () => maybeRunCleanup()
-    const handleVisibility = () => maybeRunCleanup()
-    window.addEventListener(NEEDS_REVIEW_AUTO_CLEANUP_EVENT, handleSettingChange)
-    window.addEventListener('focus', handleVisibility)
-    document.addEventListener('visibilitychange', handleVisibility)
-    maybeRunCleanup()
-    return () => {
-      window.removeEventListener(NEEDS_REVIEW_AUTO_CLEANUP_EVENT, handleSettingChange)
-      window.removeEventListener('focus', handleVisibility)
-      document.removeEventListener('visibilitychange', handleVisibility)
-    }
   }, [])
 
   const handlePrefetchSession = useCallback((sessionId: string) => {

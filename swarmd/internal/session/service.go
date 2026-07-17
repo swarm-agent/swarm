@@ -73,6 +73,20 @@ func (s *Service) Store() *pebblestore.SessionStore {
 	return s.store
 }
 
+func (s *Service) ListDueReviewAutoArchives(nowUnixMs int64, limit int) ([]pebblestore.SessionReviewAutoArchiveDue, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session service is not configured")
+	}
+	return s.store.ListDueSessionReviewAutoArchives(nowUnixMs, limit)
+}
+
+func (s *Service) DeleteReviewAutoArchiveDue(item pebblestore.SessionReviewAutoArchiveDue) error {
+	if s == nil || s.store == nil {
+		return errors.New("session service is not configured")
+	}
+	return s.store.DeleteSessionReviewAutoArchiveDue(item)
+}
+
 func (s *Service) BeginExecutionEpoch(input pebblestore.BeginExecutionEpochInput) (pebblestore.BeginExecutionEpochResult, error) {
 	if s == nil || s.store == nil {
 		return pebblestore.BeginExecutionEpochResult{}, errors.New("session service is not configured")

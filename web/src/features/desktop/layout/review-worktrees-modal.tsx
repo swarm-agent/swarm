@@ -7,9 +7,9 @@ import { commitWorkspaceChanges, fetchGitStatus } from '../git/api'
 import type { GitFileStatus } from '../git/types'
 import { archiveDesktopV3Sessions } from '../session-v3/plan-execution-api'
 import { reviewDesktopV3Worktrees, unarchiveDesktopV3ReviewSessions, type ReviewWorktreeCandidate, type ReviewWorktreesResponse } from '../session-v3/review-worktrees-api'
-
-export const NEEDS_REVIEW_AUTO_CLEANUP_KEY = 'swarm.desktop.needs-review.auto-cleanup'
-export const NEEDS_REVIEW_AUTO_CLEANUP_EVENT = 'swarm:needs-review-auto-cleanup-changed'
+import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
+import { saveReviewAutoArchiveMinutes } from '../settings/swarm/mutations/save-review-auto-archive-minutes'
+import { normalizeReviewAutoArchiveMinutes, REVIEW_AUTO_ARCHIVE_MINUTES, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 
 export function reviewWorktreeReasonLabel(item: ReviewWorktreeCandidate): string {
   switch (item.reason) {
@@ -71,7 +71,9 @@ export function ReviewWorktreesModal({ workspacePath, onClose }: { workspacePath
   const [integrateCandidate, setIntegrateCandidate] = useState<ReviewWorktreeCandidate | null>(null)
   const [integrating, setIntegrating] = useState(false)
   const [error, setError] = useState('')
-  const [autoCleanup, setAutoCleanup] = useState(() => window.localStorage.getItem(NEEDS_REVIEW_AUTO_CLEANUP_KEY) === '1')
+  const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
+  const [autoArchiveMinutes, setAutoArchiveMinutes] = useState(0)
+  const [savingAutoArchive, setSavingAutoArchive] = useState(false)
   const refresh = useCallback(async (automatic = false): Promise<ReviewWorktreesResponse | null> => {
     setLoading(true)
     setError('')
@@ -105,9 +107,31 @@ export function ReviewWorktreesModal({ workspacePath, onClose }: { workspacePath
     return () => { cancelled = true }
   }, [workspacePath])
   useEffect(() => {
-    window.localStorage.setItem(NEEDS_REVIEW_AUTO_CLEANUP_KEY, autoCleanup ? '1' : '0')
-    window.dispatchEvent(new CustomEvent(NEEDS_REVIEW_AUTO_CLEANUP_EVENT, { detail: autoCleanup }))
-  }, [autoCleanup])
+    let cancelled = false
+    void getUISettings().then((settings) => {
+      if (cancelled) return
+      setUISettings(settings)
+      setAutoArchiveMinutes(normalizeReviewAutoArchiveMinutes(settings.chat?.review_auto_archive_minutes))
+    }).catch((cause) => {
+      if (!cancelled) setError(cause instanceof Error ? cause.message : 'Could not load auto-archive setting.')
+    })
+    return () => { cancelled = true }
+  }, [])
+  const setAutoArchive = async (minutes: number) => {
+    if (!uiSettings || savingAutoArchive) return
+    setSavingAutoArchive(true)
+    setError('')
+    try {
+      const saved = await saveReviewAutoArchiveMinutes({ current: uiSettings, minutes })
+      setUISettings(saved)
+      setAutoArchiveMinutes(normalizeReviewAutoArchiveMinutes(saved.chat?.review_auto_archive_minutes))
+      await refresh(false)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not save auto-archive setting.')
+    } finally {
+      setSavingAutoArchive(false)
+    }
+  }
   const reviewIDs = useMemo(() => selectableReviewIDs(result), [result])
   const archiveCandidates = useMemo(() => selectedArchiveCandidates(result, selected), [result, selected])
   const checkoutCommitCandidate = useMemo(() => currentCheckoutCommitCandidate(result), [result])
@@ -249,15 +273,15 @@ export function ReviewWorktreesModal({ workspacePath, onClose }: { workspacePath
           <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-border)] px-2.5 py-1.5" disabled={loading} onClick={() => void refresh(false)}>{loading ? <LoaderCircle size={13} className="animate-spin" /> : <RefreshCcw size={13} />} Recheck worktrees</button>
           <button type="button" className="rounded-md border border-[var(--app-border)] px-2.5 py-1.5 disabled:opacity-50" disabled={reviewIDs.length === 0} onClick={() => { setReviewingSelection((current) => !current); setSelected(new Set()) }}>{reviewingSelection ? 'Cancel selection' : 'Select to archive'}</button>
           <button type="button" className="rounded-md border border-[var(--app-border)] px-2.5 py-1.5 disabled:opacity-50" disabled={reviewIDs.length === 0} onClick={() => { setReviewingSelection(true); setSelected(new Set(reviewIDs)) }}>Archive all</button>
-          <label className="ml-auto inline-flex items-center gap-2"><input type="checkbox" checked={autoCleanup} onChange={(event) => setAutoCleanup(event.target.checked)} />Auto-archive after 1h grace</label>
+          <label className="ml-auto inline-flex items-center gap-2">Auto-archive<select className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1" value={autoArchiveMinutes} disabled={!uiSettings || savingAutoArchive} onChange={(event) => void setAutoArchive(Number(event.target.value))}><option value={0}>Off</option>{REVIEW_AUTO_ARCHIVE_MINUTES.map((minutes) => <option key={minutes} value={minutes}>After {minutes === 60 ? '1 hour' : `${minutes} minutes`}</option>)}</select></label>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
           {error ? <p className="mt-3 rounded-md bg-[var(--app-danger-bg)] p-2.5 text-xs text-[var(--app-danger)]">{error}</p> : null}
           {result?.checkout_dirty ? <section className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-[var(--app-warning)] bg-[var(--app-surface-subtle)] p-4" aria-label="Dirty main checkout summary"><div className="min-w-0 flex-1"><h3 className="text-sm font-semibold text-[var(--app-text)]">{result.current_target_branch || 'Current branch'} has {result.checkout_dirty_count} uncommitted change{result.checkout_dirty_count === 1 ? '' : 's'}</h3><p className="mt-1 text-xs text-[var(--app-text-subtle)]">{result.blocked_by_checkout_count} chat{result.blocked_by_checkout_count === 1 ? ' is' : 's are'} waiting for these commits before they can get archived. Commit, then Swarm will recheck and show the exact chats released into Done.</p></div>{checkoutCommitCandidate ? <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-warning)] bg-transparent px-3 py-2 text-xs font-semibold text-[var(--app-warning)] disabled:opacity-50" disabled={openingCommit} onClick={() => void openCommitReview(checkoutCommitCandidate)}>{openingCommit ? <LoaderCircle size={13} className="animate-spin" /> : <GitCommitHorizontal size={13} />}Commit {result.current_target_branch || 'branch'}…</button> : null}</section> : null}
-          {!result?.checkout_dirty && releasedAfterCommit.length > 0 ? <section className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-[var(--app-success)] bg-[var(--app-surface-subtle)] p-4" aria-label="Released chats ready to archive"><div className="min-w-0 flex-1"><h3 className="text-sm font-semibold text-[var(--app-text)]">{releasedAfterCommit.length} chat{releasedAfterCommit.length === 1 ? '' : 's'} released into Done</h3><p className="mt-1 text-xs text-[var(--app-text-subtle)]">The commit succeeded and these exact sessions passed the backend safety recheck. Archive them now or leave them in Done for the one-hour grace period.</p></div><button type="button" className="inline-flex items-center gap-1.5 rounded-md bg-[var(--app-primary)] px-3 py-2 text-xs font-medium text-[var(--app-primary-text)] disabled:opacity-50" disabled={archiving} onClick={() => void archiveReleased()}>{archiving ? <LoaderCircle size={13} className="animate-spin" /> : <Archive size={13} />}Archive {releasedAfterCommit.length}</button></section> : null}
+          {!result?.checkout_dirty && releasedAfterCommit.length > 0 ? <section className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-[var(--app-success)] bg-[var(--app-surface-subtle)] p-4" aria-label="Released chats ready to archive"><div className="min-w-0 flex-1"><h3 className="text-sm font-semibold text-[var(--app-text)]">{releasedAfterCommit.length} chat{releasedAfterCommit.length === 1 ? '' : 's'} released into Done</h3><p className="mt-1 text-xs text-[var(--app-text-subtle)]">The commit succeeded and these exact sessions passed the backend safety recheck. Archive them now or leave them in Done for the configured auto-archive delay.</p></div><button type="button" className="inline-flex items-center gap-1.5 rounded-md bg-[var(--app-primary)] px-3 py-2 text-xs font-medium text-[var(--app-primary-text)] disabled:opacity-50" disabled={archiving} onClick={() => void archiveReleased()}>{archiving ? <LoaderCircle size={13} className="animate-spin" /> : <Archive size={13} />}Archive {releasedAfterCommit.length}</button></section> : null}
           {showReviewCommitAction ? <section className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-[var(--app-primary)] bg-[var(--app-surface-subtle)] p-4" aria-label="AI review commit batch"><div className="min-w-0 flex-1"><h3 className="text-sm font-semibold text-[var(--app-text)]">Prepare review commits with AI</h3><p className="mt-1 text-xs text-[var(--app-text-subtle)]">The auto model inspects each isolated worktree with only read and dedicated Git tools, chooses a message, and creates one commit per worktree in parallel. Sessions stay in review.</p><p className="mt-2 text-xs text-[var(--app-text-muted)]">{activeReviewCommitJobs.length > 0 ? `${activeReviewCommitJobs.length} pending or running` : completedReviewCommitJobs.length > 0 ? `${completedReviewCommitJobs.length} committed and ready to review` : `${reviewCommitWorktrees.length} ready to commit`}{failedReviewCommitJobs.length > 0 ? ` · ${failedReviewCommitJobs.length} failed` : ''}</p>{failedReviewCommitJobs.map((item) => <p key={item.session_id} className="mt-1 truncate text-xs text-[var(--app-danger)]" title={item.commit_job?.error}>{item.title || item.session_id}: {item.commit_job?.error}</p>)}</div><button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-primary)] bg-transparent px-3 py-2 text-xs font-semibold text-[var(--app-primary)] disabled:opacity-50" disabled={batchCommitting || activeReviewCommitJobs.length > 0 || reviewCommitWorktrees.length === 0} onClick={() => void commitReviewWorktrees()}>{batchCommitting || activeReviewCommitJobs.length > 0 ? <LoaderCircle size={13} className="animate-spin" /> : <GitCommitHorizontal size={13} />}{activeReviewCommitJobs.length > 0 ? 'Committing…' : `Commit ${reviewCommitWorktrees.length} with AI`}</button></section> : null}
           <CandidatePile title="Keep in review" icon={<ShieldAlert size={14} />} items={result?.retained ?? []} selected={selected} onToggle={toggleSelected} selectable={reviewingSelection} onCommit={(item) => void openCommitReview(item)} onIntegrate={setIntegrateCandidate} />
-          <CandidatePile title="Done · archives after 1h" icon={<CheckCircle2 size={14} />} items={result?.done ?? []} selected={selected} onToggle={() => undefined} selectable={false} />
+          <CandidatePile title={autoArchiveMinutes > 0 ? `Done · archives after ${autoArchiveMinutes === 60 ? '1h' : `${autoArchiveMinutes}m`}` : 'Done · auto-archive off'} icon={<CheckCircle2 size={14} />} items={result?.done ?? []} selected={selected} onToggle={() => undefined} selectable={false} />
           {commitCandidate ? (
             <section className="mt-5 rounded-xl border border-[var(--app-warning)] bg-[var(--app-surface-subtle)] p-4" aria-label="Commit current checkout review">
               <h3 className="text-sm font-semibold text-[var(--app-text)]">Commit current checkout before archiving</h3>
@@ -267,7 +291,7 @@ export function ReviewWorktreesModal({ workspacePath, onClose }: { workspacePath
               <div className="mt-3 flex justify-end gap-2"><button type="button" className="rounded-md border border-[var(--app-border)] px-3 py-1.5 text-xs" disabled={committing} onClick={() => { setCommitCandidate(null); setCommitFiles([]); setCommitMessage('') }}>Cancel</button><button type="button" className="inline-flex items-center gap-1.5 rounded-md bg-[var(--app-primary)] px-3 py-1.5 text-xs text-[var(--app-primary-text)] disabled:opacity-50" disabled={committing || commitFiles.length === 0 || !commitMessage.trim()} onClick={() => void commitCurrentCheckout()}>{committing ? <LoaderCircle size={13} className="animate-spin" /> : <GitCommitHorizontal size={13} />}Commit changes</button></div>
             </section>
           ) : null}
-          {integrateCandidate ? <section className="mt-5 rounded-xl border border-[var(--app-primary)] bg-[var(--app-surface-subtle)] p-4" aria-label="Integrate worktree review"><h3 className="text-sm font-semibold text-[var(--app-text)]">Integrate {integrateCandidate.worktree_branch} into {integrateCandidate.target_branch}</h3><p className="mt-1 text-xs text-[var(--app-text-subtle)]">Swarm preflights the full commit stack and leaves the target unchanged on conflict. Success moves this chat into Done for one hour; it is not archived immediately.</p><div className="mt-3 flex justify-end gap-2"><button type="button" className="rounded-md border border-[var(--app-border)] px-3 py-1.5 text-xs" disabled={integrating} onClick={() => setIntegrateCandidate(null)}>Cancel</button><button type="button" className="inline-flex items-center gap-1.5 rounded-md bg-[var(--app-primary)] px-3 py-1.5 text-xs text-[var(--app-primary-text)]" disabled={integrating} onClick={() => void integrateWorktree()}>{integrating ? <LoaderCircle size={13} className="animate-spin" /> : <GitMerge size={13} />}Confirm integration</button></div></section> : null}
+          {integrateCandidate ? <section className="mt-5 rounded-xl border border-[var(--app-primary)] bg-[var(--app-surface-subtle)] p-4" aria-label="Integrate worktree review"><h3 className="text-sm font-semibold text-[var(--app-text)]">Integrate {integrateCandidate.worktree_branch} into {integrateCandidate.target_branch}</h3><p className="mt-1 text-xs text-[var(--app-text-subtle)]">Swarm preflights the full commit stack and leaves the target unchanged on conflict. Success moves this chat into Done; it is not archived immediately.</p><div className="mt-3 flex justify-end gap-2"><button type="button" className="rounded-md border border-[var(--app-border)] px-3 py-1.5 text-xs" disabled={integrating} onClick={() => setIntegrateCandidate(null)}>Cancel</button><button type="button" className="inline-flex items-center gap-1.5 rounded-md bg-[var(--app-primary)] px-3 py-1.5 text-xs text-[var(--app-primary-text)]" disabled={integrating} onClick={() => void integrateWorktree()}>{integrating ? <LoaderCircle size={13} className="animate-spin" /> : <GitMerge size={13} />}Confirm integration</button></div></section> : null}
           {reviewingSelection && archiveCandidates.length > 0 ? (
             <section className="mt-5 rounded-xl border border-[var(--app-primary)] bg-[var(--app-surface-subtle)] p-4" aria-label="Archive selection review">
               <h3 className="text-sm font-semibold text-[var(--app-text)]">This will archive {archiveCandidates.length} session{archiveCandidates.length === 1 ? '' : 's'}</h3>

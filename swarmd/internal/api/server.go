@@ -113,19 +113,20 @@ type Server struct {
 	codexOAuthMu       sync.Mutex
 	codexOAuthSessions map[string]*codexOAuthSession
 
-	shuttingDown         atomic.Bool
-	runCtx               context.Context
-	runCancel            context.CancelFunc
-	runWG                sync.WaitGroup
-	activeRuns           atomic.Int32
-	requestStop          func(reason string)
-	desktopLocalSessions *desktopLocalSessionManager
-	identityService      *identity.Service
-	identitySessions     *identity.SessionService
-	gitRealtime          *gitRealtimeManager
-	swarmStore           *pebblestore.SwarmStore
-	reviewCommitMu       sync.Mutex
-	reviewCommitActive   map[string]string
+	shuttingDown          atomic.Bool
+	runCtx                context.Context
+	runCancel             context.CancelFunc
+	runWG                 sync.WaitGroup
+	activeRuns            atomic.Int32
+	requestStop           func(reason string)
+	desktopLocalSessions  *desktopLocalSessionManager
+	identityService       *identity.Service
+	identitySessions      *identity.SessionService
+	gitRealtime           *gitRealtimeManager
+	swarmStore            *pebblestore.SwarmStore
+	reviewCommitMu        sync.Mutex
+	reviewCommitActive    map[string]string
+	reviewAutoArchiveOnce sync.Once
 }
 
 type codexAccountClient interface {
@@ -263,7 +264,6 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	if sessionSvc != nil {
 		server.v3SessionExecutor = newSessionV3Executor(server)
 		server.planLifecycle = sessionruntime.NewPlanLifecycleService(sessionSvc)
-		go server.runSessionsV3ReviewAutoArchive(runCtx)
 	}
 	server.gitRealtime = newGitRealtimeManager(server)
 	return server
@@ -377,6 +377,11 @@ func (s *Server) SetUISettingsService(uiSettingsSvc *uisettings.Service) {
 		return
 	}
 	s.uiSettings = uiSettingsSvc
+	if uiSettingsSvc != nil && s.sessions != nil && s.runCtx != nil {
+		s.reviewAutoArchiveOnce.Do(func() {
+			go s.runSessionsV3ReviewAutoArchive(s.runCtx)
+		})
+	}
 }
 
 func (s *Server) SetTodoService(todoSvc *todo.Service) {
@@ -3503,6 +3508,7 @@ type uiChatSettingsPatchPresence struct {
 	ShowCompactButton               *bool                                  `json:"show_compact_button"`
 	DefaultNewSessionMode           *string                                `json:"default_new_session_mode"`
 	FollowupCheckpointPolicyDefault *string                                `json:"followup_checkpoint_policy_default"`
+	ReviewAutoArchiveMinutes        *int                                   `json:"review_auto_archive_minutes"`
 	SidebarHideInactiveHours        *int                                   `json:"sidebar_hide_inactive_hours"`
 	DefaultWorkspaceRoutes          *map[string]string                     `json:"default_workspace_routes"`
 	ToolStream                      *uiChatToolStreamSettingsPatchPresence `json:"tool_stream"`
@@ -3575,6 +3581,9 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 		}
 		if raw.Chat.FollowupCheckpointPolicyDefault != nil {
 			settings.Chat.FollowupCheckpointPolicyDefault = patch.Chat.FollowupCheckpointPolicyDefault
+		}
+		if raw.Chat.ReviewAutoArchiveMinutes != nil {
+			settings.Chat.ReviewAutoArchiveMinutes = patch.Chat.ReviewAutoArchiveMinutes
 		}
 		if raw.Chat.SidebarHideInactiveHours != nil {
 			settings.Chat.SidebarHideInactiveHours = patch.Chat.SidebarHideInactiveHours

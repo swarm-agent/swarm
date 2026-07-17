@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,7 +16,10 @@ import (
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
-const sessionsV3ReviewWorktreeLimit = 200
+const (
+	sessionsV3ReviewWorktreeLimit        = 200
+	sessionsV3ReviewAutoArchiveBatchSize = 32
+)
 
 type sessionsV3ReviewWorktreesRequest struct {
 	WorkspacePath string   `json:"workspace_path,omitempty"`
@@ -153,6 +157,28 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 				doneAt = now.UnixMilli()
 				metadata := cloneStringAnyMap(session.Metadata)
 				metadata["review_done_at"] = doneAt
+				if delay := s.reviewAutoArchiveDelay(session.AccountScopeID); delay > 0 {
+					metadata["review_auto_archive_after"] = doneAt + delay.Milliseconds()
+				}
+				updated, _, updateErr := s.sessions.UpdateDerivedMetadata(session.ID, metadata)
+				if updateErr != nil {
+					return nil, updateErr
+				}
+				session = updated
+				classification.UpdatedAt = updated.UpdatedAt
+			}
+			delay := s.reviewAutoArchiveDelay(session.AccountScopeID)
+			desiredArchiveAfter := int64(0)
+			if delay > 0 {
+				desiredArchiveAfter = doneAt + delay.Milliseconds()
+			}
+			if scheduled := sessionsV3MetadataInt64(session.Metadata, "review_auto_archive_after"); scheduled != desiredArchiveAfter {
+				metadata := cloneStringAnyMap(session.Metadata)
+				if desiredArchiveAfter > 0 {
+					metadata["review_auto_archive_after"] = desiredArchiveAfter
+				} else {
+					delete(metadata, "review_auto_archive_after")
+				}
 				updated, _, updateErr := s.sessions.UpdateDerivedMetadata(session.ID, metadata)
 				if updateErr != nil {
 					return nil, updateErr
@@ -367,11 +393,30 @@ func (s *Server) integrateSessionsV3ReviewWorktrees(ctx context.Context, princip
 	for _, session := range sessions {
 		metadata := cloneStringAnyMap(session.Metadata)
 		metadata["review_done_at"] = now.UnixMilli()
+		if delay := s.reviewAutoArchiveDelay(session.AccountScopeID); delay > 0 {
+			metadata["review_auto_archive_after"] = now.Add(delay).UnixMilli()
+		}
 		if _, _, err := s.sessions.UpdateDerivedMetadata(session.ID, metadata); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func sessionsV3MetadataInt64(metadata map[string]any, key string) int64 {
+	switch value := metadata[key].(type) {
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	case float64:
+		return int64(value)
+	case string:
+		parsed, _ := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		return parsed
+	default:
+		return 0
+	}
 }
 
 func sessionReviewDoneAt(session pebblestore.SessionSnapshot) int64 {
@@ -409,7 +454,8 @@ func countCurrentCheckoutBlocked(items []sessionreview.Classification) int {
 }
 
 func (s *Server) runSessionsV3ReviewAutoArchive(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
+	// The timer only probes the ordered Pebble due index. It never scans sessions.
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
@@ -421,21 +467,70 @@ func (s *Server) runSessionsV3ReviewAutoArchive(ctx context.Context) {
 	}
 }
 
+func (s *Server) reviewAutoArchiveDelay(accountScopeID string) time.Duration {
+	if s == nil || s.uiSettings == nil {
+		return 0
+	}
+	settings, err := s.uiSettings.GetForAccount(strings.TrimSpace(accountScopeID))
+	if err != nil || settings.Chat.ReviewAutoArchiveMinutes <= 0 {
+		return 0
+	}
+	return time.Duration(settings.Chat.ReviewAutoArchiveMinutes) * time.Minute
+}
+
 func (s *Server) archiveDueSessionsV3Review(ctx context.Context, now time.Time) {
-	if s == nil || s.sessions == nil {
+	if s == nil || s.sessions == nil || s.uiSettings == nil {
 		return
 	}
-	sessions, err := s.sessions.ListSessions(sessionsV3ReviewWorktreeLimit)
+	due, err := s.sessions.ListDueReviewAutoArchives(now.UnixMilli(), sessionsV3ReviewAutoArchiveBatchSize)
 	if err != nil {
 		return
 	}
-	for _, session := range sessions {
-		doneAt := sessionReviewDoneAt(session)
-		if doneAt == 0 || now.UnixMilli() < doneAt+sessionreview.DefaultGracePeriod.Milliseconds() {
+	for _, item := range due {
+		session, found, getErr := s.sessions.GetSession(item.SessionID)
+		if getErr != nil || !found {
+			_ = s.sessions.DeleteReviewAutoArchiveDue(item)
 			continue
 		}
-		principal := identity.Principal{UserID: session.UserID, AccountScopeID: session.AccountScopeID}
-		if !principal.Valid() {
+		delay := s.reviewAutoArchiveDelay(session.AccountScopeID)
+		if sessionsV3MetadataInt64(session.Metadata, "review_auto_archive_after") != item.DueAt {
+			_ = s.sessions.DeleteReviewAutoArchiveDue(item)
+			continue
+		}
+		if delay <= 0 {
+			metadata := cloneStringAnyMap(session.Metadata)
+			delete(metadata, "review_auto_archive_after")
+			_, _, _ = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
+			continue
+		}
+		doneAt := sessionReviewDoneAt(session)
+		if doneAt <= 0 {
+			metadata := cloneStringAnyMap(session.Metadata)
+			delete(metadata, "review_auto_archive_after")
+			_, _, _ = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
+			continue
+		}
+		desiredArchiveAfter := doneAt + delay.Milliseconds()
+		if desiredArchiveAfter != item.DueAt {
+			metadata := cloneStringAnyMap(session.Metadata)
+			metadata["review_auto_archive_after"] = desiredArchiveAfter
+			_, _, _ = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
+			if now.UnixMilli() < desiredArchiveAfter {
+				continue
+			}
+			session, found, getErr = s.sessions.GetSession(item.SessionID)
+			if getErr != nil || !found {
+				continue
+			}
+		}
+		if session.Lifecycle != nil && session.Lifecycle.Active {
+			s.deferSessionsV3ReviewAutoArchive(session, now)
+			continue
+		}
+		if !s.sessionNeedsReview(session.ID) {
+			metadata := cloneStringAnyMap(session.Metadata)
+			delete(metadata, "review_auto_archive_after")
+			_, _, _ = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
 			continue
 		}
 		workspacePath := strings.TrimSpace(session.WorkspacePath)
@@ -443,14 +538,56 @@ func (s *Server) archiveDueSessionsV3Review(ctx context.Context, now time.Time) 
 			workspacePath = strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_path"))
 		}
 		if workspacePath == "" {
+			s.deferSessionsV3ReviewAutoArchive(session, now)
 			continue
 		}
-		result, classifyErr := s.classifySessionsV3ReviewWorktrees(ctx, principal, sessionsV3ReviewWorktreesRequest{WorkspacePath: workspacePath, ArchiveIDs: []string{session.ID}, Automatic: true, GraceHours: "1"})
-		archived, _ := result["archived_session_ids"].([]string)
-		if classifyErr != nil || len(archived) == 0 {
+		checkoutSnapshot, checkoutCommonDir := sessionsV3ReviewCheckoutTarget(ctx, workspacePath)
+		targetBranch := session.WorktreeBaseBranch
+		var classification sessionreview.Classification
+		if sessionsV3ReviewSessionUsesCheckout(ctx, session, checkoutSnapshot, checkoutCommonDir) {
+			classification = sessionreview.ClassifyCurrentCheckout(session, checkoutSnapshot, now, delay)
+		} else {
+			if checkoutSnapshot.Branch != "" && sessionsV3ReviewWorktreeMatchesCheckout(ctx, session.WorktreeRootPath, checkoutCommonDir) {
+				targetBranch = checkoutSnapshot.Branch
+			}
+			classification = sessionreview.ClassifyAgainstTarget(ctx, sessionreview.ExecGitRunner{}, session, now, delay, targetBranch)
+		}
+		if classification.Classification != "done" {
+			s.deferSessionsV3ReviewAutoArchive(session, now)
 			continue
+		}
+		events, archiveErr := s.sessions.ArchiveSessionsWithEventsIfUnchanged([]string{session.ID}, map[string]int64{session.ID: session.UpdatedAt})
+		if archiveErr != nil {
+			s.deferSessionsV3ReviewAutoArchive(session, now)
+			continue
+		}
+		s.publishSessionsV3ArchiveRealtime([]pebblestore.SessionSnapshot{session}, events)
+	}
+}
+
+func (s *Server) sessionNeedsReview(sessionID string) bool {
+	if s == nil || s.sessions == nil {
+		return false
+	}
+	plan, ok, err := s.sessions.GetActivePlan(sessionID)
+	if err != nil || !ok || plan.Document == nil {
+		return false
+	}
+	if plan.Document.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(plan.Document.ExecutionState.Status), "waiting_review") {
+		return true
+	}
+	for _, checkpoint := range plan.Document.Checkpoints {
+		if checkpoint.ID == plan.Document.ActiveCheckpointID {
+			return strings.EqualFold(strings.TrimSpace(checkpoint.Status), "needs_review")
 		}
 	}
+	return false
+}
+
+func (s *Server) deferSessionsV3ReviewAutoArchive(session pebblestore.SessionSnapshot, now time.Time) {
+	metadata := cloneStringAnyMap(session.Metadata)
+	metadata["review_auto_archive_after"] = now.Add(5 * time.Minute).UnixMilli()
+	_, _, _ = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
 }
 
 func compactStrings(values []string) []string {

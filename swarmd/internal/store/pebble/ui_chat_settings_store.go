@@ -65,6 +65,7 @@ type UIChatSettingsRecord struct {
 	ShowCompactButton               bool                           `json:"show_compact_button"`
 	DefaultNewSessionMode           string                         `json:"default_new_session_mode,omitempty"`
 	FollowupCheckpointPolicyDefault string                         `json:"followup_checkpoint_policy_default,omitempty"`
+	ReviewAutoArchiveMinutes        int                            `json:"review_auto_archive_minutes"`
 	SidebarHideInactiveHours        *int                           `json:"sidebar_hide_inactive_hours"`
 	DefaultWorkspaceRoutes          map[string]string              `json:"default_workspace_routes,omitempty"`
 	ToolStream                      UIChatToolStreamSettingsRecord `json:"tool_stream,omitempty"`
@@ -268,6 +269,7 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 		record.Chat.DefaultNewSessionMode = normalizeDefaultNewSessionMode(record.Chat.DefaultNewSessionMode)
 	}
 	record.Chat.FollowupCheckpointPolicyDefault = normalizeFollowupCheckpointPolicyDefault(record.Chat.FollowupCheckpointPolicyDefault)
+	record.Chat.ReviewAutoArchiveMinutes = normalizeReviewAutoArchiveMinutes(record.Chat.ReviewAutoArchiveMinutes)
 	if record.Chat.SidebarHideInactiveHours == nil || *record.Chat.SidebarHideInactiveHours < 0 {
 		record.Chat.SidebarHideInactiveHours = intPointer(12)
 	}
@@ -304,6 +306,16 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	record.Agents.Explorer.Thinking = strings.TrimSpace(record.Agents.Explorer.Thinking)
 	record.Agents.Explorer.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Explorer.ServiceTier))
 	return record
+}
+
+func normalizeReviewAutoArchiveMinutes(value int) int {
+	if value <= 0 {
+		return 0
+	}
+	if value > 60 {
+		value = 60
+	}
+	return ((value + 4) / 5) * 5
 }
 
 func intPointer(value int) *int {

@@ -278,6 +278,9 @@ func (s *SessionStore) CreateSession(session SessionSnapshot) error {
 	if err := replaceSessionRecentIndexInBatch(batch, nil, &session); err != nil {
 		return err
 	}
+	if err := replaceSessionReviewAutoArchiveDueInBatch(batch, nil, &session); err != nil {
+		return err
+	}
 	if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, nil); err != nil {
 		return err
 	}
@@ -330,6 +333,9 @@ func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
 		}
 	}
 	if err := replaceSessionRecentIndexInBatch(batch, previous, &session); err != nil {
+		return err
+	}
+	if err := replaceSessionReviewAutoArchiveDueInBatch(batch, previous, &session); err != nil {
 		return err
 	}
 	if previous == nil || v3SessionSearchMetadataChanged(*previous, session) {
@@ -473,6 +479,9 @@ func (s *SessionStore) ReactivateArchivedSessions(sessionIDs []string, expectedU
 			return err
 		}
 		if err := s.setSessionInBatch(batch, session); err != nil {
+			return err
+		}
+		if err := replaceSessionReviewAutoArchiveDueInBatch(batch, nil, &session); err != nil {
 			return err
 		}
 		if session.Lifecycle != nil {
@@ -710,6 +719,9 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 		}
 		if existing.ID != "" {
 			if err := replaceSessionRecentIndexInBatch(batch, &existing, nil); err != nil {
+				return err
+			}
+			if err := replaceSessionReviewAutoArchiveDueInBatch(batch, &existing, nil); err != nil {
 				return err
 			}
 		}

@@ -2319,6 +2319,9 @@ func (s *SessionStore) setSessionInBatch(batch *pebble.Batch, session SessionSna
 	if err := replaceSessionRecentIndexInBatch(batch, previous, &session); err != nil {
 		return err
 	}
+	if err := replaceSessionReviewAutoArchiveDueInBatch(batch, previous, &session); err != nil {
+		return err
+	}
 	return nil
 }
 

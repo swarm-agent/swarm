@@ -8,6 +8,7 @@
 export const DEFAULT_SWARM_NAME = 'Local'
 export const DEFAULT_GLOBAL_THEME_ID = 'crimson'
 export const DEFAULT_SIDEBAR_HIDE_INACTIVE_HOURS = 12
+export const REVIEW_AUTO_ARCHIVE_MINUTES = Array.from({ length: 12 }, (_, index) => (index + 1) * 5)
 
 export interface UISwarmingSettingsWire {
   title?: string
@@ -48,6 +49,7 @@ export interface UIChatSettingsWire {
   show_compact_button?: boolean
   default_new_session_mode?: DesktopSessionMode
   followup_checkpoint_policy_default?: FollowupCheckpointPolicyDefault
+  review_auto_archive_minutes?: number
   sidebar_hide_inactive_hours?: number | null
   default_workspace_routes?: Record<string, string>
   tool_stream?: Record<string, unknown>
@@ -89,6 +91,11 @@ export function normalizeSwarmName(value: string): string {
 
 export function normalizeSessionMode(value: unknown): DesktopSessionMode {
   return typeof value === 'string' && value.trim().toLowerCase() === 'plan' ? 'plan' : 'auto'
+}
+
+export function normalizeReviewAutoArchiveMinutes(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 0
+  return Math.min(60, Math.max(5, Math.ceil(value / 5) * 5))
 }
 
 export function normalizeSidebarHideInactiveHours(value: unknown): number | null {
@@ -155,6 +162,16 @@ export function withDefaultWorkspaceRoute(current: UISettingsWire, workspacePath
     chat: {
       ...(current.chat ?? {}),
       default_workspace_routes: routes,
+    },
+  }
+}
+
+export function withReviewAutoArchiveMinutes(current: UISettingsWire, minutes: number): UISettingsWire {
+  return {
+    ...current,
+    chat: {
+      ...(current.chat ?? {}),
+      review_auto_archive_minutes: normalizeReviewAutoArchiveMinutes(minutes),
     },
   }
 }
