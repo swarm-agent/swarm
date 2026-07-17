@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Archive, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Clock3, Copy, GitBranch, Layers3, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
+import { Archive, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, CircleDot, Clock3, Copy, GitBranch, Layers3, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
 import type {
@@ -1106,6 +1106,93 @@ function parseToolJSON(value: string): Record<string, unknown> | null {
   }
 }
 
+function planTransitionLabel(action: string): string {
+  switch (action.trim().toLowerCase().replace(/-/g, "_")) {
+    case "start_session_checkpoint":
+    case "start_checkpoint":
+      return "Checkpoint started";
+    case "continue_checkpoint":
+      return "Checkpoint continuing";
+    case "restart_checkpoint":
+      return "Checkpoint restarted";
+    case "complete_subtask":
+      return "Task completed";
+    case "complete_checkpoint":
+    case "checkpoint_outcome":
+      return "Checkpoint completed";
+    case "mark_needs_review":
+      return "Ready for review";
+    case "mark_blocked":
+      return "Checkpoint blocked";
+    case "mark_failed":
+      return "Checkpoint failed";
+    case "approve_and_start":
+      return "Plan approved";
+    case "request_followup_checkpoint":
+      return "Checkpoint added";
+    default:
+      return action ? action.replace(/[-_]+/g, " ") : "Plan updated";
+  }
+}
+
+function planTransitionStatus(payload: Record<string, unknown> | null): string {
+  if (!payload) return "";
+  const summary = payload.execution_summary && typeof payload.execution_summary === "object" && !Array.isArray(payload.execution_summary)
+    ? payload.execution_summary as Record<string, unknown>
+    : null;
+  if (!summary) return toolJsonString(payload, "status");
+  if (summary.review_required === true) return "Waiting review";
+  if (summary.blocked === true) return "Blocked";
+  if (summary.failed === true) return "Failed";
+  if (summary.plan_complete === true) return "Complete";
+  return toolJsonString(summary, "next_checkpoint_status") || toolJsonString(summary, "next_action") || toolJsonString(payload, "status");
+}
+
+function PlanManageToolView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
+  const payload = parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+  const args = toolMessage.argumentsJson ?? parseToolJSON(toolMessage.argumentsText);
+  const action = toolJsonString(payload, "action") || toolJsonString(args, "action");
+  const summary = payload?.execution_summary && typeof payload.execution_summary === "object" && !Array.isArray(payload.execution_summary)
+    ? payload.execution_summary as Record<string, unknown>
+    : null;
+  const plan = payload?.plan && typeof payload.plan === "object" && !Array.isArray(payload.plan)
+    ? payload.plan as Record<string, unknown>
+    : null;
+  const document = plan?.document && typeof plan.document === "object" && !Array.isArray(plan.document)
+    ? plan.document as Record<string, unknown>
+    : null;
+  const checkpointId = toolJsonString(summary, "active_checkpoint_id")
+    || toolJsonString(summary, "next_checkpoint_id")
+    || toolJsonString(args, "checkpoint_id")
+    || toolJsonString(document, "active_checkpoint_id");
+  const title = toolJsonString(plan, "title") || toolJsonString(payload, "title");
+  const status = planTransitionStatus(payload);
+  const failed = toolMessage.state === "error" || status.toLowerCase() === "failed" || status.toLowerCase() === "blocked";
+
+  return (
+    <div className="mb-2 min-w-0 py-1.5" data-plan-tool-transition>
+      <div className={cn(
+        "relative min-w-0 border-l-2 py-1 pl-3",
+        failed ? "border-[var(--app-danger)]" : "border-[var(--app-primary)]",
+      )}>
+        <div className="flex min-w-0 items-center gap-2">
+          <CircleDot size={13} className={cn("shrink-0", failed ? "text-[var(--app-danger)]" : "text-[var(--app-primary)]")} />
+          <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Plan transition</span>
+          {status ? <span className="ml-auto shrink-0 text-[10px] font-medium capitalize text-[var(--app-text-muted)]">{status.replace(/[-_]+/g, " ")}</span> : null}
+        </div>
+        <div className="mt-1 text-[13px] font-semibold text-[var(--app-text)]">{planTransitionLabel(action)}</div>
+        {(checkpointId || title) ? (
+          <div className="mt-0.5 min-w-0 truncate text-[11px] text-[var(--app-text-muted)]">
+            {checkpointId ? <span className="font-mono text-[var(--app-primary)]">{checkpointId}</span> : null}
+            {checkpointId && title ? <span className="px-1.5 text-[var(--app-text-subtle)]">·</span> : null}
+            {title ? <span>{title}</span> : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function SearchToolView({
   toolMessage,
 }: {
@@ -1168,12 +1255,14 @@ export function ToolMessageView({
   const shellPreview = false;
   const plainPreview = shouldRenderPreviewAsPlain(toolMessage.tool);
   const isManageSessions = ["manage-sessions", "manage_sessions"].includes(normalizedTool);
+  const isPlanManage = ["plan-manage", "plan_manage"].includes(normalizedTool);
   const isFileAction = ["read", "list", "search", "edit"].includes(normalizedTool);
   const fileSummary = isFileAction && toolMessage.target
     ? summary.replace(toolMessage.target, "").replace(/\s+in\s+(?=\()/, " ").trim()
     : summary;
   const showPreview = normalizedTool !== 'thinking' || thinkingTagsEnabled;
   const isWindup = state === "running" && !toolMessage.output.trim() && !toolMessage.error.trim();
+  if (isPlanManage) return <PlanManageToolView toolMessage={toolMessage} />;
   const hasBody = Boolean(
     toolMessage.error
     || toolMessage.editDiff

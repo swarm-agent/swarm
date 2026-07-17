@@ -247,7 +247,7 @@ test('Desktop V3 plan lifecycle messages render as conversation breaks', () => {
     global_seq: 7,
     role: 'system',
     content: 'Checkpoint started\nPlan: Demo plan (plan-1)\nCheckpoint: cp-1 Build UI\nFresh context: previous checkpoint context cleared for this run.',
-    metadata: { source: 'plan_execution_lifecycle', kind: 'plan_execution_break' },
+    metadata: { source: 'plan_execution_lifecycle', kind: 'plan_execution_break', action: 'start_checkpoint', execution_status: 'in_progress' },
     created_at: 7,
   }
 
@@ -257,7 +257,16 @@ test('Desktop V3 plan lifecycle messages render as conversation breaks', () => {
   assert.equal(items[0]?.type, 'plan-break')
   if (items[0]?.type === 'plan-break') {
     assert.equal(items[0].headline, 'Checkpoint started')
+    assert.equal(items[0].tone, 'primary')
     assert.equal(items[0].details.includes('Checkpoint: cp-1 Build UI'), true)
+    const markup = renderToStaticMarkup(createElement(DesktopV3RenderItemView, {
+      item: items[0], thinkingTagsEnabled: true, timerNow: 0, index: 0,
+    }))
+    assert.match(markup, /data-plan-transition-tone="primary"/)
+    assert.match(markup, /Plan transition/)
+    assert.match(markup, /Checkpoint started/)
+    assert.doesNotMatch(markup, /rounded-2xl/)
+    assert.doesNotMatch(markup, /text-center/)
   }
 })
 

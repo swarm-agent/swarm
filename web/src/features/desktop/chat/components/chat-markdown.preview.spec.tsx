@@ -40,28 +40,34 @@ function testDeniedExitPlanPermissionUsesFlatPreview(): void {
   assert(!markup.includes("border border-[var(--app-border)]"), "exit-plan permission preview should be flat, not bordered");
 }
 
-function testPlanManageUsesFlatPreview(): void {
+function testPlanManageUsesMinimalTransitionView(): void {
   const message = buildStructuredToolMessage({
     tool: "plan_manage",
-    callId: "call_plan_manage_save",
+    callId: "call_plan_manage_start",
+    argumentsText: JSON.stringify({ action: "start_checkpoint", checkpoint_id: "cp-2" }),
     outputText: JSON.stringify({
       tool: "plan_manage",
-      action: "save",
+      action: "start_checkpoint",
       status: "ok",
+      execution_summary: {
+        active_checkpoint_id: "cp-2",
+        next_checkpoint_status: "in_progress",
+      },
       plan: {
         id: "plan_123",
         title: "Implementation Plan",
-        plan: "# Plan\n1. Patch tool stream\n2. Test",
-        update_summary: "polish tool stream",
       },
     }),
   });
   assert(Boolean(message), "expected structured plan_manage message");
 
   const markup = renderToolMarkup(message!);
-  assert(markup.includes("save (Implementation Plan)"), "expected plan_manage summary");
-  assert(markup.includes("action: save"), "expected plan_manage action preview");
-  assert(!markup.includes("border border-[var(--app-border)]"), "plan_manage preview should be flat, not bordered");
+  assert(markup.includes("data-plan-tool-transition"), "expected dedicated plan transition treatment");
+  assert(markup.includes("Checkpoint started"), "expected lifecycle action label");
+  assert(markup.includes("cp-2"), "expected checkpoint identity");
+  assert(markup.includes("in progress"), "expected transition status");
+  assert(!markup.includes("action: start checkpoint"), "raw preview rows should not render");
+  assert(!markup.includes("rounded-2xl"), "plan transition should not render as a segmented card");
 }
 
 function testTaskSwarmUsesCompactPreview(): void {
@@ -352,7 +358,7 @@ function testTaskElapsedClockUsesDisplayCadence(): void {
 
 function main(): void {
   testDeniedExitPlanPermissionUsesFlatPreview();
-  testPlanManageUsesFlatPreview();
+  testPlanManageUsesMinimalTransitionView();
   testTaskSwarmUsesCompactPreview();
   testTaskRunningTimerUsesStartTimestamp();
   testTaskTerminalTimerUsesFinalElapsed();

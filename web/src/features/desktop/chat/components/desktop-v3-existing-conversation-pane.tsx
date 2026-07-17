@@ -15,6 +15,7 @@ import {
   ArrowRight,
   CheckCircle2,
   CircleAlert,
+  CircleDot,
   Loader2,
   LoaderCircle,
   XCircle,
@@ -515,12 +516,15 @@ function scrollFollowKeyPart(value: unknown): string {
   }
 }
 
+type DesktopV3PlanTransitionTone = "primary" | "success" | "warning" | "danger";
+
 export type DesktopV3RenderItem =
   | {
       type: "plan-break";
       message: MessageSnapshot;
       headline: string;
       details: string[];
+      tone: DesktopV3PlanTransitionTone;
       timelineSeq?: number;
     }
   | {
@@ -1038,6 +1042,15 @@ export function isDesktopV3PlanBlockedHandoffMessage(
   );
 }
 
+function planTransitionTone(message: MessageSnapshot): DesktopV3PlanTransitionTone {
+  const action = metadataString(message.metadata, "action").toLowerCase();
+  const status = metadataString(message.metadata, "execution_status").toLowerCase();
+  if (action === "mark_failed" || status === "failed") return "danger";
+  if (action === "mark_blocked" || status === "blocked") return "warning";
+  if (action === "complete_checkpoint" || action === "checkpoint_outcome" || action === "accept_checkpoint") return "success";
+  return "primary";
+}
+
 function buildDesktopV3PlanExecutionBreakItem(
   message: MessageSnapshot,
 ): Extract<DesktopV3RenderItem, { type: "plan-break" }> {
@@ -1051,6 +1064,7 @@ function buildDesktopV3PlanExecutionBreakItem(
     message,
     headline,
     details: lines.slice(1),
+    tone: planTransitionTone(message),
     timelineSeq: message.global_seq,
   };
 }
@@ -2680,27 +2694,43 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   }
 });
 
+function planTransitionToneClass(tone: DesktopV3PlanTransitionTone): string {
+  switch (tone) {
+    case "success":
+      return "border-[var(--app-success)] text-[var(--app-success)]";
+    case "warning":
+      return "border-[var(--app-warning)] text-[var(--app-warning)]";
+    case "danger":
+      return "border-[var(--app-danger)] text-[var(--app-danger)]";
+    default:
+      return "border-[var(--app-primary)] text-[var(--app-primary)]";
+  }
+}
+
 function DesktopV3PlanExecutionBreak({
   item,
 }: {
   item: Extract<DesktopV3RenderItem, { type: "plan-break" }>;
 }) {
+  const checkpoint = item.details.find((detail) => /^(Checkpoint|Completed|Resolved|Next):/i.test(detail));
+  const context = item.details.find((detail) => /^(Context|Fresh context|Next):/i.test(detail) && detail !== checkpoint);
+  const plan = item.details.find((detail) => /^Plan:/i.test(detail));
+
   return (
     <div
-      className="flex justify-center py-1"
+      className="flex justify-start py-1"
       data-testid="desktop-v3-plan-execution-break"
+      data-plan-transition-tone={item.tone}
     >
-      <div className="max-w-[min(100%,42rem)] rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-center shadow-sm">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-primary)]">
-          {item.headline}
+      <div className={cn("min-w-0 max-w-[min(100%,44rem)] border-l-2 py-1 pl-3", planTransitionToneClass(item.tone))}>
+        <div className="flex min-w-0 items-center gap-2">
+          <CircleDot size={13} className="shrink-0" />
+          <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Plan transition</span>
         </div>
-        {item.details.length > 0 ? (
-          <div className="mt-1.5 grid gap-0.5 text-xs leading-5 text-[var(--app-text-muted)]">
-            {item.details.map((detail, index) => (
-              <div key={`${item.message.id}:detail:${index}`}>{detail}</div>
-            ))}
-          </div>
-        ) : null}
+        <div className="mt-1 text-[13px] font-semibold text-[var(--app-text)]">{item.headline}</div>
+        {checkpoint ? <div className="mt-0.5 break-words text-xs leading-5 text-[var(--app-text-muted)]">{checkpoint}</div> : null}
+        {context ? <div className="mt-0.5 break-words text-[11px] leading-4 text-[var(--app-text-subtle)]">{context}</div> : null}
+        {plan ? <div className="mt-1 truncate text-[10px] text-[var(--app-text-subtle)]">{plan}</div> : null}
       </div>
     </div>
   );
