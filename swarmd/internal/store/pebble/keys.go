@@ -42,6 +42,8 @@ const (
 	KeyModelFavoriteAccountPrefix                  = "model_favorite/account/"
 	KeyModelProfileAccountPrefix                   = "model_profile/account/"
 	KeyModelProfileNameAccountPrefix               = "model_profile/name_by_account/"
+	KeySwarmProfileAccountPrefix                   = "swarm_profile/account/"
+	KeySwarmProfileNameAccountPrefix               = "swarm_profile/name_by_account/"
 	KeyWorktreeGlobalConfig                        = "worktree/global/config"
 	KeyWorktreeConfigPrefix                        = "worktree/config/" // legacy single-workspace config prefix; retained for migration.
 	KeyWorktreeConfigAccountPrefix                 = "worktree/config_by_account/"
@@ -214,6 +216,22 @@ func ModelProfileNamePrefixForAccount(accountScopeID string) string {
 		return KeyModelProfileNameAccountPrefix
 	}
 	return fmt.Sprintf("%s%s/", KeyModelProfileNameAccountPrefix, accountPart)
+}
+
+func KeySwarmProfileForAccount(accountScopeID, profileID string) string {
+	return fmt.Sprintf("%s%s/%s", KeySwarmProfileAccountPrefix, keyPart(accountScopeID), keyPart(profileID))
+}
+
+func SwarmProfilePrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeySwarmProfileAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeySwarmProfileAccountPrefix, accountPart)
+}
+
+func KeySwarmProfileNameForAccount(accountScopeID, normalizedName string) string {
+	return fmt.Sprintf("%s%s/%s", KeySwarmProfileNameAccountPrefix, keyPart(accountScopeID), keyPart(normalizedName))
 }
 
 func IdentityPrefix() string {

@@ -18,6 +18,7 @@ type Store struct {
 	path             string
 	sessionMutations *sessionMutationCoordinator
 	modelProfilesMu  sync.Mutex
+	swarmProfilesMu  sync.Mutex
 }
 
 func Open(path string) (*Store, error) {

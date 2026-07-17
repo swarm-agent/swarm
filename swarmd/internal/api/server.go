@@ -75,6 +75,7 @@ type Server struct {
 	agents                      *agentruntime.Service
 	model                       *model.Service
 	modelProfiles               *modelprofile.Service
+	swarmProfiles               *modelprofile.SwarmService
 	runner                      runService
 	runStreams                  *runStreamManager
 	v3RealtimeOutbox            *v3RealtimeOutboxHub
@@ -283,6 +284,13 @@ func (s *Server) SetModelProfileService(service *modelprofile.Service) {
 		return
 	}
 	s.modelProfiles = service
+}
+
+func (s *Server) SetSwarmProfileService(service *modelprofile.SwarmService) {
+	if s == nil {
+		return
+	}
+	s.swarmProfiles = service
 }
 
 func (s *Server) SetWebPushService(service *webpush.Service) {

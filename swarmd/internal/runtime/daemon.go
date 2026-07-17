@@ -277,6 +277,8 @@ func New(cfg config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("seed ui swarm name: %w", err)
 	}
 	toolRuntime.SetManageWorktreeServices(sessionSvc, workspaceSvc, worktreeSvc)
+	// Agent persistence remains wired for session selection and orchestration, but
+	// the AI-facing manage-agent tool is disabled for the MVP compiled crew.
 	toolRuntime.SetManageAgentService(agentSvc)
 	toolRuntime.SetManageOrchestrationPolicyService(permissionSvc)
 	toolRuntime.SetManageTodoService(todoSvc)
@@ -389,6 +391,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetCodexAccountClient(codexClient)
 	apiServer.SetWebPushService(webPushSvc)
 	apiServer.SetModelProfileService(modelprofile.NewService(pebblestore.NewModelProfileStore(store)))
+	apiServer.SetSwarmProfileService(modelprofile.NewSwarmService(pebblestore.NewSwarmProfileStore(store)))
 	apiServer.SetIdentityService(identitySvc)
 	apiServer.SetIdentitySessionService(identitySessionSvc)
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)

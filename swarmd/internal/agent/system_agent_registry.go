@@ -278,7 +278,7 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"task":                {Enabled: pebblestore.BoolPtr(true)},
 			"skill_use":           {Enabled: pebblestore.BoolPtr(true)},
 			"manage_skill":        {Enabled: pebblestore.BoolPtr(true)},
-			"manage_agent":        {Enabled: pebblestore.BoolPtr(true)},
+			"manage_agent":        {Enabled: pebblestore.BoolPtr(false)},
 			"manage_integrations": {Enabled: pebblestore.BoolPtr(true)},
 			"manage_image":        {Enabled: pebblestore.BoolPtr(true)},
 			"manage_theme":        {Enabled: pebblestore.BoolPtr(true)},
