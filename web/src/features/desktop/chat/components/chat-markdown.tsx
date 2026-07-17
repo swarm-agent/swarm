@@ -1167,27 +1167,48 @@ function PlanManageToolView({ toolMessage }: { toolMessage: StructuredToolMessag
     || toolJsonString(document, "active_checkpoint_id");
   const title = toolJsonString(plan, "title") || toolJsonString(payload, "title");
   const status = planTransitionStatus(payload);
-  const failed = toolMessage.state === "error" || status.toLowerCase() === "failed" || status.toLowerCase() === "blocked";
+  const normalizedStatus = status.trim().toLowerCase().replace(/[-_]+/g, " ");
+  const tone = toolMessage.state === "error" || normalizedStatus === "failed"
+    ? "danger"
+    : normalizedStatus === "blocked"
+      ? "warning"
+      : normalizedStatus === "complete" || normalizedStatus === "completed"
+        ? "success"
+        : "primary";
+  const toneClasses = tone === "danger"
+    ? "bg-[var(--app-danger-bg)] text-[var(--app-danger)]"
+    : tone === "warning"
+      ? "bg-[var(--app-warning-bg)] text-[var(--app-warning)]"
+      : tone === "success"
+        ? "bg-[var(--app-success-bg)] text-[var(--app-success)]"
+        : "bg-[color-mix(in_srgb,var(--app-primary)_10%,transparent)] text-[var(--app-primary)]";
+  const toneTextClass = tone === "danger"
+    ? "text-[var(--app-danger)]"
+    : tone === "warning"
+      ? "text-[var(--app-warning)]"
+      : tone === "success"
+        ? "text-[var(--app-success)]"
+        : "text-[var(--app-text-subtle)]";
 
   return (
-    <div className="mb-2 min-w-0 py-1.5" data-plan-tool-transition>
-      <div className={cn(
-        "relative min-w-0 border-l-2 py-1 pl-3",
-        failed ? "border-[var(--app-danger)]" : "border-[var(--app-primary)]",
-      )}>
-        <div className="flex min-w-0 items-center gap-2">
-          <CircleDot size={13} className={cn("shrink-0", failed ? "text-[var(--app-danger)]" : "text-[var(--app-primary)]")} />
-          <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Plan transition</span>
-          {status ? <span className="ml-auto shrink-0 text-[10px] font-medium capitalize text-[var(--app-text-muted)]">{status.replace(/[-_]+/g, " ")}</span> : null}
-        </div>
-        <div className="mt-1 text-[13px] font-semibold text-[var(--app-text)]">{planTransitionLabel(action)}</div>
-        {(checkpointId || title) ? (
-          <div className="mt-0.5 min-w-0 truncate text-[11px] text-[var(--app-text-muted)]">
-            {checkpointId ? <span className="font-mono text-[var(--app-primary)]">{checkpointId}</span> : null}
-            {checkpointId && title ? <span className="px-1.5 text-[var(--app-text-subtle)]">·</span> : null}
-            {title ? <span>{title}</span> : null}
+    <div className="mb-2 min-w-0 py-1.5" data-plan-tool-transition data-plan-transition-tone={tone}>
+      <div className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className={cn("grid h-6 w-6 shrink-0 place-items-center rounded-md", toneClasses)}>
+            <CircleDot size={13} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] font-semibold leading-5 text-[var(--app-text)]">{planTransitionLabel(action)}</div>
+            {(checkpointId || title) ? (
+              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
+                {checkpointId ? <span className="font-mono text-[var(--app-text-muted)]">{checkpointId}</span> : null}
+                {checkpointId && title ? <span className="text-[var(--app-text-subtle)]">·</span> : null}
+                {title ? <span className="min-w-0 truncate">{title}</span> : null}
+              </div>
+            ) : null}
           </div>
-        ) : null}
+          {status ? <span className={cn("shrink-0 text-[10px] font-medium capitalize", toneTextClass)}>{normalizedStatus}</span> : null}
+        </div>
       </div>
     </div>
   );

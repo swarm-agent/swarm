@@ -2697,13 +2697,13 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
 function planTransitionToneClass(tone: DesktopV3PlanTransitionTone): string {
   switch (tone) {
     case "success":
-      return "border-[var(--app-success)] text-[var(--app-success)]";
+      return "bg-[var(--app-success-bg)] text-[var(--app-success)]";
     case "warning":
-      return "border-[var(--app-warning)] text-[var(--app-warning)]";
+      return "bg-[var(--app-warning-bg)] text-[var(--app-warning)]";
     case "danger":
-      return "border-[var(--app-danger)] text-[var(--app-danger)]";
+      return "bg-[var(--app-danger-bg)] text-[var(--app-danger)]";
     default:
-      return "border-[var(--app-primary)] text-[var(--app-primary)]";
+      return "bg-[color-mix(in_srgb,var(--app-primary)_10%,transparent)] text-[var(--app-primary)]";
   }
 }
 
@@ -2715,6 +2715,7 @@ function DesktopV3PlanExecutionBreak({
   const checkpoint = item.details.find((detail) => /^(Checkpoint|Completed|Resolved|Next):/i.test(detail));
   const context = item.details.find((detail) => /^(Context|Fresh context|Next):/i.test(detail) && detail !== checkpoint);
   const plan = item.details.find((detail) => /^Plan:/i.test(detail));
+  const remainingDetails = item.details.filter((detail) => detail !== checkpoint && detail !== context && detail !== plan);
 
   return (
     <div
@@ -2722,15 +2723,21 @@ function DesktopV3PlanExecutionBreak({
       data-testid="desktop-v3-plan-execution-break"
       data-plan-transition-tone={item.tone}
     >
-      <div className={cn("min-w-0 max-w-[min(100%,44rem)] border-l-2 py-1 pl-3", planTransitionToneClass(item.tone))}>
-        <div className="flex min-w-0 items-center gap-2">
-          <CircleDot size={13} className="shrink-0" />
-          <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Plan transition</span>
+      <div className="min-w-0 max-w-[min(100%,44rem)] rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <span className={cn("mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md", planTransitionToneClass(item.tone))}>
+            <CircleDot size={13} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] font-semibold leading-5 text-[var(--app-text)]">{item.headline}</div>
+            {checkpoint ? <div className="break-words text-xs leading-5 text-[var(--app-text-muted)]">{checkpoint}</div> : null}
+            {context ? <div className="break-words text-[11px] leading-4 text-[var(--app-text-subtle)]">{context}</div> : null}
+            {remainingDetails.map((detail, index) => (
+              <div key={`${item.message.id}:detail:${index}`} className="break-words text-[11px] leading-4 text-[var(--app-text-subtle)]">{detail}</div>
+            ))}
+            {plan ? <div className="mt-1 truncate text-[10px] text-[var(--app-text-subtle)]">{plan}</div> : null}
+          </div>
         </div>
-        <div className="mt-1 text-[13px] font-semibold text-[var(--app-text)]">{item.headline}</div>
-        {checkpoint ? <div className="mt-0.5 break-words text-xs leading-5 text-[var(--app-text-muted)]">{checkpoint}</div> : null}
-        {context ? <div className="mt-0.5 break-words text-[11px] leading-4 text-[var(--app-text-subtle)]">{context}</div> : null}
-        {plan ? <div className="mt-1 truncate text-[10px] text-[var(--app-text-subtle)]">{plan}</div> : null}
       </div>
     </div>
   );

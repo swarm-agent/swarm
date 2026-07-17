@@ -67,7 +67,9 @@ function testPlanManageUsesMinimalTransitionView(): void {
   assert(markup.includes("cp-2"), "expected checkpoint identity");
   assert(markup.includes("in progress"), "expected transition status");
   assert(!markup.includes("action: start checkpoint"), "raw preview rows should not render");
-  assert(!markup.includes("rounded-2xl"), "plan transition should not render as a segmented card");
+  assert(markup.includes("rounded-xl"), "plan transition should render as a minimal card");
+  assert(markup.includes("border border-[var(--app-border)]"), "plan transition card should keep a quiet theme border");
+  assert(!markup.includes("border-l-2"), "plan transition should not return to the left-rail treatment");
 }
 
 function testTaskSwarmUsesCompactPreview(): void {
