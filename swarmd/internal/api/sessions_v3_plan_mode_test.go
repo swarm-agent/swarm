@@ -178,6 +178,7 @@ func TestSessionsV3PlanModeDedicatedLifecycleEndpointsSuccess(t *testing.T) {
 		}{
 			{name: "start", path: "/plan-mode/checkpoints/cp-1/start", transition: "start_checkpoint", doc: sessionsV3PlanModeTestDocument("plan-start-cp", sessionruntime.PlanExecutionPolicyModeAutomatic, sessionruntime.PlanExecutionShapeCheckpointed, "cp-1", []pebblestore.SessionPlanCheckpoint{{ID: "cp-1"}})},
 			{name: "continue", path: "/plan-mode/checkpoints/cp-1/continue", transition: "continue_checkpoint", doc: sessionsV3PlanModeTestDocument("plan-continue-cp", sessionruntime.PlanExecutionPolicyModeAutomatic, sessionruntime.PlanExecutionShapeCheckpointed, "cp-1", []pebblestore.SessionPlanCheckpoint{{ID: "cp-1"}})},
+			{name: "resume", path: "/plan-mode/checkpoints/cp-1/resume", transition: "resume_checkpoint", doc: sessionsV3PlanModeTestDocument("plan-resume-cp", sessionruntime.PlanExecutionPolicyModeAutomatic, sessionruntime.PlanExecutionShapeCheckpointed, "cp-1", []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: sessionruntime.PlanCheckpointStatusPaused, AttemptID: "old-attempt", RunID: "old-run", SessionID: "old-session", Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "old-attempt", CheckpointID: "cp-1", Status: sessionruntime.PlanCheckpointStatusPaused, Outcome: sessionruntime.PlanCheckpointStatusPaused, RunID: "old-run", SessionID: "old-session"}}}})},
 			{name: "restart", path: "/plan-mode/checkpoints/cp-1/restart", transition: "restart_checkpoint", doc: sessionsV3PlanModeTestDocument("plan-restart-cp", sessionruntime.PlanExecutionPolicyModeAutomatic, sessionruntime.PlanExecutionShapeCheckpointed, "cp-1", []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: sessionruntime.PlanCheckpointStatusCompleted, AttemptID: "old-attempt", RunID: "old-run"}})},
 			{name: "rewind", path: "/plan-mode/checkpoints/cp-1/rewind", transition: "rewind_to_checkpoint", doc: sessionsV3PlanModeTestDocument("plan-rewind-cp", sessionruntime.PlanExecutionPolicyModeAutomatic, sessionruntime.PlanExecutionShapeCheckpointed, "cp-2", []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: sessionruntime.PlanCheckpointStatusCompleted, Review: &pebblestore.SessionPlanCheckpointReview{Status: sessionruntime.PlanCheckpointReviewStatusApproved}}, {ID: "cp-2", Status: sessionruntime.PlanCheckpointStatusFailed}})},
 		} {
@@ -189,6 +190,13 @@ func TestSessionsV3PlanModeDedicatedLifecycleEndpointsSuccess(t *testing.T) {
 
 				payload := postSessionsV3PlanModeTestJSON(t, server, created.ID, action.path, `{}`)
 				assertSessionsV3PlanModeQueuedRun(t, payload, sessionSvc, created.ID, action.transition, "cp-1")
+				intent, ok, err := sessionSvc.GetSessionActiveRunIntent(created.ID)
+				if err != nil || !ok {
+					t.Fatalf("queued run intent = %#v ok=%t err=%v", intent, ok, err)
+				}
+				if got := intent.ResumeContext; got != (action.transition == "resume_checkpoint") {
+					t.Fatalf("resume context = %t for transition %q", got, action.transition)
+				}
 			})
 		}
 	})

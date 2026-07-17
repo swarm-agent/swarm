@@ -6,6 +6,7 @@ import type { DesktopSessionPlanCheckpoint } from "../types/chat";
 import type { DesktopPlanExecutionView } from "../../state/desktop-v3-cache-selectors";
 type DesktopPlanExecutionSidebarAction =
   | "accept_checkpoint"
+  | "resume_checkpoint"
   | "restart_checkpoint"
   | "resolve_blocked_checkpoint"
   | "resolve_blocked_only"
@@ -467,8 +468,8 @@ function ActionsSection({
   const automatic = view.policyMode === "automatic";
   const acceptBusy =
     busyAction === actionBusyKey("accept_checkpoint", checkpointId);
-  const restartBusy =
-    busyAction === actionBusyKey("restart_checkpoint", checkpointId);
+  const resumeBusy =
+    busyAction === actionBusyKey("resume_checkpoint", checkpointId);
   const automaticBusy = busyAction === actionBusyKey("resume_automatic");
   const checkpointedBusy = busyAction === actionBusyKey("resume_checkpointed");
   const archiveBusy = busyAction === actionBusyKey("archive_plan");
@@ -522,7 +523,7 @@ function ActionsSection({
             Checkpoint paused
           </div>
           <p className="mt-0.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
-            Resume the same checkpoint with a fresh attempt. No new checkpoint is added.
+            Continue the same checkpoint in this session with the work already completed.
           </p>
         </div>
         <div className="mt-3 grid gap-1.5">
@@ -530,9 +531,9 @@ function ActionsSection({
             type="button"
             size="sm"
             variant="primary"
-            className={cn("rounded-lg", restartBusy ? "animate-pulse" : "")}
-            onClick={() => void onAction?.({ action: "restart_checkpoint", checkpointId })}
-            disabled={!onAction || !checkpointId || restartBusy}
+            className={cn("rounded-lg", resumeBusy ? "animate-pulse" : "")}
+            onClick={() => void onAction?.({ action: "resume_checkpoint", checkpointId })}
+            disabled={!onAction || !checkpointId || resumeBusy}
           >
             Resume checkpoint
           </Button>

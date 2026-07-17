@@ -306,6 +306,20 @@ export async function resolveDesktopPlanBlockedCheckpoint(
   );
 }
 
+export async function resumeDesktopPlanCheckpoint(
+  sessionId: string,
+  checkpointId: string,
+  input: DesktopPlanCheckpointInput = {},
+): Promise<DesktopPlanLifecycleResponse> {
+  return postDesktopPlanLifecycle(
+    sessionId,
+    `checkpoints/${encodePathSegment(checkpointId)}/resume`,
+    {
+      plan_id: trimmed(input.planId),
+    },
+  );
+}
+
 export async function restartDesktopPlanCheckpoint(
   sessionId: string,
   checkpointId: string,

@@ -9,6 +9,7 @@ import {
   pauseDesktopPlanRun,
   resolveDesktopPlanBlockedCheckpoint,
   restartDesktopPlanCheckpoint,
+  resumeDesktopPlanCheckpoint,
   resumeDesktopPlanAutomatic,
   resumeDesktopPlanCheckpointed,
   rewindDesktopPlanCheckpoint,
@@ -404,6 +405,7 @@ test("checkpoint start reset controls call dedicated endpoints without run strea
 
   try {
     await startDesktopPlanCheckpoint("session-1", "cp-1", { planId: "plan-1" });
+    await resumeDesktopPlanCheckpoint("session-1", "cp-1", { planId: "plan-1" });
     await restartDesktopPlanCheckpoint("session-1", "cp-1", {
       planId: "plan-1",
     });
@@ -417,6 +419,10 @@ test("checkpoint start reset controls call dedicated endpoints without run strea
   assert.deepEqual(calls, [
     {
       url: "/v3/sessions/session-1/plan-mode/checkpoints/cp-1/start",
+      body: { plan_id: "plan-1" },
+    },
+    {
+      url: "/v3/sessions/session-1/plan-mode/checkpoints/cp-1/resume",
       body: { plan_id: "plan-1" },
     },
     {

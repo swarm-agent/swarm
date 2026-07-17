@@ -260,6 +260,50 @@ func TestSessionV3OrdinaryAgentResolutionKeepsCurrentAccountToolContract(t *test
 	}
 }
 
+func TestSessionV3ProviderCheckpointResumeKeepsProviderContext(t *testing.T) {
+	job := sessionV3ExecutorJob{CheckpointID: "cp-1", ResumeContext: true}
+	scope := sessionV3ProviderJobCheckpointScope(job)
+	if scope.FreshContext || sessionV3ProviderCheckpointFreshContext(job, scope) {
+		t.Fatalf("resume checkpoint unexpectedly requested fresh provider context: job=%#v scope=%#v", job, scope)
+	}
+	if sessionV3ProviderCheckpointFreshContext(sessionV3ExecutorJob{CheckpointID: "cp-1"}, sessionV3ProviderCheckpointScope{FreshContext: true}) == false {
+		t.Fatal("explicit checkpoint restart must keep fresh provider context")
+	}
+}
+
+func TestSessionV3ProviderCheckpointResumeFallsBackToParentEpochInput(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "resume-parent-context-create", "resume parent context", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model"})
+	parent, ok, err := sessionSvc.GetActiveExecutionEpoch(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get parent epoch: ok=%t err=%v", ok, err)
+	}
+	result, err := sessionSvc.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{
+		SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID,
+		ClientRequestID: "resume-parent-context", PayloadHash: "resume-parent-context-hash",
+		Reason: "resume_checkpoint", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-2",
+		RunID: "resume-run", RunSessionID: created.ID, ParentSessionID: created.ID, ResumeContext: true,
+	})
+	if err != nil {
+		t.Fatalf("begin resume epoch: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	messages, err := exec.sessionV3ProviderContextMessages(sessionV3ExecutorJob{SessionID: created.ID, RunID: "resume-run", EpochID: result.Epoch.EpochID, CheckpointID: "cp-1", ResumeContext: true})
+	if err != nil {
+		t.Fatalf("resume context messages: %v", err)
+	}
+	input := sessionsV3ProviderInput(messages)
+	if len(input) == 0 {
+		t.Fatal("resume provider input is empty")
+	}
+	if !sessionsV3ProviderInputContainsContentText(input, "resume parent context") {
+		t.Fatalf("resume provider input = %+v, want parent session context", input)
+	}
+	if result.Epoch.ParentEpochID != parent.EpochID {
+		t.Fatalf("resume parent epoch = %q, want %q", result.Epoch.ParentEpochID, parent.EpochID)
+	}
+}
+
 func TestSessionV3ProviderCheckpointScopeFromFreshPayloadOverridesStaleJobScope(t *testing.T) {
 	scope := sessionV3ProviderCheckpointScopeFromPayload(sessionV3ProviderCheckpointScope{
 		PlanID:          "old-plan",

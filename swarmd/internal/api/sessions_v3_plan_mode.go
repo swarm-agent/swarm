@@ -224,6 +224,9 @@ func (s *Server) handleSessionV3PrimaryPlanMode(w http.ResponseWriter, r *http.R
 			case "accept":
 				s.handleSessionV3PrimaryPlanModeAcceptCheckpoint(w, r, principal, sessionID, parts[0])
 				return
+			case "resume":
+				s.handleSessionV3PrimaryPlanModeResumeCheckpoint(w, r, principal, sessionID, parts[0])
+				return
 			case "restart":
 				s.handleSessionV3PrimaryPlanModeRestartCheckpoint(w, r, principal, sessionID, parts[0])
 				return
@@ -631,6 +634,10 @@ func (s *Server) handleSessionV3PrimaryPlanModeAcceptCheckpoint(w http.ResponseW
 	s.finishSessionsV3PlanModeLifecycle(w, principal, sessionID, "accept_checkpoint", result, nil)
 }
 
+func (s *Server) handleSessionV3PrimaryPlanModeResumeCheckpoint(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, checkpointID string) {
+	s.handleSessionV3PrimaryPlanModeResetCheckpointWithMethod(w, r, principal, sessionID, checkpointID, "resume_checkpoint", s.planLifecycle.ResumeCheckpointRun)
+}
+
 func (s *Server) handleSessionV3PrimaryPlanModeRestartCheckpoint(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, checkpointID string) {
 	s.handleSessionV3PrimaryPlanModeResetCheckpointWithMethod(w, r, principal, sessionID, checkpointID, "restart_checkpoint", s.planLifecycle.RestartCheckpointRun)
 }
@@ -838,7 +845,8 @@ func (s *Server) startSessionsV3PlanModeRun(principal identity.Principal, sessio
 	}
 	payloadHash := sessionsV3PlanModeRunIntentPayloadHash(sessionID, runID, checkpointID, attemptID)
 	clientRequestID := fmt.Sprintf("plan-mode-run:%s:%s", strings.TrimSpace(sessionID), strings.TrimSpace(runID))
-	epochResult, err := s.sessions.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, PayloadHash: payloadHash, Reason: strings.TrimSpace(transition), PlanID: strings.TrimSpace(result.Plan.ID), CheckpointID: checkpointID, AttemptID: attemptID, RunID: runID, RunSessionID: sessionID, ParentSessionID: sessionID, NowUnixMs: time.Now().UnixMilli()})
+	resumeContext := strings.EqualFold(strings.TrimSpace(transition), "resume_checkpoint")
+	epochResult, err := s.sessions.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, PayloadHash: payloadHash, Reason: strings.TrimSpace(transition), PlanID: strings.TrimSpace(result.Plan.ID), CheckpointID: checkpointID, AttemptID: attemptID, RunID: runID, RunSessionID: sessionID, ParentSessionID: sessionID, ResumeContext: resumeContext, NowUnixMs: time.Now().UnixMilli()})
 	if err != nil {
 		return nil, http.StatusConflict, err
 	}
@@ -852,7 +860,7 @@ func (s *Server) startSessionsV3PlanModeRun(principal identity.Principal, sessio
 	_ = s.publishCommittedV3RealtimeOutbox(epochResult.Outbox)
 	runStart := &sessionsV3PlanModeRunStart{RunIntent: &intent, CheckpointID: checkpointID, AttemptID: attemptID}
 	if !epochResult.Replayed && intent.Status == sessionruntime.RunIntentPendingExecutor && s.v3SessionExecutor != nil {
-		runStart.Queued = s.v3SessionExecutor.EnqueueRun(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID, EpochID: epochResult.Epoch.EpochID, PlanID: result.Plan.ID, CheckpointID: checkpointID, AttemptID: attemptID, ParentSessionID: sessionID})
+		runStart.Queued = s.v3SessionExecutor.EnqueueRun(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID, EpochID: epochResult.Epoch.EpochID, PlanID: result.Plan.ID, CheckpointID: checkpointID, AttemptID: attemptID, ParentSessionID: sessionID, ResumeContext: resumeContext})
 	}
 	return runStart, http.StatusAccepted, nil
 }

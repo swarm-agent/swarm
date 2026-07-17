@@ -107,6 +107,7 @@ type BeginExecutionEpochInput struct {
 	AttemptID       string                  `json:"attempt_id,omitempty"`
 	RunSessionID    string                  `json:"run_session_id,omitempty"`
 	ParentSessionID string                  `json:"parent_session_id,omitempty"`
+	ResumeContext   bool                    `json:"resume_context,omitempty"`
 	SourceMessageID string                  `json:"source_message_id,omitempty"`
 	TriggerMessage  *MessageSnapshot        `json:"trigger_message,omitempty"`
 	SkipRunIntent   bool                    `json:"skip_run_intent,omitempty"`
@@ -737,7 +738,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 			return BeginExecutionEpochResult{}, getErr
 		}
 		if !ok {
-			run = V3SessionRunIntent{SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, RunID: strings.TrimSpace(input.RunID), Status: V3RunIntentPendingExecutor, CreatedAt: now}
+			run = V3SessionRunIntent{SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, RunID: strings.TrimSpace(input.RunID), Status: V3RunIntentPendingExecutor, CreatedAt: now, ResumeContext: input.ResumeContext}
 		}
 		if ok {
 			previousStatusKey := KeyV3SessionRunIntentStatus(run.Status, run.UpdatedAt, run.AccountScopeID, run.SessionID, run.RunID)
@@ -751,6 +752,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		run.AttemptID = epoch.Boundary.AttemptID
 		run.RunSessionID = epoch.Boundary.RunSessionID
 		run.ParentSessionID = epoch.Boundary.ParentSessionID
+		run.ResumeContext = input.ResumeContext
 		run.UpdatedAt = now
 		run.EventSeq = epochLastSeq
 		raw, marshalErr := json.Marshal(run)

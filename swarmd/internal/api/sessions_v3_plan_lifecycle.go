@@ -189,6 +189,8 @@ func sessionsV3PlanLifecycleMessagePayload(result sessionruntime.PlanLifecycleRe
 		payload["next_action"] = "stopped"
 	} else if result.Summary.NextCheckpointID != "" {
 		switch strings.TrimSpace(result.Action) {
+		case "resume_checkpoint":
+			payload["next_action"] = "resume_checkpoint_context"
 		case "start_checkpoint", "continue_checkpoint", "restart_checkpoint", "rewind_to_checkpoint":
 			payload["next_action"] = "run_checkpoint_with_fresh_context"
 		case "resolve_blocked_checkpoint":

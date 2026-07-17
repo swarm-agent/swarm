@@ -65,6 +65,7 @@ type sessionV3ExecutorJob struct {
 	AttemptID       string
 	RunSessionID    string
 	ParentSessionID string
+	ResumeContext   bool
 	enqueuedAt      time.Time
 }
 
@@ -87,6 +88,7 @@ func sessionV3RunIntentForJob(job sessionV3ExecutorJob, status string, now int64
 		AttemptID:       strings.TrimSpace(job.AttemptID),
 		RunSessionID:    strings.TrimSpace(firstNonEmptyString(job.RunSessionID, job.SessionID)),
 		ParentSessionID: strings.TrimSpace(job.ParentSessionID),
+		ResumeContext:   job.ResumeContext,
 		UpdatedAt:       now,
 	}
 }
@@ -315,6 +317,7 @@ func hydrateSessionV3ExecutorJobFromIntent(job sessionV3ExecutorJob, intent pebb
 	if job.ParentSessionID == "" {
 		job.ParentSessionID = strings.TrimSpace(intent.ParentSessionID)
 	}
+	job.ResumeContext = intent.ResumeContext
 	return job
 }
 
@@ -396,6 +399,7 @@ func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
 			AttemptID:       intent.AttemptID,
 			RunSessionID:    intent.RunSessionID,
 			ParentSessionID: intent.ParentSessionID,
+			ResumeContext:   intent.ResumeContext,
 		}
 		if strings.TrimSpace(job.Principal.UserID) == "" || strings.TrimSpace(job.Principal.AccountScopeID) == "" {
 			if session, ok, err := e.server.sessions.GetSession(intent.SessionID); err != nil {
@@ -1404,7 +1408,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	var messages []pebblestore.MessageSnapshot
 	var input []map[string]any
 	checkpointRestartInput := false
-	if !forceCommittedContext && (strings.TrimSpace(job.CheckpointID) != "" || strings.TrimSpace(job.PlanID) != "") {
+	if !forceCommittedContext && !job.ResumeContext && (strings.TrimSpace(job.CheckpointID) != "" || strings.TrimSpace(job.PlanID) != "") {
 		checkpointInput, ok, checkpointErr := e.sessionV3ProviderCheckpointRestartInput(ctx, job, resolved, "")
 		if checkpointErr != nil {
 			return sessionV3AssistantResponse{}, checkpointErr
@@ -1982,7 +1986,7 @@ func sessionV3ProviderJobCheckpointScope(job sessionV3ExecutorJob) sessionV3Prov
 		CheckpointID:    checkpointID,
 		AttemptID:       strings.TrimSpace(job.AttemptID),
 		ParentSessionID: strings.TrimSpace(job.ParentSessionID),
-		FreshContext:    checkpointID != "",
+		FreshContext:    checkpointID != "" && !job.ResumeContext,
 	}
 }
 
@@ -2123,7 +2127,7 @@ func sessionV3ProviderForceFreshContext(job sessionV3ExecutorJob, previousLineag
 }
 
 func sessionV3ProviderCheckpointFreshContext(job sessionV3ExecutorJob, checkpointScope sessionV3ProviderCheckpointScope) bool {
-	return strings.TrimSpace(job.CheckpointID) != "" || checkpointScope.FreshContext
+	return !job.ResumeContext && (strings.TrimSpace(job.CheckpointID) != "" || checkpointScope.FreshContext)
 }
 
 func sessionV3ProviderBoundaryReasonWithOverride(current, override string) string {
@@ -2928,6 +2932,12 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 	if err != nil {
 		return nil, err
 	}
+	if job.ResumeContext {
+		messages, err = e.sessionV3ProviderResumeContextMessages(job.SessionID, epoch, messages)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "post_checkpoint_followup") {
 		if activePlan, planOK, planErr := e.server.sessions.GetActivePlan(job.SessionID); planErr != nil {
 			return nil, planErr
@@ -2947,6 +2957,21 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 		}
 	}
 	return runruntime.CompactMessagesForProviderContext(messages, 500), nil
+}
+
+func (e *sessionV3Executor) sessionV3ProviderResumeContextMessages(sessionID string, epoch pebblestore.ExecutionEpoch, messages []pebblestore.MessageSnapshot) ([]pebblestore.MessageSnapshot, error) {
+	if len(sessionsV3ProviderInput(messages)) != 0 {
+		return messages, nil
+	}
+	parentEpochID := strings.TrimSpace(epoch.ParentEpochID)
+	if parentEpochID == "" {
+		return messages, nil
+	}
+	_, parentMessages, err := e.server.sessions.ListExecutionEpochMessages(sessionID, parentEpochID, 0)
+	if err != nil {
+		return nil, fmt.Errorf("v3 resume checkpoint parent context resolve failed: %w", err)
+	}
+	return parentMessages, nil
 }
 
 func (e *sessionV3Executor) sessionV3ProviderPlanFreshContextBoundary(job sessionV3ExecutorJob, messages []pebblestore.MessageSnapshot) (*pebblestore.MessageSnapshot, int, error) {

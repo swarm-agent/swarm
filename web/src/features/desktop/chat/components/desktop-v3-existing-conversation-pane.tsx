@@ -19,7 +19,6 @@ import {
   LoaderCircle,
   XCircle,
 } from "lucide-react";
-import { Button } from "../../../../components/ui/button";
 import { cn } from "../../../../lib/cn";
 import { ChatMarkdown } from "./chat-markdown";
 import {
@@ -117,6 +116,7 @@ import {
   archiveDesktopV3Sessions,
   resolveDesktopPlanBlockedCheckpoint,
   restartDesktopPlanCheckpoint,
+  resumeDesktopPlanCheckpoint,
   resumeDesktopPlanAutomatic,
   resumeDesktopPlanCheckpointed,
 } from "../../session-v3/plan-execution-api";
@@ -2246,6 +2246,14 @@ export function DesktopV3ExistingConversationPane({
         case "archive_plan":
           await archiveDesktopV3Sessions([normalizedSessionId]);
           onArchivePlanSession?.(normalizedSessionId);
+          break;
+        case "resume_checkpoint":
+          if (!input.checkpointId)
+            throw new Error("Resume checkpoint requires checkpoint_id");
+          await resumeDesktopPlanCheckpoint(
+            normalizedSessionId,
+            input.checkpointId,
+          );
           break;
         case "restart_checkpoint":
           if (!input.checkpointId)

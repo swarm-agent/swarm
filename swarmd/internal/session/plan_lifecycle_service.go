@@ -867,6 +867,10 @@ func (s *PlanLifecycleService) ApproveAndStartPlanCheckpointed(input PlanLifecyc
 	return s.approveAndStartCheckpoint(input, "start_plan_checkpointed", PlanAcceptanceExecutionOptions{ExecutionGranularity: input.ExecutionGranularity, ContinuationPolicy: input.ContinuationPolicy})
 }
 
+func (s *PlanLifecycleService) ResumeCheckpointRun(input PlanLifecycleExecutionInput) (PlanLifecycleResult, error) {
+	return s.resetAndStartCheckpoint(input, false, "resume_checkpoint")
+}
+
 func (s *PlanLifecycleService) RestartCheckpointRun(input PlanLifecycleExecutionInput) (PlanLifecycleResult, error) {
 	return s.resetAndStartCheckpoint(input, false, "restart_checkpoint")
 }

@@ -341,6 +341,7 @@ type V3SessionRunIntent struct {
 	AttemptID            string `json:"attempt_id,omitempty"`
 	RunSessionID         string `json:"run_session_id,omitempty"`
 	ParentSessionID      string `json:"parent_session_id,omitempty"`
+	ResumeContext        bool   `json:"resume_context,omitempty"`
 }
 
 type V3SessionRunState struct {
@@ -364,6 +365,7 @@ type V3SessionRunState struct {
 	AttemptID            string `json:"attempt_id,omitempty"`
 	RunSessionID         string `json:"run_session_id,omitempty"`
 	ParentSessionID      string `json:"parent_session_id,omitempty"`
+	ResumeContext        bool   `json:"resume_context,omitempty"`
 }
 
 type V3SessionReplay struct {
@@ -1984,6 +1986,7 @@ func v3SessionRunStateFromIntent(intent V3SessionRunIntent) V3SessionRunState {
 		AttemptID:       strings.TrimSpace(intent.AttemptID),
 		RunSessionID:    strings.TrimSpace(intent.RunSessionID),
 		ParentSessionID: strings.TrimSpace(intent.ParentSessionID),
+		ResumeContext:   intent.ResumeContext,
 	}
 }
 
@@ -2041,6 +2044,7 @@ func v3SessionRunIntentFromState(state V3SessionRunState) V3SessionRunIntent {
 		AttemptID:       strings.TrimSpace(state.AttemptID),
 		RunSessionID:    strings.TrimSpace(state.RunSessionID),
 		ParentSessionID: strings.TrimSpace(state.ParentSessionID),
+		ResumeContext:   state.ResumeContext,
 	}, state)
 }
 
