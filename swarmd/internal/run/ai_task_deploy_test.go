@@ -19,6 +19,10 @@ func TestParseAITaskPreparationStrict(t *testing.T) {
 	if err != nil || got.Mode != "auto" || !got.Worktree {
 		t.Fatalf("got %#v, %v", got, err)
 	}
+	normalized, err := ParseAITaskPreparation(`{"title":"x","prompt":"y","mode":"auto","worktree":false}`)
+	if err != nil || !normalized.Worktree {
+		t.Fatalf("worktree policy normalization = %#v, %v", normalized, err)
+	}
 	for _, raw := range []string{
 		`{"title":"x","prompt":"y","mode":"later","worktree":true}`,
 		`{"title":"x","prompt":"y","mode":"auto","worktree":true,"session_id":"escape"}`,
@@ -105,10 +109,13 @@ func TestExecutePreparedAITaskCreatesManagedWorktreeSessionAndDurableLinkage(t *
 	svc.SetAITaskBinder(todoSvc)
 
 	managedPath := filepath.Join(t.TempDir(), "managed-worktree")
-	worktrees := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{
-		RepoRoot: workspacePath, WorkspacePath: managedPath, WorkspaceID: "ws_ai_task",
-		BaseBranch: "dev", BranchName: "agent/fix-queued-task",
-	}}
+	worktrees := &taskLaunchWorktreeStub{
+		config: worktreeruntime.Config{WorkspacePath: workspacePath, BaseBranch: "release", BranchName: "feature/<id>"},
+		allocation: worktreeruntime.Allocation{
+			RepoRoot: workspacePath, WorkspacePath: managedPath, WorkspaceID: "ws_ai_task",
+			BaseBranch: "release", BranchName: "feature/fix-queued-task",
+		},
+	}
 	svc.SetWorktreeService(worktrees)
 	svc.SetSessionDeployCanonicalizer(func(input SessionDeployCanonicalizeInput) (SessionDeployCanonicalization, error) {
 		metadata := input.Metadata
@@ -130,7 +137,9 @@ func TestExecutePreparedAITaskCreatesManagedWorktreeSessionAndDurableLinkage(t *
 		return true
 	})
 
-	preparation := AITaskPreparation{Title: "Fix queued task", Prompt: "Implement the narrow fix", Mode: sessionruntime.ModeAuto, Worktree: true}
+	// The server owns placement policy even if a stale preparer response asks for
+	// the base workspace.
+	preparation := AITaskPreparation{Title: "Fix queued task", Prompt: "Implement the narrow fix", Mode: sessionruntime.ModeAuto, Worktree: false}
 	if err := todoSvc.BindAITask(parent.AccountScopeID, workspacePath, queued.ID, "queued", "preparing", "", false, "", ""); err != nil {
 		t.Fatalf("claim queued AI task: %v", err)
 	}
@@ -152,8 +161,11 @@ func TestExecutePreparedAITaskCreatesManagedWorktreeSessionAndDurableLinkage(t *
 	if err != nil || !ok {
 		t.Fatalf("load managed session: ok=%t err=%v", ok, err)
 	}
-	if !managed.WorktreeEnabled || managed.WorkspacePath != managedPath || managed.WorktreeBranch != "agent/fix-queued-task" {
+	if !managed.WorktreeEnabled || managed.WorkspacePath != managedPath || managed.WorktreeBaseBranch != "release" || managed.WorktreeBranch != "feature/fix-queued-task" {
 		t.Fatalf("managed worktree session = %#v", managed)
+	}
+	if worktrees.requestedBase != "release" || worktrees.requestedBranch != "feature/fix-queued-task" {
+		t.Fatalf("worktree allocation used base=%q branch=%q", worktrees.requestedBase, worktrees.requestedBranch)
 	}
 	if mapString(managed.Metadata, "ai_task_id") != queued.ID || mapString(managed.Metadata, "ai_task_workspace_path") != workspacePath {
 		t.Fatalf("reciprocal AI task metadata = %#v", managed.Metadata)

@@ -3937,6 +3937,30 @@ export function DesktopAppPage() {
     })
   }, [])
 
+  const handleGitCommit = async () => {
+    const message = gitCommitMessage.trim()
+    if (!gitCommitModal || gitCommitBusy || !message) return
+
+    setGitCommitBusy(true)
+    setGitCommitError(null)
+    try {
+      await commitWorkspaceChanges({
+        workspacePath: gitCommitModal.workspacePath,
+        sessionId: gitCommitModal.sessionId,
+        message,
+        all: true,
+      })
+      setGitCommitModal(null)
+      setGitCommitMessage('')
+      setDesktopToast({ message: 'Changes committed successfully.', tone: 'success' })
+      await gitStatusQuery.refetch()
+    } catch (error) {
+      setGitCommitError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setGitCommitBusy(false)
+    }
+  }
+
   const planSidebarGitPanel = selectedGitSessionId && selectedGitWorkspacePath ? (
     <section data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-col overflow-hidden">
       <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
@@ -4697,11 +4721,13 @@ export function DesktopAppPage() {
       {gitCommitModal ? <Dialog>
         <DialogBackdrop onClick={() => { if (!gitCommitBusy) setGitCommitModal(null) }} />
         <DialogPanel className="w-[min(560px,100%)] gap-4">
-          <div><div className="text-sm font-semibold text-[var(--app-text)]">Commit all changes</div><div className="mt-1 text-xs text-[var(--app-text-subtle)]">This explicitly stages and commits all {gitCommitModal.files.length} shown files, including untracked files.</div></div>
-          <div className="max-h-48 overflow-y-auto border border-[var(--app-border)] font-mono text-xs">{gitCommitModal.files.map((file) => <div key={`${file.kind}:${file.path}`} className="flex gap-2 border-b border-[var(--app-border)] px-2 py-1 last:border-0"><span className="text-[var(--app-text-subtle)]">{gitFileStatusLabel(file)}</span><span className="truncate">{file.path}</span></div>)}</div>
-          <label className="grid gap-1 text-xs text-[var(--app-text-muted)]"><span>Commit message</span><input autoFocus value={gitCommitMessage} onChange={(event) => setGitCommitMessage(event.target.value)} className="h-10 border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[var(--app-text)] outline-none" /></label>
-          {gitCommitError ? <div className="text-xs text-[var(--app-warning)]">{gitCommitError}</div> : null}
-          <div className="flex justify-end gap-2"><Button variant="ghost" disabled={gitCommitBusy} onClick={() => setGitCommitModal(null)}>Cancel</Button><Button disabled={gitCommitBusy || !gitCommitMessage.trim()} onClick={() => { void (async () => { setGitCommitBusy(true); setGitCommitError(null); try { await commitWorkspaceChanges({ workspacePath: gitCommitModal.workspacePath, sessionId: gitCommitModal.sessionId, message: gitCommitMessage.trim(), all: true }); setGitCommitModal(null); setGitCommitMessage(''); await gitStatusQuery.refetch() } catch (error) { setGitCommitError(error instanceof Error ? error.message : String(error)) } finally { setGitCommitBusy(false) } })() }}>{gitCommitBusy ? 'Committing…' : 'Commit all changes'}</Button></div>
+          <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void handleGitCommit() }}>
+            <div><div className="text-sm font-semibold text-[var(--app-text)]">Commit all changes</div><div className="mt-1 text-xs text-[var(--app-text-subtle)]">This explicitly stages and commits all {gitCommitModal.files.length} shown files, including untracked files.</div></div>
+            <div className="max-h-48 overflow-y-auto border border-[var(--app-border)] font-mono text-xs">{gitCommitModal.files.map((file) => <div key={`${file.kind}:${file.path}`} className="flex gap-2 border-b border-[var(--app-border)] px-2 py-1 last:border-0"><span className="text-[var(--app-text-subtle)]">{gitFileStatusLabel(file)}</span><span className="truncate">{file.path}</span></div>)}</div>
+            <label className="grid gap-1 text-xs text-[var(--app-text-muted)]"><span>Commit message</span><input autoFocus value={gitCommitMessage} onChange={(event) => setGitCommitMessage(event.target.value)} className="h-10 border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[var(--app-text)] outline-none" /></label>
+            {gitCommitError ? <div className="text-xs text-[var(--app-warning)]">{gitCommitError}</div> : null}
+            <div className="flex justify-end gap-2"><Button variant="ghost" disabled={gitCommitBusy} onClick={() => setGitCommitModal(null)}>Cancel</Button><Button type="submit" disabled={gitCommitBusy || !gitCommitMessage.trim()}>{gitCommitBusy ? 'Committing…' : 'Commit all changes'}</Button></div>
+          </form>
         </DialogPanel>
       </Dialog> : null}
       <GitDetailsOverlay

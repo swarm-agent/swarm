@@ -323,7 +323,7 @@ func CompactAgentToolContract() *pebblestore.AgentToolContract {
 }
 
 func AITaskPreparerAgentPrompt() string {
-	return strings.TrimSpace(`You are Swarm's one-shot queued-task preparer. Inspect the bound workspace using only read-only discovery tools. Return exactly one JSON object with keys title, prompt, mode, and worktree; no markdown or extra keys. title and prompt must be non-empty strings, mode must be plan for broad or large work and auto for narrow quick fixes, and worktree must be a boolean. You cannot mutate todos, sessions, plans, agents, settings, or workspace state.`)
+	return strings.TrimSpace(`You are Swarm's one-shot queued-task preparer. Inspect the bound workspace using only read-only discovery tools. Return exactly one JSON object with keys title, prompt, mode, and worktree; no markdown or extra keys. title and prompt must be non-empty strings, mode must be plan for broad or large work and auto for narrow quick fixes, and worktree must always be true because queued AI tasks run in managed worktrees using the user's configured branch settings. You cannot mutate todos, sessions, plans, agents, settings, or workspace state.`)
 }
 
 func AITaskPreparerAgentToolContract() *pebblestore.AgentToolContract {

@@ -47,6 +47,10 @@ func ParseAITaskPreparation(raw string) (AITaskPreparation, error) {
 	if out.Mode != sessionruntime.ModePlan && out.Mode != sessionruntime.ModeAuto {
 		return AITaskPreparation{}, fmt.Errorf("AI task preparation mode must be plan or auto")
 	}
+	// Worktree placement is server-owned policy for queued AI tasks, not model
+	// authority. Normalize the preparer field so a stale or noncompliant model
+	// response cannot route deployment into the base workspace.
+	out.Worktree = true
 	return out, nil
 }
 
@@ -64,7 +68,10 @@ func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, ac
 	if _, err := ParseAITaskPreparation(marshalAITaskPreparation(preparation)); err != nil {
 		return "", err
 	}
-	arguments, _ := json.Marshal(map[string]any{"action": "deploy", "proposals": []map[string]any{{"title": preparation.Title, "prompt": preparation.Prompt, "mode": preparation.Mode, "agent": agentruntime.SwarmAgentID, "workspace_path": workspacePath, "worktree": preparation.Worktree}}})
+	// Queued AI tasks always deploy through the managed-worktree branch of the
+	// canonical session deploy path. The manifest builder resolves the user's
+	// worktree base branch and branch family for both plan and auto modes.
+	arguments, _ := json.Marshal(map[string]any{"action": "deploy", "proposals": []map[string]any{{"title": preparation.Title, "prompt": preparation.Prompt, "mode": preparation.Mode, "agent": agentruntime.SwarmAgentID, "workspace_path": workspacePath, "worktree": true}}})
 	call := tool.Call{Name: "manage_sessions", Arguments: string(arguments)}
 	manifest, err := s.buildManageSessionsDeployManifest(parentSessionID, call)
 	if err != nil {

@@ -48,6 +48,25 @@ test('plan Git panel stays content-sized and scrolls only its file list when con
   assert.doesNotMatch(panelSource, /max-h-48/)
 })
 
+test('plan Git commit form submits on Enter through the shared commit handler and shows a success toast', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const handlerStart = source.indexOf('const handleGitCommit = async () =>')
+  const handlerEnd = source.indexOf('const planSidebarGitPanel =', handlerStart)
+  const handlerSource = source.slice(handlerStart, handlerEnd)
+  const modalStart = source.indexOf('{gitCommitModal ? <Dialog>')
+  const modalEnd = source.indexOf('<GitDetailsOverlay', modalStart)
+  const modalSource = source.slice(modalStart, modalEnd)
+
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
+  assert.match(handlerSource, /await commitWorkspaceChanges/)
+  assert.match(handlerSource, /setDesktopToast\(\{ message: 'Changes committed successfully\.', tone: 'success' \}\)/)
+  assert.ok(modalStart >= 0 && modalEnd > modalStart)
+  assert.match(modalSource, /<form[^>]*onSubmit=/)
+  assert.match(modalSource, /void handleGitCommit\(\)/)
+  assert.match(modalSource, /<Button type="submit"/)
+  assert.equal((modalSource.match(/commitWorkspaceChanges/g) ?? []).length, 0)
+})
+
 test('sidebar session focus clears selection immediately, including same-route clicks', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const handlerStart = source.indexOf('const handleSelectSession = useCallback')

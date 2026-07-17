@@ -423,9 +423,13 @@ func TestBuildTaskLaunchPermissionPayloadIncludesResolvedToolSummary(t *testing.
 }
 
 type taskLaunchWorktreeStub struct {
-	allocations int
-	allocation  worktreeruntime.Allocation
-	taskBase    worktreeruntime.TaskBase
+	allocations       int
+	allocation        worktreeruntime.Allocation
+	taskBase          worktreeruntime.TaskBase
+	config            worktreeruntime.Config
+	requestedBase     string
+	requestedBranch   string
+	requestedNameSeed string
 }
 
 func (s *taskLaunchWorktreeStub) AttachBranch(_, _, _ string) (string, error) { return "", nil }
@@ -451,11 +455,15 @@ func (s *taskLaunchWorktreeStub) InspectTaskWorkspace(path string) (worktreerunt
 }
 
 func (s *taskLaunchWorktreeStub) GetConfigForPrincipal(_ identity.Principal, workspacePath string) (worktreeruntime.Config, error) {
-	return worktreeruntime.Config{WorkspacePath: workspacePath, BranchName: "agent"}, nil
+	if strings.TrimSpace(s.config.WorkspacePath) == "" {
+		return worktreeruntime.Config{WorkspacePath: workspacePath, BranchName: "agent"}, nil
+	}
+	return s.config, nil
 }
 
-func (s *taskLaunchWorktreeStub) AllocateDetachedWorkspaceRequestedForPrincipal(_ identity.Principal, _, _, _, _ string) (worktreeruntime.Allocation, error) {
+func (s *taskLaunchWorktreeStub) AllocateDetachedWorkspaceRequestedForPrincipal(_ identity.Principal, _, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error) {
 	s.allocations++
+	s.requestedNameSeed, s.requestedBase, s.requestedBranch = nameSeed, baseBranch, branchName
 	return s.allocation, nil
 }
 
