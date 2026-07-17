@@ -1810,7 +1810,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
         event.preventDefault()
         event.stopPropagation()
         closeActionMenu()
-        setRenameDraft(rowTitle)
+        setRenameDraft('')
         setRenameError(null)
         setRenaming(true)
       }}
@@ -1853,7 +1853,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       }}
     >
       <Bot size={12} aria-hidden="true" />
-      <span className="min-w-0 flex-1 truncate">Subagent sessions</span>
+      <span className="min-w-0 flex-1 truncate">Subagents</span>
       <span className="ml-auto font-mono tabular-nums text-[10px] leading-none text-[var(--app-text-muted)]">{agentSummary.total}</span>
     </button>
   ) : null
