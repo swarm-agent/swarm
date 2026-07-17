@@ -33,6 +33,8 @@ func TestDurableRunStateInstructionsUsesActivePlanInsteadOfTranscript(t *testing
 		"Durable run state (authoritative", `"session_mode":"auto"`, `"run_kind":"inline_checkpoint"`, `"context_policy":"session_history"`,
 		`"execution_origin":"auto_session"`, `"plan_id":"plan-state"`, `"active_attempt_id":"attempt-1"`,
 		`"next_lifecycle_action":"continue_or_start_next_checkpoint"`, "Do not trust old transcript",
+		"do not blindly restart the stale definition", "classify whether it is the same deliverable or an independent task",
+		"restart_checkpoint with change_request and complete replacement title/tasks/acceptance_criteria/notes", "request_followup_checkpoint",
 	} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("run state missing %q: %s", want, instructions)

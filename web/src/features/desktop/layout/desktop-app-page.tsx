@@ -72,7 +72,7 @@ import { SearchChatsModal } from '../session-search/search-chats-modal'
 import type { DesktopSessionSearchItem } from '../session-search/session-search-api'
 import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortcuts/components/desktop-quick-actions-modal'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
-import { NeedsReviewCleanupPanel, NEEDS_REVIEW_AUTO_CLEANUP_EVENT, NEEDS_REVIEW_AUTO_CLEANUP_KEY } from './needs-review-cleanup-panel'
+import { ReviewWorktreesModal, NEEDS_REVIEW_AUTO_CLEANUP_EVENT, NEEDS_REVIEW_AUTO_CLEANUP_KEY } from './review-worktrees-modal'
 import { reviewDesktopV3Worktrees } from '../session-v3/review-worktrees-api'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
@@ -4304,7 +4304,7 @@ export function DesktopAppPage() {
                       <GitBranch size={13} strokeWidth={1.8} className="shrink-0" />
                     </button>
                   </div>
-                  {needsReviewCleanupOpen ? <NeedsReviewCleanupPanel workspacePath={topWorkspacePath || undefined} onClose={() => setNeedsReviewCleanupOpen(false)} /> : null}
+                  {needsReviewCleanupOpen ? <ReviewWorktreesModal workspacePath={topWorkspacePath || undefined} onClose={() => setNeedsReviewCleanupOpen(false)} /> : null}
                   {renderSidebarSessionGroups({
                     nodes: globalFlattenedSessionNodes,
                     routeSessionId,

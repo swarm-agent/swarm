@@ -151,6 +151,12 @@ type PlanLifecycleExecutionInput struct {
 	StartedAt               int64
 	StartNext               bool
 	RequestedCheckpointKind string
+	ReplacementRequest      string
+	ReplacementTitle        string
+	ReplacementTasks        []string
+	ReplacementCriteria     []string
+	ReplacementNotes        string
+	ReplacementSourceID     string
 }
 
 type PlanLifecycleResult struct {
@@ -991,7 +997,48 @@ func (s *PlanLifecycleService) RestartCheckpointFromZero(input PlanLifecycleExec
 	if _, err := ApplyPlanCheckpointReset(state.doc, PlanCheckpointResetOptions{CheckpointID: checkpointID}); err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	return s.saveLifecyclePlan(state, checkpointID, "restart_checkpoint", "Restarted checkpoint from zero and prepared fresh-context checkpoint start")
+	message := "Restarted checkpoint from zero and prepared fresh-context checkpoint start"
+	if strings.TrimSpace(input.ReplacementRequest) != "" {
+		if err := replaceRestartedCheckpointRequirements(state.doc, checkpointID, input); err != nil {
+			return PlanLifecycleResult{}, err
+		}
+		message = "Replaced checkpoint requirements and prepared fresh-context checkpoint restart"
+	}
+	return s.saveLifecyclePlan(state, checkpointID, "restart_checkpoint", message)
+}
+
+func replaceRestartedCheckpointRequirements(doc *pebblestore.SessionPlanDocument, checkpointID string, input PlanLifecycleExecutionInput) error {
+	request := strings.TrimSpace(input.ReplacementRequest)
+	if request == "" {
+		return nil
+	}
+	criteria := trimStringSlice(input.ReplacementCriteria)
+	if len(criteria) == 0 {
+		return errors.New("restart_checkpoint replacement requires acceptance_criteria")
+	}
+	idx := findPlanCheckpointIndex(doc.Checkpoints, checkpointID)
+	if idx < 0 {
+		return fmt.Errorf("plan document checkpoint %q was not found", checkpointID)
+	}
+	checkpoint := &doc.Checkpoints[idx]
+	title := strings.TrimSpace(input.ReplacementTitle)
+	if title == "" {
+		return errors.New("restart_checkpoint replacement requires checkpoint_title")
+	}
+	tasks := trimStringSlice(input.ReplacementTasks)
+	if len(tasks) == 0 {
+		return errors.New("restart_checkpoint replacement requires tasks")
+	}
+	checkpoint.Title = title
+	checkpoint.Objective = request
+	checkpoint.Tasks = tasks
+	checkpoint.Subtasks = nil
+	checkpoint.ActiveSubtaskID = ""
+	normalizePlanCheckpointSubtasks(checkpoint)
+	checkpoint.AcceptanceCriteria = criteria
+	checkpoint.Notes = buildFollowupCheckpointHandoffNotes(request, request, input.ReplacementNotes)
+	checkpoint.SourceMessageID = strings.TrimSpace(input.ReplacementSourceID)
+	return ValidatePlanDocument(doc)
 }
 
 func (s *PlanLifecycleService) RewindToCheckpoint(input PlanLifecycleExecutionInput) (PlanLifecycleResult, error) {
@@ -1132,7 +1179,14 @@ func (s *PlanLifecycleService) resetAndStartCheckpoint(input PlanLifecycleExecut
 	if _, err := ApplyPlanCheckpointReset(state.doc, PlanCheckpointResetOptions{CheckpointID: checkpointID, Rewind: rewind}); err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	return s.applyCheckpointStartAndSave(state, input, checkpointID, action, "Prepared fresh-context checkpoint start", state.plan.Status, state.plan.ApprovalState)
+	summary := "Prepared fresh-context checkpoint start"
+	if action == "restart_checkpoint" && strings.TrimSpace(input.ReplacementRequest) != "" {
+		if err := replaceRestartedCheckpointRequirements(state.doc, checkpointID, input); err != nil {
+			return PlanLifecycleResult{}, err
+		}
+		summary = "Replaced checkpoint requirements and prepared fresh-context checkpoint restart"
+	}
+	return s.applyCheckpointStartAndSave(state, input, checkpointID, action, summary, state.plan.Status, state.plan.ApprovalState)
 }
 
 func (s *PlanLifecycleService) startCheckpoint(input PlanLifecycleExecutionInput, action string) (PlanLifecycleResult, error) {

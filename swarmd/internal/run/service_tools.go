@@ -2497,6 +2497,12 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 			result, err = lifecycle.StartPlanCheckpointed(input)
 		}
 	case "restart_checkpoint":
+		input.ReplacementRequest = strings.TrimSpace(firstNonEmptyString(mapString(args, "change_request"), mapString(args, "user_request"), mapString(args, "request"), mapString(args, "prompt"), mapString(args, "text")))
+		input.ReplacementTitle = strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title")))
+		input.ReplacementTasks = mapStringSlice(args, "tasks")
+		input.ReplacementCriteria = mapStringSlice(args, "acceptance_criteria")
+		input.ReplacementNotes = strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context")))
+		input.ReplacementSourceID = strings.TrimSpace(firstNonEmptyString(mapString(args, "source_message_id"), mapString(args, "source_message")))
 		result, err = lifecycle.RestartCheckpointFromZero(input)
 	case "rewind_to_checkpoint":
 		result, err = lifecycle.RewindToCheckpoint(input)

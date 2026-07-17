@@ -1276,6 +1276,63 @@ func TestExecutePlanManageAcceptRestartAndRewind(t *testing.T) {
 	}
 }
 
+func TestExecutePlanManageRestartCheckpointAtomicallyReplacesChangedRequirements(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-restart-replace", "Restart Replace", "# Restart", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStatePaused, LastCheckpointID: "cp-1", LastAttemptID: "cp-1:attempt-1", LastOutcome: sessionruntime.PlanCheckpointStatusPaused},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Old title", Status: sessionruntime.PlanCheckpointStatusPaused, Objective: "old objective", Tasks: []string{"old task"}, AcceptanceCriteria: []string{"old criterion"}, AttemptID: "cp-1:attempt-1", Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "cp-1:attempt-1", Status: sessionruntime.PlanCheckpointStatusPaused}}}},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save replace-restart plan: %v", err)
+	}
+
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"restart_checkpoint","checkpoint_id":"cp-1","change_request":"redirect the same feature to the new behavior","checkpoint_title":"New behavior","tasks":["implement redirected behavior","remove stale assumptions"],"acceptance_criteria":["new behavior works","old requirement is not retained"],"notes":"replacement handoff","source_message_id":"redirect-message"}`, "")
+	if err != nil {
+		t.Fatalf("replace and restart checkpoint: %v output=%s", err, raw)
+	}
+	var payload struct {
+		NextAction string `json:"next_action"`
+		Plan       struct {
+			Document *pebblestore.SessionPlanDocument `json:"document"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode replacement restart payload: %v", err)
+	}
+	checkpoint := payload.Plan.Document.Checkpoints[0]
+	if payload.NextAction != "run_checkpoint_with_fresh_context" || checkpoint.Title != "New behavior" || checkpoint.Objective != "redirect the same feature to the new behavior" || strings.Join(checkpoint.Tasks, ",") != "implement redirected behavior,remove stale assumptions" || strings.Join(checkpoint.AcceptanceCriteria, ",") != "new behavior works,old requirement is not retained" || checkpoint.SourceMessageID != "redirect-message" {
+		t.Fatalf("replacement restart did not carry new requirements: raw=%s checkpoint=%#v", raw, checkpoint)
+	}
+	if len(checkpoint.Attempts) != 1 || checkpoint.Attempts[0].Status != sessionruntime.PlanCheckpointStatusInProgress || checkpoint.AttemptID == "" || checkpoint.Status != sessionruntime.PlanCheckpointStatusInProgress || !strings.Contains(checkpoint.Notes, "replacement handoff") {
+		t.Fatalf("replacement restart did not create a fresh execution attempt: %#v", checkpoint)
+	}
+}
+
+func TestExecutePlanManageRestartCheckpointRejectsIncompleteReplacement(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-restart-incomplete", "Restart Incomplete", "# Restart", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Old", Status: sessionruntime.PlanCheckpointStatusPaused, Objective: "old", Tasks: []string{"old"}, AcceptanceCriteria: []string{"old"}}},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save incomplete-restart plan: %v", err)
+	}
+
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"restart_checkpoint","checkpoint_id":"cp-1","change_request":"changed requirements but no acceptance criteria","checkpoint_title":"Changed","tasks":["implement changed requirements"]}`, "")
+	if err == nil || !strings.Contains(err.Error(), "replacement requires acceptance_criteria") {
+		t.Fatalf("incomplete replacement restart err=%v raw=%s", err, raw)
+	}
+}
+
 func TestExecutePlanManageNeedsReviewAndBlockedStopAdvancement(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()

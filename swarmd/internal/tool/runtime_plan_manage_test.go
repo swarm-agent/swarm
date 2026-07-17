@@ -88,6 +88,25 @@ func TestPlanToolDefinitionsExposeCanonicalInfoFieldTypes(t *testing.T) {
 	}
 }
 
+func TestPlanManageDefinitionRequiresRequirementAwareRestartSelection(t *testing.T) {
+	definition := mustFindDefinition(t, "plan_manage")
+	if !containsAll(definition.Description, "restart_checkpoint retries the same deliverable", "complete replacement title/tasks/acceptance_criteria/notes", "atomically", "independent deliverable", "request_followup_checkpoint") {
+		t.Fatalf("plan_manage description does not define requirement-aware restart selection: %q", definition.Description)
+	}
+	params, ok := definition.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("plan_manage properties type = %T", definition.Parameters["properties"])
+	}
+	actionDescription, _ := params["action"].(map[string]any)["description"].(string)
+	if !containsAll(actionDescription, "Before restarting after user feedback", "same deliverable", "changed that checkpoint", "independent deliverable") {
+		t.Fatalf("plan_manage action description does not classify redirected work: %q", actionDescription)
+	}
+	changeRequestDescription, _ := params["change_request"].(map[string]any)["description"].(string)
+	if !containsAll(changeRequestDescription, "restart_checkpoint", "atomically replaces the checkpoint definition", "do not restart an unchanged stale definition") {
+		t.Fatalf("plan_manage change_request description does not require replacement on redirect: %q", changeRequestDescription)
+	}
+}
+
 func TestPlanManageDefinitionDirectsBlockedFollowupsToAtomicRecovery(t *testing.T) {
 	definition := mustFindDefinition(t, "plan_manage")
 	if !containsAll(definition.Description, "blocked plan", "request_followup_checkpoint", "do not call resolve_blocked_checkpoint first", "failed checkpoints remain stopped") {
