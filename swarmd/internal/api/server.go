@@ -28,6 +28,7 @@ import (
 	integrationruntime "swarm/packages/swarmd/internal/integration"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/provider/codex"
@@ -73,6 +74,7 @@ type Server struct {
 	auth                        *auth.Service
 	agents                      *agentruntime.Service
 	model                       *model.Service
+	modelProfiles               *modelprofile.Service
 	runner                      runService
 	runStreams                  *runStreamManager
 	v3RealtimeOutbox            *v3RealtimeOutboxHub
@@ -274,6 +276,13 @@ func (s *Server) SetCodexAccountClient(client codexAccountClient) {
 		return
 	}
 	s.codexAccount = client
+}
+
+func (s *Server) SetModelProfileService(service *modelprofile.Service) {
+	if s == nil {
+		return
+	}
+	s.modelProfiles = service
 }
 
 func (s *Server) SetWebPushService(service *webpush.Service) {

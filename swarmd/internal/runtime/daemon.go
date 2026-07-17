@@ -28,6 +28,7 @@ import (
 	"swarm/packages/swarmd/internal/lock"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/provider/anthropic"
@@ -387,6 +388,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageSessionRealtimePublisher(apiServer.PublishCommittedV3RealtimeOutbox)
 	apiServer.SetCodexAccountClient(codexClient)
 	apiServer.SetWebPushService(webPushSvc)
+	apiServer.SetModelProfileService(modelprofile.NewService(pebblestore.NewModelProfileStore(store)))
 	apiServer.SetIdentityService(identitySvc)
 	apiServer.SetIdentitySessionService(identitySessionSvc)
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
