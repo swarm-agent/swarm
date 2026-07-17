@@ -45,6 +45,12 @@ func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 	if proposal["additionalProperties"] != false {
 		t.Fatalf("proposal trust boundary = %#v", proposal)
 	}
+	proposalProperties := proposal["properties"].(map[string]any)
+	worktree := proposalProperties["worktree"].(map[string]any)
+	worktreeName := proposalProperties["worktree_name"].(map[string]any)
+	if !strings.Contains(worktree["description"].(string), "Omitted defaults to true") || !strings.Contains(worktreeName["description"].(string), "AI-suggested") {
+		t.Fatalf("proposal worktree schema = %#v", proposalProperties)
+	}
 	expectedByID := properties["expected_updated_at_by_id"].(map[string]any)
 	if expectedByID["maxProperties"] != manageSessionsMaxMutationBatch || !strings.Contains(expectedByID["description"].(string), "bulk archive or unarchive") {
 		t.Fatalf("expected_updated_at_by_id schema = %#v", expectedByID)

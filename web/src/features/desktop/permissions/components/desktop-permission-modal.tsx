@@ -1589,6 +1589,10 @@ function SessionDeployModal({
       setError('Every selected session requires a prompt, agent, and workspace.')
       return
     }
+    if (selected.some((proposal) => proposal.managedWorktree && !proposal.worktreeBranch.trim())) {
+      setError('Managed worktree sessions require the AI-provided branch suggestion.')
+      return
+    }
     const approvedProposals = proposals.map((proposal) => ({
       ...proposal.manifest,
       title: proposal.title.trim(),
@@ -1652,9 +1656,9 @@ function SessionDeployModal({
               </div>
               <SessionDeployField label="Prompt" className="mt-3"><Textarea value={proposal.prompt} onChange={(event) => updateProposal(proposal.id, { prompt: event.target.value })} rows={4} className="min-h-24 resize-y bg-[var(--app-bg-alt)]" /></SessionDeployField>
               <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                <SessionDeployField label="Worktree mode"><select value={proposal.managedWorktree ? 'managed' : 'workspace'} onChange={(event) => updateProposal(proposal.id, { managedWorktree: event.target.value === 'managed' })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)]"><option value="workspace">Use workspace</option><option value="managed">Managed worktree</option></select></SessionDeployField>
+                <SessionDeployField label="Worktree mode"><select aria-label="Worktree mode" value={proposal.managedWorktree ? 'managed' : 'workspace'} onChange={(event) => updateProposal(proposal.id, { managedWorktree: event.target.value === 'managed' })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)]"><option value="managed">Managed worktree (recommended)</option><option value="workspace">Use current workspace</option></select></SessionDeployField>
                 <SessionDeployField label="Base branch"><input value={proposal.worktreeBaseBranch} disabled={!proposal.managedWorktree} onChange={(event) => updateProposal(proposal.id, { worktreeBaseBranch: event.target.value })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)] disabled:opacity-50" placeholder="Current branch" /></SessionDeployField>
-                <SessionDeployField label="Branch suggestion"><input value={proposal.worktreeBranch} disabled={!proposal.managedWorktree} onChange={(event) => updateProposal(proposal.id, { worktreeBranch: event.target.value })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)] disabled:opacity-50" placeholder="Server generated" /></SessionDeployField>
+                <SessionDeployField label="AI branch suggestion"><input value={proposal.worktreeBranch} disabled={!proposal.managedWorktree} onChange={(event) => updateProposal(proposal.id, { worktreeBranch: event.target.value })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)] disabled:opacity-50" placeholder="Provided automatically" /></SessionDeployField>
               </div>
             </article>
           ))}

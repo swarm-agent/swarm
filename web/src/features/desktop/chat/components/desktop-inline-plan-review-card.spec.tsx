@@ -83,6 +83,7 @@ for (const [requirement, toolName] of [
   );
   assert(markup.includes(">Reject<") && markup.includes(">Accept<"), `expected concise review controls for ${requirement}`);
   assert(markup.includes(">Copy<"), `expected visible plan copy control for ${requirement}`);
+  assert(!markup.includes("Ask Swarm"), `expected mobile plan chat control only when the opener is provided for ${requirement}`);
   assert(!markup.includes("Accept edit") && !markup.includes("Reject edit") && !markup.includes("Request another revision"), `expected legacy review labels to be removed for ${requirement}`);
   if (requirement === "permission" || requirement === "plan_new_request") {
     const switchIndex = markup.indexOf('role="switch"');
@@ -91,5 +92,19 @@ for (const [requirement, toolName] of [
   }
   assert(!markup.includes("Message to Swarm (optional)"), `expected Plan Agent to replace standalone rejection note for ${requirement}`);
 }
+
+const mobileMarkup = renderToStaticMarkup(
+  <DesktopInlinePlanReviewCard
+    permission={permission("permission", "exit_plan_mode")}
+    parentSessionId="session-1"
+    pendingPosition={1}
+    pendingCount={1}
+    onResolve={async () => undefined}
+    onAskForChanges={() => undefined}
+  />,
+);
+assert(mobileMarkup.includes(">Ask Swarm<"), "expected mobile plan chat opener when provided");
+assert(mobileMarkup.includes("xl:hidden"), "expected plan chat opener to stay mobile-only");
+assert(mobileMarkup.indexOf(">Ask Swarm<") < mobileMarkup.indexOf(">Copy<"), "expected plan chat opener to the left of Copy");
 
 console.log("desktop inline plan review card tests passed");

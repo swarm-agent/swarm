@@ -108,6 +108,8 @@ func (p *ChatPage) handleManageSessionsPermissionModalKey(ev *tcell.EventKey) bo
 	case tcell.KeyRune:
 		if p.manageSessionsAction == "deploy" && ev.Rune() == ' ' {
 			p.toggleManageSessionsProposal(p.manageSessionsFocus)
+		} else if p.manageSessionsAction == "deploy" && (ev.Rune() == 'w' || ev.Rune() == 'W') {
+			p.toggleManageSessionsProposalWorktree(p.manageSessionsFocus)
 		} else if ev.Rune() == 'a' || ev.Rune() == 'A' {
 			p.resolveManageSessionsPermissionModal(true)
 		} else if ev.Rune() == 'd' || ev.Rune() == 'D' {
@@ -188,6 +190,18 @@ func (p *ChatPage) toggleManageSessionsProposal(index int) {
 	p.manageSessionsSelected[index] = !p.manageSessionsSelected[index]
 }
 
+func (p *ChatPage) toggleManageSessionsProposalWorktree(index int) {
+	if index < 0 || index >= len(p.manageSessionsProposals) {
+		return
+	}
+	p.manageSessionsProposals[index].ManagedWorktree = !p.manageSessionsProposals[index].ManagedWorktree
+	if p.manageSessionsProposals[index].ManagedWorktree {
+		p.statusLine = "managed worktree enabled"
+	} else {
+		p.statusLine = "managed worktree disabled; session will use the current workspace"
+	}
+}
+
 func (p *ChatPage) manageSessionsSelectedCount() int {
 	count := 0
 	for _, selected := range p.manageSessionsSelected {
@@ -261,7 +275,7 @@ func (p *ChatPage) drawManageSessionsPermissionModal(s tcell.Screen, screen Rect
 
 	help := "a/Enter approve  •  d/Esc deny  •  ↑/↓ scroll"
 	if p.manageSessionsAction == "deploy" {
-		help = "↑/↓ choose  •  Space select  •  a/Enter approve  •  d/Esc deny"
+		help = "↑/↓ choose  •  Space select  •  w worktree  •  a/Enter approve  •  d/Esc deny"
 	}
 	helpY := modal.Y + modal.H - 3
 	DrawText(s, modal.X+2, helpY, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(help, modal.W-4))
@@ -414,6 +428,25 @@ func (p *ChatPage) manageSessionsPermissionApprovedArguments() string {
 			return ""
 		}
 		args["selected_proposal_ids"] = selected
+		if proposals, ok := args["proposals"].([]any); ok {
+			for i, raw := range proposals {
+				item, itemOK := raw.(map[string]any)
+				if !itemOK {
+					continue
+				}
+				id := mapStringArg(item, "id")
+				for formIndex, proposal := range p.manageSessionsProposals {
+					if proposal.ID != id || formIndex >= len(p.manageSessionsSelected) {
+						continue
+					}
+					item["managed_worktree"] = proposal.ManagedWorktree
+					item["selected"] = p.manageSessionsSelected[formIndex]
+					proposals[i] = item
+					break
+				}
+			}
+			args["proposals"] = proposals
+		}
 	}
 	raw, err := json.Marshal(args)
 	if err != nil {

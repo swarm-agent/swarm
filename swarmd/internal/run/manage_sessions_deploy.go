@@ -70,6 +70,7 @@ type manageSessionsDeployInput struct {
 	Agent         string
 	WorkspacePath string
 	Worktree      bool
+	WorktreeName  string
 }
 
 func parseManageSessionsDeployArguments(arguments string) ([]manageSessionsDeployInput, error) {
@@ -97,7 +98,7 @@ func parseManageSessionsDeployArguments(arguments string) ([]manageSessionsDeplo
 	for i, item := range raw {
 		for key := range item {
 			switch key {
-			case "title", "prompt", "mode", "agent", "workspace_path", "worktree":
+			case "title", "prompt", "mode", "agent", "workspace_path", "worktree", "worktree_name":
 			default:
 				return nil, fmt.Errorf("manage-sessions deploy proposals[%d] rejects untrusted field %q", i, key)
 			}
@@ -108,7 +109,8 @@ func parseManageSessionsDeployArguments(arguments string) ([]manageSessionsDeplo
 			Mode          string `json:"mode"`
 			Agent         string `json:"agent"`
 			WorkspacePath string `json:"workspace_path"`
-			Worktree      bool   `json:"worktree"`
+			Worktree      *bool  `json:"worktree"`
+			WorktreeName  string `json:"worktree_name"`
 		}
 		encoded, _ := json.Marshal(item)
 		if err := json.Unmarshal(encoded, &input); err != nil {
@@ -125,7 +127,11 @@ func parseManageSessionsDeployArguments(arguments string) ([]manageSessionsDeplo
 		if mode != sessionruntime.ModePlan && mode != sessionruntime.ModeAuto {
 			return nil, fmt.Errorf("manage-sessions deploy proposals[%d] mode must be plan or auto", i)
 		}
-		out = append(out, manageSessionsDeployInput{Title: strings.TrimSpace(input.Title), Prompt: input.Prompt, Mode: mode, Agent: strings.TrimSpace(input.Agent), WorkspacePath: strings.TrimSpace(input.WorkspacePath), Worktree: input.Worktree})
+		worktree := true
+		if input.Worktree != nil {
+			worktree = *input.Worktree
+		}
+		out = append(out, manageSessionsDeployInput{Title: strings.TrimSpace(input.Title), Prompt: input.Prompt, Mode: mode, Agent: strings.TrimSpace(input.Agent), WorkspacePath: strings.TrimSpace(input.WorkspacePath), Worktree: worktree, WorktreeName: strings.TrimSpace(input.WorktreeName)})
 	}
 	return out, nil
 }
@@ -233,7 +239,7 @@ func (s *Service) buildManageSessionsDeployManifest(sessionID string, call tool.
 			if configErr != nil {
 				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] worktree settings: %w", i, configErr)
 			}
-			branchSuffix := canonicalDeployWorktreeBranchSuffix(input.Title, fmt.Sprintf("session-%d", i+1))
+			branchSuffix := canonicalDeployWorktreeBranchSuffix(firstNonEmptyString(input.WorktreeName, input.Title), fmt.Sprintf("session-%d", i+1))
 			proposal.WorktreeBaseBranch = strings.TrimSpace(config.BaseBranch)
 			proposal.WorktreeBranch = canonicalDeployWorktreeBranch(config.BranchName, branchSuffix)
 		}
@@ -253,7 +259,7 @@ func resolveManageSessionsDeployBindingPath(parent pebblestore.SessionSnapshot, 
 	if requested := strings.TrimSpace(input.WorkspacePath); requested != "" {
 		return requested, nil
 	}
-	if !input.Worktree && parent.WorktreeEnabled {
+	if parent.WorktreeEnabled {
 		if source := strings.TrimSpace(mapString(parent.Metadata, "swarm_v3_source_workspace_path")); source != "" {
 			return source, nil
 		}

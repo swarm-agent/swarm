@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertCircle, Check, Copy } from "lucide-react";
+import { AlertCircle, Check, Copy, MessageCircle } from "lucide-react";
 import { Button } from "../../../../components/ui/button";
 import type { DesktopPermissionRecord } from "../../types/realtime";
 import {
@@ -41,6 +41,7 @@ interface DesktopInlinePlanReviewCardProps {
     reason: string,
     approvedArguments?: Record<string, unknown>,
   ) => Promise<void>;
+  onAskForChanges?: () => void;
 }
 
 export function DesktopInlinePlanReviewCard({
@@ -49,6 +50,7 @@ export function DesktopInlinePlanReviewCard({
   pendingPosition,
   pendingCount,
   onResolve,
+  onAskForChanges,
 }: DesktopInlinePlanReviewCardProps) {
   const kind = permissionKind(permission);
   const exitPayload =
@@ -120,22 +122,37 @@ export function DesktopInlinePlanReviewCard({
           </h2>
         </div>
         <div className="flex flex-col items-end gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={loading}
-            onClick={() => void copyPlan()}
-          >
-            {copyState === "copied" ? (
-              <Check className="size-4" />
-            ) : copyState === "error" ? (
-              <AlertCircle className="size-4" />
-            ) : (
-              <Copy className="size-4" />
-            )}
-            {copyState === "copied" ? "Copied" : copyState === "error" ? "Copy failed" : "Copy"}
-          </Button>
+          <div className="flex items-center gap-2">
+            {onAskForChanges ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="xl:hidden"
+                disabled={loading}
+                onClick={onAskForChanges}
+              >
+                <MessageCircle className="size-4" />
+                Ask Swarm
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={loading}
+              onClick={() => void copyPlan()}
+            >
+              {copyState === "copied" ? (
+                <Check className="size-4" />
+              ) : copyState === "error" ? (
+                <AlertCircle className="size-4" />
+              ) : (
+                <Copy className="size-4" />
+              )}
+              {copyState === "copied" ? "Copied" : copyState === "error" ? "Copy failed" : "Copy"}
+            </Button>
+          </div>
           {pendingCount > 1 ? (
             <div className="text-xs text-[var(--app-text-muted)]">
               {pendingPosition} of {pendingCount} pending plans

@@ -1440,9 +1440,9 @@ export function DesktopV3ExistingConversationPane({
       : null,
     [pendingPlanPermission],
   );
-  const [planAgentMobileOpen, setPlanAgentMobileOpen] = useState(true);
+  const [planAgentMobileOpen, setPlanAgentMobileOpen] = useState(false);
   useEffect(() => {
-    setPlanAgentMobileOpen(Boolean(pendingPlanPermission));
+    setPlanAgentMobileOpen(false);
   }, [pendingPlanPermission?.id]);
   const currentRun =
     renderedMessages.liveRuns.find(
@@ -2502,6 +2502,7 @@ export function DesktopV3ExistingConversationPane({
                     pendingPosition={index + 1}
                     pendingCount={pendingPlanPermissions.length}
                     onResolve={resolvePermission}
+                    onAskForChanges={index === 0 ? () => setPlanAgentMobileOpen(true) : undefined}
                   />
                 ))}
                 <div
@@ -2511,16 +2512,6 @@ export function DesktopV3ExistingConversationPane({
                 />
               </div>
             </div>
-            {pendingPlanDocument && pendingPlanPermission && !planAgentMobileOpen ? (
-              <Button
-                type="button"
-                variant="outline"
-                className="absolute right-5 top-5 z-10 xl:hidden"
-                onClick={() => setPlanAgentMobileOpen(true)}
-              >
-                Plan
-              </Button>
-            ) : null}
             {!isAtBottom ? (
               <button
                 type="button"

@@ -141,6 +141,9 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 		"do not call resolve_blocked_checkpoint first",
 		"Failed checkpoints remain stopped",
 		"use manage-sessions deploy; do not use the task tool",
+		"suggest a short worktree_name",
+		"leave managed worktree isolation enabled by default",
+		"approval UI lets them disable worktree isolation",
 		"explicitly asks to use subagents",
 		"names the agent or agents to run",
 	} {

@@ -262,7 +262,7 @@ test('session deploy permission defaults to one selected proposal and never offe
     manifest_version: 1,
     manifest_digest: 'digest-1',
     proposals: [
-      { id: 'proposal-1', title: 'Primary work', prompt: 'Ship the primary task', mode: 'auto', agent_name: 'swarm', agent_mode: 'primary', workspace_path: '/workspace', workspace_name: 'Workspace', selected: true },
+      { id: 'proposal-1', title: 'Primary work', prompt: 'Ship the primary task', mode: 'auto', agent_name: 'swarm', agent_mode: 'primary', workspace_path: '/workspace', workspace_name: 'Workspace', managed_worktree: true, worktree_base_branch: 'dev', worktree_branch: 'agent/primary-work', selected: true },
       { id: 'proposal-2', title: 'Extra work', prompt: 'Investigate an extra task', mode: 'plan', agent_name: 'explorer', agent_mode: 'subagent', workspace_path: '/workspace', workspace_name: 'Workspace', selected: true },
     ],
     allowed_workspaces: [
@@ -278,6 +278,10 @@ test('session deploy permission defaults to one selected proposal and never offe
   assert.equal((markup.match(/checked=""/g) || []).length, 1)
   assert.match(markup, /Deploy 1 session/)
   assert.match(markup, /Another workspace/)
+  assert.match(markup, /Managed worktree \(recommended\)/)
+  assert.match(markup, /Use current workspace/)
+  assert.match(markup, /AI branch suggestion/)
+  assert.match(markup, /agent\/primary-work/)
   assert.doesNotMatch(markup, /value="\/workspace" readonly/)
   assert.doesNotMatch(markup, /Always Allow|Always Deny/)
 })

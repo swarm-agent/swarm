@@ -97,6 +97,29 @@ func TestManageSessionsDeployDefaultsFirstValidAndOverlaysOnlySelection(t *testi
 	assertManageSessionsArguments(t, page.manageSessionsPermissionApprovedArguments(), "proposal-1", "proposal-2")
 }
 
+func TestManageSessionsDeployWorktreeCanBeDisabledWithoutTypingBranch(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-1", SessionMode: "auto", AuthConfigured: true})
+	record := manageSessionsPermissionTestRecord("perm-deploy-worktree", "session_deploy")
+	page.OpenManageSessionsPermissionModal(record)
+	page.manageSessionsApproved = `{"action":"deploy","keep":"canonical","selected_proposal_ids":["proposal-1"],"proposals":[{"id":"proposal-1","title":"Primary work","prompt":"Ship the primary task","mode":"auto","agent_name":"swarm","agent_mode":"primary","workspace_path":"/workspace","managed_worktree":true,"worktree_base_branch":"dev","worktree_branch":"agent/work"}]}`
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'w', tcell.ModNone))
+	if page.manageSessionsProposals[0].ManagedWorktree {
+		t.Fatal("worktree override remained enabled")
+	}
+	var approved map[string]any
+	if err := json.Unmarshal([]byte(page.manageSessionsPermissionApprovedArguments()), &approved); err != nil {
+		t.Fatal(err)
+	}
+	proposals := jsonObjectSlice(approved, "proposals")
+	if len(proposals) != 1 {
+		t.Fatalf("approved proposals = %#v", proposals)
+	}
+	managed, _ := manageTodosBoolArg(proposals[0], "managed_worktree")
+	if managed {
+		t.Fatalf("approved worktree override = %#v", proposals[0])
+	}
+}
+
 func TestManageSessionsNonDeployPreservesCanonicalArgumentsExactly(t *testing.T) {
 	page := NewChatPage(ChatPageOptions{SessionID: "session-1", SessionMode: "auto", AuthConfigured: true})
 	page.OpenManageSessionsPermissionModal(manageSessionsPermissionTestRecord("perm-commit", "session_commit"))
