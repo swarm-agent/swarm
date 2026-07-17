@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { currentCheckoutCommitCandidate, reviewWorktreeReasonLabel, selectableReviewIDs, selectedArchiveCandidates } from './review-worktrees-modal'
+import { currentCheckoutCommitCandidate, reviewCommitCandidates, reviewWorktreeReasonLabel, selectableReviewIDs, selectedArchiveCandidates, shouldShowReviewCommitAction } from './review-worktrees-modal'
 import type { ReviewWorktreeCandidate, ReviewWorktreesResponse } from '../session-v3/review-worktrees-api'
 
 function candidate(overrides: Partial<ReviewWorktreeCandidate>): ReviewWorktreeCandidate {
@@ -23,5 +23,16 @@ describe('review worktrees modal helpers', () => {
     const checkout = candidate({ session_id: 'checkout', reason: 'current_checkout_uncommitted_work', current_checkout: true, commit_eligible: true, worktree_path: '/workspace' })
     const result: ReviewWorktreesResponse = { ok: true, target_detection: '', comparison: '', retained: [candidate({ session_id: 'managed', commit_eligible: true, worktree_path: '/worktrees/managed' }), checkout], done: [], archived_session_ids: [], recently_archived: [], grace_period_ms: 3_600_000, checkout_dirty: true, checkout_dirty_count: 2, blocked_by_checkout_count: 1, complete: true }
     expect(currentCheckoutCommitCandidate(result)).toEqual(checkout)
+  })
+
+  it('shows the AI review commit action only for uncommitted managed worktrees', () => {
+    const cleanResult: ReviewWorktreesResponse = { ok: true, target_detection: '', comparison: '', retained: [candidate({ session_id: 'clean', reason: 'commits_missing_from_target', missing_commit_count: 1, worktree_path: '/worktrees/clean' })], done: [], archived_session_ids: [], recently_archived: [], grace_period_ms: 3_600_000, checkout_dirty: false, checkout_dirty_count: 0, blocked_by_checkout_count: 0, complete: true }
+    expect(reviewCommitCandidates(cleanResult)).toEqual([])
+    expect(shouldShowReviewCommitAction(cleanResult)).toBe(false)
+
+    const dirty = candidate({ session_id: 'dirty', dirty_count: 2, commit_eligible: true, worktree_path: '/worktrees/dirty' })
+    const dirtyResult = { ...cleanResult, retained: [dirty] }
+    expect(reviewCommitCandidates(dirtyResult)).toEqual([dirty])
+    expect(shouldShowReviewCommitAction(dirtyResult)).toBe(true)
   })
 })
