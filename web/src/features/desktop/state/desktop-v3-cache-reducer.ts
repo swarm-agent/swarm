@@ -1715,7 +1715,7 @@ export function applyWorksetSessionDiscovered(
   if (!discoveredWorksetId || !sessionId) return
 
   if (frame.session) {
-    upsertSessions(state, { [sessionId]: frame.session })
+    upsertWorksetSessionShell(state, sessionId, frame.session)
   } else if (!state.sessionsById[sessionId]) {
     state.sessionsById[sessionId] = {
       kind: 'stub',
@@ -1780,7 +1780,7 @@ export function applyWorksetSessionUpdated(
   if (!worksetIdValue || !sessionId) return
 
   if (frame.session) {
-    upsertSessions(state, { [sessionId]: frame.session })
+    upsertWorksetSessionShell(state, sessionId, frame.session)
   } else if (!state.sessionsById[sessionId]) {
     state.sessionsById[sessionId] = {
       kind: 'stub',
@@ -2349,6 +2349,40 @@ function upsertSessions(state: DesktopV3CacheState, sessionsById: Record<string,
   }
 }
 
+function upsertWorksetSessionShell(state: DesktopV3CacheState, sessionId: string, shell: SessionSnapshot): void {
+  const existing = state.sessionsById[sessionId]
+  if (existing?.kind !== 'full') {
+    upsertSessions(state, { [sessionId]: shell })
+    return
+  }
+
+  const existingSession = existing.session
+  const shellPreference = recordValue(shell.preference)
+  const nextSession: SessionSnapshot = {
+    ...existingSession,
+    ...shell,
+    title: shell.title?.trim() ? shell.title : existingSession.title,
+    mode: shell.mode?.trim() ? shell.mode : existingSession.mode,
+    workspace_path: shell.workspace_path?.trim() ? shell.workspace_path : existingSession.workspace_path,
+    workspace_name: shell.workspace_name?.trim() ? shell.workspace_name : existingSession.workspace_name,
+    created_at: shell.created_at || existingSession.created_at,
+    updated_at: shell.updated_at || existingSession.updated_at,
+    message_count: shell.message_count || existingSession.message_count,
+    last_message_at: shell.last_message_at || existingSession.last_message_at,
+    metadata: shell.metadata === undefined
+      ? existingSession.metadata
+      : { ...(existingSession.metadata ?? {}), ...shell.metadata },
+    preference: shellPreference && Object.keys(shellPreference).length > 0
+      ? shell.preference
+      : existingSession.preference,
+    lifecycle: shell.lifecycle === undefined ? existingSession.lifecycle : shell.lifecycle,
+    current_execution_epoch: shell.current_execution_epoch === undefined
+      ? existingSession.current_execution_epoch
+      : shell.current_execution_epoch,
+  }
+  state.sessionsById[sessionId] = { ...existing, session: nextSession }
+}
+
 function mergeRunIntentsBySession(state: DesktopV3CacheState, runIntentsBySession: Record<string, V3SessionRunIntent[]> | undefined): void {
   if (!runIntentsBySession) return
   for (const [sessionId, runIntents] of Object.entries(runIntentsBySession)) {
@@ -2508,19 +2542,36 @@ function applyScalarSessionPatchIfPresent(
   if (record?.kind !== 'full') return
 
   let nextSession = record.session
-  if (typeof payload.title === 'string') nextSession = { ...nextSession, title: payload.title }
-  if (typeof payload.mode === 'string') nextSession = { ...nextSession, mode: payload.mode }
-  if (typeof payload.updated_at === 'number') nextSession = { ...nextSession, updated_at: payload.updated_at }
-  const metadata = recordValue(payload.metadata)
-  if (metadata) nextSession = { ...nextSession, metadata }
-  if (payload.preference !== undefined) {
+  if (eventType === 'session.title.updated' && typeof payload.title === 'string') {
+    nextSession = { ...nextSession, title: payload.title }
+  }
+  if (eventType === 'session.mode.updated' && typeof payload.mode === 'string') {
+    nextSession = { ...nextSession, mode: payload.mode }
+  }
+  if (eventType === 'session.metadata.updated') {
+    const metadata = recordValue(payload.metadata)
+    if (metadata) nextSession = { ...nextSession, metadata }
+  }
+  if ((eventType === 'session.preference.updated' || eventType === 'session.mode.updated') && payload.preference !== undefined) {
     nextSession = { ...nextSession, preference: payload.preference }
     state.preferencesBySession[sessionId] = payload.preference
+  }
+  if (
+    typeof payload.updated_at === 'number'
+    && (eventType === 'session.title.updated'
+      || eventType === 'session.mode.updated'
+      || eventType === 'session.metadata.updated'
+      || eventType === 'session.preference.updated')
+  ) {
+    nextSession = { ...nextSession, updated_at: payload.updated_at }
   }
   if (nextSession !== record.session) {
     state.sessionsById[sessionId] = { ...record, session: nextSession }
   }
-  if (payload.agent_model_policy !== undefined) {
+  if (
+    payload.agent_model_policy !== undefined
+    && (eventType === 'session.agent_model_policy.updated' || eventType === 'session.mode.updated')
+  ) {
     state.agentModelPolicyBySession[sessionId] = payload.agent_model_policy
   }
   if (typeof payload.status === 'string' && eventType.startsWith('run.')) {

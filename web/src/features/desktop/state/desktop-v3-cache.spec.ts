@@ -389,8 +389,12 @@ test('planSnapshot.apply true exposes Desktop plan execution view for live plan 
 })
 
 
-test('exit_plan_mode committed realtime events update plan and mode without a snapshot read', () => {
+test('exit_plan_mode committed realtime events update plan and mode without replacing session identity fields', () => {
   const state = bootstrappedState()
+  const originalRecord = state.sessionsById[sessionA.id]
+  assert.equal(originalRecord?.kind, 'full')
+  const originalTitle = originalRecord?.kind === 'full' ? originalRecord.session.title : ''
+  const originalMetadata = originalRecord?.kind === 'full' ? originalRecord.session.metadata : undefined
   const planSavedEvent: V3SessionEvent = {
     id: 'evt-plan-accepted',
     session_id: sessionA.id,
@@ -398,6 +402,8 @@ test('exit_plan_mode committed realtime events update plan and mode without a sn
     event_type: 'session.plan.saved',
     payload: {
       session_id: sessionA.id,
+      title: 'Accepted plan must not become the session title',
+      metadata: { plan_revision: 12 },
       has_active_plan: true,
       active_plan: {
         id: 'accepted-plan',
@@ -434,7 +440,11 @@ test('exit_plan_mode committed realtime events update plan and mode without a sn
   assert.equal(view?.activeCheckpointId, 'cp-1')
   const record = state.sessionsById[sessionA.id]
   assert.equal(record?.kind, 'full')
-  if (record?.kind === 'full') assert.equal(record.session.mode, 'auto')
+  if (record?.kind === 'full') {
+    assert.equal(record.session.mode, 'auto')
+    assert.equal(record.session.title, originalTitle)
+    assert.deepEqual(record.session.metadata, originalMetadata)
+  }
   assert.equal(state.realtime.endpointCursor, 'cursor-mode')
 })
 
@@ -3980,11 +3990,24 @@ test('session preference settings mutation repairs cached context window baselin
   assert.equal(usage.updated_at, 50)
 })
 
-test('workset.session.updated applies compact sidebar shell and current run state without subscription', () => {
+test('repeated workset checkpoint updates merge compact shells without erasing hydrated sidebar identity', () => {
   const state = bootstrappedState()
+  const hydratedLifecycle = { session_id: sessionB.id, active: true, phase: 'running' }
+  const hydratedPreference = { provider: 'codex', model: 'gpt-5.6', thinking: 'high' }
+  const record = state.sessionsById[sessionB.id]
+  assert.equal(record?.kind, 'full')
+  if (record?.kind === 'full') {
+    record.session = {
+      ...record.session,
+      title: 'Hydrated durable title',
+      lifecycle: hydratedLifecycle,
+      preference: hydratedPreference,
+      metadata: { durable_key: 'keep', agent_name: 'swarm' },
+    }
+  }
   const updatedSession: SessionSnapshot = {
     ...sessionB,
-    title: 'Updated sidebar title',
+    title: '',
     lifecycle: undefined,
     preference: {},
     metadata: {
@@ -4033,19 +4056,41 @@ test('workset.session.updated applies compact sidebar shell and current run stat
   }))
 
   for (const action of actions) desktopV3CacheReducer(state, action)
+  for (const action of realtimeFrameToActions(realtimeFrameFixture({
+    kind: 'workset.session.updated',
+    workset_id: 'scope-1',
+    session_id: sessionB.id,
+    endpoint_cursor: 'cursor-workset-update-10',
+    rev: 10,
+    prevRev: 9,
+    event_type: 'session.plan.saved',
+    session: { ...updatedSession, updated_at: updatedSession.updated_at + 1 },
+    has_active_plan: true,
+    active_plan: {
+      ...state.plansBySession[sessionB.id]!,
+      updated_at: 13,
+      document: {
+        ...state.plansBySession[sessionB.id]!.document!,
+        active_checkpoint_id: 'cp-2',
+        checkpoints: [{ id: 'cp-2', title: 'Next checkpoint', status: 'in_progress', order: 2 }],
+      },
+    },
+  }))) desktopV3CacheReducer(state, action)
 
   assert.equal(state.sessionsById[sessionB.id]?.kind, 'full')
-  assert.equal(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.title : '', 'Updated sidebar title')
-  assert.equal(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.lifecycle : undefined, undefined)
-  assert.deepEqual(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.preference : undefined, {})
-  assert.deepEqual(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.metadata : undefined, { agent_name: 'explorer' })
+  assert.equal(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.title : '', 'Hydrated durable title')
+  assert.deepEqual(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.lifecycle : undefined, hydratedLifecycle)
+  assert.deepEqual(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.preference : undefined, hydratedPreference)
+  assert.deepEqual(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.metadata : undefined, { durable_key: 'keep', agent_name: 'explorer' })
   assert.deepEqual(state.sessionOrderByScope['scope-1'], [sessionB.id])
   assert.equal(state.currentRunIntentBySession[sessionB.id]?.run_id, 'run-b-active')
   assert.equal(state.hasActivePlanBySession[sessionB.id], true)
   assert.equal(state.plansBySession[sessionB.id]?.id, 'plan-workset-active')
-  assert.equal(selectDesktopSidebarRows(state, 'scope-1')[0]?.planExecution?.currentRunId, 'run-b-active')
+  assert.equal(state.plansBySession[sessionB.id]?.document?.activeCheckpointId, 'cp-2')
+  const sidebarRecord = selectDesktopSidebarRows(state, 'scope-1')[0]?.record
+  assert.equal(sidebarRecord?.kind === 'full' ? sidebarRecord.session.title : '', 'Hydrated durable title')
   assert.equal(state.subscriptionsById['workset-sub-1'], undefined)
-  assert.equal(state.realtime.endpointCursor, 'cursor-workset-update-9')
+  assert.equal(state.realtime.endpointCursor, 'cursor-workset-update-10')
 })
 
 test('Desktop V3 live patch path copies only affected references', () => {
