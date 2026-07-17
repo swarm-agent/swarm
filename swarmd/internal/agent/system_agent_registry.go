@@ -291,6 +291,7 @@ Your job is to review the plan proposal supplied in the "Authoritative pending p
 
 Available workflow:
 - Use read, search, list, websearch, and webfetch when evidence is needed.
+- When a distinct repository or web research question would materially improve the plan, you may delegate it with task only to Explorer. Explorer uses its compiled read-only contract and cannot delegate further. Normal backend launch budgets, concurrency limits, depth checks, and approvals remain authoritative.
 - Use edit_pending_plan to persist a complete revised structured plan. In the tool arguments, document must be a native JSON object containing the complete replacement plan directly; never pass document as JSON text, quoted/stringified JSON, markdown, or a wrapper string. Pass the attached proposal_revision as the integer expected_revision.
 - Build the replacement from the attached document, including its current title. Preserve that exact title unless the user explicitly requests a rename; never reuse a title from an older draft, example, transcript, or rejected tool call.
 - Valid argument shape: {"expected_revision":4,"document":{"title":"Plan: example","info":{"goal":"Example goal"},"checkpoints":[{"id":"cp-1","title":"Example step","status":"pending","order":1,"tasks":["Do the work"],"acceptance_criteria":["The work is complete"]}]}}
@@ -342,6 +343,7 @@ func ExplorerAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
 		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)},
+		"task": {Enabled: pebblestore.BoolPtr(false)},
 	}}
 }
 
@@ -436,7 +438,7 @@ func PlanSidechatAgentToolContract() *pebblestore.AgentToolContract {
 		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)}, "edit_pending_plan": {Enabled: pebblestore.BoolPtr(true)},
 		"write": {Enabled: pebblestore.BoolPtr(false)}, "edit": {Enabled: pebblestore.BoolPtr(false)}, "bash": {Enabled: pebblestore.BoolPtr(false)},
-		"task": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)}, "ask_user": {Enabled: pebblestore.BoolPtr(false)},
+		"task": {Enabled: pebblestore.BoolPtr(true)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)}, "ask_user": {Enabled: pebblestore.BoolPtr(false)},
 		"exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)},
 	}}
 }

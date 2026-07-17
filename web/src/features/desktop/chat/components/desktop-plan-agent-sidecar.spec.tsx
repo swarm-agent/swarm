@@ -56,6 +56,7 @@ assert.doesNotMatch(markup, /Jump to latest Plan message/, "jump control remains
 assert.match(markup, /Saved edits update the parent approval card live\./, "plan edits should advertise live parent updates");
 assert.match(markup, /aria-label="Send to Plan"/, "idle real session should expose its send control");
 assert.match(markup, /aria-label="Start microphone dictation"/, "Plan composer should expose the canonical microphone affordance");
+assert.match(markup, /aria-label="Context window unavailable"/, "Plan composer should expose the real compact/context control before usage arrives");
 assert.match(markup, /data-testid="desktop-plan-composer"/, "expected dedicated Plan composer wrapper");
 assert.match(markup, /border-t[^\"]*bg-\[var\(--app-surface\)\][^\"]*data-testid="desktop-plan-composer"/, "Plan composer should share the canonical chat composer boundary");
 assert.doesNotMatch(markup, /data-testid="desktop-plan-composer"[^>]*pb-1\.5/, "Plan composer should not be taller than the canonical chat composer");
@@ -69,5 +70,7 @@ const source = readFileSync(fileURLToPath(new URL("./desktop-plan-agent-sidecar.
 assert.match(source, /event\.key !== "Enter" \|\| event\.shiftKey \|\| event\.nativeEvent\.isComposing/, "Enter should submit while Shift+Enter and IME composition preserve multiline input");
 assert.match(source, /if \(!textarea\.value\)[\s\S]*removeProperty\("height"\)[\s\S]*textarea\.style\.height = "auto"[\s\S]*Math\.min\(textarea\.scrollHeight, viewportMaxHeight\)/, "Plan textarea should keep its baseline while empty and auto-grow only from typed content");
 assert.match(source, /speechRecognitionConstructor\(\)[\s\S]*recognition\.onresult[\s\S]*setDraft\(appendDictation/, "Plan microphone should feed browser dictation into the draft");
+assert.match(source, /DesktopV3CompactButton[\s\S]*remaining_tokens[\s\S]*Remaining context[\s\S]*compactDesktopV3Session/, "Plan should reuse the canonical compact button, display remaining context, and compact its durable sidechat session");
+assert.doesNotMatch(source, /MessageCircle|reopen|compact Plan chat/i, "Plan must not invent a compact reopen-chat control");
 
 console.log("desktop plan agent sidecar tests passed");

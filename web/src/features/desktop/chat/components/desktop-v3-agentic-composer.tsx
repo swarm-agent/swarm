@@ -162,6 +162,32 @@ export interface DesktopV3AgenticComposerProps {
 
 export const DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME = "mx-auto grid w-full min-w-0 max-w-[70rem] gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5";
 
+export function DesktopV3CompactButton({
+  contextLabel,
+  contextTooltip,
+  disabled = false,
+  onClick,
+}: {
+  contextLabel: string
+  contextTooltip?: string
+  disabled?: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={contextTooltip || 'Compact conversation'}
+      aria-label={contextTooltip || 'Compact conversation'}
+      className="inline-flex min-h-7 min-w-0 shrink-0 items-center gap-1 rounded-lg border-0 bg-transparent px-2 text-[11px] font-medium tabular-nums text-[var(--app-text)] transition-all hover:-translate-y-0.5 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none"
+    >
+      <span>{contextLabel}</span>
+      <Minimize2 size={12} className="text-[var(--app-text-subtle)]" />
+    </button>
+  )
+}
+
 export function DesktopV3AgenticComposer({
   draft,
   onDraftChange,
@@ -610,17 +636,12 @@ export function DesktopV3AgenticComposer({
   ) : null
 
   const compactButton = () => (
-    <button
-      type="button"
-      onClick={() => { void onCompact?.(draft) }}
+    <DesktopV3CompactButton
+      contextLabel={contextButtonLabel}
+      contextTooltip={contextTooltip}
       disabled={compactDisabled || !onCompact}
-      title={contextTooltip || 'Compact conversation'}
-      aria-label={contextTooltip || 'Compact conversation'}
-      className="inline-flex min-h-7 min-w-0 shrink-0 items-center gap-1 rounded-lg border-0 bg-transparent px-2 text-[11px] font-medium tabular-nums text-[var(--app-text)] transition-all hover:-translate-y-0.5 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none"
-    >
-      <span>{contextButtonLabel}</span>
-      <Minimize2 size={12} className="text-[var(--app-text-subtle)]" />
-    </button>
+      onClick={() => { void onCompact?.(draft) }}
+    />
   )
 
   return (

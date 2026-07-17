@@ -42,6 +42,11 @@ func TestPlanSidechatPromptAttachesAuthoritativePlanContext(t *testing.T) {
 			t.Fatalf("prompt missing %q: %s", expected, prompt)
 		}
 	}
+	for _, expected := range []string{"only to Explorer", "read-only contract", "cannot delegate further", "budgets", "depth checks"} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("prompt missing Explorer delegation boundary %q: %s", expected, prompt)
+		}
+	}
 	if strings.Contains(prompt, `"expected_revision":"4"`) || strings.Contains(prompt, `"document":"{`) {
 		t.Fatalf("prompt example stringifies structured arguments: %s", prompt)
 	}
@@ -55,13 +60,13 @@ func TestPlanSidechatIsRestrictedAndHidden(t *testing.T) {
 	if profile.ExitPlanModeEnabled == nil || *profile.ExitPlanModeEnabled {
 		t.Fatal("Plan sidechat must not exit plan mode")
 	}
-	for _, name := range []string{"write", "edit", "bash", "task", "plan_manage", "ask_user", "exit_plan_mode", "manage_agent"} {
+	for _, name := range []string{"write", "edit", "bash", "plan_manage", "ask_user", "exit_plan_mode", "manage_agent"} {
 		config, ok := profile.ToolContract.Tools[name]
 		if !ok || config.Enabled == nil || *config.Enabled {
 			t.Fatalf("tool %q must be explicitly disabled", name)
 		}
 	}
-	for _, name := range []string{"read", "search", "list", "websearch", "webfetch", "edit_pending_plan"} {
+	for _, name := range []string{"read", "search", "list", "websearch", "webfetch", "edit_pending_plan", "task"} {
 		config, ok := profile.ToolContract.Tools[name]
 		if !ok || config.Enabled == nil || !*config.Enabled {
 			t.Fatalf("tool %q must be enabled", name)
@@ -80,6 +85,14 @@ func TestPlanSidechatIsRestrictedAndHidden(t *testing.T) {
 	}
 	if _, _, _, err := svc.Upsert(UpsertInput{Name: PlanSidechatAgentID, Mode: ModeSubagent, Prompt: "replace"}); err == nil {
 		t.Fatal("reserved profile was mutable")
+	}
+}
+
+func TestExplorerContractExplicitlyDisablesRecursiveTask(t *testing.T) {
+	profile := ExplorerAgentProfileForParent(pebblestore.AgentProfile{})
+	config, ok := profile.ToolContract.Tools["task"]
+	if !ok || config.Enabled == nil || *config.Enabled {
+		t.Fatal("Explorer task capability must be explicitly disabled")
 	}
 }
 

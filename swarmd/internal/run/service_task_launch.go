@@ -1488,6 +1488,24 @@ func cloneTaskAgentProfile(profile pebblestore.AgentProfile) (pebblestore.AgentP
 	return pebblestore.NormalizeAgentProfile(cloned), nil
 }
 
+func isPlanSidechatTaskParent(session pebblestore.SessionSnapshot) bool {
+	return strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "system_sidechat_kind")), agentruntime.SystemSidechatKindPlan) &&
+		strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "lineage_kind")), "system_sidechat") &&
+		agentruntime.IsPlanSidechatAgentName(mapString(session.Metadata, "agent_name"))
+}
+
+func validatePlanSidechatTaskTargets(parentSession pebblestore.SessionSnapshot, launches []taskLaunchSpec) error {
+	if !isPlanSidechatTaskParent(parentSession) {
+		return nil
+	}
+	for i, launch := range launches {
+		if !agentruntime.IsExplorerAgentName(launch.RequestedSubagentType) {
+			return fmt.Errorf("Plan sidechat task launches[%d] may target only Explorer", i)
+		}
+	}
+	return nil
+}
+
 func (s *Service) resolveTaskLaunchProfile(parentSession pebblestore.SessionSnapshot, requested string) (pebblestore.AgentProfile, bool, string, error) {
 	if !agentruntime.IsCloneAgentName(requested) {
 		profile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested)
@@ -1544,7 +1562,16 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		return taskLaunchManifest{}, err
 	}
 
-	parentSession, _, _ := s.sessions.GetSession(sessionID)
+	parentSession, ok, sessionErr := s.sessions.GetSession(sessionID)
+	if sessionErr != nil {
+		return taskLaunchManifest{}, sessionErr
+	}
+	if !ok {
+		return taskLaunchManifest{}, fmt.Errorf("session %q not found", sessionID)
+	}
+	if err := validatePlanSidechatTaskTargets(parentSession, parsed.Launches); err != nil {
+		return taskLaunchManifest{}, err
+	}
 	parentMode := sessionruntime.NormalizeMode(sessionMode)
 	childMode := effectiveTaskChildMode(sessionMode)
 	disabledTools := taskDisabledToolNames(false)

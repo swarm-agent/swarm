@@ -1396,6 +1396,23 @@ func TestApprovedExplorerWaveManifestDigestSurvivesPermissionRoundTrip(t *testin
 	}
 }
 
+func TestPlanSidechatTaskTargetsExplorerOnly(t *testing.T) {
+	parent := pebblestore.SessionSnapshot{Metadata: map[string]any{
+		"system_sidechat_kind": agentruntime.SystemSidechatKindPlan,
+		"lineage_kind":         "system_sidechat",
+		"agent_name":           agentruntime.PlanSidechatAgentID,
+	}}
+	if err := validatePlanSidechatTaskTargets(parent, []taskLaunchSpec{{RequestedSubagentType: "explorer"}, {RequestedSubagentType: agentruntime.ExplorerAgentID}}); err != nil {
+		t.Fatalf("Explorer targets rejected: %v", err)
+	}
+	for _, target := range []string{"clone", "reviewer"} {
+		err := validatePlanSidechatTaskTargets(parent, []taskLaunchSpec{{RequestedSubagentType: target}})
+		if err == nil || !strings.Contains(err.Error(), "only Explorer") {
+			t.Fatalf("target %q error = %v, want Explorer-only rejection", target, err)
+		}
+	}
+}
+
 func TestTaskRejectsClientSuppliedCloneTrustFields(t *testing.T) {
 	_, err := parseTaskCallArguments(`{"prompt":"x","subagent_type":"clone","meta_prompt":"y","runtime_mode":"readwrite"}`)
 	if err == nil || !strings.Contains(err.Error(), "cannot set launch-time trust") {

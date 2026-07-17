@@ -14,10 +14,12 @@ import {
   useDesktopV3StickyBottomScroll,
 } from "./desktop-v3-existing-conversation-pane";
 import { stopSessionV3Run } from "../../session-v3/api";
-import { DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME } from "./desktop-v3-agentic-composer";
+import { DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME, DesktopV3CompactButton } from "./desktop-v3-agentic-composer";
 import { selectRenderedSessionMessages } from "../../state/desktop-v3-cache-selectors";
 import { requireDesktopV3RealtimeControllerReady } from "../../realtime/v3-realtime-controller";
 import { useDesktopV3CacheSelector } from "../../state/desktop-v3-cache-store";
+import { compactDesktopV3Session } from "../../session-v3/compact-session-flow";
+import { formatContextWindow } from "../services/model-options";
 
 interface DesktopPlanAgentSidecarProps {
   parentSessionId: string;
@@ -92,6 +94,7 @@ export function DesktopPlanAgentSidecar({
 }: DesktopPlanAgentSidecarProps) {
   const [sidechat, setSidechat] = useState<SidechatState>(EMPTY_SIDECHAT);
   const [draft, setDraft] = useState("");
+  const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const dictationBaseRef = useRef("");
@@ -103,6 +106,15 @@ export function DesktopPlanAgentSidecar({
     (left, right) => left === right,
   );
   const rendered = useDesktopV3CacheSelector((state) => selectRenderedSessionMessages(state, sidechat.sessionId));
+  const rawUsage = useDesktopV3CacheSelector((state) => sidechat.sessionId ? state.usageBySession[sidechat.sessionId] : undefined);
+  const contextWindow = Number((rawUsage as Record<string, unknown> | undefined)?.context_window ?? (rawUsage as Record<string, unknown> | undefined)?.contextWindow ?? 0);
+  const remainingTokens = Number((rawUsage as Record<string, unknown> | undefined)?.remaining_tokens ?? (rawUsage as Record<string, unknown> | undefined)?.remainingTokens ?? 0);
+  const hasContextUsage = Number.isFinite(contextWindow) && contextWindow > 0 && Number.isFinite(remainingTokens) && remainingTokens >= 0;
+  const contextUsagePercent = hasContextUsage ? Math.max(0, Math.min(100, ((contextWindow - remainingTokens) / contextWindow) * 100)) : 0;
+  const contextLabel = hasContextUsage ? `${Math.round(contextUsagePercent)}%` : "ctx";
+  const contextTooltip = hasContextUsage
+    ? `Remaining context ${formatContextWindow(remainingTokens)} of ${formatContextWindow(contextWindow)}.`
+    : "Context window unavailable";
 
   useEffect(() => {
     if (realtimeMessages.length === 0) return;
@@ -228,6 +240,23 @@ export function DesktopPlanAgentSidecar({
     }
   };
 
+  const compact = async () => {
+    if (!sidechat.sessionId || sidechat.busy || activeRun || compactStartedAt !== null) return;
+    setCompactStartedAt(Date.now());
+    setSidechat((current) => ({ ...current, error: null }));
+    try {
+      await compactDesktopV3Session({
+        sessionId: sidechat.sessionId,
+        note: draft,
+        agentName: "system-plan-sidechat",
+      });
+    } catch (cause) {
+      setSidechat((current) => ({ ...current, error: cause instanceof Error ? cause.message : "Unable to compact Plan context." }));
+    } finally {
+      setCompactStartedAt(null);
+    }
+  };
+
   const send = async () => {
     const content = draft.trim();
     if (!content || !sidechat.sessionId || sidechat.busy) return;
@@ -304,19 +333,27 @@ export function DesktopPlanAgentSidecar({
                   />
                 </div>
               </div>
-              <div className="flex items-center justify-end gap-2 border-y border-[var(--app-border-strong)] px-4 py-2">
-                <button
-                  type="button"
-                  onClick={toggleDictation}
-                  disabled={sidechat.busy || !sidechat.sessionId || !dictationSupported}
-                  aria-pressed={dictationEnabled}
-                  aria-label={dictationEnabled ? "Stop microphone dictation" : "Start microphone dictation"}
-                  title={dictationSupported ? (dictationEnabled ? "Stop dictation" : "Start dictation") : "Speech recognition is not available in this browser"}
-                  className={dictationEnabled ? "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-primary-text)]" : "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-surface)] text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"}
-                ><Mic size={15} className={dictationEnabled ? "animate-pulse" : undefined} /></button>
-                <Button type="button" size="sm" className="h-9 w-9 shrink-0 rounded-lg p-0" disabled={activeRun ? !sidechat.runtimeSwarmId : sidechat.busy || !draft.trim() || !sidechat.sessionId} aria-label={activeRun ? "Stop Plan" : "Send to Plan"} onClick={() => activeRun ? void stop() : void send()}>
-                  {activeRun ? <Square size={16} /> : sidechat.busy ? <Loader2 size={16} className="animate-spin" /> : <Send size={17} />}
-                </Button>
+              <div className="flex items-center justify-between gap-2 border-y border-[var(--app-border-strong)] px-4 py-2">
+                <DesktopV3CompactButton
+                  contextLabel={contextLabel}
+                  contextTooltip={contextTooltip}
+                  disabled={sidechat.busy || !sidechat.sessionId || Boolean(activeRun) || compactStartedAt !== null}
+                  onClick={() => { void compact(); }}
+                />
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={toggleDictation}
+                    disabled={sidechat.busy || !sidechat.sessionId || !dictationSupported}
+                    aria-pressed={dictationEnabled}
+                    aria-label={dictationEnabled ? "Stop microphone dictation" : "Start microphone dictation"}
+                    title={dictationSupported ? (dictationEnabled ? "Stop dictation" : "Start dictation") : "Speech recognition is not available in this browser"}
+                    className={dictationEnabled ? "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-primary-text)]" : "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-surface)] text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"}
+                  ><Mic size={15} className={dictationEnabled ? "animate-pulse" : undefined} /></button>
+                  <Button type="button" size="sm" className="h-9 w-9 shrink-0 rounded-lg p-0" disabled={activeRun ? !sidechat.runtimeSwarmId : sidechat.busy || !draft.trim() || !sidechat.sessionId} aria-label={activeRun ? "Stop Plan" : "Send to Plan"} onClick={() => activeRun ? void stop() : void send()}>
+                    {activeRun ? <Square size={16} /> : sidechat.busy ? <Loader2 size={16} className="animate-spin" /> : <Send size={17} />}
+                  </Button>
+                </div>
               </div>
             </div>
           </div>

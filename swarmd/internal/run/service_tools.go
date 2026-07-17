@@ -2828,6 +2828,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			return "", fmt.Errorf("session %q not found", sessionID)
 		}
 	}
+	if err := validatePlanSidechatTaskTargets(parentSession, launchSpecs); err != nil {
+		return "", err
+	}
 	taskCallID := strings.TrimSpace(call.CallID)
 	if taskCallID == "" {
 		taskCallID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
