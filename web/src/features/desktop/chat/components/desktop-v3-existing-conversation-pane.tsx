@@ -2741,18 +2741,23 @@ export function DesktopV3ExistingConversationPane({
 
           />
         ) : showPlanExecutionSidebar && planExecutionView ? (
-          <DesktopPlanExecutionSidebar
-            view={planExecutionView}
-            busyAction={planExecutionBusyAction}
-            canStop={Boolean(currentRun)}
-            onAction={stablePlanExecutionAction}
-            onStop={stableStop}
-            onEditPlan={stableOpenPlan}
-            belowActions={planSidebarBelowActions}
-            displayMode={planSidebarDisplayMode}
-            taskChildren={taskChildren}
-            taskChildActions={taskChildActions}
-          />
+          <div
+            className="hidden min-h-0 min-w-0 overflow-hidden min-[1300px]:flex min-[1300px]:flex-col"
+            data-plan-sidebar-column
+          >
+            <DesktopPlanExecutionSidebar
+              view={planExecutionView}
+              busyAction={planExecutionBusyAction}
+              canStop={Boolean(currentRun)}
+              onAction={stablePlanExecutionAction}
+              onStop={stableStop}
+              onEditPlan={stableOpenPlan}
+              belowActions={planSidebarBelowActions}
+              displayMode={planSidebarDisplayMode}
+              taskChildren={taskChildren}
+              taskChildActions={taskChildActions}
+            />
+          </div>
         ) : null}
       </div>
 
