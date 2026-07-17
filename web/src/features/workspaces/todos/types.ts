@@ -240,7 +240,7 @@ export async function createWorkspaceAITask(workspacePath: string, request: stri
       workspace_path: workspacePath,
       owner_kind: 'user',
       text: normalizedRequest,
-      session_id: originSessionId?.trim() || undefined,
+      origin_session_id: originSessionId?.trim() || undefined,
     }),
   })
   if (!response.item) {

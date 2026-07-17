@@ -1975,20 +1975,21 @@ func (s *Server) handleWorkspaceTodos(w http.ResponseWriter, r *http.Request) {
 		})
 	case http.MethodPost:
 		var req struct {
-			Action        string   `json:"action"`
-			WorkspacePath string   `json:"workspace_path"`
-			OwnerKind     string   `json:"owner_kind"`
-			ID            string   `json:"id"`
-			Text          string   `json:"text"`
-			Done          *bool    `json:"done"`
-			Priority      string   `json:"priority"`
-			Group         string   `json:"group"`
-			Tags          []string `json:"tags"`
-			InProgress    *bool    `json:"in_progress"`
-			SessionID     string   `json:"session_id"`
-			ParentID      string   `json:"parent_id"`
-			OrderedIDs    []string `json:"ordered_ids"`
-			Operations    []struct {
+			Action          string   `json:"action"`
+			WorkspacePath   string   `json:"workspace_path"`
+			OwnerKind       string   `json:"owner_kind"`
+			ID              string   `json:"id"`
+			Text            string   `json:"text"`
+			Done            *bool    `json:"done"`
+			Priority        string   `json:"priority"`
+			Group           string   `json:"group"`
+			Tags            []string `json:"tags"`
+			InProgress      *bool    `json:"in_progress"`
+			SessionID       string   `json:"session_id"`
+			OriginSessionID string   `json:"origin_session_id"`
+			ParentID        string   `json:"parent_id"`
+			OrderedIDs      []string `json:"ordered_ids"`
+			Operations      []struct {
 				Action     string   `json:"action"`
 				ID         string   `json:"id"`
 				OwnerKind  string   `json:"owner_kind"`
@@ -2032,7 +2033,7 @@ func (s *Server) handleWorkspaceTodos(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, errors.New("canonical workspace identity is required"))
 				return
 			}
-			originSessionID := strings.TrimSpace(req.SessionID)
+			originSessionID := strings.TrimSpace(req.OriginSessionID)
 			if originSessionID != "" {
 				origin, found, originErr := s.sessions.GetSession(originSessionID)
 				if originErr != nil || !found || strings.TrimSpace(origin.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) || strings.TrimSpace(origin.UserID) != strings.TrimSpace(principal.UserID) || strings.TrimSpace(origin.WorkspacePath) != workspacePath {

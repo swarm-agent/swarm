@@ -16,8 +16,13 @@ import (
 )
 
 const (
-	aiTaskRecoveryLimit = 100
-	aiTaskMaxAttempts   = 3
+	aiTaskRecoveryLimit     = 100
+	aiTaskMaxAttempts       = 3
+	aiTaskMessagePageLimit  = 500
+	aiTaskOriginContextOpen = "----- BEGIN DURABLE ORIGIN CONVERSATION -----"
+	aiTaskOriginContextEnd  = "----- END DURABLE ORIGIN CONVERSATION -----"
+	aiTaskRequestOpen       = "----- BEGIN TASK INSTRUCTION -----"
+	aiTaskRequestEnd        = "----- END TASK INSTRUCTION -----"
 )
 
 type AITaskQueueTransition struct {
@@ -164,6 +169,11 @@ func (s *Service) runClaimedAITask(ctx context.Context, queue AITaskQueue, task 
 	if err != nil {
 		return terminalizeAITask(queue, task, err)
 	}
+	prompt, err := s.buildAITaskPreparationPrompt(task)
+	if err != nil {
+		return terminalizeAITask(queue, task, err)
+	}
+
 	preference := pebblestore.ModelPreference{Provider: profile.Provider, Model: profile.Model, Thinking: profile.Thinking, ServiceTier: profile.AutoServiceTier}
 	if _, err = s.model.ResolvePreference(preference); err != nil {
 		return terminalizeAITask(queue, task, fmt.Errorf("resolve configured Swarm auto preference: %w", err))
@@ -172,6 +182,9 @@ func (s *Service) runClaimedAITask(ctx context.Context, queue AITaskQueue, task 
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: task.UserID, AccountScopeID: task.AccountScopeID, SessionID: task.PreparationSessionID, AccountScopeSource: identity.AccountScopeSourceSession}
 	metadata := map[string]any{"source": "ai_task_preparation", "navigation_hidden": true, "system_session": true, "lineage_kind": "ai_task_preparation", "ai_task_id": task.ID, "ai_task_preparation_session_id": task.PreparationSessionID, "ai_task_preparation_run_id": task.PreparationRunID, "ai_task_preparation_attempt_id": task.PreparationAttemptID}
+	if originSessionID := strings.TrimSpace(task.OriginSessionID); originSessionID != "" {
+		metadata["ai_task_origin_session_id"] = originSessionID
+	}
 	canonical, err := s.sessionDeployCanonicalize(SessionDeployCanonicalizeInput{Principal: principal, WorkspacePath: task.WorkspacePath, AgentProfile: profile, RuntimeMode: pebblestore.AgentRuntimeModeRead, Metadata: metadata})
 	if err != nil {
 		return terminalizeAITask(queue, task, fmt.Errorf("canonicalize preparation session: %w", err))
@@ -200,7 +213,6 @@ func (s *Service) runClaimedAITask(ctx context.Context, queue AITaskQueue, task 
 		}
 	}
 	if raw == "" {
-		prompt := strings.TrimSpace(task.AIRequest)
 		intent := pebblestore.V3SessionRunIntent{SessionID: prep.ID, UserID: task.UserID, AccountScopeID: task.AccountScopeID, RunID: task.PreparationRunID, Status: sessionruntime.RunIntentPendingExecutor, RunSessionID: prep.ID, ParentSessionID: prep.ID}
 		message := pebblestore.MessageSnapshot{ID: deterministicAITaskID(task.ID, task.PreparationRunID, "prompt", "message"), SessionID: prep.ID, UserID: task.UserID, AccountScopeID: task.AccountScopeID, Role: "user", Content: prompt, Metadata: map[string]any{"source": "ai_task_preparation"}, CreatedAt: now}
 		appendKey := "ai-task:preparation:prompt:" + task.PreparationRunID
@@ -224,6 +236,71 @@ func (s *Service) runClaimedAITask(ctx context.Context, queue AITaskQueue, task 
 	_ = queue.AppendAITaskAudit(task.AccountScopeID, task.WorkspacePath, task.ID, pebblestore.AITaskAuditRecord{StageKey: fmt.Sprintf("%06d_parse_success", task.AIStateVersion), Stage: "parse_success", Disposition: "parsed", CreatedAt: time.Now().UnixMilli()})
 	_, err = s.ExecutePreparedAITask(ctx, task.PreparationSessionID, task.AccountScopeID, task.WorkspacePath, task.ID, preparation, apply)
 	return err
+}
+
+func (s *Service) buildAITaskPreparationPrompt(task pebblestore.WorkspaceTodoItem) (string, error) {
+	request := strings.TrimSpace(task.AIRequest)
+	originSessionID := strings.TrimSpace(task.OriginSessionID)
+	if originSessionID == "" {
+		return request, nil
+	}
+
+	origin, ok, err := s.sessions.GetSession(originSessionID)
+	if err != nil {
+		return "", fmt.Errorf("load AI task origin session: %w", err)
+	}
+	if !ok {
+		return "", fmt.Errorf("AI task origin session %q not found", originSessionID)
+	}
+	if strings.TrimSpace(origin.AccountScopeID) != strings.TrimSpace(task.AccountScopeID) || strings.TrimSpace(origin.UserID) != strings.TrimSpace(task.UserID) || strings.TrimSpace(origin.WorkspacePath) != strings.TrimSpace(task.WorkspacePath) {
+		return "", fmt.Errorf("AI task origin session is not authorized for this task")
+	}
+
+	messages, err := s.listAllAITaskOriginMessages(originSessionID)
+	if err != nil {
+		return "", fmt.Errorf("load AI task origin conversation: %w", err)
+	}
+	return formatAITaskPreparationPrompt(messages, request), nil
+}
+
+func (s *Service) listAllAITaskOriginMessages(sessionID string) ([]pebblestore.MessageSnapshot, error) {
+	var all []pebblestore.MessageSnapshot
+	var afterSeq uint64
+	for {
+		page, err := s.sessions.ListSessionMessages(sessionID, afterSeq, aiTaskMessagePageLimit)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if len(page) < aiTaskMessagePageLimit {
+			return all, nil
+		}
+		nextSeq := page[len(page)-1].GlobalSeq
+		if nextSeq <= afterSeq {
+			return nil, fmt.Errorf("origin conversation pagination did not advance")
+		}
+		afterSeq = nextSeq
+	}
+}
+
+func formatAITaskPreparationPrompt(messages []pebblestore.MessageSnapshot, request string) string {
+	var b strings.Builder
+	b.WriteString(aiTaskOriginContextOpen)
+	for _, message := range messages {
+		b.WriteString("\n\n[")
+		b.WriteString(strings.TrimSpace(message.Role))
+		b.WriteString("]\n")
+		b.WriteString(message.Content)
+	}
+	b.WriteString("\n\n")
+	b.WriteString(aiTaskOriginContextEnd)
+	b.WriteString("\n\n")
+	b.WriteString(aiTaskRequestOpen)
+	b.WriteString("\n")
+	b.WriteString(strings.TrimSpace(request))
+	b.WriteString("\n")
+	b.WriteString(aiTaskRequestEnd)
+	return b.String()
 }
 
 func terminalizeAITask(queue AITaskQueue, task pebblestore.WorkspaceTodoItem, err error) error {

@@ -5,6 +5,7 @@ import { Textarea } from '../../../../components/ui/textarea'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
+import { submitDesktopComposer } from '../services/composer-submit'
 import {
   chatMentionCandidates,
   mentionPaletteActive,
@@ -500,23 +501,15 @@ export function DesktopV3AgenticComposer({
   }, [dictationButtonDisabled, draft, startRecognition, stopDictation])
 
   const handleSubmitClick = useCallback(async () => {
-    if (canStop) {
-      void onStop?.()
-      return
-    }
     const submittedDraft = textareaRef.current?.value ?? dictationComposer
-    const submittedPalette = buildDesktopSlashPaletteState(submittedDraft)
-    if (submittedPalette.exactMatch?.action.kind === 'queue-ai-task') {
-      try {
-        await onSlashCommand?.(submittedPalette.exactMatch, submittedDraft)
-        clearComposerForSubmit()
-      } catch {
-        // The owning pane surfaces the error and the task request stays editable.
-      }
-      return
-    }
-    clearComposerForSubmit()
-    void onSubmit(submittedDraft)
+    await submitDesktopComposer({
+      draft: submittedDraft,
+      canStop,
+      clear: clearComposerForSubmit,
+      onSubmit,
+      onStop,
+      onSlashCommand,
+    })
   }, [canStop, clearComposerForSubmit, dictationComposer, onSlashCommand, onStop, onSubmit])
 
   const handleMentionInsert = useCallback((agent: string) => {
