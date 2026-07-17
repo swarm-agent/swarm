@@ -29,6 +29,7 @@ interface DesktopPlanAgentSidecarProps {
   embedded?: boolean;
   modelLabel?: string;
   mobileOpen?: boolean;
+  displayMode?: "full" | "compact" | "thin";
 }
 
 interface SidechatState {
@@ -91,6 +92,7 @@ export function DesktopPlanAgentSidecar({
   embedded = false,
   modelLabel = "",
   mobileOpen = true,
+  displayMode = "full",
 }: DesktopPlanAgentSidecarProps) {
   const [sidechat, setSidechat] = useState<SidechatState>(EMPTY_SIDECHAT);
   const [draft, setDraft] = useState("");
@@ -286,8 +288,8 @@ export function DesktopPlanAgentSidecar({
     <div
       className={embedded
         ? mobileOpen
-          ? "fixed inset-0 z-50 flex bg-black/30 xl:static xl:z-auto xl:min-h-0 xl:w-[360px] xl:max-w-[360px] xl:border-l xl:border-[var(--app-border)] xl:bg-[var(--app-surface)]"
-          : "hidden xl:flex xl:min-h-0 xl:w-[360px] xl:max-w-[360px] xl:border-l xl:border-[var(--app-border)] xl:bg-[var(--app-surface)]"
+          ? `fixed inset-0 z-50 flex bg-black/30 xl:static xl:z-auto xl:min-h-0 xl:border-l xl:border-[var(--app-border)] xl:bg-[var(--app-surface)] ${displayMode === "thin" ? "xl:w-[56px] xl:max-w-[56px]" : displayMode === "compact" ? "xl:w-[280px] xl:max-w-[280px]" : "xl:w-[360px] xl:max-w-[360px]"}`
+          : `hidden xl:flex xl:min-h-0 xl:border-l xl:border-[var(--app-border)] xl:bg-[var(--app-surface)] ${displayMode === "thin" ? "xl:w-[56px] xl:max-w-[56px]" : displayMode === "compact" ? "xl:w-[280px] xl:max-w-[280px]" : "xl:w-[360px] xl:max-w-[360px]"}`
         : "fixed inset-0 z-50 bg-black/30 md:left-auto md:w-[28rem]"}
       data-testid="desktop-plan-agent-sidecar"
       data-embedded={embedded ? "true" : "false"}

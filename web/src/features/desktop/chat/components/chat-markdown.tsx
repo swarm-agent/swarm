@@ -1,5 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Archive, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Clock3, Copy, GitBranch, Layers3, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
+import { Archive, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, CircleStop, Clock3, Copy, GitBranch, Layers3, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
 import type {
@@ -7,7 +7,13 @@ import type {
   SearchToolFileGroup,
   SearchToolLineGroup,
   TaskToolRow,
+  TaskChildCardActions,
 } from "../types/chat";
+import { useDesktopV3CacheSelector } from "../../state/desktop-v3-cache-store";
+import { selectDesktopV3TaskChildViewModel, type DesktopV3TaskChildViewModel } from "../../state/desktop-v3-cache-selectors";
+import { hydrateDesktopV3ChildCard } from "../../state/desktop-v3-session-hydrator";
+import { requireDesktopV3RealtimeControllerReady, type DesktopV3RealtimeSessionDemandLease } from "../../realtime/v3-realtime-controller";
+import { stopSessionV3Run } from "../../session-v3/api";
 import { getToolTheme, type ToolState } from "../services/tool-theme";
 import { ToolSyntaxLine, inferToolSyntaxLanguage, pathFromToolSummary } from "../services/tool-syntax";
 
@@ -16,6 +22,7 @@ interface ChatMarkdownProps {
   className?: string;
   toolMessage?: StructuredToolMessage | null;
   thinkingTagsEnabled?: boolean;
+  taskChildActions?: TaskChildCardActions;
 }
 
 function resolveToolState(toolMessage: StructuredToolMessage): ToolState {
@@ -592,15 +599,194 @@ function taskPreviewLabel(row: TaskToolRow): string {
   return row.previewKind.trim() || 'live';
 }
 
-function TaskAgentListRow({
+const TASK_CARD_HOVER_DEBOUNCE_MS = 180;
+
+function taskChildModelsEqual(left: DesktopV3TaskChildViewModel | null, right: DesktopV3TaskChildViewModel | null): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return Object.keys(left).every((key) => left[key as keyof DesktopV3TaskChildViewModel] === right[key as keyof DesktopV3TaskChildViewModel]);
+}
+
+function taskRowWithChildState(row: TaskToolRow, child: DesktopV3TaskChildViewModel | null): TaskToolRow {
+  if (!child?.hydrated) return row;
+  return {
+    ...row,
+    status: child.status || row.status,
+    tool: child.currentTool || row.tool,
+    modelLabel: child.modelLabel || row.modelLabel,
+    launchStartedAtMs: child.startedAt || row.launchStartedAtMs,
+    elapsedMs: child.elapsedMs || row.elapsedMs,
+    terminal: child.terminal,
+    previewKind: child.error ? 'error' : row.previewKind,
+    previewText: child.error || row.previewText,
+  };
+}
+
+function taskContextLabel(child: DesktopV3TaskChildViewModel | null): string {
+  if (!child?.hydrated || child.contextWindow <= 0 || child.remainingTokens === null) return 'Context unavailable';
+  const used = Math.max(0, child.contextWindow - child.remainingTokens);
+  return `${Math.round((used / child.contextWindow) * 100)}% context · ${child.remainingTokens.toLocaleString()} left`;
+}
+
+function TaskChildInteractiveRow({
   row,
-  index,
-  dense,
+  actions,
+  className,
+  children,
 }: {
   row: TaskToolRow;
-  index: number;
-  dense: boolean;
+  actions?: TaskChildCardActions;
+  className: string;
+  children: (effectiveRow: TaskToolRow, child: DesktopV3TaskChildViewModel | null) => ReactNode;
 }) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const demandRef = useRef<DesktopV3RealtimeSessionDemandLease | null>(null);
+  const [visible, setVisible] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [stopPending, setStopPending] = useState(false);
+  const [stopMessage, setStopMessage] = useState('');
+  const selectChild = useCallback(
+    (state: Parameters<typeof selectDesktopV3TaskChildViewModel>[0]) => selectDesktopV3TaskChildViewModel(state, row),
+    [row],
+  );
+  const child = useDesktopV3CacheSelector(selectChild, taskChildModelsEqual);
+  const effectiveRow = useMemo(() => taskRowWithChildState(row, child), [child, row]);
+  const engaged = Boolean(actions && row.childSessionId.trim() && !effectiveRow.terminal && (visible || focused || hovered));
+  const ownerKey = `${actions?.parentSessionId || 'parent'}:task-card:${row.launchKey || row.childSessionId}`;
+
+  useEffect(() => {
+    const node = rootRef.current;
+    if (!node) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => setVisible(entries.some((entry) => entry.isIntersecting)), { threshold: 0.01 });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!engaged) {
+      demandRef.current?.release();
+      demandRef.current = null;
+      return;
+    }
+    let cancelled = false;
+    void hydrateDesktopV3ChildCard(row.childSessionId).catch(() => undefined);
+    void requireDesktopV3RealtimeControllerReady().then((controller) => {
+      if (cancelled) return;
+      demandRef.current?.release();
+      demandRef.current = controller.acquireSessionDemand(ownerKey, row.childSessionId);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+      demandRef.current?.release();
+      demandRef.current = null;
+    };
+  }, [engaged, ownerKey, row.childSessionId]);
+
+  useEffect(() => () => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    demandRef.current?.release();
+  }, []);
+
+  const navigate = useCallback(() => {
+    if (!actions || !row.childSessionId.trim()) return;
+    actions.onNavigate(row.childSessionId, child?.workspacePath || '');
+  }, [actions, child?.workspacePath, row.childSessionId]);
+
+  const stop = useCallback(async (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!child?.runId || !child.targetSwarmId || child.terminal || stopPending) return;
+    setStopPending(true);
+    setStopMessage('Stopping…');
+    try {
+      await stopSessionV3Run(child.sessionId, { runId: child.runId, targetSwarmId: child.targetSwarmId });
+      setStopMessage('Stop requested');
+    } catch (error) {
+      setStopMessage(error instanceof Error ? error.message : 'Stop failed');
+    } finally {
+      setStopPending(false);
+    }
+  }, [child, stopPending]);
+
+  const canNavigate = Boolean(actions && row.childSessionId.trim());
+  const canStop = Boolean(child?.hydrated && !child.terminal && child.runId && child.targetSwarmId);
+  return (
+    <div
+      ref={rootRef}
+      className={cn(className, canNavigate && 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--app-primary)]')}
+      role={canNavigate ? 'link' : undefined}
+      tabIndex={canNavigate ? 0 : undefined}
+      onClick={navigate}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          navigate();
+        }
+      }}
+      onFocusCapture={() => setFocused(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false);
+      }}
+      onPointerEnter={(event) => {
+        if ((event.target as HTMLElement).closest('[data-task-stop]')) return;
+        if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+        hoverTimerRef.current = setTimeout(() => setHovered(true), TASK_CARD_HOVER_DEBOUNCE_MS);
+      }}
+      onPointerLeave={() => {
+        if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+        hoverTimerRef.current = null;
+        setHovered(false);
+      }}
+      data-child-session-id={row.childSessionId || undefined}
+    >
+      {children(effectiveRow, child)}
+      {row.childSessionId ? (
+        <div className="flex min-w-0 items-center gap-2 px-3 pb-2 text-[10px] text-[var(--app-text-subtle)]">
+          <span className="min-w-0 truncate" title={taskContextLabel(child)}>{child?.loading ? 'Loading live state…' : child?.unavailable ? 'Session unavailable' : child?.stale ? 'Live state stale' : taskContextLabel(child)}</span>
+          {child?.contextWindow && child.remainingTokens !== null ? (
+            <span className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-[var(--app-border)]" aria-hidden="true">
+              <span className="block h-full bg-[var(--app-primary)]" style={{ width: `${Math.max(0, Math.min(100, ((child.contextWindow - child.remainingTokens) / child.contextWindow) * 100))}%` }} />
+            </span>
+          ) : null}
+          <button
+            type="button"
+            data-task-stop
+            className="ml-auto inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md border border-[var(--app-border)] px-2 text-[10px] font-medium text-[var(--app-text-muted)] opacity-100 transition hover:border-[var(--app-danger)] hover:text-[var(--app-danger)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+            aria-label={`Stop ${row.assignmentLabel || row.agent || 'subagent'}`}
+            title={canStop ? 'Stop subagent run' : 'No active resolvable child run'}
+            disabled={!canStop || stopPending}
+            onClick={stop}
+            onPointerEnter={(event) => event.stopPropagation()}
+          >
+            <CircleStop size={12} aria-hidden="true" />
+            <span className="sm:hidden">Stop</span>
+          </button>
+          {stopMessage ? <span role="status" className={cn('shrink-0', stopMessage.toLowerCase().includes('fail') ? 'text-[var(--app-danger)]' : '')}>{stopMessage}</span> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TaskAgentListRow({ row, index, dense, actions }: { row: TaskToolRow; index: number; dense: boolean; actions?: TaskChildCardActions }) {
+  return (
+    <TaskChildInteractiveRow
+      row={row}
+      actions={actions}
+      className="group min-w-0 border-t border-[var(--app-border)] transition-colors hover:bg-[color-mix(in_srgb,var(--app-text-muted)_5%,transparent)]"
+    >
+      {(effectiveRow) => <TaskAgentListRowContent row={effectiveRow} index={index} dense={dense} />}
+    </TaskChildInteractiveRow>
+  );
+}
+
+function TaskAgentListRowContent({ row, index, dense }: { row: TaskToolRow; index: number; dense: boolean }) {
   const kind = taskStatusKind(row);
   const statusLabel = taskStatusLabel(row);
   const primaryLabel = row.assignmentLabel || row.agent || 'subagent';
@@ -612,10 +798,7 @@ function TaskAgentListRow({
   const rowNumber = row.launchIndex || index + 1;
 
   return (
-    <div className={cn(
-      "group min-w-0 border-t border-[var(--app-border)] transition-colors hover:bg-[color-mix(in_srgb,var(--app-text-muted)_5%,transparent)]",
-      kind === "running" ? "bg-[color-mix(in_srgb,var(--app-primary)_5%,transparent)]" : "",
-    )}>
+    <div className={cn(kind === "running" ? "bg-[color-mix(in_srgb,var(--app-primary)_5%,transparent)]" : "")}>
       <div className={cn(
         "grid min-w-0 grid-cols-[3.25rem_minmax(0,1fr)_4.25rem] items-center gap-x-2 gap-y-1 px-3 sm:grid-cols-[2.5rem_3.75rem_minmax(0,1.5fr)_minmax(0,0.9fr)_4.75rem] sm:gap-x-3",
         dense ? "py-1.5" : "py-2",
@@ -707,13 +890,19 @@ function TaskRowsHeader({
   );
 }
 
-function TaskSwarmCompactRow({
-  row,
-  index,
-}: {
-  row: TaskToolRow;
-  index: number;
-}) {
+function TaskSwarmCompactRow({ row, index, actions }: { row: TaskToolRow; index: number; actions?: TaskChildCardActions }) {
+  return (
+    <TaskChildInteractiveRow
+      row={row}
+      actions={actions}
+      className="group min-w-0 rounded-lg border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_34%,transparent)]"
+    >
+      {(effectiveRow) => <TaskSwarmCompactRowContent row={effectiveRow} index={index} />}
+    </TaskChildInteractiveRow>
+  );
+}
+
+function TaskSwarmCompactRowContent({ row, index }: { row: TaskToolRow; index: number }) {
   const kind = taskStatusKind(row);
   const statusLabel = taskStatusLabel(row);
   const rowNumber = row.launchIndex || index + 1;
@@ -724,7 +913,7 @@ function TaskSwarmCompactRow({
 
   return (
     <div className={cn(
-      "min-w-0 rounded-lg border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_34%,transparent)] px-2 py-1.5",
+      "min-w-0 px-2 py-1.5",
       kind === "running" ? "border-[color-mix(in_srgb,var(--app-primary)_34%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_6%,transparent)]" : "",
     )}>
       <div className="flex min-w-0 items-center gap-1.5">
@@ -757,15 +946,17 @@ function TaskSwarmCompactRow({
 const MemoizedTaskAgentListRow = memo(TaskAgentListRow, (previous, next) => (
   previous.index === next.index
   && previous.dense === next.dense
+  && previous.actions === next.actions
   && taskRowsEqual(previous.row, next.row)
 ));
 
 const MemoizedTaskSwarmCompactRow = memo(TaskSwarmCompactRow, (previous, next) => (
   previous.index === next.index
+  && previous.actions === next.actions
   && taskRowsEqual(previous.row, next.row, { comparePreview: false })
 ));
 
-function TaskSwarmRowsView({ rows }: { rows: TaskToolRow[] }) {
+function TaskSwarmRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: TaskChildCardActions }) {
   const counts = taskRowsCounts(rows);
   return (
     <div className="mt-2 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm">
@@ -776,6 +967,7 @@ function TaskSwarmRowsView({ rows }: { rows: TaskToolRow[] }) {
             key={taskRowKey(row, index)}
             row={row}
             index={index}
+            actions={actions}
           />
         ))}
       </div>
@@ -783,7 +975,7 @@ function TaskSwarmRowsView({ rows }: { rows: TaskToolRow[] }) {
   );
 }
 
-function TaskAgentRowsView({ rows }: { rows: TaskToolRow[] }) {
+function TaskAgentRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: TaskChildCardActions }) {
   const counts = taskRowsCounts(rows);
   const dense = rows.length >= 50;
 
@@ -804,6 +996,7 @@ function TaskAgentRowsView({ rows }: { rows: TaskToolRow[] }) {
             row={row}
             index={index}
             dense={dense}
+            actions={actions}
           />
         ))}
       </div>
@@ -811,10 +1004,10 @@ function TaskAgentRowsView({ rows }: { rows: TaskToolRow[] }) {
   );
 }
 
-function TaskRowsView({ rows }: { rows: TaskToolRow[] }) {
+function TaskRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: TaskChildCardActions }) {
   if (rows.length === 0) return null;
-  if (rows.length > TASK_SWARM_THRESHOLD) return <TaskSwarmRowsView rows={rows} />;
-  return <TaskAgentRowsView rows={rows} />;
+  if (rows.length > TASK_SWARM_THRESHOLD) return <TaskSwarmRowsView rows={rows} actions={actions} />;
+  return <TaskAgentRowsView rows={rows} actions={actions} />;
 }
 
 function SearchSummaryLine({
@@ -1130,10 +1323,12 @@ export function ToolMessageView({
   toolMessage,
   isGroupItem,
   thinkingTagsEnabled = true,
+  taskChildActions,
 }: {
   toolMessage: StructuredToolMessage;
   isGroupItem?: boolean;
   thinkingTagsEnabled?: boolean;
+  taskChildActions?: TaskChildCardActions;
 }) {
   if (toolMessage.tool.trim().toLowerCase() === "bash") {
     return <BashToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
@@ -1212,7 +1407,7 @@ export function ToolMessageView({
         {!toolMessage.editDiff &&
         toolMessage.tool === "task" &&
         toolMessage.taskRows.length > 0 ? (
-          <TaskRowsView rows={toolMessage.taskRows} />
+          <TaskRowsView rows={toolMessage.taskRows} actions={taskChildActions} />
         ) : null}
         {!toolMessage.editDiff &&
         toolMessage.tool === "search" &&
@@ -1294,9 +1489,10 @@ function ChatMarkdownInner({
   className,
   toolMessage,
   thinkingTagsEnabled = true,
+  taskChildActions,
 }: ChatMarkdownProps) {
   if (toolMessage) {
-    return <ToolMessageView toolMessage={toolMessage} thinkingTagsEnabled={thinkingTagsEnabled} />;
+    return <ToolMessageView toolMessage={toolMessage} thinkingTagsEnabled={thinkingTagsEnabled} taskChildActions={taskChildActions} />;
   }
 
   return (

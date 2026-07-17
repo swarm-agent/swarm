@@ -1,4 +1,4 @@
-import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord } from '../chat/types/chat'
+import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord, TaskToolRow } from '../chat/types/chat'
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
 import { safeString } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopPermissionSummary, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
@@ -87,6 +87,98 @@ export interface DesktopV3HydratedTranscriptDiagnostics {
   retainedBackgroundHydratedSessionCount: number
   inFlightHydrateSessionCount: number
   evictedTranscriptCount: number
+}
+
+export interface DesktopV3TaskChildViewModel {
+  sessionId: string
+  hydrated: boolean
+  loading: boolean
+  unavailable: boolean
+  stale: boolean
+  terminal: boolean
+  status: string
+  runId: string
+  currentTool: string
+  startedAt: number
+  elapsedMs: number
+  modelLabel: string
+  contextWindow: number
+  remainingTokens: number | null
+  contextUpdatedAt: number
+  workspacePath: string
+  workspaceName: string
+  targetSwarmId: string
+  error: string
+}
+
+const DESKTOP_V3_ACTIVE_TASK_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
+
+export function selectDesktopV3TaskChildViewModel(
+  state: DesktopV3CacheState,
+  row: TaskToolRow,
+): DesktopV3TaskChildViewModel | null {
+  const sessionId = row.childSessionId.trim()
+  if (!sessionId) return null
+  const record = state.sessionsById[sessionId]
+  const session = record?.kind === 'full' ? record.session : undefined
+  const view = state.sessionViewsById[sessionId]
+  const intent = state.currentRunIntentBySession[sessionId]
+  const liveRun = intent?.run_id ? state.liveRunsBySession[sessionId]?.[intent.run_id] : undefined
+  const usage = objectRecord(state.usageBySession[sessionId] ?? view?.usage_summary)
+  const settings = view?.agentic_settings
+  const status = (intent?.status || view?.current_run_state?.status || row.status || row.phase || 'pending').trim().toLowerCase()
+  const terminal = intent ? !DESKTOP_V3_ACTIVE_TASK_STATUSES.has(status) : row.terminal
+  const contextWindow = positiveNumber(usage?.context_window ?? usage?.contextWindow ?? settings?.context_window)
+  const remainingRaw = finiteOptionalNumber(usage?.remaining_tokens ?? usage?.remainingTokens)
+  const remainingCandidate = remainingRaw === null ? null : Math.max(0, contextWindow > 0 ? Math.min(contextWindow, remainingRaw) : remainingRaw)
+  const toolCalls = liveRun ? Object.values(liveRun.toolCallsByCallId) : []
+  const currentTool = [...toolCalls]
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .find((tool) => !['completed', 'done', 'failed', 'error', 'cancelled', 'canceled'].includes((tool.status || '').toLowerCase()))?.toolName?.trim()
+    || row.tool.trim()
+  const preference = objectRecord(state.preferencesBySession[sessionId])
+  const metadata = session?.metadata
+  const targetSwarmId = metadataString(metadata, 'swarm_v3_runtime_swarm_id')
+  const error = intent?.blocked_reason?.trim() || (status === 'failed' ? row.previewText.trim() : '')
+  const startedAt = intent?.started_at || view?.current_run_state?.started_at || row.launchStartedAtMs || row.currentToolStartedAtMs || 0
+  const elapsedMs = intent?.duration_ms || intent?.cumulative_duration_ms || view?.current_run_state?.duration_ms || row.elapsedMs || row.currentToolMs || 0
+  return {
+    sessionId,
+    hydrated: Boolean(session && view),
+    loading: (state.hydrateInFlightBySession[sessionId] ?? 0) > 0,
+    unavailable: Boolean(record && record.kind === 'stub' && !state.hydrateInFlightBySession[sessionId]),
+    stale: state.realtime.status === 'stale' || state.realtime.needsBootstrap,
+    terminal,
+    status,
+    runId: intent?.run_id?.trim() || view?.current_run_state?.run_id?.trim() || '',
+    currentTool: currentTool && currentTool !== '-' ? currentTool : '',
+    startedAt,
+    elapsedMs,
+    modelLabel: stringValue(usage?.model) || stringValue(preference?.model) || stringValue(settings?.effective_preference && objectRecord(settings.effective_preference)?.model) || row.modelLabel,
+    contextWindow,
+    remainingTokens: remainingCandidate,
+    contextUpdatedAt: positiveNumber(usage?.updated_at ?? usage?.updatedAt),
+    workspacePath: session?.workspace_path?.trim() || '',
+    workspaceName: session?.workspace_name?.trim() || '',
+    targetSwarmId,
+    error,
+  }
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function positiveNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+}
+
+function finiteOptionalNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
 export function selectOrderedNotifications(state: DesktopV3CacheState): DesktopNotificationCenterRecord[] {

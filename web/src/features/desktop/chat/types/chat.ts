@@ -102,6 +102,12 @@ export interface BashToolData {
   exitCode: number | null;
 }
 
+export interface TaskChildCardActions {
+  workspaceSlug: string;
+  parentSessionId: string;
+  onNavigate: (sessionId: string, workspacePath: string) => void;
+}
+
 export interface StructuredToolMessage {
   pathId: "run.tool-history.v2" | "run.v3.provider-tool-result.v1";
   tool: string;

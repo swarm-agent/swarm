@@ -856,7 +856,7 @@ test("automatic mode toggle dispatches checkpointed policy action", () => {
       }}
       onEditPlan={() => undefined}
     />,
-    "Switch to checkpoint-by-checkpoint",
+    "Pause for review after each checkpoint",
   );
 
   assert.equal(button.props.disabled, false);
