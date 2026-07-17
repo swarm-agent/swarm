@@ -473,15 +473,25 @@ export function DesktopV3AgenticComposer({
     startRecognition()
   }, [dictationButtonDisabled, draft, startRecognition, stopDictation])
 
-  const handleSubmitClick = useCallback(() => {
+  const handleSubmitClick = useCallback(async () => {
     if (canStop) {
       void onStop?.()
       return
     }
     const submittedDraft = textareaRef.current?.value ?? dictationComposer
+    const submittedPalette = buildDesktopSlashPaletteState(submittedDraft)
+    if (submittedPalette.exactMatch?.action.kind === 'queue-ai-task') {
+      try {
+        await onSlashCommand?.(submittedPalette.exactMatch, submittedDraft)
+        clearComposerForSubmit()
+      } catch {
+        // The owning pane surfaces the error and the task request stays editable.
+      }
+      return
+    }
     clearComposerForSubmit()
     void onSubmit(submittedDraft)
-  }, [canStop, clearComposerForSubmit, dictationComposer, onStop, onSubmit])
+  }, [canStop, clearComposerForSubmit, dictationComposer, onSlashCommand, onStop, onSubmit])
 
   const handleMentionInsert = useCallback((agent: string) => {
     const trimmedStartLength = draft.length - draft.replace(/^[\s\t\r\n]+/, '').length
@@ -497,6 +507,14 @@ export function DesktopV3AgenticComposer({
 
   const handleSlashSelect = useCallback((command: DesktopSlashCommand) => {
     if (command.state !== 'ready') return
+    if (command.action.kind === 'queue-ai-task') {
+      void Promise.resolve(onSlashCommand?.(command, draft))
+        .then(() => onDraftChange(''))
+        .catch(() => {
+          // The owning pane surfaces the error and the task request stays editable.
+        })
+      return
+    }
     void onSlashCommand?.(command, draft)
     if (command.action.kind === 'open-model-picker' || command.action.kind === 'toggle-fast') {
       openAgentSetup(currentAgent)
@@ -546,8 +564,12 @@ export function DesktopV3AgenticComposer({
         if (command) onDraftChange(command.command + ' ')
         return
       }
-      if (event.key === 'Enter' && !event.shiftKey && !slashPalette.hasArguments) {
+      if (event.key === 'Enter' && !event.shiftKey && (!slashPalette.hasArguments || slashPalette.exactMatch?.action.kind === 'queue-ai-task')) {
         event.preventDefault()
+        if (slashPalette.exactMatch?.action.kind === 'queue-ai-task') {
+          void handleSubmitClick()
+          return
+        }
         const command = slashCommands[slashSelectionIndex] ?? slashCommands[0]
         if (command) handleSlashSelect(command)
         return

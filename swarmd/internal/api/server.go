@@ -2022,6 +2022,21 @@ func (s *Server) handleWorkspaceTodos(w http.ResponseWriter, r *http.Request) {
 			action = "upsert"
 		}
 		switch action {
+		case "ai_task":
+			if ownerKind != pebblestore.WorkspaceTodoOwnerKindUser {
+				writeError(w, http.StatusBadRequest, errors.New("AI tasks must be user-owned"))
+				return
+			}
+			item, summary, _, err := s.todos.CreateAITask(todo.CreateAITaskInput{
+				WorkspacePath:  workspacePath,
+				Request:        req.Text,
+				IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key")),
+			})
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "item": item, "summary": summary, "status": item.AIState})
 		case "create":
 			item, summary, _, err := s.todos.Create(todo.CreateInput{
 				WorkspacePath: workspacePath,

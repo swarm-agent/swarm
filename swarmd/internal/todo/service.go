@@ -59,6 +59,23 @@ type UpdateInput struct {
 	ParentID      *string
 }
 
+type CreateAITaskInput struct {
+	WorkspacePath  string
+	Request        string
+	IdempotencyKey string
+}
+
+type AITaskTransitionInput struct {
+	WorkspacePath    string
+	ID               string
+	ExpectedState    string
+	State            string
+	Mode             string
+	Worktree         bool
+	ManagedSessionID string
+	Error            string
+}
+
 type ReorderInput struct {
 	WorkspacePath string
 	OwnerKind     string
@@ -166,6 +183,121 @@ func (s *Service) Create(input CreateInput) (TodoItem, TodoSummary, *pebblestore
 		return TodoItem{}, TodoSummary{}, nil, err
 	}
 	return created, summary, event, nil
+}
+
+// CreateAITask persists an AI request as an ordinary user-owned todo. A stable
+// idempotency key lets callers safely retry without creating a second authority.
+func (s *Service) CreateAITask(input CreateAITaskInput) (TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
+	workspacePath := strings.TrimSpace(input.WorkspacePath)
+	request := strings.TrimSpace(input.Request)
+	if workspacePath == "" || request == "" {
+		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("workspace path and AI task request are required")
+	}
+	items, err := s.store.List(workspacePath, 100000)
+	if err != nil {
+		return TodoItem{}, TodoSummary{}, nil, err
+	}
+	key := strings.TrimSpace(input.IdempotencyKey)
+	if key != "" {
+		for _, item := range items {
+			if item.OwnerKind == pebblestore.WorkspaceTodoOwnerKindUser && item.AIRequest == request && item.Group == "ai-task:"+key {
+				return item, pebblestore.SummarizeWorkspaceTodos(items), nil, nil
+			}
+		}
+	}
+	created, summary, event, err := s.Create(CreateInput{WorkspacePath: workspacePath, OwnerKind: pebblestore.WorkspaceTodoOwnerKindUser, Text: request, Group: "ai-task:" + key})
+	if err != nil {
+		return TodoItem{}, TodoSummary{}, nil, err
+	}
+	created.AIState, created.AIRequest = pebblestore.WorkspaceTodoAIStateQueued, request
+	created.UpdatedAt = time.Now().UnixMilli()
+	created, err = s.store.Save(created)
+	if err != nil {
+		return TodoItem{}, TodoSummary{}, nil, err
+	}
+	return created, summary, event, nil
+}
+
+// TransitionAITask is the only mutation available to the bound AI-task
+// orchestrator. It requires the exact workspace, todo id, user ownership, and
+// optional expected state; it cannot address arbitrary todos or sessions.
+func (s *Service) TransitionAITask(input AITaskTransitionInput) (TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
+	workspacePath, itemID := strings.TrimSpace(input.WorkspacePath), strings.TrimSpace(input.ID)
+	item, ok, err := s.store.Get(workspacePath, itemID)
+	if err != nil || !ok {
+		if err == nil {
+			err = fmt.Errorf("AI task %q not found", itemID)
+		}
+		return TodoItem{}, TodoSummary{}, nil, err
+	}
+	if item.OwnerKind != pebblestore.WorkspaceTodoOwnerKindUser || item.AIState == "" {
+		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("todo %q is not a user AI task", itemID)
+	}
+	if expected := pebblestore.NormalizeWorkspaceTodoAIState(input.ExpectedState); expected != "" && item.AIState != expected {
+		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("AI task %q state is %q, expected %q", itemID, item.AIState, expected)
+	}
+	next := pebblestore.NormalizeWorkspaceTodoAIState(input.State)
+	if !validAITaskTransition(item.AIState, next) {
+		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("invalid AI task transition %q to %q", item.AIState, next)
+	}
+	mode := strings.ToLower(strings.TrimSpace(input.Mode))
+	if mode != "" && mode != "plan" && mode != "auto" {
+		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("AI task mode must be plan or auto")
+	}
+	item.AIState, item.AIError, item.UpdatedAt = next, strings.TrimSpace(input.Error), time.Now().UnixMilli()
+	if mode != "" {
+		item.AIMode = mode
+	}
+	item.AIWorktree = input.Worktree
+	if sessionID := strings.TrimSpace(input.ManagedSessionID); sessionID != "" {
+		item.ManagedSessionID = sessionID
+	}
+	item.InProgress = next == pebblestore.WorkspaceTodoAIStateInProgress
+	if item.InProgress && (item.AIMode == "" || item.ManagedSessionID == "") {
+		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("AI task requires mode and managed session linkage before in progress")
+	}
+	item, err = s.store.Save(item)
+	if err != nil {
+		return TodoItem{}, TodoSummary{}, nil, err
+	}
+	summary, err := s.store.Summary(workspacePath)
+	if err != nil {
+		return TodoItem{}, TodoSummary{}, nil, err
+	}
+	event, err := s.appendEvent(workspacePath, "workspace.todo.ai_state_updated", item.ID, map[string]any{"workspace_path": workspacePath, "item": item, "summary": summary})
+	if err != nil {
+		return TodoItem{}, TodoSummary{}, nil, err
+	}
+	return item, summary, event, nil
+}
+
+// BindAITask satisfies run.AITaskBinder without importing run (and creating a
+// package cycle). The run service can therefore update only its pre-bound task.
+func (s *Service) BindAITask(workspacePath, taskID, expectedState, state, mode string, worktree bool, managedSessionID, errorText string) error {
+	_, _, _, err := s.TransitionAITask(AITaskTransitionInput{
+		WorkspacePath: workspacePath, ID: taskID, ExpectedState: expectedState,
+		State: state, Mode: mode, Worktree: worktree,
+		ManagedSessionID: managedSessionID, Error: errorText,
+	})
+	return err
+}
+
+func validAITaskTransition(current, next string) bool {
+	if current == next {
+		return true
+	}
+	switch current {
+	case pebblestore.WorkspaceTodoAIStateQueued:
+		return next == pebblestore.WorkspaceTodoAIStatePreparing || next == pebblestore.WorkspaceTodoAIStateFailed
+	case pebblestore.WorkspaceTodoAIStatePreparing:
+		return next == pebblestore.WorkspaceTodoAIStateQueued || next == pebblestore.WorkspaceTodoAIStateInProgress || next == pebblestore.WorkspaceTodoAIStateFailed
+	case pebblestore.WorkspaceTodoAIStateInProgress:
+		return next == pebblestore.WorkspaceTodoAIStateFailed
+	case pebblestore.WorkspaceTodoAIStateFailed:
+		return next == pebblestore.WorkspaceTodoAIStateQueued || next == pebblestore.WorkspaceTodoAIStatePreparing
+	default:
+		return false
+	}
 }
 
 func (s *Service) Update(input UpdateInput, options ...ListOptions) (TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {

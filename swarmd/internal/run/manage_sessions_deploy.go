@@ -159,6 +159,14 @@ func (s *Service) buildManageSessionsDeployManifest(sessionID string, call tool.
 	}
 	activeName := strings.TrimSpace(state.ActivePrimary)
 	active, found := profiles[strings.ToLower(activeName)]
+	if strings.EqualFold(activeName, agentruntime.SwarmAgentID) {
+		active, err = s.agents.ResolveSystemAgent(agentruntime.SwarmAgentID, active)
+		if err != nil {
+			return manageSessionsDeployManifest{}, fmt.Errorf("resolve active primary system agent: %w", err)
+		}
+		found = true
+		profiles[strings.ToLower(active.Name)] = active
+	}
 	if !found || !active.Enabled || active.Mode != agentruntime.ModePrimary {
 		return manageSessionsDeployManifest{}, fmt.Errorf("active primary agent is missing, disabled, or invalid")
 	}

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode, ChangeEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, LayoutGrid, LoaderCircle, Menu, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, ListChecks, LoaderCircle, Menu, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -22,7 +22,9 @@ import { WorkspaceTodoModal } from '../../workspaces/todos/components/workspace-
 import type { WorkspaceTodoItem, WorkspaceTodoOwnerKind, WorkspaceTodoSummary } from '../../workspaces/todos/types'
 import {
   createEmptyWorkspaceTodoSummary,
+  createWorkspaceAITask,
   createWorkspaceTodo,
+  fetchWorkspaceTodos,
   deleteAllWorkspaceTodos,
   deleteDoneWorkspaceTodos,
   deleteWorkspaceTodo,
@@ -2518,6 +2520,20 @@ export function DesktopAppPage() {
     }, 'Failed to clear notifications')
   ), [mutateNotificationState])
 
+  const openTodoModal = useCallback((workspacePath: string, workspaceName: string) => {
+    const normalizedPath = workspacePath.trim()
+    if (!normalizedPath) return
+    setTodoModal({ workspacePath: normalizedPath, workspaceName })
+    void fetchWorkspaceTodos(normalizedPath, 'user')
+      .then((result) => {
+        setTodoItems((current) => ({ ...current, [normalizedPath]: result.items }))
+        setTodoSummaries((current) => ({ ...current, [normalizedPath]: normalizeWorkspaceTodoSummary(result.summary) }))
+      })
+      .catch((error) => {
+        setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to load tasks', tone: 'error' })
+      })
+  }, [])
+
   const closeTodoModal = useCallback(() => {
     setTodoModal(null)
   }, [])
@@ -3322,7 +3338,7 @@ export function DesktopAppPage() {
     void navigate({ to: '/settings', search })
   }, [navigate, routeSessionId, routeWorkspaceSlug])
 
-  const handleSlashCommand = useCallback((command: DesktopSlashCommand) => {
+  const handleSlashCommand = useCallback(async (command: DesktopSlashCommand, draft = '') => {
     const action = command.action
     switch (action.kind) {
       case 'open-settings':
@@ -3366,6 +3382,30 @@ export function DesktopAppPage() {
         if (workspacePath) handleStartNewSessionInWorkspace(workspacePath, workspaceName)
         return
       }
+      case 'queue-ai-task': {
+        const request = draft.trimStart().replace(/^\/task(?:\s+|$)/i, '').trim()
+        if (!request) {
+          const error = new Error('Enter a task request after /task.')
+          setDesktopToast({ message: error.message, tone: 'error' })
+          throw error
+        }
+        const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || topWorkspacePath
+        if (!workspacePath) {
+          const error = new Error('Select a workspace before queuing a task.')
+          setDesktopToast({ message: error.message, tone: 'error' })
+          throw error
+        }
+        try {
+          const result = await createWorkspaceAITask(workspacePath, request)
+          setTodoItems((current) => ({ ...current, [workspacePath]: upsertWorkspaceTodoItem(current[workspacePath] ?? [], result.item) }))
+          setTodoSummaries((current) => ({ ...current, [workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
+          setDesktopToast({ message: result.item.managedSessionId ? 'Task started in a managed session.' : 'Task queued for Swarm.', tone: 'success' })
+        } catch (error) {
+          setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to queue task', tone: 'error' })
+          throw error
+        }
+        return
+      }
       case 'show-help':
         setDesktopToast({ message: 'Slash commands: use ↑/↓ to choose, Enter to run, Tab to insert.', tone: 'info' })
         return
@@ -3378,7 +3418,7 @@ export function DesktopAppPage() {
         return _exhaustive
       }
     }
-  }, [handleOpenSettingsTab, handleStartNewSessionInWorkspace, openGitPanel, openPlanModalForSession, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById])
+  }, [handleOpenSettingsTab, handleStartNewSessionInWorkspace, openGitPanel, openPlanModalForSession, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath]
 
   const latestNeedsApprovalSession = useMemo(() => {
     return desktopStateSessions
@@ -3832,6 +3872,9 @@ export function DesktopAppPage() {
           <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => void navigate({ to: '/' })} aria-label="Back to launcher">
             <Folder size={24} className="shrink-0" />
           </Button>
+          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { if (topWorkspacePath) openTodoModal(topWorkspacePath, topWorkspaceLabel) }} aria-label="Open tasks" disabled={!topWorkspacePath}>
+            <ListChecks size={24} className="shrink-0" />
+          </Button>
           {notificationAttentionVisible ? (
             <Button variant="ghost" className={cn('relative h-12 w-12 min-w-12 p-0', notificationUnreadCount > 0 && 'text-[var(--app-primary)]')} onClick={handleOpenNotifications} aria-label="Open notifications" title={notificationUnreadCount > 0 ? `${notificationUnreadCount} unread notification${notificationUnreadCount === 1 ? '' : 's'}` : 'Notifications'}>
               <Bell size={24} className="shrink-0" />
@@ -4006,16 +4049,20 @@ export function DesktopAppPage() {
                       <Search size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                       <span className="min-w-0 truncate">Search Chats</span>
                     </button>
-                    <Link
-                      to="/tools"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
-                      onClick={() => setMobileSidebarOpen(false)}
-                      aria-label="Open Swarm Tools"
-                      title="Tools"
+                    <button
+                      type="button"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => {
+                        if (topWorkspacePath) openTodoModal(topWorkspacePath, topWorkspaceLabel)
+                        setMobileSidebarOpen(false)
+                      }}
+                      disabled={!topWorkspacePath}
+                      aria-label="Open tasks"
+                      title="Tasks"
                     >
-                      <LayoutGrid size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">Tools</span>
-                    </Link>
+                      <ListChecks size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 truncate">Tasks</span>
+                    </button>
                     {routeWorkspaceSlug ? (
                       <Link
                         to="/$workspaceSlug/settings"
@@ -4383,6 +4430,11 @@ export function DesktopAppPage() {
             },
           }}
           saving={todoSavingWorkspacePath === todoModal.workspacePath}
+          onOpenManagedSession={(sessionId) => {
+            const workspaceSlug = workspaceSlugByPath.get(todoModal.workspacePath) ?? workspaceRouteSlugBase({ path: todoModal.workspacePath, workspaceName: todoModal.workspaceName })
+            closeTodoModal()
+            void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId } })
+          }}
           onOpenChange={(nextOpen) => {
             if (!nextOpen) {
               closeTodoModal()

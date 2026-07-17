@@ -13,6 +13,11 @@ import (
 const (
 	WorkspaceTodoOwnerKindUser  = "user"
 	WorkspaceTodoOwnerKindAgent = "agent"
+
+	WorkspaceTodoAIStateQueued     = "queued"
+	WorkspaceTodoAIStatePreparing  = "preparing"
+	WorkspaceTodoAIStateInProgress = "in_progress"
+	WorkspaceTodoAIStateFailed     = "failed"
 )
 
 type WorkspaceTodoOwnerSummary struct {
@@ -22,21 +27,27 @@ type WorkspaceTodoOwnerSummary struct {
 }
 
 type WorkspaceTodoItem struct {
-	ID            string   `json:"id"`
-	WorkspacePath string   `json:"workspace_path"`
-	OwnerKind     string   `json:"owner_kind"`
-	Text          string   `json:"text"`
-	Done          bool     `json:"done"`
-	Priority      string   `json:"priority,omitempty"`
-	Group         string   `json:"group,omitempty"`
-	Tags          []string `json:"tags,omitempty"`
-	InProgress    bool     `json:"in_progress,omitempty"`
-	SessionID     string   `json:"session_id,omitempty"`
-	ParentID      string   `json:"parent_id,omitempty"`
-	SortIndex     int      `json:"sort_index"`
-	CreatedAt     int64    `json:"created_at"`
-	UpdatedAt     int64    `json:"updated_at"`
-	CompletedAt   int64    `json:"completed_at,omitempty"`
+	ID               string   `json:"id"`
+	WorkspacePath    string   `json:"workspace_path"`
+	OwnerKind        string   `json:"owner_kind"`
+	Text             string   `json:"text"`
+	Done             bool     `json:"done"`
+	Priority         string   `json:"priority,omitempty"`
+	Group            string   `json:"group,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
+	InProgress       bool     `json:"in_progress,omitempty"`
+	SessionID        string   `json:"session_id,omitempty"`
+	ParentID         string   `json:"parent_id,omitempty"`
+	AIState          string   `json:"ai_state,omitempty"`
+	AIMode           string   `json:"ai_mode,omitempty"`
+	AIWorktree       bool     `json:"ai_worktree,omitempty"`
+	AIRequest        string   `json:"ai_request,omitempty"`
+	AIError          string   `json:"ai_error,omitempty"`
+	ManagedSessionID string   `json:"managed_session_id,omitempty"`
+	SortIndex        int      `json:"sort_index"`
+	CreatedAt        int64    `json:"created_at"`
+	UpdatedAt        int64    `json:"updated_at"`
+	CompletedAt      int64    `json:"completed_at,omitempty"`
 }
 
 type WorkspaceTodoSummary struct {
@@ -226,11 +237,22 @@ func normalizeWorkspaceTodoItem(item WorkspaceTodoItem) WorkspaceTodoItem {
 	item.Tags = normalizeWorkspaceTodoTags(item.Tags)
 	item.SessionID = strings.TrimSpace(item.SessionID)
 	item.ParentID = strings.TrimSpace(item.ParentID)
+	item.AIState = NormalizeWorkspaceTodoAIState(item.AIState)
+	item.AIMode = strings.ToLower(strings.TrimSpace(item.AIMode))
+	item.AIRequest = strings.TrimSpace(item.AIRequest)
+	item.AIError = strings.TrimSpace(item.AIError)
+	item.ManagedSessionID = strings.TrimSpace(item.ManagedSessionID)
 	if item.OwnerKind == WorkspaceTodoOwnerKindAgent {
 		item.Priority = "medium"
+		item.AIState, item.AIMode, item.AIRequest, item.AIError, item.ManagedSessionID = "", "", "", "", ""
+		item.AIWorktree = false
 	} else {
 		item.SessionID = ""
 		item.ParentID = ""
+		if item.AIState == "" {
+			item.AIMode, item.AIRequest, item.AIError, item.ManagedSessionID = "", "", "", ""
+			item.AIWorktree = false
+		}
 	}
 	if item.ParentID != "" && item.ParentID == item.ID {
 		item.ParentID = ""
@@ -252,6 +274,15 @@ func normalizeWorkspaceTodoItem(item WorkspaceTodoItem) WorkspaceTodoItem {
 		item.SortIndex = 0
 	}
 	return item
+}
+
+func NormalizeWorkspaceTodoAIState(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case WorkspaceTodoAIStateQueued, WorkspaceTodoAIStatePreparing, WorkspaceTodoAIStateInProgress, WorkspaceTodoAIStateFailed:
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return ""
+	}
 }
 
 func ParseWorkspaceTodoOwnerKind(raw string) (string, bool) {

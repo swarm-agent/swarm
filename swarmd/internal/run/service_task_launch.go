@@ -143,6 +143,8 @@ type taskLaunchManifestRow struct {
 	DependencyEvidence    string                         `json:"dependency_evidence,omitempty"`
 	SubagentProvider      string                         `json:"subagent_provider,omitempty"`
 	SubagentModel         string                         `json:"subagent_model,omitempty"`
+	SubagentThinking      string                         `json:"subagent_thinking,omitempty"`
+	SubagentServiceTier   string                         `json:"subagent_service_tier,omitempty"`
 	ChildTitlePreview     string                         `json:"child_title_preview,omitempty"`
 	ChildMode             string                         `json:"effective_child_mode"`
 	DisabledTools         []string                       `json:"disabled_tools,omitempty"`
@@ -1613,6 +1615,8 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			DependencyEvidence:    strings.TrimSpace(launch.DependencyEvidence),
 			SubagentProvider:      strings.TrimSpace(preference.Provider),
 			SubagentModel:         strings.TrimSpace(preference.Model),
+			SubagentThinking:      strings.TrimSpace(preference.Thinking),
+			SubagentServiceTier:   strings.TrimSpace(preference.ServiceTier),
 			ChildTitlePreview:     childTitle,
 			ChildMode:             childMode,
 			DisabledTools:         disabledTools,

@@ -3,6 +3,7 @@ import { requestJson } from '../../../app/api'
 export type WorkspaceTodoPriority = 'low' | 'medium' | 'high' | 'urgent'
 
 export type WorkspaceTodoOwnerKind = 'user' | 'agent'
+export type WorkspaceTodoAIState = 'queued' | 'preparing' | 'in_progress' | 'failed'
 
 export interface WorkspaceTodoOwnerSummary {
   taskCount: number
@@ -22,6 +23,12 @@ export interface WorkspaceTodoItem {
   inProgress: boolean
   sessionId: string
   parentId: string
+  aiState: WorkspaceTodoAIState | ''
+  aiMode: 'plan' | 'auto' | ''
+  aiWorktree: boolean
+  aiRequest: string
+  aiError: string
+  managedSessionId: string
   sortIndex: number
   createdAt: number
   updatedAt: number
@@ -48,6 +55,12 @@ interface WorkspaceTodoItemWire {
   in_progress?: boolean
   session_id?: string
   parent_id?: string
+  ai_state?: string
+  ai_mode?: string
+  ai_worktree?: boolean
+  ai_request?: string
+  ai_error?: string
+  managed_session_id?: string
   sort_index: number
   created_at: number
   updated_at: number
@@ -85,6 +98,10 @@ interface WorkspaceTodoMutationResponseWire {
   summary: WorkspaceTodoSummaryWire
 }
 
+interface WorkspaceAITaskResponseWire extends WorkspaceTodoMutationResponseWire {
+  status?: string
+}
+
 export function createEmptyWorkspaceTodoOwnerSummary(): WorkspaceTodoOwnerSummary {
   return { taskCount: 0, openCount: 0, inProgressCount: 0 }
 }
@@ -114,6 +131,11 @@ function normalizeOwnerKind(value: string | undefined): WorkspaceTodoOwnerKind {
   return value?.trim().toLowerCase() === 'agent' ? 'agent' : 'user'
 }
 
+function normalizeAIState(value: string | undefined): WorkspaceTodoAIState | '' {
+  const state = value?.trim().toLowerCase()
+  return state === 'queued' || state === 'preparing' || state === 'in_progress' || state === 'failed' ? state : ''
+}
+
 function mapWorkspaceTodoOwnerSummary(summary: WorkspaceTodoSummaryWire['user'] | undefined): WorkspaceTodoOwnerSummary {
   return {
     taskCount: typeof summary?.task_count === 'number' ? summary.task_count : 0,
@@ -135,6 +157,12 @@ export function mapWorkspaceTodoItem(item: WorkspaceTodoItemWire): WorkspaceTodo
     inProgress: Boolean(item.in_progress),
     sessionId: (item.session_id ?? '').trim(),
     parentId: (item.parent_id ?? '').trim(),
+    aiState: normalizeAIState(item.ai_state),
+    aiMode: item.ai_mode?.trim().toLowerCase() === 'plan' ? 'plan' : item.ai_mode?.trim().toLowerCase() === 'auto' ? 'auto' : '',
+    aiWorktree: Boolean(item.ai_worktree),
+    aiRequest: (item.ai_request ?? '').trim(),
+    aiError: (item.ai_error ?? '').trim(),
+    managedSessionId: (item.managed_session_id ?? '').trim(),
     sortIndex: item.sort_index,
     createdAt: item.created_at,
     updatedAt: item.updated_at,
@@ -169,6 +197,31 @@ export async function fetchWorkspaceTodos(workspacePath: string, ownerKind?: Wor
   return {
     items: Array.isArray(response.items) ? response.items.map(mapWorkspaceTodoItem) : [],
     summary: mapWorkspaceTodoSummary(response.summary),
+  }
+}
+
+export async function createWorkspaceAITask(workspacePath: string, request: string): Promise<{ item: WorkspaceTodoItem; summary: WorkspaceTodoSummary; status: string }> {
+  const normalizedRequest = request.trim()
+  if (!normalizedRequest) {
+    throw new Error('Enter a task request after /task.')
+  }
+  const response = await requestJson<WorkspaceAITaskResponseWire>('/v1/workspace/todos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'ai_task',
+      workspace_path: workspacePath,
+      owner_kind: 'user',
+      text: normalizedRequest,
+    }),
+  })
+  if (!response.item) {
+    throw new Error('AI task request returned no task')
+  }
+  return {
+    item: mapWorkspaceTodoItem(response.item),
+    summary: mapWorkspaceTodoSummary(response.summary),
+    status: response.status?.trim() || 'queued',
   }
 }
 

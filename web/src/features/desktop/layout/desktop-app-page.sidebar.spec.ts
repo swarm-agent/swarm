@@ -23,6 +23,15 @@ import {
   sidebarShouldRenderSelectionToolbar,
 } from './desktop-app-page'
 
+test('global sidebar restores Tasks and removes only the Tools shortcut', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  assert.match(source, /aria-label="Open tasks"/)
+  assert.match(source, />Tasks<\/span>/)
+  assert.match(source, /fetchWorkspaceTodos\(normalizedPath, 'user'\)/)
+  assert.doesNotMatch(source, /to="\/tools"/)
+  assert.doesNotMatch(source, /\bLayoutGrid\b/)
+})
+
 test('plan Git panel stays content-sized and scrolls only its file list when constrained', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const panelStart = source.indexOf('const planSidebarGitPanel =')

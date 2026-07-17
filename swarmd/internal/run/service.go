@@ -112,6 +112,7 @@ type Service struct {
 	eventPublish              func(pebblestore.EventEnvelope)
 	sessionDeployCanonicalize SessionDeployCanonicalizer
 	sessionDeployEnqueue      SessionDeployEnqueuer
+	aiTaskBinder              AITaskBinder
 	runCounter                atomic.Uint64
 	lifecycleMu               sync.Mutex
 	activeRuns                map[string]*activeSessionRun
@@ -137,6 +138,21 @@ type SessionDeployCanonicalization struct {
 
 type SessionDeployCanonicalizer func(SessionDeployCanonicalizeInput) (SessionDeployCanonicalization, error)
 type SessionDeployEnqueuer func(identity.Principal, string, string, string) bool
+
+type AITaskBindInput struct {
+	WorkspacePath    string
+	TaskID           string
+	ExpectedState    string
+	State            string
+	Mode             string
+	Worktree         bool
+	ManagedSessionID string
+	Error            string
+}
+
+type AITaskBinder interface {
+	BindAITask(workspacePath, taskID, expectedState, state, mode string, worktree bool, managedSessionID, errorText string) error
+}
 
 type worktreeService interface {
 	AttachBranch(workspacePath, sessionID, title string) (string, error)
@@ -637,6 +653,12 @@ func (s *Service) SetSessionDeployCanonicalizer(canonicalize SessionDeployCanoni
 		return
 	}
 	s.sessionDeployCanonicalize = canonicalize
+}
+
+func (s *Service) SetAITaskBinder(binder AITaskBinder) {
+	if s != nil {
+		s.aiTaskBinder = binder
+	}
 }
 
 func (s *Service) SetSessionDeployEnqueuer(enqueue SessionDeployEnqueuer) {

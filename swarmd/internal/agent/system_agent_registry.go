@@ -10,18 +10,20 @@ import (
 )
 
 const (
-	PlanSidechatAgentID   = "system-plan-sidechat"
-	PlanSidechatAgentName = "Plan"
-	AISidechatAgentID     = "system-ai-sidechat"
-	AISidechatAgentName   = "AI"
-	CompactAgentID        = "system-compact"
-	CompactAgentName      = "Compact"
-	ExplorerAgentID       = "system-explorer"
-	ExplorerAgentName     = "Explorer"
-	CloneAgentID          = "system-clone"
-	CloneAgentName        = "Clone"
-	SwarmAgentID          = "swarm"
-	SwarmAgentName        = "Swarm"
+	PlanSidechatAgentID     = "system-plan-sidechat"
+	PlanSidechatAgentName   = "Plan"
+	AISidechatAgentID       = "system-ai-sidechat"
+	AISidechatAgentName     = "AI"
+	CompactAgentID          = "system-compact"
+	CompactAgentName        = "Compact"
+	ExplorerAgentID         = "system-explorer"
+	ExplorerAgentName       = "Explorer"
+	CloneAgentID            = "system-clone"
+	CloneAgentName          = "Clone"
+	SwarmAgentID            = "swarm"
+	SwarmAgentName          = "Swarm"
+	AITaskPreparerAgentID   = "system-ai-task-preparer"
+	AITaskPreparerAgentName = "AI Task Preparer"
 
 	SystemSidechatKindPlan     = "plan"
 	SystemSidechatKindAI       = "ai"
@@ -212,6 +214,12 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Reconcile:                reconcileCompactAgentProfile,
 	},
 	{
+		ID:          AITaskPreparerAgentID,
+		DisplayName: AITaskPreparerAgentName,
+		Materialize: AITaskPreparerAgentProfileForParent,
+		Reconcile:   reconcileAITaskPreparerAgentProfile,
+	},
+	{
 		ID:           ExplorerAgentID,
 		DisplayName:  ExplorerAgentName,
 		UserVisible:  true,
@@ -312,6 +320,16 @@ func CompactAgentPrompt() string {
 
 func CompactAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{}}
+}
+
+func AITaskPreparerAgentPrompt() string {
+	return strings.TrimSpace(`You are Swarm's one-shot queued-task preparer. Inspect the bound workspace using only read-only discovery tools. Return exactly one JSON object with keys title, prompt, mode, and worktree; no markdown or extra keys. title and prompt must be non-empty strings, mode must be plan for broad or large work and auto for narrow quick fixes, and worktree must be a boolean. You cannot mutate todos, sessions, plans, agents, settings, or workspace state.`)
+}
+
+func AITaskPreparerAgentToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
+	}}
 }
 
 func ExplorerAgentPrompt() string {
@@ -459,6 +477,22 @@ func CompactAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.A
 		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: CompactAgentToolContract(), Enabled: true,
 	})
 	return profile
+}
+
+func AITaskPreparerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+	provider := firstNonEmptyProfileValue(parent.AutoProvider, parent.Provider)
+	model := firstNonEmptyProfileValue(parent.AutoModel, parent.Model)
+	thinking := firstNonEmptyProfileValue(parent.AutoThinking, parent.Thinking)
+	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: AITaskPreparerAgentID, Mode: ModeSubagent, Description: "Compiled read-only queued AI task preparer",
+		Provider: provider, Model: model, Thinking: thinking, AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
+		Prompt: AITaskPreparerAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: AITaskPreparerAgentToolContract(), Enabled: true,
+	})
+}
+
+func reconcileAITaskPreparerAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	return AITaskPreparerAgentProfileForParent(snapshot)
 }
 
 func ExplorerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {

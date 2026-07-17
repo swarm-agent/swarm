@@ -49,6 +49,17 @@ function testMCPCommandIsDeferredAndExaRequiresAPIKey(): void {
   assert(mcp?.tips.every((tip) => !tip.includes('Free Exa MCP search')), 'expected /mcp tips not to advertise free Exa MCP search')
 }
 
+function testTaskCommandAcceptsFullArguments(): void {
+  const task = getDesktopSlashCommands().find((command) => command.id === 'task')
+  assert(Boolean(task), 'expected /task command to exist')
+  assert(task?.state === 'ready', 'expected /task command to be ready')
+  assert((task?.action as DesktopSlashCommandAction | undefined)?.kind === 'queue-ai-task', 'expected /task to queue an AI task')
+
+  const palette = buildDesktopSlashPaletteState('/task fix the sidebar now')
+  assert(palette.exactMatch?.id === 'task', 'expected /task arguments to preserve the exact command match')
+  assert(palette.hasArguments === true, 'expected /task request to be recognized as arguments')
+}
+
 function testKeybindingsWarnsAboutDesktopShortcuts(): void {
   const keybindings = getDesktopSlashCommands().find((command) => command.id === 'keybindings')
   assert(Boolean(keybindings), 'expected /keybindings command to exist')
@@ -64,6 +75,7 @@ function main(): void {
   testCodexOpensUsageWithoutChangingModels()
   testFastCommandIsReady()
   testMCPCommandIsDeferredAndExaRequiresAPIKey()
+  testTaskCommandAcceptsFullArguments()
   testKeybindingsWarnsAboutDesktopShortcuts()
   console.log('slash-commands tests passed')
 }

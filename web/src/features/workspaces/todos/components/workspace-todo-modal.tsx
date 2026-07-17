@@ -1,6 +1,6 @@
 import { useMemo, useState, type DragEvent, useRef, useEffect, useLayoutEffect, type FocusEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, Copy, GripVertical, ListChecks, MoreHorizontal, Play, Plus, Trash2, X } from 'lucide-react'
+import { Check, Copy, ExternalLink, GripVertical, ListChecks, MoreHorizontal, Play, Plus, Trash2, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Input } from '../../../../components/ui/input'
@@ -22,6 +22,7 @@ interface WorkspaceTodoModalProps {
   workspaceName: string
   userSection: WorkspaceTodoModalSection
   saving: boolean
+  onOpenManagedSession?: (sessionId: string) => void
   onOpenChange: (open: boolean) => void
   onCreate: (ownerKind: WorkspaceTodoOwnerKind, input: { text: string; priority: WorkspaceTodoPriority; group: string; tags: string[]; sessionId?: string; parentId?: string }) => Promise<void> | void
   onToggleDone: (item: WorkspaceTodoItem, done: boolean) => Promise<void> | void
@@ -59,6 +60,7 @@ export function WorkspaceTodoModal({
   workspaceName,
   userSection,
   saving,
+  onOpenManagedSession,
   onOpenChange,
   onCreate,
   onToggleDone,
@@ -323,9 +325,27 @@ export function WorkspaceTodoModal({
     if (item.ownerKind === 'user' && item.tags.length > 0) {
       metaParts.push(item.tags.map((tag) => `#${tag}`).join(' '))
     }
+    if (item.aiState) {
+      const stateLabel = item.aiState === 'in_progress' ? 'In progress' : item.aiState.charAt(0).toUpperCase() + item.aiState.slice(1)
+      metaParts.push(`AI · ${stateLabel}${item.aiMode ? ` · ${item.aiMode}` : ''}${item.aiWorktree ? ' · worktree' : ''}`)
+    }
+    if (item.aiError) {
+      metaParts.push(item.aiError)
+    }
 
     const actionButtons = (
       <>
+        {item.managedSessionId && onOpenManagedSession ? (
+          <button
+            type="button"
+            onClick={() => onOpenManagedSession(item.managedSessionId)}
+            className="flex size-7 items-center justify-center rounded text-[var(--app-primary)] transition-colors hover:bg-[var(--app-surface-subtle)]"
+            title="Open managed session"
+            aria-label="Open managed session"
+          >
+            <ExternalLink size={14} className="shrink-0" />
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={() => void handleCopyTodo(item)}

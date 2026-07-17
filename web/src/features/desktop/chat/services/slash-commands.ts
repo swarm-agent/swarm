@@ -15,6 +15,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'open-quick-actions' }
   | { kind: 'compact-session' }
   | { kind: 'new-session' }
+  | { kind: 'queue-ai-task' }
   | { kind: 'show-help' }
 
 export interface DesktopSlashCommand {
@@ -96,6 +97,16 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/new', 'Clear the current selection', 'Start a fresh conversation in this workspace'],
     state: 'ready',
     action: { kind: 'new-session' },
+  },
+  {
+    id: 'task',
+    command: '/task',
+    aliases: [],
+    hint: 'Queue a durable AI task for Swarm',
+    actionLabel: 'Queue AI Task',
+    tips: ['/task <request>', 'Swarm chooses plan or auto mode', 'The task opens a managed worktree session'],
+    state: 'ready',
+    action: { kind: 'queue-ai-task' },
   },
   {
     id: 'agents',

@@ -10,12 +10,18 @@ import (
 	"strings"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
+
+type AITaskDeployBinding struct {
+	WorkspacePath string
+	TaskID        string
+}
 
 type manageSessionsDeployApproved struct {
 	Action              string                         `json:"action"`
@@ -59,6 +65,10 @@ func parseApprovedManageSessionsDeploy(raw string) (manageSessionsDeployApproved
 }
 
 func (s *Service) executeManageSessionsDeploy(ctx context.Context, parentSessionID string, call tool.Call, approvedArguments string, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
+	return s.executeManageSessionsDeployBound(ctx, parentSessionID, call, approvedArguments, apply, nil)
+}
+
+func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSessionID string, call tool.Call, approvedArguments string, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), aiTask *AITaskDeployBinding) (string, error) {
 	if s == nil || s.sessions == nil || s.agents == nil || s.workspace == nil || s.sessionDeployCanonicalize == nil || s.sessionDeployEnqueue == nil {
 		return "", errors.New("session deployment canonical V3 services are not configured")
 	}
@@ -96,7 +106,16 @@ func (s *Service) executeManageSessionsDeploy(ctx context.Context, parentSession
 	for _, profile := range profilesState.Profiles {
 		profiles[strings.ToLower(strings.TrimSpace(profile.Name))] = profile
 	}
-	active, activeFound := profiles[strings.ToLower(strings.TrimSpace(profilesState.ActivePrimary))]
+	activeName := strings.TrimSpace(profilesState.ActivePrimary)
+	active, activeFound := profiles[strings.ToLower(activeName)]
+	if strings.EqualFold(activeName, agentruntime.SwarmAgentID) {
+		active, err = s.agents.ResolveSystemAgent(agentruntime.SwarmAgentID, active)
+		if err != nil {
+			return "", fmt.Errorf("resolve active primary system agent: %w", err)
+		}
+		activeFound = true
+		profiles[strings.ToLower(active.Name)] = active
+	}
 	if !activeFound || !active.Enabled || active.Mode != "primary" {
 		return "", errors.New("active primary agent is missing, disabled, or invalid")
 	}
@@ -202,6 +221,10 @@ func (s *Service) executeManageSessionsDeploy(ctx context.Context, parentSession
 			title = "New Session"
 		}
 		lineageMetadata := sessionDeployCreationMetadata(parent.ID, scope.WorkspacePath, digest, proposal.ID)
+		if aiTask != nil {
+			lineageMetadata["ai_task_id"] = strings.TrimSpace(aiTask.TaskID)
+			lineageMetadata["ai_task_workspace_path"] = strings.TrimSpace(aiTask.WorkspacePath)
+		}
 		canonical, canonicalErr := s.sessionDeployCanonicalize(SessionDeployCanonicalizeInput{Principal: principal, WorkspacePath: scope.WorkspacePath, WorkspaceBindingID: proposal.WorkspaceBindingID, AgentProfile: profile, RuntimeMode: proposal.RuntimeMode, Metadata: lineageMetadata})
 		if canonicalErr != nil {
 			return "", fmt.Errorf("proposal %q resolve canonical V3 session metadata: %w", proposal.ID, canonicalErr)
@@ -263,12 +286,25 @@ func (s *Service) executeManageSessionsDeploy(ctx context.Context, parentSession
 		if results[i].Status == "error" || (results[i].Status == "replayed" && !replayedPending[i]) {
 			continue
 		}
+		if aiTask != nil {
+			if s.aiTaskBinder == nil {
+				results[i].Status, results[i].Error = "error", "AI task binder is not configured"
+				continue
+			}
+			if bindErr := s.aiTaskBinder.BindAITask(aiTask.WorkspacePath, aiTask.TaskID, "preparing", "in_progress", item.proposal.Mode, item.proposal.ManagedWorktree, item.session.ID, ""); bindErr != nil {
+				results[i].Status, results[i].Error = "error", bindErr.Error()
+				continue
+			}
+		}
 		if !s.sessionDeployEnqueue(principal, item.session.ID, item.runID, parent.ID) {
 			if results[i].Status == "replayed" {
 				continue
 			}
 			results[i].Status = "error"
 			results[i].Error = "canonical V3 session executor rejected the deployed run"
+			if aiTask != nil && s.aiTaskBinder != nil {
+				_ = s.aiTaskBinder.BindAITask(aiTask.WorkspacePath, aiTask.TaskID, "in_progress", "failed", item.proposal.Mode, item.proposal.ManagedWorktree, item.session.ID, results[i].Error)
+			}
 			continue
 		}
 		results[i].Status = "started"
