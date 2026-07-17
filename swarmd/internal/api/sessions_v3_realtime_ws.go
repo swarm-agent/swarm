@@ -709,6 +709,9 @@ func (s *Server) v3RealtimeMatchRecordWorkset(principal identity.Principal, reco
 }
 
 func (s *Server) v3RealtimeSessionSnapshotForRecord(record sessionruntime.RealtimeOutboxRecord) (pebblestore.SessionSnapshot, bool) {
+	if session, ok, err := s.sessions.GetSession(record.SessionID); err == nil && ok {
+		return session, true
+	}
 	return v3RealtimeSessionSnapshotFromRecord(record)
 }
 

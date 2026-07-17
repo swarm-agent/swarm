@@ -21,6 +21,26 @@ import (
 	transportws "swarm/packages/swarmd/internal/transport/ws"
 )
 
+func TestV3RealtimeSessionSnapshotForRecordFallsBackToMembershipWhenCurrentSessionMissing(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	record := sessionruntime.RealtimeOutboxRecord{
+		SessionID: "missing-session",
+		Membership: &pebblestore.V3RealtimeOutboxMembership{
+			SessionID:      "missing-session",
+			UserID:         testPrincipal().UserID,
+			AccountScopeID: testPrincipal().AccountScopeID,
+			WorkspacePath:  "/workspace/fallback",
+			WorkspaceName:  "fallback",
+			Metadata:       map[string]any{"fallback": true},
+		},
+	}
+
+	snapshot, ok := server.v3RealtimeSessionSnapshotForRecord(record)
+	if !ok || snapshot.ID != record.SessionID || snapshot.WorkspacePath != "/workspace/fallback" || snapshot.Metadata["fallback"] != true {
+		t.Fatalf("membership fallback snapshot = %+v ok=%v", snapshot, ok)
+	}
+}
+
 func TestV3RealtimeWorksetsExcludeNavigationHiddenSessions(t *testing.T) {
 	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
 	selector := V3RealtimeWorksetSelector{Kind: "global", Global: true}
@@ -131,6 +151,35 @@ func TestV3RealtimePublishesCommittedOutboxEventAndReplaysAfterReconnect(t *test
 	assertV3RealtimeFrame(t, replayedAppend, V3RealtimeKindEvent, created.ID, appendResult.Event.Seq)
 	assertV3RealtimeSignedCursorSeq(t, server, replayedAppend.EndpointCursor, appendResult.RealtimeOutbox.EndpointSeq)
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, replayConn), V3RealtimeKindReplayDone, created.ID, appendResult.Event.Seq)
+}
+
+func TestV3RealtimeCheckpointPlanWorksetUpdateUsesDurableSessionTitle(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "Durable session title", "create-realtime-checkpoint-workset")
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	workset := v3RealtimeGlobalWorksetRequestForTest()
+	workset.AutoSubscribeSessions = false
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq), Worksets: []V3RealtimeWorksetSubscriptionRequest{workset}})
+
+	plan, event, err := sessionSvc.SavePlanWithMetadata(created.SessionID, "plan-checkpoint-workset", "Checkpoint title", "# Checkpoint", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Checkpoint: true, Document: &pebblestore.SessionPlanDocument{
+		Info:        pebblestore.SessionPlanInfo{Goal: "preserve sidebar title"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Checkpoint title", Status: sessionruntime.PlanCheckpointStatusInProgress, Order: 1}},
+	}})
+	if err != nil {
+		t.Fatalf("save checkpoint plan: %v", err)
+	}
+	if err := server.publishCommittedPlanSaved(plan, event); err != nil {
+		t.Fatalf("publish checkpoint plan: %v", err)
+	}
+
+	updated := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, updated, V3RealtimeKindWorksetSessionUpdated, created.SessionID, 0)
+	if updated.EventType != "session.plan.saved" || updated.Session == nil || updated.Session.Title != created.Session.Title {
+		t.Fatalf("checkpoint workset update = %+v, want durable title %q", updated, created.Session.Title)
+	}
 }
 
 func TestV3RealtimePlanSavedOutboxRowReachesWebsocket(t *testing.T) {
@@ -1119,6 +1168,9 @@ func TestV3RealtimeWorksetReactivationUpdatesUnsubscribedSidebarSession(t *testi
 	assertV3RealtimeFrame(t, updated, V3RealtimeKindWorksetSessionUpdated, created.SessionID, 0)
 	if updated.EventType != "session.reactivated" || updated.Event == nil || updated.Event.EventType != "session.reactivated" || updated.SubscriptionID != "" || updated.AutoSubscribed {
 		t.Fatalf("unsubscribed reactivation updated frame = %+v", updated)
+	}
+	if updated.Session == nil || updated.Session.Title != created.Session.Title {
+		t.Fatalf("unsubscribed reactivation shell title = %+v, want current durable title %q", updated.Session, created.Session.Title)
 	}
 	assertV3RealtimeSignedCursorSeq(t, server, updated.EndpointCursor, rows[len(rows)-1].EndpointSeq)
 }

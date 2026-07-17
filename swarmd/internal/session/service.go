@@ -1777,9 +1777,9 @@ func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, a
 	payload, err := json.Marshal(map[string]any{
 		"session_id":            sessionID,
 		"plan_id":               planID,
-		"title":                 record.Title,
-		"status":                record.Status,
-		"approval_state":        record.ApprovalState,
+		"plan_title":            record.Title,
+		"plan_status":           record.Status,
+		"plan_approval_state":   record.ApprovalState,
 		"activate":              activate,
 		"has_active_plan":       activate,
 		"active_plan":           record,

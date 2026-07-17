@@ -1,11 +1,60 @@
 package session
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+func TestPlanLifecycleCheckpointSavePreservesSessionMetadataAndNamespacesPlanFields(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	before, ok, err := svc.GetSession(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get session before checkpoint save: session=%+v ok=%v err=%v", before, ok, err)
+	}
+	before.Metadata = map[string]any{"sidebar_label": "Durable label"}
+	before, _, err = svc.UpdateMetadata(sessionID, before.Metadata)
+	if err != nil {
+		t.Fatalf("set durable session metadata: %v", err)
+	}
+
+	_, event, err := svc.SavePlanWithMetadata(sessionID, "plan-checkpoint", "Checkpoint title", "# Checkpoint", "approved", "approved", true, PlanSaveMetadata{
+		Checkpoint: true,
+		Document: &pebblestore.SessionPlanDocument{
+			ID:    "plan-checkpoint",
+			Title: "Checkpoint title",
+			Info:  pebblestore.SessionPlanInfo{Goal: "preserve session metadata"},
+			Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+				ID: "cp-1", Title: "Checkpoint title", Status: PlanCheckpointStatusInProgress, Order: 1,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("save checkpoint plan: %v", err)
+	}
+	after, ok, err := svc.GetSession(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get session after checkpoint save: session=%+v ok=%v err=%v", after, ok, err)
+	}
+	if after.Title != before.Title || after.Metadata["sidebar_label"] != "Durable label" {
+		t.Fatalf("checkpoint save replaced session metadata: before=%+v after=%+v", before, after)
+	}
+	var payload map[string]any
+	if event == nil || json.Unmarshal(event.Payload, &payload) != nil {
+		t.Fatalf("decode session.plan.saved payload: event=%+v", event)
+	}
+	if _, exists := payload["title"]; exists {
+		t.Fatalf("session.plan.saved ambiguously exposes session title: %s", event.Payload)
+	}
+	if payload["plan_title"] != "Checkpoint title" || payload["plan_status"] != "approved" || payload["plan_approval_state"] != "approved" {
+		t.Fatalf("session.plan.saved missing namespaced plan fields: %s", event.Payload)
+	}
+}
 
 func TestPlanLifecycleAmendPlanReplacesFutureCheckpointsAndPreservesCompletedState(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)

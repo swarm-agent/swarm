@@ -112,7 +112,7 @@ func (s *Service) CommitV3PlanAcceptance(input PlanAcceptanceCommitInput) (PlanA
 		updatedSession.Title = title
 	}
 	updatedSession.UpdatedAt = now
-	planPayload, err := json.Marshal(map[string]any{"session_id": session.ID, "plan_id": planID, "title": title, "status": "approved", "approval_state": "approved", "activate": true, "has_active_plan": true, "active_plan": plan, "updated_at": now, "updated": found, "version": version, "parent_revision": plan.ParentRevision, "update_summary": plan.UpdateSummary, "update_scope": plan.UpdateScope, "update_kind": plan.UpdateKind, "revision_kind": plan.RevisionKind})
+	planPayload, err := json.Marshal(map[string]any{"session_id": session.ID, "plan_id": planID, "plan_title": title, "plan_status": "approved", "plan_approval_state": "approved", "activate": true, "has_active_plan": true, "active_plan": plan, "updated_at": now, "updated": found, "version": version, "parent_revision": plan.ParentRevision, "update_summary": plan.UpdateSummary, "update_scope": plan.UpdateScope, "update_kind": plan.UpdateKind, "revision_kind": plan.RevisionKind})
 	if err != nil {
 		return PlanAcceptanceCommitResult{}, err
 	}
