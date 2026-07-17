@@ -1111,16 +1111,16 @@ function formatRelativeTime(timestamp: number | null, now: number): string {
 
   const minutes = Math.floor(deltaMs / 60_000)
   if (minutes < 60) {
-    return `${minutes} min${minutes === 1 ? '' : 's'} ago`
+    return `${minutes} min${minutes === 1 ? '' : 's'}`
   }
 
   const hours = Math.floor(minutes / 60)
   if (hours < 24) {
-    return `${hours} hr${hours === 1 ? '' : 's'} ago`
+    return `${hours} hr${hours === 1 ? '' : 's'}`
   }
 
   const days = Math.floor(hours / 24)
-  return `${days} day${days === 1 ? '' : 's'} ago`
+  return `${days} day${days === 1 ? '' : 's'}`
 }
 
 function sessionOriginLabel(session: DesktopSessionRecord, routeOptions: DesktopChatRoute[], fallbackSwarmName: string): string {
@@ -1972,7 +1972,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-start gap-2">
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2">
+            <div className="flex min-w-0 items-center">
               {depth === 0 ? (
                 <input
                   type="checkbox"
@@ -2149,9 +2149,9 @@ export function sidebarShouldClearSelectionForSessionChange(currentSessionId: st
 }
 
 export function sidebarCheckboxVisibilityClass(selectionMode: boolean, revealSuppressed: boolean): string {
-  if (selectionMode) return 'w-4 opacity-100'
+  if (selectionMode) return 'mr-2 w-4 opacity-100'
   if (revealSuppressed) return 'w-0 opacity-0'
-  return 'w-0 opacity-0 group-hover:w-4 group-hover:opacity-100 group-focus-within:w-4 group-focus-within:opacity-100'
+  return 'w-0 opacity-0 group-hover:mr-2 group-hover:w-4 group-hover:opacity-100 group-focus-within:mr-2 group-focus-within:w-4 group-focus-within:opacity-100'
 }
 
 export function sidebarShouldReleaseCheckboxRevealSuppression(pointerInside: boolean, focusInside: boolean): boolean {

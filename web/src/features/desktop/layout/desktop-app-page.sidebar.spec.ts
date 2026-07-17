@@ -595,7 +595,15 @@ test('sidebar needs review sessions without active runs sort by durable last act
   })
 
   assert.equal(compareSidebarSessions(recentPaused, staleNeedsReview, 120_000) < 0, true)
-  assert.equal(sessionStatusDetail(staleNeedsReview, 120_000), '1 min ago')
+  assert.equal(sessionStatusDetail(staleNeedsReview, 120_000), '1 min')
+})
+
+test('sidebar relative timestamps use compact units without a trailing ago', () => {
+  const session = makeSession('compact-relative-time', { updatedAt: 1_000 })
+
+  assert.equal(sessionStatusDetail(session, 1_000 + 2 * 60_000), '2 mins')
+  assert.equal(sessionStatusDetail(session, 1_000 + 2 * 60 * 60_000), '2 hrs')
+  assert.equal(sessionStatusDetail(session, 1_000 + 2 * 24 * 60 * 60_000), '2 days')
 })
 
 test('sidebar active status and timer ignore lifecycle/live-only liveness without canonical active run', () => {
