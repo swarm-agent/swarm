@@ -484,6 +484,86 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	}
 }
 
+func TestExecutePlanManageManualReviewCompletionEmitsLifecycleThenSeparateHandoff(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-manual-review", "Plan: Manual Review", "# Manual Review", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeReviewEachCheckpoint, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:  &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateInProgress, ActiveAttemptID: "attempt-1", CurrentRunID: "run-1", CurrentSessionID: "child-session", ParentSessionID: "parent-session"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Implementation", Status: sessionruntime.PlanCheckpointStatusInProgress, AttemptID: "attempt-1", RunID: "run-1", SessionID: "child-session"},
+			{ID: "cp-2", Title: "Verification", Status: sessionruntime.PlanCheckpointStatusPending},
+		},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save manual review plan: %v", err)
+	}
+
+	var appliedMutations []sessionruntime.SessionMutationInput
+	applyMutation := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		appliedMutations = append(appliedMutations, input)
+		return sessionSvc.ApplySessionMutation(input)
+	}
+
+	raw, err := runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-1","attempt_id":"attempt-1","run_id":"run-1","run_session_id":"child-session","parent_session_id":"parent-session","report":"## Outcome\n- implementation ready","result":"checkpoint complete","changed_files":["swarmd/internal/run/plan_lifecycle_message.go"],"validation":["not run; not requested"]}`, "", applyMutation)
+	if err != nil {
+		t.Fatalf("complete manual review checkpoint: %v output=%s", err, raw)
+	}
+	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
+		t.Fatalf("append manual review lifecycle and handoff: %v", err)
+	}
+
+	messages, err := sessionSvc.ListSessionMessages(sessionID, 0, 10)
+	if err != nil {
+		t.Fatalf("list manual review messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("manual review completion messages = %#v", messages)
+	}
+	lifecycle := messages[0]
+	if lifecycle.Metadata["source"] != PlanExecutionLifecycleMessageSource || lifecycle.Metadata["kind"] != "plan_execution_break" || lifecycle.Metadata["next_action"] != "await_review" {
+		t.Fatalf("manual review lifecycle metadata = %#v", lifecycle.Metadata)
+	}
+	for _, want := range []string{"Checkpoint complete — Manual review mode", "Completed: Checkpoint 1 — Implementation", "Next: waiting for checkpoint review."} {
+		if !strings.Contains(lifecycle.Content, want) {
+			t.Fatalf("manual review lifecycle missing %q: %q", want, lifecycle.Content)
+		}
+	}
+	for _, forbidden := range []string{"implementation ready", "Result:", "Changed files:", "Validation:"} {
+		if strings.Contains(lifecycle.Content, forbidden) {
+			t.Fatalf("manual review lifecycle leaked handoff detail %q: %q", forbidden, lifecycle.Content)
+		}
+	}
+	handoff := messages[1]
+	for key, want := range map[string]any{"source": PlanExecutionCheckpointHandoffMessageSource, "kind": "plan_checkpoint_handoff", "action": "complete_checkpoint", "checkpoint_id": "cp-1", "next_checkpoint_id": "cp-2", "next_action": "await_review", "fresh_context": false, "review_required": true, "outcome": sessionruntime.PlanCheckpointStatusCompleted, "attempt_id": "attempt-1", "run_id": "run-1", "run_session_id": "child-session", "parent_session_id": "parent-session"} {
+		if handoff.Metadata[key] != want {
+			t.Fatalf("manual review handoff metadata[%q] = %#v, want %#v: %#v", key, handoff.Metadata[key], want, handoff.Metadata)
+		}
+	}
+	for _, want := range []string{"Checkpoint handoff", "Completed: Checkpoint 1 — Implementation", "Review: Review this checkpoint before starting Checkpoint 2 — Verification.", "Report:\n## Outcome\n- implementation ready", "Result: checkpoint complete", "Changed files:\n- swarmd/internal/run/plan_lifecycle_message.go", "Validation:\n- not run; not requested"} {
+		if !strings.Contains(handoff.Content, want) {
+			t.Fatalf("manual review handoff missing %q: %q", want, handoff.Content)
+		}
+	}
+	if len(appliedMutations) != 3 || appliedMutations[1].Message == nil || appliedMutations[1].Message.Metadata["source"] != PlanExecutionLifecycleMessageSource || appliedMutations[2].Message == nil || appliedMutations[2].Message.Metadata["source"] != PlanExecutionCheckpointHandoffMessageSource {
+		t.Fatalf("manual review lifecycle/handoff mutation ordering = %#v", appliedMutations)
+	}
+
+	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
+		t.Fatalf("reappend manual review lifecycle and handoff: %v", err)
+	}
+	messages, err = sessionSvc.ListSessionMessages(sessionID, 0, 10)
+	if err != nil {
+		t.Fatalf("list manual review messages after replay: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("idempotent manual review replay appended duplicate messages: %#v", messages)
+	}
+}
+
 func TestExecutePlanManageRequestFollowupAtomicallyUnblocksAndReturnsFreshRun(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()

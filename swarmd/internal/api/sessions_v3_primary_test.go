@@ -5942,7 +5942,7 @@ func TestSessionsV3ExecutorFinalizesReviewCheckpointAfterProviderManagedPlanComp
 			if req.ToolInvoker == nil {
 				return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
 			}
-			args := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "cp-1 complete", "result": "done"})
+			args := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "cp-1 complete", "result": "done", "changed_files": []string{"swarmd/internal/run/plan_lifecycle_message.go"}, "validation": []string{"not run; not requested"}})
 			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-review-checkpoint", Name: "plan_manage", Arguments: args})
 			if err != nil {
 				return provideriface.Response{}, err
@@ -5968,14 +5968,29 @@ func TestSessionsV3ExecutorFinalizesReviewCheckpointAfterProviderManagedPlanComp
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != 3 || messages[1].Role != "tool" || messages[2].Role != "system" {
+	if len(messages) != 4 || messages[1].Role != "tool" || messages[2].Role != "system" || messages[3].Role != "system" {
 		t.Fatalf("messages after review lifecycle completion = %+v", messages)
 	}
-	if messages[2].Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || messages[2].Metadata["action"] != "complete_checkpoint" || messages[2].Metadata["next_action"] != "await_review" {
-		t.Fatalf("review lifecycle message metadata = %+v", messages[2].Metadata)
+	lifecycleMessage := messages[2]
+	if lifecycleMessage.Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || lifecycleMessage.Metadata["action"] != "complete_checkpoint" || lifecycleMessage.Metadata["next_action"] != "await_review" {
+		t.Fatalf("review lifecycle message metadata = %+v", lifecycleMessage.Metadata)
 	}
-	if strings.Contains(messages[2].Content, "All checkpoints complete") || strings.Contains(messages[2].Content, "Context: Starting the next checkpoint") || !strings.Contains(messages[2].Content, "Checkpoint complete") || !strings.Contains(messages[2].Content, "Next: waiting for checkpoint review") || !strings.Contains(messages[2].Content, "cp-1 complete") {
-		t.Fatalf("review lifecycle message content = %q", messages[2].Content)
+	if strings.Contains(lifecycleMessage.Content, "All checkpoints complete") || strings.Contains(lifecycleMessage.Content, "Context: Starting the next checkpoint") || !strings.Contains(lifecycleMessage.Content, "Checkpoint complete") || !strings.Contains(lifecycleMessage.Content, "Next: waiting for checkpoint review") {
+		t.Fatalf("review lifecycle message content = %q", lifecycleMessage.Content)
+	}
+	for _, leaked := range []string{"cp-1 complete", "Result: done", "Changed files:", "Validation:"} {
+		if strings.Contains(lifecycleMessage.Content, leaked) {
+			t.Fatalf("review lifecycle message leaked handoff detail %q: %q", leaked, lifecycleMessage.Content)
+		}
+	}
+	handoffMessage := messages[3]
+	if handoffMessage.Metadata["source"] != runruntime.PlanExecutionCheckpointHandoffMessageSource || handoffMessage.Metadata["kind"] != "plan_checkpoint_handoff" || handoffMessage.Metadata["action"] != "complete_checkpoint" || handoffMessage.Metadata["checkpoint_id"] != "cp-1" || handoffMessage.Metadata["next_checkpoint_id"] != "cp-2" || handoffMessage.Metadata["next_action"] != "await_review" || handoffMessage.Metadata["fresh_context"] != false || handoffMessage.Metadata["review_required"] != true {
+		t.Fatalf("review checkpoint handoff metadata = %+v", handoffMessage.Metadata)
+	}
+	for _, want := range []string{"Checkpoint handoff", "Completed: Checkpoint 1 — Review", "Review: Review this checkpoint before starting Checkpoint 2 — Next.", "Report: cp-1 complete", "Result: done", "Changed files:\n- swarmd/internal/run/plan_lifecycle_message.go", "Validation:\n- not run; not requested"} {
+		if !strings.Contains(handoffMessage.Content, want) {
+			t.Fatalf("review checkpoint handoff missing %q: %q", want, handoffMessage.Content)
+		}
 	}
 	activePlan, ok, err := sessionSvc.GetActivePlan(created.ID)
 	if err != nil || !ok || activePlan.Document == nil {

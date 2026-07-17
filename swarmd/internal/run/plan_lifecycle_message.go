@@ -84,7 +84,7 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 	} else if nextAction == "plan_complete" {
 		bodyLines = append(bodyLines, "Next: plan complete.")
 	}
-	if !finalHandoff && isPlanExecutionOutcomeMessageAction(action) && action != "mark_blocked" {
+	if !finalHandoff && isPlanExecutionOutcomeMessageAction(action) && action != "mark_blocked" && !planLifecycleManualReviewCheckpointHandoffRequired(action, nextAction, doc) {
 		bodyLines = append(bodyLines, planLifecycleOutcomeDetailLines(input.Payload, false)...)
 	}
 	if len(bodyLines) > 0 {
@@ -273,6 +273,14 @@ func planLifecycleFinalHandoffRequired(nextAction, checkpointID string, doc *peb
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(checkpointID)), "followup-")
 }
 
+func planLifecycleManualReviewCheckpointHandoffRequired(action, nextAction string, doc *pebblestore.SessionPlanDocument) bool {
+	return planLifecycleActionCompleted(action) &&
+		strings.TrimSpace(nextAction) == "await_review" &&
+		doc != nil &&
+		strings.TrimSpace(doc.ExecutionPolicy.Mode) == sessionruntime.PlanExecutionPolicyModeReviewEachCheckpoint &&
+		!allPlanLifecycleCheckpointsCompleted(doc)
+}
+
 func allPlanLifecycleCheckpointsCompleted(doc *pebblestore.SessionPlanDocument) bool {
 	if doc == nil || len(doc.Checkpoints) == 0 {
 		return false
@@ -358,7 +366,9 @@ func BuildPlanExecutionCheckpointHandoffSystemMessage(input PlanExecutionLifecyc
 	if nextAction == "" {
 		nextAction = inferPlanExecutionNextAction(summary)
 	}
-	if nextAction != "run_checkpoint_with_fresh_context" || strings.TrimSpace(doc.ExecutionPolicy.Mode) != sessionruntime.PlanExecutionPolicyModeAutomatic {
+	automaticFreshContext := nextAction == "run_checkpoint_with_fresh_context" && strings.TrimSpace(doc.ExecutionPolicy.Mode) == sessionruntime.PlanExecutionPolicyModeAutomatic
+	manualReview := planLifecycleManualReviewCheckpointHandoffRequired(action, nextAction, doc)
+	if !automaticFreshContext && !manualReview {
 		return PlanExecutionLifecycleMessage{}, false
 	}
 	checkpointID := planLifecycleCheckpointID(action, doc, summary, input.Payload)
@@ -375,8 +385,14 @@ func BuildPlanExecutionCheckpointHandoffSystemMessage(input PlanExecutionLifecyc
 		"Checkpoint handoff",
 		"",
 		"Completed: " + planLifecycleCheckpointLabel(checkpointID, checkpointTitle),
-		"Next: " + planLifecycleCheckpointLabel(nextCheckpointID, nextCheckpointTitle),
-		"Context: Starting the next checkpoint with fresh context.",
+	}
+	if automaticFreshContext {
+		lines = append(lines,
+			"Next: "+planLifecycleCheckpointLabel(nextCheckpointID, nextCheckpointTitle),
+			"Context: Starting the next checkpoint with fresh context.",
+		)
+	} else {
+		lines = append(lines, "Review: Review this checkpoint before starting "+planLifecycleCheckpointLabel(nextCheckpointID, nextCheckpointTitle)+".")
 	}
 	if detailLines := planLifecycleOutcomeDetailLines(input.Payload, true); len(detailLines) > 0 {
 		lines = append(lines, "")
@@ -385,7 +401,10 @@ func BuildPlanExecutionCheckpointHandoffSystemMessage(input PlanExecutionLifecyc
 	metadata := planExecutionHandoffMetadata(input, action, doc, checkpointID, checkpointTitle, nextAction, PlanExecutionCheckpointHandoffMessageSource, "plan_checkpoint_handoff")
 	metadata["next_checkpoint_id"] = nextCheckpointID
 	metadata["next_checkpoint_title"] = nextCheckpointTitle
-	metadata["fresh_context"] = true
+	metadata["fresh_context"] = automaticFreshContext
+	if manualReview {
+		metadata["review_required"] = true
+	}
 	metadata["outcome"] = sessionruntime.PlanCheckpointStatusCompleted
 	return PlanExecutionLifecycleMessage{Content: strings.Join(lines, "\n"), Metadata: metadata}, true
 }

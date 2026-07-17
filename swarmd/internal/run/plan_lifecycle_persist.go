@@ -13,7 +13,8 @@ func (s *Service) appendPlanExecutionLifecycleSystemMessage(sessionID, action st
 	if blockedHandoff, ok := BuildBlockedPlanExecutionHandoffSystemMessage(handoffInput); ok {
 		return s.appendPlanExecutionSystemMessage(sessionID, plan, blockedHandoff, planBlockedHandoffMessageLogicalKey(action, plan, payload), "plan execution blocked handoff", applySessionMutation)
 	}
-	if checkpointHandoff, ok := BuildPlanExecutionCheckpointHandoffSystemMessage(handoffInput); ok {
+	checkpointHandoff, hasCheckpointHandoff := BuildPlanExecutionCheckpointHandoffSystemMessage(handoffInput)
+	if hasCheckpointHandoff && checkpointHandoff.Metadata["fresh_context"] == true {
 		return s.appendPlanExecutionSystemMessage(sessionID, plan, checkpointHandoff, planCheckpointHandoffMessageLogicalKey(action, plan, payload), "plan execution checkpoint handoff", applySessionMutation)
 	}
 	message, ok := BuildPlanExecutionLifecycleSystemMessage(handoffInput)
@@ -22,6 +23,9 @@ func (s *Service) appendPlanExecutionLifecycleSystemMessage(sessionID, action st
 	}
 	if err := s.appendPlanExecutionSystemMessage(sessionID, plan, message, planLifecycleMessageLogicalKey(action, plan, payload), "plan execution lifecycle", applySessionMutation); err != nil {
 		return err
+	}
+	if hasCheckpointHandoff {
+		return s.appendPlanExecutionSystemMessage(sessionID, plan, checkpointHandoff, planCheckpointHandoffMessageLogicalKey(action, plan, payload), "plan execution checkpoint handoff", applySessionMutation)
 	}
 	handoffMessage, ok := BuildFinalPlanExecutionHandoffSystemMessage(handoffInput)
 	logicalKey := planFinalHandoffMessageLogicalKey
