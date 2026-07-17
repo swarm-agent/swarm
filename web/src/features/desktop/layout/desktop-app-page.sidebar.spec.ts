@@ -17,11 +17,18 @@ import {
   sessionActiveRunIntent,
   sessionSidebarDisplayGroup,
   sidebarCheckboxVisibilityClass,
+  sidebarWorkspaceContextLabel,
   sidebarRootIDsForSelectionGroup,
   sidebarShouldClearSelectionForSessionChange,
   sidebarShouldReleaseCheckboxRevealSuppression,
   sidebarShouldRenderSelectionToolbar,
 } from './desktop-app-page'
+
+test('sidebar workspace context shows the Git branch before the workspace name', () => {
+  assert.equal(sidebarWorkspaceContextLabel('swarm-go', 'dev'), 'dev · swarm-go')
+  assert.equal(sidebarWorkspaceContextLabel(' swarm-go ', ' agent/sidebar-label '), 'agent/sidebar-label · swarm-go')
+  assert.equal(sidebarWorkspaceContextLabel('swarm-go', ''), 'swarm-go')
+})
 
 test('global sidebar restores Tasks and removes only the Tools shortcut', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
@@ -30,6 +37,17 @@ test('global sidebar restores Tasks and removes only the Tools shortcut', async 
   assert.match(source, /fetchWorkspaceTodos\(normalizedPath, 'user'\)/)
   assert.doesNotMatch(source, /to="\/tools"/)
   assert.doesNotMatch(source, /\bLayoutGrid\b/)
+})
+
+test('sidebar header renders workspace context instead of the swarm role label', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const headerStart = source.indexOf('{editingSidebarSwarmName ? (')
+  const headerEnd = source.indexOf('<SidebarActionRail', headerStart)
+  const headerSource = source.slice(headerStart, headerEnd)
+
+  assert.ok(headerStart >= 0 && headerEnd > headerStart)
+  assert.match(headerSource, /\{sidebarWorkspaceContext\}/)
+  assert.doesNotMatch(headerSource, /currentSwarmRoleLabel/)
 })
 
 test('plan Git panel stays content-sized and scrolls only its file list when constrained', async () => {

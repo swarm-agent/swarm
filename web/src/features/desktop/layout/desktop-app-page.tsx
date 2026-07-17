@@ -1022,18 +1022,11 @@ function loadSidebarWorkspaceLayout(): Record<string, SidebarWorkspaceLayout> {
   }
 }
 
-function swarmRoleLabel(target: Pick<SwarmTarget, 'role'> | null | undefined): string {
-  const role = target?.role?.trim().toLowerCase() || ''
-  switch (role) {
-    case 'child':
-      return 'Child'
-    case 'controller':
-    case 'parent':
-    case 'master':
-      return 'Master'
-    default:
-      return role ? role.replace(/_/g, ' ') : 'Swarm'
-  }
+export function sidebarWorkspaceContextLabel(workspaceName: string, branch: string | null | undefined): string {
+  const normalizedWorkspaceName = workspaceName.trim()
+  const normalizedBranch = branch?.trim() ?? ''
+  if (!normalizedBranch) return normalizedWorkspaceName
+  return normalizedWorkspaceName ? `${normalizedBranch} · ${normalizedWorkspaceName}` : normalizedBranch
 }
 
 function sessionPendingPermissionCount(session: DesktopSessionRecord): number {
@@ -2438,7 +2431,6 @@ export function DesktopAppPage() {
   const currentSwarmTarget = swarmTargets.find((target) => target.current) ?? null
   const swarmName = currentSwarmTarget?.name ?? swarmSettingsQuery.data?.name ?? 'Local'
   const sidebarSwarmNameDirty = sidebarSwarmNameDraft.trim() !== swarmName.trim()
-  const currentSwarmRoleLabel = swarmRoleLabel(currentSwarmTarget)
   const masterWorkspaceName = selectedWorkspace?.workspaceName ?? routeWorkspace?.workspaceName ?? fallbackWorkspaceNameFromPath(selectedWorkspacePath ?? '')
   const notificationItems = useDesktopV3CacheSelector(selectOrderedNotifications)
   const notificationSummary = useDesktopV3CacheSelector(selectNotificationSummary)
@@ -2865,6 +2857,10 @@ export function DesktopAppPage() {
     ? workspaceSlugByPath.get(topWorkspacePath) ?? workspaceRouteSlugBase({ path: topWorkspacePath, workspaceName: topWorkspaceLabel })
     : routeWorkspaceSlug
   const topWorkspaceOptions = useMemo(() => mergedSidebarWorkspaceEntries, [mergedSidebarWorkspaceEntries])
+  const sidebarWorkspaceBranch = activeGitSession?.worktreeEnabled
+    ? gitSnapshot?.branch
+    : gitSnapshot?.branch || selectedWorkspace?.gitBranch || routeWorkspace?.gitBranch || topWorkspace?.gitBranch
+  const sidebarWorkspaceContext = sidebarWorkspaceContextLabel(masterWorkspaceName || topWorkspaceLabel, sidebarWorkspaceBranch)
   const defaultNewChatWorkspace = useMemo(() => {
     const defaultPath = currentWorkspacePath?.trim() || ''
     if (defaultPath) {
@@ -4064,8 +4060,11 @@ export function DesktopAppPage() {
                         {swarmName}
                       </button>
                     )}
-                    <div className="mt-px truncate text-[10px] leading-[1.25] text-[var(--app-text-subtle)]">
-                      <strong className="font-medium text-[var(--app-text-muted)]">{currentSwarmRoleLabel}</strong> · {masterWorkspaceName}
+                    <div
+                      className="mt-px truncate text-[10px] font-medium leading-[1.25] text-[var(--app-text-muted)]"
+                      title={sidebarWorkspaceContext}
+                    >
+                      {sidebarWorkspaceContext}
                     </div>
                   </div>
                   <SidebarActionRail className={headerActionRailClass}>
