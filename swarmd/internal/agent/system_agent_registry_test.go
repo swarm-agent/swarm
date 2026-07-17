@@ -16,7 +16,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{SwarmAgentID, AISidechatAgentID, CloneAgentID, CompactAgentID, ExplorerAgentID, PlanSidechatAgentID}
+	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CloneAgentID, CompactAgentID, ExplorerAgentID, PlanSidechatAgentID, ReviewCommitAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
@@ -32,7 +32,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 			t.Fatalf("sidechat-only system agent %q is not protected: %+v", id, definition)
 		}
 	}
-	for _, id := range []string{SwarmAgentID, ExplorerAgentID, CloneAgentID} {
+	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, ExplorerAgentID, CloneAgentID, ReviewCommitAgentID} {
 		definition, _ := registry.DefinitionByID(id)
 		if definition.RequiresSidechatMetadata || IsReservedSidechatAgentName(id) {
 			t.Fatalf("ordinary/task system agent %q was classified as sidechat-only: %+v", id, definition)
@@ -160,6 +160,22 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("AI mandatory denial %q was not restored", denied)
 		}
 	}
+	reviewCommit, err := registry.Materialize(ReviewCommitAgentID, pebblestore.AgentProfile{Provider: "codex", Model: "base-model", AutoProvider: "openai", AutoModel: "auto-model", AutoThinking: "high", AutoServiceTier: "priority"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewCommit.Provider != "openai" || reviewCommit.Model != "auto-model" || reviewCommit.Thinking != "high" || reviewCommit.AutoServiceTier != "priority" || reviewCommit.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite {
+		t.Fatalf("Review Commit auto model inheritance mismatch: %+v", reviewCommit)
+	}
+	for _, allowed := range []string{"read", "git_status", "git_diff", "git_add", "git_commit"} {
+		if cfg := reviewCommit.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Review Commit tool %q unavailable: %+v", allowed, reviewCommit.ToolContract)
+		}
+	}
+	if len(reviewCommit.ToolContract.Tools) != 5 {
+		t.Fatalf("Review Commit tool contract is not least privilege: %+v", reviewCommit.ToolContract)
+	}
+
 	compact, err := registry.Materialize(CompactAgentID, pebblestore.AgentProfile{Provider: "codex", Model: "utility-model", Thinking: "medium"})
 	if err != nil {
 		t.Fatal(err)
@@ -232,7 +248,7 @@ func TestEnsureSystemAgentRegistryExposesImmutableProfilesWithoutPersistingThem(
 	if err := svc.EnsureSystemAgentRegistry(); err != nil {
 		t.Fatalf("ensure registry: %v", err)
 	}
-	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, CompactAgentID, ExplorerAgentID, CloneAgentID, SwarmAgentID} {
+	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, ExplorerAgentID, CloneAgentID, ReviewCommitAgentID, SwarmAgentID} {
 		if id != SwarmAgentID {
 			if _, ok, err := agents.GetProfile(id); err != nil || ok {
 				t.Fatalf("system profile %q persisted ok=%v err=%v", id, ok, err)

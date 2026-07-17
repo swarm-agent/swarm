@@ -24,6 +24,8 @@ const (
 	SwarmAgentName          = "Swarm"
 	AITaskPreparerAgentID   = "system-ai-task-preparer"
 	AITaskPreparerAgentName = "AI Task Preparer"
+	ReviewCommitAgentID     = "system-review-commit"
+	ReviewCommitAgentName   = "Review Commit"
 
 	SystemSidechatKindPlan     = "plan"
 	SystemSidechatKindAI       = "ai"
@@ -220,6 +222,12 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Reconcile:   reconcileAITaskPreparerAgentProfile,
 	},
 	{
+		ID:          ReviewCommitAgentID,
+		DisplayName: ReviewCommitAgentName,
+		Materialize: ReviewCommitAgentProfileForParent,
+		Reconcile:   reconcileReviewCommitAgentProfile,
+	},
+	{
 		ID:           ExplorerAgentID,
 		DisplayName:  ExplorerAgentName,
 		UserVisible:  true,
@@ -330,6 +338,18 @@ func AITaskPreparerAgentPrompt() string {
 func AITaskPreparerAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
 		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
+	}}
+}
+
+func ReviewCommitAgentPrompt() string {
+	return strings.TrimSpace(`You are Swarm's one-shot review commit agent. Work only in the bound repository. Inspect the supplied changed files and their diffs, choose one concise commit message that accurately describes the complete change, stage the intended repository changes, create exactly one commit, and verify the repository status afterward. Use only read and the dedicated Git tools. Do not edit files, run shell commands, amend, reset, push, merge, rebase, archive sessions, or change plans, agents, settings, and permissions. If the worktree has conflicts, unrelated staged work, no committable changes, or a commit fails, stop and report the exact failure without claiming success.`)
+}
+
+func ReviewCommitAgentToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+		"read":       {Enabled: pebblestore.BoolPtr(true)},
+		"git_status": {Enabled: pebblestore.BoolPtr(true)}, "git_diff": {Enabled: pebblestore.BoolPtr(true)},
+		"git_add": {Enabled: pebblestore.BoolPtr(true)}, "git_commit": {Enabled: pebblestore.BoolPtr(true)},
 	}}
 }
 
@@ -495,6 +515,22 @@ func AITaskPreparerAgentProfileForParent(parent pebblestore.AgentProfile) pebble
 
 func reconcileAITaskPreparerAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
 	return AITaskPreparerAgentProfileForParent(snapshot)
+}
+
+func ReviewCommitAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+	provider := firstNonEmptyProfileValue(parent.AutoProvider, parent.Provider)
+	model := firstNonEmptyProfileValue(parent.AutoModel, parent.Model)
+	thinking := firstNonEmptyProfileValue(parent.AutoThinking, parent.Thinking)
+	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: ReviewCommitAgentID, Mode: ModeSubagent, Description: "Compiled one-shot review commit agent",
+		Provider: provider, Model: model, Thinking: thinking, AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
+		Prompt: ReviewCommitAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: ReviewCommitAgentToolContract(), Enabled: true,
+	})
+}
+
+func reconcileReviewCommitAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	return ReviewCommitAgentProfileForParent(snapshot)
 }
 
 func ExplorerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {

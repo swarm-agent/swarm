@@ -56,6 +56,8 @@ export function NeedsReviewCleanupPanel({ workspacePath, onClose }: { workspaceP
   const [commitMessage, setCommitMessage] = useState('')
   const [openingCommit, setOpeningCommit] = useState(false)
   const [committing, setCommitting] = useState(false)
+  const [batchCommitting, setBatchCommitting] = useState(false)
+  const [activeCommitBatchID, setActiveCommitBatchID] = useState('')
   const [releasedAfterCommit, setReleasedAfterCommit] = useState<ReviewWorktreeCandidate[]>([])
   const [integrateCandidate, setIntegrateCandidate] = useState<ReviewWorktreeCandidate | null>(null)
   const [integrating, setIntegrating] = useState(false)
@@ -68,6 +70,7 @@ export function NeedsReviewCleanupPanel({ workspacePath, onClose }: { workspaceP
     try {
       const next = await reviewDesktopV3Worktrees({ workspacePath, automatic, graceHours: 1 })
       setResult(next)
+      if (next.commit_batch_id) setActiveCommitBatchID(next.commit_batch_id)
       setSelected((current) => new Set([...current].filter((id) => next.done.some((item) => item.session_id === id))))
       setReviewingSelection(false)
       setReleasedAfterCommit((current) => current.map((item) => next.done.find((candidate) => candidate.session_id === item.session_id)).filter((item): item is ReviewWorktreeCandidate => Boolean(item)))
@@ -100,6 +103,10 @@ export function NeedsReviewCleanupPanel({ workspacePath, onClose }: { workspaceP
   const doneIDs = useMemo(() => selectableDoneIDs(result), [result])
   const archiveCandidates = useMemo(() => selectedArchiveCandidates(result, selected), [result, selected])
   const checkoutCommitCandidate = useMemo(() => currentCheckoutCommitCandidate(result), [result])
+  const reviewCommitCandidates = useMemo(() => result?.retained.filter((item) => item.commit_eligible && !item.current_checkout && Boolean(item.worktree_path)) ?? [], [result])
+  const activeReviewCommitJobs = useMemo(() => result?.retained.filter((item) => item.commit_job?.status === 'pending' || item.commit_job?.status === 'running') ?? [], [result])
+  const completedReviewCommitJobs = useMemo(() => [...(result?.retained ?? []), ...(result?.done ?? [])].filter((item) => item.commit_job?.status === 'completed') ?? [], [result])
+  const failedReviewCommitJobs = useMemo(() => result?.retained.filter((item) => item.commit_job?.status === 'failed') ?? [], [result])
   const toggleSelected = (id: string) => {
     setReviewingSelection(false)
     setSelected((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next })
@@ -150,6 +157,30 @@ export function NeedsReviewCleanupPanel({ workspacePath, onClose }: { workspaceP
       setError(cause instanceof Error ? cause.message : 'Could not commit the current checkout.')
     } finally {
       setCommitting(false)
+    }
+  }
+  useEffect(() => {
+    if (!activeCommitBatchID && activeReviewCommitJobs.length === 0) return
+    const timer = window.setInterval(() => { void refresh(false) }, 1500)
+    return () => window.clearInterval(timer)
+  }, [activeCommitBatchID, activeReviewCommitJobs.length, refresh])
+  useEffect(() => {
+    if (!activeCommitBatchID || !result) return
+    const batchItems = [...result.retained, ...result.done].filter((item) => item.commit_job?.batch_id === activeCommitBatchID)
+    if (batchItems.length > 0 && batchItems.every((item) => item.commit_job?.status === 'completed' || item.commit_job?.status === 'failed')) setActiveCommitBatchID('')
+  }, [activeCommitBatchID, result])
+  const commitReviewWorktrees = async () => {
+    if (reviewCommitCandidates.length === 0 || batchCommitting) return
+    setBatchCommitting(true)
+    setError('')
+    try {
+      const next = await reviewDesktopV3Worktrees({ workspacePath, commitSessionIds: reviewCommitCandidates.map((item) => item.session_id), graceHours: 1 })
+      setResult(next)
+      if (next.commit_batch_id) setActiveCommitBatchID(next.commit_batch_id)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not start review commits.')
+    } finally {
+      setBatchCommitting(false)
     }
   }
   const archiveReleased = async () => {
@@ -227,6 +258,7 @@ export function NeedsReviewCleanupPanel({ workspacePath, onClose }: { workspaceP
           {error ? <p className="mt-3 rounded-md bg-[var(--app-danger-bg)] p-2.5 text-xs text-[var(--app-danger)]">{error}</p> : null}
           {result?.checkout_dirty ? <section className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-[var(--app-warning)] bg-[var(--app-surface-subtle)] p-4" aria-label="Dirty main checkout summary"><div className="min-w-0 flex-1"><h3 className="text-sm font-semibold text-[var(--app-text)]">{result.current_target_branch || 'Current branch'} has {result.checkout_dirty_count} uncommitted change{result.checkout_dirty_count === 1 ? '' : 's'}</h3><p className="mt-1 text-xs text-[var(--app-text-subtle)]">{result.blocked_by_checkout_count} chat{result.blocked_by_checkout_count === 1 ? ' is' : 's are'} waiting for these commits before they can get archived. Commit, then Swarm will recheck and show the exact chats released into Done.</p></div>{checkoutCommitCandidate ? <button type="button" className="inline-flex items-center gap-1.5 rounded-md bg-[var(--app-primary)] px-3 py-2 text-xs font-medium text-[var(--app-primary-text)] disabled:opacity-50" disabled={openingCommit} onClick={() => void openCommitReview(checkoutCommitCandidate)}>{openingCommit ? <LoaderCircle size={13} className="animate-spin" /> : <GitCommitHorizontal size={13} />}Commit {result.current_target_branch || 'branch'}…</button> : null}</section> : null}
           {!result?.checkout_dirty && releasedAfterCommit.length > 0 ? <section className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-[var(--app-success)] bg-[var(--app-surface-subtle)] p-4" aria-label="Released chats ready to archive"><div className="min-w-0 flex-1"><h3 className="text-sm font-semibold text-[var(--app-text)]">{releasedAfterCommit.length} chat{releasedAfterCommit.length === 1 ? '' : 's'} released into Done</h3><p className="mt-1 text-xs text-[var(--app-text-subtle)]">The commit succeeded and these exact sessions passed the backend safety recheck. Archive them now or leave them in Done for the one-hour grace period.</p></div><button type="button" className="inline-flex items-center gap-1.5 rounded-md bg-[var(--app-primary)] px-3 py-2 text-xs font-medium text-[var(--app-primary-text)] disabled:opacity-50" disabled={archiving} onClick={() => void archiveReleased()}>{archiving ? <LoaderCircle size={13} className="animate-spin" /> : <Archive size={13} />}Archive {releasedAfterCommit.length}</button></section> : null}
+          {reviewCommitCandidates.length > 0 || activeReviewCommitJobs.length > 0 || completedReviewCommitJobs.length > 0 || failedReviewCommitJobs.length > 0 ? <section className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-[var(--app-primary)] bg-[var(--app-surface-subtle)] p-4" aria-label="AI review commit batch"><div className="min-w-0 flex-1"><h3 className="text-sm font-semibold text-[var(--app-text)]">Prepare review commits with AI</h3><p className="mt-1 text-xs text-[var(--app-text-subtle)]">The auto model inspects each isolated worktree with only read and dedicated Git tools, chooses a message, and creates one commit per worktree in parallel. Sessions stay in review.</p><p className="mt-2 text-xs text-[var(--app-text-muted)]">{activeReviewCommitJobs.length > 0 ? `${activeReviewCommitJobs.length} pending or running` : completedReviewCommitJobs.length > 0 ? `${completedReviewCommitJobs.length} committed and ready to review` : `${reviewCommitCandidates.length} ready to commit`}{failedReviewCommitJobs.length > 0 ? ` · ${failedReviewCommitJobs.length} failed` : ''}</p>{failedReviewCommitJobs.map((item) => <p key={item.session_id} className="mt-1 truncate text-xs text-[var(--app-danger)]" title={item.commit_job?.error}>{item.title || item.session_id}: {item.commit_job?.error}</p>)}</div><button type="button" className="inline-flex items-center gap-1.5 rounded-md bg-[var(--app-primary)] px-3 py-2 text-xs font-medium text-[var(--app-primary-text)] disabled:opacity-50" disabled={batchCommitting || activeReviewCommitJobs.length > 0 || reviewCommitCandidates.length === 0} onClick={() => void commitReviewWorktrees()}>{batchCommitting || activeReviewCommitJobs.length > 0 ? <LoaderCircle size={13} className="animate-spin" /> : <GitCommitHorizontal size={13} />}{activeReviewCommitJobs.length > 0 ? 'Committing…' : `Commit ${reviewCommitCandidates.length} with AI`}</button></section> : null}
           <CandidatePile title="Keep in review" icon={<ShieldAlert size={14} />} items={result?.retained ?? []} selected={selected} onToggle={() => undefined} selectable={false} onCommit={(item) => void openCommitReview(item)} onIntegrate={setIntegrateCandidate} />
           <CandidatePile title="Done · archives after 1h" icon={<CheckCircle2 size={14} />} items={result?.done ?? []} selected={selected} onToggle={toggleSelected} selectable />
           {commitCandidate ? (
@@ -264,5 +296,5 @@ function CandidatePile({ title, icon, items, selected, onToggle, selectable, onC
 }
 
 function WorktreeCard({ item, selected, onToggle, selectable, onCommit, onIntegrate }: { item: ReviewWorktreeCandidate; selected: Set<string>; onToggle: (id: string) => void; selectable: boolean; onCommit?: (item: ReviewWorktreeCandidate) => void; onIntegrate?: (item: ReviewWorktreeCandidate) => void }) {
-  return <div className={cn('grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2 rounded-lg border p-3 text-xs', selected.has(item.session_id) ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)]' : 'border-[var(--app-border)]')}><label className={selectable ? 'cursor-pointer' : ''}>{selectable ? <input className="mt-0.5" type="checkbox" checked={selected.has(item.session_id)} onChange={() => onToggle(item.session_id)} aria-label={`Select ${item.title || item.session_id}`} /> : <span className="mt-1.5 block h-2 w-2 rounded-full bg-[var(--app-warning)]" />}</label><span className="min-w-0"><span className="block truncate font-semibold text-[var(--app-text)]" title={item.title || item.session_id}>{item.title || item.session_id}</span><span className="mt-1 flex min-w-0 items-center gap-1 text-[var(--app-text-muted)]"><GitBranch size={12} className="shrink-0" /><span className="truncate" title={item.worktree_branch}>{item.worktree_branch || 'Unknown worktree branch'}</span></span><span className="mt-0.5 block truncate text-[var(--app-text-subtle)]" title={item.worktree_path}>{item.worktree_path || 'Worktree path unavailable'}</span><span className="mt-2 block text-[var(--app-text-muted)]">{reviewWorktreeReasonLabel(item)}</span>{item.commit_eligible && onCommit ? <button type="button" className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-[var(--app-border)] px-2 py-1 text-[var(--app-text)]" onClick={() => onCommit(item)}><GitCommitHorizontal size={12} />Review commit</button> : null}{item.integrate_eligible && onIntegrate ? <button type="button" className="ml-2 mt-2 inline-flex items-center gap-1.5 rounded-md border border-[var(--app-border)] px-2 py-1 text-[var(--app-text)]" onClick={() => onIntegrate(item)}><GitMerge size={12} />Integrate into {item.target_branch || 'target'}</button> : null}{item.classification === 'done' && !item.archive_ready ? <span className="mt-1 block text-[var(--app-text-subtle)]">Grace period active</span> : null}</span></div>
+  return <div className={cn('grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2 rounded-lg border p-3 text-xs', selected.has(item.session_id) ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)]' : 'border-[var(--app-border)]')}><label className={selectable ? 'cursor-pointer' : ''}>{selectable ? <input className="mt-0.5" type="checkbox" checked={selected.has(item.session_id)} onChange={() => onToggle(item.session_id)} aria-label={`Select ${item.title || item.session_id}`} /> : <span className="mt-1.5 block h-2 w-2 rounded-full bg-[var(--app-warning)]" />}</label><span className="min-w-0"><span className="block truncate font-semibold text-[var(--app-text)]" title={item.title || item.session_id}>{item.title || item.session_id}</span><span className="mt-1 flex min-w-0 items-center gap-1 text-[var(--app-text-muted)]"><GitBranch size={12} className="shrink-0" /><span className="truncate" title={item.worktree_branch}>{item.worktree_branch || 'Unknown worktree branch'}</span></span><span className="mt-0.5 block truncate text-[var(--app-text-subtle)]" title={item.worktree_path}>{item.worktree_path || 'Worktree path unavailable'}</span><span className="mt-2 block text-[var(--app-text-muted)]">{reviewWorktreeReasonLabel(item)}</span>{item.commit_job ? <span className={cn('mt-1 block', item.commit_job.status === 'failed' ? 'text-[var(--app-danger)]' : item.commit_job.status === 'completed' ? 'text-[var(--app-success)]' : 'text-[var(--app-primary)]')}>{item.commit_job.status === 'completed' ? `AI committed ${item.commit_job.commit_hash?.slice(0, 8) || ''}` : item.commit_job.status === 'failed' ? 'AI commit failed' : `AI commit ${item.commit_job.status}`}</span> : null}{item.commit_eligible && onCommit && item.commit_job?.status !== 'pending' && item.commit_job?.status !== 'running' ? <button type="button" className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-[var(--app-border)] px-2 py-1 text-[var(--app-text)]" onClick={() => onCommit(item)}><GitCommitHorizontal size={12} />Review commit</button> : null}{item.integrate_eligible && onIntegrate ? <button type="button" className="ml-2 mt-2 inline-flex items-center gap-1.5 rounded-md border border-[var(--app-border)] px-2 py-1 text-[var(--app-text)]" onClick={() => onIntegrate(item)}><GitMerge size={12} />Integrate into {item.target_branch || 'target'}</button> : null}{item.classification === 'done' && !item.archive_ready ? <span className="mt-1 block text-[var(--app-text-subtle)]">Grace period active</span> : null}</span></div>
 }

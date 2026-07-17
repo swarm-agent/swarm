@@ -14,24 +14,34 @@ import (
 
 const DefaultGracePeriod = time.Hour
 
+type CommitJob struct {
+	BatchID      string `json:"batch_id"`
+	Status       string `json:"status"`
+	RunSessionID string `json:"run_session_id,omitempty"`
+	CommitHash   string `json:"commit_hash,omitempty"`
+	Error        string `json:"error,omitempty"`
+	UpdatedAt    int64  `json:"updated_at"`
+}
+
 type Classification struct {
-	SessionID         string `json:"session_id"`
-	Title             string `json:"title"`
-	UpdatedAt         int64  `json:"updated_at"`
-	WorktreeBranch    string `json:"worktree_branch,omitempty"`
-	WorktreePath      string `json:"worktree_path,omitempty"`
-	TargetBranch      string `json:"target_branch,omitempty"`
-	Classification    string `json:"classification"`
-	Reason            string `json:"reason"`
-	DirtyCount        int    `json:"dirty_count,omitempty"`
-	MissingCommits    int    `json:"missing_commit_count,omitempty"`
-	Equivalent        int    `json:"equivalent_commit_count,omitempty"`
-	DoneAt            int64  `json:"done_at,omitempty"`
-	ArchiveAfter      int64  `json:"archive_after,omitempty"`
-	ArchiveReady      bool   `json:"archive_ready"`
-	CurrentCheckout   bool   `json:"current_checkout,omitempty"`
-	CommitEligible    bool   `json:"commit_eligible,omitempty"`
-	IntegrateEligible bool   `json:"integrate_eligible,omitempty"`
+	SessionID         string     `json:"session_id"`
+	Title             string     `json:"title"`
+	UpdatedAt         int64      `json:"updated_at"`
+	WorktreeBranch    string     `json:"worktree_branch,omitempty"`
+	WorktreePath      string     `json:"worktree_path,omitempty"`
+	TargetBranch      string     `json:"target_branch,omitempty"`
+	Classification    string     `json:"classification"`
+	Reason            string     `json:"reason"`
+	DirtyCount        int        `json:"dirty_count,omitempty"`
+	MissingCommits    int        `json:"missing_commit_count,omitempty"`
+	Equivalent        int        `json:"equivalent_commit_count,omitempty"`
+	DoneAt            int64      `json:"done_at,omitempty"`
+	ArchiveAfter      int64      `json:"archive_after,omitempty"`
+	ArchiveReady      bool       `json:"archive_ready"`
+	CurrentCheckout   bool       `json:"current_checkout,omitempty"`
+	CommitEligible    bool       `json:"commit_eligible,omitempty"`
+	IntegrateEligible bool       `json:"integrate_eligible,omitempty"`
+	CommitJob         *CommitJob `json:"commit_job,omitempty"`
 }
 
 type GitRunner interface {

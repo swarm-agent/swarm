@@ -22,6 +22,7 @@ type sessionsV3ReviewWorktreesRequest struct {
 	ArchiveIDs    []string `json:"archive_session_ids,omitempty"`
 	ArchiveAll    bool     `json:"archive_all,omitempty"`
 	IntegrateIDs  []string `json:"integrate_session_ids,omitempty"`
+	CommitIDs     []string `json:"commit_session_ids,omitempty"`
 	Automatic     bool     `json:"automatic,omitempty"`
 	GraceHours    string   `json:"grace_hours,omitempty"`
 }
@@ -50,6 +51,9 @@ func (s *Server) handleSessionsV3ReviewWorktrees(w http.ResponseWriter, r *http.
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	if batchID := reviewCommitString(result["commit_batch_id"]); batchID != "" {
+		w.Header().Set("X-Swarm-Review-Commit-Batch", batchID)
 	}
 	writeJSON(w, http.StatusOK, result)
 }
@@ -85,6 +89,21 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 	}
 	grace := sessionreview.ParseGraceHours(req.GraceHours)
 	now := time.Now()
+	commitBatchID := ""
+	if len(compactStrings(req.CommitIDs)) > 0 {
+		commitBatchID, err = s.startSessionsV3ReviewCommits(ctx, principal, req.WorkspacePath, req.CommitIDs, search.Items, now)
+		if err != nil {
+			return nil, err
+		}
+		search, err = s.sessions.SearchSessions(pebblestore.V3SessionSearchOptions{
+			AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
+			Global: strings.TrimSpace(req.WorkspacePath) == "", WorkspacePaths: compactStrings([]string{req.WorkspacePath}),
+			State: "needs_review", ArchivedMode: "exclude", Limit: sessionsV3ReviewWorktreeLimit,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
 	if len(compactStrings(req.IntegrateIDs)) > 0 {
 		if err := s.integrateSessionsV3ReviewWorktrees(ctx, principal, req.WorkspacePath, req.IntegrateIDs, now); err != nil {
 			return nil, err
@@ -119,6 +138,7 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 			}
 			classification = sessionreview.ClassifyAgainstTarget(ctx, sessionreview.ExecGitRunner{}, session, now, grace, targetBranch)
 		}
+		classification.CommitJob = sessionReviewCommitJob(session)
 		if classification.Classification == "done" {
 			doneAt := sessionReviewDoneAt(session)
 			if doneAt == 0 && req.Automatic && len(compactStrings(req.ArchiveIDs)) > 0 {
@@ -202,6 +222,7 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 		"retained":                  retained,
 		"done":                      done,
 		"archived_session_ids":      archived,
+		"commit_batch_id":           commitBatchID,
 		"recently_archived":         recentlyArchived,
 		"grace_period_ms":           grace.Milliseconds(),
 		"checkout_dirty":            checkoutSnapshot.HasGit && !checkoutSnapshot.Clean,

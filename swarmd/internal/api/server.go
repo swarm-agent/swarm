@@ -124,6 +124,8 @@ type Server struct {
 	identitySessions     *identity.SessionService
 	gitRealtime          *gitRealtimeManager
 	swarmStore           *pebblestore.SwarmStore
+	reviewCommitMu       sync.Mutex
+	reviewCommitActive   map[string]string
 }
 
 type codexAccountClient interface {
@@ -241,6 +243,7 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		codexOAuthSessions:   make(map[string]*codexOAuthSession),
 		desktopLocalSessions: newDesktopLocalSessionManager(),
 		gitRealtime:          nil,
+		reviewCommitActive:   make(map[string]string),
 		runCtx:               runCtx,
 		runCancel:            runCancel,
 	}

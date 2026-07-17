@@ -30,6 +30,14 @@ export interface ReviewWorktreeCandidate {
   current_checkout?: boolean
   commit_eligible?: boolean
   integrate_eligible?: boolean
+  commit_job?: {
+    batch_id: string
+    status: 'pending' | 'running' | 'completed' | 'failed'
+    run_session_id?: string
+    commit_hash?: string
+    error?: string
+    updated_at: number
+  }
 }
 
 export interface RecentlyArchivedReviewSession {
@@ -49,6 +57,7 @@ export interface ReviewWorktreesResponse {
   retained: ReviewWorktreeCandidate[]
   done: ReviewWorktreeCandidate[]
   archived_session_ids: string[]
+  commit_batch_id?: string
   recently_archived: RecentlyArchivedReviewSession[]
   grace_period_ms: number
   checkout_dirty: boolean
@@ -72,6 +81,7 @@ export async function reviewDesktopV3Worktrees(input: {
   archiveSessionIds?: string[]
   archiveAll?: boolean
   integrateSessionIds?: string[]
+  commitSessionIds?: string[]
   automatic?: boolean
   graceHours?: number
 } = {}): Promise<ReviewWorktreesResponse> {
@@ -83,6 +93,7 @@ export async function reviewDesktopV3Worktrees(input: {
       archive_session_ids: input.archiveSessionIds,
       archive_all: input.archiveAll,
       integrate_session_ids: input.integrateSessionIds,
+      commit_session_ids: input.commitSessionIds,
       automatic: input.automatic,
       grace_hours: input.graceHours ? String(input.graceHours) : undefined,
     }),
