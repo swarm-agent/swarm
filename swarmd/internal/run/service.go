@@ -1944,7 +1944,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		stepsCompleted = step
 		accumulatedUsage = mergeTokenUsage(accumulatedUsage, response.Usage)
 		if shouldPersistProviderUsage(providerID, accumulatedUsage) {
-			turnUsage, usageSummary, usageEvent, usageErr := s.recordProviderUsageSnapshot(sessionID, runID, providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow, stepsCompleted, accumulatedUsage)
+			turnUsage, usageSummary, usageEvent, usageErr := s.recordProviderUsageSnapshot(sessionID, runID, providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow, stepsCompleted, accumulatedUsage, options.Principal, options.ApplySessionMutation)
 			if usageErr != nil {
 				return RunResult{}, usageErr
 			}

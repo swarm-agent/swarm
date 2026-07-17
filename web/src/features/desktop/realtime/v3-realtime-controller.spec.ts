@@ -660,7 +660,7 @@ test('Desktop V3 workset updated subscribes active child session for direct stre
 })
 
 
-test('Desktop V3 subscribes child sessions from parent task stream payload', async () => {
+test('Desktop V3 keeps task child hidden until an explicit view lease is acquired', async () => {
   let state = readyControllerState()
   state.selectedSessionId = sessionA.id
   const sockets: FakeWebSocket[] = []
@@ -749,10 +749,79 @@ test('Desktop V3 subscribes child sessions from parent task stream payload', asy
       endpoint_cursor: 'cursor-parent-task-delta',
     })
 
-    await waitFor(() => sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'subscribe.session' && (frame as RealtimeMessage).session_id === childSessionId))
+    await flushAsyncWork()
     assert.deepEqual([...taskChildRealtimeSessionIds(state)], [childSessionId])
+    assert.equal(sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'subscribe.session' && (frame as RealtimeMessage).session_id === childSessionId), false)
+
+    const first = controller.acquireSessionDemand('card:first', childSessionId)
+    const second = controller.acquireSessionDemand('card:second', childSessionId)
+    await waitFor(() => sockets[0].sent.filter((frame) => (frame as RealtimeMessage).kind === 'subscribe.session' && (frame as RealtimeMessage).session_id === childSessionId).length === 1)
     const subscribe = sockets[0].sent.find((frame) => (frame as RealtimeMessage).kind === 'subscribe.session' && (frame as RealtimeMessage).session_id === childSessionId) as RealtimeMessage
     assert.equal(subscribe.endpoint_cursor, 'cursor-parent-task-delta')
+    const diagnostics = controller.diagnostics()
+    assert.equal(diagnostics.desiredSessionCount, 2)
+    assert.equal(diagnostics.sessionDemandOwnerCount, 2)
+    assert.deepEqual(diagnostics.desiredSessionIds, [childSessionId, sessionA.id].sort())
+    assert.equal(diagnostics.registeredSessionIds.includes(childSessionId), true)
+
+    first.release()
+    await flushAsyncWork()
+    assert.equal(sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'unsubscribe.session' && (frame as RealtimeMessage).session_id === childSessionId), false)
+    second.release()
+    await waitFor(() => sockets[0].sent.filter((frame) => (frame as RealtimeMessage).kind === 'unsubscribe.session' && (frame as RealtimeMessage).session_id === childSessionId).length === 1)
+  } finally {
+    controller.stop()
+  }
+})
+
+
+test('Desktop V3 reconnect resumes only selected and currently leased child sessions on one socket', async () => {
+  let state = readyControllerState()
+  state.selectedSessionId = sessionA.id
+  const sockets: FakeWebSocket[] = []
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action) => { state = desktopV3CacheReducer(state, action) },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect-demand',
+      sessions_by_id: {}, projections_by_session: {}, run_intents_by_session: {}, current_run_intent_by_session: {}, session_order: [], workset_id: 'global-scope',
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime', protocol_version: 1, kind: 'resume', endpoint_cursor: 'cursor-reconnect-demand',
+          subscriptions: [
+            { session_id: 'hidden-child', subscription_id: 'stale-hidden', endpoint_cursor: 'cursor-reconnect-demand' },
+            { session_id: 'leased-child', subscription_id: 'stale-leased', endpoint_cursor: 'cursor-reconnect-demand' },
+          ],
+          worksets: [],
+        },
+      },
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+  try {
+    const ready = controller.start(sessionA.id)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    const lease = controller.acquireSessionDemand('visible:leased', 'leased-child')
+    await waitFor(() => sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'subscribe.session' && (frame as RealtimeMessage).session_id === 'leased-child'))
+
+    sockets[0].close()
+    await waitFor(() => sockets.length === 2, 3_000)
+    sockets[1].open()
+    await waitFor(() => sockets[1].sent.some((frame) => (frame as RealtimeMessage).kind === 'resume'))
+    const resume = sockets[1].sent.find((frame) => (frame as RealtimeMessage).kind === 'resume') as RealtimeMessage
+    assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.session_id).sort(), ['leased-child', sessionA.id].sort())
+    assert.equal(resume.subscriptions?.some((subscription) => subscription.session_id === 'hidden-child'), false)
+    assert.equal(sockets.length, 2, 'reconnect should replace the one retained socket, not fan out per card')
+    lease.release()
   } finally {
     controller.stop()
   }
@@ -846,24 +915,29 @@ test('Desktop V3 child reconciliation unsubscribes a terminal child while retain
     await waitFor(() => sockets.length === 1)
     sockets[0].open()
     await ready
-    const resume = sockets[0].sent[0] as RealtimeMessage
-    assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.session_id), [sessionA.id, activeChild, terminalChild])
+    const terminalLease = controller.acquireSessionDemand('card:terminal', terminalChild)
+    const activeLease = controller.acquireSessionDemand('card:active', activeChild)
+    await waitFor(() => controller.diagnostics().registeredSessionCount === 3)
     sockets[0].sent = []
 
     taskStream.launchesByKey[terminalChild] = { status: 'completed', child_session_id: terminalChild }
     state.currentRunIntentBySession[terminalChild] = {
       session_id: terminalChild,
       run_id: 'stale-child-intent',
-      status: 'running',
+      status: 'completed',
       created_at: 1,
       updated_at: 1,
       event_seq: 1,
     }
     state = { ...state, liveRunsBySession: { ...state.liveRunsBySession } }
     for (const listener of listeners) listener()
+    terminalLease.release()
 
-    await waitFor(() => sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'unsubscribe.session' && (frame as RealtimeMessage).session_id === terminalChild))
+    await flushAsyncWork()
+    assert.equal(controller.diagnostics().sessionDemandOwnerCount, 1)
+    assert.equal(controller.diagnostics().desiredSessionIds.includes(activeChild), true)
     assert.equal(sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'unsubscribe.session' && (frame as RealtimeMessage).session_id === activeChild), false)
+    activeLease.release()
   } finally {
     controller.stop()
   }

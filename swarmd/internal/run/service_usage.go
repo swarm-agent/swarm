@@ -1,12 +1,17 @@
 package run
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -189,7 +194,7 @@ func shouldPersistProviderUsage(providerID string, usage provideriface.TokenUsag
 	}
 }
 
-func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, modelName string, contextWindow, stepsCompleted int, usage provideriface.TokenUsage) (pebblestore.SessionTurnUsageSnapshot, pebblestore.SessionUsageSummary, *pebblestore.EventEnvelope, error) {
+func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, modelName string, contextWindow, stepsCompleted int, usage provideriface.TokenUsage, principal identity.Principal, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (pebblestore.SessionTurnUsageSnapshot, pebblestore.SessionUsageSummary, *pebblestore.EventEnvelope, error) {
 	if s == nil || s.sessions == nil {
 		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, errors.New("session service is not configured")
 	}
@@ -197,7 +202,7 @@ func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, mode
 	if providerID == "" {
 		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, errors.New("provider id is required")
 	}
-	return s.sessions.RecordTurnUsage(sessionID, pebblestore.SessionTurnUsageSnapshot{
+	turnUsage := pebblestore.SessionTurnUsageSnapshot{
 		RunID:            runID,
 		Provider:         providerID,
 		Model:            modelName,
@@ -218,7 +223,57 @@ func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, mode
 		TotalTokens:      usage.TotalTokens,
 		ServiceTier:      strings.ToLower(strings.TrimSpace(usage.ServiceTier)),
 		EstimatedCostUSD: usage.EstimatedCostUSD,
+	}
+	if apply == nil {
+		return s.sessions.RecordTurnUsage(sessionID, turnUsage)
+	}
+
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, err
+	}
+	if !ok {
+		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, fmt.Errorf("session %q not found", sessionID)
+	}
+	if strings.TrimSpace(principal.UserID) == "" {
+		principal.UserID = strings.TrimSpace(session.UserID)
+	}
+	if strings.TrimSpace(principal.AccountScopeID) == "" {
+		principal.AccountScopeID = strings.TrimSpace(session.AccountScopeID)
+	}
+	turnUsage.SessionID = strings.TrimSpace(sessionID)
+	turnUsage.UserID = strings.TrimSpace(principal.UserID)
+	turnUsage.AccountScopeID = strings.TrimSpace(principal.AccountScopeID)
+	payload, err := json.Marshal(turnUsage)
+	if err != nil {
+		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, fmt.Errorf("encode provider usage snapshot: %w", err)
+	}
+	sum := sha256.Sum256(payload)
+	payloadHash := hex.EncodeToString(sum[:])
+	clientRequestID := fmt.Sprintf("run:%s:usage:%d", strings.TrimSpace(runID), stepsCompleted)
+	mutation, err := apply(sessionruntime.SessionMutationInput{
+		SessionID:       strings.TrimSpace(sessionID),
+		UserID:          turnUsage.UserID,
+		AccountScopeID:  turnUsage.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordUsage,
+		EventType:       "run.usage.updated",
+		TurnUsage:       &turnUsage,
+		NowUnixMs:       time.Now().UnixMilli(),
 	})
+	if err != nil {
+		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, err
+	}
+	if mutation.TurnUsage == nil || mutation.UsageSummary == nil {
+		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, errors.New("run.usage.updated mutation did not return committed usage state")
+	}
+	if mutation.RealtimeOutbox == nil || mutation.RealtimeOutbox.EndpointSeq == 0 {
+		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, errors.New("run.usage.updated mutation did not return committed realtime outbox")
+	}
+	return *mutation.TurnUsage, *mutation.UsageSummary, nil, nil
 }
 
 func cloneUsageHistory(history []map[string]any) []map[string]any {

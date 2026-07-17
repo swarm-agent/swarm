@@ -29,6 +29,7 @@ import {
 } from "../services/tool-message";
 import {
   selectDesktopPlanExecutionView,
+  selectDesktopV3TaskChildViewModel,
   type DesktopPlanExecutionView,
   type RenderedSessionMessages,
 } from "../../state/desktop-v3-cache-selectors";
@@ -52,6 +53,8 @@ import type {
   AgentStateRecord,
   SessionPreferenceRecord,
   ChatMessageRecord,
+  TaskChildCardActions,
+  TaskToolRow,
 } from "../types/chat";
 import {
   getDesktopSessionStopTarget,
@@ -113,6 +116,7 @@ import {
   type DesktopV3ExistingMessageOperation,
 } from "../../session-v3/existing-session-flow";
 import { compactDesktopV3Session } from "../../session-v3/compact-session-flow";
+import { selectAndHydrateDesktopV3Session } from "../../state/desktop-v3-session-hydrator";
 import {
   acceptAndContinueDesktopPlanCheckpoint,
   archiveDesktopV3Sessions,
@@ -145,6 +149,11 @@ import {
   DesktopPlanExecutionSidebar,
   type DesktopPlanExecutionSidebarActionInput,
 } from "./desktop-plan-execution-sidebar";
+import {
+  effectiveDesktopSidebarDisplayMode,
+  loadDesktopSidebarDisplayMode,
+  type DesktopSidebarDisplayMode,
+} from "./desktop-sidebar-display";
 
 const EMPTY_AGENT_STATE: AgentStateRecord = {
   profiles: [],
@@ -1326,6 +1335,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   routeOptions?: DesktopChatRoute[];
   onOpenChats?: () => void;
   onNewSession?: () => void;
+  onOpenChildSession?: (sessionId: string, workspacePath: string) => void;
   sessionActions?: DesktopV3ChatHeaderSessionActions | null;
   onSlashCommand?: (
     command: DesktopSlashCommand,
@@ -1369,6 +1379,7 @@ export function DesktopV3ExistingConversationPane({
   routeOptions = [],
   onOpenChats,
   onNewSession,
+  onOpenChildSession,
   sessionActions = null,
   onSlashCommand,
   agentSettingsOpenSignal = 0,
@@ -1622,6 +1633,37 @@ export function DesktopV3ExistingConversationPane({
     workspaceSettingsMatch && "workspaceSlug" in workspaceSettingsMatch
       ? String(workspaceSettingsMatch.workspaceSlug ?? "").trim()
       : "";
+  const [planSidebarAvailableWidth, setPlanSidebarAvailableWidth] = useState(0);
+  const planSidebarGridRef = useRef<HTMLDivElement | null>(null);
+  const preferredPlanSidebarMode = useMemo(loadDesktopSidebarDisplayMode, []);
+  const planSidebarDisplayMode: DesktopSidebarDisplayMode = effectiveDesktopSidebarDisplayMode(preferredPlanSidebarMode, planSidebarAvailableWidth);
+  useEffect(() => {
+    const element = planSidebarGridRef.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const update = () => setPlanSidebarAvailableWidth(element.clientWidth);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  const taskChildActions = useMemo<TaskChildCardActions>(() => ({
+    workspaceSlug: routeWorkspaceSlug,
+    parentSessionId: normalizedSessionId,
+    onNavigate: (childSessionId, workspacePath) => {
+      const normalizedChildSessionId = childSessionId.trim();
+      if (!normalizedChildSessionId) return;
+      if (onOpenChildSession) {
+        onOpenChildSession(normalizedChildSessionId, workspacePath);
+        return;
+      }
+      if (!routeWorkspaceSlug) return;
+      void selectAndHydrateDesktopV3Session(normalizedChildSessionId);
+      void navigate({
+        to: "/$workspaceSlug/$sessionId",
+        params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedChildSessionId },
+      });
+    },
+  }), [navigate, normalizedSessionId, onOpenChildSession, routeWorkspaceSlug]);
   const route = useMemo(
     () =>
       resolveDesktopChatRouteFromSession(
@@ -1644,6 +1686,37 @@ export function DesktopV3ExistingConversationPane({
     () => buildDesktopV3ConversationRenderItems(renderedMessages),
     [renderedMessages],
   );
+  const taskChildRows = useMemo<TaskToolRow[]>(() => {
+    const rows: TaskToolRow[] = [];
+    for (const item of renderItems) {
+      if (item.type === "message") {
+        const parsed = parseStructuredToolMessage(item.message.content);
+        if (parsed?.tool === "task") rows.push(...parsed.taskRows);
+      } else if (item.type === "live-tool" && item.tool.toolName === "task") {
+        const tool = item.tool;
+        const state: ToolMessageState = tool.status === "failed" || tool.status === "error"
+          ? "error"
+          : ["completed", "done", "cancelled", "canceled"].includes(tool.status ?? "") ? "done" : "running";
+        const parsed = buildStructuredToolMessage({
+          pathId: "run.v3.provider-tool-result.v1",
+          tool: tool.toolName || "task",
+          callId: tool.callId,
+          toolInstanceId: tool.toolInstanceId,
+          argumentsText: tool.argumentsText ?? "",
+          outputText: tool.outputText ?? "",
+          error: tool.errorText ?? "",
+          durationMs: tool.durationMs,
+          state,
+          taskStream: tool.taskStream,
+        });
+        if (parsed) rows.push(...parsed.taskRows);
+      }
+    }
+    const bySession = new Map<string, TaskToolRow>();
+    for (const row of rows) bySession.set(row.childSessionId || row.launchKey || String(row.launchIndex), row);
+    return [...bySession.values()];
+  }, [renderItems]);
+  const taskChildren = useDesktopV3CacheSelector((state) => taskChildRows.map((row) => ({ row, view: selectDesktopV3TaskChildViewModel(state, row) })));
   const scrollFollowKey = useMemo(
     () =>
       [
@@ -1708,6 +1781,7 @@ export function DesktopV3ExistingConversationPane({
     !hasMessages &&
     !hasStoredOperation;
   const showPlanExecutionSidebar = Boolean(planExecutionView?.plan.document);
+  const showPlanSidebar = showPlanExecutionSidebar || Boolean(pendingPlanDocument);
   const {
     scrollContainerRef,
     contentRef,
@@ -2461,14 +2535,14 @@ export function DesktopV3ExistingConversationPane({
         sessionActions={headerSessionActions}
       />
       <div
+        ref={planSidebarGridRef}
         className={cn(
           "grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden",
-          pendingPlanDocument
-            ? "xl:grid-cols-[minmax(0,1fr)_360px]"
-            : showPlanExecutionSidebar
-              ? "min-[1300px]:grid-cols-[minmax(0,1fr)_360px]"
-              : "",
+          showPlanSidebar && planSidebarDisplayMode === "full" ? "min-[1300px]:grid-cols-[minmax(0,1fr)_360px]" : "",
+          showPlanSidebar && planSidebarDisplayMode === "compact" ? "min-[1300px]:grid-cols-[minmax(0,1fr)_280px]" : "",
+          showPlanSidebar && planSidebarDisplayMode === "thin" ? "min-[1300px]:grid-cols-[minmax(0,1fr)_56px]" : "",
         )}
+        data-plan-sidebar-mode={planSidebarDisplayMode}
       >
         <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -2517,6 +2591,7 @@ export function DesktopV3ExistingConversationPane({
                         thinkingTagsEnabled={thinkingTagsEnabled}
                         timerNow={timerNow}
                         index={index}
+                        taskChildActions={taskChildActions}
                       />
                     </div>
                   );
@@ -2661,6 +2736,7 @@ export function DesktopV3ExistingConversationPane({
             embedded
             mobileOpen={planAgentMobileOpen}
             modelLabel={preference.model}
+            displayMode={planSidebarDisplayMode}
             onClose={() => setPlanAgentMobileOpen(false)}
 
           />
@@ -2673,6 +2749,9 @@ export function DesktopV3ExistingConversationPane({
             onStop={stableStop}
             onEditPlan={stableOpenPlan}
             belowActions={planSidebarBelowActions}
+            displayMode={planSidebarDisplayMode}
+            taskChildren={taskChildren}
+            taskChildActions={taskChildActions}
           />
         ) : null}
       </div>
@@ -2694,11 +2773,13 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   item,
   thinkingTagsEnabled,
   timerNow,
+  taskChildActions,
 }: {
   item: DesktopV3RenderItem;
   thinkingTagsEnabled: boolean;
   timerNow: number;
   index: number;
+  taskChildActions?: TaskChildCardActions;
 }) {
   switch (item.type) {
     case "plan-break":
@@ -2715,6 +2796,7 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
           message={item.message}
           thinkingTagsEnabled={thinkingTagsEnabled}
           timerNow={timerNow}
+          taskChildActions={taskChildActions}
         />
       );
     case "pending-user":
@@ -2732,7 +2814,7 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
         />
       );
     case "live-tool":
-      return <DesktopV3LiveToolCall tool={item.tool} />;
+      return <DesktopV3LiveToolCall tool={item.tool} taskChildActions={taskChildActions} />;
     case "live-working":
       return null;
     default:
@@ -2877,10 +2959,12 @@ function DesktopV3CommittedMessage({
   message,
   thinkingTagsEnabled,
   timerNow,
+  taskChildActions,
 }: {
   message: MessageSnapshot;
   thinkingTagsEnabled: boolean;
   timerNow: number;
+  taskChildActions?: TaskChildCardActions;
 }) {
   const role = message.role || "message";
   const toolMessage = parseStructuredToolMessage(message.content);
@@ -2890,6 +2974,7 @@ function DesktopV3CommittedMessage({
         content={message.content}
         toolMessage={toolMessage}
         thinkingTagsEnabled={thinkingTagsEnabled}
+        taskChildActions={taskChildActions}
       />
     );
   }
@@ -3009,10 +3094,12 @@ function DesktopV3ToolMessage({
   content,
   toolMessage,
   thinkingTagsEnabled = true,
+  taskChildActions,
 }: {
   content: string;
   toolMessage: StructuredToolMessage | null;
   thinkingTagsEnabled?: boolean;
+  taskChildActions?: TaskChildCardActions;
 }) {
   const toolName = toolMessage?.tool.trim().toLowerCase();
   const usesFullWidthCard = toolName === "bash" || toolName === "task" || ["read", "list", "search", "edit", "plan-manage", "plan_manage"].includes(toolName ?? "");
@@ -3033,6 +3120,7 @@ function DesktopV3ToolMessage({
           content={content}
           toolMessage={toolMessage ?? undefined}
           thinkingTagsEnabled={thinkingTagsEnabled}
+          taskChildActions={taskChildActions}
         />
       </div>
     </div>
@@ -3085,8 +3173,10 @@ function DesktopV3ReasoningMessage({
 
 function DesktopV3LiveToolCall({
   tool,
+  taskChildActions,
 }: {
   tool: LiveRunOverlay["toolCallsByCallId"][string];
+  taskChildActions?: TaskChildCardActions;
 }) {
   const state: ToolMessageState =
     tool.status === "failed" || tool.status === "error"
@@ -3113,7 +3203,7 @@ function DesktopV3LiveToolCall({
     taskStream: tool.taskStream,
   });
   if (parsed && tool.timelineSeq) parsed.timelineSeq = tool.timelineSeq;
-  return <DesktopV3ToolMessage content="" toolMessage={parsed} />;
+  return <DesktopV3ToolMessage content="" toolMessage={parsed} taskChildActions={taskChildActions} />;
 }
 
 export function chatMessageToMessageSnapshot(

@@ -59,7 +59,7 @@ assert.match(markup, /aria-label="Send to Plan"/, "idle real session should expo
 assert.match(markup, /aria-label="Start microphone dictation"/, "Plan composer should expose the canonical microphone affordance");
 assert.match(markup, /aria-label="Context window unavailable"/, "Plan composer should expose the real compact/context control before usage arrives");
 assert.match(markup, /data-testid="desktop-plan-composer"/, "expected dedicated Plan composer wrapper");
-assert.match(markup, /class="[^\"]*border-t[^\"]*bg-\[var\(--app-surface\)\]" data-testid="desktop-plan-composer"/, "Plan composer should share the canonical chat composer boundary");
+assert.match(markup, /class="[^"]*border-t[^\"]*bg-\[var\(--app-surface\)\][^"]*" data-testid="desktop-plan-composer"/, "Plan composer should share the canonical chat composer boundary");
 assert.doesNotMatch(markup, /data-testid="desktop-plan-composer"[^>]*pb-1\.5/, "Plan composer should not be taller than the canonical chat composer");
 assert.match(markup, /min-w-0 items-center justify-between gap-2 overflow-hidden bg-transparent px-4 py-3 text-\[11px\]/, "Plan control row should use the canonical chat padding for the matched 311×144 geometry");
 assert.doesNotMatch(markup, /border-y border-\[var\(--app-border-strong\)\]/, "Plan control row should not add a separator absent from the canonical chat composer");

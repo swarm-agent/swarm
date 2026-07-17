@@ -30,6 +30,8 @@ export const DESKTOP_V3_LIVE_PATCH_ENABLED = true
 
 export interface DesktopV3RealtimeController {
   ensureSessionConnected(sessionId: string): Promise<void>
+  acquireSessionDemand(ownerKey: string, sessionId: string): DesktopV3RealtimeSessionDemandLease
+  diagnostics(): DesktopV3RealtimeControllerDiagnostics
   start(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void>
   stop(reason?: string): void
 }
@@ -37,6 +39,19 @@ export interface DesktopV3RealtimeController {
 export interface DesktopV3RealtimeLease {
   ready: Promise<void>
   release: () => void
+}
+
+export interface DesktopV3RealtimeSessionDemandLease extends DesktopV3RealtimeLease {
+  ownerKey: string
+  sessionId: string
+}
+
+export interface DesktopV3RealtimeControllerDiagnostics {
+  desiredSessionCount: number
+  registeredSessionCount: number
+  sessionDemandOwnerCount: number
+  desiredSessionIds: string[]
+  registeredSessionIds: string[]
 }
 
 interface DesktopV3RealtimeControllerDeps {
@@ -66,6 +81,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private readonly livePatchCoordinator: DesktopV3LivePatchCoordinator
   private readonly clientEffectRunner: DesktopV3ClientEffectRunner
   private readonly subscribingSessionIds = new Set<string>()
+  private readonly sessionDemandByOwner = new Map<string, { sessionId: string; token: symbol }>()
   private readonly onDesiredSessionsReconciled?: () => void
   private reconciliationTimer?: ReturnType<typeof setTimeout>
   private firstResumeSent?: Deferred<void>
@@ -170,6 +186,52 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     return this.subscribeSessionRealtime(normalized)
   }
 
+  acquireSessionDemand(ownerKeyInput: string, sessionIdInput: string): DesktopV3RealtimeSessionDemandLease {
+    const ownerKey = ownerKeyInput.trim()
+    const sessionId = sessionIdInput.trim()
+    if (!ownerKey) throw new Error('Desktop V3 realtime session demand requires ownerKey')
+    if (!sessionId) throw new Error('Desktop V3 realtime session demand requires sessionId')
+
+    const token = Symbol(ownerKey)
+    this.sessionDemandByOwner.set(ownerKey, { sessionId, token })
+    this.scheduleDesiredSessionReconciliation()
+    const ready = this.transport.diagnostics().status === 'open'
+      ? this.subscribeSessionRealtime(sessionId)
+      : Promise.resolve()
+    // A view may collapse before replay.complete. Releasing demand must not
+    // surface the expected transport cancellation as an unhandled rejection.
+    ready.catch(() => undefined)
+
+    let released = false
+    return {
+      ownerKey,
+      sessionId,
+      ready,
+      release: () => {
+        if (released) return
+        released = true
+        const current = this.sessionDemandByOwner.get(ownerKey)
+        if (current?.token !== token) return
+        this.sessionDemandByOwner.delete(ownerKey)
+        // Reconciliation is deliberately deferred so React remounts can replace
+        // the owner without an unsubscribe/subscribe churn cycle.
+        this.scheduleDesiredSessionReconciliation()
+      },
+    }
+  }
+
+  diagnostics(): DesktopV3RealtimeControllerDiagnostics {
+    const desiredSessionIds = [...this.desiredSessionIds(this.getSnapshot())].sort()
+    const registeredSessionIds = this.transport.diagnostics().sessions.map((session) => session.session_id).sort()
+    return {
+      desiredSessionCount: desiredSessionIds.length,
+      registeredSessionCount: registeredSessionIds.length,
+      sessionDemandOwnerCount: this.sessionDemandByOwner.size,
+      desiredSessionIds,
+      registeredSessionIds,
+    }
+  }
+
   stop(reason = 'Desktop V3 realtime controller stopped'): void {
     this.stopped = true
     const stopError = new Error(reason)
@@ -179,6 +241,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.unsubscribeCache = undefined
     this.startPromise = undefined
     this.subscribingSessionIds.clear()
+    this.sessionDemandByOwner.clear()
     if (this.reconciliationTimer !== undefined) {
       clearTimeout(this.reconciliationTimer)
       this.reconciliationTimer = undefined
@@ -292,10 +355,13 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     const selectedSessionId = preferredSessionId === null
       ? undefined
       : preferredSessionId?.trim() || this.getSnapshot().selectedSessionId?.trim()
+    // The reconnect response may describe subscriptions retained by an older
+    // view. Rebuild from current demand instead of reviving those sessions.
     const subscriptions = new Map<string, RealtimeSubscriptionRequest>()
+    const currentTaskChildren = taskChildRealtimeSessionIds(this.getSnapshot())
     for (const subscription of resume.subscriptions ?? []) {
       const sessionId = subscription.session_id?.trim()
-      if (!sessionId || subscriptions.has(sessionId)) continue
+      if (!sessionId || subscriptions.has(sessionId) || currentTaskChildren.has(sessionId)) continue
       subscriptions.set(sessionId, {
         ...subscription,
         session_id: sessionId,
@@ -314,20 +380,9 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     }
 
     const state = this.getSnapshot()
-    addRecoverySubscription(selectedSessionId)
-    const terminalTaskChildSessionIDs = terminalTaskChildRealtimeSessionIds(state)
-    for (const sessionId of activeRealtimeSessionIds(state)) {
-      if (sessionId === selectedSessionId || !terminalTaskChildSessionIDs.has(sessionId)) addRecoverySubscription(sessionId)
-    }
-    for (const sessionId of taskChildRealtimeSessionIds(state)) {
+    this.releaseTerminalSessionDemand(state)
+    for (const sessionId of this.desiredSessionIds(state, selectedSessionId)) {
       addRecoverySubscription(sessionId)
-    }
-    for (const pending of Object.values(state.pendingUserByClientRequestId)) {
-      if (pending.status !== 'pending') continue
-      addRecoverySubscription(pending.sessionId)
-    }
-    for (const sessionId of this.subscribingSessionIds) {
-      if (!terminalTaskChildSessionIDs.has(sessionId)) addRecoverySubscription(sessionId)
     }
 
     resume.subscriptions = Array.from(subscriptions.values())
@@ -388,30 +443,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     if (this.stopped) return
     this.onDesiredSessionsReconciled?.()
     const state = this.getSnapshot()
-    const desired = new Set<string>()
-    const addDesired = (sessionId: string | null | undefined) => {
-      const normalized = sessionId?.trim()
-      if (normalized) desired.add(normalized)
-    }
-
-    addDesired(state.selectedSessionId)
-
-    const terminalTaskChildSessionIDs = terminalTaskChildRealtimeSessionIds(state)
-    for (const sessionId of activeRealtimeSessionIds(state)) {
-      if (sessionId === state.selectedSessionId?.trim() || !terminalTaskChildSessionIDs.has(sessionId)) addDesired(sessionId)
-    }
-
-    for (const sessionId of taskChildRealtimeSessionIds(state)) {
-      addDesired(sessionId)
-    }
-
-    for (const pending of Object.values(state.pendingUserByClientRequestId)) {
-      if (pending.status === 'pending') addDesired(pending.sessionId)
-    }
-
-    for (const sessionId of this.subscribingSessionIds) {
-      if (!terminalTaskChildSessionIDs.has(sessionId)) addDesired(sessionId)
-    }
+    this.releaseTerminalSessionDemand(state)
+    const desired = this.desiredSessionIds(state)
 
     const diagnostics = this.transport.diagnostics()
     if (diagnostics.status === 'rehydrating' || diagnostics.status === 'stale') return
@@ -431,6 +464,46 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     for (const sessionId of registered.keys()) {
       if (desired.has(sessionId)) continue
       this.transport.unsubscribeSession(sessionId)
+    }
+  }
+
+  private desiredSessionIds(state: DesktopV3CacheState, selectedSessionId = state.selectedSessionId?.trim()): Set<string> {
+    const desired = new Set<string>()
+    const addDesired = (sessionId: string | null | undefined) => {
+      const normalized = sessionId?.trim()
+      if (normalized) desired.add(normalized)
+    }
+
+    addDesired(selectedSessionId)
+    const taskChildSessionIds = taskChildRealtimeSessionIds(state)
+    const terminalTaskChildSessionIds = terminalTaskChildRealtimeSessionIds(state)
+    for (const sessionId of activeRealtimeSessionIds(state)) {
+      if (!taskChildSessionIds.has(sessionId)) addDesired(sessionId)
+    }
+    for (const pending of Object.values(state.pendingUserByClientRequestId)) {
+      if (pending.status === 'pending') addDesired(pending.sessionId)
+    }
+    for (const [sessionId, summary] of Object.entries(state.permissionSummaryBySessionId)) {
+      if (summary.pendingApprovalCount > 0) addDesired(sessionId)
+    }
+    for (const sessionId of this.subscribingSessionIds) {
+      if (!taskChildSessionIds.has(sessionId)) addDesired(sessionId)
+    }
+    for (const demand of this.sessionDemandByOwner.values()) {
+      if (!terminalTaskChildSessionIds.has(demand.sessionId)) addDesired(demand.sessionId)
+    }
+    return desired
+  }
+
+  private releaseTerminalSessionDemand(state: DesktopV3CacheState): void {
+    const terminalSessionIds = terminalTaskChildRealtimeSessionIds(state)
+    for (const [sessionId, intent] of Object.entries(state.currentRunIntentBySession)) {
+      if (!intent || ACTIVE_INTENT_STATUSES.has(intent.status.trim().toLowerCase())) continue
+      terminalSessionIds.add(intent.session_id?.trim() || sessionId.trim())
+    }
+    if (terminalSessionIds.size === 0) return
+    for (const [ownerKey, demand] of this.sessionDemandByOwner) {
+      if (terminalSessionIds.has(demand.sessionId)) this.sessionDemandByOwner.delete(ownerKey)
     }
   }
 
@@ -514,13 +587,6 @@ export function buildDesktopV3InitialRealtimeResume(
   const selectedSessionId = preferredSessionId === null
     ? undefined
     : preferredSessionId?.trim() || state.selectedSessionId?.trim()
-  const activeSessionIDs = activeRealtimeSessionIds(state)
-  for (const sessionId of terminalTaskChildRealtimeSessionIds(state)) {
-    if (sessionId !== selectedSessionId) activeSessionIDs.delete(sessionId)
-  }
-  const taskChildSessionIDs = taskChildRealtimeSessionIds(state)
-
-  const sessionOrder = state.sessionOrderByScope[sidebarScopeId] ?? []
   const orderedSessionIDs: string[] = []
   const seen = new Set<string>()
   const append = (sessionId: string | null | undefined) => {
@@ -531,15 +597,20 @@ export function buildDesktopV3InitialRealtimeResume(
   }
 
   append(selectedSessionId)
+  const taskChildSessionIds = taskChildRealtimeSessionIds(state)
+  const activeSessionIds = activeRealtimeSessionIds(state)
+  const sessionOrder = state.sessionOrderByScope[sidebarScopeId] ?? []
   for (const sessionId of sessionOrder) {
-    const normalized = sessionId.trim()
-    if (activeSessionIDs.has(normalized)) append(normalized)
+    if (activeSessionIds.has(sessionId) && !taskChildSessionIds.has(sessionId)) append(sessionId)
   }
-  for (const sessionId of [...activeSessionIDs].filter((sessionId) => !seen.has(sessionId)).sort()) {
-    append(sessionId)
+  for (const sessionId of [...activeSessionIds].sort()) {
+    if (!taskChildSessionIds.has(sessionId)) append(sessionId)
   }
-  for (const sessionId of [...taskChildSessionIDs].filter((sessionId) => !seen.has(sessionId)).sort()) {
-    append(sessionId)
+  for (const pending of Object.values(state.pendingUserByClientRequestId)) {
+    if (pending.status === 'pending') append(pending.sessionId)
+  }
+  for (const [sessionId, summary] of Object.entries(state.permissionSummaryBySessionId)) {
+    if (summary.pendingApprovalCount > 0) append(sessionId)
   }
 
   const subscriptions = orderedSessionIDs.map((sessionId) => ({

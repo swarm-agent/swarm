@@ -74,6 +74,11 @@ import type { DesktopSessionSearchItem } from '../session-search/session-search-
 import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortcuts/components/desktop-quick-actions-modal'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { buildReviewWorktreeFixPrompt, resolveReviewWorktreeRepairAgent, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
+import {
+  loadDesktopSidebarDisplayMode,
+  saveDesktopSidebarDisplayMode,
+  type DesktopSidebarDisplayMode,
+} from '../chat/components/desktop-sidebar-display'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
@@ -2261,7 +2266,12 @@ export function DesktopAppPage() {
   const routeSessionId = (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, currentWorkspacePath, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [sidebarDisplayMode, setSidebarDisplayModeState] = useState<DesktopSidebarDisplayMode>(() => loadDesktopSidebarDisplayMode())
+  const sidebarCollapsed = sidebarDisplayMode === 'thin'
+  const setSidebarDisplayMode = useCallback((mode: DesktopSidebarDisplayMode) => {
+    setSidebarDisplayModeState(mode)
+    saveDesktopSidebarDisplayMode(mode)
+  }, [])
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
   const [notificationsOpen, setNotificationsOpen] = useState(false)
@@ -3876,7 +3886,6 @@ export function DesktopAppPage() {
   }, [updateRunning])
 
   const handleOpenMobileSidebar = useCallback(() => {
-    setSidebarCollapsed(false)
     setMobileSidebarOpen(true)
   }, [])
 
@@ -4061,7 +4070,7 @@ export function DesktopAppPage() {
     <>
       {sidebarCollapsed ? (
         <div className="flex h-full flex-col items-center gap-1 py-3">
-          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => setSidebarCollapsed(false)} aria-label="Expand sidebar">
+          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => setSidebarDisplayMode('compact')} aria-label="Expand sidebar to compact mode" title="Compact sidebar">
             <ChevronRight size={28} className="shrink-0" />
           </Button>
           <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => void navigate({ to: '/' })} aria-label="Back to launcher">
@@ -4082,6 +4091,19 @@ export function DesktopAppPage() {
               {updateActionEnabled ? <span aria-hidden="true" className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_10px_var(--app-primary)]" /> : null}
             </Button>
           ) : null}
+          <div className="mt-1 grid min-h-0 flex-1 content-start gap-1 overflow-y-auto border-t border-[var(--app-border)] pt-2" aria-label="Sessions">
+            {globalFlattenedSessionNodes.map((node) => {
+              const selected = routeSessionId === node.session.id
+              const pending = sessionHasPendingPermission(node.session)
+              const running = sessionHasCanonicalActiveRun(node.session)
+              const failed = sessionStatusTone(node.session) === 'error'
+              const label = node.assignmentLabel || node.session.title || 'Conversation'
+              return <button key={node.session.id} type="button" className={cn('relative grid h-11 w-11 place-items-center rounded-lg text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]', selected && 'bg-[var(--app-selection-bg)] text-[var(--app-primary)]')} onClick={() => { handleSelectSession(node.session.id) }} aria-label={`Open ${label}`} title={label}>
+                <Bot size={20} aria-hidden="true" />
+                {pending || running || failed ? <span aria-hidden="true" className={cn('absolute right-1.5 top-1.5 size-2 rounded-full', pending ? 'bg-[var(--app-warning)]' : failed ? 'bg-[var(--app-error)]' : 'animate-pulse bg-[var(--app-primary)]')} /> : null}
+              </button>
+            })}
+          </div>
         </div>
       ) : (
         <div className="flex h-full flex-col min-h-0">
@@ -4134,9 +4156,9 @@ export function DesktopAppPage() {
                       <button
                         type="button"
                         className="min-w-0 truncate rounded-md text-left text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)] hover:text-[var(--app-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
-                        onClick={handleStartSidebarSwarmNameEdit}
-                        aria-label="Edit swarm name"
-                        title="Click to rename swarm"
+                        onClick={sidebarDisplayMode === 'compact' ? () => setSidebarDisplayMode('full') : handleStartSidebarSwarmNameEdit}
+                        aria-label={sidebarDisplayMode === 'compact' ? 'Expand sidebar to full mode' : 'Edit swarm name'}
+                        title={sidebarDisplayMode === 'compact' ? 'Full sidebar' : 'Click to rename swarm'}
                       >
                         {swarmName}
                       </button>
@@ -4188,11 +4210,11 @@ export function DesktopAppPage() {
                     <button
                       type="button"
                       className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-text-subtle)]')}
-                      onClick={() => setSidebarCollapsed(true)}
-                      aria-label="Collapse sidebar"
-                      title="Collapse"
+                      onClick={() => setSidebarDisplayMode(sidebarDisplayMode === 'full' ? 'compact' : 'thin')}
+                      aria-label={sidebarDisplayMode === 'full' ? 'Compact sidebar' : 'Use thin sidebar'}
+                      title={sidebarDisplayMode === 'full' ? 'Compact' : 'Thin'}
                     >
-                      <ChevronLeft size={14} strokeWidth={1.8} className="shrink-0" />
+                      {sidebarDisplayMode === 'full' ? <ChevronLeft size={14} strokeWidth={1.8} className="shrink-0" /> : <ChevronRight size={14} strokeWidth={1.8} className="shrink-0 rotate-180" />}
                     </button>
                   </SidebarActionRail>
                 </div>
@@ -4413,7 +4435,14 @@ export function DesktopAppPage() {
       onTouchEnd={handleMobileSidebarTouchEnd}
       onTouchCancel={handleMobileSidebarTouchEnd}
     >
-      <aside data-testid="desktop-workspace-sidebar" className={cn('hidden shrink-0 flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] sm:flex', sidebarCollapsed ? 'sm:w-[56px]' : 'sm:w-[320px]')}>
+      <aside
+        data-testid="desktop-workspace-sidebar"
+        data-sidebar-display-mode={sidebarDisplayMode}
+        className={cn(
+          'hidden shrink-0 flex-col overflow-hidden border-r border-[var(--app-border)] bg-[var(--app-surface)] transition-[width] sm:flex',
+          sidebarDisplayMode === 'thin' ? 'sm:w-[56px]' : sidebarDisplayMode === 'compact' ? 'sm:w-[240px]' : 'sm:w-[320px]',
+        )}
+      >
         {sidebarContent}
       </aside>
       {mobileSidebarOpen ? (
@@ -4485,6 +4514,14 @@ export function DesktopAppPage() {
               })
             })() : []}
             onOpenChats={() => setMobileSidebarOpen(true)}
+            onOpenChildSession={(sessionId, workspacePath) => {
+              const workspaceSlug = workspacePath
+                ? workspaceSlugByPath.get(workspacePath) ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: 'Workspace' })
+                : routeWorkspaceSlug
+              if (!workspaceSlug) return
+              void selectAndHydrateDesktopV3Session(sessionId)
+              void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId } })
+            }}
             sessionActions={activeRouteSessionActions}
             onCompactingChange={handleCompactingSessionChange}
             onArchivePlanSession={handleArchivePlanSession}

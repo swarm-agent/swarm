@@ -70,6 +70,38 @@ export const DESKTOP_V3_INITIAL_HYDRATE_DEFAULT_RESOURCES: SyncResources = {
   permission_summaries: false,
 }
 
+export const DESKTOP_V3_CHILD_CARD_HYDRATE_RESOURCES: SyncResources = {
+  messages: false,
+  events: false,
+  run_intents: false,
+  current_run_state: true,
+  session_view: true,
+  active_plan: false,
+  plan_revisions: false,
+  permission_summaries: false,
+}
+
+export function buildDesktopV3ChildCardHydrateInput(
+  rawSessionIds: string[],
+  options: { activePlan?: boolean; permissionSummary?: boolean } = {},
+): DesktopV3HydrateInput {
+  const sessionIds = [...new Set(rawSessionIds.map((sessionId) => sessionId.trim()).filter(Boolean))]
+  if (sessionIds.length === 0) {
+    throw new Error('Desktop V3 child-card hydrate requires at least one session_id')
+  }
+  return {
+    surface: 'desktop',
+    session_ids: sessionIds,
+    history: { mode: 'none' },
+    resources: {
+      ...DESKTOP_V3_CHILD_CARD_HYDRATE_RESOURCES,
+      active_plan: options.activePlan === true,
+      permission_summaries: options.permissionSummary === true,
+    },
+    include_active: true,
+  }
+}
+
 export function buildDesktopV3SelectedSessionHydrateInput(sessionId: string): DesktopV3HydrateInput {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) {

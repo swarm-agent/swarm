@@ -1,4 +1,7 @@
 import { memo, type ReactNode } from "react";
+import type { TaskChildCardActions, TaskToolRow } from "../types/chat";
+import type { DesktopV3TaskChildViewModel } from "../../state/desktop-v3-cache-selectors";
+import { DesktopPlanSubagentList } from "./desktop-plan-subagent-list";
 import { ChevronDown } from "lucide-react";
 import { cn } from "../../../../lib/cn";
 import { Button } from "../../../../components/ui/button";
@@ -32,6 +35,9 @@ export interface DesktopPlanExecutionSidebarProps {
   belowActions?: ReactNode;
   onNewAutoChat?: () => void;
   onOpenPlanAgent?: () => void;
+  displayMode?: "full" | "compact" | "thin";
+  taskChildren?: Array<{ row: TaskToolRow; view: DesktopV3TaskChildViewModel | null }>;
+  taskChildActions?: TaskChildCardActions;
 }
 
 type Tone = "muted" | "primary" | "success" | "warning" | "danger";
@@ -338,6 +344,7 @@ function ActiveCheckpointSection({
   totalCount,
   activeIndex,
   onOpenPlan,
+  compact = false,
 }: {
   view: DesktopPlanExecutionView;
   checkpoints: DesktopSessionPlanCheckpoint[];
@@ -345,6 +352,7 @@ function ActiveCheckpointSection({
   totalCount: number;
   activeIndex: number;
   onOpenPlan?: () => void;
+  compact?: boolean;
 }) {
   const checkpoint = view.activeCheckpoint;
   const activePosition = activeIndex >= 0 ? activeIndex : -1;
@@ -428,7 +436,7 @@ function ActiveCheckpointSection({
         )}
       </div>
 
-      <CheckpointDetails checkpoint={checkpoint} />
+      {!compact ? <CheckpointDetails checkpoint={checkpoint} /> : null}
 
       <Button
         type="button"
@@ -757,10 +765,15 @@ export const DesktopPlanExecutionSidebar = memo(
     onStop: _onStop,
     onEditPlan,
     belowActions,
+    displayMode = "full",
+    taskChildren = [],
+    taskChildActions,
   }: DesktopPlanExecutionSidebarProps) {
     const document = view?.plan.document ?? null;
     if (!view || !document) return null;
 
+    const thin = displayMode === "thin";
+    const compact = displayMode !== "full";
     const checkpoints = document.checkpoints;
     const completedCount = checkpoints.filter(
       (checkpoint) => checkpoint.status.toLowerCase() === "completed",
@@ -776,9 +789,13 @@ export const DesktopPlanExecutionSidebar = memo(
       <aside
         className={embedded
           ? "min-h-0 min-w-0 w-full overflow-visible bg-[var(--app-surface)]"
-          : "hidden min-h-0 min-w-0 w-[360px] max-w-[360px] overflow-hidden border-l border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4 min-[1300px]:flex min-[1300px]:flex-col"}
+          : cn(
+              "hidden min-h-0 min-w-0 overflow-hidden border-l border-[var(--app-border)] bg-[var(--app-surface)] min-[1300px]:flex min-[1300px]:flex-col",
+              thin ? "w-[56px] max-w-[56px] px-2 py-3" : compact ? "w-[280px] max-w-[280px] px-3 py-4" : "w-[360px] max-w-[360px] px-5 py-4",
+            )}
         aria-label="Plan execution sidebar"
         data-testid="desktop-plan-execution-sidebar"
+        data-display-mode={displayMode}
       >
         <div
           className={cn(
@@ -790,10 +807,19 @@ export const DesktopPlanExecutionSidebar = memo(
         >
           {!embedded ? (
             <header className="shrink-0 border-b border-[var(--app-border)] pb-3">
-              <div className="text-sm font-semibold text-[var(--app-text)]">Plan</div>
+              <div className={cn("font-semibold text-[var(--app-text)]", thin ? "text-center text-xs" : "text-sm")} title="Plan execution">
+                {thin ? "P" : "Plan"}
+              </div>
             </header>
           ) : null}
-          <div
+          {thin ? (
+            <div className="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto py-1" data-plan-thin-rail>
+              <button type="button" onClick={onEditPlan} disabled={!onEditPlan} className="grid min-h-11 place-items-center rounded-lg border border-[var(--app-border)] text-xs font-semibold text-[var(--app-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" title={`${statusLabel(view, view.activeCheckpoint)} · ${completedCount}/${totalCount} checkpoints`} aria-label={`Open full plan. ${statusLabel(view, view.activeCheckpoint)}. ${completedCount} of ${totalCount} checkpoints complete.`}>
+                {completedCount}/{totalCount}
+              </button>
+              {taskChildren.length > 0 ? <DesktopPlanSubagentList children={taskChildren} actions={taskChildActions} mode="thin" /> : null}
+            </div>
+          ) : <div
             className={cn(
               "grid content-start gap-4",
               !embedded && "shrink-0",
@@ -807,7 +833,9 @@ export const DesktopPlanExecutionSidebar = memo(
               totalCount={totalCount}
               activeIndex={activeIndex}
               onOpenPlan={onEditPlan}
+              compact={compact}
             />
+            {taskChildren.length > 0 ? <DesktopPlanSubagentList children={taskChildren} actions={taskChildActions} mode={compact ? "compact" : "full"} /> : null}
             <ActionsSection
               view={view}
               busyAction={busyAction}
@@ -815,8 +843,8 @@ export const DesktopPlanExecutionSidebar = memo(
               onAction={onAction}
               onEditPlan={onEditPlan}
             />
-          </div>
-          {belowActions ? (
+          </div>}
+          {!thin && belowActions ? (
             <div
               className={cn(
                 "border-t border-[var(--app-border)] pt-4",
