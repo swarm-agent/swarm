@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode, ChangeEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
@@ -1564,6 +1564,8 @@ interface SessionAgentSummary {
   running: number
 }
 
+const EMPTY_SESSION_AGENT_SUMMARY: SessionAgentSummary = { total: 0, running: 0 }
+
 function summarizeSubagentDescendants(node: SidebarSessionNode): SessionAgentSummary {
   let total = 0
   let running = 0
@@ -1678,8 +1680,10 @@ interface SessionRowProps {
   compactingStartedAt?: number | null
   pendingAction?: 'pin' | 'archive' | 'rename' | null
   selectionMode?: boolean
+  selectionGroup?: SidebarSessionGroupID
   selected?: boolean
   onSelect: (sessionId: string) => void | boolean
+  onEnterSelectionMode?: (group: SidebarSessionGroupID) => void
   onToggleSelected?: (sessionId: string, range: boolean) => void
   onPrefetch: (sessionId: string) => void
   onToggleAgents: (sessionId: string) => void
@@ -1688,7 +1692,7 @@ interface SessionRowProps {
   onRename: (sessionId: string, title: string) => Promise<void>
 }
 
-function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childAssignmentLabel = null, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selected = false, onSelect, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
+const SessionRow = memo(function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childAssignmentLabel = null, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
   const session = initialSession
   const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
   const activeSession = compactingActive || sessionIsActive(session)
@@ -1975,7 +1979,12 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
                   checked={selected}
                   aria-label={`Select ${rowTitle}`}
                   onChange={() => undefined}
-                  onClick={(event) => { event.preventDefault(); event.stopPropagation(); onToggleSelected?.(session.id, event.shiftKey) }}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    if (!selectionMode && selectionGroup) onEnterSelectionMode?.(selectionGroup)
+                    onToggleSelected?.(session.id, event.shiftKey)
+                  }}
                   className={cn(
                     'h-4 shrink-0 accent-[var(--app-primary)] transition-[width,opacity]',
                     sidebarCheckboxVisibilityClass(selectionMode, checkboxRevealSuppressed),
@@ -2082,7 +2091,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       ) : null}
     </Link>
   )
-}
+})
 
 interface RenderSidebarSessionGroupsInput {
   nodes: SidebarSessionNode[]
@@ -2092,6 +2101,7 @@ interface RenderSidebarSessionGroupsInput {
   routeOptions: DesktopChatRoute[]
   workspaceSlug: string | ((session: DesktopSessionRecord) => string)
   expandedAgentSessions: Record<string, boolean>
+  agentSummaries: Map<string, SessionAgentSummary>
   compactingSession: DesktopV3CompactingSessionState | null
   pendingActions: Record<string, 'pin' | 'archive' | 'rename' | undefined>
   selectionMode: boolean
@@ -2127,6 +2137,10 @@ export function sidebarShouldRenderSelectionToolbar(
   group: SidebarSessionGroupID,
 ): boolean {
   return selectionMode && masterGroup === group
+}
+
+export function sidebarShouldShowReviewAction(group: SidebarSessionGroupID, selectionMode: boolean): boolean {
+  return group === 'needs_review' && !selectionMode
 }
 
 export function sidebarShouldClearSelectionForSessionChange(currentSessionId: string, nextSessionId: string): boolean {
@@ -2171,8 +2185,8 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
       <section key={group.id} className="group/section grid content-start gap-1.5">
         <div className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
           <span>{group.label}</span>
-          {group.id === 'needs_review' ? <button type="button" className="rounded border border-[var(--app-border)] px-1.5 py-0.5 normal-case tracking-normal" aria-expanded={input.reviewCleanupOpen} onClick={input.onToggleReviewCleanup}>Review</button> : null}
-          <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
+          <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${group.id === 'needs_review' || input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
+            {sidebarShouldShowReviewAction(group.id, input.selectionMode) ? <button type="button" className="rounded border border-[var(--app-border)] px-1.5 py-0.5 normal-case tracking-normal" aria-expanded={input.reviewCleanupOpen} onClick={input.onToggleReviewCleanup}>Review</button> : null}
             {group.showInactiveThreshold ? (
               <label className="flex items-center gap-1 font-normal">
                 <span>Show last</span>
@@ -2210,17 +2224,16 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
             childLabel={node.label}
             childAssignmentLabel={node.assignmentLabel}
             childKind={node.kind}
-            agentSummary={summarizeSubagentDescendants(node)}
+            agentSummary={input.agentSummaries.get(node.session.id) ?? EMPTY_SESSION_AGENT_SUMMARY}
             agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
             compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
             pendingAction={input.pendingActions[node.session.id] ?? null}
             selectionMode={input.selectionMode}
+            selectionGroup={group.id}
             selected={input.selectedRootIDs.has(node.session.id)}
             onSelect={input.onSelect}
-            onToggleSelected={(sessionId, range) => {
-              if (!input.selectionMode) input.onEnterSelectionMode(group.id)
-              input.onToggleSelected(sessionId, range)
-            }}
+            onEnterSelectionMode={input.onEnterSelectionMode}
+            onToggleSelected={input.onToggleSelected}
             onPrefetch={input.onPrefetch}
             onToggleAgents={input.onToggleAgents}
             onTogglePinned={input.onTogglePinned}
@@ -2297,7 +2310,7 @@ export function DesktopAppPage() {
   const [sidebarSelectionMode, setSidebarSelectionMode] = useState(false)
   const [sidebarMasterSelectionGroup, setSidebarMasterSelectionGroup] = useState<SidebarSessionGroupID | null>(null)
   const [selectedSidebarRootIDs, setSelectedSidebarRootIDs] = useState<Set<string>>(() => new Set())
-  const [lastSelectedSidebarRootID, setLastSelectedSidebarRootID] = useState<string | null>(null)
+  const lastSelectedSidebarRootIDRef = useRef<string | null>(null)
   const [bulkArchivePending, setBulkArchivePending] = useState(false)
   const [needsReviewCleanupOpen, setNeedsReviewCleanupOpen] = useState(false)
   const [sidebarThresholdSaving, setSidebarThresholdSaving] = useState(false)
@@ -2777,6 +2790,10 @@ export function DesktopAppPage() {
     () => sidebarRootIDsForSelectionGroup(filteredSidebarTrees.nodes, null),
     [filteredSidebarTrees.nodes],
   )
+  const sidebarAgentSummaries = useMemo(
+    () => new Map(globalFlattenedSessionNodes.map((node) => [node.session.id, summarizeSubagentDescendants(node)] as const)),
+    [globalFlattenedSessionNodes],
+  )
 
   const sessionById = useMemo<Map<string, DesktopSessionRecord>>(
     () => new Map(desktopStateSessions.map((session) => [session.id, session] as const)),
@@ -2934,7 +2951,7 @@ export function DesktopAppPage() {
     setSelectedSidebarRootIDs(new Set())
     setSidebarSelectionMode(false)
     setSidebarMasterSelectionGroup(null)
-    setLastSelectedSidebarRootID(null)
+    lastSelectedSidebarRootIDRef.current = null
   }, [])
 
   const handleOpenSearchResult = useCallback((item: DesktopSessionSearchItem) => {
@@ -3141,6 +3158,7 @@ export function DesktopAppPage() {
     if (!normalized) return
     setSelectedSidebarRootIDs((current) => {
       const next = new Set(current)
+      const lastSelectedSidebarRootID = lastSelectedSidebarRootIDRef.current
       if (range && lastSelectedSidebarRootID) {
         const start = visibleSidebarRootIDs.indexOf(lastSelectedSidebarRootID)
         const end = visibleSidebarRootIDs.indexOf(normalized)
@@ -3149,8 +3167,8 @@ export function DesktopAppPage() {
       else next.add(normalized)
       return next
     })
-    setLastSelectedSidebarRootID(normalized)
-  }, [lastSelectedSidebarRootID, visibleSidebarRootIDs])
+    lastSelectedSidebarRootIDRef.current = normalized
+  }, [visibleSidebarRootIDs])
 
   const handleBulkArchiveSidebar = useCallback(async () => {
     const roots = globalSidebarSessionNodes.filter((node) => selectedSidebarRootIDs.has(node.session.id))
@@ -3164,7 +3182,7 @@ export function DesktopAppPage() {
       setSelectedSidebarRootIDs(new Set())
       setSidebarSelectionMode(false)
       setSidebarMasterSelectionGroup(null)
-      setLastSelectedSidebarRootID(null)
+      lastSelectedSidebarRootIDRef.current = null
       setMobileSidebarOpen(false)
       if (selectedRouteArchived) handleArchivePlanSession(routeSessionId)
     } catch (error) {
@@ -3903,6 +3921,7 @@ export function DesktopAppPage() {
           routeOptions: globalSessionRouteOptions,
           workspaceSlug: globalSessionWorkspaceSlug,
           expandedAgentSessions,
+          agentSummaries: sidebarAgentSummaries,
           compactingSession,
           pendingActions: sidebarSessionActions,
           selectionMode: sidebarSelectionMode,
@@ -4313,6 +4332,7 @@ export function DesktopAppPage() {
                     routeOptions: globalSessionRouteOptions,
                     workspaceSlug: globalSessionWorkspaceSlug,
                     expandedAgentSessions,
+                    agentSummaries: sidebarAgentSummaries,
                     compactingSession,
                     pendingActions: sidebarSessionActions,
                     selectionMode: sidebarSelectionMode,

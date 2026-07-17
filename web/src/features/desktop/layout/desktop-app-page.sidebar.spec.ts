@@ -22,6 +22,7 @@ import {
   sidebarShouldClearSelectionForSessionChange,
   sidebarShouldReleaseCheckboxRevealSuppression,
   sidebarShouldRenderSelectionToolbar,
+  sidebarShouldShowReviewAction,
 } from './desktop-app-page'
 
 test('sidebar workspace context shows the Git branch before the workspace name', () => {
@@ -446,6 +447,12 @@ test('sidebar selection toolbar renders only in the master group', () => {
   assert.equal(sidebarShouldRenderSelectionToolbar(true, 'needs_review', 'active_chats'), false)
   assert.equal(sidebarShouldRenderSelectionToolbar(false, 'needs_review', 'needs_review'), false)
   assert.equal(sidebarShouldRenderSelectionToolbar(true, null, 'needs_review'), false)
+})
+
+test('sidebar review action is limited to Needs Review outside archive selection mode', () => {
+  assert.equal(sidebarShouldShowReviewAction('needs_review', false), true)
+  assert.equal(sidebarShouldShowReviewAction('needs_review', true), false)
+  assert.equal(sidebarShouldShowReviewAction('active_chats', false), false)
 })
 
 test('sidebar renders contextual controls for active groups without an Archived section', () => {
