@@ -2448,10 +2448,11 @@ export function DesktopV3ExistingConversationPane({
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
             <div
               ref={scrollContainerRef}
-              className="h-full min-h-0 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable]"
+              className="h-full min-h-0 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable_both-edges]"
               data-testid="desktop-chat-scroller"
               tabIndex={0}
             >
+              {/* Match the composer's 70rem frame, then double its 16/24px frame padding so both message edges sit exactly 16/24px inside the outlined composer. */}
               <div
                 ref={contentRef}
                 className="mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 px-8 [&>*:not(:last-child)]:[overflow-anchor:none] sm:px-12"
@@ -2853,7 +2854,7 @@ function DesktopV3UserMessage({
   pendingLabel?: string;
 }) {
   return (
-    <div className="flex translate-x-[15px] justify-end pr-0">
+    <div className="flex justify-end">
       <div className="max-w-[70%] rounded-xl bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)] shadow-sm">
         <div className="whitespace-pre-wrap break-words">{content}</div>
         {pendingLabel ? (
@@ -2908,7 +2909,7 @@ function DesktopV3AssistantMessage({
   role: string;
 }) {
   return (
-    <div className="flex translate-x-[5px] justify-start">
+    <div className="flex justify-start">
       <div className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)]">
         {role === "reasoning" ? (
           <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
