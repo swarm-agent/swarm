@@ -2719,11 +2719,11 @@ function DesktopV3PlanExecutionBreak({
 
   return (
     <div
-      className="flex justify-start py-1"
+      className="flex w-full min-w-0 justify-start py-1"
       data-testid="desktop-v3-plan-execution-break"
       data-plan-transition-tone={item.tone}
     >
-      <div className="min-w-0 max-w-[min(100%,44rem)] rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
+      <div className="w-full min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
         <div className="flex min-w-0 items-start gap-2.5">
           <span className={cn("mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md", planTransitionToneClass(item.tone))}>
             <CircleDot size={13} />
@@ -2803,8 +2803,8 @@ function DesktopV3PlanHandoff({
   testId: string;
 }) {
   return (
-    <div className="flex justify-start py-1" data-testid={testId}>
-      <div className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)] opacity-90">
+    <div className="flex w-full min-w-0 justify-start py-1" data-testid={testId}>
+      <div className="w-full min-w-0 text-sm leading-6 text-[var(--app-text)] opacity-90">
         <div className="mb-1 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
           {icon}
           {item.headline}
@@ -2812,7 +2812,7 @@ function DesktopV3PlanHandoff({
         {item.summary ? (
           <section
             aria-label="At a glance"
-            className="mb-3 rounded-xl border border-[var(--app-border-active)] bg-[var(--app-surface-subtle)] px-3 py-2.5"
+            className="mb-3 w-full min-w-0 rounded-xl border border-[var(--app-border-active)] bg-[var(--app-surface-subtle)] px-3 py-2.5"
             data-testid={`${testId}-summary`}
           >
             <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-primary)]">
@@ -2969,7 +2969,7 @@ function DesktopV3ToolMessage({
   thinkingTagsEnabled?: boolean;
 }) {
   const toolName = toolMessage?.tool.trim().toLowerCase();
-  const usesFullWidthCard = toolName === "bash" || toolName === "task" || ["read", "list", "search", "edit"].includes(toolName ?? "");
+  const usesFullWidthCard = toolName === "bash" || toolName === "task" || ["read", "list", "search", "edit", "plan-manage", "plan_manage"].includes(toolName ?? "");
   return (
     <div
       className={cn(

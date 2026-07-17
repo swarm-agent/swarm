@@ -1191,8 +1191,8 @@ function PlanManageToolView({ toolMessage }: { toolMessage: StructuredToolMessag
         : "text-[var(--app-text-subtle)]";
 
   return (
-    <div className="mb-2 min-w-0 py-1.5" data-plan-tool-transition data-plan-transition-tone={tone}>
-      <div className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
+    <div className="mb-2 w-full min-w-0 py-1.5" data-plan-tool-transition data-plan-transition-tone={tone}>
+      <div className="w-full min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
         <div className="flex min-w-0 items-center gap-2.5">
           <span className={cn("grid h-6 w-6 shrink-0 place-items-center rounded-md", toneClasses)}>
             <CircleDot size={13} />
