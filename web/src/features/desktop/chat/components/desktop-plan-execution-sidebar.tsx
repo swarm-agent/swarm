@@ -776,7 +776,7 @@ export const DesktopPlanExecutionSidebar = memo(
       <aside
         className={embedded
           ? "min-h-0 min-w-0 w-full overflow-visible bg-[var(--app-surface)]"
-          : "hidden min-h-0 min-w-0 w-[360px] max-w-[360px] overflow-hidden border-l border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4 xl:flex xl:flex-col"}
+          : "hidden min-h-0 min-w-0 w-[360px] max-w-[360px] overflow-hidden border-l border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4 min-[1300px]:flex min-[1300px]:flex-col"}
         aria-label="Plan execution sidebar"
         data-testid="desktop-plan-execution-sidebar"
       >

@@ -14,6 +14,7 @@ import {
   ArrowDown,
   ArrowRight,
   CheckCircle2,
+  ChevronDown,
   CircleAlert,
   CircleDot,
   Loader2,
@@ -1707,7 +1708,6 @@ export function DesktopV3ExistingConversationPane({
     !hasMessages &&
     !hasStoredOperation;
   const showPlanExecutionSidebar = Boolean(planExecutionView?.plan.document);
-  const showPlanSidebar = showPlanExecutionSidebar || Boolean(pendingPlanDocument);
   const {
     scrollContainerRef,
     contentRef,
@@ -2463,7 +2463,11 @@ export function DesktopV3ExistingConversationPane({
       <div
         className={cn(
           "grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden",
-          showPlanSidebar ? "xl:grid-cols-[minmax(0,1fr)_360px]" : "",
+          pendingPlanDocument
+            ? "xl:grid-cols-[minmax(0,1fr)_360px]"
+            : showPlanExecutionSidebar
+              ? "min-[1300px]:grid-cols-[minmax(0,1fr)_360px]"
+              : "",
         )}
       >
         <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
@@ -2547,6 +2551,48 @@ export function DesktopV3ExistingConversationPane({
               </button>
             ) : null}
           </div>
+
+          {!pendingPlanDocument && showPlanExecutionSidebar && planExecutionView ? (
+            <div
+              className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] min-[1300px]:hidden"
+              data-testid="desktop-plan-execution-composer-region"
+            >
+              <details className="group mx-auto w-full max-w-[70rem] px-4 sm:px-6">
+                <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--app-primary)] [&::-webkit-details-marker]:hidden">
+                  <span className="flex min-w-0 flex-1 items-center gap-2.5">
+                    <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+                      Plan
+                    </span>
+                    <span className="min-w-0 truncate text-xs font-medium text-[var(--app-text)]">
+                      {planExecutionView.activeCheckpoint?.title || planExecutionView.plan.title || "Plan execution"}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-primary)]">
+                    {planExecutionView.policyMode === "automatic" ? "Automatic" : "Review each"}
+                  </span>
+                  <span className="hidden shrink-0 text-[10px] font-medium capitalize text-[var(--app-text-muted)] sm:inline">
+                    {(planExecutionView.activeCheckpoint?.status || planExecutionView.status || "ready").replace(/_/g, " ")}
+                  </span>
+                  <ChevronDown
+                    aria-hidden="true"
+                    className="size-4 shrink-0 text-[var(--app-text-muted)] transition-transform group-open:rotate-180"
+                  />
+                </summary>
+                <div className="max-h-[min(46vh,30rem)] overflow-y-auto border-t border-[var(--app-border)] py-4">
+                  <DesktopPlanExecutionSidebar
+                    view={planExecutionView}
+                    embedded
+                    busyAction={planExecutionBusyAction}
+                    canStop={Boolean(currentRun)}
+                    onAction={stablePlanExecutionAction}
+                    onStop={stableStop}
+                    onEditPlan={stableOpenPlan}
+                    belowActions={planSidebarBelowActions}
+                  />
+                </div>
+              </details>
+            </div>
+          ) : null}
 
           <DesktopV3AgenticComposer
             draft={draft}
