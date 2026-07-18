@@ -531,6 +531,7 @@ function testSearchToolPreservesContentMatchText(): void {
           path: 'web/src/features/desktop/chat/components/chat-markdown.tsx',
           query: 'SearchToolView',
           line: 307,
+          column: 12,
           text: 'function SearchToolView({ toolMessage }: { toolMessage: StructuredToolMessage }) {',
         },
       ],
@@ -540,6 +541,7 @@ function testSearchToolPreservesContentMatchText(): void {
   assert(Boolean(message), 'expected structured search tool message')
   const match = message?.searchData?.files[0]?.queryGroups[0]?.matches[0]
   assert(match?.line === 307, `unexpected search match line: ${match?.line}`)
+  assert(match?.column === 12, `unexpected search match column: ${match?.column}`)
   assert(
     match?.text.includes('function SearchToolView') === true,
     `missing search match text: ${match?.text}`,
@@ -548,6 +550,34 @@ function testSearchToolPreservesContentMatchText(): void {
     message?.previewLines.length === 0,
     `search tool should use rich search data, got preview lines: ${message?.previewLines.join(' | ')}`,
   )
+}
+
+function testSearchToolParsesCompactGroupedResults(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'search',
+    callId: 'call_search_compact',
+    outputText: JSON.stringify({
+      tool: 'search',
+      search_mode: 'content',
+      path: 'web/src',
+      count: 2,
+      total_matched: 4,
+      query_results: [{ query: 'SearchToolView' }, { query: 'ManageSessionsCard' }],
+      results: [{
+        path: 'features/desktop/chat/components/chat-markdown.tsx',
+        items: [
+          { query: 'SearchToolView', line: 1204, column: 9, text: 'function SearchToolView() {' },
+          { query: 'ManageSessionsCard', line: 1077, column: 9, text: 'function ManageSessionsCard() {' },
+        ],
+      }],
+    }),
+  })
+
+  assert(Boolean(message), 'expected compact grouped search tool message')
+  assert(message?.searchData?.queryCount === 2, `unexpected compact search query count: ${message?.searchData?.queryCount}`)
+  assert(message?.searchData?.files.length === 1, `unexpected compact search file count: ${message?.searchData?.files.length}`)
+  assert(message?.searchData?.files[0]?.matchCount === 2, `unexpected compact search match count: ${message?.searchData?.files[0]?.matchCount}`)
+  assert(message?.searchData?.files[0]?.queryGroups[1]?.matches[0]?.line === 1077, 'expected grouped line metadata')
 }
 
 function testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads(): void {
@@ -916,6 +946,7 @@ function main(): void {
   testBashToolMessageShowsCommandAsMetadata();
   testBashToolMessagePreservesFullOutput();
   testSearchToolPreservesContentMatchText();
+  testSearchToolParsesCompactGroupedResults();
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
   testTaskRowsParseCanonicalStreamContractFields();
   testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload();

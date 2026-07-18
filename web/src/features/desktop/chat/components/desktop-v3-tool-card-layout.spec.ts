@@ -13,3 +13,10 @@ test('file action cards span the transcript and grouped actions stack vertically
   assert.match(markdownSource, /<div className="flex min-w-0 flex-col gap-2">/)
   assert.doesNotMatch(markdownSource, /grid min-w-0 grid-cols-1 gap-2 md:grid-cols-2/)
 })
+
+test('expanded tool result bodies stay within half the viewport and scroll internally', () => {
+  assert.match(markdownSource, /BASH_EXPANDED_MAX_HEIGHT = "50vh"/)
+  assert.match(markdownSource, /TOOL_RESULT_BODY_CLASS = "max-h-\[50vh\] min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain"/)
+  assert.match(markdownSource, /<div className=\{TOOL_RESULT_BODY_CLASS\}>/)
+  assert.match(markdownSource, /cn\(TOOL_RESULT_BODY_CLASS, "mt-2 grid gap-2 font-mono pr-1"\)/)
+})

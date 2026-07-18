@@ -51,7 +51,8 @@ function formatDuration(ms: number): string {
 const BASH_COLLAPSED_MIN_HEIGHT = 180;
 const BASH_COLLAPSED_MAX_HEIGHT = 420;
 const BASH_COLLAPSED_FALLBACK_HEIGHT = 320;
-const BASH_EXPANDED_MAX_HEIGHT = "min(72vh, 48rem)";
+const BASH_EXPANDED_MAX_HEIGHT = "50vh";
+export const TOOL_RESULT_BODY_CLASS = "max-h-[50vh] min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain";
 
 function joinBashOutputParts(parts: string[]): string {
   let out = "";
@@ -255,7 +256,7 @@ function BashToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToo
         {output ? (
           <div
             ref={outputRef}
-            className="min-w-0 overflow-auto overscroll-contain bg-[var(--app-code-bg)] text-[12px] leading-5 text-[var(--app-code-text)]"
+            className="min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain bg-[var(--app-code-bg)] text-[12px] leading-5 text-[var(--app-code-text)]"
             style={{ maxHeight: outputMaxHeight }}
             onScroll={handleOutputScroll}
           >
@@ -302,7 +303,7 @@ function EditDiffView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
         <span className="ml-auto font-mono font-semibold text-[var(--app-danger)]">−{removedCount}</span>
         <span className="font-mono font-semibold text-[var(--app-success)]">+{addedCount}</span>
       </div>
-      <div className="max-h-[28rem] overflow-auto py-1">
+      <div className={cn(TOOL_RESULT_BODY_CLASS, "py-1")}>
         {hunks.map((hunk, hunkIndex) => (
           <div key={`hunk-${hunk.index}-${hunkIndex}`} className={cn(hunkIndex > 0 && "border-t border-[var(--app-border)] pt-1")}>
             {showHunkLabels ? (
@@ -356,8 +357,8 @@ function PreviewLinesView({
 
   return (
     <div className={compact
-      ? "mt-1 min-w-0 py-0.5 font-mono text-[11px] leading-[18px] text-[var(--app-text-muted)]"
-      : "mt-2 min-w-0 space-y-1.5"}
+      ? cn(TOOL_RESULT_BODY_CLASS, "mt-1 py-0.5 font-mono text-[11px] leading-[18px] text-[var(--app-text-muted)]")
+      : cn(TOOL_RESULT_BODY_CLASS, "mt-2 space-y-1.5")}
     >
       {commandText ? (
         <div className="mb-1.5 min-w-0 rounded-md bg-[var(--app-surface)] px-2 py-1 text-[11px] leading-5 text-[var(--app-text)]">
@@ -782,7 +783,7 @@ function TaskSwarmRowsView({ rows }: { rows: TaskToolRow[] }) {
   return (
     <div className="mt-2 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm">
       <TaskRowsHeader counts={counts} swarm />
-      <div className="grid min-w-0 grid-cols-1 gap-1.5 p-2 md:grid-cols-2 xl:grid-cols-3">
+      <div className={cn(TOOL_RESULT_BODY_CLASS, "grid grid-cols-1 gap-1.5 p-2 md:grid-cols-2 xl:grid-cols-3")}>
         {rows.map((row, index) => (
           <MemoizedTaskSwarmCompactRow
             key={taskRowKey(row, index)}
@@ -809,7 +810,7 @@ function TaskAgentRowsView({ rows }: { rows: TaskToolRow[] }) {
         <div className="min-w-0">Current</div>
         <div className="min-w-0 text-right">Time</div>
       </div>
-      <div className="min-w-0">
+      <div className={TOOL_RESULT_BODY_CLASS}>
         {rows.map((row, index) => (
           <MemoizedTaskAgentListRow
             key={taskRowKey(row, index)}
@@ -851,38 +852,45 @@ function SearchSummaryLine({
   const summary = parts.length > 0 ? parts.join(" · ") : "no matches";
 
   return (
-    <div className="mt-1 text-[11px] leading-5 text-[var(--app-text-subtle)]">
-      {summary}
-      {data.path ? <span className="hidden sm:inline"> · {data.path}</span> : null}
+    <div className="mt-1 flex min-w-0 items-baseline gap-1 text-[11px] leading-5 text-[var(--app-text-subtle)]">
+      <span className="shrink-0">{summary}</span>
+      {data.path ? <span className="min-w-0 truncate" title={data.path}> · {data.path}</span> : null}
     </div>
   );
 }
 
+function compactSearchPreview(value: string, maxLength = 240): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length > maxLength ? `${compact.slice(0, maxLength - 1)}…` : compact;
+}
+
 function SearchLineList({ group }: { group: SearchToolLineGroup }) {
   const displayMatches = group.matches.length > 0;
-  const items = displayMatches ? group.matches : group.lines.map((line) => ({ line, text: "" }));
+  const items = displayMatches ? group.matches : group.lines.map((line) => ({ line, column: 0, text: "" }));
 
   return (
-    <div className="mt-2 min-w-0 text-[12px] leading-5 text-[var(--app-text-muted)]">
-      <div className="mb-1 font-sans text-[11px] font-medium text-[var(--app-text-subtle)]">
-        {group.query || "match"}
-      </div>
+    <div className="min-w-0 text-[11px] leading-4 text-[var(--app-text-muted)]">
+      {group.query ? (
+        <div className="mb-1 truncate font-sans text-[10px] font-medium text-[var(--app-text-subtle)]" title={group.query}>
+          {group.query}
+        </div>
+      ) : null}
       {items.length > 0 ? (
-        <div className="space-y-1">
-          {items.map((item, index) => (
-            <div key={`${item.line}:${index}`} className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-2">
-              {item.line > 0 ? (
-                <span className="select-none font-mono text-[11px] text-[var(--app-text-subtle)]">
-                  {item.line}
+        <div className="divide-y divide-[var(--app-border)] overflow-hidden rounded-md border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_72%,transparent)]">
+          {items.map((item, index) => {
+            const location = item.line > 0 ? `${item.line}${item.column > 0 ? `:${item.column}` : ""}` : "";
+            const preview = compactSearchPreview(item.text || (item.line > 0 ? "line match" : "file match"));
+            return (
+              <div key={`${item.line}:${item.column}:${index}`} className="grid min-w-0 grid-cols-[3.75rem_minmax(0,1fr)] gap-2 px-2 py-1">
+                <span className="select-none text-right font-mono text-[10px] tabular-nums text-[var(--app-text-subtle)]">
+                  {location}
                 </span>
-              ) : (
-                <span />
-              )}
-              <span className="min-w-0 whitespace-pre-wrap break-words font-mono text-[var(--app-text-muted)] [overflow-wrap:anywhere]">
-                <ToolSyntaxLine text={item.text || (item.line > 0 ? "line match" : "file match")} language={inferToolSyntaxLanguage(group.query)} />
-              </span>
-            </div>
-          ))}
+                <span className="line-clamp-2 min-w-0 break-all font-mono text-[var(--app-text-muted)]" title={preview}>
+                  <ToolSyntaxLine text={preview} language={inferToolSyntaxLanguage(group.query)} />
+                </span>
+              </div>
+            );
+          })}
         </div>
       ) : (
         <div className="font-mono text-[var(--app-text-subtle)]">file match</div>
@@ -899,14 +907,18 @@ function SearchFileSection({
   mode: string;
 }) {
   return (
-    <div className="min-w-0 border-t border-[var(--app-border)] px-3 py-2.5 first:border-t-0">
-      <FilePathLine
-        path={file.path}
-        meta={mode === "files"
-          ? `${file.matchCount} ${file.matchCount === 1 ? "hit" : "hits"}`
-          : `${file.matchCount} ${file.matchCount === 1 ? "match" : "matches"}`}
-      />
-      <div className="mt-1.5 space-y-1">
+    <section className="min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_62%,transparent)]">
+      <div className="flex min-w-0 items-baseline gap-2 border-b border-[var(--app-border)] px-2.5 py-1.5 text-[11px]">
+        <span className="min-w-0 flex-1 truncate font-mono font-medium text-[var(--app-text)]" title={file.path}>
+          {file.path}
+        </span>
+        <span className="shrink-0 text-[10px] text-[var(--app-text-subtle)]">
+          {mode === "files"
+            ? `${file.matchCount} ${file.matchCount === 1 ? "hit" : "hits"}`
+            : `${file.matchCount} ${file.matchCount === 1 ? "match" : "matches"}`}
+        </span>
+      </div>
+      <div className="grid gap-1.5 p-1.5">
         {file.queryGroups.map((group, index) => (
           <SearchLineList
             key={`${file.path}:${group.query}:${index}`}
@@ -914,7 +926,7 @@ function SearchFileSection({
           />
         ))}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -956,6 +968,12 @@ interface ManageSessionCardItem {
   navigation: ManageSessionNavigation | null;
   snippet: string;
   gitSummary: string;
+  reviewKind: "follow_up" | "archive_candidate" | "";
+  clean: boolean | null;
+  dirtyCount: number | null;
+  missingCommitCount: number | null;
+  missingCommitSubjects: string[];
+  missingCommitsTruncated: boolean;
 }
 
 function manageSessionNumber(record: Record<string, unknown>, key: string): number | null {
@@ -975,7 +993,9 @@ function manageSessionItem(value: unknown): ManageSessionCardItem | null {
     const item = entry as Record<string, unknown>;
     return toolJsonString(item, "text") || toolJsonString(item, "snippet");
   }).find(Boolean) || "";
-  const clean = typeof record.clean === "boolean" ? (record.clean ? "Clean" : `${manageSessionNumber(record, "dirty_count") ?? 0} changes`) : "";
+  const cleanState = typeof record.clean === "boolean" ? record.clean : null;
+  const dirtyCount = manageSessionNumber(record, "dirty_count");
+  const clean = cleanState !== null ? (cleanState ? "Clean" : `${dirtyCount ?? 0} changes`) : "";
   const ahead = manageSessionNumber(record, "ahead");
   const behind = manageSessionNumber(record, "behind");
   const gitSummary = [clean, ahead ? `${ahead} ahead` : "", behind ? `${behind} behind` : ""].filter(Boolean).join(" · ");
@@ -990,6 +1010,16 @@ function manageSessionItem(value: unknown): ManageSessionCardItem | null {
     navigation: manageSessionNavigation(record.navigation),
     snippet,
     gitSummary,
+    reviewKind: toolJsonString(record, "classification") === "follow_up" ? "follow_up" : toolJsonString(record, "classification") === "archive_candidate" ? "archive_candidate" : "",
+    clean: cleanState,
+    dirtyCount,
+    missingCommitCount: manageSessionNumber(record, "missing_commit_count"),
+    missingCommitSubjects: (Array.isArray(record.missing_commits) ? record.missing_commits : []).flatMap((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+      const subject = compactSearchPreview(toolJsonString(value as Record<string, unknown>, "subject"), 120);
+      return subject ? [subject] : [];
+    }),
+    missingCommitsTruncated: record.missing_commits_truncated === true,
   };
 }
 
@@ -1009,14 +1039,65 @@ function manageSessionNavigation(record: unknown): ManageSessionNavigation | nul
   return { sessionId, href };
 }
 
+function ReviewWorktreeRow({ item }: { item: ManageSessionCardItem }) {
+  const missingCount = item.missingCommitCount ?? 0;
+  const cleanliness = item.clean === true
+    ? "Clean"
+    : item.clean === false
+      ? `Dirty${item.dirtyCount !== null ? ` · ${item.dirtyCount} ${item.dirtyCount === 1 ? "change" : "changes"}` : ""}`
+      : "Cleanliness unknown";
+  const missingLabel = `${missingCount} missing ${missingCount === 1 ? "commit" : "commits"}`;
+  const subjectSuffix = item.missingCommitsTruncated || missingCount > item.missingCommitSubjects.length ? " …" : "";
+
+  return (
+    <article className="min-w-0 border-t border-[var(--app-border)] px-3 py-2 first:border-t-0">
+      <div className="flex min-w-0 items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[12px] font-semibold text-[var(--app-text)]" title={item.title}>{item.title}</div>
+          <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] text-[var(--app-text-muted)]">
+            <GitBranch size={10} className="shrink-0" />
+            <span className="truncate font-mono" title={item.branch}>{item.branch || "Unknown branch"}</span>
+          </div>
+        </div>
+        <span className={cn(
+          "shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold",
+          item.reviewKind === "archive_candidate"
+            ? "bg-[color-mix(in_srgb,var(--app-success)_12%,transparent)] text-[var(--app-success)]"
+            : "bg-[color-mix(in_srgb,var(--app-warning)_12%,transparent)] text-[var(--app-warning)]",
+        )}>
+          {item.reviewKind === "archive_candidate" ? "Archive ready" : "Follow up"}
+        </span>
+      </div>
+      <div className="mt-1 flex min-w-0 flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-[var(--app-text-subtle)]">
+        <span>{cleanliness}</span>
+        <span>{missingLabel}</span>
+      </div>
+      {item.missingCommitSubjects.length > 0 ? (
+        <p className="mt-1 line-clamp-2 min-w-0 break-words text-[10px] leading-4 text-[var(--app-text-muted)] [overflow-wrap:anywhere]" title={item.missingCommitSubjects.join(" · ")}>
+          {item.missingCommitSubjects.join(" · ")}{subjectSuffix}
+        </p>
+      ) : null}
+      {item.navigation ? (
+        <a href={item.navigation.href} className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-semibold text-[var(--app-primary)] hover:underline" title={item.navigation.href}>
+          Open session <ArrowRight size={10} />
+        </a>
+      ) : null}
+    </article>
+  );
+}
+
 function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessage }) {
   const output = parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
   if (!output) return null;
   const args = toolMessage.argumentsJson ?? null;
   const action = toolJsonString(output, "action") || toolJsonString(args, "action") || "sessions";
   const deployResults = Array.isArray(output.results) ? output.results : [];
-  const rawItems = Array.isArray(output.items) ? output.items : deployResults.length ? deployResults : output.id || output.session_id ? [output] : [];
+  const followUpCandidates = Array.isArray(output.follow_up_candidates) ? output.follow_up_candidates : [];
+  const archiveCandidates = Array.isArray(output.archive_candidates) ? output.archive_candidates : [];
+  const reviewCandidates = action === "review_worktrees" ? [...followUpCandidates, ...archiveCandidates] : [];
+  const rawItems = reviewCandidates.length > 0 ? reviewCandidates : Array.isArray(output.items) ? output.items : deployResults.length ? deployResults : output.id || output.session_id ? [output] : [];
   const items = rawItems.map(manageSessionItem).filter((item): item is ManageSessionCardItem => Boolean(item));
+  const isReviewWorktrees = action === "review_worktrees";
   const failedDeployments = action === "deploy" ? deployResults.flatMap((value): Array<{ proposal: string; error: string }> => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return [];
     const record = value as Record<string, unknown>;
@@ -1032,20 +1113,40 @@ function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessag
     return [{ sessionId: typeof commit.session_id === "string" ? commit.session_id : "", message: typeof commit.message === "string" ? commit.message : "", hash: typeof commit.commit_hash === "string" ? commit.commit_hash : "", files: Array.isArray(commit.files) ? commit.files.filter((file): file is string => typeof file === "string") : [] }];
   }) : [];
   const unarchivedIds = Array.isArray(output.unarchived_session_ids) ? output.unarchived_session_ids.filter((id): id is string => typeof id === "string") : [];
-  const title = action === "deploy" ? "Session deployment" : action === "search" ? "Session search" : action === "list" ? "Your sessions" : action === "read_messages" ? "Session context" : action === "git_status" ? "Worktree status" : action === "archive" ? "Sessions archived" : action === "unarchive" ? "Sessions unarchived" : action === "commit" ? "Session commits ready for testing" : action === "inspect" ? "Session manager" : "Session details";
-  const HeaderIcon = action === "search" ? Search : action === "archive" || action === "unarchive" ? Archive : action === "read_messages" ? MessageSquareText : action === "git_status" ? GitBranch : Layers3;
+  const title = action === "deploy" ? "Session deployment" : action === "search" ? "Session search" : action === "list" ? "Your sessions" : action === "read_messages" ? "Session context" : action === "git_status" ? "Worktree status" : action === "review_worktrees" ? "Worktrees needing review" : action === "archive" ? "Sessions archived" : action === "unarchive" ? "Sessions unarchived" : action === "commit" ? "Session commits ready for testing" : action === "inspect" ? "Session manager" : "Session details";
+  const HeaderIcon = action === "search" ? Search : action === "archive" || action === "unarchive" ? Archive : action === "read_messages" ? MessageSquareText : action === "git_status" || action === "review_worktrees" ? GitBranch : Layers3;
+  const needsReviewCount = manageSessionNumber(output, "needs_review_count");
+  const worktreeSessionCount = manageSessionNumber(output, "worktree_session_count");
+  const followUpCount = manageSessionNumber(output, "follow_up_candidate_count") ?? followUpCandidates.length;
+  const archiveCount = manageSessionNumber(output, "archive_candidate_count") ?? archiveCandidates.length;
+  const inspectionErrorCount = manageSessionNumber(output, "inspection_error_count");
+  const reviewSummary = [
+    needsReviewCount !== null ? `${needsReviewCount} total` : "",
+    worktreeSessionCount !== null ? `${worktreeSessionCount} worktrees` : "",
+    `${followUpCount} follow up`,
+    `${archiveCount} archive ready`,
+    inspectionErrorCount ? `${inspectionErrorCount} errors` : "",
+  ].filter(Boolean).join(" · ");
+  const headerSummary = isReviewWorktrees
+    ? reviewSummary
+    : items.length
+      ? `${items.length} ${items.length === 1 ? "session" : "sessions"}`
+      : action.split("_").join(" ");
 
   return (
-    <section className="mt-2 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[linear-gradient(145deg,color-mix(in_srgb,var(--app-primary)_8%,var(--app-surface)),var(--app-surface)_45%)] shadow-[0_12px_35px_rgba(0,0,0,0.08)]">
+    <section className="mt-2 min-w-0 max-w-full overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[linear-gradient(145deg,color-mix(in_srgb,var(--app-primary)_8%,var(--app-surface)),var(--app-surface)_45%)] shadow-[0_12px_35px_rgba(0,0,0,0.08)]">
       <header className="flex items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-[color-mix(in_srgb,var(--app-primary)_15%,transparent)] text-[var(--app-primary)]"><HeaderIcon size={15} /></span>
-          <div className="min-w-0"><h4 className="truncate text-sm font-semibold text-[var(--app-text)]">{title}</h4><p className="text-[11px] text-[var(--app-text-subtle)]">{items.length ? `${items.length} ${items.length === 1 ? "session" : "sessions"}` : action.split("_").join(" ")}</p></div>
+          <div className="min-w-0"><h4 className="truncate text-sm font-semibold text-[var(--app-text)]">{title}</h4><p className="truncate text-[11px] text-[var(--app-text-subtle)]" title={headerSummary}>{headerSummary}</p></div>
         </div>
         {output.has_more === true ? <span className="rounded-full border border-[var(--app-border)] px-2 py-1 text-[10px] font-medium text-[var(--app-text-muted)]">More available</span> : null}
       </header>
-      {items.length > 0 ? <div className="grid gap-2 p-2.5">{items.map((item, index) => (
-        <article key={item.id || `${item.title}-${index}`} className="group rounded-xl border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_88%,transparent)] p-3 transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]">
+      <div className={TOOL_RESULT_BODY_CLASS}>
+      {items.length > 0 ? <div className={isReviewWorktrees ? "min-w-0 divide-y divide-[var(--app-border)]" : "grid min-w-0 gap-2 p-2.5"}>{items.map((item, index) => isReviewWorktrees ? (
+        <ReviewWorktreeRow key={item.id || `${item.title}-${index}`} item={item} />
+      ) : (
+        <article key={item.id || `${item.title}-${index}`} className="group min-w-0 rounded-xl border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_88%,transparent)] p-3 transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]">
           <div className="flex min-w-0 items-start justify-between gap-3">
             <div className="min-w-0"><div className="truncate text-[13px] font-semibold text-[var(--app-text)]">{item.title}</div>{item.id ? <div className="mt-0.5 truncate font-mono text-[9px] text-[var(--app-text-subtle)]">{item.id}</div> : null}</div>
             {item.state ? <span className="shrink-0 rounded-full bg-[color-mix(in_srgb,var(--app-primary)_10%,transparent)] px-2 py-1 text-[10px] font-medium capitalize text-[var(--app-text-muted)]">{item.state.split("_").join(" ")}</span> : null}
@@ -1057,18 +1158,19 @@ function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessag
           {item.navigation ? <a href={item.navigation.href} className="mt-2.5 inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--app-primary)] hover:underline" title={item.navigation.href}>Open session <ArrowRight size={12} /></a> : null}
         </article>
       ))}</div> : null}
-      {messages.length > 0 ? <div className="max-h-80 space-y-2 overflow-auto p-3">{messages.map((value, index) => {
+      {messages.length > 0 ? <div className="min-w-0 space-y-2 p-3">{messages.map((value, index) => {
         const message = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
         const role = toolJsonString(message, "role") || "message";
         const content = toolJsonString(message, "content");
         const seq = manageSessionNumber(message, "seq");
-        return <div key={`${seq ?? index}`} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3"><div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--app-text-subtle)]">{role}{seq !== null ? ` · #${seq}` : ""}</div><div className="whitespace-pre-wrap break-words text-xs leading-5 text-[var(--app-text-muted)]">{content}</div></div>;
+        return <div key={`${seq ?? index}`} className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3"><div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--app-text-subtle)]">{role}{seq !== null ? ` · #${seq}` : ""}</div><div className="min-w-0 whitespace-pre-wrap break-words text-xs leading-5 text-[var(--app-text-muted)] [overflow-wrap:anywhere]">{content}</div></div>;
       })}</div> : null}
       {failedDeployments.length > 0 ? <div className="grid gap-2 border-t border-[var(--app-border)] p-3">{failedDeployments.map((failure, index) => <div key={`${failure.proposal}:${index}`} className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]"><span className="font-semibold">{failure.proposal} failed:</span> {failure.error}</div>)}</div> : null}
       {archivedIds.length > 0 ? <div className="p-4 text-xs text-[var(--app-text-muted)]">Archived {archivedIds.length} {archivedIds.length === 1 ? "session" : "sessions"} durably.</div> : null}
-      {commits.length > 0 ? <div className="grid gap-2 border-t border-[var(--app-border)] p-3">{commits.map((commit, index) => <article key={`${commit.hash}:${index}`} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs"><div className="font-semibold text-[var(--app-text)]">{commit.message || `Commit ${index + 1}`}</div><div className="mt-1 font-mono text-[var(--app-text-muted)]">{commit.hash}</div>{commit.files.length > 0 ? <div className="mt-2 text-[var(--app-text-muted)]">{commit.files.length} changed {commit.files.length === 1 ? "file" : "files"} · session remains in needs review</div> : null}</article>)}</div> : null}
+      {commits.length > 0 ? <div className="grid min-w-0 gap-2 border-t border-[var(--app-border)] p-3">{commits.map((commit, index) => <article key={`${commit.hash}:${index}`} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs"><div className="font-semibold text-[var(--app-text)]">{commit.message || `Commit ${index + 1}`}</div><div className="mt-1 font-mono text-[var(--app-text-muted)]">{commit.hash}</div>{commit.files.length > 0 ? <div className="mt-2 text-[var(--app-text-muted)]">{commit.files.length} changed {commit.files.length === 1 ? "file" : "files"} · session remains in needs review</div> : null}</article>)}</div> : null}
       {unarchivedIds.length > 0 ? <div className="p-4 text-xs text-[var(--app-text-muted)]">Unarchived {unarchivedIds.length} {unarchivedIds.length === 1 ? "session" : "sessions"} durably.</div> : null}
       {action === "inspect" ? <div className="p-4 text-xs leading-5 text-[var(--app-text-muted)]">Search and read are bounded for efficient context. Archive and unarchive require approval.</div> : null}
+      </div>
     </section>
   );
 }
@@ -1228,7 +1330,7 @@ function SearchToolView({
     <div className="min-w-0">
       <SearchSummaryLine toolMessage={toolMessage} />
       {sections.length > 0 ? (
-        <div className="mt-3 min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] font-mono">
+        <div className={cn(TOOL_RESULT_BODY_CLASS, "mt-2 grid gap-2 font-mono pr-1")}>
           {sections.map((file, index) => (
             <SearchFileSection
               key={`${file.path}:${index}`}

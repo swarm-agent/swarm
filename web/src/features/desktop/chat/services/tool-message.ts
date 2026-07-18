@@ -866,7 +866,10 @@ function extractSearchToolData(
 
   const mode = jsonStr(effective, "search_mode").toLowerCase();
   const path = jsonStr(effective, "path");
-  const queryCount = jsonNum(effective, "query_count");
+  const queryCount = Math.max(
+    jsonNum(effective, "query_count"),
+    jsonObjectSlice(effective, "query_results").length,
+  );
   const count = jsonNum(effective, "count");
   const totalMatched = jsonNum(effective, "total_matched");
   const truncated =
@@ -904,7 +907,10 @@ function buildSearchFileGroups(
 function buildSearchFileModeGroups(
   outputJson: Record<string, unknown> | null,
 ): SearchToolFileGroup[] {
-  const items = jsonObjectSlice(outputJson, "files");
+  const items = [
+    ...jsonObjectSlice(outputJson, "files"),
+    ...jsonObjectSlice(outputJson, "results"),
+  ];
   return items
     .map((item) => {
       const path = firstNonEmpty(
@@ -927,10 +933,21 @@ function buildSearchFileModeGroups(
     .filter((item): item is SearchToolFileGroup => Boolean(item));
 }
 
+function compactSearchContentItems(
+  outputJson: Record<string, unknown> | null,
+): Record<string, unknown>[] {
+  const legacy = jsonObjectSlice(outputJson, "matches");
+  const compact = jsonObjectSlice(outputJson, "results").flatMap((group) => {
+    const path = firstNonEmpty(jsonStr(group, "relative_path"), jsonStr(group, "path"));
+    return jsonObjectSlice(group, "items").map((item) => ({ ...item, path }));
+  });
+  return [...legacy, ...compact];
+}
+
 function buildSearchContentFileGroups(
   outputJson: Record<string, unknown> | null,
 ): SearchToolFileGroup[] {
-  const items = jsonObjectSlice(outputJson, "matches");
+  const items = compactSearchContentItems(outputJson);
   const fileMap = new Map<
     string,
     {
@@ -941,8 +958,8 @@ function buildSearchContentFileGroups(
         {
           query: string;
           lines: number[];
-          matches: { line: number; text: string }[];
-          seen: Set<number>;
+          matches: { line: number; column: number; text: string }[];
+          seen: Set<string>;
         }
       >;
     }
@@ -957,6 +974,7 @@ function buildSearchContentFileGroups(
     const query = jsonStr(item, "query");
     const queryKey = query.toLowerCase();
     const line = jsonNum(item, "line");
+    const column = jsonNum(item, "column");
 
     let fileGroup = fileMap.get(path);
     if (!fileGroup) {
@@ -966,19 +984,20 @@ function buildSearchContentFileGroups(
 
     let queryGroup = fileGroup.queryMap.get(queryKey);
     if (!queryGroup) {
-      queryGroup = { query, lines: [], matches: [], seen: new Set<number>() };
+      queryGroup = { query, lines: [], matches: [], seen: new Set<string>() };
       fileGroup.queryMap.set(queryKey, queryGroup);
       fileGroup.queryOrder.push(queryKey);
     }
 
     if (!queryGroup.query && query) queryGroup.query = query;
     const text = jsonStr(item, "text");
-    if (line > 0 && !queryGroup.seen.has(line)) {
-      queryGroup.seen.add(line);
-      queryGroup.lines.push(line);
-      queryGroup.matches.push({ line, text });
+    const matchKey = `${line}:${column}:${text}`;
+    if (line > 0 && !queryGroup.seen.has(matchKey)) {
+      queryGroup.seen.add(matchKey);
+      if (!queryGroup.lines.includes(line)) queryGroup.lines.push(line);
+      queryGroup.matches.push({ line, column, text });
     } else if (line <= 0 && text) {
-      queryGroup.matches.push({ line: 0, text });
+      queryGroup.matches.push({ line: 0, column, text });
     }
   }
 
@@ -997,7 +1016,7 @@ function buildSearchContentFileGroups(
       },
     );
     const matchCount = Array.from(fileGroup.queryMap.values()).reduce(
-      (sum, queryGroup) => sum + Math.max(queryGroup.lines.length, 1),
+      (sum, queryGroup) => sum + Math.max(queryGroup.matches.length, queryGroup.lines.length, 1),
       0,
     );
     return {
