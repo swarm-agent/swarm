@@ -180,7 +180,9 @@ function testBashToolUsesDedicatedFullWidthCard(): void {
   assert(markup.includes("Copy"), "bash card should include copy control");
   assert(markup.includes('aria-label="Copy Bash output"'), "bash copy control should identify output as its only payload");
   assert(markup.includes("max-height"), "bash output should render in a bounded scroll container");
-  assert(markup.includes("overflow-auto"), "bash output should be scrollable");
+  assert(markup.includes("50vh") || markup.includes("max-height:"), "bash output should expose a bounded viewport height");
+  assert(markup.includes("overflow-y-auto"), "bash output should be vertically scrollable");
+  assert(markup.includes("overflow-x-hidden"), "bash output should not overflow horizontally");
   assert(markup.includes("line-80"), "bash card should render final output line without data truncation");
   assert(!markup.includes("odd:bg"), "bash output should not use striped preview rows");
 }
@@ -236,6 +238,87 @@ function testManageSessionsDeployRendersNavigableResultsAndHonestFailures(): voi
   assert(markup.includes('href="/workspace/session-deploy-1"') && markup.includes("Open session"), "expected navigable deployed session");
   assert(markup.includes("proposal-2 failed:") && markup.includes("worktree allocation failed"), "expected honest per-item failure");
   assert(!markup.includes('results":'), "raw deployment JSON must not render");
+}
+
+function testManageSessionsReviewWorktreesHydratesCandidates(): void {
+  const longSubject = `Compact a very long worktree commit subject ${"x".repeat(180)}`;
+  const message = buildStructuredToolMessage({
+    tool: "manage-sessions",
+    callId: "call_manage_sessions_review_worktrees",
+    argumentsText: JSON.stringify({ action: "review_worktrees" }),
+    outputText: JSON.stringify({
+      action: "review_worktrees",
+      needs_review_count: 3,
+      worktree_session_count: 2,
+      follow_up_candidate_count: 1,
+      archive_candidate_count: 1,
+      inspection_error_count: 0,
+      follow_up_candidates: [{
+        session_id: "session-follow-up",
+        title: "Search rendering worktree",
+        worktree_branch: "agent/search-rendering",
+        classification: "follow_up",
+        clean: false,
+        dirty_count: 2,
+        missing_commit_count: 2,
+        missing_commits_truncated: true,
+        missing_commits: [{ subject: "Group results by file" }, { subject: longSubject }],
+        navigation: { session_id: "session-follow-up", href: "/swarm/session-follow-up" },
+      }],
+      archive_candidates: [{
+        session_id: "session-archive",
+        title: "Integrated tool card",
+        worktree_branch: "agent/integrated-tool-card",
+        classification: "archive_candidate",
+        clean: true,
+        dirty_count: 0,
+        missing_commit_count: 0,
+      }],
+    }),
+  });
+  assert(Boolean(message), "expected review_worktrees tool message");
+
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("Worktrees needing review"), "expected review-worktrees title");
+  assert(markup.includes("3 total · 2 worktrees · 1 follow up · 1 archive ready"), "expected review count summary");
+  assert(markup.includes("Search rendering worktree") && markup.includes("Integrated tool card"), "expected both candidate groups to hydrate");
+  assert(markup.includes("agent/search-rendering") && markup.includes("Dirty · 2 changes") && markup.includes("2 missing commits"), "expected compact worktree metadata");
+  assert(markup.includes("Group results by file") && markup.includes("line-clamp-2"), "expected concise commit subjects");
+  assert(markup.includes('href="/swarm/session-follow-up"') && markup.includes("Open session"), "expected safe internal session link");
+  assert(!markup.includes("Session details"), "review_worktrees must not fall back to the generic empty card");
+}
+
+function testSearchToolRendersCompactGroupedList(): void {
+  const longPath = `web/src/features/desktop/${"nested/".repeat(12)}chat-markdown.tsx`;
+  const longMatch = `const compactSearchResult = ${"largeMatchText".repeat(40)}`;
+  const message = buildStructuredToolMessage({
+    tool: "search",
+    callId: "call_compact_search_render",
+    outputText: JSON.stringify({
+      tool: "search",
+      search_mode: "content",
+      path: "web/src",
+      count: 2,
+      total_matched: 8,
+      query_results: [{ query: "compactSearchResult" }],
+      results: [{
+        path: longPath,
+        items: [
+          { line: 88, column: 4, text: longMatch },
+          { line: 93, column: 7, text: "return compactSearchResult" },
+        ],
+      }],
+    }),
+  });
+  assert(Boolean(message), "expected compact search tool message");
+
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("2 matches · 8 total"), "expected useful search counts");
+  assert(markup.includes("88:4") && markup.includes("93:7"), "expected line and column locations");
+  assert(markup.includes("2 matches") && markup.includes("truncate font-mono"), "expected grouped file header with truncated path");
+  assert(markup.includes("line-clamp-2") && markup.includes("max-h-[50vh]"), "expected clamped previews in a bounded scroll body");
+  assert(markup.includes("overflow-y-auto") && markup.includes("overflow-x-hidden"), "expected internal vertical scrolling without horizontal overflow");
+  assert(!markup.includes(longMatch), "large raw match text should be compacted before rendering");
 }
 
 function testManageSessionsListRendersCardsWithoutRawJson(): void {
@@ -325,6 +408,8 @@ function main(): void {
   testBashToolUsesDedicatedFullWidthCard();
   testManageSessionsUsesRelativeDesktopNavigation();
   testManageSessionsDeployRendersNavigableResultsAndHonestFailures();
+  testManageSessionsReviewWorktreesHydratesCandidates();
+  testSearchToolRendersCompactGroupedList();
   testManageSessionsListRendersCardsWithoutRawJson();
   testTaskHeaderDoesNotShiftBetweenLaunchAssignments();
   console.log("chat-markdown preview tests passed");

@@ -51,6 +51,7 @@ export interface TaskToolRow {
 
 export interface SearchToolLineMatch {
   line: number;
+  column: number;
   text: string;
 }
 
