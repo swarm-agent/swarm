@@ -1,7 +1,7 @@
 import { Square } from "lucide-react";
 import type { TaskChildCardActions, TaskToolRow } from "../types/chat";
 import type { DesktopV3TaskChildViewModel } from "../../state/desktop-v3-cache-selectors";
-import { stopSessionV3Run } from "../../session-v3/api";
+import { stopSubagentSessionV3Run } from "../../session-v3/api";
 import { cn } from "../../../../lib/cn";
 
 interface DesktopPlanSubagentListProps {
@@ -42,7 +42,7 @@ export function DesktopPlanSubagentList({ children, actions, mode }: DesktopPlan
           const status = view?.loading ? "loading" : view?.unavailable ? "unavailable" : view?.stale ? "stale" : view?.status || row.status || "pending";
           const terminal = view?.terminal ?? row.terminal;
           const percent = contextPercent(view);
-          const canStop = Boolean(view && !view.terminal && view.runId && view.targetSwarmId);
+          const canStop = Boolean(row.childSessionId.trim() && view && !view.terminal);
           const details = `${title}. ${status}. ${percent === null ? "Context unavailable" : `${Math.round(percent)}% context used`}. ${formatElapsed(view?.elapsedMs || row.elapsedMs)} elapsed.`;
           if (mode === "thin") {
             return <button key={row.launchKey || row.childSessionId || row.launchIndex} type="button" className="relative grid min-h-11 place-items-center rounded-lg border border-[var(--app-border)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" title={details} aria-label={`Open ${details}`} onClick={() => actions?.onNavigate(row.childSessionId, view?.workspacePath || "")} disabled={!row.childSessionId}>
@@ -61,7 +61,7 @@ export function DesktopPlanSubagentList({ children, actions, mode }: DesktopPlan
                 {percent !== null ? <div className="h-full bg-[var(--app-primary)]" style={{ width: `${percent}%` }} /> : null}
               </div>
             </button>
-            {canStop ? <button type="button" className="grid h-9 w-9 place-items-center rounded-md text-[var(--app-text-muted)] opacity-100 hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100" aria-label={`Stop ${title}`} title={`Stop ${title}`} onClick={() => { void stopSessionV3Run(view!.sessionId, { runId: view!.runId, targetSwarmId: view!.targetSwarmId }); }}><Square size={13} /></button> : null}
+            {canStop ? <button type="button" className="grid h-9 w-9 place-items-center rounded-md text-[var(--app-text-muted)] opacity-100 hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100" aria-label={`Stop ${title}`} title={`Stop ${title}`} onClick={() => { void stopSubagentSessionV3Run(row.childSessionId); }}><Square size={13} /></button> : null}
           </div>;
         })}
       </div>

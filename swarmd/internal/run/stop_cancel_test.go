@@ -15,6 +15,56 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
+func TestCancelledTaskLaunchReasonPreservesUserStopClassification(t *testing.T) {
+	svc, sessionID, cleanup := newStopCancelService(t)
+	defer cleanup()
+
+	lifecycle, err := svc.beginSessionLifecycle(sessionID, "run-task-cancel", "http")
+	if err != nil {
+		t.Fatalf("begin lifecycle: %v", err)
+	}
+	if lifecycle.RunID != "run-task-cancel" {
+		t.Fatalf("run id = %q, want run-task-cancel", lifecycle.RunID)
+	}
+	if err := svc.StopSessionRun(sessionID, "run-task-cancel", "user stopped subagent"); err != nil {
+		t.Fatalf("stop session run: %v", err)
+	}
+
+	reason, cancelled := svc.cancelledTaskLaunchReason(sessionID, context.Canceled)
+	if !cancelled {
+		t.Fatalf("cancelled = false, want true")
+	}
+	if reason != "user stopped subagent" {
+		t.Fatalf("reason = %q, want user stopped subagent", reason)
+	}
+}
+
+func newStopCancelService(t *testing.T) (*Service, string, func()) {
+	t.Helper()
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "stop-cancel-helper.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	cleanup := func() { _ = store.Close() }
+	eventLog, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		cleanup()
+		t.Fatalf("new event log: %v", err)
+	}
+	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
+	session, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		Title:         "Task cancellation",
+		WorkspacePath: t.TempDir(),
+		WorkspaceName: "workspace",
+		Mode:          sessionruntime.ModeAuto,
+	})
+	if err != nil {
+		cleanup()
+		t.Fatalf("create session: %v", err)
+	}
+	return NewService(sessions, nil, nil, nil, nil, nil, nil, eventLog), session.ID, cleanup
+}
+
 func TestStopSessionRunSuppressesProviderOutputAfterCancel(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "stop-cancel.pebble"))
 	if err != nil {

@@ -75,6 +75,10 @@ type sessionsV3StopRequest struct {
 	Reason        string `json:"reason,omitempty"`
 }
 
+type sessionsV3SubagentStopRequest struct {
+	SessionID string `json:"session_id"`
+}
+
 type sessionsV3CompactRequest struct {
 	ClientRequestID string `json:"client_request_id,omitempty"`
 	IdempotencyKey  string `json:"idempotency_key,omitempty"`
@@ -2047,6 +2051,60 @@ func (s *Server) handleSessionV3PrimaryPlanByID(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": plan})
+}
+
+func (s *Server) handleSessionsV3SubagentStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.sessions == nil || s.runner == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("sessions v3 runtime is not configured"))
+		return
+	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	var req sessionsV3SubagentStopRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("session_id is required"))
+		return
+	}
+	session, found, err := s.requireSessionV3Access(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	if sessionsV3MetadataString(session.Metadata, "lineage_kind") != "delegated_subagent" {
+		writeError(w, http.StatusBadRequest, errors.New("session is not a delegated subagent"))
+		return
+	}
+	const reason = "user stopped subagent"
+	if err := s.runner.StopSessionRun(sessionID, "", reason); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, runruntime.ErrSessionRunNotActive) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"session_id": sessionID,
+		"status":     "cancelled",
+		"reason":     reason,
+	})
 }
 
 func (s *Server) handleSessionV3PrimaryRunStop(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {

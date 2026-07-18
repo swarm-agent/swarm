@@ -345,6 +345,16 @@ function objectRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 }
 
+export async function stopSubagentSessionV3Run(sessionId: string): Promise<SessionV3RunStopResponseWire> {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) throw new Error('Desktop V3 subagent stop requires session_id')
+  return requestJson('/v3/subagents:stop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: normalizedSessionId }),
+  })
+}
+
 export async function stopSessionV3Run(
   sessionId: string,
   input: { runId: string; targetSwarmId: string },

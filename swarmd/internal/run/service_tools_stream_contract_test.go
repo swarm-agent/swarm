@@ -101,6 +101,71 @@ func TestBuildTaskStreamPatchPayloadDesktopSubagentSchema(t *testing.T) {
 	}
 }
 
+func TestBuildTaskStreamPatchPayloadAcknowledgesCancelledChild(t *testing.T) {
+	payload := buildTaskStreamPatchPayload("parent", "call-task", "spawn", "inspect", 2, taskLaunchOutcome{
+		LaunchIndex:      2,
+		ResolvedSubagent: "explorer",
+		ChildSessionID:   "child-cancelled",
+		Phase:            "cancelled",
+		Summary:          "launch 2 subagent explorer cancelled (session child-cancelled): user stopped subagent",
+		Reason:           "user stopped subagent",
+	}, "cancelled", "")
+
+	if got := payload["status"]; got != "error" {
+		t.Fatalf("status = %#v, want error", got)
+	}
+	if got := payload["phase"]; got != "cancelled" {
+		t.Fatalf("phase = %#v, want cancelled", got)
+	}
+	launch, ok := payload["launch"].(map[string]any)
+	if !ok {
+		t.Fatalf("launch = %#v, want object", payload["launch"])
+	}
+	if got := launch["child_session_id"]; got != "child-cancelled" {
+		t.Fatalf("child_session_id = %#v, want child-cancelled", got)
+	}
+	if got := launch["phase"]; got != "cancelled" {
+		t.Fatalf("launch phase = %#v, want cancelled", got)
+	}
+	if got := launch["reason"]; got != "user stopped subagent" {
+		t.Fatalf("reason = %#v, want user stopped subagent", got)
+	}
+	if got := launch["error"]; got != "" {
+		t.Fatalf("error = %#v, want empty cancellation error", got)
+	}
+	if got := launch["terminal"]; got != true {
+		t.Fatalf("terminal = %#v, want true", got)
+	}
+}
+
+func TestTaskLaunchOutcomePayloadDistinguishesSuccessFailureAndCancellation(t *testing.T) {
+	launches := []struct {
+		outcome taskLaunchOutcome
+		status  string
+		phase   string
+	}{
+		{outcome: taskLaunchOutcome{LaunchIndex: 1, ChildSessionID: "child-ok", Summary: "completed"}, status: "ok", phase: "completed"},
+		{outcome: taskLaunchOutcome{LaunchIndex: 2, ChildSessionID: "child-failed", Summary: "failed", Error: "provider unavailable", Reason: "provider unavailable"}, status: "error", phase: "failed"},
+		{outcome: taskLaunchOutcome{LaunchIndex: 3, ChildSessionID: "child-cancelled", Summary: "cancelled", Reason: "user stopped subagent"}, status: "cancelled", phase: "cancelled"},
+	}
+
+	for _, tc := range launches {
+		row := buildTaskStreamLaunchPayload(tc.outcome, tc.status, tc.phase, true)
+		if got := row["child_session_id"]; got != tc.outcome.ChildSessionID {
+			t.Fatalf("child_session_id = %#v, want %q", got, tc.outcome.ChildSessionID)
+		}
+		if got := row["status"]; got != tc.status {
+			t.Fatalf("session %s status = %#v, want %q", tc.outcome.ChildSessionID, got, tc.status)
+		}
+		if got := row["phase"]; got != tc.phase {
+			t.Fatalf("session %s phase = %#v, want %q", tc.outcome.ChildSessionID, got, tc.phase)
+		}
+		if got := row["reason"]; got != tc.outcome.Reason {
+			t.Fatalf("session %s reason = %#v, want %q", tc.outcome.ChildSessionID, got, tc.outcome.Reason)
+		}
+	}
+}
+
 func TestBuildTaskStreamPatchPayloadDoesNotExposeAssistantOrReasoningPreviewText(t *testing.T) {
 	tests := []struct {
 		name string

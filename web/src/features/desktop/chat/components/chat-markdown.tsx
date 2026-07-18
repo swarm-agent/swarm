@@ -13,7 +13,7 @@ import { useDesktopV3CacheSelector } from "../../state/desktop-v3-cache-store";
 import { selectDesktopV3TaskChildViewModel, type DesktopV3TaskChildViewModel } from "../../state/desktop-v3-cache-selectors";
 import { hydrateDesktopV3ChildCard } from "../../state/desktop-v3-session-hydrator";
 import { requireDesktopV3RealtimeControllerReady, type DesktopV3RealtimeSessionDemandLease } from "../../realtime/v3-realtime-controller";
-import { stopSessionV3Run } from "../../session-v3/api";
+import { stopSubagentSessionV3Run } from "../../session-v3/api";
 import { getToolTheme, type ToolState } from "../services/tool-theme";
 import { ToolSyntaxLine, inferToolSyntaxLanguage, pathFromToolSummary } from "../services/tool-syntax";
 
@@ -703,21 +703,21 @@ function TaskChildInteractiveRow({
   const stop = useCallback(async (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    if (!child?.runId || !child.targetSwarmId || child.terminal || stopPending) return;
+    if (!row.childSessionId.trim() || child?.terminal || stopPending) return;
     setStopPending(true);
     setStopMessage('Stopping…');
     try {
-      await stopSessionV3Run(child.sessionId, { runId: child.runId, targetSwarmId: child.targetSwarmId });
+      await stopSubagentSessionV3Run(row.childSessionId);
       setStopMessage('Stop requested');
     } catch (error) {
       setStopMessage(error instanceof Error ? error.message : 'Stop failed');
     } finally {
       setStopPending(false);
     }
-  }, [child, stopPending]);
+  }, [child?.terminal, row.childSessionId, stopPending]);
 
   const canNavigate = Boolean(actions && row.childSessionId.trim());
-  const canStop = Boolean(child?.hydrated && !child.terminal && child.runId && child.targetSwarmId);
+  const canStop = Boolean(row.childSessionId.trim() && child?.hydrated && !child.terminal);
   return (
     <div
       ref={rootRef}

@@ -15,6 +15,7 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
+	"swarm/packages/swarmd/internal/privacy"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -85,6 +86,32 @@ type taskLaunchOutcome struct {
 	ReportTruncated    bool
 	Summary            string
 	Error              string
+	Reason             string
+}
+
+const taskLaunchReasonMaxRunes = 512
+
+func boundedTaskLaunchReason(reason string) string {
+	reason = strings.TrimSpace(privacy.SanitizeText(reason))
+	if reason == "" {
+		return ""
+	}
+	return truncateRunes(reason, taskLaunchReasonMaxRunes)
+}
+
+func (s *Service) cancelledTaskLaunchReason(childSessionID string, runErr error) (string, bool) {
+	if s == nil || s.sessions == nil || !errors.Is(runErr, context.Canceled) {
+		return "", false
+	}
+	snapshot, ok, err := s.GetSessionLifecycle(strings.TrimSpace(childSessionID))
+	if err != nil || !ok || !strings.EqualFold(strings.TrimSpace(snapshot.Phase), lifecyclePhaseCancelled) {
+		return "", false
+	}
+	reason := boundedTaskLaunchReason(snapshot.StopReason)
+	if reason == "" {
+		reason = "run stopped by user"
+	}
+	return reason, true
 }
 
 type taskReportRef struct {
@@ -261,6 +288,7 @@ func buildTaskStreamLaunchPayload(launch taskLaunchOutcome, status, phase string
 		"tool_order":                 append([]string(nil), launch.ToolOrder...),
 		"summary":                    strings.TrimSpace(launch.Summary),
 		"error":                      strings.TrimSpace(launch.Error),
+		"reason":                     strings.TrimSpace(launch.Reason),
 		"report_chars":               launch.ReportChars,
 		"report_truncated":           launch.ReportTruncated,
 	}
@@ -353,6 +381,7 @@ func buildTaskStreamLaunchPatchPayload(launch taskLaunchOutcome, status, phase s
 		"tool_failed":                launch.ToolFailed,
 		"summary":                    strings.TrimSpace(launch.Summary),
 		"error":                      strings.TrimSpace(launch.Error),
+		"reason":                     strings.TrimSpace(launch.Reason),
 		"report_chars":               launch.ReportChars,
 		"report_truncated":           launch.ReportTruncated,
 		"terminal":                   terminal,
@@ -3048,6 +3077,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"tool_failed":          launch.ToolFailed,
 				"tool_order":           append([]string(nil), launch.ToolOrder...),
 				"error":                strings.TrimSpace(launch.Error),
+				"reason":               strings.TrimSpace(launch.Reason),
+				"phase":                strings.TrimSpace(launch.Phase),
 			}
 			if launch.ReportRef != nil {
 				launchRow["report_ref"] = launch.ReportRef
@@ -3206,12 +3237,21 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 			outcome.CurrentPreviewKind = ""
 			outcome.CurrentPreviewText = ""
-			outcome.Error = strings.TrimSpace(runErr.Error())
-			outcome.Summary = fmt.Sprintf("launch %d subagent %s failed", outcome.LaunchIndex, outcome.ResolvedSubagent)
-			if outcome.Error != "" {
-				outcome.Summary += ": " + outcome.Error
+			phase := "failed"
+			if reason, cancelled := s.cancelledTaskLaunchReason(outcome.ChildSessionID, runErr); cancelled {
+				phase = "cancelled"
+				outcome.Reason = reason
+				outcome.Error = ""
+				outcome.Summary = fmt.Sprintf("launch %d subagent %s cancelled (session %s): %s", outcome.LaunchIndex, outcome.ResolvedSubagent, outcome.ChildSessionID, reason)
+			} else {
+				outcome.Error = boundedTaskLaunchReason(runErr.Error())
+				outcome.Reason = outcome.Error
+				outcome.Summary = fmt.Sprintf("launch %d subagent %s failed (session %s)", outcome.LaunchIndex, outcome.ResolvedSubagent, outcome.ChildSessionID)
+				if outcome.Error != "" {
+					outcome.Summary += ": " + outcome.Error
+				}
 			}
-			emitTaskProgress("failed", outcome.Summary, outcome)
+			emitTaskProgress(phase, outcome.Summary, outcome)
 			return outcome, runErr
 		}
 
@@ -3279,6 +3319,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	}
 
 	failedCount := 0
+	cancelledCount := 0
 	successCount := 0
 	totalToolStarted := 0
 	totalToolCompleted := 0
@@ -3307,12 +3348,19 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			launch.CurrentToolMS = maxInt64(0, nowMS-launch.CurrentToolStarted)
 		}
 		if err != nil {
-			failedCount++
+			if strings.EqualFold(strings.TrimSpace(launch.Phase), "cancelled") {
+				cancelledCount++
+			} else {
+				failedCount++
+				if strings.TrimSpace(launch.Error) == "" {
+					launch.Error = boundedTaskLaunchReason(err.Error())
+				}
+				if strings.TrimSpace(launch.Reason) == "" {
+					launch.Reason = launch.Error
+				}
+			}
 			if firstErr == nil {
 				firstErr = err
-			}
-			if strings.TrimSpace(launch.Error) == "" {
-				launch.Error = strings.TrimSpace(err.Error())
 			}
 		} else {
 			successCount++
@@ -3331,7 +3379,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			reportTruncatedAny = true
 		}
 		status := "ok"
-		if strings.TrimSpace(launch.Error) != "" {
+		if strings.EqualFold(strings.TrimSpace(launch.Phase), "cancelled") {
+			status = "cancelled"
+		} else if err != nil || strings.TrimSpace(launch.Error) != "" {
 			status = "error"
 		}
 		launchSummary := strings.TrimSpace(launch.Summary)
@@ -3344,7 +3394,10 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		summaryParts = append(summaryParts, fmt.Sprintf("[%d] %s", launch.LaunchIndex, launchSummary))
 		launchPhase := "completed"
-		if status == "error" {
+		switch status {
+		case "cancelled":
+			launchPhase = "cancelled"
+		case "error":
 			launchPhase = "failed"
 		}
 		launch.Phase = launchPhase
@@ -3352,7 +3405,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		launchPayload := buildTaskStreamLaunchPayload(launch, status, launchPhase, true)
 		if launch.VirtualTarget {
 			childState := "committed"
-			if status == "error" {
+			if status == "error" || status == "cancelled" {
 				childState = "blocked"
 				if !launch.WorktreeClean && strings.TrimSpace(launch.GitStatus) != "" {
 					childState = "dirty-recoverable"
@@ -3387,12 +3440,12 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	}
 
 	overallStatus := "ok"
-	if failedCount > 0 {
+	if failedCount > 0 || cancelledCount > 0 {
 		overallStatus = "error"
 	}
 	if s.permissions != nil && strings.TrimSpace(req.RunID) != "" {
 		reservationStatus := "completed"
-		if failedCount > 0 {
+		if failedCount > 0 || cancelledCount > 0 {
 			reservationStatus = "failed"
 		}
 		if finishErr := s.permissions.FinishSubagentWave(parentSession.ID, req.RunID, taskCallID, reservationStatus); finishErr != nil {
@@ -3408,12 +3461,13 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		aggregateSummary += " | warning: aggregate subagent reports exceeded inline context budget; inspect report_ref child session transcripts for full reports"
 	}
 	lineageUpdate(overallStatus, outcomes, map[string]any{
-		"success_count":  successCount,
-		"failed_count":   failedCount,
-		"tool_started":   totalToolStarted,
-		"tool_completed": totalToolCompleted,
-		"tool_failed":    totalToolFailed,
-		"summary":        aggregateSummary,
+		"success_count":   successCount,
+		"failed_count":    failedCount,
+		"cancelled_count": cancelledCount,
+		"tool_started":    totalToolStarted,
+		"tool_completed":  totalToolCompleted,
+		"tool_failed":     totalToolFailed,
+		"summary":         aggregateSummary,
 	})
 
 	payload := map[string]any{
@@ -3429,6 +3483,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		"launches":                launchPayloads,
 		"success_count":           successCount,
 		"failed_count":            failedCount,
+		"cancelled_count":         cancelledCount,
+		"stop_acknowledged":       cancelledCount > 0,
 		"tool_started":            totalToolStarted,
 		"tool_completed":          totalToolCompleted,
 		"tool_failed":             totalToolFailed,
