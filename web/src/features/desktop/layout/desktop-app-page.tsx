@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode, ChangeEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, ListChecks, LoaderCircle, Menu, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, ListChecks, LoaderCircle, Menu, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -41,6 +41,7 @@ import { saveSidebarHideInactiveHours } from '../settings/swarm/mutations/save-s
 import { fetchSwarmTargets } from '../swarm/api/swarm-targets'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
+import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
 import { createDesktopV3CreateOnlySessionOperation, createDesktopV3NewSessionOperation, startDesktopV3CreateOnlySession, startNewDesktopV3Session } from '../session-v3/new-session-flow'
 import { DesktopPlanModal, type DesktopPlanRecoveryInput } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
@@ -203,6 +204,7 @@ interface ManagedWorktreeOption {
 }
 
 interface WorktreeSessionModalState {
+  presentation: 'dialog' | 'page'
   workspacePath: string
   workspaceName: string
   workspaceSlug: string
@@ -707,7 +709,252 @@ function composeWorktreeBranchName(prefix: string, suffix: string): string {
   return normalizedSuffix ? `${normalizedPrefix}/${normalizedSuffix}` : normalizedPrefix
 }
 
-function WorktreeSessionModal({ state, title, branch, selectedExistingPath, busy, error, onTitleChange, onBranchChange, onSelectedExistingPathChange, onSubmit, onClose }: {
+type SpeechRecognitionResultEventLike = Event & {
+  results: ArrayLike<{ 0?: { transcript?: string }; isFinal?: boolean }>
+}
+
+type SpeechRecognitionErrorEventLike = Event & {
+  error?: string
+  message?: string
+}
+
+type SpeechRecognitionLike = {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  maxAlternatives: number
+  onstart: ((event: Event) => void) | null
+  onend: ((event: Event) => void) | null
+  onresult: ((event: SpeechRecognitionResultEventLike) => void) | null
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null
+  start: () => void
+  stop: () => void
+  abort: () => void
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
+
+type SpeechRecognitionWindow = Window & typeof globalThis & {
+  SpeechRecognition?: SpeechRecognitionConstructor
+  webkitSpeechRecognition?: SpeechRecognitionConstructor
+}
+
+function browserSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {
+  if (typeof window === 'undefined') return null
+  const speechWindow = window as SpeechRecognitionWindow
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null
+}
+
+function appendBrowserDictation(base: string, transcript: string): string {
+  const addition = transcript.replace(/\s+/g, ' ').trim()
+  if (!addition) return base
+  const trimmedBase = base.replace(/[ \t]+$/g, '')
+  if (!trimmedBase) return addition
+  const separator = /[\s\n]$/.test(trimmedBase) || /^[,.;:!?]/.test(addition) ? '' : ' '
+  return `${trimmedBase}${separator}${addition}`
+}
+
+function browserDictationError(error: string, message = ''): string {
+  if (error === 'not-allowed' || error === 'service-not-allowed') return 'Microphone permission was denied or blocked.'
+  if (error === 'audio-capture') return 'No microphone was found.'
+  if (error === 'no-speech') return 'No speech was detected. Try again.'
+  return message.trim() || 'Browser dictation could not start.'
+}
+
+function useBrowserDictation(value: string, onValueChange: (value: string) => void, disabled: boolean) {
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
+  const valueRef = useRef(value)
+  const [supported, setSupported] = useState(false)
+  const [listening, setListening] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    valueRef.current = value
+  }, [value])
+
+  useEffect(() => {
+    const Recognition = browserSpeechRecognitionConstructor()
+    setSupported(Boolean(Recognition))
+    if (!Recognition) return
+    const recognition = new Recognition()
+    recognition.continuous = false
+    recognition.interimResults = false
+    recognition.lang = typeof navigator === 'undefined' ? 'en-US' : navigator.language || 'en-US'
+    recognition.maxAlternatives = 1
+    recognition.onstart = () => {
+      setListening(true)
+      setError(null)
+    }
+    recognition.onend = () => setListening(false)
+    recognition.onerror = (event) => {
+      setListening(false)
+      setError(browserDictationError(event.error ?? '', event.message))
+    }
+    recognition.onresult = (event) => {
+      let transcript = ''
+      for (let index = 0; index < event.results.length; index += 1) {
+        transcript += ` ${event.results[index]?.[0]?.transcript ?? ''}`
+      }
+      const nextValue = appendBrowserDictation(valueRef.current, transcript)
+      valueRef.current = nextValue
+      onValueChange(nextValue)
+    }
+    recognitionRef.current = recognition
+    return () => {
+      recognitionRef.current = null
+      try {
+        recognition.abort()
+      } catch {
+        // Ignore browser recognition teardown races.
+      }
+    }
+  }, [onValueChange])
+
+  useEffect(() => {
+    if (!disabled || !listening) return
+    try {
+      recognitionRef.current?.stop()
+    } catch {
+      recognitionRef.current?.abort()
+    }
+  }, [disabled, listening])
+
+  const toggle = useCallback(() => {
+    const recognition = recognitionRef.current
+    if (!recognition || disabled) return
+    if (listening) {
+      recognition.stop()
+      return
+    }
+    setError(null)
+    try {
+      recognition.start()
+    } catch (startError) {
+      setError(startError instanceof Error ? startError.message : 'Browser dictation could not start.')
+    }
+  }, [disabled, listening])
+
+  return { supported, listening, error, toggle }
+}
+
+function BackgroundTaskForm({ presentation, workspaceName, request, busy, error, onRequestChange, onSubmit, onClose }: {
+  presentation: 'dialog' | 'page'
+  workspaceName: string
+  request: string
+  busy: boolean
+  error: string | null
+  onRequestChange: (value: string) => void
+  onSubmit: (request: string) => void
+  onClose: () => void
+}) {
+  const dictation = useBrowserDictation(request, onRequestChange, busy)
+  if (presentation === 'page') {
+    return (
+      <section data-testid="mobile-task-page" className="flex h-full min-h-0 flex-col bg-[var(--app-surface)] pt-[var(--app-safe-area-top)] font-mono">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--app-border)] px-4 py-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]">
+              <ListChecks size={16} aria-hidden="true" />
+              <span>Background task</span>
+            </div>
+            <div className="mt-1 truncate text-xs text-[var(--app-text-subtle)]">{workspaceName}</div>
+          </div>
+          <button type="button" className="grid size-11 shrink-0 touch-manipulation place-items-center rounded-xl text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]" onClick={onClose} disabled={busy} aria-label="Back to workspace">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col justify-end">
+          <p className="px-4 pb-1 pt-5 text-sm leading-6 text-[var(--app-text-muted)]">
+            Send Swarm a background task. Sessions start automatically.
+          </p>
+          <DesktopV3AgenticComposer
+            draft={request}
+            onDraftChange={onRequestChange}
+            placeholder="What should Swarm do?"
+            inputLabel="Send Swarm a background task"
+            disabled={busy}
+            busy={busy}
+            canSubmit={Boolean(request.trim()) && !busy}
+            error={error}
+            onSubmit={onSubmit}
+            mode="auto"
+            showModePicker={false}
+            executionLabel="background"
+            currentAgent="swarm"
+            selectedPrimaryAgent="swarm"
+            agents={[]}
+            modelOptions={[]}
+            selectedModelKey=""
+            thinking="off"
+          />
+        </div>
+      </section>
+    )
+  }
+  const content = (
+    <>
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--app-border)] px-4 py-3 sm:px-5 sm:py-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]">
+              <ListChecks size={16} aria-hidden="true" />
+              <span>Background task</span>
+            </div>
+            <div className="mt-1 truncate text-xs text-[var(--app-text-subtle)]">{workspaceName}</div>
+          </div>
+          <button type="button" className="grid size-11 shrink-0 touch-manipulation place-items-center rounded-xl text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]" onClick={onClose} disabled={busy} aria-label="Close background task dialog">
+            <X size={18} />
+          </button>
+        </div>
+        <form
+          className="flex min-h-0 flex-1 flex-col"
+          onSubmit={(event) => {
+            event.preventDefault()
+            onSubmit(request)
+          }}
+        >
+          <div data-creation-form-scroll className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-4 py-4 [-webkit-overflow-scrolling:touch] sm:px-5">
+            <p className="text-xs leading-5 text-[var(--app-text-muted)]">
+              Describe the work once. Swarm will run it in the background in a managed session, so you can close this window and follow progress from the active session list.
+            </p>
+          <label className="grid min-h-0 gap-1.5 text-xs text-[var(--app-text-muted)]">
+            <span>What should Swarm do?</span>
+            <div className="relative">
+              <textarea
+                autoFocus={presentation === 'dialog'}
+                value={request}
+                onChange={(event) => onRequestChange(event.target.value)}
+                disabled={busy}
+                rows={6}
+                className="min-h-32 w-full resize-y rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-3 pr-14 text-[16px] leading-6 text-[var(--app-text)] outline-none focus:border-[var(--app-border-strong)] max-sm:max-h-[34dvh]"
+                placeholder="Describe a complete task for this workspace…"
+              />
+              {dictation.supported ? (
+                <button type="button" className={cn('absolute bottom-2 right-2 grid size-11 touch-manipulation place-items-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]', dictation.listening && 'border-[var(--app-primary)] text-[var(--app-primary)]')} onClick={dictation.toggle} disabled={busy} aria-pressed={dictation.listening} aria-label={dictation.listening ? 'Stop microphone dictation' : 'Start microphone dictation'} title={dictation.listening ? 'Stop dictation' : 'Dictate task'}>
+                  <Mic size={18} className={dictation.listening ? 'animate-pulse' : undefined} aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+          </label>
+            {dictation.error ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs text-[var(--app-warning)]" role="alert">{dictation.error}</div> : null}
+            {error ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs text-[var(--app-warning)]" role="alert">{error}</div> : null}
+          </div>
+          <div className="grid shrink-0 grid-cols-2 gap-3 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 max-sm:pb-[calc(0.75rem+var(--app-safe-area-bottom))] sm:flex sm:justify-end sm:px-5">
+            <Button className="min-h-11" type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+            <Button className="min-h-11" type="submit" disabled={busy || !request.trim()}>{busy ? 'Starting…' : 'Start task'}</Button>
+          </div>
+        </form>
+    </>
+  )
+  return (
+    <Dialog>
+      <DialogBackdrop onClick={busy ? undefined : onClose} />
+      <DialogPanel className="w-[min(560px,100%)] gap-0 overflow-hidden p-0 font-mono">{content}</DialogPanel>
+    </Dialog>
+  )
+}
+
+function WorktreeSessionForm({ presentation, state, title, branch, selectedExistingPath, busy, error, onTitleChange, onBranchChange, onSelectedExistingPathChange, onSubmit, onClose }: {
+  presentation: 'dialog' | 'page'
   state: WorktreeSessionModalState | null
   title: string
   branch: string
@@ -721,42 +968,47 @@ function WorktreeSessionModal({ state, title, branch, selectedExistingPath, busy
   onClose: () => void
 }) {
   const reusingExistingWorktree = Boolean(selectedExistingPath.trim())
-  if (!state) return null
-  return (
-    <Dialog>
-      <DialogBackdrop onClick={busy ? undefined : onClose} />
-      <DialogPanel className="w-[min(520px,100%)] gap-4 font-mono">
-        <div className="flex items-start justify-between gap-4">
+  if (!state) {
+    return presentation === 'page' ? (
+      <section data-testid="mobile-worktree-page" className="flex h-full items-center justify-center bg-[var(--app-surface)] pt-[var(--app-safe-area-top)] font-mono text-sm text-[var(--app-text-muted)]">
+        Loading worktree settings…
+      </section>
+    ) : null
+  }
+  const content = (
+    <>
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--app-border)] px-4 py-3 sm:px-5 sm:py-4">
           <div className="min-w-0">
             <div className="text-sm font-semibold text-[var(--app-text)]">Worktree Session</div>
             <div className="mt-1 truncate text-xs text-[var(--app-text-subtle)]">{state.workspaceName || state.workspacePath}</div>
           </div>
-          <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={onClose} disabled={busy} title="Close" aria-label="Close worktree session modal">
-            <X size={14} />
+          <button type="button" className="grid size-11 shrink-0 touch-manipulation place-items-center rounded-xl text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]" onClick={onClose} disabled={busy} title="Close" aria-label={presentation === 'page' ? 'Back to workspace' : 'Close worktree session dialog'}>
+            <X size={18} />
           </button>
         </div>
         <form
-          className="grid gap-4"
+          className="flex min-h-0 flex-1 flex-col"
           onSubmit={(event) => {
             event.preventDefault()
             onSubmit()
           }}
         >
+          <div data-creation-form-scroll className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-4 py-4 [-webkit-overflow-scrolling:touch] sm:px-5">
           <label className="grid gap-1.5 text-xs text-[var(--app-text-muted)]">
             <span>Title:</span>
             <input
               name="title"
-              className="h-10 border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-border-strong)]"
+              className="min-h-11 w-full min-w-0 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[16px] text-[var(--app-text)] outline-none focus:border-[var(--app-border-strong)]"
               value={title}
               onChange={(event) => onTitleChange(event.target.value)}
               disabled={busy}
-              autoFocus
+              autoFocus={presentation === 'dialog'}
             />
           </label>
           <label className="grid gap-1.5 text-xs text-[var(--app-text-muted)]">
             <span>Reuse existing worktree:</span>
             <select
-              className="h-10 border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-border-strong)]"
+              className="min-h-11 w-full min-w-0 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[16px] text-[var(--app-text)] outline-none focus:border-[var(--app-border-strong)]"
               value={selectedExistingPath}
               onChange={(event) => onSelectedExistingPathChange(event.target.value)}
               disabled={busy || state.settingsLoading || state.managedWorktrees.length === 0}
@@ -771,13 +1023,13 @@ function WorktreeSessionModal({ state, title, branch, selectedExistingPath, busy
           {!reusingExistingWorktree ? (
             <label className="grid gap-1.5 text-xs text-[var(--app-text-muted)]">
               <span>Branch suffix:</span>
-              <div className="flex h-10 overflow-hidden border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-sm focus-within:border-[var(--app-border-strong)]">
-                <span className="flex shrink-0 items-center border-r border-[var(--app-border)] bg-[var(--app-bg)] px-3 font-mono text-[var(--app-text-muted)]">
+              <div className="flex min-h-11 min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-sm focus-within:border-[var(--app-border-strong)]">
+                <span className="flex max-w-[45%] shrink-0 items-center truncate border-r border-[var(--app-border)] bg-[var(--app-bg)] px-3 font-mono text-[var(--app-text-muted)]">
                   {state.settingsLoading ? 'Loading…' : `${state.branchPrefix}/`}
                 </span>
                 <input
                   name="branch"
-                  className="min-w-0 flex-1 bg-transparent px-3 text-[var(--app-text)] outline-none"
+                  className="min-w-0 flex-1 bg-transparent px-3 text-[16px] text-[var(--app-text)] outline-none"
                   value={branch}
                   onChange={(event) => onBranchChange(event.target.value)}
                   disabled={busy || state.settingsLoading || !state.branchPrefix.trim()}
@@ -787,15 +1039,28 @@ function WorktreeSessionModal({ state, title, branch, selectedExistingPath, busy
               <span className="text-[11px] text-[var(--app-text-subtle)]">Prefix comes from Worktree settings. Change it in Settings → Worktrees.</span>
             </label>
           ) : null}
-          {error ? <div className="border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs text-[var(--app-warning)]">{error}</div> : null}
-          <div className="flex justify-end gap-3">
-            <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
-            <Button type="submit" disabled={busy || state.settingsLoading || !state.branchPrefix.trim() || !title.trim() || (!reusingExistingWorktree && !normalizeWorktreeBranchSuffix(branch))}>
+            {error ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs text-[var(--app-warning)]" role="alert">{error}</div> : null}
+          </div>
+          <div className="grid shrink-0 grid-cols-2 gap-3 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 max-sm:pb-[calc(0.75rem+var(--app-safe-area-bottom))] sm:flex sm:justify-end sm:px-5">
+            <Button className="min-h-11" type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+            <Button className="min-h-11" type="submit" disabled={busy || state.settingsLoading || !state.branchPrefix.trim() || !title.trim() || (!reusingExistingWorktree && !normalizeWorktreeBranchSuffix(branch))}>
               {busy ? 'Creating…' : 'Create session'}
             </Button>
           </div>
         </form>
-      </DialogPanel>
+    </>
+  )
+  if (presentation === 'page') {
+    return (
+      <section data-testid="mobile-worktree-page" className="flex h-full min-h-0 flex-col bg-[var(--app-surface)] pt-[var(--app-safe-area-top)] font-mono">
+        {content}
+      </section>
+    )
+  }
+  return (
+    <Dialog>
+      <DialogBackdrop onClick={busy ? undefined : onClose} />
+      <DialogPanel className="w-[min(520px,100%)] gap-0 overflow-hidden p-0 font-mono">{content}</DialogPanel>
     </Dialog>
   )
 }
@@ -1345,6 +1610,11 @@ function sessionRowMetadataLabel(session: DesktopSessionRecord): string {
 
 function sessionIsActive(session: DesktopSessionRecord): boolean {
   return sessionHasPendingPermission(session) || sessionHasCanonicalActiveRun(session)
+}
+
+export function sessionIsMobileActive(session: DesktopSessionRecord): boolean {
+  const group = sessionSidebarDisplayGroup(session)
+  return sessionIsActive(session) || group === 'needs_review' || group === 'in_progress'
 }
 
 function positiveTimestamp(value: number | null | undefined): number {
@@ -2260,10 +2530,21 @@ export function DesktopAppPage() {
   const requestedAgentName = typeof search.agent === 'string' ? search.agent.trim() : 'swarm'
   const agentSettingsOpenSignal = requestedAgentSetup ? 1 : 0
   const matchRoute = useMatchRoute()
+  const workspaceTaskMatch = matchRoute({ to: '/$workspaceSlug/task', fuzzy: false })
+  const workspaceWorktreeMatch = matchRoute({ to: '/$workspaceSlug/worktree', fuzzy: false })
   const workspaceSessionMatch = matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
   const workspaceMatch = matchRoute({ to: '/$workspaceSlug', fuzzy: false })
-  const routeWorkspaceSlug = (workspaceSessionMatch ? workspaceSessionMatch.workspaceSlug : workspaceMatch ? workspaceMatch.workspaceSlug : '').trim()
-  const routeSessionId = (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
+  const routeWorkspaceSlug = (workspaceTaskMatch
+    ? workspaceTaskMatch.workspaceSlug
+    : workspaceWorktreeMatch
+      ? workspaceWorktreeMatch.workspaceSlug
+      : workspaceSessionMatch
+        ? workspaceSessionMatch.workspaceSlug
+        : workspaceMatch
+          ? workspaceMatch.workspaceSlug
+          : '').trim()
+  const mobileCreationPage = workspaceTaskMatch ? 'task' : workspaceWorktreeMatch ? 'worktree' : null
+  const routeSessionId = mobileCreationPage ? '' : (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, currentWorkspacePath, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const [sidebarDisplayMode, setSidebarDisplayModeState] = useState<DesktopSidebarDisplayMode>(() => loadDesktopSidebarDisplayMode())
@@ -2273,6 +2554,11 @@ export function DesktopAppPage() {
     saveDesktopSidebarDisplayMode(mode)
   }, [])
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
+  const [mobilePreviousSessionsOpen, setMobilePreviousSessionsOpen] = useState(false)
+  const [backgroundTaskOpen, setBackgroundTaskOpen] = useState(false)
+  const [backgroundTaskRequest, setBackgroundTaskRequest] = useState('')
+  const [backgroundTaskBusy, setBackgroundTaskBusy] = useState(false)
+  const [backgroundTaskError, setBackgroundTaskError] = useState<string | null>(null)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [codexUsageOpen, setCodexUsageOpen] = useState(false)
@@ -2795,6 +3081,22 @@ export function DesktopAppPage() {
     () => flattenVisibleSidebarSessionNodes(filteredSidebarTrees.nodes, expandedAgentSessions, routeSessionId),
     [expandedAgentSessions, filteredSidebarTrees.nodes, routeSessionId],
   )
+  const mobileWorkspaceSessionNodes = useMemo(
+    () => globalFlattenedSessionNodes.filter((node) => (
+      routeWorkspace?.path
+        ? desktopRouteWorkspacePathForSession(node.session, workspacePathByBindingId, knownWorkspacePaths) === routeWorkspace.path
+        : false
+    )),
+    [globalFlattenedSessionNodes, knownWorkspacePaths, routeWorkspace?.path, workspacePathByBindingId],
+  )
+  const mobileActiveSessionNodes = useMemo(
+    () => mobileWorkspaceSessionNodes.filter((node) => sessionIsMobileActive(node.session)),
+    [mobileWorkspaceSessionNodes],
+  )
+  const mobilePreviousSessionNodes = useMemo(
+    () => mobileWorkspaceSessionNodes.filter((node) => !sessionIsMobileActive(node.session)),
+    [mobileWorkspaceSessionNodes],
+  )
   const visibleSidebarRootIDs = useMemo(
     () => sidebarRootIDsForSelectionGroup(filteredSidebarTrees.nodes, null),
     [filteredSidebarTrees.nodes],
@@ -3292,9 +3594,11 @@ export function DesktopAppPage() {
     workspace: WorkspaceEntry
     workspaceSlug: string
     routeOptions: DesktopChatRoute[]
+    presentation?: 'dialog' | 'page'
   }) => {
     const workspacePath = input.workspace.path
     setWorktreeSessionModal({
+      presentation: input.presentation ?? 'dialog',
       workspacePath,
       workspaceName: input.workspace.workspaceName,
       workspaceSlug: input.workspaceSlug,
@@ -3326,7 +3630,10 @@ export function DesktopAppPage() {
     if (worktreeSessionCreating) return
     setWorktreeSessionModal(null)
     setWorktreeSessionError(null)
-  }, [worktreeSessionCreating])
+    if (mobileCreationPage === 'worktree' && routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
+    }
+  }, [mobileCreationPage, navigate, routeWorkspaceSlug, worktreeSessionCreating])
 
   const handleCreateWorktreeSession = useCallback(async () => {
     if (!worktreeSessionModal || worktreeSessionCreating) return
@@ -3409,6 +3716,23 @@ export function DesktopAppPage() {
       setWorktreeSessionCreating(false)
     }
   }, [agentStateQuery.data?.activePrimary, draftPreferenceQuery.data?.preference, navigate, newSessionModeByWorkspace, uiSettings, uiSettingsQuery.data, worktreeSessionBranch, worktreeSessionCreating, worktreeSessionExistingPath, worktreeSessionModal, worktreeSessionTitle])
+
+  useEffect(() => {
+    if (mobileCreationPage !== 'worktree' || !routeWorkspace?.path || worktreeSessionModal?.presentation === 'page') return
+    openWorktreeSessionModal({
+      workspace: routeWorkspace,
+      workspaceSlug: routeWorkspaceSlug || workspaceRouteSlugBase({ path: routeWorkspace.path, workspaceName: routeWorkspace.workspaceName }),
+      presentation: 'page',
+      routeOptions: buildDesktopChatRouteOptions({
+        hostSwarmName: swarmName,
+        workspacePath: routeWorkspace.path,
+        workspaceName: routeWorkspace.workspaceName,
+        topologyRoutes: routeWorkspace.topologyRoutes,
+        localWorkspaceBindingId: routeWorkspace.localWorkspaceBindingId,
+        hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
+      }),
+    })
+  }, [currentSwarmTarget?.swarm_id, mobileCreationPage, openWorktreeSessionModal, routeWorkspace, routeWorkspaceSlug, swarmName, worktreeSessionModal])
 
   const openPlanModalForSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
@@ -3632,7 +3956,7 @@ export function DesktopAppPage() {
   const canStartNewSession = Boolean(topWorkspacePath)
   const canReturnToPreviousChat = Boolean(previousChatSessionId && sessionById.has(previousChatSessionId))
   useEffect(() => {
-    function desktopShortcutMatches(event: KeyboardEvent, key: string): boolean {
+    function desktopShortcutMatches(event: globalThis.KeyboardEvent, key: string): boolean {
       const normalizedKey = event.key.toLowerCase()
       return (event.metaKey || event.ctrlKey) && event.altKey && !event.shiftKey && normalizedKey === key
     }
@@ -3649,7 +3973,7 @@ export function DesktopAppPage() {
       return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'))
     }
 
-    function handleDesktopShortcut(event: KeyboardEvent) {
+    function handleDesktopShortcut(event: globalThis.KeyboardEvent) {
       if (event.defaultPrevented) return
       const target = event.target
       const element = target instanceof HTMLElement ? target : null
@@ -3951,46 +4275,143 @@ export function DesktopAppPage() {
     }))
   }, [])
 
+  const openBackgroundTaskModal = useCallback(() => {
+    setBackgroundTaskRequest('')
+    setBackgroundTaskError(null)
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 639px)').matches && routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/task', params: { workspaceSlug: routeWorkspaceSlug } })
+      return
+    }
+    setBackgroundTaskOpen(true)
+  }, [navigate, routeWorkspaceSlug])
+
+  const closeBackgroundTaskModal = useCallback(() => {
+    if (backgroundTaskBusy) return
+    setBackgroundTaskOpen(false)
+    setBackgroundTaskError(null)
+    if (mobileCreationPage === 'task' && routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
+    }
+  }, [backgroundTaskBusy, mobileCreationPage, navigate, routeWorkspaceSlug])
+
+  const handleQueueBackgroundTask = useCallback(async (submittedRequest = backgroundTaskRequest) => {
+    const request = submittedRequest.trim()
+    const workspacePath = routeWorkspace?.path.trim() ?? ''
+    if (!request || !workspacePath || backgroundTaskBusy) return
+    setBackgroundTaskBusy(true)
+    setBackgroundTaskError(null)
+    const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `task-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    try {
+      const result = await createWorkspaceAITask(workspacePath, request, idempotencyKey)
+      setTodoItems((current) => ({ ...current, [workspacePath]: upsertWorkspaceTodoItem(current[workspacePath] ?? [], result.item) }))
+      setTodoSummaries((current) => ({ ...current, [workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
+      if (result.item.aiState === 'failed') {
+        setBackgroundTaskError(result.item.aiError || 'Swarm could not start the task.')
+        return
+      }
+      if (result.item.managedSessionId || result.item.aiState === 'in_progress') aiTaskTerminalToastRef.current.add(result.item.id)
+      if (isWorkspaceAITaskActive(result.item)) reconcileWorkspaceAITask(workspacePath, result.item.id)
+      setBackgroundTaskOpen(false)
+      setBackgroundTaskRequest('')
+      setDesktopToast({ message: 'Task started in the background. Follow it from Active sessions.', tone: 'success' })
+      if (mobileCreationPage === 'task' && routeWorkspaceSlug) {
+        void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
+      }
+    } catch (error) {
+      setBackgroundTaskError(error instanceof Error ? error.message : 'Failed to start task')
+    } finally {
+      setBackgroundTaskBusy(false)
+    }
+  }, [backgroundTaskBusy, backgroundTaskRequest, mobileCreationPage, navigate, reconcileWorkspaceAITask, routeWorkspace?.path, routeWorkspaceSlug])
+
+  const openRouteWorkspaceWorktree = useCallback(() => {
+    if (!routeWorkspace?.path) return
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 639px)').matches && routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/worktree', params: { workspaceSlug: routeWorkspaceSlug } })
+      return
+    }
+    openWorktreeSessionModal({
+      workspace: routeWorkspace,
+      workspaceSlug: routeWorkspaceSlug || workspaceRouteSlugBase({ path: routeWorkspace.path, workspaceName: routeWorkspace.workspaceName }),
+      routeOptions: buildDesktopChatRouteOptions({
+        hostSwarmName: swarmName,
+        workspacePath: routeWorkspace.path,
+        workspaceName: routeWorkspace.workspaceName,
+        topologyRoutes: routeWorkspace.topologyRoutes,
+        localWorkspaceBindingId: routeWorkspace.localWorkspaceBindingId,
+        hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
+      }),
+    })
+  }, [currentSwarmTarget?.swarm_id, navigate, openWorktreeSessionModal, routeWorkspace, routeWorkspaceSlug, swarmName])
+
+  const renderMobileSessions = (nodes: SidebarSessionNode[]) => renderSidebarSessionGroups({
+    nodes,
+    routeSessionId,
+    now: sidebarNow,
+    fallbackSwarmName: swarmName,
+    routeOptions: globalSessionRouteOptions,
+    workspaceSlug: globalSessionWorkspaceSlug,
+    expandedAgentSessions,
+    agentSummaries: sidebarAgentSummaries,
+    compactingSession,
+    pendingActions: sidebarSessionActions,
+    selectionMode: sidebarSelectionMode,
+    selectedRootIDs: selectedSidebarRootIDs,
+    hideInactiveHours: sidebarHideInactiveHours,
+    thresholdSaving: sidebarThresholdSaving,
+    bulkArchivePending,
+    masterSelectionGroup: sidebarMasterSelectionGroup,
+    reviewCleanupOpen: needsReviewCleanupOpen,
+    onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
+    onEnterSelectionMode: handleEnterSidebarSelectionMode,
+    onClearSelection: handleClearSidebarSelection,
+    onBulkArchive: () => { void handleBulkArchiveSidebar() },
+    onThresholdChange: (hours) => { void handleSidebarThresholdChange(hours) },
+    onSelect: handleSelectSession,
+    onToggleSelected: handleToggleSidebarSelected,
+    onPrefetch: handlePrefetchSession,
+    onToggleAgents: handleToggleAgentSessions,
+    onTogglePinned: handleToggleSidebarPinned,
+    onArchive: handleArchiveSidebarSession,
+    onRename: handleRenameSidebarSession,
+  })
+
   const mobileSessionQuickMenu = routeWorkspace?.path ? (
-    <Card className="flex min-h-0 w-full flex-1 flex-col border-[var(--app-border)] bg-[var(--app-surface)] p-4 shadow-sm">
-      <div className="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto pr-1 [-webkit-overflow-scrolling:touch]">
-        {renderSidebarSessionGroups({
-          nodes: globalFlattenedSessionNodes,
-          routeSessionId,
-          now: sidebarNow,
-          fallbackSwarmName: swarmName,
-          routeOptions: globalSessionRouteOptions,
-          workspaceSlug: globalSessionWorkspaceSlug,
-          expandedAgentSessions,
-          agentSummaries: sidebarAgentSummaries,
-          compactingSession,
-          pendingActions: sidebarSessionActions,
-          selectionMode: sidebarSelectionMode,
-          selectedRootIDs: selectedSidebarRootIDs,
-          hideInactiveHours: sidebarHideInactiveHours,
-          thresholdSaving: sidebarThresholdSaving,
-          bulkArchivePending,
-          masterSelectionGroup: sidebarMasterSelectionGroup,
-          reviewCleanupOpen: needsReviewCleanupOpen,
-          onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
-          onEnterSelectionMode: handleEnterSidebarSelectionMode,
-          onClearSelection: handleClearSidebarSelection,
-          onBulkArchive: () => { void handleBulkArchiveSidebar() },
-          onThresholdChange: (hours) => { void handleSidebarThresholdChange(hours) },
-          onSelect: handleSelectSession,
-          onToggleSelected: handleToggleSidebarSelected,
-          onPrefetch: handlePrefetchSession,
-          onToggleAgents: handleToggleAgentSessions,
-          onTogglePinned: handleToggleSidebarPinned,
-          onArchive: handleArchiveSidebarSession,
-          onRename: handleRenameSidebarSession,
-        }) ?? (
-          <div className="rounded-xl border border-dashed border-[var(--app-border)] px-3 py-4 text-center text-xs text-[var(--app-text-subtle)]">
-            No active chats yet.
-          </div>
-        )}
-      </div>
-    </Card>
+    <div className="flex min-h-0 w-full flex-1 flex-col gap-4 pb-2" data-testid="mobile-workspace-home">
+      <section className="shrink-0" aria-label="Workspace actions">
+        <div className="grid grid-cols-2 gap-3">
+          <button type="button" className="flex min-h-20 touch-manipulation flex-col items-start justify-between rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left shadow-sm transition active:bg-[var(--app-surface-hover)]" onClick={openBackgroundTaskModal}>
+            <ListChecks size={21} className="text-[var(--app-primary)]" aria-hidden="true" />
+            <span className="text-sm font-semibold text-[var(--app-text)]">Task</span>
+          </button>
+          <button type="button" className="flex min-h-20 touch-manipulation flex-col items-start justify-between rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left shadow-sm transition active:bg-[var(--app-surface-hover)] disabled:opacity-50" onClick={openRouteWorkspaceWorktree} disabled={!routeWorkspace}>
+            <GitBranch size={21} className="text-[var(--app-primary)]" aria-hidden="true" />
+            <span className="text-sm font-semibold text-[var(--app-text)]">Worktree</span>
+          </button>
+        </div>
+      </section>
+
+      <Card className="flex min-h-0 w-full flex-1 flex-col border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-sm">
+        <div className="mb-2 flex shrink-0 items-center justify-between px-1">
+          <h2 className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Active sessions</h2>
+          <span className="text-xs tabular-nums text-[var(--app-text-muted)]">{mobileActiveSessionNodes.length}</span>
+        </div>
+        <div className="grid min-h-0 content-start gap-2 overflow-y-auto pr-1 [-webkit-overflow-scrolling:touch]">
+          {renderMobileSessions(mobileActiveSessionNodes) ?? (
+            <div className="rounded-xl border border-dashed border-[var(--app-border)] px-3 py-4 text-center text-xs text-[var(--app-text-subtle)]">No active sessions.</div>
+          )}
+          {mobilePreviousSessionNodes.length > 0 ? (
+            <div className="mt-1 border-t border-[var(--app-border)] pt-2">
+              <button type="button" className="flex min-h-11 w-full touch-manipulation items-center justify-between rounded-xl px-3 text-left text-xs text-[var(--app-text-muted)] active:bg-[var(--app-surface-hover)]" onClick={() => setMobilePreviousSessionsOpen((open) => !open)} aria-expanded={mobilePreviousSessionsOpen}>
+                <span>{mobilePreviousSessionNodes.length} previous session{mobilePreviousSessionNodes.length === 1 ? '' : 's'}</span>
+                <ChevronDown size={16} className={cn('transition-transform', mobilePreviousSessionsOpen && 'rotate-180')} aria-hidden="true" />
+              </button>
+              {mobilePreviousSessionsOpen ? <div className="mt-2 grid gap-2">{renderMobileSessions(mobilePreviousSessionNodes)}</div> : null}
+            </div>
+          ) : null}
+        </div>
+      </Card>
+    </div>
   ) : null
 
   const handleWorkspaceSelect = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
@@ -4474,7 +4895,39 @@ export function DesktopAppPage() {
       ) : null}
 
       <main className="flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden sm:pr-[var(--app-safe-area-right)] sm:pl-[var(--app-safe-area-left)]">
-        {routeSessionUnavailable ? (
+        {mobileCreationPage === 'task' && routeWorkspace ? (
+          <BackgroundTaskForm
+            presentation="page"
+            workspaceName={routeWorkspace.workspaceName || routeWorkspace.path}
+            request={backgroundTaskRequest}
+            busy={backgroundTaskBusy}
+            error={backgroundTaskError}
+            onRequestChange={setBackgroundTaskRequest}
+            onSubmit={(request) => { void handleQueueBackgroundTask(request) }}
+            onClose={closeBackgroundTaskModal}
+          />
+        ) : mobileCreationPage === 'worktree' && routeWorkspace ? (
+          <WorktreeSessionForm
+            presentation="page"
+            state={worktreeSessionModal?.presentation === 'page' ? worktreeSessionModal : null}
+            title={worktreeSessionTitle}
+            branch={worktreeSessionBranch}
+            selectedExistingPath={worktreeSessionExistingPath}
+            busy={worktreeSessionCreating}
+            error={worktreeSessionError}
+            onTitleChange={(value) => {
+              setWorktreeSessionTitle(value)
+              if (!worktreeSessionBranchOverridden) setWorktreeSessionBranch(titleToWorktreeBranchSlug(value))
+            }}
+            onBranchChange={(value) => {
+              setWorktreeSessionBranch(value)
+              setWorktreeSessionBranchOverridden(true)
+            }}
+            onSelectedExistingPathChange={setWorktreeSessionExistingPath}
+            onSubmit={() => { void handleCreateWorktreeSession() }}
+            onClose={closeWorktreeSessionModal}
+          />
+        ) : routeSessionUnavailable ? (
           <div className="flex h-full flex-1 items-center justify-center px-6">
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
               <div className="text-lg font-semibold">Session not available</div>
@@ -4752,7 +5205,7 @@ export function DesktopAppPage() {
       ) : null}
 
       {desktopToast ? (
-        <div className="pointer-events-none absolute right-6 top-6 z-[70] max-w-md" role="status" aria-live="polite">
+        <div className="pointer-events-none absolute left-4 right-4 top-[calc(var(--app-safe-area-top)+1rem)] z-[70] sm:left-auto sm:right-6 sm:top-6 sm:max-w-md" role="status" aria-live="polite">
           <Card className={cn(
             'border p-4 shadow-2xl',
             desktopToast.tone === 'success'
@@ -4820,8 +5273,21 @@ export function DesktopAppPage() {
         </div>
       ) : null}
 
-      <WorktreeSessionModal
-        state={worktreeSessionModal}
+      {backgroundTaskOpen && routeWorkspace && mobileCreationPage !== 'task' ? (
+        <BackgroundTaskForm
+          presentation="dialog"
+          workspaceName={routeWorkspace.workspaceName || routeWorkspace.path}
+          request={backgroundTaskRequest}
+          busy={backgroundTaskBusy}
+          error={backgroundTaskError}
+          onRequestChange={setBackgroundTaskRequest}
+          onSubmit={() => { void handleQueueBackgroundTask() }}
+          onClose={closeBackgroundTaskModal}
+        />
+      ) : null}
+      {mobileCreationPage !== 'worktree' ? <WorktreeSessionForm
+        presentation="dialog"
+        state={worktreeSessionModal?.presentation === 'dialog' ? worktreeSessionModal : null}
         title={worktreeSessionTitle}
         branch={worktreeSessionBranch}
         selectedExistingPath={worktreeSessionExistingPath}
@@ -4838,7 +5304,7 @@ export function DesktopAppPage() {
         onSelectedExistingPathChange={setWorktreeSessionExistingPath}
         onSubmit={() => { void handleCreateWorktreeSession() }}
         onClose={closeWorktreeSessionModal}
-      />
+      /> : null}
       {gitCommitModal ? <Dialog>
         <DialogBackdrop onClick={() => { if (!gitCommitBusy) setGitCommitModal(null) }} />
         <DialogPanel className="w-[min(560px,100%)] gap-4">

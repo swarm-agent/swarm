@@ -23,6 +23,7 @@ export interface DesktopV3ChatHeaderProps {
   sessionActions?: DesktopV3ChatHeaderSessionActions | null
   onOpenChats?: () => void
   onNewSession?: () => void
+  hideMobileIdentity?: boolean
 }
 
 function normalizeTitle(value: string): string {
@@ -51,6 +52,7 @@ export function DesktopV3ChatHeader({
   sessionActions = null,
   onOpenChats,
   onNewSession,
+  hideMobileIdentity = false,
 }: DesktopV3ChatHeaderProps) {
   const displayTitle = normalizeTitle(title)
   const displayWorkspace = normalizeWorkspaceName(workspaceName)
@@ -138,24 +140,26 @@ export function DesktopV3ChatHeader({
         ) : null}
 
         <div className="min-w-0 flex-1">
-          <div className="sm:hidden">
-            <h1 className="min-w-0 text-[13px] font-semibold leading-tight text-[var(--app-text)]">
-              {editableTitle}
-            </h1>
-            <div className="relative mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-[10px] font-medium text-[var(--app-text-muted)]" title={displayWorkspace}>
-              <span className="min-w-0 truncate text-left">{displayWorkspace}</span>
-              {displayBranch ? (
-                <span className="pointer-events-none absolute left-1/2 max-w-[42vw] -translate-x-1/2 truncate text-center text-[var(--app-text-muted)]" title={displayBranch}>
-                  {displayBranch}
-                </span>
-              ) : null}
-              {mobileRunTimerLabel ? (
-                <span className="shrink-0 justify-self-end tabular-nums text-[var(--app-text)]" title={runStatus?.label}>
-                  {mobileRunTimerLabel}
-                </span>
-              ) : null}
+          {!hideMobileIdentity ? (
+            <div className="sm:hidden">
+              <h1 className="min-w-0 text-[13px] font-semibold leading-tight text-[var(--app-text)]">
+                {editableTitle}
+              </h1>
+              <div className="relative mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-[10px] font-medium text-[var(--app-text-muted)]" title={displayWorkspace}>
+                <span className="min-w-0 truncate text-left">{displayWorkspace}</span>
+                {displayBranch ? (
+                  <span className="pointer-events-none absolute left-1/2 max-w-[42vw] -translate-x-1/2 truncate text-center text-[var(--app-text-muted)]" title={displayBranch}>
+                    {displayBranch}
+                  </span>
+                ) : null}
+                {mobileRunTimerLabel ? (
+                  <span className="shrink-0 justify-self-end tabular-nums text-[var(--app-text)]" title={runStatus?.label}>
+                    {mobileRunTimerLabel}
+                  </span>
+                ) : null}
+              </div>
             </div>
-          </div>
+          ) : null}
 
           <div className="hidden min-w-0 sm:block">
             <h1 className="flex items-center gap-2 overflow-hidden text-sm font-semibold text-[var(--app-text)]">

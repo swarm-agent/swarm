@@ -14,7 +14,7 @@ const SwarmToolsPage = lazyRouteComponent(() => import('../features/desktop/tool
 const VideoToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/video-tool-page'), 'VideoToolPage')
 const ImageToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/image-tool-page'), 'ImageToolPage')
 const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'agents'])
-const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree'])
 
 function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
   const parts = pathname.split('/').map((part) => decodeURIComponent(part).trim()).filter(Boolean)
@@ -199,6 +199,20 @@ const workspaceSessionRoute = createRoute({
   component: DesktopAppPage,
 })
 
+const workspaceTaskRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/task',
+  parseParams: validateWorkspaceParams,
+  component: DesktopAppPage,
+})
+
+const workspaceWorktreeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/worktree',
+  parseParams: validateWorkspaceParams,
+  component: DesktopAppPage,
+})
+
 const workspaceSettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/settings',
@@ -247,6 +261,8 @@ const routeTree = rootRoute.addChildren([
   imageToolSessionRoute,
   workspaceRoute,
   workspaceSessionRoute,
+  workspaceTaskRoute,
+  workspaceWorktreeRoute,
   workspaceSettingsRoute,
   workspaceToolsRoute,
   workspaceVideoToolRoute,

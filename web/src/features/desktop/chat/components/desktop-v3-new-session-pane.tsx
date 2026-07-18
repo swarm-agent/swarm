@@ -547,9 +547,10 @@ export function DesktopV3NewSessionPane({
         runStatus={runStatusModel}
         runStatusNow={timerNow}
         onOpenChats={onOpenChats}
+        hideMobileIdentity
       />
-      <div className="min-h-0 flex-1 overflow-y-auto py-6 [-webkit-overflow-scrolling:touch]">
-        <div className="mx-auto flex min-h-full w-full max-w-[70rem] flex-col justify-start px-4 sm:justify-end sm:px-6">
+      <div className="min-h-0 flex-1 overflow-y-auto py-4 [-webkit-overflow-scrolling:touch] sm:py-6">
+        <div className="mx-auto flex min-h-full w-full max-w-[70rem] flex-col justify-start px-3 sm:justify-end sm:px-6">
           {mobileSessionQuickMenu ? <div className="flex min-h-0 w-full flex-1 sm:hidden">{mobileSessionQuickMenu}</div> : null}
         </div>
       </div>
