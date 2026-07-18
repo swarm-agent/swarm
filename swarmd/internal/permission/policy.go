@@ -23,15 +23,21 @@ const (
 )
 
 type Policy struct {
-	Version   int            `json:"version"`
-	Rules     []PolicyRule   `json:"rules,omitempty"`
-	Subagents SubagentPolicy `json:"subagents"`
-	UpdatedAt int64          `json:"updated_at,omitempty"`
+	Version        int                  `json:"version"`
+	Rules          []PolicyRule         `json:"rules,omitempty"`
+	Subagents      SubagentPolicy       `json:"subagents"`
+	SessionDeploy  SessionDeployPolicy  `json:"session_deploy"`
+	PlanAcceptance PlanAcceptancePolicy `json:"plan_acceptance"`
+	UpdatedAt      int64                `json:"updated_at,omitempty"`
 }
 
 type SubagentOrchestrationMode string
 
 type SubagentOverBudgetAction string
+
+type CapabilityPolicyMode string
+
+type SessionDeployOverLimitAction string
 
 const (
 	SubagentModeDirect  SubagentOrchestrationMode = "direct"
@@ -41,11 +47,32 @@ const (
 	SubagentOverBudgetAsk  SubagentOverBudgetAction = "ask"
 	SubagentOverBudgetDeny SubagentOverBudgetAction = "deny"
 
+	CapabilityModeAsk         CapabilityPolicyMode = "ask"
+	CapabilityModeAlwaysAllow CapabilityPolicyMode = "always_allow"
+	CapabilityModeBounded     CapabilityPolicyMode = "bounded"
+
+	SessionDeployOverLimitAsk  SessionDeployOverLimitAction = "ask"
+	SessionDeployOverLimitDeny SessionDeployOverLimitAction = "deny"
+
 	// These are validation safety bounds, not orchestration defaults. Account policy
 	// remains authoritative within them and can support substantial refactor waves.
 	MaxSubagentWaveSize = 256
 	MaxSubagentDepth    = 16
 )
+
+// SessionDeployPolicy controls only durable manage-sessions deployment. It is
+// intentionally separate from generic manage_sessions tool rules.
+type SessionDeployPolicy struct {
+	Mode                             CapabilityPolicyMode         `json:"mode"`
+	AutomaticDeploymentsPerParentRun int                          `json:"automatic_deployments_per_parent_run"`
+	OverLimitAction                  SessionDeployOverLimitAction `json:"over_limit_action"`
+}
+
+// PlanAcceptancePolicy controls only structured plan acceptance boundaries. The
+// validated backend-owned document and canonical arguments remain authoritative.
+type PlanAcceptancePolicy struct {
+	Mode CapabilityPolicyMode `json:"mode"`
+}
 
 // SubagentPolicy is the single account-scoped delegation policy. Launches share one
 // budget regardless of child purpose (for example Explorer or Clone).
@@ -58,6 +85,42 @@ type SubagentPolicy struct {
 	MaxDepth                      int                       `json:"max_depth"`
 	RequireWriteIsolation         bool                      `json:"require_write_isolation"`
 }
+
+func DefaultSessionDeployPolicy() SessionDeployPolicy {
+	return SessionDeployPolicy{Mode: CapabilityModeAsk, AutomaticDeploymentsPerParentRun: 0, OverLimitAction: SessionDeployOverLimitAsk}
+}
+
+func DefaultPlanAcceptancePolicy() PlanAcceptancePolicy {
+	return PlanAcceptancePolicy{Mode: CapabilityModeAsk}
+}
+
+func ValidateSessionDeployPolicy(policy SessionDeployPolicy) error {
+	switch policy.Mode {
+	case CapabilityModeAsk, CapabilityModeAlwaysAllow, CapabilityModeBounded:
+	default:
+		return fmt.Errorf("unsupported session deployment policy mode %q", policy.Mode)
+	}
+	if policy.AutomaticDeploymentsPerParentRun < 0 || policy.AutomaticDeploymentsPerParentRun > manageSessionDeployPolicyMaximum {
+		return fmt.Errorf("automatic deployments per parent run must be between 0 and %d", manageSessionDeployPolicyMaximum)
+	}
+	switch policy.OverLimitAction {
+	case SessionDeployOverLimitAsk, SessionDeployOverLimitDeny:
+	default:
+		return fmt.Errorf("unsupported session deployment over-limit action %q", policy.OverLimitAction)
+	}
+	return nil
+}
+
+func ValidatePlanAcceptancePolicy(policy PlanAcceptancePolicy) error {
+	switch policy.Mode {
+	case CapabilityModeAsk, CapabilityModeAlwaysAllow:
+		return nil
+	default:
+		return fmt.Errorf("unsupported plan acceptance policy mode %q", policy.Mode)
+	}
+}
+
+const manageSessionDeployPolicyMaximum = 256
 
 func DefaultSubagentPolicy() SubagentPolicy {
 	return SubagentPolicy{
@@ -133,8 +196,10 @@ type policyEvalContext struct {
 
 func DefaultPolicy() Policy {
 	return Policy{
-		Version:   1,
-		Subagents: DefaultSubagentPolicy(),
+		Version:        1,
+		Subagents:      DefaultSubagentPolicy(),
+		SessionDeploy:  DefaultSessionDeployPolicy(),
+		PlanAcceptance: DefaultPlanAcceptancePolicy(),
 		Rules: []PolicyRule{
 			{ID: "default_deny_bash_rm_root", Kind: PolicyRuleKindPhrase, Decision: PolicyDecisionDeny, Tool: "bash", Pattern: "rm -rf /"},
 			{ID: "default_deny_bash_rm_root_glob", Kind: PolicyRuleKindPhrase, Decision: PolicyDecisionDeny, Tool: "bash", Pattern: "rm -rf /*"},
@@ -159,6 +224,12 @@ func NormalizePolicy(policy Policy) Policy {
 	if err := ValidateSubagentPolicy(policy.Subagents); err != nil {
 		policy.Subagents = DefaultSubagentPolicy()
 	}
+	if err := ValidateSessionDeployPolicy(policy.SessionDeploy); err != nil {
+		policy.SessionDeploy = DefaultSessionDeployPolicy()
+	}
+	if err := ValidatePlanAcceptancePolicy(policy.PlanAcceptance); err != nil {
+		policy.PlanAcceptance = DefaultPlanAcceptancePolicy()
+	}
 	if policy.UpdatedAt < 0 {
 		policy.UpdatedAt = 0
 	}
@@ -175,10 +246,27 @@ func ExplainPolicy(mode, toolName, toolArguments string, policy Policy) PolicyEx
 	if explain, ok := explainPhraseDeny(ctx, policy); ok {
 		return explain
 	}
-	// Session deployment is always a fresh user decision. It intentionally runs
-	// before explicit allow rules and generic permission bypass.
+	// Dedicated capabilities are evaluated before generic rules and bypass so a
+	// broad manage_sessions/plan_manage rule cannot authorize either boundary.
 	if ctx.ToolName == "session_deploy" {
-		return PolicyExplain{Decision: PolicyDecisionAsk, Source: "builtin", Reason: "session deployment always requires fresh user approval", ToolName: ctx.ToolName}
+		decision := PolicyDecisionAsk
+		reason := "session deployment policy requires approval"
+		switch policy.SessionDeploy.Mode {
+		case CapabilityModeAlwaysAllow:
+			decision, reason = PolicyDecisionAllow, "session deployment capability is always allowed"
+		case CapabilityModeBounded:
+			// Durable per-run accounting resolves bounded calls at the approval boundary.
+			decision, reason = PolicyDecisionAllow, "session deployment uses bounded per-run accounting"
+		}
+		return PolicyExplain{Decision: decision, Source: "session_deploy_policy", Reason: reason, ToolName: ctx.ToolName}
+	}
+	if ctx.ToolName == "plan_acceptance" {
+		decision := PolicyDecisionAsk
+		reason := "plan acceptance policy requires approval"
+		if policy.PlanAcceptance.Mode == CapabilityModeAlwaysAllow {
+			decision, reason = PolicyDecisionAllow, "plan acceptance capability is always allowed"
+		}
+		return PolicyExplain{Decision: decision, Source: "plan_acceptance_policy", Reason: reason, ToolName: ctx.ToolName}
 	}
 	if explain, ok := explainExplicitRule(ctx, policy); ok {
 		return explain
@@ -235,6 +323,11 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	// Session mutations are separate policy capabilities even though they share the
 	// manage_sessions transport tool. This prevents a generic manage_sessions rule,
 	// or a rule for another mutation, from authorizing this action.
+	if toolName == "exit_plan_mode" {
+		toolName = "plan_acceptance"
+	} else if toolName == "plan_manage" && IsPlanAcceptanceLifecycleRequirement(PlanManageLifecycleRequirement(toolArguments)) {
+		toolName = "plan_acceptance"
+	}
 	if toolName == "manage_sessions" {
 		switch {
 		case ShouldApproveManageSessionsDeploy(toolArguments):

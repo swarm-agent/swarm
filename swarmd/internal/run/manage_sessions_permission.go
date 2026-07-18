@@ -137,6 +137,16 @@ func (s *Service) buildManageSessionsCommitPermissionPayload(sessionID string, a
 	return payload, nil
 }
 
+func selectedSessionDeployCount(approvedArguments string) int {
+	var payload struct {
+		SelectedProposalIDs []string `json:"selected_proposal_ids"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(approvedArguments)), &payload) != nil {
+		return 0
+	}
+	return len(payload.SelectedProposalIDs)
+}
+
 func isCanonicalManageSessionsMutation(action string) bool {
 	switch strings.ToLower(strings.TrimSpace(action)) {
 	case "commit", "archive", "unarchive":

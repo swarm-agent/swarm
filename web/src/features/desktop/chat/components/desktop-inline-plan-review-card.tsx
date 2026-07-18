@@ -14,6 +14,7 @@ import {
 } from "../../permissions/services/permission-payload";
 import { exitPlanExecutionArguments } from "../../permissions/components/desktop-permission-modal";
 import { ChatMarkdown } from "./chat-markdown";
+import { savePlanAcceptanceMode } from "../../permissions/services/capability-policy";
 
 export function structuredPlanDocumentFromPermission(
   permission: DesktopPermissionRecord,
@@ -66,6 +67,8 @@ export function DesktopInlinePlanReviewCard({
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const supportsExecutionChoice =
     kind === "exit-plan" || kind === "plan-new-request";
+  const supportsPersistentAcceptance =
+    kind === "exit-plan" || kind === "plan-followup-request" || kind === "plan-revision-request" || kind === "plan-amendment-request" || kind === "plan-new-request";
   const title =
     document?.title ||
     exitPayload?.title ||
@@ -91,16 +94,17 @@ export function DesktopInlinePlanReviewCard({
     }
   };
 
-  const resolve = async (action: "approve" | "deny") => {
+  const resolve = async (action: "approve" | "deny" | "approve_always") => {
     if (loading) return;
     setLoading(true);
     try {
       // The pending backend permission remains proposal authority. The client may
       // only overlay execution policy, never replay a stale proposal document.
-      const approvedArguments = action === "approve" && supportsExecutionChoice
+      if (action === "approve_always") await savePlanAcceptanceMode("always_allow");
+      const approvedArguments = action !== "deny" && supportsExecutionChoice
         ? exitPlanExecutionArguments(pauseForReview)
         : undefined;
-      await onResolve(permission, action, "", approvedArguments);
+      await onResolve(permission, action === "deny" ? "deny" : "approve", "", approvedArguments);
     } finally {
       setLoading(false);
     }
@@ -199,12 +203,17 @@ export function DesktopInlinePlanReviewCard({
           >
             Reject
           </Button>
+          {supportsPersistentAcceptance ? (
+            <Button type="button" variant="outline" disabled={loading} onClick={() => void resolve("approve_always")}>
+              Always allow
+            </Button>
+          ) : null}
           <Button
             type="button"
             disabled={loading}
             onClick={() => void resolve("approve")}
           >
-            Accept
+            Accept once
           </Button>
         </div>
       </div>

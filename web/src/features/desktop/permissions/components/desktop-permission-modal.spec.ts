@@ -100,6 +100,7 @@ test('exit plan modal ignores top-level backend execution recommendation', () =>
   }), 'plan')
 
   assert.match(markup, /Pause for review after each checkpoint/)
+  assert.match(markup, /Always allow plan acceptance/)
   assert.doesNotMatch(markup, /AI suggested/)
   assert.doesNotMatch(markup, /execution_granularity=/)
   assert.doesNotMatch(markup, /continuation_policy=automatic/)
@@ -113,6 +114,7 @@ test('exit plan modal ignores approved argument execution controls when choosing
   }), 'plan')
 
   assert.match(markup, /Pause for review after each checkpoint/)
+  assert.match(markup, /Always allow plan acceptance/)
   assert.doesNotMatch(markup, /AI suggested/)
   assert.doesNotMatch(markup, /execution_granularity=/)
   assert.doesNotMatch(markup, /continuation_policy=automatic/)
@@ -250,13 +252,14 @@ test('DesktopPermissionModal routes typed plan lifecycle approvals away from gen
   assert.match(newPlan, /Checkpoint content is visible before approval/)
   assert.match(newPlan, /Approve new plan/)
   assert.match(newPlan, /Pause for review after each checkpoint/)
+  assert.match(newPlan, /Always allow plan acceptance/)
   assert.match(newPlan, /type="checkbox"/)
   assert.doesNotMatch(newPlan, /Single run/)
   assert.doesNotMatch(newPlan, /No proposed new plan document or plan text was provided/)
   assert.doesNotMatch(newPlan, /Plan update overview/)
 })
 
-test('session deploy permission defaults to one selected proposal and never offers persistent approval', () => {
+test('session deploy permission defaults to one selected proposal and offers separate persistent policy controls', () => {
   const markup = renderPermission(planLifecyclePermission('session_deploy', {
     action: 'deploy',
     manifest_version: 1,
@@ -283,7 +286,12 @@ test('session deploy permission defaults to one selected proposal and never offe
   assert.match(markup, /AI branch suggestion/)
   assert.match(markup, /agent\/primary-work/)
   assert.doesNotMatch(markup, /value="\/workspace" readonly/)
-  assert.doesNotMatch(markup, /Always Allow|Always Deny/)
+  assert.match(markup, /Persistent deployment policy/)
+  assert.match(markup, /Save policy &amp; deploy/)
+  assert.match(markup, /Automatic deployments per parent run/)
+  assert.match(markup, /When limit is reached/)
+  assert.match(markup, /Ask every time/)
+  assert.match(markup, /Bounded automatic/)
 })
 
 test('session commit permission renders exact commits and persistent choices', () => {

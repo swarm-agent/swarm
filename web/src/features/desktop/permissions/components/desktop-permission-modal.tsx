@@ -16,6 +16,7 @@ import { modelOptionsQueryOptions } from '../../../queries/query-options'
 import { useQuery } from '@tanstack/react-query'
 import type { DesktopPermissionRecord } from '../../types/realtime'
 import { safeString } from '../services/desktop-permission-normalization'
+import { saveCapabilityPolicies, savePlanAcceptanceMode, type SessionDeployPolicy } from '../services/capability-policy'
 import {
   buildAskUserResolutionReason,
   buildWorkspaceScopeResolutionReason,
@@ -592,10 +593,11 @@ function ExitPlanModal({
     }
   }
 
-  const resolve = async (action: 'approve' | 'deny') => {
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always') => {
     setLoading(true)
     try {
-      const approvedArguments = action === 'approve'
+      if (action === 'approve_always') await savePlanAcceptanceMode('always_allow')
+      const approvedArguments = action !== 'deny'
         ? {
             ...payload.approvedArguments,
             plan_id: payload.planId || structuredDocument?.id || payload.approvedArguments.plan_id,
@@ -605,7 +607,7 @@ function ExitPlanModal({
             ...exitPlanExecutionArguments(pauseForReview),
           }
         : undefined
-      await onResolve(action, note.trim(), approvedArguments)
+      await onResolve(action === 'approve_always' ? 'approve' : action, note.trim(), approvedArguments)
     } finally {
       setLoading(false)
     }
@@ -639,6 +641,9 @@ function ExitPlanModal({
           loading={loading}
           onApprove={() => void resolve('approve')}
           onDeny={() => void resolve('deny')}
+          onAlwaysAllow={() => void resolve('approve_always')}
+          showPersistentActions
+          alwaysAllowLabel="Always allow plan acceptance"
           note={note}
           onNoteChange={setNote}
           leadingAction={hasStructuredPlan ? (
@@ -999,13 +1004,14 @@ function PlanFollowupRequestModal({
   const effectivePolicy = payload.policyEffective || 'require_approval'
   const checkpointTitle = payload.checkpointTitle || payload.title || `Session checkpoint: ${promptWordPreview(payload.changeRequest, 10) || 'New checkpoint'}`
   const tasks = payload.tasks.length > 0 ? payload.tasks : payload.changeRequest ? [payload.changeRequest] : []
-  const resolve = async (action: 'approve' | 'deny') => {
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always') => {
     setLoading(true)
     try {
+      if (action === 'approve_always') await savePlanAcceptanceMode('always_allow')
       await onResolve(
-        action,
+        action === 'approve_always' ? 'approve' : action,
         note.trim(),
-        action === 'approve' ? planLifecycleApprovedArguments(payload, 'request_followup_checkpoint') : undefined,
+        action !== 'deny' ? planLifecycleApprovedArguments(payload, 'request_followup_checkpoint') : undefined,
       )
     } finally {
       setLoading(false)
@@ -1026,6 +1032,9 @@ function PlanFollowupRequestModal({
           loading={loading}
           onApprove={() => void resolve('approve')}
           onDeny={() => void resolve('deny')}
+          onAlwaysAllow={() => void resolve('approve_always')}
+          showPersistentActions
+          alwaysAllowLabel="Always allow plan acceptance"
           approveLabel={followupApproveLabel(effectivePolicy)}
           note={note}
           onNoteChange={setNote}
@@ -1141,10 +1150,11 @@ function PlanAmendmentRequestModal({
 
   if (!permission) return null
   const payload = parsePlanUpdatePermission(permission)
-  const resolve = async (action: 'approve' | 'deny') => {
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always') => {
     setLoading(true)
     try {
-      await onResolve(action, note.trim(), action === 'approve' ? planLifecycleApprovedArguments(payload, 'amend_plan') : undefined)
+      if (action === 'approve_always') await savePlanAcceptanceMode('always_allow')
+      await onResolve(action === 'approve_always' ? 'approve' : action, note.trim(), action !== 'deny' ? planLifecycleApprovedArguments(payload, 'amend_plan') : undefined)
     } finally {
       setLoading(false)
     }
@@ -1159,7 +1169,7 @@ function PlanAmendmentRequestModal({
       sessionMode={sessionMode}
       widthClassName="w-full sm:w-[min(1180px,calc(100vw-48px))]"
       bodyClassName="overflow-y-auto"
-      footer={<PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Approve amendment" note={note} onNoteChange={setNote} noteLabel="Message to agent" />}
+      footer={<PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} onAlwaysAllow={() => void resolve('approve_always')} showPersistentActions alwaysAllowLabel="Always allow plan acceptance" approveLabel="Approve amendment" note={note} onNoteChange={setNote} noteLabel="Message to agent" />}
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void resolve('approve')}
       onDenyShortcut={() => void resolve('deny')}
@@ -1193,10 +1203,11 @@ function PlanRevisionRequestModal({
 
   if (!permission) return null
   const payload = parsePlanUpdatePermission(permission)
-  const resolve = async (action: 'approve' | 'deny') => {
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always') => {
     setLoading(true)
     try {
-      await onResolve(action, note.trim(), action === 'approve' ? planLifecycleApprovedArguments(payload, 'request_plan_revision') : undefined)
+      if (action === 'approve_always') await savePlanAcceptanceMode('always_allow')
+      await onResolve(action === 'approve_always' ? 'approve' : action, note.trim(), action !== 'deny' ? planLifecycleApprovedArguments(payload, 'request_plan_revision') : undefined)
     } finally {
       setLoading(false)
     }
@@ -1211,7 +1222,7 @@ function PlanRevisionRequestModal({
       sessionMode={sessionMode}
       widthClassName="w-full sm:w-[min(1180px,calc(100vw-48px))]"
       bodyClassName="overflow-y-auto"
-      footer={<PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Approve revision" note={note} onNoteChange={setNote} noteLabel="Message to agent" />}
+      footer={<PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} onAlwaysAllow={() => void resolve('approve_always')} showPersistentActions alwaysAllowLabel="Always allow plan acceptance" approveLabel="Approve revision" note={note} onNoteChange={setNote} noteLabel="Message to agent" />}
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void resolve('approve')}
       onDenyShortcut={() => void resolve('deny')}
@@ -1265,13 +1276,14 @@ function NewPlanRequestModal({
       setCopyState('error')
     }
   }
-  const resolve = async (action: 'approve' | 'deny') => {
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always') => {
     setLoading(true)
     try {
+      if (action === 'approve_always') await savePlanAcceptanceMode('always_allow')
       await onResolve(
-        action,
+        action === 'approve_always' ? 'approve' : action,
         note.trim(),
-        action === 'approve' ? newPlanLifecycleApprovedArguments(payload, pauseForReview) : undefined,
+        action !== 'deny' ? newPlanLifecycleApprovedArguments(payload, pauseForReview) : undefined,
       )
     } finally {
       setLoading(false)
@@ -1306,6 +1318,9 @@ function NewPlanRequestModal({
           loading={loading}
           onApprove={() => void resolve('approve')}
           onDeny={() => void resolve('deny')}
+          onAlwaysAllow={() => void resolve('approve_always')}
+          showPersistentActions
+          alwaysAllowLabel="Always allow plan acceptance"
           approveLabel="Approve new plan"
           note={note}
           onNoteChange={setNote}
@@ -1559,6 +1574,7 @@ function SessionDeployModal({
   const [proposals, setProposals] = useState<SessionDeployFormProposal[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [persistentPolicy, setPersistentPolicy] = useState<SessionDeployPolicy>({ mode: 'always_allow', automatic_deployments_per_parent_run: 1, over_limit_action: 'ask' })
 
   useEffect(() => {
     if (!open || !payload) return
@@ -1574,7 +1590,7 @@ function SessionDeployModal({
     setError('')
   }
   const selectedCount = proposals.filter((proposal) => proposal.selected).length
-  const submit = async (action: 'approve' | 'deny') => {
+  const submit = async (action: 'approve' | 'deny' | 'approve_always') => {
     if (action === 'deny') {
       setLoading(true)
       try { await onResolve('deny', '') } finally { setLoading(false) }
@@ -1607,6 +1623,7 @@ function SessionDeployModal({
     }))
     setLoading(true)
     try {
+      if (action === 'approve_always') await saveCapabilityPolicies({ session_deploy: persistentPolicy })
       await onResolve('approve', '', {
         ...payload.approvedArguments,
         action: 'deploy',
@@ -1629,7 +1646,7 @@ function SessionDeployModal({
       sessionMode={sessionMode}
       widthClassName="w-[min(100%,calc(100vw-12px))] sm:w-[min(1100px,calc(100vw-48px))]"
       bodyClassName="overflow-y-auto"
-      footer={<PermissionActionBar loading={loading} onApprove={() => void submit('approve')} onDeny={() => void submit('deny')} approveLabel={selectedCount === 1 ? 'Deploy 1 session' : `Deploy ${selectedCount} sessions`} shortcutHint="Enter deploys selected · Esc denies" />}
+      footer={<PermissionActionBar loading={loading} onApprove={() => void submit('approve')} onDeny={() => void submit('deny')} onAlwaysAllow={() => void submit('approve_always')} showPersistentActions alwaysAllowLabel="Save policy & deploy" approveLabel={selectedCount === 1 ? 'Deploy 1 session' : `Deploy ${selectedCount} sessions`} shortcutHint="Enter deploys selected · Esc denies" />}
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void submit('approve')}
       onDenyShortcut={() => void submit('deny')}
@@ -1638,8 +1655,17 @@ function SessionDeployModal({
     >
       <div className="grid gap-4">
         <div className="rounded-2xl border border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_8%,var(--app-surface))] px-4 py-3 text-sm leading-6 text-[var(--app-text-muted)]">
-          One safe default is selected. Check additional proposals to allow more in this batch. Deployment is approved only for this request.
+          One safe default is selected. Check additional proposals to allow more in this batch. Deploy only approves this request; saving a policy is a separate choice.
         </div>
+        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4" aria-label="Persistent session deployment policy">
+          <div className="text-sm font-semibold text-[var(--app-text)]">Persistent deployment policy</div>
+          <div className="mt-1 text-xs text-[var(--app-text-muted)]">Applied account-wide only when you choose Save policy &amp; deploy.</div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <SessionDeployField label="Policy"><select aria-label="Session deployment policy" value={persistentPolicy.mode} onChange={(event) => setPersistentPolicy((current) => ({ ...current, mode: event.target.value as SessionDeployPolicy['mode'] }))} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm"><option value="ask">Ask every time</option><option value="always_allow">Always allow</option><option value="bounded">Bounded automatic</option></select></SessionDeployField>
+            <SessionDeployField label="Automatic deployments per parent run"><input aria-label="Automatic deployments per parent run" type="number" min={0} max={256} value={persistentPolicy.automatic_deployments_per_parent_run} disabled={persistentPolicy.mode !== 'bounded'} onChange={(event) => setPersistentPolicy((current) => ({ ...current, automatic_deployments_per_parent_run: Number(event.target.value) }))} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm disabled:opacity-50" /></SessionDeployField>
+            <SessionDeployField label="When limit is reached"><select aria-label="Deployment over-limit action" value={persistentPolicy.over_limit_action} disabled={persistentPolicy.mode !== 'bounded'} onChange={(event) => setPersistentPolicy((current) => ({ ...current, over_limit_action: event.target.value as SessionDeployPolicy['over_limit_action'] }))} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm disabled:opacity-50"><option value="ask">Ask</option><option value="deny">Deny</option></select></SessionDeployField>
+          </div>
+        </section>
         {proposals.length === 0 ? <div className="rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">No valid deployment proposals were provided.</div> : null}
         <section className="grid gap-3" aria-label="Session deployment proposals">
           {proposals.map((proposal, index) => (

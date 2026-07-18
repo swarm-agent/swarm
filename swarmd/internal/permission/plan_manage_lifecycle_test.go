@@ -107,6 +107,27 @@ func TestAuthorizeToolCallResolvesFollowupPolicyEveryTime(t *testing.T) {
 	}
 }
 
+func TestPlanAcceptanceAlwaysAllowPreservesCanonicalPendingArguments(t *testing.T) {
+	svc, sessionID, _, cleanup := newPermissionLifecycleTestService(t, "")
+	defer cleanup()
+	policy, err := svc.CurrentPolicyForAccount("account-lifecycle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.PlanAcceptance.Mode = CapabilityModeAlwaysAllow
+	if _, err := svc.UpdateCapabilityPoliciesForAccount("account-lifecycle", policy.SessionDeploy, policy.PlanAcceptance); err != nil {
+		t.Fatal(err)
+	}
+	args := `{"action":"request_new_plan","title":"Canonical","document":{"title":"Canonical","info":{"goal":"ship"},"checkpoints":[{"id":"cp-1","title":"One","status":"pending","tasks":["ship"],"acceptance_criteria":["done"]}]}}`
+	auth, err := svc.AuthorizeToolCall(AuthorizationInput{SessionID: sessionID, AccountScopeID: "account-lifecycle", RunID: "run", CallID: "call", ToolName: "plan_manage", ToolArguments: args, Mode: sessionruntime.ModeAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.Decision != AuthorizationApprove || auth.Record != nil || auth.Source != "plan_acceptance_policy" {
+		t.Fatalf("authorization = %+v", auth)
+	}
+}
+
 func TestAuthorizeToolCallKeepsRevisionAndNewPlanApprovalGated(t *testing.T) {
 	svc, sessionID, planID, cleanup := newPermissionLifecycleTestService(t, sessionruntime.PlanFollowupCheckpointPolicyAutoStart)
 	defer cleanup()

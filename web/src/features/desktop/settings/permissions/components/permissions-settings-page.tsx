@@ -5,6 +5,7 @@ import { Dialog, DialogBackdrop, DialogPanel } from '../../../../../components/u
 import { Input } from '../../../../../components/ui/input'
 import { ModalCloseButton } from '../../../../../components/ui/modal-close-button'
 import { cn } from '../../../../../lib/cn'
+import { DEFAULT_PLAN_ACCEPTANCE_POLICY, DEFAULT_SESSION_DEPLOY_POLICY, fetchCapabilityPolicies, saveCapabilityPolicies, type PlanAcceptancePolicy, type SessionDeployPolicy } from '../../../permissions/services/capability-policy'
 
 export interface PermissionRule {
   id: string
@@ -207,6 +208,9 @@ export function PermissionsSettingsPage() {
   const [bypassPermissions, setBypassPermissionsState] = useState(false)
   const [subagentPolicy, setSubagentPolicy] = useState<SubagentPolicy>({ mode: 'bounded', automatic_launches_per_parent_run: 5, active_child_limit: 5, over_budget_action: 'ask', absolute_wave_maximum: 16, max_depth: 2, require_write_isolation: true })
   const [subagentBusy, setSubagentBusy] = useState(false)
+  const [sessionDeployPolicy, setSessionDeployPolicy] = useState<SessionDeployPolicy>(DEFAULT_SESSION_DEPLOY_POLICY)
+  const [planAcceptancePolicy, setPlanAcceptancePolicy] = useState<PlanAcceptancePolicy>(DEFAULT_PLAN_ACCEPTANCE_POLICY)
+  const [capabilityBusy, setCapabilityBusy] = useState(false)
   const [bypassBusy, setBypassBusy] = useState(false)
   const [confirmBypassOpen, setConfirmBypassOpen] = useState(false)
   const [busyRuleID, setBusyRuleID] = useState<string | null>(null)
@@ -225,9 +229,11 @@ export function PermissionsSettingsPage() {
     setLoading(true)
     setError(null)
     try {
-      const result = await fetchPermissionPolicy()
+      const [result, capabilities] = await Promise.all([fetchPermissionPolicy(), fetchCapabilityPolicies()])
       setPolicy(result.policy)
       if (result.policy.subagents) setSubagentPolicy(result.policy.subagents)
+      setSessionDeployPolicy(capabilities.session_deploy)
+      setPlanAcceptancePolicy(capabilities.plan_acceptance)
       setBypassPermissionsState(result.bypassPermissions)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load permission policy')
@@ -265,6 +271,22 @@ export function PermissionsSettingsPage() {
       setError(err instanceof Error ? err.message : 'Failed to save subagent policy')
     } finally {
       setSubagentBusy(false)
+    }
+  }
+
+  const handleSaveCapabilities = async () => {
+    setCapabilityBusy(true)
+    setError(null)
+    setStatus(null)
+    try {
+      const saved = await saveCapabilityPolicies({ session_deploy: sessionDeployPolicy, plan_acceptance: planAcceptancePolicy })
+      setSessionDeployPolicy(saved.session_deploy)
+      setPlanAcceptancePolicy(saved.plan_acceptance)
+      setStatus('Session deployment and plan acceptance policies saved')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save capability policies')
+    } finally {
+      setCapabilityBusy(false)
     }
   }
 
@@ -468,6 +490,25 @@ export function PermissionsSettingsPage() {
             <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Children running at once:</span> The independent concurrency ceiling; completed children release capacity without restoring the cumulative automatic budget.</div>
             <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Largest single wave:</span> The maximum children in one task call. It does not cap the cumulative budget or concurrency setting.</div>
             <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Delegation depth:</span> How many nested generations may delegate; zero disables child delegation.</div>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-5 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div><div className="text-sm font-semibold text-[var(--app-text)]">Session deployment &amp; plan acceptance</div><div className="mt-1 text-xs text-[var(--app-text-muted)]">Account-scoped capability policies. Fresh accounts ask for both operations.</div></div>
+            <Button variant="outline" onClick={() => void handleSaveCapabilities()} disabled={loading || capabilityBusy}>{capabilityBusy ? 'Saving…' : 'Save'}</Button>
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+              <div className="text-sm font-medium text-[var(--app-text)]">Session deployment</div>
+              <label className="mt-3 grid gap-2"><span className="text-xs text-[var(--app-text-muted)]">Policy</span><select aria-label="Session deployment policy" value={sessionDeployPolicy.mode} onChange={(event) => setSessionDeployPolicy((current) => ({ ...current, mode: event.target.value as SessionDeployPolicy['mode'] }))} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm"><option value="ask">Ask every time</option><option value="always_allow">Always allow</option><option value="bounded">Bounded automatic</option></select></label>
+              <label className="mt-3 grid gap-2"><span className="text-xs text-[var(--app-text-muted)]">Automatic deployments per parent run</span><Input aria-label="Automatic deployments per parent run" type="number" min={0} max={256} disabled={sessionDeployPolicy.mode !== 'bounded'} value={sessionDeployPolicy.automatic_deployments_per_parent_run} onChange={(event) => setSessionDeployPolicy((current) => ({ ...current, automatic_deployments_per_parent_run: Number(event.target.value) }))} /></label>
+              <label className="mt-3 grid gap-2"><span className="text-xs text-[var(--app-text-muted)]">When the limit is reached</span><select aria-label="Deployment over-limit action" disabled={sessionDeployPolicy.mode !== 'bounded'} value={sessionDeployPolicy.over_limit_action} onChange={(event) => setSessionDeployPolicy((current) => ({ ...current, over_limit_action: event.target.value as SessionDeployPolicy['over_limit_action'] }))} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm disabled:opacity-50"><option value="ask">Ask</option><option value="deny">Deny</option></select></label>
+            </div>
+            <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+              <div className="text-sm font-medium text-[var(--app-text)]">Plan acceptance</div><div className="mt-1 text-xs text-[var(--app-text-muted)]">Controls validated structured-plan acceptance only; continuation choices remain per plan.</div>
+              <label className="mt-3 grid gap-2"><span className="text-xs text-[var(--app-text-muted)]">Policy</span><select aria-label="Plan acceptance policy" value={planAcceptancePolicy.mode} onChange={(event) => setPlanAcceptancePolicy({ mode: event.target.value as PlanAcceptancePolicy['mode'] })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm"><option value="ask">Ask every time</option><option value="always_allow">Always allow</option></select></label>
+            </div>
           </div>
         </section>
 

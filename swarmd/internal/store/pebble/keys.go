@@ -1072,6 +1072,14 @@ func SubagentWaveReservationRunPrefix(sessionID, runID string) string {
 	return fmt.Sprintf("subagent_reservation/%s/%s/", keyPart(sessionID), keyPart(runID))
 }
 
+func KeySessionDeployReservation(sessionID, runID, callID string) string {
+	return fmt.Sprintf("session_deploy_reservation/%s/%s/%s", keyPart(sessionID), keyPart(runID), keyPart(callID))
+}
+
+func SessionDeployReservationRunPrefix(sessionID, runID string) string {
+	return fmt.Sprintf("session_deploy_reservation/%s/%s/", keyPart(sessionID), keyPart(runID))
+}
+
 func RunPermissionPrefix(sessionID, runID string) string {
 	sessionPart := keyPart(sessionID)
 	runPart := keyPart(runID)

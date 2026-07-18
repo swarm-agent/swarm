@@ -85,27 +85,29 @@ const (
 )
 
 type AuthorizationInput struct {
-	SessionID           string
-	AccountScopeID      string
-	RunID               string
-	Step                int
-	CallID              string
-	ToolName            string
-	ToolArguments       string
-	ToolCallArguments   string
-	Mode                string
-	Overlay             *Policy
-	SubagentReservation *SubagentReservationResult
+	SessionID                string
+	AccountScopeID           string
+	RunID                    string
+	Step                     int
+	CallID                   string
+	ToolName                 string
+	ToolArguments            string
+	ToolCallArguments        string
+	Mode                     string
+	Overlay                  *Policy
+	SubagentReservation      *SubagentReservationResult
+	SessionDeployReservation *SessionDeployReservationResult
 }
 
 type AuthorizationResult struct {
-	Decision    AuthorizationDecision
-	Requirement string
-	Reason      string
-	Source      string
-	RulePreview string
-	Record      *pebblestore.PermissionRecord
-	Reservation *pebblestore.SubagentWaveReservation
+	Decision          AuthorizationDecision
+	Requirement       string
+	Reason            string
+	Source            string
+	RulePreview       string
+	Record            *pebblestore.PermissionRecord
+	Reservation       *pebblestore.SubagentWaveReservation
+	DeployReservation *pebblestore.SessionDeployReservation
 }
 
 type sessionLookup interface {
@@ -384,10 +386,17 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: explicit.Reason, Source: explicit.Source, RulePreview: explicit.RulePreview}, nil
 		}
 	}
-	// Session deployment always asks before generic bypass or persisted allow rules.
-	if requirement == "session_deploy" {
-		input.Mode = effectiveMode
-		return s.createPendingAuthorization(input, sessionID, requirement, "session deployment always requires fresh user approval", "builtin", "ask exact session deployment manifest")
+	// Deployment accounting is resolved before generic bypass and generic rules.
+	if input.SessionDeployReservation != nil {
+		reservation := input.SessionDeployReservation
+		switch reservation.Decision {
+		case SessionDeployReservationDeny:
+			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: reservation.Reason, Source: "session_deploy_policy", DeployReservation: &reservation.Reservation}, nil
+		case SessionDeployReservationAsk:
+			return s.createPendingAuthorization(input, sessionID, requirement, reservation.Reason, "session_deploy_policy", "ask exact session deployment manifest")
+		case SessionDeployReservationApprove:
+			return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: reservation.Reason, Source: "session_deploy_policy", DeployReservation: &reservation.Reservation}, nil
+		}
 	}
 	// Delegation safeguards are resolved before generic permission bypass.
 	if input.SubagentReservation != nil {
@@ -424,7 +433,7 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 		RulePreview: strings.TrimSpace(explain.RulePreview),
 	}
 
-	if explain.Decision != PolicyDecisionDeny {
+	if explain.Decision != PolicyDecisionDeny && !(explain.Decision == PolicyDecisionAllow && explain.Source == "plan_acceptance_policy") {
 		if dynamic, handled, err := s.authorizeDynamicToolAction(input, sessionID, requirement); handled || err != nil {
 			return dynamic, err
 		}
@@ -794,13 +803,6 @@ func (s *Service) ResolveWithArguments(sessionID, permissionID, action, reason, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	current, found, loadErr := s.store.GetPermission(sessionID, permissionID)
-	if loadErr != nil {
-		return pebblestore.PermissionRecord{}, loadErr
-	}
-	if found && authorizationRequirement(current.Mode, current.ToolName, current.ToolArguments) == "session_deploy" && action == ActionAllowAlways {
-		return pebblestore.PermissionRecord{}, errors.New("session deployment does not support persistent allow")
-	}
 	record, changed, err := s.resolveLocked(sessionID, permissionID, action, reason, approvedArguments, now)
 	if err != nil {
 		return pebblestore.PermissionRecord{}, err
@@ -1481,6 +1483,8 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 			return "skill_change"
 		}
 		return "manage_skill"
+	case "exit_plan_mode":
+		return "plan_acceptance"
 	case "plan_manage":
 		if requirement := PlanManageLifecycleRequirement(toolArguments); requirement != "" {
 			return requirement
@@ -1554,6 +1558,15 @@ func manageAction(toolArguments string) string {
 
 func ShouldApprovePlanManageUpdate(toolArguments string) bool {
 	return PlanManageLifecycleRequirement(toolArguments) != ""
+}
+
+func IsPlanAcceptanceLifecycleRequirement(requirement string) bool {
+	switch strings.TrimSpace(requirement) {
+	case "plan_followup_request", "plan_revision_request", "plan_amendment_request", "plan_new_request":
+		return true
+	default:
+		return false
+	}
 }
 
 func PlanManageLifecycleRequirement(toolArguments string) string {

@@ -49,6 +49,34 @@ func (s *Service) ExplainToolForAccount(accountScopeID, mode, toolName, toolArgu
 	return ExplainPolicy(mode, toolName, toolArguments, policy), nil
 }
 
+func (s *Service) UpdateCapabilityPoliciesForAccount(accountScopeID string, sessionDeploy SessionDeployPolicy, planAcceptance PlanAcceptancePolicy) (Policy, error) {
+	if s == nil {
+		return Policy{}, errors.New("permission service is not configured")
+	}
+	if err := ValidateSessionDeployPolicy(sessionDeploy); err != nil {
+		return Policy{}, err
+	}
+	if err := ValidatePlanAcceptancePolicy(planAcceptance); err != nil {
+		return Policy{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.loadPermissionStateLocked(accountScopeID)
+	if err != nil {
+		return Policy{}, err
+	}
+	policy := state.Policy
+	policy.SessionDeploy = sessionDeploy
+	policy.PlanAcceptance = planAcceptance
+	now := time.Now().UnixMilli()
+	policy.UpdatedAt = now
+	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
+		return Policy{}, err
+	}
+	s.cachePermissionStateLocked(accountScopeID, policy, state.BypassPermissions, now, state.BypassUpdatedAt)
+	return NormalizePolicy(policy), nil
+}
+
 func (s *Service) CurrentSubagentPolicyForAccount(accountScopeID string) (map[string]any, error) {
 	policy, err := s.CurrentPolicyForAccount(accountScopeID)
 	if err != nil {
@@ -250,6 +278,33 @@ func (s *Service) ResolveWithPolicyAndArguments(sessionID, permissionID, action,
 	}
 
 	var savedRule *PolicyRule
+	if action == ActionAllowAlways {
+		pending, lookupErr := s.lookupPermission(sessionID, permissionID)
+		if lookupErr != nil {
+			return pebblestore.PermissionRecord{}, nil, lookupErr
+		}
+		requirement := authorizationRequirement(pending.Mode, pending.ToolName, pending.ToolArguments)
+		if requirement == "session_deploy" || requirement == "plan_acceptance" || IsPlanAcceptanceLifecycleRequirement(requirement) {
+			accountScopeID, scopeErr := s.accountScopeIDForSession(sessionID)
+			if scopeErr != nil {
+				return pebblestore.PermissionRecord{}, nil, scopeErr
+			}
+			policy, policyErr := s.CurrentPolicyForAccount(accountScopeID)
+			if policyErr != nil {
+				return pebblestore.PermissionRecord{}, nil, policyErr
+			}
+			if requirement == "session_deploy" {
+				policy.SessionDeploy.Mode = CapabilityModeAlwaysAllow
+			} else {
+				policy.PlanAcceptance.Mode = CapabilityModeAlwaysAllow
+			}
+			if _, policyErr = s.UpdateCapabilityPoliciesForAccount(accountScopeID, policy.SessionDeploy, policy.PlanAcceptance); policyErr != nil {
+				return pebblestore.PermissionRecord{}, nil, policyErr
+			}
+			record, resolveErr := s.ResolveWithArguments(sessionID, permissionID, action, reason, approvedArguments)
+			return record, nil, resolveErr
+		}
+	}
 	if actionIsPersistent(action) {
 		decision := PolicyDecisionAllow
 		if actionIsDeny(action) {
@@ -339,7 +394,7 @@ func (s *Service) accountScopeIDForSession(sessionID string) (string, error) {
 
 func allowRuleSupported(toolName string) bool {
 	switch normalizePolicyToolName(toolName) {
-	case "exit_plan_mode", "ask_user":
+	case "exit_plan_mode", "plan_acceptance", "session_deploy", "ask_user":
 		return false
 	default:
 		return true

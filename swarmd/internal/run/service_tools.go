@@ -693,6 +693,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			}
 		}
 		var subagentReservation *permission.SubagentReservationResult
+		var sessionDeployReservation *permission.SessionDeployReservationResult
 		if canonicalToolName(toolCalls[i].Name) == "task" {
 			var manifest taskLaunchManifest
 			if err := json.Unmarshal([]byte(permissionArguments), &manifest); err != nil {
@@ -723,18 +724,43 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			}
 			subagentReservation = &reserved
 		}
+		if canonicalToolName(toolCalls[i].Name) == "manage_sessions" && permission.ManageSessionsAction(toolCalls[i].Arguments) == "deploy" {
+			var manifest manageSessionsDeployManifest
+			if err := json.Unmarshal([]byte(permissionArguments), &manifest); err != nil {
+				decisions[i].Err = err
+				decisions[i].Result.Error = "session deployment manifest is invalid"
+				continue
+			}
+			selectedCount := 0
+			if approved, ok := manifest.ApprovedArguments["selected_proposal_ids"].([]any); ok {
+				selectedCount = len(approved)
+			} else if selected, ok := manifest.ApprovedArguments["selected_proposal_ids"].([]string); ok {
+				selectedCount = len(selected)
+			}
+			if selectedCount == 0 {
+				selectedCount = 1
+			}
+			reserved, reserveErr := s.permissions.ReserveSessionDeploy(permission.SessionDeployReservationRequest{SessionID: sessionID, AccountScopeID: accountScopeID, RunID: runID, CallID: strings.TrimSpace(toolCalls[i].CallID), ManifestHash: manifest.ManifestDigest, DeployCount: selectedCount})
+			if reserveErr != nil {
+				decisions[i].Err = reserveErr
+				decisions[i].Result.Error = fmt.Sprintf("session deployment reservation failed: %v", reserveErr)
+				continue
+			}
+			sessionDeployReservation = &reserved
+		}
 		auth, err := s.permissions.AuthorizeToolCall(permission.AuthorizationInput{
-			SessionID:           sessionID,
-			AccountScopeID:      accountScopeID,
-			RunID:               runID,
-			Step:                step,
-			CallID:              toolCalls[i].CallID,
-			ToolName:            toolCalls[i].Name,
-			ToolArguments:       permissionArguments,
-			ToolCallArguments:   strings.TrimSpace(toolCalls[i].Arguments),
-			Mode:                sessionMode,
-			Overlay:             overlay,
-			SubagentReservation: subagentReservation,
+			SessionID:                sessionID,
+			AccountScopeID:           accountScopeID,
+			RunID:                    runID,
+			Step:                     step,
+			CallID:                   toolCalls[i].CallID,
+			ToolName:                 toolCalls[i].Name,
+			ToolArguments:            permissionArguments,
+			ToolCallArguments:        strings.TrimSpace(toolCalls[i].Arguments),
+			Mode:                     sessionMode,
+			Overlay:                  overlay,
+			SubagentReservation:      subagentReservation,
+			SessionDeployReservation: sessionDeployReservation,
 		})
 		if err != nil {
 			decisions[i].Err = err
@@ -747,7 +773,16 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 		case permission.AuthorizationApprove:
 			decisions[i].Approved = true
 			canonical := canonicalToolName(toolCalls[i].Name)
-			if canonical == "task" || (canonical == "manage_sessions" && isCanonicalManageSessionsMutation(permission.ManageSessionsAction(toolCalls[i].Arguments))) {
+			if canonical == "manage_sessions" && permission.ManageSessionsAction(toolCalls[i].Arguments) == "deploy" {
+				if markErr := s.permissions.MarkSessionDeployApproved(sessionID, runID, toolCalls[i].CallID, selectedCount); markErr != nil {
+					decisions[i].Err = markErr
+					decisions[i].Approved = false
+					decisions[i].Result.Error = fmt.Sprintf("session deployment accounting failed: %v", markErr)
+					continue
+				}
+			}
+			planAcceptance := canonical == "exit_plan_mode" || (canonical == "plan_manage" && permission.IsPlanAcceptanceLifecycleRequirement(permission.PlanManageLifecycleRequirement(toolCalls[i].Arguments)))
+			if canonical == "task" || planAcceptance || (canonical == "manage_sessions" && (isCanonicalManageSessionsMutation(permission.ManageSessionsAction(toolCalls[i].Arguments)) || permission.ManageSessionsAction(toolCalls[i].Arguments) == "deploy")) {
 				var permissionPayload map[string]any
 				if json.Unmarshal([]byte(permissionArguments), &permissionPayload) == nil {
 					if approved, ok := permissionPayload["approved_arguments"].(map[string]any); ok {
@@ -821,6 +856,14 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				switch strings.ToLower(strings.TrimSpace(resolved.Status)) {
 				case pebblestore.PermissionStatusApproved:
 					decisions[index].Approved = true
+					if canonicalToolName(call.Name) == "manage_sessions" && permission.ManageSessionsAction(call.Arguments) == "deploy" {
+						if markErr := s.permissions.MarkSessionDeployApproved(sessionID, runID, call.CallID, selectedSessionDeployCount(resolved.ApprovedArguments)); markErr != nil {
+							decisions[index].Err = markErr
+							decisions[index].Approved = false
+							decisions[index].Result.Error = fmt.Sprintf("session deployment accounting failed: %v", markErr)
+							return
+						}
+					}
 					decisions[index].Feedback = normalizePermissionFeedback(resolved.Reason)
 					decisions[index].ApprovedArguments = strings.TrimSpace(resolved.ApprovedArguments)
 				case pebblestore.PermissionStatusDenied:

@@ -173,6 +173,7 @@ type permissionService interface {
 	CancelRunPending(sessionID, runID, reason string) ([]pebblestore.PermissionRecord, error)
 	CurrentPolicy() (permission.Policy, error)
 	CurrentPolicyForAccount(accountScopeID string) (permission.Policy, error)
+	UpdateCapabilityPoliciesForAccount(accountScopeID string, sessionDeploy permission.SessionDeployPolicy, planAcceptance permission.PlanAcceptancePolicy) (permission.Policy, error)
 	UpsertRule(rule permission.PolicyRule) (permission.PolicyRule, error)
 	UpsertRuleForAccount(accountScopeID string, rule permission.PolicyRule) (permission.PolicyRule, error)
 	RemoveRule(ruleID string) (bool, error)
@@ -4303,6 +4304,45 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	switch {
+	case path == "/v1/permissions/capabilities":
+		switch r.Method {
+		case http.MethodGet:
+			policy, err := s.perm.CurrentPolicyForAccount(accountScopeID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_deploy": policy.SessionDeploy, "plan_acceptance": policy.PlanAcceptance})
+		case http.MethodPost, http.MethodPut:
+			current, err := s.perm.CurrentPolicyForAccount(accountScopeID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			var req struct {
+				SessionDeploy  *permission.SessionDeployPolicy  `json:"session_deploy"`
+				PlanAcceptance *permission.PlanAcceptancePolicy `json:"plan_acceptance"`
+			}
+			if err := decodeJSON(r, &req); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if req.SessionDeploy != nil {
+				current.SessionDeploy = *req.SessionDeploy
+			}
+			if req.PlanAcceptance != nil {
+				current.PlanAcceptance = *req.PlanAcceptance
+			}
+			policy, err := s.perm.UpdateCapabilityPoliciesForAccount(accountScopeID, current.SessionDeploy, current.PlanAcceptance)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_deploy": policy.SessionDeploy, "plan_acceptance": policy.PlanAcceptance})
+		default:
+			methodNotAllowed(w)
+		}
+		return
 	case path == "/v1/permissions/subagents":
 		switch r.Method {
 		case http.MethodGet:
