@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronDown, GitBranch, Lightbulb, Lock, Settings2, Zap, ZapOff } from 'lucide-react'
+import { Check, ChevronDown, GitBranch, Lightbulb, Lock, Plus, Settings2, Zap, ZapOff } from 'lucide-react'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileInput, ModelProfileRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
@@ -105,6 +105,25 @@ function modelBehaviorLabel(profile: AgentProfileRecord | null): string {
   if (!profile) return 'Single model'
   if (profile.modelMode === 'split' && isPlanCapableAgent(profile)) return 'Split plan/action models'
   return 'Single model'
+}
+
+function savedProfileModelLabels(profile: ModelProfileRecord): string[] {
+  if (profile.modelMode === 'split') {
+    return [
+      `Plan · ${savedProfileSelectionLabel(profile.plan)}`,
+      `Action · ${savedProfileSelectionLabel(profile.auto)}`,
+    ]
+  }
+  return [`Single · ${savedProfileSelectionLabel(profile.single)}`]
+}
+
+function savedProfileSelectionLabel(selection: ModelProfileRecord['single']): string {
+  if (!selection) return 'Unavailable selection'
+  return [
+    [selection.provider.trim(), selection.model.trim()].filter(Boolean).join('/') || 'Default model',
+    selection.thinking.trim() ? `thinking ${selection.thinking.trim()}` : '',
+    selection.serviceTier.trim(),
+  ].filter(Boolean).join(' · ')
 }
 
 function isPlanCapableAgent(profile: AgentProfileRecord | null): boolean {
@@ -344,16 +363,17 @@ export function AgentModelControl({
   const effectiveDraftMode: DraftMode = draftMode === 'split' && !splitModeAllowed ? 'single' : draftMode
   const agentSections = useMemo(() => {
     const sections = [
-      { label: 'Primary agents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'primary' && !isCompiledSystemAgent(agent.name)) },
+      { label: 'Agents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'primary' && !isCompiledSystemAgent(agent.name)) },
       { label: 'Subagents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'subagent' && !isCompiledSystemAgent(agent.name)) },
-      { label: 'System agents', profiles: selectableAgents.filter((agent) => isCompiledSystemAgent(agent.name)) },
+      { label: 'Default agent', profiles: modelProfiles.length === 0 ? selectableAgents.filter((agent) => agent.name === SWARM_AGENT_NAME) : [] },
+      { label: 'System agents', profiles: selectableAgents.filter((agent) => isCompiledSystemAgent(agent.name) && agent.name !== SWARM_AGENT_NAME) },
       { label: 'Other agents', profiles: selectableAgents.filter((agent) => {
         const profileMode = agentMode(agent)
         return profileMode !== 'primary' && profileMode !== 'subagent' && !isCompiledSystemAgent(agent.name)
       }) },
     ]
     return sections.filter((section) => section.profiles.length > 0)
-  }, [selectableAgents])
+  }, [modelProfiles.length, selectableAgents])
   const selectedModelLabel = selectedModel
     ? `${selectedModel.provider}/${displayModelName(selectedModel.provider, selectedModel.model, selectedModel.contextMode)}`
     : 'No resolved model'
@@ -388,17 +408,48 @@ export function AgentModelControl({
     setDraftProfileName(name)
     setDraftMakeDefault(makeDefault)
     setEditingProfileId(saved?.profileId ?? '')
-    setBaseline(JSON.stringify({ name, makeDefault, mode: nextMode, single, plan, auto }))
+    setBaseline(JSON.stringify({ name, makeDefault, sessionMode: profile?.defaultSessionMode ?? mode, mode: nextMode, single, plan, auto }))
     setError(null)
   }, [activeModelProfile, activeProfile, initialAgentName, initialModelProfileId, mode, modelProfiles, open, selectableAgents, selectedModel, selectedPrimaryAgent, selectedServiceTier, selectedThinking])
 
   function chooseAgent(profile: AgentProfileRecord) {
+    if (customized && !window.confirm('Discard the unsaved profile changes and switch agents?')) return
+    const nextMode = selectedDraftMode(profile)
+    const single = singleDraftFromProfile(profile, selectedModel, selectedServiceTier, selectedThinking)
+    const plan = splitDraftFromProfile(profile, 'plan', selectedModel, selectedServiceTier, selectedThinking)
+    const auto = splitDraftFromProfile(profile, 'auto', selectedModel, selectedServiceTier, selectedThinking)
     setDraftAgentName(profile.name)
     setDraftSessionMode(profile.defaultSessionMode)
-    setDraftMode(selectedDraftMode(profile))
-    setSingleDraft(singleDraftFromProfile(profile, selectedModel, selectedServiceTier, selectedThinking))
-    setPlanDraft(splitDraftFromProfile(profile, 'plan', selectedModel, selectedServiceTier, selectedThinking))
-    setAutoDraft(splitDraftFromProfile(profile, 'auto', selectedModel, selectedServiceTier, selectedThinking))
+    setDraftMode(nextMode)
+    setSingleDraft(single)
+    setPlanDraft(plan)
+    setAutoDraft(auto)
+    setDraftProfileName('')
+    setDraftMakeDefault(modelProfiles.length === 0)
+    setEditingProfileId('')
+    setBaseline(JSON.stringify({ name: '', makeDefault: modelProfiles.length === 0, sessionMode: profile.defaultSessionMode, mode: nextMode, single, plan, auto }))
+    setError(null)
+  }
+
+  function chooseModelProfile(saved: ModelProfileRecord | null) {
+    if (customized && !window.confirm('Discard the unsaved changes and switch profiles?')) return
+    const profile = draftProfile ?? activeProfile
+    const nextMode: DraftMode = saved?.modelMode ?? selectedDraftMode(profile)
+    const single = saved?.single ? { ...saved.single } : singleDraftFromProfile(profile, selectedModel, selectedServiceTier, selectedThinking)
+    const plan = saved?.plan ? { ...saved.plan } : splitDraftFromProfile(profile, 'plan', selectedModel, selectedServiceTier, selectedThinking)
+    const auto = saved?.auto ? { ...saved.auto } : splitDraftFromProfile(profile, 'auto', selectedModel, selectedServiceTier, selectedThinking)
+    const name = saved?.name ?? ''
+    const makeDefault = saved?.isDefault ?? modelProfiles.length === 0
+    const sessionMode = profile?.defaultSessionMode ?? mode
+    setDraftSessionMode(sessionMode)
+    setDraftMode(nextMode)
+    setSingleDraft(single)
+    setPlanDraft(plan)
+    setAutoDraft(auto)
+    setDraftProfileName(name)
+    setDraftMakeDefault(makeDefault)
+    setEditingProfileId(saved?.profileId ?? '')
+    setBaseline(JSON.stringify({ name, makeDefault, sessionMode, mode: nextMode, single, plan, auto }))
     setError(null)
   }
 
@@ -426,7 +477,7 @@ export function AgentModelControl({
     else setAutoDraft(update)
   }
 
-  const currentDraftSignature = JSON.stringify({ name: draftProfileName.trim(), makeDefault: draftMakeDefault, mode: effectiveDraftMode, single: singleDraft, plan: planDraft, auto: autoDraft })
+  const currentDraftSignature = JSON.stringify({ name: draftProfileName.trim(), makeDefault: draftMakeDefault, sessionMode: draftSessionMode, mode: effectiveDraftMode, single: singleDraft, plan: planDraft, auto: autoDraft })
   const customized = Boolean(baseline && currentDraftSignature !== baseline)
 
   async function confirm(persistence: AgentModelControlConfirmInput['persistence']) {
@@ -500,8 +551,8 @@ export function AgentModelControl({
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {onOpenAgentSettings ? (
-              <button type="button" onClick={() => { setOpen(false); onOpenAgentSettings() }} className="rounded-lg border border-[var(--app-border)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-                Close
+              <button type="button" onClick={() => { setOpen(false); onOpenAgentSettings() }} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+                <Settings2 size={12} /> Manage agent
               </button>
             ) : null}
             <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-[var(--app-border)] px-3 py-1 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Close</button>
@@ -509,30 +560,62 @@ export function AgentModelControl({
         </div>
 
         <div className="grid min-h-0 flex-1 min-[780px]:grid-cols-[280px_minmax(0,1fr)]">
-          <div className="min-h-0 border-b border-[var(--app-border)] min-[780px]:border-b-0 min-[780px]:border-r">
-            <div className="border-b border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Choose agent</div>
-            <div className="max-h-56 overflow-y-auto py-1 min-[780px]:max-h-[660px]">
-              {agentSections.map((section, sectionIndex) => (
-                <div key={section.label} className={sectionIndex === 0 ? '' : 'mt-1 border-t border-[var(--app-border)] pt-1'}>
-                  <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{section.label}</div>
-                  {section.profiles.map((profile) => {
-                    const selected = profile.name === draftAgentName
-                    return (
-                      <button key={profile.name} type="button" onClick={() => chooseAgent(profile)} className={`flex w-full items-start gap-2 px-3 py-2.5 text-left text-sm transition ${selected ? 'bg-[var(--app-surface-subtle)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}>
-                        {selected ? <Check size={14} className="mt-0.5 shrink-0 text-[var(--app-primary)]" /> : <span className="mt-0.5 w-[14px] shrink-0" />}
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate font-medium">{agentLabel(profile)}</span>
-                          <span className="mt-0.5 block truncate text-[11px] text-[var(--app-text-subtle)]">{modelBehaviorLabel(profile)} · {agentModeLabel(profile)}</span>
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
+          <div className="min-h-0 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] min-[780px]:border-b-0 min-[780px]:border-r">
+            <div className="border-b border-[var(--app-border)] px-4 py-3">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent</div>
+              <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Profiles use the current agent. Switch only when needed.</div>
+            </div>
+            <div className="max-h-56 space-y-3 overflow-y-auto p-3 min-[780px]:max-h-[660px]">
+              {agentSections.map((section) => (
+                <section key={section.label}>
+                  <div className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{section.label}</div>
+                  <div className="grid gap-1">
+                    {section.profiles.map((profile) => {
+                      const selected = profile.name === draftAgentName
+                      return (
+                        <button key={profile.name} type="button" onClick={() => chooseAgent(profile)} aria-pressed={selected} className={`group flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-xs transition ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}>
+                          <span className={`grid h-4 w-4 shrink-0 place-items-center rounded-full ${selected ? 'bg-[var(--app-primary)] text-[var(--app-primary-text)]' : 'bg-[var(--app-surface-subtle)] text-transparent'}`}><Check size={10} /></span>
+                          <span className="min-w-0 flex-1 truncate font-semibold">{agentLabel(profile)}</span>
+                          <span className="shrink-0 text-[10px] text-[var(--app-text-subtle)]">{agentModeLabel(profile)} · {modelBehaviorLabel(profile)}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </section>
               ))}
             </div>
           </div>
 
           <div className="min-h-0 overflow-y-auto p-5">
+            <section aria-label="Saved model profiles" className="mb-4">
+              <div className="mb-2 flex items-end justify-between gap-3">
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Your profiles</div>
+                  <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Switch profiles to inspect or edit their model setup.</div>
+                </div>
+                <button type="button" onClick={() => chooseModelProfile(null)} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"><Plus size={12} />New profile</button>
+              </div>
+              {modelProfiles.length ? (
+                <div className="grid gap-1.5">
+                  {modelProfiles.map((profile) => {
+                    const selected = editingProfileId === profile.profileId
+                    return <button key={profile.profileId} type="button" onClick={() => chooseModelProfile(profile)} aria-pressed={selected} className={`flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)] shadow-sm' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className="truncate text-xs font-semibold text-[var(--app-text)]">{profile.name}</span>
+                          {profile.isDefault ? <span className="shrink-0 rounded-full border border-[var(--app-primary)] px-1 py-0.5 text-[8px] font-semibold uppercase text-[var(--app-primary)]">Default</span> : null}
+                        </span>
+                        <span className="mt-1 grid gap-0.5 text-[9px] leading-3 text-[var(--app-text-subtle)]">
+                          {savedProfileModelLabels(profile).map((label) => <span key={label} className="block truncate">{label}</span>)}
+                        </span>
+                      </span>
+                      {selected ? <Check size={13} className="shrink-0 text-[var(--app-primary)]" /> : null}
+                    </button>
+                  })}
+                </div>
+              ) : <button type="button" onClick={() => chooseModelProfile(null)} className="w-full rounded-xl border border-dashed border-[var(--app-border)] px-4 py-4 text-left text-xs text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]">No saved profiles yet. Create your first profile.</button>}
+            </section>
+
             <div className="mb-4 grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
               <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
                 Profile name
@@ -598,36 +681,10 @@ export function AgentModelControl({
                 <ModelDraftEditor title="Action model" draft={autoDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('auto', provider)} onModelChange={(model) => selectModel('auto', model)} onThinkingChange={(thinking) => setAutoDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setAutoDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
               </div>
             )}
-            {thinkingTagsEnabled !== undefined && onThinkingTagsToggle ? (
-              <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--app-border)] pt-4 text-sm text-[var(--app-text-muted)]">
-                <span>Shows thinking responses</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={thinkingTagsEnabled}
-                  aria-label="Shows thinking responses"
-                  disabled={thinkingTagsBusy}
-                  onClick={() => onThinkingTagsToggle(!thinkingTagsEnabled)}
-                  className={`relative h-6 w-11 shrink-0 rounded-full border transition disabled:cursor-not-allowed disabled:opacity-60 ${thinkingTagsEnabled ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border-strong)] bg-[var(--app-surface)]'}`}
-                >
-                  <span className={`absolute left-1 top-1 h-4 w-4 rounded-full shadow-sm transition-transform ${thinkingTagsEnabled ? 'translate-x-5 bg-[var(--app-primary-text)]' : 'translate-x-0 bg-[var(--app-text-muted)]'}`} />
-                </button>
-              </div>
-            ) : null}
-            {onShowCompactButtonToggle ? (
-              <div className="flex items-center justify-between gap-3 border-t border-[var(--app-border)] py-4 text-sm text-[var(--app-text-muted)]">
-                <span>Show compact button</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={showCompactButton}
-                  aria-label="Show compact button"
-                  disabled={showCompactButtonBusy}
-                  onClick={() => onShowCompactButtonToggle(!showCompactButton)}
-                  className={`relative h-6 w-11 shrink-0 rounded-full border transition disabled:cursor-not-allowed disabled:opacity-60 ${showCompactButton ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border-strong)] bg-[var(--app-surface)]'}`}
-                >
-                  <span className={`absolute left-1 top-1 h-4 w-4 rounded-full shadow-sm transition-transform ${showCompactButton ? 'translate-x-5 bg-[var(--app-primary-text)]' : 'translate-x-0 bg-[var(--app-text-muted)]'}`} />
-                </button>
+            {(thinkingTagsEnabled !== undefined && onThinkingTagsToggle) || onShowCompactButtonToggle ? (
+              <div className="mt-4 grid gap-2 border-t border-[var(--app-border)] pt-4 sm:grid-cols-2">
+                {thinkingTagsEnabled !== undefined && onThinkingTagsToggle ? <PreferenceSwitch label="Show thinking responses" checked={thinkingTagsEnabled} busy={thinkingTagsBusy} onToggle={onThinkingTagsToggle} /> : null}
+                {onShowCompactButtonToggle ? <PreferenceSwitch label="Show compact button" checked={showCompactButton} busy={showCompactButtonBusy} onToggle={onShowCompactButtonToggle} /> : null}
               </div>
             ) : null}
             {error ? <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
@@ -636,10 +693,10 @@ export function AgentModelControl({
 
         <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4">
           <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Cancel</button>
-          <button type="button" disabled={busy || saving || !draftProfile || draftProfile.name === CLONE_AGENT_NAME} onClick={() => { void confirm('temporary') }} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">Use for this session</button>
+          <button type="button" disabled={busy || saving || !draftProfile || draftProfile.name === CLONE_AGENT_NAME} onClick={() => { void confirm('temporary') }} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">Use without saving</button>
           {editingProfileId ? <button type="button" disabled={busy || saving || !customized} onClick={() => { void confirm('create-copy') }} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">Save as new</button> : null}
-          <button type="button" disabled={busy || saving || !draftProfile || draftProfile.name === CLONE_AGENT_NAME || !draftProfileName.trim()} onClick={() => { void confirm(editingProfileId ? 'update' : 'create') }} className="rounded-lg border border-[var(--app-primary)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">
-            {saving || busy ? 'Saving…' : editingProfileId ? 'Save changes and use' : 'Save profile and use'}
+          <button type="button" disabled={busy || saving || !draftProfile || draftProfile.name === CLONE_AGENT_NAME || !draftProfileName.trim() || Boolean(editingProfileId && !customized)} onClick={() => { void confirm(editingProfileId ? 'update' : 'create') }} className="rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60">
+            {saving || busy ? 'Saving…' : editingProfileId ? customized ? 'Save changes and use' : 'Saved profile in use' : 'Create profile and use'}
           </button>
         </div>
       </div>
@@ -673,6 +730,25 @@ export function AgentModelControl({
         </button>
       ) : null}
       {modal}
+    </div>
+  )
+}
+
+function PreferenceSwitch({ label, checked, busy, onToggle }: { label: string; checked: boolean; busy: boolean; onToggle: (enabled: boolean) => void }) {
+  return (
+    <div className="flex min-h-14 items-center justify-between gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text-muted)]">
+      <span className="min-w-0 font-medium">{label}</span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        disabled={busy}
+        onClick={() => onToggle(!checked)}
+        className={`relative h-6 w-11 shrink-0 rounded-full border transition disabled:cursor-not-allowed disabled:opacity-60 ${checked ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border-strong)] bg-[var(--app-surface)]'}`}
+      >
+        <span className={`absolute left-1 top-1 h-4 w-4 rounded-full shadow-sm transition-transform ${checked ? 'translate-x-5 bg-[var(--app-primary-text)]' : 'translate-x-0 bg-[var(--app-text-muted)]'}`} />
+      </button>
     </div>
   )
 }

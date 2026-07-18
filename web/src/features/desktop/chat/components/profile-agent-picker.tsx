@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, Pencil, Plus, Star, Trash2 } from 'lucide-react'
+import { Check, ChevronDown, Pencil, Plus, Settings2, Star, Trash2 } from 'lucide-react'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelProfileRecord, ModelProfileSelectionRecord } from '../types/chat'
 import { displayAgentName } from '../services/agent-display'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
@@ -18,9 +18,11 @@ interface ProfileAgentPickerProps {
   disabled?: boolean
   compact?: boolean
   modelDetail?: string
+  renderTrigger?: (input: { open: boolean; openPicker: () => void; disabled: boolean; profileLabel: string; modelLabel: string; combinedLabel: string }) => ReactNode
   onAgentSelect?: (agent: string) => void | Promise<void>
   onProfileSelect?: (profileId: string) => void | Promise<void>
   onAddProfile: () => void
+  onOpenAgentSetup?: (agent?: string) => void
   onEditProfile: (profileId: string) => void
   onSetDefault: (profileId: string) => void | Promise<void>
   onDeleteProfile: (profileId: string) => void | Promise<void>
@@ -76,6 +78,18 @@ function agentMode(profile: AgentProfileRecord): string {
   return (profile.mode || 'primary').trim().toLowerCase()
 }
 
+const SWARM_AGENT_NAME = 'swarm'
+
+export function profilePickerAgentSections(agents: AgentProfileRecord[], hasProfiles: boolean): Array<{ label: string; agents: AgentProfileRecord[] }> {
+  const sections = [
+    { label: 'Agents', agents: agents.filter((agent) => agentMode(agent) === 'primary' && agent.name !== SWARM_AGENT_NAME) },
+    { label: 'Subagents', agents: agents.filter((agent) => agentMode(agent) === 'subagent') },
+    { label: 'Default agent', agents: hasProfiles ? [] : agents.filter((agent) => agent.name === SWARM_AGENT_NAME) },
+    { label: 'Other agents', agents: agents.filter((agent) => !['primary', 'subagent'].includes(agentMode(agent)) && agent.name !== SWARM_AGENT_NAME) },
+  ]
+  return sections.filter((section) => section.agents.length > 0)
+}
+
 export function ProfileAgentPicker({
   currentAgent,
   selectedPrimaryAgent,
@@ -89,9 +103,11 @@ export function ProfileAgentPicker({
   disabled = false,
   compact = false,
   modelDetail = '',
+  renderTrigger,
   onAgentSelect,
   onProfileSelect,
   onAddProfile,
+  onOpenAgentSetup,
   onEditProfile,
   onSetDefault,
   onDeleteProfile,
@@ -158,16 +174,20 @@ export function ProfileAgentPicker({
     }
   }, [])
 
-  const agentSections = [
-    { label: 'Primary agents', agents: agents.filter((agent) => agentMode(agent) === 'primary') },
-    { label: 'Subagents', agents: agents.filter((agent) => agentMode(agent) === 'subagent') },
-    { label: 'Other agents', agents: agents.filter((agent) => !['primary', 'subagent'].includes(agentMode(agent))) },
-  ].filter((section) => section.agents.length > 0)
+  const openPicker = useCallback(() => {
+    pointerRef.current = null
+    setOpen((value) => !value)
+  }, [])
+
+  const agentSections = profilePickerAgentSections(agents, profiles.length > 0)
 
   const dropdown = open && position ? createPortal(
     <div ref={dropdownRef} style={{ position: 'fixed', bottom: position.bottom, left: position.left, width: position.width, maxHeight: position.maxHeight, zIndex: 9999 }}>
       <div className="flex max-h-[inherit] min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl shadow-black/40">
-        <div className="shrink-0 border-b border-[var(--app-border)] px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Profiles and agents</div>
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-2.5">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Profiles</span>
+          {onOpenAgentSetup ? <button type="button" onClick={() => { setOpen(false); onOpenAgentSetup(selectedAgent?.name) }} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)]"><Settings2 size={12} />Agent setup</button> : null}
+        </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           <section aria-label="Profiles" className="px-2 py-2">
             <div className="flex items-center justify-between gap-2 px-1 pb-1.5">
@@ -177,21 +197,23 @@ export function ProfileAgentPicker({
             {loading ? <div className="rounded-lg border border-[var(--app-border)] px-3 py-3 text-xs text-[var(--app-text-muted)]">Loading profiles…</div> : profiles.length === 0 ? (
               <div className="rounded-lg border border-dashed border-[var(--app-border)] px-3 py-4 text-center text-xs text-[var(--app-text-muted)]">No profiles yet</div>
             ) : (
-              <div className="overflow-hidden rounded-lg border border-[var(--app-border)]">
-                {profiles.map((profile, index) => {
+              <div className="grid gap-1.5">
+                {profiles.map((profile) => {
                   const selected = activeProfile?.source === 'saved' && activeProfile.profileId === profile.profileId
-                  return <div key={profile.profileId} className={`group flex items-stretch ${index ? 'border-t border-[var(--app-border)]' : ''} ${selected ? 'bg-[var(--app-surface-subtle)]' : 'hover:bg-[var(--app-surface-hover)]'}`}>
-                    <button type="button" disabled={busy || !onProfileSelect} onClick={() => void invoke(() => onProfileSelect?.(profile.profileId), true)} className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2.5 text-left disabled:opacity-50">
-                      {selected ? <Check size={14} className="mt-0.5 shrink-0 text-[var(--app-primary)]" /> : <span className="w-[14px] shrink-0" />}
+                  return <div key={profile.profileId} className={`group flex min-w-0 items-center rounded-lg border px-2 py-1.5 ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)] shadow-sm' : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
+                    <button type="button" disabled={busy || !onProfileSelect} onClick={() => void invoke(() => onProfileSelect?.(profile.profileId), true)} className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left disabled:opacity-50">
+                      <span className={`grid h-4 w-4 shrink-0 place-items-center rounded-full ${selected ? 'bg-[var(--app-primary)] text-[var(--app-primary-text)]' : 'bg-[var(--app-surface-subtle)] text-transparent'}`}><Check size={10} /></span>
                       <span className="min-w-0 flex-1">
-                        <span className="flex flex-wrap items-center gap-1.5 text-sm font-medium text-[var(--app-text)]">{profile.name}{profile.isDefault ? <span className="rounded-full border border-[var(--app-primary)] px-1.5 py-0.5 text-[9px] font-semibold uppercase text-[var(--app-primary)]">Default</span> : null}</span>
-                        <span className="mt-0.5 block text-[10px] leading-4 text-[var(--app-text-subtle)]">{profileLabels(profile).map((label) => <span key={label} className="block break-words">{label}</span>)}</span>
+                        <span className="flex min-w-0 items-center gap-1 text-xs font-semibold text-[var(--app-text)]"><span className="truncate">{profile.name}</span>{profile.isDefault ? <span className="shrink-0 rounded-full border border-[var(--app-primary)] px-1 py-0.5 text-[8px] font-semibold uppercase text-[var(--app-primary)]">Default</span> : null}</span>
+                        <span className="mt-0.5 grid gap-0.5 text-[9px] leading-3 text-[var(--app-text-subtle)]">
+                          {profileLabels(profile).map((label) => <span key={label} className="block truncate">{label}</span>)}
+                        </span>
                       </span>
                     </button>
-                    <div className="flex shrink-0 items-center pr-1">
-                      {!profile.isDefault ? <button type="button" disabled={busy} onClick={() => void invoke(() => onSetDefault(profile.profileId))} aria-label={`Make ${profile.name} default`} title="Make default" className="rounded-md p-1.5 text-[var(--app-text-subtle)] hover:bg-[var(--app-surface)] hover:text-[var(--app-primary)] disabled:opacity-50"><Star size={13} /></button> : null}
-                      <button type="button" disabled={busy} onClick={() => { setOpen(false); onEditProfile(profile.profileId) }} aria-label={`Edit ${profile.name}`} className="rounded-md p-1.5 text-[var(--app-text-subtle)] hover:bg-[var(--app-surface)] hover:text-[var(--app-text)] disabled:opacity-50"><Pencil size={13} /></button>
-                      <button type="button" disabled={busy} onClick={() => { if (window.confirm(`Delete profile “${profile.name}”?`)) void invoke(() => onDeleteProfile(profile.profileId)) }} aria-label={`Delete ${profile.name}`} className="rounded-md p-1.5 text-[var(--app-text-subtle)] hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] disabled:opacity-50"><Trash2 size={13} /></button>
+                    <div className="ml-1 flex shrink-0 items-center gap-0.5">
+                      {!profile.isDefault ? <button type="button" disabled={busy} onClick={() => void invoke(() => onSetDefault(profile.profileId))} aria-label={`Make ${profile.name} default`} title="Make default" className="rounded-md p-1.5 text-[var(--app-text-subtle)] hover:bg-[var(--app-surface)] hover:text-[var(--app-primary)] disabled:opacity-50"><Star size={12} /></button> : null}
+                      <button type="button" disabled={busy} onClick={() => { setOpen(false); onEditProfile(profile.profileId) }} aria-label={`Edit ${profile.name}`} title="Edit profile" className="rounded-md p-1.5 text-[var(--app-text-subtle)] hover:bg-[var(--app-surface)] hover:text-[var(--app-text)] disabled:opacity-50"><Pencil size={12} /></button>
+                      <button type="button" disabled={busy} onClick={() => { if (window.confirm(`Delete profile “${profile.name}”?`)) void invoke(() => onDeleteProfile(profile.profileId)) }} aria-label={`Delete ${profile.name}`} title="Delete profile" className="rounded-md p-1.5 text-[var(--app-text-subtle)] hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] disabled:opacity-50"><Trash2 size={12} /></button>
                     </div>
                   </div>
                 })}
@@ -200,12 +222,12 @@ export function ProfileAgentPicker({
           </section>
           {agentSections.map((section) => <section key={section.label} aria-label={section.label} className="border-t border-[var(--app-border)] px-2 py-2">
             <div className="px-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{section.label}</div>
-            <div className="overflow-hidden rounded-lg border border-[var(--app-border)]">
-              {section.agents.map((agent, index) => {
+            <div className="grid gap-1.5">
+              {section.agents.map((agent) => {
                 const selected = agent.name === selectedAgent?.name && !activeProfile?.source
-                return <button key={agent.name} type="button" disabled={busy || !onAgentSelect} onClick={() => void invoke(() => onAgentSelect?.(agent.name), true)} className={`flex w-full items-start gap-2 px-3 py-2.5 text-left text-sm ${index ? 'border-t border-[var(--app-border)]' : ''} ${selected ? 'bg-[var(--app-surface-subtle)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'} disabled:opacity-50`}>
-                  {selected ? <Check size={14} className="mt-0.5 text-[var(--app-primary)]" /> : <span className="w-[14px]" />}
-                  <span className="font-medium">{displayAgentName(agent.name)}</span>
+                return <button key={agent.name} type="button" disabled={busy || !onAgentSelect} onClick={() => void invoke(() => onAgentSelect?.(agent.name), true)} className={`flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-xs ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)] text-[var(--app-text)]' : 'border-[var(--app-border)] text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'} disabled:opacity-50`}>
+                  <span className={`grid h-4 w-4 shrink-0 place-items-center rounded-full ${selected ? 'bg-[var(--app-primary)] text-[var(--app-primary-text)]' : 'bg-[var(--app-surface-subtle)] text-transparent'}`}><Check size={10} /></span>
+                  <span className="min-w-0 truncate font-semibold">{displayAgentName(agent.name)}</span>
                 </button>
               })}
             </div>
@@ -216,16 +238,20 @@ export function ProfileAgentPicker({
     </div>, document.body) : null
 
   return <div className="inline-flex min-w-0 items-center">
-    <button ref={triggerRef} type="button" disabled={disabled} aria-expanded={open} aria-haspopup="menu" aria-label={`Model profile: ${triggerDisplay.combinedLabel}`} title={triggerDisplay.combinedLabel} onClick={(event: ReactMouseEvent<HTMLButtonElement>) => {
-      if (!open) pointerRef.current = event.detail > 0 ? { x: event.clientX, y: event.clientY } : null
-      setOpen((value) => !value)
-    }} className="inline-flex min-h-9 min-w-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-[var(--app-text-muted)] transition hover:text-[var(--app-text)] disabled:opacity-50">
-      <span className={`min-w-0 truncate text-[11px] ${compact ? 'max-w-[240px]' : 'max-w-[420px]'}`}>
-        {triggerDisplay.profileLabel ? <><span className="font-medium text-[var(--app-text-muted)]">{triggerDisplay.profileLabel}</span><span aria-hidden="true" className="text-[var(--app-text-subtle)]"> · </span></> : null}
-        <span data-testid="selected-model-detail" className="text-[var(--app-text-subtle)]">{triggerDisplay.modelLabel}</span>
-      </span>
-      <ChevronDown size={14} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
-    </button>
+    <div ref={renderTrigger ? (node) => { triggerRef.current = node?.querySelector('button[aria-haspopup="menu"]') ?? node?.querySelector('button') ?? null } : undefined} className="contents">
+      {renderTrigger ? renderTrigger({ ...triggerDisplay, open, openPicker, disabled }) : (
+        <button ref={triggerRef} type="button" disabled={disabled} aria-expanded={open} aria-haspopup="menu" aria-label={`Model profile: ${triggerDisplay.combinedLabel}`} title={triggerDisplay.combinedLabel} onClick={(event: ReactMouseEvent<HTMLButtonElement>) => {
+          if (!open) pointerRef.current = event.detail > 0 ? { x: event.clientX, y: event.clientY } : null
+          setOpen((value) => !value)
+        }} className="inline-flex min-h-9 min-w-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-[var(--app-text-muted)] transition hover:text-[var(--app-text)] disabled:opacity-50">
+          <span className={`min-w-0 truncate text-[11px] ${compact ? 'max-w-[240px]' : 'max-w-[420px]'}`}>
+            {triggerDisplay.profileLabel ? <><span className="font-medium text-[var(--app-text-muted)]">{triggerDisplay.profileLabel}</span><span aria-hidden="true" className="text-[var(--app-text-subtle)]"> · </span></> : null}
+            <span data-testid="selected-model-detail" className="text-[var(--app-text-subtle)]">{triggerDisplay.modelLabel}</span>
+          </span>
+          <ChevronDown size={14} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+        </button>
+      )}
+    </div>
     {dropdown}
   </div>
 }
