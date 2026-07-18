@@ -1,9 +1,32 @@
 import { describe, expect, it } from 'vitest'
-import { currentCheckoutCommitCandidate, reviewCommitCandidates, reviewWorktreeReasonLabel, selectableReviewIDs, selectedArchiveCandidates, shouldShowReviewCommitAction } from './review-worktrees-modal'
+import { buildReviewWorktreeFixPrompt, currentCheckoutCommitCandidate, resolveReviewWorktreeRepairAgent, reviewCommitCandidates, reviewWorktreeIntegrationFailureDisplay, reviewWorktreeReasonLabel, selectableReviewIDs, selectedArchiveCandidates, shouldShowReviewCommitAction } from './review-worktrees-modal'
 import type { ReviewWorktreeCandidate, ReviewWorktreesResponse } from '../session-v3/review-worktrees-api'
+import type { AgentProfileRecord, AgentStateRecord } from '../chat/types/chat'
 
 function candidate(overrides: Partial<ReviewWorktreeCandidate>): ReviewWorktreeCandidate {
   return { session_id: 'session-1', title: 'Session', updated_at: 1, classification: 'retained', reason: 'uncommitted_work', archive_ready: false, ...overrides }
+}
+
+function primaryAgent(name: string, overrides: Partial<AgentProfileRecord> = {}): AgentProfileRecord {
+  return {
+    name,
+    mode: 'primary',
+    description: '',
+    provider: 'codex',
+    model: 'gpt-5.4',
+    thinking: 'high',
+    modelMode: 'single',
+    planProvider: '', planModel: '', planThinking: '', planServiceTier: '',
+    autoProvider: '', autoModel: '', autoThinking: '', autoServiceTier: '',
+    prompt: '', runtimeMode: 'readwrite', defaultSessionMode: 'auto', executionSetting: 'readwrite',
+    exitPlanModeEnabled: false, toolScope: null, toolContract: null,
+    enabled: true, protected: false, updatedAt: 0,
+    ...overrides,
+  }
+}
+
+function agentState(profiles: AgentProfileRecord[], activePrimary: string): AgentStateRecord {
+  return { profiles, activePrimary, activeSubagent: {}, version: 1, providerDefaultsPreview: null, toolInventory: null }
 }
 
 describe('review worktrees modal helpers', () => {
@@ -34,5 +57,38 @@ describe('review worktrees modal helpers', () => {
     const dirtyResult = { ...cleanResult, retained: [dirty] }
     expect(reviewCommitCandidates(dirtyResult)).toEqual([dirty])
     expect(shouldShowReviewCommitAction(dirtyResult)).toBe(true)
+  })
+
+  it('defaults repair to the enabled Swarm primary even when its model mode is single and runtime is readwrite', () => {
+    expect(resolveReviewWorktreeRepairAgent(agentState([
+      primaryAgent('legacy', { runtimeMode: 'plan_auto', exitPlanModeEnabled: true }),
+      primaryAgent('swarm'),
+    ], 'legacy'))).toBe('swarm')
+  })
+
+  it('does not expose repair when no enabled primary agent exists', () => {
+    expect(resolveReviewWorktreeRepairAgent(agentState([
+      primaryAgent('swarm', { enabled: false }),
+    ], 'swarm'))).toBe('')
+  })
+
+  it('keeps integration details hidden until requested', () => {
+    const error = 'CONFLICT (content): Merge conflict in web/src/app.tsx\nlong diagnostics'
+    expect(reviewWorktreeIntegrationFailureDisplay(error, false)).toEqual({
+      summary: 'The worktree could not be integrated. The target branch was left unchanged.',
+      fullError: undefined,
+    })
+    expect(reviewWorktreeIntegrationFailureDisplay(error, true).fullError).toBe(error)
+  })
+
+  it('builds a single-candidate auto repair prompt with the complete error', () => {
+    const item = candidate({ session_id: 'failed-session', title: 'Failed integration', worktree_branch: 'agent/fix', target_branch: 'dev', worktree_path: '/worktrees/fix' })
+    const prompt = buildReviewWorktreeFixPrompt({ candidate: item, error: 'CONFLICT in app.tsx' }, '/workspace')
+    expect(prompt).toContain('resolve the cherry-pick/integration conflict safely')
+    expect(prompt).toContain('Session: Failed integration (failed-session)')
+    expect(prompt).toContain('Source branch: agent/fix')
+    expect(prompt).toContain('Target branch: dev')
+    expect(prompt).toContain('Workspace: /workspace')
+    expect(prompt).toContain('CONFLICT in app.tsx')
   })
 })

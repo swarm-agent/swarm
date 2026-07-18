@@ -274,17 +274,6 @@ function BashToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToo
   );
 }
 
-function FilePathLine({ path, meta }: { path: string; meta?: string }) {
-  return (
-    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-baseline gap-3">
-      <span className="min-w-0 break-words font-mono text-[12px] font-medium text-[var(--app-text)] [overflow-wrap:anywhere]">
-        {path}
-      </span>
-      {meta ? <span className="shrink-0 text-[10px] text-[var(--app-text-subtle)]">{meta}</span> : null}
-    </div>
-  );
-}
-
 function EditDiffView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
   const diff = toolMessage.editDiff;
   if (!diff) return null;

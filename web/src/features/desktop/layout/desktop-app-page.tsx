@@ -41,9 +41,10 @@ import { saveSidebarHideInactiveHours } from '../settings/swarm/mutations/save-s
 import { fetchSwarmTargets } from '../swarm/api/swarm-targets'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
-import { createDesktopV3CreateOnlySessionOperation, startDesktopV3CreateOnlySession } from '../session-v3/new-session-flow'
+import { createDesktopV3CreateOnlySessionOperation, createDesktopV3NewSessionOperation, startDesktopV3CreateOnlySession, startNewDesktopV3Session } from '../session-v3/new-session-flow'
 import { DesktopPlanModal, type DesktopPlanRecoveryInput } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
+import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
 import type { DesktopSlashCommand } from '../chat/services/slash-commands'
 import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
@@ -72,7 +73,7 @@ import { SearchChatsModal } from '../session-search/search-chats-modal'
 import type { DesktopSessionSearchItem } from '../session-search/session-search-api'
 import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortcuts/components/desktop-quick-actions-modal'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
-import { ReviewWorktreesModal } from './review-worktrees-modal'
+import { buildReviewWorktreeFixPrompt, resolveReviewWorktreeRepairAgent, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
@@ -2910,6 +2911,60 @@ export function DesktopAppPage() {
     localWorkspaceBindingId: topWorkspace?.localWorkspaceBindingId ?? '',
     hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
   }), [currentSwarmTarget?.swarm_id, swarmName, topWorkspace?.localWorkspaceBindingId, topWorkspace?.topologyRoutes, topWorkspaceLabel, topWorkspacePath])
+  const reviewFixAgent = resolveReviewWorktreeRepairAgent(agentStateQuery.data)
+  const reviewFixAvailable = Boolean(reviewFixAgent && topWorkspacePath)
+  const handleAskSwarmToFixReviewIntegration = useCallback(async (failure: ReviewWorktreeIntegrationFailure) => {
+    if (!reviewFixAgent || !topWorkspacePath) return
+    const route = globalSessionRouteOptions.find((option) => getDesktopSessionCreateTarget(option).endpoint === '/v3/sessions') ?? null
+    const draftPreference = draftPreferenceQuery.data?.preference
+    const agentModel = resolveDesktopV3AgentModelLock(agentStateQuery.data?.profiles ?? [], reviewFixAgent, 'auto')
+    const preference = agentModel.locked
+      ? {
+          provider: agentModel.provider,
+          model: agentModel.model,
+          thinking: agentModel.thinking || draftPreference?.thinking || '',
+          serviceTier: agentModel.serviceTier,
+          contextMode: draftPreference?.contextMode || '',
+        }
+      : draftPreference
+    if (!route || !preference?.provider?.trim() || !preference.model?.trim() || !preference.thinking?.trim()) {
+      setNeedsReviewCleanupOpen(false)
+      setDesktopToast({ message: 'Swarm could not start a repair session because its Desktop V3 route or model preference is unavailable.', tone: 'error' })
+      return
+    }
+    setNeedsReviewCleanupOpen(false)
+    try {
+      const operation = createDesktopV3NewSessionOperation({
+        workspacePath: topWorkspacePath,
+        workspaceName: topWorkspaceLabel,
+        route,
+        prompt: buildReviewWorktreeFixPrompt(failure, topWorkspacePath),
+        title: `Fix integration: ${failure.candidate.title || failure.candidate.worktree_branch || failure.candidate.session_id}`,
+        mode: 'auto',
+        agentName: reviewFixAgent,
+        preference: {
+          provider: preference.provider,
+          model: preference.model,
+          thinking: preference.thinking,
+          serviceTier: preference.serviceTier,
+          contextMode: preference.contextMode,
+        },
+        sessionMetadata: { source: 'desktop-v3-review-worktrees-recovery', workspace_path: topWorkspacePath },
+        messageMetadata: { source: 'desktop-v3-review-worktrees-recovery', failed_session_id: failure.candidate.session_id },
+      })
+      await startNewDesktopV3Session({
+        operation,
+        onSessionStarted: (sessionId) => {
+          void navigate({
+            to: '/$workspaceSlug/$sessionId',
+            params: { workspaceSlug: topWorkspaceSlug, sessionId },
+          })
+        },
+      })
+    } catch (cause) {
+      setDesktopToast({ message: cause instanceof Error ? cause.message : 'Could not start a Swarm repair session.', tone: 'error' })
+    }
+  }, [agentStateQuery.data?.profiles, draftPreferenceQuery.data?.preference, globalSessionRouteOptions, navigate, reviewFixAgent, topWorkspaceLabel, topWorkspacePath, topWorkspaceSlug])
 
   useEffect(() => {
     if (!routeSessionId) return
@@ -4300,7 +4355,7 @@ export function DesktopAppPage() {
                       <GitBranch size={13} strokeWidth={1.8} className="shrink-0" />
                     </button>
                   </div>
-                  {needsReviewCleanupOpen ? <ReviewWorktreesModal workspacePath={topWorkspacePath || undefined} onClose={() => setNeedsReviewCleanupOpen(false)} /> : null}
+                  {needsReviewCleanupOpen ? <ReviewWorktreesModal workspacePath={topWorkspacePath || undefined} onClose={() => setNeedsReviewCleanupOpen(false)} repairFixAvailable={reviewFixAvailable} onAskSwarmFix={handleAskSwarmToFixReviewIntegration} /> : null}
                   {renderSidebarSessionGroups({
                     nodes: globalFlattenedSessionNodes,
                     routeSessionId,
