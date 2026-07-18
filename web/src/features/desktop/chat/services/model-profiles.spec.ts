@@ -5,7 +5,9 @@ import {
   activeModelProfileFromPolicy,
   modelOptionForSelection,
   modelProfileChoiceForTemporary,
+  modelProfileFromMetadata,
   preferenceFromModelProfile,
+  preferenceFromModelProfileMetadata,
   selectionFromModelOption,
 } from './model-profiles'
 import type { ModelOptionRecord, ModelProfileInput } from '../types/chat'
@@ -46,6 +48,43 @@ test('active profile state maps the durable session metadata snapshot', () => {
   assert.deepEqual(activeModelProfileFromMetadata({}), {
     source: '', profileId: '', name: '', modelMode: '',
   })
+})
+
+test('durable session metadata is the authoritative mode-specific composer preference', () => {
+  const metadata = {
+    model_profile: {
+      source: 'saved',
+      saved_profile_id: 'mp_non_default',
+      name: 'Non-default split',
+      model_mode: 'split',
+      plan: { provider: 'openai', model: 'profile-plan', thinking: 'high', service_tier: '', context_mode: 'full' },
+      auto: { provider: 'anthropic', model: 'profile-action', thinking: 'medium', service_tier: 'fast', context_mode: '' },
+      applied_at: 123,
+    },
+  }
+
+  assert.deepEqual(modelProfileFromMetadata(metadata), {
+    name: 'Non-default split',
+    modelMode: 'split',
+    single: null,
+    plan: { provider: 'openai', model: 'profile-plan', thinking: 'high', serviceTier: '', contextMode: 'full' },
+    auto: { provider: 'anthropic', model: 'profile-action', thinking: 'medium', serviceTier: 'fast', contextMode: '' },
+  })
+  assert.deepEqual(preferenceFromModelProfileMetadata(metadata, 'plan'), {
+    provider: 'openai', model: 'profile-plan', thinking: 'high', serviceTier: '', contextMode: 'full', updatedAt: 123,
+  })
+  assert.deepEqual(preferenceFromModelProfileMetadata(metadata, 'auto'), {
+    provider: 'anthropic', model: 'profile-action', thinking: 'medium', serviceTier: 'fast', contextMode: '', updatedAt: 123,
+  })
+})
+
+test('invalid session profile metadata does not masquerade as an authoritative preference', () => {
+  assert.equal(preferenceFromModelProfileMetadata({
+    model_profile: {
+      source: 'saved', model_mode: 'split',
+      plan: { provider: 'openai', model: 'plan', thinking: 'high' },
+    },
+  }, 'plan'), null)
 })
 
 test('active profile state maps hydrated snake-case policy fields', () => {

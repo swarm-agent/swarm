@@ -4200,6 +4200,84 @@ test('usage summary events update context cache turn by turn without timestamp r
   assert.equal((state.usageBySession[sessionA.id] as Record<string, unknown>).total_tokens, 150)
 })
 
+test('realtime agent and model-profile events refresh authoritative session metadata', () => {
+  const state = bootstrappedState()
+  const original = state.sessionsById[sessionA.id]
+  assert.equal(original?.kind, 'full')
+  if (original?.kind !== 'full') return
+  original.session = {
+    ...original.session,
+    metadata: {
+      durable_key: 'keep',
+      agent_profile: { name: 'old-agent', model: 'old-agent-model' },
+      model_profile: { source: 'saved', saved_profile_id: 'old-profile' },
+    },
+  }
+
+  applyCacheEvent(state, cacheEvent({
+    id: 'evt-agent-profile-refresh',
+    session_id: sessionA.id,
+    seq: 50,
+    event_type: 'session.agent.updated',
+    payload: {
+      metadata: {
+        durable_key: 'keep',
+        agent_profile: { name: 'new-agent', model: 'new-agent-model' },
+        model_profile: { source: 'saved', saved_profile_id: 'old-profile' },
+      },
+      updated_at: 50,
+    },
+    ts_unix_ms: 50,
+  }))
+
+  applyCacheEvent(state, cacheEvent({
+    id: 'evt-model-profile-refresh',
+    session_id: sessionA.id,
+    seq: 51,
+    event_type: 'session.model_profile.updated',
+    payload: {
+      model_profile: {
+        source: 'saved',
+        saved_profile_id: 'new-profile',
+        model_mode: 'split',
+        plan: { provider: 'openai', model: 'plan-model', thinking: 'high' },
+        auto: { provider: 'openai', model: 'auto-model', thinking: 'medium' },
+      },
+      updated_at: 51,
+    },
+    ts_unix_ms: 51,
+  }))
+
+  const refreshed = state.sessionsById[sessionA.id]
+  assert.equal(refreshed?.kind, 'full')
+  assert.deepEqual(refreshed?.kind === 'full' ? refreshed.session.metadata : undefined, {
+    durable_key: 'keep',
+    agent_profile: { name: 'new-agent', model: 'new-agent-model' },
+    model_profile: {
+      source: 'saved',
+      saved_profile_id: 'new-profile',
+      model_mode: 'split',
+      plan: { provider: 'openai', model: 'plan-model', thinking: 'high' },
+      auto: { provider: 'openai', model: 'auto-model', thinking: 'medium' },
+    },
+  })
+  assert.equal(refreshed?.kind === 'full' ? refreshed.session.updated_at : 0, 51)
+
+  applyCacheEvent(state, cacheEvent({
+    id: 'evt-model-profile-cleared',
+    session_id: sessionA.id,
+    seq: 52,
+    event_type: 'session.model_profile.updated',
+    payload: { model_profile: null, updated_at: 52 },
+    ts_unix_ms: 52,
+  }))
+  const cleared = state.sessionsById[sessionA.id]
+  assert.deepEqual(cleared?.kind === 'full' ? cleared.session.metadata : undefined, {
+    durable_key: 'keep',
+    agent_profile: { name: 'new-agent', model: 'new-agent-model' },
+  })
+})
+
 test('session preference settings mutation repairs cached context window baseline immediately', () => {
   const state = bootstrappedState()
   state.usageBySession[sessionA.id] = {

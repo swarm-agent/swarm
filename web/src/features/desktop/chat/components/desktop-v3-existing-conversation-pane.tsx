@@ -83,11 +83,16 @@ import {
   normalizeModelID,
   normalizeProviderID,
 } from "../services/model-options";
-import { activeModelProfileFromMetadata, preferenceFromModelProfile } from "../services/model-profiles";
+import {
+  activeModelProfileFromMetadata,
+  preferenceFromModelProfile,
+  preferenceFromModelProfileMetadata,
+} from "../services/model-profiles";
 import { createModelProfile, deleteModelProfile, invalidateModelProfiles, setDefaultModelProfile, updateModelProfile } from "../queries/model-profile-queries";
 import {
   preferenceFromAgentModelLock,
   resolveDesktopV3AgentModelLock,
+  resolveDesktopV3SessionAgentModelLock,
 } from "../services/agent-model-preferences";
 import { DesktopV3AgenticComposer } from "./desktop-v3-agentic-composer";
 import {
@@ -1478,7 +1483,7 @@ export function DesktopV3ExistingConversationPane({
     liveRuns: renderedMessages.liveRuns,
   });
   const sessionMetadata =
-    session?.metadata ?? cacheSession?.metadata ?? metadata;
+    cacheSession?.metadata ?? session?.metadata ?? metadata;
   const headerBranchLabel =
     metadataString(sessionMetadata, "swarm_v3_branch_label") ||
     session?.worktreeBranch?.trim() ||
@@ -1543,10 +1548,15 @@ export function DesktopV3ExistingConversationPane({
     renderedMessages.committed.length > 0 ||
     renderedMessages.pendingUser.length > 0 ||
     renderedMessages.liveRuns.length > 0;
+  const sessionAgentModelLock = useMemo(
+    () => resolveDesktopV3SessionAgentModelLock(sessionMetadata, mode),
+    [mode, sessionMetadata],
+  );
   const selectedAgentModelLock = useMemo(
     () =>
-      resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent, mode),
-    [agentState.profiles, mode, selectedAgent],
+      sessionAgentModelLock
+      ?? resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent, mode),
+    [agentState.profiles, mode, selectedAgent, sessionAgentModelLock],
   );
   const lockedPolicyPreference = useMemo(
     () => policyLockedPreference(cachedAgentModelPolicy),
@@ -1554,23 +1564,34 @@ export function DesktopV3ExistingConversationPane({
   );
   const cachedPolicyMatchesSelectedMode = mode === settingsBaseline.mode;
   const activeModelProfile = useMemo(() => activeModelProfileFromMetadata(sessionMetadata), [sessionMetadata]);
+  const sessionProfilePreference = useMemo(
+    () => preferenceFromModelProfileMetadata(sessionMetadata, mode),
+    [mode, sessionMetadata],
+  );
+  const sessionAgentPreference = useMemo(
+    () => sessionAgentModelLock
+      ? preferenceFromAgentModelLock(sessionAgentModelLock, preference, modelOptions)
+      : null,
+    [modelOptions, preference, sessionAgentModelLock],
+  );
+  const displayedPreference = sessionProfilePreference ?? sessionAgentPreference ?? preference;
   const selectedModelKey = modelOptionKey(
-    preference.provider,
-    preference.model,
-    preference.contextMode,
+    displayedPreference.provider,
+    displayedPreference.model,
+    displayedPreference.contextMode,
   );
   const selectedModelOption =
     modelOptions.find((option) => option.key === selectedModelKey) ?? null;
   const hasResolvedPreference = Boolean(
-    preference.provider.trim() &&
-    preference.model.trim() &&
-    preference.thinking.trim(),
+    displayedPreference.provider.trim() &&
+    displayedPreference.model.trim() &&
+    displayedPreference.thinking.trim(),
   );
   const selectedModelAvailable = Boolean(
     selectedModelOption && hasResolvedPreference,
   );
   const needsAuth = desktopProviderNeedsAuth(
-    preference.provider,
+    displayedPreference.provider,
     authCredentialsQuery.data,
   );
   const cachedUsage = useMemo(
@@ -1874,6 +1895,22 @@ export function DesktopV3ExistingConversationPane({
   }, [normalizedSessionId, settingsBaseline]);
 
   useEffect(() => {
+    if (sessionProfilePreference) {
+      setPreference((current) =>
+        preferencesEqual(current, sessionProfilePreference)
+          ? current
+          : sessionProfilePreference,
+      );
+      return;
+    }
+    if (sessionAgentPreference) {
+      setPreference((current) =>
+        preferencesEqual(current, sessionAgentPreference)
+          ? current
+          : sessionAgentPreference,
+      );
+      return;
+    }
     if (cachedPolicyMatchesSelectedMode && lockedPolicyPreference) {
       setPreference((current) =>
         preferencesEqual(current, lockedPolicyPreference)
@@ -1895,16 +1932,16 @@ export function DesktopV3ExistingConversationPane({
     lockedPolicyPreference,
     modelOptions,
     selectedAgentModelLock,
+    sessionAgentPreference,
+    sessionProfilePreference,
   ]);
 
   useEffect(() => {
     if (modeCommand !== "toggle-plan-auto") return;
-    localSettingsDirtyRef.current.mode = true;
     const nextMode = mode === "plan" ? "auto" : "plan";
-    setMode(nextMode);
-    onModeChange?.(nextMode);
+    handleModeSelect(nextMode);
     onModeCommandHandled?.();
-  }, [mode, modeCommand, onModeChange, onModeCommandHandled]);
+  }, [mode, modeCommand, onModeCommandHandled]);
 
   function handleOpenAuthSettings() {
     if (routeWorkspaceSlug) {
@@ -1930,7 +1967,8 @@ export function DesktopV3ExistingConversationPane({
       });
       setSelectedAgent(normalizedAgentName);
       localSettingsDirtyRef.current.agent = false;
-      const nextLock = resolveDesktopV3AgentModelLock(agentState.profiles, normalizedAgentName, mode);
+      const nextLock = resolveDesktopV3SessionAgentModelLock(agentResponse.metadata, mode)
+        ?? resolveDesktopV3AgentModelLock(agentState.profiles, normalizedAgentName, mode);
       if (nextLock.locked) {
         setPreference((current) => preferenceFromAgentModelLock(nextLock, current, modelOptions));
       }
@@ -1945,7 +1983,18 @@ export function DesktopV3ExistingConversationPane({
     localSettingsDirtyRef.current.mode = true;
     setMode(nextMode);
     onModeChange?.(nextMode);
-    const nextLock = resolveDesktopV3AgentModelLock(
+    const nextProfilePreference = preferenceFromModelProfileMetadata(
+      sessionMetadata,
+      nextMode,
+    );
+    if (nextProfilePreference) {
+      setPreference(nextProfilePreference);
+      return;
+    }
+    const nextLock = resolveDesktopV3SessionAgentModelLock(
+      sessionMetadata,
+      nextMode,
+    ) ?? resolveDesktopV3AgentModelLock(
       agentState.profiles,
       selectedAgent,
       nextMode,
@@ -2711,7 +2760,7 @@ export function DesktopV3ExistingConversationPane({
             }}
             modelOptions={modelOptions}
             selectedModelKey={selectedModelKey}
-            selectedServiceTier={preference.serviceTier}
+            selectedServiceTier={displayedPreference.serviceTier}
             agentSettingsOpenSignal={agentSettingsOpenSignal}
             agentSettingsInitialAgent={agentSettingsInitialAgent}
             modelPickerDisabled={selectedAgentModelLock.locked}
@@ -2724,16 +2773,16 @@ export function DesktopV3ExistingConversationPane({
             modelControlDetail={modelControlDetail({
               locked: selectedAgentModelLock.locked,
               customized: selectedAgentModelLock.customized,
-              modelLabel: selectedModelOption?.label || preference.model,
-              thinking: preference.thinking,
-              serviceTier: serviceTierFromPreference(preference),
+              modelLabel: selectedModelOption?.label || displayedPreference.model,
+              thinking: displayedPreference.thinking,
+              serviceTier: serviceTierFromPreference(displayedPreference),
             })}
             onAgentSelect={handleAgentSelect}
             needsAuth={needsAuth}
             onOpenAuthSettings={handleOpenAuthSettings}
             onConfirmAgentSettings={handleConfirmAgentSettings}
             agentModelControlBusy={agentModelSaving}
-            thinking={preference.thinking}
+            thinking={displayedPreference.thinking}
             thinkingTagsEnabled={thinkingTagsEnabled}
             onThinkingTagsToggle={(enabled) => {
               void handleThinkingTagsToggle(enabled);
@@ -2757,7 +2806,7 @@ export function DesktopV3ExistingConversationPane({
             document={pendingPlanDocument}
             embedded
             mobileOpen={planAgentMobileOpen}
-            modelLabel={preference.model}
+            modelLabel={displayedPreference.model}
             displayMode={planSidebarDisplayMode}
             onClose={() => setPlanAgentMobileOpen(false)}
 

@@ -104,6 +104,46 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
+function selectionFromMetadata(value: unknown): ModelProfileSelectionRecord | null {
+  const selection = record(value)
+  const provider = String(selection.provider ?? '').trim()
+  const model = String(selection.model ?? '').trim()
+  if (!provider || !model) return null
+  return {
+    provider,
+    model,
+    thinking: String(selection.thinking ?? '').trim(),
+    serviceTier: String(selection.serviceTier ?? selection.service_tier ?? '').trim(),
+    contextMode: String(selection.contextMode ?? selection.context_mode ?? '').trim().toLowerCase(),
+  }
+}
+
+export function modelProfileFromMetadata(metadata: unknown): ModelProfileInput | null {
+  const profile = record(record(metadata).model_profile)
+  const modelMode = String(profile.model_mode ?? '').trim()
+  if (modelMode === 'single') {
+    const single = selectionFromMetadata(profile.single)
+    return single ? { name: String(profile.name ?? '').trim(), modelMode: 'single', single, plan: null, auto: null } : null
+  }
+  if (modelMode === 'split') {
+    const plan = selectionFromMetadata(profile.plan)
+    const auto = selectionFromMetadata(profile.auto)
+    return plan && auto ? { name: String(profile.name ?? '').trim(), modelMode: 'split', single: null, plan, auto } : null
+  }
+  return null
+}
+
+export function preferenceFromModelProfileMetadata(
+  metadata: unknown,
+  mode: 'plan' | 'auto',
+): SessionPreferenceRecord | null {
+  const profile = modelProfileFromMetadata(metadata)
+  if (!profile) return null
+  const snapshot = record(record(metadata).model_profile)
+  const appliedAt = typeof snapshot.applied_at === 'number' ? snapshot.applied_at : 0
+  return preferenceFromModelProfile(profile, mode, appliedAt)
+}
+
 export function activeModelProfileFromMetadata(metadata: unknown): ActiveModelProfileState {
   const profile = record(record(metadata).model_profile)
   const source = String(profile.source ?? '').trim()

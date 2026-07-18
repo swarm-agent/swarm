@@ -48,6 +48,55 @@ function splitPreferenceForMode(profile: AgentProfileRecord, mode: DesktopSessio
   }
 }
 
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function storedAgentSupportsPlan(profile: Record<string, unknown>): boolean {
+  const runtimeMode = String(profile.runtime_mode ?? '').trim().toLowerCase().replace(/-/g, '_')
+  if (runtimeMode === 'plan_auto' || profile.exit_plan_mode_enabled === true) return true
+  if (runtimeMode === 'read' || runtimeMode === 'readwrite' || runtimeMode === 'read_write') return false
+  const tools = record(record(profile.tool_contract).tools)
+  return record(tools.plan_manage).enabled === true || record(tools.exit_plan_mode).enabled === true
+}
+
+export function resolveDesktopV3SessionAgentModelLock(
+  metadata: unknown,
+  mode: DesktopSessionMode = 'auto',
+): AgentModelLockState | null {
+  const profile = record(record(metadata).agent_profile)
+  const agentName = String(profile.name ?? '').trim()
+  if (!agentName) return null
+  const normalizedMode = normalizeSessionMode(mode)
+  const splitModelActive = String(profile.model_mode ?? '').trim().toLowerCase() === 'split'
+    && storedAgentSupportsPlan(profile)
+  const provider = String(splitModelActive
+    ? normalizedMode === 'plan' ? profile.plan_provider : profile.auto_provider
+    : profile.provider ?? '').trim()
+  const model = String(splitModelActive
+    ? normalizedMode === 'plan' ? profile.plan_model : profile.auto_model
+    : profile.model ?? '').trim()
+  if (!provider || !model) return null
+  const thinking = String(splitModelActive
+    ? normalizedMode === 'plan' ? profile.plan_thinking : profile.auto_thinking
+    : profile.thinking ?? '').trim()
+  const serviceTier = String(splitModelActive
+    ? normalizedMode === 'plan' ? profile.plan_service_tier : profile.auto_service_tier
+    : profile.auto_service_tier ?? '').trim()
+  return {
+    profile: null,
+    locked: true,
+    customized: true,
+    agentName,
+    provider,
+    model,
+    thinking,
+    serviceTier,
+    mode: normalizedMode,
+    disabledReason: '',
+  }
+}
+
 export function resolveDesktopV3AgentModelLock(
   agents: AgentProfileRecord[],
   selectedAgentName: string,

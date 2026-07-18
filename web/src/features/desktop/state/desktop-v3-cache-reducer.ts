@@ -2548,9 +2548,17 @@ function applyScalarSessionPatchIfPresent(
   if (eventType === 'session.mode.updated' && typeof payload.mode === 'string') {
     nextSession = { ...nextSession, mode: payload.mode }
   }
-  if (eventType === 'session.metadata.updated') {
+  if (eventType === 'session.metadata.updated' || eventType === 'session.agent.updated') {
     const metadata = recordValue(payload.metadata)
     if (metadata) nextSession = { ...nextSession, metadata }
+  }
+  if (eventType === 'session.model_profile.updated'
+    && Object.prototype.hasOwnProperty.call(payload, 'model_profile')) {
+    const metadata = { ...(recordValue(nextSession.metadata) ?? {}) }
+    const modelProfile = recordValue(payload.model_profile)
+    if (modelProfile) metadata.model_profile = modelProfile
+    else delete metadata.model_profile
+    nextSession = { ...nextSession, metadata }
   }
   if ((eventType === 'session.preference.updated' || eventType === 'session.mode.updated') && payload.preference !== undefined) {
     nextSession = { ...nextSession, preference: payload.preference }
@@ -2561,6 +2569,8 @@ function applyScalarSessionPatchIfPresent(
     && (eventType === 'session.title.updated'
       || eventType === 'session.mode.updated'
       || eventType === 'session.metadata.updated'
+      || eventType === 'session.agent.updated'
+      || eventType === 'session.model_profile.updated'
       || eventType === 'session.preference.updated')
   ) {
     nextSession = { ...nextSession, updated_at: payload.updated_at }

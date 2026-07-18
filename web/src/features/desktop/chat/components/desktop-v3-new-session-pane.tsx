@@ -285,11 +285,12 @@ export function DesktopV3NewSessionPane({
 
   useEffect(() => {
     if (!selectedAgentModelLock.locked) return
+    if (modelProfileChoice && modelProfileChoice.kind !== 'agent-default') return
     setPreference((current) => {
       unlockedPreferenceRef.current = current
       return preferenceFromAgentModelLock(selectedAgentModelLock, current, modelOptions)
     })
-  }, [modelOptions, selectedAgentModelLock])
+  }, [modelOptions, modelProfileChoice, selectedAgentModelLock])
 
   useEffect(() => {
     const operation = loadDesktopV3NewSessionOperation(workspace.path)
@@ -345,7 +346,7 @@ export function DesktopV3NewSessionPane({
     }
     const nextMode = nextProfile?.defaultSessionMode ?? mode
     const nextLock = resolveDesktopV3AgentModelLock(agentState.profiles, normalizedAgentName, nextMode)
-    if (nextLock.locked) {
+    if (nextLock.locked && (modelProfileChoice?.kind === 'agent-default' || !modelProfileChoice)) {
       setPreference((current) => preferenceFromAgentModelLock(nextLock, current, modelOptions))
     }
   }
@@ -354,6 +355,18 @@ export function DesktopV3NewSessionPane({
     modeManuallySelectedRef.current = true
     setMode(nextMode)
     onModeChange?.(nextMode)
+    const activeProfile = activeModelProfile.source === 'saved'
+      ? modelProfileState.profiles.find((profile) => profile.profileId === activeModelProfile.profileId) ?? null
+      : modelProfileChoice?.kind === 'temporary'
+        ? modelProfileChoice.profile
+        : null
+    if (activeProfile) {
+      const updatedAt = 'updatedAt' in activeProfile && typeof activeProfile.updatedAt === 'number'
+        ? activeProfile.updatedAt
+        : Date.now()
+      const next = preferenceFromModelProfile(activeProfile, nextMode, updatedAt)
+      if (next) setPreference(next)
+    }
   }
 
   async function handleConfirmAgentSettings(input: AgentModelControlConfirmInput) {
@@ -409,12 +422,10 @@ export function DesktopV3NewSessionPane({
 
   useEffect(() => {
     if (modeCommand !== 'toggle-plan-auto') return
-    modeManuallySelectedRef.current = true
     const nextMode = mode === 'plan' ? 'auto' : 'plan'
-    setMode(nextMode)
-    onModeChange?.(nextMode)
+    handleModeSelect(nextMode)
     onModeCommandHandled?.()
-  }, [mode, modeCommand, onModeChange, onModeCommandHandled])
+  }, [mode, modeCommand, onModeCommandHandled])
 
   async function handleThinkingTagsToggle(enabled: boolean) {
     if (thinkingTagsSaving) return
@@ -596,6 +607,11 @@ export function DesktopV3NewSessionPane({
           profileManuallyChangedRef.current = true
           setModelProfileChoice({ kind: 'agent-default' })
           setActiveModelProfile({ source: 'agent-default', profileId: '', name: '', modelMode: '' })
+          if (selectedAgentModelLock.locked) {
+            setPreference((current) => preferenceFromAgentModelLock(selectedAgentModelLock, current, modelOptions))
+          } else {
+            setPreference(unlockedPreferenceRef.current)
+          }
         }}
         modelOptions={modelOptions}
         selectedModelKey={selectedModelKey}
