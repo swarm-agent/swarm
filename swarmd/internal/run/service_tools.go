@@ -694,6 +694,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 		}
 		var subagentReservation *permission.SubagentReservationResult
 		var sessionDeployReservation *permission.SessionDeployReservationResult
+		selectedCount := 0
 		if canonicalToolName(toolCalls[i].Name) == "task" {
 			var manifest taskLaunchManifest
 			if err := json.Unmarshal([]byte(permissionArguments), &manifest); err != nil {
@@ -731,7 +732,6 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				decisions[i].Result.Error = "session deployment manifest is invalid"
 				continue
 			}
-			selectedCount := 0
 			if approved, ok := manifest.ApprovedArguments["selected_proposal_ids"].([]any); ok {
 				selectedCount = len(approved)
 			} else if selected, ok := manifest.ApprovedArguments["selected_proposal_ids"].([]string); ok {
