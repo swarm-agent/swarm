@@ -14,6 +14,7 @@ import (
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/modelprofile"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -146,6 +147,17 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 	if pref.Provider != "openai" || pref.Model != "snapshot-main-model" || pref.Thinking != "high" {
 		t.Fatalf("composer/global preference not hydrated from snapshot: %+v", pref)
 	}
+	profileState, err := server.modelProfiles.ListState(identity.ContextWithPrincipal(context.Background(), principal))
+	if err != nil {
+		t.Fatalf("list onboarding model profiles: %v", err)
+	}
+	if len(profileState.Profiles) != 1 || profileState.DefaultProfileID != profileState.Profiles[0].ProfileID || profileState.Profiles[0].Name != "Swarm recommended" || !profileState.Profiles[0].IsDefault {
+		t.Fatalf("onboarding recommended default = %+v", profileState)
+	}
+	recommended := profileState.Profiles[0]
+	if recommended.ModelMode != pebblestore.ModelProfileModeSplit || recommended.Plan == nil || recommended.Auto == nil || recommended.Plan.Provider != "openai" || recommended.Plan.Model != "snapshot-plan-model" || recommended.Plan.Thinking != "xhigh" || recommended.Auto.Provider != "openai" || recommended.Auto.Model != "snapshot-main-model" || recommended.Auto.Thinking != "high" {
+		t.Fatalf("onboarding recommended mapping = %+v", recommended)
+	}
 	uiSettings, err := server.uiSettings.GetForAccount(principal.AccountScopeID)
 	if err != nil {
 		t.Fatalf("get onboarding system-agent settings: %v", err)
@@ -157,6 +169,27 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 		if configured.Provider != "openai" || configured.Model != "snapshot-utility-model" || configured.Thinking != "medium" {
 			t.Fatalf("%s system-agent settings not hydrated from snapshot: %+v", name, configured)
 		}
+	}
+}
+
+func TestOnboardingProviderCredentialPreservesExistingModelProfileAndDefault(t *testing.T) {
+	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: true, message: "ok"})
+	ctx := identity.ContextWithPrincipal(context.Background(), principal)
+	selection := modelprofile.Selection{Provider: "openai", Model: "existing-model", Thinking: "medium", ContextMode: "full"}
+	existing, err := server.modelProfiles.Create(ctx, modelprofile.Input{Name: "My default", ModelMode: pebblestore.ModelProfileModeSingle, Single: &selection})
+	if err != nil {
+		t.Fatalf("create existing profile: %v", err)
+	}
+
+	if _, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{Provider: "openai", Type: "api", APIKey: "sk-test-valid"}); err != nil {
+		t.Fatalf("accept onboarding provider credential: %v", err)
+	}
+	state, err := server.modelProfiles.ListState(ctx)
+	if err != nil {
+		t.Fatalf("list profiles: %v", err)
+	}
+	if len(state.Profiles) != 1 || state.DefaultProfileID != existing.ProfileID || state.Profiles[0].Name != "My default" || !state.Profiles[0].IsDefault {
+		t.Fatalf("onboarding replaced existing profile/default: %+v", state)
 	}
 }
 
@@ -231,6 +264,10 @@ func TestOnboardingProviderCredentialRequiresSnapshotRecommendationsAndRollsBack
 	if len(agents.Profiles) != 0 {
 		t.Fatalf("missing recommendations hydrated agents: %+v", agents.Profiles)
 	}
+	profiles, profileErr := server.modelProfiles.ListState(identity.ContextWithPrincipal(context.Background(), principal))
+	if profileErr != nil || len(profiles.Profiles) != 0 || profiles.DefaultProfileID != "" {
+		t.Fatalf("missing recommendations persisted model profile: %+v err=%v", profiles, profileErr)
+	}
 }
 
 func TestOnboardingProviderCredentialEndpointAcceptsDesktopActiveField(t *testing.T) {
@@ -289,6 +326,10 @@ func TestOnboardingProviderCredentialRejectsFailedVerificationWithoutPersisting(
 	if len(agents.Profiles) != 0 {
 		t.Fatalf("failed verification hydrated agents: %+v", agents.Profiles)
 	}
+	profiles, profileErr := server.modelProfiles.ListState(identity.ContextWithPrincipal(context.Background(), principal))
+	if profileErr != nil || len(profiles.Profiles) != 0 || profiles.DefaultProfileID != "" {
+		t.Fatalf("failed verification persisted model profile: %+v err=%v", profiles, profileErr)
+	}
 }
 
 func newOnboardingProviderCredentialTestServer(t *testing.T, adapter onboardingProviderTestAdapter) (*Server, identity.Principal) {
@@ -329,6 +370,7 @@ func newOnboardingProviderCredentialTestServerWithCatalog(t *testing.T, adapter 
 	providers.RegisterRunner(adapter)
 	hub := stream.NewHub(eventLog)
 	server := NewServer(authSvc, agentSvc, modelSvc, nil, nil, nil, nil, nil, providers, nil, nil, eventLog, hub)
+	server.SetModelProfileService(modelprofile.NewService(pebblestore.NewModelProfileStore(store)))
 	server.uiSettings = uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user_onboarding_test", AccountScopeID: "acct_onboarding_test", AccountScopeSource: identity.AccountScopeSourceServerState}
 	return server, principal

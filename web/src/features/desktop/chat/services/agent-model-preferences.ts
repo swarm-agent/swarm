@@ -90,7 +90,8 @@ export function preferenceFromAgentModelLock(
   modelOptions: ModelOptionRecord[],
 ): SessionPreferenceRecord {
   if (!lock.locked) return current
-  const matchingOption = modelOptions.find((option) => option.provider === lock.provider && option.model === lock.model) ?? null
+  const matchingOptions = modelOptions.filter((option) => option.provider === lock.provider && option.model === lock.model)
+  const matchingOption = matchingOptions.find((option) => option.contextMode === current.contextMode) ?? matchingOptions.find((option) => option.contextMode === '') ?? matchingOptions[0] ?? null
   return {
     ...current,
     provider: lock.provider,

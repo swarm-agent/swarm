@@ -67,6 +67,7 @@ func (s *Server) registerProviderRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/image/storage/reveal", s.handleImageStorageReveal)
 	mux.HandleFunc("/v1/model", s.handleModelPreference)
 	mux.HandleFunc("/v1/model-profiles", s.handleModelProfiles)
+	mux.HandleFunc("/v1/model-profiles/default", s.handleModelProfileDefault)
 	mux.HandleFunc("/v1/model-profiles/bulk-delete", s.handleModelProfilesBulkDelete)
 	mux.HandleFunc("/v1/model-profiles/", s.handleModelProfileByID)
 	mux.HandleFunc("/v1/swarm-profiles", s.handleSwarmProfiles)

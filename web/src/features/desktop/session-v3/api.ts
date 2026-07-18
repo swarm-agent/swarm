@@ -1,5 +1,6 @@
 import { requestJson } from '../../../app/api'
-import type { ResolvedSessionPreference } from '../chat/types/chat'
+import type { ModelProfileChoice, ResolvedSessionPreference } from '../chat/types/chat'
+import { desktopV3ModelProfileChoiceWire } from './write-api'
 import type { DesktopSessionMode, FollowupCheckpointPolicyDefault } from '../settings/swarm/types/swarm-settings'
 import { normalizeFollowupCheckpointPolicyDefault, normalizeSessionMode } from '../settings/swarm/types/swarm-settings'
 import type {
@@ -154,6 +155,42 @@ export async function updateSessionV3Preference(
     },
   )
   return response
+}
+
+export interface SessionV3ModelProfileMutationResponseWire {
+  ok?: boolean
+  session_id?: string
+  model_profile?: unknown
+  agent_model_policy?: unknown
+  mutation?: unknown
+  realtime_outbox?: unknown
+}
+
+export function sessionV3ModelProfileSettingsMutationResponse(
+  response: SessionV3ModelProfileMutationResponseWire,
+  fallbackSessionId: string,
+): SessionSettingsMutationResponse {
+  return {
+    ok: response.ok ?? true,
+    session_id: response.session_id ?? fallbackSessionId,
+    agent_model_policy: response.agent_model_policy,
+    mutation: mutationRecord(response.mutation),
+    realtime_outbox: response.realtime_outbox,
+    model_profile: response.model_profile,
+  }
+}
+
+export async function updateSessionV3ModelProfile(
+  sessionId: string,
+  choice: ModelProfileChoice,
+): Promise<SessionV3ModelProfileMutationResponseWire> {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) throw new Error('Desktop V3 model profile update requires session_id')
+  return requestJson(`/v3/sessions/${encodeURIComponent(normalizedSessionId)}/model-profile`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_request_id: `desktop-model-profile:${crypto.randomUUID()}`, choice: desktopV3ModelProfileChoiceWire(choice) }),
+  })
 }
 
 export async function updateSessionV3Title(

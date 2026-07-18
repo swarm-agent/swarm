@@ -25,6 +25,10 @@ func TestModelProfilesHTTPCRUDIsolationAndBulkDelete(t *testing.T) {
 	if !strings.HasPrefix(profileID, "mp_") {
 		t.Fatalf("profile_id = %q, want opaque mp_ id", profileID)
 	}
+	createdProfile := created["model_profile"].(map[string]any)
+	if createdProfile["is_default"] != true {
+		t.Fatalf("first profile is_default = %#v", createdProfile["is_default"])
+	}
 
 	modelProfileRequestJSON(t, server, accountOne, http.MethodGet, modelProfilesPath+"/"+profileID, "", http.StatusOK)
 	modelProfileRequestJSON(t, server, accountTwo, http.MethodGet, modelProfilesPath+"/"+profileID, "", http.StatusNotFound)
@@ -39,9 +43,16 @@ func TestModelProfilesHTTPCRUDIsolationAndBulkDelete(t *testing.T) {
 	modelProfileRequestJSON(t, server, accountOne, http.MethodPost, modelProfilesPath, duplicate, http.StatusConflict)
 	second := modelProfileRequestJSON(t, server, accountOne, http.MethodPost, modelProfilesPath, strings.Replace(split, `"Renamed"`, `"Second"`, 1), http.StatusCreated)
 	secondID := modelProfileIDFromResponse(t, second)
+	setDefault := modelProfileRequestJSON(t, server, accountOne, http.MethodPost, modelProfilesPath+"/default", `{"profile_id":"`+secondID+`"}`, http.StatusOK)
+	if setDefault["default_profile_id"] != secondID {
+		t.Fatalf("default_profile_id = %#v, want %q", setDefault["default_profile_id"], secondID)
+	}
 	listed := modelProfileRequestJSON(t, server, accountOne, http.MethodGet, modelProfilesPath, "", http.StatusOK)
 	if profiles, ok := listed["model_profiles"].([]any); !ok || len(profiles) != 2 {
 		t.Fatalf("model_profiles = %#v, want two account-owned profiles", listed["model_profiles"])
+	}
+	if listed["default_profile_id"] != secondID {
+		t.Fatalf("listed default_profile_id = %#v", listed["default_profile_id"])
 	}
 
 	bulk := `{"profile_ids":["` + profileID + `","missing","` + profileID + `"]}`

@@ -21,6 +21,11 @@ type Selection = pebblestore.ModelProfileSelection
 type Profile = pebblestore.ModelProfileRecord
 type BulkDeleteResult = pebblestore.ModelProfileBulkDeleteResult
 
+type ListState struct {
+	Profiles         []Profile
+	DefaultProfileID string
+}
+
 type Input struct {
 	Name      string
 	ModelMode string
@@ -48,36 +53,88 @@ func (s *Service) Create(ctx context.Context, input Input) (Profile, error) {
 	if err != nil {
 		return Profile{}, err
 	}
+	return s.createForAccount(principal.AccountScopeID, input)
+}
+
+// CreateFirstForAccount atomically creates the profile only if the account still has none.
+func (s *Service) CreateFirstForAccount(accountScopeID string, input Input) (Profile, bool, error) {
+	if s == nil || s.store == nil {
+		return Profile{}, false, ErrNotConfigured
+	}
+	input, err := validateInput(input)
+	if err != nil {
+		return Profile{}, false, err
+	}
+	now := s.now().UnixMilli()
+	return s.store.PutForAccountIfEmpty(Profile{
+		ProfileID: s.newID(), AccountScopeID: strings.TrimSpace(accountScopeID), Name: input.Name,
+		ModelMode: input.ModelMode, Single: cloneSelection(input.Single), Plan: cloneSelection(input.Plan),
+		Auto: cloneSelection(input.Auto), CreatedAt: now, UpdatedAt: now,
+	})
+}
+
+func (s *Service) createForAccount(accountScopeID string, input Input) (Profile, error) {
 	if s == nil || s.store == nil {
 		return Profile{}, ErrNotConfigured
 	}
-	input, err = validateInput(input)
+	input, err := validateInput(input)
 	if err != nil {
 		return Profile{}, err
 	}
 	now := s.now().UnixMilli()
-	return s.store.PutForAccount(Profile{
-		ProfileID:      s.newID(),
-		AccountScopeID: principal.AccountScopeID,
-		Name:           input.Name,
-		ModelMode:      input.ModelMode,
-		Single:         cloneSelection(input.Single),
-		Plan:           cloneSelection(input.Plan),
-		Auto:           cloneSelection(input.Auto),
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	})
+	record := Profile{ProfileID: s.newID(), AccountScopeID: strings.TrimSpace(accountScopeID), Name: input.Name, ModelMode: input.ModelMode, Single: cloneSelection(input.Single), Plan: cloneSelection(input.Plan), Auto: cloneSelection(input.Auto), CreatedAt: now, UpdatedAt: now}
+	return s.store.PutForAccount(record)
 }
 
 func (s *Service) List(ctx context.Context) ([]Profile, error) {
+	state, err := s.ListState(ctx)
+	return state.Profiles, err
+}
+
+func (s *Service) ListState(ctx context.Context) (ListState, error) {
 	principal, err := requirePrincipal(ctx)
 	if err != nil {
-		return nil, err
+		return ListState{}, err
 	}
 	if s == nil || s.store == nil {
-		return nil, ErrNotConfigured
+		return ListState{}, ErrNotConfigured
 	}
-	return s.store.ListForAccount(principal.AccountScopeID, 500)
+	state, err := s.store.ListStateForAccount(principal.AccountScopeID, 500)
+	if err != nil {
+		return ListState{}, err
+	}
+	return ListState{Profiles: state.Profiles, DefaultProfileID: state.DefaultProfileID}, nil
+}
+
+func (s *Service) GetDefault(ctx context.Context) (Profile, bool, error) {
+	state, err := s.ListState(ctx)
+	if err != nil {
+		return Profile{}, false, err
+	}
+	if strings.TrimSpace(state.DefaultProfileID) == "" {
+		return Profile{}, false, nil
+	}
+	for _, profile := range state.Profiles {
+		if profile.ProfileID == state.DefaultProfileID {
+			return profile, true, nil
+		}
+	}
+	return Profile{}, false, nil
+}
+
+func (s *Service) SetDefault(ctx context.Context, profileID string) (Profile, error) {
+	principal, err := requirePrincipal(ctx)
+	if err != nil {
+		return Profile{}, err
+	}
+	if s == nil || s.store == nil {
+		return Profile{}, ErrNotConfigured
+	}
+	profile, err := s.store.SetDefaultForAccount(principal.AccountScopeID, profileID)
+	if errors.Is(err, pebblestore.ErrModelProfileNotFound) {
+		return Profile{}, ErrNotFound
+	}
+	return profile, err
 }
 
 func (s *Service) Get(ctx context.Context, profileID string) (Profile, error) {
@@ -146,6 +203,11 @@ func requirePrincipal(ctx context.Context) (identity.Principal, error) {
 	return principal, nil
 }
 
+// ValidateInput normalizes and validates an inline model profile without saving it.
+func ValidateInput(input Input) (Input, error) {
+	return validateInput(input)
+}
+
 func validateInput(input Input) (Input, error) {
 	input.Name = strings.TrimSpace(input.Name)
 	input.ModelMode = strings.ToLower(strings.TrimSpace(input.ModelMode))
@@ -187,8 +249,8 @@ func normalizeSelection(selection Selection) (Selection, error) {
 	selection.Thinking = strings.TrimSpace(selection.Thinking)
 	selection.ServiceTier = strings.TrimSpace(selection.ServiceTier)
 	selection.ContextMode = strings.TrimSpace(selection.ContextMode)
-	if selection.Provider == "" || selection.Model == "" || selection.Thinking == "" || selection.ServiceTier == "" || selection.ContextMode == "" {
-		return Selection{}, errors.New("model selection provider, model, thinking, service_tier, and context_mode are required")
+	if selection.Provider == "" || selection.Model == "" || selection.Thinking == "" {
+		return Selection{}, errors.New("model selection provider, model, and thinking are required")
 	}
 	return selection, nil
 }

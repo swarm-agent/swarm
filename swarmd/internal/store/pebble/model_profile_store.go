@@ -11,6 +11,7 @@ import (
 )
 
 var ErrModelProfileNameConflict = errors.New("model profile name already exists")
+var ErrModelProfileNotFound = errors.New("model profile not found")
 
 const (
 	ModelProfileModeSingle = "single"
@@ -35,6 +36,12 @@ type ModelProfileRecord struct {
 	Auto           *ModelProfileSelection `json:"auto,omitempty"`
 	CreatedAt      int64                  `json:"created_at"`
 	UpdatedAt      int64                  `json:"updated_at"`
+	IsDefault      bool                   `json:"-"`
+}
+
+type ModelProfileListState struct {
+	Profiles         []ModelProfileRecord
+	DefaultProfileID string
 }
 
 type ModelProfileBulkDeleteResult struct {
@@ -42,40 +49,69 @@ type ModelProfileBulkDeleteResult struct {
 	MissingIDs []string `json:"missing_ids"`
 }
 
-type ModelProfileStore struct {
-	store *Store
-}
+type ModelProfileStore struct{ store *Store }
 
-func NewModelProfileStore(store *Store) *ModelProfileStore {
-	return &ModelProfileStore{store: store}
-}
+func NewModelProfileStore(store *Store) *ModelProfileStore { return &ModelProfileStore{store: store} }
 
-func NormalizeModelProfileName(name string) string {
-	return strings.ToLower(strings.TrimSpace(name))
-}
+func NormalizeModelProfileName(name string) string { return strings.ToLower(strings.TrimSpace(name)) }
 
 func (s *ModelProfileStore) GetForAccount(accountScopeID, profileID string) (ModelProfileRecord, bool, error) {
-	accountScopeID = strings.TrimSpace(accountScopeID)
-	profileID = strings.TrimSpace(profileID)
+	accountScopeID, profileID = strings.TrimSpace(accountScopeID), strings.TrimSpace(profileID)
 	if accountScopeID == "" || profileID == "" {
 		return ModelProfileRecord{}, false, nil
 	}
-	var record ModelProfileRecord
-	ok, err := s.store.GetJSON(KeyModelProfileForAccount(accountScopeID, profileID), &record)
-	if err != nil || !ok {
-		return ModelProfileRecord{}, ok, err
+	state, err := s.ListStateForAccount(accountScopeID, 500)
+	if err != nil {
+		return ModelProfileRecord{}, false, err
 	}
-	if record.AccountScopeID != accountScopeID || record.ProfileID != profileID {
-		return ModelProfileRecord{}, false, nil
-	}
-	return record, true, nil
+	record, ok := findModelProfile(state.Profiles, profileID)
+	return record, ok, nil
 }
 
 func (s *ModelProfileStore) ListForAccount(accountScopeID string, limit int) ([]ModelProfileRecord, error) {
+	state, err := s.ListStateForAccount(accountScopeID, limit)
+	return state.Profiles, err
+}
+
+// ListStateForAccount returns profiles and repairs legacy missing/dangling defaults atomically.
+func (s *ModelProfileStore) ListStateForAccount(accountScopeID string, limit int) (ModelProfileListState, error) {
+	if s == nil || s.store == nil {
+		return ModelProfileListState{}, errors.New("model profile store is not configured")
+	}
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	if accountScopeID == "" {
-		return nil, errors.New("account scope id is required")
+		return ModelProfileListState{}, errors.New("account scope id is required")
 	}
+	s.store.modelProfilesMu.Lock()
+	defer s.store.modelProfilesMu.Unlock()
+	profiles, err := s.listUnlocked(accountScopeID, limit)
+	if err != nil {
+		return ModelProfileListState{}, err
+	}
+	defaultID, _, err := s.defaultIDUnlocked(accountScopeID)
+	if err != nil {
+		return ModelProfileListState{}, err
+	}
+	if !containsModelProfile(profiles, defaultID) {
+		if len(profiles) == 0 {
+			defaultID = ""
+			if err := s.store.Delete(KeyModelProfileDefaultForAccount(accountScopeID)); err != nil {
+				return ModelProfileListState{}, err
+			}
+		} else {
+			defaultID = profiles[0].ProfileID
+			if err := s.store.PutBytes(KeyModelProfileDefaultForAccount(accountScopeID), []byte(defaultID)); err != nil {
+				return ModelProfileListState{}, err
+			}
+		}
+	}
+	for i := range profiles {
+		profiles[i].IsDefault = profiles[i].ProfileID == defaultID
+	}
+	return ModelProfileListState{Profiles: profiles, DefaultProfileID: defaultID}, nil
+}
+
+func (s *ModelProfileStore) listUnlocked(accountScopeID string, limit int) ([]ModelProfileRecord, error) {
 	if limit <= 0 {
 		limit = 500
 	}
@@ -104,23 +140,39 @@ func (s *ModelProfileStore) ListForAccount(accountScopeID string, limit int) ([]
 }
 
 func (s *ModelProfileStore) PutForAccount(record ModelProfileRecord) (ModelProfileRecord, error) {
+	return s.putForAccount(record, false)
+}
+
+// PutForAccountIfEmpty creates the onboarding profile only while the account has no records.
+func (s *ModelProfileStore) PutForAccountIfEmpty(record ModelProfileRecord) (ModelProfileRecord, bool, error) {
+	stored, err := s.putForAccount(record, true)
+	if errors.Is(err, errModelProfileAccountNotEmpty) {
+		return ModelProfileRecord{}, false, nil
+	}
+	return stored, err == nil, err
+}
+
+var errModelProfileAccountNotEmpty = errors.New("model profile account is not empty")
+
+func (s *ModelProfileStore) putForAccount(record ModelProfileRecord, onlyIfEmpty bool) (ModelProfileRecord, error) {
 	if s == nil || s.store == nil {
 		return ModelProfileRecord{}, errors.New("model profile store is not configured")
 	}
-	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
-	record.ProfileID = strings.TrimSpace(record.ProfileID)
-	record.Name = strings.TrimSpace(record.Name)
+	record.AccountScopeID, record.ProfileID, record.Name = strings.TrimSpace(record.AccountScopeID), strings.TrimSpace(record.ProfileID), strings.TrimSpace(record.Name)
+	record.IsDefault = false
 	if record.AccountScopeID == "" || record.ProfileID == "" || NormalizeModelProfileName(record.Name) == "" {
 		return ModelProfileRecord{}, errors.New("account scope id, profile id, and name are required")
 	}
-
 	s.store.modelProfilesMu.Lock()
 	defer s.store.modelProfilesMu.Unlock()
-
-	existing, exists, err := s.GetForAccount(record.AccountScopeID, record.ProfileID)
+	profiles, err := s.listUnlocked(record.AccountScopeID, 500)
 	if err != nil {
 		return ModelProfileRecord{}, err
 	}
+	if onlyIfEmpty && len(profiles) != 0 {
+		return ModelProfileRecord{}, errModelProfileAccountNotEmpty
+	}
+	existing, exists := findModelProfile(profiles, record.ProfileID)
 	nameKey := KeyModelProfileNameForAccount(record.AccountScopeID, NormalizeModelProfileName(record.Name))
 	indexedID, indexed, err := s.store.GetBytes(nameKey)
 	if err != nil {
@@ -129,10 +181,19 @@ func (s *ModelProfileStore) PutForAccount(record ModelProfileRecord) (ModelProfi
 	if indexed && string(indexedID) != record.ProfileID {
 		return ModelProfileRecord{}, ErrModelProfileNameConflict
 	}
-
 	payload, err := json.Marshal(record)
 	if err != nil {
 		return ModelProfileRecord{}, fmt.Errorf("marshal model profile: %w", err)
+	}
+	defaultID, _, err := s.defaultIDUnlocked(record.AccountScopeID)
+	if err != nil {
+		return ModelProfileRecord{}, err
+	}
+	if !containsModelProfile(profiles, defaultID) {
+		defaultID = ""
+	}
+	if defaultID == "" {
+		defaultID = record.ProfileID
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
@@ -140,6 +201,9 @@ func (s *ModelProfileStore) PutForAccount(record ModelProfileRecord) (ModelProfi
 		return ModelProfileRecord{}, err
 	}
 	if err := batch.Set([]byte(nameKey), []byte(record.ProfileID), nil); err != nil {
+		return ModelProfileRecord{}, err
+	}
+	if err := batch.Set([]byte(KeyModelProfileDefaultForAccount(record.AccountScopeID)), []byte(defaultID), nil); err != nil {
 		return ModelProfileRecord{}, err
 	}
 	if exists && NormalizeModelProfileName(existing.Name) != NormalizeModelProfileName(record.Name) {
@@ -150,6 +214,32 @@ func (s *ModelProfileStore) PutForAccount(record ModelProfileRecord) (ModelProfi
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return ModelProfileRecord{}, err
 	}
+	record.IsDefault = record.ProfileID == defaultID
+	return record, nil
+}
+
+func (s *ModelProfileStore) SetDefaultForAccount(accountScopeID, profileID string) (ModelProfileRecord, error) {
+	if s == nil || s.store == nil {
+		return ModelProfileRecord{}, errors.New("model profile store is not configured")
+	}
+	accountScopeID, profileID = strings.TrimSpace(accountScopeID), strings.TrimSpace(profileID)
+	if accountScopeID == "" || profileID == "" {
+		return ModelProfileRecord{}, errors.New("account scope id and profile id are required")
+	}
+	s.store.modelProfilesMu.Lock()
+	defer s.store.modelProfilesMu.Unlock()
+	profiles, err := s.listUnlocked(accountScopeID, 500)
+	if err != nil {
+		return ModelProfileRecord{}, err
+	}
+	record, ok := findModelProfile(profiles, profileID)
+	if !ok {
+		return ModelProfileRecord{}, ErrModelProfileNotFound
+	}
+	if err := s.store.PutBytes(KeyModelProfileDefaultForAccount(accountScopeID), []byte(profileID)); err != nil {
+		return ModelProfileRecord{}, err
+	}
+	record.IsDefault = true
 	return record, nil
 }
 
@@ -166,13 +256,18 @@ func (s *ModelProfileStore) BulkDeleteForAccount(accountScopeID string, profileI
 	if accountScopeID == "" {
 		return ModelProfileBulkDeleteResult{}, errors.New("account scope id is required")
 	}
-
 	s.store.modelProfilesMu.Lock()
 	defer s.store.modelProfilesMu.Unlock()
-
+	all, err := s.listUnlocked(accountScopeID, 500)
+	if err != nil {
+		return ModelProfileBulkDeleteResult{}, err
+	}
+	byID := make(map[string]ModelProfileRecord, len(all))
+	for _, record := range all {
+		byID[record.ProfileID] = record
+	}
 	result := ModelProfileBulkDeleteResult{DeletedIDs: []string{}, MissingIDs: []string{}}
-	records := make([]ModelProfileRecord, 0, len(profileIDs))
-	seen := make(map[string]struct{}, len(profileIDs))
+	seen, deleting := map[string]struct{}{}, map[string]struct{}{}
 	for _, rawID := range profileIDs {
 		profileID := strings.TrimSpace(rawID)
 		if profileID == "" {
@@ -182,30 +277,67 @@ func (s *ModelProfileStore) BulkDeleteForAccount(accountScopeID string, profileI
 			continue
 		}
 		seen[profileID] = struct{}{}
-		record, ok, err := s.GetForAccount(accountScopeID, profileID)
-		if err != nil {
-			return ModelProfileBulkDeleteResult{}, err
-		}
-		if !ok {
+		if _, ok := byID[profileID]; !ok {
 			result.MissingIDs = append(result.MissingIDs, profileID)
 			continue
 		}
-		records = append(records, record)
+		deleting[profileID] = struct{}{}
 		result.DeletedIDs = append(result.DeletedIDs, profileID)
 	}
-
+	remaining := make([]ModelProfileRecord, 0, len(all)-len(deleting))
+	for _, record := range all {
+		if _, drop := deleting[record.ProfileID]; !drop {
+			remaining = append(remaining, record)
+		}
+	}
+	defaultID, _, err := s.defaultIDUnlocked(accountScopeID)
+	if err != nil {
+		return ModelProfileBulkDeleteResult{}, err
+	}
+	if !containsModelProfile(remaining, defaultID) {
+		defaultID = ""
+		if len(remaining) > 0 {
+			defaultID = remaining[0].ProfileID
+		}
+	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	for _, record := range records {
-		if err := batch.Delete([]byte(KeyModelProfileForAccount(accountScopeID, record.ProfileID)), nil); err != nil {
+	for profileID := range deleting {
+		record := byID[profileID]
+		if err := batch.Delete([]byte(KeyModelProfileForAccount(accountScopeID, profileID)), nil); err != nil {
 			return ModelProfileBulkDeleteResult{}, err
 		}
 		if err := batch.Delete([]byte(KeyModelProfileNameForAccount(accountScopeID, NormalizeModelProfileName(record.Name))), nil); err != nil {
 			return ModelProfileBulkDeleteResult{}, err
 		}
 	}
+	if defaultID == "" {
+		if err := batch.Delete([]byte(KeyModelProfileDefaultForAccount(accountScopeID)), nil); err != nil {
+			return ModelProfileBulkDeleteResult{}, err
+		}
+	} else if err := batch.Set([]byte(KeyModelProfileDefaultForAccount(accountScopeID)), []byte(defaultID), nil); err != nil {
+		return ModelProfileBulkDeleteResult{}, err
+	}
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return ModelProfileBulkDeleteResult{}, err
 	}
 	return result, nil
+}
+
+func (s *ModelProfileStore) defaultIDUnlocked(accountScopeID string) (string, bool, error) {
+	value, ok, err := s.store.GetBytes(KeyModelProfileDefaultForAccount(accountScopeID))
+	return strings.TrimSpace(string(value)), ok, err
+}
+
+func containsModelProfile(profiles []ModelProfileRecord, profileID string) bool {
+	_, ok := findModelProfile(profiles, profileID)
+	return ok
+}
+func findModelProfile(profiles []ModelProfileRecord, profileID string) (ModelProfileRecord, bool) {
+	for _, profile := range profiles {
+		if profile.ProfileID == profileID {
+			return profile, true
+		}
+	}
+	return ModelProfileRecord{}, false
 }

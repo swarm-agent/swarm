@@ -14,26 +14,43 @@ import (
 	"swarm/packages/swarmd/internal/privacy"
 )
 
+const (
+	SessionModelProfileSourceSaved     = "saved"
+	SessionModelProfileSourceTemporary = "temporary"
+)
+
+type SessionModelProfileSnapshot struct {
+	Source         string                 `json:"source"`
+	SavedProfileID string                 `json:"saved_profile_id,omitempty"`
+	Name           string                 `json:"name,omitempty"`
+	ModelMode      string                 `json:"model_mode"`
+	Single         *ModelProfileSelection `json:"single,omitempty"`
+	Plan           *ModelProfileSelection `json:"plan,omitempty"`
+	Auto           *ModelProfileSelection `json:"auto,omitempty"`
+	AppliedAt      int64                  `json:"applied_at"`
+}
+
 type SessionSnapshot struct {
-	ID                      string                    `json:"id"`
-	UserID                  string                    `json:"user_id,omitempty"`
-	AccountScopeID          string                    `json:"account_scope_id,omitempty"`
-	WorkspacePath           string                    `json:"workspace_path"`
-	WorkspaceName           string                    `json:"workspace_name"`
-	TemporaryWorkspaceRoots []string                  `json:"temporary_workspace_roots,omitempty"`
-	Title                   string                    `json:"title"`
-	Mode                    string                    `json:"mode"`
-	Preference              ModelPreference           `json:"preference,omitempty"`
-	WorktreeEnabled         bool                      `json:"worktree_enabled,omitempty"`
-	WorktreeRootPath        string                    `json:"worktree_root_path,omitempty"`
-	WorktreeBaseBranch      string                    `json:"worktree_base_branch,omitempty"`
-	WorktreeBranch          string                    `json:"worktree_branch,omitempty"`
-	Metadata                map[string]any            `json:"metadata,omitempty"`
-	CreatedAt               int64                     `json:"created_at"`
-	UpdatedAt               int64                     `json:"updated_at"`
-	MessageCount            int                       `json:"message_count"`
-	LastMessageAt           int64                     `json:"last_message_at"`
-	Lifecycle               *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	ID                      string                       `json:"id"`
+	UserID                  string                       `json:"user_id,omitempty"`
+	AccountScopeID          string                       `json:"account_scope_id,omitempty"`
+	WorkspacePath           string                       `json:"workspace_path"`
+	WorkspaceName           string                       `json:"workspace_name"`
+	TemporaryWorkspaceRoots []string                     `json:"temporary_workspace_roots,omitempty"`
+	Title                   string                       `json:"title"`
+	Mode                    string                       `json:"mode"`
+	Preference              ModelPreference              `json:"preference,omitempty"`
+	ModelProfile            *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
+	WorktreeEnabled         bool                         `json:"worktree_enabled,omitempty"`
+	WorktreeRootPath        string                       `json:"worktree_root_path,omitempty"`
+	WorktreeBaseBranch      string                       `json:"worktree_base_branch,omitempty"`
+	WorktreeBranch          string                       `json:"worktree_branch,omitempty"`
+	Metadata                map[string]any               `json:"metadata,omitempty"`
+	CreatedAt               int64                        `json:"created_at"`
+	UpdatedAt               int64                        `json:"updated_at"`
+	MessageCount            int                          `json:"message_count"`
+	LastMessageAt           int64                        `json:"last_message_at"`
+	Lifecycle               *SessionLifecycleSnapshot    `json:"lifecycle,omitempty"`
 }
 
 type SessionLifecycleSnapshot struct {

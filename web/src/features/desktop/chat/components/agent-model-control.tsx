@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronDown, GitBranch, Lightbulb, Lock, Settings2, Zap, ZapOff } from 'lucide-react'
-import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
+import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileInput, ModelProfileRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
 import { uiSettingsQueryOptions } from '../../../queries/query-options'
@@ -34,6 +34,10 @@ export type AgentModelControlConfirmInput = {
   agentName: string
   profile: AgentProfileRecord
   action: AgentModelControlAction
+  modelProfile: ModelProfileInput
+  persistence: 'temporary' | 'create' | 'update' | 'create-copy'
+  profileId: string
+  makeDefault: boolean
 }
 
 interface AgentModelControlProps {
@@ -51,6 +55,10 @@ interface AgentModelControlProps {
   openSignal?: number
   onOpenAgentSettings?: () => void
   onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
+  modelProfiles?: ModelProfileRecord[]
+  activeModelProfile?: ActiveModelProfileState
+  initialModelProfileId?: string
+  createModelProfileSignal?: number
   busy?: boolean
   showTrigger?: boolean
   initialAgentName?: string
@@ -74,7 +82,7 @@ function isSystemUtility(name: string): boolean {
 function isCompiledSystemAgent(name: string): boolean {
   return isSystemUtility(name) || name === CLONE_AGENT_NAME || name === SWARM_AGENT_NAME
 }
-export type ModelDraft = { provider: string; model: string; thinking: string; serviceTier: string }
+export type ModelDraft = { provider: string; model: string; thinking: string; serviceTier: string; contextMode: string }
 
 function agentMode(profile: AgentProfileRecord): string {
   return (profile.mode || 'primary').trim().toLowerCase()
@@ -113,8 +121,8 @@ function selectedDraftMode(profile: AgentProfileRecord | null): DraftMode {
   return profile?.modelMode === 'split' && isPlanCapableAgent(profile) ? 'split' : 'single'
 }
 
-function modelOptionFor(provider: string, model: string, modelOptions: ModelOptionRecord[]): ModelOptionRecord | null {
-  return modelOptions.find((candidate) => candidate.provider === provider && candidate.model === model) ?? null
+function modelOptionFor(provider: string, model: string, modelOptions: ModelOptionRecord[], contextMode = ''): ModelOptionRecord | null {
+  return modelOptions.find((candidate) => candidate.provider === provider && candidate.model === model && candidate.contextMode === contextMode) ?? modelOptions.find((candidate) => candidate.provider === provider && candidate.model === model) ?? null
 }
 
 function normalizeDraftServiceTier(provider: string, value: string): string {
@@ -127,13 +135,13 @@ function modelSupportsServiceTier(provider: string, model: string, modelOptions:
 }
 
 function serviceTierOptionsForDraft(draft: ModelDraft, modelOptions: ModelOptionRecord[]) {
-  const option = modelOptionFor(draft.provider, draft.model, modelOptions)
+  const option = modelOptionFor(draft.provider, draft.model, modelOptions, draft.contextMode)
   return modelServiceTierOptions(draft.provider, draft.model, option ?? { serviceTiers: [], serviceTierMappings: [] })
 }
 
 function serviceTierLabel(provider: string, model: string, modelOptions: ModelOptionRecord[], value: string): string {
   const normalized = normalizeDraftServiceTier(provider, value)
-  const options = serviceTierOptionsForDraft({ provider, model, thinking: '', serviceTier: normalized }, modelOptions)
+  const options = serviceTierOptionsForDraft({ provider, model, thinking: '', serviceTier: normalized, contextMode: '' }, modelOptions)
   return options.find((option) => option.value === normalized)?.label ?? (normalized || 'Off / standard')
 }
 
@@ -148,6 +156,7 @@ function defaultDraftFromModel(model: ModelOptionRecord | null, selectedServiceT
     model: modelID,
     thinking: selectedThinking.trim() || defaultThinkingForOption(model),
     serviceTier: modelSupportsServiceTier(provider, modelID, model ? [model] : [], resolvedServiceTier) ? resolvedServiceTier : '',
+    contextMode: model?.contextMode ?? '',
   }
 }
 
@@ -160,6 +169,7 @@ function singleDraftFromProfile(profile: AgentProfileRecord | null, selectedMode
     model: hasExplicitSingleModel ? profile?.model.trim() || fallback.model : fallback.model,
     thinking: hasExplicitSingleModel ? profile?.thinking.trim() || fallback.thinking : fallback.thinking,
     serviceTier: hasExplicitSingleModel ? normalizeDraftServiceTier(provider, profile?.autoServiceTier ?? '') : fallback.serviceTier,
+    contextMode: fallback.contextMode,
   }
 }
 
@@ -172,6 +182,7 @@ function splitDraftFromProfile(profile: AgentProfileRecord | null, prefix: 'plan
       model: profile?.planModel.trim() || fallback.model,
       thinking: profile?.planThinking.trim() || fallback.thinking,
       serviceTier: normalizeDraftServiceTier(provider, profile?.planServiceTier ?? ''),
+      contextMode: fallback.contextMode,
     }
   }
   const provider = profile?.autoProvider.trim() || fallback.provider
@@ -180,6 +191,7 @@ function splitDraftFromProfile(profile: AgentProfileRecord | null, prefix: 'plan
     model: profile?.autoModel.trim() || fallback.model,
     thinking: profile?.autoThinking.trim() || fallback.thinking,
     serviceTier: normalizeDraftServiceTier(provider, profile?.autoServiceTier ?? ''),
+    contextMode: fallback.contextMode,
   }
 }
 
@@ -268,6 +280,10 @@ export function AgentModelControl({
   openSignal = 0,
   onOpenAgentSettings,
   onConfirmAgentSettings,
+  modelProfiles = [],
+  activeModelProfile,
+  initialModelProfileId = '',
+  createModelProfileSignal = 0,
   busy = false,
   showTrigger = true,
   initialAgentName = '',
@@ -310,6 +326,10 @@ export function AgentModelControl({
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [draftProfileName, setDraftProfileName] = useState('')
+  const [draftMakeDefault, setDraftMakeDefault] = useState(false)
+  const [editingProfileId, setEditingProfileId] = useState('')
+  const [baseline, setBaseline] = useState('')
   const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'explorer' && (!isCompiledSystemAgent(agent.name) || agent.name === SWARM_AGENT_NAME)), explorerProfile, cloneProfile], [agents, cloneProfile, explorerProfile])
   const activeProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? selectableAgents.find((agent) => agent.name === currentAgent) ?? null
   const [draftAgentName, setDraftAgentName] = useState(activeProfile?.name ?? selectedPrimaryAgent)
@@ -344,22 +364,33 @@ export function AgentModelControl({
   const SelectedServiceTierIcon = normalizedSelectedServiceTier ? Zap : ZapOff
 
   useEffect(() => {
-    if (openSignal > 0) setOpen(true)
-  }, [openSignal])
+    if (openSignal > 0 || createModelProfileSignal > 0) setOpen(true)
+  }, [createModelProfileSignal, openSignal])
 
   useEffect(() => {
     if (!open) return
     const profile = selectableAgents.find((agent) => agent.name === initialAgentName)
       ?? selectableAgents.find((agent) => agent.name === selectedPrimaryAgent)
       ?? activeProfile
+    const saved = modelProfiles.find((candidate) => candidate.profileId === initialModelProfileId) ?? null
+    const nextMode: DraftMode = saved?.modelMode ?? selectedDraftMode(profile)
+    const single = saved?.single ? { ...saved.single } : singleDraftFromProfile(profile, selectedModel, selectedServiceTier, selectedThinking)
+    const plan = saved?.plan ? { ...saved.plan } : splitDraftFromProfile(profile, 'plan', selectedModel, selectedServiceTier, selectedThinking)
+    const auto = saved?.auto ? { ...saved.auto } : splitDraftFromProfile(profile, 'auto', selectedModel, selectedServiceTier, selectedThinking)
+    const name = saved?.name ?? (activeModelProfile?.source === 'saved' ? `${activeModelProfile.name} copy` : '')
+    const makeDefault = saved?.isDefault ?? modelProfiles.length === 0
     setDraftAgentName(profile?.name ?? selectedPrimaryAgent)
     setDraftSessionMode(profile?.defaultSessionMode ?? mode)
-    setDraftMode(selectedDraftMode(profile))
-    setSingleDraft(singleDraftFromProfile(profile, selectedModel, selectedServiceTier, selectedThinking))
-    setPlanDraft(splitDraftFromProfile(profile, 'plan', selectedModel, selectedServiceTier, selectedThinking))
-    setAutoDraft(splitDraftFromProfile(profile, 'auto', selectedModel, selectedServiceTier, selectedThinking))
+    setDraftMode(nextMode)
+    setSingleDraft(single)
+    setPlanDraft(plan)
+    setAutoDraft(auto)
+    setDraftProfileName(name)
+    setDraftMakeDefault(makeDefault)
+    setEditingProfileId(saved?.profileId ?? '')
+    setBaseline(JSON.stringify({ name, makeDefault, mode: nextMode, single, plan, auto }))
     setError(null)
-  }, [activeProfile, initialAgentName, mode, open, selectableAgents, selectedModel, selectedPrimaryAgent, selectedServiceTier, selectedThinking])
+  }, [activeModelProfile, activeProfile, initialAgentName, initialModelProfileId, mode, modelProfiles, open, selectableAgents, selectedModel, selectedPrimaryAgent, selectedServiceTier, selectedThinking])
 
   function chooseAgent(profile: AgentProfileRecord) {
     setDraftAgentName(profile.name)
@@ -372,25 +403,33 @@ export function AgentModelControl({
   }
 
   function selectProvider(target: 'single' | 'plan' | 'auto', provider: string) {
-    const update = (current: ModelDraft): ModelDraft => ({ ...current, provider, model: '', thinking: '', serviceTier: '' })
+    const update = (current: ModelDraft): ModelDraft => ({ ...current, provider, model: '', thinking: '', serviceTier: '', contextMode: '' })
     if (target === 'single') setSingleDraft(update)
     else if (target === 'plan') setPlanDraft(update)
     else setAutoDraft(update)
   }
 
-  function selectModel(target: 'single' | 'plan' | 'auto', model: string) {
-    const update = (current: ModelDraft): ModelDraft => ({
-      ...current,
-      model,
-      thinking: normalizeDraftThinking(current.provider, model, modelOptions, current.thinking),
-      serviceTier: modelSupportsServiceTier(current.provider, model, modelOptions, current.serviceTier) ? current.serviceTier : '',
-    })
+  function selectModel(target: 'single' | 'plan' | 'auto', key: string) {
+    const update = (current: ModelDraft): ModelDraft => {
+      const option = modelOptions.find((candidate) => candidate.provider === current.provider && modelOptionKey(candidate) === key) ?? null
+      const model = option?.model ?? ''
+      return {
+        ...current,
+        model,
+        contextMode: option?.contextMode ?? '',
+        thinking: normalizeDraftThinking(current.provider, model, modelOptions, current.thinking),
+        serviceTier: modelSupportsServiceTier(current.provider, model, modelOptions, current.serviceTier) ? current.serviceTier : '',
+      }
+    }
     if (target === 'single') setSingleDraft(update)
     else if (target === 'plan') setPlanDraft(update)
     else setAutoDraft(update)
   }
 
-  async function confirm() {
+  const currentDraftSignature = JSON.stringify({ name: draftProfileName.trim(), makeDefault: draftMakeDefault, mode: effectiveDraftMode, single: singleDraft, plan: planDraft, auto: autoDraft })
+  const customized = Boolean(baseline && currentDraftSignature !== baseline)
+
+  async function confirm(persistence: AgentModelControlConfirmInput['persistence']) {
     const profile = draftProfile
     if (!profile || saving || busy || profile.name === CLONE_AGENT_NAME) return
     const normalizedDraftMode: DraftMode = draftMode === 'split' && !isPlanCapableAgent(profile) ? 'single' : draftMode
@@ -425,7 +464,22 @@ export function AgentModelControl({
         })
         queryClient.setQueryData(uiSettingsQueryOptions().queryKey, saved)
       } else {
-        await onConfirmAgentSettings?.({ agentName: profile.name, profile, action })
+        const toSelection = (draft: ModelDraft) => ({ provider: draft.provider.trim(), model: draft.model.trim(), thinking: draft.thinking.trim(), serviceTier: draft.serviceTier.trim(), contextMode: draft.contextMode.trim() })
+        const profileName = draftProfileName.trim() || (persistence === 'temporary' ? 'Temporary/customized' : '')
+        if (persistence !== 'temporary' && !profileName) {
+          throw new Error('Enter a profile name before saving.')
+        }
+        await onConfirmAgentSettings?.({
+          agentName: profile.name,
+          profile,
+          action,
+          modelProfile: normalizedDraftMode === 'single'
+            ? { name: profileName, modelMode: 'single', single: toSelection(singleDraft), plan: null, auto: null }
+            : { name: profileName, modelMode: 'split', single: null, plan: toSelection(planDraft), auto: toSelection(autoDraft) },
+          persistence,
+          profileId: editingProfileId,
+          makeDefault: draftMakeDefault,
+        })
       }
       setOpen(false)
     } catch (cause) {
@@ -442,7 +496,7 @@ export function AgentModelControl({
           <div className="min-w-0">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent setup</div>
             <div className="mt-1 truncate text-sm font-semibold text-[var(--app-text)]">{draftProfile ? agentLabel(draftProfile) : displayAgentName(currentAgent) || 'Agent'}</div>
-            <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Changes are staged here and saved to the agent profile only when confirmed.</div>
+            <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Model setup is separate from agent identity. Choose explicitly whether to use it temporarily or save a named profile.</div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {onOpenAgentSettings ? (
@@ -479,6 +533,17 @@ export function AgentModelControl({
           </div>
 
           <div className="min-h-0 overflow-y-auto p-5">
+            <div className="mb-4 grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
+                Profile name
+                <input value={draftProfileName} onChange={(event) => setDraftProfileName(event.target.value)} placeholder="Name this model setup" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm font-normal normal-case tracking-normal text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+              </label>
+              <label className="flex min-h-10 items-center gap-2 text-sm text-[var(--app-text-muted)]">
+                <input type="checkbox" checked={draftMakeDefault} onChange={(event) => setDraftMakeDefault(event.target.checked)} />
+                Account default
+              </label>
+              {customized ? <div className="text-[11px] font-semibold text-[var(--app-warning)] sm:col-span-2">Customized — this draft differs from the saved baseline.</div> : null}
+            </div>
             {draftProfile?.name === CLONE_AGENT_NAME ? (
               <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
                 <div className="font-semibold text-[var(--app-text)]">Compiled system agent</div>
@@ -569,10 +634,12 @@ export function AgentModelControl({
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4">
+        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4">
           <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Cancel</button>
-          <button type="button" disabled={busy || saving || !draftProfile || draftProfile.name === CLONE_AGENT_NAME} onClick={() => { void confirm() }} className="rounded-lg border border-[var(--app-primary)] bg-transparent px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60">
-            {saving || busy ? 'Saving…' : 'Confirm changes'}
+          <button type="button" disabled={busy || saving || !draftProfile || draftProfile.name === CLONE_AGENT_NAME} onClick={() => { void confirm('temporary') }} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">Use for this session</button>
+          {editingProfileId ? <button type="button" disabled={busy || saving || !customized} onClick={() => { void confirm('create-copy') }} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">Save as new</button> : null}
+          <button type="button" disabled={busy || saving || !draftProfile || draftProfile.name === CLONE_AGENT_NAME || !draftProfileName.trim()} onClick={() => { void confirm(editingProfileId ? 'update' : 'create') }} className="rounded-lg border border-[var(--app-primary)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">
+            {saving || busy ? 'Saving…' : editingProfileId ? 'Save changes and use' : 'Save profile and use'}
           </button>
         </div>
       </div>
@@ -694,7 +761,7 @@ function ModelDraftEditor({
   onServiceTierChange?: (serviceTier: string) => void
 }) {
   const choices = modelChoices(draft.provider, modelOptions)
-  const selectedOption = choices.find((option) => option.model === draft.model) ?? null
+  const selectedOption = choices.find((option) => option.model === draft.model && option.contextMode === draft.contextMode) ?? null
   const serviceTierOptions = serviceTierOptionsForDraft(draft, modelOptions)
   const serviceTierSupported = serviceTierOptions.length > 1
   const normalizedServiceTier = serviceTierSupported ? normalizeDraftServiceTier(draft.provider, draft.serviceTier) : ''
@@ -705,7 +772,7 @@ function ModelDraftEditor({
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]"><GitBranch size={14} />{title}</div>
       <div className="grid gap-3 md:grid-cols-[minmax(130px,0.7fr)_minmax(220px,1.4fr)_minmax(130px,0.7fr)_minmax(130px,0.7fr)]">
         <SelectField label="Provider" value={draft.provider} onChange={onProviderChange} options={providers.map((provider) => ({ label: provider, value: provider }))} placeholder="Choose provider" />
-        <ModelSelectField label="Model" value={draft.model} onChange={onModelChange} options={choices} placeholder="Choose model" disabled={!draft.provider.trim()} />
+        <ModelSelectField label="Model" value={selectedOption ? modelOptionKey(selectedOption) : ''} onChange={onModelChange} options={choices} placeholder="Choose model" disabled={!draft.provider.trim()} />
         <SelectField label="Thinking" value={normalizedThinking} onChange={onThinkingChange} options={thinkingOptions.map((option) => ({ label: option, value: option }))} disabled={!selectedOption || thinkingOptions.length <= 1} />
         {showServiceTier ? <SelectField label="Service tier" value={normalizedServiceTier} onChange={(value) => onServiceTierChange?.(normalizeDraftServiceTier(draft.provider, value))} options={serviceTierOptions} disabled={!serviceTierSupported} /> : <div />}
       </div>
@@ -725,7 +792,7 @@ function ModelSelectField({ label, value, options, placeholder = '', disabled = 
             const pricingLabel = formatModelPricing(option.pricing)
             const meta = [contextLabel ? `Context ${contextLabel}` : '', pricingLabel].filter(Boolean).join(' · ')
             const labelText = `${displayModelName(option.provider, option.model, option.contextMode)}${meta ? ` — ${meta}` : ''}`
-            return <option key={`model:${modelOptionKey(option)}`} value={option.model}>{labelText}</option>
+            return <option key={`model:${modelOptionKey(option)}`} value={modelOptionKey(option)}>{labelText}</option>
           })}
         </select>
         <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />

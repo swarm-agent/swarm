@@ -42,6 +42,7 @@ const (
 	KeyModelFavoriteAccountPrefix                  = "model_favorite/account/"
 	KeyModelProfileAccountPrefix                   = "model_profile/account/"
 	KeyModelProfileNameAccountPrefix               = "model_profile/name_by_account/"
+	KeyModelProfileDefaultAccountPrefix            = "model_profile/default_by_account/"
 	KeySwarmProfileAccountPrefix                   = "swarm_profile/account/"
 	KeySwarmProfileNameAccountPrefix               = "swarm_profile/name_by_account/"
 	KeyWorktreeGlobalConfig                        = "worktree/global/config"
@@ -216,6 +217,10 @@ func ModelProfileNamePrefixForAccount(accountScopeID string) string {
 		return KeyModelProfileNameAccountPrefix
 	}
 	return fmt.Sprintf("%s%s/", KeyModelProfileNameAccountPrefix, accountPart)
+}
+
+func KeyModelProfileDefaultForAccount(accountScopeID string) string {
+	return fmt.Sprintf("%s%s", KeyModelProfileDefaultAccountPrefix, keyPart(accountScopeID))
 }
 
 func KeySwarmProfileForAccount(accountScopeID, profileID string) string {

@@ -20,7 +20,7 @@ import { applyWorkspaceTheme } from '../../../workspaces/launcher/services/works
 import { useWorkspaceLauncher } from '../../../workspaces/launcher/state/use-workspace-launcher'
 import { buildWorkspaceRouteSlugMap, workspaceRouteSlugBase } from '../../../workspaces/launcher/services/workspace-route'
 import { formatWorkspacePath } from '../../../workspaces/launcher/services/workspace-format'
-import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions } from '../../../queries/query-options'
+import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions } from '../../../queries/query-options'
 import type { WorkspaceDiscoverEntry, WorkspaceResolution } from '../../../workspaces/launcher/types/workspace'
 
 type OnboardingStep = 'identity' | 'provider' | 'workspace'
@@ -95,6 +95,7 @@ async function refreshAuthDependentQueries(): Promise<void> {
     queryClient.invalidateQueries({ queryKey: draftModelQueryOptions().queryKey }),
     queryClient.invalidateQueries({ queryKey: modelOptionsQueryOptions().queryKey }),
     queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey }),
+    queryClient.invalidateQueries({ queryKey: modelProfilesQueryOptions().queryKey }),
     queryClient.invalidateQueries({ queryKey: ['auth-credentials'] }),
   ])
 }

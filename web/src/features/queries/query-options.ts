@@ -1,4 +1,5 @@
 import { fetchAgentState, fetchAgentStateSummary, fetchAgentToolContract, fetchDraftModelPreference, fetchModelOptions } from '../desktop/chat/queries/chat-queries'
+import { fetchModelProfiles } from '../desktop/chat/queries/model-profile-queries'
 import { getUISettings } from '../desktop/settings/swarm/queries/get-ui-settings'
 import { fetchWorkspaceOverview } from '../workspaces/launcher/queries/fetch-workspace-overview'
 
@@ -76,5 +77,17 @@ export function modelOptionsQueryOptions() {
     queryKey: ['model-options'] as const,
     queryFn: ({ signal }: { signal?: AbortSignal }) => fetchModelOptions(signal),
     staleTime: 5 * 60_000,
+  }
+}
+
+export function modelProfilesQueryKey() {
+  return ['model-profiles'] as const
+}
+
+export function modelProfilesQueryOptions() {
+  return {
+    queryKey: modelProfilesQueryKey(),
+    queryFn: ({ signal }: { signal?: AbortSignal }) => fetchModelProfiles(signal),
+    staleTime: 30_000,
   }
 }

@@ -44,6 +44,10 @@ export function normalizeModelThinking(value: string): string {
   return value.trim().toLowerCase() || 'off'
 }
 
+export function modelOptionKey(provider: string, model: string, contextMode = ''): string {
+  return `${normalizeProviderID(provider)}:${model.trim()}:${contextMode.trim().toLowerCase()}`
+}
+
 export function normalizeModelID(provider: string, model: string): string {
   const trimmedModel = model.trim()
   if (trimmedModel === '') return ''

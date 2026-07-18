@@ -162,6 +162,52 @@ export interface SessionPreferenceRecord {
   updatedAt: number;
 }
 
+export interface ModelProfileSelectionRecord {
+  provider: string;
+  model: string;
+  thinking: string;
+  serviceTier: string;
+  contextMode: string;
+}
+
+export interface ModelProfileRecord {
+  profileId: string;
+  name: string;
+  modelMode: 'single' | 'split';
+  single: ModelProfileSelectionRecord | null;
+  plan: ModelProfileSelectionRecord | null;
+  auto: ModelProfileSelectionRecord | null;
+  createdAt: number;
+  updatedAt: number;
+  isDefault: boolean;
+}
+
+export interface ModelProfileState {
+  profiles: ModelProfileRecord[];
+  defaultProfileId: string;
+}
+
+export interface ModelProfileInput {
+  name: string;
+  modelMode: 'single' | 'split';
+  single: ModelProfileSelectionRecord | null;
+  plan: ModelProfileSelectionRecord | null;
+  auto: ModelProfileSelectionRecord | null;
+}
+
+export type ModelProfileChoice =
+  | { kind: 'account-default' }
+  | { kind: 'saved'; profileId: string }
+  | { kind: 'temporary'; profile: ModelProfileInput }
+  | { kind: 'agent-default' }
+
+export interface ActiveModelProfileState {
+  source: 'saved' | 'temporary' | 'agent-default' | '';
+  profileId: string;
+  name: string;
+  modelMode: 'single' | 'split' | '';
+}
+
 export interface ResolvedSessionPreference {
   preference: SessionPreferenceRecord;
   contextWindow: number;
@@ -177,6 +223,10 @@ export interface AgentModelPolicyRecord {
   preference: SessionPreferenceRecord;
   contextWindow: number;
   maxOutputTokens: number;
+  profileId?: string;
+  profileName?: string;
+  profileSource?: string;
+  profileMode?: string;
 }
 
 export interface AgentToolScopeRecord {

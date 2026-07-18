@@ -1,4 +1,5 @@
 import { requestJson } from '../../../app/api'
+import type { ModelProfileChoice, ModelProfileSelectionRecord } from '../chat/types/chat'
 import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
 
 import type {
@@ -30,11 +31,54 @@ export interface DesktopV3CreateSessionRequest {
     service_tier?: string
     context_mode?: string
   }
+  model_profile?: DesktopV3ModelProfileChoiceWire
   worktree_mode?: string
   worktree_use_current_branch?: boolean
   worktree_base_branch?: string
   worktree_branch_name?: string
   worktree_existing_path?: string
+}
+
+export interface DesktopV3ModelProfileSelectionWire {
+  provider: string
+  model: string
+  thinking: string
+  service_tier?: string
+  context_mode?: string
+}
+
+export interface DesktopV3ModelProfileChoiceWire {
+  use_account_default?: true
+  saved_profile_id?: string
+  temporary?: {
+    name?: string
+    model_mode: 'single' | 'split'
+    single?: DesktopV3ModelProfileSelectionWire
+    plan?: DesktopV3ModelProfileSelectionWire
+    auto?: DesktopV3ModelProfileSelectionWire
+  }
+  use_agent_default?: true
+}
+
+function modelProfileSelectionWire(value: ModelProfileSelectionRecord | null): DesktopV3ModelProfileSelectionWire | undefined {
+  return value ? {
+    provider: value.provider.trim(), model: value.model.trim(), thinking: value.thinking.trim(),
+    service_tier: value.serviceTier.trim() || undefined, context_mode: value.contextMode.trim() || undefined,
+  } : undefined
+}
+
+export function desktopV3ModelProfileChoiceWire(choice: ModelProfileChoice): DesktopV3ModelProfileChoiceWire {
+  switch (choice.kind) {
+    case 'account-default': return { use_account_default: true }
+    case 'saved': return { saved_profile_id: choice.profileId.trim() }
+    case 'agent-default': return { use_agent_default: true }
+    case 'temporary': return {
+      temporary: {
+        name: choice.profile.name.trim() || 'Temporary', model_mode: choice.profile.modelMode,
+        single: modelProfileSelectionWire(choice.profile.single), plan: modelProfileSelectionWire(choice.profile.plan), auto: modelProfileSelectionWire(choice.profile.auto),
+      },
+    }
+  }
 }
 
 export interface DesktopV3AppendMessageRequest {

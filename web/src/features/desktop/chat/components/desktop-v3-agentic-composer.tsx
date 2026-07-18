@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as Re
 import { AlertTriangle, ArrowUp, LoaderCircle, Mic, Minimize2, Square } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
-import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
+import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
 import { submitDesktopComposer } from '../services/composer-submit'
@@ -13,7 +13,7 @@ import {
   normalizeMentionSubagents,
 } from '../services/subagent-mentions'
 import { AgentModelControl, type AgentModelControlConfirmInput } from './agent-model-control'
-import { AgentPicker } from './agent-picker'
+import { ProfileAgentPicker } from './profile-agent-picker'
 import { ModePicker } from './mode-picker'
 import { DesktopMentionPanel } from './desktop-mention-panel'
 import { DesktopSlashCommandPanel } from './desktop-slash-command-panel'
@@ -128,6 +128,14 @@ export interface DesktopV3AgenticComposerProps {
   currentAgent: string
   selectedPrimaryAgent: string
   agents: AgentProfileRecord[]
+  modelProfiles?: ModelProfileRecord[]
+  activeModelProfile?: ActiveModelProfileState
+  onModelProfileSelect?: (profileId: string) => void | Promise<void>
+  onModelProfileSetDefault?: (profileId: string) => void | Promise<void>
+  onModelProfileDelete?: (profileId: string) => void | Promise<void>
+  modelProfilesLoading?: boolean
+  modelProfilesError?: string | null
+  onUseAgentModelDefault?: () => void | Promise<void>
   modelOptions: ModelOptionRecord[]
   selectedModelKey: string
   selectedServiceTier?: string
@@ -209,6 +217,14 @@ export function DesktopV3AgenticComposer({
   currentAgent,
   selectedPrimaryAgent,
   agents,
+  modelProfiles = [],
+  activeModelProfile,
+  onModelProfileSelect,
+  onModelProfileSetDefault,
+  onModelProfileDelete,
+  modelProfilesLoading = false,
+  modelProfilesError = null,
+  onUseAgentModelDefault: _onUseAgentModelDefault,
   modelOptions,
   selectedModelKey,
   selectedServiceTier = '',
@@ -261,6 +277,8 @@ export function DesktopV3AgenticComposer({
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
   const [agentSetupOpenSignal, setAgentSetupOpenSignal] = useState(0)
   const [agentSetupInitialAgent, setAgentSetupInitialAgent] = useState('')
+  const [agentSetupProfileId, setAgentSetupProfileId] = useState('')
+  const [createProfileSignal, setCreateProfileSignal] = useState(0)
 
   const composerDisabled = disabled
   const showDictationButton = true
@@ -279,7 +297,18 @@ export function DesktopV3AgenticComposer({
   const effectiveAgentSetupOpenSignal = agentSettingsOpenSignal + agentSetupOpenSignal
   const effectiveAgentSetupInitialAgent = agentSetupInitialAgent || agentSettingsInitialAgent
   const openAgentSetup = useCallback((agent?: string) => {
+    setAgentSetupProfileId('')
     setAgentSetupInitialAgent(agent?.trim() || currentAgent)
+    setAgentSetupOpenSignal((current) => current + 1)
+  }, [currentAgent])
+  const addModelProfile = useCallback(() => {
+    setAgentSetupProfileId('')
+    setAgentSetupInitialAgent(currentAgent)
+    setCreateProfileSignal((current) => current + 1)
+  }, [currentAgent])
+  const editModelProfile = useCallback((profileId: string) => {
+    setAgentSetupProfileId(profileId)
+    setAgentSetupInitialAgent(currentAgent)
     setAgentSetupOpenSignal((current) => current + 1)
   }, [currentAgent])
   const dictationComposer = dictationEnabled
@@ -684,7 +713,7 @@ export function DesktopV3AgenticComposer({
                 {showModePicker ? (
                   <>
                     <ModePicker mode={mode} onSelect={(nextMode) => onModeSelect?.(nextMode)} disabled={!onModeSelect || composerDisabled} />
-                    <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} thinkingTagsEnabled={thinkingTagsEnabled} onThinkingTagsToggle={onThinkingTagsToggle} thinkingTagsBusy={thinkingTagsBusy} disabled={composerDisabled || agentModelControlBusy} />
+                    <ProfileAgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} profiles={modelProfiles} activeProfile={activeModelProfile} mode={mode} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} modelDetail={modelControlDetail} onAgentSelect={onAgentSelect} onProfileSelect={onModelProfileSelect} onAddProfile={addModelProfile} onEditProfile={editModelProfile} onSetDefault={async (profileId) => { if (!onModelProfileSetDefault) throw new Error('Default profile management is unavailable'); await onModelProfileSetDefault(profileId) }} onDeleteProfile={async (profileId) => { if (!onModelProfileDelete) throw new Error('Profile deletion is unavailable'); await onModelProfileDelete(profileId) }} />
                   </>
                 ) : executionLabel ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
@@ -692,6 +721,7 @@ export function DesktopV3AgenticComposer({
                     <span className="font-semibold uppercase tracking-wider text-[var(--app-primary)]">{executionLabel}</span>
                   </span>
                 ) : null}
+
                 {needsAuth ? (
                   <button type="button" onClick={onOpenAuthSettings} disabled={!onOpenAuthSettings} className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1 text-[11px] font-semibold text-[var(--app-warning)] transition-all hover:-translate-y-0.5 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-none" title="Open auth settings to add a provider credential">
                     <AlertTriangle size={13} className="shrink-0" />
@@ -712,11 +742,12 @@ export function DesktopV3AgenticComposer({
                 {showModePicker ? (
                   <>
                     <ModePicker mode={mode} onSelect={(nextMode) => onModeSelect?.(nextMode)} disabled={!onModeSelect || composerDisabled} />
-                    <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} thinkingTagsEnabled={thinkingTagsEnabled} onThinkingTagsToggle={onThinkingTagsToggle} thinkingTagsBusy={thinkingTagsBusy} disabled={composerDisabled || agentModelControlBusy} compactThinkingLabel />
+                    <ProfileAgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} profiles={modelProfiles} activeProfile={activeModelProfile} mode={mode} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} compact modelDetail={modelControlDetail} onAgentSelect={onAgentSelect} onProfileSelect={onModelProfileSelect} onAddProfile={addModelProfile} onEditProfile={editModelProfile} onSetDefault={async (profileId) => { if (!onModelProfileSetDefault) throw new Error('Default profile management is unavailable'); await onModelProfileSetDefault(profileId) }} onDeleteProfile={async (profileId) => { if (!onModelProfileDelete) throw new Error('Profile deletion is unavailable'); await onModelProfileDelete(profileId) }} />
                   </>
                 ) : (
                   <span className="min-w-0 truncate font-medium text-[var(--app-text-muted)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
                 )}
+
                 {showCompactButton && onCompact ? compactButton() : null}
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -751,6 +782,10 @@ export function DesktopV3AgenticComposer({
         initialAgentName={effectiveAgentSetupInitialAgent}
         onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSetupInitialAgent || currentAgent) : undefined}
         onConfirmAgentSettings={onConfirmAgentSettings}
+        modelProfiles={modelProfiles}
+        activeModelProfile={activeModelProfile}
+        initialModelProfileId={agentSetupProfileId}
+        createModelProfileSignal={createProfileSignal}
         busy={agentModelControlBusy}
         showTrigger={false}
       />

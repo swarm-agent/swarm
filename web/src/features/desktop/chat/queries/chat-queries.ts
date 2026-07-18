@@ -41,6 +41,7 @@ import {
 } from "../../services/session-workspace";
 import {
   modelAllowedByProviderPreset,
+  modelOptionKey,
   sortModelOptions,
 } from "../services/model-options";
 import { parseStructuredToolMessage } from "../services/tool-message";
@@ -2110,14 +2111,6 @@ export async function resolveAllSessionPermissions(
       .map((permission) => mapResolvedPermission(permission, undefined, sessionId))
       .filter((permission): permission is DesktopPermissionRecord => Boolean(permission))
     : [];
-}
-
-function modelOptionKey(
-  provider: string,
-  model: string,
-  contextMode = "",
-): string {
-  return `${provider}:${model}:${contextMode.trim().toLowerCase()}`;
 }
 
 function normalizeModelPricing(value: unknown): ModelPricingRecord | null {

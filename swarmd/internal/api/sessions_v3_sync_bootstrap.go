@@ -910,6 +910,27 @@ func (s *Server) sessionsV3AgentModelPolicyWithResolver(session pebblestore.Sess
 	if policy.ResolvedAgent == "" {
 		policy.ResolvedAgent = policy.AgentName
 	}
+	if profilePreference, ok := sessionsV3ProfilePreference(session); ok {
+		policy.Source = "model_profile"
+		if session.ModelProfile.Source == pebblestore.SessionModelProfileSourceSaved {
+			policy.Source = "saved_model_profile"
+		} else if session.ModelProfile.Source == pebblestore.SessionModelProfileSourceTemporary {
+			policy.Source = "temporary_model_profile"
+		}
+		policy.Locked = true
+		policy.Reason = "Session model profile controls the model; clear or replace the session profile to change it."
+		policy.ProfileID = session.ModelProfile.SavedProfileID
+		policy.ProfileName = session.ModelProfile.Name
+		policy.ProfileSource = session.ModelProfile.Source
+		policy.ProfileMode = session.ModelProfile.ModelMode
+		policy.Preference = normalizeSessionsV3ModelPreference(profilePreference)
+		policy.ContextWindow, policy.MaxOutputTokens = 0, 0
+		if resolvePreference != nil {
+			resolved := resolvePreference(policy.Preference)
+			policy.Preference, policy.ContextWindow, policy.MaxOutputTokens = resolved.Preference, resolved.ContextWindow, resolved.MaxOutputTokens
+		}
+		return policy
+	}
 	profile, err := sessionV3AgentProfileFromMetadata(session.Metadata)
 	if err != nil {
 		return policy

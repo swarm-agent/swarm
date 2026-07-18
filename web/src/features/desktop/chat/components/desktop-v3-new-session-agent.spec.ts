@@ -24,8 +24,12 @@ function state(profiles: AgentProfileRecord[], activePrimary: string): AgentStat
   return { profiles, activePrimary, activeSubagent: {}, version: 1, providerDefaultsPreview: null, toolInventory: null }
 }
 
-test('new Desktop sessions select canonical Swarm over a stale active primary', () => {
-  assert.equal(resolveDesktopV3StartupAgent(state([profile('legacy'), profile('swarm')], 'legacy')), 'swarm')
+test('new Desktop sessions select a valid active primary before built-in Swarm', () => {
+  assert.equal(resolveDesktopV3StartupAgent(state([profile('legacy'), profile('swarm')], 'legacy')), 'legacy')
+})
+
+test('new Desktop sessions fall back to built-in Swarm when active primary is invalid', () => {
+  assert.equal(resolveDesktopV3StartupAgent(state([profile('swarm')], 'missing')), 'swarm')
 })
 
 test('an explicit requested agent remains authoritative', () => {

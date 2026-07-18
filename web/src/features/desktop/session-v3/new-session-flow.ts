@@ -1,4 +1,5 @@
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
+import type { ModelProfileChoice } from '../chat/types/chat'
 import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
 import { normalizeSessionMode } from '../settings/swarm/types/swarm-settings'
 import { getDesktopSessionCreateTarget } from '../chat/services/chat-routing'
@@ -18,6 +19,7 @@ import {
 } from '../state/desktop-v3-cache-wire'
 import {
   postDesktopV3AppendMessage,
+  desktopV3ModelProfileChoiceWire,
   postDesktopV3CreateSession,
   type DesktopV3AppendMessageRequest,
   type DesktopV3CreateSessionRequest,
@@ -52,6 +54,7 @@ export interface CreateDesktopV3NewSessionOperationInput {
   mode?: DesktopSessionMode
   agentName: string
   preference?: DesktopV3NewSessionPreference
+  modelProfileChoice?: ModelProfileChoice
   sessionMetadata?: Record<string, unknown>
   messageMetadata?: Record<string, unknown>
   worktree?: {
@@ -137,6 +140,7 @@ export function createDesktopV3CreateOnlySessionOperation(
       agent_name: agentName,
       metadata: input.sessionMetadata,
       preference,
+      model_profile: input.modelProfileChoice ? desktopV3ModelProfileChoiceWire(input.modelProfileChoice) : undefined,
       worktree_mode: input.worktree?.mode,
       worktree_use_current_branch: input.worktree?.useCurrentBranch,
       worktree_base_branch: input.worktree?.baseBranch,

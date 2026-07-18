@@ -13,22 +13,23 @@ import (
 )
 
 const (
-	V3SessionMutationCreateSession     = "session.create"
-	V3SessionMutationAppendMessage     = "message.append"
-	V3SessionMutationUpsertLifecycle   = "lifecycle.upsert"
-	V3SessionMutationRecordRunIntent   = "run_intent.record"
-	V3SessionMutationRecordDiagnostic  = "diagnostic.record"
-	V3SessionMutationRecordUsage       = "usage.record"
-	V3SessionMutationUpdateMode        = "session.mode.update"
-	V3SessionMutationUpdatePreference  = "session.preference.update"
-	V3SessionMutationUpdateMetadata    = "session.metadata.update"
-	V3SessionMutationUpdateSettings    = "session.settings.update"
-	V3SessionMutationUpdateTitle       = "session.title.update"
-	V3SessionMutationSavePlan          = "plan.save"
-	V3SessionMutationAcceptPlan        = "plan.accept"
-	V3SessionMutationDeleteSession     = "session.delete"
-	V3SessionMutationArchiveSession    = "session.archive"
-	V3SessionMutationReactivateSession = "session.reactivate"
+	V3SessionMutationCreateSession      = "session.create"
+	V3SessionMutationAppendMessage      = "message.append"
+	V3SessionMutationUpsertLifecycle    = "lifecycle.upsert"
+	V3SessionMutationRecordRunIntent    = "run_intent.record"
+	V3SessionMutationRecordDiagnostic   = "diagnostic.record"
+	V3SessionMutationRecordUsage        = "usage.record"
+	V3SessionMutationUpdateMode         = "session.mode.update"
+	V3SessionMutationUpdatePreference   = "session.preference.update"
+	V3SessionMutationUpdateMetadata     = "session.metadata.update"
+	V3SessionMutationUpdateSettings     = "session.settings.update"
+	V3SessionMutationUpdateModelProfile = "session.model_profile.update"
+	V3SessionMutationUpdateTitle        = "session.title.update"
+	V3SessionMutationSavePlan           = "plan.save"
+	V3SessionMutationAcceptPlan         = "plan.accept"
+	V3SessionMutationDeleteSession      = "session.delete"
+	V3SessionMutationArchiveSession     = "session.archive"
+	V3SessionMutationReactivateSession  = "session.reactivate"
 
 	V3SessionMutationResponseVersion = "v3.session_mutation.result.v1"
 	V3SessionMutationStatusCompleted = "completed"
@@ -2253,6 +2254,22 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 			if input.Kind != V3SessionMutationUpdateMetadata && len(session.Metadata) == 0 && len(current.Metadata) > 0 {
 				session.Metadata = cloneSessionMetadataMap(current.Metadata)
 			}
+			if input.Kind != V3SessionMutationUpdateModelProfile && session.ModelProfile == nil && current.ModelProfile != nil {
+				profile := *current.ModelProfile
+				if profile.Single != nil {
+					selection := *profile.Single
+					profile.Single = &selection
+				}
+				if profile.Plan != nil {
+					selection := *profile.Plan
+					profile.Plan = &selection
+				}
+				if profile.Auto != nil {
+					selection := *profile.Auto
+					profile.Auto = &selection
+				}
+				session.ModelProfile = &profile
+			}
 		}
 		if session.UserID == "" {
 			session.UserID = input.UserID
@@ -2541,6 +2558,8 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.metadata.updated"
 	case V3SessionMutationUpdateSettings:
 		return "session.settings.updated"
+	case V3SessionMutationUpdateModelProfile:
+		return "session.model_profile.updated"
 	case V3SessionMutationUpdateTitle:
 		return "session.title.updated"
 	case V3SessionMutationSavePlan:

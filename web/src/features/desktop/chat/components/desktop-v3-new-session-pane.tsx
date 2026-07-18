@@ -2,16 +2,17 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
-import { draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
+import { draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeDefaultNewSessionMode, normalizeShowCompactButton, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { saveShowCompactButtonSetting } from '../../settings/swarm/mutations/save-show-compact-button-setting'
 import { getDesktopSessionCreateTarget, type DesktopChatRoute } from '../services/chat-routing'
-import { formatContextWindow, effectiveContextWindow } from '../services/model-options'
+import { formatContextWindow, effectiveContextWindow, modelOptionKey } from '../services/model-options'
+import { preferenceFromModelProfile } from '../services/model-profiles'
+import { createModelProfile, deleteModelProfile, invalidateModelProfiles, setDefaultModelProfile, updateModelProfile } from '../queries/model-profile-queries'
 import { preferenceFromAgentModelLock, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import { resolveDesktopV3StartupAgent } from '../services/desktop-startup-agent'
-import type { AgentStateRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
-import { refreshAgentModelMutationCaches, updateAgentProfile } from '../queries/agent-preference-mutations'
+import type { ActiveModelProfileState, AgentStateRecord, ModelProfileChoice, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
 import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
@@ -36,10 +37,6 @@ const EMPTY_AGENT_STATE: AgentStateRecord = {
   version: 0,
   providerDefaultsPreview: null,
   toolInventory: null,
-}
-
-function optionKey(provider: string, model: string, contextMode = ''): string {
-  return `${provider}:${model}:${contextMode.trim().toLowerCase()}`
 }
 
 function preferenceFromResolved(resolved: ResolvedSessionPreference | undefined): SessionPreferenceRecord {
@@ -138,6 +135,7 @@ export function DesktopV3NewSessionPane({
   const operationRef = useRef<DesktopV3NewSessionOperation | null>(storedOperation)
   const agentStateQuery = useQuery(agentStateQueryOptions())
   const modelOptionsQuery = useQuery(modelOptionsQueryOptions())
+  const modelProfilesQuery = useQuery(modelProfilesQueryOptions())
   const draftPreferenceQuery = useQuery(draftModelQueryOptions())
   const uiSettingsQuery = useQuery(uiSettingsQueryOptions())
   const authCredentialsQuery = useQuery({
@@ -147,6 +145,7 @@ export function DesktopV3NewSessionPane({
   })
   const agentState = agentStateQuery.data ?? EMPTY_AGENT_STATE
   const modelOptions = modelOptionsQuery.data ?? []
+  const modelProfileState = modelProfilesQuery.data ?? { profiles: [], defaultProfileId: '' }
   const uiSettings = uiSettingsQuery.data
   const defaultMode = normalizeDefaultNewSessionMode(uiSettings?.chat?.default_new_session_mode)
   const initialMode = initialModeProp ?? defaultMode
@@ -188,6 +187,9 @@ export function DesktopV3NewSessionPane({
   const modeManuallySelectedRef = useRef(false)
   const agentManuallySelectedRef = useRef(false)
   const preferenceManuallyChangedRef = useRef(false)
+  const profileManuallyChangedRef = useRef(false)
+  const [modelProfileChoice, setModelProfileChoice] = useState<ModelProfileChoice | undefined>(() => currentOperation?.createRequest.model_profile ? undefined : undefined)
+  const [activeModelProfile, setActiveModelProfile] = useState<ActiveModelProfileState>({ source: '', profileId: '', name: '', modelMode: '' })
   const [preference, setPreference] = useState<SessionPreferenceRecord>(() => ({
     ...preferenceFromResolved(draftPreferenceQuery.data),
     provider: preferenceProp?.provider ?? draftPreferenceQuery.data?.preference.provider ?? '',
@@ -231,6 +233,17 @@ export function DesktopV3NewSessionPane({
     const timer = window.setInterval(() => setTimerNow(Date.now()), 250)
     return () => window.clearInterval(timer)
   }, [starting])
+
+  useEffect(() => {
+    if (profileManuallyChangedRef.current || modelProfileChoice || !modelProfileState.defaultProfileId) return
+    const profile = modelProfileState.profiles.find((candidate) => candidate.profileId === modelProfileState.defaultProfileId)
+    if (!profile) return
+    const next = preferenceFromModelProfile(profile, mode, profile.updatedAt)
+    if (!next) return
+    setModelProfileChoice({ kind: 'account-default' })
+    setActiveModelProfile({ source: 'saved', profileId: profile.profileId, name: profile.name, modelMode: profile.modelMode })
+    setPreference(next)
+  }, [mode, modelProfileChoice, modelProfileState.defaultProfileId, modelProfileState.profiles])
 
   useEffect(() => {
     const resolved = preferenceFromResolved(draftPreferenceQuery.data)
@@ -294,7 +307,7 @@ export function DesktopV3NewSessionPane({
     operationRef.current = null
   }, [selectedRoute, workspace.path])
 
-  const selectedModelKey = optionKey(preference.provider, preference.model, preference.contextMode)
+  const selectedModelKey = modelOptionKey(preference.provider, preference.model, preference.contextMode)
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
   const hasResolvedPreference = Boolean(preference.provider.trim() && preference.model.trim() && preference.thinking.trim())
   const selectedModelAvailable = Boolean(selectedModelOption && hasResolvedPreference)
@@ -348,18 +361,35 @@ export function DesktopV3NewSessionPane({
     setAgentModelSaving(true)
     setStartError(null)
     try {
-      const action = input.action
-      const basePreference = preference
-      await updateAgentProfile(input.profile, action.agentPatch)
-      const agentStateResult = await refreshAgentModelMutationCaches(queryClient)
-      const refreshedLock = resolveDesktopV3AgentModelLock(agentStateResult.profiles, input.agentName, mode)
-      const nextPreference = refreshedLock.locked
-        ? preferenceFromAgentModelLock(refreshedLock, basePreference, modelOptions)
-        : basePreference
-      unlockedPreferenceRef.current = refreshedLock.locked ? basePreference : nextPreference
+      let appliedProfile = input.modelProfile
+      let savedProfileId = ''
+      if (input.persistence === 'create' || input.persistence === 'create-copy') {
+        const saved = await createModelProfile(input.modelProfile)
+        savedProfileId = saved.profileId
+        appliedProfile = saved
+        if (input.makeDefault) await setDefaultModelProfile(saved.profileId)
+        await invalidateModelProfiles(queryClient)
+      } else if (input.persistence === 'update') {
+        const saved = await updateModelProfile(input.profileId, input.modelProfile)
+        savedProfileId = saved.profileId
+        appliedProfile = saved
+        if (input.makeDefault) await setDefaultModelProfile(saved.profileId)
+        await invalidateModelProfiles(queryClient)
+      }
+      const nextPreference = preferenceFromModelProfile(appliedProfile, mode, Date.now())
+      if (!nextPreference) throw new Error('Model profile does not resolve for the selected mode')
+      profileManuallyChangedRef.current = true
+      preferenceManuallyChangedRef.current = true
+      unlockedPreferenceRef.current = nextPreference
       setPreference(nextPreference)
+      if (savedProfileId) {
+        setModelProfileChoice({ kind: 'saved', profileId: savedProfileId })
+        setActiveModelProfile({ source: 'saved', profileId: savedProfileId, name: appliedProfile.name, modelMode: appliedProfile.modelMode })
+      } else {
+        setModelProfileChoice({ kind: 'temporary', profile: appliedProfile })
+        setActiveModelProfile({ source: 'temporary', profileId: '', name: appliedProfile.name, modelMode: appliedProfile.modelMode })
+      }
       agentManuallySelectedRef.current = true
-      preferenceManuallyChangedRef.current = false
       setSelectedAgent(input.agentName)
     } catch (error) {
       if (mountedRef.current) setStartError(error instanceof Error ? error.message : 'Failed to update agent settings')
@@ -447,6 +477,7 @@ export function DesktopV3NewSessionPane({
           mode,
           agentName,
           preference: preferenceForRequest(preference),
+          modelProfileChoice,
           sessionMetadata: {
             source: 'desktop-v3',
             workspace_path: workspace.path,
@@ -526,6 +557,46 @@ export function DesktopV3NewSessionPane({
         currentAgent={selectedAgentName || agentState.activePrimary || 'Agent'}
         selectedPrimaryAgent={selectedAgentName || agentState.activePrimary || ''}
         agents={agentState.profiles}
+        modelProfiles={modelProfileState.profiles}
+        activeModelProfile={activeModelProfile}
+        modelProfilesLoading={modelProfilesQuery.isLoading}
+        modelProfilesError={modelProfilesQuery.error instanceof Error ? modelProfilesQuery.error.message : null}
+        onModelProfileSetDefault={async (profileId) => {
+          await setDefaultModelProfile(profileId)
+          await invalidateModelProfiles(queryClient)
+        }}
+        onModelProfileDelete={async (profileId) => {
+          await deleteModelProfile(profileId)
+          await invalidateModelProfiles(queryClient)
+          if (activeModelProfile.profileId === profileId) {
+            const remaining = modelProfileState.profiles.filter((profile) => profile.profileId !== profileId)
+            const replacement = remaining.find((profile) => profile.isDefault) ?? remaining[0]
+            if (replacement) {
+              setModelProfileChoice({ kind: 'saved', profileId: replacement.profileId })
+              setActiveModelProfile({ source: 'saved', profileId: replacement.profileId, name: replacement.name, modelMode: replacement.modelMode })
+              const next = preferenceFromModelProfile(replacement, mode, replacement.updatedAt)
+              if (next) setPreference(next)
+            } else {
+              setModelProfileChoice({ kind: 'agent-default' })
+              setActiveModelProfile({ source: 'agent-default', profileId: '', name: '', modelMode: '' })
+            }
+          }
+        }}
+        onModelProfileSelect={(profileId) => {
+          const profile = modelProfileState.profiles.find((candidate) => candidate.profileId === profileId)
+          if (!profile) return
+          profileManuallyChangedRef.current = true
+          preferenceManuallyChangedRef.current = true
+          setModelProfileChoice({ kind: 'saved', profileId })
+          setActiveModelProfile({ source: 'saved', profileId, name: profile.name, modelMode: profile.modelMode })
+          const next = preferenceFromModelProfile(profile, mode, profile.updatedAt)
+          if (next) setPreference(next)
+        }}
+        onUseAgentModelDefault={() => {
+          profileManuallyChangedRef.current = true
+          setModelProfileChoice({ kind: 'agent-default' })
+          setActiveModelProfile({ source: 'agent-default', profileId: '', name: '', modelMode: '' })
+        }}
         modelOptions={modelOptions}
         selectedModelKey={selectedModelKey}
         selectedServiceTier={preference.serviceTier}

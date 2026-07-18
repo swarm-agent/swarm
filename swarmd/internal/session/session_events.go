@@ -22,20 +22,21 @@ type SessionTombstone = pebblestore.V3SessionTombstone
 type SessionIdempotencyRecord = pebblestore.V3SessionIdempotencyRecord
 
 const (
-	SessionMutationCreateSession    = pebblestore.V3SessionMutationCreateSession
-	SessionMutationAppendMessage    = pebblestore.V3SessionMutationAppendMessage
-	SessionMutationUpsertLifecycle  = pebblestore.V3SessionMutationUpsertLifecycle
-	SessionMutationRecordRunIntent  = pebblestore.V3SessionMutationRecordRunIntent
-	SessionMutationRecordDiagnostic = pebblestore.V3SessionMutationRecordDiagnostic
-	SessionMutationRecordUsage      = pebblestore.V3SessionMutationRecordUsage
-	SessionMutationUpdateMode       = pebblestore.V3SessionMutationUpdateMode
-	SessionMutationUpdatePreference = pebblestore.V3SessionMutationUpdatePreference
-	SessionMutationUpdateMetadata   = pebblestore.V3SessionMutationUpdateMetadata
-	SessionMutationUpdateSettings   = pebblestore.V3SessionMutationUpdateSettings
-	SessionMutationUpdateTitle      = pebblestore.V3SessionMutationUpdateTitle
-	SessionMutationSavePlan         = pebblestore.V3SessionMutationSavePlan
-	SessionMutationAcceptPlan       = pebblestore.V3SessionMutationAcceptPlan
-	SessionMutationArchiveSession   = pebblestore.V3SessionMutationArchiveSession
+	SessionMutationCreateSession      = pebblestore.V3SessionMutationCreateSession
+	SessionMutationAppendMessage      = pebblestore.V3SessionMutationAppendMessage
+	SessionMutationUpsertLifecycle    = pebblestore.V3SessionMutationUpsertLifecycle
+	SessionMutationRecordRunIntent    = pebblestore.V3SessionMutationRecordRunIntent
+	SessionMutationRecordDiagnostic   = pebblestore.V3SessionMutationRecordDiagnostic
+	SessionMutationRecordUsage        = pebblestore.V3SessionMutationRecordUsage
+	SessionMutationUpdateMode         = pebblestore.V3SessionMutationUpdateMode
+	SessionMutationUpdatePreference   = pebblestore.V3SessionMutationUpdatePreference
+	SessionMutationUpdateMetadata     = pebblestore.V3SessionMutationUpdateMetadata
+	SessionMutationUpdateSettings     = pebblestore.V3SessionMutationUpdateSettings
+	SessionMutationUpdateModelProfile = pebblestore.V3SessionMutationUpdateModelProfile
+	SessionMutationUpdateTitle        = pebblestore.V3SessionMutationUpdateTitle
+	SessionMutationSavePlan           = pebblestore.V3SessionMutationSavePlan
+	SessionMutationAcceptPlan         = pebblestore.V3SessionMutationAcceptPlan
+	SessionMutationArchiveSession     = pebblestore.V3SessionMutationArchiveSession
 
 	RunIntentPendingExecutor = pebblestore.V3RunIntentPendingExecutor
 	RunIntentRunning         = pebblestore.V3RunIntentRunning

@@ -30,10 +30,15 @@ type modelProfileResponse struct {
 	Auto      *pebblestore.ModelProfileSelection `json:"auto,omitempty"`
 	CreatedAt int64                              `json:"created_at"`
 	UpdatedAt int64                              `json:"updated_at"`
+	IsDefault bool                               `json:"is_default"`
 }
 
 type modelProfilesBulkDeleteRequest struct {
 	ProfileIDs []string `json:"profile_ids"`
+}
+
+type modelProfileDefaultRequest struct {
+	ProfileID string `json:"profile_id"`
 }
 
 func (s *Server) handleModelProfiles(w http.ResponseWriter, r *http.Request) {
@@ -43,16 +48,16 @@ func (s *Server) handleModelProfiles(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		profiles, err := s.modelProfiles.List(ctx)
+		state, err := s.modelProfiles.ListState(ctx)
 		if err != nil {
 			writeModelProfileError(w, err)
 			return
 		}
-		out := make([]modelProfileResponse, 0, len(profiles))
-		for _, profile := range profiles {
+		out := make([]modelProfileResponse, 0, len(state.Profiles))
+		for _, profile := range state.Profiles {
 			out = append(out, modelProfileFromRecord(profile))
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model_profiles": out})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model_profiles": out, "default_profile_id": state.DefaultProfileID})
 	case http.MethodPost:
 		var req modelProfileRequest
 		if err := decodeJSON(r, &req); err != nil {
@@ -116,6 +121,32 @@ func (s *Server) handleModelProfileByID(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+func (s *Server) handleModelProfileDefault(w http.ResponseWriter, r *http.Request) {
+	ctx, ok := s.modelProfileContext(w, r)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var req modelProfileDefaultRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(req.ProfileID) == "" {
+		writeError(w, http.StatusBadRequest, errors.New("profile_id is required"))
+		return
+	}
+	profile, err := s.modelProfiles.SetDefault(ctx, req.ProfileID)
+	if err != nil {
+		writeModelProfileError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "default_profile_id": profile.ProfileID, "model_profile": modelProfileFromRecord(profile)})
+}
+
 func (s *Server) handleModelProfilesBulkDelete(w http.ResponseWriter, r *http.Request) {
 	ctx, ok := s.modelProfileContext(w, r)
 	if !ok {
@@ -171,7 +202,7 @@ func (r modelProfileRequest) input() modelprofile.Input {
 }
 
 func modelProfileFromRecord(profile modelprofile.Profile) modelProfileResponse {
-	return modelProfileResponse{ProfileID: profile.ProfileID, Name: profile.Name, ModelMode: profile.ModelMode, Single: profile.Single, Plan: profile.Plan, Auto: profile.Auto, CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt}
+	return modelProfileResponse{ProfileID: profile.ProfileID, Name: profile.Name, ModelMode: profile.ModelMode, Single: profile.Single, Plan: profile.Plan, Auto: profile.Auto, CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt, IsDefault: profile.IsDefault}
 }
 
 func parseModelProfileID(path string) (string, error) {

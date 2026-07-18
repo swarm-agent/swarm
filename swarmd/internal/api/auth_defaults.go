@@ -9,6 +9,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/auth"
+	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/provider/defaults"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -17,7 +18,7 @@ import (
 // after a provider credential has been verified and activated, create the
 // account's built-in agents already hydrated with verified snapshot defaults.
 func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(accountScopeID, userID, activatedProvider string) (*auth.AutoDefaultsStatus, error) {
-	if s == nil || s.model == nil || s.agents == nil || s.providers == nil {
+	if s == nil || s.model == nil || s.agents == nil || s.providers == nil || s.modelProfiles == nil {
 		return nil, errors.New("onboarding provider hydration is not configured")
 	}
 	accountScopeID = strings.TrimSpace(accountScopeID)
@@ -70,6 +71,14 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 		if _, settingsErr = s.uiSettings.SetForAccount(accountScopeID, settings); settingsErr != nil {
 			return nil, fmt.Errorf("set onboarding system-agent model settings: %w", settingsErr)
 		}
+	}
+	planSelection := modelprofile.Selection{Provider: providerID, Model: providerDefaults.PlanModel, Thinking: providerDefaults.PlanThinking}
+	actionSelection := modelprofile.Selection{Provider: providerID, Model: providerDefaults.AutoModel, Thinking: providerDefaults.AutoThinking}
+	if _, _, err := s.modelProfiles.CreateFirstForAccount(accountScopeID, modelprofile.Input{
+		Name: "Swarm recommended", ModelMode: pebblestore.ModelProfileModeSplit,
+		Plan: &planSelection, Auto: &actionSelection,
+	}); err != nil {
+		return nil, fmt.Errorf("create onboarding recommended model profile: %w", err)
 	}
 	if event != nil && s.hub != nil {
 		s.hub.Publish(*event)

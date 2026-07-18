@@ -34,27 +34,49 @@ const (
 // V3 primary write handlers delegate through the ApplySessionMutation boundary.
 
 type sessionsV3CreateRequest struct {
-	SessionID                string                      `json:"session_id,omitempty"`
-	ClientRequestID          string                      `json:"client_request_id,omitempty"`
-	IdempotencyKey           string                      `json:"idempotency_key,omitempty"`
-	Title                    string                      `json:"title,omitempty"`
-	WorkspacePath            string                      `json:"workspace_path"`
-	WorkspaceName            string                      `json:"workspace_name,omitempty"`
-	WorkspaceBindingID       string                      `json:"workspace_binding_id,omitempty"`
-	SwarmID                  string                      `json:"swarm_id,omitempty"`
-	TargetKind               string                      `json:"target_kind,omitempty"`
-	TargetRelationship       string                      `json:"target_relationship,omitempty"`
-	HostWorkspacePath        string                      `json:"host_workspace_path,omitempty"`
-	RuntimeWorkspacePath     string                      `json:"runtime_workspace_path,omitempty"`
-	Mode                     string                      `json:"mode,omitempty"`
-	AgentName                string                      `json:"agent_name,omitempty"`
-	Preference               pebblestore.ModelPreference `json:"preference,omitempty"`
-	WorktreeMode             string                      `json:"worktree_mode,omitempty"`
-	WorktreeUseCurrentBranch *bool                       `json:"worktree_use_current_branch,omitempty"`
-	WorktreeBaseBranch       string                      `json:"worktree_base_branch,omitempty"`
-	WorktreeBranchName       string                      `json:"worktree_branch_name,omitempty"`
-	WorktreeExistingPath     string                      `json:"worktree_existing_path,omitempty"`
-	Metadata                 map[string]any              `json:"metadata,omitempty"`
+	SessionID                string                        `json:"session_id,omitempty"`
+	ClientRequestID          string                        `json:"client_request_id,omitempty"`
+	IdempotencyKey           string                        `json:"idempotency_key,omitempty"`
+	Title                    string                        `json:"title,omitempty"`
+	WorkspacePath            string                        `json:"workspace_path"`
+	WorkspaceName            string                        `json:"workspace_name,omitempty"`
+	WorkspaceBindingID       string                        `json:"workspace_binding_id,omitempty"`
+	SwarmID                  string                        `json:"swarm_id,omitempty"`
+	TargetKind               string                        `json:"target_kind,omitempty"`
+	TargetRelationship       string                        `json:"target_relationship,omitempty"`
+	HostWorkspacePath        string                        `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath     string                        `json:"runtime_workspace_path,omitempty"`
+	Mode                     string                        `json:"mode,omitempty"`
+	AgentName                string                        `json:"agent_name,omitempty"`
+	Preference               pebblestore.ModelPreference   `json:"preference,omitempty"`
+	WorktreeMode             string                        `json:"worktree_mode,omitempty"`
+	WorktreeUseCurrentBranch *bool                         `json:"worktree_use_current_branch,omitempty"`
+	WorktreeBaseBranch       string                        `json:"worktree_base_branch,omitempty"`
+	WorktreeBranchName       string                        `json:"worktree_branch_name,omitempty"`
+	WorktreeExistingPath     string                        `json:"worktree_existing_path,omitempty"`
+	Metadata                 map[string]any                `json:"metadata,omitempty"`
+	ModelProfile             *sessionsV3ModelProfileChoice `json:"model_profile,omitempty"`
+}
+
+type sessionsV3ModelProfileInline struct {
+	Name      string                             `json:"name,omitempty"`
+	ModelMode string                             `json:"model_mode"`
+	Single    *pebblestore.ModelProfileSelection `json:"single,omitempty"`
+	Plan      *pebblestore.ModelProfileSelection `json:"plan,omitempty"`
+	Auto      *pebblestore.ModelProfileSelection `json:"auto,omitempty"`
+}
+
+type sessionsV3ModelProfileChoice struct {
+	UseAccountDefault *bool                         `json:"use_account_default,omitempty"`
+	SavedProfileID    string                        `json:"saved_profile_id,omitempty"`
+	Temporary         *sessionsV3ModelProfileInline `json:"temporary,omitempty"`
+	UseAgentDefault   *bool                         `json:"use_agent_default,omitempty"`
+}
+
+type sessionsV3ModelProfileApplyRequest struct {
+	ClientRequestID string                       `json:"client_request_id"`
+	IfProjectionSeq *uint64                      `json:"if_projection_seq,omitempty"`
+	Choice          sessionsV3ModelProfileChoice `json:"choice"`
 }
 
 type sessionsV3MessageRequest struct {
@@ -169,6 +191,10 @@ type sessionsV3AgentModelPolicy struct {
 	Preference      pebblestore.ModelPreference `json:"preference"`
 	ContextWindow   int                         `json:"context_window"`
 	MaxOutputTokens int                         `json:"max_output_tokens"`
+	ProfileID       string                      `json:"profile_id,omitempty"`
+	ProfileName     string                      `json:"profile_name,omitempty"`
+	ProfileSource   string                      `json:"profile_source,omitempty"`
+	ProfileMode     string                      `json:"profile_mode,omitempty"`
 }
 
 type sessionsV3ArchiveBatchRequest struct {
@@ -289,6 +315,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryAgent(w, r, principal, sessionID)
 	case "preference":
 		s.handleSessionV3PrimaryPreference(w, r, principal, sessionID)
+	case "model-profile":
+		s.handleSessionV3PrimaryModelProfile(w, r, principal, sessionID)
 	case "usage":
 		s.handleSessionV3PrimaryUsage(w, r, principal, sessionID)
 	case "metadata":
@@ -575,6 +603,11 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		title = "New Session"
 	}
 	now := time.Now().UnixMilli()
+	modelProfileSnapshot, err := s.resolveSessionsV3ModelProfileChoice(identity.ContextWithPrincipal(r.Context(), principal), req.ModelProfile, true, now)
+	if err != nil {
+		writeModelProfileError(w, err)
+		return
+	}
 	session := pebblestore.SessionSnapshot{
 		ID:             sessionID,
 		UserID:         strings.TrimSpace(principal.UserID),
@@ -584,6 +617,7 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		Title:          title,
 		Mode:           sessionruntime.NormalizeMode(req.Mode),
 		Preference:     normalizeSessionsV3ModelPreference(req.Preference),
+		ModelProfile:   modelProfileSnapshot,
 		Metadata:       sessionsV3CreateServerMetadata(req.Metadata, resolvedAgent, binding),
 		CreatedAt:      now,
 		UpdatedAt:      now,
@@ -3218,22 +3252,23 @@ func (s *Server) reuseSessionsV3CreateWorktree(principal identity.Principal, wor
 
 func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, workspacePath, workspaceName, title string, metadata map[string]any) (string, error) {
 	canonical := struct {
-		Operation                string                      `json:"operation"`
-		SessionID                string                      `json:"session_id"`
-		Title                    string                      `json:"title"`
-		WorkspacePath            string                      `json:"workspace_path"`
-		WorkspaceName            string                      `json:"workspace_name"`
-		WorkspaceBindingID       string                      `json:"workspace_binding_id"`
-		SwarmID                  string                      `json:"swarm_id"`
-		Mode                     string                      `json:"mode"`
-		AgentName                string                      `json:"agent_name,omitempty"`
-		Preference               pebblestore.ModelPreference `json:"preference"`
-		WorktreeMode             string                      `json:"worktree_mode,omitempty"`
-		WorktreeUseCurrentBranch *bool                       `json:"worktree_use_current_branch,omitempty"`
-		WorktreeBaseBranch       string                      `json:"worktree_base_branch,omitempty"`
-		WorktreeBranchName       string                      `json:"worktree_branch_name,omitempty"`
-		WorktreeExistingPath     string                      `json:"worktree_existing_path,omitempty"`
-		Metadata                 map[string]any              `json:"metadata,omitempty"`
+		Operation                string                        `json:"operation"`
+		SessionID                string                        `json:"session_id"`
+		Title                    string                        `json:"title"`
+		WorkspacePath            string                        `json:"workspace_path"`
+		WorkspaceName            string                        `json:"workspace_name"`
+		WorkspaceBindingID       string                        `json:"workspace_binding_id"`
+		SwarmID                  string                        `json:"swarm_id"`
+		Mode                     string                        `json:"mode"`
+		AgentName                string                        `json:"agent_name,omitempty"`
+		Preference               pebblestore.ModelPreference   `json:"preference"`
+		WorktreeMode             string                        `json:"worktree_mode,omitempty"`
+		WorktreeUseCurrentBranch *bool                         `json:"worktree_use_current_branch,omitempty"`
+		WorktreeBaseBranch       string                        `json:"worktree_base_branch,omitempty"`
+		WorktreeBranchName       string                        `json:"worktree_branch_name,omitempty"`
+		WorktreeExistingPath     string                        `json:"worktree_existing_path,omitempty"`
+		Metadata                 map[string]any                `json:"metadata,omitempty"`
+		ModelProfile             *sessionsV3ModelProfileChoice `json:"model_profile,omitempty"`
 	}{
 		Operation:                sessionruntime.SessionMutationCreateSession,
 		SessionID:                strings.TrimSpace(sessionID),
@@ -3251,6 +3286,7 @@ func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, 
 		WorktreeBranchName:       strings.TrimSpace(req.WorktreeBranchName),
 		WorktreeExistingPath:     strings.TrimSpace(req.WorktreeExistingPath),
 		Metadata:                 cloneSessionsV3Metadata(metadata),
+		ModelProfile:             req.ModelProfile,
 	}
 	raw, err := json.Marshal(canonical)
 	if err != nil {
