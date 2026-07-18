@@ -116,6 +116,51 @@ body {
   display: none;
 }
 
+.task-card-container {
+  container-name: task-card;
+  container-type: inline-size;
+}
+
+.task-card-narrow-only {
+  display: none;
+}
+
+@container task-card (max-width: 23rem) {
+  .task-card-container > [data-task-card-header],
+  .task-card-column-header,
+  .task-card-wide-only,
+  .task-card-child-context {
+    display: none;
+  }
+
+  .task-card-narrow-only {
+    display: flex;
+  }
+
+  .task-card-swarm-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    padding: 0;
+  }
+
+  .task-card-container [data-task-child-row] {
+    border-width: 0;
+    border-top-width: 1px;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .task-card-container [data-task-child-row]:first-child {
+    border-top-width: 0;
+  }
+}
+
+@container task-card (max-width: 12rem) {
+  .task-card-narrow-detail {
+    display: none;
+  }
+}
+
 a {
   color: inherit;
   text-decoration: none;

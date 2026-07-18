@@ -482,6 +482,19 @@ function taskStatusTextClass(kind: ReturnType<typeof taskStatusKind>): string {
   }
 }
 
+function taskStatusDotClass(kind: ReturnType<typeof taskStatusKind>): string {
+  switch (kind) {
+    case "success":
+      return "bg-[var(--app-success)]";
+    case "error":
+      return "bg-[var(--app-danger)]";
+    case "running":
+      return "bg-[var(--app-primary)] animate-pulse";
+    default:
+      return "bg-[var(--app-text-subtle)]";
+  }
+}
+
 function taskStatusBadgeClass(kind: ReturnType<typeof taskStatusKind>): string {
   switch (kind) {
     case "success":
@@ -745,11 +758,12 @@ function TaskChildInteractiveRow({
         hoverTimerRef.current = null;
         setHovered(false);
       }}
+      data-task-child-row
       data-child-session-id={row.childSessionId || undefined}
     >
       {children(effectiveRow, child)}
       {row.childSessionId ? (
-        <div className="flex min-w-0 items-center gap-2 px-3 pb-2 text-[10px] text-[var(--app-text-subtle)]">
+        <div className="task-card-child-context flex min-w-0 items-center gap-2 px-3 pb-2 text-[10px] text-[var(--app-text-subtle)]">
           <span className="min-w-0 truncate" title={taskContextLabel(child)}>{child?.loading ? 'Loading live state…' : child?.unavailable ? 'Session unavailable' : child?.stale ? 'Live state stale' : taskContextLabel(child)}</span>
           {child?.contextWindow && child.remainingTokens !== null ? (
             <span className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-[var(--app-border)]" aria-hidden="true">
@@ -788,6 +802,27 @@ function TaskAgentListRow({ row, index, dense, actions }: { row: TaskToolRow; in
   );
 }
 
+function TaskNarrowRowContent({ row, index }: { row: TaskToolRow; index: number }) {
+  const kind = taskStatusKind(row);
+  const rowNumber = row.launchIndex || index + 1;
+  const detail = row.tool && row.tool !== '-' ? row.tool : taskStatusText(kind);
+
+  return (
+    <div className="task-card-narrow-only min-w-0 items-center gap-2 px-2 py-2">
+      <span className={cn("size-2 shrink-0 rounded-full", taskStatusDotClass(kind))} aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-[var(--app-text)]">
+        Subagent {rowNumber}
+      </span>
+      <span className="task-card-narrow-detail min-w-0 truncate font-mono text-[10px] text-[var(--app-text-muted)]">
+        {detail}
+      </span>
+      <span className={cn("task-card-narrow-detail shrink-0 font-mono text-[10px] tabular-nums", taskStatusTextClass(kind))}>
+        <TaskElapsedTime row={row} />
+      </span>
+    </div>
+  );
+}
+
 function TaskAgentListRowContent({ row, index, dense }: { row: TaskToolRow; index: number; dense: boolean }) {
   const kind = taskStatusKind(row);
   const statusLabel = taskStatusLabel(row);
@@ -801,7 +836,9 @@ function TaskAgentListRowContent({ row, index, dense }: { row: TaskToolRow; inde
 
   return (
     <div className={cn(kind === "running" ? "bg-[color-mix(in_srgb,var(--app-primary)_5%,transparent)]" : "")}>
+      <TaskNarrowRowContent row={row} index={index} />
       <div className={cn(
+        "task-card-wide-only",
         "grid min-w-0 grid-cols-[3.25rem_minmax(0,1fr)_4.25rem] items-center gap-x-2 gap-y-1 px-3 sm:grid-cols-[2.5rem_3.75rem_minmax(0,1.5fr)_minmax(0,0.9fr)_4.75rem] sm:gap-x-3",
         dense ? "py-1.5" : "py-2",
       )}>
@@ -830,7 +867,7 @@ function TaskAgentListRowContent({ row, index, dense }: { row: TaskToolRow; inde
         </div>
       </div>
       {(previewText || errorText) && !dense ? (
-        <div className="grid min-w-0 grid-cols-[3.25rem_minmax(0,1fr)] gap-x-2 px-3 pb-2 sm:grid-cols-[2.5rem_3.75rem_minmax(0,1fr)] sm:gap-x-3">
+        <div className="task-card-wide-only grid min-w-0 grid-cols-[3.25rem_minmax(0,1fr)] gap-x-2 px-3 pb-2 sm:grid-cols-[2.5rem_3.75rem_minmax(0,1fr)] sm:gap-x-3">
           <div />
           <div className="hidden sm:block" />
           <div className={cn("col-start-2 min-w-0 break-words border-l pl-2 text-[11px] leading-4 [overflow-wrap:anywhere] sm:col-start-3", errorText ? "border-[var(--app-danger)] text-[var(--app-danger)]" : "border-[var(--app-border)] text-[var(--app-text-subtle)]")}>
@@ -868,7 +905,7 @@ function TaskRowsHeader({
   swarm: boolean;
 }) {
   return (
-    <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_72%,transparent)] px-3 py-2">
+    <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_72%,transparent)] px-3 py-2" data-task-card-header>
       <div className="flex min-w-0 items-center gap-2">
         <LoaderCircle size={14} className={counts.running > 0 ? "animate-spin text-[var(--app-primary)]" : "text-[var(--app-text-subtle)]"} />
         <div className="min-w-0">
@@ -915,9 +952,11 @@ function TaskSwarmCompactRowContent({ row, index }: { row: TaskToolRow; index: n
 
   return (
     <div className={cn(
-      "min-w-0 px-2 py-1.5",
+      "min-w-0",
       kind === "running" ? "border-[color-mix(in_srgb,var(--app-primary)_34%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_6%,transparent)]" : "",
     )}>
+      <TaskNarrowRowContent row={row} index={index} />
+      <div className="task-card-wide-only px-2 py-1.5">
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="shrink-0 font-mono text-[10px] text-[var(--app-text-subtle)] tabular-nums">
           {rowNumber.toString().padStart(2, '0')}
@@ -941,6 +980,7 @@ function TaskSwarmCompactRowContent({ row, index }: { row: TaskToolRow; index: n
           {title}
         </div>
       ) : null}
+      </div>
     </div>
   );
 }
@@ -961,9 +1001,9 @@ const MemoizedTaskSwarmCompactRow = memo(TaskSwarmCompactRow, (previous, next) =
 function TaskSwarmRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: TaskChildCardActions }) {
   const counts = taskRowsCounts(rows);
   return (
-    <div className="mt-2 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm">
+    <div className="task-card-container mt-2 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm" data-task-card>
       <TaskRowsHeader counts={counts} swarm />
-      <div className={cn(TOOL_RESULT_BODY_CLASS, "grid grid-cols-1 gap-1.5 p-2 md:grid-cols-2 xl:grid-cols-3")}>
+      <div className={cn(TOOL_RESULT_BODY_CLASS, "task-card-swarm-grid grid grid-cols-1 gap-1.5 p-2 md:grid-cols-2 xl:grid-cols-3")}>
         {rows.map((row, index) => (
           <MemoizedTaskSwarmCompactRow
             key={taskRowKey(row, index)}
@@ -982,9 +1022,9 @@ function TaskAgentRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: T
   const dense = rows.length >= 50;
 
   return (
-    <div className="mt-2 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm">
+    <div className="task-card-container mt-2 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm" data-task-card>
       <TaskRowsHeader counts={counts} swarm={false} />
-      <div className="hidden min-w-0 grid-cols-[2.5rem_3.75rem_minmax(0,1.5fr)_minmax(0,0.9fr)_4.75rem] items-center gap-x-3 border-b border-[var(--app-border)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)] sm:grid">
+      <div className="task-card-column-header hidden min-w-0 grid-cols-[2.5rem_3.75rem_minmax(0,1.5fr)_minmax(0,0.9fr)_4.75rem] items-center gap-x-3 border-b border-[var(--app-border)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)] sm:grid">
         <div className="min-w-0 font-mono tabular-nums">#</div>
         <div className="min-w-0">Status</div>
         <div className="min-w-0">Subagent</div>

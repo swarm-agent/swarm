@@ -28,6 +28,21 @@ test('task card navigation, stop isolation, pending/error state, and keyboard/to
   assert.match(source, /sm:hidden">Stop/)
 })
 
+test('task cards switch to a titleless vertical subagent list from their own width', async () => {
+  const [source, theme] = await Promise.all([
+    readFile(sourceURL, 'utf8'),
+    readFile(new URL('../../../../theme.css', import.meta.url), 'utf8'),
+  ])
+  assert.match(source, /data-task-card/)
+  assert.match(source, /task-card-narrow-only/)
+  assert.match(source, /Subagent \{rowNumber\}/)
+  assert.match(theme, /container-name: task-card/)
+  assert.match(theme, /@container task-card \(max-width: 23rem\)/)
+  assert.match(theme, /\.task-card-container > \[data-task-card-header\]/)
+  assert.match(theme, /\.task-card-swarm-grid[\s\S]*grid-template-columns: minmax\(0, 1fr\)/)
+  assert.match(theme, /@container task-card \(max-width: 12rem\)[\s\S]*\.task-card-narrow-detail/)
+})
+
 test('plan and subagent sidebars expose compact and ultra-thin critical actions', async () => {
   const [plan, subagents] = await Promise.all([readFile(planURL, 'utf8'), readFile(sidecarURL, 'utf8')])
   assert.match(plan, /data-display-mode=\{displayMode\}/)
