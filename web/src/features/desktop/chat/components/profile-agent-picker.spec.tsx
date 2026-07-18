@@ -7,6 +7,7 @@ import type { ActiveModelProfileState, AgentProfileRecord, ModelProfileRecord } 
 const source = readFileSync(new URL('./profile-agent-picker.tsx', import.meta.url), 'utf8')
 const setupSource = readFileSync(new URL('./agent-model-control.tsx', import.meta.url), 'utf8')
 const composerSource = readFileSync(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
+const existingConversationSource = readFileSync(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8')
 
 function savedProfile(modelMode: 'single' | 'split'): ModelProfileRecord {
   const selection = (provider: string, model: string) => ({ provider, model, thinking: 'high', serviceTier: '', contextMode: '' })
@@ -58,6 +59,11 @@ test('agent setup applies the same profile-first Swarm suppression without prima
   assert.match(setupSource, /label: 'Default agent', profiles: modelProfiles\.length === 0/)
   assert.match(setupSource, /agent\.name !== SWARM_AGENT_NAME/)
   assert.doesNotMatch(setupSource, /label: 'Primary agents'/)
+})
+
+test('existing session selector restores the active profile from hydrated session metadata', () => {
+  assert.match(existingConversationSource, /activeModelProfileFromMetadata\(sessionMetadata\)/)
+  assert.doesNotMatch(existingConversationSource, /activeModelProfileFromPolicy\(cachedAgentModelPolicy\)/)
 })
 
 test('profile picker exposes vertically stacked model summaries, default management, editing, and confirmed deletion', () => {

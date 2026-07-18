@@ -181,11 +181,27 @@ func TestSessionsV3SyncBootstrapMetadataOnlyDoesNotEmitPerSessionMessageKeys(t *
 	}
 }
 
+func TestSessionsV3SyncShellMetadataPreservesModelProfileIdentity(t *testing.T) {
+	metadata := sessionsV3SyncShellMetadata(map[string]any{
+		"agent_name": "swarm",
+		"model_profile": pebblestore.SessionModelProfileSnapshot{
+			Source:         pebblestore.SessionModelProfileSourceSaved,
+			SavedProfileID: "mp_exact",
+			Name:           "Exact",
+			ModelMode:      pebblestore.ModelProfileModeSingle,
+		},
+	})
+	profile, ok := metadata["model_profile"].(pebblestore.SessionModelProfileSnapshot)
+	if !ok || profile.SavedProfileID != "mp_exact" || profile.Name != "Exact" {
+		t.Fatalf("sync shell model profile metadata = %#v", metadata["model_profile"])
+	}
+}
+
 func TestSessionsV3SyncBootstrapSessionShellOmitsSettingsOnlyMetadata(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-metadata-shell", "Sync Bootstrap Metadata Shell", "/workspace/metadata-shell")
 
-	body := `{"metadata":{"parent_session_id":"parent-1","lineage_kind":"delegated_subagent","agent_profile":{"name":"forbidden"},"tool_contract":{"preset":"forbidden"},"tool_scope":{"preset":"forbidden"},"prompt":"forbidden","provider":"forbidden","model":"forbidden","purpose":"client-only"}}`
+	body := `{"metadata":{"parent_session_id":"parent-1","lineage_kind":"delegated_subagent","agent_profile":{"name":"forbidden"},"model_profile":{"saved_profile_id":"forbidden"},"tool_contract":{"preset":"forbidden"},"tool_scope":{"preset":"forbidden"},"prompt":"forbidden","provider":"forbidden","model":"forbidden","purpose":"client-only"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/metadata", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -209,7 +225,7 @@ func TestSessionsV3SyncBootstrapSessionShellOmitsSettingsOnlyMetadata(t *testing
 		t.Fatalf("decode bootstrap response: %v", err)
 	}
 	metadata := payload.SessionsByID[created.ID].Metadata
-	for _, key := range []string{"agent_profile", "tool_contract", "tool_scope", "prompt", "provider", "model", "purpose"} {
+	for _, key := range []string{"agent_profile", "model_profile", "tool_contract", "tool_scope", "prompt", "provider", "model", "purpose"} {
 		if _, ok := metadata[key]; ok {
 			t.Fatalf("bootstrap shell leaked settings-only metadata %s: %+v", key, metadata)
 		}

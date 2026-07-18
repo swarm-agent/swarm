@@ -104,6 +104,18 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
+export function activeModelProfileFromMetadata(metadata: unknown): ActiveModelProfileState {
+  const profile = record(record(metadata).model_profile)
+  const source = String(profile.source ?? '').trim()
+  const modelMode = String(profile.model_mode ?? '').trim()
+  return {
+    source: source === 'saved' ? 'saved' : source === 'temporary' ? 'temporary' : '',
+    profileId: String(profile.saved_profile_id ?? '').trim(),
+    name: String(profile.name ?? '').trim(),
+    modelMode: modelMode === 'split' ? 'split' : modelMode === 'single' ? 'single' : '',
+  }
+}
+
 export function activeModelProfileFromPolicy(value: unknown): ActiveModelProfileState {
   const policy = record(value) as Partial<AgentModelPolicyRecord> & Record<string, unknown>
   const source = String(policy.profileSource ?? policy.profile_source ?? '').trim()

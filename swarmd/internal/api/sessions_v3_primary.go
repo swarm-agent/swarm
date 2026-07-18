@@ -618,7 +618,7 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		Mode:           sessionruntime.NormalizeMode(req.Mode),
 		Preference:     normalizeSessionsV3ModelPreference(req.Preference),
 		ModelProfile:   modelProfileSnapshot,
-		Metadata:       sessionsV3CreateServerMetadata(req.Metadata, resolvedAgent, binding),
+		Metadata:       sessionsV3ModelProfileMetadata(sessionsV3CreateServerMetadata(req.Metadata, resolvedAgent, binding), modelProfileSnapshot),
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -3683,6 +3683,7 @@ func isProtectedSessionsV3MetadataKey(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case "agent_name",
 		"agent_profile",
+		"model_profile",
 		"resolved_agent_name",
 		"agent_mode",
 		"runtime_mode",
@@ -3779,6 +3780,14 @@ func cloneSessionsV3MetadataValue(value any) any {
 	switch typed := value.(type) {
 	case pebblestore.AgentProfile:
 		return cloneSessionsV3AgentProfile(typed)
+	case pebblestore.SessionModelProfileSnapshot:
+		return cloneSessionsV3ModelProfileSnapshot(typed)
+	case *pebblestore.SessionModelProfileSnapshot:
+		if typed == nil {
+			return (*pebblestore.SessionModelProfileSnapshot)(nil)
+		}
+		cloned := cloneSessionsV3ModelProfileSnapshot(*typed)
+		return &cloned
 	case map[string]any:
 		return cloneSessionsV3Metadata(typed)
 	case []any:

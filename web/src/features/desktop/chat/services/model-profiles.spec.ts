@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  activeModelProfileFromMetadata,
   activeModelProfileFromPolicy,
   modelOptionForSelection,
   modelProfileChoiceForTemporary,
@@ -36,6 +37,15 @@ test('split model profile resolves the branch for the current mode', () => {
   assert.equal(preferenceFromModelProfile(profile, 'plan')?.model, 'plan')
   assert.equal(preferenceFromModelProfile(profile, 'auto')?.serviceTier, 'fast')
   assert.deepEqual(modelProfileChoiceForTemporary({ ...profile, single: { provider: '', model: '', thinking: '', serviceTier: '', contextMode: '' } }), { kind: 'temporary', profile })
+})
+
+test('active profile state maps the durable session metadata snapshot', () => {
+  assert.deepEqual(activeModelProfileFromMetadata({ model_profile: { source: 'saved', saved_profile_id: 'mp_1', name: 'Recommended', model_mode: 'split' } }), {
+    source: 'saved', profileId: 'mp_1', name: 'Recommended', modelMode: 'split',
+  })
+  assert.deepEqual(activeModelProfileFromMetadata({}), {
+    source: '', profileId: '', name: '', modelMode: '',
+  })
 })
 
 test('active profile state maps hydrated snake-case policy fields', () => {

@@ -1024,6 +1024,7 @@ func sessionsV3SyncShellMetadata(metadata map[string]any) map[string]any {
 func sessionsV3SyncShellMetadataKeyAllowed(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case "agent_name",
+		"model_profile",
 		"resolved_agent_name",
 		"agent_mode",
 		"runtime_mode",

@@ -160,6 +160,7 @@ export async function updateSessionV3Preference(
 export interface SessionV3ModelProfileMutationResponseWire {
   ok?: boolean
   session_id?: string
+  metadata?: Record<string, unknown>
   model_profile?: unknown
   agent_model_policy?: unknown
   mutation?: unknown
@@ -174,6 +175,7 @@ export function sessionV3ModelProfileSettingsMutationResponse(
     ok: response.ok ?? true,
     session_id: response.session_id ?? fallbackSessionId,
     agent_model_policy: response.agent_model_policy,
+    metadata: response.metadata,
     mutation: mutationRecord(response.mutation),
     realtime_outbox: response.realtime_outbox,
     model_profile: response.model_profile,

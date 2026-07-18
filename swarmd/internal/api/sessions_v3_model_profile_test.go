@@ -61,6 +61,33 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 	}
 }
 
+func TestSessionsV3ModelProfileMetadataPersistsExactSavedProfileIdentity(t *testing.T) {
+	profile := &pebblestore.SessionModelProfileSnapshot{
+		Source:         pebblestore.SessionModelProfileSourceSaved,
+		SavedProfileID: "mp_exact",
+		Name:           "Exact",
+		ModelMode:      pebblestore.ModelProfileModeSingle,
+		Single:         &pebblestore.ModelProfileSelection{Provider: "openai", Model: "same-model"},
+	}
+	metadata := sessionsV3ModelProfileMetadata(map[string]any{"agent_name": "swarm"}, profile)
+	stored, ok := metadata["model_profile"].(pebblestore.SessionModelProfileSnapshot)
+	if !ok || stored.SavedProfileID != "mp_exact" || stored.Name != "Exact" {
+		t.Fatalf("model profile metadata = %#v", metadata["model_profile"])
+	}
+	profile.SavedProfileID = "mutated"
+	profile.Single.Model = "mutated"
+	if stored.SavedProfileID != "mp_exact" || stored.Single.Model != "same-model" {
+		t.Fatalf("metadata did not snapshot profile identity: %+v", stored)
+	}
+	cleared := sessionsV3ModelProfileMetadata(metadata, nil)
+	if _, ok := cleared["model_profile"]; ok {
+		t.Fatalf("cleared metadata retained model_profile: %+v", cleared)
+	}
+	if cleared["agent_name"] != "swarm" {
+		t.Fatalf("clearing model profile removed unrelated metadata: %+v", cleared)
+	}
+}
+
 func TestSessionsV3ProfilePreferenceUsesCurrentMode(t *testing.T) {
 	session := pebblestore.SessionSnapshot{Mode: "plan", ModelProfile: &pebblestore.SessionModelProfileSnapshot{ModelMode: pebblestore.ModelProfileModeSplit, AppliedAt: 7, Plan: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "plan", Thinking: "high", ContextMode: "full"}, Auto: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "action", Thinking: "medium", ServiceTier: "fast"}}}
 	plan, ok := sessionsV3ProfilePreference(session)

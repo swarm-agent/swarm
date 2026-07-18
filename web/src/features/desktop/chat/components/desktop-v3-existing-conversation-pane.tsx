@@ -83,7 +83,7 @@ import {
   normalizeModelID,
   normalizeProviderID,
 } from "../services/model-options";
-import { activeModelProfileFromPolicy, preferenceFromModelProfile } from "../services/model-profiles";
+import { activeModelProfileFromMetadata, preferenceFromModelProfile } from "../services/model-profiles";
 import { createModelProfile, deleteModelProfile, invalidateModelProfiles, setDefaultModelProfile, updateModelProfile } from "../queries/model-profile-queries";
 import {
   preferenceFromAgentModelLock,
@@ -1553,7 +1553,7 @@ export function DesktopV3ExistingConversationPane({
     [cachedAgentModelPolicy],
   );
   const cachedPolicyMatchesSelectedMode = mode === settingsBaseline.mode;
-  const activeModelProfile = useMemo(() => activeModelProfileFromPolicy(cachedAgentModelPolicy), [cachedAgentModelPolicy]);
+  const activeModelProfile = useMemo(() => activeModelProfileFromMetadata(sessionMetadata), [sessionMetadata]);
   const selectedModelKey = modelOptionKey(
     preference.provider,
     preference.model,

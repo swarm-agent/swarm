@@ -90,6 +90,25 @@ func sessionModelProfileSnapshotFromSaved(profile modelprofile.Profile, appliedA
 	}
 }
 
+func sessionsV3ModelProfileMetadata(metadata map[string]any, profile *pebblestore.SessionModelProfileSnapshot) map[string]any {
+	metadata = cloneSessionsV3Metadata(metadata)
+	if metadata == nil {
+		metadata = make(map[string]any)
+	}
+	delete(metadata, "model_profile")
+	if profile != nil {
+		metadata["model_profile"] = cloneSessionsV3ModelProfileSnapshot(*profile)
+	}
+	return metadata
+}
+
+func cloneSessionsV3ModelProfileSnapshot(profile pebblestore.SessionModelProfileSnapshot) pebblestore.SessionModelProfileSnapshot {
+	profile.Single = cloneSessionModelSelection(profile.Single)
+	profile.Plan = cloneSessionModelSelection(profile.Plan)
+	profile.Auto = cloneSessionModelSelection(profile.Auto)
+	return profile
+}
+
 func cloneSessionModelSelection(selection *pebblestore.ModelProfileSelection) *pebblestore.ModelProfileSelection {
 	if selection == nil {
 		return nil
@@ -171,6 +190,7 @@ func (s *Server) handleSessionV3PrimaryModelProfile(w http.ResponseWriter, r *ht
 	}
 	next := current
 	next.ModelProfile = snapshot
+	next.Metadata = sessionsV3ModelProfileMetadata(current.Metadata, snapshot)
 	next.UpdatedAt = now
 	payload := map[string]any{"session_id": sessionID, "model_profile": snapshot, "updated_at": now}
 	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateModelProfile, payload)
@@ -193,7 +213,7 @@ func (s *Server) handleSessionV3PrimaryModelProfile(w http.ResponseWriter, r *ht
 		return
 	}
 	policy := s.sessionsV3AgentModelPolicy(next, next.Preference, 0, 0)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "model_profile": snapshot, "agent_model_policy": policy, "mutation": sessionV3MutationResultResponse(result), "realtime_outbox": result.RealtimeOutbox})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "metadata": next.Metadata, "model_profile": snapshot, "agent_model_policy": policy, "mutation": sessionV3MutationResultResponse(result), "realtime_outbox": result.RealtimeOutbox})
 }
 
 func boolPtr(value bool) *bool { return &value }
