@@ -30,12 +30,12 @@ test('/task submit is intercepted before ordinary session creation', async () =>
   assert.match(app, /Enter a task request after \/task\./)
 })
 
-test('/task API carries a stable key, optional origin, abortable reconciliation, and diagnostics', async () => {
+test('/task fails explicitly without issuing workspace todo API requests', async () => {
   const api = await readFile(new URL('../../../workspaces/todos/types.ts', import.meta.url), 'utf8')
-  assert.match(api, /'Idempotency-Key': idempotencyKey\.trim\(\)/)
-  assert.match(api, /origin_session_id: originSessionId\?\.trim\(\) \|\| undefined/)
   assert.match(api, /fetchWorkspaceTodos\([^)]*signal\?: AbortSignal/)
-  assert.match(api, /requestJson<WorkspaceTodosResponseWire>\([^\n]+, \{ signal \}\)/)
+  assert.match(api, /Workspace todos and \/task are temporarily unavailable/)
+  assert.doesNotMatch(api, /requestJson/)
+  assert.doesNotMatch(api, /\/v1\/workspace\/todos/)
   assert.match(api, /preparation_session_id\?: string/)
   assert.match(api, /ai_state_version\?: number/)
 })

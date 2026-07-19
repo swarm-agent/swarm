@@ -26,11 +26,10 @@ type derivedSessionMetadataStore interface {
 }
 
 type Service struct {
-	store      *pebblestore.WorkspaceTodoStore
-	events     *pebblestore.EventLog
-	publish    func(pebblestore.EventEnvelope)
-	sessions   SessionMetadataStore
-	wakeAITask func(TodoItem)
+	store    *pebblestore.WorkspaceTodoStore
+	events   *pebblestore.EventLog
+	publish  func(pebblestore.EventEnvelope)
+	sessions SessionMetadataStore
 }
 
 type TodoItem = pebblestore.WorkspaceTodoItem
@@ -130,12 +129,6 @@ type BatchResult struct {
 
 func NewService(store *pebblestore.WorkspaceTodoStore, events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope), sessions SessionMetadataStore) *Service {
 	return &Service{store: store, events: events, publish: publish, sessions: sessions}
-}
-
-func (s *Service) SetAITaskWake(fn func(TodoItem)) { s.wakeAITask = fn }
-
-func (s *Service) ListActiveAITasks(accountScopeID string, limit int) ([]TodoItem, error) {
-	return s.store.ListActiveAITasksForAccount(strings.TrimSpace(accountScopeID), limit)
 }
 
 func (s *Service) AppendAITaskAudit(accountScopeID, workspacePath, taskID string, record pebblestore.AITaskAuditRecord) error {
@@ -264,9 +257,6 @@ func (s *Service) CreateAITask(input CreateAITaskInput) (TodoItem, TodoSummary, 
 		return created, summary, nil, nil
 	}
 	event, err := s.appendEventForAccount(accountScopeID, workspacePath, "workspace.todo.created", created.ID, map[string]any{"account_scope_id": accountScopeID, "workspace_path": workspacePath, "item": created, "summary": summary})
-	if err == nil && s.wakeAITask != nil {
-		s.wakeAITask(created)
-	}
 	return created, summary, event, err
 }
 
@@ -333,10 +323,6 @@ func (s *Service) BindAITask(accountScopeID, workspacePath, taskID, expectedStat
 func (s *Service) TransitionAITaskAuthority(input AITaskTransitionInput) (TodoItem, error) {
 	item, _, _, err := s.TransitionAITask(input)
 	return item, err
-}
-
-func (s *Service) ListAITaskAccounts(limit int) ([]string, error) {
-	return s.store.ListAITaskAccounts(limit)
 }
 
 func validAITaskTransition(current, next string) bool {

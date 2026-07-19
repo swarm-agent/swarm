@@ -339,56 +339,6 @@ func (s *WorkspaceTodoStore) TransitionAITask(input AITaskTransitionStoreInput) 
 	return item, nil
 }
 
-func (s *WorkspaceTodoStore) ListAITaskAccounts(limit int) ([]string, error) {
-	if limit <= 0 {
-		limit = 1000
-	}
-	seen := map[string]struct{}{}
-	out := make([]string, 0)
-	err := s.store.IteratePrefix(KeyWorkspaceTodoItemAccountPrefix, limit*100, func(_ string, value []byte) error {
-		var item WorkspaceTodoItem
-		if err := json.Unmarshal(value, &item); err != nil {
-			return err
-		}
-		account := strings.TrimSpace(item.AccountScopeID)
-		if account != "" && item.AIState != "" {
-			if _, ok := seen[account]; !ok && len(out) < limit {
-				seen[account] = struct{}{}
-				out = append(out, account)
-			}
-		}
-		return nil
-	})
-	sort.Strings(out)
-	return out, err
-}
-
-func (s *WorkspaceTodoStore) ListActiveAITasksForAccount(accountScopeID string, limit int) ([]WorkspaceTodoItem, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 100
-	}
-	prefix := fmt.Sprintf("%s%s/", KeyWorkspaceTodoItemAccountPrefix, keyPart(accountScopeID))
-	out := make([]WorkspaceTodoItem, 0)
-	err := s.store.IteratePrefix(prefix, limit*10, func(_ string, value []byte) error {
-		var item WorkspaceTodoItem
-		if err := json.Unmarshal(value, &item); err != nil {
-			return err
-		}
-		item = normalizeWorkspaceTodoItem(item)
-		if item.AccountScopeID == strings.TrimSpace(accountScopeID) && (item.AIState == WorkspaceTodoAIStateQueued || item.AIState == WorkspaceTodoAIStatePreparing) && len(out) < limit {
-			out = append(out, item)
-		}
-		return nil
-	})
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].UpdatedAt != out[j].UpdatedAt {
-			return out[i].UpdatedAt < out[j].UpdatedAt
-		}
-		return out[i].ID < out[j].ID
-	})
-	return out, err
-}
-
 func (s *WorkspaceTodoStore) TerminalizeLegacyActiveAITasks(limit int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -16,8 +15,6 @@ import (
 )
 
 const (
-	aiTaskRecoveryLimit     = 100
-	aiTaskMaxAttempts       = 3
 	aiTaskMessagePageLimit  = 500
 	aiTaskOriginContextOpen = "----- BEGIN DURABLE ORIGIN CONVERSATION -----"
 	aiTaskOriginContextEnd  = "----- END DURABLE ORIGIN CONVERSATION -----"
@@ -33,129 +30,9 @@ type AITaskQueueTransition struct {
 }
 
 type AITaskQueue interface {
-	ListAITaskAccounts(limit int) ([]string, error)
-	ListActiveAITasks(accountScopeID string, limit int) ([]pebblestore.WorkspaceTodoItem, error)
 	GetAITask(accountScopeID, workspacePath, taskID string) (pebblestore.WorkspaceTodoItem, bool, error)
 	TransitionAITask(AITaskQueueTransition) (pebblestore.WorkspaceTodoItem, error)
 	AppendAITaskAudit(accountScopeID, workspacePath, taskID string, record pebblestore.AITaskAuditRecord) error
-}
-
-type aiTaskWorker struct {
-	service *Service
-	queue   AITaskQueue
-	apply   func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
-	wake    chan pebblestore.WorkspaceTodoItem
-	wg      sync.WaitGroup
-	mu      sync.Mutex
-	active  map[string]struct{}
-	execute func(context.Context, AITaskQueue, pebblestore.WorkspaceTodoItem, func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error
-}
-
-type AITaskWorker struct{ worker *aiTaskWorker }
-
-func (w *AITaskWorker) Wake(item pebblestore.WorkspaceTodoItem) {
-	if w == nil || w.worker == nil {
-		return
-	}
-	select {
-	case w.worker.wake <- item:
-	default:
-	}
-}
-
-func (w *AITaskWorker) Wait() {
-	if w != nil && w.worker != nil {
-		w.worker.wg.Wait()
-	}
-}
-
-func (s *Service) StartAITaskWorker(ctx context.Context, queue AITaskQueue, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) *AITaskWorker {
-	w := &aiTaskWorker{service: s, queue: queue, apply: apply, wake: make(chan pebblestore.WorkspaceTodoItem, 128), active: map[string]struct{}{}}
-	w.wg.Add(1)
-	go w.loop(ctx)
-	return &AITaskWorker{worker: w}
-}
-
-func (w *aiTaskWorker) loop(ctx context.Context) {
-	defer w.wg.Done()
-	w.recover(ctx)
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case item := <-w.wake:
-			w.dispatch(ctx, item)
-		case <-ticker.C:
-			w.recover(ctx)
-		}
-	}
-}
-
-func (w *aiTaskWorker) recover(ctx context.Context) {
-	accounts, err := w.queue.ListAITaskAccounts(1000)
-	if err != nil {
-		return
-	}
-	for _, account := range accounts {
-		items, listErr := w.queue.ListActiveAITasks(account, aiTaskRecoveryLimit)
-		if listErr != nil {
-			continue
-		}
-		for _, item := range items {
-			w.dispatch(ctx, item)
-		}
-	}
-}
-
-func (w *aiTaskWorker) dispatch(ctx context.Context, item pebblestore.WorkspaceTodoItem) {
-	key := item.AccountScopeID + "\x00" + item.ID
-	w.mu.Lock()
-	if _, exists := w.active[key]; exists {
-		w.mu.Unlock()
-		return
-	}
-	w.active[key] = struct{}{}
-	w.mu.Unlock()
-	w.wg.Add(1)
-	go func() {
-		defer w.wg.Done()
-		defer func() { w.mu.Lock(); delete(w.active, key); w.mu.Unlock() }()
-		_ = w.process(ctx, item)
-	}()
-}
-
-func (w *aiTaskWorker) process(ctx context.Context, item pebblestore.WorkspaceTodoItem) error {
-	if item.AIState == pebblestore.WorkspaceTodoAIStateQueued {
-		attempt := int(item.AIStateVersion)
-		if attempt > aiTaskMaxAttempts {
-			return w.fail(item, "AI task exceeded bounded preparation attempts")
-		}
-		attemptID := fmt.Sprintf("ai-task-attempt:%s:%d", item.ID, attempt)
-		prepSessionID := deterministicAITaskID(item.AccountScopeID, item.WorkspaceID, item.ID, "preparation-session")
-		prepRunID := "ai-task-preparation-run:" + deterministicAITaskID(item.AccountScopeID, item.WorkspaceID, item.ID, fmt.Sprintf("attempt-%d", attempt))
-		claimed, err := w.queue.TransitionAITask(AITaskQueueTransition{Item: item, ExpectedState: pebblestore.WorkspaceTodoAIStateQueued, State: pebblestore.WorkspaceTodoAIStatePreparing, PreparationSessionID: prepSessionID, PreparationRunID: prepRunID, PreparationAttemptID: attemptID, Disposition: "claimed"})
-		if err != nil {
-			return err
-		}
-		item = claimed
-	} else if item.AIState == pebblestore.WorkspaceTodoAIStatePreparing {
-		_ = w.audit(item, "recovery", "recovered", "")
-	}
-	if w.execute != nil {
-		return w.execute(ctx, w.queue, item, w.apply)
-	}
-	return w.service.runClaimedAITask(ctx, w.queue, item, w.apply)
-}
-
-func (w *aiTaskWorker) audit(item pebblestore.WorkspaceTodoItem, stage, disposition, errorText string) error {
-	return w.queue.AppendAITaskAudit(item.AccountScopeID, item.WorkspacePath, item.ID, pebblestore.AITaskAuditRecord{StageKey: fmt.Sprintf("%06d_%s", item.AIStateVersion, stage), Stage: stage, Disposition: disposition, Error: sanitizeAITaskError(errorText), CreatedAt: time.Now().UnixMilli()})
-}
-
-func (w *aiTaskWorker) fail(item pebblestore.WorkspaceTodoItem, message string) error {
-	_, err := w.queue.TransitionAITask(AITaskQueueTransition{Item: item, ExpectedState: item.AIState, State: pebblestore.WorkspaceTodoAIStateFailed, Mode: item.AIMode, Worktree: item.AIWorktree, ManagedSessionID: item.ManagedSessionID, Error: sanitizeAITaskError(message), Disposition: "failed"})
-	return err
 }
 
 func (s *Service) runClaimedAITask(ctx context.Context, queue AITaskQueue, task pebblestore.WorkspaceTodoItem, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
