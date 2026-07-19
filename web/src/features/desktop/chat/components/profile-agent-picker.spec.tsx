@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { profilePickerAgentSections, profileTriggerDisplay } from './profile-agent-picker'
+import { modelProfileDraftIsCustomized, resolveInitialModelProfileId } from './agent-model-control'
+import { canSwitchModelProfilePolicyGroup, initialModelProfilePolicyGroup, modelProfilesInPolicyGroup } from '../services/model-profile-groups'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelProfileRecord } from '../types/chat'
 
 const source = readFileSync(new URL('./profile-agent-picker.tsx', import.meta.url), 'utf8')
@@ -32,11 +34,15 @@ function agent(name: string, mode = 'primary'): AgentProfileRecord {
   return { name, mode, enabled: true } as AgentProfileRecord
 }
 
-test('profile picker keeps minimal stacked profile cards before separated stacked agent sections', () => {
+test('profile picker keeps readable outlined profile cards before separated agent sections', () => {
   assert.match(source, /aria-label="Profiles"/)
-  assert.match(source, /No profiles yet/)
+  assert.match(source, /No \{modelProfilePolicyGroupLabel\(profileGroup\)\.toLowerCase\(\)\} profiles yet/)
   assert.match(source, /Add profile/)
-  assert.equal((source.match(/className="grid gap-1\.5"/g) ?? []).length, 2)
+  assert.match(source, /<div className="grid gap-2">/)
+  assert.match(source, /rounded-lg border \$\{selected \? 'border-\[var\(--app-primary\)\] bg-\[var\(--app-surface-subtle\)\] shadow-sm'/)
+  assert.match(source, /text-sm font-semibold leading-5/)
+  assert.match(source, /mt-1 grid gap-0\.5 text-xs leading-4/)
+  assert.doesNotMatch(source, /shadow-\[inset_2px_0_0_var\(--app-primary\)\]/)
   assert.doesNotMatch(source, /sm:grid-cols-2/)
   assert.match(source, /Agent setup/)
   assert.doesNotMatch(source, /Primary agents/)
@@ -44,7 +50,7 @@ test('profile picker keeps minimal stacked profile cards before separated stacke
   assert.ok(source.indexOf('<section aria-label="Profiles"') < source.indexOf('{agentSections.map'))
 })
 
-test('profile-first selection hides Swarm when profiles exist and retains it only as the no-profile fallback', () => {
+test('profile-first quick menu hides Swarm when profiles exist and retains it only as the no-profile fallback', () => {
   const agents = [agent('swarm'), agent('writer'), agent('system-explorer', 'subagent')]
   const withProfiles = profilePickerAgentSections(agents, true)
   const withoutProfiles = profilePickerAgentSections(agents, false)
@@ -55,9 +61,9 @@ test('profile-first selection hides Swarm when profiles exist and retains it onl
   assert.equal(withProfiles.some((section) => section.agents.some((entry) => entry.name === 'swarm')), false)
 })
 
-test('agent setup applies the same profile-first Swarm suppression without primary-agent copy', () => {
-  assert.match(setupSource, /label: 'Default agent', profiles: modelProfiles\.length === 0/)
-  assert.match(setupSource, /agent\.name !== SWARM_AGENT_NAME/)
+test('agent setup keeps Swarm first and selectable in Agents regardless of saved profiles', () => {
+  assert.match(setupSource, /label: 'Agents', profiles: \[\.\.\.\(swarmProfile \? \[swarmProfile\] : \[\]\), \.\.\.primaryProfiles\]/)
+  assert.doesNotMatch(setupSource, /label: 'Default agent'/)
   assert.doesNotMatch(setupSource, /label: 'Primary agents'/)
 })
 
@@ -66,32 +72,78 @@ test('existing session selector restores the active profile from hydrated sessio
   assert.doesNotMatch(existingConversationSource, /activeModelProfileFromPolicy\(cachedAgentModelPolicy\)/)
 })
 
-test('profile picker exposes vertically stacked model summaries, default management, editing, and confirmed deletion', () => {
+test('profile policy groups default to the active policy, isolate choices, and only switch for Swarm', () => {
+  const singleProfile = savedProfile('single')
+  const splitProfile = { ...savedProfile('split'), profileId: 'profile-2', name: 'Plan and action' }
+  const swarm = { ...agent('swarm'), modelMode: 'single' as const }
+  const explorer = { ...agent('system-explorer', 'subagent'), modelMode: 'single' as const }
+
+  assert.equal(initialModelProfilePolicyGroup(swarm, activeSaved('split')), 'split')
+  assert.equal(initialModelProfilePolicyGroup(explorer, activeSaved('split')), 'single')
+  assert.deepEqual(modelProfilesInPolicyGroup([singleProfile, splitProfile], 'split').map((profile) => profile.profileId), ['profile-2'])
+  assert.deepEqual(modelProfilesInPolicyGroup([singleProfile, splitProfile], 'single').map((profile) => profile.profileId), ['profile-1'])
+  assert.equal(canSwitchModelProfilePolicyGroup(swarm), true)
+  assert.equal(canSwitchModelProfilePolicyGroup(explorer), false)
+  assert.match(source, /profileGroupSwitchable \? <PolicyGroupSwitch/)
+  assert.match(source, /visibleProfiles\.map/)
+  assert.match(setupSource, /profileGroupSwitchable \? <SetupProfileGroupSwitch/)
+  assert.match(setupSource, /visibleModelProfiles\.map/)
+  assert.match(setupSource, /chooseModelProfile\(profile\)/)
+})
+
+test('profile picker exposes model summaries, star default management, direct row application, and confirmed deletion', () => {
   assert.match(source, /Plan \$\{selectionLabel\(profile\.plan\)\}/)
   assert.match(source, /Action \$\{selectionLabel\(profile\.auto\)\}/)
   assert.match(source, /profileLabels\(profile\)\.map\(\(label\) => <span key=\{label\} className="block truncate">/)
   assert.doesNotMatch(source, /profileLabels\(profile\)\.join\(' · '\)/)
-  assert.match(source, />Default</)
-  assert.match(source, /Make .* default/)
+  assert.doesNotMatch(source, /\bCheck\b/)
+  assert.doesNotMatch(source, />Preferred</)
+  assert.match(source, /fill=\{profile\.isDefault \? 'currentColor' : 'none'\}/)
+  assert.match(source, /Make .* the account default/)
+  assert.match(source, /aria-label=\{`Apply \$\{profile\.name\}`\}/)
+  assert.doesNotMatch(source, /Pencil/)
   assert.match(source, /window\.confirm/)
   assert.match(source, /Delete profile/)
 })
 
-test('agent setup offers explicit temporary and saved outcomes with customized detection', () => {
+test('agent setup loads the selected or account-default profile as the editable baseline', () => {
+  const accountDefault = savedProfile('single')
+  const otherProfile = { ...savedProfile('single'), profileId: 'profile-2', name: 'Other', isDefault: false }
+
+  assert.equal(resolveInitialModelProfileId(undefined, undefined, [otherProfile, accountDefault]), accountDefault.profileId)
+  assert.equal(resolveInitialModelProfileId(undefined, activeSaved('single'), [otherProfile, accountDefault]), accountDefault.profileId)
+  assert.equal(resolveInitialModelProfileId(otherProfile.profileId, activeSaved('single'), [otherProfile, accountDefault]), otherProfile.profileId)
+  assert.equal(resolveInitialModelProfileId('', activeSaved('single'), [otherProfile, accountDefault]), '')
+  assert.equal(modelProfileDraftIsCustomized('saved', 'saved'), false)
+  assert.equal(modelProfileDraftIsCustomized('saved', 'changed'), true)
+  assert.match(setupSource, /initializedOpenRef\.current/)
+  assert.match(setupSource, /const saved = requestedProfileId \? modelProfiles\.find/)
+  assert.match(setupSource, /Unsaved changes — choose whether to update the saved profile or use this draft only in the current chat/)
+  assert.match(composerSource, /setAgentSetupProfileId\(undefined\)/)
+})
+
+test('agent setup offers explicit chat-only and persisted outcomes for saved profiles', () => {
   assert.match(setupSource, /Profile name/)
-  assert.match(setupSource, /Account default/)
-  assert.match(setupSource, /Customized — this draft differs from the saved baseline/)
-  assert.match(setupSource, /Your profiles/)
-  assert.match(setupSource, /Switch profiles to inspect or edit their model setup/)
-  assert.match(setupSource, /<div className="grid gap-1\.5">/)
+  assert.match(setupSource, /Editing your account default profile\. Saving updates it everywhere; continuing for this chat only leaves it unchanged/)
+  assert.match(setupSource, /onSetDefaultModelProfile\(profile\.profileId\)/)
+  assert.match(setupSource, /fill=\{profile\.isDefault \? 'currentColor' : 'none'\}/)
+  assert.doesNotMatch(setupSource, /type="checkbox" checked=\{draftMakeDefault\}/)
+  assert.match(setupSource, /modelProfilePolicyGroupLabel\(effectiveDraftMode\)/)
+  assert.match(setupSource, /Profiles are grouped by model policy to keep the current setup clear/)
+  assert.match(setupSource, /<div className="grid gap-2">/)
+  assert.match(setupSource, /rounded-lg border bg-\[var\(--app-surface\)\] transition/)
+  assert.match(setupSource, /text-sm font-semibold leading-5/)
+  assert.match(setupSource, /text-xs leading-4 text-\[var\(--app-text-subtle\)\]/)
+  assert.doesNotMatch(setupSource, /shadow-\[inset_2px_0_0_var\(--app-primary\)\]/)
   assert.match(setupSource, /`Plan · \$\{savedProfileSelectionLabel\(profile\.plan\)\}`/)
   assert.match(setupSource, /`Action · \$\{savedProfileSelectionLabel\(profile\.auto\)\}`/)
-  assert.match(setupSource, /savedProfileModelLabels\(profile\)\.map\(\(label\) => <span key=\{label\} className="block truncate">/)
+  assert.match(setupSource, /savedProfileModelLabels\(profile\)\.map\(\(label\) => <span key=\{label\} className="min-w-0 flex-1 truncate">/)
   assert.doesNotMatch(setupSource, /Your profiles[\s\S]*?sm:grid-cols-2[\s\S]*?No saved profiles yet/)
-  assert.match(setupSource, /Use without saving/)
-  assert.match(setupSource, /Create profile and use/)
-  assert.match(setupSource, /Save changes and use/)
+  assert.match(setupSource, /Continue for this chat only/)
+  assert.match(setupSource, /Create profile and apply/)
+  assert.match(setupSource, /Save and apply/)
   assert.match(setupSource, /Save as new/)
+  assert.match(composerSource, /onSetDefaultModelProfile=\{onModelProfileSetDefault\}/)
 })
 
 test('composer trigger keeps a single-profile model visible beside its profile name', () => {

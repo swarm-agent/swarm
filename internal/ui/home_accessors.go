@@ -5,6 +5,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 )
 
@@ -164,6 +165,38 @@ func (p *HomePage) ModelState() (provider, modelName, thinking, serviceTier, con
 	return p.model.ModelProvider, p.model.ModelName, p.model.ThinkingLevel, p.model.ServiceTier, p.model.ContextMode
 }
 
+func (p *HomePage) ModelProfiles() []client.ModelProfile {
+	if p == nil {
+		return nil
+	}
+	return append([]client.ModelProfile(nil), p.model.ModelProfiles...)
+}
+
+func (p *HomePage) ActiveModelProfile() model.ActiveModelProfile {
+	if p == nil {
+		return model.ActiveModelProfile{}
+	}
+	return p.model.ActiveModelProfile
+}
+
+func (p *HomePage) ProfileLabel() string {
+	if p == nil {
+		return "Agent model default"
+	}
+	profile := p.model.ActiveModelProfile
+	switch strings.ToLower(strings.TrimSpace(profile.Source)) {
+	case "saved":
+		if name := strings.TrimSpace(profile.Name); name != "" {
+			return name
+		}
+		return "Saved profile"
+	case "temporary":
+		return "Temporary/customized"
+	default:
+		return "Agent model default"
+	}
+}
+
 func homeDisplayedMode(m model.HomeModel, sessionMode string) string {
 	if m.ActiveAgentRuntimeKnown {
 		if m.ActiveAgentExitPlanMode {
@@ -181,9 +214,12 @@ func homeDisplayedMode(m model.HomeModel, sessionMode string) string {
 
 func currentDisplayedHomeSessionMode(page *HomePage) string {
 	if page == nil {
-		return "plan"
+		return "on"
 	}
-	return homeDisplayedMode(page.model, page.sessionMode)
+	if normalizeHomeSessionMode(page.sessionMode) == "plan" {
+		return "on"
+	}
+	return "off"
 }
 
 func homeAgentModeCapability(m model.HomeModel, sessionMode string) string {
@@ -191,7 +227,7 @@ func homeAgentModeCapability(m model.HomeModel, sessionMode string) string {
 		return normalizeHomeSessionMode(sessionMode)
 	}
 	if m.ActiveAgentExitPlanMode {
-		return "plan/auto"
+		return "Plan on/off"
 	}
 	return homeDisplayedMode(m, sessionMode)
 }

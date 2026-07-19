@@ -122,6 +122,13 @@ type SwarmTarget struct {
 	Current      bool
 }
 
+type ActiveModelProfile struct {
+	Source    string
+	ProfileID string
+	Name      string
+	ModelMode string
+}
+
 type HomeModel struct {
 	Title                       string
 	Version                     string
@@ -147,6 +154,9 @@ type HomeModel struct {
 	AutoModelName               string
 	AutoThinkingLevel           string
 	AutoServiceTier             string
+	ModelProfiles               []client.ModelProfile
+	DefaultModelProfileID       string
+	ActiveModelProfile          ActiveModelProfile
 	ActiveAgent                 string
 	ActiveAgentExecutionSetting string
 	ActiveAgentExitPlanMode     bool
@@ -196,18 +206,24 @@ func MockHome() HomeModel {
 	playgroundPath := filepath.Join(root, "playground")
 
 	return HomeModel{
-		Title:                       "Swarm",
-		Version:                     buildinfo.DisplayVersion(),
-		UpdateStatus:                &client.UpdateStatus{CurrentVersion: buildinfo.DisplayVersion(), LatestVersion: "v0.2.0", UpdateAvailable: true, CheckedAtUnixMS: 1735689600000},
-		ActivePlan:                  "Core Platform",
-		ServerURL:                   "http://127.0.0.1:7781",
-		ServerMode:                  "local",
-		CWD:                         ".",
-		ModelProvider:               "codex",
-		ModelName:                   "gpt-5.4",
-		ThinkingLevel:               "xhigh",
-		ServiceTier:                 "",
-		ContextMode:                 "",
+		Title:         "Swarm",
+		Version:       buildinfo.DisplayVersion(),
+		UpdateStatus:  &client.UpdateStatus{CurrentVersion: buildinfo.DisplayVersion(), LatestVersion: "v0.2.0", UpdateAvailable: true, CheckedAtUnixMS: 1735689600000},
+		ActivePlan:    "Core Platform",
+		ServerURL:     "http://127.0.0.1:7781",
+		ServerMode:    "local",
+		CWD:           ".",
+		ModelProvider: "codex",
+		ModelName:     "gpt-5.4",
+		ThinkingLevel: "xhigh",
+		ServiceTier:   "",
+		ContextMode:   "",
+		ModelProfiles: []client.ModelProfile{{
+			ProfileID: "recommended", Name: "Recommended", ModelMode: "single", IsDefault: true,
+			Single: &client.ModelProfileSelection{Provider: "codex", Model: "gpt-5.4", Thinking: "xhigh"},
+		}},
+		DefaultModelProfileID:       "recommended",
+		ActiveModelProfile:          ActiveModelProfile{Source: "saved", ProfileID: "recommended", Name: "Recommended", ModelMode: "single"},
 		ActiveAgent:                 "swarm",
 		ActiveAgentExecutionSetting: "",
 		ActiveAgentExitPlanMode:     true,
@@ -232,7 +248,7 @@ func MockHome() HomeModel {
 			{Name: "playground", Path: displayPath(playgroundPath), ResolvedPath: playgroundPath, Branch: "tui/control-plane", DirtyCount: 7, StagedCount: 2, ModifiedCount: 3, UntrackedCount: 1, ConflictCount: 1, AheadCount: 3, BehindCount: 1, Upstream: "origin/tui/control-plane", HasGit: true, AgentsToken: "agents", IsWorkspace: true},
 		},
 		PromptHint:   "",
-		QuickActions: []string{"Agent: swarm", "Model: gpt-5.4", "Thinking: xhigh"},
+		QuickActions: []string{"Profile: Recommended · gpt-5.4 · xhigh · default"},
 		HintLine:     "Type /help for commands",
 		TipLine:      "/workspace  •  /models  •  /auth",
 		RecentSessions: []SessionSummary{

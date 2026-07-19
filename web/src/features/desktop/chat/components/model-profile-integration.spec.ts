@@ -47,11 +47,16 @@ test('new-session composer resolves the active chosen profile when mode changes'
   assert.match(newSessionSource, /onUseAgentModelDefault=\{\(\) => \{[\s\S]*preferenceFromAgentModelLock\(selectedAgentModelLock, current, modelOptions\)/)
 })
 
-test('profile modal preserves rename/default inputs and explicit action routing', () => {
+test('profile modal preserves rename, star-default persistence, and explicit action routing', () => {
   assert.match(controlSource, /setDraftProfileName\(name\)/)
   assert.match(controlSource, /setDraftMakeDefault\(makeDefault\)/)
+  assert.match(controlSource, /onSetDefaultModelProfile\(profile\.profileId\)/)
+  assert.match(controlSource, /fill=\{profile\.isDefault \? 'currentColor' : 'none'\}/)
+  assert.doesNotMatch(controlSource, /type="checkbox" checked=\{draftMakeDefault\}/)
   assert.match(controlSource, /persistence: 'temporary' \| 'create' \| 'update' \| 'create-copy'/)
-  assert.match(controlSource, /Use without saving/)
-  assert.match(controlSource, /Save changes and use/)
+  assert.match(controlSource, /confirm\('temporary'\)/)
+  assert.match(controlSource, /Continue for this chat only/)
+  assert.match(controlSource, /confirm\(editingProfileId \? 'update' : 'create'\)/)
+  assert.match(controlSource, /Save and apply/)
   assert.match(controlSource, /Save as new/)
 })

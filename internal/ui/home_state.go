@@ -162,9 +162,9 @@ func (p *HomePage) handleTopTarget(target clickTarget) {
 	case "open-agents-modal":
 		p.pendingHomeAction = &HomeAction{Kind: HomeActionOpenAgentsModal}
 		p.statusLine = "opening agents manager..."
-	case "open-models-modal":
-		p.pendingHomeAction = &HomeAction{Kind: HomeActionOpenModelsModal}
-		p.statusLine = "opening model manager..."
+	case "open-profiles-modal":
+		p.pendingHomeAction = &HomeAction{Kind: HomeActionOpenProfilesModal}
+		p.statusLine = "opening profiles..."
 	case "cycle-thinking":
 		p.pendingHomeAction = &HomeAction{Kind: HomeActionCycleThinking}
 		p.statusLine = "cycling thinking level..."

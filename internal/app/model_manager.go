@@ -121,7 +121,6 @@ func (a *App) openModelsModal(providerHint string) {
 	a.home.HideAuthModal()
 	a.home.HideWorkspaceModal()
 	a.home.HideWorktreesModal()
-	a.home.HideMCPModal()
 	a.home.HideAgentsModal()
 	a.home.HideVoiceModal()
 	a.home.HideThemeModal()
@@ -419,6 +418,7 @@ func (a *App) handleModelsModalAction(action ui.ModelsModalAction) {
 		}
 		if action.CloseAfter {
 			a.home.HideModelsModal()
+			a.home.HideCodexUsageModal()
 			if sessionID != "" && a.chat != nil {
 				a.chat.SetStatus(message)
 			} else {

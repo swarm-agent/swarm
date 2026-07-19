@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, Pencil, Plus, Settings2, Star, Trash2 } from 'lucide-react'
+import { ChevronDown, Plus, Settings2, Star, Trash2 } from 'lucide-react'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelProfileRecord, ModelProfileSelectionRecord } from '../types/chat'
 import { displayAgentName } from '../services/agent-display'
+import { canSwitchModelProfilePolicyGroup, initialModelProfilePolicyGroup, modelProfilePolicyGroupLabel, modelProfilesInPolicyGroup, type ModelProfilePolicyGroup } from '../services/model-profile-groups'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 
 interface ProfileAgentPickerProps {
@@ -23,7 +24,6 @@ interface ProfileAgentPickerProps {
   onProfileSelect?: (profileId: string) => void | Promise<void>
   onAddProfile: () => void
   onOpenAgentSetup?: (agent?: string) => void
-  onEditProfile: (profileId: string) => void
   onSetDefault: (profileId: string) => void | Promise<void>
   onDeleteProfile: (profileId: string) => void | Promise<void>
 }
@@ -108,17 +108,19 @@ export function ProfileAgentPicker({
   onProfileSelect,
   onAddProfile,
   onOpenAgentSetup,
-  onEditProfile,
   onSetDefault,
   onDeleteProfile,
 }: ProfileAgentPickerProps) {
   const [open, setOpen] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
+  const [profileGroup, setProfileGroup] = useState<ModelProfilePolicyGroup>('single')
   const [position, setPosition] = useState<{ bottom: number; left: number; width: number; maxHeight: number } | null>(null)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
   const pointerRef = useRef<{ x: number; y: number } | null>(null)
   const selectedAgent = agents.find((agent) => agent.name === currentAgent) ?? agents.find((agent) => agent.name === selectedPrimaryAgent)
+  const profileGroupSwitchable = canSwitchModelProfilePolicyGroup(selectedAgent)
+  const visibleProfiles = modelProfilesInPolicyGroup(profiles, profileGroup)
   const triggerDisplay = profileTriggerDisplay({ activeProfile, profiles, mode, modelDetail })
 
   const updatePosition = useCallback(() => {
@@ -143,6 +145,11 @@ export function ProfileAgentPicker({
     if (open) updatePosition()
     else setPosition(null)
   }, [open, updatePosition])
+
+  useEffect(() => {
+    if (!open) return
+    setProfileGroup(initialModelProfilePolicyGroup(selectedAgent, activeProfile))
+  }, [activeProfile, open, selectedAgent])
 
   useEffect(() => {
     if (!open) return
@@ -191,29 +198,28 @@ export function ProfileAgentPicker({
         <div className="min-h-0 flex-1 overflow-y-auto">
           <section aria-label="Profiles" className="px-2 py-2">
             <div className="flex items-center justify-between gap-2 px-1 pb-1.5">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Profiles</span>
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{modelProfilePolicyGroupLabel(profileGroup)} profiles</span>
               <button type="button" onClick={() => { setOpen(false); onAddProfile() }} disabled={busy} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:opacity-50"><Plus size={12} />Add profile</button>
             </div>
-            {loading ? <div className="rounded-lg border border-[var(--app-border)] px-3 py-3 text-xs text-[var(--app-text-muted)]">Loading profiles…</div> : profiles.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-[var(--app-border)] px-3 py-4 text-center text-xs text-[var(--app-text-muted)]">No profiles yet</div>
+            {profileGroupSwitchable ? <PolicyGroupSwitch value={profileGroup} onChange={setProfileGroup} /> : null}
+            {loading ? <div className="rounded-lg border border-[var(--app-border)] px-3 py-3 text-xs text-[var(--app-text-muted)]">Loading profiles…</div> : visibleProfiles.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-[var(--app-border)] px-3 py-4 text-center text-xs text-[var(--app-text-muted)]">No {modelProfilePolicyGroupLabel(profileGroup).toLowerCase()} profiles yet</div>
             ) : (
-              <div className="grid gap-1.5">
-                {profiles.map((profile) => {
+              <div className="grid gap-2">
+                {visibleProfiles.map((profile) => {
                   const selected = activeProfile?.source === 'saved' && activeProfile.profileId === profile.profileId
-                  return <div key={profile.profileId} className={`group flex min-w-0 items-center rounded-lg border px-2 py-1.5 ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)] shadow-sm' : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
-                    <button type="button" disabled={busy || !onProfileSelect} onClick={() => void invoke(() => onProfileSelect?.(profile.profileId), true)} className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left disabled:opacity-50">
-                      <span className={`grid h-4 w-4 shrink-0 place-items-center rounded-full ${selected ? 'bg-[var(--app-primary)] text-[var(--app-primary-text)]' : 'bg-[var(--app-surface-subtle)] text-transparent'}`}><Check size={10} /></span>
+                  return <div key={profile.profileId} className={`group flex min-w-0 items-center rounded-lg border ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)] shadow-sm' : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
+                    <button type="button" disabled={busy || !onProfileSelect} onClick={() => void invoke(() => onProfileSelect?.(profile.profileId), true)} aria-label={`Apply ${profile.name}`} aria-pressed={selected} className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2.5 text-left disabled:opacity-50">
                       <span className="min-w-0 flex-1">
-                        <span className="flex min-w-0 items-center gap-1 text-xs font-semibold text-[var(--app-text)]"><span className="truncate">{profile.name}</span>{profile.isDefault ? <span className="shrink-0 rounded-full border border-[var(--app-primary)] px-1 py-0.5 text-[8px] font-semibold uppercase text-[var(--app-primary)]">Default</span> : null}</span>
-                        <span className="mt-0.5 grid gap-0.5 text-[9px] leading-3 text-[var(--app-text-subtle)]">
+                        <span className="flex min-w-0 items-center gap-1 text-sm font-semibold leading-5 text-[var(--app-text)]"><span className="truncate">{profile.name}</span></span>
+                        <span className="mt-1 grid gap-0.5 text-xs leading-4 text-[var(--app-text-subtle)]">
                           {profileLabels(profile).map((label) => <span key={label} className="block truncate">{label}</span>)}
                         </span>
                       </span>
                     </button>
-                    <div className="ml-1 flex shrink-0 items-center gap-0.5">
-                      {!profile.isDefault ? <button type="button" disabled={busy} onClick={() => void invoke(() => onSetDefault(profile.profileId))} aria-label={`Make ${profile.name} default`} title="Make default" className="rounded-md p-1.5 text-[var(--app-text-subtle)] hover:bg-[var(--app-surface)] hover:text-[var(--app-primary)] disabled:opacity-50"><Star size={12} /></button> : null}
-                      <button type="button" disabled={busy} onClick={() => { setOpen(false); onEditProfile(profile.profileId) }} aria-label={`Edit ${profile.name}`} title="Edit profile" className="rounded-md p-1.5 text-[var(--app-text-subtle)] hover:bg-[var(--app-surface)] hover:text-[var(--app-text)] disabled:opacity-50"><Pencil size={12} /></button>
-                      <button type="button" disabled={busy} onClick={() => { if (window.confirm(`Delete profile “${profile.name}”?`)) void invoke(() => onDeleteProfile(profile.profileId)) }} aria-label={`Delete ${profile.name}`} title="Delete profile" className="rounded-md p-1.5 text-[var(--app-text-subtle)] hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] disabled:opacity-50"><Trash2 size={12} /></button>
+                    <div className="ml-1 flex shrink-0 items-center gap-0.5 pr-1">
+                      <button type="button" disabled={busy || profile.isDefault} onClick={() => void invoke(() => onSetDefault(profile.profileId))} aria-label={profile.isDefault ? `${profile.name} is the account default` : `Make ${profile.name} the account default`} aria-pressed={profile.isDefault} title={profile.isDefault ? 'Account default' : 'Make account default'} className={`rounded-md p-1.5 disabled:cursor-default ${profile.isDefault ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)] hover:bg-[var(--app-surface)] hover:text-[var(--app-primary)] disabled:opacity-50'}`}><Star size={14} fill={profile.isDefault ? 'currentColor' : 'none'} /></button>
+                      <button type="button" disabled={busy} onClick={() => { if (window.confirm(`Delete profile “${profile.name}”?`)) void invoke(() => onDeleteProfile(profile.profileId)) }} aria-label={`Delete ${profile.name}`} title="Delete profile" className="rounded-md p-1.5 text-[var(--app-text-subtle)] hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] disabled:opacity-50"><Trash2 size={14} /></button>
                     </div>
                   </div>
                 })}
@@ -226,7 +232,6 @@ export function ProfileAgentPicker({
               {section.agents.map((agent) => {
                 const selected = agent.name === selectedAgent?.name && !activeProfile?.source
                 return <button key={agent.name} type="button" disabled={busy || !onAgentSelect} onClick={() => void invoke(() => onAgentSelect?.(agent.name), true)} className={`flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-xs ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)] text-[var(--app-text)]' : 'border-[var(--app-border)] text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'} disabled:opacity-50`}>
-                  <span className={`grid h-4 w-4 shrink-0 place-items-center rounded-full ${selected ? 'bg-[var(--app-primary)] text-[var(--app-primary-text)]' : 'bg-[var(--app-surface-subtle)] text-transparent'}`}><Check size={10} /></span>
                   <span className="min-w-0 truncate font-semibold">{displayAgentName(agent.name)}</span>
                 </button>
               })}
@@ -253,5 +258,11 @@ export function ProfileAgentPicker({
       )}
     </div>
     {dropdown}
+  </div>
+}
+
+function PolicyGroupSwitch({ value, onChange }: { value: ModelProfilePolicyGroup; onChange: (value: ModelProfilePolicyGroup) => void }) {
+  return <div role="group" aria-label="Profile policy type" className="mb-2 grid grid-cols-2 gap-1 rounded-lg border border-[var(--app-border)] p-1">
+    {(['split', 'single'] as const).map((group) => <button key={group} type="button" aria-pressed={value === group} onClick={() => onChange(group)} className={`rounded-md px-2 py-1.5 text-[11px] font-semibold transition ${value === group ? 'bg-[var(--app-surface-subtle)] text-[var(--app-primary)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}>{modelProfilePolicyGroupLabel(group)}</button>)}
   </div>
 }

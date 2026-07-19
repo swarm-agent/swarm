@@ -12,8 +12,12 @@ type FooterState struct {
 	NotificationCount int
 	DisplayedMode     string
 	Agent             string
+	ProfileLabel      string
 	ModelLabel        string
 	Thinking          string
+	ServiceTier       string
+	UnifiedProfile    bool
+	PlanToggle        bool
 	RightFacts        []string
 	StatusLine        string
 	StatusStyle       tcell.Style
@@ -34,13 +38,33 @@ func footerTokensFromState(theme Theme, state FooterState) []footerToken {
 	primaryStyle := styleForCurrentCellBackground(theme.Accent.Bold(true))
 	modeStyle := styleForCurrentCellBackground(theme.Secondary.Bold(true))
 	metaStyle := styleForCurrentCellBackground(theme.Text)
-	return []footerToken{
-		{Text: routeLabel, Style: primaryStyle, Action: "cycle-route"},
-		{Text: emptyValue(strings.TrimSpace(state.DisplayedMode), "plan"), Style: modeStyle},
-		{Text: "[a:" + clampEllipsis(emptyValue(strings.TrimSpace(state.Agent), "swarm"), 12) + "]", Style: metaStyle, Action: "open-agents-modal"},
-		{Text: "[m:" + clampEllipsis(emptyValue(strings.TrimSpace(state.ModelLabel), "-"), 24) + "]", Style: metaStyle, Action: "open-models-modal"},
-		{Text: "[t:" + clampEllipsis(emptyValue(strings.TrimSpace(state.Thinking), "-"), 10) + "]", Style: metaStyle, Action: "cycle-thinking"},
+	modeText := emptyValue(strings.TrimSpace(state.DisplayedMode), "plan")
+	if state.PlanToggle {
+		modeText = "Plan: " + emptyValue(strings.TrimSpace(state.DisplayedMode), "on")
 	}
+	tokens := []footerToken{
+		{Text: routeLabel, Style: primaryStyle, Action: "cycle-route"},
+		{Text: modeText, Style: modeStyle},
+	}
+	if state.UnifiedProfile {
+		return append(tokens, footerToken{Text: footerProfileUnit(state), Style: metaStyle, Action: "open-profiles-modal"})
+	}
+	return append(tokens,
+		footerToken{Text: "[a:" + clampEllipsis(emptyValue(strings.TrimSpace(state.Agent), "swarm"), 12) + "]", Style: metaStyle, Action: "open-agents-modal"},
+		footerToken{Text: "[m:" + clampEllipsis(emptyValue(strings.TrimSpace(state.ModelLabel), "-"), 24) + "]", Style: metaStyle, Action: "open-models-modal"},
+		footerToken{Text: "[t:" + clampEllipsis(emptyValue(strings.TrimSpace(state.Thinking), "-"), 10) + "]", Style: metaStyle, Action: "cycle-thinking"},
+	)
+}
+
+func footerProfileUnit(state FooterState) string {
+	parts := []string{emptyValue(strings.TrimSpace(state.ProfileLabel), "Agent model default"), emptyValue(strings.TrimSpace(state.ModelLabel), "-")}
+	if thinking := strings.TrimSpace(state.Thinking); thinking != "" {
+		parts = append(parts, thinking)
+	}
+	if tier := strings.TrimSpace(state.ServiceTier); tier != "" {
+		parts = append(parts, tier)
+	}
+	return "[profile: " + clampEllipsis(strings.Join(parts, " · "), 44) + "]"
 }
 
 func intLabel(value int) string {

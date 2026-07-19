@@ -25,7 +25,6 @@ const (
 	KeybindGlobalReloadHome      KeybindID = "global.reload_home"
 	KeybindGlobalToggleMouse     KeybindID = "global.toggle_mouse"
 	KeybindGlobalOpenAgents      KeybindID = "global.open_agents"
-	KeybindGlobalOpenModels      KeybindID = "global.open_models"
 	KeybindGlobalCycleThinking   KeybindID = "global.cycle_thinking"
 	KeybindGlobalCycleRoute      KeybindID = "global.cycle_route"
 	KeybindGlobalVoiceInput      KeybindID = "global.voice_input"
@@ -213,7 +212,6 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindGlobalReloadHome, Group: "Global", Action: "Reload home", Default: "ctrl+r", Editable: true},
 	{ID: KeybindGlobalToggleMouse, Group: "Global", Action: "Toggle mouse capture", Default: "f8", Editable: true},
 	{ID: KeybindGlobalOpenAgents, Group: "Global", Action: "Open agents modal", Default: "ctrl+a", Aliases: []string{"alt+a"}, Editable: true},
-	{ID: KeybindGlobalOpenModels, Group: "Global", Action: "Open models modal", Default: "ctrl+m", Aliases: []string{"alt+m", "ctrl+enter"}, Editable: true},
 	{ID: KeybindGlobalCycleThinking, Group: "Global", Action: "Cycle thinking", Default: "ctrl+t", Editable: true},
 	{ID: KeybindGlobalCycleRoute, Group: "Global", Action: "Cycle chat route", Default: "alt+r", Editable: true},
 	{ID: KeybindGlobalVoiceInput, Group: "Global", Action: "Voice input capture", Default: "f9", Editable: true},
@@ -354,7 +352,7 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindChatUserVariantNext, Group: "Chat", Action: "User diff variant next", Default: "f5", Editable: true},
 	{ID: KeybindChatAssistantVariantPrev, Group: "Chat", Action: "Assistant diff variant previous", Default: "f6", Editable: true},
 	{ID: KeybindChatAssistantVariantNext, Group: "Chat", Action: "Assistant diff variant next", Default: "f7", Editable: true},
-	{ID: KeybindChatCycleMode, Group: "Chat", Action: "Cycle mode", Default: "shift+tab", Editable: true},
+	{ID: KeybindChatCycleMode, Group: "Chat", Action: "Toggle Plan on/off", Default: "shift+tab", Editable: true},
 	{ID: KeybindChatComplete, Group: "Chat", Action: "Complete command/preset", Default: "tab", Editable: true},
 	{ID: KeybindChatInsertNewline, Group: "Chat", Action: "Insert input newline", Default: "ctrl+j", Editable: true},
 	{ID: KeybindChatSubmit, Group: "Chat", Action: "Submit input", Default: "enter", Editable: true},

@@ -1195,12 +1195,25 @@ type UISwarmSettings struct {
 	Name string `json:"name,omitempty"`
 }
 
+type UICompactAgentSettings struct {
+	Provider    string `json:"provider,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Thinking    string `json:"thinking,omitempty"`
+	ServiceTier string `json:"service_tier,omitempty"`
+}
+
+type UIAgentSettings struct {
+	Compact  UICompactAgentSettings `json:"compact,omitempty"`
+	Explorer UICompactAgentSettings `json:"explorer,omitempty"`
+}
+
 type UISettings struct {
 	Theme     UIThemeSettings    `json:"theme,omitempty"`
 	Input     UIInputSettings    `json:"input,omitempty"`
 	Chat      UIChatSettings     `json:"chat,omitempty"`
 	Swarming  UISwarmingSettings `json:"swarming,omitempty"`
 	Swarm     UISwarmSettings    `json:"swarm,omitempty"`
+	Agents    UIAgentSettings    `json:"agents,omitempty"`
 	UpdatedAt int64              `json:"updated_at"`
 }
 

@@ -6,6 +6,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
+	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 )
 
@@ -112,11 +113,13 @@ type HomePage struct {
 	pendingWorkspaceAction    *WorkspaceModalAction
 	worktreesModal            worktreesModalState
 	pendingWorktreesAction    *WorktreesModalAction
-	mcpModal                  mcpModalState
-	pendingMCPAction          *MCPModalAction
+	codexModal                codexUsageModalState
+	codexModalTargets         []clickTarget
 	modelsModal               modelsModalState
 	modelsModalTargets        []clickTarget
 	pendingModelsAction       *ModelsModalAction
+	profilesModal             profilesModalState
+	profilesModalTargets      []clickTarget
 	agentsModal               agentsModalState
 	agentsModalTargets        []clickTarget
 	pendingAgentsAction       *AgentsModalAction
@@ -131,6 +134,8 @@ type HomePage struct {
 	keybindsModal             keybindsModalState
 	pendingKeybindsAction     *KeybindsModalAction
 	pendingHomeAction         *HomeAction
+	codexUsage                client.CodexAccountUsage
+	codexResetCredits         client.CodexResetCredits
 	toast                     toastState
 }
 
@@ -151,6 +156,14 @@ func (p *HomePage) HandleMouse(ev *tcell.EventMouse) {
 	if p == nil || ev == nil {
 		return
 	}
+	if p.codexModal.Visible {
+		p.handleCodexUsageModalMouse(ev)
+		return
+	}
+	if p.profilesModal.Visible {
+		p.handleProfilesModalMouse(ev)
+		return
+	}
 	if p.modelsModal.Visible {
 		p.handleModelsModalMouse(ev)
 		return
@@ -159,7 +172,7 @@ func (p *HomePage) HandleMouse(ev *tcell.EventMouse) {
 		p.handleAgentsModalMouse(ev)
 		return
 	}
-	if p.onboarding.Visible || p.alertsModal.Visible || p.sessionsModal.Visible || p.authModal.Visible || p.vaultModal.Visible || p.authDefaultsInfoModal.Visible || p.workspaceModal.Visible || p.worktreesModal.Visible || p.mcpModal.Visible || p.voiceModal.Visible || p.themeModal.Visible || p.keybindsModal.Visible {
+	if p.onboarding.Visible || p.alertsModal.Visible || p.sessionsModal.Visible || p.authModal.Visible || p.vaultModal.Visible || p.authDefaultsInfoModal.Visible || p.workspaceModal.Visible || p.worktreesModal.Visible || p.voiceModal.Visible || p.themeModal.Visible || p.keybindsModal.Visible {
 		return
 	}
 
@@ -289,8 +302,12 @@ func (p *HomePage) HandleKey(ev *tcell.EventKey) {
 		p.handleWorktreesModalKey(ev)
 		return
 	}
-	if p.mcpModal.Visible {
-		p.handleMCPModalKey(ev)
+	if p.codexModal.Visible {
+		p.handleCodexUsageModalKey(ev)
+		return
+	}
+	if p.profilesModal.Visible {
+		p.handleProfilesModalKey(ev)
 		return
 	}
 	if p.modelsModal.Visible {
@@ -328,9 +345,9 @@ func (p *HomePage) HandleKey(ev *tcell.EventKey) {
 		if p.CanCycleSessionMode() {
 			next := nextHomeSessionMode(p.sessionMode)
 			p.SetSessionMode(next)
-			p.statusLine = "mode: " + currentDisplayedHomeSessionMode(p)
+			p.statusLine = "Plan: " + currentDisplayedHomeSessionMode(p)
 		} else {
-			p.statusLine = "agent mode: " + currentHomeAgentModeCapability(p)
+			p.statusLine = "Plan toggle unavailable: " + currentHomeAgentModeCapability(p)
 		}
 		return
 	}
@@ -446,7 +463,8 @@ func (p *HomePage) ChatOverlayVisible() bool {
 		p.authModal.Visible ||
 		p.workspaceModal.Visible ||
 		p.worktreesModal.Visible ||
-		p.mcpModal.Visible ||
+		p.codexModal.Visible ||
+		p.profilesModal.Visible ||
 		p.modelsModal.Visible ||
 		p.agentsModal.Visible ||
 		p.voiceModal.Visible ||
@@ -458,6 +476,12 @@ func (p *HomePage) HandleChatOverlayMouse(ev *tcell.EventMouse) bool {
 		return false
 	}
 	switch {
+	case p.codexModal.Visible:
+		p.handleCodexUsageModalMouse(ev)
+		return true
+	case p.profilesModal.Visible:
+		p.handleProfilesModalMouse(ev)
+		return true
 	case p.modelsModal.Visible:
 		p.handleModelsModalMouse(ev)
 		return true
@@ -498,8 +522,11 @@ func (p *HomePage) HandleChatOverlayKey(ev *tcell.EventKey) bool {
 	case p.worktreesModal.Visible:
 		p.handleWorktreesModalKey(ev)
 		return true
-	case p.mcpModal.Visible:
-		p.handleMCPModalKey(ev)
+	case p.codexModal.Visible:
+		p.handleCodexUsageModalKey(ev)
+		return true
+	case p.profilesModal.Visible:
+		p.handleProfilesModalKey(ev)
 		return true
 	case p.modelsModal.Visible:
 		p.handleModelsModalKey(ev)
@@ -527,7 +554,8 @@ func (p *HomePage) DrawChatOverlay(s tcell.Screen) {
 	p.drawAuthDefaultsInfoModal(s)
 	p.drawWorkspaceModal(s)
 	p.drawWorktreesModal(s)
-	p.drawMCPModal(s)
+	p.drawCodexUsageModal(s)
+	p.drawProfilesModal(s)
 	p.drawModelsModal(s)
 	p.drawAgentsModal(s)
 	p.drawVoiceModal(s)
@@ -765,7 +793,8 @@ func (p *HomePage) Draw(s tcell.Screen) {
 	p.drawAuthDefaultsInfoModal(s)
 	p.drawWorkspaceModal(s)
 	p.drawWorktreesModal(s)
-	p.drawMCPModal(s)
+	p.drawCodexUsageModal(s)
+	p.drawProfilesModal(s)
 	p.drawModelsModal(s)
 	p.drawAgentsModal(s)
 	p.drawVoiceModal(s)

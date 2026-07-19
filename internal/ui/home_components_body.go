@@ -301,7 +301,7 @@ func (p *HomePage) drawPresetsRow(s tcell.Screen, rect Rect, centered bool) {
 	if len(p.model.QuickActions) == 0 {
 		line := "/auth"
 		if p.model.AuthConfigured {
-			line = "/models"
+			line = "/profiles"
 		}
 		DrawText(s, rect.X, rect.Y, rect.W, p.theme.TextMuted, line)
 		return
@@ -373,12 +373,8 @@ func homePresetChip(action string, compact bool) string {
 	}
 
 	switch key {
-	case "agent":
-		return "[a:" + clampEllipsis(emptyValue(value, "swarm"), 16) + "]"
-	case "model":
-		return "[m:" + clampEllipsis(emptyValue(value, "unset"), 24) + "]"
-	case "thinking":
-		return "[t:" + clampEllipsis(emptyValue(value, "unset"), 10) + "]"
+	case "agent", "model", "thinking", "profile":
+		return "[profile:" + clampEllipsis(emptyValue(value, "setup"), 28) + "]"
 	default:
 		return "[" + action + "]"
 	}
@@ -395,12 +391,10 @@ func homePresetChipAction(action string) string {
 	}
 	key := strings.ToLower(strings.TrimSpace(action[:sep]))
 	switch key {
-	case "agent":
+	case "agent", "model", "thinking":
 		return "open-agents-modal"
-	case "model":
-		return "open-models-modal"
-	case "thinking":
-		return "cycle-thinking"
+	case "profile":
+		return "open-profiles-modal"
 	default:
 		return ""
 	}
@@ -418,9 +412,9 @@ func (p *HomePage) drawTipsRow(s tcell.Screen, rect Rect, centered bool) {
 			modeKeyLabel = label
 		}
 	}
-	modeHint := "agent mode: " + currentHomeAgentModeCapability(p)
+	modeHint := "Plan: " + currentDisplayedHomeSessionMode(p)
 	if p.CanCycleSessionMode() {
-		modeHint = fmt.Sprintf("%s changes mode", modeKeyLabel)
+		modeHint = fmt.Sprintf("%s toggles Plan on/off", modeKeyLabel)
 	}
 	line := ""
 	switch {
@@ -433,7 +427,7 @@ func (p *HomePage) drawTipsRow(s tcell.Screen, rect Rect, centered bool) {
 	default:
 		line = modeHint
 	}
-	if !strings.Contains(strings.ToLower(line), "changes mode") {
+	if !strings.Contains(strings.ToLower(line), "toggles plan") {
 		line = fmt.Sprintf("%s • %s", line, modeHint)
 	}
 	if centered {
@@ -452,9 +446,12 @@ func (p *HomePage) homeFooterState() FooterState {
 		RouteLabel:        p.activeSwarmFooterLabel(),
 		NotificationCount: p.swarmNotificationCount,
 		DisplayedMode:     currentDisplayedHomeSessionMode(p),
-		Agent:             strings.TrimSpace(p.model.ActiveAgent),
+		ProfileLabel:      p.ProfileLabel(),
 		ModelLabel:        model.DisplayModelLabel(p.model.ModelProvider, p.model.ModelName, p.model.ServiceTier, p.model.ContextMode),
 		Thinking:          strings.TrimSpace(p.model.ThinkingLevel),
+		ServiceTier:       strings.TrimSpace(p.model.ServiceTier),
+		UnifiedProfile:    true,
+		PlanToggle:        true,
 		RightFacts:        p.homeFooterRightFacts(),
 		StatusLine:        strings.TrimSpace(p.statusLine),
 		StatusStyle:       p.homeStatusStyle(p.statusLine),

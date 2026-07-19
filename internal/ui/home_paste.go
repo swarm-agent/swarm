@@ -83,8 +83,8 @@ func (p *HomePage) handlePromptPasteKey(ev *tcell.EventKey) bool {
 		p.handleWorktreesModalKey(ev)
 		return true
 	}
-	if p.mcpModal.Visible {
-		p.handleMCPModalKey(ev)
+	if p.codexModal.Visible {
+		p.handleCodexUsageModalKey(ev)
 		return true
 	}
 	if p.modelsModal.Visible {

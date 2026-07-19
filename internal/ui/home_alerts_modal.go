@@ -49,7 +49,7 @@ func (p *HomePage) OpenAlertsModal(items []AlertModalItem, query string) bool {
 		p.authDefaultsInfoModal.Visible ||
 		p.workspaceModal.Visible ||
 		p.worktreesModal.Visible ||
-		p.mcpModal.Visible ||
+		p.codexModal.Visible ||
 		p.modelsModal.Visible ||
 		p.agentsModal.Visible ||
 		p.voiceModal.Visible ||

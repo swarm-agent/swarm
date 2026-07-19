@@ -12,7 +12,10 @@ type HomeActionKind string
 const (
 	HomeActionOpenSession           HomeActionKind = "open-session"
 	HomeActionOpenAgentsModal       HomeActionKind = "open-agents-modal"
-	HomeActionOpenModelsModal       HomeActionKind = "open-models-modal"
+	HomeActionOpenProfilesModal     HomeActionKind = "open-profiles-modal"
+	HomeActionSelectModelProfile    HomeActionKind = "select-model-profile"
+	HomeActionRefreshCodexUsage     HomeActionKind = "refresh-codex-usage"
+	HomeActionConsumeCodexReset     HomeActionKind = "consume-codex-reset"
 	HomeActionCycleThinking         HomeActionKind = "cycle-thinking"
 	HomeActionCycleRoute            HomeActionKind = "cycle-route"
 	HomeActionSelectWorkspace       HomeActionKind = "select-workspace"
@@ -36,6 +39,9 @@ type HomeAction struct {
 	NotificationID   string
 	Username         string
 	SwarmName        string
+	ModelProfileID   string
+	ResetCreditID    string
+	IdempotencyKey   string
 }
 
 func (p *HomePage) PopHomeAction() (HomeAction, bool) {
@@ -69,6 +75,35 @@ func (p *HomePage) queueOpenSessionAction(session model.SessionSummary) {
 		WorktreeRootPath: strings.TrimSpace(session.WorktreeRootPath),
 	}
 	p.statusLine = fmt.Sprintf("open session: %s", title)
+}
+
+func (p *HomePage) QueueSelectModelProfile(profileID string) bool {
+	profileID = strings.TrimSpace(profileID)
+	if p == nil || profileID == "" {
+		return false
+	}
+	p.pendingHomeAction = &HomeAction{Kind: HomeActionSelectModelProfile, ModelProfileID: profileID}
+	p.statusLine = "selecting profile..."
+	return true
+}
+
+func (p *HomePage) QueueCodexUsageRefresh() {
+	if p == nil {
+		return
+	}
+	p.pendingHomeAction = &HomeAction{Kind: HomeActionRefreshCodexUsage}
+	p.statusLine = "refreshing Codex account usage..."
+}
+
+func (p *HomePage) QueueCodexResetCredit(creditID, idempotencyKey string) bool {
+	creditID = strings.TrimSpace(creditID)
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if p == nil || creditID == "" || idempotencyKey == "" {
+		return false
+	}
+	p.pendingHomeAction = &HomeAction{Kind: HomeActionConsumeCodexReset, ResetCreditID: creditID, IdempotencyKey: idempotencyKey}
+	p.statusLine = "using Codex reset credit..."
+	return true
 }
 
 func (p *HomePage) queueSelectWorkspaceAction(workspace model.Workspace) {

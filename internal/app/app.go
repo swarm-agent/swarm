@@ -102,22 +102,20 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 	items := []ui.CommandSuggestion{
 		{Command: "/add-dir", Hint: "Open linked-directory flow in the workspace manager"},
 		{Command: "/alerts", Hint: "Open alerts / notifications (c clears all, Enter opens session)"},
-		{Command: "/agents", Hint: "Open agents manager modal", QuickTips: []string{"/agents reset", "/agents restore", "/agents use <name>", "/agents prompt <name> <text>", "/agents delete <name>"}},
+		{Command: "/agents", Hint: "Open agent cards and model setup"},
+		{Command: "/profiles", Hint: "Quick-switch the saved model profile used by new sessions"},
 		{Command: "/notifications", Hint: "Alias for /alerts"},
 		{Command: "/auth", Hint: "Auth status or key setup", QuickTips: []string{"/auth status", "/auth key <provider> <api_key>"}},
-		{Command: "/codex", Hint: "Show Codex gpt-5.4/gpt-5.5 runtime settings (Fast on/off)", QuickTips: []string{"/codex status", "/codex fast", "/fast"}},
+		{Command: "/codex", Hint: "Show Codex account usage and reset credits", QuickTips: []string{"/codex", "/codex refresh"}},
 		{Command: "/commit", Hint: "Launch the memory agent in background to review diffs and commit changes", QuickTips: []string{"/commit [instructions]"}},
 		{Command: "/compact", Hint: "Compact current chat context via memory agent", QuickTips: []string{"/compact [threshold%] [notes]"}},
 		{Command: "/copy", Hint: "Copy chat snapshot or /copy N block to clipboard"},
-		{Command: "/fast", Hint: "Toggle Codex Fast for the current chat or home draft (gpt-5.4/gpt-5.5)", QuickTips: []string{"alias tip: /codex fast"}},
 		{Command: "/git", Hint: "Show authoritative Git status for the active workspace"},
 		{Command: "/header", Hint: "Toggle chat header visibility", QuickTips: []string{"/header toggle"}},
 		{Command: "/help", Hint: "Show command help"},
 		{Command: "/home", Hint: "Return to home without ending the chat session"},
 		{Command: "/keybinds", Hint: "Open keybindings modal", QuickTips: []string{"/keybinds list", "/keybinds reset [all]"}},
-		{Command: "/mcp", Hint: "MCP management is deferred until Swarm Sync integration", QuickTips: []string{"Generic MCP management is coming later", "Exa web access requires an active Exa API key", "Use /auth key exa <api_key>"}},
-		{Command: "/mode", Hint: "Set the default mode for new chats", QuickTips: []string{"/mode auto", "/mode plan", "/mode status"}},
-		{Command: "/models", Hint: "Open model manager modal (favorites + provider catalog)"},
+		{Command: "/mode", Hint: "Toggle Plan behavior for new chats", QuickTips: []string{"/mode plan", "/mode action", "/mode status"}},
 		{Command: "/mouse", Hint: "Toggle mouse click capture", QuickTips: []string{"/mouse toggle", "/mouse status"}},
 		{Command: "/new", Hint: "Create a new session (scaffold)"},
 		{Command: "/output", Hint: "Open the full bash output viewer"},
@@ -1278,13 +1276,21 @@ func (a *App) applyAgentStreamEvent(event client.StreamEventEnvelope) bool {
 		for _, profile := range state.Profiles {
 			hints = append(hints, profile.Provider)
 		}
+		settings, err := a.api.GetUISettings(ctx)
+		if err != nil {
+			return false
+		}
+		modalState := enrichSystemAgentModels(state, settings, a.homeModel)
 		resolvedModels := a.resolveProviderModelData(ctx, hints, 2000, 1200)
 		a.home.SetAgentsModalData(mapAgentsModalData(
-			state,
+			modalState,
 			resolvedModels,
 			strings.TrimSpace(a.homeModel.ModelProvider),
 			strings.TrimSpace(a.homeModel.ModelName),
 			strings.TrimSpace(a.homeModel.ThinkingLevel),
+			a.homeModel.ModelProfiles,
+			a.homeModel.DefaultModelProfileID,
+			a.homeModel.ActiveModelProfile.ProfileID,
 		))
 		a.home.SetAgentsModalLoading(false)
 		changed = true
@@ -1833,21 +1839,6 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 			return false
 		}
 	}
-	if keybinds.Match(ev, ui.KeybindGlobalOpenModels) {
-		if a.route == "chat" && a.chat != nil {
-			a.openModelsModal("")
-			return false
-		}
-		if a.route == "chat" {
-			a.route = "home"
-			a.chat = nil
-		}
-		if a.route == "home" {
-			a.home.SetPasteActive(a.pasteActive)
-			a.openModelsModal("")
-			return false
-		}
-	}
 	if keybinds.Match(ev, ui.KeybindGlobalWorkspacePrev) {
 		if a.workspaceCycleHotkeyBlocked() {
 			return true
@@ -2104,8 +2095,6 @@ func (a *App) executeCommand(raw string) {
 		a.handleCompactCommand(args)
 	case "commit":
 		a.handleCommitCommand(args)
-	case "fast":
-		a.handleCodexCommand([]string{"fast"})
 	case "git":
 		a.handleGitCommand(args)
 	case "codex":
@@ -2116,8 +2105,6 @@ func (a *App) executeCommand(raw string) {
 		a.handleWorkspaceCommand(args)
 	case "add-dir":
 		a.handleAddDirectoryCommand(args)
-	case "mcp":
-		a.handleMCPCommand(args)
 	case "permissions":
 		a.handlePermissionsCommand(args)
 	case "output":
@@ -2126,8 +2113,8 @@ func (a *App) executeCommand(raw string) {
 		a.handleWorktreesCommand(args)
 	case "mode":
 		a.handleModeCommand(args)
-	case "models":
-		a.handleModelsCommand(args)
+	case "profiles":
+		a.openProfilesModal()
 	case "agents", "agent":
 		a.handleAgentsCommand(args)
 	case "auth":
@@ -2174,15 +2161,13 @@ func (a *App) showHelp() {
 		"/plan new [title]   (create and activate a new plan draft)",
 		"/compact [threshold%] [notes]   (compact now + optionally set auto-compact threshold)",
 		"/commit [instructions]   (launch memory agent in background to review diffs and commit)",
-		"/fast   (toggle Codex Fast for current chat or home draft; gpt-5.4/gpt-5.5)",
 		"/git   (show authoritative Git status for the active workspace)",
-		"/codex [status|fast]   (Codex gpt-5.4/gpt-5.5 runtime settings; Fast on-off)",
+		"/codex [refresh]   (Codex account usage and reset credits)",
 		"/workspace   (open workspace manager)",
 		"/workspaces   (alias for /workspace)",
 		"/workspace save [path|#n]   (open workspace setup)",
 		"/add-dir [path]   (open workspace linked-directory flow)",
 		"/workspace scan [query]",
-		"/mcp   (deferred: generic MCP management needs Swarm Sync; Exa web access requires an active API key)",
 		"/output   (open full bash output viewer)",
 		"/permissions [on|off]   (toggle global permission prompts)",
 		"/permissions show   (show global permission policy)",
@@ -2198,16 +2183,11 @@ func (a *App) showHelp() {
 		"/wt   (alias for /worktrees)",
 		"/worktrees new   (create a worktree session with title and editable branch)",
 		"/worktrees [new|open|off|status|branch <name>]",
-		"/agents   (open agents manager modal)",
-		"/agents restore   (restore built-in agents without deleting custom ones)",
-		"/agents reset   (delete custom agents/tools and restore built-ins)",
-		"/agents use <primary-agent>",
-		"/agents prompt <name> <prompt text>",
-		"/agents delete <name>",
-		"/mode [auto|plan|status]   (default mode for new chats)",
-		"/models   (open model manager modal)",
+		"/agents   (open agent cards and model setup)",
+
+		"/mode [plan|action|status]   (Plan on/off for new chats)",
+		"/profiles   (quick-switch the saved model profile used by new sessions)",
 		fmt.Sprintf("%s   (open agents manager modal)", keybinds.Label(ui.KeybindGlobalOpenAgents)),
-		fmt.Sprintf("%s   (open model manager modal)", keybinds.Label(ui.KeybindGlobalOpenModels)),
 		fmt.Sprintf("%s   (cycle workspace previous)", keybinds.Label(ui.KeybindGlobalWorkspacePrev)),
 		fmt.Sprintf("%s   (cycle workspace next)", keybinds.Label(ui.KeybindGlobalWorkspaceNext)),
 		fmt.Sprintf("%s   (activate workspace slot 1)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot1)),
@@ -4134,10 +4114,6 @@ func (a *App) consumeHomeOverlayActions() {
 			a.handleWorktreesModalAction(action)
 			processed = true
 		}
-		if action, ok := a.home.PopMCPModalAction(); ok {
-			a.handleMCPModalAction(action)
-			processed = true
-		}
 		if action, ok := a.home.PopModelsModalAction(); ok {
 			a.handleModelsModalAction(action)
 			processed = true
@@ -4210,10 +4186,6 @@ func (a *App) consumeHomeActions() {
 		}
 		if action, ok := a.home.PopWorktreesModalAction(); ok {
 			a.handleWorktreesModalAction(action)
-			processed = true
-		}
-		if action, ok := a.home.PopMCPModalAction(); ok {
-			a.handleMCPModalAction(action)
 			processed = true
 		}
 		if action, ok := a.home.PopModelsModalAction(); ok {
@@ -4985,8 +4957,14 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		a.queueReload(false)
 	case ui.HomeActionOpenAgentsModal:
 		a.openAgentsModal()
-	case ui.HomeActionOpenModelsModal:
-		a.openModelsModal("")
+	case ui.HomeActionOpenProfilesModal:
+		a.openProfilesModal()
+	case ui.HomeActionSelectModelProfile:
+		a.selectHomeModelProfile(action.ModelProfileID)
+	case ui.HomeActionRefreshCodexUsage:
+		a.refreshHomeCodexAccount()
+	case ui.HomeActionConsumeCodexReset:
+		a.consumeHomeCodexResetCredit(action.ResetCreditID, action.IdempotencyKey)
 	case ui.HomeActionCycleThinking:
 		a.cycleThinkingLevel()
 	case ui.HomeActionCycleRoute:
@@ -5473,85 +5451,6 @@ func (a *App) handleWorktreesModalAction(action ui.WorktreesModalAction) {
 	}
 }
 
-func (a *App) handleMCPModalAction(action ui.MCPModalAction) {
-	if !a.home.MCPModalVisible() {
-		return
-	}
-	switch action.Kind {
-	case ui.MCPModalActionRefresh:
-		a.refreshMCPModalData("Refreshing MCP servers...")
-	case ui.MCPModalActionSetEnabled:
-		id := strings.TrimSpace(action.ID)
-		if id == "" {
-			a.home.SetMCPModalLoading(false)
-			a.home.SetMCPModalError("MCP server id is required")
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		server, err := a.api.SetMCPServerEnabled(ctx, id, action.Enabled)
-		if err != nil {
-			a.home.SetMCPModalLoading(false)
-			a.home.SetMCPModalError(fmt.Sprintf("mcp toggle failed: %v", err))
-			return
-		}
-		state := "disabled"
-		if server.Enabled {
-			state = "enabled"
-		}
-		a.home.SetMCPModalStatus(fmt.Sprintf("MCP %s: %s", server.ID, state))
-		a.refreshMCPModalData("")
-	case ui.MCPModalActionDelete:
-		id := strings.TrimSpace(action.ID)
-		if id == "" {
-			a.home.SetMCPModalLoading(false)
-			a.home.SetMCPModalError("MCP server id is required")
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		if err := a.api.DeleteMCPServer(ctx, id); err != nil {
-			a.home.SetMCPModalLoading(false)
-			a.home.SetMCPModalError(fmt.Sprintf("mcp delete failed: %v", err))
-			return
-		}
-		a.home.SetMCPModalStatus(fmt.Sprintf("MCP server removed: %s", id))
-		a.refreshMCPModalData("")
-	case ui.MCPModalActionUpsert:
-		if action.Upsert == nil {
-			a.home.SetMCPModalLoading(false)
-			a.home.SetMCPModalError("mcp upsert payload is missing")
-			return
-		}
-		upsert := action.Upsert
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		server, err := a.api.UpsertMCPServer(ctx, client.MCPServerUpsertRequest{
-			ID:        strings.TrimSpace(upsert.ID),
-			Name:      strings.TrimSpace(upsert.Name),
-			Transport: strings.TrimSpace(upsert.Transport),
-			URL:       strings.TrimSpace(upsert.URL),
-			Command:   strings.TrimSpace(upsert.Command),
-			Args:      append([]string(nil), upsert.Args...),
-			Enabled:   upsert.Enabled,
-			Source:    strings.TrimSpace(upsert.Source),
-		})
-		if err != nil {
-			a.home.SetMCPModalLoading(false)
-			a.home.SetMCPModalError(fmt.Sprintf("mcp save failed: %v", err))
-			return
-		}
-		target := strings.TrimSpace(server.URL)
-		if target == "" {
-			target = strings.TrimSpace(server.Command)
-		}
-		a.home.SetMCPModalStatus(fmt.Sprintf("MCP server saved: %s (%s)", server.ID, emptyFallback(target, "configured")))
-		a.refreshMCPModalData("")
-	default:
-		a.home.SetMCPModalLoading(false)
-	}
-}
-
 func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 	if !a.home.AgentsModalVisible() {
 		return
@@ -5559,6 +5458,32 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 	switch action.Kind {
 	case ui.AgentsModalActionRefresh:
 		a.refreshAgentsModalData("Refreshing agent profiles...")
+	case ui.AgentsModalActionSetProfileDefault:
+		profileID := strings.TrimSpace(action.ModelProfileID)
+		if profileID == "" {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError("profile id is required")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		profile, err := a.api.SetDefaultModelProfile(ctx, profileID)
+		if err != nil {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError(fmt.Sprintf("set default profile failed: %v", err))
+			return
+		}
+		state, err := a.api.ListModelProfiles(ctx)
+		if err != nil {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError(fmt.Sprintf("default profile saved, but refresh failed: %v", err))
+			a.queueReload(false)
+			return
+		}
+		a.applyHomeModel(applyHomeModelProfiles(a.homeModel, state))
+		label := emptyFallback(strings.TrimSpace(profile.Name), profileID)
+		a.refreshAgentsModalData("account default profile: " + label)
+		a.queueReload(false)
 	case ui.AgentsModalActionSetUtilityAI:
 		input := action.UtilityAI
 		if input == nil || strings.TrimSpace(input.Provider) == "" || strings.TrimSpace(input.Model) == "" {
@@ -5639,6 +5564,34 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
+		if isCloneSystemAgentName(action.Upsert.Name) {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError("Clone inherits the parent session model and cannot be edited independently")
+			return
+		}
+		if isExplorerSystemAgentName(action.Upsert.Name) {
+			settings, err := a.api.GetUISettings(ctx)
+			if err != nil {
+				a.home.SetAgentsModalLoading(false)
+				a.home.SetAgentsModalError(fmt.Sprintf("load Explorer settings failed: %v", err))
+				return
+			}
+			settings.Agents.Explorer = client.UICompactAgentSettings{
+				Provider:    strings.TrimSpace(action.Upsert.Provider),
+				Model:       strings.TrimSpace(action.Upsert.Model),
+				Thinking:    strings.TrimSpace(action.Upsert.Thinking),
+				ServiceTier: strings.TrimSpace(action.Upsert.ServiceTier),
+			}
+			if _, err := a.api.UpdateUISettings(ctx, settings); err != nil {
+				a.home.SetAgentsModalLoading(false)
+				a.home.SetAgentsModalError(fmt.Sprintf("save Explorer model failed: %v", err))
+				return
+			}
+			a.home.SetAgentsModalStatus("Explorer single-model settings saved")
+			a.refreshAgentsModalData("")
+			a.queueReload(false)
+			return
+		}
 		req := client.AgentUpsertRequest{
 			Name:        action.Upsert.Name,
 			Mode:        action.Upsert.Mode,
@@ -5701,6 +5654,16 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 	default:
 		a.home.SetAgentsModalLoading(false)
 	}
+}
+
+func isCloneSystemAgentName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == "clone" || name == "system-clone"
+}
+
+func isExplorerSystemAgentName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == "explorer" || name == "system-explorer"
 }
 
 func (a *App) handleThemeModalAction(action ui.ThemeModalAction) {
@@ -6162,8 +6125,9 @@ func (a *App) openWorkspaceModal() ([]client.WorkspaceEntry, error) {
 	a.home.HideSessionsModal()
 	a.home.HideAuthModal()
 	a.home.HideWorktreesModal()
-	a.home.HideMCPModal()
 	a.home.HideModelsModal()
+	a.home.HideProfilesModal()
+	a.home.HideCodexUsageModal()
 	a.home.HideAgentsModal()
 	a.home.HideVoiceModal()
 	a.home.HideThemeModal()
@@ -6178,8 +6142,9 @@ func (a *App) openWorktreesModalWithCreate(create bool) {
 	a.home.HideSessionsModal()
 	a.home.HideAuthModal()
 	a.home.HideWorkspaceModal()
-	a.home.HideMCPModal()
 	a.home.HideModelsModal()
+	a.home.HideProfilesModal()
+	a.home.HideCodexUsageModal()
 	a.home.HideAgentsModal()
 	a.home.HideVoiceModal()
 	a.home.HideThemeModal()
@@ -6196,28 +6161,6 @@ func (a *App) openWorktreesModalWithCreate(create bool) {
 		}
 		a.refreshWorktreesModalData(statusHint)
 	}
-}
-
-func (a *App) refreshMCPModalData(statusHint string) {
-	if !a.home.MCPModalVisible() {
-		return
-	}
-	if strings.TrimSpace(statusHint) != "" {
-		a.home.SetMCPModalStatus(statusHint)
-	}
-	a.home.SetMCPModalLoading(true)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	servers, err := a.api.ListMCPServers(ctx, 500)
-	if err != nil {
-		a.home.SetMCPModalLoading(false)
-		a.home.SetMCPModalError(fmt.Sprintf("mcp list failed: %v", err))
-		return
-	}
-	a.home.SetMCPModalData(mapMCPModalServers(servers))
-	a.home.SetMCPModalLoading(false)
-	a.home.SetMCPModalStatus(fmt.Sprintf("mcp servers loaded: %d", len(servers)))
 }
 
 func (a *App) refreshWorktreesModalData(statusHint string) {
@@ -6318,8 +6261,9 @@ func (a *App) openAuthModal() {
 	a.home.HideSessionsModal()
 	a.home.HideWorktreesModal()
 	a.home.HideWorkspaceModal()
-	a.home.HideMCPModal()
 	a.home.HideModelsModal()
+	a.home.HideProfilesModal()
+	a.home.HideCodexUsageModal()
 	a.home.HideAgentsModal()
 	a.home.HideVoiceModal()
 	a.home.HideThemeModal()
@@ -6328,14 +6272,30 @@ func (a *App) openAuthModal() {
 	a.refreshAuthModalData("Loading auth manager...")
 }
 
+func (a *App) openProfilesModal() {
+	a.home.ClearCommandOverlay()
+	a.home.HideSessionsModal()
+	a.home.HideAuthModal()
+	a.home.HideWorkspaceModal()
+	a.home.HideWorktreesModal()
+	a.home.HideModelsModal()
+	a.home.HideCodexUsageModal()
+	a.home.HideAgentsModal()
+	a.home.HideVoiceModal()
+	a.home.HideThemeModal()
+	a.home.HideKeybindsModal()
+	a.home.ShowProfilesModal()
+}
+
 func (a *App) openAgentsModal() {
 	a.home.ClearCommandOverlay()
 	a.home.HideSessionsModal()
 	a.home.HideAuthModal()
 	a.home.HideWorkspaceModal()
 	a.home.HideWorktreesModal()
-	a.home.HideMCPModal()
 	a.home.HideModelsModal()
+	a.home.HideProfilesModal()
+	a.home.HideCodexUsageModal()
 	a.home.HideVoiceModal()
 	a.home.HideThemeModal()
 	a.home.HideKeybindsModal()
@@ -6372,14 +6332,24 @@ func (a *App) refreshAgentsModalData(statusHint string) {
 	for _, profile := range state.Profiles {
 		hints = append(hints, profile.Provider)
 	}
+	settings, err := a.api.GetUISettings(ctx)
+	if err != nil {
+		a.home.SetAgentsModalLoading(false)
+		a.home.SetAgentsModalError(fmt.Sprintf("system agent model settings failed: %v", err))
+		return
+	}
+	modalState := enrichSystemAgentModels(state, settings, a.homeModel)
 	resolvedModels := a.resolveProviderModelData(ctx, hints, 2000, 1200)
 
 	a.home.SetAgentsModalData(mapAgentsModalData(
-		state,
+		modalState,
 		resolvedModels,
 		strings.TrimSpace(a.homeModel.ModelProvider),
 		strings.TrimSpace(a.homeModel.ModelName),
 		strings.TrimSpace(a.homeModel.ThinkingLevel),
+		a.homeModel.ModelProfiles,
+		a.homeModel.DefaultModelProfileID,
+		a.homeModel.ActiveModelProfile.ProfileID,
 	))
 	a.home.SetAgentsModalLoading(false)
 	status := fmt.Sprintf("agent profiles loaded: %d", len(state.Profiles))
@@ -6616,7 +6586,36 @@ func mapWorkspaceModalEntries(entries []client.WorkspaceEntry) []ui.WorkspaceMod
 	return out
 }
 
-func mapAgentsModalData(state client.AgentState, resolved providerModelResolverResult, defaultProvider, defaultModel, defaultThinking string) ui.AgentsModalData {
+func enrichSystemAgentModels(state client.AgentState, settings client.UISettings, home model.HomeModel) client.AgentState {
+	state.Profiles = append([]client.AgentProfile(nil), state.Profiles...)
+	for i := range state.Profiles {
+		profile := &state.Profiles[i]
+		switch {
+		case isExplorerSystemAgentName(profile.Name):
+			override := settings.Agents.Explorer
+			if strings.TrimSpace(override.Provider) != "" {
+				profile.Provider = strings.TrimSpace(override.Provider)
+			}
+			if strings.TrimSpace(override.Model) != "" {
+				profile.Model = strings.TrimSpace(override.Model)
+			}
+			if strings.TrimSpace(override.Thinking) != "" {
+				profile.Thinking = strings.TrimSpace(override.Thinking)
+			}
+			profile.AutoServiceTier = strings.TrimSpace(override.ServiceTier)
+			profile.ModelMode = "single"
+		case isCloneSystemAgentName(profile.Name):
+			profile.Provider = strings.TrimSpace(home.ModelProvider)
+			profile.Model = strings.TrimSpace(home.ModelName)
+			profile.Thinking = strings.TrimSpace(home.ThinkingLevel)
+			profile.AutoServiceTier = strings.TrimSpace(home.ServiceTier)
+			profile.ModelMode = "single"
+		}
+	}
+	return state
+}
+
+func mapAgentsModalData(state client.AgentState, resolved providerModelResolverResult, defaultProvider, defaultModel, defaultThinking string, modelProfiles []client.ModelProfile, defaultModelProfileID, activeModelProfileID string) ui.AgentsModalData {
 	profiles := make([]ui.AgentModalProfile, 0, len(state.Profiles))
 	modelsByProvider := make(map[string][]string, len(resolved.ModelsByProvider)+8)
 	for providerID, models := range resolved.ModelsByProvider {
@@ -6791,16 +6790,19 @@ func mapAgentsModalData(state client.AgentState, resolved providerModelResolverR
 	}
 
 	data := ui.AgentsModalData{
-		Profiles:         profiles,
-		ActivePrimary:    strings.TrimSpace(state.ActivePrimary),
-		ActiveSubagent:   activeSubagent,
-		Version:          state.Version,
-		Providers:        providers,
-		ModelsByProvider: modelsByProvider,
-		ReasoningModels:  reasoningModels,
-		DefaultProvider:  defaultProvider,
-		DefaultModel:     defaultModel,
-		DefaultThinking:  defaultThinking,
+		Profiles:              profiles,
+		ActivePrimary:         strings.TrimSpace(state.ActivePrimary),
+		ActiveSubagent:        activeSubagent,
+		Version:               state.Version,
+		Providers:             providers,
+		ModelsByProvider:      modelsByProvider,
+		ReasoningModels:       reasoningModels,
+		DefaultProvider:       defaultProvider,
+		DefaultModel:          defaultModel,
+		DefaultThinking:       defaultThinking,
+		ModelProfiles:         append([]client.ModelProfile(nil), modelProfiles...),
+		DefaultModelProfileID: strings.TrimSpace(defaultModelProfileID),
+		ActiveModelProfileID:  strings.TrimSpace(activeModelProfileID),
 	}
 	if state.ProviderDefaultsPreview != nil {
 		preview := state.ProviderDefaultsPreview
@@ -6890,11 +6892,6 @@ func (a *App) handleAddDirectoryCommand(args []string) {
 	a.openWorkspaceModalForAddDirectory(prefill)
 }
 
-func (a *App) handleMCPCommand(args []string) {
-	a.home.ClearCommandOverlay()
-	a.home.SetStatus("MCP management is deferred until Swarm Sync integration; Exa web access requires an active Exa API key (use /auth key exa <api_key>)")
-}
-
 func (a *App) handleWorktreesCommand(args []string) {
 	if a.home == nil {
 		return
@@ -6963,123 +6960,12 @@ func (a *App) showAgentsManager() {
 }
 
 func (a *App) handleAgentsCommand(args []string) {
-	if len(args) == 0 || strings.EqualFold(args[0], "open") || strings.EqualFold(args[0], "manage") || strings.EqualFold(args[0], "crud") || strings.EqualFold(args[0], "list") {
+	if len(args) == 0 || strings.EqualFold(args[0], "open") {
 		a.showAgentsManager()
 		return
 	}
-
-	sub := strings.ToLower(strings.TrimSpace(args[0]))
-	switch sub {
-	case "default", "defaults", "restore":
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		result, err := a.api.RestoreAgentDefaults(ctx)
-		if err != nil {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus(fmt.Sprintf("restore defaults failed: %v", err))
-			return
-		}
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus(fmt.Sprintf("restored default agents: %d profiles", len(result.Profiles)))
-		a.queueReload(false)
-		if a.home.AgentsModalVisible() {
-			a.refreshAgentsModalData("")
-		}
-	case "reset":
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		result, err := a.api.ResetAgentDefaults(ctx)
-		if err != nil {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus(fmt.Sprintf("reset defaults failed: %v", err))
-			return
-		}
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus(fmt.Sprintf("reset agents to built-in defaults: %d profiles", len(result.Profiles)))
-		a.queueReload(false)
-		if a.home.AgentsModalVisible() {
-			a.refreshAgentsModalData("")
-		}
-	case "use":
-		if len(args) < 2 {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus("usage: /agents use <primary-agent>")
-			return
-		}
-		target := strings.TrimSpace(args[1])
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		active, _, err := a.api.ActivatePrimaryAgent(ctx, target)
-		if err != nil {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus(fmt.Sprintf("agent activate failed: %v", err))
-			return
-		}
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus(fmt.Sprintf("active primary agent: %s", emptyFallback(active, target)))
-		a.queueReload(false)
-		a.syncChatAgentRuntime()
-		if a.home.AgentsModalVisible() {
-			a.refreshAgentsModalData("")
-		}
-	case "prompt":
-		if len(args) < 3 {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus("usage: /agents prompt <name> <prompt>")
-			return
-		}
-		name := strings.TrimSpace(args[1])
-		prompt := strings.TrimSpace(strings.Join(args[2:], " "))
-		if prompt == "" {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus("usage: /agents prompt <name> <prompt>")
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		profile, _, err := a.api.UpsertAgent(ctx, client.AgentUpsertRequest{
-			Name:   name,
-			Prompt: prompt,
-		})
-		if err != nil {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus(fmt.Sprintf("agent prompt update failed: %v", err))
-			return
-		}
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus(fmt.Sprintf("agent prompt updated: %s", profile.Name))
-		a.queueReload(false)
-		if a.home.AgentsModalVisible() {
-			a.refreshAgentsModalData("")
-		}
-	case "delete", "remove":
-		if len(args) < 2 {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus("usage: /agents delete <name>")
-			return
-		}
-		target := strings.TrimSpace(args[1])
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		deleted, activePrimary, _, err := a.api.DeleteAgent(ctx, target)
-		if err != nil {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus(fmt.Sprintf("agent delete failed: %v", err))
-			return
-		}
-		a.home.ClearCommandOverlay()
-		if strings.TrimSpace(activePrimary) == "" {
-			activePrimary = "swarm"
-		}
-		a.home.SetStatus(fmt.Sprintf("agent deleted: %s (active primary: %s)", emptyFallback(deleted, target), activePrimary))
-		a.queueReload(false)
-		if a.home.AgentsModalVisible() {
-			a.refreshAgentsModalData("")
-		}
-	default:
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus("usage: /agents [open|restore|reset|use|prompt|delete]")
-	}
+	a.home.ClearCommandOverlay()
+	a.home.SetStatus("usage: /agents")
 }
 
 func (a *App) handleAuthCommand(args []string) {
@@ -7720,6 +7606,8 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		providersErr     error
 		modelResolved    client.ModelResolved
 		modelErr         error
+		modelProfiles    client.ModelProfileState
+		modelProfilesErr error
 		updateStatus     client.UpdateStatus
 		updateErr        error
 		agentState       client.AgentState
@@ -7728,7 +7616,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		contextErr       error
 	)
 	var refreshWG sync.WaitGroup
-	refreshWG.Add(9)
+	refreshWG.Add(10)
 	go func() {
 		defer refreshWG.Done()
 		health, healthErr = a.api.GetHealth(ctx)
@@ -7752,6 +7640,10 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 	go func() {
 		defer refreshWG.Done()
 		modelResolved, modelErr = a.api.GetModel(ctx)
+	}()
+	go func() {
+		defer refreshWG.Done()
+		modelProfiles, modelProfilesErr = a.api.ListModelProfiles(ctx)
 	}()
 	go func() {
 		defer refreshWG.Done()
@@ -7960,6 +7852,11 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		next = applyHomeModelResolved(next, modelResolved)
 	} else {
 		errorsSeen = append(errorsSeen, "model preference unavailable")
+	}
+	if modelProfilesErr == nil {
+		next = applyHomeModelProfiles(next, modelProfiles)
+	} else {
+		errorsSeen = append(errorsSeen, "model profiles unavailable")
 	}
 
 	if updateErr == nil {
@@ -9166,18 +9063,14 @@ func clampText(value string, maxRunes int) string {
 
 func homeQuickActions(next model.HomeModel) []string {
 	if !next.AuthConfigured {
-		return []string{
-			"Agent: " + emptyFallback(next.ActiveAgent, "swarm"),
-			"Auth: missing",
-			"Run /auth",
-		}
+		return []string{"Auth: missing", "Run /auth"}
 	}
-	actions := []string{
-		"Agent: " + emptyFallback(next.ActiveAgent, "swarm"),
-		"Model: " + homeModelDisplayLabel(next),
-		"Thinking: " + emptyFallback(next.ThinkingLevel, "unset"),
+	profile := "Agent model default"
+	if strings.EqualFold(strings.TrimSpace(next.ActiveModelProfile.Source), "saved") {
+		profile = emptyFallback(strings.TrimSpace(next.ActiveModelProfile.Name), "Saved profile")
 	}
-	return actions
+	setup := strings.Join([]string{profile, homeModelDisplayLabel(next), emptyFallback(next.ThinkingLevel, "unset"), emptyFallback(next.ServiceTier, "default")}, " · ")
+	return []string{"Profile: " + setup}
 }
 
 func applyHomeModelResolved(next model.HomeModel, resolved client.ModelResolved) model.HomeModel {
@@ -9188,6 +9081,53 @@ func applyHomeModelResolved(next model.HomeModel, resolved client.ModelResolved)
 	next.ContextMode = strings.TrimSpace(resolved.Preference.ContextMode)
 	next.ContextWindow = resolved.ContextWindow
 	next.QuickActions = homeQuickActions(next)
+	return next
+}
+
+func applyHomeModelProfiles(next model.HomeModel, state client.ModelProfileState) model.HomeModel {
+	next.ModelProfiles = append([]client.ModelProfile(nil), state.Profiles...)
+	next.DefaultModelProfileID = strings.TrimSpace(state.DefaultProfileID)
+	next.ActiveModelProfile = model.ActiveModelProfile{Source: "agent-default"}
+	if next.DefaultModelProfileID == "" {
+		return next
+	}
+	for _, profile := range next.ModelProfiles {
+		if strings.TrimSpace(profile.ProfileID) != next.DefaultModelProfileID {
+			continue
+		}
+		next.ActiveModelProfile = model.ActiveModelProfile{
+			Source:    "saved",
+			ProfileID: strings.TrimSpace(profile.ProfileID),
+			Name:      strings.TrimSpace(profile.Name),
+			ModelMode: strings.TrimSpace(profile.ModelMode),
+		}
+		if strings.EqualFold(strings.TrimSpace(profile.ModelMode), "split") {
+			applySelection := func(selection *client.ModelProfileSelection) (string, string, string, string, string) {
+				if selection == nil {
+					return "", "", "", "", ""
+				}
+				return strings.TrimSpace(selection.Provider), strings.TrimSpace(selection.Model), strings.TrimSpace(selection.Thinking), strings.TrimSpace(selection.ServiceTier), strings.TrimSpace(selection.ContextMode)
+			}
+			next.PlanModelProvider, next.PlanModelName, next.PlanThinkingLevel, next.PlanServiceTier, _ = applySelection(profile.Plan)
+			next.AutoModelProvider, next.AutoModelName, next.AutoThinkingLevel, next.AutoServiceTier, next.ContextMode = applySelection(profile.Auto)
+			if aMode := strings.ToLower(strings.TrimSpace(next.ActiveAgentExecutionSetting)); aMode == "plan" {
+				next.ModelProvider, next.ModelName, next.ThinkingLevel, next.ServiceTier, next.ContextMode = applySelection(profile.Plan)
+			} else {
+				next.ModelProvider, next.ModelName, next.ThinkingLevel, next.ServiceTier, next.ContextMode = applySelection(profile.Auto)
+			}
+		} else if profile.Single != nil {
+			next.ModelProvider = strings.TrimSpace(profile.Single.Provider)
+			next.ModelName = strings.TrimSpace(profile.Single.Model)
+			next.ThinkingLevel = strings.TrimSpace(profile.Single.Thinking)
+			next.ServiceTier = strings.TrimSpace(profile.Single.ServiceTier)
+			next.ContextMode = strings.TrimSpace(profile.Single.ContextMode)
+			next.PlanModelProvider, next.AutoModelProvider = next.ModelProvider, next.ModelProvider
+			next.PlanModelName, next.AutoModelName = next.ModelName, next.ModelName
+			next.PlanThinkingLevel, next.AutoThinkingLevel = next.ThinkingLevel, next.ThinkingLevel
+			next.PlanServiceTier, next.AutoServiceTier = next.ServiceTier, next.ServiceTier
+		}
+		break
+	}
 	return next
 }
 
@@ -9288,27 +9228,6 @@ func (a *App) worktreesStatusSummary(settings client.WorktreeSettings) string {
 		createdBranch = "agent"
 	}
 	return fmt.Sprintf("worktrees %s • workspace=%s • created=%s/<id> • source=%s • resolved=%s", onOffLabel(settings.Enabled), scope, createdBranch, worktreeBranchLabel(settings.UseCurrentBranch, strings.TrimSpace(settings.BaseBranch)), resolved)
-}
-
-func mapMCPModalServers(servers []client.MCPServer) []ui.MCPModalServer {
-	out := make([]ui.MCPModalServer, 0, len(servers))
-	for _, server := range servers {
-		out = append(out, ui.MCPModalServer{
-			ID:          strings.TrimSpace(server.ID),
-			Name:        strings.TrimSpace(server.Name),
-			Transport:   strings.TrimSpace(server.Transport),
-			URL:         strings.TrimSpace(server.URL),
-			Command:     strings.TrimSpace(server.Command),
-			Args:        append([]string(nil), server.Args...),
-			Enabled:     server.Enabled,
-			Source:      strings.TrimSpace(server.Source),
-			EnvCount:    len(server.Env),
-			HeaderCount: len(server.Headers),
-			CreatedAt:   server.CreatedAt,
-			UpdatedAt:   server.UpdatedAt,
-		})
-	}
-	return out
 }
 
 func onOffLabel(enabled bool) string {
