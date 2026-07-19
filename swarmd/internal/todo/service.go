@@ -82,11 +82,14 @@ type AITaskTransitionInput struct {
 	State                string
 	Mode                 string
 	Worktree             bool
+	WorktreeName         string
 	ManagedSessionID     string
 	DisplayTitle         string
 	Result               string
 	Error                string
 	ExpectedVersion      uint64
+	RetryCount           uint32
+	NextAttemptAt        int64
 	PreparationSessionID string
 	PreparationRunID     string
 	PreparationAttemptID string
@@ -157,6 +160,14 @@ func (s *Service) GetAITask(accountScopeID, workspacePath, taskID string) (TodoI
 
 func (s *Service) ListAITasksForAccount(accountScopeID string, limit int) ([]TodoItem, error) {
 	return s.store.ListAITasksForAccount(accountScopeID, limit)
+}
+
+func (s *Service) LoadAITaskV2RecoveryQueue(limit int) ([]pebblestore.AITaskV2QueueRecord, error) {
+	return s.store.LoadAITaskV2RecoveryQueue(limit)
+}
+
+func (s *Service) DeleteAITaskV2QueueRecord(key string) error {
+	return s.store.DeleteAITaskV2QueueRecord(key)
 }
 
 func (s *Service) List(workspacePath string, options ...ListOptions) ([]TodoItem, TodoSummary, error) {
@@ -263,8 +274,8 @@ func (s *Service) CreateAITask(input CreateAITaskInput) (TodoItem, TodoSummary, 
 func (s *Service) CreateAITaskWithReplay(input CreateAITaskInput) (TodoItem, TodoSummary, *pebblestore.EventEnvelope, bool, error) {
 	accountScopeID, userID := strings.TrimSpace(input.AccountScopeID), strings.TrimSpace(input.UserID)
 	workspacePath, workspaceID := strings.TrimSpace(input.WorkspacePath), strings.TrimSpace(input.WorkspaceID)
-	request, key := strings.TrimSpace(input.Request), strings.TrimSpace(input.IdempotencyKey)
-	if accountScopeID == "" || userID == "" || workspacePath == "" || workspaceID == "" || request == "" || key == "" {
+	request, key := input.Request, strings.TrimSpace(input.IdempotencyKey)
+	if accountScopeID == "" || userID == "" || workspacePath == "" || workspaceID == "" || strings.TrimSpace(request) == "" || key == "" {
 		return TodoItem{}, TodoSummary{}, nil, false, fmt.Errorf("account, user, canonical workspace, request, and idempotency key are required")
 	}
 	now := time.Now().UnixMilli()
@@ -288,7 +299,7 @@ func (s *Service) CreateAITaskWithReplay(input CreateAITaskInput) (TodoItem, Tod
 }
 
 func hashAITaskValue(value string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(value)))
+	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -323,7 +334,7 @@ func (s *Service) TransitionAITask(input AITaskTransitionInput) (TodoItem, TodoS
 	if next == pebblestore.WorkspaceTodoAIStatePreparing && claimedAt == 0 {
 		claimedAt = time.Now().UnixMilli()
 	}
-	item, err = s.store.TransitionAITask(pebblestore.AITaskTransitionStoreInput{AccountScopeID: accountScopeID, WorkspacePath: workspacePath, TaskID: itemID, ExpectedState: input.ExpectedState, ExpectedVersion: input.ExpectedVersion, NextState: next, Mode: mode, Worktree: input.Worktree, ManagedSessionID: input.ManagedSessionID, DisplayTitle: input.DisplayTitle, FinalRunID: input.FinalRunID, Result: input.Result, PreparationSessionID: input.PreparationSessionID, PreparationRunID: input.PreparationRunID, PreparationAttemptID: input.PreparationAttemptID, Error: input.Error, ClaimedAt: claimedAt, Audit: pebblestore.AITaskAuditRecord{StageKey: stage, Stage: next, Disposition: strings.TrimSpace(input.Disposition), CreatedAt: time.Now().UnixMilli()}})
+	item, err = s.store.TransitionAITask(pebblestore.AITaskTransitionStoreInput{AccountScopeID: accountScopeID, WorkspacePath: workspacePath, TaskID: itemID, ExpectedState: input.ExpectedState, ExpectedVersion: input.ExpectedVersion, NextState: next, Mode: mode, Worktree: input.Worktree, WorktreeName: input.WorktreeName, ManagedSessionID: input.ManagedSessionID, DisplayTitle: input.DisplayTitle, FinalRunID: input.FinalRunID, Result: input.Result, PreparationSessionID: input.PreparationSessionID, PreparationRunID: input.PreparationRunID, PreparationAttemptID: input.PreparationAttemptID, Error: input.Error, ClaimedAt: claimedAt, RetryCount: input.RetryCount, NextAttemptAt: input.NextAttemptAt, Audit: pebblestore.AITaskAuditRecord{StageKey: stage, Stage: next, Disposition: strings.TrimSpace(input.Disposition), CreatedAt: time.Now().UnixMilli()}})
 	if err != nil {
 		return TodoItem{}, TodoSummary{}, nil, err
 	}

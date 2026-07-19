@@ -58,6 +58,7 @@ const (
 	KeyWorkspaceTodoItemAccountPrefix              = "workspace_todo/item_by_account/"
 	KeyAITaskIdempotencyAccountPrefix              = "ai_task/idempotency_by_account/"
 	KeyAITaskAuditAccountPrefix                    = "ai_task/audit_by_account/"
+	KeyAITaskV2QueuePrefix                         = "ai_task/v2_queue/"
 	KeyVideoThreadPrefix                           = "video/thread/"
 	KeyImageThreadPrefix                           = "image/thread/" // legacy global image thread prefix; retained for explicit migration only.
 	KeyImageThreadAccountPrefix                    = "image/thread_by_account/"
@@ -739,6 +740,14 @@ func KeyAITaskAuditForAccount(accountScopeID, taskID, stageKey string) string {
 
 func AITaskAuditPrefixForAccount(accountScopeID, taskID string) string {
 	return fmt.Sprintf("%s%s/%s/", KeyAITaskAuditAccountPrefix, keyPart(accountScopeID), keyPart(taskID))
+}
+
+func KeyAITaskV2Queue(enqueuedAt int64, accountScopeID, workspacePath, taskID string) string {
+	return fmt.Sprintf("%s%020d/%s/%s/%s", KeyAITaskV2QueuePrefix, enqueuedAt, keyPart(accountScopeID), keyPart(workspacePath), keyPart(taskID))
+}
+
+func AITaskV2QueuePrefix() string {
+	return KeyAITaskV2QueuePrefix
 }
 
 func WorkspaceTodoPrefix(workspacePath string) string {

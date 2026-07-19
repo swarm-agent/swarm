@@ -9,6 +9,75 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestAITaskV2AcceptanceAtomicallyCreatesDurableRecoveryRecord(t *testing.T) {
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "v2-queue.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := pebblestore.NewWorkspaceTodoStore(db)
+	svc := NewService(store, nil, nil, nil)
+	workspace := t.TempDir()
+
+	item, _, _, err := svc.CreateAITask(CreateAITaskInput{AccountScopeID: "account-v2", UserID: "user-v2", WorkspaceID: "workspace-v2", WorkspacePath: workspace, Request: "durably queue this", IdempotencyKey: "key-v2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := store.LoadAITaskV2RecoveryQueue(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovery) != 1 || recovery[0].Task.ID != item.ID || recovery[0].Task.AIState != pebblestore.WorkspaceTodoAIStateQueued {
+		t.Fatalf("recovery records=%#v", recovery)
+	}
+	preparing, err := svc.TransitionAITaskAuthority(AITaskTransitionInput{AccountScopeID: item.AccountScopeID, WorkspacePath: workspace, ID: item.ID, ExpectedState: item.AIState, ExpectedVersion: item.AIStateVersion, State: pebblestore.WorkspaceTodoAIStatePreparing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery, err = store.LoadAITaskV2RecoveryQueue(10)
+	if err != nil || len(recovery) != 1 || recovery[0].Task.AIState != pebblestore.WorkspaceTodoAIStatePreparing || recovery[0].Task.AIStateVersion != preparing.AIStateVersion {
+		t.Fatalf("preparing recovery=%#v err=%v", recovery, err)
+	}
+	if _, err := svc.BindAITaskLifecycle(item.AccountScopeID, workspace, item.ID, preparing.AIState, pebblestore.WorkspaceTodoAIStateInProgress, "auto", true, "session-v2", "Task", "run-v2", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	recovery, err = store.LoadAITaskV2RecoveryQueue(10)
+	if err != nil || len(recovery) != 0 {
+		t.Fatalf("terminal dispatcher handoff retained recovery=%#v err=%v", recovery, err)
+	}
+}
+
+func TestAITaskPreparedMetadataAndOriginalRequestAreDurable(t *testing.T) {
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "prepared-metadata.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := pebblestore.NewWorkspaceTodoStore(db)
+	svc := NewService(store, nil, nil, nil)
+	workspace := t.TempDir()
+	const request = "  preserve this exact request\nwith spacing  "
+	item, _, _, err := svc.CreateAITask(CreateAITaskInput{AccountScopeID: "account", UserID: "user", WorkspaceID: "workspace", WorkspacePath: workspace, Request: request, IdempotencyKey: "metadata-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparing, err := svc.TransitionAITaskAuthority(AITaskTransitionInput{AccountScopeID: item.AccountScopeID, WorkspacePath: workspace, ID: item.ID, ExpectedState: item.AIState, ExpectedVersion: item.AIStateVersion, State: pebblestore.WorkspaceTodoAIStatePreparing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := svc.TransitionAITaskAuthority(AITaskTransitionInput{AccountScopeID: item.AccountScopeID, WorkspacePath: workspace, ID: item.ID, ExpectedState: preparing.AIState, ExpectedVersion: preparing.AIStateVersion, State: pebblestore.WorkspaceTodoAIStatePreparing, Mode: "auto", Worktree: true, WorktreeName: "stable-seed", DisplayTitle: "Stable title"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.AIRequest != request || prepared.AIDisplayTitle != "Stable title" || prepared.AIWorktreeName != "stable-seed" {
+		t.Fatalf("prepared authority=%#v", prepared)
+	}
+	recovery, err := store.LoadAITaskV2RecoveryQueue(10)
+	if err != nil || len(recovery) != 1 || recovery[0].Task.AIRequest != request || recovery[0].Task.AIWorktreeName != "stable-seed" {
+		t.Fatalf("prepared recovery=%#v err=%v", recovery, err)
+	}
+}
+
 func TestAITaskTerminalStatesAndPreparedTitleAreDurable(t *testing.T) {
 	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "terminal.pebble"))
 	if err != nil {

@@ -44,6 +44,7 @@ type WorkspaceTodoItem struct {
 	AIState              string   `json:"ai_state,omitempty"`
 	AIMode               string   `json:"ai_mode,omitempty"`
 	AIWorktree           bool     `json:"ai_worktree,omitempty"`
+	AIWorktreeName       string   `json:"ai_worktree_name,omitempty"`
 	AIRequest            string   `json:"ai_request,omitempty"`
 	AIDisplayTitle       string   `json:"ai_display_title,omitempty"`
 	AIResult             string   `json:"ai_result,omitempty"`
@@ -61,6 +62,8 @@ type WorkspaceTodoItem struct {
 	AIRequestHash        string   `json:"ai_request_hash,omitempty"`
 	AIStateVersion       uint64   `json:"ai_state_version,omitempty"`
 	AIClaimedAt          int64    `json:"ai_claimed_at,omitempty"`
+	AIRetryCount         uint32   `json:"ai_retry_count,omitempty"`
+	AINextAttemptAt      int64    `json:"ai_next_attempt_at,omitempty"`
 	SortIndex            int      `json:"sort_index"`
 	CreatedAt            int64    `json:"created_at"`
 	UpdatedAt            int64    `json:"updated_at"`
@@ -108,6 +111,12 @@ type CreateAITaskStoreInput struct {
 	Audit           AITaskAuditRecord
 }
 
+type AITaskV2QueueRecord struct {
+	Key      string            `json:"-"`
+	Task     WorkspaceTodoItem `json:"task"`
+	QueuedAt int64             `json:"queued_at"`
+}
+
 type AITaskTransitionStoreInput struct {
 	AccountScopeID       string
 	WorkspacePath        string
@@ -117,6 +126,7 @@ type AITaskTransitionStoreInput struct {
 	NextState            string
 	Mode                 string
 	Worktree             bool
+	WorktreeName         string
 	ManagedSessionID     string
 	DisplayTitle         string
 	FinalRunID           string
@@ -126,6 +136,8 @@ type AITaskTransitionStoreInput struct {
 	PreparationAttemptID string
 	Error                string
 	ClaimedAt            int64
+	RetryCount           uint32
+	NextAttemptAt        int64
 	Audit                AITaskAuditRecord
 }
 
@@ -277,10 +289,44 @@ func (s *WorkspaceTodoStore) CreateAITask(input CreateAITaskStoreInput) (Workspa
 	if err := batch.Set([]byte(KeyAITaskAuditForAccount(accountScopeID, item.ID, input.Audit.StageKey)), auditPayload, nil); err != nil {
 		return WorkspaceTodoItem{}, false, err
 	}
+	queueRecord := AITaskV2QueueRecord{Task: item, QueuedAt: item.CreatedAt}
+	queuePayload, err := json.Marshal(queueRecord)
+	if err != nil {
+		return WorkspaceTodoItem{}, false, err
+	}
+	if err := batch.Set([]byte(KeyAITaskV2Queue(item.CreatedAt, accountScopeID, item.WorkspacePath, item.ID)), queuePayload, nil); err != nil {
+		return WorkspaceTodoItem{}, false, err
+	}
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return WorkspaceTodoItem{}, false, err
 	}
 	return item, false, nil
+}
+
+func (s *WorkspaceTodoStore) LoadAITaskV2RecoveryQueue(limit int) ([]AITaskV2QueueRecord, error) {
+	if limit <= 0 || limit > 10000 {
+		limit = 1000
+	}
+	out := make([]AITaskV2QueueRecord, 0, minWorkspaceTodoInt(limit, 100))
+	err := s.store.IteratePrefix(AITaskV2QueuePrefix(), limit, func(key string, value []byte) error {
+		var record AITaskV2QueueRecord
+		if err := json.Unmarshal(value, &record); err != nil {
+			return err
+		}
+		record.Key = key
+		record.Task = normalizeWorkspaceTodoItem(record.Task)
+		out = append(out, record)
+		return nil
+	})
+	return out, err
+}
+
+func (s *WorkspaceTodoStore) DeleteAITaskV2QueueRecord(key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" || !strings.HasPrefix(key, AITaskV2QueuePrefix()) {
+		return fmt.Errorf("valid AI task V2 queue key is required")
+	}
+	return s.store.Delete(key)
 }
 
 func (s *WorkspaceTodoStore) TransitionAITask(input AITaskTransitionStoreInput) (WorkspaceTodoItem, error) {
@@ -301,7 +347,13 @@ func (s *WorkspaceTodoStore) TransitionAITask(input AITaskTransitionStoreInput) 
 	}
 	item.AIState = NormalizeWorkspaceTodoAIState(input.NextState)
 	item.AIStateVersion++
-	item.AIMode, item.AIWorktree = strings.ToLower(strings.TrimSpace(input.Mode)), input.Worktree
+	if mode := strings.ToLower(strings.TrimSpace(input.Mode)); mode != "" {
+		item.AIMode = mode
+	}
+	item.AIWorktree = input.Worktree
+	if value := strings.TrimSpace(input.WorktreeName); value != "" {
+		item.AIWorktreeName = value
+	}
 	if value := strings.TrimSpace(input.ManagedSessionID); value != "" {
 		item.ManagedSessionID = value
 	}
@@ -324,6 +376,7 @@ func (s *WorkspaceTodoStore) TransitionAITask(input AITaskTransitionStoreInput) 
 		item.PreparationAttemptID = value
 	}
 	item.AIError, item.AIClaimedAt, item.UpdatedAt = strings.TrimSpace(input.Error), input.ClaimedAt, time.Now().UnixMilli()
+	item.AIRetryCount, item.AINextAttemptAt = input.RetryCount, input.NextAttemptAt
 	item.InProgress = item.AIState == WorkspaceTodoAIStateInProgress
 	item.Done = item.AIState == WorkspaceTodoAIStateCompleted
 	if item.Done {
@@ -347,6 +400,18 @@ func (s *WorkspaceTodoStore) TransitionAITask(input AITaskTransitionStoreInput) 
 		return WorkspaceTodoItem{}, err
 	}
 	if err := batch.Set([]byte(KeyAITaskAuditForAccount(item.AccountScopeID, item.ID, input.Audit.StageKey)), auditPayload, nil); err != nil {
+		return WorkspaceTodoItem{}, err
+	}
+	queueKey := KeyAITaskV2Queue(item.CreatedAt, item.AccountScopeID, item.WorkspacePath, item.ID)
+	if item.AIState == WorkspaceTodoAIStatePreparing || item.AIState == WorkspaceTodoAIStateQueued {
+		queuePayload, marshalErr := json.Marshal(AITaskV2QueueRecord{Task: item, QueuedAt: item.CreatedAt})
+		if marshalErr != nil {
+			return WorkspaceTodoItem{}, marshalErr
+		}
+		if err := batch.Set([]byte(queueKey), queuePayload, nil); err != nil {
+			return WorkspaceTodoItem{}, err
+		}
+	} else if err := batch.Delete([]byte(queueKey), nil); err != nil {
 		return WorkspaceTodoItem{}, err
 	}
 	if err := batch.Commit(pebble.Sync); err != nil {
@@ -684,10 +749,12 @@ func mergeAITaskAuthority(candidate, current WorkspaceTodoItem) WorkspaceTodoIte
 	}
 	candidate.AccountScopeID, candidate.UserID, candidate.WorkspaceID, candidate.WorkspacePath = current.AccountScopeID, current.UserID, current.WorkspaceID, current.WorkspacePath
 	candidate.OriginSessionID, candidate.AIState, candidate.AIMode, candidate.AIWorktree = current.OriginSessionID, current.AIState, current.AIMode, current.AIWorktree
+	candidate.AIWorktreeName = current.AIWorktreeName
 	candidate.AIRequest, candidate.AIDisplayTitle, candidate.AIResult, candidate.AIError = current.AIRequest, current.AIDisplayTitle, current.AIResult, current.AIError
 	candidate.ManagedSessionID, candidate.FinalRunID = current.ManagedSessionID, current.FinalRunID
 	candidate.PreparationSessionID, candidate.PreparationRunID, candidate.PreparationAttemptID = current.PreparationSessionID, current.PreparationRunID, current.PreparationAttemptID
 	candidate.AIIdempotencyKeyHash, candidate.AIRequestHash, candidate.AIStateVersion, candidate.AIClaimedAt = current.AIIdempotencyKeyHash, current.AIRequestHash, current.AIStateVersion, current.AIClaimedAt
+	candidate.AIRetryCount, candidate.AINextAttemptAt = current.AIRetryCount, current.AINextAttemptAt
 	candidate.InProgress = current.InProgress
 	if current.UpdatedAt > candidate.UpdatedAt {
 		candidate.UpdatedAt = current.UpdatedAt
@@ -717,7 +784,7 @@ func normalizeWorkspaceTodoItem(item WorkspaceTodoItem) WorkspaceTodoItem {
 	item.ParentID = strings.TrimSpace(item.ParentID)
 	item.AIState = NormalizeWorkspaceTodoAIState(item.AIState)
 	item.AIMode = strings.ToLower(strings.TrimSpace(item.AIMode))
-	item.AIRequest = strings.TrimSpace(item.AIRequest)
+	item.AIWorktreeName = strings.TrimSpace(item.AIWorktreeName)
 	item.AIDisplayTitle = strings.TrimSpace(item.AIDisplayTitle)
 	item.AIResult = strings.TrimSpace(item.AIResult)
 	item.AIError = strings.TrimSpace(item.AIError)
@@ -726,12 +793,14 @@ func normalizeWorkspaceTodoItem(item WorkspaceTodoItem) WorkspaceTodoItem {
 		item.Priority = "medium"
 		item.AIState, item.AIMode, item.AIRequest, item.AIError, item.ManagedSessionID = "", "", "", "", ""
 		item.AIWorktree = false
+		item.AIWorktreeName, item.AIRetryCount, item.AINextAttemptAt = "", 0, 0
 	} else {
 		item.SessionID = ""
 		item.ParentID = ""
 		if item.AIState == "" {
 			item.AIMode, item.AIRequest, item.AIError, item.ManagedSessionID = "", "", "", ""
 			item.AIWorktree = false
+			item.AIWorktreeName, item.AIRetryCount, item.AINextAttemptAt = "", 0, 0
 		}
 	}
 	if item.ParentID != "" && item.ParentID == item.ID {

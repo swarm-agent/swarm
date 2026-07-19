@@ -116,8 +116,7 @@ func parseManageSessionsDeployArguments(arguments string) ([]manageSessionsDeplo
 		if err := json.Unmarshal(encoded, &input); err != nil {
 			return nil, fmt.Errorf("manage-sessions deploy proposals[%d] invalid: %w", i, err)
 		}
-		input.Prompt = strings.TrimSpace(input.Prompt)
-		if input.Prompt == "" {
+		if strings.TrimSpace(input.Prompt) == "" {
 			return nil, fmt.Errorf("manage-sessions deploy proposals[%d] prompt is required", i)
 		}
 		mode := strings.ToLower(strings.TrimSpace(input.Mode))

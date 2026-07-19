@@ -2,11 +2,14 @@ package run
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	"swarm/packages/swarmd/internal/provider/registry"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/todo"
@@ -15,22 +18,67 @@ import (
 )
 
 func TestParseAITaskPreparationStrict(t *testing.T) {
-	got, err := ParseAITaskPreparation(`{"title":"Fix sidebar","prompt":"Implement it","mode":"auto","worktree":true}`)
-	if err != nil || got.Mode != "auto" || !got.Worktree {
+	got, err := ParseAITaskPreparation(`{"title":"Fix sidebar","worktree_name":"Fix Sidebar"}`)
+	if err != nil || got.Title != "Fix sidebar" || got.WorktreeName != "fix-sidebar" {
 		t.Fatalf("got %#v, %v", got, err)
 	}
-	normalized, err := ParseAITaskPreparation(`{"title":"x","prompt":"y","mode":"auto","worktree":false}`)
-	if err != nil || !normalized.Worktree {
-		t.Fatalf("worktree policy normalization = %#v, %v", normalized, err)
-	}
 	for _, raw := range []string{
-		`{"title":"x","prompt":"y","mode":"later","worktree":true}`,
-		`{"title":"x","prompt":"y","mode":"auto","worktree":true,"session_id":"escape"}`,
-		`{"title":"x","prompt":"","mode":"auto","worktree":true}`,
+		`{"title":"x","worktree_name":"y","prompt":"escape"}`,
+		`{"title":"x","worktree_name":"y","session_id":"escape"}`,
+		`{"title":"","worktree_name":"y"}`,
 	} {
 		if _, err := ParseAITaskPreparation(raw); err == nil {
 			t.Fatalf("expected rejection for %s", raw)
 		}
+	}
+}
+
+type principalCapturingAITaskRunner struct {
+	principal identity.Principal
+	request   provideriface.Request
+}
+
+func (*principalCapturingAITaskRunner) ID() string { return "codex" }
+
+func (r *principalCapturingAITaskRunner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
+	principal, ok := identity.PrincipalFromContext(ctx)
+	if !ok {
+		return provideriface.Response{}, identity.ErrPrincipalRequired
+	}
+	r.principal, r.request = principal, req
+	return provideriface.Response{Text: `{"title":"Fix trusted task","worktree_name":"fix-trusted-task"}`}, nil
+}
+
+func (r *principalCapturingAITaskRunner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	return r.CreateResponse(ctx, req)
+}
+
+func TestPrepareAITaskMetadataPropagatesTrustedPrincipalToCompact(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	runner := &principalCapturingAITaskRunner{}
+	svc.providers = registry.New()
+	svc.providers.RegisterRunner(runner)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account", SessionID: "origin-session", AccountScopeSource: identity.AccountScopeSourceSession}
+	preparation, err := svc.PrepareAITaskMetadata(context.Background(), "task-1", "preserve this exact request", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "high"}, principal)
+	if err != nil {
+		t.Fatalf("prepare AI task metadata: %v", err)
+	}
+	if preparation.Title != "Fix trusted task" || preparation.WorktreeName != "fix-trusted-task" {
+		t.Fatalf("preparation = %#v", preparation)
+	}
+	if runner.principal.UserID != principal.UserID || runner.principal.AccountScopeID != principal.AccountScopeID || runner.principal.SessionID != principal.SessionID {
+		t.Fatalf("Compact principal = %#v, want %#v", runner.principal, principal)
+	}
+	if runner.request.ToolChoice != "none" || len(runner.request.Tools) != 0 {
+		t.Fatalf("Compact request gained tools: choice=%q tools=%#v", runner.request.ToolChoice, runner.request.Tools)
+	}
+	if len(runner.request.Input) != 1 {
+		t.Fatalf("Compact input = %#v", runner.request.Input)
+	}
+	if _, err := svc.PrepareAITaskMetadata(context.Background(), "task-2", "request", pebblestore.ModelPreference{Provider: "codex"}, identity.Principal{}); !errors.Is(err, identity.ErrPrincipalRequired) {
+		t.Fatalf("untrusted preparation error = %v, want %v", err, identity.ErrPrincipalRequired)
 	}
 }
 
@@ -137,13 +185,11 @@ func TestExecutePreparedAITaskCreatesManagedWorktreeSessionAndDurableLinkage(t *
 		return true
 	})
 
-	// The server owns placement policy even if a stale preparer response asks for
-	// the base workspace.
-	preparation := AITaskPreparation{Title: "Fix queued task", Prompt: "Implement the narrow fix", Mode: sessionruntime.ModeAuto, Worktree: false}
+	preparation := AITaskPreparation{Title: "Fix queued task", WorktreeName: "fix-queued-task"}
 	if err := todoSvc.BindAITask(parent.AccountScopeID, workspacePath, queued.ID, "queued", "preparing", "", false, "", ""); err != nil {
 		t.Fatalf("claim queued AI task: %v", err)
 	}
-	if _, err := svc.ExecutePreparedAITask(context.Background(), parent.ID, parent.AccountScopeID, workspacePath, queued.ID, preparation, svc.sessions.ApplySessionMutation); err != nil {
+	if _, err := svc.ExecutePreparedAITask(context.Background(), parent.ID, parent.AccountScopeID, workspacePath, queued.ID, queued.AIRequest, preparation, svc.sessions.ApplySessionMutation); err != nil {
 		t.Fatalf("execute prepared AI task: %v", err)
 	}
 
@@ -169,5 +215,16 @@ func TestExecutePreparedAITaskCreatesManagedWorktreeSessionAndDurableLinkage(t *
 	}
 	if mapString(managed.Metadata, "ai_task_id") != queued.ID || mapString(managed.Metadata, "ai_task_workspace_path") != workspacePath {
 		t.Fatalf("reciprocal AI task metadata = %#v", managed.Metadata)
+	}
+	messages, err := svc.sessions.ListSessionMessages(managed.ID, 0, 10)
+	if err != nil || len(messages) != 1 || messages[0].Content != queued.AIRequest {
+		t.Fatalf("managed prompt messages=%#v err=%v", messages, err)
+	}
+	firstSessionID := managed.ID
+	if _, err := svc.ExecutePreparedAITask(context.Background(), parent.ID, parent.AccountScopeID, workspacePath, queued.ID, queued.AIRequest, preparation, svc.sessions.ApplySessionMutation); err != nil {
+		t.Fatalf("replay prepared AI task: %v", err)
+	}
+	if enqueuedSessionID != firstSessionID {
+		t.Fatalf("replay created a different visible session: first=%q replay=%q", firstSessionID, enqueuedSessionID)
 	}
 }

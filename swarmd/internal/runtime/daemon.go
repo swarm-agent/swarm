@@ -87,7 +87,7 @@ type Daemon struct {
 	bgCancel                  context.CancelFunc
 	copilot                   *copilot.Manager
 	toolRuntime               *tool.Runtime
-	aiTaskDispatcher          *run.AITaskDispatcher
+	aiTaskDispatcher          *run.AITaskV2Dispatcher
 	localTransportRuntimeName string
 	localTransportBaseURL     string
 	localTransportSocketPath  string
@@ -385,7 +385,14 @@ func New(cfg config.Config) (*Daemon, error) {
 	runSvc.SetSessionDeployCanonicalizer(apiServer.CanonicalizeSessionDeploy)
 	runSvc.SetSessionDeployEnqueuer(apiServer.EnqueueSessionDeployRun)
 	runSvc.SetAITaskBinder(todoSvc)
-	aiTaskDispatcher := runSvc.StartAITaskDispatcher(bgCtx, aiTaskQueueAdapter{service: todoSvc}, sessionSvc.ApplySessionMutation)
+	aiTaskDispatcher, err := runSvc.StartAITaskV2Dispatcher(bgCtx, aiTaskQueueAdapter{service: todoSvc}, sessionSvc.ApplySessionMutation)
+	if err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("start AI task V2 dispatcher: %w", err)
+	}
 	apiServer.SetAITaskEnqueuer(aiTaskDispatcher)
 	toolRuntime.SetManageSessionRealtimePublisher(apiServer.PublishCommittedV3RealtimeOutbox)
 	apiServer.SetCodexAccountClient(codexClient)

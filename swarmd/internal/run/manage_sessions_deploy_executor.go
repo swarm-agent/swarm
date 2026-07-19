@@ -160,6 +160,9 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 	// Rebind the digest after re-resolving every trust field. Client edits are
 	// limited to user-authorized fields; resolved authority remains server-owned.
 	digest, err := manageSessionsDeployDigest(manifest)
+	if aiTask != nil {
+		digest = aiTaskDeploymentDigest(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID)
+	}
 	if err != nil {
 		return "", fmt.Errorf("bind approved session deployment manifest: %w", err)
 	}
@@ -312,9 +315,11 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 				results[i].Status, results[i].Error = "error", "AI task binder is not configured"
 				continue
 			}
-			if _, bindErr := s.aiTaskBinder.BindAITaskLifecycle(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID, "preparing", "in_progress", item.proposal.Mode, item.proposal.ManagedWorktree, item.session.ID, item.session.Title, item.runID, "", ""); bindErr != nil {
-				results[i].Status, results[i].Error = "error", bindErr.Error()
-				continue
+			if results[i].Status != "replayed" {
+				if _, bindErr := s.aiTaskBinder.BindAITaskLifecycle(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID, "preparing", "in_progress", item.proposal.Mode, item.proposal.ManagedWorktree, item.session.ID, item.session.Title, item.runID, "", ""); bindErr != nil {
+					results[i].Status, results[i].Error = "error", bindErr.Error()
+					continue
+				}
 			}
 		}
 		if !s.sessionDeployEnqueue(principal, item.session.ID, item.runID, parent.ID) {
@@ -367,6 +372,11 @@ func sessionDeployRunIntent(sessionID, runID, parentSessionID, userID, accountSc
 		RunSessionID:    strings.TrimSpace(sessionID),
 		ParentSessionID: strings.TrimSpace(parentSessionID),
 	}
+}
+
+func aiTaskDeploymentDigest(accountScopeID, workspacePath, taskID string) string {
+	sum := sha256.Sum256([]byte("ai-task-deploy\x00" + strings.TrimSpace(accountScopeID) + "\x00" + strings.TrimSpace(workspacePath) + "\x00" + strings.TrimSpace(taskID)))
+	return hex.EncodeToString(sum[:])
 }
 
 func deterministicDeployID(digest, proposalID, kind string) string {
