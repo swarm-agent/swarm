@@ -77,6 +77,7 @@ type Page struct {
 	modelOptions   []client.ModelCatalogRecord
 	modelIndex     int
 	matchCycleMode func(*tcell.EventKey) bool
+	runTimer       *time.Timer
 }
 
 func NewPage(runtime *Runtime, styles PageStyles) *Page {
@@ -101,6 +102,18 @@ func defaultCycleModeKey(ev *tcell.EventKey) bool {
 }
 
 func (p *Page) Runtime() *Runtime { return p.runtime }
+
+func (p *Page) Close() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	if p.runTimer != nil {
+		p.runTimer.Stop()
+		p.runTimer = nil
+	}
+	p.mu.Unlock()
+}
 
 func (p *Page) SetStyles(styles PageStyles) {
 	if p == nil {
@@ -263,6 +276,12 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	}
 	switch ev.Key() {
 	case tcell.KeyEscape:
+		if p.runtime != nil {
+			if _, active := SelectActiveRun(p.runtime.Store().Snapshot()); active {
+				go p.StopRun()
+				return PageActionNone
+			}
+		}
 		return PageActionHome
 	case tcell.KeyEnter:
 		text := strings.TrimSpace(string(p.input))
@@ -478,6 +497,10 @@ type renderRow struct {
 }
 
 func (p *Page) Draw(screen tcell.Screen) {
+	p.DrawAt(screen, time.Now())
+}
+
+func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if p == nil || screen == nil {
 		return
 	}
@@ -490,7 +513,7 @@ func (p *Page) Draw(screen tcell.Screen) {
 	input := append([]rune(nil), p.input...)
 	cursor := p.cursor
 	scroll := p.scroll
-	status, errText, busy := p.status, p.errText, p.busy
+	errText := p.errText
 	routeLabel, profileLabel := p.routeLabel, p.profileLabel
 	p.lastWidth, p.lastHeight = width, height
 	modelPicker, modelLoading, modelIndex := p.modelPicker, p.modelLoading, p.modelIndex
@@ -506,31 +529,33 @@ func (p *Page) Draw(screen tcell.Screen) {
 	if title == "" {
 		title = "New V3 session"
 	}
-	connection, stale, reason := SelectReconnect(state)
-	header := " Swarm  •  " + title
-	drawText(screen, 0, 0, width, styles.Panel.Bold(true), padRight(header, width))
-	statusLine := fmt.Sprintf(" %s", connection)
-	statusStyle := styles.Muted
-	if stale {
-		statusLine = " stale • Ctrl-R to rehydrate • " + reason
-		statusStyle = styles.Warning
-	} else if errText != "" {
-		statusLine = " error • " + errText
-		statusStyle = styles.Error
-	} else if status != "" {
-		statusLine = " " + status
-		if !busy {
-			statusStyle = styles.Success
+	_, stale, reason := SelectReconnect(state)
+	runStatus, hasRunStatus := BuildRunStatus(state, now)
+	headerRight := ""
+	if hasRunStatus {
+		headerRight = runStatus.Label
+		if runStatus.Timer != "" {
+			headerRight += "  " + runStatus.Timer
 		}
 	}
-	drawText(screen, 0, 1, width, statusStyle, padRight(statusLine, width))
+	drawHeader(screen, width, styles.Panel.Bold(true), title, headerRight)
+	statusLine := ""
+	statusStyle := styles.Muted
+	if stale {
+		statusLine = "stale • Ctrl-R to rehydrate • " + reason
+		statusStyle = styles.Warning
+	} else if errText != "" {
+		statusLine = "error • " + errText
+		statusStyle = styles.Error
+	}
+	p.scheduleRunTimer(runStatus.Active)
 
 	footerHeight := 3
 	if height < 12 || width < 50 {
 		footerHeight = 1
 	}
 	composerHeight := 2 + footerHeight
-	transcriptTop := 3
+	transcriptTop := 1
 	transcriptHeight := height - transcriptTop - composerHeight
 	if transcriptHeight < 1 {
 		transcriptHeight = 1
@@ -573,6 +598,132 @@ func (p *Page) Draw(screen tcell.Screen) {
 	if modelPicker {
 		p.drawModelPicker(screen, width, height, styles, modelOptions, modelIndex, modelLoading, modelState)
 	}
+}
+
+type RunStatus struct {
+	Label  string
+	Timer  string
+	Active bool
+}
+
+func BuildRunStatus(state State, now time.Time) (RunStatus, bool) {
+	run, ok := SelectActiveRun(state)
+	if !ok {
+		run, ok = SelectLatestRun(state)
+	}
+	if !ok {
+		return RunStatus{}, false
+	}
+	status := strings.ToLower(strings.TrimSpace(run.Status))
+	model := RunStatus{}
+	switch status {
+	case "pending_executor", "running":
+		model.Label, model.Active = "Running", true
+	case "dispatch_blocked":
+		model.Label = "Paused"
+	case "completed":
+		model.Label = "Completed"
+	case "failed":
+		model.Label = "Failed"
+	case "cancelled":
+		model.Label = "Stopped"
+	case "interrupted":
+		model.Label = "Interrupted"
+	case "expired":
+		model.Label = "Expired"
+	default:
+		return RunStatus{}, false
+	}
+	currentMS := run.DurationMS
+	hasCurrentTiming := run.DurationMS > 0
+	if model.Active {
+		startedAt := firstPositive(run.StartedAt, run.CreatedAt, run.UpdatedAt)
+		if startedAt > 0 {
+			currentMS = maxInt64(0, now.UnixMilli()-startedAt)
+			hasCurrentTiming = true
+		}
+	}
+	if hasCurrentTiming {
+		model.Timer = formatDurationMS(currentMS)
+	}
+	if run.CumulativeDurationMS > 0 {
+		totalMS := run.CumulativeDurationMS
+		if model.Active && hasCurrentTiming {
+			totalMS += currentMS
+		}
+		total := formatDurationMS(totalMS)
+		if model.Timer == "" {
+			model.Timer = total
+		} else if total != model.Timer {
+			model.Timer += " (" + total + ")"
+		}
+	}
+	return model, true
+}
+
+func formatDurationMS(elapsedMS int64) string {
+	if elapsedMS < 0 {
+		return ""
+	}
+	totalSeconds := elapsedMS / 1000
+	seconds := totalSeconds % 60
+	minutes := (totalSeconds / 60) % 60
+	hours := totalSeconds / 3600
+	if hours > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", hours, minutes, seconds)
+	}
+	return fmt.Sprintf("%d:%02d", minutes, seconds)
+}
+
+func firstPositive(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func drawHeader(screen tcell.Screen, width int, style tcell.Style, title, right string) {
+	drawText(screen, 0, 0, width, style, padRight("", width))
+	rightRunes := []rune(strings.TrimSpace(right))
+	titleWidth := width
+	if len(rightRunes) > 0 {
+		titleWidth = maxInt(0, width-len(rightRunes)-2)
+		drawText(screen, width-len(rightRunes), 0, len(rightRunes), style, string(rightRunes))
+	}
+	drawText(screen, 0, 0, titleWidth, style, strings.TrimSpace(title))
+}
+
+func (p *Page) scheduleRunTimer(active bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !active {
+		if p.runTimer != nil {
+			p.runTimer.Stop()
+			p.runTimer = nil
+		}
+		return
+	}
+	if p.runTimer != nil {
+		return
+	}
+	delay := time.Second - time.Duration(time.Now().UnixNano()%int64(time.Second))
+	p.runTimer = time.AfterFunc(delay, func() {
+		p.mu.Lock()
+		p.runTimer = nil
+		p.mu.Unlock()
+		if p.runtime != nil {
+			p.runtime.signalWake()
+		}
+	})
 }
 
 func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, state State, routeLabel, profileLabel, status string, statusStyle tcell.Style) {

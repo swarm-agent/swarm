@@ -41,11 +41,17 @@ func SelectPending(state State) []PendingMessage {
 	}
 	return out
 }
-func SelectActiveRun(state State) (ActiveRun, bool) {
-	if state.ActiveRun == nil {
-		return ActiveRun{}, false
+func SelectActiveRun(state State) (RunState, bool) {
+	if state.CurrentRun == nil || !runStatusActive(state.CurrentRun.Status) {
+		return RunState{}, false
 	}
-	return *state.ActiveRun, true
+	return *state.CurrentRun, true
+}
+func SelectLatestRun(state State) (RunState, bool) {
+	if state.LatestRun == nil {
+		return RunState{}, false
+	}
+	return *state.LatestRun, true
 }
 func SelectLiveSegments(state State) []LiveSegment {
 	out := make([]LiveSegment, 0, len(state.Live))

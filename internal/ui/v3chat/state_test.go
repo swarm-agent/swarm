@@ -5,9 +5,34 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"swarm-refactor/swarmtui/internal/client"
 )
+
+func TestRunIntentLifecycleUsesAuthoritativeTimingAndTerminalState(t *testing.T) {
+	state := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session: client.SessionSummary{ID: "s"},
+		ActiveRunIntent: &client.SessionV3RunIntent{
+			RunID: "run", Status: "pending_executor", CreatedAt: 1_000, CumulativeDurationMS: 60_000,
+		},
+	}})
+	status, ok := BuildRunStatus(state, time.UnixMilli(3_500))
+	if !ok || !status.Active || status.Label != "Running" || status.Timer != "0:02 (1:02)" {
+		t.Fatalf("pending run status = %#v/%t", status, ok)
+	}
+	payload, _ := json.Marshal(map[string]any{"run_intent": client.SessionV3RunIntent{
+		RunID: "run", Status: "cancelled", CreatedAt: 1_000, StartedAt: 2_000, CompletedAt: 7_000, DurationMS: 5_000, CumulativeDurationMS: 65_000,
+	}})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{SessionID: "s", Seq: 1, EventType: "session.run.cancelled", Payload: payload}}})
+	if _, active := SelectActiveRun(state); active {
+		t.Fatalf("cancelled run remained active: %#v", state)
+	}
+	status, ok = BuildRunStatus(state, time.UnixMilli(999_000))
+	if !ok || status.Active || status.Label != "Stopped" || status.Timer != "0:05 (1:05)" {
+		t.Fatalf("terminal run status = %#v/%t", status, ok)
+	}
+}
 
 func TestModeActionShiftsModelAndProfileFromBackendPolicy(t *testing.T) {
 	state := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{

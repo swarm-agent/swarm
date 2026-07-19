@@ -38,6 +38,33 @@ func TestPageHeaderAndLiveOverlayRenderFromStore(t *testing.T) {
 	}
 }
 
+func TestPageHeaderUsesTitleAndCanonicalRunStatusWithoutConnectedChrome(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session: client.SessionSummary{ID: "s", Title: "Canonical title"},
+		ActiveRunIntent: &client.SessionV3RunIntent{
+			RunID: "run", Status: "running", StartedAt: 120_000, CumulativeDurationMS: 90_000,
+		},
+	}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	defer page.Close()
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 18)
+	page.DrawAt(screen, time.UnixMilli(125_000))
+	screen.Show()
+	header := simulationRow(screen, 80, 0)
+	if !strings.HasPrefix(header, "Canonical title") || !strings.Contains(header, "Running  0:05 (1:35)") {
+		t.Fatalf("canonical header missing title/run status: %q", header)
+	}
+	if strings.Contains(simulationText(screen, 80, 18), "Connected") || strings.Contains(simulationText(screen, 80, 18), "connected") || strings.Contains(header, "Swarm") {
+		t.Fatalf("redundant connection/header chrome remains:\n%s", simulationText(screen, 80, 18))
+	}
+}
+
 func TestPageRendersComposerAboveCanonicalHomeFooterWithDesktopContext(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
@@ -147,6 +174,42 @@ func TestShiftTabCyclesModeThroughBackendResolvedState(t *testing.T) {
 	transport.mu.Unlock()
 	if modeRequest != "plan" {
 		t.Fatalf("mode request = %q, want plan", modeRequest)
+	}
+}
+
+func TestEscapeStopsActiveRunThroughCanonicalV3Path(t *testing.T) {
+	transport := &fakeTransport{}
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:         client.SessionSummary{ID: "session"},
+		ActiveRunIntent: &client.SessionV3RunIntent{RunID: "run", Status: "running", StartedAt: 1},
+	}})
+	page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
+	defer page.Close()
+	if action := page.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone)); action != PageActionNone {
+		t.Fatalf("Escape action = %v, want cancellation without navigation", action)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		transport.mu.Lock()
+		request := transport.stopRequest
+		transport.mu.Unlock()
+		if request.runID != "" {
+			if request.sessionID != "session" || request.runID != "run" || request.reason != "stopped from TUI" {
+				t.Fatalf("stop request = %#v", request)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("Escape did not invoke canonical StopSessionV3Run")
+}
+
+func TestEscapeReturnsHomeWithoutActiveRun(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
+	defer page.Close()
+	if action := page.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone)); action != PageActionHome {
+		t.Fatalf("Escape action = %v, want home", action)
 	}
 }
 

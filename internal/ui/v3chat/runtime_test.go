@@ -27,6 +27,11 @@ type fakeTransport struct {
 	providers         []client.ProviderStatus
 	catalog           map[string][]client.ModelCatalogRecord
 	preferenceRequest map[string]any
+	stopRequest       struct {
+		sessionID string
+		runID     string
+		reason    string
+	}
 }
 
 func (f *fakeTransport) record(call string) {
@@ -72,8 +77,13 @@ func (f *fakeTransport) StreamV3Realtime(ctx context.Context, options client.V3R
 		return errors.New("closed")
 	}
 }
-func (f *fakeTransport) StopSessionV3Run(context.Context, string, string, string, string) error {
-	f.record("stop")
+func (f *fakeTransport) StopSessionV3Run(_ context.Context, sessionID, runID, _ string, reason string) error {
+	f.mu.Lock()
+	f.calls = append(f.calls, "stop")
+	f.stopRequest.sessionID = sessionID
+	f.stopRequest.runID = runID
+	f.stopRequest.reason = reason
+	f.mu.Unlock()
 	return nil
 }
 func (f *fakeTransport) SetSessionV3ModeResolved(_ context.Context, _ string, mode string) (client.SessionV3ModeResult, error) {

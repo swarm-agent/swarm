@@ -213,8 +213,11 @@ func (a *App) openExistingV3Chat(summary model.SessionSummary) error {
 }
 
 func (a *App) closeV3Chat() {
-	if a != nil && a.v3Chat != nil && a.v3Chat.Runtime() != nil {
-		a.v3Chat.Runtime().Stop()
+	if a != nil && a.v3Chat != nil {
+		a.v3Chat.Close()
+		if a.v3Chat.Runtime() != nil {
+			a.v3Chat.Runtime().Stop()
+		}
 	}
 	if a != nil {
 		a.v3Chat = nil

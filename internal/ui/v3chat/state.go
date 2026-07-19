@@ -71,9 +71,37 @@ type PendingMessage struct {
 	ClientRequestID string
 }
 
-type ActiveRun struct {
-	ID     string
-	Status string
+type RunState struct {
+	ID                   string
+	Status               string
+	CreatedAt            int64
+	StartedAt            int64
+	CompletedAt          int64
+	DurationMS           int64
+	CumulativeDurationMS int64
+	UpdatedAt            int64
+}
+
+func runStateFromClient(value client.SessionV3RunIntent) RunState {
+	return RunState{
+		ID:                   strings.TrimSpace(value.RunID),
+		Status:               strings.ToLower(strings.TrimSpace(value.Status)),
+		CreatedAt:            value.CreatedAt,
+		StartedAt:            value.StartedAt,
+		CompletedAt:          value.CompletedAt,
+		DurationMS:           value.DurationMS,
+		CumulativeDurationMS: value.CumulativeDurationMS,
+		UpdatedAt:            value.UpdatedAt,
+	}
+}
+
+func runStatusActive(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending_executor", "running":
+		return true
+	default:
+		return false
+	}
 }
 
 type LiveSegment struct {
@@ -88,7 +116,8 @@ type State struct {
 	Session        Session
 	Messages       []Message
 	Pending        map[string]PendingMessage
-	ActiveRun      *ActiveRun
+	CurrentRun     *RunState
+	LatestRun      *RunState
 	Live           map[string]LiveSegment
 	Connection     ConnectionStatus
 	EndpointCursor string
@@ -186,9 +215,12 @@ func reduceHydrated(state State, hydrated client.SessionV3Hydrated) State {
 	state.LastEventSeq = 0
 	state.EndpointCursor = strings.TrimSpace(hydrated.SnapshotEndpointCursor)
 	if hydrated.ActiveRunIntent != nil {
-		state.ActiveRun = &ActiveRun{ID: strings.TrimSpace(hydrated.ActiveRunIntent.RunID), Status: strings.TrimSpace(hydrated.ActiveRunIntent.Status)}
+		run := runStateFromClient(*hydrated.ActiveRunIntent)
+		state.CurrentRun = &run
+		state.LatestRun = &run
 	} else {
-		state.ActiveRun = nil
+		state.CurrentRun = nil
+		state.LatestRun = nil
 	}
 	for _, event := range sortedEvents(hydrated.Events) {
 		state = applyEvent(state, event)
@@ -228,7 +260,13 @@ func reduceMessageResult(state State, result client.SessionV3MessageResult) Stat
 		state.LastEventSeq = result.Projection.LastEventSeq
 	}
 	if strings.TrimSpace(result.RunIntent.RunID) != "" {
-		state.ActiveRun = &ActiveRun{ID: strings.TrimSpace(result.RunIntent.RunID), Status: strings.TrimSpace(result.RunIntent.Status)}
+		run := runStateFromClient(result.RunIntent)
+		state.LatestRun = &run
+		if runStatusActive(run.Status) {
+			state.CurrentRun = &run
+		} else {
+			state.CurrentRun = nil
+		}
 	}
 	if result.RealtimeOutbox != nil && strings.TrimSpace(result.RealtimeOutbox.EndpointCursor) != "" {
 		state.EndpointCursor = strings.TrimSpace(result.RealtimeOutbox.EndpointCursor)
@@ -305,9 +343,15 @@ func applyEvent(state State, event client.SessionV3Event) State {
 		}
 	}
 	if raw := payload["run_intent"]; len(raw) > 0 {
-		var run client.SessionV3RunIntent
-		if json.Unmarshal(raw, &run) == nil && strings.TrimSpace(run.RunID) != "" {
-			state.ActiveRun = &ActiveRun{ID: strings.TrimSpace(run.RunID), Status: strings.TrimSpace(run.Status)}
+		var value client.SessionV3RunIntent
+		if json.Unmarshal(raw, &value) == nil && strings.TrimSpace(value.RunID) != "" {
+			run := runStateFromClient(value)
+			state.LatestRun = &run
+			if runStatusActive(run.Status) {
+				state.CurrentRun = &run
+			} else {
+				state.CurrentRun = nil
+			}
 		}
 	}
 	if event.Seq > state.LastEventSeq {
@@ -443,9 +487,13 @@ func cloneState(value State) State {
 	for key, segment := range value.Live {
 		out.Live[key] = segment
 	}
-	if value.ActiveRun != nil {
-		run := *value.ActiveRun
-		out.ActiveRun = &run
+	if value.CurrentRun != nil {
+		run := *value.CurrentRun
+		out.CurrentRun = &run
+	}
+	if value.LatestRun != nil {
+		run := *value.LatestRun
+		out.LatestRun = &run
 	}
 	return out
 }

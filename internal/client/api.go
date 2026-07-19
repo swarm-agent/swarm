@@ -601,13 +601,17 @@ type SessionV3Projection struct {
 }
 
 type SessionV3RunIntent struct {
-	SessionID     string `json:"session_id"`
-	RunID         string `json:"run_id"`
-	Status        string `json:"status"`
-	BlockedReason string `json:"blocked_reason,omitempty"`
-	CreatedAt     int64  `json:"created_at"`
-	UpdatedAt     int64  `json:"updated_at"`
-	EventSeq      uint64 `json:"event_seq"`
+	SessionID            string `json:"session_id"`
+	RunID                string `json:"run_id"`
+	Status               string `json:"status"`
+	BlockedReason        string `json:"blocked_reason,omitempty"`
+	CreatedAt            int64  `json:"created_at"`
+	StartedAt            int64  `json:"started_at,omitempty"`
+	CompletedAt          int64  `json:"completed_at,omitempty"`
+	DurationMS           int64  `json:"duration_ms,omitempty"`
+	CumulativeDurationMS int64  `json:"cumulative_duration_ms,omitempty"`
+	UpdatedAt            int64  `json:"updated_at"`
+	EventSeq             uint64 `json:"event_seq"`
 }
 
 type SessionV3Event struct {

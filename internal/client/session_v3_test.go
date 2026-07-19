@@ -47,7 +47,7 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 				"projection":        map[string]any{"session_id": "session-v3", "last_event_seq": 1, "projection_high_watermark_seq": 1},
 				"messages":          []any{},
 				"events":            []any{},
-				"active_run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-create", "status": "running", "created_at": 1000, "updated_at": 1001, "event_seq": 1},
+				"active_run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-create", "status": "running", "created_at": 1000, "started_at": 1001, "cumulative_duration_ms": 60000, "updated_at": 1001, "event_seq": 1},
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v3/sessions/session-v3":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -99,7 +99,7 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 	if created.Session.SessionAPI != "v3" || created.Session.ProjectionHighWatermarkSeq != 1 {
 		t.Fatalf("created session = %#v", created.Session)
 	}
-	if created.ActiveRunIntent == nil || created.ActiveRunIntent.RunID != "run-create" || created.ActiveRunIntent.CreatedAt != 1000 {
+	if created.ActiveRunIntent == nil || created.ActiveRunIntent.RunID != "run-create" || created.ActiveRunIntent.CreatedAt != 1000 || created.ActiveRunIntent.StartedAt != 1001 || created.ActiveRunIntent.CumulativeDurationMS != 60000 {
 		t.Fatalf("created active_run_intent = %#v", created.ActiveRunIntent)
 	}
 	hydrated, err := api.GetSessionV3(context.Background(), "session-v3")
