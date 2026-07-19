@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -174,6 +175,11 @@ func (d *AITaskDispatcher) release(job AITaskJob) {
 
 func (d *AITaskDispatcher) process(ctx context.Context, job AITaskJob) {
 	item := job.Task
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			d.recoverPanickedJob(item, recovered)
+		}
+	}()
 	attemptID := fmt.Sprintf("ai-task-attempt:%s:%d", item.ID, item.AIStateVersion)
 	prepSessionID := deterministicAITaskID(item.AccountScopeID, item.WorkspaceID, item.ID, "preparation-session")
 	prepRunID := "ai-task-preparation-run:" + deterministicAITaskID(item.AccountScopeID, item.WorkspaceID, item.ID, fmt.Sprintf("attempt-%d", item.AIStateVersion))
@@ -186,6 +192,30 @@ func (d *AITaskDispatcher) process(ctx context.Context, job AITaskJob) {
 	if err := d.service.runClaimedAITask(ctx, d.lifecycle, item, d.apply); err != nil && ctx.Err() == nil {
 		log.Printf("AI task %s execution failed: %v", item.ID, err)
 	}
+}
+
+// recoverPanickedJob contains task-local failures at the dispatcher goroutine
+// boundary. Without this guard, a panic anywhere in preparation or deployment
+// terminates the daemon and interrupts every unrelated active session.
+func (d *AITaskDispatcher) recoverPanickedJob(item pebblestore.WorkspaceTodoItem, recovered any) {
+	message := fmt.Sprintf("AI task worker panic: %v", recovered)
+	log.Printf("AI task %s panic contained: %s stack=%s", item.ID, message, strings.TrimSpace(string(debug.Stack())))
+
+	// Lifecycle persistence is best effort after a panic. Guard it separately so
+	// a panicking storage adapter cannot escape the dispatcher recovery boundary.
+	func() {
+		defer func() {
+			if nested := recover(); nested != nil {
+				log.Printf("AI task %s panic recovery failed: %v", item.ID, nested)
+			}
+		}()
+		if d == nil || d.lifecycle == nil {
+			return
+		}
+		if err := terminalizeAITask(d.lifecycle, item, errors.New(message)); err != nil {
+			log.Printf("AI task %s panic terminalization failed: %v", item.ID, err)
+		}
+	}()
 }
 
 func aiTaskJobKey(item pebblestore.WorkspaceTodoItem) string {

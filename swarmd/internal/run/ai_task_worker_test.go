@@ -101,6 +101,66 @@ func TestAITaskDispatcherBoundsAdmissionDeduplicatesAndRejectsShutdown(t *testin
 	}
 }
 
+type panickingAITaskLifecycle struct {
+	mu          sync.Mutex
+	transitions []AITaskQueueTransition
+	started     chan struct{}
+}
+
+func (l *panickingAITaskLifecycle) TransitionAITask(input AITaskQueueTransition) (pebblestore.WorkspaceTodoItem, error) {
+	l.mu.Lock()
+	l.transitions = append(l.transitions, input)
+	l.mu.Unlock()
+	if input.State == pebblestore.WorkspaceTodoAIStatePreparing {
+		panic("task preparation exploded")
+	}
+	if input.State == pebblestore.WorkspaceTodoAIStateFailed && l.started != nil {
+		select {
+		case l.started <- struct{}{}:
+		default:
+		}
+	}
+	return input.Item, nil
+}
+
+func (l *panickingAITaskLifecycle) AppendAITaskAudit(_, _, _ string, _ pebblestore.AITaskAuditRecord) error {
+	return nil
+}
+
+func TestAITaskDispatcherContainsPanicsAndContinuesServingJobs(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	lifecycle := &panickingAITaskLifecycle{started: make(chan struct{}, 2)}
+	dispatcher := (&Service{}).StartAITaskDispatcher(ctx, lifecycle, nil)
+	defer dispatcher.Close()
+
+	for _, id := range []string{"task-panics-first", "task-runs-after-panic"} {
+		if !dispatcher.Enqueue(completeQueuedAITaskFixture(id)) {
+			t.Fatalf("dispatcher rejected %s", id)
+		}
+		select {
+		case <-lifecycle.started:
+		case <-time.After(time.Second):
+			t.Fatalf("dispatcher did not contain and terminalize panic for %s", id)
+		}
+	}
+
+	lifecycle.mu.Lock()
+	defer lifecycle.mu.Unlock()
+	var preparing, failed int
+	for _, transition := range lifecycle.transitions {
+		switch transition.State {
+		case pebblestore.WorkspaceTodoAIStatePreparing:
+			preparing++
+		case pebblestore.WorkspaceTodoAIStateFailed:
+			failed++
+		}
+	}
+	if preparing != 2 || failed != 2 {
+		t.Fatalf("panic containment transitions preparing=%d failed=%d, want 2 each: %#v", preparing, failed, lifecycle.transitions)
+	}
+}
+
 func TestAITaskDispatcherShutdownStopsWorkerAndRejectsAdmission(t *testing.T) {
 	ctx := context.Background()
 	lifecycle := &recordingAITaskLifecycle{started: make(chan struct{}, 1), unblock: make(chan struct{})}
