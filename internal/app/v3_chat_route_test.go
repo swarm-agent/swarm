@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+
+	"swarm-refactor/swarmtui/internal/model"
 )
 
 func TestV3ChatRenderWakeIsIdleAndCoalescesBurst(t *testing.T) {
@@ -36,6 +38,31 @@ func TestV3ChatRenderWakeIsIdleAndCoalescesBurst(t *testing.T) {
 	app.consumeV3ChatRender()
 	if got := len(app.pendingV3ChatRender); got != 0 {
 		t.Fatalf("render queue after consume = %d", got)
+	}
+}
+
+func TestV3ChatFooterUsesBackendResolvedSwarmIdentity(t *testing.T) {
+	app := &App{
+		config: AppConfig{Swarm: SwarmConfig{Name: "Configured Desk"}},
+		homeModel: model.HomeModel{CurrentSwarmTarget: &model.SwarmTarget{
+			SwarmID: "host-swarm", Name: "Primary Desk", Relationship: "self", Kind: "host",
+		}},
+	}
+	primary := model.ChatRoute{SwarmID: "host-swarm", Label: "Local", TargetKind: "host", TargetRelationship: "self"}
+	if got := app.v3ChatFooterRouteLabel(primary); got != "Primary Desk" {
+		t.Fatalf("primary footer identity = %q, want backend target name", got)
+	}
+
+	remote := model.ChatRoute{SwarmID: "remote-swarm", Label: "Remote Desk", TargetKind: "container", TargetRelationship: "child"}
+	if got := app.v3ChatFooterRouteLabel(remote); got != "Remote Desk" {
+		t.Fatalf("remote footer identity = %q, want route target name", got)
+	}
+}
+
+func TestV3ChatFooterUsesConfiguredSwarmNameForLegacyHostFallback(t *testing.T) {
+	app := &App{config: AppConfig{Swarm: SwarmConfig{Name: "Configured Desk"}}}
+	if got := app.v3ChatFooterRouteLabel(model.ChatRoute{Label: "host"}); got != "Configured Desk" {
+		t.Fatalf("legacy host footer identity = %q, want configured swarm name", got)
 	}
 }
 

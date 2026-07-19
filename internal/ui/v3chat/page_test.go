@@ -48,6 +48,7 @@ func TestPageRendersComposerAboveCanonicalHomeFooterWithDesktopContext(t *testin
 		SnapshotEndpointCursor: "cursor",
 	}})
 	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	page.SetRouteLabel("Primary Desk")
 	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'h', tcell.ModNone))
 	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'i', tcell.ModNone))
 	screen := tcell.NewSimulationScreen("UTF-8")
@@ -62,7 +63,7 @@ func TestPageRendersComposerAboveCanonicalHomeFooterWithDesktopContext(t *testin
 	if !strings.Contains(drawn, "> hi") {
 		t.Fatalf("composer input missing:\n%s", drawn)
 	}
-	if !strings.Contains(drawn, "Local") || !strings.Contains(drawn, "Plan: off") || !strings.Contains(drawn, "[gpt-test · high · fast]") {
+	if !strings.Contains(drawn, "Primary Desk") || !strings.Contains(drawn, "Plan: off") || !strings.Contains(drawn, "[gpt-test · high · fast]") {
 		t.Fatalf("canonical home footer tokens missing:\n%s", drawn)
 	}
 	for _, redundant := range []string{"Agent", "model default", "[a:", "[m:", "[t:"} {
@@ -77,7 +78,7 @@ func TestPageRendersComposerAboveCanonicalHomeFooterWithDesktopContext(t *testin
 		t.Fatalf("context facts = %#v", got)
 	}
 	composerRow, footerSeparatorRow, footerRow := simulationRow(screen, 80, 14), simulationRow(screen, 80, 16), simulationRow(screen, 80, 17)
-	if !strings.Contains(composerRow, "> hi") || !strings.Contains(footerSeparatorRow, "─") || !strings.Contains(footerRow, "Local") {
+	if !strings.Contains(composerRow, "> hi") || !strings.Contains(footerSeparatorRow, "─") || !strings.Contains(footerRow, "Primary Desk") {
 		t.Fatalf("composer/footer vertical layout mismatch: composer=%q separator=%q footer=%q", composerRow, footerSeparatorRow, footerRow)
 	}
 	if strings.Contains(drawn, "F2 models") || strings.Contains(drawn, "thinking high") || strings.Contains(drawn, "Enter send") || strings.Contains(drawn, "PgUp/PgDn") || strings.Contains(drawn, "Esc home") || strings.Contains(drawn, "No messages yet") {
@@ -111,6 +112,21 @@ func TestShiftTabCyclesModeThroughBackendResolvedState(t *testing.T) {
 	transport.mu.Unlock()
 	if modeRequest != "plan" {
 		t.Fatalf("mode request = %q, want plan", modeRequest)
+	}
+}
+
+func TestCanonicalFooterFallsBackToLocalOnlyWithoutResolvedRouteIdentity(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 18)
+	page.Draw(screen)
+	screen.Show()
+	if footerRow := simulationRow(screen, 80, 17); !strings.Contains(footerRow, "Local") {
+		t.Fatalf("footer fallback missing when route identity is unavailable: %q", footerRow)
 	}
 }
 

@@ -43,8 +43,24 @@ func (a *App) newV3Runtime() *v3chat.Runtime {
 	return v3chat.NewRuntime(a.api, store, a.requestV3ChatRender)
 }
 
-func (a *App) newV3ChatPage(runtime *v3chat.Runtime) *v3chat.Page {
+func (a *App) v3ChatFooterRouteLabel(route model.ChatRoute) string {
+	label := a.displayChatRouteLabel(route)
+	if label == "" || strings.EqualFold(label, "host") {
+		label = a.currentSwarmName()
+	}
+	return strings.TrimSpace(label)
+}
+
+func (a *App) v3ChatSessionFooterRouteLabel(summary model.SessionSummary) string {
+	if route, ok := a.sessionRouteFromMetadata(summary.WorkspacePath, summary.Metadata); ok {
+		return a.v3ChatFooterRouteLabel(route)
+	}
+	return a.v3ChatFooterRouteLabel(a.selectedChatRouteForWorkspace(summary.WorkspacePath))
+}
+
+func (a *App) newV3ChatPage(runtime *v3chat.Runtime, routeLabel string) *v3chat.Page {
 	page := v3chat.NewPage(runtime, a.v3ChatStyles())
+	page.SetRouteLabel(routeLabel)
 	page.SetCycleModeMatcher(func(ev *tcell.EventKey) bool {
 		return a.activeKeyBindings().Match(ev, ui.KeybindChatCycleMode)
 	})
@@ -130,7 +146,7 @@ func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, 
 	}
 	runtime := a.newV3Runtime()
 	a.closeV3Chat()
-	a.v3Chat = a.newV3ChatPage(runtime)
+	a.v3Chat = a.newV3ChatPage(runtime, a.v3ChatFooterRouteLabel(route))
 	a.route = "v3chat"
 	a.home.ClearPrompt()
 	a.v3Chat.OpenNew(v3chat.NewSessionRequest{Create: create, InitialPrompt: prompt})
@@ -165,7 +181,7 @@ func (a *App) openExistingV3Chat(summary model.SessionSummary) error {
 		return err
 	}
 	a.closeV3Chat()
-	a.v3Chat = a.newV3ChatPage(runtime)
+	a.v3Chat = a.newV3ChatPage(runtime, a.v3ChatSessionFooterRouteLabel(summary))
 	a.route = "v3chat"
 	return nil
 }

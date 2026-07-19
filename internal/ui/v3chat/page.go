@@ -70,6 +70,7 @@ type Page struct {
 	lastWidth      int
 	lastHeight     int
 	modelTarget    footerbar.Rect
+	routeLabel     string
 	modelPicker    bool
 	modelLoading   bool
 	modelOptions   []client.ModelCatalogRecord
@@ -107,6 +108,27 @@ func (p *Page) SetStyles(styles PageStyles) {
 	p.mu.Lock()
 	p.styles = styles
 	p.mu.Unlock()
+}
+
+// SetRouteLabel supplies the backend-resolved Swarm target name used by the
+// shared canonical footer. An empty value deliberately leaves fallback
+// presentation to footerbar rather than inventing session identity here.
+func (p *Page) SetRouteLabel(label string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.routeLabel = strings.TrimSpace(label)
+	p.mu.Unlock()
+}
+
+func (p *Page) RouteLabel() string {
+	if p == nil {
+		return ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.routeLabel
 }
 
 func (p *Page) SetStatus(status string) {
@@ -459,6 +481,7 @@ func (p *Page) Draw(screen tcell.Screen) {
 	cursor := p.cursor
 	scroll := p.scroll
 	status, errText, busy := p.status, p.errText, p.busy
+	routeLabel := p.routeLabel
 	p.lastWidth, p.lastHeight = width, height
 	modelPicker, modelLoading, modelIndex := p.modelPicker, p.modelLoading, p.modelIndex
 	modelOptions := append([]client.ModelCatalogRecord(nil), p.modelOptions...)
@@ -519,7 +542,7 @@ func (p *Page) Draw(screen tcell.Screen) {
 	drawHLine(screen, 0, composerY, width, styles.Border)
 	modelState := SelectModel(state)
 	footerY := height - footerHeight
-	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, statusLine, statusStyle)
+	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, routeLabel, statusLine, statusStyle)
 	prefix := "> "
 	available := maxInt(1, width-len(prefix)-1)
 	inputText := string(input)
@@ -542,7 +565,7 @@ func (p *Page) Draw(screen tcell.Screen) {
 	}
 }
 
-func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, state State, status string, statusStyle tcell.Style) {
+func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, state State, routeLabel, status string, statusStyle tcell.Style) {
 	modelState := SelectModel(state)
 	usage := SelectUsage(state)
 	displayedMode := "off"
@@ -550,7 +573,7 @@ func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, sta
 		displayedMode = "on"
 	}
 	footerState := footerbar.State{
-		RouteLabel:     "Local",
+		RouteLabel:     strings.TrimSpace(routeLabel),
 		DisplayedMode:  displayedMode,
 		ProfileLabel:   modelProfileLabel(modelState),
 		ModelLabel:     displayModelLabel(modelState.Preference),
