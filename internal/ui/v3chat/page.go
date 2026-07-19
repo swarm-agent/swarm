@@ -637,7 +637,7 @@ func BuildRunStatus(state State, now time.Time) (RunStatus, bool) {
 	currentMS := run.DurationMS
 	hasCurrentTiming := run.DurationMS > 0
 	if model.Active {
-		startedAt := firstPositive(run.StartedAt, run.CreatedAt, run.UpdatedAt)
+		startedAt := firstPositive(run.StartedAt, run.CreatedAt)
 		if startedAt > 0 {
 			currentMS = maxInt64(0, now.UnixMilli()-startedAt)
 			hasCurrentTiming = true

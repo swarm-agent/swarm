@@ -80,6 +80,7 @@ type RunState struct {
 	DurationMS           int64
 	CumulativeDurationMS int64
 	UpdatedAt            int64
+	EventSeq             uint64
 }
 
 func runStateFromClient(value client.SessionV3RunIntent) RunState {
@@ -92,6 +93,7 @@ func runStateFromClient(value client.SessionV3RunIntent) RunState {
 		DurationMS:           value.DurationMS,
 		CumulativeDurationMS: value.CumulativeDurationMS,
 		UpdatedAt:            value.UpdatedAt,
+		EventSeq:             value.EventSeq,
 	}
 }
 
@@ -102,6 +104,69 @@ func runStatusActive(status string) bool {
 	default:
 		return false
 	}
+}
+
+func applyRunIntent(state State, value client.SessionV3RunIntent, eventSeq uint64) State {
+	run := runStateFromClient(value)
+	if run.EventSeq == 0 {
+		run.EventSeq = eventSeq
+	}
+	if state.LatestRun != nil {
+		previous := *state.LatestRun
+		if previous.ID == run.ID {
+			if run.EventSeq != 0 && previous.EventSeq != 0 && run.EventSeq <= previous.EventSeq {
+				return state
+			}
+			run = mergeRunTiming(previous, run)
+		}
+	}
+	state.LatestRun = &run
+	if runStatusActive(run.Status) {
+		state.CurrentRun = &run
+	} else {
+		state.CurrentRun = nil
+	}
+	return state
+}
+
+// Realtime event payloads are sometimes assembled before the mutation store
+// attaches canonical timing. Preserve the authoritative anchor already reduced
+// for the same run instead of treating omitted timing as a new start.
+func mergeRunTiming(previous, incoming RunState) RunState {
+	incoming.CreatedAt = firstPositiveInt64(previous.CreatedAt, incoming.CreatedAt)
+	incoming.StartedAt = firstPositiveInt64(previous.StartedAt, incoming.StartedAt)
+	incoming.CompletedAt = firstPositiveInt64(incoming.CompletedAt, previous.CompletedAt)
+	incoming.DurationMS = maxInt64Value(previous.DurationMS, incoming.DurationMS)
+	incoming.CumulativeDurationMS = maxInt64Value(previous.CumulativeDurationMS, incoming.CumulativeDurationMS)
+	incoming.UpdatedAt = maxInt64Value(previous.UpdatedAt, incoming.UpdatedAt)
+	incoming.EventSeq = maxUint64(previous.EventSeq, incoming.EventSeq)
+	if incoming.Status == "" {
+		incoming.Status = previous.Status
+	}
+	return incoming
+}
+
+func firstPositiveInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func maxInt64Value(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func maxUint64(a, b uint64) uint64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 type LiveSegment struct {
@@ -214,10 +279,10 @@ func reduceHydrated(state State, hydrated client.SessionV3Hydrated) State {
 	state.Messages = mergeMessages(nil, hydrated.Messages)
 	state.LastEventSeq = 0
 	state.EndpointCursor = strings.TrimSpace(hydrated.SnapshotEndpointCursor)
+	state.CurrentRun = nil
+	state.LatestRun = nil
 	if hydrated.ActiveRunIntent != nil {
-		run := runStateFromClient(*hydrated.ActiveRunIntent)
-		state.CurrentRun = &run
-		state.LatestRun = &run
+		state = applyRunIntent(state, *hydrated.ActiveRunIntent, hydrated.ActiveRunIntent.EventSeq)
 	} else {
 		state.CurrentRun = nil
 		state.LatestRun = nil
@@ -260,13 +325,7 @@ func reduceMessageResult(state State, result client.SessionV3MessageResult) Stat
 		state.LastEventSeq = result.Projection.LastEventSeq
 	}
 	if strings.TrimSpace(result.RunIntent.RunID) != "" {
-		run := runStateFromClient(result.RunIntent)
-		state.LatestRun = &run
-		if runStatusActive(run.Status) {
-			state.CurrentRun = &run
-		} else {
-			state.CurrentRun = nil
-		}
+		state = applyRunIntent(state, result.RunIntent, result.RunIntent.EventSeq)
 	}
 	if result.RealtimeOutbox != nil && strings.TrimSpace(result.RealtimeOutbox.EndpointCursor) != "" {
 		state.EndpointCursor = strings.TrimSpace(result.RealtimeOutbox.EndpointCursor)
@@ -345,13 +404,7 @@ func applyEvent(state State, event client.SessionV3Event) State {
 	if raw := payload["run_intent"]; len(raw) > 0 {
 		var value client.SessionV3RunIntent
 		if json.Unmarshal(raw, &value) == nil && strings.TrimSpace(value.RunID) != "" {
-			run := runStateFromClient(value)
-			state.LatestRun = &run
-			if runStatusActive(run.Status) {
-				state.CurrentRun = &run
-			} else {
-				state.CurrentRun = nil
-			}
+			state = applyRunIntent(state, value, event.Seq)
 		}
 	}
 	if event.Seq > state.LastEventSeq {

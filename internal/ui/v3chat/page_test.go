@@ -38,6 +38,32 @@ func TestPageHeaderAndLiveOverlayRenderFromStore(t *testing.T) {
 	}
 }
 
+func TestRunTimerWakeIsOneShotAndReschedulesWithoutHeartbeat(t *testing.T) {
+	wake := make(chan struct{}, 3)
+	runtime := NewRuntime(&fakeTransport{}, NewStore(), func() { wake <- struct{}{} })
+	page := NewPage(runtime, testPageStyles())
+	defer page.Close()
+
+	waitForWake := func(label string) {
+		t.Helper()
+		select {
+		case <-wake:
+		case <-time.After(1500 * time.Millisecond):
+			t.Fatalf("timed out waiting for %s timer wake", label)
+		}
+	}
+
+	page.scheduleRunTimer(true)
+	waitForWake("first")
+	page.scheduleRunTimer(true)
+	waitForWake("second")
+	select {
+	case <-wake:
+		t.Fatal("run timer became a recurring heartbeat without another render")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestPageHeaderUsesTitleAndCanonicalRunStatusWithoutConnectedChrome(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{

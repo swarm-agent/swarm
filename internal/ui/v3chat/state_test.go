@@ -34,6 +34,58 @@ func TestRunIntentLifecycleUsesAuthoritativeTimingAndTerminalState(t *testing.T)
 	}
 }
 
+func TestRepeatedRunIntentUpdatesPreserveCanonicalTimerAnchor(t *testing.T) {
+	state := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session: client.SessionSummary{ID: "s"},
+		ActiveRunIntent: &client.SessionV3RunIntent{
+			RunID: "run", Status: "running", CreatedAt: 1_000, StartedAt: 2_000,
+			CumulativeDurationMS: 60_000, UpdatedAt: 2_000, EventSeq: 1,
+		},
+	}})
+	assertTimer := func(want string) {
+		t.Helper()
+		status, ok := BuildRunStatus(state, time.UnixMilli(7_500))
+		if !ok || !status.Active || status.Timer != want {
+			t.Fatalf("run status = %#v/%t, want timer %q", status, ok, want)
+		}
+	}
+	assertTimer("0:05 (1:05)")
+
+	// Executor phase/progress payloads can omit timing while the durable run
+	// intent already has the authoritative anchor. They must not reset it.
+	for seq, updatedAt := range []int64{3_000, 4_000, 6_000} {
+		payload, _ := json.Marshal(map[string]any{"run_intent": client.SessionV3RunIntent{
+			RunID: "run", Status: "running", UpdatedAt: updatedAt,
+		}})
+		state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{
+			Kind: "event", Event: &client.SessionV3Event{SessionID: "s", Seq: uint64(seq + 2), Payload: payload},
+		}})
+		assertTimer("0:05 (1:05)")
+	}
+
+	run, ok := SelectActiveRun(state)
+	if !ok || run.StartedAt != 2_000 || run.CreatedAt != 1_000 || run.CumulativeDurationMS != 60_000 {
+		t.Fatalf("repeated updates replaced canonical timing: %#v/%t", run, ok)
+	}
+
+	// A delayed duplicate with a lower canonical event sequence cannot rewind
+	// timing or status either.
+	state = Reduce(state, MessageResultAction{Result: client.SessionV3MessageResult{RunIntent: client.SessionV3RunIntent{
+		RunID: "run", Status: "running", CreatedAt: 6_900, UpdatedAt: 6_900, EventSeq: 2,
+	}}})
+	assertTimer("0:05 (1:05)")
+}
+
+func TestRunTimerUsesCreatedAnchorAndNeverUpdatedAtFallback(t *testing.T) {
+	state := NewState()
+	state.CurrentRun = &RunState{ID: "run", Status: "running", UpdatedAt: 9_000}
+	state.LatestRun = state.CurrentRun
+	status, ok := BuildRunStatus(state, time.UnixMilli(10_000))
+	if !ok || !status.Active || status.Timer != "" {
+		t.Fatalf("update-only run invented reset-prone timer: %#v/%t", status, ok)
+	}
+}
+
 func TestModeActionShiftsModelAndProfileFromBackendPolicy(t *testing.T) {
 	state := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{
 		Session:    client.SessionSummary{ID: "s", Mode: "auto"},
