@@ -156,7 +156,7 @@ func TestEnsureDefaultsExposesCompiledSwarmAndPersistsOnlyModelContext(t *testin
 	if resolved.Mode != ModePrimary || resolved.Prompt != SwarmAgentPrompt() || !resolved.Protected || !reflect.DeepEqual(resolved.ToolContract, SwarmAgentToolContract()) {
 		t.Fatalf("compiled swarm = %+v", resolved)
 	}
-	for _, name := range []string{"clone", CloneAgentID, "memory", "explorer"} {
+	for _, name := range []string{"clone", "system-clone", CoderAgentID, "memory", "explorer"} {
 		if _, ok, err := agents.GetProfile(name); err != nil || ok {
 			t.Fatalf("persisted compiled/retired profile %q ok=%v err=%v, want absent", name, ok, err)
 		}
@@ -201,16 +201,16 @@ func TestRestoreDefaultsDoesNotPersistOrAssignClone(t *testing.T) {
 	if _, exists := state.ActiveSubagent["clone"]; exists {
 		t.Fatalf("RestoreDefaults() returned mutable Clone assignment: %+v", state.ActiveSubagent)
 	}
-	for _, name := range []string{"clone", CloneAgentID} {
+	for _, name := range []string{"clone", "system-clone", CoderAgentID} {
 		if _, ok, err := agents.GetProfile(name); err != nil || ok {
 			t.Fatalf("GetProfile(%q) ok=%v err=%v, want absent", name, ok, err)
 		}
 	}
-	clone, err := svc.ResolveSystemAgent(CloneAgentID, pebblestore.AgentProfile{Provider: "codex", Model: "parent-model"})
+	clone, err := svc.ResolveSystemAgent(CoderAgentID, pebblestore.AgentProfile{Provider: "codex", Model: "parent-model"})
 	if err != nil {
 		t.Fatalf("ResolveSystemAgent(Clone) error = %v", err)
 	}
-	if clone.Name != CloneAgentID || clone.Provider != "codex" || clone.Model != "parent-model" || !clone.Enabled {
+	if clone.Name != CoderAgentID || clone.Provider != "codex" || clone.Model != "parent-model" || !clone.Enabled {
 		t.Fatalf("compiled Clone = %+v", clone)
 	}
 }
@@ -249,7 +249,7 @@ func TestEnsureDefaultsCleansLegacyCloneRowsAndAssignments(t *testing.T) {
 
 func TestCloneAliasesRejectUserMutationsAndRemapping(t *testing.T) {
 	svc, _ := newTestService(t)
-	for _, name := range []string{"clone", CloneAgentID} {
+	for _, name := range []string{"clone", "system-clone", CoderAgentID} {
 		if _, _, _, err := svc.Upsert(UpsertInput{Name: name, ToolContract: defaultReadWriteSubagentToolContract()}); err == nil || !strings.Contains(err.Error(), "reserved") {
 			t.Fatalf("Upsert(%q) error = %v, want reserved", name, err)
 		}
@@ -263,7 +263,7 @@ func TestCloneAliasesRejectUserMutationsAndRemapping(t *testing.T) {
 	if _, _, _, err := svc.SetActiveSubagent("clone", "helper"); err == nil || !strings.Contains(err.Error(), "cannot be remapped") {
 		t.Fatalf("SetActiveSubagent clone purpose error = %v", err)
 	}
-	if _, _, _, err := svc.SetActiveSubagent("helper", CloneAgentID); err == nil || !strings.Contains(err.Error(), "cannot be remapped") {
+	if _, _, _, err := svc.SetActiveSubagent("helper", CoderAgentID); err == nil || !strings.Contains(err.Error(), "cannot be remapped") {
 		t.Fatalf("SetActiveSubagent Clone target error = %v", err)
 	}
 }

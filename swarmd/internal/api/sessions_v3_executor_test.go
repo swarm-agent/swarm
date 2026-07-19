@@ -203,7 +203,7 @@ func TestSessionV3VisibleSystemAgentResolutionDoesNotRequireSidechatMetadata(t *
 	}{
 		{name: "Swarm", id: agentruntime.SwarmAgentID},
 		{name: "Explorer", id: agentruntime.ExplorerAgentID},
-		{name: "Clone", id: agentruntime.CloneAgentID},
+		{name: "Coder", id: agentruntime.CoderAgentID},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot, err := agents.ResolveSystemAgent(test.id, pebblestore.AgentProfile{Provider: "codex", Model: "parent-model"})

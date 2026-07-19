@@ -27,6 +27,7 @@ type footerToken struct {
 	Text   string
 	Style  tcell.Style
 	Action string
+	Shrink bool
 }
 
 func footerTokensFromState(theme Theme, state FooterState) []footerToken {
@@ -48,8 +49,7 @@ func footerTokensFromState(theme Theme, state FooterState) []footerToken {
 	}
 	if state.UnifiedProfile {
 		return append(tokens,
-			footerToken{Text: "[a:" + clampEllipsis(emptyValue(strings.TrimSpace(state.Agent), "swarm"), 12) + "]", Style: metaStyle, Action: "open-agents-modal"},
-			footerToken{Text: footerProfileUnit(state), Style: metaStyle, Action: "open-profiles-modal"},
+			footerToken{Text: footerProfileUnit(state), Style: metaStyle, Action: "open-profiles-modal", Shrink: true},
 		)
 	}
 	return append(tokens,
@@ -60,14 +60,17 @@ func footerTokensFromState(theme Theme, state FooterState) []footerToken {
 }
 
 func footerProfileUnit(state FooterState) string {
-	parts := []string{emptyValue(strings.TrimSpace(state.ProfileLabel), "Agent model default"), emptyValue(strings.TrimSpace(state.ModelLabel), "-")}
+	parts := []string{
+		emptyValue(strings.TrimSpace(state.ProfileLabel), "Agent model default"),
+		emptyValue(strings.TrimSpace(state.ModelLabel), "Model"),
+	}
 	if thinking := strings.TrimSpace(state.Thinking); thinking != "" {
 		parts = append(parts, thinking)
 	}
-	if tier := strings.TrimSpace(state.ServiceTier); tier != "" {
-		parts = append(parts, tier)
+	if priority := strings.TrimSpace(state.ServiceTier); priority != "" {
+		parts = append(parts, priority)
 	}
-	return "[profile: " + clampEllipsis(strings.Join(parts, " · "), 44) + "]"
+	return "[" + clampEllipsis(strings.Join(parts, " · "), 58) + "]"
 }
 
 func intLabel(value int) string {
@@ -160,9 +163,17 @@ func drawFooterTokenRowWithTargets(s tcell.Screen, x, y, maxWidth int, tokens []
 			width++
 		}
 		if used+width > maxWidth {
-			break
+			remaining := maxWidth - used
+			if len(selected) > 0 {
+				remaining--
+			}
+			if !token.Shrink || remaining < 8 {
+				break
+			}
+			label = " " + clampEllipsis(strings.TrimSpace(token.Text), remaining-2) + " "
+			width = utf8.RuneCountInString(label)
 		}
-		selected = append(selected, footerToken{Text: label, Style: token.Style, Action: token.Action})
+		selected = append(selected, footerToken{Text: label, Style: token.Style, Action: token.Action, Shrink: token.Shrink})
 		used += width
 	}
 	cx := x

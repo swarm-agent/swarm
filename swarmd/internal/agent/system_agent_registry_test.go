@@ -16,11 +16,11 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CloneAgentID, CompactAgentID, ExplorerAgentID, PlanSidechatAgentID, ReviewCommitAgentID}
+	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, ExplorerAgentID, PlanSidechatAgentID, ReviewCommitAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
-	for kind, id := range map[string]string{SystemSidechatKindPlan: PlanSidechatAgentID, SystemSidechatKindAI: AISidechatAgentID, SystemSidechatKindCompact: CompactAgentID, SystemSidechatKindExplorer: ExplorerAgentID, SystemSidechatKindClone: CloneAgentID} {
+	for kind, id := range map[string]string{SystemSidechatKindPlan: PlanSidechatAgentID, SystemSidechatKindAI: AISidechatAgentID, SystemSidechatKindCompact: CompactAgentID, SystemSidechatKindExplorer: ExplorerAgentID, SystemSidechatKindCoder: CoderAgentID} {
 		definition, ok := registry.DefinitionBySidechatKind(kind)
 		if !ok || definition.ID != id {
 			t.Fatalf("kind %q resolved to %+v, ok=%v", kind, definition, ok)
@@ -32,10 +32,23 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 			t.Fatalf("sidechat-only system agent %q is not protected: %+v", id, definition)
 		}
 	}
-	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, ExplorerAgentID, CloneAgentID, ReviewCommitAgentID} {
+	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, ExplorerAgentID, CoderAgentID, ReviewCommitAgentID} {
 		definition, _ := registry.DefinitionByID(id)
 		if definition.RequiresSidechatMetadata || IsReservedSidechatAgentName(id) {
 			t.Fatalf("ordinary/task system agent %q was classified as sidechat-only: %+v", id, definition)
+		}
+	}
+}
+
+func TestCoderIdentityDoesNotAcceptRetiredCloneNames(t *testing.T) {
+	for _, name := range []string{"coder", CoderAgentID} {
+		if !IsCoderAgentName(name) {
+			t.Fatalf("Coder identity %q was not accepted", name)
+		}
+	}
+	for _, name := range []string{"clone", "system-clone"} {
+		if IsCoderAgentName(name) || IsReservedSystemAgentName(name) {
+			t.Fatalf("retired Clone identity %q remains launchable", name)
 		}
 	}
 }
@@ -45,7 +58,7 @@ func TestBuiltinSystemAgentRegistryUserVisibleIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuiltinSystemAgentRegistry() error = %v", err)
 	}
-	want := []string{SwarmAgentID, CloneAgentID, ExplorerAgentID}
+	want := []string{SwarmAgentID, CoderAgentID, ExplorerAgentID}
 	if got := registry.UserVisibleIDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("UserVisibleIDs() = %v, want %v", got, want)
 	}
@@ -215,14 +228,14 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 		t.Fatalf("Swarm exact tool contract mismatch: got %+v want %+v", swarm.ToolContract, SwarmAgentToolContract())
 	}
 
-	clone, err := registry.ReconcileSnapshot(CloneAgentID, pebblestore.AgentProfile{
-		Name: CloneAgentID, Provider: "codex", Model: "parent-model", Thinking: "high", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeRead,
+	clone, err := registry.ReconcileSnapshot(CoderAgentID, pebblestore.AgentProfile{
+		Name: CoderAgentID, Provider: "codex", Model: "parent-model", Thinking: "high", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeRead,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"bash": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: false,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if clone.Name != CloneAgentID || clone.Prompt != CloneAgentPrompt() || clone.Provider != "codex" || clone.Model != "parent-model" || clone.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || !clone.Enabled || clone.ExitPlanModeEnabled == nil || *clone.ExitPlanModeEnabled {
+	if clone.Name != CoderAgentID || clone.Prompt != CoderAgentPrompt() || clone.Provider != "codex" || clone.Model != "parent-model" || clone.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || !clone.Enabled || clone.ExitPlanModeEnabled == nil || *clone.ExitPlanModeEnabled {
 		t.Fatalf("Clone immutable contract was not restored: %+v", clone)
 	}
 	for _, allowed := range []string{"read", "search", "list", "write", "edit", "websearch", "webfetch", "webdownload", "git_status", "git_diff", "git_add", "git_commit"} {
@@ -235,7 +248,7 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("Clone mandatory denial %q was not restored: %+v", denied, clone.ToolContract)
 		}
 	}
-	if _, err := registry.ReconcileSnapshot(CloneAgentID, pebblestore.AgentProfile{Name: "clone"}); err == nil || !strings.Contains(err.Error(), "metadata mismatch") {
+	if _, err := registry.ReconcileSnapshot(CoderAgentID, pebblestore.AgentProfile{Name: "system-clone"}); err == nil || !strings.Contains(err.Error(), "metadata mismatch") {
 		t.Fatalf("Clone alias metadata mismatch error = %v", err)
 	}
 	if _, err := registry.ReconcileSnapshot(PlanSidechatAgentID, pebblestore.AgentProfile{Name: AISidechatAgentID}); err == nil || !strings.Contains(err.Error(), "metadata mismatch") {
@@ -248,7 +261,7 @@ func TestEnsureSystemAgentRegistryExposesImmutableProfilesWithoutPersistingThem(
 	if err := svc.EnsureSystemAgentRegistry(); err != nil {
 		t.Fatalf("ensure registry: %v", err)
 	}
-	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, ExplorerAgentID, CloneAgentID, ReviewCommitAgentID, SwarmAgentID} {
+	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, ExplorerAgentID, CoderAgentID, ReviewCommitAgentID, SwarmAgentID} {
 		if id != SwarmAgentID {
 			if _, ok, err := agents.GetProfile(id); err != nil || ok {
 				t.Fatalf("system profile %q persisted ok=%v err=%v", id, ok, err)

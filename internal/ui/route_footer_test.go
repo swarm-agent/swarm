@@ -138,7 +138,7 @@ func TestChatFooterUsesLocalSwarmNameForHostRoute(t *testing.T) {
 	}
 }
 
-func TestHomeAndChatFootersShareActionSlots(t *testing.T) {
+func TestHomeFooterUsesUnifiedModelProfileAction(t *testing.T) {
 	home := NewHomePage(model.HomeModel{
 		ServerMode:    "local",
 		ActiveAgent:   "swarm",
@@ -147,25 +147,37 @@ func TestHomeAndChatFootersShareActionSlots(t *testing.T) {
 		ChatRoutes:    []model.ChatRoute{{ID: "host", Label: "host"}},
 	})
 	home.SetSwarmName("Local Desk")
-	chat := NewChatPage(ChatPageOptions{
-		SessionID:      "session-test",
-		ShowHeader:     true,
-		SessionMode:    "auto",
-		AuthConfigured: true,
-		SwarmName:      "Local Desk",
-		ModelProvider:  "anthropic",
-		ModelName:      "claude",
-		Meta:           ChatSessionMeta{Route: "host", Agent: "swarm"},
-	})
 
-	homeTokens := home.homeFooterTokens()
-	chatTokens := chat.footerSettingsTokens()
-	if len(homeTokens) != len(chatTokens) {
-		t.Fatalf("footer token counts differ: home=%d chat=%d", len(homeTokens), len(chatTokens))
+	tokens := home.homeFooterTokens()
+	if len(tokens) != 3 {
+		t.Fatalf("home footer token count = %d, want route, plan, and unified model profile", len(tokens))
 	}
-	for i := range homeTokens {
-		if homeTokens[i].Action != chatTokens[i].Action {
-			t.Fatalf("footer token %d action differs: home=%q chat=%q", i, homeTokens[i].Action, chatTokens[i].Action)
+	if tokens[2].Action != "open-profiles-modal" {
+		t.Fatalf("home model profile action = %q, want open-profiles-modal", tokens[2].Action)
+	}
+	if got, want := tokens[2].Text, "[Agent model default · claude]"; got != want {
+		t.Fatalf("home model profile unit = %q, want %q", got, want)
+	}
+	for _, token := range tokens {
+		if token.Action == "open-agents-modal" {
+			t.Fatalf("home footer retained redundant agent action: %#v", tokens)
+		}
+	}
+}
+
+func TestHomeFooterModelProfileUsesConciseOptionValues(t *testing.T) {
+	got := footerProfileUnit(FooterState{
+		ProfileLabel: "Recommended",
+		ModelLabel:   "gpt-5.4",
+		Thinking:     "high",
+		ServiceTier:  "fast",
+	})
+	if want := "[Recommended · gpt-5.4 · high · fast]"; got != want {
+		t.Fatalf("footerProfileUnit() = %q, want %q", got, want)
+	}
+	for _, unwanted := range []string{"Action", "Plan", "thinking", "tier"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("footerProfileUnit() retained obsolete label %q: %q", unwanted, got)
 		}
 	}
 }

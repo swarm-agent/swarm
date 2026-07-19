@@ -9,7 +9,7 @@ import (
 	"swarm-refactor/swarmtui/internal/model"
 )
 
-func TestV3HomepageDrawsDistinctLaunchPanelOnCanonicalHomePage(t *testing.T) {
+func TestV3HomepageDrawsSimpleLaunchPromptOnCanonicalHomePage(t *testing.T) {
 	screen := tcell.NewSimulationScreen("")
 	if err := screen.Init(); err != nil {
 		t.Fatalf("screen init: %v", err)
@@ -36,9 +36,14 @@ func TestV3HomepageDrawsDistinctLaunchPanelOnCanonicalHomePage(t *testing.T) {
 	page.Draw(screen)
 
 	text := dumpHomeTestScreen(screen, 100, 30)
-	for _, want := range []string{"SWARM HOME", "Center hive. Start fast.", "Type to launch a session"} {
+	for _, want := range []string{"Talk to Swarm", "Type below to begin"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("homepage missing %q:\n%s", want, text)
+		}
+	}
+	for _, unwanted := range []string{"Start a session", "Ready for a new V3 session", "/agents to personalize your profiles", "SWARM HOME", "Center hive. Start fast.", "swarm://"} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("homepage retained obsolete hero treatment %q:\n%s", unwanted, text)
 		}
 	}
 }

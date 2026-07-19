@@ -16,6 +16,7 @@ import { requireDesktopV3RealtimeControllerReady, type DesktopV3RealtimeSessionD
 import { stopSubagentSessionV3Run } from "../../session-v3/api";
 import { getToolTheme, type ToolState } from "../services/tool-theme";
 import { ToolSyntaxLine, inferToolSyntaxLanguage, pathFromToolSummary } from "../services/tool-syntax";
+import { displayAgentName } from "../services/agent-display";
 
 interface ChatMarkdownProps {
   content: string;
@@ -827,7 +828,8 @@ function TaskAgentListRowContent({ row, index, dense }: { row: TaskToolRow; inde
   const kind = taskStatusKind(row);
   const statusLabel = taskStatusLabel(row);
   const primaryLabel = row.assignmentLabel || row.agent || 'subagent';
-  const agentLabel = row.agent && row.assignmentLabel ? `@${row.agent}` : row.agent;
+  const displayAgent = displayAgentName(row.agent);
+  const agentLabel = displayAgent && row.assignmentLabel ? `@${displayAgent}` : displayAgent;
   const secondaryLabel = [agentLabel, row.modelLabel].filter(Boolean).join(' · ');
   const toolLabel = row.tool && row.tool !== '-' ? row.tool : taskStatusText(kind);
   const errorText = row.status.trim().toLowerCase() === 'failed' || row.status.trim().toLowerCase() === 'error' ? row.previewText.trim() : '';
@@ -945,7 +947,7 @@ function TaskSwarmCompactRowContent({ row, index }: { row: TaskToolRow; index: n
   const kind = taskStatusKind(row);
   const statusLabel = taskStatusLabel(row);
   const rowNumber = row.launchIndex || index + 1;
-  const agent = row.agent || 'subagent';
+  const agent = displayAgentName(row.agent) || 'subagent';
   const agentLabel = agent.startsWith('@') ? agent : `@${agent}`;
   const toolLabel = row.tool && row.tool !== '-' ? row.tool : taskStatusText(kind);
   const title = row.assignmentLabel && row.assignmentLabel !== row.agent ? row.assignmentLabel : '';

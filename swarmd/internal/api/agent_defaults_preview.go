@@ -52,7 +52,7 @@ func (s *Server) providerDefaultsPreviewForState(state agentruntime.State) *prov
 	}
 	profilesByName := agentProfilesByName(state.Profiles)
 	for _, name := range utilityAgents {
-		if agentruntime.IsCloneAgentName(name) {
+		if agentruntime.IsCoderAgentName(name) {
 			continue
 		}
 		profile, found := profilesByName[strings.ToLower(strings.TrimSpace(name))]
@@ -121,7 +121,7 @@ func (s *Server) applyUtilityAIToBuiltInsForAccount(accountScopeID string, state
 	}
 	updated := false
 	for _, name := range builtinUtilityAgentNames() {
-		if agentruntime.IsCloneAgentName(name) {
+		if agentruntime.IsCoderAgentName(name) {
 			continue
 		}
 		key := strings.ToLower(strings.TrimSpace(name))
@@ -255,7 +255,7 @@ func builtinUtilityAgentNames() []string {
 func utilityAgentNames(providerDefaults defaults.ProviderDefaults) []string {
 	names := make([]string, 0, len(providerDefaults.UtilitySubagents))
 	for _, name := range providerDefaults.UtilitySubagents {
-		if !agentruntime.IsCloneAgentName(name) {
+		if !agentruntime.IsCoderAgentName(name) {
 			names = append(names, name)
 		}
 	}

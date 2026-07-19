@@ -1,7 +1,7 @@
 const COMPILED_SYSTEM_AGENT_LABELS: Readonly<Record<string, string>> = {
   'system-explorer': 'Explorer',
-  'system-clone': 'Coder',
-  clone: 'Coder',
+  'system-coder': 'Coder',
+  'system-clone': 'Coder', // Historical durable sessions only; new launches use system-coder.
   coder: 'Coder',
   swarm: 'Swarm',
 }

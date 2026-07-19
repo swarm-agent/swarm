@@ -29,8 +29,12 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 		t.Fatalf("task definition must warn models to use structured launch fields instead of prompt-embedded launch markup: %#v", taskDefinition)
 	}
 	for _, key := range []string{"subagent_type", "agent", "purpose", "meta_prompt", "role"} {
-		if _, ok := properties[key]; !ok {
+		property, ok := properties[key]
+		if !ok {
 			t.Fatalf("task single-launch shorthand missing %q", key)
+		}
+		if key == "subagent_type" || key == "agent" || key == "purpose" {
+			assertTaskSubagentEnum(t, property, key)
 		}
 	}
 
@@ -43,8 +47,12 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 		t.Fatalf("task launches item schema missing: %#v", launches)
 	}
 	for _, key := range []string{"subagent_type", "agent", "purpose", "meta_prompt", "role"} {
-		if _, ok := itemsProperty(items, key); !ok {
+		property, ok := itemsProperty(items, key)
+		if !ok {
 			t.Fatalf("task launches item missing property %q", key)
+		}
+		if key == "subagent_type" || key == "agent" || key == "purpose" {
+			assertTaskSubagentEnum(t, property, "launches."+key)
 		}
 	}
 	for _, key := range []string{"allOf", "anyOf", "oneOf"} {
@@ -54,6 +62,18 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	}
 	if _, ok := items["required"]; ok {
 		t.Fatalf("task launches provider schema must not require agent/assignment fields: %#v", items["required"])
+	}
+}
+
+func assertTaskSubagentEnum(t *testing.T, property any, label string) {
+	t.Helper()
+	schema, ok := property.(map[string]any)
+	if !ok {
+		t.Fatalf("task %s schema = %#v, want object", label, property)
+	}
+	values, ok := schema["enum"].([]string)
+	if !ok || len(values) != 2 || values[0] != "coder" || values[1] != "explorer" {
+		t.Fatalf("task %s enum = %#v, want only coder and explorer", label, schema["enum"])
 	}
 }
 

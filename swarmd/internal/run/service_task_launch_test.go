@@ -147,7 +147,7 @@ func TestParseTaskCallArgumentsValidLaunches(t *testing.T) {
 		"prompt":      "inspect the repo",
 		"launches": []any{
 			map[string]any{"subagent_type": "explorer", "meta_prompt": "map backend files"},
-			map[string]any{"agent": "clone", "role": "map frontend files", "deliverable": "frontend map", "concurrency_reason": "independent tree", "owned_scope": []any{"web/src/**"}, "dependency_evidence": "read-only mapping"},
+			map[string]any{"agent": "coder", "role": "map frontend files", "deliverable": "frontend map", "concurrency_reason": "independent tree", "owned_scope": []any{"web/src/**"}, "dependency_evidence": "read-only mapping"},
 		},
 	}))
 	if err != nil {
@@ -159,12 +159,12 @@ func TestParseTaskCallArgumentsValidLaunches(t *testing.T) {
 	if parsed.Launches[0].RequestedSubagentType != "explorer" || parsed.Launches[0].MetaPrompt != "map backend files" {
 		t.Fatalf("unexpected first launch: %#v", parsed.Launches[0])
 	}
-	if parsed.Launches[1].RequestedSubagentType != "clone" || parsed.Launches[1].MetaPrompt != "map frontend files" || parsed.Launches[1].Deliverable != "frontend map" || len(parsed.Launches[1].OwnedScope) != 1 {
+	if parsed.Launches[1].RequestedSubagentType != "coder" || parsed.Launches[1].MetaPrompt != "map frontend files" || parsed.Launches[1].Deliverable != "frontend map" || len(parsed.Launches[1].OwnedScope) != 1 {
 		t.Fatalf("unexpected second launch: %#v", parsed.Launches[1])
 	}
 }
 
-func TestParseTaskCallArgumentsAppliesCanonicalCoderScopeWhenOmitted(t *testing.T) {
+func TestParseTaskCallArgumentsAllowsOnlyCoderAndExplorerAndAppliesCanonicalCoderScope(t *testing.T) {
 	tests := []struct {
 		name string
 		args map[string]any
@@ -181,7 +181,7 @@ func TestParseTaskCallArgumentsAppliesCanonicalCoderScopeWhenOmitted(t *testing.
 				"prompt": "Ask two coders to acknowledge",
 				"launches": []any{
 					map[string]any{"agent": "coder", "role": "acknowledge one"},
-					map[string]any{"subagent_type": "clone", "meta_prompt": "acknowledge two"},
+					map[string]any{"subagent_type": "coder", "meta_prompt": "acknowledge two"},
 				},
 			},
 			want: 2,
@@ -202,6 +202,12 @@ func TestParseTaskCallArgumentsAppliesCanonicalCoderScopeWhenOmitted(t *testing.
 				}
 			}
 		})
+	}
+	for _, rejected := range []string{"clone", "system-clone", "reviewer"} {
+		_, err := parseTaskCallArguments(mustJSON(t, map[string]any{"prompt": "reject", "agent": rejected, "role": "reject"}))
+		if err == nil || !strings.Contains(err.Error(), "subagent_type must be coder or explorer") {
+			t.Fatalf("target %q error = %v, want Coder/Explorer-only rejection", rejected, err)
+		}
 	}
 }
 
@@ -579,7 +585,7 @@ func TestApprovedExplorerInheritsParentWorktreeScopeWithoutAllocation(t *testing
 	}
 }
 
-func TestApprovedCloneAllocatesIsolatedWorktreeScope(t *testing.T) {
+func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 	parent, ok, err := svc.sessions.GetSession(parentSessionID)
@@ -593,34 +599,34 @@ func TestApprovedCloneAllocatesIsolatedWorktreeScope(t *testing.T) {
 	clonePath := t.TempDir()
 	stub := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{WorkspacePath: clonePath, RepoRoot: filepath.Dir(clonePath), BaseBranch: "dev", BranchName: "agent/clone", WorkspaceID: "clone-workspace"}}
 	svc.SetWorktreeService(stub)
-	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "clone")
+	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "coder")
 	if err != nil || !virtual {
-		t.Fatalf("resolve Clone profile: virtual=%t source=%q err=%v", virtual, source, err)
+		t.Fatalf("resolve Coder profile: virtual=%t source=%q err=%v", virtual, source, err)
 	}
 	taskBase, err := stub.ResolveTaskBase(parent.WorkspacePath)
 	if err != nil {
 		t.Fatalf("resolve task base: %v", err)
 	}
 	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
-		LaunchIndex: 1, RequestedSubagent: "clone", MetaPrompt: "implement", VirtualTarget: virtual, TaskBase: &taskBase,
+		LaunchIndex: 1, RequestedSubagent: "coder", MetaPrompt: "implement", VirtualTarget: virtual, TaskBase: &taskBase,
 	}, "implement", "", &profile, source, nil)
 	if err != nil {
-		t.Fatalf("prepare approved Clone: %v", err)
+		t.Fatalf("prepare approved Coder: %v", err)
 	}
 	child := launch.ChildSession
 	if stub.allocations != 1 || child.WorkspacePath != clonePath || child.WorktreeRootPath != clonePath || !child.WorktreeEnabled {
-		t.Fatalf("Clone isolation facts: allocations=%d child=%#v", stub.allocations, child)
+		t.Fatalf("Coder isolation facts: allocations=%d child=%#v", stub.allocations, child)
 	}
 	if len(child.TemporaryWorkspaceRoots) != 0 {
-		t.Fatalf("Clone inherited temporary roots: %v", child.TemporaryWorkspaceRoots)
+		t.Fatalf("Coder inherited temporary roots: %v", child.TemporaryWorkspaceRoots)
 	}
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
 	scope, err := svc.resolveRunWorkspaceScope(child, principal)
 	if err != nil {
-		t.Fatalf("resolve Clone scope: %v", err)
+		t.Fatalf("resolve Coder scope: %v", err)
 	}
 	if _, needsExpansion, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": parent.WorkspacePath})}); err != nil || !needsExpansion {
-		t.Fatalf("parent worktree read from Clone: needed=%t err=%v scope=%#v", needsExpansion, err, scope)
+		t.Fatalf("parent worktree read from Coder: needed=%t err=%v scope=%#v", needsExpansion, err, scope)
 	}
 }
 
@@ -1351,7 +1357,7 @@ func stringSliceContains(values []string, want string) bool {
 	return false
 }
 
-func TestClonePermissionSnapshotsCurrentCaller(t *testing.T) {
+func TestCoderPermissionSnapshotsCurrentCaller(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 	parent, ok, err := svc.sessions.GetSession(parentSessionID)
@@ -1360,6 +1366,7 @@ func TestClonePermissionSnapshotsCurrentCaller(t *testing.T) {
 	}
 	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: "swarm", Mode: agentruntime.ModePrimary, RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
+		AutoProvider: "codex", AutoModel: "swarm-auto-model", AutoThinking: "high", AutoServiceTier: "priority",
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true), Prompt: "trusted parent prompt",
 		ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}, Enabled: true,
 	})
@@ -1373,49 +1380,49 @@ func TestClonePermissionSnapshotsCurrentCaller(t *testing.T) {
 		t.Fatalf("update parent metadata: %v", err)
 	}
 	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
-		"prompt": "implement independent scope", "launches": []any{map[string]any{"subagent_type": "clone", "meta_prompt": "implement backend"}},
+		"prompt": "implement independent scope", "launches": []any{map[string]any{"subagent_type": "coder", "meta_prompt": "implement backend"}},
 	})})
 	if err != nil {
-		t.Fatalf("build Clone manifest: %v", err)
+		t.Fatalf("build Coder manifest: %v", err)
 	}
 	if len(manifest.Launches) != 1 || !manifest.Launches[0].ParentCopy || manifest.Launches[0].SourceAgentName != "swarm" {
-		t.Fatalf("Clone manifest = %#v", manifest.Launches)
+		t.Fatalf("Coder manifest = %#v", manifest.Launches)
 	}
-	if manifest.Launches[0].ProfileSnapshot == nil || manifest.Launches[0].ProfileSnapshot.Name != agentruntime.CloneAgentID || manifest.Launches[0].ProfileSnapshot.Prompt != agentruntime.CloneAgentPrompt() || manifest.Launches[0].InheritedRuntimeMode != pebblestore.AgentRuntimeModeReadWrite {
-		t.Fatalf("Clone snapshot = %#v", manifest.Launches[0])
+	if manifest.Launches[0].ProfileSnapshot == nil || manifest.Launches[0].ProfileSnapshot.Name != agentruntime.CoderAgentID || manifest.Launches[0].ProfileSnapshot.Prompt != agentruntime.CoderAgentPrompt() || manifest.Launches[0].InheritedRuntimeMode != pebblestore.AgentRuntimeModeReadWrite {
+		t.Fatalf("Coder snapshot = %#v", manifest.Launches[0])
 	}
 	if !slices.Equal(manifest.Launches[0].OwnedScope, []string{"."}) {
-		t.Fatalf("Clone manifest owned scope = %#v, want canonical whole-worktree scope", manifest.Launches[0].OwnedScope)
+		t.Fatalf("Coder manifest owned scope = %#v, want canonical whole-worktree scope", manifest.Launches[0].OwnedScope)
 	}
-	if manifest.Launches[0].ProfileSnapshot.Provider != parent.Preference.Provider || manifest.Launches[0].ProfileSnapshot.Model != parent.Preference.Model || manifest.Launches[0].SubagentThinking != parent.Preference.Thinking || manifest.Launches[0].SubagentServiceTier != parent.Preference.ServiceTier {
-		t.Fatalf("Clone did not inherit parent launch preference and service tier: %#v", manifest.Launches[0])
+	if manifest.Launches[0].ProfileSnapshot.Provider != "codex" || manifest.Launches[0].ProfileSnapshot.Model != "swarm-auto-model" || manifest.Launches[0].SubagentThinking != "high" || manifest.Launches[0].SubagentServiceTier != "priority" {
+		t.Fatalf("Coder did not inherit active Swarm auto preference and service tier: %#v", manifest.Launches[0])
 	}
-	cloneTools := manifest.Launches[0].ProfileSnapshot.ToolContract.Tools
+	coderTools := manifest.Launches[0].ProfileSnapshot.ToolContract.Tools
 	for _, name := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
-		if cfg, ok := cloneTools[name]; !ok || cfg.Enabled == nil || !*cfg.Enabled {
-			t.Fatalf("Clone snapshot omitted enabled %s: %#v", name, cloneTools)
+		if cfg, ok := coderTools[name]; !ok || cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Coder snapshot omitted enabled %s: %#v", name, coderTools)
 		}
 	}
-	if cfg := cloneTools["bash"]; cfg.Enabled == nil || *cfg.Enabled {
-		t.Fatalf("Clone snapshot must disable generic bash: %#v", cloneTools)
+	if cfg := coderTools["bash"]; cfg.Enabled == nil || *cfg.Enabled {
+		t.Fatalf("Coder snapshot must disable generic bash: %#v", coderTools)
 	}
 	if manifest.ManifestHash == "" || manifest.ApprovedArguments == nil {
-		t.Fatalf("Clone manifest binding missing: %#v", manifest)
+		t.Fatalf("Coder manifest binding missing: %#v", manifest)
 	}
 }
 
-func TestCloneLaunchDoesNotRequirePersistedProfile(t *testing.T) {
+func TestCoderLaunchDoesNotRequirePersistedProfile(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
-	if _, ok, err := svc.agents.GetProfileForAccount("test-account", "clone"); err != nil || ok {
-		t.Fatalf("persisted Clone profile ok=%v err=%v, want absent", ok, err)
+	if _, ok, err := svc.agents.GetProfileForAccount("test-account", "coder"); err != nil || ok {
+		t.Fatalf("persisted Coder profile ok=%v err=%v, want absent", ok, err)
 	}
-	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: `{"prompt":"x","subagent_type":"clone","meta_prompt":"y"}`})
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: `{"prompt":"x","subagent_type":"coder","meta_prompt":"y"}`})
 	if err != nil {
-		t.Fatalf("build compiled Clone manifest: %v", err)
+		t.Fatalf("build compiled Coder manifest: %v", err)
 	}
-	if len(manifest.Launches) != 1 || manifest.Launches[0].ProfileSnapshot == nil || manifest.Launches[0].ProfileSnapshot.Name != agentruntime.CloneAgentID || !manifest.Launches[0].ParentCopy {
-		t.Fatalf("compiled Clone manifest = %#v", manifest.Launches)
+	if len(manifest.Launches) != 1 || manifest.Launches[0].ProfileSnapshot == nil || manifest.Launches[0].ProfileSnapshot.Name != agentruntime.CoderAgentID || !manifest.Launches[0].ParentCopy {
+		t.Fatalf("compiled Coder manifest = %#v", manifest.Launches)
 	}
 }
 

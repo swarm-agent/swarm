@@ -165,7 +165,8 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 		next.HintLine = "Auth is missing, run /auth"
 		next.TipLine = "/auth"
 	default:
-		next.HintLine = "Ready for a new V3 session"
+		next.HintLine = ""
+		next.TipLine = ""
 	}
 	if len(warnings) > 0 {
 		warning := strings.Join(warnings, "; ")

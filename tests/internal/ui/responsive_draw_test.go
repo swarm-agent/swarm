@@ -104,7 +104,12 @@ func TestHomeBottomStatusUsesAvailableWidth(t *testing.T) {
 		ModelProvider: "codex",
 		ModelName:     "gpt-5.4",
 		ThinkingLevel: "xhigh",
+		ServiceTier:   "fast",
 		ActiveAgent:   "swarm",
+		ActiveModelProfile: model.ActiveModelProfile{
+			Source: "saved",
+			Name:   "Recommended",
+		},
 	})
 	status := "warning: provider status unavailable; run /auth key openai <api_key> to recover fully"
 	page.SetStatus(status)
@@ -122,10 +127,13 @@ func TestHomeBottomStatusUsesAvailableWidth(t *testing.T) {
 	if !strings.Contains(text, status) {
 		t.Fatalf("expected full status line to render without one-third truncation; status=%q\nrendered:\n%s", status, text)
 	}
-	for _, token := range []string{" local ", " plan ", " [a:swarm] ", " [m:gpt-5.4] ", " [t:xhigh] "} {
+	for _, token := range []string{" local ", " Plan: off ", " Recommended · gpt-5.4 (fast) · thinking xhigh · tier fast "} {
 		if !strings.Contains(text, token) {
 			t.Fatalf("expected footer metadata to include %q, got:\n%s", token, text)
 		}
+	}
+	if strings.Contains(text, "[a:swarm]") {
+		t.Fatalf("expected footer metadata to omit the redundant agent chip, got:\n%s", text)
 	}
 	if strings.Contains(text, " wt on ") {
 		t.Fatalf("expected footer metadata to omit worktree indicator when disabled, got:\n%s", text)
@@ -148,8 +156,11 @@ func TestHomeBottomStatusOmitsObsoleteWorktreeIndicator(t *testing.T) {
 	page.Draw(screen)
 
 	text := dumpScreenText(screen, 120, 24)
-	if !strings.Contains(text, " local ") || !strings.Contains(text, " plan ") || !strings.Contains(text, " [a:swarm] ") {
-		t.Fatalf("expected footer metadata to include runtime/mode/agent chips, got:\n%s", text)
+	if !strings.Contains(text, " local ") || !strings.Contains(text, " Plan: off ") || !strings.Contains(text, " Agent model default · unset · thinking off · tier standard ") {
+		t.Fatalf("expected footer metadata to include runtime, plan, and unified model profile chips, got:\n%s", text)
+	}
+	if strings.Contains(text, "[a:swarm]") {
+		t.Fatalf("expected footer metadata to omit the redundant agent chip, got:\n%s", text)
 	}
 	if strings.Contains(text, " wt on ") {
 		t.Fatalf("expected footer metadata to omit obsolete worktree indicator, got:\n%s", text)

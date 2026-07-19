@@ -2973,11 +2973,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			if err != nil {
 				return "", err
 			}
-			if agentruntime.IsCloneAgentName(launchSpecs[i].RequestedSubagentType) {
-				if !row.ParentCopy || !agentruntime.IsCloneAgentName(row.ResolvedAgentName) {
+			if agentruntime.IsCoderAgentName(launchSpecs[i].RequestedSubagentType) {
+				if !row.ParentCopy || !agentruntime.IsCoderAgentName(row.ResolvedAgentName) {
 					return "", fmt.Errorf("approved task manifest launch %d does not identify compiled Coder", i)
 				}
-				profile, err = s.agents.ReconcileSystemAgentSnapshot(agentruntime.CloneAgentID, profile)
+				profile, err = s.agents.ReconcileSystemAgentSnapshot(agentruntime.CoderAgentID, profile)
 				if err != nil {
 					return "", fmt.Errorf("reconcile compiled Coder launch snapshot: %w", err)
 				}
@@ -2990,29 +2990,29 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 	}
 
-	cloneIndexes := make([]int, 0, len(launchSpecs))
+	coderIndexes := make([]int, 0, len(launchSpecs))
 	for i := range launchSpecs {
-		if agentruntime.IsCloneAgentName(launchSpecs[i].RequestedSubagentType) {
-			cloneIndexes = append(cloneIndexes, i)
+		if agentruntime.IsCoderAgentName(launchSpecs[i].RequestedSubagentType) {
+			coderIndexes = append(coderIndexes, i)
 		}
 	}
-	var cloneTaskBase *worktreeruntime.TaskBase
-	if len(cloneIndexes) > 0 {
+	var coderTaskBase *worktreeruntime.TaskBase
+	if len(coderIndexes) > 0 {
 		if s.worktrees == nil {
-			return "", errors.New("write-capable clones require separate worktree isolation")
+			return "", errors.New("write-capable Coders require separate worktree isolation")
 		}
 		resolved, resolveErr := s.worktrees.ResolveTaskBase(parentSession.WorkspacePath)
 		if resolveErr != nil {
 			return "", fmt.Errorf("task failed to resolve parent Git state before Coder execution: %w", resolveErr)
 		}
-		cloneTaskBase = &resolved
+		coderTaskBase = &resolved
 	}
 	collisionWarnings := make([]string, 0)
-	if len(cloneIndexes) > 1 {
-		for left := 0; left < len(cloneIndexes); left++ {
-			for right := left + 1; right < len(cloneIndexes); right++ {
-				if taskOwnedScopesOverlap(launchSpecs[cloneIndexes[left]].OwnedScope, launchSpecs[cloneIndexes[right]].OwnedScope) {
-					collisionWarnings = append(collisionWarnings, fmt.Sprintf("owned scopes overlap between launches[%d] and launches[%d]; integrate these child commits sequentially and resolve conflicts explicitly", cloneIndexes[left], cloneIndexes[right]))
+	if len(coderIndexes) > 1 {
+		for left := 0; left < len(coderIndexes); left++ {
+			for right := left + 1; right < len(coderIndexes); right++ {
+				if taskOwnedScopesOverlap(launchSpecs[coderIndexes[left]].OwnedScope, launchSpecs[coderIndexes[right]].OwnedScope) {
+					collisionWarnings = append(collisionWarnings, fmt.Sprintf("owned scopes overlap between launches[%d] and launches[%d]; integrate these child commits sequentially and resolve conflicts explicitly", coderIndexes[left], coderIndexes[right]))
 				}
 			}
 		}
@@ -3032,7 +3032,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, taskLaunchPrepared{
 			LaunchIndex:       i + 1,
 			VirtualTarget:     trustedVirtualTargets[i],
-			TaskBase:          cloneTaskBase,
+			TaskBase:          coderTaskBase,
 			RequestedSubagent: requestedSubagent,
 			MetaPrompt:        metaPrompt,
 			AssignmentLabel:   spec.AssignmentLabel,

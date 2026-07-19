@@ -18,8 +18,8 @@ const (
 	CompactAgentName        = "Compact"
 	ExplorerAgentID         = "system-explorer"
 	ExplorerAgentName       = "Explorer"
-	CloneAgentID            = "system-clone"
-	CloneAgentName          = "Coder"
+	CoderAgentID            = "system-coder"
+	CoderAgentName          = "Coder"
 	SwarmAgentID            = "swarm"
 	SwarmAgentName          = "Swarm"
 	AITaskPreparerAgentID   = "system-ai-task-preparer"
@@ -31,7 +31,7 @@ const (
 	SystemSidechatKindAI       = "ai"
 	SystemSidechatKindCompact  = "compact"
 	SystemSidechatKindExplorer = "explorer"
-	SystemSidechatKindClone    = "clone"
+	SystemSidechatKindCoder    = "coder"
 )
 
 // SystemAgentDefinition is the immutable, code-owned identity and security
@@ -236,12 +236,12 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Reconcile:    reconcileExplorerAgentProfile,
 	},
 	{
-		ID:           CloneAgentID,
-		DisplayName:  CloneAgentName,
+		ID:           CoderAgentID,
+		DisplayName:  CoderAgentName,
 		UserVisible:  true,
-		SidechatKind: SystemSidechatKindClone,
-		Materialize:  CloneAgentProfileForParent,
-		Reconcile:    reconcileCloneAgentProfile,
+		SidechatKind: SystemSidechatKindCoder,
+		Materialize:  CoderAgentProfileForParent,
+		Reconcile:    reconcileCoderAgentProfile,
 	},
 }
 
@@ -367,13 +367,13 @@ func ExplorerAgentToolContract() *pebblestore.AgentToolContract {
 	}}
 }
 
-func CloneAgentPrompt() string {
+func CoderAgentPrompt() string {
 	return strings.TrimSpace(`You are Coder, Swarm's compiled implementation subagent.
 Execute only the dependency-ready implementation scope assigned by the parent. Work exclusively in the isolated worktree allocated for this launch, preserve parent lineage metadata, and do not orchestrate other agents or change plans, agents, settings, or user-owned todos.
 Finish successful work with one scoped commit and a clean worktree. If permission is denied or work cannot be completed, report the exact uncommitted or failed state instead of claiming a successful handoff.`)
 }
 
-func CloneAgentToolContract() *pebblestore.AgentToolContract {
+func CoderAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
 		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"write": {Enabled: pebblestore.BoolPtr(true)}, "edit": {Enabled: pebblestore.BoolPtr(true)},
@@ -387,9 +387,9 @@ func CloneAgentToolContract() *pebblestore.AgentToolContract {
 	}}
 }
 
-func IsCloneAgentName(name string) bool {
+func IsCoderAgentName(name string) bool {
 	switch normalizeName(name) {
-	case "clone", "coder", CloneAgentID:
+	case "coder", CoderAgentID:
 		return true
 	default:
 		return false
@@ -426,8 +426,8 @@ func CanonicalSystemAgentID(name string) (string, bool) {
 		return PlanSidechatAgentID, true
 	case IsExplorerAgentName(name):
 		return ExplorerAgentID, true
-	case IsCloneAgentName(name):
-		return CloneAgentID, true
+	case IsCoderAgentName(name):
+		return CoderAgentID, true
 	case name == "ai sidechat":
 		return AISidechatAgentID, true
 	default:
@@ -542,12 +542,12 @@ func ExplorerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.
 	})
 }
 
-func CloneAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+func CoderAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
 	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
-		Name: CloneAgentID, Mode: ModeSubagent, Description: "Compiled isolated implementation subagent",
+		Name: CoderAgentID, Mode: ModeSubagent, Description: "Compiled isolated implementation subagent",
 		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
-		Prompt: CloneAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
-		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: CloneAgentToolContract(), Enabled: true,
+		Prompt: CoderAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: CoderAgentToolContract(), Enabled: true,
 	})
 }
 
@@ -609,8 +609,8 @@ func reconcileExplorerAgentProfile(snapshot pebblestore.AgentProfile) pebblestor
 	return profile
 }
 
-func reconcileCloneAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
-	profile := CloneAgentProfileForParent(snapshot)
+func reconcileCoderAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := CoderAgentProfileForParent(snapshot)
 	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
 	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
 	return profile

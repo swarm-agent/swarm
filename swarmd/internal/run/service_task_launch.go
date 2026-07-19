@@ -244,6 +244,14 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		if launch.RequestedSubagentType == "" {
 			return taskLaunchSpec{}, fmt.Errorf("%s requires subagent_type, agent, or purpose", label)
 		}
+		switch {
+		case agentruntime.IsCoderAgentName(launch.RequestedSubagentType):
+			launch.RequestedSubagentType = "coder"
+		case agentruntime.IsExplorerAgentName(launch.RequestedSubagentType):
+			launch.RequestedSubagentType = "explorer"
+		default:
+			return taskLaunchSpec{}, fmt.Errorf("%s subagent_type must be coder or explorer", label)
+		}
 		if launch.MetaPrompt == "" {
 			return taskLaunchSpec{}, fmt.Errorf("%s requires meta_prompt or role assignment", label)
 		}
@@ -321,7 +329,7 @@ func parseTaskOwnedScope(raw map[string]any, label string) ([]string, error) {
 }
 
 func applyCanonicalCoderOwnedScope(launch *taskLaunchSpec) {
-	if launch == nil || !agentruntime.IsCloneAgentName(launch.RequestedSubagentType) || len(launch.OwnedScope) != 0 {
+	if launch == nil || !agentruntime.IsCoderAgentName(launch.RequestedSubagentType) || len(launch.OwnedScope) != 0 {
 		return
 	}
 	// Owned scope is advisory metadata for review and collision detection, not an
@@ -1554,7 +1562,7 @@ func validatePlanSidechatTaskTargets(parentSession pebblestore.SessionSnapshot, 
 }
 
 func (s *Service) resolveTaskLaunchProfile(parentSession pebblestore.SessionSnapshot, requested string) (pebblestore.AgentProfile, bool, string, error) {
-	if !agentruntime.IsCloneAgentName(requested) {
+	if !agentruntime.IsCoderAgentName(requested) {
 		profile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested)
 		return profile, false, "", err
 	}
@@ -1570,10 +1578,10 @@ func (s *Service) resolveTaskLaunchProfile(parentSession pebblestore.SessionSnap
 		}
 	}
 	sourceName := strings.TrimSpace(parentProfile.Name)
-	provider := strings.TrimSpace(parentSession.Preference.Provider)
-	modelName := strings.TrimSpace(parentSession.Preference.Model)
-	thinking := strings.TrimSpace(parentSession.Preference.Thinking)
-	serviceTier := strings.TrimSpace(parentSession.Preference.ServiceTier)
+	provider := firstNonEmptyString(parentProfile.AutoProvider, parentSession.Preference.Provider, parentProfile.Provider)
+	modelName := firstNonEmptyString(parentProfile.AutoModel, parentSession.Preference.Model, parentProfile.Model)
+	thinking := firstNonEmptyString(parentProfile.AutoThinking, parentSession.Preference.Thinking, parentProfile.Thinking)
+	serviceTier := firstNonEmptyString(parentProfile.AutoServiceTier, parentSession.Preference.ServiceTier)
 	if s.uiSettings != nil {
 		if settings, settingsErr := s.uiSettings.GetForAccount(strings.TrimSpace(parentSession.AccountScopeID)); settingsErr == nil {
 			override := settings.Agents.Coder
@@ -1591,7 +1599,7 @@ func (s *Service) resolveTaskLaunchProfile(parentSession pebblestore.SessionSnap
 			}
 		}
 	}
-	profile, err := s.agents.ResolveSystemAgent(agentruntime.CloneAgentID, pebblestore.AgentProfile{
+	profile, err := s.agents.ResolveSystemAgent(agentruntime.CoderAgentID, pebblestore.AgentProfile{
 		Provider:        provider,
 		Model:           modelName,
 		Thinking:        thinking,

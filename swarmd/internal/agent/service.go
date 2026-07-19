@@ -363,7 +363,7 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 				return err
 			}
 		}
-		if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
+		if err := s.cleanupBuiltInCoderForAccountLocked(accountScopeID); err != nil {
 			return err
 		}
 		if err := s.cleanupCompiledSwarmContextForAccountLocked(accountScopeID); err != nil {
@@ -382,7 +382,7 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 	if err := s.cleanupBuiltInExplorerForAccountLocked(accountScopeID); err != nil {
 		return err
 	}
-	if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
+	if err := s.cleanupBuiltInCoderForAccountLocked(accountScopeID); err != nil {
 		return err
 	}
 	if err := s.cleanupCompiledSwarmContextForAccountLocked(accountScopeID); err != nil {
@@ -438,11 +438,20 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 	return s.setActivePrimaryForAccountLocked(accountScopeID, fallback)
 }
 
+func isRetiredCloneAgentName(name string) bool {
+	switch normalizeName(name) {
+	case "clone", "system-clone":
+		return true
+	default:
+		return false
+	}
+}
+
 func normalizeDefaultUtilityAgentNames(values []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		name := normalizeName(value)
-		if name != "" && name != "memory" && name != "compact" && name != CompactAgentID && !IsExplorerAgentName(name) && !IsCloneAgentName(name) {
+		if name != "" && name != "memory" && name != "compact" && name != CompactAgentID && !IsExplorerAgentName(name) && !IsCoderAgentName(name) && !isRetiredCloneAgentName(name) {
 			out[name] = struct{}{}
 		}
 	}
@@ -608,8 +617,8 @@ func (s *Service) cleanupBuiltInExplorerForAccountLocked(accountScopeID string) 
 	return s.deleteProfileForAccountLocked(accountScopeID, "explorer")
 }
 
-func (s *Service) cleanupBuiltInCloneForAccountLocked(accountScopeID string) error {
-	for _, name := range []string{"clone", CloneAgentID} {
+func (s *Service) cleanupBuiltInCoderForAccountLocked(accountScopeID string) error {
+	for _, name := range []string{"clone", "system-clone", CoderAgentID} {
 		if _, ok, err := s.getProfileForAccountLocked(accountScopeID, name); err != nil {
 			return err
 		} else if ok {
@@ -623,7 +632,7 @@ func (s *Service) cleanupBuiltInCloneForAccountLocked(accountScopeID string) err
 		return err
 	}
 	for purpose, assigned := range activeSubagents {
-		if IsCloneAgentName(purpose) || IsCloneAgentName(assigned) {
+		if IsCoderAgentName(purpose) || IsCoderAgentName(assigned) || isRetiredCloneAgentName(purpose) || isRetiredCloneAgentName(assigned) {
 			if err := s.deleteActiveSubagentForAccountLocked(accountScopeID, purpose); err != nil {
 				return err
 			}
@@ -854,7 +863,7 @@ func (s *Service) replaceManagedStateForAccount(accountScopeID string, state Sta
 			if purpose == "" {
 				continue
 			}
-			if IsCloneAgentName(purpose) || IsCloneAgentName(assigned) {
+			if IsCoderAgentName(purpose) || IsCoderAgentName(assigned) {
 				return State{}, 0, nil, errors.New("Coder is a compiled system agent and cannot be remapped")
 			}
 			assignmentKeys = append(assignmentKeys, purpose)
@@ -1815,7 +1824,7 @@ func (s *Service) restoreDefaultsForAccount(accountScopeID string) (State, int64
 	if err := s.cleanupBuiltInExplorerForAccountLocked(accountScopeID); err != nil {
 		return State{}, 0, nil, err
 	}
-	if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
+	if err := s.cleanupBuiltInCoderForAccountLocked(accountScopeID); err != nil {
 		return State{}, 0, nil, err
 	}
 	if err := s.cleanupCompiledSwarmContextForAccountLocked(accountScopeID); err != nil {
@@ -1940,7 +1949,7 @@ func (s *Service) resetDefaultsForAccount(accountScopeID string) (State, int64, 
 	if err := s.cleanupBuiltInExplorerForAccountLocked(accountScopeID); err != nil {
 		return State{}, 0, nil, err
 	}
-	if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
+	if err := s.cleanupBuiltInCoderForAccountLocked(accountScopeID); err != nil {
 		return State{}, 0, nil, err
 	}
 	if err := s.cleanupCompiledSwarmContextForAccountLocked(accountScopeID); err != nil {
@@ -2091,7 +2100,7 @@ func (s *Service) setActiveSubagentForAccount(accountScopeID, purpose, name stri
 	if name == "" {
 		return nil, 0, nil, errors.New("agent name is required")
 	}
-	if IsCloneAgentName(purpose) || IsCloneAgentName(name) {
+	if IsCoderAgentName(purpose) || IsCoderAgentName(name) {
 		return nil, 0, nil, errors.New("Coder is a compiled system agent and cannot be remapped")
 	}
 	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
@@ -2156,7 +2165,7 @@ func (s *Service) deleteActiveSubagentForAccount(accountScopeID, purpose string)
 	if purpose == "" {
 		return nil, 0, nil, errors.New("subagent purpose is required")
 	}
-	if IsCloneAgentName(purpose) {
+	if IsCoderAgentName(purpose) {
 		return nil, 0, nil, errors.New("Coder is a compiled system agent and has no mutable assignment")
 	}
 	if err := s.deleteActiveSubagentForAccountLocked(accountScopeID, purpose); err != nil {
@@ -2317,8 +2326,8 @@ func (s *Service) resolveSubagentForAccount(accountScopeID, nameOrPurpose string
 	if IsExplorerAgentName(key) {
 		return s.ResolveSystemAgent(ExplorerAgentID, pebblestore.AgentProfile{})
 	}
-	if IsCloneAgentName(key) {
-		return s.ResolveSystemAgent(CloneAgentID, pebblestore.AgentProfile{})
+	if IsCoderAgentName(key) {
+		return s.ResolveSystemAgent(CoderAgentID, pebblestore.AgentProfile{})
 	}
 
 	if profile, ok, err := s.getProfileForAccountLocked(accountScopeID, key); err != nil {

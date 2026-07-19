@@ -74,11 +74,11 @@ interface AgentModelControlProps {
 
 type DraftMode = 'single' | 'split'
 const EXPLORER_AGENT_NAME = 'system-explorer'
-const CLONE_AGENT_NAME = 'system-clone'
+const CODER_AGENT_NAME = 'system-coder'
 const SWARM_AGENT_NAME = 'swarm'
 
 function isSystemUtility(name: string): boolean {
-  return name === EXPLORER_AGENT_NAME || name === CLONE_AGENT_NAME
+  return name === EXPLORER_AGENT_NAME || name === CODER_AGENT_NAME
 }
 
 function isCompiledSystemAgent(name: string): boolean {
@@ -346,8 +346,8 @@ export function AgentModelControl({
     toolContract: { preset: 'custom', inheritPolicy: false, tools: { read: { enabled: true, bashPrefixes: [] }, search: { enabled: true, bashPrefixes: [] }, list: { enabled: true, bashPrefixes: [] }, websearch: { enabled: true, bashPrefixes: [] }, webfetch: { enabled: true, bashPrefixes: [] } } },
     enabled: true, protected: true, updatedAt: 0,
   }), [explorerSettings.model, explorerSettings.provider, explorerSettings.service_tier, explorerSettings.thinking])
-  const cloneProfile = useMemo<AgentProfileRecord>(() => ({
-    name: CLONE_AGENT_NAME,
+  const coderProfile = useMemo<AgentProfileRecord>(() => ({
+    name: CODER_AGENT_NAME,
     mode: 'subagent',
     description: 'Compiled isolated implementation subagent',
     provider: coderSettingsEnabled ? coderSettings.provider : '', model: coderSettingsEnabled ? coderSettings.model : '', thinking: coderSettingsEnabled ? coderSettings.thinking : '', modelMode: 'single',
@@ -366,7 +366,7 @@ export function AgentModelControl({
   const [editingProfileId, setEditingProfileId] = useState('')
   const [baseline, setBaseline] = useState('')
   const initializedOpenRef = useRef(false)
-  const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'explorer' && (!isCompiledSystemAgent(agent.name) || agent.name === SWARM_AGENT_NAME)), explorerProfile, cloneProfile], [agents, cloneProfile, explorerProfile])
+  const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'explorer' && (!isCompiledSystemAgent(agent.name) || agent.name === SWARM_AGENT_NAME)), explorerProfile, coderProfile], [agents, coderProfile, explorerProfile])
   const activeProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? selectableAgents.find((agent) => agent.name === currentAgent) ?? null
   const [draftAgentName, setDraftAgentName] = useState(activeProfile?.name ?? selectedPrimaryAgent)
   const draftProfile = selectableAgents.find((agent) => agent.name === draftAgentName) ?? activeProfile
@@ -549,7 +549,7 @@ export function AgentModelControl({
       if (isSystemUtility(profile.name)) {
         const saved = await saveSystemAgentSettings({
           current: uiSettings,
-          agent: profile.name === CLONE_AGENT_NAME ? 'coder' : 'explorer',
+          agent: profile.name === CODER_AGENT_NAME ? 'coder' : 'explorer',
           settings: {
             provider: String(action.agentPatch.provider ?? '').trim(),
             model: String(action.agentPatch.model ?? '').trim(),
@@ -681,7 +681,7 @@ export function AgentModelControl({
             {draftProfile && isSystemUtility(draftProfile.name) ? (
               <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
                 <div className="font-semibold text-[var(--app-text)]">Compiled system agent</div>
-                <div className="mt-1">{draftProfile.name === CLONE_AGENT_NAME ? 'Coder' : 'Explorer'} uses its independently configured single-model selection when set, otherwise it inherits the parent session model. Its identity, prompt, runtime, and tool contract remain code-owned.</div>
+                <div className="mt-1">{draftProfile.name === CODER_AGENT_NAME ? 'Coder' : 'Explorer'} uses its independently configured single-model selection when set, otherwise it inherits the active Swarm auto model. Its identity, prompt, runtime, and tool contract remain code-owned.</div>
               </div>
             ) : draftProfile && agentMode(draftProfile) === 'primary' ? (
               <PrimaryAgentControlRow
@@ -712,7 +712,7 @@ export function AgentModelControl({
               {!splitModeAllowed ? <div className="mt-2 text-[11px] text-[var(--app-text-subtle)]">Split policy is available only for plan-capable agents.</div> : null}
             </div> : null}
             {!splitModeAllowed && draftProfile && agentMode(draftProfile) === 'primary' ? <div className="mt-2 text-[11px] text-[var(--app-text-subtle)]">Split policy is available only for plan-capable agents.</div> : null}
-            {modelLocked && modelLockNotice && draftProfile?.name !== CLONE_AGENT_NAME && !isSystemUtility(draftProfile?.name ?? '') ? (
+            {modelLocked && modelLockNotice && draftProfile?.name !== CODER_AGENT_NAME && !isSystemUtility(draftProfile?.name ?? '') ? (
               <div className="mt-3 flex gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-[11px] text-[var(--app-text-muted)]">
                 <Lock size={13} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
                 <span>{modelLockNotice}</span>

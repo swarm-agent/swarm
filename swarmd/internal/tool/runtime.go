@@ -1098,12 +1098,12 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-worktree",
-			Description: "Recall durable Clone child lineage or atomically integrate a selected committed child batch. For integrate, pass only action and session_ids. The tool derives and validates all lineage and parent state, preflights the complete ordered stack, applies automatically without confirmation, and leaves the parent unchanged on any conflict.",
+			Description: "Recall durable Coder child lineage or atomically integrate a selected committed child batch. For integrate, pass only action and session_ids. The tool derives and validates all lineage and parent state, preflights the complete ordered stack, applies automatically without confirmation, and leaves the parent unchanged on any conflict.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"action":         map[string]any{"type": "string", "description": "Action: inspect|list|recall|integrate"},
-					"session_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Selected Clone child session ids from durable current-parent lineage"},
+					"session_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Selected Coder child session ids from durable current-parent lineage"},
 					"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path; defaults to current/active workspace scope"},
 					"branch_name":    map[string]any{"type": "string", "description": "Optional worktree branch family/prefix override such as agent or foo"},
 					"limit":          map[string]any{"type": "integer", "description": "Page size for returned commits (default 25)"},
@@ -1252,7 +1252,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate a distinct research question to Explorer or an independent, dependency-ready owned scope to Clone. Use this only when the user explicitly asks for subagents, asks for Explorer or Clone, or names the agent or agents to run. A generic request to create, make, start, or open a new session means a durable session via manage-sessions deploy, not this task tool. Keep cohesive work direct. Put child launches in the structured launches array; each launch states its assignment, deliverable, concurrency reason, owned scope, and dependency evidence for review.",
+			Description: "Delegate a distinct research question to Explorer or an independent, dependency-ready owned scope to Coder. These are the only supported subagent types. Use this only when the user explicitly asks for subagents, asks for Explorer or Coder, or names the agent or agents to run. A generic request to create, make, start, or open a new session means a durable session via manage-sessions deploy, not this task tool. Keep cohesive work direct. Put child launches in the structured launches array; each launch states its assignment, deliverable, concurrency reason, owned scope, and dependency evidence for review.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1270,14 +1270,17 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"subagent_type": map[string]any{
 						"type":        "string",
-						"description": "Existing saved subagent name or purpose for the single-launch shorthand. Requires a top-level meta_prompt or role.",
+						"enum":        []string{"coder", "explorer"},
+						"description": "Subagent type for the single-launch shorthand. Supported values: coder or explorer. Requires a top-level meta_prompt or role.",
 					},
 					"agent": map[string]any{
 						"type":        "string",
+						"enum":        []string{"coder", "explorer"},
 						"description": "Alias for subagent_type in the single-launch shorthand.",
 					},
 					"purpose": map[string]any{
 						"type":        "string",
+						"enum":        []string{"coder", "explorer"},
 						"description": "Alias for subagent_type in the single-launch shorthand.",
 					},
 					"meta_prompt": map[string]any{
@@ -1294,13 +1297,13 @@ func (r *Runtime) Definitions() []Definition {
 					"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that the launch does not depend on unfinished child work."},
 					"launches": map[string]any{
 						"type":        "array",
-						"description": "The exact dependency-ready wave for one task approval. Do not paste JSON into prompt. Use Explorer for distinct research deliverables and Clone for implementation scopes created from the same parent HEAD on unique sibling worktrees. Intentional scope overlap is allowed and reported for sequential integration. The current backend orchestration policy defines launch limits; available budget is never a target.",
+						"description": "The exact dependency-ready wave for one task approval. Do not paste JSON into prompt. Use Explorer for distinct research deliverables and Coder for implementation scopes created from the same parent HEAD on unique sibling worktrees. Intentional scope overlap is allowed and reported for sequential integration. The current backend orchestration policy defines launch limits; available budget is never a target.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"subagent_type":       map[string]any{"type": "string", "description": "Existing saved subagent name or purpose for this child."},
-								"agent":               map[string]any{"type": "string", "description": "Alias for subagent_type."},
-								"purpose":             map[string]any{"type": "string", "description": "Alias for subagent_type."},
+								"subagent_type":       map[string]any{"type": "string", "enum": []string{"coder", "explorer"}, "description": "Subagent type for this child. Supported values: coder or explorer."},
+								"agent":               map[string]any{"type": "string", "enum": []string{"coder", "explorer"}, "description": "Alias for subagent_type."},
+								"purpose":             map[string]any{"type": "string", "enum": []string{"coder", "explorer"}, "description": "Alias for subagent_type."},
 								"meta_prompt":         map[string]any{"type": "string", "description": "Required per-child assignment shown in the approval modal. This must be a field on the launch object, not text embedded in prompt."},
 								"role":                map[string]any{"type": "string", "description": "Alias for meta_prompt."},
 								"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
@@ -6176,7 +6179,7 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 		for _, rawRow := range rows {
 			row, _ := rawRow.(map[string]any)
 			id := strings.TrimSpace(asString(row["child_session_id"]))
-			if !selectedSet[id] || !strings.EqualFold(asString(row["subagent"]), "clone") {
+			if !selectedSet[id] || !agentruntime.IsCoderAgentName(asString(row["subagent"])) {
 				continue
 			}
 			path := strings.TrimSpace(firstNonEmptyString(asString(row["worktree_root_path"]), asString(row["workspace_path"])))
@@ -6293,7 +6296,7 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 		}
 		for _, rawRow := range rows {
 			row, ok := rawRow.(map[string]any)
-			if !ok || !strings.EqualFold(strings.TrimSpace(asString(row["subagent"])), "clone") {
+			if !ok || !agentruntime.IsCoderAgentName(asString(row["subagent"])) {
 				continue
 			}
 			child := make(map[string]any, len(row)+2)
