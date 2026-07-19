@@ -273,6 +273,56 @@ func TestPageDurableAssistantReplacesLiveOverlay(t *testing.T) {
 	}
 }
 
+func TestPageUserMessagesUseThemedTextWithoutBackgroundBlock(t *testing.T) {
+	styles := testPageStyles()
+	styles.Text = tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorBlack)
+	styles.Secondary = tcell.StyleDefault.Foreground(tcell.ColorBlue).Background(tcell.ColorRed)
+	styles.Element = tcell.StyleDefault.Background(tcell.ColorGreen)
+	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), styles)
+
+	rows := page.renderUserRows("message:user", "one two three four", 10, styles)
+	if len(rows) != 4 {
+		t.Fatalf("row count = %d, want 3 wrapped content rows plus spacing", len(rows))
+	}
+	if rows[0].text != "> one two" || rows[1].text != "  three" || rows[2].text != "  four" || rows[3].text != "" {
+		t.Fatalf("user rows = %#v", rows)
+	}
+	for _, row := range rows {
+		foreground, background, _ := row.style.Decompose()
+		if foreground != tcell.ColorBlue || background != tcell.ColorBlack {
+			t.Fatalf("user row colors = fg %v, bg %v; want themed text on normal background", foreground, background)
+		}
+		if strings.ContainsRune(row.text, '─') {
+			t.Fatalf("user row still contains border chrome: %q", row.text)
+		}
+	}
+	markerForeground, markerBackground, markerAttributes := rows[0].prefixStyle.Decompose()
+	if rows[0].prefixWidth != 1 || markerForeground != tcell.ColorBlue || markerBackground != tcell.ColorBlack || markerAttributes&tcell.AttrBold == 0 {
+		t.Fatalf("marker style = width %d, fg %v, bg %v, attrs %v", rows[0].prefixWidth, markerForeground, markerBackground, markerAttributes)
+	}
+	if rows[1].prefixWidth != 0 || rows[2].prefixWidth != 0 {
+		t.Fatalf("continuation rows unexpectedly style a marker: %#v", rows)
+	}
+}
+
+func TestPageAssistantRowsOmitRoleLabels(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), testPageStyles())
+	state := State{
+		Messages: []Message{{ID: "durable", Role: "assistant", Content: "durable response"}},
+		Live:     map[string]LiveSegment{"run": {StreamID: "assistant:run", Text: "live response"}},
+	}
+
+	rows := page.renderRows(state, 40, testPageStyles())
+	if len(rows) != 3 || rows[0].text != "durable response" || rows[1].text != "" || rows[2].text != "live response" {
+		t.Fatalf("assistant rows = %#v", rows)
+	}
+	for _, row := range rows {
+		if strings.Contains(strings.ToLower(row.text), "assistant") {
+			t.Fatalf("assistant role label remains in row %q", row.text)
+		}
+	}
+}
+
 func TestPageRowCacheIsBounded(t *testing.T) {
 	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), testPageStyles())
 	for i := 0; i < maxRowCacheItems+1; i++ {

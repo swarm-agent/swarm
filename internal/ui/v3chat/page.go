@@ -493,14 +493,16 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 }
 
 type renderRow struct {
-	text  string
-	style tcell.Style
+	text        string
+	style       tcell.Style
+	prefixWidth int
+	prefixStyle tcell.Style
 }
 
-func styleWithBackground(style, background tcell.Style) tcell.Style {
-	foreground, _, attributes := style.Decompose()
-	_, backgroundColor, _ := background.Decompose()
-	return tcell.StyleDefault.Foreground(foreground).Background(backgroundColor).Attributes(attributes)
+func styleWithForeground(style, foregroundStyle tcell.Style) tcell.Style {
+	_, background, attributes := style.Decompose()
+	foreground, _, _ := foregroundStyle.Decompose()
+	return tcell.StyleDefault.Foreground(foreground).Background(background).Attributes(attributes)
 }
 
 func (p *Page) Draw(screen tcell.Screen) {
@@ -574,7 +576,12 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	}
 	end := minInt(len(rows), start+transcriptHeight)
 	for i := start; i < end; i++ {
-		drawText(screen, 2, transcriptTop+i-start, width-4, rows[i].style, rows[i].text)
+		row := rows[i]
+		y := transcriptTop + i - start
+		drawText(screen, 2, y, width-4, row.style, row.text)
+		if row.prefixWidth > 0 {
+			drawText(screen, 2, y, minInt(width-4, row.prefixWidth), row.prefixStyle, row.text)
+		}
 	}
 
 	composerY := height - composerHeight
@@ -893,7 +900,6 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 			rows = append(rows, p.renderUserRows("message:"+message.ID, message.Content, width, styles)...)
 			continue
 		}
-		rows = append(rows, renderRow{text: "assistant", style: styles.Text.Bold(true)})
 		for _, line := range p.cachedWrap("message:"+message.ID, message.Content, width) {
 			rows = append(rows, renderRow{text: line, style: styles.Text})
 		}
@@ -907,7 +913,6 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 	live := SelectLiveSegments(state)
 	sort.SliceStable(live, func(i, j int) bool { return live[i].StreamID < live[j].StreamID })
 	for _, segment := range live {
-		rows = append(rows, renderRow{text: "assistant • streaming", style: styles.Accent.Bold(true)})
 		for _, line := range wrapText(segment.Text, width) {
 			rows = append(rows, renderRow{text: line, style: styles.Text})
 		}
@@ -919,18 +924,21 @@ func (p *Page) renderUserRows(key, content string, width int, styles PageStyles)
 	if width <= 0 {
 		return nil
 	}
-	rowStyle := styleWithBackground(styles.Text, styles.Element)
 	lines := p.cachedWrap(key, content, maxInt(1, width-2))
-	rows := make([]renderRow, 0, len(lines)+2)
-	rows = append(rows, renderRow{text: strings.Repeat("─", width), style: styleWithBackground(styles.Border, styles.Element)})
+	rows := make([]renderRow, 0, len(lines)+1)
+	userStyle := styleWithForeground(styles.Text, styles.Secondary)
 	for i, line := range lines {
 		prefix := "  "
+		row := renderRow{style: userStyle}
 		if i == 0 {
 			prefix = "> "
+			row.prefixWidth = 1
+			row.prefixStyle = userStyle.Bold(true)
 		}
-		rows = append(rows, renderRow{text: prefix + line + strings.Repeat(" ", maxInt(0, width-2-utf8.RuneCountInString(line))), style: rowStyle})
+		row.text = prefix + line
+		rows = append(rows, row)
 	}
-	rows = append(rows, renderRow{text: strings.Repeat("─", width), style: styleWithBackground(styles.Border, styles.Element)})
+	rows = append(rows, renderRow{text: "", style: userStyle})
 	return rows
 }
 
