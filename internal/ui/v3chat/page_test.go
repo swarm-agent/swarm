@@ -86,6 +86,41 @@ func TestPageRendersComposerAboveCanonicalHomeFooterWithDesktopContext(t *testin
 	}
 }
 
+func TestPagePreservesHomeProfileUntilBackendModeShiftResolvesProfile(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:    client.SessionSummary{ID: "s", Title: "chat", Mode: "auto"},
+		Preference: client.ModelPreference{Provider: "codex", Model: "gpt-test", Thinking: "high"},
+	}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	page.SetRouteLabel("Primary Desk")
+	page.SetProfileLabel("Focused work")
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(90, 18)
+	page.Draw(screen)
+	screen.Show()
+	if footer := simulationRow(screen, 90, 17); !strings.Contains(footer, "[Focused work · gpt-test · high]") {
+		t.Fatalf("home profile did not persist into chat footer: %q", footer)
+	}
+
+	store.Dispatch(ModeAction{Resolved: client.SessionV3ModeResult{
+		Mode:             "plan",
+		Preference:       client.ModelPreference{Provider: "codex", Model: "plan-model", Thinking: "medium"},
+		AgentModelPolicy: client.SessionV3AgentModelPolicy{ProfileName: "Planning", ProfileSource: "saved"},
+	}})
+	page.Draw(screen)
+	screen.Show()
+	footer := simulationRow(screen, 90, 17)
+	if !strings.Contains(footer, "[Planning · plan-model · medium]") || strings.Contains(footer, "Focused work") {
+		t.Fatalf("backend mode shift did not replace carried profile: %q", footer)
+	}
+}
+
 func TestShiftTabCyclesModeThroughBackendResolvedState(t *testing.T) {
 	transport := &fakeTransport{mode: client.SessionV3ModeResult{
 		Mode:             "plan",

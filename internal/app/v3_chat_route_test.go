@@ -9,6 +9,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 
 	"swarm-refactor/swarmtui/internal/model"
+	"swarm-refactor/swarmtui/internal/ui"
 )
 
 func TestV3ChatRenderWakeIsIdleAndCoalescesBurst(t *testing.T) {
@@ -63,6 +64,22 @@ func TestV3ChatFooterUsesConfiguredSwarmNameForLegacyHostFallback(t *testing.T) 
 	app := &App{config: AppConfig{Swarm: SwarmConfig{Name: "Configured Desk"}}}
 	if got := app.v3ChatFooterRouteLabel(model.ChatRoute{Label: "host"}); got != "Configured Desk" {
 		t.Fatalf("legacy host footer identity = %q, want configured swarm name", got)
+	}
+}
+
+func TestV3ChatHomeProfileUsesCanonicalCreateAndFooterHandoff(t *testing.T) {
+	profile := model.ActiveModelProfile{Source: "saved", ProfileID: "profile-1", Name: "Focused work", ModelMode: "split"}
+	page := ui.NewHomePage(model.HomeModel{ActiveAgent: "swarm", ActiveModelProfile: profile})
+	intent := buildHomeSessionIntent(page, model.ChatRoute{})
+	if intent.Profile != profile {
+		t.Fatalf("home-to-chat profile handoff = %#v, want %#v", intent.Profile, profile)
+	}
+	choice := v3ChatCreateModelProfile(intent.Profile)
+	if choice == nil || choice.SavedProfileID != "profile-1" {
+		t.Fatalf("create model profile choice = %#v", choice)
+	}
+	if got := v3ChatHomeProfileLabel(profile); got != "Focused work" {
+		t.Fatalf("chat footer profile label = %q, want Focused work", got)
 	}
 }
 

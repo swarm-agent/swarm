@@ -58,13 +58,38 @@ func (a *App) v3ChatSessionFooterRouteLabel(summary model.SessionSummary) string
 	return a.v3ChatFooterRouteLabel(a.selectedChatRouteForWorkspace(summary.WorkspacePath))
 }
 
-func (a *App) newV3ChatPage(runtime *v3chat.Runtime, routeLabel string) *v3chat.Page {
+func (a *App) newV3ChatPage(runtime *v3chat.Runtime, routeLabel, profileLabel string) *v3chat.Page {
 	page := v3chat.NewPage(runtime, a.v3ChatStyles())
 	page.SetRouteLabel(routeLabel)
+	page.SetProfileLabel(profileLabel)
 	page.SetCycleModeMatcher(func(ev *tcell.EventKey) bool {
 		return a.activeKeyBindings().Match(ev, ui.KeybindChatCycleMode)
 	})
 	return page
+}
+
+func v3ChatHomeProfileLabel(profile model.ActiveModelProfile) string {
+	switch strings.ToLower(strings.TrimSpace(profile.Source)) {
+	case "saved":
+		return emptyFallback(strings.TrimSpace(profile.Name), "Saved profile")
+	case "temporary":
+		return "Temporary/customized"
+	default:
+		return "Agent model default"
+	}
+}
+
+func v3ChatCreateModelProfile(profile model.ActiveModelProfile) *client.SessionV3ModelProfileChoice {
+	switch strings.ToLower(strings.TrimSpace(profile.Source)) {
+	case "saved":
+		if profileID := strings.TrimSpace(profile.ProfileID); profileID != "" {
+			return &client.SessionV3ModelProfileChoice{SavedProfileID: profileID}
+		}
+	case "agent-default":
+		value := true
+		return &client.SessionV3ModelProfileChoice{UseAgentDefault: &value}
+	}
+	return nil
 }
 
 func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, worktreeSuffix string) error {
@@ -139,6 +164,7 @@ func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, 
 		TargetKind:               route.TargetKind,
 		TargetRelationship:       route.TargetRelationship,
 		Preference:               intent.Preference,
+		ModelProfile:             v3ChatCreateModelProfile(intent.Profile),
 		WorktreeMode:             worktreeMode,
 		WorktreeUseCurrentBranch: useCurrent,
 		WorktreeBaseBranch:       baseBranch,
@@ -146,7 +172,7 @@ func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, 
 	}
 	runtime := a.newV3Runtime()
 	a.closeV3Chat()
-	a.v3Chat = a.newV3ChatPage(runtime, a.v3ChatFooterRouteLabel(route))
+	a.v3Chat = a.newV3ChatPage(runtime, a.v3ChatFooterRouteLabel(route), v3ChatHomeProfileLabel(intent.Profile))
 	a.route = "v3chat"
 	a.home.ClearPrompt()
 	a.v3Chat.OpenNew(v3chat.NewSessionRequest{Create: create, InitialPrompt: prompt})
@@ -181,7 +207,7 @@ func (a *App) openExistingV3Chat(summary model.SessionSummary) error {
 		return err
 	}
 	a.closeV3Chat()
-	a.v3Chat = a.newV3ChatPage(runtime, a.v3ChatSessionFooterRouteLabel(summary))
+	a.v3Chat = a.newV3ChatPage(runtime, a.v3ChatSessionFooterRouteLabel(summary), "")
 	a.route = "v3chat"
 	return nil
 }

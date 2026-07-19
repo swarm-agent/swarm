@@ -544,10 +544,17 @@ type SessionCreateOptions struct {
 	TargetRelationship       string
 	Metadata                 map[string]any
 	Preference               ModelPreference
+	ModelProfile             *SessionV3ModelProfileChoice
 	WorktreeMode             string
 	WorktreeUseCurrentBranch *bool
 	WorktreeBaseBranch       string
 	WorktreeBranchName       string
+}
+
+type SessionV3ModelProfileChoice struct {
+	UseAccountDefault *bool
+	SavedProfileID    string
+	UseAgentDefault   *bool
 }
 
 type SessionSummary struct {
@@ -2920,6 +2927,9 @@ func (c *API) CreateSessionV3WithOptions(ctx context.Context, options SessionCre
 		req["runtime_workspace_path"] = runtimeWorkspacePath
 	}
 	appendSessionV3WorktreeCreateOptions(req, options)
+	if profile := sessionV3ModelProfileCreateRequest(options.ModelProfile); profile != nil {
+		req["model_profile"] = profile
+	}
 	if len(options.Metadata) > 0 {
 		req["metadata"] = options.Metadata
 	}
@@ -2929,6 +2939,22 @@ func (c *API) CreateSessionV3WithOptions(ctx context.Context, options SessionCre
 	}
 	resp.Session = markSessionV3(resp.Session, resp.Projection)
 	return resp, nil
+}
+
+func sessionV3ModelProfileCreateRequest(choice *SessionV3ModelProfileChoice) map[string]any {
+	if choice == nil {
+		return nil
+	}
+	if profileID := strings.TrimSpace(choice.SavedProfileID); profileID != "" {
+		return map[string]any{"saved_profile_id": profileID}
+	}
+	if choice.UseAccountDefault != nil && *choice.UseAccountDefault {
+		return map[string]any{"use_account_default": true}
+	}
+	if choice.UseAgentDefault != nil && *choice.UseAgentDefault {
+		return map[string]any{"use_agent_default": true}
+	}
+	return nil
 }
 
 func appendSessionV3WorktreeCreateOptions(req map[string]any, options SessionCreateOptions) {
@@ -2976,6 +3002,9 @@ func (c *API) CreateSessionV3TUIWithOptions(ctx context.Context, options Session
 		},
 	}
 	appendSessionV3WorktreeCreateOptions(req, options)
+	if profile := sessionV3ModelProfileCreateRequest(options.ModelProfile); profile != nil {
+		req["model_profile"] = profile
+	}
 	if len(options.Metadata) > 0 {
 		req["metadata"] = options.Metadata
 	}

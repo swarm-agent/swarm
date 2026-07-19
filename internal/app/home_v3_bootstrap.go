@@ -182,6 +182,7 @@ func buildHomeSessionIntent(page *ui.HomePage, route model.ChatRoute) ui.HomeSes
 		Agent:              state.SelectedAgent,
 		Mode:               page.SessionMode(),
 		Preference:         client.ModelPreference{Provider: state.ModelProvider, Model: state.ModelName, Thinking: state.Thinking, ServiceTier: state.ServiceTier, ContextMode: state.ContextMode},
+		Profile:            state.Profile,
 		RouteID:            strings.TrimSpace(route.ID),
 		SwarmID:            strings.TrimSpace(route.SwarmID),
 		TargetKind:         strings.TrimSpace(route.TargetKind),

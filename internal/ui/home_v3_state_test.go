@@ -36,7 +36,7 @@ func TestHomepageStateCapturesComposerAndSessionIntentBoundary(t *testing.T) {
 	if state.SelectedWorkspace.Path != "/default" || state.SelectedWorkspace.LocalWorkspaceBindingID != "binding-1" {
 		t.Fatalf("selected workspace = %#v", state.SelectedWorkspace)
 	}
-	if state.SelectedAgent != "swarm" || state.ModelProvider != "codex" || state.ModelName != "gpt-test" || state.ComposerInput != "build the feature" {
+	if state.SelectedAgent != "swarm" || state.ModelProvider != "codex" || state.ModelName != "gpt-test" || state.Profile.Name != "Profile" || state.ComposerInput != "build the feature" {
 		t.Fatalf("homepage state = %#v", state)
 	}
 	intent := page.SessionIntent()

@@ -71,6 +71,7 @@ type Page struct {
 	lastHeight     int
 	modelTarget    footerbar.Rect
 	routeLabel     string
+	profileLabel   string
 	modelPicker    bool
 	modelLoading   bool
 	modelOptions   []client.ModelCatalogRecord
@@ -119,6 +120,15 @@ func (p *Page) SetRouteLabel(label string) {
 	}
 	p.mu.Lock()
 	p.routeLabel = strings.TrimSpace(label)
+	p.mu.Unlock()
+}
+
+func (p *Page) SetProfileLabel(label string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.profileLabel = strings.TrimSpace(label)
 	p.mu.Unlock()
 }
 
@@ -481,7 +491,7 @@ func (p *Page) Draw(screen tcell.Screen) {
 	cursor := p.cursor
 	scroll := p.scroll
 	status, errText, busy := p.status, p.errText, p.busy
-	routeLabel := p.routeLabel
+	routeLabel, profileLabel := p.routeLabel, p.profileLabel
 	p.lastWidth, p.lastHeight = width, height
 	modelPicker, modelLoading, modelIndex := p.modelPicker, p.modelLoading, p.modelIndex
 	modelOptions := append([]client.ModelCatalogRecord(nil), p.modelOptions...)
@@ -542,7 +552,7 @@ func (p *Page) Draw(screen tcell.Screen) {
 	drawHLine(screen, 0, composerY, width, styles.Border)
 	modelState := SelectModel(state)
 	footerY := height - footerHeight
-	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, routeLabel, statusLine, statusStyle)
+	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, routeLabel, profileLabel, statusLine, statusStyle)
 	prefix := "> "
 	available := maxInt(1, width-len(prefix)-1)
 	inputText := string(input)
@@ -565,17 +575,21 @@ func (p *Page) Draw(screen tcell.Screen) {
 	}
 }
 
-func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, state State, routeLabel, status string, statusStyle tcell.Style) {
+func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, state State, routeLabel, profileLabel, status string, statusStyle tcell.Style) {
 	modelState := SelectModel(state)
 	usage := SelectUsage(state)
 	displayedMode := "off"
 	if strings.EqualFold(strings.TrimSpace(state.Session.Mode), "plan") {
 		displayedMode = "on"
 	}
+	resolvedProfileLabel := modelProfileLabel(modelState)
+	if resolvedProfileLabel == "" {
+		resolvedProfileLabel = strings.TrimSpace(profileLabel)
+	}
 	footerState := footerbar.State{
 		RouteLabel:     strings.TrimSpace(routeLabel),
 		DisplayedMode:  displayedMode,
-		ProfileLabel:   modelProfileLabel(modelState),
+		ProfileLabel:   resolvedProfileLabel,
 		ModelLabel:     displayModelLabel(modelState.Preference),
 		Thinking:       strings.TrimSpace(modelState.Preference.Thinking),
 		ServiceTier:    strings.TrimSpace(modelState.Preference.ServiceTier),

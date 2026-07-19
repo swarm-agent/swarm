@@ -31,6 +31,10 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 			if body["agent_name"] != "swarm" {
 				t.Fatalf("v3 create agent_name = %#v, want swarm", body["agent_name"])
 			}
+			profile, _ := body["model_profile"].(map[string]any)
+			if profile["saved_profile_id"] != "profile-1" {
+				t.Fatalf("v3 create model_profile = %#v", body["model_profile"])
+			}
 			if body["worktree_mode"] != "on" || body["worktree_base_branch"] != "dev" || body["worktree_branch_name"] != "agent/client-v3" {
 				t.Fatalf("v3 create worktree fields = %#v", body)
 			}
@@ -85,7 +89,7 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 
 	api := New(server.URL)
 	api.SetToken("test-token")
-	created, err := api.CreateSessionV3WithOptions(context.Background(), SessionCreateOptions{Title: "V3", WorkspacePath: "/workspace", WorkspaceName: "workspace", WorkspaceBindingID: "binding-primary", SwarmID: "host-swarm", TargetKind: "host", TargetRelationship: "self", Mode: "auto", AgentName: "swarm", WorktreeMode: "on", WorktreeBaseBranch: "dev", WorktreeBranchName: "agent/client-v3"})
+	created, err := api.CreateSessionV3WithOptions(context.Background(), SessionCreateOptions{Title: "V3", WorkspacePath: "/workspace", WorkspaceName: "workspace", WorkspaceBindingID: "binding-primary", SwarmID: "host-swarm", TargetKind: "host", TargetRelationship: "self", Mode: "auto", AgentName: "swarm", ModelProfile: &SessionV3ModelProfileChoice{SavedProfileID: "profile-1"}, WorktreeMode: "on", WorktreeBaseBranch: "dev", WorktreeBranchName: "agent/client-v3"})
 	if err != nil {
 		t.Fatalf("CreateSessionV3WithOptions() error = %v", err)
 	}
@@ -120,6 +124,34 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 		if seen[i] != want[i] {
 			t.Fatalf("request[%d] = %q, want %q", i, seen[i], want[i])
 		}
+	}
+}
+
+func TestSessionV3TUICreateCarriesSelectedModelProfile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v3/tui/sessions" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		profile, _ := body["model_profile"].(map[string]any)
+		if profile["saved_profile_id"] != "profile-1" {
+			t.Fatalf("tui create model_profile = %#v", body["model_profile"])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session":    map[string]any{"id": "session-v3", "title": "V3", "mode": "auto"},
+			"projection": map[string]any{"session_id": "session-v3"},
+		})
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("test-token")
+	_, err := api.CreateSessionV3TUIWithOptions(context.Background(), SessionCreateOptions{CWDPath: "/workspace", AgentName: "swarm", ModelProfile: &SessionV3ModelProfileChoice{SavedProfileID: "profile-1"}})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

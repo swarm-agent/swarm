@@ -20,19 +20,20 @@ import (
 const sessionsV3TUIPrefix = "/v3/tui/sessions/"
 
 type sessionsV3TUICreateRequest struct {
-	SessionID                string                      `json:"session_id,omitempty"`
-	ClientRequestID          string                      `json:"client_request_id,omitempty"`
-	IdempotencyKey           string                      `json:"idempotency_key,omitempty"`
-	CWDPath                  string                      `json:"cwd_path"`
-	Title                    string                      `json:"title,omitempty"`
-	Mode                     string                      `json:"mode,omitempty"`
-	AgentName                string                      `json:"agent_name,omitempty"`
-	Preference               pebblestore.ModelPreference `json:"preference,omitempty"`
-	WorktreeMode             string                      `json:"worktree_mode,omitempty"`
-	WorktreeUseCurrentBranch *bool                       `json:"worktree_use_current_branch,omitempty"`
-	WorktreeBaseBranch       string                      `json:"worktree_base_branch,omitempty"`
-	WorktreeBranchName       string                      `json:"worktree_branch_name,omitempty"`
-	Metadata                 map[string]any              `json:"metadata,omitempty"`
+	SessionID                string                        `json:"session_id,omitempty"`
+	ClientRequestID          string                        `json:"client_request_id,omitempty"`
+	IdempotencyKey           string                        `json:"idempotency_key,omitempty"`
+	CWDPath                  string                        `json:"cwd_path"`
+	Title                    string                        `json:"title,omitempty"`
+	Mode                     string                        `json:"mode,omitempty"`
+	AgentName                string                        `json:"agent_name,omitempty"`
+	Preference               pebblestore.ModelPreference   `json:"preference,omitempty"`
+	WorktreeMode             string                        `json:"worktree_mode,omitempty"`
+	WorktreeUseCurrentBranch *bool                         `json:"worktree_use_current_branch,omitempty"`
+	WorktreeBaseBranch       string                        `json:"worktree_base_branch,omitempty"`
+	WorktreeBranchName       string                        `json:"worktree_branch_name,omitempty"`
+	Metadata                 map[string]any                `json:"metadata,omitempty"`
+	ModelProfile             *sessionsV3ModelProfileChoice `json:"model_profile,omitempty"`
 }
 
 type sessionsV3TUIRebindRequest struct {
@@ -150,7 +151,12 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 		title = "New Session"
 	}
 	now := time.Now().UnixMilli()
-	metadata := sessionsV3TUICreateServerMetadata(req.Metadata, resolvedAgent, runtimeSwarmID, cwdPath)
+	modelProfileSnapshot, err := s.resolveSessionsV3ModelProfileChoice(identity.ContextWithPrincipal(r.Context(), principal), req.ModelProfile, true, now)
+	if err != nil {
+		writeModelProfileError(w, err)
+		return
+	}
+	metadata := sessionsV3ModelProfileMetadata(sessionsV3TUICreateServerMetadata(req.Metadata, resolvedAgent, runtimeSwarmID, cwdPath), modelProfileSnapshot)
 	session := pebblestore.SessionSnapshot{
 		ID:             sessionID,
 		UserID:         strings.TrimSpace(principal.UserID),
@@ -160,6 +166,7 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 		Title:          title,
 		Mode:           sessionruntime.NormalizeMode(req.Mode),
 		Preference:     normalizeSessionsV3ModelPreference(req.Preference),
+		ModelProfile:   modelProfileSnapshot,
 		Metadata:       metadata,
 		CreatedAt:      now,
 		UpdatedAt:      now,
@@ -467,18 +474,19 @@ func sessionsV3ResolvedAgentIdentityFromMetadata(metadata map[string]any) (sessi
 
 func sessionsV3TUICreatePayloadHash(sessionID string, req sessionsV3TUICreateRequest, cwdPath, title string, metadata map[string]any) (string, error) {
 	canonical := struct {
-		Operation                string                      `json:"operation"`
-		SessionID                string                      `json:"session_id"`
-		Title                    string                      `json:"title"`
-		CWDPath                  string                      `json:"cwd_path"`
-		Mode                     string                      `json:"mode"`
-		AgentName                string                      `json:"agent_name,omitempty"`
-		Preference               pebblestore.ModelPreference `json:"preference"`
-		WorktreeMode             string                      `json:"worktree_mode,omitempty"`
-		WorktreeUseCurrentBranch *bool                       `json:"worktree_use_current_branch,omitempty"`
-		WorktreeBaseBranch       string                      `json:"worktree_base_branch,omitempty"`
-		WorktreeBranchName       string                      `json:"worktree_branch_name,omitempty"`
-		Metadata                 map[string]any              `json:"metadata,omitempty"`
+		Operation                string                        `json:"operation"`
+		SessionID                string                        `json:"session_id"`
+		Title                    string                        `json:"title"`
+		CWDPath                  string                        `json:"cwd_path"`
+		Mode                     string                        `json:"mode"`
+		AgentName                string                        `json:"agent_name,omitempty"`
+		Preference               pebblestore.ModelPreference   `json:"preference"`
+		WorktreeMode             string                        `json:"worktree_mode,omitempty"`
+		WorktreeUseCurrentBranch *bool                         `json:"worktree_use_current_branch,omitempty"`
+		WorktreeBaseBranch       string                        `json:"worktree_base_branch,omitempty"`
+		WorktreeBranchName       string                        `json:"worktree_branch_name,omitempty"`
+		Metadata                 map[string]any                `json:"metadata,omitempty"`
+		ModelProfile             *sessionsV3ModelProfileChoice `json:"model_profile,omitempty"`
 	}{
 		Operation:                sessionruntime.SessionMutationCreateSession,
 		SessionID:                strings.TrimSpace(sessionID),
@@ -492,6 +500,7 @@ func sessionsV3TUICreatePayloadHash(sessionID string, req sessionsV3TUICreateReq
 		WorktreeBaseBranch:       strings.TrimSpace(req.WorktreeBaseBranch),
 		WorktreeBranchName:       strings.TrimSpace(req.WorktreeBranchName),
 		Metadata:                 cloneSessionsV3Metadata(metadata),
+		ModelProfile:             req.ModelProfile,
 	}
 	raw, err := json.Marshal(canonical)
 	if err != nil {

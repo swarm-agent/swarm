@@ -28,6 +28,7 @@ type HomeSessionIntent struct {
 	Agent              string
 	Mode               string
 	Preference         client.ModelPreference
+	Profile            model.ActiveModelProfile
 	RouteID            string
 	SwarmID            string
 	TargetKind         string
