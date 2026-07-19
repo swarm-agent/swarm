@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	maxComposerRunes = 32 * 1024
-	maxRowCacheItems = maxResidentMessages
+	maxComposerRunes       = 32 * 1024
+	maxComposerVisibleRows = 8
+	maxRowCacheItems       = maxResidentMessages
 )
 
 // PageStyles are supplied by the app shell so this package does not depend on
@@ -62,6 +63,8 @@ type Page struct {
 	mu             sync.Mutex
 	input          []rune
 	cursor         int
+	pasteActive    bool
+	pasteBuffer    []rune
 	scroll         int
 	follow         bool
 	status         string
@@ -180,7 +183,71 @@ func (p *Page) ClearInput() {
 	p.mu.Lock()
 	p.input = nil
 	p.cursor = 0
+	p.pasteBuffer = nil
 	p.mu.Unlock()
+}
+
+func (p *Page) SetPasteActive(active bool) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	wasActive := p.pasteActive
+	p.pasteActive = active
+	if wasActive && !active {
+		p.flushPasteBufferLocked()
+	}
+	p.mu.Unlock()
+}
+
+func (p *Page) flushPasteBufferLocked() {
+	if len(p.pasteBuffer) == 0 {
+		return
+	}
+	p.insertRunesLocked(p.pasteBuffer)
+	p.pasteBuffer = nil
+}
+
+func (p *Page) insertRunesLocked(chunk []rune) {
+	remaining := maxComposerRunes - len(p.input)
+	if remaining <= 0 || len(chunk) == 0 {
+		return
+	}
+	if len(chunk) > remaining {
+		chunk = chunk[:remaining]
+	}
+	inserted := append([]rune(nil), chunk...)
+	p.input = append(p.input, make([]rune, len(inserted))...)
+	copy(p.input[p.cursor+len(inserted):], p.input[p.cursor:len(p.input)-len(inserted)])
+	copy(p.input[p.cursor:], inserted)
+	p.cursor += len(inserted)
+}
+
+func (p *Page) handlePasteKeyLocked(ev *tcell.EventKey) {
+	switch ev.Key() {
+	case tcell.KeyRune:
+		r := ev.Rune()
+		if r == '\r' {
+			r = '\n'
+		}
+		if r == '\n' || r == '\t' || r >= ' ' {
+			if r == '\t' {
+				r = ' '
+			}
+			p.pasteBuffer = append(p.pasteBuffer, r)
+		}
+	case tcell.KeyEnter, tcell.KeyCtrlJ:
+		p.pasteBuffer = append(p.pasteBuffer, '\n')
+	case tcell.KeyTab, tcell.KeyBacktab:
+		p.pasteBuffer = append(p.pasteBuffer, ' ')
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(p.pasteBuffer) > 0 {
+			p.pasteBuffer = p.pasteBuffer[:len(p.pasteBuffer)-1]
+		}
+	}
+	if len(p.pasteBuffer) >= 256 {
+		p.flushPasteBufferLocked()
+	}
 }
 
 func (p *Page) OpenNew(request NewSessionRequest) {
@@ -271,6 +338,10 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	if p.modelPicker {
 		return p.handleModelPickerKeyLocked(ev)
 	}
+	if p.pasteActive {
+		p.handlePasteKeyLocked(ev)
+		return PageActionNone
+	}
 	if p.matchCycleMode != nil && p.matchCycleMode(ev) {
 		p.cycleModeLocked()
 		return PageActionNone
@@ -293,6 +364,8 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			p.scroll = 0
 			go p.Send(text)
 		}
+	case tcell.KeyCtrlJ:
+		p.insertRunesLocked([]rune{'\n'})
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if p.cursor > 0 {
 			p.input = append(p.input[:p.cursor-1], p.input[p.cursor:]...)
@@ -331,13 +404,7 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 		// Recovery scope is already retained by the runtime's hydrated session.
 		go p.Recover("", "")
 	case tcell.KeyRune:
-		if len(p.input) < maxComposerRunes {
-			r := ev.Rune()
-			p.input = append(p.input, 0)
-			copy(p.input[p.cursor+1:], p.input[p.cursor:])
-			p.input[p.cursor] = r
-			p.cursor++
-		}
+		p.insertRunesLocked([]rune{ev.Rune()})
 	}
 	return PageActionNone
 }
@@ -563,7 +630,11 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if height < 12 || width < 50 {
 		footerHeight = 1
 	}
-	composerHeight := 2 + footerHeight
+	composerLines, composerCursorLine, composerCursorCol := composerLayout(string(input), cursor, width)
+	composerVisibleRows := minInt(len(composerLines), maxComposerVisibleRows)
+	composerVisibleRows = minInt(composerVisibleRows, maxInt(1, height-footerHeight-3))
+	composerStart := inputVisibleWindow(len(composerLines), composerVisibleRows, composerCursorLine)
+	composerHeight := 1 + composerVisibleRows + footerHeight
 	transcriptTop := 1
 	transcriptHeight := height - transcriptTop - composerHeight
 	if transcriptHeight < 1 {
@@ -592,22 +663,19 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	modelState := SelectModel(state)
 	footerY := height - footerHeight
 	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, routeLabel, profileLabel, statusLine, statusStyle)
-	prefix := "> "
-	available := maxInt(1, width-len(prefix)-1)
-	inputText := string(input)
-	visible, visibleCursor := composerWindow(inputText, cursor, available)
-	drawText(screen, 0, composerY+1, width, styles.Prompt, prefix+visible)
-	cursorX := len(prefix) + visibleCursor
-	if cursorX >= width {
-		cursorX = width - 1
+	composerEnd := minInt(len(composerLines), composerStart+composerVisibleRows)
+	for i := composerStart; i < composerEnd; i++ {
+		drawText(screen, 0, composerY+1+i-composerStart, width, styles.Prompt, composerLines[i])
 	}
-	if composerY+1 < height && cursorX >= 0 {
+	cursorY := composerY + 1 + composerCursorLine - composerStart
+	cursorX := minInt(maxInt(0, composerCursorCol), width-1)
+	if cursorY >= composerY+1 && cursorY < footerY {
 		r := ' '
-		visibleRunes := []rune(visible)
-		if visibleCursor < len(visibleRunes) {
-			r = visibleRunes[visibleCursor]
+		lineRunes := []rune(composerLines[composerCursorLine])
+		if composerCursorCol < len(lineRunes) {
+			r = lineRunes[composerCursorCol]
 		}
-		screen.SetContent(cursorX, composerY+1, r, nil, styles.Cursor)
+		screen.SetContent(cursorX, cursorY, r, nil, styles.Cursor)
 	}
 	if modelPicker {
 		p.drawModelPicker(screen, width, height, styles, modelOptions, modelIndex, modelLoading, modelState)
@@ -957,18 +1025,56 @@ func (p *Page) cachedWrap(key, text string, width int) []string {
 	return lines
 }
 
-func composerWindow(text string, cursor, width int) (string, int) {
-	runes := []rune(text)
+func composerLayout(text string, cursor, width int) ([]string, int, int) {
+	const firstPrefix = "> "
+	const continuationPrefix = "  "
+	width = maxInt(1, width)
+	runes := []rune(strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n"))
 	cursor = maxInt(0, minInt(cursor, len(runes)))
-	if width <= 0 {
-		return "", 0
+	lines := []string{firstPrefix}
+	line := []rune(firstPrefix)
+	cursorLine, cursorCol := 0, len(line)
+
+	startContinuation := func() {
+		lines = append(lines, continuationPrefix)
+		line = []rune(continuationPrefix)
 	}
-	start := 0
-	if cursor >= width {
-		start = cursor - width + 1
+	commitLine := func() {
+		lines[len(lines)-1] = string(line)
 	}
-	end := minInt(len(runes), start+width)
-	return string(runes[start:end]), cursor - start
+	for i, r := range runes {
+		if r != '\n' && len(line) >= width {
+			commitLine()
+			startContinuation()
+		}
+		if i == cursor {
+			cursorLine, cursorCol = len(lines)-1, len(line)
+		}
+		if r == '\n' {
+			commitLine()
+			startContinuation()
+			continue
+		}
+		line = append(line, r)
+	}
+	if len(line) >= width {
+		commitLine()
+		startContinuation()
+	}
+	if cursor == len(runes) {
+		cursorLine, cursorCol = len(lines)-1, len(line)
+	}
+	commitLine()
+	return lines, cursorLine, cursorCol
+}
+
+func inputVisibleWindow(totalLines, visibleHeight, cursorLine int) int {
+	if visibleHeight <= 0 || totalLines <= visibleHeight {
+		return 0
+	}
+	cursorLine = maxInt(0, minInt(cursorLine, totalLines-1))
+	start := cursorLine - visibleHeight + 1
+	return maxInt(0, minInt(start, totalLines-visibleHeight))
 }
 
 func wrapText(text string, width int) []string {

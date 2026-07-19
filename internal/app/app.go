@@ -605,6 +605,11 @@ func (a *App) Run() error {
 					a.consumeHomeActions()
 					continue
 				}
+				if a.route == "v3chat" && a.v3Chat != nil {
+					a.v3Chat.HandleKey(e)
+					dirty = true
+					continue
+				}
 				a.setPasteActive(false)
 				dirty = true
 			}
@@ -667,6 +672,9 @@ func (a *App) setPasteActive(active bool) {
 	}
 	if a.chat != nil {
 		a.chat.SetPasteActive(active)
+	}
+	if a.v3Chat != nil {
+		a.v3Chat.SetPasteActive(active)
 	}
 }
 
@@ -1876,6 +1884,10 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 	}
 
 	if keybinds.Match(ev, ui.KeybindGlobalQuit) {
+		if a.route == "v3chat" && a.v3Chat != nil && strings.TrimSpace(a.v3Chat.InputValue()) != "" {
+			a.v3Chat.ClearInput()
+			return true
+		}
 		if a.route == "chat" && a.chat != nil && strings.TrimSpace(a.chat.InputValue()) != "" {
 			a.chat.ClearInput()
 			return true

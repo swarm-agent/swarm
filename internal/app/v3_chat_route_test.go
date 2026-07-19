@@ -10,6 +10,7 @@ import (
 
 	"swarm-refactor/swarmtui/internal/model"
 	"swarm-refactor/swarmtui/internal/ui"
+	"swarm-refactor/swarmtui/internal/ui/v3chat"
 )
 
 func TestV3ChatRenderWakeIsIdleAndCoalescesBurst(t *testing.T) {
@@ -39,6 +40,33 @@ func TestV3ChatRenderWakeIsIdleAndCoalescesBurst(t *testing.T) {
 	app.consumeV3ChatRender()
 	if got := len(app.pendingV3ChatRender); got != 0 {
 		t.Fatalf("render queue after consume = %d", got)
+	}
+}
+
+func TestV3ChatCtrlCClearsInputBeforeRequestingQuit(t *testing.T) {
+	page := v3chat.NewPage(v3chat.NewRuntime(nil, v3chat.NewStore(), nil), v3chat.PageStyles{})
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
+	app := &App{
+		home:   ui.NewHomePage(model.EmptyHome()),
+		v3Chat: page,
+		route:  "v3chat",
+		config: defaultAppConfig(),
+	}
+
+	if !app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlC, 0, tcell.ModNone)) {
+		t.Fatal("first Ctrl-C was not handled")
+	}
+	if got := page.InputValue(); got != "" {
+		t.Fatalf("V3 input = %q, want cleared input", got)
+	}
+	if app.quitRequested {
+		t.Fatal("first Ctrl-C requested quit while input was non-empty")
+	}
+	if !app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlC, 0, tcell.ModNone)) {
+		t.Fatal("second Ctrl-C was not handled")
+	}
+	if !app.quitRequested {
+		t.Fatal("second Ctrl-C did not request quit after input was cleared")
 	}
 }
 

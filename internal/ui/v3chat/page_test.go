@@ -139,6 +139,72 @@ func TestPageRendersComposerAboveCanonicalHomeFooterWithDesktopContext(t *testin
 	}
 }
 
+func TestPageComposerDefaultsToOneRowAndExpandsForMultilineInput(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'o', tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'e', tcell.ModNone))
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(40, 14)
+	page.Draw(screen)
+	screen.Show()
+	if got := simulationRow(screen, 40, 12); !strings.Contains(got, "> one") {
+		t.Fatalf("compact composer row = %q, want one-row input", got)
+	}
+
+	page.HandleKey(tcell.NewEventKey(tcell.KeyCtrlJ, 0, tcell.ModCtrl))
+	for _, r := range "two" {
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	page.Draw(screen)
+	screen.Show()
+	if first, second := simulationRow(screen, 40, 11), simulationRow(screen, 40, 12); !strings.Contains(first, "> one") || !strings.Contains(second, "  two") {
+		t.Fatalf("expanded composer rows = %q / %q", first, second)
+	}
+}
+
+func TestPageComposerPastePreservesMultilineContentAndFollowsCursor(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
+	page.SetPasteActive(true)
+	for _, r := range "first pasted line" {
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	for _, r := range "second pasted line with enough text to wrap" {
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	page.SetPasteActive(false)
+
+	want := "first pasted line\nsecond pasted line with enough text to wrap"
+	if got := page.InputValue(); got != want {
+		t.Fatalf("pasted input = %q, want %q", got, want)
+	}
+	lines, cursorLine, cursorCol := composerLayout(page.InputValue(), len([]rune(page.InputValue())), 24)
+	if len(lines) < 3 || cursorLine != len(lines)-1 || cursorCol <= 2 {
+		t.Fatalf("paste layout = lines %#v, cursor %d:%d", lines, cursorLine, cursorCol)
+	}
+	if start := inputVisibleWindow(len(lines), 2, cursorLine); start+2 != len(lines) {
+		t.Fatalf("visible composer starts at %d for %d lines; want tail containing cursor", start, len(lines))
+	}
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(24, 14)
+	page.Draw(screen)
+	screen.Show()
+	if drawn := simulationText(screen, 24, 14); !strings.Contains(drawn, "wrap") {
+		t.Fatalf("composer does not show the pasted content near the cursor:\n%s", drawn)
+	}
+}
+
 func TestPagePreservesHomeProfileUntilBackendModeShiftResolvesProfile(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
