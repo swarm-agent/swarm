@@ -5530,30 +5530,36 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		if isCloneSystemAgentName(action.Upsert.Name) {
-			a.home.SetAgentsModalLoading(false)
-			a.home.SetAgentsModalError("Clone inherits the parent session model and cannot be edited independently")
-			return
-		}
-		if isExplorerSystemAgentName(action.Upsert.Name) {
+		if isCloneSystemAgentName(action.Upsert.Name) || isExplorerSystemAgentName(action.Upsert.Name) {
+			label := "Explorer"
+			settingsField := "explorer"
+			if isCloneSystemAgentName(action.Upsert.Name) {
+				label = "Coder"
+				settingsField = "coder"
+			}
 			settings, err := a.api.GetUISettings(ctx)
 			if err != nil {
 				a.home.SetAgentsModalLoading(false)
-				a.home.SetAgentsModalError(fmt.Sprintf("load Explorer settings failed: %v", err))
+				a.home.SetAgentsModalError(fmt.Sprintf("load %s settings failed: %v", label, err))
 				return
 			}
-			settings.Agents.Explorer = client.UICompactAgentSettings{
+			selection := client.UICompactAgentSettings{
 				Provider:    strings.TrimSpace(action.Upsert.Provider),
 				Model:       strings.TrimSpace(action.Upsert.Model),
 				Thinking:    strings.TrimSpace(action.Upsert.Thinking),
 				ServiceTier: strings.TrimSpace(action.Upsert.ServiceTier),
 			}
+			if settingsField == "coder" {
+				settings.Agents.Coder = selection
+			} else {
+				settings.Agents.Explorer = selection
+			}
 			if _, err := a.api.UpdateUISettings(ctx, settings); err != nil {
 				a.home.SetAgentsModalLoading(false)
-				a.home.SetAgentsModalError(fmt.Sprintf("save Explorer model failed: %v", err))
+				a.home.SetAgentsModalError(fmt.Sprintf("save %s model failed: %v", label, err))
 				return
 			}
-			a.home.SetAgentsModalStatus("Explorer single-model settings saved")
+			a.home.SetAgentsModalStatus(label + " single-model settings saved")
 			a.refreshAgentsModalData("")
 			a.queueReload(false)
 			return
@@ -5624,7 +5630,7 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 
 func isCloneSystemAgentName(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
-	return name == "clone" || name == "system-clone"
+	return name == "clone" || name == "coder" || name == "system-clone"
 }
 
 func isExplorerSystemAgentName(name string) bool {
@@ -6572,10 +6578,11 @@ func enrichSystemAgentModels(state client.AgentState, settings client.UISettings
 			profile.AutoServiceTier = strings.TrimSpace(override.ServiceTier)
 			profile.ModelMode = "single"
 		case isCloneSystemAgentName(profile.Name):
-			profile.Provider = strings.TrimSpace(home.ModelProvider)
-			profile.Model = strings.TrimSpace(home.ModelName)
-			profile.Thinking = strings.TrimSpace(home.ThinkingLevel)
-			profile.AutoServiceTier = strings.TrimSpace(home.ServiceTier)
+			override := settings.Agents.Coder
+			profile.Provider = emptyFallback(strings.TrimSpace(override.Provider), strings.TrimSpace(home.ModelProvider))
+			profile.Model = emptyFallback(strings.TrimSpace(override.Model), strings.TrimSpace(home.ModelName))
+			profile.Thinking = emptyFallback(strings.TrimSpace(override.Thinking), strings.TrimSpace(home.ThinkingLevel))
+			profile.AutoServiceTier = emptyFallback(strings.TrimSpace(override.ServiceTier), strings.TrimSpace(home.ServiceTier))
 			profile.ModelMode = "single"
 		}
 	}

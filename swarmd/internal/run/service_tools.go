@@ -532,10 +532,10 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	}
 	if launch.VirtualTarget {
 		if s.worktrees == nil {
-			return taskLaunchPrepared{}, errors.New("task failed to allocate Clone worktree: worktree service is unavailable")
+			return taskLaunchPrepared{}, errors.New("task failed to allocate Coder worktree: worktree service is unavailable")
 		}
 		if launch.TaskBase == nil {
-			return taskLaunchPrepared{}, errors.New("task failed to allocate Clone worktree: parent Git state was not resolved")
+			return taskLaunchPrepared{}, errors.New("task failed to allocate Coder worktree: parent Git state was not resolved")
 		}
 		allocation, allocErr := s.worktrees.AllocateTaskWorkspace(parentSession.WorkspacePath, *launch.TaskBase, childSessionID)
 		if allocErr != nil {
@@ -2972,11 +2972,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 			if agentruntime.IsCloneAgentName(launchSpecs[i].RequestedSubagentType) {
 				if !row.ParentCopy || !agentruntime.IsCloneAgentName(row.ResolvedAgentName) {
-					return "", fmt.Errorf("approved task manifest launch %d does not identify compiled Clone", i)
+					return "", fmt.Errorf("approved task manifest launch %d does not identify compiled Coder", i)
 				}
 				profile, err = s.agents.ReconcileSystemAgentSnapshot(agentruntime.CloneAgentID, profile)
 				if err != nil {
-					return "", fmt.Errorf("reconcile compiled Clone launch snapshot: %w", err)
+					return "", fmt.Errorf("reconcile compiled Coder launch snapshot: %w", err)
 				}
 				trustedVirtualTargets[i] = true
 			} else {
@@ -3000,7 +3000,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		resolved, resolveErr := s.worktrees.ResolveTaskBase(parentSession.WorkspacePath)
 		if resolveErr != nil {
-			return "", fmt.Errorf("task failed to resolve parent Git state before Clone execution: %w", resolveErr)
+			return "", fmt.Errorf("task failed to resolve parent Git state before Coder execution: %w", resolveErr)
 		}
 		cloneTaskBase = &resolved
 	}
@@ -3008,7 +3008,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if len(cloneIndexes) > 1 {
 		for _, index := range cloneIndexes {
 			if len(launchSpecs[index].OwnedScope) == 0 {
-				return "", fmt.Errorf("task launches[%d] clone requires declared owned_scope", index)
+				return "", fmt.Errorf("task launches[%d] Coder requires declared owned_scope", index)
 			}
 		}
 		for left := 0; left < len(cloneIndexes); left++ {
@@ -3319,30 +3319,30 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if launch.VirtualTarget && s.worktrees != nil {
 			state, inspectErr := s.worktrees.InspectTaskWorkspace(outcome.WorkspacePath)
 			if inspectErr != nil {
-				return outcome, fmt.Errorf("inspect Clone handoff Git state: %w", inspectErr)
+				return outcome, fmt.Errorf("inspect Coder handoff Git state: %w", inspectErr)
 			}
 			outcome.WorktreeBranch = strings.TrimSpace(state.BranchName)
 			outcome.HeadCommit = strings.TrimSpace(state.HeadCommit)
 			outcome.GitStatus = strings.TrimSpace(state.Status)
 			outcome.WorktreeClean = state.Clean
 			if strings.TrimSpace(outcome.WorktreeBranch) != strings.TrimSpace(launch.ChildSession.WorktreeBranch) {
-				return outcome, fmt.Errorf("Clone handoff branch %q does not match allocated branch %q", outcome.WorktreeBranch, launch.ChildSession.WorktreeBranch)
+				return outcome, fmt.Errorf("Coder handoff branch %q does not match allocated branch %q", outcome.WorktreeBranch, launch.ChildSession.WorktreeBranch)
 			}
 			if outcome.HeadCommit == "" {
-				return outcome, errors.New("Clone handoff is missing child HEAD commit")
+				return outcome, errors.New("Coder handoff is missing child HEAD commit")
 			}
 			if !outcome.WorktreeClean {
-				return outcome, fmt.Errorf("implementation Clone completed with uncommitted work; commit the changes before a successful handoff:\n%s", outcome.GitStatus)
+				return outcome, fmt.Errorf("implementation Coder completed with uncommitted work; commit the changes before a successful handoff:\n%s", outcome.GitStatus)
 			}
 			if outcome.HeadCommit == outcome.BaseCommit {
-				return outcome, errors.New("implementation Clone completed without a commit")
+				return outcome, errors.New("implementation Coder completed without a commit")
 			}
 			descends, ancestryErr := s.worktrees.TaskCommitDescendsFrom(outcome.WorkspacePath, outcome.BaseCommit, outcome.HeadCommit)
 			if ancestryErr != nil {
-				return outcome, fmt.Errorf("validate Clone handoff ancestry: %w", ancestryErr)
+				return outcome, fmt.Errorf("validate Coder handoff ancestry: %w", ancestryErr)
 			}
 			if !descends {
-				return outcome, errors.New("Clone handoff HEAD does not descend from its recorded immutable base")
+				return outcome, errors.New("Coder handoff HEAD does not descend from its recorded immutable base")
 			}
 		}
 		if outcome.ReportChars > taskReportDefaultChars {
@@ -3691,7 +3691,7 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 	b.WriteString("6. End with a `Relevant filepaths:` section listing the most important files and why each matters.\n")
 	b.WriteString("7. If essential files are still unknown, include an `Open questions / missing filepaths:` section with exact paths needed.\n")
 	b.WriteString("8. Keep the final response concise, factual, and implementation-focused.\n")
-	b.WriteString("9. For implementation Clone work, finish with a scoped commit. If commit permission is denied or work fails, explicitly report the uncommitted/failed state; the parent records live HEAD and status for later repair.\n")
+	b.WriteString("9. For implementation Coder work, finish with a scoped commit. If commit permission is denied or work fails, explicitly report the uncommitted/failed state; the parent records live HEAD and status for later repair.\n")
 	return strings.TrimSpace(b.String())
 }
 

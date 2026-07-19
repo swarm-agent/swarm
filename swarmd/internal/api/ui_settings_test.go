@@ -15,6 +15,47 @@ import (
 	"swarm/packages/swarmd/internal/uisettings"
 )
 
+func TestUISettingsPostPersistsCoderModelSettings(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-coder-api.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, hub.Publish)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server.SetUISettingsService(settingsSvc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader([]byte(`{"agents":{"coder":{"provider":"CODEX","model":"gpt-5.6","thinking":"high","service_tier":"PRIORITY"}}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response uisettings.UISettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Agents.Coder.Provider != "codex" || response.Agents.Coder.Model != "gpt-5.6" || response.Agents.Coder.Thinking != "high" || response.Agents.Coder.ServiceTier != "priority" {
+		t.Fatalf("response Coder settings = %#v", response.Agents.Coder)
+	}
+	stored, err := settingsSvc.Get()
+	if err != nil {
+		t.Fatalf("reload settings: %v", err)
+	}
+	if stored.Agents.Coder != response.Agents.Coder {
+		t.Fatalf("stored Coder settings = %#v, want %#v", stored.Agents.Coder, response.Agents.Coder)
+	}
+}
+
 func TestUISettingsPostPreservesExistingThinkingTagsWhenChatOmitted(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api.pebble"))
 	if err != nil {

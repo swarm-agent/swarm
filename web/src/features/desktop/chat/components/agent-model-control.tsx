@@ -7,7 +7,7 @@ import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settin
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
 import { uiSettingsQueryOptions } from '../../../queries/query-options'
 import { saveSystemAgentSettings } from '../../settings/swarm/mutations/save-system-agent-settings'
-import { normalizeExplorerAgentSettings } from '../../settings/swarm/types/swarm-settings'
+import { normalizeCoderAgentSettings, normalizeExplorerAgentSettings } from '../../settings/swarm/types/swarm-settings'
 import { displayAgentName } from '../services/agent-display'
 import { canSwitchModelProfilePolicyGroup, modelProfilePolicyGroupLabel, modelProfilesInPolicyGroup, type ModelProfilePolicyGroup } from '../services/model-profile-groups'
 
@@ -78,11 +78,11 @@ const CLONE_AGENT_NAME = 'system-clone'
 const SWARM_AGENT_NAME = 'swarm'
 
 function isSystemUtility(name: string): boolean {
-  return name === EXPLORER_AGENT_NAME
+  return name === EXPLORER_AGENT_NAME || name === CLONE_AGENT_NAME
 }
 
 function isCompiledSystemAgent(name: string): boolean {
-  return isSystemUtility(name) || name === CLONE_AGENT_NAME || name === SWARM_AGENT_NAME
+  return isSystemUtility(name) || name === SWARM_AGENT_NAME
 }
 export type ModelDraft = { provider: string; model: string; thinking: string; serviceTier: string; contextMode: string }
 
@@ -329,6 +329,8 @@ export function AgentModelControl({
   const queryClient = useQueryClient()
   const { data: uiSettings = {} } = useQuery(uiSettingsQueryOptions())
   const explorerSettings = normalizeExplorerAgentSettings(uiSettings)
+  const coderSettings = normalizeCoderAgentSettings(uiSettings)
+  const coderSettingsEnabled = Boolean(coderSettings.provider && coderSettings.model)
   const explorerProfile = useMemo<AgentProfileRecord>(() => ({
     name: EXPLORER_AGENT_NAME,
     mode: 'subagent',
@@ -347,14 +349,14 @@ export function AgentModelControl({
   const cloneProfile = useMemo<AgentProfileRecord>(() => ({
     name: CLONE_AGENT_NAME,
     mode: 'subagent',
-    description: 'Compiled task-only implementation subagent',
-    provider: '', model: '', thinking: '', modelMode: 'single',
+    description: 'Compiled isolated implementation subagent',
+    provider: coderSettingsEnabled ? coderSettings.provider : '', model: coderSettingsEnabled ? coderSettings.model : '', thinking: coderSettingsEnabled ? coderSettings.thinking : '', modelMode: 'single',
     planProvider: '', planModel: '', planThinking: '', planServiceTier: '',
-    autoProvider: '', autoModel: '', autoThinking: '', autoServiceTier: '',
+    autoProvider: '', autoModel: '', autoThinking: '', autoServiceTier: coderSettingsEnabled ? coderSettings.service_tier : '',
     prompt: '', runtimeMode: 'readwrite', defaultSessionMode: 'auto', executionSetting: 'readwrite',
     exitPlanModeEnabled: false, toolScope: null, toolContract: null,
     enabled: true, protected: true, updatedAt: 0,
-  }), [])
+  }), [coderSettings.model, coderSettings.provider, coderSettings.service_tier, coderSettings.thinking, coderSettingsEnabled])
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -524,7 +526,7 @@ export function AgentModelControl({
 
   async function confirm(persistence: AgentModelControlConfirmInput['persistence']) {
     const profile = draftProfile
-    if (!profile || saving || busy || profile.name === CLONE_AGENT_NAME) return
+    if (!profile || saving || busy) return
     const normalizedDraftMode: DraftMode = draftMode === 'split' && !isPlanCapableAgent(profile) ? 'single' : draftMode
     const agentPatch = {
       ...buildPatch(normalizedDraftMode, singleDraft, planDraft, autoDraft, modelOptions),
@@ -547,7 +549,7 @@ export function AgentModelControl({
       if (isSystemUtility(profile.name)) {
         const saved = await saveSystemAgentSettings({
           current: uiSettings,
-          agent: 'explorer',
+          agent: profile.name === CLONE_AGENT_NAME ? 'coder' : 'explorer',
           settings: {
             provider: String(action.agentPatch.provider ?? '').trim(),
             model: String(action.agentPatch.model ?? '').trim(),
@@ -628,13 +630,13 @@ export function AgentModelControl({
           </div>
 
           <div className="min-h-0 overflow-y-auto p-5">
-            <section aria-label="Saved model profiles" className="mb-4">
+            {!draftProfile || !isSystemUtility(draftProfile.name) || visibleModelProfiles.length > 0 ? <section aria-label="Saved model profiles" className="mb-4">
               <div className="mb-2 flex items-end justify-between gap-3">
                 <div>
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{modelProfilePolicyGroupLabel(effectiveDraftMode)} profiles</div>
                   <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Profiles are grouped by model policy to keep the current setup clear.</div>
                 </div>
-                <button type="button" onClick={() => chooseModelProfile(null)} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"><Plus size={12} />New profile</button>
+                {!draftProfile || !isSystemUtility(draftProfile.name) ? <button type="button" onClick={() => chooseModelProfile(null)} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"><Plus size={12} />New profile</button> : null}
               </div>
               {profileGroupSwitchable ? <SetupProfileGroupSwitch value={effectiveDraftMode} onChange={setDraftMode} /> : null}
               {visibleModelProfiles.length ? (
@@ -649,7 +651,7 @@ export function AgentModelControl({
                           {savedProfileModelLabels(profile).map((label) => <span key={label} className="min-w-0 flex-1 truncate">{label}</span>)}
                         </span>
                       </button>
-                      <button
+                      {!draftProfile || !isSystemUtility(draftProfile.name) ? <button
                         type="button"
                         disabled={busy || saving || settingDefault || profile.isDefault || !onSetDefaultModelProfile}
                         onClick={() => { void makeModelProfileDefault(profile) }}
@@ -659,30 +661,27 @@ export function AgentModelControl({
                         className={`mr-1.5 rounded-md p-1.5 transition disabled:cursor-default ${profile.isDefault ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)] hover:bg-[var(--app-surface)] hover:text-[var(--app-primary)] disabled:opacity-50'}`}
                       >
                         <Star size={14} fill={profile.isDefault ? 'currentColor' : 'none'} />
-                      </button>
+                      </button> : null}
                     </div>
                   })}
                 </div>
               ) : <button type="button" onClick={() => chooseModelProfile(null)} className="w-full rounded-xl border border-dashed border-[var(--app-border)] px-4 py-4 text-left text-xs text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]">No {modelProfilePolicyGroupLabel(effectiveDraftMode).toLowerCase()} profiles yet. Create one in this group.</button>}
-            </section>
+            </section> : null}
 
-            <div className="mb-4 grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
-                Profile name
-                <input value={draftProfileName} onChange={(event) => setDraftProfileName(event.target.value)} placeholder="Name this model setup" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm font-normal normal-case tracking-normal text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
-              </label>
-              {editingModelProfile ? <div className="text-[11px] text-[var(--app-text-muted)]">{editingModelProfile.isDefault ? 'Editing your account default profile. Saving updates it everywhere; continuing for this chat only leaves it unchanged.' : 'Editing a saved profile. Saving updates it everywhere; continuing for this chat only leaves it unchanged.'}</div> : null}
-              {customized ? <div className="text-[11px] font-semibold text-[var(--app-warning)]">Unsaved changes — choose whether to update the saved profile or use this draft only in the current chat.</div> : null}
-            </div>
-            {draftProfile?.name === CLONE_AGENT_NAME ? (
-              <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
-                <div className="font-semibold text-[var(--app-text)]">Compiled system agent</div>
-                <div className="mt-1">Clone has no independent model controls. Every task launch inherits its parent session&apos;s provider, model, thinking, and service tier, while its identity, prompt, runtime, tools, worktree isolation, and commit handoff remain code-owned.</div>
+            {!draftProfile || !isSystemUtility(draftProfile.name) ? (
+              <div className="mb-4 grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+                <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
+                  Profile name
+                  <input value={draftProfileName} onChange={(event) => setDraftProfileName(event.target.value)} placeholder="Name this model setup" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm font-normal normal-case tracking-normal text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+                </label>
+                {editingModelProfile ? <div className="text-[11px] text-[var(--app-text-muted)]">{editingModelProfile.isDefault ? 'Editing your account default profile. Saving updates it everywhere; continuing for this chat only leaves it unchanged.' : 'Editing a saved profile. Saving updates it everywhere; continuing for this chat only leaves it unchanged.'}</div> : null}
+                {customized ? <div className="text-[11px] font-semibold text-[var(--app-warning)]">Unsaved changes — choose whether to update the saved profile or use this draft only in the current chat.</div> : null}
               </div>
-            ) : draftProfile && isSystemUtility(draftProfile.name) ? (
+            ) : null}
+            {draftProfile && isSystemUtility(draftProfile.name) ? (
               <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
                 <div className="font-semibold text-[var(--app-text)]">Compiled system agent</div>
-                <div className="mt-1">Explorer&apos;s provider, model, thinking level, and priority/service tier are configurable. Its identity, prompt, runtime, and tool contract remain code-owned.</div>
+                <div className="mt-1">{draftProfile.name === CLONE_AGENT_NAME ? 'Coder' : 'Explorer'} uses its independently configured single-model selection when set, otherwise it inherits the parent session model. Its identity, prompt, runtime, and tool contract remain code-owned.</div>
               </div>
             ) : draftProfile && agentMode(draftProfile) === 'primary' ? (
               <PrimaryAgentControlRow
@@ -720,8 +719,8 @@ export function AgentModelControl({
               </div>
             ) : null}
 
-            {draftProfile?.name === CLONE_AGENT_NAME ? null : effectiveDraftMode === 'single' ? (
-              <ModelDraftEditor title={draftProfile && isSystemUtility(draftProfile.name) ? 'Explorer model' : 'Single model'} draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
+            {effectiveDraftMode === 'single' ? (
+              <ModelDraftEditor title={draftProfile && isSystemUtility(draftProfile.name) ? `${displayAgentName(draftProfile.name)} model` : 'Single model'} draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
             ) : (
               <div className="mt-4 grid gap-3">
                 <ModelDraftEditor title="Plan model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('plan', provider)} onModelChange={(model) => selectModel('plan', model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
@@ -740,10 +739,10 @@ export function AgentModelControl({
 
         <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4">
           <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Cancel</button>
-          <button type="button" disabled={busy || saving || !draftProfile || draftProfile.name === CLONE_AGENT_NAME} onClick={() => { void confirm('temporary') }} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">Continue for this chat only</button>
-          {editingProfileId ? <button type="button" disabled={busy || saving || !customized} onClick={() => { void confirm('create-copy') }} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">Save as new</button> : null}
-          <button type="button" disabled={busy || saving || !draftProfile || draftProfile.name === CLONE_AGENT_NAME || !draftProfileName.trim() || Boolean(editingProfileId && !customized)} onClick={() => { void confirm(editingProfileId ? 'update' : 'create') }} className="rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60">
-            {saving || busy ? 'Saving…' : editingProfileId ? customized ? 'Save and apply' : 'Saved profile in use' : 'Create profile and apply'}
+          <button type="button" disabled={busy || saving || !draftProfile || isSystemUtility(draftProfile.name)} onClick={() => { void confirm('temporary') }} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">Continue for this chat only</button>
+          {editingProfileId && (!draftProfile || !isSystemUtility(draftProfile.name)) ? <button type="button" disabled={busy || saving || !customized} onClick={() => { void confirm('create-copy') }} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">Save as new</button> : null}
+          <button type="button" disabled={busy || saving || !draftProfile || (isSystemUtility(draftProfile.name) ? !singleDraft.provider || !singleDraft.model || !singleDraft.thinking : !draftProfileName.trim() || Boolean(editingProfileId && !customized))} onClick={() => { void confirm(editingProfileId ? 'update' : 'create') }} className="rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60">
+            {saving || busy ? 'Saving…' : draftProfile && isSystemUtility(draftProfile.name) ? `Save ${displayAgentName(draftProfile.name)} model` : editingProfileId ? customized ? 'Save and apply' : 'Saved profile in use' : 'Create profile and apply'}
           </button>
         </div>
       </div>

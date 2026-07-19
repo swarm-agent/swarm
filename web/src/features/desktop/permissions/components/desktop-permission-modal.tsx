@@ -8,6 +8,7 @@ import { cn } from '../../../../lib/cn'
 import { requestJson } from '../../../../app/api'
 import { ChatMarkdown } from '../../chat/components/chat-markdown'
 import { StructuredPlanDocumentView, normalizeStructuredPlanDocument, type StructuredPlanDocument } from '../../chat/components/structured-plan-document'
+import { displayAgentName } from '../../chat/services/agent-display'
 import { getToolTheme } from '../../chat/services/tool-theme'
 import { AGENT_TOOL_PRESET_OPTIONS, CUSTOM_AGENT_TOOL_PRESET_ID } from '../../chat/services/agent-tool-presets'
 import type { ModelOptionRecord } from '../../chat/types/chat'
@@ -2352,8 +2353,9 @@ function TaskLaunchModal({
           {payload.launches.length > 0 ? (
             <div className="grid max-h-[min(52dvh,34rem)] gap-3 overflow-y-auto overscroll-contain pr-1 sm:max-h-[min(56dvh,36rem)]">
               {payload.launches.map((launch) => {
-                const agentName = launch.resolvedAgentName || launch.requestedSubagentType || 'subagent'
-                const requestedLabel = launch.requestedSubagentType && launch.requestedSubagentType !== agentName ? launch.requestedSubagentType : ''
+                const resolvedAgentName = launch.resolvedAgentName || launch.requestedSubagentType || 'subagent'
+                const agentName = displayAgentName(resolvedAgentName)
+                const requestedLabel = launch.requestedSubagentType && displayAgentName(launch.requestedSubagentType) !== agentName ? displayAgentName(launch.requestedSubagentType) : ''
                 const modelLabel = [launch.subagentProvider, launch.subagentModel].filter(Boolean).join(' / ')
                 const toolLabel = taskLaunchToolsSummary(launch.resolvedTools)
                 return (
@@ -2379,7 +2381,7 @@ function TaskLaunchModal({
                         </div>
                       ) : null}
                       <div className="mt-2 grid gap-1 text-xs text-[var(--app-text-muted)] sm:grid-cols-2">
-                        {launch.sourceAgentName ? <div><span className="text-[var(--app-text-subtle)]">Clone source:</span> {launch.sourceAgentName}</div> : null}
+                        {launch.sourceAgentName ? <div><span className="text-[var(--app-text-subtle)]">Coder source:</span> {displayAgentName(launch.sourceAgentName)}</div> : null}
                         {launch.sourceProfileMode ? <div><span className="text-[var(--app-text-subtle)]">Profile mode:</span> {launch.sourceProfileMode}</div> : null}
                         {launch.inheritedRuntimeMode ? <div><span className="text-[var(--app-text-subtle)]">Runtime/session:</span> {launch.inheritedRuntimeMode} / {launch.childMode || '—'}</div> : null}
                         {launch.deliverable ? <div><span className="text-[var(--app-text-subtle)]">Deliverable:</span> {launch.deliverable}</div> : null}

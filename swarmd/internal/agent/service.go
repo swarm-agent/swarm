@@ -855,7 +855,7 @@ func (s *Service) replaceManagedStateForAccount(accountScopeID string, state Sta
 				continue
 			}
 			if IsCloneAgentName(purpose) || IsCloneAgentName(assigned) {
-				return State{}, 0, nil, errors.New("Clone is a compiled system agent and cannot be remapped")
+				return State{}, 0, nil, errors.New("Coder is a compiled system agent and cannot be remapped")
 			}
 			assignmentKeys = append(assignmentKeys, purpose)
 		}
@@ -2092,7 +2092,7 @@ func (s *Service) setActiveSubagentForAccount(accountScopeID, purpose, name stri
 		return nil, 0, nil, errors.New("agent name is required")
 	}
 	if IsCloneAgentName(purpose) || IsCloneAgentName(name) {
-		return nil, 0, nil, errors.New("Clone is a compiled system agent and cannot be remapped")
+		return nil, 0, nil, errors.New("Coder is a compiled system agent and cannot be remapped")
 	}
 	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
 	if err != nil {
@@ -2157,7 +2157,7 @@ func (s *Service) deleteActiveSubagentForAccount(accountScopeID, purpose string)
 		return nil, 0, nil, errors.New("subagent purpose is required")
 	}
 	if IsCloneAgentName(purpose) {
-		return nil, 0, nil, errors.New("Clone is a compiled system agent and has no mutable assignment")
+		return nil, 0, nil, errors.New("Coder is a compiled system agent and has no mutable assignment")
 	}
 	if err := s.deleteActiveSubagentForAccountLocked(accountScopeID, purpose); err != nil {
 		return nil, 0, nil, err

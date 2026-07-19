@@ -1,6 +1,8 @@
 const COMPILED_SYSTEM_AGENT_LABELS: Readonly<Record<string, string>> = {
   'system-explorer': 'Explorer',
-  'system-clone': 'Clone',
+  'system-clone': 'Coder',
+  clone: 'Coder',
+  coder: 'Coder',
   swarm: 'Swarm',
 }
 

@@ -602,7 +602,7 @@ func (p *ChatPage) taskLaunchLaunchCardLines(launches []map[string]any, width in
 			out = append(out, p.taskLaunchCardContentLine(chatRenderLine{Text: strings.Join(metaParts, " · "), Style: p.theme.TextMuted}, innerWidth))
 		}
 		details := []struct{ label, value string }{
-			{"Clone source", jsonString(launch, "source_agent_name")},
+			{"Coder source", jsonString(launch, "source_agent_name")},
 			{"Profile mode", jsonString(launch, "source_profile_mode")},
 			{"Inherited runtime", jsonString(launch, "inherited_runtime_mode")},
 			{"Deliverable", jsonString(launch, "deliverable")},

@@ -873,8 +873,8 @@ func (p *HomePage) openAgentsModalUtilityAIEditor() {
 
 func (p *HomePage) openAgentsModalEditEditor(profile AgentModalProfile) {
 	profileName := strings.ToLower(strings.TrimSpace(profile.Name))
-	agentSettingsLocked := profileName == "system-clone" || profileName == "clone" || profileName == "system-explorer" || profileName == "explorer"
-	modelReadOnly := profileName == "system-clone" || profileName == "clone"
+	agentSettingsLocked := profileName == "system-clone" || profileName == "clone" || profileName == "coder" || profileName == "system-explorer" || profileName == "explorer"
+	modelReadOnly := false
 	modelMode := strings.ToLower(strings.TrimSpace(profile.ModelMode))
 	if modelMode != "split" {
 		modelMode = "single"
@@ -909,8 +909,13 @@ func (p *HomePage) openAgentsModalEditEditor(profile AgentModalProfile) {
 	if autoThinking == "" {
 		autoThinking = strings.TrimSpace(profile.Thinking)
 	}
+	modelProfileOptions := p.agentsModalModelProfileOptions(profile)
+	selectedModelProfileID := p.agentsModal.SelectedModelProfileID
+	if isCompiledSingleModelSubagent(profile.Name) && !agentsModalStringOptionExists(modelProfileOptions, selectedModelProfileID) {
+		selectedModelProfileID = ""
+	}
 	fields := []agentsModalEditorField{
-		{Key: "model_profile", Label: "Profile", Value: p.agentsModal.SelectedModelProfileID, Options: p.agentsModalModelProfileOptions()},
+		{Key: "model_profile", Label: "Profile", Value: selectedModelProfileID, Options: modelProfileOptions},
 		{Key: "default_session_mode", Label: "Default session", Value: sessionMode, Options: []string{"plan", "auto"}},
 		{Key: "model_mode", Label: "Model policy", Value: modelMode, Options: []string{"single", "split"}},
 		{Key: "provider", Label: "Provider", Value: singleProvider, Placeholder: "choose provider", Options: providerOptions},
@@ -930,9 +935,12 @@ func (p *HomePage) openAgentsModalEditEditor(profile AgentModalProfile) {
 	p.normalizeAgentsModalEditorFields(p.agentsModal.Editor)
 	p.agentsModal.Editor.InitialFields = cloneAgentsModalEditorFields(p.agentsModal.Editor.Fields)
 	p.agentsModal.Editor.Selected = 0
+	if visible := agentsModalVisibleEditorFieldIndexes(p.agentsModal.Editor); len(visible) > 0 {
+		p.agentsModal.Editor.Selected = visible[0]
+	}
 	p.agentsModal.DetailScroll = 0
 	if agentSettingsLocked {
-		p.agentsModal.Status = fmt.Sprintf("%s is a compiled system agent • agent policy locked • single-model choices only", profile.Name)
+		p.agentsModal.Status = fmt.Sprintf("%s is a compiled system agent • agent policy locked • single-model choices only", agentsModalDisplayName(profile.Name))
 	} else {
 		p.agentsModal.Status = fmt.Sprintf("%s setup • Enter opens a selector • arrows navigate • %s saves", profile.Name, p.agentsModalEditorSaveLabel())
 	}
@@ -940,12 +948,30 @@ func (p *HomePage) openAgentsModalEditEditor(profile AgentModalProfile) {
 	p.dismissAgentsModalUnsavedConfirm()
 }
 
-func (p *HomePage) agentsModalModelProfileOptions() []string {
+func agentsModalStringOptionExists(options []string, target string) bool {
+	for _, option := range options {
+		if strings.EqualFold(strings.TrimSpace(option), strings.TrimSpace(target)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCompiledSingleModelSubagent(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == "system-clone" || name == "clone" || name == "coder" || name == "system-explorer" || name == "explorer"
+}
+
+func (p *HomePage) agentsModalModelProfileOptions(agent AgentModalProfile) []string {
 	if p == nil || len(p.agentsModal.ModelProfiles) == 0 {
 		return nil
 	}
+	singleOnly := isCompiledSingleModelSubagent(agent.Name)
 	out := make([]string, 0, len(p.agentsModal.ModelProfiles))
 	for _, profile := range p.agentsModal.ModelProfiles {
+		if singleOnly && (!strings.EqualFold(strings.TrimSpace(profile.ModelMode), "single") || profile.Single == nil) {
+			continue
+		}
 		if id := strings.TrimSpace(profile.ProfileID); id != "" {
 			out = append(out, id)
 		}
@@ -1281,10 +1307,6 @@ func (p *HomePage) submitAgentsModalEditor() {
 	}
 
 	if editor.Mode == "model" {
-		if editor.ModelReadOnly {
-			p.agentsModal.Error = "Clone inherits the parent session model and cannot be edited independently"
-			return
-		}
 		profile, ok := p.findAgentsModalProfileByName(editor.TargetName)
 		if !ok {
 			p.agentsModal.Error = "selected agent is no longer available"
@@ -1919,7 +1941,7 @@ func (p *HomePage) drawAgentsModalListPane(s tcell.Screen, rect Rect) {
 				metaStyle = p.theme.Text
 			}
 
-			nameLine := prefix + nonEmpty(profile.Name, "-")
+			nameLine := prefix + nonEmpty(agentsModalDisplayName(profile.Name), "-")
 			if strings.EqualFold(profile.Name, p.agentsModal.ActivePrimary) {
 				nameLine += "  [active]"
 			}
@@ -1977,6 +1999,17 @@ func agentsModalSessionModeLabel(value string) string {
 	return "Action"
 }
 
+func agentsModalDisplayName(name string) string {
+	name = strings.TrimSpace(name)
+	if isCompiledSingleModelSubagent(name) && (strings.EqualFold(name, "clone") || strings.EqualFold(name, "system-clone") || strings.EqualFold(name, "coder")) {
+		return "Coder"
+	}
+	if strings.EqualFold(name, "system-explorer") {
+		return "Explorer"
+	}
+	return name
+}
+
 func agentsModalModelBehaviorLines(profile AgentModalProfile) []string {
 	format := func(label, provider, model, thinking, tier string) string {
 		selection := strings.Trim(strings.TrimSpace(provider)+"/"+modelpkg.DisplayModelName(provider, model), "/")
@@ -2018,6 +2051,9 @@ func agentsModalEditorFieldVisible(editor *agentsModalEditor, field agentsModalE
 		return true
 	}
 	if editor.AgentSettingsLocked && (field.Key == "default_session_mode" || field.Key == "model_mode") {
+		return false
+	}
+	if editor.AgentSettingsLocked && field.Key == "model_profile" && len(field.Options) == 0 {
 		return false
 	}
 	if editor.ModelReadOnly && field.Key != "model_profile" {
@@ -2101,14 +2137,10 @@ func (p *HomePage) drawAgentsModalDetailPane(s tcell.Screen, rect Rect) {
 
 	if editor != nil {
 		modelMode := agentsModalEditorModelMode(editor)
-		lines = append(lines, agentsModalRenderLine{Text: nonEmpty(profile.Name, "Agent"), Style: p.theme.Text.Bold(true)})
+		lines = append(lines, agentsModalRenderLine{Text: nonEmpty(agentsModalDisplayName(profile.Name), "Agent"), Style: p.theme.Text.Bold(true)})
 		if editor.AgentSettingsLocked {
 			lockText := "Compiled system agent: agent identity, default session, and model policy are locked."
-			if editor.ModelReadOnly {
-				lockText += " Clone inherits its parent model; profiles can be inspected or starred, but its model is not independently editable."
-			} else {
-				lockText += " Only Explorer's single-model choices are editable."
-			}
+			lockText += " Only independent single-model choices are editable."
 			lines = append(lines, agentsModalRenderLine{Text: lockText, Style: p.theme.TextMuted})
 		} else {
 			lines = append(lines, agentsModalRenderLine{Text: "Default session and model policy are agent settings. Model controls below edit the selected policy.", Style: p.theme.TextMuted})
@@ -2272,7 +2304,7 @@ func (p *HomePage) drawAgentsModalDetailPane(s tcell.Screen, rect Rect) {
 		}
 		lines = append(lines, agentsModalRenderLine{Text: saveHint, Style: p.theme.TextMuted})
 	} else {
-		lines = append(lines, agentsModalRenderLine{Text: nonEmpty(profile.Name, "Agent"), Style: p.theme.Text.Bold(true)})
+		lines = append(lines, agentsModalRenderLine{Text: nonEmpty(agentsModalDisplayName(profile.Name), "Agent"), Style: p.theme.Text.Bold(true)})
 		for _, behavior := range agentsModalModelBehaviorLines(profile) {
 			for _, wrapped := range Wrap(behavior, contentWidth) {
 				lines = append(lines, agentsModalRenderLine{Text: wrapped, Style: p.theme.Text})
@@ -2840,10 +2872,6 @@ func (p *HomePage) applyAgentsModalModelProfile(profileID string) bool {
 	p.agentsModal.SelectedModelProfileID = profileID
 	if field := p.findAgentsModalEditorField(editor, "model_profile"); field != nil {
 		field.Value = profileID
-	}
-	if editor.ModelReadOnly {
-		p.agentsModal.Status = "selected profile: " + p.agentsModalModelProfileLabel(profileID)
-		return true
 	}
 	apply := func(prefix string, selection *client.ModelProfileSelection) {
 		if selection == nil {

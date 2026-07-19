@@ -2,18 +2,21 @@ import { patchUISettings } from '../queries/get-ui-settings'
 import {
   type UICompactAgentSettingsWire,
   type UISettingsWire,
+  withCoderAgentSettings,
   withCompactAgentSettings,
   withExplorerAgentSettings,
 } from '../types/swarm-settings'
 
 export async function saveSystemAgentSettings(input: {
   current: UISettingsWire
-  agent: 'compact' | 'explorer'
+  agent: 'compact' | 'explorer' | 'coder'
   settings: UICompactAgentSettingsWire
 }): Promise<UISettingsWire> {
   const next = input.agent === 'compact'
     ? withCompactAgentSettings(input.current, input.settings)
-    : withExplorerAgentSettings(input.current, input.settings)
+    : input.agent === 'explorer'
+      ? withExplorerAgentSettings(input.current, input.settings)
+      : withCoderAgentSettings(input.current, input.settings)
   return patchUISettings(next)
 }
 

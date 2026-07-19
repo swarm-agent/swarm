@@ -1515,21 +1515,43 @@ func (s *Service) resolveTaskLaunchProfile(parentSession pebblestore.SessionSnap
 	if err != nil {
 		sourceName := strings.TrimSpace(mapString(parentSession.Metadata, "agent_name"))
 		if sourceName == "" {
-			return pebblestore.AgentProfile{}, true, "", fmt.Errorf("clone requires trusted parent agent profile snapshot: %w", err)
+			return pebblestore.AgentProfile{}, true, "", fmt.Errorf("Coder requires trusted parent agent profile snapshot: %w", err)
 		}
 		parentProfile, err = s.resolveAgentProfileForAccount(parentSession.AccountScopeID, sourceName, RunTargetKindAgent, false)
 		if err != nil {
-			return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("Clone cannot resolve trusted parent agent %q: %w", sourceName, err)
+			return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("Coder cannot resolve trusted parent agent %q: %w", sourceName, err)
 		}
 	}
 	sourceName := strings.TrimSpace(parentProfile.Name)
+	provider := strings.TrimSpace(parentSession.Preference.Provider)
+	modelName := strings.TrimSpace(parentSession.Preference.Model)
+	thinking := strings.TrimSpace(parentSession.Preference.Thinking)
+	serviceTier := strings.TrimSpace(parentSession.Preference.ServiceTier)
+	if s.uiSettings != nil {
+		if settings, settingsErr := s.uiSettings.GetForAccount(strings.TrimSpace(parentSession.AccountScopeID)); settingsErr == nil {
+			override := settings.Agents.Coder
+			if strings.TrimSpace(override.Provider) != "" {
+				provider = strings.TrimSpace(override.Provider)
+			}
+			if strings.TrimSpace(override.Model) != "" {
+				modelName = strings.TrimSpace(override.Model)
+			}
+			if strings.TrimSpace(override.Thinking) != "" {
+				thinking = strings.TrimSpace(override.Thinking)
+			}
+			if strings.TrimSpace(override.ServiceTier) != "" {
+				serviceTier = strings.TrimSpace(override.ServiceTier)
+			}
+		}
+	}
 	profile, err := s.agents.ResolveSystemAgent(agentruntime.CloneAgentID, pebblestore.AgentProfile{
-		Provider: strings.TrimSpace(parentSession.Preference.Provider),
-		Model:    strings.TrimSpace(parentSession.Preference.Model),
-		Thinking: strings.TrimSpace(parentSession.Preference.Thinking),
+		Provider:        provider,
+		Model:           modelName,
+		Thinking:        thinking,
+		AutoServiceTier: serviceTier,
 	})
 	if err != nil {
-		return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("resolve compiled Clone: %w", err)
+		return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("resolve compiled Coder: %w", err)
 	}
 	return profile, true, sourceName, nil
 }
@@ -1616,7 +1638,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		var profileDisabledTools map[string]bool
 		var toolErr error
 		if virtualTarget || agentruntime.IsExplorerAgentName(resolvedName) {
-			// Compiled Clone and Explorer profiles are trusted launch snapshots, not
+			// Compiled Coder and Explorer profiles are trusted launch snapshots, not
 			// persisted agent rows. Compile their immutable
 			// contracts directly instead of looking them up in the agent store.
 			toolContract, _, profileDisabledTools, toolErr = s.compileResolvedAgentToolContract(parentSession.AccountScopeID, subagentProfile)
