@@ -3,6 +3,7 @@ package v3chat
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -626,10 +627,9 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	}
 	p.scheduleRunTimer(runStatus.Active)
 
-	footerHeight := 3
-	if height < 12 || width < 50 {
-		footerHeight = 1
-	}
+	// Keep the footer to its separator and token row so the separator is also
+	// the composer's bottom border, directly beneath the editable rows.
+	footerHeight := 2
 	composerLines, composerCursorLine, composerCursorCol := composerLayout(string(input), cursor, width)
 	composerVisibleRows := minInt(len(composerLines), maxComposerVisibleRows)
 	composerVisibleRows = minInt(composerVisibleRows, maxInt(1, height-footerHeight-3))
@@ -849,26 +849,17 @@ func conversationContextFacts(usage UsageState, fallbackWindow int) []string {
 	if window <= 0 {
 		return nil
 	}
-	if usage.Available {
-		return []string{fmt.Sprintf("%s / %s ctx", compactTokenCount(usage.RemainingTokens), compactTokenCount(int64(window)))}
-	}
-	return []string{compactTokenCount(int64(window)) + " ctx"}
-}
 
-func compactTokenCount(value int64) string {
-	if value >= 1_000_000 {
-		if value%1_000_000 == 0 {
-			return fmt.Sprintf("%dm", value/1_000_000)
-		}
-		return fmt.Sprintf("%.1fm", float64(value)/1_000_000)
+	remaining := int64(window)
+	if usage.Available {
+		remaining = usage.RemainingTokens
 	}
-	if value >= 1_000 {
-		if value%1_000 == 0 {
-			return fmt.Sprintf("%dk", value/1_000)
-		}
-		return fmt.Sprintf("%.1fk", float64(value)/1_000)
+	remaining = maxInt64(0, remaining)
+	if remaining > int64(window) {
+		remaining = int64(window)
 	}
-	return fmt.Sprintf("%d", value)
+	percentage := int(math.Round(float64(remaining) * 100 / float64(window)))
+	return []string{fmt.Sprintf("ctx %d%%", percentage)}
 }
 
 func modelProfileLabel(state ModelState) string {
@@ -965,6 +956,9 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 	messages := SelectMessages(state)
 	for _, message := range messages {
 		if strings.EqualFold(message.Role, "user") {
+			if len(rows) == 0 {
+				rows = append(rows, renderRow{text: "", style: styles.Text})
+			}
 			rows = append(rows, p.renderUserRows("message:"+message.ID, message.Content, width, styles)...)
 			continue
 		}

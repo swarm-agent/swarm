@@ -124,15 +124,15 @@ func TestPageRendersComposerAboveCanonicalHomeFooterWithDesktopContext(t *testin
 			t.Fatalf("redundant footer label %q remains:\n%s", redundant, drawn)
 		}
 	}
-	if !strings.Contains(drawn, "125k / 200k ctx") {
-		t.Fatalf("desktop-style conversation context missing:\n%s", drawn)
+	if !strings.Contains(drawn, "ctx 63%") {
+		t.Fatalf("remaining context percentage missing:\n%s", drawn)
 	}
-	if got := conversationContextFacts(SelectUsage(store.Snapshot()), 0); len(got) != 1 || got[0] != "125k / 200k ctx" {
+	if got := conversationContextFacts(SelectUsage(store.Snapshot()), 0); len(got) != 1 || got[0] != "ctx 63%" {
 		t.Fatalf("context facts = %#v", got)
 	}
-	composerRow, footerSeparatorRow, footerRow := simulationRow(screen, 80, 14), simulationRow(screen, 80, 16), simulationRow(screen, 80, 17)
-	if !strings.Contains(composerRow, "> hi") || !strings.Contains(footerSeparatorRow, "─") || !strings.Contains(footerRow, "Primary Desk") {
-		t.Fatalf("composer/footer vertical layout mismatch: composer=%q separator=%q footer=%q", composerRow, footerSeparatorRow, footerRow)
+	topBorderRow, composerRow, bottomBorderRow, footerRow := simulationRow(screen, 80, 14), simulationRow(screen, 80, 15), simulationRow(screen, 80, 16), simulationRow(screen, 80, 17)
+	if !strings.Contains(topBorderRow, "─") || !strings.Contains(composerRow, "> hi") || !strings.Contains(bottomBorderRow, "─") || !strings.Contains(footerRow, "Primary Desk") {
+		t.Fatalf("composer/footer vertical layout mismatch: top=%q composer=%q bottom=%q footer=%q", topBorderRow, composerRow, bottomBorderRow, footerRow)
 	}
 	if strings.Contains(drawn, "F2 models") || strings.Contains(drawn, "thinking high") || strings.Contains(drawn, "Enter send") || strings.Contains(drawn, "PgUp/PgDn") || strings.Contains(drawn, "Esc home") || strings.Contains(drawn, "No messages yet") {
 		t.Fatalf("invented bottom bar/help text remains:\n%s", drawn)
@@ -141,10 +141,6 @@ func TestPageRendersComposerAboveCanonicalHomeFooterWithDesktopContext(t *testin
 
 func TestPageComposerDefaultsToOneRowAndExpandsForMultilineInput(t *testing.T) {
 	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
-	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'o', tcell.ModNone))
-	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone))
-	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'e', tcell.ModNone))
-
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {
 		t.Fatal(err)
@@ -153,8 +149,23 @@ func TestPageComposerDefaultsToOneRowAndExpandsForMultilineInput(t *testing.T) {
 	screen.SetSize(40, 14)
 	page.Draw(screen)
 	screen.Show()
-	if got := simulationRow(screen, 40, 12); !strings.Contains(got, "> one") {
-		t.Fatalf("compact composer row = %q, want one-row input", got)
+	if top, input, bottom := simulationRow(screen, 40, 10), simulationRow(screen, 40, 11), simulationRow(screen, 40, 12); !strings.Contains(top, "─") || !strings.HasPrefix(input, "> ") || !strings.Contains(bottom, "─") {
+		t.Fatalf("empty composer geometry = top %q / input %q / bottom %q, want one editable row between borders", top, input, bottom)
+	}
+
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'o', tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'e', tcell.ModNone))
+	page.Draw(screen)
+	screen.Show()
+	topBorder, compactRow, bottomBorder := simulationRow(screen, 40, 10), simulationRow(screen, 40, 11), simulationRow(screen, 40, 12)
+	if !strings.Contains(topBorder, "─") || !strings.Contains(compactRow, "> one") || !strings.Contains(bottomBorder, "─") {
+		t.Fatalf("compact composer geometry = top %q / input %q / bottom %q, want one editable row between borders", topBorder, compactRow, bottomBorder)
+	}
+	_, _, cursorStyle, _ := screen.GetContent(len([]rune("> one")), 11)
+	_, _, cursorAttrs := cursorStyle.Decompose()
+	if cursorAttrs&tcell.AttrReverse == 0 {
+		t.Fatalf("cursor is not rendered on the sole composer content row")
 	}
 
 	page.HandleKey(tcell.NewEventKey(tcell.KeyCtrlJ, 0, tcell.ModCtrl))
@@ -163,8 +174,8 @@ func TestPageComposerDefaultsToOneRowAndExpandsForMultilineInput(t *testing.T) {
 	}
 	page.Draw(screen)
 	screen.Show()
-	if first, second := simulationRow(screen, 40, 11), simulationRow(screen, 40, 12); !strings.Contains(first, "> one") || !strings.Contains(second, "  two") {
-		t.Fatalf("expanded composer rows = %q / %q", first, second)
+	if first, second, bottom := simulationRow(screen, 40, 10), simulationRow(screen, 40, 11), simulationRow(screen, 40, 12); !strings.Contains(first, "> one") || !strings.Contains(second, "  two") || !strings.Contains(bottom, "─") {
+		t.Fatalf("expanded composer rows = %q / %q with bottom border %q", first, second, bottom)
 	}
 }
 
@@ -320,10 +331,29 @@ func TestCanonicalFooterFallsBackToLocalOnlyWithoutResolvedRouteIdentity(t *test
 	}
 }
 
-func TestCanonicalFooterUsesContextWindowUntilUsageArrives(t *testing.T) {
+func TestCanonicalFooterUsesFullContextUntilUsageArrives(t *testing.T) {
 	got := conversationContextFacts(UsageState{}, 200000)
-	if len(got) != 1 || got[0] != "200k ctx" {
+	if len(got) != 1 || got[0] != "ctx 100%" {
 		t.Fatalf("context facts = %#v", got)
+	}
+}
+
+func TestConversationContextPercentageBoundsRemainingTokens(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		remaining int64
+		want      string
+	}{
+		{name: "below zero", remaining: -1, want: "ctx 0%"},
+		{name: "above window", remaining: 250000, want: "ctx 100%"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			usage := UsageState{Available: true, ContextWindow: 200000, RemainingTokens: test.remaining}
+			got := conversationContextFacts(usage, 0)
+			if len(got) != 1 || got[0] != test.want {
+				t.Fatalf("context facts = %#v, want %q", got, test.want)
+			}
+		})
 	}
 }
 
@@ -336,6 +366,28 @@ func TestPageDurableAssistantReplacesLiveOverlay(t *testing.T) {
 	state := store.Snapshot()
 	if len(SelectLiveSegments(state)) != 0 || len(SelectMessages(state)) != 1 {
 		t.Fatalf("durable handoff duplicated state: %#v", state)
+	}
+}
+
+func TestPageFirstUserMessageHasBalancedSpacingBelowTitle(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:  client.SessionSummary{ID: "s", Title: "chat"},
+		Messages: []client.SessionMessage{{ID: "user-1", Role: "user", Content: "first message"}},
+	}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(40, 14)
+	page.Draw(screen)
+	screen.Show()
+
+	above, message, below := simulationRow(screen, 40, 1), simulationRow(screen, 40, 2), simulationRow(screen, 40, 3)
+	if strings.TrimSpace(above) != "" || !strings.Contains(message, "> first message") || strings.TrimSpace(below) != "" {
+		t.Fatalf("first user message spacing = above %q / message %q / below %q, want one blank row on each side", above, message, below)
 	}
 }
 
