@@ -96,6 +96,29 @@ func (p *HomePage) SessionIntent() HomeSessionIntent {
 		return HomeSessionIntent{}
 	}
 	intent := p.sessionIntent
+	provider, modelName, thinking, serviceTier, contextMode := p.ModelState()
 	intent.InitialPrompt = p.prompt
+	intent.Agent = strings.TrimSpace(p.model.ActiveAgent)
+	if intent.Agent == "" {
+		intent.Agent = "swarm"
+	}
+	intent.Mode = p.SessionMode()
+	intent.Preference = client.ModelPreference{
+		Provider:    strings.TrimSpace(provider),
+		Model:       strings.TrimSpace(modelName),
+		Thinking:    strings.TrimSpace(thinking),
+		ServiceTier: strings.TrimSpace(serviceTier),
+		ContextMode: strings.TrimSpace(contextMode),
+	}
+	intent.Profile = p.model.ActiveModelProfile
+	if workspace, ok := p.activeWorkspace(); ok {
+		intent.Workspace = HomepageWorkspaceSelection{
+			Name:                    strings.TrimSpace(workspace.Name),
+			Path:                    strings.TrimSpace(workspace.Path),
+			WorkspaceID:             strings.TrimSpace(workspace.WorkspaceID),
+			WorkspaceGeneration:     workspace.WorkspaceGeneration,
+			LocalWorkspaceBindingID: strings.TrimSpace(workspace.LocalWorkspaceBindingID),
+		}
+	}
 	return intent
 }

@@ -7,6 +7,33 @@ import (
 	"swarm-refactor/swarmtui/internal/model"
 )
 
+func TestSessionIntentUsesCurrentHomepageModeAndModeModel(t *testing.T) {
+	page := NewHomePage(model.HomeModel{
+		ActiveAgent:             "swarm",
+		ActiveAgentExitPlanMode: true,
+		AutoModelProvider:       "codex",
+		AutoModelName:           "auto-model",
+		AutoThinkingLevel:       "medium",
+		PlanModelProvider:       "codex",
+		PlanModelName:           "plan-model",
+		PlanThinkingLevel:       "high",
+	})
+	page.SetSessionMode("auto")
+	page.SetSessionIntent(HomeSessionIntent{Mode: "auto", Preference: client.ModelPreference{Provider: "codex", Model: "auto-model", Thinking: "medium"}})
+
+	page.SetSessionMode("plan")
+	planIntent := page.SessionIntent()
+	if planIntent.Mode != "plan" || planIntent.Preference.Model != "plan-model" || planIntent.Preference.Thinking != "high" {
+		t.Fatalf("plan intent = %#v, want current plan mode/model", planIntent)
+	}
+
+	page.SetSessionMode("auto")
+	autoIntent := page.SessionIntent()
+	if autoIntent.Mode != "auto" || autoIntent.Preference.Model != "auto-model" || autoIntent.Preference.Thinking != "medium" {
+		t.Fatalf("auto intent = %#v, want current auto mode/model", autoIntent)
+	}
+}
+
 func TestHomepageStateCapturesComposerAndSessionIntentBoundary(t *testing.T) {
 	page := NewHomePage(model.HomeModel{
 		ActiveAgent:        "swarm",

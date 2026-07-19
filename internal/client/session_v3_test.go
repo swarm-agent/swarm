@@ -31,6 +31,9 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 			if body["agent_name"] != "swarm" {
 				t.Fatalf("v3 create agent_name = %#v, want swarm", body["agent_name"])
 			}
+			if body["mode"] != "auto" {
+				t.Fatalf("v3 create mode = %#v, want auto", body["mode"])
+			}
 			profile, _ := body["model_profile"].(map[string]any)
 			if profile["saved_profile_id"] != "profile-1" {
 				t.Fatalf("v3 create model_profile = %#v", body["model_profile"])
@@ -136,6 +139,9 @@ func TestSessionV3TUICreateCarriesSelectedModelProfile(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
+		if body["mode"] != "plan" {
+			t.Fatalf("tui create mode = %#v, want plan", body["mode"])
+		}
 		profile, _ := body["model_profile"].(map[string]any)
 		if profile["saved_profile_id"] != "profile-1" {
 			t.Fatalf("tui create model_profile = %#v", body["model_profile"])
@@ -149,7 +155,7 @@ func TestSessionV3TUICreateCarriesSelectedModelProfile(t *testing.T) {
 
 	api := New(server.URL)
 	api.SetToken("test-token")
-	_, err := api.CreateSessionV3TUIWithOptions(context.Background(), SessionCreateOptions{CWDPath: "/workspace", AgentName: "swarm", ModelProfile: &SessionV3ModelProfileChoice{SavedProfileID: "profile-1"}})
+	_, err := api.CreateSessionV3TUIWithOptions(context.Background(), SessionCreateOptions{CWDPath: "/workspace", Mode: "plan", AgentName: "swarm", ModelProfile: &SessionV3ModelProfileChoice{SavedProfileID: "profile-1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
