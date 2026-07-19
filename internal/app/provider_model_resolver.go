@@ -52,7 +52,7 @@ func (a *App) resolveProviderModelData(ctx context.Context, hints []string, favo
 		result.Warnings = append(result.Warnings, "favorites unavailable")
 	}
 
-	providerSet := make(map[string]struct{}, len(modelPresetsByProvider)+len(providerStatuses)+len(favorites)+len(hints)+2)
+	providerSet := make(map[string]struct{}, len(providerStatuses)+len(favorites)+len(hints)+2)
 	addProvider := func(providerID string) {
 		providerID = normalizeModelProviderID(providerID)
 		if providerID != "" && providerID != copilotProviderTemporarilyDisabled {
@@ -60,9 +60,6 @@ func (a *App) resolveProviderModelData(ctx context.Context, hints []string, favo
 		}
 	}
 
-	for providerID := range modelPresetsByProvider {
-		addProvider(providerID)
-	}
 	for _, status := range providerStatuses {
 		id := normalizeModelProviderID(status.ID)
 		if id == "" || id == copilotProviderTemporarilyDisabled {
@@ -128,7 +125,7 @@ func (a *App) resolveProviderModelData(ctx context.Context, hints []string, favo
 				recordProvider = providerID
 			}
 			modelID := strings.TrimSpace(record.Model)
-			if modelID == "" || !modelAllowedByProviderPreset(recordProvider, modelID) {
+			if modelID == "" {
 				continue
 			}
 			key := modelEntryKey(recordProvider, modelID)
@@ -143,34 +140,10 @@ func (a *App) resolveProviderModelData(ctx context.Context, hints []string, favo
 		}
 	}
 
-	for _, providerID := range providerIDs {
-		for _, preset := range modelPresetListForProvider(providerID) {
-			modelID := strings.TrimSpace(preset)
-			key := modelEntryKey(providerID, modelID)
-			if key == "" {
-				continue
-			}
-			result.ModelsByProvider[providerID] = append(result.ModelsByProvider[providerID], modelID)
-			if _, ok := result.ReasoningByKey[key]; !ok {
-				result.ReasoningByKey[key] = true
-			}
-		}
-		if status, ok := result.ProviderStatuses[providerID]; ok {
-			modelID := strings.TrimSpace(status.DefaultModel)
-			key := modelEntryKey(providerID, modelID)
-			if key != "" && modelAllowedByProviderPreset(providerID, modelID) {
-				result.ModelsByProvider[providerID] = append(result.ModelsByProvider[providerID], modelID)
-				if _, ok := result.ReasoningByKey[key]; !ok {
-					result.ReasoningByKey[key] = true
-				}
-			}
-		}
-	}
-
 	for key, favorite := range result.FavoritesByKey {
 		providerID := normalizeModelProviderID(favorite.Provider)
 		modelID := strings.TrimSpace(favorite.Model)
-		if providerID == "" || modelID == "" || !modelAllowedByProviderPreset(providerID, modelID) {
+		if providerID == "" || modelID == "" {
 			delete(result.FavoritesByKey, key)
 			continue
 		}

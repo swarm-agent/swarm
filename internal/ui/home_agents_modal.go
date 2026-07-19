@@ -46,7 +46,7 @@ type AgentsModalData struct {
 	Version               int64
 	Providers             []string
 	ModelsByProvider      map[string][]string
-	ReasoningModels       map[string]bool
+	ModelCatalog          map[string]client.ModelCatalogRecord
 	DefaultProvider       string
 	DefaultModel          string
 	DefaultThinking       string
@@ -154,7 +154,7 @@ type agentsModalState struct {
 	Version                int64
 	Providers              []string
 	ModelsByProvider       map[string][]string
-	ReasoningModels        map[string]bool
+	ModelCatalog           map[string]client.ModelCatalogRecord
 	DefaultProvider        string
 	DefaultModel           string
 	DefaultThinking        string
@@ -247,19 +247,25 @@ func (p *HomePage) SetAgentsModalData(data AgentsModalData) {
 		}
 		p.agentsModal.ModelsByProvider[providerID] = dedupeAgentsModelOptions(models)
 	}
-	p.agentsModal.ReasoningModels = make(map[string]bool, len(data.ReasoningModels))
-	for name, enabled := range data.ReasoningModels {
+	p.agentsModal.ModelCatalog = make(map[string]client.ModelCatalogRecord, len(data.ModelCatalog))
+	for name, record := range data.ModelCatalog {
 		key := strings.ToLower(strings.TrimSpace(name))
 		if key == "" {
 			continue
 		}
-		p.agentsModal.ReasoningModels[key] = enabled
+		record.Provider = normalizeAgentsModalProviderID(record.Provider)
+		record.Model = strings.TrimSpace(record.Model)
+		record.ThinkingOptions = normalizeAgentsModalCatalogOptions(record.ThinkingOptions)
+		record.DefaultThinking = normalizeThinkingValue(record.DefaultThinking)
+		record.ServiceTiers = normalizeAgentsModalServiceTierOptions(record.ServiceTiers)
+		record.DefaultServiceTier = strings.ToLower(strings.TrimSpace(record.DefaultServiceTier))
+		p.agentsModal.ModelCatalog[key] = record
 	}
 	p.agentsModal.DefaultProvider = strings.ToLower(strings.TrimSpace(data.DefaultProvider))
 	p.agentsModal.DefaultModel = strings.TrimSpace(data.DefaultModel)
 	p.agentsModal.DefaultThinking = normalizeThinkingValue(data.DefaultThinking)
-	if p.agentsModal.DefaultThinking == "" {
-		p.agentsModal.DefaultThinking = "xhigh"
+	if record, ok := p.agentsModalCatalogRecord(p.agentsModal.DefaultProvider, p.agentsModal.DefaultModel); ok && p.agentsModal.DefaultThinking == "" {
+		p.agentsModal.DefaultThinking = record.DefaultThinking
 	}
 	p.agentsModal.UtilityProvider = strings.ToLower(strings.TrimSpace(data.UtilityProvider))
 	p.agentsModal.UtilityModel = strings.TrimSpace(data.UtilityModel)
@@ -794,11 +800,11 @@ func (p *HomePage) openAgentsModalCreateEditor() {
 			{Key: "plan_provider", Label: "Plan provider", Value: "", Placeholder: "inherit single provider", Options: providerOptions},
 			{Key: "plan_model", Label: "Plan model", Value: "", Placeholder: "inherit single model", Options: modelOptions},
 			{Key: "plan_thinking", Label: "Plan thinking", Value: "", Placeholder: "inherit", Options: thinkingOptions},
-			{Key: "plan_service_tier", Label: "Plan priority", Value: "", Placeholder: "default", Options: []string{"", "priority", "fast", "flex"}},
+			{Key: "plan_service_tier", Label: "Plan priority", Value: "", Placeholder: "default", Options: []string{""}},
 			{Key: "auto_provider", Label: "Action provider", Value: "", Placeholder: "inherit single provider", Options: providerOptions},
 			{Key: "auto_model", Label: "Action model", Value: "", Placeholder: "inherit single model", Options: modelOptions},
 			{Key: "auto_thinking", Label: "Action thinking", Value: "", Placeholder: "inherit", Options: thinkingOptions},
-			{Key: "auto_service_tier", Label: "Action priority", Value: "", Placeholder: "default", Options: []string{"", "priority", "fast", "flex"}},
+			{Key: "auto_service_tier", Label: "Action priority", Value: "", Placeholder: "default", Options: []string{""}},
 			{Key: "enabled", Label: "Enabled", Value: "y", Placeholder: "y", Options: []string{"y", "n"}},
 			{Key: "prompt", Label: "Prompt", Value: "", Placeholder: "System prompt"},
 		},
@@ -910,15 +916,15 @@ func (p *HomePage) openAgentsModalEditEditor(profile AgentModalProfile) {
 		{Key: "provider", Label: "Provider", Value: singleProvider, Placeholder: "choose provider", Options: providerOptions},
 		{Key: "model", Label: "Model", Value: profile.Model, Placeholder: "choose model", Options: p.agentsModalModelOptionsForProvider(singleProvider)},
 		{Key: "thinking", Label: "Thinking", Value: profile.Thinking, Placeholder: "off", Options: p.agentsModalThinkingOptions(singleProvider, profile.Model)},
-		{Key: "service_tier", Label: "Priority", Value: profile.ServiceTier, Placeholder: "standard", Options: agentsModalServiceTierOptions()},
+		{Key: "service_tier", Label: "Priority", Value: profile.ServiceTier, Placeholder: "standard", Options: p.agentsModalServiceTierOptions(singleProvider, profile.Model)},
 		{Key: "plan_provider", Label: "Provider", Value: planProvider, Placeholder: "choose provider", Options: providerOptions},
 		{Key: "plan_model", Label: "Model", Value: planModel, Placeholder: "choose model", Options: p.agentsModalModelOptionsForProvider(planProvider)},
 		{Key: "plan_thinking", Label: "Thinking", Value: planThinking, Placeholder: "off", Options: p.agentsModalThinkingOptions(planProvider, planModel)},
-		{Key: "plan_service_tier", Label: "Priority", Value: profile.PlanServiceTier, Placeholder: "standard", Options: agentsModalServiceTierOptions()},
+		{Key: "plan_service_tier", Label: "Priority", Value: profile.PlanServiceTier, Placeholder: "standard", Options: p.agentsModalServiceTierOptions(planProvider, planModel)},
 		{Key: "auto_provider", Label: "Provider", Value: autoProvider, Placeholder: "choose provider", Options: providerOptions},
 		{Key: "auto_model", Label: "Model", Value: autoModel, Placeholder: "choose model", Options: p.agentsModalModelOptionsForProvider(autoProvider)},
 		{Key: "auto_thinking", Label: "Thinking", Value: autoThinking, Placeholder: "off", Options: p.agentsModalThinkingOptions(autoProvider, autoModel)},
-		{Key: "auto_service_tier", Label: "Priority", Value: profile.AutoServiceTier, Placeholder: "standard", Options: agentsModalServiceTierOptions()},
+		{Key: "auto_service_tier", Label: "Priority", Value: profile.AutoServiceTier, Placeholder: "standard", Options: p.agentsModalServiceTierOptions(autoProvider, autoModel)},
 	}
 	p.agentsModal.Editor = &agentsModalEditor{Mode: "model", TargetName: profile.Name, Fields: fields, AgentSettingsLocked: agentSettingsLocked, ModelReadOnly: modelReadOnly}
 	p.normalizeAgentsModalEditorFields(p.agentsModal.Editor)
@@ -947,8 +953,12 @@ func (p *HomePage) agentsModalModelProfileOptions() []string {
 	return out
 }
 
-func agentsModalServiceTierOptions() []string {
-	return []string{"", "priority", "fast", "flex"}
+func (p *HomePage) agentsModalServiceTierOptions(providerID, model string) []string {
+	record, ok := p.agentsModalCatalogRecord(providerID, model)
+	if !ok {
+		return []string{""}
+	}
+	return dedupeAgentsModalOptions(append([]string{""}, record.ServiceTiers...))
 }
 
 func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
@@ -1250,10 +1260,11 @@ func (p *HomePage) submitAgentsModalEditor() {
 			return
 		}
 		thinkingOptions := p.agentsModalThinkingOptions(provider, model)
-		thinking := normalizeAgentsModalThinkingValue(get("thinking"), thinkingOptions, "off")
-		if thinking == "" {
-			thinking = "off"
+		thinkingFallback := ""
+		if record, ok := p.agentsModalCatalogRecord(provider, model); ok {
+			thinkingFallback = record.DefaultThinking
 		}
+		thinking := normalizeAgentsModalThinkingValue(get("thinking"), thinkingOptions, thinkingFallback)
 		p.agentsModal.Editor = nil
 		overwriteExplicit := strings.EqualFold(editor.Mode, "utility-ai-overwrite") || agentsModalUtilityAIOverwriteChoice(get("scope"))
 		p.enqueueAgentsModalAction(AgentsModalAction{
@@ -1300,11 +1311,11 @@ func (p *HomePage) submitAgentsModalEditor() {
 			upsert.Thinking = ""
 			upsert.PlanProvider = p.normalizeAgentsModalProviderValueWithFallback(get("plan_provider"), false)
 			upsert.PlanModel = p.normalizeAgentsModalModelValueWithFallback(upsert.PlanProvider, get("plan_model"), false)
-			upsert.PlanThinking = normalizeAgentsModalThinkingValue(get("plan_thinking"), p.agentsModalThinkingOptions(upsert.PlanProvider, upsert.PlanModel), "off")
+			upsert.PlanThinking = normalizeAgentsModalThinkingValue(get("plan_thinking"), p.agentsModalThinkingOptions(upsert.PlanProvider, upsert.PlanModel), "")
 			upsert.PlanServiceTier = strings.ToLower(get("plan_service_tier"))
 			upsert.AutoProvider = p.normalizeAgentsModalProviderValueWithFallback(get("auto_provider"), false)
 			upsert.AutoModel = p.normalizeAgentsModalModelValueWithFallback(upsert.AutoProvider, get("auto_model"), false)
-			upsert.AutoThinking = normalizeAgentsModalThinkingValue(get("auto_thinking"), p.agentsModalThinkingOptions(upsert.AutoProvider, upsert.AutoModel), "off")
+			upsert.AutoThinking = normalizeAgentsModalThinkingValue(get("auto_thinking"), p.agentsModalThinkingOptions(upsert.AutoProvider, upsert.AutoModel), "")
 			upsert.AutoServiceTier = strings.ToLower(get("auto_service_tier"))
 			if upsert.PlanProvider == "" || upsert.PlanModel == "" || upsert.AutoProvider == "" || upsert.AutoModel == "" {
 				p.agentsModal.Error = "provider and model are required for both Plan and Action"
@@ -1320,7 +1331,7 @@ func (p *HomePage) submitAgentsModalEditor() {
 			upsert.AutoThinking = ""
 			upsert.Provider = p.normalizeAgentsModalProviderValueWithFallback(get("provider"), false)
 			upsert.Model = p.normalizeAgentsModalModelValueWithFallback(upsert.Provider, get("model"), false)
-			upsert.Thinking = normalizeAgentsModalThinkingValue(get("thinking"), p.agentsModalThinkingOptions(upsert.Provider, upsert.Model), "off")
+			upsert.Thinking = normalizeAgentsModalThinkingValue(get("thinking"), p.agentsModalThinkingOptions(upsert.Provider, upsert.Model), "")
 			upsert.ServiceTier = strings.ToLower(get("service_tier"))
 			upsert.AutoServiceTier = upsert.ServiceTier
 			if upsert.Provider == "" || upsert.Model == "" {
@@ -1346,7 +1357,7 @@ func (p *HomePage) submitAgentsModalEditor() {
 		model = ""
 	}
 	thinkingOptions := p.agentsModalThinkingOptions(provider, model)
-	thinking := normalizeAgentsModalThinkingValue(get("thinking"), thinkingOptions, p.agentsModal.DefaultThinking)
+	thinking := normalizeAgentsModalThinkingValue(get("thinking"), thinkingOptions, "")
 
 	upsert := AgentsModalUpsert{
 		Mode:            mode,
@@ -1439,12 +1450,10 @@ func normalizeThinkingValue(raw string) string {
 	switch value {
 	case "", "inherit", "default":
 		return ""
-	case "off", "low", "medium", "high", "xhigh":
-		return value
 	case "x-high":
 		return "xhigh"
 	default:
-		return ""
+		return value
 	}
 }
 
@@ -2453,6 +2462,39 @@ func agentsModalReasoningKey(providerID, modelID string) string {
 	return providerID + "/" + strings.ToLower(modelID)
 }
 
+func normalizeAgentsModalCatalogOptions(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = normalizeThinkingValue(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return dedupeAgentsModalOptions(out)
+}
+
+func normalizeAgentsModalServiceTierOptions(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.ToLower(strings.TrimSpace(value)); value != "" {
+			out = append(out, value)
+		}
+	}
+	return dedupeAgentsModalOptions(out)
+}
+
+func (p *HomePage) agentsModalCatalogRecord(providerID, model string) (client.ModelCatalogRecord, bool) {
+	if p == nil {
+		return client.ModelCatalogRecord{}, false
+	}
+	key := agentsModalReasoningKey(providerID, model)
+	if key == "" {
+		return client.ModelCatalogRecord{}, false
+	}
+	record, ok := p.agentsModal.ModelCatalog[key]
+	return record, ok
+}
+
 func (s *agentsModalState) defaultModelForProvider(providerID string) string {
 	providerID = normalizeAgentsModalProviderID(providerID)
 	if providerID == "" {
@@ -2526,21 +2568,6 @@ func (p *HomePage) agentsModalModelOptionsForProviderWithInherit(providerID stri
 	return dedupeAgentsModalOptions(out)
 }
 
-func (p *HomePage) agentsModalModelReasoningEnabled(providerID, model string) bool {
-	key := agentsModalReasoningKey(providerID, model)
-	if key == "" || len(p.agentsModal.ReasoningModels) == 0 {
-		return true
-	}
-	if enabled, ok := p.agentsModal.ReasoningModels[key]; ok {
-		return enabled
-	}
-	legacyKey := strings.ToLower(strings.TrimSpace(model))
-	if enabled, ok := p.agentsModal.ReasoningModels[legacyKey]; ok {
-		return enabled
-	}
-	return true
-}
-
 func (p *HomePage) agentsModalThinkingOptions(providerID, model string) []string {
 	effectiveProvider := normalizeAgentsModalProviderID(providerID)
 	if effectiveProvider == "" {
@@ -2550,11 +2577,11 @@ func (p *HomePage) agentsModalThinkingOptions(providerID, model string) []string
 	if effectiveModel == "" {
 		effectiveModel = p.agentsModal.defaultModelForProvider(effectiveProvider)
 	}
-	options := []string{"", "off"}
-	if p.agentsModalModelReasoningEnabled(effectiveProvider, effectiveModel) {
-		options = append(options, "low", "medium", "high", "xhigh")
+	record, ok := p.agentsModalCatalogRecord(effectiveProvider, effectiveModel)
+	if !ok {
+		return []string{""}
 	}
-	return dedupeAgentsModalOptions(options)
+	return dedupeAgentsModalOptions(append([]string{""}, record.ThinkingOptions...))
 }
 
 func (p *HomePage) normalizeAgentsModalModelValue(providerID, raw string) string {
@@ -2678,11 +2705,11 @@ func (p *HomePage) syncAgentsModalEditorDependentOptions(editor *agentsModalEdit
 	}
 	if thinking := p.findAgentsModalEditorField(editor, "thinking"); thinking != nil {
 		thinking.Options = p.agentsModalThinkingOptions(selectedProvider, modelValue)
-		fallback := p.agentsModal.DefaultThinking
-		if utilityEditor {
-			fallback = "off"
-		}
-		thinking.Value = normalizeAgentsModalThinkingValue(thinking.Value, thinking.Options, fallback)
+		thinking.Value = normalizeAgentsModalThinkingValue(thinking.Value, thinking.Options, "")
+	}
+	if serviceTier := p.findAgentsModalEditorField(editor, "service_tier"); serviceTier != nil {
+		serviceTier.Options = p.agentsModalServiceTierOptions(selectedProvider, modelValue)
+		serviceTier.Value = normalizeAgentsModalOptionValue(strings.ToLower(strings.TrimSpace(serviceTier.Value)), serviceTier.Options, "")
 	}
 	for _, prefix := range []string{"plan", "auto"} {
 		provider := p.findAgentsModalEditorField(editor, prefix+"_provider")
@@ -2697,13 +2724,17 @@ func (p *HomePage) syncAgentsModalEditorDependentOptions(editor *agentsModalEdit
 			model.Value = p.normalizeAgentsModalModelValueWithFallback(provider.Value, model.Value, false)
 		}
 		thinking := p.findAgentsModalEditorField(editor, prefix+"_thinking")
+		modelValue := ""
+		if model != nil {
+			modelValue = model.Value
+		}
 		if thinking != nil {
-			modelValue := ""
-			if model != nil {
-				modelValue = model.Value
-			}
 			thinking.Options = p.agentsModalThinkingOptions(provider.Value, modelValue)
-			thinking.Value = normalizeAgentsModalThinkingValue(thinking.Value, thinking.Options, "off")
+			thinking.Value = normalizeAgentsModalThinkingValue(thinking.Value, thinking.Options, "")
+		}
+		if serviceTier := p.findAgentsModalEditorField(editor, prefix+"_service_tier"); serviceTier != nil {
+			serviceTier.Options = p.agentsModalServiceTierOptions(provider.Value, modelValue)
+			serviceTier.Value = normalizeAgentsModalOptionValue(strings.ToLower(strings.TrimSpace(serviceTier.Value)), serviceTier.Options, "")
 		}
 	}
 	if scope := p.findAgentsModalEditorField(editor, "scope"); scope != nil {

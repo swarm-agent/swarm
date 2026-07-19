@@ -74,10 +74,12 @@ type agentToolAccessSummary struct {
 }
 
 type agentChangeModelOption struct {
-	Provider  string
-	Model     string
-	Label     string
-	Reasoning bool
+	Provider        string
+	Model           string
+	Label           string
+	Reasoning       bool
+	ThinkingOptions []string
+	DefaultThinking string
 }
 
 func isAgentChangePermission(record ChatPermissionRecord) bool {
@@ -1043,10 +1045,12 @@ func normalizeAgentChangeModelOptions(models []ModelsModalEntry) []agentChangeMo
 		}
 		seen[key] = struct{}{}
 		options = append(options, agentChangeModelOption{
-			Provider:  provider,
-			Model:     modelName,
-			Label:     provider + " / " + model.DisplayModelName(provider, modelName),
-			Reasoning: entry.Reasoning,
+			Provider:        provider,
+			Model:           modelName,
+			Label:           provider + " / " + model.DisplayModelName(provider, modelName),
+			Reasoning:       entry.Reasoning,
+			ThinkingOptions: append([]string(nil), entry.ThinkingOptions...),
+			DefaultThinking: strings.TrimSpace(entry.DefaultThinking),
 		})
 	}
 	sort.SliceStable(options, func(i, j int) bool {
@@ -1137,29 +1141,28 @@ func (p *ChatPage) agentChangePayloadThinking() string {
 }
 
 func (p *ChatPage) agentChangeDefaultThinking() string {
-	if thinking := normalizeAgentChangeThinkingValue(p.thinkingLevel); thinking != "" {
+	provider, modelName := p.agentChangeSelectedModelIdentity()
+	options := p.agentChangeThinkingOptionsForModel(provider, modelName)
+	if thinking := normalizeAgentChangeThinkingValue(p.thinkingLevel); containsAgentChangeThinkingOption(options, thinking) {
 		return thinking
 	}
-	return "medium"
+	for _, option := range p.agentChangeModelOptions {
+		if strings.EqualFold(strings.TrimSpace(option.Provider), provider) && strings.EqualFold(strings.TrimSpace(option.Model), modelName) {
+			if thinking := normalizeAgentChangeThinkingValue(option.DefaultThinking); containsAgentChangeThinkingOption(options, thinking) {
+				return thinking
+			}
+			break
+		}
+	}
+	return ""
 }
 
 func normalizeAgentChangeThinkingValue(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
-	switch value {
-	case "off", "low", "medium", "high", "xhigh":
-		return value
-	case "x-high":
+	if value == "x-high" {
 		return "xhigh"
-	default:
-		return ""
 	}
-}
-
-func reasoningLevelsForAgentChange(reasoning bool) []string {
-	if !reasoning {
-		return nil
-	}
-	return []string{"low", "medium", "high", "xhigh"}
+	return value
 }
 
 func containsAgentChangeThinkingOption(options []string, target string) bool {
@@ -1188,19 +1191,20 @@ func agentChangeThinkingOptionIndex(options []string, target string) (int, bool)
 func (p *ChatPage) agentChangeThinkingOptionsForModel(provider, modelName string) []string {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	modelName = strings.TrimSpace(modelName)
-	options := []string{"off"}
 	for _, option := range p.agentChangeModelOptions {
 		if !strings.EqualFold(strings.TrimSpace(option.Provider), provider) || !strings.EqualFold(strings.TrimSpace(option.Model), modelName) {
 			continue
 		}
-		for _, level := range reasoningLevelsForAgentChange(option.Reasoning) {
-			if !containsAgentChangeThinkingOption(options, level) {
+		options := make([]string, 0, len(option.ThinkingOptions))
+		for _, level := range option.ThinkingOptions {
+			level = normalizeAgentChangeThinkingValue(level)
+			if level != "" && !containsAgentChangeThinkingOption(options, level) {
 				options = append(options, level)
 			}
 		}
-		break
+		return options
 	}
-	return options
+	return nil
 }
 
 func (p *ChatPage) cycleAgentChangeThinking() {

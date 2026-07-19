@@ -47,51 +47,6 @@ const (
 	commitBackgroundLineageTag = "@memory"
 )
 
-var (
-	modelPresetsByProvider = map[string][]string{
-		"anthropic": {
-			"claude-opus-4-7",
-			"claude-opus-4-6",
-			"claude-opus-4-5",
-			"claude-sonnet-4-6",
-			"claude-sonnet-4-5",
-			"claude-haiku-4-5",
-		},
-		"codex": {
-			"gpt-5.5",
-			"gpt-5.4",
-			"gpt-5.4-mini",
-			"gpt-5.3-codex",
-			"gpt-5.3-codex-spark",
-			"gpt-5.2",
-			"gpt-5.1-codex-max",
-			"gpt-5.1-codex-mini",
-		},
-		// Copilot presets are intentionally hidden for now. The provider code stays
-		// in-tree, but we cannot fairly test or recommend it while the required paid
-		// Copilot plan is unavailable.
-		"fireworks": {
-			"accounts/fireworks/models/kimi-k2p6",
-			"accounts/fireworks/models/minimax-m2p7",
-			"accounts/fireworks/models/kimi-k2p5",
-		},
-		"google": {
-			"gemini-3.1-pro-preview",
-			"gemini-3-flash-preview",
-			"gemini-2.5-pro",
-			"gemini-2.5-flash",
-			"gemini-2.0-flash",
-		},
-		"openrouter": {
-			"openai/gpt-5.5",
-			"google/gemini-3-flash-preview",
-			"openai/gpt-5.2",
-			"openai/gpt-5.2-mini",
-		},
-	}
-	thinkingPresets = []string{"off", "low", "medium", "high", "xhigh"}
-)
-
 func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 	updateQuickTips := []string{"/update"}
 	updateHint := "Update Swarm"
@@ -6625,15 +6580,13 @@ func mapAgentsModalData(state client.AgentState, resolved providerModelResolverR
 		}
 		modelsByProvider[providerID] = append([]string(nil), models...)
 	}
-	reasoningModels := make(map[string]bool, len(resolved.ReasoningByKey)+32)
-	for key, enabled := range resolved.ReasoningByKey {
+	modelCatalog := make(map[string]client.ModelCatalogRecord, len(resolved.CatalogByKey))
+	for key, record := range resolved.CatalogByKey {
 		key = strings.ToLower(strings.TrimSpace(key))
-		if key == "" {
-			continue
+		if key != "" {
+			modelCatalog[key] = record
 		}
-		reasoningModels[key] = enabled
 	}
-
 	providerSet := make(map[string]struct{}, len(resolved.ProviderIDs)+8)
 	for _, providerID := range resolved.ProviderIDs {
 		providerID = normalizeModelProviderID(providerID)
@@ -6660,12 +6613,6 @@ func mapAgentsModalData(state client.AgentState, resolved providerModelResolverR
 				continue
 			}
 			modelsByProvider[configuredProvider] = append(modelsByProvider[configuredProvider], configuredModel)
-			reasonKey := modelEntryKey(configuredProvider, configuredModel)
-			if reasonKey != "" {
-				if _, ok := reasoningModels[reasonKey]; !ok {
-					reasoningModels[reasonKey] = true
-				}
-			}
 		}
 		profiles = append(profiles, ui.AgentModalProfile{
 			Name:               strings.TrimSpace(profile.Name),
@@ -6698,21 +6645,6 @@ func mapAgentsModalData(state client.AgentState, resolved providerModelResolverR
 		providers = append(providers, providerID)
 	}
 	sort.Strings(providers)
-	for _, providerID := range providers {
-		for _, preset := range modelPresetListForProvider(providerID) {
-			modelID := strings.TrimSpace(preset)
-			if modelID == "" {
-				continue
-			}
-			modelsByProvider[providerID] = append(modelsByProvider[providerID], modelID)
-			reasonKey := modelEntryKey(providerID, modelID)
-			if reasonKey != "" {
-				if _, ok := reasoningModels[reasonKey]; !ok {
-					reasoningModels[reasonKey] = true
-				}
-			}
-		}
-	}
 	for providerID, models := range modelsByProvider {
 		modelsByProvider[providerID] = dedupeModelValues(models)
 		defaultModelForProvider := ""
@@ -6775,18 +6707,9 @@ func mapAgentsModalData(state client.AgentState, resolved providerModelResolverR
 			defaultModel = modelsByProvider[defaultProvider][0]
 		}
 	}
-	if defaultProvider != "" && defaultModel != "" {
-		reasonKey := modelEntryKey(defaultProvider, defaultModel)
-		if reasonKey != "" {
-			if _, ok := reasoningModels[reasonKey]; !ok {
-				reasoningModels[reasonKey] = true
-			}
-		}
-	}
-
 	defaultThinking = strings.ToLower(strings.TrimSpace(defaultThinking))
-	if defaultThinking == "" {
-		defaultThinking = "xhigh"
+	if record, ok := modelCatalog[modelEntryKey(defaultProvider, defaultModel)]; ok && defaultThinking == "" {
+		defaultThinking = strings.ToLower(strings.TrimSpace(record.DefaultThinking))
 	}
 
 	data := ui.AgentsModalData{
@@ -6796,7 +6719,7 @@ func mapAgentsModalData(state client.AgentState, resolved providerModelResolverR
 		Version:               state.Version,
 		Providers:             providers,
 		ModelsByProvider:      modelsByProvider,
-		ReasoningModels:       reasoningModels,
+		ModelCatalog:          modelCatalog,
 		DefaultProvider:       defaultProvider,
 		DefaultModel:          defaultModel,
 		DefaultThinking:       defaultThinking,
@@ -9451,6 +9374,10 @@ func (a *App) chatAvailableModelsFromResolved(resolved providerModelResolverResu
 			if record, ok := resolved.CatalogByKey[key]; ok {
 				entry.ContextMode = record.ContextMode
 				entry.Reasoning = record.Reasoning
+				entry.ThinkingOptions = append([]string(nil), record.ThinkingOptions...)
+				entry.DefaultThinking = strings.TrimSpace(record.DefaultThinking)
+				entry.ServiceTiers = append([]string(nil), record.ServiceTiers...)
+				entry.DefaultServiceTier = strings.TrimSpace(record.DefaultServiceTier)
 			}
 			if enabled, ok := resolved.ReasoningByKey[key]; ok {
 				entry.Reasoning = enabled

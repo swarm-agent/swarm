@@ -50,20 +50,26 @@ func (a *App) cycleThinkingLevel() {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	record, err := a.modelCatalogRecord(ctx, providerID, modelID)
+	if err != nil {
+		setStatus(fmt.Sprintf("thinking options unavailable: %v", err))
+		return
+	}
 	current := normalizeModelThinkingLevel(a.homeModel.ThinkingLevel)
 	if a.route == "chat" && a.chat != nil {
 		_, _, sessionThinking, _, _ := a.chat.ModelState()
-		if normalized := normalizeModelThinkingLevel(sessionThinking); normalized != "" {
-			current = normalized
-		}
+		current = normalizeModelThinkingLevel(sessionThinking)
 	}
 	if current == "" {
-		current = defaultThinkingForProvider(providerID, "")
+		current = normalizeModelThinkingLevel(record.DefaultThinking)
 	}
-	nextThinking := nextThinkingLevel(providerID, current)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	nextThinking, ok := nextThinkingLevel(record.ThinkingOptions, current)
+	if !ok {
+		setStatus("thinking cycle unavailable: model snapshot has no thinking options")
+		return
+	}
 	if a.route == "chat" && a.chat != nil {
 		sessionID := strings.TrimSpace(a.chat.SessionID())
 		if sessionID == "" {
@@ -224,6 +230,10 @@ func (a *App) refreshModelsModalData(providerHint, statusHint string) {
 				entry.MaxOutputTokens = record.MaxOutputTokens
 				entry.Source = strings.TrimSpace(record.Source)
 				entry.Reasoning = record.Reasoning
+				entry.ThinkingOptions = append([]string(nil), record.ThinkingOptions...)
+				entry.DefaultThinking = strings.TrimSpace(record.DefaultThinking)
+				entry.ServiceTiers = append([]string(nil), record.ServiceTiers...)
+				entry.DefaultServiceTier = strings.TrimSpace(record.DefaultServiceTier)
 				entry.UpdatedAt = record.FetchedAt
 			}
 			if favorite, ok := resolved.FavoritesByKey[key]; ok {
@@ -239,11 +249,7 @@ func (a *App) refreshModelsModalData(providerHint, statusHint string) {
 				}
 			}
 			if strings.TrimSpace(entry.Source) == "" {
-				if hasModelPreset(providerID, modelID) {
-					entry.Source = "preset"
-				} else {
-					entry.Source = "catalog"
-				}
+				entry.Source = "catalog"
 			}
 			entries = append(entries, entry)
 			if model.SupportsCodex1MMode(providerID, modelID) {
@@ -362,14 +368,24 @@ func (a *App) handleModelsModalAction(action ui.ModelsModalAction) {
 		}
 		_, _, activeThinking, serviceTier, _, sessionID := a.currentModelPreferenceState()
 		contextMode := strings.TrimSpace(action.ContextMode)
-		thinking := normalizeModelThinkingLevel(action.Thinking)
-		if thinking == "" {
-			thinking = defaultThinkingForProvider(providerID, activeThinking)
-		}
-		thinking = normalizeThinkingForProvider(providerID, thinking)
-
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
+		catalog, err := a.modelCatalogRecord(ctx, providerID, modelID)
+		if err != nil {
+			a.home.SetModelsModalLoading(false)
+			a.home.SetModelsModalError(err.Error())
+			return
+		}
+		thinking := normalizeModelThinkingLevel(action.Thinking)
+		if !stringInSliceFold(catalog.ThinkingOptions, thinking) {
+			thinking = normalizeModelThinkingLevel(activeThinking)
+		}
+		if !stringInSliceFold(catalog.ThinkingOptions, thinking) {
+			thinking = normalizeModelThinkingLevel(catalog.DefaultThinking)
+		}
+		if !stringInSliceFold(catalog.ThinkingOptions, thinking) {
+			thinking = ""
+		}
 		if err := a.ensureProviderReadyForModelSet(ctx, providerID); err != nil {
 			a.home.SetModelsModalLoading(false)
 			a.home.SetModelsModalError(err.Error())
@@ -467,72 +483,6 @@ func (a *App) handleModelsModalAction(action ui.ModelsModalAction) {
 	}
 }
 
-func modelPresetListForProvider(providerID string) []string {
-	providerID = normalizeModelProviderID(providerID)
-	if providerID == "" {
-		return nil
-	}
-	presets, ok := modelPresetsByProvider[providerID]
-	if !ok {
-		return nil
-	}
-	out := make([]string, 0, len(presets))
-	for _, preset := range presets {
-		preset = strings.TrimSpace(preset)
-		if preset != "" {
-			out = append(out, preset)
-		}
-	}
-	return out
-}
-
-func hasModelPreset(providerID, modelID string) bool {
-	modelID = strings.TrimSpace(modelID)
-	if modelID == "" {
-		return false
-	}
-	for _, preset := range modelPresetListForProvider(providerID) {
-		if strings.EqualFold(strings.TrimSpace(preset), modelID) {
-			return true
-		}
-	}
-	return false
-}
-
-func modelAllowedByProviderPreset(providerID, modelID string) bool {
-	providerID = normalizeModelProviderID(providerID)
-	modelID = strings.TrimSpace(modelID)
-	if modelID == "" {
-		return false
-	}
-	// Keep codex as a curated list so model UX stays compact and stable.
-	if providerID != "codex" {
-		return true
-	}
-	presets := modelPresetListForProvider(providerID)
-	if len(presets) == 0 {
-		return true
-	}
-	for _, preset := range presets {
-		if strings.EqualFold(strings.TrimSpace(preset), modelID) {
-			return true
-		}
-	}
-	return false
-}
-
-func sortedModelProviders() []string {
-	ids := make([]string, 0, len(modelPresetsByProvider))
-	for providerID := range modelPresetsByProvider {
-		providerID = normalizeModelProviderID(providerID)
-		if providerID != "" {
-			ids = append(ids, providerID)
-		}
-	}
-	sort.Strings(ids)
-	return ids
-}
-
 func normalizeModelProviderID(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	switch value {
@@ -547,58 +497,52 @@ func normalizeModelProviderID(value string) string {
 
 func normalizeModelThinkingLevel(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
-	switch value {
-	case "off", "low", "medium", "high", "xhigh":
-		return value
-	default:
-		return ""
+	if value == "x-high" {
+		return "xhigh"
 	}
+	return value
 }
 
-func nextThinkingLevel(providerID, current string) string {
+func nextThinkingLevel(options []string, current string) (string, bool) {
 	current = normalizeModelThinkingLevel(current)
-
-	presets := []string{"off", "low", "medium", "high", "xhigh"}
-	if normalizeModelProviderID(providerID) == "copilot" {
-		presets = []string{"off", "low", "medium", "high"}
-	}
-
-	if len(presets) == 0 {
-		return "high"
-	}
-
-	for i, preset := range presets {
-		if preset != current {
-			continue
+	levels := make([]string, 0, len(options))
+	for _, option := range options {
+		option = normalizeModelThinkingLevel(option)
+		if option != "" && !stringInSliceFold(levels, option) {
+			levels = append(levels, option)
 		}
-		return presets[(i+1)%len(presets)]
 	}
-	return presets[0]
+	if len(levels) == 0 {
+		return "", false
+	}
+	for i, level := range levels {
+		if level == current {
+			return levels[(i+1)%len(levels)], true
+		}
+	}
+	return levels[0], true
 }
 
-func defaultThinkingForProvider(providerID, current string) string {
-	if normalized := normalizeModelThinkingLevel(current); normalized != "" {
-		return normalizeThinkingForProvider(providerID, normalized)
+func stringInSliceFold(values []string, target string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(target)) {
+			return true
+		}
 	}
-	switch normalizeModelProviderID(providerID) {
-	case "google":
-		return "xhigh"
-	case "copilot":
-		return "high"
-	default:
-		return "xhigh"
-	}
+	return false
 }
 
-func normalizeThinkingForProvider(providerID, thinking string) string {
-	normalized := normalizeModelThinkingLevel(thinking)
-	if normalized == "" {
-		return ""
+func (a *App) modelCatalogRecord(ctx context.Context, providerID, modelID string) (client.ModelCatalogRecord, error) {
+	records, err := a.api.ListModelCatalog(ctx, normalizeModelProviderID(providerID), 1200)
+	if err != nil {
+		return client.ModelCatalogRecord{}, err
 	}
-	if normalizeModelProviderID(providerID) == "copilot" && normalized == "xhigh" {
-		return "high"
+	for _, record := range records {
+		if strings.EqualFold(strings.TrimSpace(record.Model), strings.TrimSpace(modelID)) {
+			return record, nil
+		}
 	}
-	return normalized
+	return client.ModelCatalogRecord{}, fmt.Errorf("model catalog record not found for %s/%s", providerID, modelID)
 }
 
 func modelEntryKey(providerID, modelID string) string {
@@ -644,39 +588,9 @@ func modelEntrySortTimestamp(entry ui.ModelsModalEntry) int64 {
 	return entry.UpdatedAt
 }
 
-func modelIDLessForProvider(providerID, left, right string) bool {
+func modelIDLessForProvider(_ string, left, right string) bool {
 	leftModel := strings.ToLower(strings.TrimSpace(left))
 	rightModel := strings.ToLower(strings.TrimSpace(right))
-	if leftModel == rightModel {
-		return false
-	}
-	presets := modelPresetListForProvider(providerID)
-	leftPreset := -1
-	rightPreset := -1
-	for i, preset := range presets {
-		preset = strings.ToLower(strings.TrimSpace(preset))
-		if preset == leftModel && leftPreset < 0 {
-			leftPreset = i
-		}
-		if preset == rightModel && rightPreset < 0 {
-			rightPreset = i
-		}
-	}
-	if leftPreset >= 0 || rightPreset >= 0 {
-		if leftPreset < 0 {
-			return false
-		}
-		if rightPreset < 0 {
-			return true
-		}
-		if leftPreset != rightPreset {
-			return leftPreset < rightPreset
-		}
-	}
-	// For Google, invert lexical fallback so newer-numbered Gemini variants float up.
-	if normalizeModelProviderID(providerID) == "google" {
-		return leftModel > rightModel
-	}
 	return leftModel < rightModel
 }
 

@@ -246,15 +246,19 @@ type ModelResolved struct {
 }
 
 type ModelCatalogRecord struct {
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	ContextMode     string `json:"context_mode,omitempty"`
-	ContextWindow   int    `json:"context_window"`
-	MaxOutputTokens int    `json:"max_output_tokens"`
-	Reasoning       bool   `json:"reasoning"`
-	Source          string `json:"source"`
-	FetchedAt       int64  `json:"fetched_at"`
-	ExpiresAt       int64  `json:"expires_at"`
+	Provider           string   `json:"provider"`
+	Model              string   `json:"model"`
+	ContextMode        string   `json:"context_mode,omitempty"`
+	ContextWindow      int      `json:"context_window"`
+	MaxOutputTokens    int      `json:"max_output_tokens"`
+	Reasoning          bool     `json:"reasoning"`
+	ThinkingOptions    []string `json:"thinking_options,omitempty"`
+	DefaultThinking    string   `json:"default_thinking,omitempty"`
+	ServiceTiers       []string `json:"service_tiers,omitempty"`
+	DefaultServiceTier string   `json:"default_service_tier,omitempty"`
+	Source             string   `json:"source"`
+	FetchedAt          int64    `json:"fetched_at"`
+	ExpiresAt          int64    `json:"expires_at"`
 }
 
 type ModelFavoriteRecord struct {
