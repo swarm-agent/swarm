@@ -63,6 +63,7 @@ type V3RealtimeResumeOptions struct {
 	Surface        string
 	Subscriptions  []V3RealtimeSubscription
 	Worksets       []V3RealtimeWorksetSubscription
+	StartAtCurrent bool
 	OnResumeSent   func()
 }
 
@@ -170,23 +171,29 @@ func (c *API) StreamV3Realtime(ctx context.Context, options V3RealtimeResumeOpti
 	for _, sub := range normalized.Subscriptions {
 		lastSeqBySession[sub.SessionID] = sub.LastSeq
 	}
-	resume := V3RealtimeFrame{
-		Protocol:        v3RealtimeProtocol,
-		ProtocolVersion: v3RealtimeProtocolVersion,
-		Kind:            v3RealtimeKindResume,
-		EndpointCursor:  endpointCursor,
-		Subscriptions:   normalized.Subscriptions,
-		Worksets:        normalized.Worksets,
-	}
-	raw, err := json.Marshal(resume)
-	if err != nil {
-		return err
-	}
-	if err := conn.WriteText(raw); err != nil {
-		return fmt.Errorf("send v3 realtime resume: %w", err)
-	}
-	if normalized.OnResumeSent != nil {
-		normalized.OnResumeSent()
+	if endpointCursor == "" {
+		if err := startV3RealtimeAtCurrent(ctx, conn, normalized, onFrame); err != nil {
+			return err
+		}
+	} else {
+		resume := V3RealtimeFrame{
+			Protocol:        v3RealtimeProtocol,
+			ProtocolVersion: v3RealtimeProtocolVersion,
+			Kind:            v3RealtimeKindResume,
+			EndpointCursor:  endpointCursor,
+			Subscriptions:   normalized.Subscriptions,
+			Worksets:        normalized.Worksets,
+		}
+		raw, err := json.Marshal(resume)
+		if err != nil {
+			return err
+		}
+		if err := conn.WriteText(raw); err != nil {
+			return fmt.Errorf("send v3 realtime resume: %w", err)
+		}
+		if normalized.OnResumeSent != nil {
+			normalized.OnResumeSent()
+		}
 	}
 
 	for {
@@ -266,6 +273,56 @@ func (c *API) StreamV3Realtime(ctx context.Context, options V3RealtimeResumeOpti
 	}
 }
 
+// startV3RealtimeAtCurrent is reserved for a newly committed session whose
+// create response has no snapshot cursor. The cursorless websocket handshake
+// establishes the daemon's current durable outbox head; only then is the
+// session subscribed at that signed cursor. Resume and recovery callers remain
+// cursor-bound through normalizeV3RealtimeResumeOptions.
+func startV3RealtimeAtCurrent(ctx context.Context, conn *wsClientConn, options V3RealtimeResumeOptions, onFrame func(V3RealtimeFrame)) error {
+	raw, err := conn.ReadText(ctx)
+	if err != nil {
+		return fmt.Errorf("read v3 realtime hello: %w", err)
+	}
+	var hello V3RealtimeFrame
+	if err := json.Unmarshal(raw, &hello); err != nil {
+		return fmt.Errorf("decode v3 realtime hello: %w", err)
+	}
+	if err := validateV3RealtimeFrameProtocol(hello); err != nil {
+		return err
+	}
+	if strings.ToLower(strings.TrimSpace(hello.Kind)) != v3RealtimeKindHello {
+		return fmt.Errorf("v3 realtime start-at-current expected hello, got %q", hello.Kind)
+	}
+	cursor := strings.TrimSpace(hello.EndpointCursor)
+	if cursor == "" {
+		return errors.New("v3 realtime start-at-current hello missing endpoint cursor")
+	}
+	if onFrame != nil {
+		onFrame(hello)
+	}
+	for _, sub := range options.Subscriptions {
+		subscribe := V3RealtimeFrame{
+			Protocol:        v3RealtimeProtocol,
+			ProtocolVersion: v3RealtimeProtocolVersion,
+			Kind:            v3RealtimeKindSubscribe,
+			SessionID:       sub.SessionID,
+			SubscriptionID:  sub.SubscriptionID,
+			EndpointCursor:  cursor,
+		}
+		rawSubscribe, err := json.Marshal(subscribe)
+		if err != nil {
+			return err
+		}
+		if err := conn.WriteText(rawSubscribe); err != nil {
+			return fmt.Errorf("send v3 realtime current-head subscription: %w", err)
+		}
+	}
+	if options.OnResumeSent != nil {
+		options.OnResumeSent()
+	}
+	return nil
+}
+
 func normalizeV3RealtimeResumeOptions(options V3RealtimeResumeOptions) (V3RealtimeResumeOptions, string, error) {
 	cursor := strings.TrimSpace(options.EndpointCursor)
 	normalized := V3RealtimeResumeOptions{
@@ -273,6 +330,7 @@ func normalizeV3RealtimeResumeOptions(options V3RealtimeResumeOptions) (V3Realti
 		Surface:        strings.TrimSpace(options.Surface),
 		Subscriptions:  make([]V3RealtimeSubscription, 0, len(options.Subscriptions)),
 		Worksets:       make([]V3RealtimeWorksetSubscription, 0, len(options.Worksets)),
+		StartAtCurrent: options.StartAtCurrent,
 		OnResumeSent:   options.OnResumeSent,
 	}
 	seenSessions := make(map[string]struct{}, len(options.Subscriptions))
@@ -326,8 +384,11 @@ func normalizeV3RealtimeResumeOptions(options V3RealtimeResumeOptions) (V3Realti
 		workset.Resources = trimNonEmptyStrings(workset.Resources)
 		normalized.Worksets = append(normalized.Worksets, workset)
 	}
-	if cursor == "" {
+	if cursor == "" && !normalized.StartAtCurrent {
 		return V3RealtimeResumeOptions{}, "", errors.New("v3 realtime endpoint cursor is required")
+	}
+	if cursor == "" && len(normalized.Worksets) != 0 {
+		return V3RealtimeResumeOptions{}, "", errors.New("v3 realtime start-at-current supports session subscriptions only")
 	}
 	if len(normalized.Subscriptions) == 0 && len(normalized.Worksets) == 0 {
 		return V3RealtimeResumeOptions{}, "", errors.New("at least one v3 realtime session or workset subscription is required")

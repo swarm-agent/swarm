@@ -251,6 +251,9 @@ func (a *App) renderThemeOption(option ui.ThemeOption) {
 	if a.chat != nil {
 		a.chat.SetTheme(option.Theme)
 	}
+	if a.v3Chat != nil {
+		a.v3Chat.SetStyles(a.v3ChatStyles())
+	}
 }
 
 func (a *App) applySelectedWorkspaceTheme(themeID string) {

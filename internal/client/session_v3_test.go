@@ -302,6 +302,65 @@ func TestSessionV3TUIWorksetClientUsesTUIRouteAndScope(t *testing.T) {
 	}
 }
 
+func TestStreamV3RealtimeStartAtCurrentUsesHelloCursorForNewSessionSubscription(t *testing.T) {
+	var gotPath string
+	var gotSubscribe V3RealtimeFrame
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.RequestURI()
+		conn, rw, err := hijackLifecycleTestWebsocket(w, r)
+		if err != nil {
+			t.Fatalf("hijack websocket: %v", err)
+		}
+		defer conn.Close()
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "hello", "endpoint_cursor": "signed-current"})
+		_, payload, err := readClientLifecycleTestFrame(rw)
+		if err != nil {
+			t.Fatalf("read subscribe: %v", err)
+		}
+		if err := json.Unmarshal(payload, &gotSubscribe); err != nil {
+			t.Fatalf("decode subscribe: %v", err)
+		}
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.complete", "session_id": "session-new", "endpoint_cursor": "signed-current", "last_seq": 0})
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("test-token")
+	ctx, cancel := context.WithCancel(context.Background())
+	ready := false
+	var frames []V3RealtimeFrame
+	err := api.StreamV3Realtime(ctx, V3RealtimeResumeOptions{
+		Surface:        "tui",
+		StartAtCurrent: true,
+		Subscriptions:  []V3RealtimeSubscription{{SessionID: "session-new", SubscriptionID: "sub-new"}},
+		OnResumeSent:   func() { ready = true },
+	}, func(frame V3RealtimeFrame) {
+		frames = append(frames, frame)
+		if frame.Kind == "replay.complete" {
+			cancel()
+		}
+	})
+	if err != nil {
+		t.Fatalf("StreamV3Realtime() error = %v", err)
+	}
+	if gotPath != "/v3/realtime/stream?surface=tui" {
+		t.Fatalf("stream path = %q", gotPath)
+	}
+	if !ready || len(frames) != 2 || frames[0].Kind != "hello" || frames[0].EndpointCursor != "signed-current" {
+		t.Fatalf("ready=%v frames=%#v", ready, frames)
+	}
+	if gotSubscribe.Kind != "subscribe.session" || gotSubscribe.SessionID != "session-new" || gotSubscribe.SubscriptionID != "sub-new" || gotSubscribe.EndpointCursor != "signed-current" {
+		t.Fatalf("subscribe = %#v", gotSubscribe)
+	}
+}
+
+func TestNormalizeV3RealtimeResumeStillRequiresCursorOutsideNewSessionStart(t *testing.T) {
+	_, _, err := normalizeV3RealtimeResumeOptions(V3RealtimeResumeOptions{Subscriptions: []V3RealtimeSubscription{{SessionID: "session-a", SubscriptionID: "sub-a"}}})
+	if err == nil || err.Error() != "v3 realtime endpoint cursor is required" {
+		t.Fatalf("normalize error = %v", err)
+	}
+}
+
 func TestStreamSessionsV3RealtimeDeliversLiveAssistantPatchWithoutAdvancingDurableOrder(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, rw, err := hijackLifecycleTestWebsocket(w, r)

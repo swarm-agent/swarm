@@ -366,27 +366,11 @@ func (c *tuiRealtimeController) waitForResumeSent(ctx context.Context, active *t
 	if ready == nil {
 		return errors.New("tui realtime generation readiness is not initialized")
 	}
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ready:
-			return active.readyResult()
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			c.mu.Lock()
-			changed := c.generation != waitForCurrent
-			c.mu.Unlock()
-			if changed {
-				select {
-				case <-ready:
-					return active.readyResult()
-				default:
-					return errTUIRealtimeGenerationReplaced
-				}
-			}
-		}
+	select {
+	case <-ready:
+		return active.readyResult()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

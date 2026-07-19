@@ -26,6 +26,7 @@ import (
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 	"swarm-refactor/swarmtui/internal/ui"
+	"swarm-refactor/swarmtui/internal/ui/v3chat"
 	"swarm-refactor/swarmtui/internal/updatehandoff"
 )
 
@@ -37,6 +38,7 @@ const (
 	interruptVoiceReady        = "voice-ready"
 	interruptStreamReady       = "stream-ready"
 	interruptGitStatusReady    = "git-status-ready"
+	interruptV3Chat            = "v3-chat-ready"
 	interruptQuit              = "quit"
 	defaultDaemonURL           = "http://127.0.0.1:7781"
 	reloadInterval             = 3 * time.Second
@@ -192,6 +194,7 @@ type App struct {
 	screen tcell.Screen
 	home   *ui.HomePage
 	chat   *ui.ChatPage
+	v3Chat *v3chat.Page
 	route  string
 
 	api                 *client.API
@@ -242,8 +245,9 @@ type App struct {
 
 	swarmNotificationCount int
 
-	pendingChatRender  chan struct{}
-	pendingStreamReady chan struct{}
+	pendingChatRender   chan struct{}
+	pendingV3ChatRender chan struct{}
+	pendingStreamReady  chan struct{}
 
 	workspaceCandidates []workspaceCandidate
 	mouseHintShown      bool
@@ -332,6 +336,7 @@ func New() (*App, error) {
 		streamEvents:        make(chan client.StreamEventEnvelope, 256),
 		gitStatusCh:         make(chan gitStatusRefreshResult, 8),
 		pendingChatRender:   make(chan struct{}, 1),
+		pendingV3ChatRender: make(chan struct{}, 1),
 		pendingStreamReady:  make(chan struct{}, 1),
 		tuiSessionStore:     newTUISessionStore(),
 		tuiRealtimeFrames:   make(chan client.V3RealtimeFrame, 256),
@@ -410,6 +415,7 @@ func (a *App) Close() {
 	if a.tuiRealtime != nil {
 		a.tuiRealtime.Stop()
 	}
+	a.closeV3Chat()
 	a.stopGitRealtimeWatcher()
 	if a.voiceCapture.cancel != nil {
 		a.voiceCapture.cancel()
@@ -422,27 +428,12 @@ func (a *App) Close() {
 }
 
 func (a *App) Run() error {
-	stop := make(chan struct{})
-	tick := time.NewTicker(120 * time.Millisecond)
-	defer tick.Stop()
-	go func() {
-		for {
-			select {
-			case <-tick.C:
-				if a.screen != nil {
-					a.screen.PostEventWait(tcell.NewEventInterrupt(interruptTick))
-				}
-			case <-stop:
-				return
-			}
-		}
-	}()
-	defer close(stop)
-
 	dirty := true
 	for {
 		if dirty {
-			if a.route == "chat" && a.chat != nil {
+			if a.route == "v3chat" && a.v3Chat != nil {
+				a.v3Chat.Draw(a.screen)
+			} else if a.route == "chat" && a.chat != nil {
 				a.chat.Draw(a.screen)
 				if a.home != nil {
 					a.home.DrawChatOverlay(a.screen)
@@ -498,6 +489,9 @@ func (a *App) Run() error {
 				if a.consumeGitStatusRefreshResults() {
 					dirty = true
 				}
+			case interruptV3Chat:
+				a.consumeV3ChatRender()
+				dirty = true
 			case interruptQuit:
 				if a.devUpdateRequested {
 					return updatehandoff.ErrDevUpdateRequested
@@ -545,6 +539,11 @@ func (a *App) Run() error {
 					a.home.SetStatus(message)
 				}
 				a.showToast(ui.ToastInfo, message)
+			}
+			if a.route == "v3chat" && a.v3Chat != nil {
+				a.v3Chat.HandleMouse(e)
+				dirty = true
+				continue
 			}
 			if a.route == "chat" && a.chat != nil {
 				a.chat.HandleMouse(e)
@@ -626,6 +625,15 @@ func (a *App) Run() error {
 				continue
 			}
 			if a.voiceInputLocked() {
+				dirty = true
+				continue
+			}
+			if a.route == "v3chat" && a.v3Chat != nil {
+				if a.v3Chat.HandleKey(e) == v3chat.PageActionHome {
+					a.closeV3Chat()
+					a.route = "home"
+					a.home.SetStatus("home")
+				}
 				dirty = true
 				continue
 			}
@@ -2746,7 +2754,19 @@ func (a *App) openChatSessionWithWorktree(titleSeed, initialPrompt, worktreeBran
 	if a.api == nil {
 		return errors.New("api client is not configured")
 	}
+	intent := a.home.SessionIntent()
+	intent.Title = strings.TrimSpace(titleSeed)
+	intent.InitialPrompt = strings.TrimSpace(initialPrompt)
+	route := a.selectedChatRouteForWorkspace(a.activeContextPath())
+	return a.openNewV3Chat(intent, route, worktreeBranchSuffix)
+}
 
+// openLegacyChatSessionWithWorktree is retained only for old app-shell callers
+// outside the new homepage/V3 page route. It is not used by production home.
+func (a *App) openLegacyChatSessionWithWorktree(titleSeed, initialPrompt, worktreeBranchSuffix string) error {
+	if a.api == nil {
+		return errors.New("api client is not configured")
+	}
 	workspacePath := strings.TrimSpace(a.activeContextPath())
 	if workspacePath == "" {
 		workspacePath = strings.TrimSpace(a.startupCWD)
@@ -2899,7 +2919,7 @@ func (a *App) openChatSessionWithWorktree(titleSeed, initialPrompt, worktreeBran
 }
 
 func (a *App) openExistingSession(summary model.SessionSummary) error {
-	return a.openSessionSummary(summary, "")
+	return a.openExistingV3Chat(summary)
 }
 
 func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt string) error {

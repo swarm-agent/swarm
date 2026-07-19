@@ -26,8 +26,7 @@ const (
 	wsOpcodePing  = 0x9
 	wsOpcodePong  = 0xA
 
-	wsMaxFrameLength  = 1 << 20
-	wsReadPollTimeout = 500 * time.Millisecond
+	wsMaxFrameLength = 1 << 20
 )
 
 type StreamEventEnvelope struct {
@@ -322,24 +321,28 @@ func (c *wsClientConn) Close() error {
 }
 
 func (c *wsClientConn) ReadText(ctx context.Context) ([]byte, error) {
+	if c == nil || c.conn == nil {
+		return nil, io.EOF
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Cancellation closes the connection to unblock the in-flight read. This
+	// avoids recurring read deadlines while preserving immediate shutdown.
+	readDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = c.conn.Close()
+		case <-readDone:
+		}
+	}()
+	defer close(readDone)
 	for {
-		if c == nil || c.conn == nil {
-			return nil, io.EOF
-		}
-		deadline := time.Now().Add(wsReadPollTimeout)
-		if ctx != nil {
-			if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-				deadline = d
-			}
-		}
-		_ = c.conn.SetReadDeadline(deadline)
 		opcode, payload, err := c.readFrame()
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				if ctx != nil && ctx.Err() != nil {
-					return nil, ctx.Err()
-				}
-				continue
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
 			}
 			return nil, err
 		}
