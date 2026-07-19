@@ -9,6 +9,55 @@ import (
 	"swarm-refactor/swarmtui/internal/client"
 )
 
+func TestModeActionShiftsModelAndProfileFromBackendPolicy(t *testing.T) {
+	state := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:    client.SessionSummary{ID: "s", Mode: "auto"},
+		Preference: client.ModelPreference{Provider: "codex", Model: "auto-model"},
+	}})
+	state = Reduce(state, ModeAction{Resolved: client.SessionV3ModeResult{
+		Mode:       "plan",
+		Preference: client.ModelPreference{Provider: "codex", Model: "base-plan-model"},
+		AgentModelPolicy: client.SessionV3AgentModelPolicy{
+			Locked: true, ProfileName: "Plan profile", ProfileSource: "saved", ProfileMode: "split",
+			Preference: client.ModelPreference{Provider: "codex", Model: "resolved-plan-model", Thinking: "high"}, ContextWindow: 200000,
+		},
+	}})
+	if state.Session.Mode != "plan" || state.Model.Preference.Model != "resolved-plan-model" || state.Model.ProfileName != "Plan profile" || state.Model.ProfileSource != "saved" || !state.Model.Locked {
+		t.Fatalf("mode/model shift state = %#v", state)
+	}
+}
+
+func TestHydrateAndRealtimeUsageShareCanonicalContextState(t *testing.T) {
+	state := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:      client.SessionSummary{ID: "s"},
+		UsageSummary: &client.SessionUsageSummary{ContextWindow: 200000, RemainingTokens: 125000, TotalTokens: 75000},
+	}})
+	if !state.Usage.Available || state.Usage.ContextWindow != 200000 || state.Usage.RemainingTokens != 125000 {
+		t.Fatalf("hydrated usage state = %#v", state.Usage)
+	}
+	payload, _ := json.Marshal(map[string]any{"usage_summary": client.SessionUsageSummary{ContextWindow: 200000, RemainingTokens: 100000, TotalTokens: 100000}})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{SessionID: "s", Seq: 1, EventType: "run.usage.updated", Payload: payload}}})
+	if state.Usage.RemainingTokens != 100000 || state.Usage.TotalTokens != 100000 {
+		t.Fatalf("realtime usage state = %#v", state.Usage)
+	}
+}
+
+func TestHydrateAndRealtimePreferenceShareCanonicalModelState(t *testing.T) {
+	state := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:       client.SessionSummary{ID: "s"},
+		Preference:    client.ModelPreference{Provider: "Codex", Model: "before", Thinking: "medium"},
+		ContextWindow: 100000,
+	}})
+	if state.Model.Preference.Provider != "codex" || state.Model.Preference.Model != "before" || state.Model.ContextWindow != 100000 {
+		t.Fatalf("hydrated model state = %#v", state.Model)
+	}
+	payload, _ := json.Marshal(map[string]any{"preference": client.ModelPreference{Provider: "anthropic", Model: "after", Thinking: "high"}})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{SessionID: "s", Seq: 1, EventType: "session.preference.updated", Payload: payload}}})
+	if state.Model.Preference.Provider != "anthropic" || state.Model.Preference.Model != "after" || state.Model.Preference.Thinking != "high" {
+		t.Fatalf("realtime model state = %#v", state.Model)
+	}
+}
+
 func TestReducerOrdersDeduplicatesAndReconcilesPending(t *testing.T) {
 	state := NewState()
 	state = Reduce(state, PendingUserAction{Pending: PendingMessage{Message: Message{ID: "m2", Role: "user", Content: "pending", OperationID: "op"}}})

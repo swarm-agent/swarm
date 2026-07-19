@@ -13,14 +13,20 @@ import (
 )
 
 type fakeTransport struct {
-	mu            sync.Mutex
-	calls         []string
-	created       client.SessionV3Hydrated
-	result        client.SessionV3MessageResult
-	streamBlock   chan struct{}
-	streamFrames  []client.V3RealtimeFrame
-	streamOptions []client.V3RealtimeResumeOptions
-	hydrateCount  int
+	mu                sync.Mutex
+	calls             []string
+	created           client.SessionV3Hydrated
+	result            client.SessionV3MessageResult
+	streamBlock       chan struct{}
+	streamFrames      []client.V3RealtimeFrame
+	streamOptions     []client.V3RealtimeResumeOptions
+	hydrateCount      int
+	preference        client.ModelResolved
+	mode              client.SessionV3ModeResult
+	modeRequest       string
+	providers         []client.ProviderStatus
+	catalog           map[string][]client.ModelCatalogRecord
+	preferenceRequest map[string]any
 }
 
 func (f *fakeTransport) record(call string) {
@@ -69,6 +75,28 @@ func (f *fakeTransport) StreamV3Realtime(ctx context.Context, options client.V3R
 func (f *fakeTransport) StopSessionV3Run(context.Context, string, string, string, string) error {
 	f.record("stop")
 	return nil
+}
+func (f *fakeTransport) SetSessionV3ModeResolved(_ context.Context, _ string, mode string) (client.SessionV3ModeResult, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, "set-mode")
+	f.modeRequest = mode
+	f.mu.Unlock()
+	return f.mode, nil
+}
+func (f *fakeTransport) SetSessionV3Preference(_ context.Context, _ string, request map[string]any) (client.ModelResolved, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, "set-preference")
+	f.preferenceRequest = request
+	f.mu.Unlock()
+	return f.preference, nil
+}
+func (f *fakeTransport) ListProviders(context.Context) ([]client.ProviderStatus, error) {
+	f.record("list-providers")
+	return append([]client.ProviderStatus(nil), f.providers...), nil
+}
+func (f *fakeTransport) ListModelCatalog(_ context.Context, provider string, _ int) ([]client.ModelCatalogRecord, error) {
+	f.record("list-catalog:" + provider)
+	return append([]client.ModelCatalogRecord(nil), f.catalog[provider]...), nil
 }
 func (f *fakeTransport) SendSessionV3Message(_ context.Context, sessionID string, options client.SessionV3MessageOptions) (client.SessionV3MessageResult, error) {
 	f.record("send")
@@ -206,6 +234,72 @@ func TestExistingSessionHydratesOnceAndDoesNotRefreshWhileIdle(t *testing.T) {
 	transport.mu.Unlock()
 	if hydrates != 1 || !reflect.DeepEqual(calls, []string{"hydrate", "stream", "ready"}) {
 		t.Fatalf("idle transport calls = %#v hydrates=%d", calls, hydrates)
+	}
+}
+
+func TestSetModeCommitsBackendResolvedModeAndModelState(t *testing.T) {
+	transport := &fakeTransport{mode: client.SessionV3ModeResult{
+		Mode:             "plan",
+		Preference:       client.ModelPreference{Provider: "codex", Model: "plan-model", Thinking: "high"},
+		ContextWindow:    200000,
+		AgentModelPolicy: client.SessionV3AgentModelPolicy{Locked: true, ProfileName: "Planning", ProfileSource: "saved", Preference: client.ModelPreference{Provider: "codex", Model: "plan-model", Thinking: "high"}, ContextWindow: 200000},
+	}}
+	runtime := NewRuntime(transport, nil, nil)
+	runtime.Store().Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s", Mode: "auto"}, Preference: client.ModelPreference{Provider: "codex", Model: "auto-model"}}})
+	resolved, err := runtime.SetMode(context.Background(), "plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Mode != "plan" || transport.modeRequest != "plan" {
+		t.Fatalf("mode result/request = %#v / %q", resolved, transport.modeRequest)
+	}
+	state := runtime.Store().Snapshot()
+	if state.Session.Mode != "plan" || state.Model.Preference.Model != "plan-model" || state.Model.ProfileName != "Planning" || !state.Model.Locked {
+		t.Fatalf("backend-resolved mode/model state not committed: %#v", state)
+	}
+}
+
+func TestSetModelPreferenceCommitsBackendResolvedState(t *testing.T) {
+	transport := &fakeTransport{preference: client.ModelResolved{Preference: client.ModelPreference{Provider: "codex", Model: "resolved-model", Thinking: "high", ServiceTier: "fast"}, ContextWindow: 200000}}
+	runtime := NewRuntime(transport, nil, nil)
+	runtime.Store().Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s"}, Preference: client.ModelPreference{Provider: "codex", Model: "before"}}})
+	resolved, err := runtime.SetModelPreference(context.Background(), client.ModelPreference{Provider: "codex", Model: "requested", Thinking: "medium"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Preference.Model != "resolved-model" {
+		t.Fatalf("resolved = %#v", resolved)
+	}
+	state := runtime.Store().Snapshot()
+	if state.Model.Preference.Model != "resolved-model" || state.Model.ContextWindow != 200000 {
+		t.Fatalf("store did not commit backend response: %#v", state.Model)
+	}
+	transport.mu.Lock()
+	request := transport.preferenceRequest
+	transport.mu.Unlock()
+	if request["model"] != "requested" || request["thinking"] != "medium" {
+		t.Fatalf("preference request = %#v", request)
+	}
+}
+
+func TestListModelOptionsUsesRunnableBackendCatalog(t *testing.T) {
+	transport := &fakeTransport{
+		providers: []client.ProviderStatus{{ID: "codex", Runnable: true}, {ID: "offline", Runnable: false}},
+		catalog:   map[string][]client.ModelCatalogRecord{"codex": {{Model: "gpt-test"}}},
+	}
+	runtime := NewRuntime(transport, nil, nil)
+	options, err := runtime.ListModelOptions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(options) != 1 || options[0].Provider != "codex" || options[0].Model != "gpt-test" {
+		t.Fatalf("options = %#v", options)
+	}
+	transport.mu.Lock()
+	calls := append([]string(nil), transport.calls...)
+	transport.mu.Unlock()
+	if !reflect.DeepEqual(calls, []string{"list-providers", "list-catalog:codex"}) {
+		t.Fatalf("catalog calls = %#v", calls)
 	}
 }
 

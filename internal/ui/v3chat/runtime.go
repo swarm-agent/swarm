@@ -20,6 +20,10 @@ type Transport interface {
 	StreamV3Realtime(context.Context, client.V3RealtimeResumeOptions, func(client.V3RealtimeFrame)) error
 	SendSessionV3Message(context.Context, string, client.SessionV3MessageOptions) (client.SessionV3MessageResult, error)
 	StopSessionV3Run(context.Context, string, string, string, string) error
+	SetSessionV3ModeResolved(context.Context, string, string) (client.SessionV3ModeResult, error)
+	SetSessionV3Preference(context.Context, string, map[string]any) (client.ModelResolved, error)
+	ListProviders(context.Context) ([]client.ProviderStatus, error)
+	ListModelCatalog(context.Context, string, int) ([]client.ModelCatalogRecord, error)
 }
 
 type Runtime struct {
@@ -165,6 +169,87 @@ func (r *Runtime) Send(ctx context.Context, prompt string, metadata map[string]a
 	r.store.Dispatch(MessageResultAction{Result: result})
 	r.signalWake()
 	return result, nil
+}
+
+func (r *Runtime) SetMode(ctx context.Context, mode string) (client.SessionV3ModeResult, error) {
+	if r == nil || r.transport == nil {
+		return client.SessionV3ModeResult{}, errors.New("v3 chat transport is not configured")
+	}
+	state := r.store.Snapshot()
+	sessionID := strings.TrimSpace(state.Session.ID)
+	if sessionID == "" {
+		return client.SessionV3ModeResult{}, errors.New("v3 chat session is not connected")
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode != "auto" && mode != "plan" {
+		return client.SessionV3ModeResult{}, errors.New("session mode must be auto or plan")
+	}
+	resolved, err := r.transport.SetSessionV3ModeResolved(ctx, sessionID, mode)
+	if err != nil {
+		return client.SessionV3ModeResult{}, err
+	}
+	r.store.Dispatch(ModeAction{Resolved: resolved})
+	r.signalWake()
+	return resolved, nil
+}
+
+func (r *Runtime) SetModelPreference(ctx context.Context, preference client.ModelPreference) (client.ModelResolved, error) {
+	if r == nil || r.transport == nil {
+		return client.ModelResolved{}, errors.New("v3 chat transport is not configured")
+	}
+	state := r.store.Snapshot()
+	sessionID := strings.TrimSpace(state.Session.ID)
+	if sessionID == "" {
+		return client.ModelResolved{}, errors.New("v3 chat session is not connected")
+	}
+	if state.Model.Locked {
+		return client.ModelResolved{}, errors.New(firstNonEmpty(state.Model.LockReason, "session model is controlled by its agent policy"))
+	}
+	preference = normalizeModelPreference(preference)
+	if preference.Provider == "" || preference.Model == "" {
+		return client.ModelResolved{}, errors.New("provider and model are required")
+	}
+	resolved, err := r.transport.SetSessionV3Preference(ctx, sessionID, map[string]any{
+		"provider":     preference.Provider,
+		"model":        preference.Model,
+		"thinking":     preference.Thinking,
+		"service_tier": preference.ServiceTier,
+		"context_mode": preference.ContextMode,
+	})
+	if err != nil {
+		return client.ModelResolved{}, err
+	}
+	r.store.Dispatch(ModelPreferenceAction{Resolved: resolved})
+	r.signalWake()
+	return resolved, nil
+}
+
+func (r *Runtime) ListModelOptions(ctx context.Context) ([]client.ModelCatalogRecord, error) {
+	if r == nil || r.transport == nil {
+		return nil, errors.New("v3 chat transport is not configured")
+	}
+	providers, err := r.transport.ListProviders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var options []client.ModelCatalogRecord
+	for _, provider := range providers {
+		providerID := strings.ToLower(strings.TrimSpace(provider.ID))
+		if providerID == "" || !provider.Runnable {
+			continue
+		}
+		records, err := r.transport.ListModelCatalog(ctx, providerID, 1200)
+		if err != nil {
+			return nil, fmt.Errorf("list %s model catalog: %w", providerID, err)
+		}
+		for i := range records {
+			if strings.TrimSpace(records[i].Provider) == "" {
+				records[i].Provider = providerID
+			}
+			options = append(options, records[i])
+		}
+	}
+	return options, nil
 }
 
 func (r *Runtime) StopActiveRun(ctx context.Context, reason string) error {

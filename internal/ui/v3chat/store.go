@@ -57,4 +57,6 @@ func SelectLiveSegments(state State) []LiveSegment {
 func SelectReconnect(state State) (ConnectionStatus, bool, string) {
 	return state.Connection, state.NeedsRehydrate, state.StaleReason
 }
+func SelectModel(state State) ModelState        { return state.Model }
+func SelectUsage(state State) UsageState        { return state.Usage }
 func SelectCursor(state State) (string, uint64) { return state.EndpointCursor, state.LastEventSeq }

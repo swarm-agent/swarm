@@ -155,7 +155,7 @@ func TestHomeFooterUsesUnifiedModelProfileAction(t *testing.T) {
 	if tokens[2].Action != "open-profiles-modal" {
 		t.Fatalf("home model profile action = %q, want open-profiles-modal", tokens[2].Action)
 	}
-	if got, want := tokens[2].Text, "[Agent model default · claude]"; got != want {
+	if got, want := tokens[2].Text, "[claude]"; got != want {
 		t.Fatalf("home model profile unit = %q, want %q", got, want)
 	}
 	for _, token := range tokens {

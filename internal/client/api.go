@@ -245,6 +245,14 @@ type ModelResolved struct {
 	CatalogPresent  bool            `json:"catalog_present"`
 }
 
+type SessionV3ModeResult struct {
+	Mode             string                    `json:"mode"`
+	Preference       ModelPreference           `json:"preference"`
+	ContextWindow    int                       `json:"context_window"`
+	MaxOutputTokens  int                       `json:"max_output_tokens"`
+	AgentModelPolicy SessionV3AgentModelPolicy `json:"agent_model_policy"`
+}
+
 type ModelCatalogRecord struct {
 	Provider           string   `json:"provider"`
 	Model              string   `json:"model"`
@@ -695,6 +703,10 @@ type SessionV3AgentModelPolicy struct {
 	Preference      ModelPreference `json:"preference"`
 	ContextWindow   int             `json:"context_window"`
 	MaxOutputTokens int             `json:"max_output_tokens"`
+	ProfileID       string          `json:"profile_id,omitempty"`
+	ProfileName     string          `json:"profile_name,omitempty"`
+	ProfileSource   string          `json:"profile_source,omitempty"`
+	ProfileMode     string          `json:"profile_mode,omitempty"`
 }
 
 type SessionV3HistoryManifestItem struct {
@@ -3304,18 +3316,27 @@ func (c *API) SetSessionMode(ctx context.Context, sessionID, mode string) (strin
 }
 
 func (c *API) SetSessionV3Mode(ctx context.Context, sessionID, mode string) (string, error) {
+	resolved, err := c.SetSessionV3ModeResolved(ctx, sessionID, mode)
+	if err != nil {
+		return "", err
+	}
+	return resolved.Mode, nil
+}
+
+func (c *API) SetSessionV3ModeResolved(ctx context.Context, sessionID, mode string) (SessionV3ModeResult, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return "", errors.New("session id is required")
+		return SessionV3ModeResult{}, errors.New("session id is required")
 	}
 	req := map[string]string{
 		"mode": strings.TrimSpace(mode),
 	}
-	var resp SessionV3Hydrated
+	var resp SessionV3ModeResult
 	if err := c.postJSON(ctx, sessionV3PrimaryPath(sessionID, "mode"), req, &resp, true); err != nil {
-		return "", err
+		return SessionV3ModeResult{}, err
 	}
-	return strings.TrimSpace(resp.Session.Mode), nil
+	resp.Mode = strings.TrimSpace(resp.Mode)
+	return resp, nil
 }
 
 func (c *API) UpdateSessionMetadata(ctx context.Context, sessionID string, metadata map[string]any) (SessionSummary, error) {

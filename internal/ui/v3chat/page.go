@@ -10,6 +10,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
+
+	"swarm-refactor/swarmtui/internal/client"
+	"swarm-refactor/swarmtui/internal/model"
+	"swarm-refactor/swarmtui/internal/ui/footerbar"
 )
 
 const (
@@ -27,6 +31,7 @@ type PageStyles struct {
 	Muted      tcell.Style
 	Primary    tcell.Style
 	Accent     tcell.Style
+	Secondary  tcell.Style
 	Success    tcell.Style
 	Warning    tcell.Style
 	Error      tcell.Style
@@ -53,20 +58,44 @@ type Page struct {
 	runtime *Runtime
 	styles  PageStyles
 
-	mu        sync.Mutex
-	input     []rune
-	cursor    int
-	scroll    int
-	follow    bool
-	status    string
-	errText   string
-	busy      bool
-	rowCache  map[string]cachedRows
-	lastWidth int
+	mu             sync.Mutex
+	input          []rune
+	cursor         int
+	scroll         int
+	follow         bool
+	status         string
+	errText        string
+	busy           bool
+	rowCache       map[string]cachedRows
+	lastWidth      int
+	lastHeight     int
+	modelTarget    footerbar.Rect
+	modelPicker    bool
+	modelLoading   bool
+	modelOptions   []client.ModelCatalogRecord
+	modelIndex     int
+	matchCycleMode func(*tcell.EventKey) bool
 }
 
 func NewPage(runtime *Runtime, styles PageStyles) *Page {
-	return &Page{runtime: runtime, styles: styles, follow: true, rowCache: make(map[string]cachedRows)}
+	return &Page{runtime: runtime, styles: styles, follow: true, rowCache: make(map[string]cachedRows), matchCycleMode: defaultCycleModeKey}
+}
+
+func (p *Page) SetCycleModeMatcher(match func(*tcell.EventKey) bool) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	if match == nil {
+		p.matchCycleMode = defaultCycleModeKey
+	} else {
+		p.matchCycleMode = match
+	}
+	p.mu.Unlock()
+}
+
+func defaultCycleModeKey(ev *tcell.EventKey) bool {
+	return ev != nil && (ev.Key() == tcell.KeyBacktab || ev.Key() == tcell.KeyTab && ev.Modifiers()&tcell.ModShift != 0)
 }
 
 func (p *Page) Runtime() *Runtime { return p.runtime }
@@ -193,6 +222,13 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.modelPicker {
+		return p.handleModelPickerKeyLocked(ev)
+	}
+	if p.matchCycleMode != nil && p.matchCycleMode(ev) {
+		p.cycleModeLocked()
+		return PageActionNone
+	}
 	switch ev.Key() {
 	case tcell.KeyEscape:
 		return PageActionHome
@@ -235,6 +271,8 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			p.scroll = 0
 			p.follow = true
 		}
+	case tcell.KeyF2:
+		p.openModelPickerLocked()
 	case tcell.KeyCtrlX:
 		go p.StopRun()
 	case tcell.KeyCtrlR:
@@ -252,13 +290,143 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	return PageActionNone
 }
 
+func (p *Page) cycleModeLocked() {
+	if p.runtime == nil || p.busy {
+		return
+	}
+	state := p.runtime.Store().Snapshot()
+	if strings.TrimSpace(state.Session.ID) == "" {
+		p.errText = "plan mode is available after the session connects"
+		return
+	}
+	next := "plan"
+	if strings.EqualFold(strings.TrimSpace(state.Session.Mode), "plan") {
+		next = "auto"
+	}
+	p.busy = true
+	p.status = "switching Plan " + map[bool]string{true: "on", false: "off"}[next == "plan"] + "…"
+	p.errText = ""
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		resolved, err := p.runtime.SetMode(ctx, next)
+		if err != nil {
+			p.finishAsync("", err)
+			return
+		}
+		p.finishAsync("Plan: "+map[bool]string{true: "on", false: "off"}[strings.EqualFold(resolved.Mode, "plan")], nil)
+	}()
+}
+
+func (p *Page) openModelPickerLocked() {
+	if p.runtime == nil || p.modelLoading {
+		return
+	}
+	state := p.runtime.Store().Snapshot()
+	if state.Session.ID == "" {
+		p.errText = "model selection is available after the session connects"
+		return
+	}
+	if state.Model.Locked {
+		p.errText = firstNonEmpty(state.Model.LockReason, "session model is controlled by its agent policy")
+		return
+	}
+	p.modelPicker = true
+	p.modelLoading = true
+	p.modelOptions = nil
+	p.modelIndex = 0
+	p.errText = ""
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		options, err := p.runtime.ListModelOptions(ctx)
+		sort.SliceStable(options, func(i, j int) bool {
+			left := strings.ToLower(strings.TrimSpace(options[i].Provider)) + "/" + strings.ToLower(strings.TrimSpace(options[i].Model))
+			right := strings.ToLower(strings.TrimSpace(options[j].Provider)) + "/" + strings.ToLower(strings.TrimSpace(options[j].Model))
+			return left < right
+		})
+		p.mu.Lock()
+		p.modelLoading = false
+		if err != nil {
+			p.errText = err.Error()
+			p.modelPicker = false
+		} else {
+			p.modelOptions = options
+			current := SelectModel(p.runtime.Store().Snapshot()).Preference
+			for i, option := range options {
+				if strings.EqualFold(option.Provider, current.Provider) && option.Model == current.Model && option.ContextMode == current.ContextMode {
+					p.modelIndex = i
+					break
+				}
+			}
+		}
+		p.mu.Unlock()
+		p.runtime.signalWake()
+	}()
+}
+
+func (p *Page) handleModelPickerKeyLocked(ev *tcell.EventKey) PageAction {
+	switch ev.Key() {
+	case tcell.KeyEscape:
+		p.modelPicker = false
+		p.modelOptions = nil
+	case tcell.KeyUp:
+		if p.modelIndex > 0 {
+			p.modelIndex--
+		}
+	case tcell.KeyDown:
+		if p.modelIndex+1 < len(p.modelOptions) {
+			p.modelIndex++
+		}
+	case tcell.KeyPgUp:
+		p.modelIndex = maxInt(0, p.modelIndex-8)
+	case tcell.KeyPgDn:
+		p.modelIndex = minInt(maxInt(0, len(p.modelOptions)-1), p.modelIndex+8)
+	case tcell.KeyEnter:
+		if p.modelLoading || p.modelIndex < 0 || p.modelIndex >= len(p.modelOptions) {
+			return PageActionNone
+		}
+		option := p.modelOptions[p.modelIndex]
+		current := SelectModel(p.runtime.Store().Snapshot()).Preference
+		thinking := current.Thinking
+		if !containsFold(option.ThinkingOptions, thinking) {
+			thinking = strings.TrimSpace(option.DefaultThinking)
+		}
+		serviceTier := current.ServiceTier
+		if !containsFold(option.ServiceTiers, serviceTier) {
+			serviceTier = strings.TrimSpace(option.DefaultServiceTier)
+		}
+		preference := client.ModelPreference{Provider: option.Provider, Model: option.Model, Thinking: thinking, ServiceTier: serviceTier, ContextMode: option.ContextMode}
+		p.modelPicker = false
+		p.modelOptions = nil
+		p.busy = true
+		p.status = "updating model…"
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			resolved, err := p.runtime.SetModelPreference(ctx, preference)
+			if err != nil {
+				p.finishAsync("", err)
+				return
+			}
+			p.finishAsync("model set • "+modelPreferenceLabel(resolved.Preference), nil)
+		}()
+	}
+	return PageActionNone
+}
+
 func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 	if p == nil || ev == nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	x, y := ev.Position()
 	buttons := ev.Buttons()
+	if buttons&tcell.Button1 != 0 && containsFooterPoint(p.modelTarget, x, y) {
+		p.openModelPickerLocked()
+		return
+	}
 	if buttons&tcell.WheelUp != 0 {
 		p.scroll += 3
 		p.follow = false
@@ -291,6 +459,9 @@ func (p *Page) Draw(screen tcell.Screen) {
 	cursor := p.cursor
 	scroll := p.scroll
 	status, errText, busy := p.status, p.errText, p.busy
+	p.lastWidth, p.lastHeight = width, height
+	modelPicker, modelLoading, modelIndex := p.modelPicker, p.modelLoading, p.modelIndex
+	modelOptions := append([]client.ModelCatalogRecord(nil), p.modelOptions...)
 	p.mu.Unlock()
 
 	fill(screen, 0, 0, width, height, styles.Background)
@@ -321,7 +492,11 @@ func (p *Page) Draw(screen tcell.Screen) {
 	}
 	drawText(screen, 0, 1, width, statusStyle, padRight(statusLine, width))
 
-	composerHeight := 3
+	footerHeight := 3
+	if height < 12 || width < 50 {
+		footerHeight = 1
+	}
+	composerHeight := 2 + footerHeight
 	transcriptTop := 3
 	transcriptHeight := height - transcriptTop - composerHeight
 	if transcriptHeight < 1 {
@@ -342,8 +517,9 @@ func (p *Page) Draw(screen tcell.Screen) {
 		composerY = 2
 	}
 	drawHLine(screen, 0, composerY, width, styles.Border)
-	hint := " Enter send  •  Ctrl-X stop  •  PgUp/PgDn scroll  •  Esc home "
-	drawText(screen, 0, composerY+2, width, styles.Muted, padRight(hint, width))
+	modelState := SelectModel(state)
+	footerY := height - footerHeight
+	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, statusLine, statusStyle)
 	prefix := "> "
 	available := maxInt(1, width-len(prefix)-1)
 	inputText := string(input)
@@ -360,6 +536,157 @@ func (p *Page) Draw(screen tcell.Screen) {
 			r = visibleRunes[visibleCursor]
 		}
 		screen.SetContent(cursorX, composerY+1, r, nil, styles.Cursor)
+	}
+	if modelPicker {
+		p.drawModelPicker(screen, width, height, styles, modelOptions, modelIndex, modelLoading, modelState)
+	}
+}
+
+func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, state State, status string, statusStyle tcell.Style) {
+	modelState := SelectModel(state)
+	usage := SelectUsage(state)
+	displayedMode := "off"
+	if strings.EqualFold(strings.TrimSpace(state.Session.Mode), "plan") {
+		displayedMode = "on"
+	}
+	footerState := footerbar.State{
+		RouteLabel:     "Local",
+		DisplayedMode:  displayedMode,
+		ProfileLabel:   modelProfileLabel(modelState),
+		ModelLabel:     displayModelLabel(modelState.Preference),
+		Thinking:       strings.TrimSpace(modelState.Preference.Thinking),
+		ServiceTier:    strings.TrimSpace(modelState.Preference.ServiceTier),
+		UnifiedProfile: true,
+		PlanToggle:     true,
+		RightFacts:     conversationContextFacts(usage, modelState.ContextWindow),
+		StatusLine:     strings.TrimSpace(status),
+		StatusStyle:    statusStyle,
+	}
+	footerbar.Draw(screen, footerbar.Styles{Border: p.styles.Border, Accent: p.styles.Accent, Secondary: p.styles.Secondary, Text: p.styles.Text}, rect, footerState, func(target footerbar.Rect, token footerbar.Token) {
+		if token.Action == "open-profiles-modal" {
+			p.mu.Lock()
+			p.modelTarget = target
+			p.mu.Unlock()
+		}
+	})
+}
+
+func conversationContextFacts(usage UsageState, fallbackWindow int) []string {
+	window := usage.ContextWindow
+	if window <= 0 {
+		window = fallbackWindow
+	}
+	if window <= 0 {
+		return nil
+	}
+	if usage.Available {
+		return []string{fmt.Sprintf("%s / %s ctx", compactTokenCount(usage.RemainingTokens), compactTokenCount(int64(window)))}
+	}
+	return []string{compactTokenCount(int64(window)) + " ctx"}
+}
+
+func compactTokenCount(value int64) string {
+	if value >= 1_000_000 {
+		if value%1_000_000 == 0 {
+			return fmt.Sprintf("%dm", value/1_000_000)
+		}
+		return fmt.Sprintf("%.1fm", float64(value)/1_000_000)
+	}
+	if value >= 1_000 {
+		if value%1_000 == 0 {
+			return fmt.Sprintf("%dk", value/1_000)
+		}
+		return fmt.Sprintf("%.1fk", float64(value)/1_000)
+	}
+	return fmt.Sprintf("%d", value)
+}
+
+func modelProfileLabel(state ModelState) string {
+	source := strings.ToLower(strings.TrimSpace(state.ProfileSource))
+	switch source {
+	case "saved":
+		if name := strings.TrimSpace(state.ProfileName); name != "" {
+			return name
+		}
+		return "Saved profile"
+	case "temporary":
+		return "Temporary/customized"
+	default:
+		return ""
+	}
+}
+
+func displayModelLabel(preference client.ModelPreference) string {
+	return model.DisplayModelLabel(preference.Provider, preference.Model, preference.ServiceTier, preference.ContextMode)
+}
+
+func containsFooterPoint(rect footerbar.Rect, x, y int) bool {
+	return rect.W > 0 && rect.H > 0 && x >= rect.X && x < rect.X+rect.W && y >= rect.Y && y < rect.Y+rect.H
+}
+
+func modelPreferenceLabel(preference client.ModelPreference) string {
+	provider, model := strings.TrimSpace(preference.Provider), strings.TrimSpace(preference.Model)
+	label := strings.Trim(strings.Join([]string{provider, model}, "/"), "/")
+	if tier := strings.TrimSpace(preference.ServiceTier); tier != "" {
+		label += " · " + tier
+	}
+	if contextMode := strings.TrimSpace(preference.ContextMode); contextMode != "" {
+		label += " · " + contextMode
+	}
+	return label
+}
+
+func containsFold(values []string, value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, candidate := range values {
+		if strings.EqualFold(strings.TrimSpace(candidate), value) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Page) drawModelPicker(screen tcell.Screen, width, height int, styles PageStyles, options []client.ModelCatalogRecord, selected int, loading bool, modelState ModelState) {
+	modalWidth := minInt(maxInt(44, width-12), 84)
+	modalHeight := minInt(maxInt(8, height-6), 18)
+	if modalWidth > width {
+		modalWidth = width
+	}
+	if modalHeight > height {
+		modalHeight = height
+	}
+	x, y := (width-modalWidth)/2, (height-modalHeight)/2
+	fill(screen, x, y, modalWidth, modalHeight, styles.Panel)
+	drawText(screen, x+2, y, modalWidth-4, styles.Primary.Bold(true), "Model • backend catalog")
+	if loading {
+		drawText(screen, x+2, y+2, modalWidth-4, styles.Muted, "Loading available models…")
+		return
+	}
+	if len(options) == 0 {
+		drawText(screen, x+2, y+2, modalWidth-4, styles.Warning, "No runnable models are available.")
+		return
+	}
+	visibleRows := maxInt(1, modalHeight-3)
+	start := maxInt(0, selected-visibleRows/2)
+	if start+visibleRows > len(options) {
+		start = maxInt(0, len(options)-visibleRows)
+	}
+	for i := start; i < minInt(len(options), start+visibleRows); i++ {
+		option := options[i]
+		label := modelPreferenceLabel(client.ModelPreference{Provider: option.Provider, Model: option.Model, ContextMode: option.ContextMode})
+		prefix := "  "
+		style := styles.Text
+		if i == selected {
+			prefix = "› "
+			style = styles.Accent.Bold(true)
+		}
+		if strings.EqualFold(option.Provider, modelState.Preference.Provider) && option.Model == modelState.Preference.Model && option.ContextMode == modelState.Preference.ContextMode {
+			label += "  ✓"
+		}
+		drawText(screen, x+2, y+1+i-start, modalWidth-4, style, prefix+label)
 	}
 }
 
@@ -395,9 +722,6 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 		for _, line := range wrapText(segment.Text, width) {
 			rows = append(rows, renderRow{text: line, style: styles.Text})
 		}
-	}
-	if len(rows) == 0 {
-		rows = append(rows, renderRow{text: "No messages yet.", style: styles.Muted})
 	}
 	return rows
 }

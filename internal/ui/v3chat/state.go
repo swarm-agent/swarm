@@ -37,6 +37,24 @@ type Session struct {
 	UpdatedAt int64
 }
 
+type ModelState struct {
+	Preference      client.ModelPreference
+	ContextWindow   int
+	MaxOutputTokens int
+	Locked          bool
+	LockReason      string
+	ProfileName     string
+	ProfileSource   string
+	ProfileMode     string
+}
+
+type UsageState struct {
+	Available       bool
+	ContextWindow   int
+	RemainingTokens int64
+	TotalTokens     int64
+}
+
 type Message struct {
 	ID          string
 	SessionID   string
@@ -77,6 +95,8 @@ type State struct {
 	LastEventSeq   uint64
 	StaleReason    string
 	NeedsRehydrate bool
+	Model          ModelState
+	Usage          UsageState
 }
 
 type Action interface{ isV3ChatAction() }
@@ -104,6 +124,18 @@ type ConnectionAction struct {
 
 func (ConnectionAction) isV3ChatAction() {}
 
+type ModelPreferenceAction struct {
+	Resolved client.ModelResolved
+}
+
+func (ModelPreferenceAction) isV3ChatAction() {}
+
+type ModeAction struct {
+	Resolved client.SessionV3ModeResult
+}
+
+func (ModeAction) isV3ChatAction() {}
+
 // Reduce returns a detached next state. Maps and slices are copied before they
 // are changed so render selectors can safely retain an older snapshot.
 func Reduce(current State, action Action) State {
@@ -130,12 +162,26 @@ func Reduce(current State, action Action) State {
 		if value.Status != ConnectionStale {
 			next.NeedsRehydrate = false
 		}
+	case ModelPreferenceAction:
+		next.Model.Preference = normalizeModelPreference(value.Resolved.Preference)
+		next.Model.ContextWindow = value.Resolved.ContextWindow
+		next.Model.MaxOutputTokens = value.Resolved.MaxOutputTokens
+	case ModeAction:
+		next.Session.Mode = strings.ToLower(strings.TrimSpace(value.Resolved.Mode))
+		applyAgentModelPolicy(&next.Model, value.Resolved.Preference, value.Resolved.ContextWindow, value.Resolved.MaxOutputTokens, value.Resolved.AgentModelPolicy)
 	}
 	return next
 }
 
 func reduceHydrated(state State, hydrated client.SessionV3Hydrated) State {
 	state.Session = sessionFromClient(hydrated.Session, hydrated.Projection.SessionID)
+	preference := normalizeModelPreference(hydrated.Preference)
+	if preference.Provider == "" && preference.Model == "" {
+		preference = normalizeModelPreference(hydrated.Session.Preference)
+	}
+	state.Model = ModelState{}
+	applyAgentModelPolicy(&state.Model, preference, hydrated.ContextWindow, hydrated.MaxOutputTokens, hydrated.AgentModelPolicy)
+	state.Usage = usageStateFromSummary(hydrated.UsageSummary)
 	state.Messages = mergeMessages(nil, hydrated.Messages)
 	state.LastEventSeq = 0
 	state.EndpointCursor = strings.TrimSpace(hydrated.SnapshotEndpointCursor)
@@ -238,6 +284,18 @@ func applyEvent(state State, event client.SessionV3Event) State {
 		var title string
 		if json.Unmarshal(raw, &title) == nil && strings.TrimSpace(title) != "" {
 			state.Session.Title = strings.TrimSpace(title)
+		}
+	}
+	if raw := payload["preference"]; len(raw) > 0 {
+		var preference client.ModelPreference
+		if json.Unmarshal(raw, &preference) == nil {
+			state.Model.Preference = normalizeModelPreference(preference)
+		}
+	}
+	if raw := payload["usage_summary"]; len(raw) > 0 {
+		var summary client.SessionUsageSummary
+		if json.Unmarshal(raw, &summary) == nil {
+			state.Usage = usageStateFromSummary(&summary)
 		}
 	}
 	if raw := payload["message"]; len(raw) > 0 {
@@ -393,6 +451,54 @@ func cloneState(value State) State {
 }
 
 func NewState() State { return cloneState(State{Connection: ConnectionDisconnected}) }
+
+func applyAgentModelPolicy(state *ModelState, preference client.ModelPreference, contextWindow, maxOutputTokens int, policy client.SessionV3AgentModelPolicy) {
+	if state == nil {
+		return
+	}
+	state.Preference = normalizeModelPreference(preference)
+	state.ContextWindow = contextWindow
+	state.MaxOutputTokens = maxOutputTokens
+	state.Locked = policy.Locked
+	state.LockReason = strings.TrimSpace(policy.Reason)
+	state.ProfileName = strings.TrimSpace(policy.ProfileName)
+	state.ProfileSource = strings.TrimSpace(policy.ProfileSource)
+	state.ProfileMode = strings.TrimSpace(policy.ProfileMode)
+	if state.Locked {
+		if effective := normalizeModelPreference(policy.Preference); effective.Provider != "" || effective.Model != "" {
+			state.Preference = effective
+			state.ContextWindow = policy.ContextWindow
+			state.MaxOutputTokens = policy.MaxOutputTokens
+		}
+	}
+}
+
+func usageStateFromSummary(summary *client.SessionUsageSummary) UsageState {
+	if summary == nil {
+		return UsageState{}
+	}
+	window := summary.ContextWindow
+	remaining := summary.RemainingTokens
+	if window <= 0 {
+		return UsageState{}
+	}
+	if remaining < 0 {
+		remaining = 0
+	}
+	if remaining > int64(window) {
+		remaining = int64(window)
+	}
+	return UsageState{Available: true, ContextWindow: window, RemainingTokens: remaining, TotalTokens: summary.TotalTokens}
+}
+
+func normalizeModelPreference(value client.ModelPreference) client.ModelPreference {
+	value.Provider = strings.ToLower(strings.TrimSpace(value.Provider))
+	value.Model = strings.TrimSpace(value.Model)
+	value.Thinking = strings.TrimSpace(value.Thinking)
+	value.ServiceTier = strings.TrimSpace(value.ServiceTier)
+	value.ContextMode = strings.TrimSpace(value.ContextMode)
+	return value
+}
 
 func metadataString(metadata map[string]any, key string) string {
 	if metadata == nil {

@@ -16,7 +16,7 @@ import (
 
 func (a *App) v3ChatStyles() v3chat.PageStyles {
 	theme := a.effectiveThemeOption().Theme
-	return v3chat.PageStyles{Background: theme.Background, Panel: theme.Panel, Border: theme.Border, Text: theme.Text, Muted: theme.TextMuted, Primary: theme.Primary, Accent: theme.Accent, Success: theme.Success, Warning: theme.Warning, Error: theme.Error, Prompt: theme.Prompt, Cursor: theme.PromptCursor}
+	return v3chat.PageStyles{Background: theme.Background, Panel: theme.Panel, Border: theme.Border, Text: theme.Text, Muted: theme.TextMuted, Primary: theme.Primary, Accent: theme.Accent, Secondary: theme.Secondary, Success: theme.Success, Warning: theme.Warning, Error: theme.Error, Prompt: theme.Prompt, Cursor: theme.PromptCursor}
 }
 
 // requestV3ChatRender coalesces token bursts into one queued terminal wakeup.
@@ -41,6 +41,14 @@ func (a *App) consumeV3ChatRender() {
 func (a *App) newV3Runtime() *v3chat.Runtime {
 	store := v3chat.NewStore()
 	return v3chat.NewRuntime(a.api, store, a.requestV3ChatRender)
+}
+
+func (a *App) newV3ChatPage(runtime *v3chat.Runtime) *v3chat.Page {
+	page := v3chat.NewPage(runtime, a.v3ChatStyles())
+	page.SetCycleModeMatcher(func(ev *tcell.EventKey) bool {
+		return a.activeKeyBindings().Match(ev, ui.KeybindChatCycleMode)
+	})
+	return page
 }
 
 func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, worktreeSuffix string) error {
@@ -122,7 +130,7 @@ func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, 
 	}
 	runtime := a.newV3Runtime()
 	a.closeV3Chat()
-	a.v3Chat = v3chat.NewPage(runtime, a.v3ChatStyles())
+	a.v3Chat = a.newV3ChatPage(runtime)
 	a.route = "v3chat"
 	a.home.ClearPrompt()
 	a.v3Chat.OpenNew(v3chat.NewSessionRequest{Create: create, InitialPrompt: prompt})
@@ -157,7 +165,7 @@ func (a *App) openExistingV3Chat(summary model.SessionSummary) error {
 		return err
 	}
 	a.closeV3Chat()
-	a.v3Chat = v3chat.NewPage(runtime, a.v3ChatStyles())
+	a.v3Chat = a.newV3ChatPage(runtime)
 	a.route = "v3chat"
 	return nil
 }

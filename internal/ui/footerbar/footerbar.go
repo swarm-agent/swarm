@@ -1,0 +1,259 @@
+// Package footerbar owns the canonical TUI home/footer bar renderer.
+package footerbar
+
+import (
+	"strconv"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/gdamore/tcell/v2"
+)
+
+type Styles struct {
+	Border    tcell.Style
+	Accent    tcell.Style
+	Secondary tcell.Style
+	Text      tcell.Style
+}
+
+type State struct {
+	RouteLabel        string
+	NotificationCount int
+	DisplayedMode     string
+	Agent             string
+	ProfileLabel      string
+	ModelLabel        string
+	Thinking          string
+	ServiceTier       string
+	UnifiedProfile    bool
+	PlanToggle        bool
+	RightFacts        []string
+	StatusLine        string
+	StatusStyle       tcell.Style
+}
+
+type Token struct {
+	Text   string
+	Style  tcell.Style
+	Action string
+	Shrink bool
+}
+
+type Rect struct {
+	X int
+	Y int
+	W int
+	H int
+}
+
+func Tokens(styles Styles, state State) []Token {
+	routeLabel := fallback(strings.TrimSpace(state.RouteLabel), "Local")
+	if state.NotificationCount > 0 {
+		routeLabel += " !" + strconv.Itoa(state.NotificationCount)
+	}
+	routeLabel = clampSwarmNotificationLabel(routeLabel, state.NotificationCount, 20)
+	primaryStyle := currentCellBackground(styles.Accent.Bold(true))
+	modeStyle := currentCellBackground(styles.Secondary.Bold(true))
+	metaStyle := currentCellBackground(styles.Text)
+	modeText := fallback(strings.TrimSpace(state.DisplayedMode), "plan")
+	if state.PlanToggle {
+		modeText = "Plan: " + fallback(strings.TrimSpace(state.DisplayedMode), "on")
+	}
+	tokens := []Token{
+		{Text: routeLabel, Style: primaryStyle, Action: "cycle-route"},
+		{Text: modeText, Style: modeStyle},
+	}
+	if state.UnifiedProfile {
+		return append(tokens, Token{Text: ProfileUnit(state), Style: metaStyle, Action: "open-profiles-modal", Shrink: true})
+	}
+	return append(tokens,
+		Token{Text: "[a:" + clamp(fallback(strings.TrimSpace(state.Agent), "swarm"), 12) + "]", Style: metaStyle, Action: "open-agents-modal"},
+		Token{Text: "[m:" + clamp(fallback(strings.TrimSpace(state.ModelLabel), "-"), 24) + "]", Style: metaStyle, Action: "open-models-modal"},
+		Token{Text: "[t:" + clamp(fallback(strings.TrimSpace(state.Thinking), "-"), 10) + "]", Style: metaStyle, Action: "cycle-thinking"},
+	)
+}
+
+func ProfileUnit(state State) string {
+	parts := make([]string, 0, 4)
+	if profile := strings.TrimSpace(state.ProfileLabel); profile != "" && !strings.EqualFold(profile, "Agent model default") {
+		parts = append(parts, profile)
+	}
+	parts = append(parts, fallback(strings.TrimSpace(state.ModelLabel), "Model"))
+	if thinking := strings.TrimSpace(state.Thinking); thinking != "" {
+		parts = append(parts, thinking)
+	}
+	if priority := strings.TrimSpace(state.ServiceTier); priority != "" {
+		parts = append(parts, priority)
+	}
+	return "[" + clamp(strings.Join(parts, " · "), 58) + "]"
+}
+
+func RightLine(state State, maxWidth int) string {
+	segments := make([]string, 0, len(state.RightFacts))
+	for _, fact := range state.RightFacts {
+		if fact = strings.TrimSpace(fact); fact != "" {
+			segments = append(segments, fact)
+		}
+	}
+	return clamp(strings.Join(segments, "  "), maxWidth)
+}
+
+func Draw(screen tcell.Screen, styles Styles, rect Rect, state State, register func(Rect, Token)) {
+	if rect.H <= 0 || rect.W <= 0 {
+		return
+	}
+	lineY := rect.Y + rect.H - 1
+	if rect.H >= 2 {
+		drawHLine(screen, rect.X, lineY-1, rect.W, styles.Border)
+	}
+	textX, textW := rect.X, rect.W
+	if rect.W > 2 {
+		textX, textW = rect.X+1, rect.W-2
+	}
+	if textW <= 0 {
+		return
+	}
+	right := RightLine(state, 28)
+	rightW := utf8.RuneCountInString(right)
+	leftW := textW
+	if rightW > 0 && leftW > rightW+2 {
+		leftW -= rightW + 2
+	}
+	if status := strings.TrimSpace(state.StatusLine); status != "" {
+		statusWidth := max(1, min(leftW, max(leftW/2, 18)))
+		if rect.H >= 3 {
+			drawTextRight(screen, textX+textW-1, rect.Y, statusWidth, state.StatusStyle, clamp(status, statusWidth))
+		} else if leftW > statusWidth+2 {
+			leftW -= statusWidth + 2
+			drawTextRight(screen, textX+leftW-1, lineY, statusWidth, state.StatusStyle, clamp(status, statusWidth))
+		}
+	}
+	DrawTokenRow(screen, textX, lineY, leftW, Tokens(styles, state), register)
+	if rightW > 0 && textW > rightW+2 {
+		drawTextRight(screen, textX+textW-1, lineY, rightW, styles.Secondary, right)
+	}
+}
+
+func DrawTokenRow(screen tcell.Screen, x, y, maxWidth int, tokens []Token, register func(Rect, Token)) {
+	if maxWidth <= 0 || len(tokens) == 0 {
+		return
+	}
+	selected := make([]Token, 0, len(tokens))
+	used := 0
+	for _, token := range tokens {
+		label := " " + strings.TrimSpace(token.Text) + " "
+		if strings.TrimSpace(label) == "" {
+			continue
+		}
+		width := utf8.RuneCountInString(label)
+		if len(selected) > 0 {
+			width++
+		}
+		if used+width > maxWidth {
+			remaining := maxWidth - used
+			if len(selected) > 0 {
+				remaining--
+			}
+			if !token.Shrink || remaining < 8 {
+				break
+			}
+			label = " " + clamp(strings.TrimSpace(token.Text), remaining-2) + " "
+			width = utf8.RuneCountInString(label)
+		}
+		token.Text = label
+		selected = append(selected, token)
+		used += width
+	}
+	cx := x
+	for i, token := range selected {
+		if i > 0 {
+			cx++
+		}
+		drawText(screen, cx, y, maxWidth-(cx-x), token.Style, token.Text)
+		width := utf8.RuneCountInString(token.Text)
+		if register != nil && token.Action != "" {
+			register(Rect{X: cx, Y: y, W: width, H: 1}, token)
+		}
+		cx += width
+	}
+}
+
+func currentCellBackground(style tcell.Style) tcell.Style {
+	fg, _, attrs := style.Decompose()
+	return tcell.StyleDefault.Foreground(fg).Background(tcell.ColorDefault).Attributes(attrs)
+}
+
+func drawText(screen tcell.Screen, x, y, maxWidth int, style tcell.Style, text string) {
+	for _, r := range text {
+		if maxWidth <= 0 {
+			return
+		}
+		_, _, existing, _ := screen.GetContent(x, y)
+		fg, bg, attrs := style.Decompose()
+		if bg == tcell.ColorDefault {
+			_, bg, _ = existing.Decompose()
+		}
+		screen.SetContent(x, y, r, nil, tcell.StyleDefault.Foreground(fg).Background(bg).Attributes(attrs))
+		x++
+		maxWidth--
+	}
+}
+
+func drawTextRight(screen tcell.Screen, xRight, y, maxWidth int, style tcell.Style, text string) {
+	width := min(utf8.RuneCountInString(text), maxWidth)
+	drawText(screen, xRight-width+1, y, maxWidth, style, text)
+}
+
+func drawHLine(screen tcell.Screen, x, y, width int, style tcell.Style) {
+	for i := 0; i < width; i++ {
+		screen.SetContent(x+i, y, tcell.RuneHLine, nil, style)
+	}
+}
+
+func clamp(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= width {
+		return text
+	}
+	if width <= 3 {
+		return string(runes[:width])
+	}
+	return string(runes[:width-3]) + "..."
+}
+
+func clampSwarmNotificationLabel(label string, count, width int) string {
+	label = strings.TrimSpace(label)
+	if count <= 0 {
+		return clamp(label, width)
+	}
+	suffix := " !" + strconv.Itoa(count)
+	base := strings.TrimSpace(strings.TrimSuffix(label, suffix))
+	baseWidth := width - utf8.RuneCountInString(suffix)
+	if baseWidth < 1 {
+		return clamp(strings.TrimSpace(suffix), width)
+	}
+	return clamp(base, baseWidth) + suffix
+}
+
+func fallback(value, fallbackValue string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallbackValue
+	}
+	return value
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}

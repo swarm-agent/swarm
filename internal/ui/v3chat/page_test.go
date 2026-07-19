@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 
@@ -37,6 +38,89 @@ func TestPageHeaderAndLiveOverlayRenderFromStore(t *testing.T) {
 	}
 }
 
+func TestPageRendersComposerAboveCanonicalHomeFooterWithDesktopContext(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:                client.SessionSummary{ID: "s", Title: "chat", Mode: "auto"},
+		Preference:             client.ModelPreference{Provider: "codex", Model: "gpt-test", Thinking: "high", ServiceTier: "fast"},
+		ContextWindow:          200000,
+		UsageSummary:           &client.SessionUsageSummary{ContextWindow: 200000, RemainingTokens: 125000, TotalTokens: 75000},
+		SnapshotEndpointCursor: "cursor",
+	}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'h', tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'i', tcell.ModNone))
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 18)
+	page.Draw(screen)
+	screen.Show()
+	drawn := simulationText(screen, 80, 18)
+	if !strings.Contains(drawn, "> hi") {
+		t.Fatalf("composer input missing:\n%s", drawn)
+	}
+	if !strings.Contains(drawn, "Local") || !strings.Contains(drawn, "Plan: off") || !strings.Contains(drawn, "[gpt-test · high · fast]") {
+		t.Fatalf("canonical home footer tokens missing:\n%s", drawn)
+	}
+	for _, redundant := range []string{"Agent", "model default", "[a:", "[m:", "[t:"} {
+		if strings.Contains(drawn, redundant) {
+			t.Fatalf("redundant footer label %q remains:\n%s", redundant, drawn)
+		}
+	}
+	if !strings.Contains(drawn, "125k / 200k ctx") {
+		t.Fatalf("desktop-style conversation context missing:\n%s", drawn)
+	}
+	if got := conversationContextFacts(SelectUsage(store.Snapshot()), 0); len(got) != 1 || got[0] != "125k / 200k ctx" {
+		t.Fatalf("context facts = %#v", got)
+	}
+	composerRow, footerSeparatorRow, footerRow := simulationRow(screen, 80, 14), simulationRow(screen, 80, 16), simulationRow(screen, 80, 17)
+	if !strings.Contains(composerRow, "> hi") || !strings.Contains(footerSeparatorRow, "─") || !strings.Contains(footerRow, "Local") {
+		t.Fatalf("composer/footer vertical layout mismatch: composer=%q separator=%q footer=%q", composerRow, footerSeparatorRow, footerRow)
+	}
+	if strings.Contains(drawn, "F2 models") || strings.Contains(drawn, "thinking high") || strings.Contains(drawn, "Enter send") || strings.Contains(drawn, "PgUp/PgDn") || strings.Contains(drawn, "Esc home") || strings.Contains(drawn, "No messages yet") {
+		t.Fatalf("invented bottom bar/help text remains:\n%s", drawn)
+	}
+}
+
+func TestShiftTabCyclesModeThroughBackendResolvedState(t *testing.T) {
+	transport := &fakeTransport{mode: client.SessionV3ModeResult{
+		Mode:             "plan",
+		Preference:       client.ModelPreference{Provider: "codex", Model: "plan-model"},
+		AgentModelPolicy: client.SessionV3AgentModelPolicy{ProfileName: "Planning", ProfileSource: "saved"},
+	}}
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s", Mode: "auto"}, Preference: client.ModelPreference{Provider: "codex", Model: "auto-model"}}})
+	page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
+	page.HandleKey(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModShift))
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if store.Snapshot().Session.Mode == "plan" {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	state := store.Snapshot()
+	if state.Session.Mode != "plan" || state.Model.Preference.Model != "plan-model" || state.Model.ProfileName != "Planning" {
+		t.Fatalf("Shift+Tab did not commit backend-resolved plan/model state: %#v", state)
+	}
+	transport.mu.Lock()
+	modeRequest := transport.modeRequest
+	transport.mu.Unlock()
+	if modeRequest != "plan" {
+		t.Fatalf("mode request = %q, want plan", modeRequest)
+	}
+}
+
+func TestCanonicalFooterUsesContextWindowUntilUsageArrives(t *testing.T) {
+	got := conversationContextFacts(UsageState{}, 200000)
+	if len(got) != 1 || got[0] != "200k ctx" {
+		t.Fatalf("context facts = %#v", got)
+	}
+}
+
 func TestPageDurableAssistantReplacesLiveOverlay(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s", Title: "chat"}, SnapshotEndpointCursor: "cursor"}})
@@ -60,7 +144,21 @@ func TestPageRowCacheIsBounded(t *testing.T) {
 }
 
 func testPageStyles() PageStyles {
-	return PageStyles{Background: tcell.StyleDefault, Panel: tcell.StyleDefault, Border: tcell.StyleDefault, Text: tcell.StyleDefault, Muted: tcell.StyleDefault, Primary: tcell.StyleDefault, Accent: tcell.StyleDefault, Success: tcell.StyleDefault, Warning: tcell.StyleDefault, Error: tcell.StyleDefault, Prompt: tcell.StyleDefault, Cursor: tcell.StyleDefault.Reverse(true)}
+	return PageStyles{Background: tcell.StyleDefault, Panel: tcell.StyleDefault, Border: tcell.StyleDefault, Text: tcell.StyleDefault, Muted: tcell.StyleDefault, Primary: tcell.StyleDefault, Accent: tcell.StyleDefault, Secondary: tcell.StyleDefault, Success: tcell.StyleDefault, Warning: tcell.StyleDefault, Error: tcell.StyleDefault, Prompt: tcell.StyleDefault, Cursor: tcell.StyleDefault.Reverse(true)}
+}
+
+func simulationRow(screen tcell.SimulationScreen, width, row int) string {
+	cells, _, _ := screen.GetContents()
+	var b strings.Builder
+	for x := 0; x < width; x++ {
+		cell := cells[row*width+x]
+		if len(cell.Runes) == 0 {
+			b.WriteRune(' ')
+		} else {
+			b.WriteRune(cell.Runes[0])
+		}
+	}
+	return b.String()
 }
 
 func simulationText(screen tcell.SimulationScreen, width, height int) string {
