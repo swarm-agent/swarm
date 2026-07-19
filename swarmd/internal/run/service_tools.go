@@ -2892,6 +2892,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			MetaPrompt:            strings.TrimSpace(parsed.Prompt),
 		}}
 	}
+	for i := range launchSpecs {
+		applyCanonicalCoderOwnedScope(&launchSpecs[i])
+	}
 
 	parentSession := pebblestore.SessionSnapshot{}
 	if req.ParentSession != nil {
@@ -3006,11 +3009,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	}
 	collisionWarnings := make([]string, 0)
 	if len(cloneIndexes) > 1 {
-		for _, index := range cloneIndexes {
-			if len(launchSpecs[index].OwnedScope) == 0 {
-				return "", fmt.Errorf("task launches[%d] Coder requires declared owned_scope", index)
-			}
-		}
 		for left := 0; left < len(cloneIndexes); left++ {
 			for right := left + 1; right < len(cloneIndexes); right++ {
 				if taskOwnedScopesOverlap(launchSpecs[cloneIndexes[left]].OwnedScope, launchSpecs[cloneIndexes[right]].OwnedScope) {

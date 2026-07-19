@@ -164,6 +164,75 @@ func TestParseTaskCallArgumentsValidLaunches(t *testing.T) {
 	}
 }
 
+func TestParseTaskCallArgumentsAppliesCanonicalCoderScopeWhenOmitted(t *testing.T) {
+	tests := []struct {
+		name string
+		args map[string]any
+		want int
+	}{
+		{
+			name: "single Coder shorthand",
+			args: map[string]any{"prompt": "acknowledge", "agent": "coder", "role": "acknowledge"},
+			want: 1,
+		},
+		{
+			name: "two Coder wave",
+			args: map[string]any{
+				"prompt": "Ask two coders to acknowledge",
+				"launches": []any{
+					map[string]any{"agent": "coder", "role": "acknowledge one"},
+					map[string]any{"subagent_type": "clone", "meta_prompt": "acknowledge two"},
+				},
+			},
+			want: 2,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := parseTaskCallArguments(mustJSON(t, tc.args))
+			if err != nil {
+				t.Fatalf("parse Coder launch: %v", err)
+			}
+			if len(parsed.Launches) != tc.want {
+				t.Fatalf("launch count = %d, want %d", len(parsed.Launches), tc.want)
+			}
+			for i, launch := range parsed.Launches {
+				if !slices.Equal(launch.OwnedScope, []string{"."}) {
+					t.Fatalf("launch %d owned scope = %#v, want canonical whole-worktree scope", i, launch.OwnedScope)
+				}
+			}
+		})
+	}
+}
+
+func TestParseTaskCallArgumentsPreservesCoderScopeAndRejectsInvalidScopeShape(t *testing.T) {
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt": "implement backend", "agent": "coder", "role": "implement backend", "owned_scope": []any{"swarmd/internal/run/**"},
+	}))
+	if err != nil {
+		t.Fatalf("parse scoped Coder launch: %v", err)
+	}
+	if !slices.Equal(parsed.Launches[0].OwnedScope, []string{"swarmd/internal/run/**"}) {
+		t.Fatalf("owned scope = %#v, want declared scope", parsed.Launches[0].OwnedScope)
+	}
+
+	_, err = parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt": "implement backend", "agent": "coder", "role": "implement backend", "owned_scope": "swarmd/internal/run/**",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "owned_scope must be an array of strings") {
+		t.Fatalf("invalid owned_scope error = %v", err)
+	}
+}
+
+func TestCanonicalWholeWorktreeScopeOverlapsDeclaredScope(t *testing.T) {
+	if !taskOwnedScopesOverlap([]string{"."}, []string{"web/src/**"}) {
+		t.Fatal("canonical whole-worktree scope must overlap a declared child scope")
+	}
+	if taskOwnedScopesOverlap([]string{"swarmd/internal/**"}, []string{"web/src/**"}) {
+		t.Fatal("disjoint declared scopes must remain non-overlapping")
+	}
+}
+
 func TestTaskAssignmentLabelPreservesMoreTitleContext(t *testing.T) {
 	label := taskAssignmentLabel("", "Write a quick poem about the sea with a bright moon and quiet tide", "", "memory")
 	want := "Write a quick poem about the sea with a bright moon and quiet tide"
@@ -1314,6 +1383,9 @@ func TestClonePermissionSnapshotsCurrentCaller(t *testing.T) {
 	}
 	if manifest.Launches[0].ProfileSnapshot == nil || manifest.Launches[0].ProfileSnapshot.Name != agentruntime.CloneAgentID || manifest.Launches[0].ProfileSnapshot.Prompt != agentruntime.CloneAgentPrompt() || manifest.Launches[0].InheritedRuntimeMode != pebblestore.AgentRuntimeModeReadWrite {
 		t.Fatalf("Clone snapshot = %#v", manifest.Launches[0])
+	}
+	if !slices.Equal(manifest.Launches[0].OwnedScope, []string{"."}) {
+		t.Fatalf("Clone manifest owned scope = %#v, want canonical whole-worktree scope", manifest.Launches[0].OwnedScope)
 	}
 	if manifest.Launches[0].ProfileSnapshot.Provider != parent.Preference.Provider || manifest.Launches[0].ProfileSnapshot.Model != parent.Preference.Model || manifest.Launches[0].SubagentThinking != parent.Preference.Thinking || manifest.Launches[0].SubagentServiceTier != parent.Preference.ServiceTier {
 		t.Fatalf("Clone did not inherit parent launch preference and service tier: %#v", manifest.Launches[0])

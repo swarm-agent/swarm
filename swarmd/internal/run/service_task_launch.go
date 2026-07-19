@@ -217,6 +217,10 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		if err := rejectTaskLaunchTrustFields(raw, label); err != nil {
 			return taskLaunchSpec{}, err
 		}
+		ownedScope, err := parseTaskOwnedScope(raw, label)
+		if err != nil {
+			return taskLaunchSpec{}, err
+		}
 		launch := taskLaunchSpec{
 			RequestedSubagentType: strings.TrimSpace(firstNonEmptyString(
 				mapString(raw, "subagent_type"),
@@ -233,7 +237,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			)),
 			Deliverable:        strings.TrimSpace(mapString(raw, "deliverable")),
 			ConcurrencyReason:  strings.TrimSpace(mapString(raw, "concurrency_reason")),
-			OwnedScope:         mapStringSlice(raw, "owned_scope"),
+			OwnedScope:         ownedScope,
 			DependencyEvidence: strings.TrimSpace(mapString(raw, "dependency_evidence")),
 			SourceArguments:    cloneGenericMap(raw),
 		}
@@ -243,6 +247,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		if launch.MetaPrompt == "" {
 			return taskLaunchSpec{}, fmt.Errorf("%s requires meta_prompt or role assignment", label)
 		}
+		applyCanonicalCoderOwnedScope(&launch)
 		return launch, nil
 	}
 
@@ -285,20 +290,62 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	}, nil
 }
 
+func parseTaskOwnedScope(raw map[string]any, label string) ([]string, error) {
+	value, ok := raw["owned_scope"]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	var values []string
+	switch typed := value.(type) {
+	case []string:
+		values = typed
+	case []any:
+		values = make([]string, 0, len(typed))
+		for i, entry := range typed {
+			text, ok := entry.(string)
+			if !ok {
+				return nil, fmt.Errorf("%s owned_scope[%d] must be a string", label, i)
+			}
+			values = append(values, text)
+		}
+	default:
+		return nil, fmt.Errorf("%s owned_scope must be an array of strings", label)
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out, nil
+}
+
+func applyCanonicalCoderOwnedScope(launch *taskLaunchSpec) {
+	if launch == nil || !agentruntime.IsCloneAgentName(launch.RequestedSubagentType) || len(launch.OwnedScope) != 0 {
+		return
+	}
+	// Owned scope is advisory metadata for review and collision detection, not an
+	// isolation boundary. When Coder omitted it, conservatively claim the whole
+	// isolated worktree rather than rejecting an otherwise valid launch.
+	launch.OwnedScope = []string{"."}
+}
+
+func normalizedTaskOwnedScope(scope string) string {
+	scope = strings.Trim(strings.TrimSpace(scope), "/")
+	scope = strings.TrimPrefix(scope, "./")
+	scope = strings.TrimSuffix(strings.TrimSuffix(scope, "/**"), "/*")
+	if scope == "" || scope == "." || scope == "*" || scope == "**" {
+		return "."
+	}
+	return scope
+}
+
 func taskOwnedScopesOverlap(left, right []string) bool {
 	for _, leftScope := range left {
-		leftScope = strings.Trim(strings.TrimSpace(leftScope), "/")
-		leftScope = strings.TrimSuffix(strings.TrimSuffix(leftScope, "/**"), "/*")
-		if leftScope == "" {
-			continue
-		}
+		leftScope = normalizedTaskOwnedScope(leftScope)
 		for _, rightScope := range right {
-			rightScope = strings.Trim(strings.TrimSpace(rightScope), "/")
-			rightScope = strings.TrimSuffix(strings.TrimSuffix(rightScope, "/**"), "/*")
-			if rightScope == "" {
-				continue
-			}
-			if leftScope == rightScope || strings.HasPrefix(leftScope, rightScope+"/") || strings.HasPrefix(rightScope, leftScope+"/") {
+			rightScope = normalizedTaskOwnedScope(rightScope)
+			if leftScope == "." || rightScope == "." || leftScope == rightScope || strings.HasPrefix(leftScope, rightScope+"/") || strings.HasPrefix(rightScope, leftScope+"/") {
 				return true
 			}
 		}
