@@ -53,7 +53,7 @@ test('rejected /task retains the draft and never submits or stops', async () => 
   assert.deepEqual(calls, ['queue'])
 })
 
-test('bare /task without arguments preserves ordinary stop behavior', async () => {
+test('bare /task never falls through to ordinary stop handling', async () => {
   const calls: string[] = []
   const result = await submitDesktopComposer({
     draft: '/task',
@@ -61,9 +61,12 @@ test('bare /task without arguments preserves ordinary stop behavior', async () =
     clear: () => { calls.push('clear') },
     onSubmit: () => { calls.push('submit') },
     onStop: () => { calls.push('stop') },
-    onSlashCommand: () => { calls.push('queue') },
+    onSlashCommand: async () => {
+      calls.push('queue')
+      throw new Error('task request is required')
+    },
   })
 
-  assert.equal(result, 'stopped')
-  assert.deepEqual(calls, ['stop'])
+  assert.equal(result, 'task-queue-failed')
+  assert.deepEqual(calls, ['queue'])
 })

@@ -12,6 +12,8 @@ test('/task submit is intercepted before ordinary session creation', async () =>
   assert.match(composer, /slashPalette\.exactMatch\?\.action\.kind === 'queue-ai-task'[\s\S]*?void handleSubmitClick\(\)/)
   assert.match(composer, /onClick=\{handleSubmitClick\}/)
   assert.ok(submitService.indexOf('if (taskCommand)') < submitService.indexOf('if (input.canStop)'))
+  assert.match(submitService, /submittedPalette\.exactMatch\?\.action\.kind === 'queue-ai-task'/)
+  assert.doesNotMatch(submitService, /submittedPalette\.hasArguments && submittedPalette\.exactMatch\?\.action\.kind === 'queue-ai-task'/)
   assert.match(submitService, /await input\.onSlashCommand\(taskCommand, input\.draft\)[\s\S]*?input\.clear\(\)/)
   assert.match(submitService, /catch \{\s*return 'task-queue-failed'\s*\}/)
   assert.match(pane, /onSubmit=\{handleSubmit\}/)

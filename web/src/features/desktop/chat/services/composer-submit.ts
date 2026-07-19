@@ -13,7 +13,7 @@ export interface SubmitDesktopComposerInput {
 
 export async function submitDesktopComposer(input: SubmitDesktopComposerInput): Promise<DesktopComposerSubmitResult> {
   const submittedPalette = buildDesktopSlashPaletteState(input.draft)
-  const taskCommand = submittedPalette.hasArguments && submittedPalette.exactMatch?.action.kind === 'queue-ai-task'
+  const taskCommand = submittedPalette.exactMatch?.action.kind === 'queue-ai-task'
     ? submittedPalette.exactMatch
     : null
 
