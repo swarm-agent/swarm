@@ -2879,7 +2879,7 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
       return <DesktopV3PendingUserMessage message={item.message} />;
     case "live-assistant":
       return (
-        <DesktopV3AssistantMessage content={item.content} />
+        <DesktopV3AssistantMessage content={item.content} role="assistant" />
       );
     case "live-reasoning":
       return (
@@ -3076,7 +3076,7 @@ function DesktopV3CommittedMessage({
     );
   }
   if (role === "assistant") {
-    return <DesktopV3AssistantMessage content={message.content} />;
+    return <DesktopV3AssistantMessage content={message.content} role={role} />;
   }
   return (
     <div className="flex justify-start">
@@ -3099,23 +3099,10 @@ function DesktopV3UserMessage({
 }) {
   return (
     <div className="flex justify-end">
-      <div
-        className="w-full border-y border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-sm leading-6 text-[var(--app-text)]"
-        data-testid="desktop-v3-user-message"
-      >
-        <div className="flex min-w-0 items-start gap-2">
-          <span
-            aria-hidden="true"
-            className="shrink-0 font-semibold text-[var(--app-primary)]"
-          >
-            &gt;
-          </span>
-          <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-            {content}
-          </div>
-        </div>
+      <div className="max-w-[70%] rounded-xl bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)] shadow-sm">
+        <div className="whitespace-pre-wrap break-words">{content}</div>
         {pendingLabel ? (
-          <div className="mt-1 text-right text-[10px] uppercase tracking-[0.12em] text-[var(--app-text-muted)]">
+          <div className="mt-1 text-right text-[10px] uppercase tracking-[0.12em] opacity-70">
             {pendingLabel}
           </div>
         ) : null}
@@ -3158,10 +3145,21 @@ function DesktopV3CompactPendingState() {
   );
 }
 
-function DesktopV3AssistantMessage({ content }: { content: string }) {
+function DesktopV3AssistantMessage({
+  content,
+  role,
+}: {
+  content: string;
+  role: string;
+}) {
   return (
     <div className="flex justify-start">
       <div className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)]">
+        {role === "reasoning" ? (
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
+            reasoning
+          </div>
+        ) : null}
         <ChatMarkdown content={content} />
       </div>
     </div>
