@@ -29,6 +29,7 @@ const (
 	KeybindGlobalCycleRoute      KeybindID = "global.cycle_route"
 	KeybindGlobalVoiceInput      KeybindID = "global.voice_input"
 	KeybindGlobalShowBackground  KeybindID = "global.show_background"
+	KeybindGlobalWorkspaceSelect KeybindID = "global.workspace_select"
 	KeybindGlobalWorkspacePrev   KeybindID = "global.workspace_prev"
 	KeybindGlobalWorkspaceNext   KeybindID = "global.workspace_next"
 	KeybindGlobalWorkspaceSlot1  KeybindID = "global.workspace_slot_1"
@@ -42,13 +43,6 @@ const (
 	KeybindGlobalWorkspaceSlot9  KeybindID = "global.workspace_slot_9"
 	KeybindGlobalWorkspaceSlot10 KeybindID = "global.workspace_slot_10"
 
-	KeybindHomeSessionsEnterMode   KeybindID = "home.sessions.enter_mode"
-	KeybindHomeSessionsExitMode    KeybindID = "home.sessions.exit_mode"
-	KeybindHomeSessionsMoveUp      KeybindID = "home.sessions.move_up"
-	KeybindHomeSessionsMoveDown    KeybindID = "home.sessions.move_down"
-	KeybindHomeSessionsMoveUpAlt   KeybindID = "home.sessions.move_up_alt"
-	KeybindHomeSessionsMoveDownAlt KeybindID = "home.sessions.move_down_alt"
-	KeybindHomeSessionsOpen        KeybindID = "home.sessions.open"
 	KeybindHomePaletteMoveUp       KeybindID = "home.palette.move_up"
 	KeybindHomePaletteMoveDown     KeybindID = "home.palette.move_down"
 	KeybindHomePromptBackspace     KeybindID = "home.prompt.backspace"
@@ -216,6 +210,7 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindGlobalCycleRoute, Group: "Global", Action: "Cycle chat route", Default: "alt+r", Editable: true},
 	{ID: KeybindGlobalVoiceInput, Group: "Global", Action: "Voice input capture", Default: "f9", Editable: true},
 	{ID: KeybindGlobalShowBackground, Group: "Global", Action: "Go home", Default: "ctrl+b", Editable: true},
+	{ID: KeybindGlobalWorkspaceSelect, Group: "Global", Action: "Open workspace selector (/workspace select)", Default: "", Editable: true},
 	{ID: KeybindGlobalWorkspacePrev, Group: "Global", Action: "Cycle workspace previous", Default: "", Editable: true},
 	{ID: KeybindGlobalWorkspaceNext, Group: "Global", Action: "Cycle workspace next", Default: "", Editable: true},
 	{ID: KeybindGlobalWorkspaceSlot1, Group: "Global", Action: "Activate workspace slot 1", Default: "alt+1", Editable: true},
@@ -229,13 +224,6 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindGlobalWorkspaceSlot9, Group: "Global", Action: "Activate workspace slot 9", Default: "alt+9", Editable: true},
 	{ID: KeybindGlobalWorkspaceSlot10, Group: "Global", Action: "Activate workspace slot 10", Default: "alt+0", Editable: true},
 
-	{ID: KeybindHomeSessionsEnterMode, Group: "Home", Action: "Sessions mode on", Default: "ctrl+down", Editable: true},
-	{ID: KeybindHomeSessionsExitMode, Group: "Home", Action: "Sessions mode off", Default: "ctrl+up", Editable: true},
-	{ID: KeybindHomeSessionsMoveUp, Group: "Home", Action: "Sessions move up", Default: "up", Editable: true},
-	{ID: KeybindHomeSessionsMoveDown, Group: "Home", Action: "Sessions move down", Default: "down", Editable: true},
-	{ID: KeybindHomeSessionsMoveUpAlt, Group: "Home", Action: "Sessions move up (alt)", Default: "alt+k", Editable: true},
-	{ID: KeybindHomeSessionsMoveDownAlt, Group: "Home", Action: "Sessions move down (alt)", Default: "alt+j", Editable: true},
-	{ID: KeybindHomeSessionsOpen, Group: "Home", Action: "Open selected session", Default: "enter", Editable: true},
 	{ID: KeybindHomePaletteMoveUp, Group: "Home", Action: "Command palette up", Default: "up", Editable: true},
 	{ID: KeybindHomePaletteMoveDown, Group: "Home", Action: "Command palette down", Default: "down", Editable: true},
 	{ID: KeybindHomePromptBackspace, Group: "Home", Action: "Prompt backspace", Default: "backspace", Editable: true},

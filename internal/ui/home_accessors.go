@@ -71,33 +71,6 @@ func (p *HomePage) SetModel(next model.HomeModel) {
 	} else if p.onboarding.Visible && !p.identityOnboardingComplete() {
 		p.onboarding = onboardingState{}
 	}
-	total := len(p.model.RecentSessions)
-	if total == 0 {
-		p.selectedIndex = 0
-		p.recentPage = 0
-		p.sessionsFocused = false
-		p.pendingHomeAction = nil
-	} else {
-		selectedID := ""
-		if p.selectedIndex >= 0 && p.selectedIndex < len(p.model.RecentSessions) {
-			selectedID = strings.TrimSpace(p.model.RecentSessions[p.selectedIndex].ID)
-		}
-		if selectedID != "" {
-			for idx := range next.RecentSessions {
-				if strings.TrimSpace(next.RecentSessions[idx].ID) == selectedID {
-					p.selectedIndex = idx
-					selectedID = ""
-					break
-				}
-			}
-		}
-		if p.selectedIndex >= total {
-			p.selectedIndex = total - 1
-		}
-		if p.selectedIndex < 0 {
-			p.selectedIndex = 0
-		}
-	}
 }
 
 func (p *HomePage) SetStatus(status string) {
@@ -333,10 +306,6 @@ func (p *HomePage) ActiveDirectory() model.DirectoryItem {
 
 func (p *HomePage) ActivePlanName() string {
 	return p.activePlanName()
-}
-
-func (p *HomePage) SessionsFocused() bool {
-	return p.sessionsFocused
 }
 
 func (p *HomePage) SetKeyBindings(keybinds *KeyBindings) {

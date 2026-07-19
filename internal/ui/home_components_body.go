@@ -447,6 +447,7 @@ func (p *HomePage) homeFooterState() FooterState {
 		RouteLabel:        p.activeSwarmFooterLabel(),
 		NotificationCount: p.swarmNotificationCount,
 		DisplayedMode:     currentDisplayedHomeSessionMode(p),
+		Agent:             emptyValue(strings.TrimSpace(p.model.ActiveAgent), "swarm"),
 		ProfileLabel:      p.ProfileLabel(),
 		ModelLabel:        model.DisplayModelLabel(provider, modelName, serviceTier, contextMode),
 		Thinking:          strings.TrimSpace(thinking),

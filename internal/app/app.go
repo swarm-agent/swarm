@@ -375,7 +375,7 @@ func New() (*App, error) {
 	}()
 	go func() {
 		defer wg.Done()
-		next, loadErr = app.refreshHomeModel(ctx)
+		next, loadErr = app.refreshHomeV3Model(ctx)
 	}()
 	wg.Wait()
 	if hasNotifications {
@@ -396,12 +396,6 @@ func New() (*App, error) {
 	if loadErr != nil && cfgErr != nil {
 		app.home.SetStatus(fmt.Sprintf("backend unavailable: %v (settings warning: %v)", loadErr, cfgErr))
 	}
-	if loadErr == nil {
-		if err := app.reconcileTUIRealtime(); err != nil && app.home != nil && app.home.Status() == "" {
-			app.home.SetStatus(fmt.Sprintf("realtime unavailable: %v", err))
-		}
-	}
-	app.startSessionEventStream()
 	app.refreshGitRealtimeWatcher()
 	app.announceAppliedUpdate()
 	app.openStartupNetworkWarningModal()
@@ -1795,6 +1789,13 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 			return false
 		}
 	}
+	if keybinds.Match(ev, ui.KeybindGlobalWorkspaceSelect) {
+		if a.workspaceCycleHotkeyBlocked() {
+			return true
+		}
+		a.showWorkspaceSelector()
+		return true
+	}
 	if keybinds.Match(ev, ui.KeybindGlobalWorkspacePrev) {
 		if a.workspaceCycleHotkeyBlocked() {
 			return true
@@ -1920,10 +1921,6 @@ func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
 		a.home.KeybindsModalVisible() {
 		return false
 	}
-	if a.home.SessionsFocused() {
-		return false
-	}
-
 	if !a.activeKeyBindings().Match(ev, ui.KeybindHomePromptSubmit) {
 		return false
 	}
@@ -2144,6 +2141,7 @@ func (a *App) showHelp() {
 		"/mode [plan|action|status]   (Plan on/off for new chats)",
 		"/profiles   (quick-switch the saved model profile used by new sessions)",
 		fmt.Sprintf("%s   (open agents manager modal)", keybinds.Label(ui.KeybindGlobalOpenAgents)),
+		fmt.Sprintf("%s   (open workspace selector)", keybinds.Label(ui.KeybindGlobalWorkspaceSelect)),
 		fmt.Sprintf("%s   (cycle workspace previous)", keybinds.Label(ui.KeybindGlobalWorkspacePrev)),
 		fmt.Sprintf("%s   (cycle workspace next)", keybinds.Label(ui.KeybindGlobalWorkspaceNext)),
 		fmt.Sprintf("%s   (activate workspace slot 1)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot1)),
@@ -4573,8 +4571,6 @@ func sessionSummariesFromTUIWorkset(workset client.SessionV3Workset) []client.Se
 const (
 	workspaceOverviewDesktopSessionLimit = 200
 	homeRecentSessionLimit               = 50
-	// Home only renders workspace names/directories on first paint.
-	homeWorkspaceOverviewSessionLimit = 1
 )
 
 func chatSessionPaletteItemsFromTabs(tabs []ui.ChatSessionTab) []ui.ChatSessionPaletteItem {
@@ -4917,17 +4913,8 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		if err != nil {
 			a.home.SetStatus(fmt.Sprintf("open session failed: %v", err))
 		}
-	case ui.HomeActionSelectWorkspace:
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		resolution, err := a.api.SelectWorkspace(ctx, strings.TrimSpace(action.WorkspacePath))
-		if err != nil {
-			a.home.SetStatus(fmt.Sprintf("activate workspace failed: %v", err))
-			return
-		}
-		a.syncActiveWorkspaceSelection(resolution)
-		a.home.SetStatus(fmt.Sprintf("workspace active: %s", displayPath(resolution.ResolvedPath)))
-		a.queueReload(false)
+	case ui.HomeActionOpenWorkspaceSelector:
+		a.showWorkspaceSelector()
 	case ui.HomeActionOpenAgentsModal:
 		a.openAgentsModal()
 	case ui.HomeActionOpenProfilesModal:
@@ -5287,6 +5274,7 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 		a.home.SetWorkspaceModalStatus(status)
 		a.queueReload(false)
 	case ui.WorkspaceModalActionSelect:
+		selectorMode := a.home.WorkspaceModalIntent() == "select"
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
 		resolution, err := a.api.SelectWorkspace(ctx, action.Path)
@@ -5296,9 +5284,14 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 			return
 		}
 		a.syncActiveWorkspaceSelection(resolution)
-		a.home.SetWorkspaceModalDirectory(a.activeContextPath())
-		a.refreshWorkspaceModalData("")
-		a.home.SetWorkspaceModalStatus(fmt.Sprintf("workspace active: %s", displayPath(resolution.ResolvedPath)))
+		if selectorMode {
+			a.home.HideWorkspaceModal()
+			a.home.SetStatus(fmt.Sprintf("workspace active: %s", displayPath(resolution.ResolvedPath)))
+		} else {
+			a.home.SetWorkspaceModalDirectory(a.activeContextPath())
+			a.refreshWorkspaceModalData("")
+			a.home.SetWorkspaceModalStatus(fmt.Sprintf("workspace active: %s", displayPath(resolution.ResolvedPath)))
+		}
 		a.queueReload(false)
 	case ui.WorkspaceModalActionMove:
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
@@ -6773,13 +6766,15 @@ func hasModelValue(models []string, target string) bool {
 }
 
 func (a *App) handleWorkspaceCommand(args []string) {
-	if len(args) == 0 || strings.EqualFold(args[0], "open") || strings.EqualFold(args[0], "manage") || strings.EqualFold(args[0], "crud") {
-		a.showWorkspaceManager()
+	if len(args) == 0 {
+		a.showWorkspaceSelector()
 		return
 	}
 
 	sub := strings.ToLower(args[0])
 	switch sub {
+	case "open", "manage", "crud":
+		a.showWorkspaceManager()
 	case "save":
 		target := "."
 		allowPathEdit := false
@@ -6791,8 +6786,7 @@ func (a *App) handleWorkspaceCommand(args []string) {
 		a.openWorkspaceModalForSave(target, allowPathEdit)
 	case "select", "use":
 		if len(args) < 2 {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus("usage: /workspace select <name|#n>")
+			a.showWorkspaceSelector()
 			return
 		}
 		target := strings.TrimSpace(strings.Join(args[1:], " "))
@@ -6819,7 +6813,7 @@ func (a *App) handleWorkspaceCommand(args []string) {
 		a.scanWorkspaceTree(query)
 	default:
 		a.home.ClearCommandOverlay()
-		a.home.SetStatus("usage: /workspace [open|save|select|scan]")
+		a.home.SetStatus("usage: /workspace [select [name|#n]|manage|save|scan]")
 	}
 }
 
@@ -6873,9 +6867,18 @@ func (a *App) scanWorkspaceTree(query string) {
 	a.home.SetStatus("use /workspace save #<n> to create one")
 }
 
+func (a *App) showWorkspaceSelector() {
+	a.home.SetWorkspaceModalIntent("select", "")
+	if _, err := a.openWorkspaceModal(); err != nil {
+		a.home.SetStatus(fmt.Sprintf("workspace selector failed: %v", err))
+	}
+}
+
 func (a *App) showWorkspaceManager() {
 	a.home.SetWorkspaceModalIntent("", "")
-	_, _ = a.openWorkspaceModal()
+	if _, err := a.openWorkspaceModal(); err != nil {
+		a.home.SetStatus(fmt.Sprintf("workspace manager failed: %v", err))
+	}
 }
 
 func (a *App) openWorkspaceModalForSave(target string, allowPathEdit bool) {
@@ -7306,7 +7309,7 @@ func (a *App) queueReload(silent bool) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer cancel()
-		next, err := a.refreshHomeModel(ctx)
+		next, err := a.refreshHomeV3Model(ctx)
 		result := homeReloadResult{
 			model:  next,
 			err:    err,
@@ -7339,9 +7342,6 @@ func (a *App) consumeReloadResult() {
 		a.syncActiveContextFromHomeModel(result.model)
 		a.applyHomeModel(result.model)
 		a.syncVaultUI()
-		if err := a.reconcileTUIRealtime(); err != nil && !result.silent {
-			a.home.SetStatus(fmt.Sprintf("realtime unavailable: %v", err))
-		}
 	default:
 	}
 }
@@ -7444,6 +7444,8 @@ func (a *App) currentHomeModel() model.HomeModel {
 func (a *App) applyHomeModel(next model.HomeModel) {
 	a.homeModel = next
 	a.home.SetModel(next)
+	route := a.selectedChatRouteForWorkspace(a.activeWorkspacePath())
+	a.home.SetSessionIntent(buildHomeSessionIntent(a.home, route))
 	a.home.SetSwarmNotificationCount(a.swarmNotificationCount)
 	if next.UpdateStatus != nil {
 		a.updateStatus = *next.UpdateStatus
@@ -7499,440 +7501,6 @@ func (a *App) loadSwarmNotificationCount(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	return summary.UnreadCount, nil
-}
-
-func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
-	next := model.EmptyHome()
-	next.ServerURL = a.api.BaseURL()
-	contextPath := normalizePath(a.activeContextPath())
-	if contextPath == "" {
-		contextPath = normalizePath(a.startupCWD)
-	}
-	next.CWD = contextPath
-	if next.CWD == "" {
-		next.CWD = "."
-	}
-
-	errorsSeen := make([]string, 0, 8)
-
-	if strings.TrimSpace(a.api.Token()) == "" {
-		if err := a.api.EnsureLocalAuth(ctx); err != nil {
-			if errors.Is(err, client.ErrLocalIdentityBootstrapRequired) {
-				status, statusErr := a.api.GetOnboardingStatus(ctx)
-				if statusErr == nil {
-					next.OnboardingRequired = status.NeedsOnboarding
-					next.OnboardingUsername = strings.TrimSpace(status.Identity.Username)
-					next.OnboardingSwarmName = strings.TrimSpace(status.Config.SwarmName)
-				}
-				if !next.OnboardingRequired {
-					next.OnboardingRequired = true
-				}
-				next.HintLine = "Required onboarding: create username + swarm name before using Swarm."
-				next.TipLine = "Provider auth can be skipped, but Needs auth remains until /auth is completed."
-				return next, nil
-			}
-			errorsSeen = append(errorsSeen, "local auth bootstrap failed")
-		}
-	}
-
-	vaultStatus, vaultErr := a.api.GetVaultStatus(ctx)
-	if vaultErr == nil {
-		a.vault = vaultStatus
-		if vaultStatus.Enabled && !vaultStatus.Unlocked {
-			next.HintLine = "Vault is locked. Unlock it before using Swarm."
-			next.TipLine = "/vault"
-			return next, nil
-		}
-	} else {
-		errorsSeen = append(errorsSeen, "vault status unavailable")
-	}
-
-	var (
-		health           client.HealthStatus
-		healthErr        error
-		worktreeSettings client.WorktreeSettings
-		worktreeErr      error
-		overview         client.WorkspaceOverviewResponse
-		overviewErr      error
-		cwdResolve       client.WorkspaceCWDResolveResponse
-		cwdResolveErr    error
-		providerStatuses []client.ProviderStatus
-		providersErr     error
-		modelResolved    client.ModelResolved
-		modelErr         error
-		modelProfiles    client.ModelProfileState
-		modelProfilesErr error
-		updateStatus     client.UpdateStatus
-		updateErr        error
-		agentState       client.AgentState
-		agentErr         error
-		contextReport    client.ContextReport
-		contextErr       error
-	)
-	var refreshWG sync.WaitGroup
-	refreshWG.Add(10)
-	go func() {
-		defer refreshWG.Done()
-		health, healthErr = a.api.GetHealth(ctx)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		worktreeSettings, worktreeErr = a.api.GetWorktreeSettings(ctx, next.CWD)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		overview, overviewErr = a.api.WorkspaceOverview(ctx, next.CWD, nil, homeWorkspaceOverviewSessionLimit)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		cwdResolve, cwdResolveErr = a.api.WorkspaceCWDResolve(ctx, next.CWD)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		providerStatuses, providersErr = a.api.ListProviders(ctx)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		modelResolved, modelErr = a.api.GetModel(ctx)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		modelProfiles, modelProfilesErr = a.api.ListModelProfiles(ctx)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		updateStatus, updateErr = a.api.GetUpdateStatus(ctx)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		agentState, agentErr = a.api.ListAgents(ctx, 200)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		contextReport, contextErr = a.api.ContextSources(ctx, contextPath)
-	}()
-	refreshWG.Wait()
-
-	if healthErr == nil {
-		if mode := strings.TrimSpace(health.Mode); mode != "" {
-			next.ServerMode = mode
-		}
-		next.BypassPermissions = health.BypassPermissions
-	} else {
-		errorsSeen = append(errorsSeen, "daemon status unavailable")
-	}
-
-	if worktreeErr == nil {
-		next.WorktreesEnabled = worktreeSettings.Enabled
-	} else {
-		errorsSeen = append(errorsSeen, "worktrees settings unavailable")
-	}
-
-	activePath := normalizePath(strings.TrimSpace(next.CWD))
-	activeWorkspacePath := ""
-	activeIsWorkspace := false
-	activeIsWorkspaceRoot := false
-	if overviewErr == nil {
-		next.CurrentSwarmTarget = modelSwarmTargetFromClient(overview.SwarmTarget)
-		selectedWorkspacePath := ""
-		if overview.CurrentWorkspace != nil {
-			selectedWorkspacePath = normalizePath(strings.TrimSpace(overview.CurrentWorkspace.WorkspacePath))
-			if selectedWorkspacePath == "" {
-				selectedWorkspacePath = normalizePath(strings.TrimSpace(overview.CurrentWorkspace.ResolvedPath))
-			}
-		}
-		seenDirectories := make(map[string]struct{}, len(overview.Workspaces)+len(overview.Directories))
-		for i, entry := range overview.Workspaces {
-			entryPath := normalizePath(entry.Path)
-			if entryPath == "" {
-				continue
-			}
-			name := strings.TrimSpace(entry.WorkspaceName)
-			if name == "" {
-				name = filepath.Base(entryPath)
-			}
-			if name == "" || name == "." || name == string(filepath.Separator) {
-				name = "workspace"
-			}
-			directories := append([]string(nil), entry.Directories...)
-			if len(directories) == 0 {
-				directories = []string{entryPath}
-			}
-			next.Workspaces = append(next.Workspaces, model.Workspace{
-				Name:                    name,
-				Path:                    entryPath,
-				WorkspaceID:             strings.TrimSpace(entry.WorkspaceID),
-				WorkspaceGeneration:     entry.WorkspaceGeneration,
-				LocalWorkspaceBindingID: strings.TrimSpace(entry.LocalWorkspaceBindingID),
-				Directories:             directories,
-				TopologyRoutes:          modelTopologyRoutesFromClient(entry.TopologyRoutes),
-				ThemeID:                 strings.TrimSpace(entry.ThemeID),
-				Icon:                    workspaceIcon(i),
-			})
-			next.Directories = append(next.Directories, model.DirectoryItem{
-				Name:         name,
-				Path:         displayPath(entryPath),
-				ResolvedPath: entryPath,
-				Branch:       "-",
-				DirtyCount:   0,
-				AgentsToken:  "none",
-				IsWorkspace:  true,
-			})
-			seenDirectories[entryPath] = struct{}{}
-		}
-		preferredWorkspacePath := selectedWorkspacePath
-		if preferredWorkspacePath == "" {
-			preferredWorkspacePath = normalizePath(strings.TrimSpace(a.workspacePath))
-		}
-		// ChatRoutes are authoritative only after /v1/workspace/cwd/resolve below.
-		activeWorkspacePath = resolveWorkspaceSelectionPath(activePath, next.Workspaces, preferredWorkspacePath)
-		activeIsWorkspace = activeWorkspacePath != ""
-		activeIsWorkspaceRoot = activeWorkspacePath != "" && pathsEqual(activePath, activeWorkspacePath)
-		for i := range next.Workspaces {
-			next.Workspaces[i].Active = activeWorkspacePath != "" && pathsEqual(next.Workspaces[i].Path, activeWorkspacePath)
-		}
-		for _, entry := range overview.Directories {
-			entryPath := normalizePath(entry.Path)
-			if entryPath == "" {
-				continue
-			}
-			if _, exists := seenDirectories[entryPath]; exists {
-				continue
-			}
-			name := strings.TrimSpace(entry.Name)
-			if name == "" {
-				name = directoryNameForPath(entryPath)
-			}
-			next.Directories = append(next.Directories, model.DirectoryItem{
-				Name:         name,
-				Path:         displayPath(entryPath),
-				ResolvedPath: entryPath,
-				Branch:       "-",
-				DirtyCount:   0,
-				AgentsToken:  "none",
-				IsWorkspace:  false,
-			})
-			seenDirectories[entryPath] = struct{}{}
-		}
-	} else {
-		errorsSeen = append(errorsSeen, "workspace overview unavailable")
-	}
-	if cwdResolveErr == nil {
-		next = applyCWDResolverToHomeModel(next, cwdResolve)
-		preferredWorkspacePath := activePath
-		if cwdResolve.Workspace != nil && strings.TrimSpace(cwdResolve.Workspace.WorkspacePath) != "" {
-			preferredWorkspacePath = normalizePath(strings.TrimSpace(cwdResolve.Workspace.WorkspacePath))
-			if preferredWorkspacePath != "" && !pathsEqual(preferredWorkspacePath, activeWorkspacePath) {
-				activeWorkspacePath = preferredWorkspacePath
-				activeIsWorkspace = true
-				activeIsWorkspaceRoot = activeWorkspacePath != "" && pathsEqual(activePath, activeWorkspacePath)
-				for i := range next.Workspaces {
-					next.Workspaces[i].Active = activeWorkspacePath != "" && pathsEqual(next.Workspaces[i].Path, activeWorkspacePath)
-				}
-			}
-		}
-		if len(next.ChatRoutes) > 0 {
-			selectedRouteID := a.resolveSelectedChatRouteIDForWorkspace(preferredWorkspacePath, next.ChatRoutes)
-			a.selectedChatRouteID = selectedRouteID
-			next.SelectedChatRouteID = selectedRouteID
-		} else {
-			a.selectedChatRouteID = ""
-			next.SelectedChatRouteID = ""
-		}
-	} else {
-		errorsSeen = append(errorsSeen, "cwd route resolver unavailable")
-	}
-
-	sessionScopePaths := make([]string, 0, len(next.Workspaces)+1)
-	cwdSessionScope := ""
-	if activeIsWorkspace {
-		if path := normalizePath(activeWorkspacePath); path != "" {
-			sessionScopePaths = append(sessionScopePaths, path)
-		}
-	}
-	if len(sessionScopePaths) == 0 {
-		cwdSessionScope = contextPath
-	}
-	sessionWorksetOptions := tuiSessionWorksetLoadOptions{Limit: homeRecentSessionLimit, WorkspacePaths: sessionScopePaths, CWDPath: cwdSessionScope}
-	_, sessionsErr := tuiRealtimeWorksetStateFromOptions(sessionWorksetOptions)
-	var sessionSummaries []model.SessionSummary
-	loadedSessionWorkset := false
-	if sessionsErr == nil {
-		if sessionsErr = a.ensureTUIRealtimeWorksetReady(ctx, sessionWorksetOptions); sessionsErr == nil {
-			sessionSummaries = a.tuiSessionStore.HomeSessions()
-			loadedSessionWorkset = true
-		}
-	}
-
-	gitStatus, _ := gitStatusForPath(activePath)
-	if activeIsWorkspace {
-		matched := false
-		for i := range next.Directories {
-			if pathsEqual(next.Directories[i].ResolvedPath, activePath) {
-				next.Directories[i].IsWorkspace = activeIsWorkspaceRoot
-				applyGitStatusToDirectory(&next.Directories[i], gitStatus)
-				matched = true
-				break
-			}
-		}
-		if !matched && activePath != "" {
-			next.Directories = append([]model.DirectoryItem{
-				newDirectoryItemWithGitStatus(activePath, activeIsWorkspaceRoot, gitStatus),
-			}, next.Directories...)
-		}
-	} else {
-		next.Directories = append([]model.DirectoryItem{
-			newDirectoryItemWithGitStatus(activePath, false, gitStatus),
-		}, next.Directories...)
-	}
-
-	runnableProviders := 0
-	if providersErr == nil {
-		for _, status := range providerStatuses {
-			id := strings.ToLower(strings.TrimSpace(status.ID))
-			if id == "" {
-				continue
-			}
-			if status.Runnable {
-				runnableProviders++
-			}
-		}
-		next.AuthConfigured = runnableProviders > 0
-	} else {
-		errorsSeen = append(errorsSeen, "provider status unavailable")
-	}
-
-	if modelErr == nil {
-		next = applyHomeModelResolved(next, modelResolved)
-	} else {
-		errorsSeen = append(errorsSeen, "model preference unavailable")
-	}
-	if modelProfilesErr == nil {
-		next = applyHomeModelProfiles(next, modelProfiles)
-	} else {
-		errorsSeen = append(errorsSeen, "model profiles unavailable")
-	}
-
-	if updateErr == nil {
-		next.UpdateStatus = &updateStatus
-		if current := strings.TrimSpace(updateStatus.CurrentVersion); current != "" {
-			next.Version = current
-		}
-		a.updateStatus = updateStatus
-	} else if strings.TrimSpace(buildinfo.DisplayVersion()) != "dev" {
-		errorsSeen = append(errorsSeen, "update status unavailable")
-	}
-
-	if providerID := strings.ToLower(strings.TrimSpace(next.ModelProvider)); providerID != "" {
-		credentials, credErr := a.api.ListAuthCredentials(ctx, providerID, "", 50)
-		if credErr == nil {
-			for _, record := range credentials.Records {
-				if record.Active {
-					next.AuthType = strings.TrimSpace(record.AuthType)
-					next.AuthLast4 = strings.TrimSpace(record.Last4)
-					break
-				}
-			}
-		}
-	}
-
-	if agentErr == nil {
-		a.agentState = agentState
-		next.ActiveAgent, next.ActiveAgentExecutionSetting, next.ActiveAgentExitPlanMode, next.ActiveAgentRuntimeKnown = activeAgentRuntime(agentState)
-		next.Subagents = chatMentionSubagentNames(agentState)
-		next = applyActiveAgentModels(next, agentState)
-	} else {
-		next.ActiveAgent = "swarm"
-		next.ActiveAgentExecutionSetting = ""
-		next.ActiveAgentExitPlanMode = true
-		next.ActiveAgentRuntimeKnown = true
-		errorsSeen = append(errorsSeen, "agent state unavailable")
-	}
-
-	if contextErr == nil {
-		next.RuleCount = len(contextReport.Rules)
-		next.SkillCount = len(contextReport.Skills)
-		agentsToken := contextAgentsToken(contextReport.Rules)
-		for i := range next.Directories {
-			if pathsEqual(next.Directories[i].ResolvedPath, contextPath) {
-				next.Directories[i].AgentsToken = agentsToken
-			}
-		}
-	} else {
-		errorsSeen = append(errorsSeen, "context scan unavailable")
-	}
-
-	if sessionsErr == nil {
-		for _, session := range sessionSummaries {
-			title := strings.TrimSpace(session.Title)
-			if title == "" {
-				title = session.ID
-			}
-			session.Title = title
-			next.RecentSessions = append(next.RecentSessions, session)
-		}
-		next.BackgroundSessions = backgroundSessionSummariesForSessions(next.RecentSessions, next.BackgroundSessions)
-		if loadedSessionWorkset {
-			worksetSnapshot := a.tuiSessionStore.WorksetSnapshot()
-			a.sessionWorksetPagination = tuiSessionWorksetPagination{
-				NextBeforeUpdatedAt: worksetSnapshot.Pagination.NextBeforeUpdatedAt,
-				NextBeforeSessionID: strings.TrimSpace(worksetSnapshot.Pagination.NextBeforeSessionID),
-				HasMore:             worksetSnapshot.Pagination.HasMore,
-				LoadedAt:            worksetSnapshot.Watermarks.LoadedAt,
-			}
-		}
-	} else {
-		errorsSeen = append(errorsSeen, "session workset unavailable")
-	}
-
-	next.QuickActions = homeQuickActions(next)
-
-	directoryMode := activeWorkspaceIndex(next.Workspaces) < 0
-	if directoryMode && !next.AuthConfigured {
-		next.HintLine = "Directory mode and auth is missing, run /auth"
-		next.TipLine = "/workspace  •  /auth"
-	} else if directoryMode {
-		next.HintLine = "Directory mode (no active workspace)"
-		next.TipLine = "/workspace"
-	} else if !next.AuthConfigured {
-		next.HintLine = "Auth is missing, run /auth"
-		next.TipLine = "/auth"
-	} else {
-		next.HintLine = "ctrl+down enters sessions • ctrl+up exits sessions"
-		next.TipLine = ""
-	}
-
-	next.HintLine = strings.TrimSpace(next.HintLine)
-
-	if len(errorsSeen) > 0 {
-		preview := strings.Join(errorsSeen, "; ")
-		if len(preview) > 96 {
-			preview = preview[:96] + "..."
-		}
-		if strings.TrimSpace(next.HintLine) == "" {
-			next.HintLine = fmt.Sprintf("degraded: %s", preview)
-		} else {
-			next.HintLine = fmt.Sprintf("%s • degraded: %s", next.HintLine, preview)
-		}
-	}
-
-	cycleLabel := "Shift+Tab"
-	if keybinds := a.activeKeyBindings(); keybinds != nil {
-		label := strings.TrimSpace(keybinds.Label(ui.KeybindChatCycleMode))
-		if label != "" {
-			cycleLabel = label
-		}
-	}
-	modeHint := fmt.Sprintf("%s changes mode", cycleLabel)
-	if next.HintLine == "" {
-		next.HintLine = modeHint
-	} else if !strings.Contains(strings.ToLower(next.HintLine), "changes mode") {
-		next.HintLine = next.HintLine + " • " + modeHint
-	}
-	if len(errorsSeen) > 0 && len(next.Workspaces) == 0 && strings.TrimSpace(next.ModelName) == "" && len(next.RecentSessions) == 0 {
-		return next, errors.New(strings.Join(errorsSeen, "; "))
-	}
-	return next, nil
 }
 
 func homeUpdateVersionHint(status *client.UpdateStatus) string {
@@ -8013,15 +7581,17 @@ func (a *App) syncActiveContextFromHomeModel(next model.HomeModel) {
 	if a == nil {
 		return
 	}
-	if next.CWD != "" {
-		a.activePath = normalizePath(strings.TrimSpace(next.CWD))
-	}
 	a.workspacePath = ""
 	for _, ws := range next.Workspaces {
 		if ws.Active {
 			a.workspacePath = normalizePath(strings.TrimSpace(ws.Path))
 			break
 		}
+	}
+	if a.workspacePath != "" {
+		a.activePath = a.workspacePath
+	} else if next.CWD != "" {
+		a.activePath = normalizePath(strings.TrimSpace(next.CWD))
 	}
 	a.refreshGitRealtimeWatcher()
 }

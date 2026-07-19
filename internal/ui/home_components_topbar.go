@@ -123,15 +123,12 @@ func (p *HomePage) drawWorkspaceInfoBox(s tcell.Screen, rect Rect) {
 		rightW = 0
 	}
 
-	cwdLine := "cwd " + strings.TrimSpace(d.Path)
+	cwdLine := "path " + strings.TrimSpace(d.Path)
 	if strings.TrimSpace(d.Path) == "" {
-		cwdLine = "cwd ."
+		cwdLine = "path ."
 	}
 	if linked := p.activeWorkspaceLinkedDirectories(); len(linked) > 0 {
 		cwdLine += fmt.Sprintf("  ·  linked:%d", len(linked))
-	}
-	if badge := backgroundHeaderBadge(p.model.BackgroundSessions); badge != "" {
-		cwdLine += "  ·  " + badge
 	}
 	if !d.IsWorkspace {
 		cwdLine += "  /workspace save"
@@ -367,22 +364,23 @@ func (p *HomePage) workspaceButtonStyle(base tcell.Style, state workspaceButtonS
 
 func (p *HomePage) workspaceItems() []topItem {
 	if len(p.model.Workspaces) == 0 {
-		return nil
+		return []topItem{{Label: "[+ workspace]", Style: p.theme.TextMuted, Action: "workspace-selector", Index: -1}}
 	}
 
-	items := make([]topItem, 0, len(p.model.Workspaces))
-	for i, ws := range p.model.Workspaces {
-		label := fmt.Sprintf("[%s %s]", ws.Icon, ws.Name)
-		style := p.theme.TextMuted
-		if ws.Active {
-			style = p.theme.Primary.Bold(true)
+	active := -1
+	for i, workspace := range p.model.Workspaces {
+		if workspace.Active {
+			active = i
+			break
 		}
-		items = append(items, topItem{
-			Label:  label,
-			Style:  style,
-			Action: "workspace",
-			Index:  i,
-		})
 	}
-	return items
+	if active < 0 {
+		active = 0
+	}
+	workspace := p.model.Workspaces[active]
+	label := fmt.Sprintf("[%s %s]", workspace.Icon, workspace.Name)
+	if len(p.model.Workspaces) > 1 {
+		label = fmt.Sprintf("%s +%d", label, len(p.model.Workspaces)-1)
+	}
+	return []topItem{{Label: label, Style: p.theme.Primary.Bold(true), Action: "workspace-selector", Index: active}}
 }

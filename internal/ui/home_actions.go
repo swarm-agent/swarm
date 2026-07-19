@@ -18,7 +18,7 @@ const (
 	HomeActionConsumeCodexReset     HomeActionKind = "consume-codex-reset"
 	HomeActionCycleThinking         HomeActionKind = "cycle-thinking"
 	HomeActionCycleRoute            HomeActionKind = "cycle-route"
-	HomeActionSelectWorkspace       HomeActionKind = "select-workspace"
+	HomeActionOpenWorkspaceSelector HomeActionKind = "open-workspace-selector"
 	HomeActionSetDefaultSessionMode HomeActionKind = "set-default-session-mode"
 	HomeActionOpenAlertSession      HomeActionKind = "open-alert-session"
 	HomeActionClearAlerts           HomeActionKind = "clear-alerts"
@@ -104,22 +104,4 @@ func (p *HomePage) QueueCodexResetCredit(creditID, idempotencyKey string) bool {
 	p.pendingHomeAction = &HomeAction{Kind: HomeActionConsumeCodexReset, ResetCreditID: creditID, IdempotencyKey: idempotencyKey}
 	p.statusLine = "using Codex reset credit..."
 	return true
-}
-
-func (p *HomePage) queueSelectWorkspaceAction(workspace model.Workspace) {
-	path := strings.TrimSpace(workspace.Path)
-	name := strings.TrimSpace(workspace.Name)
-	if path == "" {
-		p.statusLine = "cannot switch workspace: missing path"
-		return
-	}
-	if name == "" {
-		name = path
-	}
-	p.pendingHomeAction = &HomeAction{
-		Kind:          HomeActionSelectWorkspace,
-		WorkspacePath: path,
-		WorkspaceName: name,
-	}
-	p.statusLine = fmt.Sprintf("switch workspace: %s", name)
 }

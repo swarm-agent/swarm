@@ -47,7 +47,10 @@ func footerTokensFromState(theme Theme, state FooterState) []footerToken {
 		{Text: modeText, Style: modeStyle},
 	}
 	if state.UnifiedProfile {
-		return append(tokens, footerToken{Text: footerProfileUnit(state), Style: metaStyle, Action: "open-profiles-modal"})
+		return append(tokens,
+			footerToken{Text: "[a:" + clampEllipsis(emptyValue(strings.TrimSpace(state.Agent), "swarm"), 12) + "]", Style: metaStyle, Action: "open-agents-modal"},
+			footerToken{Text: footerProfileUnit(state), Style: metaStyle, Action: "open-profiles-modal"},
+		)
 	}
 	return append(tokens,
 		footerToken{Text: "[a:" + clampEllipsis(emptyValue(strings.TrimSpace(state.Agent), "swarm"), 12) + "]", Style: metaStyle, Action: "open-agents-modal"},

@@ -8,7 +8,6 @@ type homeSection struct {
 type homeResponsiveLayout struct {
 	Variant         layoutVariant
 	BottomBarHeight int
-	MaxRecentRows   int
 	CenterStack     bool
 	PinMetaTop      bool
 }
@@ -17,18 +16,18 @@ func resolveHomeResponsiveLayout(width, height int) homeResponsiveLayout {
 	profile := homeResponsiveLayout{
 		Variant:         homeLayout,
 		BottomBarHeight: bottomBarHeight,
-		MaxRecentRows:   recentVisibleRows,
 		CenterStack:     true,
 	}
 
 	switch {
-	case width >= 68 && height >= 16:
-		// Keep the full workspace top section for normal and medium terminals.
+	case width >= 68 && height >= 18:
+		// The full V3 home includes an unmistakable launch panel above the
+		// composer. Smaller terminals keep the lightweight compact layout.
 		profile.Variant.UseSwarmTopBar = true
+		profile.Variant.ShowHero = true
 		profile.Variant.ShowPresets = false
 		profile.Variant.ShowTips = true
 		profile.PinMetaTop = false
-		profile.MaxRecentRows = recentVisibleRows
 	case width >= 52 && height >= 14:
 		// Compact mode starts only on clearly narrow terminals.
 		profile.Variant.UseSwarmTopBar = false
@@ -37,7 +36,6 @@ func resolveHomeResponsiveLayout(width, height int) homeResponsiveLayout {
 		profile.Variant.ShowTips = false
 		profile.CenterStack = true
 		profile.PinMetaTop = true
-		profile.MaxRecentRows = recentVisibleRows
 	default:
 		profile.Variant.UseSwarmTopBar = false
 		profile.Variant.ShowDirectory = true
@@ -45,17 +43,10 @@ func resolveHomeResponsiveLayout(width, height int) homeResponsiveLayout {
 		profile.Variant.ShowTips = false
 		profile.CenterStack = true
 		profile.PinMetaTop = true
-		profile.MaxRecentRows = recentVisibleRows
 	}
 
 	if height < 12 || width < 50 {
 		profile.BottomBarHeight = 1
-	}
-	if height < 8 {
-		profile.MaxRecentRows = 1
-	}
-	if profile.MaxRecentRows < 1 {
-		profile.MaxRecentRows = 1
 	}
 	if profile.BottomBarHeight < 1 {
 		profile.BottomBarHeight = 1
@@ -74,6 +65,9 @@ func buildHomeSections(variant layoutVariant) []homeSection {
 
 	sections := make([]homeSection, 0, 5)
 	if variant.UseSwarmTopBar {
+		if variant.ShowHero {
+			sections = append(sections, homeSection{kind: "hero", h: 5})
+		}
 		if variant.ShowPresets {
 			sections = append(sections, homeSection{kind: "presets", h: 1})
 		}

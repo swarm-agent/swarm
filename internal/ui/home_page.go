@@ -11,7 +11,6 @@ import (
 )
 
 const (
-	recentVisibleRows = 5
 	bottomBarHeight   = 3
 	sectionGap        = 1
 	inputCursorRune   = '█'
@@ -23,6 +22,7 @@ type layoutVariant struct {
 	Name              string
 	ShowWorkspaceList bool
 	ShowDirectory     bool
+	ShowHero          bool
 	ShowPresets       bool
 	ShowTips          bool
 	InputFirst        bool
@@ -65,6 +65,7 @@ var homeLayout = layoutVariant{
 	Name:              "Tabs",
 	ShowWorkspaceList: false,
 	ShowDirectory:     false,
+	ShowHero:          true,
 	ShowPresets:       false,
 	ShowTips:          true,
 	InputFirst:        true,
@@ -78,13 +79,8 @@ type HomePage struct {
 	keybinds                  *KeyBindings
 	model                     model.HomeModel
 	prompt                    string
+	sessionIntent             HomeSessionIntent
 	promptCursor              int
-	selectedIndex             int
-	sessionsFocused           bool
-	recentPage                int
-	recentPageSize            int
-	sessionRows               []Rect
-	sessionIndex              []int
 	topBarTargets             []clickTarget
 	bottomBarTargets          []clickTarget
 	commandPaletteTargets     []clickTarget
@@ -141,14 +137,13 @@ type HomePage struct {
 
 func NewHomePage(m model.HomeModel) *HomePage {
 	return &HomePage{
-		theme:          NordTheme(),
-		keybinds:       NewDefaultKeyBindings(),
-		model:          m,
-		recentPageSize: recentVisibleRows,
-		statusLine:     "",
-		sessionMode:    "auto",
-		swarmName:      "Local",
-		promptCursor:   0,
+		theme:        NordTheme(),
+		keybinds:     NewDefaultKeyBindings(),
+		model:        m,
+		statusLine:   "",
+		sessionMode:  "auto",
+		swarmName:    "Local",
+		promptCursor: 0,
 	}
 }
 
@@ -231,23 +226,6 @@ func (p *HomePage) HandleMouse(ev *tcell.EventMouse) {
 		p.pressedTopAction = ""
 	}
 
-	if buttons&tcell.Button1 == 0 {
-		return
-	}
-
-	for i, r := range p.sessionRows {
-		if !r.Contains(x, y) || i >= len(p.sessionIndex) {
-			continue
-		}
-		idx := p.sessionIndex[i]
-		if idx >= 0 && idx < len(p.model.RecentSessions) {
-			p.sessionsFocused = true
-			p.selectedIndex = idx
-			p.syncPageFromSelection(p.recentPageSize)
-			p.queueOpenSessionAction(p.model.RecentSessions[idx])
-		}
-		return
-	}
 }
 
 func (p *HomePage) HandleTick() bool {
@@ -333,14 +311,6 @@ func (p *HomePage) HandleKey(ev *tcell.EventKey) {
 		return
 	}
 
-	if p.keybinds.Match(ev, KeybindHomeSessionsEnterMode) {
-		p.enterSessionsMode()
-		return
-	}
-	if p.keybinds.Match(ev, KeybindHomeSessionsExitMode) {
-		p.exitSessionsMode()
-		return
-	}
 	if p.keybinds.Match(ev, KeybindChatCycleMode) {
 		if p.CanCycleSessionMode() {
 			next := nextHomeSessionMode(p.sessionMode)
@@ -353,24 +323,6 @@ func (p *HomePage) HandleKey(ev *tcell.EventKey) {
 	}
 	if p.keybinds.Match(ev, KeybindGlobalCycleRoute) {
 		p.pendingHomeAction = &HomeAction{Kind: HomeActionCycleRoute}
-		return
-	}
-
-	if p.sessionsFocused {
-		switch {
-		case p.keybinds.Match(ev, KeybindHomeSessionsMoveUp), p.keybinds.Match(ev, KeybindHomeSessionsMoveUpAlt):
-			p.moveSelection(-1)
-			return
-		case p.keybinds.Match(ev, KeybindHomeSessionsMoveDown), p.keybinds.Match(ev, KeybindHomeSessionsMoveDownAlt):
-			p.moveSelection(1)
-			return
-		case p.keybinds.Match(ev, KeybindHomeSessionsOpen):
-			if len(p.model.RecentSessions) > 0 {
-				s := p.model.RecentSessions[p.selectedIndex]
-				p.queueOpenSessionAction(s)
-			}
-			return
-		}
 		return
 	}
 
@@ -647,15 +599,6 @@ func (p *HomePage) Draw(s tcell.Screen) {
 	}
 	sectionsH := sectionStackHeight(sections)
 
-	recentRows := p.recentRowsVisible()
-	if recentRows > profile.MaxRecentRows {
-		recentRows = profile.MaxRecentRows
-	}
-	if recentRows < 1 {
-		recentRows = 1
-	}
-	desiredRecentH := recentRows + 3
-
 	mainTop := topAnchor
 	mainBottom := h - bottomBarH
 	if mainBottom < mainTop {
@@ -684,19 +627,7 @@ func (p *HomePage) Draw(s tcell.Screen) {
 		availableMainH = 1
 	}
 
-	recentPanelH := 0
-	if availableMainH > sectionsH+sectionGap {
-		maxRecentH := availableMainH - sectionsH - sectionGap
-		recentPanelH = minInt(desiredRecentH, maxRecentH)
-	}
-	if recentPanelH == 1 {
-		recentPanelH = 0
-	}
-
 	stackH := sectionsH
-	if recentPanelH > 0 {
-		stackH += sectionGap + recentPanelH
-	}
 	if stackH > availableMainH {
 		stackH = availableMainH
 	}
@@ -756,6 +687,8 @@ func (p *HomePage) Draw(s tcell.Screen) {
 		rect, ok := clipMainRect(rawRect)
 		if ok {
 			switch sec.kind {
+			case "hero":
+				p.drawHeroPanel(s, rect, variant.CenterRows)
 			case "meta":
 				p.drawMeta(s, rect, variant)
 			case "input":
@@ -771,13 +704,6 @@ func (p *HomePage) Draw(s tcell.Screen) {
 		y += sec.h
 		if i < len(sections)-1 {
 			y += sectionGap
-		}
-	}
-
-	if recentPanelH > 0 {
-		recentRect := Rect{X: contentX, Y: y + sectionGap, W: contentW, H: recentPanelH}
-		if clipped, ok := clipMainRect(recentRect); ok {
-			p.drawRecentSessions(s, clipped)
 		}
 	}
 
@@ -804,20 +730,4 @@ func (p *HomePage) Draw(s tcell.Screen) {
 	p.drawAlertsModal(s)
 	toastInset := 1
 	drawToastOverlay(s, p.theme, &p.toast, Rect{X: 0, Y: 0, W: w, H: h}, toastInset)
-}
-
-func (p *HomePage) recentRowsVisible() int {
-	rows := len(p.model.RecentSessions)
-	if rows < 1 {
-		return 1
-	}
-	if rows > recentVisibleRows {
-		return recentVisibleRows
-	}
-	return rows
-}
-
-func (p *HomePage) recentPanelHeight() int {
-	// top border + header + rows + bottom border
-	return p.recentRowsVisible() + 3
 }
