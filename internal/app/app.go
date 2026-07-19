@@ -5652,11 +5652,27 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 			strings.TrimSpace(action.Upsert.Provider) != "" ||
 			strings.TrimSpace(action.Upsert.Model) != "" ||
 			strings.TrimSpace(action.Upsert.Thinking) != "" ||
+			strings.TrimSpace(action.Upsert.DefaultSessionMode) != "" ||
+			strings.TrimSpace(action.Upsert.ModelMode) != "" ||
+			strings.TrimSpace(action.Upsert.PlanProvider) != "" ||
+			strings.TrimSpace(action.Upsert.PlanModel) != "" ||
+			strings.TrimSpace(action.Upsert.AutoProvider) != "" ||
+			strings.TrimSpace(action.Upsert.AutoModel) != "" ||
 			action.Upsert.Enabled == nil {
 			// Full editor submits must preserve explicit "inherit" clears for provider/model/thinking.
 			req.Provider = stringPtr(action.Upsert.Provider)
 			req.Model = stringPtr(action.Upsert.Model)
 			req.Thinking = stringPtr(action.Upsert.Thinking)
+			req.DefaultSessionMode = strings.TrimSpace(action.Upsert.DefaultSessionMode)
+			req.ModelMode = strings.TrimSpace(action.Upsert.ModelMode)
+			req.PlanProvider = stringPtr(action.Upsert.PlanProvider)
+			req.PlanModel = stringPtr(action.Upsert.PlanModel)
+			req.PlanThinking = stringPtr(action.Upsert.PlanThinking)
+			req.PlanServiceTier = stringPtr(action.Upsert.PlanServiceTier)
+			req.AutoProvider = stringPtr(action.Upsert.AutoProvider)
+			req.AutoModel = stringPtr(action.Upsert.AutoModel)
+			req.AutoThinking = stringPtr(action.Upsert.AutoThinking)
+			req.AutoServiceTier = stringPtr(action.Upsert.AutoServiceTier)
 		}
 		profile, _, err := a.api.UpsertAgent(ctx, req)
 		if err != nil {
@@ -6630,29 +6646,51 @@ func mapAgentsModalData(state client.AgentState, resolved providerModelResolverR
 	for _, profile := range state.Profiles {
 		providerID := normalizeModelProviderID(profile.Provider)
 		modelID := strings.TrimSpace(profile.Model)
-		if providerID != "" {
-			providerSet[providerID] = struct{}{}
-			if modelID != "" && modelAllowedByProviderPreset(providerID, modelID) {
-				modelsByProvider[providerID] = append(modelsByProvider[providerID], modelID)
-				reasonKey := modelEntryKey(providerID, modelID)
-				if reasonKey != "" {
-					if _, ok := reasoningModels[reasonKey]; !ok {
-						reasoningModels[reasonKey] = true
-					}
+		configuredModels := [][2]string{
+			{providerID, modelID},
+			{normalizeModelProviderID(profile.PlanProvider), strings.TrimSpace(profile.PlanModel)},
+			{normalizeModelProviderID(profile.AutoProvider), strings.TrimSpace(profile.AutoModel)},
+		}
+		for _, configured := range configuredModels {
+			configuredProvider, configuredModel := configured[0], configured[1]
+			if configuredProvider == "" {
+				continue
+			}
+			providerSet[configuredProvider] = struct{}{}
+			if configuredModel == "" {
+				continue
+			}
+			modelsByProvider[configuredProvider] = append(modelsByProvider[configuredProvider], configuredModel)
+			reasonKey := modelEntryKey(configuredProvider, configuredModel)
+			if reasonKey != "" {
+				if _, ok := reasoningModels[reasonKey]; !ok {
+					reasoningModels[reasonKey] = true
 				}
 			}
 		}
 		profiles = append(profiles, ui.AgentModalProfile{
-			Name:             strings.TrimSpace(profile.Name),
-			Mode:             strings.TrimSpace(profile.Mode),
-			Description:      strings.TrimSpace(profile.Description),
-			Provider:         providerID,
-			Model:            modelID,
-			Thinking:         strings.TrimSpace(profile.Thinking),
-			Prompt:           strings.TrimSpace(profile.Prompt),
-			ExecutionSetting: strings.TrimSpace(profile.ExecutionSetting),
-			Enabled:          profile.Enabled,
-			UpdatedAt:        profile.UpdatedAt,
+			Name:               strings.TrimSpace(profile.Name),
+			Mode:               strings.TrimSpace(profile.Mode),
+			Description:        strings.TrimSpace(profile.Description),
+			Provider:           providerID,
+			Model:              modelID,
+			Thinking:           strings.TrimSpace(profile.Thinking),
+			ServiceTier:        strings.TrimSpace(profile.AutoServiceTier),
+			DefaultSessionMode: strings.TrimSpace(profile.DefaultSessionMode),
+			ModelMode:          strings.TrimSpace(profile.ModelMode),
+			PlanProvider:       normalizeModelProviderID(profile.PlanProvider),
+			PlanModel:          strings.TrimSpace(profile.PlanModel),
+			PlanThinking:       strings.TrimSpace(profile.PlanThinking),
+			PlanServiceTier:    strings.TrimSpace(profile.PlanServiceTier),
+			AutoProvider:       normalizeModelProviderID(profile.AutoProvider),
+			AutoModel:          strings.TrimSpace(profile.AutoModel),
+			AutoThinking:       strings.TrimSpace(profile.AutoThinking),
+			AutoServiceTier:    strings.TrimSpace(profile.AutoServiceTier),
+			Prompt:             strings.TrimSpace(profile.Prompt),
+			ExecutionSetting:   strings.TrimSpace(profile.ExecutionSetting),
+			Enabled:            profile.Enabled,
+			Protected:          profile.Protected,
+			UpdatedAt:          profile.UpdatedAt,
 		})
 	}
 
