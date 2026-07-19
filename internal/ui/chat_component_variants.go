@@ -84,28 +84,8 @@ func (p *ChatPage) renderUserMessageLines(message chatMessageItem, width int) []
 	case 9:
 		return styledWrapped("▣ user ", "▣ ", body, width, p.theme.Secondary.Dim(true))
 	default:
-		return p.renderDefaultUserMessageBlock(body, width)
+		return styledWrapped("> ", "", body, width, p.theme.TextMuted.Dim(true))
 	}
-}
-
-func (p *ChatPage) renderDefaultUserMessageBlock(body string, width int) []chatRenderLine {
-	if width <= 0 {
-		return nil
-	}
-
-	backgroundStyle := p.theme.Element
-	boundaryStyle := styleWithBackgroundFrom(p.theme.Border, backgroundStyle)
-	boundary := strings.Repeat("─", width)
-	lines := []chatRenderLine{{Text: boundary, Style: boundaryStyle}}
-	for _, line := range styledWrapped("> ", "", body, width, backgroundStyle) {
-		padding := width - utf8.RuneCountInString(line.Text)
-		if padding > 0 {
-			line.Text += strings.Repeat(" ", padding)
-		}
-		lines = append(lines, line)
-	}
-	lines = append(lines, chatRenderLine{Text: boundary, Style: boundaryStyle})
-	return lines
 }
 
 func (p *ChatPage) renderAssistantMessageLines(message chatMessageItem, width int) []chatRenderLine {

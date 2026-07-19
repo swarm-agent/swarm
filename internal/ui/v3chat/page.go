@@ -26,6 +26,7 @@ const (
 type PageStyles struct {
 	Background tcell.Style
 	Panel      tcell.Style
+	Element    tcell.Style
 	Border     tcell.Style
 	Text       tcell.Style
 	Muted      tcell.Style
@@ -496,6 +497,12 @@ type renderRow struct {
 	style tcell.Style
 }
 
+func styleWithBackground(style, background tcell.Style) tcell.Style {
+	foreground, _, attributes := style.Decompose()
+	_, backgroundColor, _ := background.Decompose()
+	return tcell.StyleDefault.Foreground(foreground).Background(backgroundColor).Attributes(attributes)
+}
+
 func (p *Page) Draw(screen tcell.Screen) {
 	p.DrawAt(screen, time.Now())
 }
@@ -882,26 +889,20 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 	rows := make([]renderRow, 0, len(state.Messages)*3+len(state.Pending)*2+len(state.Live)*2)
 	messages := SelectMessages(state)
 	for _, message := range messages {
-		style := styles.Text
-		label := "assistant"
 		if strings.EqualFold(message.Role, "user") {
-			style = styles.Primary
-			label = "you"
+			rows = append(rows, p.renderUserRows("message:"+message.ID, message.Content, width, styles)...)
+			continue
 		}
-		rows = append(rows, renderRow{text: label, style: style.Bold(true)})
+		rows = append(rows, renderRow{text: "assistant", style: styles.Text.Bold(true)})
 		for _, line := range p.cachedWrap("message:"+message.ID, message.Content, width) {
-			rows = append(rows, renderRow{text: line, style: style})
+			rows = append(rows, renderRow{text: line, style: styles.Text})
 		}
-		rows = append(rows, renderRow{text: "", style: style})
+		rows = append(rows, renderRow{text: "", style: styles.Text})
 	}
 	pending := SelectPending(state)
 	sort.SliceStable(pending, func(i, j int) bool { return pending[i].ID < pending[j].ID })
 	for _, message := range pending {
-		rows = append(rows, renderRow{text: "you • sending", style: styles.Warning.Bold(true)})
-		for _, line := range p.cachedWrap("pending:"+message.ID, message.Content, width) {
-			rows = append(rows, renderRow{text: line, style: styles.Text})
-		}
-		rows = append(rows, renderRow{text: "", style: styles.Text})
+		rows = append(rows, p.renderUserRows("pending:"+message.ID, message.Content, width, styles)...)
 	}
 	live := SelectLiveSegments(state)
 	sort.SliceStable(live, func(i, j int) bool { return live[i].StreamID < live[j].StreamID })
@@ -911,6 +912,25 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 			rows = append(rows, renderRow{text: line, style: styles.Text})
 		}
 	}
+	return rows
+}
+
+func (p *Page) renderUserRows(key, content string, width int, styles PageStyles) []renderRow {
+	if width <= 0 {
+		return nil
+	}
+	rowStyle := styleWithBackground(styles.Text, styles.Element)
+	lines := p.cachedWrap(key, content, maxInt(1, width-2))
+	rows := make([]renderRow, 0, len(lines)+2)
+	rows = append(rows, renderRow{text: strings.Repeat("─", width), style: styleWithBackground(styles.Border, styles.Element)})
+	for i, line := range lines {
+		prefix := "  "
+		if i == 0 {
+			prefix = "> "
+		}
+		rows = append(rows, renderRow{text: prefix + line + strings.Repeat(" ", maxInt(0, width-2-utf8.RuneCountInString(line))), style: rowStyle})
+	}
+	rows = append(rows, renderRow{text: strings.Repeat("─", width), style: styleWithBackground(styles.Border, styles.Element)})
 	return rows
 }
 
