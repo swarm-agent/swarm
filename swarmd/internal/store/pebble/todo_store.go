@@ -18,7 +18,9 @@ const (
 	WorkspaceTodoAIStateQueued     = "queued"
 	WorkspaceTodoAIStatePreparing  = "preparing"
 	WorkspaceTodoAIStateInProgress = "in_progress"
+	WorkspaceTodoAIStateCompleted  = "completed"
 	WorkspaceTodoAIStateFailed     = "failed"
+	WorkspaceTodoAIStateCancelled  = "cancelled"
 )
 
 type WorkspaceTodoOwnerSummary struct {
@@ -43,6 +45,8 @@ type WorkspaceTodoItem struct {
 	AIMode               string   `json:"ai_mode,omitempty"`
 	AIWorktree           bool     `json:"ai_worktree,omitempty"`
 	AIRequest            string   `json:"ai_request,omitempty"`
+	AIDisplayTitle       string   `json:"ai_display_title,omitempty"`
+	AIResult             string   `json:"ai_result,omitempty"`
 	AIError              string   `json:"ai_error,omitempty"`
 	ManagedSessionID     string   `json:"managed_session_id,omitempty"`
 	AccountScopeID       string   `json:"account_scope_id,omitempty"`
@@ -114,7 +118,9 @@ type AITaskTransitionStoreInput struct {
 	Mode                 string
 	Worktree             bool
 	ManagedSessionID     string
+	DisplayTitle         string
 	FinalRunID           string
+	Result               string
 	PreparationSessionID string
 	PreparationRunID     string
 	PreparationAttemptID string
@@ -299,8 +305,14 @@ func (s *WorkspaceTodoStore) TransitionAITask(input AITaskTransitionStoreInput) 
 	if value := strings.TrimSpace(input.ManagedSessionID); value != "" {
 		item.ManagedSessionID = value
 	}
+	if value := strings.TrimSpace(input.DisplayTitle); value != "" {
+		item.AIDisplayTitle = value
+	}
 	if value := strings.TrimSpace(input.FinalRunID); value != "" {
 		item.FinalRunID = value
+	}
+	if value := strings.TrimSpace(input.Result); value != "" {
+		item.AIResult = value
 	}
 	if value := strings.TrimSpace(input.PreparationSessionID); value != "" {
 		item.PreparationSessionID = value
@@ -313,6 +325,10 @@ func (s *WorkspaceTodoStore) TransitionAITask(input AITaskTransitionStoreInput) 
 	}
 	item.AIError, item.AIClaimedAt, item.UpdatedAt = strings.TrimSpace(input.Error), input.ClaimedAt, time.Now().UnixMilli()
 	item.InProgress = item.AIState == WorkspaceTodoAIStateInProgress
+	item.Done = item.AIState == WorkspaceTodoAIStateCompleted
+	if item.Done {
+		item.CompletedAt = item.UpdatedAt
+	}
 	input.Audit.AccountScopeID, input.Audit.TaskID = item.AccountScopeID, item.ID
 	input.Audit.State, input.Audit.StateVersion = item.AIState, item.AIStateVersion
 	input.Audit.AttemptID, input.Audit.PreparationSessionID, input.Audit.PreparationRunID = item.PreparationAttemptID, item.PreparationSessionID, item.PreparationRunID
@@ -337,6 +353,30 @@ func (s *WorkspaceTodoStore) TransitionAITask(input AITaskTransitionStoreInput) 
 		return WorkspaceTodoItem{}, err
 	}
 	return item, nil
+}
+
+func (s *WorkspaceTodoStore) ListAITasksForAccount(accountScopeID string, limit int) ([]WorkspaceTodoItem, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, fmt.Errorf("account scope id is required")
+	}
+	if limit <= 0 || limit > 10000 {
+		limit = 1000
+	}
+	out := make([]WorkspaceTodoItem, 0, minWorkspaceTodoInt(limit, 100))
+	err := s.store.IteratePrefix(KeyWorkspaceTodoItemAccountPrefix+keyPart(accountScopeID)+"/", limit, func(_ string, value []byte) error {
+		var item WorkspaceTodoItem
+		if err := json.Unmarshal(value, &item); err != nil {
+			return err
+		}
+		item = normalizeWorkspaceTodoItem(item)
+		if item.AccountScopeID == accountScopeID && item.AIState != "" {
+			out = append(out, item)
+		}
+		return nil
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
+	return out, err
 }
 
 func (s *WorkspaceTodoStore) TerminalizeLegacyActiveAITasks(limit int) (int, error) {
@@ -644,7 +684,8 @@ func mergeAITaskAuthority(candidate, current WorkspaceTodoItem) WorkspaceTodoIte
 	}
 	candidate.AccountScopeID, candidate.UserID, candidate.WorkspaceID, candidate.WorkspacePath = current.AccountScopeID, current.UserID, current.WorkspaceID, current.WorkspacePath
 	candidate.OriginSessionID, candidate.AIState, candidate.AIMode, candidate.AIWorktree = current.OriginSessionID, current.AIState, current.AIMode, current.AIWorktree
-	candidate.AIRequest, candidate.AIError, candidate.ManagedSessionID, candidate.FinalRunID = current.AIRequest, current.AIError, current.ManagedSessionID, current.FinalRunID
+	candidate.AIRequest, candidate.AIDisplayTitle, candidate.AIResult, candidate.AIError = current.AIRequest, current.AIDisplayTitle, current.AIResult, current.AIError
+	candidate.ManagedSessionID, candidate.FinalRunID = current.ManagedSessionID, current.FinalRunID
 	candidate.PreparationSessionID, candidate.PreparationRunID, candidate.PreparationAttemptID = current.PreparationSessionID, current.PreparationRunID, current.PreparationAttemptID
 	candidate.AIIdempotencyKeyHash, candidate.AIRequestHash, candidate.AIStateVersion, candidate.AIClaimedAt = current.AIIdempotencyKeyHash, current.AIRequestHash, current.AIStateVersion, current.AIClaimedAt
 	candidate.InProgress = current.InProgress
@@ -677,6 +718,8 @@ func normalizeWorkspaceTodoItem(item WorkspaceTodoItem) WorkspaceTodoItem {
 	item.AIState = NormalizeWorkspaceTodoAIState(item.AIState)
 	item.AIMode = strings.ToLower(strings.TrimSpace(item.AIMode))
 	item.AIRequest = strings.TrimSpace(item.AIRequest)
+	item.AIDisplayTitle = strings.TrimSpace(item.AIDisplayTitle)
+	item.AIResult = strings.TrimSpace(item.AIResult)
 	item.AIError = strings.TrimSpace(item.AIError)
 	item.ManagedSessionID = strings.TrimSpace(item.ManagedSessionID)
 	if item.OwnerKind == WorkspaceTodoOwnerKindAgent {
@@ -715,7 +758,7 @@ func normalizeWorkspaceTodoItem(item WorkspaceTodoItem) WorkspaceTodoItem {
 
 func NormalizeWorkspaceTodoAIState(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case WorkspaceTodoAIStateQueued, WorkspaceTodoAIStatePreparing, WorkspaceTodoAIStateInProgress, WorkspaceTodoAIStateFailed:
+	case WorkspaceTodoAIStateQueued, WorkspaceTodoAIStatePreparing, WorkspaceTodoAIStateInProgress, WorkspaceTodoAIStateCompleted, WorkspaceTodoAIStateFailed, WorkspaceTodoAIStateCancelled:
 		return strings.ToLower(strings.TrimSpace(raw))
 	default:
 		return ""

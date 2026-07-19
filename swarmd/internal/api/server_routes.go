@@ -110,6 +110,7 @@ func (s *Server) registerWorkspaceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/workspace/theme", s.handleWorkspaceTheme)
 	mux.HandleFunc("/v1/workspace/rename", s.handleWorkspaceRename)
 	mux.HandleFunc("/v1/workspace/move", s.handleWorkspaceMove)
+	mux.HandleFunc("/v1/workspace/todos", s.handleWorkspaceTodos)
 	mux.HandleFunc("/v1/workspace/git/status", s.handleGitStatus)
 	mux.HandleFunc("/v1/workspace/git/commit", s.handleGitCommit)
 	mux.HandleFunc("/v1/workspace/git/realtime", s.handleGitRealtime)

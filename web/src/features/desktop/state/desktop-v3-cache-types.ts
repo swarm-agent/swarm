@@ -1,6 +1,7 @@
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
 import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../chat/types/chat'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
+import type { WorkspaceTodoItem } from '../../workspaces/todos/types'
 
 export type SyncSelectorKind = '' | 'global' | 'recent' | 'session_ids' | 'workspace' | 'tui'
 
@@ -40,6 +41,7 @@ export interface SyncResources {
   permission_summaries?: boolean
   notifications?: boolean
   notification_summary?: boolean
+  tasks?: boolean
 }
 
 export interface KnownSessionState {
@@ -299,6 +301,27 @@ export interface DesktopNotificationWire {
   updatedAt?: unknown
 }
 
+export interface DesktopAITaskLifecycleWire {
+  task_id?: unknown
+  account_scope_id?: unknown
+  user_id?: unknown
+  workspace_id?: unknown
+  workspace_path?: unknown
+  request_title?: unknown
+  display_title?: unknown
+  state?: unknown
+  version?: unknown
+  managed_session_id?: unknown
+  managed_run_id?: unknown
+  preparation_session_id?: unknown
+  preparation_run_id?: unknown
+  created_at?: unknown
+  updated_at?: unknown
+  completed_at?: unknown
+  result?: unknown
+  error?: unknown
+}
+
 export interface DesktopNotificationSummaryWire {
   account_scope_id?: unknown
   accountScopeID?: unknown
@@ -327,6 +350,7 @@ export interface SyncSnapshotResponse {
   permission_summaries_by_session?: Record<string, DesktopPermissionSummaryWire>
   notifications?: DesktopNotificationWire[]
   notification_summary?: DesktopNotificationSummaryWire
+  tasks?: DesktopAITaskLifecycleWire[]
   active_session_ids?: string[]
   session_views_by_id?: Record<string, DesktopV3SessionView>
   realtime?: V3RealtimeBootstrap
@@ -349,6 +373,7 @@ export interface SyncStreamEvent {
   event_type: string
   event: V3SessionEvent
   projection: V3SessionProjection
+  task?: DesktopAITaskLifecycleWire
   notification?: DesktopNotificationWire
   notification_summary?: DesktopNotificationSummaryWire
 }
@@ -405,6 +430,7 @@ export interface SessionsReconnectResponse {
   permission_summaries_by_session?: Record<string, DesktopPermissionSummaryWire>
   notifications?: DesktopNotificationWire[]
   notification_summary?: DesktopNotificationSummaryWire
+  tasks?: DesktopAITaskLifecycleWire[]
   active_session_ids?: string[]
   session_views_by_id?: Record<string, DesktopV3SessionView>
   subscriptions: ReconnectSubscription[]
@@ -453,6 +479,7 @@ export type RealtimeKind =
   | 'slow_consumer.reconnect_required'
   | 'live.patch'
   | 'notification.resource.updated'
+  | 'task.lifecycle.updated'
 
 export interface RealtimeMessage {
   protocol?: 'v3.realtime' | string
@@ -477,6 +504,7 @@ export interface RealtimeMessage {
   permission_summary?: DesktopPermissionSummaryWire
   notification?: DesktopNotificationWire
   notification_summary?: DesktopNotificationSummaryWire
+  task?: DesktopAITaskLifecycleWire
   workset_subscription_id?: string
   auto_subscribed?: boolean
   projection?: V3SessionProjection
@@ -840,6 +868,7 @@ export interface DesktopV3CacheState {
   permissionSummaryBySessionId: Record<string, DesktopPermissionSummary>
   notificationsById: Record<string, DesktopNotificationCenterRecord>
   notificationSummary: DesktopNotificationSummary
+  aiTasksById: Record<string, WorkspaceTodoItem>
   usageBySession: Record<string, unknown>
   preferencesBySession: Record<string, unknown>
   agentModelPolicyBySession: Record<string, unknown>
@@ -860,6 +889,7 @@ export interface CacheEvent {
   payload: SessionEventPayload
   notification?: DesktopNotificationWire
   notificationSummary?: DesktopNotificationSummaryWire
+  task?: DesktopAITaskLifecycleWire
 }
 
 export type DesktopV3CacheAction =
@@ -876,6 +906,8 @@ export type DesktopV3CacheAction =
   | { type: 'realtime.storeResume'; streamPath: '/v3/realtime/stream'; resume: RealtimeMessage }
   | { type: 'realtime.applyEvent'; event: CacheEvent; endpointCursor?: string; durabilityCommitted?: boolean }
   | { type: 'realtime.applyNotificationResource'; frame: RealtimeMessage }
+  | { type: 'realtime.applyAITaskResource'; frame: RealtimeMessage }
+  | { type: 'aiTasks.mergeItems'; items: WorkspaceTodoItem[] }
   | { type: 'realtime.applyLivePatchBatch'; patches: SessionV3RealtimeLivePatchWire[] }
   | { type: 'permission.resolveResult'; sessionId: string; permissionId: string; permission: DesktopPermissionRecord | null }
   | { type: 'planSnapshot.apply'; sessionId: string; hasActivePlan: boolean; activePlan: DesktopSessionPlanRecord | null; planRevisions: DesktopSessionPlanRevisionRecord[] }

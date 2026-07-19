@@ -68,6 +68,7 @@ type sessionsV3WorksetResources struct {
 	PermissionSummaries bool `json:"permission_summaries,omitempty"`
 	Notifications       bool `json:"notifications,omitempty"`
 	NotificationSummary bool `json:"notification_summary,omitempty"`
+	Tasks               bool `json:"tasks,omitempty"`
 	ActivePlan          bool `json:"active_plan,omitempty"`
 	PlanRevisions       bool `json:"plan_revisions,omitempty"`
 }

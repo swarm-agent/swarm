@@ -4462,6 +4462,42 @@ test('Desktop V3 live patch path copies only affected references', () => {
   assert.equal(next.liveRunsBySession[sessionA.id][runIntentA.run_id].assistantDraft?.content, 'x')
 })
 
+test('task lifecycle realtime frame maps to the dedicated cache action', () => {
+  const actions = realtimeFrameToActions({ kind: 'task.lifecycle.updated', endpoint_cursor: 'cursor-task', task: { task_id: 'task-1' } })
+  assert.equal(actions.length, 1)
+  assert.equal(actions[0]?.type, 'realtime.applyAITaskResource')
+})
+
+test('task lifecycle resource merges monotonically from bootstrap and realtime frames', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const snapshot = snapshotFixture({
+    sync_scope: { ...snapshotFixture().sync_scope, resource_set: 'tasks' },
+    tasks: [{ task_id: 'task-1', workspace_path: '/repo', request_title: 'Ship it', state: 'in_progress', version: 3, updated_at: 30 }],
+  })
+  desktopV3CacheReducer(state, bootstrapResponseToAction(snapshot))
+  assert.equal(state.aiTasksById['task-1']?.aiState, 'in_progress')
+
+  desktopV3CacheReducer(state, {
+    type: 'realtime.applyAITaskResource',
+    frame: { kind: 'task.lifecycle.updated', endpoint_cursor: 'cursor-4', task: { task_id: 'task-1', workspace_path: '/repo', request_title: 'Ship it', state: 'preparing', version: 2, updated_at: 20 } },
+  })
+  assert.equal(state.aiTasksById['task-1']?.aiState, 'in_progress')
+
+  desktopV3CacheReducer(state, {
+    type: 'realtime.applyAITaskResource',
+    frame: { kind: 'task.lifecycle.updated', endpoint_cursor: 'cursor-5', task: { task_id: 'task-1', workspace_path: '/repo', request_title: 'Ship it', display_title: 'Prepared title', state: 'completed', version: 4, updated_at: 40 } },
+  })
+  assert.equal(state.aiTasksById['task-1']?.aiState, 'completed')
+  assert.equal(state.aiTasksById['task-1']?.aiDisplayTitle, 'Prepared title')
+
+  desktopV3CacheReducer(state, {
+    type: 'realtime.applyAITaskResource',
+    frame: { kind: 'task.lifecycle.updated', endpoint_cursor: 'cursor-6', task: { task_id: 'task-1', workspace_path: '/repo', request_title: 'Ship it', state: 'failed', version: 3, updated_at: 50, error: 'late stale failure' } },
+  })
+  assert.equal(state.aiTasksById['task-1']?.aiState, 'completed')
+  assert.equal(state.aiTasksById['task-1']?.aiDisplayTitle, 'Prepared title')
+})
+
 function livePatchFixture(overrides: Partial<SessionV3RealtimeLivePatchWire> = {}): SessionV3RealtimeLivePatchWire {
   const text = overrides.text ?? 'x'
   const offsetStart = overrides.offset_start ?? 0

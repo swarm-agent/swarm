@@ -2,6 +2,7 @@ import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopS
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
 import { safeString } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopPermissionSummary, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
+import type { WorkspaceTodoItem } from '../../workspaces/todos/types'
 import { isDesktopV3NavigationHiddenRecord, isDesktopV3NavigationHiddenSession } from './desktop-v3-session-visibility'
 
 export type DesktopV3SidebarRowType = 'plan_session' | 'single_chat'
@@ -179,6 +180,13 @@ function positiveNumber(value: unknown): number {
 
 function finiteOptionalNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+export function selectWorkspaceAITasks(state: DesktopV3CacheState, workspacePath?: string): WorkspaceTodoItem[] {
+  const normalizedPath = workspacePath?.trim()
+  return Object.values(state.aiTasksById)
+    .filter((task) => !normalizedPath || task.workspacePath === normalizedPath)
+    .sort((left, right) => left.sortIndex - right.sortIndex || right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))
 }
 
 export function selectOrderedNotifications(state: DesktopV3CacheState): DesktopNotificationCenterRecord[] {

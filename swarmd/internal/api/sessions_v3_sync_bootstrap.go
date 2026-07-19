@@ -488,6 +488,7 @@ type sessionsV3SyncSnapshotResponseBody struct {
 	PermissionSummariesBySession map[string]sessionsV3PermissionSummary                   `json:"permission_summaries_by_session,omitempty"`
 	Notifications                []pebblestore.NotificationRecord                         `json:"notifications,omitempty"`
 	NotificationSummary          *pebblestore.NotificationSummary                         `json:"notification_summary,omitempty"`
+	Tasks                        []sessionsV3AITaskLifecyclePayload                       `json:"tasks,omitempty"`
 	ActiveSessionIDs             []string                                                 `json:"active_session_ids,omitempty"`
 	SessionViewsByID             map[string]sessionsV3SessionView                         `json:"session_views_by_id,omitempty"`
 	Realtime                     *sessionsV3RealtimeBootstrap                             `json:"realtime,omitempty"`
@@ -757,6 +758,7 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 		PermissionSummariesBySession: nil,
 		Notifications:                nil,
 		NotificationSummary:          nil,
+		Tasks:                        nil,
 		ActiveSessionIDs:             snapshot.ActiveSessionIDs,
 		SessionViewsByID:             nil,
 		HistoryManifestsBySession:    snapshot.HistoryManifestsBySession,
@@ -785,6 +787,16 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 	}
 	if permissionSummaries != nil {
 		response.PermissionSummariesBySession = sessionsV3PermissionSummariesVisibleInSnapshot(permissionSummaries, snapshot.SessionsByID)
+	}
+	if sessionsV3SyncResourcesInclude(resources, "tasks") && s.todos != nil {
+		items, err := s.todos.ListAITasksForAccount(options.Principal.AccountScopeID, 1000)
+		if err == nil {
+			for _, item := range items {
+				if item.UserID == options.Principal.UserID && sessionsV3AITaskMatchesSelector(item, selectorValue) {
+					response.Tasks = append(response.Tasks, newSessionsV3AITaskLifecyclePayload(item))
+				}
+			}
+		}
 	}
 	if sessionsV3SyncResourcesInclude(resources, "notifications") || sessionsV3SyncResourcesInclude(resources, "notification_summary") {
 		notifications, summary, err := s.sessionsV3NotificationResources(options.Principal, sessionsV3SyncResourcesInclude(resources, "notifications"), sessionsV3SyncResourcesInclude(resources, "notification_summary"))
@@ -1234,6 +1246,9 @@ func sessionsV3SyncResourceSet(resources sessionsV3WorksetResources, history ses
 	}
 	if resources.NotificationSummary {
 		out = append(out, "notification_summary")
+	}
+	if resources.Tasks {
+		out = append(out, "tasks")
 	}
 	if resources.ActivePlan {
 		out = append(out, "active_plan")

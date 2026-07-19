@@ -1,7 +1,9 @@
+import { requestJson } from '../../../app/api'
+
 export type WorkspaceTodoPriority = 'low' | 'medium' | 'high' | 'urgent'
 
 export type WorkspaceTodoOwnerKind = 'user' | 'agent'
-export type WorkspaceTodoAIState = 'queued' | 'preparing' | 'in_progress' | 'failed'
+export type WorkspaceTodoAIState = 'queued' | 'preparing' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
 
 export interface WorkspaceTodoOwnerSummary {
   taskCount: number
@@ -26,6 +28,8 @@ export interface WorkspaceTodoItem {
   aiWorktree: boolean
   aiRequest: string
   aiError: string
+  aiDisplayTitle: string
+  aiResult: string
   managedSessionId: string
   accountScopeId: string
   workspaceId: string
@@ -66,6 +70,8 @@ interface WorkspaceTodoItemWire {
   ai_worktree?: boolean
   ai_request?: string
   ai_error?: string
+  ai_display_title?: string
+  ai_result?: string
   managed_session_id?: string
   account_scope_id?: string
   workspace_id?: string
@@ -95,6 +101,25 @@ export interface WorkspaceTodoSummaryWire {
     open_count?: number
     in_progress_count?: number
   }
+}
+
+interface WorkspaceTodosResponseWire {
+  ok: boolean
+  workspace_path: string
+  items: WorkspaceTodoItemWire[]
+  summary: WorkspaceTodoSummaryWire
+}
+
+interface WorkspaceTodoMutationResponseWire {
+  ok: boolean
+  item?: WorkspaceTodoItemWire
+  items?: WorkspaceTodoItemWire[]
+  id?: string
+  summary: WorkspaceTodoSummaryWire
+}
+
+interface WorkspaceAITaskResponseWire extends WorkspaceTodoMutationResponseWire {
+  status?: string
 }
 
 export function createEmptyWorkspaceTodoOwnerSummary(): WorkspaceTodoOwnerSummary {
@@ -128,7 +153,7 @@ function normalizeOwnerKind(value: string | undefined): WorkspaceTodoOwnerKind {
 
 function normalizeAIState(value: string | undefined): WorkspaceTodoAIState | '' {
   const state = value?.trim().toLowerCase()
-  return state === 'queued' || state === 'preparing' || state === 'in_progress' || state === 'failed' ? state : ''
+  return state === 'queued' || state === 'preparing' || state === 'in_progress' || state === 'completed' || state === 'failed' || state === 'cancelled' ? state : ''
 }
 
 function mapWorkspaceTodoOwnerSummary(summary: WorkspaceTodoSummaryWire['user'] | undefined): WorkspaceTodoOwnerSummary {
@@ -157,6 +182,8 @@ export function mapWorkspaceTodoItem(item: WorkspaceTodoItemWire): WorkspaceTodo
     aiWorktree: Boolean(item.ai_worktree),
     aiRequest: (item.ai_request ?? '').trim(),
     aiError: (item.ai_error ?? '').trim(),
+    aiDisplayTitle: (item.ai_display_title ?? '').trim(),
+    aiResult: (item.ai_result ?? '').trim(),
     managedSessionId: (item.managed_session_id ?? '').trim(),
     accountScopeId: (item.account_scope_id ?? '').trim(),
     workspaceId: (item.workspace_id ?? '').trim(),
@@ -188,93 +215,71 @@ export function mapWorkspaceTodoSummary(summary: WorkspaceTodoSummaryWire | unde
   }
 }
 
-function workspaceTodosUnavailable(): never {
-  throw new Error('Workspace todos and /task are temporarily unavailable because the blocking workspace todo API was removed.')
-}
-
-export async function fetchWorkspaceTodos(_workspacePath: string, _ownerKind?: WorkspaceTodoOwnerKind, _sessionId?: string, _signal?: AbortSignal): Promise<{ items: WorkspaceTodoItem[]; summary: WorkspaceTodoSummary }> {
-  return workspaceTodosUnavailable()
+export async function fetchWorkspaceTodos(workspacePath: string, ownerKind?: WorkspaceTodoOwnerKind, sessionId?: string, signal?: AbortSignal): Promise<{ items: WorkspaceTodoItem[]; summary: WorkspaceTodoSummary }> {
+  const search = new URLSearchParams({ workspace_path: workspacePath })
+  if (ownerKind) search.set('owner_kind', ownerKind)
+  if (sessionId?.trim()) search.set('session_id', sessionId.trim())
+  const response = await requestJson<WorkspaceTodosResponseWire>(`/v1/workspace/todos?${search.toString()}`, { signal })
+  return { items: Array.isArray(response.items) ? response.items.map(mapWorkspaceTodoItem) : [], summary: mapWorkspaceTodoSummary(response.summary) }
 }
 
 export async function createWorkspaceAITask(workspacePath: string, request: string, idempotencyKey: string, originSessionId?: string): Promise<{ item: WorkspaceTodoItem; summary: WorkspaceTodoSummary; status: string }> {
   const normalizedRequest = request.trim()
-  if (!normalizedRequest) {
-    throw new Error('Enter a task request after /task.')
-  }
-  if (!idempotencyKey.trim()) {
-    throw new Error('AI task idempotency key is required')
-  }
-  void workspacePath
-  void originSessionId
-  return workspaceTodosUnavailable()
+  if (!normalizedRequest) throw new Error('Enter a task request after /task.')
+  if (!idempotencyKey.trim()) throw new Error('AI task idempotency key is required')
+  const response = await requestJson<WorkspaceAITaskResponseWire>('/v1/workspace/todos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey.trim() },
+    body: JSON.stringify({ action: 'ai_task', workspace_path: workspacePath, owner_kind: 'user', text: normalizedRequest, origin_session_id: originSessionId?.trim() || undefined }),
+  })
+  if (!response.item) throw new Error('AI task request returned no task')
+  return { item: mapWorkspaceTodoItem(response.item), summary: mapWorkspaceTodoSummary(response.summary), status: response.status?.trim() || 'queued' }
 }
 
-export async function createWorkspaceTodo(input: {
-  workspacePath: string
-  ownerKind?: WorkspaceTodoOwnerKind
-  text: string
-  priority?: WorkspaceTodoPriority
-  group?: string
-  tags?: string[]
-  inProgress?: boolean
-  sessionId?: string
-  parentId?: string
-}): Promise<{ item: WorkspaceTodoItem; summary: WorkspaceTodoSummary }> {
-  void input
-  return workspaceTodosUnavailable()
+export async function createWorkspaceTodo(input: { workspacePath: string; ownerKind?: WorkspaceTodoOwnerKind; text: string; priority?: WorkspaceTodoPriority; group?: string; tags?: string[]; inProgress?: boolean; sessionId?: string; parentId?: string }): Promise<{ item: WorkspaceTodoItem; summary: WorkspaceTodoSummary }> {
+  const response = await requestJson<WorkspaceTodoMutationResponseWire>('/v1/workspace/todos', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'create', workspace_path: input.workspacePath, owner_kind: input.ownerKind, text: input.text, priority: input.priority ?? 'medium', group: input.group ?? '', tags: input.tags ?? [], in_progress: Boolean(input.inProgress), session_id: input.sessionId, parent_id: input.parentId }),
+  })
+  if (!response.item) throw new Error('todo create returned no item')
+  return { item: mapWorkspaceTodoItem(response.item), summary: mapWorkspaceTodoSummary(response.summary) }
 }
 
-export async function updateWorkspaceTodo(input: {
-  workspacePath: string
-  ownerKind?: WorkspaceTodoOwnerKind
-  id: string
-  text?: string
-  done?: boolean
-  priority?: WorkspaceTodoPriority
-  group?: string
-  tags?: string[]
-  inProgress?: boolean
-  sessionId?: string
-  parentId?: string
-}): Promise<{ item: WorkspaceTodoItem; summary: WorkspaceTodoSummary }> {
-  void input
-  return workspaceTodosUnavailable()
+export async function updateWorkspaceTodo(input: { workspacePath: string; ownerKind?: WorkspaceTodoOwnerKind; id: string; text?: string; done?: boolean; priority?: WorkspaceTodoPriority; group?: string; tags?: string[]; inProgress?: boolean; sessionId?: string; parentId?: string }): Promise<{ item: WorkspaceTodoItem; summary: WorkspaceTodoSummary }> {
+  const response = await requestJson<WorkspaceTodoMutationResponseWire>('/v1/workspace/todos', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'update', workspace_path: input.workspacePath, id: input.id, owner_kind: input.ownerKind, text: input.text, done: input.done, priority: input.priority, group: input.group, tags: input.tags, in_progress: input.inProgress, session_id: input.sessionId, parent_id: input.parentId }),
+  })
+  if (!response.item) throw new Error('todo update returned no item')
+  return { item: mapWorkspaceTodoItem(response.item), summary: mapWorkspaceTodoSummary(response.summary) }
+}
+
+async function mutateWorkspaceTodos(body: Record<string, unknown>): Promise<WorkspaceTodoMutationResponseWire> {
+  return requestJson<WorkspaceTodoMutationResponseWire>('/v1/workspace/todos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 }
 
 export async function deleteWorkspaceTodo(workspacePath: string, id: string, ownerKind?: WorkspaceTodoOwnerKind, sessionId?: string): Promise<WorkspaceTodoSummary> {
-  void workspacePath
-  void id
-  void ownerKind
-  void sessionId
-  return workspaceTodosUnavailable()
+  const response = await mutateWorkspaceTodos({ action: 'delete', workspace_path: workspacePath, owner_kind: ownerKind, session_id: sessionId, id })
+  return mapWorkspaceTodoSummary(response.summary)
 }
 
 export async function deleteDoneWorkspaceTodos(workspacePath: string, ownerKind?: WorkspaceTodoOwnerKind, sessionId?: string): Promise<{ items: WorkspaceTodoItem[]; summary: WorkspaceTodoSummary }> {
-  void workspacePath
-  void ownerKind
-  void sessionId
-  return workspaceTodosUnavailable()
+  const response = await mutateWorkspaceTodos({ action: 'delete_done', workspace_path: workspacePath, owner_kind: ownerKind, session_id: sessionId })
+  return { items: Array.isArray(response.items) ? response.items.map(mapWorkspaceTodoItem) : [], summary: mapWorkspaceTodoSummary(response.summary) }
 }
 
 export async function deleteAllWorkspaceTodos(workspacePath: string, ownerKind?: WorkspaceTodoOwnerKind, sessionId?: string): Promise<{ items: WorkspaceTodoItem[]; summary: WorkspaceTodoSummary }> {
-  void workspacePath
-  void ownerKind
-  void sessionId
-  return workspaceTodosUnavailable()
+  const response = await mutateWorkspaceTodos({ action: 'delete_all', workspace_path: workspacePath, owner_kind: ownerKind, session_id: sessionId })
+  return { items: Array.isArray(response.items) ? response.items.map(mapWorkspaceTodoItem) : [], summary: mapWorkspaceTodoSummary(response.summary) }
 }
 
 export async function reorderWorkspaceTodos(workspacePath: string, orderedIDs: string[], ownerKind?: WorkspaceTodoOwnerKind, sessionId?: string): Promise<{ items: WorkspaceTodoItem[]; summary: WorkspaceTodoSummary }> {
-  void workspacePath
-  void orderedIDs
-  void ownerKind
-  void sessionId
-  return workspaceTodosUnavailable()
+  const response = await mutateWorkspaceTodos({ action: 'reorder', workspace_path: workspacePath, owner_kind: ownerKind, session_id: sessionId, ordered_ids: orderedIDs })
+  return { items: Array.isArray(response.items) ? response.items.map(mapWorkspaceTodoItem) : [], summary: mapWorkspaceTodoSummary(response.summary) }
 }
 
 export async function setWorkspaceTodoInProgress(workspacePath: string, id: string, ownerKind?: WorkspaceTodoOwnerKind, sessionId?: string): Promise<{ item: WorkspaceTodoItem; summary: WorkspaceTodoSummary }> {
-  void workspacePath
-  void id
-  void ownerKind
-  void sessionId
-  return workspaceTodosUnavailable()
+  const response = await mutateWorkspaceTodos({ action: 'in_progress', workspace_path: workspacePath, owner_kind: ownerKind, session_id: sessionId, id })
+  if (!response.item) throw new Error('todo in-progress returned no item')
+  return { item: mapWorkspaceTodoItem(response.item), summary: mapWorkspaceTodoSummary(response.summary) }
 }

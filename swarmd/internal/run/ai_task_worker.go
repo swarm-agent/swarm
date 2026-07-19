@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -16,6 +18,8 @@ import (
 
 const (
 	aiTaskMessagePageLimit  = 500
+	aiTaskQueueCapacity     = 128
+	aiTaskWorkerCount       = 1
 	aiTaskOriginContextOpen = "----- BEGIN DURABLE ORIGIN CONVERSATION -----"
 	aiTaskOriginContextEnd  = "----- END DURABLE ORIGIN CONVERSATION -----"
 	aiTaskRequestOpen       = "----- BEGIN TASK INSTRUCTION -----"
@@ -23,24 +27,177 @@ const (
 )
 
 type AITaskQueueTransition struct {
-	Item                                                                                                           pebblestore.WorkspaceTodoItem
-	ExpectedState, State, Mode                                                                                     string
-	Worktree                                                                                                       bool
-	ManagedSessionID, FinalRunID, PreparationSessionID, PreparationRunID, PreparationAttemptID, Error, Disposition string
+	Item                                                                                                                                 pebblestore.WorkspaceTodoItem
+	ExpectedState, State, Mode                                                                                                           string
+	Worktree                                                                                                                             bool
+	ManagedSessionID, DisplayTitle, FinalRunID, Result, PreparationSessionID, PreparationRunID, PreparationAttemptID, Error, Disposition string
 }
 
-type AITaskQueue interface {
-	GetAITask(accountScopeID, workspacePath, taskID string) (pebblestore.WorkspaceTodoItem, bool, error)
+// AITaskLifecycleWriter is the durable write/read-model side of task execution.
+// Implementations persist lifecycle and audit records, but never schedule work.
+type AITaskLifecycleWriter interface {
 	TransitionAITask(AITaskQueueTransition) (pebblestore.WorkspaceTodoItem, error)
 	AppendAITaskAudit(accountScopeID, workspacePath, taskID string, record pebblestore.AITaskAuditRecord) error
 }
 
-func (s *Service) runClaimedAITask(ctx context.Context, queue AITaskQueue, task pebblestore.WorkspaceTodoItem, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
+// AITaskJob is the immutable, complete trusted payload accepted by the request
+// path and dispatched only through the in-memory queue.
+type AITaskJob struct {
+	Task pebblestore.WorkspaceTodoItem
+}
+
+func NewAITaskJob(item pebblestore.WorkspaceTodoItem) (AITaskJob, error) {
+	item.ID = strings.TrimSpace(item.ID)
+	item.AccountScopeID = strings.TrimSpace(item.AccountScopeID)
+	item.UserID = strings.TrimSpace(item.UserID)
+	item.WorkspaceID = strings.TrimSpace(item.WorkspaceID)
+	item.WorkspacePath = strings.TrimSpace(item.WorkspacePath)
+	item.AIRequest = strings.TrimSpace(item.AIRequest)
+	item.Tags = append([]string(nil), item.Tags...)
+	if item.ID == "" || item.AccountScopeID == "" || item.UserID == "" || item.WorkspaceID == "" || item.WorkspacePath == "" || item.AIRequest == "" {
+		return AITaskJob{}, errors.New("AI task job requires complete trusted task payload")
+	}
+	if item.AIState != pebblestore.WorkspaceTodoAIStateQueued {
+		return AITaskJob{}, fmt.Errorf("AI task job state %q is not queued", item.AIState)
+	}
+	return AITaskJob{Task: item}, nil
+}
+
+// AITaskDispatcher is the always-on in-memory scheduling authority. Accepted
+// immutable jobs enter its bounded channel directly; Pebble never wakes workers.
+type AITaskDispatcher struct {
+	service   *Service
+	lifecycle AITaskLifecycleWriter
+	apply     func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
+	jobs      chan AITaskJob
+	done      chan struct{}
+	wg        sync.WaitGroup
+	mu        sync.Mutex
+	inflight  map[string]struct{}
+	closed    bool
+}
+
+func (s *Service) StartAITaskDispatcher(ctx context.Context, lifecycle AITaskLifecycleWriter, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) *AITaskDispatcher {
+	d := &AITaskDispatcher{
+		service: s, lifecycle: lifecycle, apply: apply,
+		jobs: make(chan AITaskJob, aiTaskQueueCapacity), done: make(chan struct{}),
+		inflight: make(map[string]struct{}),
+	}
+	for i := 0; i < aiTaskWorkerCount; i++ {
+		d.wg.Add(1)
+		go d.worker(ctx)
+	}
+	return d
+}
+
+// Enqueue accepts a complete task payload without reading durable state. It is
+// deliberately non-blocking so queue saturation is reported to the caller.
+func (d *AITaskDispatcher) Enqueue(item pebblestore.WorkspaceTodoItem) bool {
+	job, err := NewAITaskJob(item)
+	if err != nil {
+		return false
+	}
+	return d.EnqueueJob(job)
+}
+
+func (d *AITaskDispatcher) EnqueueJob(job AITaskJob) bool {
+	if d == nil {
+		return false
+	}
+	key := aiTaskJobKey(job.Task)
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return false
+	}
+	if _, exists := d.inflight[key]; exists {
+		d.mu.Unlock()
+		return true
+	}
+	d.inflight[key] = struct{}{}
+	select {
+	case d.jobs <- job:
+		d.mu.Unlock()
+		return true
+	default:
+		delete(d.inflight, key)
+		d.mu.Unlock()
+		return false
+	}
+}
+
+// Close stops admission and workers, then waits for deterministic worker exit.
+// It is idempotent and does not silently accept jobs after shutdown.
+func (d *AITaskDispatcher) Close() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	if !d.closed {
+		d.closed = true
+		close(d.done)
+	}
+	d.mu.Unlock()
+	d.wg.Wait()
+}
+
+func (d *AITaskDispatcher) Wait() {
+	if d != nil {
+		d.wg.Wait()
+	}
+}
+
+func (d *AITaskDispatcher) worker(ctx context.Context) {
+	defer d.wg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-d.done:
+			return
+		case job := <-d.jobs:
+			if ctx.Err() != nil {
+				d.release(job)
+				return
+			}
+			d.process(ctx, job)
+			d.release(job)
+		}
+	}
+}
+
+func (d *AITaskDispatcher) release(job AITaskJob) {
+	d.mu.Lock()
+	delete(d.inflight, aiTaskJobKey(job.Task))
+	d.mu.Unlock()
+}
+
+func (d *AITaskDispatcher) process(ctx context.Context, job AITaskJob) {
+	item := job.Task
+	attemptID := fmt.Sprintf("ai-task-attempt:%s:%d", item.ID, item.AIStateVersion)
+	prepSessionID := deterministicAITaskID(item.AccountScopeID, item.WorkspaceID, item.ID, "preparation-session")
+	prepRunID := "ai-task-preparation-run:" + deterministicAITaskID(item.AccountScopeID, item.WorkspaceID, item.ID, fmt.Sprintf("attempt-%d", item.AIStateVersion))
+	claimed, err := d.lifecycle.TransitionAITask(AITaskQueueTransition{Item: item, ExpectedState: pebblestore.WorkspaceTodoAIStateQueued, State: pebblestore.WorkspaceTodoAIStatePreparing, PreparationSessionID: prepSessionID, PreparationRunID: prepRunID, PreparationAttemptID: attemptID, Disposition: "claimed"})
+	if err != nil {
+		log.Printf("AI task %s claim failed: %v", item.ID, err)
+		return
+	}
+	item = claimed
+	if err := d.service.runClaimedAITask(ctx, d.lifecycle, item, d.apply); err != nil && ctx.Err() == nil {
+		log.Printf("AI task %s execution failed: %v", item.ID, err)
+	}
+}
+
+func aiTaskJobKey(item pebblestore.WorkspaceTodoItem) string {
+	return strings.TrimSpace(item.AccountScopeID) + "\x00" + strings.TrimSpace(item.ID)
+}
+
+func (s *Service) runClaimedAITask(ctx context.Context, queue AITaskLifecycleWriter, task pebblestore.WorkspaceTodoItem, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
 	if task.AIState != pebblestore.WorkspaceTodoAIStatePreparing {
 		return fmt.Errorf("AI task must already be preparing")
 	}
 	if apply == nil {
-		return errors.New("AI task requires canonical V3 mutation publisher")
+		return terminalizeAITask(queue, task, errors.New("AI task requires canonical V3 mutation publisher"))
 	}
 	profile, err := s.ResolveAITaskPreparer(task.AccountScopeID)
 	if err != nil {
@@ -180,7 +337,7 @@ func formatAITaskPreparationPrompt(messages []pebblestore.MessageSnapshot, reque
 	return b.String()
 }
 
-func terminalizeAITask(queue AITaskQueue, task pebblestore.WorkspaceTodoItem, err error) error {
+func terminalizeAITask(queue AITaskLifecycleWriter, task pebblestore.WorkspaceTodoItem, err error) error {
 	message := sanitizeAITaskError(err.Error())
 	_, transitionErr := queue.TransitionAITask(AITaskQueueTransition{Item: task, ExpectedState: task.AIState, State: pebblestore.WorkspaceTodoAIStateFailed, Mode: task.AIMode, Worktree: task.AIWorktree, ManagedSessionID: task.ManagedSessionID, Error: message, Disposition: "failed"})
 	if transitionErr != nil {

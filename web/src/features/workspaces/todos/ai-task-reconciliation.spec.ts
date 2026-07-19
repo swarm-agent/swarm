@@ -7,7 +7,7 @@ function task(patch: Partial<WorkspaceTodoItem> = {}): WorkspaceTodoItem {
   return {
     id: 'task-1', workspacePath: '/workspace', ownerKind: 'user', text: 'ship it', done: false,
     priority: 'medium', group: '', tags: [], inProgress: false, sessionId: '', parentId: '',
-    aiState: 'queued', aiMode: '', aiWorktree: false, aiRequest: 'ship it', aiError: '',
+    aiState: 'queued', aiMode: '', aiWorktree: false, aiRequest: 'ship it', aiError: '', aiDisplayTitle: '', aiResult: '',
     managedSessionId: '', accountScopeId: 'acct-1', workspaceId: 'workspace-1', originSessionId: '',
     preparationSessionId: '', preparationRunId: '', preparationAttemptId: '', finalRunId: '',
     aiStateVersion: 1, sortIndex: 0, createdAt: 1, updatedAt: 1, completedAt: 0,

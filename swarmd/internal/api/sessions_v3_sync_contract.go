@@ -100,6 +100,7 @@ var V3SyncRequiredResponseSemantics = []string{
 	"resources",
 	"notifications",
 	"notification_summary",
+	"tasks",
 	"plans",
 	"replay_instructions",
 }

@@ -35,6 +35,8 @@ import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktop
 import { normalizeDesktopSessionPlan } from '../chat/services/session-plan-record'
 import { decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
 import { isDesktopV3NavigationHiddenRecord } from './desktop-v3-session-visibility'
+import { mergeWorkspaceAITaskMonotonic } from '../../workspaces/todos/ai-task-reconciliation'
+import type { WorkspaceTodoAIState, WorkspaceTodoItem } from '../../workspaces/todos/types'
 
 export const DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS = 5
 
@@ -92,6 +94,7 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     permissionSummaryBySessionId: {},
     notificationsById: {},
     notificationSummary: { ...EMPTY_NOTIFICATION_SUMMARY },
+    aiTasksById: {},
     usageBySession: {},
     preferencesBySession: {},
     agentModelPolicyBySession: {},
@@ -159,6 +162,15 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       if (action.frame.endpoint_cursor) {
         state.realtime.endpointCursor = action.frame.endpoint_cursor
       }
+      return state
+    case 'realtime.applyAITaskResource':
+      applyAITaskResourceFrame(state, action.frame)
+      if (action.frame.endpoint_cursor) {
+        state.realtime.endpointCursor = action.frame.endpoint_cursor
+      }
+      return state
+    case 'aiTasks.mergeItems':
+      mergeAITaskItems(state, action.items)
       return state
     case 'realtime.applyLivePatchBatch':
       return applyDesktopV3LivePatchBatch(state, action.patches)
@@ -389,6 +401,7 @@ export function applySnapshot(
   }
   mergeSnapshotResources(state, snapshot, snapshot.scope_id)
   applyNotificationsFromSyncSnapshot(state, snapshot)
+  applyAITasksFromSyncSnapshot(state, snapshot)
   applyPermissionSummariesFromSyncSnapshot(state, snapshot)
   if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'messages')) {
     applyMessagesBySessionFromSnapshot(state, snapshot.messages_by_session)
@@ -677,6 +690,9 @@ export function applyReconnectSnapshot(
       replaceSummary: resources.has('notification_summary'),
     })
   }
+  if (resources.has('tasks')) {
+    mergeAITaskWireItems(state, raw.tasks)
+  }
   if (resources.has('active_plan')) {
     applySessionViews(state, raw.session_views_by_id, authoritativeSessionIds, { clearMissing: false })
   }
@@ -744,6 +760,11 @@ export function applyRealtimeFrame(
 
     case 'notification.resource.updated':
       applyNotificationResourceFrame(state, frame)
+      state.realtime.endpointCursor = frame.endpoint_cursor
+      return state
+
+    case 'task.lifecycle.updated':
+      applyAITaskResourceFrame(state, frame)
       state.realtime.endpointCursor = frame.endpoint_cursor
       return state
 
@@ -1176,6 +1197,10 @@ export function applyCacheEvent(
   applyPermissionSummaryEvent(state, event)
   applyPermissionEvent(state, event)
   applyNotificationResourceEvent(state, event)
+  if (event.eventType === 'task.lifecycle.updated') {
+    const task = normalizeDesktopAITask(event.task)
+    if (task) mergeAITaskItems(state, [task])
+  }
 
   if (payload.tombstone || eventType === 'session.deleted') {
     applyTombstone(state, sessionId, payload.tombstone)
@@ -1325,6 +1350,83 @@ function applyNotificationResourceFrame(state: DesktopV3CacheState, frame: Realt
   const deleted = numberValue(recordValue(eventPayload)?.deleted)
   if (payloadEventType === 'notification.cleared' || (deleted > 0 && !frame.notification)) {
     state.notificationsById = {}
+  }
+}
+
+function applyAITaskResourceFrame(state: DesktopV3CacheState, frame: RealtimeMessage): void {
+  const task = normalizeDesktopAITask(frame.task)
+  if (task) mergeAITaskItems(state, [task])
+}
+
+function applyAITasksFromSyncSnapshot(state: DesktopV3CacheState, snapshot: SyncSnapshotResponse): void {
+  if (!syncResourceSetContains(snapshot.sync_scope.resource_set, 'tasks')) return
+  mergeAITaskWireItems(state, snapshot.tasks)
+}
+
+function mergeAITaskWireItems(state: DesktopV3CacheState, items: SyncSnapshotResponse['tasks']): void {
+  for (const raw of items ?? []) {
+    const task = normalizeDesktopAITask(raw)
+    if (task) mergeAITaskItems(state, [task])
+  }
+}
+
+function mergeAITaskItems(state: DesktopV3CacheState, items: WorkspaceTodoItem[]): void {
+  let next = state.aiTasksById
+  let changed = false
+  for (const incoming of items) {
+    if (!incoming.id || !incoming.aiState) continue
+    const current = next[incoming.id]
+    const merged = mergeWorkspaceAITaskMonotonic(current, incoming)
+    if (merged === current) continue
+    if (!changed) {
+      next = { ...next }
+      changed = true
+    }
+    next[incoming.id] = merged
+  }
+  if (changed) state.aiTasksById = next
+}
+
+function normalizeDesktopAITask(raw: RealtimeMessage['task']): WorkspaceTodoItem | undefined {
+  const id = stringField(raw?.task_id)
+  const workspacePath = stringField(raw?.workspace_path)
+  const aiState = stringField(raw?.state) as WorkspaceTodoAIState
+  if (!id || !workspacePath || !['queued', 'preparing', 'in_progress', 'completed', 'failed', 'cancelled'].includes(aiState)) return undefined
+  const createdAt = numberValue(raw?.created_at)
+  const updatedAt = numberValue(raw?.updated_at)
+  const requestTitle = stringValue(raw?.request_title)
+  return {
+    id,
+    workspacePath,
+    ownerKind: 'user',
+    text: requestTitle,
+    done: aiState === 'completed',
+    priority: 'medium',
+    group: '',
+    tags: [],
+    inProgress: aiState === 'in_progress',
+    sessionId: '',
+    parentId: '',
+    aiState,
+    aiMode: '',
+    aiWorktree: false,
+    aiRequest: requestTitle,
+    aiError: stringValue(raw?.error),
+    aiDisplayTitle: stringValue(raw?.display_title),
+    aiResult: stringValue(raw?.result),
+    managedSessionId: stringValue(raw?.managed_session_id),
+    accountScopeId: stringValue(raw?.account_scope_id),
+    workspaceId: stringValue(raw?.workspace_id),
+    originSessionId: '',
+    preparationSessionId: stringValue(raw?.preparation_session_id),
+    preparationRunId: stringValue(raw?.preparation_run_id),
+    preparationAttemptId: '',
+    finalRunId: stringValue(raw?.managed_run_id),
+    aiStateVersion: numberValue(raw?.version),
+    sortIndex: 0,
+    createdAt,
+    updatedAt,
+    completedAt: numberValue(raw?.completed_at),
   }
 }
 

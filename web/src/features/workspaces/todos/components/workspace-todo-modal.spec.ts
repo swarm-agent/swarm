@@ -8,4 +8,7 @@ test('AI tasks display state and link to their managed session', async () => {
   assert.match(source, /AI · \$\{stateLabel\}/)
   assert.match(source, /item\.managedSessionId && onOpenManagedSession/)
   assert.match(source, /aria-label="Open managed session"/)
+  assert.match(source, /const allowMutations = !aiTaskActive/)
+  assert.match(source, /disabled=\{!allowMutations\}/)
+  assert.match(source, /userActiveAITaskCount > 0/)
 })

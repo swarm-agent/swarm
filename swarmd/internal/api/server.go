@@ -100,6 +100,7 @@ type Server struct {
 	voice                       *voice.Service
 	uiSettings                  *uisettings.Service
 	todos                       *todo.Service
+	aiTasks                     aiTaskEnqueuer
 	swarm                       swarmService
 	update                      *update.Service
 	topology                    *topologyruntime.Service
@@ -130,6 +131,10 @@ type Server struct {
 	reviewCommitMu        sync.Mutex
 	reviewCommitActive    map[string]string
 	reviewAutoArchiveOnce sync.Once
+}
+
+type aiTaskEnqueuer interface {
+	Enqueue(pebblestore.WorkspaceTodoItem) bool
 }
 
 type codexAccountClient interface {
@@ -407,6 +412,16 @@ func (s *Server) SetTodoService(todoSvc *todo.Service) {
 		return
 	}
 	s.todos = todoSvc
+	if todoSvc != nil {
+		todoSvc.SetAITaskLifecyclePublisher(s.publishAITaskLifecycle)
+	}
+}
+
+func (s *Server) SetAITaskEnqueuer(enqueuer aiTaskEnqueuer) {
+	if s == nil {
+		return
+	}
+	s.aiTasks = enqueuer
 }
 
 func (s *Server) SetIntegrationService(integrationSvc *integrationruntime.Service) {

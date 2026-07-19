@@ -312,7 +312,7 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 				results[i].Status, results[i].Error = "error", "AI task binder is not configured"
 				continue
 			}
-			if bindErr := s.aiTaskBinder.BindAITask(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID, "preparing", "in_progress", item.proposal.Mode, item.proposal.ManagedWorktree, item.session.ID, ""); bindErr != nil {
+			if _, bindErr := s.aiTaskBinder.BindAITaskLifecycle(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID, "preparing", "in_progress", item.proposal.Mode, item.proposal.ManagedWorktree, item.session.ID, item.session.Title, item.runID, "", ""); bindErr != nil {
 				results[i].Status, results[i].Error = "error", bindErr.Error()
 				continue
 			}
@@ -324,7 +324,7 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 			results[i].Status = "error"
 			results[i].Error = "canonical V3 session executor rejected the deployed run"
 			if aiTask != nil && s.aiTaskBinder != nil {
-				_ = s.aiTaskBinder.BindAITask(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID, "in_progress", "failed", item.proposal.Mode, item.proposal.ManagedWorktree, item.session.ID, results[i].Error)
+				_, _ = s.aiTaskBinder.BindAITaskLifecycle(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID, "in_progress", "failed", item.proposal.Mode, item.proposal.ManagedWorktree, item.session.ID, item.session.Title, item.runID, "", results[i].Error)
 			}
 			continue
 		}

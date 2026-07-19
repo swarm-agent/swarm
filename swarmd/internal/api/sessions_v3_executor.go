@@ -635,7 +635,7 @@ func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, re
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	result, err := e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
 		AccountScopeID:  job.Principal.AccountScopeID,
@@ -648,6 +648,10 @@ func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, re
 		RunIntent:       &intent,
 		NowUnixMs:       now,
 	})
+	if err == nil {
+		err = e.server.reconcileAITaskRunLifecycle(job, status, sanitizedReason, "")
+	}
+	return result, err
 }
 
 func (e *sessionV3Executor) recordRunPhase(job sessionV3ExecutorJob, phase RunPhase, eventType string) (sessionruntime.SessionMutationResult, error) {
@@ -1048,7 +1052,7 @@ func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, response sessi
 		return sessionruntime.SessionMutationResult{}, err
 	}
 	clientRequestID := sessionV3ExecutorClientRequestID("session.assistant.completed", job.RunID)
-	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	result, err := e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
 		AccountScopeID:  job.Principal.AccountScopeID,
@@ -1062,6 +1066,10 @@ func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, response sessi
 		RunIntent:       &intent,
 		NowUnixMs:       now,
 	})
+	if err == nil {
+		err = e.server.reconcileAITaskRunLifecycle(job, sessionruntime.RunIntentCompleted, "", content)
+	}
+	return result, err
 }
 
 func (e *sessionV3Executor) recordPreToolAssistantSegment(job sessionV3ExecutorJob, response sessionV3AssistantResponse, step int) (sessionruntime.SessionMutationResult, error) {

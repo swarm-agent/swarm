@@ -546,6 +546,13 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 		advanced.LastSentEndpointSeq = record.EndpointSeq
 		return advanced, true, true
 	}
+	if strings.TrimSpace(record.Event.EventType) == v3AITaskLifecycleEventType {
+		if !s.sendV3RealtimeAITaskResourceFrame(conn, principal, record, worksets, scope) {
+			return advanced, false, false
+		}
+		advanced.LastSentEndpointSeq = record.EndpointSeq
+		return advanced, true, true
+	}
 
 	subscription, subscribed := advanced.Subscriptions[record.SessionID]
 	removeAutoSubscriptionAfterDelivery := false
@@ -807,7 +814,7 @@ func canonicalV3RealtimeWorksetSelector(selector V3RealtimeWorksetSelector) (V3R
 
 func v3RealtimeWorksetResourceAllowed(resource string) bool {
 	switch strings.TrimSpace(resource) {
-	case "sessions", "projections", "events", "messages", "run_intents", "current_run_state", "permission_summaries", "notifications", "notification_summary", "active_plan", "plan_revisions", "membership", "tombstones":
+	case "sessions", "projections", "events", "messages", "run_intents", "current_run_state", "permission_summaries", "notifications", "notification_summary", "tasks", "active_plan", "plan_revisions", "membership", "tombstones":
 		return true
 	default:
 		return false
@@ -932,6 +939,8 @@ func v3RealtimeWorksetIncludesRecordResource(workset v3RealtimeWorksetSubscripti
 		return v3RealtimeWorksetIncludesResource(workset, "permission_summaries")
 	case v3NotificationResourceEventType:
 		return v3RealtimeWorksetIncludesResource(workset, "notifications") || v3RealtimeWorksetIncludesResource(workset, "notification_summary")
+	case v3AITaskLifecycleEventType:
+		return v3RealtimeWorksetIncludesResource(workset, "tasks")
 	default:
 		return true
 	}
@@ -1165,6 +1174,10 @@ func v3RealtimeRecordVisibleToPrincipal(principal identity.Principal, record ses
 	if strings.TrimSpace(record.Event.EventType) == v3NotificationResourceEventType {
 		return true
 	}
+	if strings.TrimSpace(record.Event.EventType) == v3AITaskLifecycleEventType {
+		payload, ok := sessionsV3AITaskLifecyclePayloadFromRecord(record)
+		return ok && payload.UserID == strings.TrimSpace(principal.UserID)
+	}
 	if strings.TrimSpace(record.UserID) == "" || strings.TrimSpace(record.UserID) != strings.TrimSpace(principal.UserID) {
 		return false
 	}
@@ -1212,6 +1225,47 @@ func (s *Server) sendV3RealtimeNotificationResourceFrame(conn *transportws.Conn,
 		message.NotificationSummary = &summary
 	}
 	return s.sendV3RealtimeMessage(conn, message) == nil
+}
+
+func (s *Server) sendV3RealtimeAITaskResourceFrame(conn *transportws.Conn, principal identity.Principal, record sessionruntime.RealtimeOutboxRecord, worksets map[string]v3RealtimeWorksetSubscription, scope v3SyncCursorScope) bool {
+	payload, ok := sessionsV3AITaskLifecyclePayloadFromRecord(record)
+	if !ok || payload.AccountScopeID != strings.TrimSpace(principal.AccountScopeID) || payload.UserID != strings.TrimSpace(principal.UserID) {
+		return true
+	}
+	included := false
+	for _, workset := range orderedV3RealtimeWorksets(worksets) {
+		if !v3RealtimeWorksetIncludesResource(workset, "tasks") {
+			continue
+		}
+		if workset.Selector.Global || strings.TrimSpace(workset.Selector.Kind) == "global" || (strings.TrimSpace(workset.Selector.Kind) == "recent" && len(workset.Selector.WorkspacePaths) == 0 && strings.TrimSpace(workset.Selector.WorkspacePath) == "") {
+			included = true
+			break
+		}
+		paths := append([]string(nil), workset.Selector.WorkspacePaths...)
+		if workset.Selector.WorkspacePath != "" {
+			paths = append(paths, workset.Selector.WorkspacePath)
+		}
+		for _, path := range paths {
+			if normalized, valid := normalizeV3RealtimeWorkspaceCandidate(path); valid && normalized == payload.WorkspacePath {
+				included = true
+				break
+			}
+		}
+	}
+	if !included {
+		return true
+	}
+	cursor, err := s.signV3SyncEndpointCursor(scope, record.EndpointSeq)
+	if err != nil {
+		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "cursor_sign_failed", err.Error(), record.EndpointSeq-1, record.EndpointSeq))
+		return false
+	}
+	return s.sendV3RealtimeMessage(conn, V3RealtimeMessage{
+		Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion,
+		Kind: V3RealtimeKindAITaskResource, EndpointCursor: cursor,
+		Rev: record.EndpointSeq, PrevRev: record.EndpointSeq - 1,
+		EventType: record.Event.EventType, AITask: &payload,
+	}) == nil
 }
 
 func (s *Server) sendV3RealtimeOutboxEvent(conn *transportws.Conn, record sessionruntime.RealtimeOutboxRecord, scope v3SyncCursorScope) bool {

@@ -9,6 +9,81 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestAITaskTerminalStatesAndPreparedTitleAreDurable(t *testing.T) {
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "terminal.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := pebblestore.NewWorkspaceTodoStore(db)
+	svc := NewService(store, nil, nil, nil)
+	workspace := t.TempDir()
+	item, _, _, err := svc.CreateAITask(CreateAITaskInput{AccountScopeID: "account-a", UserID: "user-a", WorkspaceID: "workspace-a", WorkspacePath: workspace, Request: "do work", IdempotencyKey: "key-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparing, err := svc.TransitionAITaskAuthority(AITaskTransitionInput{AccountScopeID: item.AccountScopeID, WorkspacePath: workspace, ID: item.ID, ExpectedState: item.AIState, ExpectedVersion: item.AIStateVersion, State: pebblestore.WorkspaceTodoAIStatePreparing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := svc.BindAITaskLifecycle(item.AccountScopeID, workspace, item.ID, preparing.AIState, pebblestore.WorkspaceTodoAIStateInProgress, "auto", false, "session-a", "Prepared title", "run-a", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := svc.BindAITaskLifecycle(item.AccountScopeID, workspace, item.ID, started.AIState, pebblestore.WorkspaceTodoAIStateCompleted, "auto", false, "session-a", "Prepared title", "run-a", "done", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.AIDisplayTitle != "Prepared title" || completed.AIResult != "done" || !completed.Done || completed.CompletedAt == 0 {
+		t.Fatalf("completed task = %+v", completed)
+	}
+	if _, err := svc.BindAITaskLifecycle(item.AccountScopeID, workspace, item.ID, completed.AIState, pebblestore.WorkspaceTodoAIStateFailed, "auto", false, "session-a", "", "run-a", "", "late failure"); err == nil {
+		t.Fatal("terminal task must reject a second terminal transition")
+	}
+}
+
+func TestAITaskLifecyclePublisherReceivesEveryDurableTransition(t *testing.T) {
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "lifecycle.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	svc := NewService(pebblestore.NewWorkspaceTodoStore(db), nil, nil, nil)
+	workspace := t.TempDir()
+	var published []TodoItem
+	svc.SetAITaskLifecyclePublisher(func(item TodoItem) error {
+		published = append(published, item)
+		return nil
+	})
+
+	queued, _, _, err := svc.CreateAITask(CreateAITaskInput{AccountScopeID: "account", UserID: "user", WorkspaceID: "workspace", WorkspacePath: workspace, Request: "ship", IdempotencyKey: "key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.PublishAITaskLifecycle(queued); err != nil {
+		t.Fatal(err)
+	}
+	preparing, err := svc.TransitionAITaskAuthority(AITaskTransitionInput{AccountScopeID: queued.AccountScopeID, WorkspacePath: workspace, ID: queued.ID, ExpectedState: queued.AIState, ExpectedVersion: queued.AIStateVersion, State: pebblestore.WorkspaceTodoAIStatePreparing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := svc.BindAITaskLifecycle(queued.AccountScopeID, workspace, queued.ID, preparing.AIState, pebblestore.WorkspaceTodoAIStateInProgress, "auto", false, "session", "Prepared title", "run", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.BindAITaskLifecycle(queued.AccountScopeID, workspace, queued.ID, started.AIState, pebblestore.WorkspaceTodoAIStateCompleted, "auto", false, "session", "Prepared title", "run", "done", ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(published) != 4 {
+		t.Fatalf("published states=%#v, want queued plus three transitions", published)
+	}
+	for i, want := range []string{pebblestore.WorkspaceTodoAIStateQueued, pebblestore.WorkspaceTodoAIStatePreparing, pebblestore.WorkspaceTodoAIStateInProgress, pebblestore.WorkspaceTodoAIStateCompleted} {
+		if published[i].AIState != want || published[i].AIStateVersion != uint64(i+1) {
+			t.Fatalf("published[%d]=%#v, want state=%s version=%d", i, published[i], want, i+1)
+		}
+	}
+}
+
 func TestAITaskAuthorityIsAccountScopedIdempotentAndMergeSafe(t *testing.T) {
 	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "todo.pebble"))
 	if err != nil {

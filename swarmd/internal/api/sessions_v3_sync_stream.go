@@ -37,12 +37,13 @@ type sessionsV3SyncStreamResponse struct {
 }
 
 type sessionsV3SyncStreamEvent struct {
-	SessionID           string                           `json:"session_id"`
-	EventType           string                           `json:"event_type"`
-	Event               sessionruntime.SessionEvent      `json:"event"`
-	Projection          sessionruntime.SessionProjection `json:"projection"`
-	Notification        *pebblestore.NotificationRecord  `json:"notification,omitempty"`
-	NotificationSummary *pebblestore.NotificationSummary `json:"notification_summary,omitempty"`
+	SessionID           string                            `json:"session_id"`
+	EventType           string                            `json:"event_type"`
+	Event               sessionruntime.SessionEvent       `json:"event"`
+	Projection          sessionruntime.SessionProjection  `json:"projection"`
+	Notification        *pebblestore.NotificationRecord   `json:"notification,omitempty"`
+	NotificationSummary *pebblestore.NotificationSummary  `json:"notification_summary,omitempty"`
+	AITask              *sessionsV3AITaskLifecyclePayload `json:"task,omitempty"`
 }
 
 func newSessionsV3SyncStreamEvent(record sessionruntime.RealtimeOutboxRecord) sessionsV3SyncStreamEvent {
@@ -234,6 +235,17 @@ func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Reque
 		if strings.TrimSpace(record.Event.EventType) == v3NotificationResourceEventType {
 			if event, ok := sessionsV3SyncStreamNotificationEvent(record, req.Resources); ok {
 				visible = append(visible, event)
+			}
+			continue
+		}
+		if strings.TrimSpace(record.Event.EventType) == v3AITaskLifecycleEventType {
+			if payload, ok := sessionsV3AITaskLifecyclePayloadFromRecord(record); ok && req.Resources.Tasks && payload.UserID == principal.UserID {
+				item := pebblestore.WorkspaceTodoItem{WorkspacePath: payload.WorkspacePath, ManagedSessionID: payload.ManagedSessionID}
+				if sessionsV3AITaskMatchesSelector(item, selector) {
+					event := newSessionsV3SyncStreamEvent(record)
+					event.AITask = &payload
+					visible = append(visible, event)
+				}
 			}
 			continue
 		}

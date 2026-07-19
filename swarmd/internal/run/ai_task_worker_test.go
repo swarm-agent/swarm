@@ -1,13 +1,167 @@
 package run
 
 import (
-	"path/filepath"
+	"context"
+	"errors"
+	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+type recordingAITaskLifecycle struct {
+	mu          sync.Mutex
+	transitions []AITaskQueueTransition
+	audits      []pebblestore.AITaskAuditRecord
+	started     chan struct{}
+	unblock     chan struct{}
+}
+
+func (l *recordingAITaskLifecycle) TransitionAITask(input AITaskQueueTransition) (pebblestore.WorkspaceTodoItem, error) {
+	l.mu.Lock()
+	l.transitions = append(l.transitions, input)
+	l.mu.Unlock()
+	if l.started != nil {
+		select {
+		case l.started <- struct{}{}:
+		default:
+		}
+	}
+	if l.unblock != nil {
+		<-l.unblock
+	}
+	return pebblestore.WorkspaceTodoItem{}, errors.New("stop before provider execution")
+}
+
+func (l *recordingAITaskLifecycle) AppendAITaskAudit(_, _, _ string, record pebblestore.AITaskAuditRecord) error {
+	l.mu.Lock()
+	l.audits = append(l.audits, record)
+	l.mu.Unlock()
+	return nil
+}
+
+func completeQueuedAITaskFixture(id string) pebblestore.WorkspaceTodoItem {
+	return pebblestore.WorkspaceTodoItem{
+		ID: id, AccountScopeID: "account", UserID: "user", WorkspaceID: "workspace-id",
+		WorkspacePath: "/workspace", AIRequest: "do the work", AIState: pebblestore.WorkspaceTodoAIStateQueued,
+	}
+}
+
+func TestAITaskDispatcherDispatchesCompleteJobImmediatelyWithoutDurableLookup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	lifecycle := &recordingAITaskLifecycle{started: make(chan struct{}, 1)}
+	dispatcher := (&Service{}).StartAITaskDispatcher(ctx, lifecycle, nil)
+	defer dispatcher.Close()
+
+	item := completeQueuedAITaskFixture("task-immediate")
+	if !dispatcher.Enqueue(item) {
+		t.Fatal("complete in-memory job was rejected")
+	}
+	select {
+	case <-lifecycle.started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not receive the directly enqueued job")
+	}
+	lifecycle.mu.Lock()
+	defer lifecycle.mu.Unlock()
+	if len(lifecycle.transitions) != 1 || lifecycle.transitions[0].Item.ID != item.ID || lifecycle.transitions[0].Item.AIRequest != item.AIRequest {
+		t.Fatalf("worker did not receive the immutable request payload: %#v", lifecycle.transitions)
+	}
+}
+
+func TestAITaskDispatcherBoundsAdmissionDeduplicatesAndRejectsShutdown(t *testing.T) {
+	item := pebblestore.WorkspaceTodoItem{
+		ID: "task-1", AccountScopeID: "account", UserID: "user", WorkspaceID: "workspace-id",
+		WorkspacePath: "/workspace", AIRequest: "do the work", AIState: pebblestore.WorkspaceTodoAIStateQueued,
+	}
+	job, err := NewAITaskJob(item)
+	if err != nil {
+		t.Fatalf("new job: %v", err)
+	}
+	d := &AITaskDispatcher{jobs: make(chan AITaskJob, 1), done: make(chan struct{}), inflight: map[string]struct{}{}}
+	if !d.EnqueueJob(job) {
+		t.Fatal("first enqueue rejected")
+	}
+	if !d.EnqueueJob(job) || len(d.jobs) != 1 {
+		t.Fatalf("duplicate enqueue was not idempotent: queue length=%d", len(d.jobs))
+	}
+	second := job
+	second.Task.ID = "task-2"
+	if d.EnqueueJob(second) {
+		t.Fatal("saturated queue accepted another job")
+	}
+	d.Close()
+	if d.EnqueueJob(second) {
+		t.Fatal("closed queue accepted another job")
+	}
+}
+
+func TestAITaskDispatcherShutdownStopsWorkerAndRejectsAdmission(t *testing.T) {
+	ctx := context.Background()
+	lifecycle := &recordingAITaskLifecycle{started: make(chan struct{}, 1), unblock: make(chan struct{})}
+	dispatcher := (&Service{}).StartAITaskDispatcher(ctx, lifecycle, nil)
+	if !dispatcher.Enqueue(completeQueuedAITaskFixture("task-running")) {
+		t.Fatal("initial job was rejected")
+	}
+	select {
+	case <-lifecycle.started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start")
+	}
+	closed := make(chan struct{})
+	go func() {
+		dispatcher.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("Close returned before the active worker exited")
+	case <-time.After(10 * time.Millisecond):
+	}
+	close(lifecycle.unblock)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not wait for deterministic worker shutdown")
+	}
+	if dispatcher.Enqueue(completeQueuedAITaskFixture("task-after-close")) {
+		t.Fatal("closed dispatcher accepted new work")
+	}
+}
+
+func TestAITaskWorkerSourceCannotRegressToDurableQueueReadsOrTickerScans(t *testing.T) {
+	source, err := os.ReadFile("ai_task_worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, forbidden := range []string{"GetAITask(", "LoadRecoverableAITasks(", "ListActiveAITasks(", "time.NewTicker", "time.Tick("} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("AI task worker regained forbidden durable scheduling dependency %q", forbidden)
+		}
+	}
+	for _, required := range []string{"jobs chan AITaskJob", "case job := <-d.jobs", "item := job.Task"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("AI task worker missing in-memory job contract %q", required)
+		}
+	}
+}
+
+func TestNewAITaskJobRequiresCompleteTrustedPayload(t *testing.T) {
+	if _, err := NewAITaskJob(pebblestore.WorkspaceTodoItem{ID: "task"}); err == nil {
+		t.Fatal("incomplete task payload was accepted")
+	}
+	item := completeQueuedAITaskFixture("task-preparing")
+	item.AIState = pebblestore.WorkspaceTodoAIStatePreparing
+	if _, err := NewAITaskJob(item); err == nil {
+		t.Fatal("non-queued task was accepted by the in-memory dispatcher")
+	}
+}
 
 func TestBuildAITaskPreparationPromptIncludesFullAuthorizedOriginConversation(t *testing.T) {
 	svc, sessions, cleanup := newPlanManageTestService(t)

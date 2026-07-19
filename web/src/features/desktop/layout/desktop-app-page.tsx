@@ -32,7 +32,7 @@ import {
   setWorkspaceTodoInProgress,
   updateWorkspaceTodo,
 } from '../../workspaces/todos/types'
-import { isWorkspaceAITaskActive, mergeWorkspaceAITaskMonotonic, mergeWorkspaceTodoListsMonotonic } from '../../workspaces/todos/ai-task-reconciliation'
+import { mergeWorkspaceAITaskMonotonic, mergeWorkspaceTodoListsMonotonic } from '../../workspaces/todos/ai-task-reconciliation'
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
@@ -90,7 +90,6 @@ const MOBILE_SIDEBAR_SWIPE_MAX_Y_PX = 48
 type MobileSidebarSwipeState = { startX: number; startY: number; tracking: boolean; completed: boolean; mode: 'open' | 'close' }
 const UPDATE_STATUS_REFETCH_INTERVAL_MS = 5 * 60_000
 const SWARM_TARGET_REFETCH_INTERVAL_MS = 10_000
-const AI_TASK_RECONCILE_INTERVAL_MS = 1_500
 const SIDEBAR_ACTION_RAIL_WIDTH_CLASS = 'w-[52px]'
 const SIDEBAR_ACTION_ROW_CLASS = `grid min-w-0 grid-cols-[minmax(0,1fr)_52px] items-center gap-2.5`
 const SIDEBAR_ACTION_RAIL_CLASS = `grid ${SIDEBAR_ACTION_RAIL_WIDTH_CLASS} shrink-0 grid-cols-[24px_24px] justify-end gap-1`
@@ -2614,7 +2613,8 @@ export function DesktopAppPage() {
   const [previousChatSessionId, setPreviousChatSessionId] = useState<string | null>(null)
   const activeChatSessionIdRef = useRef<string | null>(null)
   const previousSidebarRouteSessionIdRef = useRef(routeSessionId)
-  const aiTaskPollersRef = useRef(new Map<string, AbortController>())
+  const aiTaskLifecycleByID = useDesktopV3CacheSelector((state) => state.aiTasksById)
+  const aiTaskObservedStateRef = useRef(new Map<string, WorkspaceTodoItem['aiState']>())
   const aiTaskTerminalToastRef = useRef(new Set<string>())
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
@@ -2831,79 +2831,35 @@ export function DesktopAppPage() {
     }, 'Failed to clear notifications')
   ), [mutateNotificationState])
 
-  const reconcileWorkspaceAITask = useCallback((workspacePath: string, taskID: string) => {
-    const normalizedPath = workspacePath.trim()
-    const normalizedTaskID = taskID.trim()
-    if (!normalizedPath || !normalizedTaskID || aiTaskPollersRef.current.has(normalizedTaskID)) return
-
-    const controller = new AbortController()
-    aiTaskPollersRef.current.set(normalizedTaskID, controller)
-    void (async () => {
-      try {
-        while (!controller.signal.aborted) {
-          const result = await fetchWorkspaceTodos(normalizedPath, 'user', undefined, controller.signal)
-          const observed = result.items.find((item) => item.id === normalizedTaskID)
-          setTodoItems((current) => ({
-            ...current,
-            [normalizedPath]: mergeWorkspaceTodoListsMonotonic(current[normalizedPath] ?? [], result.items),
-          }))
-          setTodoSummaries((current) => ({ ...current, [normalizedPath]: normalizeWorkspaceTodoSummary(result.summary) }))
-          if (!observed || !isWorkspaceAITaskActive(observed)) {
-            if (observed && !aiTaskTerminalToastRef.current.has(observed.id)) {
-              aiTaskTerminalToastRef.current.add(observed.id)
-              setDesktopToast(observed.aiState === 'failed'
-                ? { message: observed.aiError || 'Swarm could not start the task.', tone: 'error' }
-                : { message: 'Task started in a managed session.', tone: 'success' })
-            }
-            return
-          }
-          await new Promise<void>((resolve) => {
-            const timer = window.setTimeout(resolve, AI_TASK_RECONCILE_INTERVAL_MS)
-            controller.signal.addEventListener('abort', () => {
-              window.clearTimeout(timer)
-              resolve()
-            }, { once: true })
-          })
-        }
-      } catch (error) {
-        if (!controller.signal.aborted) {
-          setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to reconcile queued task', tone: 'error' })
-        }
-      } finally {
-        if (aiTaskPollersRef.current.get(normalizedTaskID) === controller) {
-          aiTaskPollersRef.current.delete(normalizedTaskID)
-        }
-      }
-    })()
-  }, [])
-
-  const hydrateWorkspaceAITasks = useCallback((workspacePath: string) => {
-    const normalizedPath = workspacePath.trim()
-    if (!normalizedPath) return
-    void fetchWorkspaceTodos(normalizedPath, 'user')
-      .then((result) => {
-        setTodoItems((current) => ({
-          ...current,
-          [normalizedPath]: mergeWorkspaceTodoListsMonotonic(current[normalizedPath] ?? [], result.items),
-        }))
-        setTodoSummaries((current) => ({ ...current, [normalizedPath]: normalizeWorkspaceTodoSummary(result.summary) }))
-        for (const item of result.items) {
-          if (isWorkspaceAITaskActive(item)) reconcileWorkspaceAITask(normalizedPath, item.id)
-        }
-      })
-      .catch(() => {
-        // Workspace hydration remains best-effort; explicit todo opening reports load errors.
-      })
-  }, [reconcileWorkspaceAITask])
-
   useEffect(() => {
-    for (const workspace of workspaces) hydrateWorkspaceAITasks(workspace.path)
-  }, [hydrateWorkspaceAITasks, workspaces])
-
-  useEffect(() => () => {
-    for (const controller of aiTaskPollersRef.current.values()) controller.abort()
-    aiTaskPollersRef.current.clear()
-  }, [])
+    const lifecycleItems = Object.values(aiTaskLifecycleByID)
+    if (lifecycleItems.length === 0) return
+    setTodoItems((current) => {
+      const next = { ...current }
+      for (const lifecycle of lifecycleItems) {
+        next[lifecycle.workspacePath] = upsertWorkspaceTodoItem(next[lifecycle.workspacePath] ?? [], lifecycle)
+      }
+      return next
+    })
+    for (const lifecycle of lifecycleItems) {
+      const previousState = aiTaskObservedStateRef.current.get(lifecycle.id)
+      aiTaskObservedStateRef.current.set(lifecycle.id, lifecycle.aiState)
+      if (!previousState || previousState === lifecycle.aiState || aiTaskTerminalToastRef.current.has(lifecycle.id)) continue
+      const title = lifecycle.aiDisplayTitle || lifecycle.text || 'Task'
+      if (lifecycle.aiState === 'in_progress') {
+        setDesktopToast({ message: `${title} started.`, tone: 'info' })
+      } else if (lifecycle.aiState === 'completed') {
+        aiTaskTerminalToastRef.current.add(lifecycle.id)
+        setDesktopToast({ message: `${title} completed.`, tone: 'success' })
+      } else if (lifecycle.aiState === 'failed') {
+        aiTaskTerminalToastRef.current.add(lifecycle.id)
+        setDesktopToast({ message: lifecycle.aiError || `${title} failed.`, tone: 'error' })
+      } else if (lifecycle.aiState === 'cancelled') {
+        aiTaskTerminalToastRef.current.add(lifecycle.id)
+        setDesktopToast({ message: `${title} was cancelled.`, tone: 'info' })
+      }
+    }
+  }, [aiTaskLifecycleByID])
 
   const openTodoModal = useCallback((workspacePath: string, workspaceName: string) => {
     const normalizedPath = workspacePath.trim()
@@ -2911,19 +2867,17 @@ export function DesktopAppPage() {
     setTodoModal({ workspacePath: normalizedPath, workspaceName })
     void fetchWorkspaceTodos(normalizedPath, 'user')
       .then((result) => {
+        dispatchDesktopV3Cache({ type: 'aiTasks.mergeItems', items: result.items.filter((item) => item.aiState) })
         setTodoItems((current) => ({
           ...current,
           [normalizedPath]: mergeWorkspaceTodoListsMonotonic(current[normalizedPath] ?? [], result.items),
         }))
         setTodoSummaries((current) => ({ ...current, [normalizedPath]: normalizeWorkspaceTodoSummary(result.summary) }))
-        for (const item of result.items) {
-          if (isWorkspaceAITaskActive(item)) reconcileWorkspaceAITask(normalizedPath, item.id)
-        }
       })
       .catch((error) => {
         setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to load tasks', tone: 'error' })
       })
-  }, [reconcileWorkspaceAITask])
+  }, [])
 
   const closeTodoModal = useCallback(() => {
     setTodoModal(null)
@@ -3890,17 +3844,22 @@ export function DesktopAppPage() {
         const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `task-${Date.now()}-${Math.random().toString(36).slice(2)}`
         try {
           const result = await createWorkspaceAITask(workspacePath, request, idempotencyKey, routeSessionId ?? undefined)
+          dispatchDesktopV3Cache({ type: 'aiTasks.mergeItems', items: [result.item] })
           setTodoItems((current) => ({ ...current, [workspacePath]: upsertWorkspaceTodoItem(current[workspacePath] ?? [], result.item) }))
           setTodoSummaries((current) => ({ ...current, [workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
           if (result.item.managedSessionId || result.item.aiState === 'in_progress') {
+            setDesktopToast({ message: `${result.item.aiDisplayTitle || result.item.text || 'Task'} started.`, tone: 'info' })
+          } else if (result.item.aiState === 'completed') {
             aiTaskTerminalToastRef.current.add(result.item.id)
-            setDesktopToast({ message: 'Task started in a managed session.', tone: 'success' })
+            setDesktopToast({ message: `${result.item.aiDisplayTitle || result.item.text || 'Task'} completed.`, tone: 'success' })
           } else if (result.item.aiState === 'failed') {
             aiTaskTerminalToastRef.current.add(result.item.id)
             setDesktopToast({ message: result.item.aiError || 'Swarm could not start the task.', tone: 'error' })
+          } else if (result.item.aiState === 'cancelled') {
+            aiTaskTerminalToastRef.current.add(result.item.id)
+            setDesktopToast({ message: `${result.item.aiDisplayTitle || result.item.text || 'Task'} was cancelled.`, tone: 'info' })
           } else {
             setDesktopToast({ message: result.item.aiState === 'preparing' ? 'Swarm is preparing the queued task.' : 'Task queued for Swarm.', tone: 'info' })
-            reconcileWorkspaceAITask(workspacePath, result.item.id)
           }
         } catch (error) {
           setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to queue task', tone: 'error' })
@@ -3920,7 +3879,7 @@ export function DesktopAppPage() {
         return _exhaustive
       }
     }
-  }, [handleOpenSettingsTab, handleStartNewSessionInWorkspace, openGitPanel, openPlanModalForSession, reconcileWorkspaceAITask, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath])
+  }, [handleOpenSettingsTab, handleStartNewSessionInWorkspace, openGitPanel, openPlanModalForSession, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath])
 
   const latestNeedsApprovalSession = useMemo(() => {
     return desktopStateSessions
@@ -4303,17 +4262,24 @@ export function DesktopAppPage() {
     const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `task-${Date.now()}-${Math.random().toString(36).slice(2)}`
     try {
       const result = await createWorkspaceAITask(workspacePath, request, idempotencyKey)
+      dispatchDesktopV3Cache({ type: 'aiTasks.mergeItems', items: [result.item] })
       setTodoItems((current) => ({ ...current, [workspacePath]: upsertWorkspaceTodoItem(current[workspacePath] ?? [], result.item) }))
       setTodoSummaries((current) => ({ ...current, [workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
       if (result.item.aiState === 'failed') {
         setBackgroundTaskError(result.item.aiError || 'Swarm could not start the task.')
         return
       }
-      if (result.item.managedSessionId || result.item.aiState === 'in_progress') aiTaskTerminalToastRef.current.add(result.item.id)
-      if (isWorkspaceAITaskActive(result.item)) reconcileWorkspaceAITask(workspacePath, result.item.id)
+      if (result.item.aiState === 'completed' || result.item.aiState === 'cancelled') {
+        aiTaskTerminalToastRef.current.add(result.item.id)
+      }
       setBackgroundTaskOpen(false)
       setBackgroundTaskRequest('')
-      setDesktopToast({ message: 'Task started in the background. Follow it from Active sessions.', tone: 'success' })
+      const taskTitle = result.item.aiDisplayTitle || result.item.text || 'Task'
+      setDesktopToast(result.item.aiState === 'completed'
+        ? { message: `${taskTitle} completed.`, tone: 'success' }
+        : result.item.aiState === 'cancelled'
+          ? { message: `${taskTitle} was cancelled.`, tone: 'info' }
+          : { message: result.item.aiState === 'in_progress' ? `${taskTitle} started.` : 'Task queued for Swarm.', tone: 'info' })
       if (mobileCreationPage === 'task' && routeWorkspaceSlug) {
         void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
       }
@@ -4322,7 +4288,7 @@ export function DesktopAppPage() {
     } finally {
       setBackgroundTaskBusy(false)
     }
-  }, [backgroundTaskBusy, backgroundTaskRequest, mobileCreationPage, navigate, reconcileWorkspaceAITask, routeWorkspace?.path, routeWorkspaceSlug])
+  }, [backgroundTaskBusy, backgroundTaskRequest, mobileCreationPage, navigate, routeWorkspace?.path, routeWorkspaceSlug])
 
   const openRouteWorkspaceWorktree = useCallback(() => {
     if (!routeWorkspace?.path) return

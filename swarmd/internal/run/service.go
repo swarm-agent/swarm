@@ -147,11 +147,14 @@ type AITaskBindInput struct {
 	Mode             string
 	Worktree         bool
 	ManagedSessionID string
+	DisplayTitle     string
+	FinalRunID       string
+	Result           string
 	Error            string
 }
 
 type AITaskBinder interface {
-	BindAITask(accountScopeID, workspacePath, taskID, expectedState, state, mode string, worktree bool, managedSessionID, errorText string) error
+	BindAITaskLifecycle(accountScopeID, workspacePath, taskID, expectedState, state, mode string, worktree bool, managedSessionID, displayTitle, finalRunID, resultText, errorText string) (pebblestore.WorkspaceTodoItem, error)
 	AppendAITaskAudit(accountScopeID, workspacePath, taskID string, record pebblestore.AITaskAuditRecord) error
 }
 

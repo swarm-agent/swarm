@@ -35,12 +35,14 @@ test('postDesktopV3SyncBootstrap posts metadata-only bounded startup workset pay
   assert.equal(body.resources.run_intents, false)
   assert.equal(body.resources.session_view, false)
   assert.equal(body.resources.permission_summaries, true)
+  assert.equal(body.resources.tasks, true)
   assert.equal(body.resources.active_plan, true)
   assert.equal(body.resources.plan_revisions, false)
   assert.equal(body.include_active, true)
   assert.deepEqual(DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.history, { mode: 'none' })
   assert.equal(DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.resources.messages, false)
   assert.equal(DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.resources.permission_summaries, true)
+  assert.equal(DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.resources.tasks, true)
 })
 
 
