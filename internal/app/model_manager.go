@@ -34,10 +34,11 @@ func (a *App) cycleThinkingLevel() {
 		return
 	}
 
-	providerID := normalizeModelProviderID(a.homeModel.ModelProvider)
-	modelID := strings.TrimSpace(a.homeModel.ModelName)
-	serviceTier := strings.TrimSpace(a.homeModel.ServiceTier)
-	contextMode := strings.TrimSpace(a.homeModel.ContextMode)
+	homeProvider, homeModelName, homeThinking, homeServiceTier, homeContextMode := a.home.ModelState()
+	providerID := normalizeModelProviderID(homeProvider)
+	modelID := strings.TrimSpace(homeModelName)
+	serviceTier := strings.TrimSpace(homeServiceTier)
+	contextMode := strings.TrimSpace(homeContextMode)
 	if a.route == "chat" && a.chat != nil {
 		providerID, modelID, _, serviceTier, contextMode = a.chat.ModelState()
 		providerID = normalizeModelProviderID(providerID)
@@ -57,7 +58,7 @@ func (a *App) cycleThinkingLevel() {
 		setStatus(fmt.Sprintf("thinking options unavailable: %v", err))
 		return
 	}
-	current := normalizeModelThinkingLevel(a.homeModel.ThinkingLevel)
+	current := normalizeModelThinkingLevel(homeThinking)
 	if a.route == "chat" && a.chat != nil {
 		_, _, sessionThinking, _, _ := a.chat.ModelState()
 		current = normalizeModelThinkingLevel(sessionThinking)
@@ -104,7 +105,7 @@ func (a *App) cycleThinkingLevel() {
 		return
 	}
 
-	next := a.homeModel
+	next := a.currentHomeModel()
 	next.ThinkingLevel = nextThinking
 	next.QuickActions = homeQuickActions(next)
 	a.applyHomeModel(next)
@@ -136,11 +137,12 @@ func (a *App) openModelsModal(providerHint string) {
 }
 
 func (a *App) currentModelPreferenceState() (string, string, string, string, string, string) {
-	providerID := normalizeModelProviderID(a.homeModel.ModelProvider)
-	modelID := strings.TrimSpace(a.homeModel.ModelName)
-	thinking := normalizeModelThinkingLevel(a.homeModel.ThinkingLevel)
-	serviceTier := strings.TrimSpace(a.homeModel.ServiceTier)
-	contextMode := strings.TrimSpace(a.homeModel.ContextMode)
+	homeProvider, homeModelName, homeThinking, homeServiceTier, homeContextMode := a.home.ModelState()
+	providerID := normalizeModelProviderID(homeProvider)
+	modelID := strings.TrimSpace(homeModelName)
+	thinking := normalizeModelThinkingLevel(homeThinking)
+	serviceTier := strings.TrimSpace(homeServiceTier)
+	contextMode := strings.TrimSpace(homeContextMode)
 	sessionID := ""
 	if a.route == "chat" && a.chat != nil {
 		sessionID = strings.TrimSpace(a.chat.SessionID())

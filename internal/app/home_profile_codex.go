@@ -32,7 +32,7 @@ func (a *App) selectHomeModelProfile(profileID string) {
 		a.queueReload(false)
 		return
 	}
-	a.applyHomeModel(applyHomeModelProfiles(a.homeModel, state))
+	a.applyHomeModel(applyHomeModelProfiles(a.currentHomeModel(), state))
 	label := strings.TrimSpace(profile.Name)
 	if label == "" {
 		label = profile.ProfileID

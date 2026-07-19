@@ -72,7 +72,12 @@ func (a *App) resolveProviderModelData(ctx context.Context, hints []string, favo
 	for _, hint := range hints {
 		addProvider(hint)
 	}
-	addProvider(a.homeModel.ModelProvider)
+	if a.home != nil {
+		homeProvider, _, _, _, _ := a.home.ModelState()
+		addProvider(homeProvider)
+	} else {
+		addProvider(a.homeModel.ModelProvider)
+	}
 
 	for _, favorite := range favorites {
 		providerID := normalizeModelProviderID(favorite.Provider)

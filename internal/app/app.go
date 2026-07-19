@@ -1227,7 +1227,8 @@ func (a *App) applyAgentStreamEvent(event client.StreamEventEnvelope) bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
 		hints := make([]string, 0, len(state.Profiles)+2)
-		hints = append(hints, a.homeModel.ModelProvider)
+		homeProvider, homeModelName, homeThinking, _, _ := a.home.ModelState()
+		hints = append(hints, homeProvider)
 		for _, profile := range state.Profiles {
 			hints = append(hints, profile.Provider)
 		}
@@ -1240,9 +1241,9 @@ func (a *App) applyAgentStreamEvent(event client.StreamEventEnvelope) bool {
 		a.home.SetAgentsModalData(mapAgentsModalData(
 			modalState,
 			resolvedModels,
-			strings.TrimSpace(a.homeModel.ModelProvider),
-			strings.TrimSpace(a.homeModel.ModelName),
-			strings.TrimSpace(a.homeModel.ThinkingLevel),
+			strings.TrimSpace(homeProvider),
+			strings.TrimSpace(homeModelName),
+			strings.TrimSpace(homeThinking),
 			a.homeModel.ModelProfiles,
 			a.homeModel.DefaultModelProfileID,
 			a.homeModel.ActiveModelProfile.ProfileID,
@@ -1270,7 +1271,7 @@ func (a *App) applyAgentStateToRuntime(state client.AgentState) bool {
 	a.agentState = state
 	activeAgent, executionSetting, exitPlanMode, runtimeKnown := activeAgentRuntime(state)
 	subagents := chatMentionSubagentNames(state)
-	next := a.homeModel
+	next := a.currentHomeModel()
 	next.ActiveAgent = activeAgent
 	next.ActiveAgentExecutionSetting = executionSetting
 	next.ActiveAgentExitPlanMode = exitPlanMode
@@ -2684,7 +2685,8 @@ func (a *App) buildPlanExitModalBody(title string) string {
 	if a.chat != nil {
 		mode = a.chat.SessionMode()
 	}
-	modelLabel := model.DisplayModelLabel(a.homeModel.ModelProvider, a.homeModel.ModelName, a.homeModel.ServiceTier, a.homeModel.ContextMode)
+	homeProvider, homeModelName, _, homeServiceTier, homeContextMode := a.home.ModelState()
+	modelLabel := model.DisplayModelLabel(homeProvider, homeModelName, homeServiceTier, homeContextMode)
 	if modelLabel == "unset" {
 		modelLabel = "unset"
 	}
@@ -3112,10 +3114,26 @@ func activeAgentProfile(state client.AgentState) (client.AgentProfile, bool) {
 }
 
 func applyActiveAgentModels(next model.HomeModel, state client.AgentState) model.HomeModel {
-	next.PlanModelProvider, next.PlanModelName, next.PlanThinkingLevel, next.PlanServiceTier = "", "", "", ""
-	next.AutoModelProvider, next.AutoModelName, next.AutoThinkingLevel, next.AutoServiceTier = "", "", "", ""
+	if strings.EqualFold(strings.TrimSpace(next.ActiveModelProfile.Source), "saved") {
+		return next
+	}
+	next.PlanModelProvider, next.PlanModelName, next.PlanThinkingLevel, next.PlanServiceTier, next.PlanContextMode = "", "", "", "", ""
+	next.AutoModelProvider, next.AutoModelName, next.AutoThinkingLevel, next.AutoServiceTier, next.AutoContextMode = "", "", "", "", ""
 	profile, ok := activeAgentProfile(state)
-	if !ok || !strings.EqualFold(strings.TrimSpace(profile.RuntimeMode), "plan_auto") || !strings.EqualFold(strings.TrimSpace(profile.ModelMode), "split") {
+	if !ok || !strings.EqualFold(strings.TrimSpace(profile.RuntimeMode), "plan_auto") {
+		return next
+	}
+	if !strings.EqualFold(strings.TrimSpace(profile.ModelMode), "split") {
+		provider := strings.TrimSpace(profile.Provider)
+		modelName := strings.TrimSpace(profile.Model)
+		if provider == "" || modelName == "" {
+			return next
+		}
+		next.PlanModelProvider, next.AutoModelProvider = provider, provider
+		next.PlanModelName, next.AutoModelName = modelName, modelName
+		next.PlanThinkingLevel, next.AutoThinkingLevel = strings.TrimSpace(profile.Thinking), strings.TrimSpace(profile.Thinking)
+		next.PlanServiceTier, next.AutoServiceTier = next.ServiceTier, next.ServiceTier
+		next.PlanContextMode, next.AutoContextMode = next.ContextMode, next.ContextMode
 		return next
 	}
 	baseProvider := strings.TrimSpace(profile.Provider)
@@ -5435,7 +5453,7 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 			a.queueReload(false)
 			return
 		}
-		a.applyHomeModel(applyHomeModelProfiles(a.homeModel, state))
+		a.applyHomeModel(applyHomeModelProfiles(a.currentHomeModel(), state))
 		label := emptyFallback(strings.TrimSpace(profile.Name), profileID)
 		a.refreshAgentsModalData("account default profile: " + label)
 		a.queueReload(false)
@@ -6283,7 +6301,8 @@ func (a *App) refreshAgentsModalData(statusHint string) {
 		return
 	}
 	hints := make([]string, 0, len(state.Profiles)+2)
-	hints = append(hints, a.homeModel.ModelProvider)
+	homeProvider, homeModelName, homeThinking, _, _ := a.home.ModelState()
+	hints = append(hints, homeProvider)
 	for _, profile := range state.Profiles {
 		hints = append(hints, profile.Provider)
 	}
@@ -6299,9 +6318,9 @@ func (a *App) refreshAgentsModalData(statusHint string) {
 	a.home.SetAgentsModalData(mapAgentsModalData(
 		modalState,
 		resolvedModels,
-		strings.TrimSpace(a.homeModel.ModelProvider),
-		strings.TrimSpace(a.homeModel.ModelName),
-		strings.TrimSpace(a.homeModel.ThinkingLevel),
+		strings.TrimSpace(homeProvider),
+		strings.TrimSpace(homeModelName),
+		strings.TrimSpace(homeThinking),
 		a.homeModel.ModelProfiles,
 		a.homeModel.DefaultModelProfileID,
 		a.homeModel.ActiveModelProfile.ProfileID,
@@ -7408,6 +7427,18 @@ func (a *App) applyLoadedAppConfig(cfg AppConfig) {
 	a.mouseHintShown = false
 	a.syncConfiguredCustomThemes()
 	a.applyEffectiveTheme()
+}
+
+func (a *App) currentHomeModel() model.HomeModel {
+	if a == nil {
+		return model.HomeModel{}
+	}
+	next := a.homeModel
+	if a.home == nil {
+		return next
+	}
+	next.ModelProvider, next.ModelName, next.ThinkingLevel, next.ServiceTier, next.ContextMode = a.home.ModelState()
+	return next
 }
 
 func (a *App) applyHomeModel(next model.HomeModel) {
@@ -9031,13 +9062,8 @@ func applyHomeModelProfiles(next model.HomeModel, state client.ModelProfileState
 				}
 				return strings.TrimSpace(selection.Provider), strings.TrimSpace(selection.Model), strings.TrimSpace(selection.Thinking), strings.TrimSpace(selection.ServiceTier), strings.TrimSpace(selection.ContextMode)
 			}
-			next.PlanModelProvider, next.PlanModelName, next.PlanThinkingLevel, next.PlanServiceTier, _ = applySelection(profile.Plan)
-			next.AutoModelProvider, next.AutoModelName, next.AutoThinkingLevel, next.AutoServiceTier, next.ContextMode = applySelection(profile.Auto)
-			if aMode := strings.ToLower(strings.TrimSpace(next.ActiveAgentExecutionSetting)); aMode == "plan" {
-				next.ModelProvider, next.ModelName, next.ThinkingLevel, next.ServiceTier, next.ContextMode = applySelection(profile.Plan)
-			} else {
-				next.ModelProvider, next.ModelName, next.ThinkingLevel, next.ServiceTier, next.ContextMode = applySelection(profile.Auto)
-			}
+			next.PlanModelProvider, next.PlanModelName, next.PlanThinkingLevel, next.PlanServiceTier, next.PlanContextMode = applySelection(profile.Plan)
+			next.AutoModelProvider, next.AutoModelName, next.AutoThinkingLevel, next.AutoServiceTier, next.AutoContextMode = applySelection(profile.Auto)
 		} else if profile.Single != nil {
 			next.ModelProvider = strings.TrimSpace(profile.Single.Provider)
 			next.ModelName = strings.TrimSpace(profile.Single.Model)
@@ -9048,6 +9074,7 @@ func applyHomeModelProfiles(next model.HomeModel, state client.ModelProfileState
 			next.PlanModelName, next.AutoModelName = next.ModelName, next.ModelName
 			next.PlanThinkingLevel, next.AutoThinkingLevel = next.ThinkingLevel, next.ThinkingLevel
 			next.PlanServiceTier, next.AutoServiceTier = next.ServiceTier, next.ServiceTier
+			next.PlanContextMode, next.AutoContextMode = next.ContextMode, next.ContextMode
 		}
 		break
 	}

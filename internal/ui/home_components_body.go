@@ -442,14 +442,15 @@ func (p *HomePage) homeFooterTokens() []footerToken {
 }
 
 func (p *HomePage) homeFooterState() FooterState {
+	provider, modelName, thinking, serviceTier, contextMode := p.ModelState()
 	return FooterState{
 		RouteLabel:        p.activeSwarmFooterLabel(),
 		NotificationCount: p.swarmNotificationCount,
 		DisplayedMode:     currentDisplayedHomeSessionMode(p),
 		ProfileLabel:      p.ProfileLabel(),
-		ModelLabel:        model.DisplayModelLabel(p.model.ModelProvider, p.model.ModelName, p.model.ServiceTier, p.model.ContextMode),
-		Thinking:          strings.TrimSpace(p.model.ThinkingLevel),
-		ServiceTier:       strings.TrimSpace(p.model.ServiceTier),
+		ModelLabel:        model.DisplayModelLabel(provider, modelName, serviceTier, contextMode),
+		Thinking:          strings.TrimSpace(thinking),
+		ServiceTier:       strings.TrimSpace(serviceTier),
 		UnifiedProfile:    true,
 		PlanToggle:        true,
 		RightFacts:        p.homeFooterRightFacts(),

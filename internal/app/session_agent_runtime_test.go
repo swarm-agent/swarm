@@ -151,6 +151,38 @@ func TestApplyActiveAgentModelsHydratesPlanAutoSplit(t *testing.T) {
 	}
 }
 
+func TestApplyActiveAgentModelsHydratesPlanAutoSingle(t *testing.T) {
+	state := client.AgentState{
+		ActivePrimary: "swarm",
+		Profiles: []client.AgentProfile{{
+			Name: "swarm", RuntimeMode: "plan_auto", ModelMode: "single", Provider: "codex", Model: "single-model", Thinking: "high",
+		}},
+	}
+
+	got := applyActiveAgentModels(model.HomeModel{ServiceTier: "priority", ContextMode: "long"}, state)
+	if got.PlanModelProvider != "codex" || got.AutoModelProvider != "codex" || got.PlanModelName != "single-model" || got.AutoModelName != "single-model" {
+		t.Fatalf("single effective models = (%q, %q, %q, %q)", got.PlanModelProvider, got.PlanModelName, got.AutoModelProvider, got.AutoModelName)
+	}
+	if got.PlanThinkingLevel != "high" || got.AutoThinkingLevel != "high" || got.PlanContextMode != "long" || got.AutoContextMode != "long" {
+		t.Fatalf("single effective settings = (%q, %q, %q, %q)", got.PlanThinkingLevel, got.AutoThinkingLevel, got.PlanContextMode, got.AutoContextMode)
+	}
+}
+
+func TestApplyActiveAgentModelsKeepsSavedProfileSelections(t *testing.T) {
+	state := client.AgentState{ActivePrimary: "swarm", Profiles: []client.AgentProfile{{
+		Name: "swarm", RuntimeMode: "plan_auto", ModelMode: "split", PlanModel: "agent-plan", AutoModel: "agent-auto",
+	}}}
+	want := model.HomeModel{
+		ActiveModelProfile: model.ActiveModelProfile{Source: "saved"},
+		PlanModelProvider:  "codex", PlanModelName: "profile-plan",
+		AutoModelProvider: "openrouter", AutoModelName: "profile-auto",
+	}
+	got := applyActiveAgentModels(want, state)
+	if got.PlanModelName != "profile-plan" || got.AutoModelName != "profile-auto" {
+		t.Fatalf("saved profile selections overwritten: plan=%q auto=%q", got.PlanModelName, got.AutoModelName)
+	}
+}
+
 func TestActiveAgentRuntimeUsesSingleRuntimeMode(t *testing.T) {
 	legacyExitEnabled := true
 	state := client.AgentState{

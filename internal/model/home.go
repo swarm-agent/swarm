@@ -150,10 +150,12 @@ type HomeModel struct {
 	PlanModelName               string
 	PlanThinkingLevel           string
 	PlanServiceTier             string
+	PlanContextMode             string
 	AutoModelProvider           string
 	AutoModelName               string
 	AutoThinkingLevel           string
 	AutoServiceTier             string
+	AutoContextMode             string
 	ModelProfiles               []client.ModelProfile
 	DefaultModelProfileID       string
 	ActiveModelProfile          ActiveModelProfile
