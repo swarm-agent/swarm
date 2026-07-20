@@ -33,12 +33,6 @@ type permissionCardLine struct {
 	Style tcell.Style
 }
 
-type permissionCardLayout struct {
-	ContentY int
-	ContentH int
-	FooterY  int
-}
-
 func normalizePermissionToolName(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	value = strings.TrimPrefix(value, "functions.")
@@ -89,11 +83,8 @@ func permissionCardModelForRecord(record client.PermissionRecord, pendingCount, 
 	if toolName == "" {
 		toolName = "tool"
 	}
-	meta := fmt.Sprintf("Approval required  ·  %s  ·  mode %s", permissionRequirementLabel(record.Requirement), mode)
-	if pendingCount > 1 {
-		meta += fmt.Sprintf("  ·  %d pending", pendingCount)
-	}
-	model := permissionCardModel{Title: toolName + " permission", Meta: meta, FooterRows: 4}
+	meta := permissionCardMeta(record, pendingCount, mode)
+	model := permissionCardModel{Title: toolName + " permission", Meta: meta, FooterRows: permissionCardFooterRows(record)}
 	model.Content = append(model.Content, permissionCardLine{Text: "REQUEST", Style: styles.Muted.Bold(true)})
 	arguments := strings.TrimSpace(record.ToolArguments)
 	if arguments == "" {
@@ -110,11 +101,8 @@ func bashPermissionCardModel(record client.PermissionRecord, pendingCount, width
 	if mode == "" {
 		mode = "auto"
 	}
-	meta := fmt.Sprintf("Approval required  ·  %s  ·  mode %s", permissionRequirementLabel(record.Requirement), mode)
-	if pendingCount > 1 {
-		meta += fmt.Sprintf("  ·  %d pending", pendingCount)
-	}
-	model := permissionCardModel{Title: "Bash permission", Meta: meta, FooterRows: 4}
+	meta := permissionCardMeta(record, pendingCount, mode)
+	model := permissionCardModel{Title: "Bash permission", Meta: meta, FooterRows: permissionCardFooterRows(record)}
 	intent, ok := parseBashPermissionIntent(record)
 	if !ok {
 		model.Content = []permissionCardLine{{
@@ -157,52 +145,222 @@ func bashPermissionCardModel(record client.PermissionRecord, pendingCount, width
 		permissionCardLine{Text: bashPermissionPreviewPrefix(prefixPreview), Style: styles.Accent},
 		permissionCardLine{Text: "Future Bash commands starting with this prefix will be approved automatically.", Style: styles.Muted},
 	)
+	if !permissionPending(record) {
+		model.Content = append(model.Content,
+			permissionCardLine{Text: "", Style: styles.Muted},
+			permissionCardLine{Text: "RESOLVED", Style: styles.Muted.Bold(true)},
+			permissionCardLine{Text: permissionResolvedLabel(record), Style: permissionResolvedStyle(record, styles).Bold(true)},
+		)
+		if reason := strings.TrimSpace(record.Reason); reason != "" {
+			model.Content = append(model.Content, permissionCardLine{Text: "Note: " + reason, Style: styles.Muted})
+		}
+	}
 	return model
 }
 
-func drawPermissionCard(screen tcell.Screen, x, y, width, height int, styles PageStyles, model permissionCardModel, scroll int) permissionCardLayout {
-	footerRows := maxInt(1, model.FooterRows)
-	layout := permissionCardLayout{ContentY: y + 4, ContentH: maxInt(0, height-footerRows-5), FooterY: y + height - footerRows}
-	if width < 8 || height < footerRows+5 {
-		return layout
-	}
-	panel := styles.Panel
-	fill(screen, x, y, width, height, panel)
-	drawBox(screen, x, y, width, height, styleOnPermissionCard(styles.Border, panel))
-	innerX, innerWidth := x+2, width-4
-	titleStyle := styleOnPermissionCard(styles.Text.Bold(true), panel)
-	mutedStyle := styleOnPermissionCard(styles.Muted, panel)
-	badgeStyle := styleOnPermissionCard(styles.Secondary.Bold(true), panel)
-	dividerStyle := styleOnPermissionCard(styles.Border, panel)
+func permissionPending(record client.PermissionRecord) bool {
+	return strings.EqualFold(strings.TrimSpace(record.Status), "pending")
+}
 
-	badge := strings.ToUpper(strings.TrimSpace(model.Badge))
-	badgeWidth := 0
+func permissionCardMeta(record client.PermissionRecord, pendingCount int, mode string) string {
+	state := "Resolved · " + permissionResolvedLabel(record)
+	if permissionPending(record) {
+		state = "Approval required"
+	}
+	meta := fmt.Sprintf("%s  ·  %s  ·  mode %s", state, permissionRequirementLabel(record.Requirement), mode)
+	if permissionPending(record) && pendingCount > 1 {
+		meta += fmt.Sprintf("  ·  %d pending", pendingCount)
+	}
+	return meta
+}
+
+func permissionCardFooterRows(record client.PermissionRecord) int {
+	if permissionPending(record) {
+		return 4
+	}
+	return 1
+}
+
+func permissionResolvedLabel(record client.PermissionRecord) string {
+	decision := strings.ToLower(strings.TrimSpace(record.Decision))
+	switch decision {
+	case "allow_once":
+		return "Approved once"
+	case "allow_always":
+		return "Always allowed"
+	case "deny_once":
+		return "Denied once"
+	case "deny_always":
+		return "Always denied"
+	}
+	status := strings.TrimSpace(record.Status)
+	if status == "" {
+		return "Resolved"
+	}
+	return strings.ToUpper(status[:1]) + status[1:]
+}
+
+func permissionResolvedStyle(record client.PermissionRecord, styles PageStyles) tcell.Style {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(record.Decision)), "deny") {
+		return styles.Error
+	}
+	return styles.Success
+}
+
+type permissionCardAction struct {
+	Label  string
+	Action string
+	Tone   tcell.Style
+}
+
+type permissionCardView struct {
+	Model     permissionCardModel
+	Selected  bool
+	Pending   bool
+	Note      string
+	Busy      bool
+	ErrorText string
+	Actions   []permissionCardAction
+}
+
+func inlinePermissionCardRows(record client.PermissionRecord, pendingCount, width int, styles PageStyles, prefixPreview string, selected bool, note []rune, busy bool, errorText string) []renderRow {
+	view := permissionCardView{
+		Model:     permissionCardModelForRecord(record, pendingCount, maxInt(1, width-4), styles, prefixPreview),
+		Selected:  selected,
+		Pending:   permissionPending(record),
+		Note:      string(note),
+		Busy:      busy,
+		ErrorText: errorText,
+		Actions: []permissionCardAction{
+			{Label: "Enter Approve", Action: "allow_once", Tone: styles.Success},
+			{Label: "Esc Deny", Action: "deny_once", Tone: styles.Error},
+			{Label: "Ctrl+A Always Allow", Action: "allow_always", Tone: styles.Accent},
+			{Label: "Ctrl+D Always Deny", Action: "deny_always", Tone: styles.Warning},
+		},
+	}
+	return permissionCardRows(view, width, styles)
+}
+
+// permissionCardRows is the shared themed permission-card renderer. Tool
+// presenters provide a model and actions; this component owns the surface,
+// focus border, badge, footer layout, and mouse targets.
+func permissionCardRows(view permissionCardView, width int, styles PageStyles) []renderRow {
+	if width < 24 {
+		return nil
+	}
+	surface := styles.Background
+	borderTone := styles.Border
+	if view.Selected {
+		borderTone = styles.BorderActive
+	}
+	border := styleOnPermissionCard(borderTone, surface)
+	text := styleOnPermissionCard(styles.Text, surface)
+	rows := make([]renderRow, 0, len(view.Model.Content)+10)
+
+	appendEdge := func(left, middle, right string) {
+		rows = append(rows, renderRow{
+			text:  left + strings.Repeat(middle, maxInt(0, width-2)) + right,
+			style: border,
+		})
+	}
+	appendBody := func(spans []renderSpan, actions []renderActionTarget) {
+		used := 2
+		body := []renderSpan{{text: "│ ", style: border}}
+		var rowText strings.Builder
+		rowText.WriteString("│ ")
+		for _, span := range spans {
+			remaining := maxInt(0, width-1-used)
+			if remaining == 0 {
+				break
+			}
+			span.text = truncateRunes(span.text, remaining)
+			if !span.keepBackground {
+				span.style = styleOnPermissionCard(span.style, surface)
+			}
+			body = append(body, span)
+			rowText.WriteString(span.text)
+			used += utf8.RuneCountInString(span.text)
+		}
+		padding := strings.Repeat(" ", maxInt(0, width-1-used))
+		body = append(body, renderSpan{text: padding + "│", style: border})
+		rowText.WriteString(padding + "│")
+		rows = append(rows, renderRow{text: rowText.String(), style: surface, spans: body, actions: actions})
+	}
+	appendText := func(value string, style tcell.Style) {
+		appendBody([]renderSpan{{text: truncateRunes(value, maxInt(0, width-3)), style: style}}, nil)
+	}
+
+	appendEdge("┌", "─", "┐")
+	title := strings.TrimSpace(view.Model.Title)
+	badge := strings.ToUpper(strings.TrimSpace(view.Model.Badge))
+	headerSpans := []renderSpan{{text: truncateRunes(title, maxInt(1, width-4)), style: styles.Text.Bold(true)}}
 	if badge != "" {
-		badge = " " + badge + " "
-		badgeWidth = utf8.RuneCountInString(badge)
-		if badgeWidth+1 < innerWidth {
-			badgeX := innerX + innerWidth - badgeWidth
-			fill(screen, badgeX, y+1, badgeWidth, 1, badgeStyle)
-			drawText(screen, badgeX, y+1, badgeWidth, badgeStyle, badge)
+		badgeText := " " + badge + " "
+		innerWidth := maxInt(1, width-3)
+		title = truncateRunes(title, maxInt(1, innerWidth-utf8.RuneCountInString(badgeText)-1))
+		gap := maxInt(1, innerWidth-utf8.RuneCountInString(title)-utf8.RuneCountInString(badgeText))
+		headerSpans = []renderSpan{
+			{text: title, style: styles.Text.Bold(true)},
+			{text: strings.Repeat(" ", gap), style: surface},
+			{text: badgeText, style: permissionButtonStyle(styles.Secondary), keepBackground: true},
 		}
 	}
-	titleWidth := innerWidth
-	if badgeWidth > 0 && badgeWidth+1 < innerWidth {
-		titleWidth -= badgeWidth + 1
+	appendBody(headerSpans, nil)
+	appendText(strings.TrimSpace(view.Model.Meta), styles.Muted)
+	appendEdge("├", "─", "┤")
+	for _, line := range view.Model.Content {
+		appendText(line.Text, line.Style)
 	}
-	drawText(screen, innerX, y+1, titleWidth, titleStyle, truncateRunes(strings.TrimSpace(model.Title), titleWidth))
-	drawText(screen, innerX, y+2, innerWidth, mutedStyle, truncateRunes(strings.TrimSpace(model.Meta), innerWidth))
-	drawHLine(screen, x+1, y+3, width-2, dividerStyle)
-	drawHLine(screen, x+1, layout.FooterY-1, width-2, dividerStyle)
 
-	maxScroll := maxInt(0, len(model.Content)-layout.ContentH)
-	scroll = maxInt(0, minInt(scroll, maxScroll))
-	end := minInt(len(model.Content), scroll+layout.ContentH)
-	for index := scroll; index < end; index++ {
-		line := model.Content[index]
-		drawText(screen, innerX, layout.ContentY+index-scroll, innerWidth, styleOnPermissionCard(line.Style, panel), line.Text)
+	if view.Pending && view.Selected {
+		appendEdge("├", "─", "┤")
+		if strings.TrimSpace(view.ErrorText) != "" {
+			appendText("error · "+strings.TrimSpace(view.ErrorText), styles.Error)
+		} else {
+			appendBody([]renderSpan{
+				{text: "note › ", style: styles.Muted},
+				{text: view.Note, style: styles.Text},
+			}, nil)
+		}
+		if view.Busy {
+			appendText("Resolving permission…", styles.Muted)
+		} else {
+			var spans []renderSpan
+			var targets []renderActionTarget
+			x := 2
+			for _, action := range view.Actions {
+				label := " " + strings.TrimSpace(action.Label) + " "
+				labelWidth := utf8.RuneCountInString(label)
+				if x+labelWidth >= width-1 {
+					break
+				}
+				spans = append(spans, renderSpan{text: label, style: permissionButtonStyle(action.Tone), keepBackground: true})
+				targets = append(targets, renderActionTarget{x: x, width: labelWidth, action: action.Action})
+				x += labelWidth
+				if x+1 < width-1 {
+					spans = append(spans, renderSpan{text: " ", style: surface})
+					x++
+				}
+			}
+			appendBody(spans, targets)
+		}
 	}
-	return layout
+	appendEdge("└", "─", "┘")
+	rows = append(rows, renderRow{text: "", style: text})
+	return rows
+}
+
+func permissionButtonStyle(tone tcell.Style) tcell.Style {
+	background, _, attributes := tone.Decompose()
+	if !background.Valid() || background == tcell.ColorDefault {
+		background = tcell.ColorWhite
+	}
+	r, g, b := background.TrueColor().RGB()
+	foreground := tcell.ColorWhite
+	if (299*r+587*g+114*b)/1000 >= 160 {
+		foreground = tcell.ColorBlack
+	}
+	return tcell.StyleDefault.Foreground(foreground).Background(background).Attributes(attributes | tcell.AttrBold)
 }
 
 func styleOnPermissionCard(style, surface tcell.Style) tcell.Style {

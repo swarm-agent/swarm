@@ -76,42 +76,67 @@ type PendingMessage struct {
 	ClientRequestID string
 }
 
-type PermissionState struct {
-	Records []client.PermissionRecord
+type PermissionTimelineItem struct {
+	Record    client.PermissionRecord
+	GlobalSeq uint64
 }
 
-func pendingPermissionsFromClient(records []client.PermissionRecord) PermissionState {
-	pending := make([]client.PermissionRecord, 0, len(records))
+type PermissionState struct {
+	Records []PermissionTimelineItem
+}
+
+func permissionsFromClient(records []client.PermissionRecord) PermissionState {
+	items := make([]PermissionTimelineItem, 0, len(records))
 	for _, record := range records {
-		if strings.EqualFold(strings.TrimSpace(record.Status), "pending") {
-			pending = append(pending, record)
+		if strings.TrimSpace(record.ID) != "" {
+			items = append(items, PermissionTimelineItem{Record: record})
 		}
 	}
-	sort.SliceStable(pending, func(i, j int) bool {
-		left := firstPositiveInt64(pending[i].PermissionRequestedAt, pending[i].CreatedAt)
-		right := firstPositiveInt64(pending[j].PermissionRequestedAt, pending[j].CreatedAt)
-		if left != right {
-			return left < right
-		}
-		return pending[i].ID < pending[j].ID
-	})
-	return PermissionState{Records: pending}
+	sortPermissionTimeline(items)
+	return PermissionState{Records: items}
 }
 
-func applyPermissionRecord(state State, record client.PermissionRecord) State {
-	records := append([]client.PermissionRecord(nil), state.Permissions.Records...)
+func sortPermissionTimeline(items []PermissionTimelineItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		left, right := items[i], items[j]
+		if left.GlobalSeq != right.GlobalSeq {
+			if left.GlobalSeq == 0 {
+				return false
+			}
+			if right.GlobalSeq == 0 {
+				return true
+			}
+			return left.GlobalSeq < right.GlobalSeq
+		}
+		leftAt := firstPositiveInt64(left.Record.PermissionRequestedAt, left.Record.CreatedAt)
+		rightAt := firstPositiveInt64(right.Record.PermissionRequestedAt, right.Record.CreatedAt)
+		if leftAt != rightAt {
+			return leftAt < rightAt
+		}
+		return left.Record.ID < right.Record.ID
+	})
+}
+
+// applyPermissionRecord preserves the request's first durable sequence so a
+// permission.updated event changes the existing timeline card in place.
+func applyPermissionRecord(state State, record client.PermissionRecord, eventSeq uint64) State {
+	records := append([]PermissionTimelineItem(nil), state.Permissions.Records...)
 	replaced := false
 	for index := range records {
-		if strings.TrimSpace(records[index].ID) == strings.TrimSpace(record.ID) {
-			records[index] = record
+		if strings.TrimSpace(records[index].Record.ID) == strings.TrimSpace(record.ID) {
+			records[index].Record = record
+			if records[index].GlobalSeq == 0 {
+				records[index].GlobalSeq = eventSeq
+			}
 			replaced = true
 			break
 		}
 	}
 	if !replaced {
-		records = append(records, record)
+		records = append(records, PermissionTimelineItem{Record: record, GlobalSeq: eventSeq})
 	}
-	state.Permissions = pendingPermissionsFromClient(records)
+	sortPermissionTimeline(records)
+	state.Permissions = PermissionState{Records: records}
 	return state
 }
 
@@ -325,9 +350,9 @@ func Reduce(current State, action Action) State {
 		next.Session.Mode = strings.ToLower(strings.TrimSpace(value.Resolved.Mode))
 		applyAgentModelPolicy(&next.Model, value.Resolved.Preference, value.Resolved.ContextWindow, value.Resolved.MaxOutputTokens, value.Resolved.AgentModelPolicy)
 	case PermissionsAction:
-		next.Permissions = pendingPermissionsFromClient(value.Records)
+		next.Permissions = permissionsFromClient(value.Records)
 	case PermissionAction:
-		next = applyPermissionRecord(next, value.Record)
+		next = applyPermissionRecord(next, value.Record, 0)
 	}
 	return next
 }
@@ -342,7 +367,7 @@ func reduceHydrated(state State, hydrated client.SessionV3Hydrated) State {
 	applyAgentModelPolicy(&state.Model, preference, hydrated.ContextWindow, hydrated.MaxOutputTokens, hydrated.AgentModelPolicy)
 	state.Usage = usageStateFromSummary(hydrated.UsageSummary)
 	state.Plan = planStateFromHydrated(hydrated)
-	state.Permissions = pendingPermissionsFromClient(hydrated.PendingPermissions)
+	state.Permissions = permissionsFromClient(hydrated.PendingPermissions)
 	state.Messages = mergeMessages(nil, hydrated.Messages)
 	state.Tools = make(map[string]ToolTimelineItem)
 	state.LastEventSeq = 0
@@ -478,7 +503,7 @@ func applyEvent(state State, event client.SessionV3Event) State {
 	if raw := payload["permission"]; len(raw) > 0 {
 		var permission client.PermissionRecord
 		if json.Unmarshal(raw, &permission) == nil && strings.TrimSpace(permission.ID) != "" {
-			state = applyPermissionRecord(state, permission)
+			state = applyPermissionRecord(state, permission, event.Seq)
 		}
 	}
 	if raw := payload["run_intent"]; len(raw) > 0 {
@@ -651,7 +676,7 @@ func sortedEvents(events []client.SessionV3Event) []client.SessionV3Event {
 func cloneState(value State) State {
 	out := value
 	out.Messages = append([]Message(nil), value.Messages...)
-	out.Permissions.Records = append([]client.PermissionRecord(nil), value.Permissions.Records...)
+	out.Permissions.Records = append([]PermissionTimelineItem(nil), value.Permissions.Records...)
 	out.Pending = make(map[string]PendingMessage, len(value.Pending))
 	for key, pending := range value.Pending {
 		out.Pending[key] = pending

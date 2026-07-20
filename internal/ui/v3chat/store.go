@@ -78,8 +78,19 @@ func SelectReconnect(state State) (ConnectionStatus, bool, string) {
 func SelectModel(state State) ModelState        { return state.Model }
 func SelectUsage(state State) UsageState        { return state.Usage }
 func SelectCursor(state State) (string, uint64) { return state.EndpointCursor, state.LastEventSeq }
+func SelectPermissions(state State) []PermissionTimelineItem {
+	return append([]PermissionTimelineItem(nil), state.Permissions.Records...)
+}
+
 func SelectPendingPermissions(state State) []client.PermissionRecord {
-	return append([]client.PermissionRecord(nil), state.Permissions.Records...)
+	items := SelectPermissions(state)
+	out := make([]client.PermissionRecord, 0, len(items))
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.Record.Status), "pending") {
+			out = append(out, item.Record)
+		}
+	}
+	return out
 }
 
 type PlanHeader struct {

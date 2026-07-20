@@ -38,7 +38,7 @@ func TestPageHeaderAndLiveOverlayRenderFromStore(t *testing.T) {
 	}
 }
 
-func TestBashPermissionFromHydrationRendersThemedCardAndActions(t *testing.T) {
+func TestBashPermissionFromHydrationRendersInlineThemedCardAndActions(t *testing.T) {
 	permission := client.PermissionRecord{
 		ID:            "permission-bash",
 		SessionID:     "session-bash",
@@ -73,8 +73,8 @@ func TestBashPermissionFromHydrationRendersThemedCardAndActions(t *testing.T) {
 		"Start a listener on TCP port 8080.",
 		"python3 listener.py",
 		"available after approval",
-		"Ctrl+D Always deny",
-		"Ctrl+A Always allow",
+		"Ctrl+D Always Deny",
+		"Ctrl+A Always Allow",
 		"Esc Deny",
 		"Enter Approve",
 	} {
@@ -82,8 +82,110 @@ func TestBashPermissionFromHydrationRendersThemedCardAndActions(t *testing.T) {
 			t.Fatalf("rendered Bash permission card missing %q:\n%s", want, drawn)
 		}
 	}
-	if strings.Contains(drawn, "> ") {
-		t.Fatalf("ordinary composer rendered behind Bash permission card:\n%s", drawn)
+	if !strings.Contains(drawn, "> ") {
+		t.Fatalf("inline Bash permission card replaced the ordinary composer:\n%s", drawn)
+	}
+	card := strings.Index(drawn, "Bash permission")
+	composer := strings.LastIndex(drawn, "> ")
+	if card < 0 || composer < 0 || card >= composer {
+		t.Fatalf("permission card is not inline above the composer: card=%d composer=%d\n%s", card, composer, drawn)
+	}
+}
+
+func TestPermissionCardRowsMatchOldChatHierarchyAndFilledActions(t *testing.T) {
+	styles := PageStyles{
+		Panel:        tcell.StyleDefault.Background(tcell.ColorBlack),
+		Border:       tcell.StyleDefault.Foreground(tcell.ColorGray),
+		BorderActive: tcell.StyleDefault.Foreground(tcell.ColorPurple),
+		Text:         tcell.StyleDefault.Foreground(tcell.ColorWhite),
+		Muted:        tcell.StyleDefault.Foreground(tcell.ColorGray),
+		Secondary:    tcell.StyleDefault.Foreground(tcell.ColorBlue),
+		Success:      tcell.StyleDefault.Foreground(tcell.ColorGreen),
+		Error:        tcell.StyleDefault.Foreground(tcell.ColorRed),
+		Accent:       tcell.StyleDefault.Foreground(tcell.ColorPurple),
+		Warning:      tcell.StyleDefault.Foreground(tcell.ColorYellow),
+	}
+	record := client.PermissionRecord{
+		ID: "permission", ToolName: "bash", Status: "pending", Mode: "auto",
+		ToolArguments: `{"command":"pwd","explanation":["Inspect the working directory."],"category":"read","critical":false}`,
+	}
+	rows := inlinePermissionCardRows(record, 1, 88, styles, "pwd", true, []rune("safe"), false, "")
+	if len(rows) < 9 || !strings.HasPrefix(rows[0].text, "┌") || !strings.Contains(rows[1].text, "Bash permission") || !strings.Contains(rows[2].text, "Approval required") {
+		t.Fatalf("permission card hierarchy does not match the old chat card: %#v", rows)
+	}
+	borderForeground, _, _ := rows[0].style.Decompose()
+	if borderForeground != tcell.ColorPurple {
+		t.Fatalf("selected card border = %v, want active border color", borderForeground)
+	}
+	var actionRow renderRow
+	for _, row := range rows {
+		if len(row.actions) > 0 {
+			actionRow = row
+			break
+		}
+	}
+	if len(actionRow.actions) != 4 || len(actionRow.spans) < 2 {
+		t.Fatalf("permission action row = %#v, want four filled old-chat actions", actionRow)
+	}
+	foreground, background, attributes := actionRow.spans[1].style.Decompose()
+	if background != tcell.ColorGreen || foreground != tcell.ColorWhite || attributes&tcell.AttrBold == 0 {
+		t.Fatalf("approve action style = fg %v bg %v attrs %v; want filled success button", foreground, background, attributes)
+	}
+}
+
+func TestPermissionCardRendersOnlyOutlineWithoutPanelBackgroundBleed(t *testing.T) {
+	background := tcell.ColorNavy
+	panel := tcell.ColorMaroon
+	styles := PageStyles{
+		Background:   tcell.StyleDefault.Background(background),
+		Panel:        tcell.StyleDefault.Background(panel),
+		Border:       tcell.StyleDefault.Foreground(tcell.ColorGray),
+		BorderActive: tcell.StyleDefault.Foreground(tcell.ColorPurple),
+		Text:         tcell.StyleDefault.Foreground(tcell.ColorWhite),
+		Muted:        tcell.StyleDefault.Foreground(tcell.ColorGray),
+	}
+	rows := permissionCardRows(permissionCardView{
+		Model: permissionCardModel{
+			Title:   "Bash permission",
+			Meta:    "Approval required",
+			Content: []permissionCardLine{{Text: "COMMAND", Style: styles.Muted}, {Text: "pwd", Style: styles.Text}},
+		},
+		Selected: true,
+	}, 40, styles)
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(48, len(rows)+2)
+	fill(screen, 0, 0, 48, len(rows)+2, styles.Background)
+	cardX, cardY := 3, 1
+	for index, row := range rows {
+		if len(row.spans) > 0 {
+			drawSpans(screen, cardX, cardY+index, 40, row.spans)
+		} else {
+			drawText(screen, cardX, cardY+index, 40, row.style, row.text)
+		}
+	}
+	screen.Show()
+
+	cardRows := len(rows) - 1 // The final empty row separates timeline items.
+	for y := cardY; y < cardY+cardRows; y++ {
+		for _, x := range []int{cardX - 1, cardX + 40} {
+			_, _, style, _ := screen.GetContent(x, y)
+			_, gotBackground, _ := style.Decompose()
+			if gotBackground != background {
+				t.Fatalf("cell immediately outside permission border at (%d,%d) has background %v, want timeline background %v", x, y, gotBackground, background)
+			}
+		}
+		for _, x := range []int{cardX, cardX + 1, cardX + 39} {
+			_, _, style, _ := screen.GetContent(x, y)
+			_, gotBackground, _ := style.Decompose()
+			if gotBackground != background {
+				t.Fatalf("permission outline cell at (%d,%d) has background %v, want unfilled timeline background %v", x, y, gotBackground, background)
+			}
+		}
 	}
 }
 
@@ -124,7 +226,10 @@ func TestBashPermissionCardApproveUsesCanonicalV3PermissionAPI(t *testing.T) {
 		ID: "permission-bash", SessionID: "session-bash", ToolName: "bash", Status: "pending",
 		ToolArguments: `{"command":"npm run build","explanation":["Build the workspace."],"category":"write","critical":false}`,
 	}
-	transport := &fakeTransport{}
+	resolved := permission
+	resolved.Status = "approved"
+	resolved.Decision = "allow_once"
+	transport := &fakeTransport{resolvedPermission: resolved}
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
 		Session: client.SessionSummary{ID: "session-bash"}, PendingPermissions: []client.PermissionRecord{permission},
@@ -140,13 +245,58 @@ func TestBashPermissionCardApproveUsesCanonicalV3PermissionAPI(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	if page.PendingPermissionVisible() {
-		t.Fatal("approved Bash permission stayed visible")
+		t.Fatal("approved Bash permission stayed pending")
+	}
+	resolvedItems := SelectPermissions(store.Snapshot())
+	if len(resolvedItems) != 1 || resolvedItems[0].Record.Status != "approved" || resolvedItems[0].Record.Decision != "allow_once" {
+		t.Fatalf("resolved permission timeline state = %#v", resolvedItems)
 	}
 	transport.mu.Lock()
 	request := transport.permissionRequest
 	transport.mu.Unlock()
 	if request.sessionID != "session-bash" || request.permissionID != "permission-bash" || request.action != "allow_once" || request.reason != "looks good" {
 		t.Fatalf("permission resolution request = %#v", request)
+	}
+}
+
+func TestBashPermissionCardMouseApproveUsesCanonicalV3PermissionAPI(t *testing.T) {
+	permission := client.PermissionRecord{
+		ID: "permission-mouse", SessionID: "session-bash", ToolName: "bash", Status: "pending",
+		ToolArguments: `{"command":"pwd","explanation":["Inspect the working directory."],"category":"read","critical":false}`,
+	}
+	resolved := permission
+	resolved.Status = "approved"
+	resolved.Decision = "allow_once"
+	transport := &fakeTransport{resolvedPermission: resolved}
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session: client.SessionSummary{ID: "session-bash"}, PendingPermissions: []client.PermissionRecord{permission},
+	}})
+	page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 28)
+	page.Draw(screen)
+
+	page.mu.Lock()
+	target := page.permissionApproveTarget
+	page.mu.Unlock()
+	if target.W == 0 || target.H == 0 {
+		t.Fatal("inline approve action did not expose a mouse target")
+	}
+	page.HandleMouse(tcell.NewEventMouse(target.X, target.Y, tcell.Button1, tcell.ModNone))
+	deadline := time.Now().Add(time.Second)
+	for page.PendingPermissionVisible() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	transport.mu.Lock()
+	request := transport.permissionRequest
+	transport.mu.Unlock()
+	if request.sessionID != "session-bash" || request.permissionID != "permission-mouse" || request.action != "allow_once" {
+		t.Fatalf("mouse permission resolution request = %#v", request)
 	}
 }
 
@@ -177,7 +327,24 @@ func TestBashPermissionRealtimeEventSelectsPermissionCard(t *testing.T) {
 	}
 	store.Dispatch(RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{SessionID: "session-bash", Seq: 2, EventType: "permission.updated", Payload: payload}}})
 	if page.PendingPermissionVisible() {
-		t.Fatal("resolved realtime Bash permission left permission card visible")
+		t.Fatal("resolved realtime Bash permission stayed pending")
+	}
+	items := SelectPermissions(store.Snapshot())
+	if len(items) != 1 || items[0].GlobalSeq != 1 || items[0].Record.Status != "approved" {
+		t.Fatalf("resolved permission did not retain its timeline position: %#v", items)
+	}
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 28)
+	page.Draw(screen)
+	screen.Show()
+	drawn := simulationText(screen, 100, 28)
+	if !strings.Contains(drawn, "Resolved · Approved once") || !strings.Contains(drawn, "RESOLVED") {
+		t.Fatalf("resolved Bash permission card was removed instead of updated:\n%s", drawn)
 	}
 }
 
@@ -696,6 +863,45 @@ func TestPageRendersToolCallAndResultInCanonicalTimelineOrder(t *testing.T) {
 	}
 }
 
+func TestPageRendersPermissionAtDurableTimelinePositionAndAtBottomWithoutSequence(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), testPageStyles())
+	permission := client.PermissionRecord{
+		ID: "permission", ToolName: "bash", Status: "pending", CreatedAt: 300,
+		ToolArguments: `{"command":"pwd","explanation":["Inspect the working directory."],"category":"read","critical":false}`,
+	}
+	state := State{
+		Messages: []Message{
+			{ID: "before", GlobalSeq: 2, CreatedAt: 200, Role: "assistant", Content: "before permission"},
+			{ID: "after", GlobalSeq: 4, CreatedAt: 400, Role: "assistant", Content: "after permission"},
+		},
+		Permissions: PermissionState{Records: []PermissionTimelineItem{{Record: permission, GlobalSeq: 3}}},
+	}
+	rows := page.renderRows(state, 80, testPageStyles())
+	var joined strings.Builder
+	for _, row := range rows {
+		joined.WriteString(row.text)
+		joined.WriteByte('\n')
+	}
+	text := joined.String()
+	before, card, after := strings.Index(text, "before permission"), strings.Index(text, "Bash permission"), strings.Index(text, "after permission")
+	if before < 0 || card < 0 || after < 0 || !(before < card && card < after) {
+		t.Fatalf("permission timeline order mismatch: before=%d card=%d after=%d\n%s", before, card, after, text)
+	}
+
+	state.Permissions.Records[0].GlobalSeq = 0
+	state.Permissions.Records[0].Record.CreatedAt = 0
+	rows = page.renderRows(state, 80, testPageStyles())
+	joined.Reset()
+	for _, row := range rows {
+		joined.WriteString(row.text)
+		joined.WriteByte('\n')
+	}
+	text = joined.String()
+	if card, after = strings.Index(text, "Bash permission"), strings.Index(text, "after permission"); card <= after {
+		t.Fatalf("unsequenced permission was not placed in the next available bottom section:\n%s", text)
+	}
+}
+
 func TestPageRendersLiveToolAtItsEventSequence(t *testing.T) {
 	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), testPageStyles())
 	state := State{
@@ -777,7 +983,7 @@ func TestPageRowCacheIsBounded(t *testing.T) {
 }
 
 func testPageStyles() PageStyles {
-	return PageStyles{Background: tcell.StyleDefault, Panel: tcell.StyleDefault, Border: tcell.StyleDefault, Text: tcell.StyleDefault, Muted: tcell.StyleDefault, Primary: tcell.StyleDefault, Accent: tcell.StyleDefault, Secondary: tcell.StyleDefault, Success: tcell.StyleDefault, Warning: tcell.StyleDefault, Error: tcell.StyleDefault, Prompt: tcell.StyleDefault, Cursor: tcell.StyleDefault.Reverse(true)}
+	return PageStyles{Background: tcell.StyleDefault, Panel: tcell.StyleDefault, Border: tcell.StyleDefault, BorderActive: tcell.StyleDefault, Text: tcell.StyleDefault, Muted: tcell.StyleDefault, Primary: tcell.StyleDefault, Accent: tcell.StyleDefault, Secondary: tcell.StyleDefault, Success: tcell.StyleDefault, Warning: tcell.StyleDefault, Error: tcell.StyleDefault, Prompt: tcell.StyleDefault, Cursor: tcell.StyleDefault.Reverse(true)}
 }
 
 func simulationRow(screen tcell.SimulationScreen, width, row int) string {

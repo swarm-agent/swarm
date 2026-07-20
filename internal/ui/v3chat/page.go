@@ -30,6 +30,7 @@ type PageStyles struct {
 	Panel          tcell.Style
 	Element        tcell.Style
 	Border         tcell.Style
+	BorderActive   tcell.Style
 	Text           tcell.Style
 	Muted          tcell.Style
 	Primary        tcell.Style
@@ -107,7 +108,6 @@ type Page struct {
 	permissionInput            []rune
 	permissionBusy             bool
 	permissionError            string
-	permissionScroll           int
 	permissionPrefix           string
 	permissionPrefixID         string
 	permissionPrefixLoading    bool
@@ -797,23 +797,24 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 	case tcell.KeyUp:
 		if p.permissionIndex > 0 {
 			p.permissionIndex--
-			p.permissionScroll = 0
 			p.permissionPrefixID = ""
 			p.ensurePermissionPrefixLocked()
 		}
 	case tcell.KeyDown:
 		if p.permissionIndex+1 < len(permissions) {
 			p.permissionIndex++
-			p.permissionScroll = 0
 			p.permissionPrefixID = ""
 			p.ensurePermissionPrefixLocked()
 		}
 	case tcell.KeyPgUp:
-		p.permissionScroll = maxInt(0, p.permissionScroll-6)
+		p.scroll += 8
+		p.follow = false
 	case tcell.KeyPgDn:
-		p.permissionScroll += 6
+		p.scroll = maxInt(0, p.scroll-8)
+		p.follow = p.scroll == 0
 	case tcell.KeyHome:
-		p.permissionScroll = 0
+		p.scroll = 1 << 30
+		p.follow = false
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if len(p.permissionInput) > 0 {
 			p.permissionInput = p.permissionInput[:len(p.permissionInput)-1]
@@ -850,7 +851,6 @@ func (p *Page) resolvePermissionLocked(permission client.PermissionRecord, actio
 			p.permissionError = err.Error()
 		} else {
 			p.permissionInput = nil
-			p.permissionScroll = 0
 			permissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
 			if p.permissionIndex >= len(permissions) {
 				p.permissionIndex = maxInt(0, len(permissions)-1)
@@ -888,10 +888,12 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 			}
 		}
 		if buttons&tcell.WheelUp != 0 {
-			p.permissionScroll = maxInt(0, p.permissionScroll-3)
+			p.scroll += 3
+			p.follow = false
 		}
 		if buttons&tcell.WheelDown != 0 {
-			p.permissionScroll += 3
+			p.scroll = maxInt(0, p.scroll-3)
+			p.follow = p.scroll == 0
 		}
 		return
 	}
@@ -913,8 +915,15 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 }
 
 type renderSpan struct {
-	text  string
-	style tcell.Style
+	text           string
+	style          tcell.Style
+	keepBackground bool
+}
+
+type renderActionTarget struct {
+	x      int
+	width  int
+	action string
 }
 
 type renderRow struct {
@@ -926,6 +935,7 @@ type renderRow struct {
 	highlightStart int
 	highlightWidth int
 	highlightStyle tcell.Style
+	actions        []renderActionTarget
 }
 
 func styleWithForeground(style, foregroundStyle tcell.Style) tcell.Style {
@@ -958,11 +968,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	modelPicker, modelLoading, modelIndex := p.modelPicker, p.modelLoading, p.modelIndex
 	modelOptions := append([]client.ModelCatalogRecord(nil), p.modelOptions...)
 	commandSuggestions := append([]CommandSuggestion(nil), p.commandSuggestions...)
-	permissionIndex := p.permissionIndex
-	permissionInput := append([]rune(nil), p.permissionInput...)
 	p.ensurePermissionPrefixLocked()
-	permissionBusy, permissionError, permissionScroll := p.permissionBusy, p.permissionError, p.permissionScroll
-	permissionPrefix := p.permissionPrefix
 	commandPaletteIndex := p.commandPaletteIndex
 	commandPaletteOptionIndex := p.commandPaletteOptionIndex
 	commandPaletteOptionOwner := p.commandPaletteOptionOwner
@@ -998,12 +1004,6 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	// left by an older render rather than waking the page for text that is not shown.
 	p.scheduleRunTimer(false)
 
-	permissions := SelectPendingPermissions(state)
-	if len(permissions) > 0 {
-		p.drawPermissionSurface(screen, width, height, styles, state, permissions, permissionIndex, permissionInput, permissionBusy, permissionError, permissionPrefix, permissionScroll, transcriptTop, routeLabel, profileLabel, statusLine, statusStyle)
-		return
-	}
-
 	// Keep the footer to its separator and token row so the separator is also
 	// the composer's bottom border, directly beneath the editable rows.
 	footerHeight := 2
@@ -1022,6 +1022,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 		start = 0
 	}
 	end := minInt(len(rows), start+transcriptHeight)
+	permissionTargets := map[string]footerbar.Rect{}
 	for i := start; i < end; i++ {
 		row := rows[i]
 		y := transcriptTop + i - start
@@ -1029,6 +1030,9 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 			drawSpans(screen, 2, y, width-4, row.spans)
 		} else {
 			drawText(screen, 2, y, width-4, row.style, row.text)
+		}
+		for _, target := range row.actions {
+			permissionTargets[target.action] = footerbar.Rect{X: 2 + target.x, Y: y, W: target.width, H: 1}
 		}
 		if row.prefixWidth > 0 {
 			drawText(screen, 2, y, minInt(width-4, row.prefixWidth), row.prefixStyle, row.text)
@@ -1038,6 +1042,12 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 			drawText(screen, 2+row.highlightStart, y, minInt(width-4-row.highlightStart, row.highlightWidth), row.highlightStyle, highlight)
 		}
 	}
+	p.mu.Lock()
+	p.permissionApproveTarget = permissionTargets["allow_once"]
+	p.permissionDenyTarget = permissionTargets["deny_once"]
+	p.permissionAlwaysTarget = permissionTargets["allow_always"]
+	p.permissionAlwaysDenyTarget = permissionTargets["deny_always"]
+	p.mu.Unlock()
 
 	composerY := height - composerHeight
 	if composerY < 2 {
@@ -1067,61 +1077,6 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	} else {
 		p.drawCommandPalette(screen, width, transcriptTop, composerY, styles, string(input), commandPaletteIndex, commandPaletteOptionOwner, commandPaletteOptionIndex, commandSuggestions)
 	}
-}
-
-func (p *Page) drawPermissionSurface(screen tcell.Screen, width, height int, styles PageStyles, state State, permissions []client.PermissionRecord, selected int, note []rune, busy bool, errorText, prefixPreview string, scroll, transcriptTop int, routeLabel, profileLabel, statusLine string, statusStyle tcell.Style) {
-	selected = maxInt(0, minInt(selected, len(permissions)-1))
-	permission := permissions[selected]
-	footerHeight := 2
-	cardHeight := minInt(22, maxInt(13, height-transcriptTop-footerHeight-1))
-	cardY := maxInt(transcriptTop, height-footerHeight-cardHeight)
-	cardWidth := minInt(width, maxInt(44, width-4))
-	cardX := maxInt(0, (width-cardWidth)/2)
-	model := permissionCardModelForRecord(permission, len(permissions), maxInt(1, cardWidth-4), styles, prefixPreview)
-	layout := drawPermissionCard(screen, cardX, cardY, cardWidth, cardHeight, styles, model, scroll)
-	panel := styles.Panel
-	muted := styleOnPermissionCard(styles.Muted, panel)
-	textStyle := styleOnPermissionCard(styles.Text, panel)
-	if errorText != "" {
-		drawText(screen, cardX+2, layout.FooterY, cardWidth-4, styleOnPermissionCard(styles.Error, panel), truncateRunes("error · "+errorText, cardWidth-4))
-	} else {
-		prefix := "note › "
-		drawText(screen, cardX+2, layout.FooterY, cardWidth-4, muted, prefix)
-		drawText(screen, cardX+2+utf8.RuneCountInString(prefix), layout.FooterY, cardWidth-4-utf8.RuneCountInString(prefix), textStyle, string(note))
-	}
-	if len(permissions) > 1 {
-		drawText(screen, cardX+2, layout.FooterY+1, cardWidth-4, muted, fmt.Sprintf("Up/Down select  ·  %d/%d", selected+1, len(permissions)))
-	}
-	actionY := layout.FooterY + 2
-	x := cardX + 2
-	limit := cardX + cardWidth - 2
-	p.mu.Lock()
-	p.permissionAlwaysDenyTarget, x = drawPermissionAction(screen, x, actionY, limit, "Ctrl+D Always deny", styleOnPermissionCard(styles.Warning, panel))
-	p.permissionAlwaysTarget, x = drawPermissionAction(screen, x, actionY, limit, "Ctrl+A Always allow", styleOnPermissionCard(styles.Accent, panel))
-	p.permissionDenyTarget, x = drawPermissionAction(screen, x, actionY, limit, "Esc Deny", styleOnPermissionCard(styles.Error, panel))
-	p.permissionApproveTarget, _ = drawPermissionAction(screen, x, actionY, limit, "Enter Approve", styleOnPermissionCard(styles.Success, panel))
-	p.mu.Unlock()
-	if busy {
-		drawText(screen, cardX+2, cardY+2, cardWidth-4, muted, "Resolving permission…")
-	}
-	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: height - footerHeight, W: width, H: footerHeight}, state, routeLabel, profileLabel, statusLine, statusStyle)
-}
-
-func drawPermissionAction(screen tcell.Screen, x, y, limit int, label string, style tcell.Style) (footerbar.Rect, int) {
-	label = "[" + label + "]"
-	width := utf8.RuneCountInString(label)
-	if x >= limit || width <= 0 {
-		return footerbar.Rect{}, x
-	}
-	if x+width > limit {
-		width = limit - x
-		label = truncateRunes(label, width)
-	}
-	if width <= 0 {
-		return footerbar.Rect{}, x
-	}
-	drawText(screen, x, y, width, style, label)
-	return footerbar.Rect{X: x, Y: y, W: width, H: 1}, x + width + 1
 }
 
 type RunStatus struct {
@@ -1246,11 +1201,11 @@ func drawCanonicalHeader(screen tcell.Screen, width int, styles PageStyles, titl
 	muted := styleWithForeground(panel, styles.Muted)
 	accent := styleWithForeground(panel, styles.Accent).Bold(true)
 
-	spans := []renderSpan{{strings.TrimSpace(title), text}}
+	spans := []renderSpan{{text: strings.TrimSpace(title), style: text}}
 	if plan.Active {
-		spans = append(spans, renderSpan{"  •  ", muted}, renderSpan{plan.StatusLabel, accent})
+		spans = append(spans, renderSpan{text: "  •  ", style: muted}, renderSpan{text: plan.StatusLabel, style: accent})
 		if checkpoint := strings.TrimSpace(plan.CheckpointLabel); checkpoint != "" {
-			spans = append(spans, renderSpan{"  ", muted}, renderSpan{checkpoint, text})
+			spans = append(spans, renderSpan{text: "  ", style: muted}, renderSpan{text: checkpoint, style: text})
 		}
 	}
 
@@ -1426,17 +1381,19 @@ func (p *Page) drawModelPicker(screen tcell.Screen, width, height int, styles Pa
 }
 
 type timelineRenderItem struct {
-	kind      string
-	seq       uint64
-	createdAt int64
-	order     int
-	message   Message
-	tool      ToolTimelineItem
-	live      LiveSegment
+	kind       string
+	seq        uint64
+	createdAt  int64
+	order      int
+	message    Message
+	tool       ToolTimelineItem
+	live       LiveSegment
+	permission PermissionTimelineItem
 }
 
 func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow {
-	items := make([]timelineRenderItem, 0, len(state.Messages)+len(state.Tools)+len(state.Live))
+	permissions := SelectPermissions(state)
+	items := make([]timelineRenderItem, 0, len(state.Messages)+len(state.Tools)+len(state.Live)+len(permissions))
 	for _, message := range SelectMessages(state) {
 		item := timelineRenderItem{kind: "message", seq: message.GlobalSeq, createdAt: message.CreatedAt, order: len(items), message: message}
 		if tool, ok := parseToolMessage(message); ok {
@@ -1449,6 +1406,10 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 	}
 	for _, segment := range SelectLiveSegments(state) {
 		items = append(items, timelineRenderItem{kind: "live", seq: segment.GlobalSeq, createdAt: segment.CreatedAt, order: len(items), live: segment})
+	}
+	for _, permission := range permissions {
+		createdAt := firstPositiveInt64(permission.Record.PermissionRequestedAt, permission.Record.CreatedAt)
+		items = append(items, timelineRenderItem{kind: "permission", seq: permission.GlobalSeq, createdAt: createdAt, order: len(items), permission: permission})
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		left, right := items[i], items[j]
@@ -1467,9 +1428,29 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 		return left.order < right.order
 	})
 
+	p.mu.Lock()
+	permissionIndex := p.permissionIndex
+	permissionNote := append([]rune(nil), p.permissionInput...)
+	permissionBusy, permissionError, permissionPrefix := p.permissionBusy, p.permissionError, p.permissionPrefix
+	p.mu.Unlock()
+	pendingPermissions := SelectPendingPermissions(state)
+	selectedPermissionID := ""
+	if len(pendingPermissions) > 0 {
+		permissionIndex = maxInt(0, minInt(permissionIndex, len(pendingPermissions)-1))
+		selectedPermissionID = pendingPermissions[permissionIndex].ID
+	}
+
 	rows := make([]renderRow, 0, len(items)*3+len(state.Pending)*2)
 	for _, item := range items {
 		switch item.kind {
+		case "permission":
+			record := item.permission.Record
+			prefix := record.SavedRulePreview
+			selected := permissionPending(record) && record.ID == selectedPermissionID
+			if selected && strings.TrimSpace(permissionPrefix) != "" {
+				prefix = permissionPrefix
+			}
+			rows = append(rows, inlinePermissionCardRows(record, len(pendingPermissions), width, styles, prefix, selected, permissionNote, permissionBusy, permissionError)...)
 		case "tool":
 			rows = append(rows, p.renderToolRows(item.tool, width, styles)...)
 		case "live":

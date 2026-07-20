@@ -17,20 +17,21 @@ import (
 func (a *App) v3ChatStyles() v3chat.PageStyles {
 	theme := a.effectiveThemeOption().Theme
 	return v3chat.PageStyles{
-		Background: theme.Background,
-		Panel:      theme.Panel,
-		Element:    theme.Element,
-		Border:     theme.Border,
-		Text:       theme.Text,
-		Muted:      theme.TextMuted,
-		Primary:    theme.Primary,
-		Accent:     theme.Accent,
-		Secondary:  theme.Secondary,
-		Success:    theme.Success,
-		Warning:    theme.Warning,
-		Error:      theme.Error,
-		Prompt:     theme.Prompt,
-		Cursor:     theme.PromptCursor,
+		Background:   theme.Background,
+		Panel:        theme.Panel,
+		Element:      theme.Element,
+		Border:       theme.Border,
+		BorderActive: theme.BorderActive,
+		Text:         theme.Text,
+		Muted:        theme.TextMuted,
+		Primary:      theme.Primary,
+		Accent:       theme.Accent,
+		Secondary:    theme.Secondary,
+		Success:      theme.Success,
+		Warning:      theme.Warning,
+		Error:        theme.Error,
+		Prompt:       theme.Prompt,
+		Cursor:       theme.PromptCursor,
 		RenderMarkdown: func(body string, width int) []v3chat.MarkdownLine {
 			lines := ui.RenderMarkdownLines(theme, body, width)
 			out := make([]v3chat.MarkdownLine, 0, len(lines))
