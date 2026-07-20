@@ -91,7 +91,6 @@ type Page struct {
 	routeLabel                string
 	profileLabel              string
 	showHeader                bool
-	headerPrototypeIndex      int
 	commandEmission           string
 	modelPicker               bool
 	modelLoading              bool
@@ -457,10 +456,6 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if ev.Key() == tcell.KeyF12 {
-		p.headerPrototypeIndex = (p.headerPrototypeIndex + 1) % headerPrototypeCount
-		return PageActionNone
-	}
 	if p.modelPicker {
 		return p.handleModelPickerKeyLocked(ev)
 	}
@@ -790,7 +785,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	scroll := p.scroll
 	errText, status := p.errText, p.status
 	routeLabel, profileLabel := p.routeLabel, p.profileLabel
-	showHeader, headerPrototypeIndex, commandEmission := p.showHeader, p.headerPrototypeIndex, p.commandEmission
+	showHeader, commandEmission := p.showHeader, p.commandEmission
 	p.lastWidth, p.lastHeight = width, height
 	modelPicker, modelLoading, modelIndex := p.modelPicker, p.modelLoading, p.modelIndex
 	modelOptions := append([]client.ModelCatalogRecord(nil), p.modelOptions...)
@@ -812,7 +807,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	_, stale, reason := SelectReconnect(state)
 	transcriptTop := 0
 	if showHeader {
-		drawPrototypeHeader(screen, width, styles, title, headerPrototypeIndex)
+		drawCanonicalHeader(screen, width, styles, title, SelectPlanHeader(state))
 		transcriptTop = 1
 	}
 	statusLine := ""
@@ -826,8 +821,8 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	} else if status != "" {
 		statusLine = status
 	}
-	// Prototype headers deliberately omit elapsed run time. Stop any timer left
-	// by an older render rather than waking the page for text that is not shown.
+	// The canonical header deliberately omits elapsed run time. Stop any timer
+	// left by an older render rather than waking the page for text that is not shown.
 	p.scheduleRunTimer(false)
 
 	// Keep the footer to its separator and token row so the separator is also
@@ -1011,40 +1006,18 @@ func truncateRunes(value string, width int) string {
 	return string(runes[:width-1]) + "…"
 }
 
-const headerPrototypeCount = 10
-
-func drawPrototypeHeader(screen tcell.Screen, width int, styles PageStyles, title string, prototype int) {
+func drawCanonicalHeader(screen tcell.Screen, width int, styles PageStyles, title string, plan PlanHeader) {
 	panel := styles.Panel.Bold(true)
 	text := styleWithForeground(panel, styles.Text)
 	muted := styleWithForeground(panel, styles.Muted)
 	accent := styleWithForeground(panel, styles.Accent).Bold(true)
 
-	title = truncateRunes(strings.TrimSpace(title), maxInt(8, minInt(24, width/4)))
-	checkpoint := truncateRunes("Prototype plan-aware header", maxInt(12, minInt(28, width/3)))
-	status := "In progress"
-
-	var spans []renderSpan
-	switch ((prototype % headerPrototypeCount) + headerPrototypeCount) % headerPrototypeCount {
-	case 0:
-		spans = []renderSpan{{title, text}, {"  •  ", muted}, {status, accent}, {"  ", muted}, {checkpoint, text}}
-	case 1:
-		spans = []renderSpan{{"● ", accent}, {title, text}, {"  /  Checkpoint  ", muted}, {checkpoint, text}, {"  /  ", muted}, {status, accent}}
-	case 2:
-		spans = []renderSpan{{title, text}, {"  —  ", muted}, {"[IN PROGRESS]", accent}, {"  ", muted}, {checkpoint, text}}
-	case 3:
-		spans = []renderSpan{{"Session  ", muted}, {title, text}, {"  ›  ", muted}, {"Checkpoint  ", accent}, {checkpoint, text}, {"  ·  ", muted}, {status, accent}}
-	case 4:
-		spans = []renderSpan{{title, text}, {"  │  ", muted}, {"◉ " + status, accent}, {"  │  ", muted}, {checkpoint, text}}
-	case 5:
-		spans = []renderSpan{{"▍ ", accent}, {title, text}, {"  ", muted}, {checkpoint, text}, {"  ", muted}, {status, accent}}
-	case 6:
-		spans = []renderSpan{{title, text}, {"  ::  ", muted}, {checkpoint, text}, {"  ::  ", muted}, {status, accent}}
-	case 7:
-		spans = []renderSpan{{title, text}, {"  →  ", muted}, {status, accent}, {"  ", muted}, {checkpoint, text}}
-	case 8:
-		spans = []renderSpan{{"IN PROGRESS  ", accent}, {title, text}, {"  · current: ", muted}, {checkpoint, text}}
-	case 9:
-		spans = []renderSpan{{title, text}, {"  [checkpoint]  ", muted}, {checkpoint, text}, {"  • ", muted}, {status, accent}}
+	spans := []renderSpan{{strings.TrimSpace(title), text}}
+	if plan.Active {
+		spans = append(spans, renderSpan{"  •  ", muted}, renderSpan{plan.StatusLabel, accent})
+		if checkpoint := strings.TrimSpace(plan.CheckpointLabel); checkpoint != "" {
+			spans = append(spans, renderSpan{"  ", muted}, renderSpan{checkpoint, text})
+		}
 	}
 
 	drawText(screen, 0, 0, width, panel, padRight("", width))

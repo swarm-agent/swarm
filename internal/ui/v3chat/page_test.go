@@ -30,8 +30,8 @@ func TestPageHeaderAndLiveOverlayRenderFromStore(t *testing.T) {
 	page.Draw(screen)
 	screen.Show()
 	drawn := simulationText(screen, 80, 18)
-	if !strings.Contains(drawn, "renamed live") {
-		t.Fatalf("header did not render reduced title:\n%s", drawn)
+	if !strings.Contains(simulationRow(screen, 80, 0), "renamed live") {
+		t.Fatalf("header did not render live session title:\n%s", drawn)
 	}
 	if !strings.Contains(drawn, "streaming") {
 		t.Fatalf("live assistant overlay missing:\n%s", drawn)
@@ -64,13 +64,15 @@ func TestRunTimerWakeIsOneShotAndReschedulesWithoutHeartbeat(t *testing.T) {
 	}
 }
 
-func TestPagePrototypeHeaderUsesCanonicalTitleWithoutTimerOrConnectedChrome(t *testing.T) {
+func TestPageCanonicalHeaderUsesLivePlanStateWithoutTimerOrConnectedChrome(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
 		Session: client.SessionSummary{ID: "s", Title: "Canonical title"},
 		ActiveRunIntent: &client.SessionV3RunIntent{
 			RunID: "run", Status: "running", StartedAt: 120_000, CumulativeDurationMS: 90_000,
 		},
+		HasActivePlan: true,
+		ActivePlan:    activePlanFixture("running", "in_progress", "cp-1", "Wire live plan state"),
 	}})
 	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
 	defer page.Close()
@@ -79,24 +81,28 @@ func TestPagePrototypeHeaderUsesCanonicalTitleWithoutTimerOrConnectedChrome(t *t
 		t.Fatal(err)
 	}
 	defer screen.Fini()
-	screen.SetSize(80, 18)
+	screen.SetSize(100, 18)
 	page.DrawAt(screen, time.UnixMilli(125_000))
 	screen.Show()
-	header := simulationRow(screen, 80, 0)
-	if !strings.HasPrefix(header, "Canonical title") || !strings.Contains(header, "In progress") || !strings.Contains(header, "Prototype plan-aware header") {
-		t.Fatalf("prototype header missing title/checkpoint state: %q", header)
+	header := simulationRow(screen, 100, 0)
+	if !strings.HasPrefix(header, "Canonical title") || !strings.Contains(header, "In Progress") || !strings.Contains(header, "cp-1 Wire live plan state") {
+		t.Fatalf("canonical header missing live title/checkpoint state: %q", header)
 	}
 	if strings.Contains(header, "0:05") || strings.Contains(header, "1:35") {
-		t.Fatalf("prototype header retained run timer: %q", header)
+		t.Fatalf("canonical header retained timer chrome: %q", header)
 	}
-	if strings.Contains(simulationText(screen, 80, 18), "Connected") || strings.Contains(simulationText(screen, 80, 18), "connected") || strings.Contains(header, "Swarm") {
-		t.Fatalf("redundant connection/header chrome remains:\n%s", simulationText(screen, 80, 18))
+	if strings.Contains(simulationText(screen, 100, 18), "Connected") || strings.Contains(simulationText(screen, 100, 18), "connected") || strings.Contains(header, "Swarm") {
+		t.Fatalf("redundant connection/header chrome remains:\n%s", simulationText(screen, 100, 18))
 	}
 }
 
-func TestPageF12CyclesTenDistinctPrototypeHeaders(t *testing.T) {
+func TestPageCanonicalHeaderUpdatesFromRealtimePlanSavedEvent(t *testing.T) {
 	store := NewStore()
-	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s", Title: "Canonical title"}}})
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:       client.SessionSummary{ID: "s", Title: "Canonical title"},
+		HasActivePlan: true,
+		ActivePlan:    activePlanFixture("running", "in_progress", "cp-1", "First checkpoint"),
+	}})
 	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {
@@ -104,27 +110,48 @@ func TestPageF12CyclesTenDistinctPrototypeHeaders(t *testing.T) {
 	}
 	defer screen.Fini()
 	screen.SetSize(100, 18)
-
-	seen := make(map[string]bool, headerPrototypeCount)
-	for i := 0; i < headerPrototypeCount; i++ {
-		page.Draw(screen)
-		screen.Show()
-		header := strings.TrimSpace(simulationRow(screen, 100, 0))
-		if seen[header] {
-			t.Fatalf("prototype %d duplicated header %q", i, header)
-		}
-		seen[header] = true
-		page.HandleKey(tcell.NewEventKey(tcell.KeyF12, 0, tcell.ModNone))
+	page.Draw(screen)
+	screen.Show()
+	if header := simulationRow(screen, 100, 0); !strings.Contains(header, "In Progress") || !strings.Contains(header, "cp-1 First checkpoint") {
+		t.Fatalf("initial plan header = %q", header)
 	}
-	if page.headerPrototypeIndex != 0 {
-		t.Fatalf("F12 cycle ended at %d, want 0", page.headerPrototypeIndex)
+
+	updated := activePlanFixture("waiting_review", "needs_review", "cp-1", "First checkpoint")
+	payload, _ := json.Marshal(map[string]any{"has_active_plan": true, "active_plan": updated})
+	store.Dispatch(RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{SessionID: "s", Seq: 1, EventType: "session.plan.saved", Payload: payload}}})
+	page.Draw(screen)
+	screen.Show()
+	if header := simulationRow(screen, 100, 0); !strings.Contains(header, "Waiting review") || !strings.Contains(header, "cp-1 First checkpoint") || strings.Contains(header, "In Progress") {
+		t.Fatalf("updated plan header = %q", header)
+	}
+
+	canonicalHeader := simulationRow(screen, 100, 0)
+	page.HandleKey(tcell.NewEventKey(tcell.KeyF12, 0, tcell.ModNone))
+	page.Draw(screen)
+	screen.Show()
+	if header := simulationRow(screen, 100, 0); header != canonicalHeader {
+		t.Fatalf("F12 changed canonical header from %q to %q", canonicalHeader, header)
 	}
 
 	page.SetHeaderVisible(false)
 	page.Draw(screen)
 	screen.Show()
 	if strings.Contains(simulationRow(screen, 100, 0), "Canonical title") {
-		t.Fatal("persisted header visibility setting did not hide prototype")
+		t.Fatal("persisted header visibility setting did not hide canonical header")
+	}
+}
+
+func activePlanFixture(planStatus, checkpointStatus, checkpointID, checkpointTitle string) *client.SessionPlan {
+	return &client.SessionPlan{
+		ID: "plan", Status: planStatus, Active: true,
+		Document: &client.SessionPlanDocument{
+			Status:             planStatus,
+			ActiveCheckpointID: checkpointID,
+			ExecutionState:     &client.SessionPlanExecutionState{Status: planStatus},
+			Checkpoints: []client.SessionPlanCheckpoint{{
+				ID: checkpointID, Title: checkpointTitle, Status: checkpointStatus,
+			}},
+		},
 	}
 }
 

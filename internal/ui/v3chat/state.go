@@ -55,6 +55,11 @@ type UsageState struct {
 	TotalTokens     int64
 }
 
+type PlanState struct {
+	HasActivePlan bool
+	ActivePlan    *client.SessionPlan
+}
+
 type Message struct {
 	ID          string
 	SessionID   string
@@ -194,6 +199,7 @@ type State struct {
 	NeedsRehydrate bool
 	Model          ModelState
 	Usage          UsageState
+	Plan           PlanState
 }
 
 type Action interface{ isV3ChatAction() }
@@ -279,6 +285,7 @@ func reduceHydrated(state State, hydrated client.SessionV3Hydrated) State {
 	state.Model = ModelState{}
 	applyAgentModelPolicy(&state.Model, preference, hydrated.ContextWindow, hydrated.MaxOutputTokens, hydrated.AgentModelPolicy)
 	state.Usage = usageStateFromSummary(hydrated.UsageSummary)
+	state.Plan = planStateFromHydrated(hydrated)
 	state.Messages = mergeMessages(nil, hydrated.Messages)
 	state.Tools = make(map[string]ToolTimelineItem)
 	state.LastEventSeq = 0
@@ -401,6 +408,9 @@ func applyEvent(state State, event client.SessionV3Event) State {
 		if json.Unmarshal(raw, &summary) == nil {
 			state.Usage = usageStateFromSummary(&summary)
 		}
+	}
+	if strings.EqualFold(strings.TrimSpace(event.EventType), "session.plan.saved") {
+		state.Plan = planStateFromPayload(state.Plan, payload)
 	}
 	if raw := payload["message"]; len(raw) > 0 {
 		var message client.SessionMessage
@@ -598,6 +608,10 @@ func cloneState(value State) State {
 		run := *value.LatestRun
 		out.LatestRun = &run
 	}
+	if value.Plan.ActivePlan != nil {
+		plan := cloneSessionPlan(*value.Plan.ActivePlan)
+		out.Plan.ActivePlan = &plan
+	}
 	return out
 }
 
@@ -622,6 +636,54 @@ func applyAgentModelPolicy(state *ModelState, preference client.ModelPreference,
 			state.MaxOutputTokens = policy.MaxOutputTokens
 		}
 	}
+}
+
+func planStateFromHydrated(hydrated client.SessionV3Hydrated) PlanState {
+	state := PlanState{HasActivePlan: hydrated.HasActivePlan}
+	if hydrated.ActivePlan != nil {
+		plan := cloneSessionPlan(*hydrated.ActivePlan)
+		state.ActivePlan = &plan
+		state.HasActivePlan = true
+	}
+	return state
+}
+
+func planStateFromPayload(current PlanState, payload map[string]json.RawMessage) PlanState {
+	next := current
+	if raw := payload["has_active_plan"]; len(raw) > 0 {
+		_ = json.Unmarshal(raw, &next.HasActivePlan)
+	}
+	if raw := payload["active_plan"]; len(raw) > 0 {
+		if string(raw) == "null" {
+			next.ActivePlan = nil
+		} else {
+			var plan client.SessionPlan
+			if json.Unmarshal(raw, &plan) == nil {
+				cloned := cloneSessionPlan(plan)
+				next.ActivePlan = &cloned
+				next.HasActivePlan = true
+			}
+		}
+	}
+	if !next.HasActivePlan {
+		next.ActivePlan = nil
+	}
+	return next
+}
+
+func cloneSessionPlan(value client.SessionPlan) client.SessionPlan {
+	out := value
+	if value.Document != nil {
+		document := *value.Document
+		document.Checkpoints = append([]client.SessionPlanCheckpoint(nil), value.Document.Checkpoints...)
+		for i := range document.Checkpoints {
+			document.Checkpoints[i].Tasks = append([]string(nil), document.Checkpoints[i].Tasks...)
+			document.Checkpoints[i].Subtasks = append([]client.SessionPlanSubtask(nil), document.Checkpoints[i].Subtasks...)
+			document.Checkpoints[i].Attempts = append([]client.SessionPlanCheckpointAttempt(nil), document.Checkpoints[i].Attempts...)
+		}
+		out.Document = &document
+	}
+	return out
 }
 
 func usageStateFromSummary(summary *client.SessionUsageSummary) UsageState {
