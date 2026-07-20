@@ -423,7 +423,7 @@ func (p *Page) Send(text string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_, err := p.runtime.Send(ctx, text, nil)
-		p.finishAsync("sent", err)
+		p.finishAsync("", err)
 	}()
 }
 
@@ -997,8 +997,14 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if stale {
 		statusLine = "stale • Ctrl-R to rehydrate • " + reason
 		statusStyle = styles.Warning
-	} else if status != "" {
-		statusLine = status
+	} else {
+		switch composerNoticeKind(status) {
+		case "stop":
+			statusLine = status
+		case "warning":
+			statusLine = status
+			statusStyle = styles.Warning
+		}
 	}
 	// Keep the activity indicator moving without turning the page into a
 	// heartbeat: each draw schedules exactly one wake for the next second.
@@ -1056,12 +1062,14 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	drawHLine(screen, 0, composerY, width, styles.Border)
 	if strings.TrimSpace(errText) != "" {
 		drawComposerError(screen, width, composerY, styles, errText)
+	} else if strings.TrimSpace(statusLine) != "" {
+		drawComposerStatus(screen, width, composerY, statusStyle, statusLine)
 	} else {
 		drawCommandEmission(screen, width, composerY, styles, commandEmission)
 	}
 	modelState := SelectModel(state)
 	footerY := height - footerHeight
-	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, routeLabel, profileLabel, statusLine, statusStyle)
+	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, routeLabel, profileLabel)
 	drawActiveRunIndicator(screen, width, footerY, styles, runStatus, now)
 	composerEnd := minInt(len(composerLines), composerStart+composerVisibleRows)
 	for i := composerStart; i < composerEnd; i++ {
@@ -1200,6 +1208,35 @@ func drawCommandEmission(screen tcell.Screen, width, y int, styles PageStyles, e
 	drawText(screen, maxInt(0, width-len(labelRunes)-1), y, len(labelRunes), styles.Secondary, label)
 }
 
+func composerNoticeKind(status string) string {
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	if normalized == "" {
+		return ""
+	}
+	for _, marker := range []string{"stop", "cancel"} {
+		if strings.Contains(normalized, marker) {
+			return "stop"
+		}
+	}
+	for _, marker := range []string{"warning", "warn:", "error", "failed", "failure", "unavailable", "required", "missing", "denied", "blocked", "stale"} {
+		if strings.Contains(normalized, marker) {
+			return "warning"
+		}
+	}
+	return ""
+}
+
+func drawComposerStatus(screen tcell.Screen, width, y int, style tcell.Style, status string) {
+	status = strings.TrimSpace(status)
+	if status == "" || width < 12 {
+		return
+	}
+	maxWidth := minInt(width-2, maxInt(18, width/2))
+	label := " " + truncateRunes(status, maxWidth-2) + " "
+	labelWidth := utf8.RuneCountInString(label)
+	drawText(screen, width-labelWidth, y, labelWidth, styleWithForeground(tcell.StyleDefault, style).Bold(true), label)
+}
+
 func drawComposerError(screen tcell.Screen, width, y int, styles PageStyles, errText string) {
 	errText = strings.TrimSpace(errText)
 	if errText == "" || width < 14 {
@@ -1278,7 +1315,7 @@ func (p *Page) scheduleRunTimer(active bool) {
 	})
 }
 
-func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, state State, routeLabel, profileLabel, status string, statusStyle tcell.Style) {
+func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, state State, routeLabel, profileLabel string) {
 	modelState := SelectModel(state)
 	usage := SelectUsage(state)
 	displayedMode := "off"
@@ -1299,8 +1336,6 @@ func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, sta
 		UnifiedProfile: true,
 		PlanToggle:     true,
 		RightFacts:     conversationContextFacts(usage, modelState.ContextWindow),
-		StatusLine:     strings.TrimSpace(status),
-		StatusStyle:    statusStyle,
 	}
 	footerbar.Draw(screen, footerbar.Styles{Border: p.styles.Border, Accent: p.styles.Accent, Secondary: p.styles.Secondary, Text: p.styles.Text}, rect, footerState, func(target footerbar.Rect, token footerbar.Token) {
 		if token.Action == "open-profiles-modal" {

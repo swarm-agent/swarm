@@ -520,6 +520,47 @@ func TestPageRendersComposerAboveCanonicalHomeFooterWithDesktopContext(t *testin
 	}
 }
 
+func TestPageComposerNoticePolicyShowsOnlyWarningsAndStopsWithoutTruncatingFooter(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
+	page.SetRouteLabel("Primary Desk")
+	page.SetProfileLabel("Focused work")
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 18)
+
+	for _, hidden := range []string{"sent", "sending…", "reconnected", "model set • gpt-test"} {
+		page.SetStatus(hidden)
+		page.Draw(screen)
+		screen.Show()
+		if separator := simulationRow(screen, 80, 14); strings.Contains(separator, hidden) {
+			t.Fatalf("routine status %q rendered on composer separator: %q", hidden, separator)
+		}
+	}
+
+	for _, visible := range []string{"stop requested", "settings warning: profile unavailable"} {
+		page.SetStatus(visible)
+		page.Draw(screen)
+		screen.Show()
+		if separator := simulationRow(screen, 80, 14); !strings.Contains(separator, visible) {
+			t.Fatalf("stop/warning status %q missing from composer separator: %q", visible, separator)
+		}
+	}
+
+	footer := simulationRow(screen, 80, 17)
+	if strings.Contains(footer, "warning") || strings.Contains(footer, "stop requested") || strings.Contains(footer, "sent") {
+		t.Fatalf("composer notice remains in footer: %q", footer)
+	}
+	for _, want := range []string{"Primary Desk", "Plan: off", "[Focused work"} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("footer token %q was displaced or truncated: %q", want, footer)
+		}
+	}
+}
+
 func TestPageLongGeneralErrorRendersRightAlignedOnComposerSeparator(t *testing.T) {
 	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
 	page.SetRouteLabel("Primary Desk")
