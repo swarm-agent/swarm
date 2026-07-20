@@ -64,7 +64,7 @@ func TestRunTimerWakeIsOneShotAndReschedulesWithoutHeartbeat(t *testing.T) {
 	}
 }
 
-func TestPageHeaderUsesTitleAndCanonicalRunStatusWithoutConnectedChrome(t *testing.T) {
+func TestPagePrototypeHeaderUsesCanonicalTitleWithoutTimerOrConnectedChrome(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
 		Session: client.SessionSummary{ID: "s", Title: "Canonical title"},
@@ -83,11 +83,48 @@ func TestPageHeaderUsesTitleAndCanonicalRunStatusWithoutConnectedChrome(t *testi
 	page.DrawAt(screen, time.UnixMilli(125_000))
 	screen.Show()
 	header := simulationRow(screen, 80, 0)
-	if !strings.HasPrefix(header, "Canonical title") || !strings.Contains(header, "Running  0:05 (1:35)") {
-		t.Fatalf("canonical header missing title/run status: %q", header)
+	if !strings.HasPrefix(header, "Canonical title") || !strings.Contains(header, "In progress") || !strings.Contains(header, "Prototype plan-aware header") {
+		t.Fatalf("prototype header missing title/checkpoint state: %q", header)
+	}
+	if strings.Contains(header, "0:05") || strings.Contains(header, "1:35") {
+		t.Fatalf("prototype header retained run timer: %q", header)
 	}
 	if strings.Contains(simulationText(screen, 80, 18), "Connected") || strings.Contains(simulationText(screen, 80, 18), "connected") || strings.Contains(header, "Swarm") {
 		t.Fatalf("redundant connection/header chrome remains:\n%s", simulationText(screen, 80, 18))
+	}
+}
+
+func TestPageF12CyclesTenDistinctPrototypeHeaders(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s", Title: "Canonical title"}}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 18)
+
+	seen := make(map[string]bool, headerPrototypeCount)
+	for i := 0; i < headerPrototypeCount; i++ {
+		page.Draw(screen)
+		screen.Show()
+		header := strings.TrimSpace(simulationRow(screen, 100, 0))
+		if seen[header] {
+			t.Fatalf("prototype %d duplicated header %q", i, header)
+		}
+		seen[header] = true
+		page.HandleKey(tcell.NewEventKey(tcell.KeyF12, 0, tcell.ModNone))
+	}
+	if page.headerPrototypeIndex != 0 {
+		t.Fatalf("F12 cycle ended at %d, want 0", page.headerPrototypeIndex)
+	}
+
+	page.SetHeaderVisible(false)
+	page.Draw(screen)
+	screen.Show()
+	if strings.Contains(simulationRow(screen, 100, 0), "Canonical title") {
+		t.Fatal("persisted header visibility setting did not hide prototype")
 	}
 }
 
