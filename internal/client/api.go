@@ -3623,8 +3623,15 @@ type SessionPlanCurrentRunRequest struct {
 	PlanID string `json:"plan_id,omitempty"`
 }
 type SessionPlanCheckpointStartRequest struct {
-	PlanID                   string `json:"plan_id,omitempty"`
-	SuppressLifecycleMessage bool   `json:"suppress_lifecycle_message,omitempty"`
+	PlanID               string `json:"plan_id"`
+	DefinitionRevision   uint64 `json:"definition_revision"`
+	ExpectedExecutionSeq uint64 `json:"expected_execution_seq"`
+	ClientRequestID      string `json:"client_request_id"`
+	AttemptID            string `json:"attempt_id,omitempty"`
+	RunID                string `json:"run_id,omitempty"`
+	EpochID              string `json:"epoch_id,omitempty"`
+	RunSessionID         string `json:"run_session_id,omitempty"`
+	ParentSessionID      string `json:"parent_session_id,omitempty"`
 }
 type SessionPlanCheckpointAcceptRequest struct {
 	PlanID     string `json:"plan_id,omitempty"`
@@ -3689,11 +3696,32 @@ func (c *API) ResumeSessionV3PlanCheckpointed(ctx context.Context, sessionID str
 	return c.sessionV3PlanLifecycle(ctx, sessionID, "runs/current/resume-checkpointed", req)
 }
 func (c *API) StartSessionV3PlanCheckpoint(ctx context.Context, sessionID, checkpointID string, req SessionPlanCheckpointStartRequest) (SessionPlanLifecycleResult, error) {
-	return c.sessionV3PlanLifecycle(ctx, sessionID, "checkpoints/"+url.PathEscape(strings.TrimSpace(checkpointID))+"/start", req)
+	return c.sessionV3PlanRuntimeCommand(ctx, sessionID, checkpointID, "start_checkpoint", req)
 }
 func (c *API) ContinueSessionV3PlanCheckpoint(ctx context.Context, sessionID, checkpointID string, req SessionPlanCheckpointStartRequest) (SessionPlanLifecycleResult, error) {
-	return c.sessionV3PlanLifecycle(ctx, sessionID, "checkpoints/"+url.PathEscape(strings.TrimSpace(checkpointID))+"/continue", req)
+	return c.sessionV3PlanRuntimeCommand(ctx, sessionID, checkpointID, "start_checkpoint", req)
 }
+func (c *API) sessionV3PlanRuntimeCommand(ctx context.Context, sessionID, checkpointID, action string, req SessionPlanCheckpointStartRequest) (SessionPlanLifecycleResult, error) {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(checkpointID) == "" || strings.TrimSpace(req.ClientRequestID) == "" {
+		return SessionPlanLifecycleResult{}, errors.New("v3 plan runtime command requires session id, checkpoint id, and client request id")
+	}
+	payload := map[string]any{
+		"session_id": sessionID, "plan_id": req.PlanID, "action": action,
+		"definition_revision": req.DefinitionRevision, "expected_execution_seq": req.ExpectedExecutionSeq,
+		"client_request_id": req.ClientRequestID, "checkpoint_id": checkpointID,
+		"attempt_id": req.AttemptID, "run_id": req.RunID, "epoch_id": req.EpochID,
+		"run_session_id": req.RunSessionID, "parent_session_id": req.ParentSessionID,
+	}
+	var raw struct {
+		OK      bool           `json:"ok"`
+		Receipt map[string]any `json:"receipt"`
+	}
+	if err := c.postJSON(ctx, "/v3/plan-runtime:command", payload, &raw, true); err != nil {
+		return SessionPlanLifecycleResult{}, err
+	}
+	return SessionPlanLifecycleResult{OK: raw.OK, SessionID: sessionID, PlanID: req.PlanID, Transition: action, CheckpointID: checkpointID}, nil
+}
+
 func (c *API) AcceptSessionV3PlanCheckpoint(ctx context.Context, sessionID, checkpointID string, req SessionPlanCheckpointAcceptRequest) (SessionPlanLifecycleResult, error) {
 	return c.sessionV3PlanLifecycle(ctx, sessionID, "checkpoints/"+url.PathEscape(strings.TrimSpace(checkpointID))+"/accept", req)
 }

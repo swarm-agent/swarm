@@ -172,6 +172,12 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("migrate v3 run-state index: %w", err)
 	}
+	if err := cutOverActivePlansToV3Runtime(sessionSvc); err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("cut over active plans to v3 runtime: %w", err)
+	}
 	permissionSvc := permission.NewService(pebblestore.NewPermissionStore(store), events, hub.Publish)
 	notificationSvc := notification.NewService(pebblestore.NewNotificationStore(store), events, hub.Publish)
 	webPushRepository, err := webpush.NewPebbleRepository(secretStore)

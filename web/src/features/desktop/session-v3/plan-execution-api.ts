@@ -4,7 +4,8 @@ import {
   type DesktopSessionPlanWire,
 } from "../chat/services/session-plan-record";
 import type { DesktopSessionPlanRecord } from "../chat/types/chat";
-import { dispatchDesktopV3Cache } from "../state/desktop-v3-cache-store";
+import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from "../state/desktop-v3-cache-store";
+import { commandPlanRuntime } from "../v3-runtime/plan-runtime-api";
 import type { SessionArchiveMutationResponse } from "../state/desktop-v3-cache-types";
 
 export type DesktopPlanExecutionGranularity = "checkpointed";
@@ -71,6 +72,14 @@ export interface DesktopPlanCurrentRunInput {
 
 export interface DesktopPlanCheckpointInput {
   planId?: string;
+  definitionRevision?: number;
+  expectedExecutionSeq?: number;
+  clientRequestId?: string;
+  attemptId?: string;
+  runId?: string;
+  epochId?: string;
+  runSessionId?: string;
+  parentSessionId?: string;
   suppressLifecycleMessage?: boolean;
 }
 
@@ -225,14 +234,7 @@ export async function startDesktopPlanCheckpoint(
   checkpointId: string,
   input: DesktopPlanCheckpointInput = {},
 ): Promise<DesktopPlanLifecycleResponse> {
-  return postDesktopPlanLifecycle(
-    sessionId,
-    `checkpoints/${encodePathSegment(checkpointId)}/start`,
-    {
-      plan_id: trimmed(input.planId),
-      suppress_lifecycle_message: input.suppressLifecycleMessage || undefined,
-    },
-  );
+  return postDesktopPlanRuntimeCommand(sessionId, checkpointId, "start_checkpoint", input);
 }
 
 export async function continueDesktopPlanCheckpoint(
@@ -240,14 +242,7 @@ export async function continueDesktopPlanCheckpoint(
   checkpointId: string,
   input: DesktopPlanCheckpointInput = {},
 ): Promise<DesktopPlanLifecycleResponse> {
-  return postDesktopPlanLifecycle(
-    sessionId,
-    `checkpoints/${encodePathSegment(checkpointId)}/continue`,
-    {
-      plan_id: trimmed(input.planId),
-      suppress_lifecycle_message: input.suppressLifecycleMessage || undefined,
-    },
-  );
+  return postDesktopPlanRuntimeCommand(sessionId, checkpointId, "start_checkpoint", input);
 }
 
 export async function acceptDesktopPlanCheckpoint(
@@ -424,6 +419,39 @@ function restoreRevisionPayload(
     skip_prior: input.skipPrior ?? defaults.skipPrior,
     suppress_lifecycle_message: input.suppressLifecycleMessage || undefined,
   };
+}
+
+async function postDesktopPlanRuntimeCommand(
+  sessionId: string,
+  checkpointId: string,
+  action: string,
+  input: DesktopPlanCheckpointInput,
+): Promise<DesktopPlanLifecycleResponse> {
+  const runtime = getDesktopV3CacheSnapshot().planRuntimeBySession[sessionId];
+  const planId = trimmed(input.planId) ?? runtime?.definition?.plan_id;
+  const definitionRevision = input.definitionRevision ?? runtime?.definition?.definition_revision;
+  const expectedExecutionSeq = input.expectedExecutionSeq ?? runtime?.appliedExecutionSeq;
+  if (!planId || !definitionRevision || expectedExecutionSeq === undefined) {
+    throw new Error("V3 plan runtime hydration is required before an execution command");
+  }
+  if (!input.clientRequestId) {
+    throw new Error("V3 plan runtime command requires client_request_id; stale clients must refresh");
+  }
+  const response = await commandPlanRuntime({
+    session_id: sessionId,
+    plan_id: planId,
+    action,
+    definition_revision: definitionRevision,
+    expected_execution_seq: expectedExecutionSeq,
+    client_request_id: input.clientRequestId,
+    checkpoint_id: checkpointId,
+    attempt_id: input.attemptId,
+    run_id: input.runId,
+    epoch_id: input.epochId,
+    run_session_id: input.runSessionId,
+    parent_session_id: input.parentSessionId,
+  });
+  return { ok: response.ok, session_id: sessionId, plan_id: planId, transition: action, execution_summary: response.receipt };
 }
 
 async function postDesktopPlanLifecycle(

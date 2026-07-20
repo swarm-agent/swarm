@@ -88,6 +88,10 @@ export function realtimeFrameToActions(frame: RealtimeMessage): DesktopV3CacheAc
     case 'task.lifecycle.updated':
       return [{ type: 'realtime.applyAITaskResource', frame }]
 
+    case 'plan.execution.delta':
+      if (!frame.session_id || !frame.plan_execution) return [{ type: 'realtime.unknownFrame', frame }]
+      return [{ type: 'realtime.applyPlanRuntimeDelta', sessionId: frame.session_id, delta: frame.plan_execution, endpointCursor: frame.endpoint_cursor }]
+
     case 'workset.session.discovered':
       return worksetFrameToActions(frame, { type: 'realtime.worksetSessionDiscovered', frame })
 

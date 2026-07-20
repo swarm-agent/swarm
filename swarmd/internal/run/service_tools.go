@@ -1964,6 +1964,25 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 	if action == "" {
 		action = "list"
 	}
+	if isNativePlanRuntimeAction(action) {
+		authority, ok, err := s.sessions.Store().GetPlanRuntimeAuthority(sessionID)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", errors.New("plan runtime cutover is incomplete for this session; legacy execution commands are disabled and no fallback is available")
+		}
+		if strings.TrimSpace(mapString(args, "plan_id")) == "" {
+			args["plan_id"] = authority.PlanID
+		}
+		if _, supplied := args["definition_revision"]; !supplied {
+			args["definition_revision"] = authority.DefinitionRevision
+		}
+		return s.executeNativePlanRuntimeAction(sessionID, action, args, lifecycleRun)
+	}
+	if legacyPlanExecutionAction(action) {
+		return "", fmt.Errorf("plan_manage action %q uses the retired execution schema; refresh the client and send the V3 plan runtime command with expected_execution_seq and client_request_id", action)
+	}
 
 	switch action {
 	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint", "resolve_blocked_checkpoint", "start_session_checkpoint", "request_followup_checkpoint", "request_plan_revision", "amend_plan", "request_new_plan":

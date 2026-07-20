@@ -212,32 +212,8 @@ func (s *Server) handleSessionV3PrimaryPlanMode(w http.ResponseWriter, r *http.R
 		}
 	}
 	if strings.HasPrefix(tail, "checkpoints/") {
-		parts := strings.Split(strings.TrimPrefix(tail, "checkpoints/"), "/")
-		if len(parts) == 2 && strings.TrimSpace(parts[0]) != "" {
-			switch parts[1] {
-			case "start":
-				s.handleSessionV3PrimaryPlanModeStartCheckpoint(w, r, principal, sessionID, parts[0])
-				return
-			case "continue":
-				s.handleSessionV3PrimaryPlanModeContinueCheckpoint(w, r, principal, sessionID, parts[0])
-				return
-			case "accept":
-				s.handleSessionV3PrimaryPlanModeAcceptCheckpoint(w, r, principal, sessionID, parts[0])
-				return
-			case "resume":
-				s.handleSessionV3PrimaryPlanModeResumeCheckpoint(w, r, principal, sessionID, parts[0])
-				return
-			case "restart":
-				s.handleSessionV3PrimaryPlanModeRestartCheckpoint(w, r, principal, sessionID, parts[0])
-				return
-			case "rewind":
-				s.handleSessionV3PrimaryPlanModeRewindCheckpoint(w, r, principal, sessionID, parts[0])
-				return
-			case "resolve-block":
-				s.handleSessionV3PrimaryPlanModeResolveBlockedCheckpoint(w, r, principal, sessionID, parts[0])
-				return
-			}
-		}
+		writeError(w, http.StatusConflict, errors.New("legacy checkpoint execution endpoint is retired; refresh the client and use POST /v3/plan-runtime:command"))
+		return
 	}
 	writeError(w, http.StatusBadRequest, errors.New("unknown plan-mode lifecycle path"))
 }

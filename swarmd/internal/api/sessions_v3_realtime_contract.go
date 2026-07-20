@@ -30,6 +30,7 @@ const (
 	V3RealtimeKindWorksetSessionRemoved    = "workset.session.removed"
 	V3RealtimeKindNotificationResource     = "notification.resource.updated"
 	V3RealtimeKindAITaskResource           = "task.lifecycle.updated"
+	V3RealtimeKindPlanExecutionDelta       = "plan.execution.delta"
 	V3RealtimeKindAuthDenied               = "auth.denied"
 	V3RealtimeKindSlowConsumer             = "slow_consumer.reconnect_required"
 	V3RealtimeKindLivePatch                = "live.patch"
@@ -62,43 +63,44 @@ type V3RealtimeWorksetSelector struct {
 }
 
 type V3RealtimeMessage struct {
-	Protocol                   string                                 `json:"protocol"`
-	ProtocolVersion            int                                    `json:"protocol_version"`
-	Kind                       string                                 `json:"kind"`
-	SessionID                  string                                 `json:"session_id,omitempty"`
-	SubscriptionID             string                                 `json:"subscription_id,omitempty"`
-	WorksetID                  string                                 `json:"workset_id,omitempty"`
-	WorksetSubscriptionID      string                                 `json:"workset_subscription_id,omitempty"`
-	AutoSubscribed             bool                                   `json:"auto_subscribed,omitempty"`
-	AfterSeq                   uint64                                 `json:"after_seq,omitempty"`
-	AfterRev                   uint64                                 `json:"afterRev,omitempty"`
-	LastSeq                    uint64                                 `json:"last_seq,omitempty"`
-	NextSeq                    uint64                                 `json:"next_seq,omitempty"`
-	HighWatermarkSeq           uint64                                 `json:"high_watermark_seq,omitempty"`
-	EndpointCursor             string                                 `json:"endpoint_cursor,omitempty"`
-	Subscriptions              []V3RealtimeSubscriptionRequest        `json:"subscriptions,omitempty"`
-	Worksets                   []V3RealtimeWorksetSubscriptionRequest `json:"worksets,omitempty"`
-	Rev                        uint64                                 `json:"rev,omitempty"`
-	PrevRev                    uint64                                 `json:"prevRev"`
-	EventType                  string                                 `json:"event_type,omitempty"`
-	Event                      *sessionruntime.SessionEvent           `json:"event,omitempty"`
-	Projection                 *sessionruntime.SessionProjection      `json:"projection,omitempty"`
-	Session                    *pebblestore.SessionSnapshot           `json:"session,omitempty"`
-	CurrentRunState            *pebblestore.V3SessionRunState         `json:"current_run_state,omitempty"`
-	HasActivePlan              *bool                                  `json:"has_active_plan,omitempty"`
-	ActivePlan                 *pebblestore.SessionPlanSnapshot       `json:"active_plan,omitempty"`
-	PermissionSummary          *sessionsV3PermissionSummary           `json:"permission_summary,omitempty"`
-	Notification               *pebblestore.NotificationRecord        `json:"notification,omitempty"`
-	NotificationSummary        *pebblestore.NotificationSummary       `json:"notification_summary,omitempty"`
-	AITask                     *sessionsV3AITaskLifecyclePayload      `json:"task,omitempty"`
-	ErrorCode                  string                                 `json:"error_code,omitempty"`
-	Error                      string                                 `json:"error,omitempty"`
-	Reason                     string                                 `json:"reason,omitempty"`
-	BootstrapRequired          bool                                   `json:"bootstrap_required,omitempty"`
-	OldestAvailableEndpointSeq uint64                                 `json:"oldest_available_endpoint_seq,omitempty"`
-	LatestEndpointSeq          uint64                                 `json:"latest_endpoint_seq,omitempty"`
-	MissingEndpointSeq         uint64                                 `json:"missing_endpoint_seq,omitempty"`
-	Capabilities               []string                               `json:"capabilities,omitempty"`
+	Protocol                   string                                         `json:"protocol"`
+	ProtocolVersion            int                                            `json:"protocol_version"`
+	Kind                       string                                         `json:"kind"`
+	SessionID                  string                                         `json:"session_id,omitempty"`
+	SubscriptionID             string                                         `json:"subscription_id,omitempty"`
+	WorksetID                  string                                         `json:"workset_id,omitempty"`
+	WorksetSubscriptionID      string                                         `json:"workset_subscription_id,omitempty"`
+	AutoSubscribed             bool                                           `json:"auto_subscribed,omitempty"`
+	AfterSeq                   uint64                                         `json:"after_seq,omitempty"`
+	AfterRev                   uint64                                         `json:"afterRev,omitempty"`
+	LastSeq                    uint64                                         `json:"last_seq,omitempty"`
+	NextSeq                    uint64                                         `json:"next_seq,omitempty"`
+	HighWatermarkSeq           uint64                                         `json:"high_watermark_seq,omitempty"`
+	EndpointCursor             string                                         `json:"endpoint_cursor,omitempty"`
+	Subscriptions              []V3RealtimeSubscriptionRequest                `json:"subscriptions,omitempty"`
+	Worksets                   []V3RealtimeWorksetSubscriptionRequest         `json:"worksets,omitempty"`
+	Rev                        uint64                                         `json:"rev,omitempty"`
+	PrevRev                    uint64                                         `json:"prevRev"`
+	EventType                  string                                         `json:"event_type,omitempty"`
+	Event                      *sessionruntime.SessionEvent                   `json:"event,omitempty"`
+	Projection                 *sessionruntime.SessionProjection              `json:"projection,omitempty"`
+	Session                    *pebblestore.SessionSnapshot                   `json:"session,omitempty"`
+	CurrentRunState            *pebblestore.V3SessionRunState                 `json:"current_run_state,omitempty"`
+	HasActivePlan              *bool                                          `json:"has_active_plan,omitempty"`
+	ActivePlan                 *pebblestore.SessionPlanSnapshot               `json:"active_plan,omitempty"`
+	PermissionSummary          *sessionsV3PermissionSummary                   `json:"permission_summary,omitempty"`
+	Notification               *pebblestore.NotificationRecord                `json:"notification,omitempty"`
+	NotificationSummary        *pebblestore.NotificationSummary               `json:"notification_summary,omitempty"`
+	AITask                     *sessionsV3AITaskLifecyclePayload              `json:"task,omitempty"`
+	PlanExecution              *pebblestore.PlanExecutionRealtimeOutboxRecord `json:"plan_execution,omitempty"`
+	ErrorCode                  string                                         `json:"error_code,omitempty"`
+	Error                      string                                         `json:"error,omitempty"`
+	Reason                     string                                         `json:"reason,omitempty"`
+	BootstrapRequired          bool                                           `json:"bootstrap_required,omitempty"`
+	OldestAvailableEndpointSeq uint64                                         `json:"oldest_available_endpoint_seq,omitempty"`
+	LatestEndpointSeq          uint64                                         `json:"latest_endpoint_seq,omitempty"`
+	MissingEndpointSeq         uint64                                         `json:"missing_endpoint_seq,omitempty"`
+	Capabilities               []string                                       `json:"capabilities,omitempty"`
 }
 
 type V3RealtimeLivePatch struct {
@@ -178,6 +180,14 @@ func ValidateV3RealtimeSchemaMessage(message V3RealtimeMessage) error {
 	case V3RealtimeKindAITaskResource:
 		if strings.TrimSpace(message.EndpointCursor) == "" || message.AITask == nil {
 			return errors.New("v3 realtime task.lifecycle.updated requires endpoint_cursor and task")
+		}
+		return nil
+	case V3RealtimeKindPlanExecutionDelta:
+		if strings.TrimSpace(message.EndpointCursor) == "" || strings.TrimSpace(message.SessionID) == "" || message.PlanExecution == nil {
+			return errors.New("v3 realtime plan.execution.delta requires endpoint_cursor, session_id, and plan_execution")
+		}
+		if message.PlanExecution.Kind != pebblestore.PlanExecutionRealtimeKindDelta || message.PlanExecution.SessionID != message.SessionID {
+			return errors.New("v3 realtime plan.execution.delta contains an invalid plan execution envelope")
 		}
 		return nil
 	case V3RealtimeKindReplayStart:
@@ -310,6 +320,7 @@ func ValidateV3RealtimeOutboundServerMessage(message V3RealtimeMessage) error {
 		V3RealtimeKindWorksetSessionRemoved,
 		V3RealtimeKindNotificationResource,
 		V3RealtimeKindAITaskResource,
+		V3RealtimeKindPlanExecutionDelta,
 		V3RealtimeKindAuthDenied,
 		V3RealtimeKindSlowConsumer:
 		return nil
@@ -320,7 +331,7 @@ func ValidateV3RealtimeOutboundServerMessage(message V3RealtimeMessage) error {
 
 func v3RealtimeKindAllowed(kind string) bool {
 	switch kind {
-	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionUpdated, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindNotificationResource, V3RealtimeKindAITaskResource, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
+	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionUpdated, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindNotificationResource, V3RealtimeKindAITaskResource, V3RealtimeKindPlanExecutionDelta, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
 		return true
 	default:
 		return false

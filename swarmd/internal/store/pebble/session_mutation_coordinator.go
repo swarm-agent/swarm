@@ -57,6 +57,9 @@ type sessionMutationCoordinator struct {
 	// beforeExecutionEpochCommit injects a pre-commit failure for the canonical
 	// compound epoch transition. Returning an error must leave no durable rows.
 	beforeExecutionEpochCommit func(sessionID string) error
+	// beforePlanRuntimeCommit injects a failure after the complete unindexed
+	// plan-runtime batch is constructed but before it becomes durable.
+	beforePlanRuntimeCommit func(sessionID, planID string) error
 }
 
 func newSessionMutationCoordinator() *sessionMutationCoordinator {

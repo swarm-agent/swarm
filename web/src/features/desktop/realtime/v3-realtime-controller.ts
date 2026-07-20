@@ -8,6 +8,7 @@ import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-boots
 import { desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, commitDesktopV3CacheSnapshot, subscribeDesktopV3Cache, type DesktopV3CacheMutation } from '../state/desktop-v3-cache-store'
 import { realtimeFrameToActions } from '../state/desktop-v3-cache-wire'
+import { hydratePlanRuntime } from '../v3-runtime/plan-runtime-api'
 import {
   postDesktopV3Reconnect,
   type DesktopV3ReconnectInput,
@@ -406,6 +407,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       await commitDesktopV3StreamFrame(this.streamCommit, frame)
       this.livePatchCoordinator.afterDurableFrame(frame)
       this.clientEffectRunner.accept(frame)
+      if (frame.kind === 'plan.execution.delta') this.rehydrateStalePlanRuntime(frame)
       if (frame.kind === 'event' || frame.kind === 'workset.session.discovered' || frame.kind === 'workset.session.updated' || frame.kind === 'workset.session.removed') {
         // Cache listeners and this post-commit path can observe the same frame.
         // Coalesce both signals so an event burst performs one reconciliation.
@@ -416,6 +418,19 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       this.handleDurableStreamCommitFailure(error)
       throw error
     }
+  }
+
+  private rehydrateStalePlanRuntime(frame: RealtimeMessage): void {
+    const sessionId = frame.session_id?.trim()
+    const delta = frame.plan_execution
+    if (!sessionId || !delta) return
+    const runtime = this.getSnapshot().planRuntimeBySession[sessionId]
+    if (!runtime?.hydrateRequired) return
+    void hydratePlanRuntime(sessionId, delta.plan_id, delta.definition_revision).then((hydration) => {
+      this.dispatch({ type: 'planRuntime.applyHydration', sessionId, hydration })
+    }).catch((error) => {
+      this.handleDurableStreamCommitFailure(error)
+    })
   }
 
   private handleDurableStreamCommitFailure(error: unknown): void {

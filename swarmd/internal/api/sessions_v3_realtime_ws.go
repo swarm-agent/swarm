@@ -553,6 +553,19 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 		advanced.LastSentEndpointSeq = record.EndpointSeq
 		return advanced, true, true
 	}
+	if strings.TrimSpace(record.Event.EventType) == pebblestore.PlanExecutionRealtimeKindDelta {
+		subscription, subscribed := advanced.Subscriptions[record.SessionID]
+		if !subscribed {
+			return advanced, true, false
+		}
+		if !s.sendV3RealtimePlanExecutionFrame(conn, record, scope) {
+			return advanced, false, false
+		}
+		advanced.LastSentEndpointSeq = record.EndpointSeq
+		subscription.LastSeq = record.Event.Seq
+		advanced.Subscriptions[record.SessionID] = subscription
+		return advanced, true, true
+	}
 
 	subscription, subscribed := advanced.Subscriptions[record.SessionID]
 	removeAutoSubscriptionAfterDelivery := false
@@ -1265,6 +1278,26 @@ func (s *Server) sendV3RealtimeAITaskResourceFrame(conn *transportws.Conn, princ
 		Kind: V3RealtimeKindAITaskResource, EndpointCursor: cursor,
 		Rev: record.EndpointSeq, PrevRev: record.EndpointSeq - 1,
 		EventType: record.Event.EventType, AITask: &payload,
+	}) == nil
+}
+
+func (s *Server) sendV3RealtimePlanExecutionFrame(conn *transportws.Conn, record sessionruntime.RealtimeOutboxRecord, scope v3SyncCursorScope) bool {
+	var payload struct {
+		PlanExecution pebblestore.PlanExecutionRealtimeOutboxRecord `json:"plan_execution"`
+	}
+	if err := json.Unmarshal(record.Event.Payload, &payload); err != nil || payload.PlanExecution.Kind != pebblestore.PlanExecutionRealtimeKindDelta {
+		return false
+	}
+	cursor, err := s.signV3SyncEndpointCursor(scope, record.EndpointSeq)
+	if err != nil {
+		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(record.SessionID, "cursor_sign_failed", err.Error(), record.EndpointSeq-1, record.EndpointSeq))
+		return false
+	}
+	return s.sendV3RealtimeMessage(conn, V3RealtimeMessage{
+		Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion,
+		Kind: V3RealtimeKindPlanExecutionDelta, SessionID: record.SessionID,
+		EndpointCursor: cursor, Rev: record.EndpointSeq, PrevRev: record.EndpointSeq - 1,
+		EventType: record.Event.EventType, PlanExecution: &payload.PlanExecution,
 	}) == nil
 }
 
