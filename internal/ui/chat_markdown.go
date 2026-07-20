@@ -22,6 +22,44 @@ var (
 	).Parser()
 )
 
+// MarkdownRenderSpan and MarkdownRenderLine expose the canonical TUI markdown
+// result without coupling callers to the legacy chat page's timeline types.
+type MarkdownRenderSpan struct {
+	Text  string
+	Style tcell.Style
+}
+
+type MarkdownRenderLine struct {
+	Text  string
+	Style tcell.Style
+	Spans []MarkdownRenderSpan
+}
+
+// RenderMarkdownLines runs message text through the canonical TUI markdown and
+// theme path used by the established chat renderer.
+func RenderMarkdownLines(theme Theme, body string, width int) []MarkdownRenderLine {
+	if width <= 0 {
+		return nil
+	}
+	page := &ChatPage{theme: theme}
+	rows := page.renderMarkdownRows(body, theme.MarkdownText, theme.Text)
+	out := make([]MarkdownRenderLine, 0, len(rows))
+	for _, row := range rows {
+		for _, wrapped := range wrapMarkdownRenderLine(row, width) {
+			line := MarkdownRenderLine{
+				Text:  chatRenderLineText(wrapped),
+				Style: wrapped.Style,
+				Spans: make([]MarkdownRenderSpan, 0, len(wrapped.Spans)),
+			}
+			for _, span := range wrapped.Spans {
+				line.Spans = append(line.Spans, MarkdownRenderSpan{Text: span.Text, Style: span.Style})
+			}
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 func (p *ChatPage) renderAssistantMarkdownMessageLines(firstPrefix, continuationPrefix, body string, width int, baseStyle tcell.Style) []chatRenderLine {
 	body = strings.ReplaceAll(body, "\r\n", "\n")
 	if body == "" {

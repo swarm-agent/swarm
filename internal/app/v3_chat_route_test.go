@@ -95,6 +95,26 @@ func TestV3ChatFooterUsesConfiguredSwarmNameForLegacyHostFallback(t *testing.T) 
 	}
 }
 
+func TestV3ChatStylesUseCanonicalMarkdownThemePath(t *testing.T) {
+	app := &App{}
+	styles := app.v3ChatStyles()
+	if styles.RenderMarkdown == nil {
+		t.Fatal("V3 chat markdown renderer was not connected")
+	}
+	lines := styles.RenderMarkdown("# Heading\n\n- **item**", 40)
+	if len(lines) < 3 || lines[0].Text != "Heading" || lines[2].Text != "• item" {
+		t.Fatalf("canonical markdown lines = %#v", lines)
+	}
+	headingForeground, _, headingAttributes := lines[0].Style.Decompose()
+	wantForeground, _, wantAttributes := app.effectiveThemeOption().Theme.MarkdownHeading.Decompose()
+	if headingForeground != wantForeground || headingAttributes != wantAttributes {
+		t.Fatalf("heading theme = fg %v attrs %v, want fg %v attrs %v", headingForeground, headingAttributes, wantForeground, wantAttributes)
+	}
+	if len(lines[2].Spans) == 0 {
+		t.Fatalf("inline markdown spans were not preserved: %#v", lines[2])
+	}
+}
+
 func TestV3ChatHomeProfileUsesCanonicalCreateAndFooterHandoff(t *testing.T) {
 	profile := model.ActiveModelProfile{Source: "saved", ProfileID: "profile-1", Name: "Focused work", ModelMode: "split"}
 	page := ui.NewHomePage(model.HomeModel{ActiveAgent: "swarm", ActiveModelProfile: profile})

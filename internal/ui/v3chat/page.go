@@ -26,20 +26,32 @@ const (
 // PageStyles are supplied by the app shell so this package does not depend on
 // the legacy UI package or its chat rendering implementation.
 type PageStyles struct {
-	Background tcell.Style
-	Panel      tcell.Style
-	Element    tcell.Style
-	Border     tcell.Style
-	Text       tcell.Style
-	Muted      tcell.Style
-	Primary    tcell.Style
-	Accent     tcell.Style
-	Secondary  tcell.Style
-	Success    tcell.Style
-	Warning    tcell.Style
-	Error      tcell.Style
-	Prompt     tcell.Style
-	Cursor     tcell.Style
+	Background     tcell.Style
+	Panel          tcell.Style
+	Element        tcell.Style
+	Border         tcell.Style
+	Text           tcell.Style
+	Muted          tcell.Style
+	Primary        tcell.Style
+	Accent         tcell.Style
+	Secondary      tcell.Style
+	Success        tcell.Style
+	Warning        tcell.Style
+	Error          tcell.Style
+	Prompt         tcell.Style
+	Cursor         tcell.Style
+	RenderMarkdown func(string, int) []MarkdownLine
+}
+
+type MarkdownSpan struct {
+	Text  string
+	Style tcell.Style
+}
+
+type MarkdownLine struct {
+	Text  string
+	Style tcell.Style
+	Spans []MarkdownSpan
 }
 
 type PageAction int
@@ -560,9 +572,15 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 	}
 }
 
+type renderSpan struct {
+	text  string
+	style tcell.Style
+}
+
 type renderRow struct {
 	text           string
 	style          tcell.Style
+	spans          []renderSpan
 	prefixWidth    int
 	prefixStyle    tcell.Style
 	highlightStart int
@@ -652,7 +670,11 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	for i := start; i < end; i++ {
 		row := rows[i]
 		y := transcriptTop + i - start
-		drawText(screen, 2, y, width-4, row.style, row.text)
+		if len(row.spans) > 0 {
+			drawSpans(screen, 2, y, width-4, row.spans)
+		} else {
+			drawText(screen, 2, y, width-4, row.style, row.text)
+		}
 		if row.prefixWidth > 0 {
 			drawText(screen, 2, y, minInt(width-4, row.prefixWidth), row.prefixStyle, row.text)
 		}
@@ -1006,9 +1028,7 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 		case "tool":
 			rows = append(rows, p.renderToolRows(item.tool, width, styles)...)
 		case "live":
-			for _, line := range wrapText(item.live.Text, width) {
-				rows = append(rows, renderRow{text: line, style: styles.Text})
-			}
+			rows = append(rows, p.renderAssistantRows(item.live.Text, width, styles)...)
 		case "message":
 			message := item.message
 			if strings.EqualFold(message.Role, "user") {
@@ -1018,9 +1038,7 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 				rows = append(rows, p.renderUserRows("message:"+message.ID, message.Content, width, styles)...)
 				continue
 			}
-			for _, line := range p.cachedWrap("message:"+message.ID, message.Content, width) {
-				rows = append(rows, renderRow{text: line, style: styles.Text})
-			}
+			rows = append(rows, p.renderAssistantRows(message.Content, width, styles)...)
 			rows = append(rows, renderRow{text: "", style: styles.Text})
 		}
 	}
@@ -1029,6 +1047,26 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 	sort.SliceStable(pending, func(i, j int) bool { return pending[i].ID < pending[j].ID })
 	for _, message := range pending {
 		rows = append(rows, p.renderUserRows("pending:"+message.ID, message.Content, width, styles)...)
+	}
+	return rows
+}
+
+func (p *Page) renderAssistantRows(content string, width int, styles PageStyles) []renderRow {
+	if styles.RenderMarkdown == nil {
+		rows := make([]renderRow, 0)
+		for _, line := range wrapText(content, width) {
+			rows = append(rows, renderRow{text: line, style: styles.Text})
+		}
+		return rows
+	}
+	lines := styles.RenderMarkdown(content, width)
+	rows := make([]renderRow, 0, len(lines))
+	for _, line := range lines {
+		row := renderRow{text: line.Text, style: line.Style, spans: make([]renderSpan, 0, len(line.Spans))}
+		for _, span := range line.Spans {
+			row.spans = append(row.spans, renderSpan{text: span.Text, style: span.Style})
+		}
+		rows = append(rows, row)
 	}
 	return rows
 }
@@ -1247,6 +1285,19 @@ func drawText(s tcell.Screen, x, y, width int, style tcell.Style, text string) {
 		}
 		s.SetContent(x+col, y, r, nil, style)
 		col++
+	}
+}
+
+func drawSpans(s tcell.Screen, x, y, width int, spans []renderSpan) {
+	col := 0
+	for _, span := range spans {
+		for _, r := range span.text {
+			if col >= width {
+				return
+			}
+			s.SetContent(x+col, y, r, nil, span.style)
+			col++
+		}
 	}
 }
 func drawHLine(s tcell.Screen, x, y, width int, style tcell.Style) {

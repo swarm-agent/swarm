@@ -531,6 +531,34 @@ func TestPageAssistantRowsOmitRoleLabels(t *testing.T) {
 	}
 }
 
+func TestPageAssistantMessagesUseInjectedCanonicalMarkdownRowsAndSpans(t *testing.T) {
+	styles := testPageStyles()
+	headingStyle := tcell.StyleDefault.Foreground(tcell.ColorPurple).Bold(true)
+	strongStyle := tcell.StyleDefault.Foreground(tcell.ColorGreen).Bold(true)
+	calls := 0
+	styles.RenderMarkdown = func(body string, width int) []MarkdownLine {
+		calls++
+		if width != 40 || body != "# Heading with **strong** text" {
+			t.Fatalf("markdown request = %q at width %d", body, width)
+		}
+		return []MarkdownLine{{
+			Text:  "Heading with strong text",
+			Style: headingStyle,
+			Spans: []MarkdownSpan{{Text: "Heading with ", Style: headingStyle}, {Text: "strong", Style: strongStyle}, {Text: " text", Style: headingStyle}},
+		}}
+	}
+	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), styles)
+	state := State{Messages: []Message{{ID: "assistant", Role: "assistant", Content: "# Heading with **strong** text"}}}
+
+	rows := page.renderRows(state, 40, styles)
+	if calls != 1 || len(rows) != 2 || rows[0].text != "Heading with strong text" || len(rows[0].spans) != 3 {
+		t.Fatalf("canonical markdown rows = %#v, calls = %d", rows, calls)
+	}
+	if rows[0].spans[1].style != strongStyle || rows[0].style != headingStyle {
+		t.Fatalf("canonical markdown styles were not preserved: %#v", rows[0])
+	}
+}
+
 func TestPageRowCacheIsBounded(t *testing.T) {
 	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), testPageStyles())
 	for i := 0; i < maxRowCacheItems+1; i++ {
