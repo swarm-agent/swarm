@@ -23,6 +23,8 @@ const (
 	maxRowCacheItems       = maxResidentMessages
 )
 
+var runIndicatorFrames = []string{"·", "•", "◦", "•"}
+
 // PageStyles are supplied by the app shell so this package does not depend on
 // the legacy UI package or its chat rendering implementation.
 type PageStyles struct {
@@ -989,6 +991,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 		drawCanonicalHeader(screen, width, styles, title, SelectPlanHeader(state))
 		transcriptTop = 1
 	}
+	runStatus, _ := BuildRunStatus(state, now)
 	statusLine := ""
 	statusStyle := styles.Muted
 	if stale {
@@ -1000,9 +1003,9 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	} else if status != "" {
 		statusLine = status
 	}
-	// The canonical header deliberately omits elapsed run time. Stop any timer
-	// left by an older render rather than waking the page for text that is not shown.
-	p.scheduleRunTimer(false)
+	// Keep the activity indicator moving without turning the page into a
+	// heartbeat: each draw schedules exactly one wake for the next second.
+	p.scheduleRunTimer(runStatus.Active)
 
 	// Keep the footer to its separator and token row so the separator is also
 	// the composer's bottom border, directly beneath the editable rows.
@@ -1058,6 +1061,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	modelState := SelectModel(state)
 	footerY := height - footerHeight
 	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, routeLabel, profileLabel, statusLine, statusStyle)
+	drawActiveRunIndicator(screen, width, footerY, styles, runStatus, now)
 	composerEnd := minInt(len(composerLines), composerStart+composerVisibleRows)
 	for i := composerStart; i < composerEnd; i++ {
 		drawText(screen, 0, composerY+1+i-composerStart, width, styles.Prompt, composerLines[i])
@@ -1123,14 +1127,14 @@ func BuildRunStatus(state State, now time.Time) (RunStatus, bool) {
 		}
 	}
 	if hasCurrentTiming {
-		model.Timer = formatDurationMS(currentMS)
-	}
-	if run.CumulativeDurationMS > 0 {
-		totalMS := run.CumulativeDurationMS
-		if model.Active && hasCurrentTiming {
-			totalMS += currentMS
+		if model.Active {
+			model.Timer = formatActiveDurationMS(currentMS)
+		} else {
+			model.Timer = formatDurationMS(currentMS)
 		}
-		total := formatDurationMS(totalMS)
+	}
+	if !model.Active && run.CumulativeDurationMS > 0 {
+		total := formatDurationMS(run.CumulativeDurationMS)
 		if model.Timer == "" {
 			model.Timer = total
 		} else if total != model.Timer {
@@ -1145,6 +1149,20 @@ func formatDurationMS(elapsedMS int64) string {
 		return ""
 	}
 	totalSeconds := elapsedMS / 1000
+	seconds := totalSeconds % 60
+	minutes := (totalSeconds / 60) % 60
+	hours := totalSeconds / 3600
+	if hours > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", hours, minutes, seconds)
+	}
+	return fmt.Sprintf("%d:%02d", minutes, seconds)
+}
+
+func formatActiveDurationMS(elapsedMS int64) string {
+	totalSeconds := maxInt64(1, elapsedMS/1000)
+	if totalSeconds < 60 {
+		return fmt.Sprintf("%ds", totalSeconds)
+	}
 	seconds := totalSeconds % 60
 	minutes := (totalSeconds / 60) % 60
 	hours := totalSeconds / 3600
@@ -1193,6 +1211,15 @@ func truncateRunes(value string, width int) string {
 		return "…"
 	}
 	return string(runes[:width-1]) + "…"
+}
+
+func drawActiveRunIndicator(screen tcell.Screen, width, y int, styles PageStyles, status RunStatus, now time.Time) {
+	if !status.Active || strings.TrimSpace(status.Timer) == "" || width < 8 {
+		return
+	}
+	frame := runIndicatorFrames[int(now.Unix())%len(runIndicatorFrames)]
+	label := " " + frame + " " + strings.TrimSpace(status.Timer) + " "
+	drawText(screen, 1, y, minInt(width-2, utf8.RuneCountInString(label)), styleWithForeground(styles.Border, styles.Accent).Bold(true), label)
 }
 
 func drawCanonicalHeader(screen tcell.Screen, width int, styles PageStyles, title string, plan PlanHeader) {

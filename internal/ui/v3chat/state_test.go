@@ -18,7 +18,7 @@ func TestRunIntentLifecycleUsesAuthoritativeTimingAndTerminalState(t *testing.T)
 		},
 	}})
 	status, ok := BuildRunStatus(state, time.UnixMilli(3_500))
-	if !ok || !status.Active || status.Label != "Running" || status.Timer != "0:02 (1:02)" {
+	if !ok || !status.Active || status.Label != "Running" || status.Timer != "2s" {
 		t.Fatalf("pending run status = %#v/%t", status, ok)
 	}
 	payload, _ := json.Marshal(map[string]any{"run_intent": client.SessionV3RunIntent{
@@ -49,7 +49,7 @@ func TestRepeatedRunIntentUpdatesPreserveCanonicalTimerAnchor(t *testing.T) {
 			t.Fatalf("run status = %#v/%t, want timer %q", status, ok, want)
 		}
 	}
-	assertTimer("0:05 (1:05)")
+	assertTimer("5s")
 
 	// Executor phase/progress payloads can omit timing while the durable run
 	// intent already has the authoritative anchor. They must not reset it.
@@ -60,7 +60,7 @@ func TestRepeatedRunIntentUpdatesPreserveCanonicalTimerAnchor(t *testing.T) {
 		state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{
 			Kind: "event", Event: &client.SessionV3Event{SessionID: "s", Seq: uint64(seq + 2), Payload: payload},
 		}})
-		assertTimer("0:05 (1:05)")
+		assertTimer("5s")
 	}
 
 	run, ok := SelectActiveRun(state)
@@ -73,14 +73,21 @@ func TestRepeatedRunIntentUpdatesPreserveCanonicalTimerAnchor(t *testing.T) {
 	state = Reduce(state, MessageResultAction{Result: client.SessionV3MessageResult{RunIntent: client.SessionV3RunIntent{
 		RunID: "run", Status: "running", CreatedAt: 6_900, UpdatedAt: 6_900, EventSeq: 2,
 	}}})
-	assertTimer("0:05 (1:05)")
+	assertTimer("5s")
 }
 
-func TestRunTimerUsesCreatedAnchorAndNeverUpdatedAtFallback(t *testing.T) {
+func TestRunTimerStartsAtOneSecondAndNeverUsesUpdatedAtFallback(t *testing.T) {
 	state := NewState()
-	state.CurrentRun = &RunState{ID: "run", Status: "running", UpdatedAt: 9_000}
+	state.CurrentRun = &RunState{ID: "run", Status: "running", StartedAt: 10_000, UpdatedAt: 10_000}
 	state.LatestRun = state.CurrentRun
 	status, ok := BuildRunStatus(state, time.UnixMilli(10_000))
+	if !ok || !status.Active || status.Timer != "1s" {
+		t.Fatalf("new active run timer = %#v/%t, want 1s", status, ok)
+	}
+
+	state.CurrentRun = &RunState{ID: "run", Status: "running", UpdatedAt: 9_000}
+	state.LatestRun = state.CurrentRun
+	status, ok = BuildRunStatus(state, time.UnixMilli(10_000))
 	if !ok || !status.Active || status.Timer != "" {
 		t.Fatalf("update-only run invented reset-prone timer: %#v/%t", status, ok)
 	}

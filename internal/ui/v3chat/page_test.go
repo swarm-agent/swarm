@@ -374,7 +374,7 @@ func TestRunTimerWakeIsOneShotAndReschedulesWithoutHeartbeat(t *testing.T) {
 	}
 }
 
-func TestPageCanonicalHeaderUsesLivePlanStateWithoutTimerOrConnectedChrome(t *testing.T) {
+func TestPageCanonicalHeaderKeepsPlanStateAndShowsRunIndicatorByComposer(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
 		Session: client.SessionSummary{ID: "s", Title: "Canonical title"},
@@ -398,8 +398,15 @@ func TestPageCanonicalHeaderUsesLivePlanStateWithoutTimerOrConnectedChrome(t *te
 	if !strings.HasPrefix(header, "Canonical title") || !strings.Contains(header, "In Progress") || !strings.Contains(header, "cp-1 Wire live plan state") {
 		t.Fatalf("canonical header missing live title/checkpoint state: %q", header)
 	}
-	if strings.Contains(header, "0:05") || strings.Contains(header, "1:35") {
-		t.Fatalf("canonical header retained timer chrome: %q", header)
+	if strings.Contains(header, "5s") || strings.Contains(header, "1:35") {
+		t.Fatalf("run indicator leaked into canonical header: %q", header)
+	}
+	indicator := simulationRow(screen, 100, 16)
+	if !strings.Contains(indicator, "• 5s") {
+		t.Fatalf("spinner/timer indicator missing beside composer: %q", indicator)
+	}
+	if strings.Contains(indicator, "Swarming") {
+		t.Fatalf("legacy Swarming label remains in active run indicator: %q", indicator)
 	}
 	if strings.Contains(simulationText(screen, 100, 18), "Connected") || strings.Contains(simulationText(screen, 100, 18), "connected") || strings.Contains(header, "Swarm") {
 		t.Fatalf("redundant connection/header chrome remains:\n%s", simulationText(screen, 100, 18))
