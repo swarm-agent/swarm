@@ -6,11 +6,6 @@ import (
 	"strings"
 )
 
-const (
-	maxToolPreviewRunes = 2000
-	maxToolPreviewLines = 8
-)
-
 // ToolTimelineItem mirrors the Desktop V3 live-tool projection: tool lifecycle
 // events are keyed by call ID and placed on the same event/message sequence used
 // by the rest of the transcript. A durable role=tool message replaces the live
@@ -98,12 +93,23 @@ func applyToolEvent(state State, event clientSessionV3Event, payload map[string]
 	} else if argumentsDelta != "" {
 		item.Arguments += argumentsDelta
 	}
-	output := firstNonEmptyRaw(rawString(payload, "completed_output"), rawString(payload, "raw_output"), rawString(payload, "output"))
-	outputDelta := firstNonEmptyRaw(rawString(payload, "output_delta"), rawString(payload, "delta"))
-	if output != "" {
-		item.Output = output
-	} else if outputDelta != "" {
-		item.Output += outputDelta
+	if eventType == "session.tool.delta" {
+		// Tool progress payloads carry the next chunk in output. Preserve it
+		// byte-for-byte and append it so Bash behaves like a live terminal.
+		item.Output += firstNonEmptyRaw(
+			rawText(payload, "output"),
+			rawText(payload, "raw_output"),
+			rawText(payload, "output_delta"),
+			rawText(payload, "delta"),
+		)
+	} else {
+		output := firstNonEmptyRaw(rawText(payload, "completed_output"), rawText(payload, "raw_output"), rawText(payload, "output"))
+		outputDelta := firstNonEmptyRaw(rawText(payload, "output_delta"), rawText(payload, "delta"))
+		if output != "" {
+			item.Output = output
+		} else if outputDelta != "" {
+			item.Output += outputDelta
+		}
 	}
 	item.Error = firstNonEmpty(rawString(payload, "error"), item.Error)
 	if duration := rawInt64(payload, "duration_ms"); duration != 0 {
@@ -176,10 +182,14 @@ func toolTerminalStatus(errorText string) string {
 }
 
 func rawString(payload map[string]json.RawMessage, keys ...string) string {
+	return strings.TrimSpace(rawText(payload, keys...))
+}
+
+func rawText(payload map[string]json.RawMessage, keys ...string) string {
 	for _, key := range keys {
 		var value string
 		if raw := payload[key]; len(raw) > 0 && json.Unmarshal(raw, &value) == nil {
-			if value = strings.TrimSpace(value); value != "" {
+			if strings.TrimSpace(value) != "" {
 				return value
 			}
 		}
@@ -215,44 +225,6 @@ func boundLiveTools(state State) State {
 	}
 	delete(state.Tools, oldestKey)
 	return state
-}
-
-func toolPreviewLines(value string) []string {
-	value = strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(value), "\r\n", "\n"), "\r", "\n")
-	if value == "" {
-		return nil
-	}
-	if compact := compactToolJSON(value); compact != "" {
-		value = compact
-	}
-	runes := []rune(value)
-	truncated := false
-	if len(runes) > maxToolPreviewRunes {
-		runes = runes[:maxToolPreviewRunes]
-		value = string(runes)
-		truncated = true
-	}
-	lines := strings.Split(value, "\n")
-	if len(lines) > maxToolPreviewLines {
-		lines = lines[:maxToolPreviewLines]
-		truncated = true
-	}
-	if truncated {
-		lines[len(lines)-1] += " …"
-	}
-	return lines
-}
-
-func compactToolJSON(value string) string {
-	var decoded any
-	if json.Unmarshal([]byte(value), &decoded) != nil {
-		return ""
-	}
-	encoded, err := json.Marshal(decoded)
-	if err != nil {
-		return ""
-	}
-	return string(encoded)
 }
 
 func toolDurationLabel(ms int64) string {

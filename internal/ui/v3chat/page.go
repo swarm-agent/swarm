@@ -561,10 +561,13 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 }
 
 type renderRow struct {
-	text        string
-	style       tcell.Style
-	prefixWidth int
-	prefixStyle tcell.Style
+	text           string
+	style          tcell.Style
+	prefixWidth    int
+	prefixStyle    tcell.Style
+	highlightStart int
+	highlightWidth int
+	highlightStyle tcell.Style
 }
 
 func styleWithForeground(style, foregroundStyle tcell.Style) tcell.Style {
@@ -652,6 +655,10 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 		drawText(screen, 2, y, width-4, row.style, row.text)
 		if row.prefixWidth > 0 {
 			drawText(screen, 2, y, minInt(width-4, row.prefixWidth), row.prefixStyle, row.text)
+		}
+		if row.highlightWidth > 0 && row.highlightStart < width-4 {
+			highlight := runeSlice(row.text, row.highlightStart, row.highlightStart+row.highlightWidth)
+			drawText(screen, 2+row.highlightStart, y, minInt(width-4-row.highlightStart, row.highlightWidth), row.highlightStyle, highlight)
 		}
 	}
 
@@ -1035,32 +1042,61 @@ func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyle
 	case "failed", "error", "cancelled", "canceled":
 		symbol, headerStyle = "✕", styles.Error
 	}
-	header := symbol + " tool " + firstNonEmpty(tool.Name, "tool")
-	if status != "" {
-		header += " · " + status
+
+	presentation := buildToolPresentation(tool)
+	toolName := normalizeToolDisplayName(tool.Name)
+	summary := strings.TrimSpace(presentation.Summary)
+	if summary != toolName && !strings.HasPrefix(summary, toolName+" ") {
+		summary = toolName + " · " + summary
 	}
+	header := symbol + " " + summary
 	if duration := toolDurationLabel(tool.DurationMS); duration != "" {
 		header += " · " + duration
 	}
-	rows := []renderRow{{text: header, style: headerStyle.Bold(true)}}
-	appendPreview := func(label, value, key string, style tcell.Style) {
-		lines := toolPreviewLines(value)
+	rows := []renderRow{{
+		text:           header,
+		style:          styles.Text.Bold(true),
+		prefixWidth:    utf8.RuneCountInString(symbol),
+		prefixStyle:    headerStyle.Bold(true),
+		highlightStart: utf8.RuneCountInString(symbol + " "),
+		highlightWidth: utf8.RuneCountInString(toolName),
+		highlightStyle: styleWithForeground(styles.Text.Bold(true), styles.Primary),
+	}}
+	bodyLimit := 14
+	if normalizeToolDisplayName(tool.Name) == "bash" {
+		bodyLimit = 10
+	}
+	bodyRows := 0
+	bodyClipped := false
+	appendLines := func(lines []toolPresentationLine, key string) {
 		for i, line := range lines {
-			prefix := "       "
-			if i == 0 {
-				prefix = label + " "
+			style := styles.Muted
+			switch line.Tone {
+			case "added":
+				style = styles.Success
+			case "removed", "error":
+				style = styles.Error
+			case "command", "label":
+				style = styles.Text
+			case "path":
+				style = styles.Secondary
 			}
-			for _, wrapped := range p.cachedWrap("tool:"+tool.ID+":"+key+":"+fmt.Sprint(i), line, maxInt(1, width-len([]rune(prefix)))) {
-				rows = append(rows, renderRow{text: prefix + wrapped, style: style})
-				prefix = strings.Repeat(" ", len([]rune(prefix)))
+			for _, wrapped := range p.cachedWrap("tool:"+tool.ID+":"+key+":"+fmt.Sprint(i), line.Text, maxInt(1, width-2)) {
+				if bodyRows >= bodyLimit {
+					bodyClipped = true
+					return
+				}
+				rows = append(rows, renderRow{text: "  " + wrapped, style: style})
+				bodyRows++
 			}
 		}
 	}
-	appendPreview("call  ", tool.Arguments, "arguments", styles.Muted)
+	appendLines(presentation.Lines, "presentation")
 	if tool.Error != "" {
-		appendPreview("error ", tool.Error, "error", styles.Error)
-	} else if tool.Output != "" {
-		appendPreview("result", tool.Output, "result", styles.Muted)
+		appendLines([]toolPresentationLine{{Text: tool.Error, Tone: "error"}}, "error")
+	}
+	if bodyClipped && bodyRows > 0 {
+		rows[len(rows)-1] = renderRow{text: "  … output clipped", style: styles.Muted}
 	}
 	rows = append(rows, renderRow{text: "", style: styles.Text})
 	return rows
@@ -1193,6 +1229,13 @@ func fill(s tcell.Screen, x, y, width, height int, style tcell.Style) {
 		}
 	}
 }
+func runeSlice(value string, start, end int) string {
+	runes := []rune(value)
+	start = maxInt(0, minInt(start, len(runes)))
+	end = maxInt(start, minInt(end, len(runes)))
+	return string(runes[start:end])
+}
+
 func drawText(s tcell.Screen, x, y, width int, style tcell.Style, text string) {
 	if width <= 0 {
 		return

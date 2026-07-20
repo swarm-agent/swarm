@@ -423,6 +423,42 @@ func TestPageUserMessagesUseThemedTextWithoutBackgroundBlock(t *testing.T) {
 	}
 }
 
+func TestPageToolNamesUseOneThemeColorSeparateFromHeaderAndResultText(t *testing.T) {
+	styles := testPageStyles()
+	styles.Text = tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorBlack)
+	styles.Muted = tcell.StyleDefault.Foreground(tcell.ColorGray).Background(tcell.ColorBlack)
+	styles.Primary = tcell.StyleDefault.Foreground(tcell.ColorPurple).Background(tcell.ColorRed)
+	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), styles)
+
+	for _, tool := range []ToolTimelineItem{
+		{ID: "read", Name: "read", Arguments: `{"path":"README.md"}`, Status: "completed"},
+		{ID: "fallback", Name: "custom_tool", Output: "fallback result", Status: "completed"},
+	} {
+		rows := page.renderToolRows(tool, 80, styles)
+		if len(rows) < 2 {
+			t.Fatalf("%s rows = %#v", tool.Name, rows)
+		}
+		name := normalizeToolDisplayName(tool.Name)
+		if rows[0].highlightWidth != len([]rune(name)) || runeSlice(rows[0].text, rows[0].highlightStart, rows[0].highlightStart+rows[0].highlightWidth) != name {
+			t.Fatalf("%s title highlight = start %d, width %d in %q", tool.Name, rows[0].highlightStart, rows[0].highlightWidth, rows[0].text)
+		}
+		titleForeground, titleBackground, _ := rows[0].highlightStyle.Decompose()
+		headerForeground, headerBackground, _ := rows[0].style.Decompose()
+		if titleForeground != tcell.ColorPurple || titleBackground != tcell.ColorBlack {
+			t.Fatalf("%s title colors = fg %v, bg %v; want primary foreground on text background", tool.Name, titleForeground, titleBackground)
+		}
+		if headerForeground != tcell.ColorWhite || headerBackground != tcell.ColorBlack || titleForeground == headerForeground {
+			t.Fatalf("%s header colors = fg %v, bg %v; title fg %v", tool.Name, headerForeground, headerBackground, titleForeground)
+		}
+		if tool.Name == "custom_tool" {
+			bodyForeground, bodyBackground, _ := rows[1].style.Decompose()
+			if rows[1].text != "  fallback result" || bodyForeground != tcell.ColorGray || bodyBackground != tcell.ColorBlack {
+				t.Fatalf("fallback result row = %#v, colors fg %v bg %v", rows[1], bodyForeground, bodyBackground)
+			}
+		}
+	}
+}
+
 func TestPageRendersToolCallAndResultInCanonicalTimelineOrder(t *testing.T) {
 	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), testPageStyles())
 	state := State{
@@ -440,13 +476,13 @@ func TestPageRendersToolCallAndResultInCanonicalTimelineOrder(t *testing.T) {
 		joined = append(joined, row.text)
 	}
 	text := strings.Join(joined, "\n")
-	for _, want := range []string{"✓ tool read · completed · 25ms", `call   {"path":"README.md"}`, "result README contents"} {
+	for _, want := range []string{"✓ read README.md · 25ms"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("tool timeline missing %q:\n%s", want, text)
 		}
 	}
 	before := strings.Index(text, "before tool")
-	tool := strings.Index(text, "✓ tool read")
+	tool := strings.Index(text, "✓ read README.md")
 	after := strings.Index(text, "after tool")
 	if before < 0 || tool < 0 || after < 0 || !(before < tool && tool < after) {
 		t.Fatalf("canonical order mismatch: before=%d tool=%d after=%d\n%s", before, tool, after, text)
@@ -471,7 +507,7 @@ func TestPageRendersLiveToolAtItsEventSequence(t *testing.T) {
 		text.WriteByte('\n')
 	}
 	rendered := text.String()
-	before, tool, after := strings.Index(rendered, "before"), strings.Index(rendered, "• tool bash · running"), strings.Index(rendered, "after")
+	before, tool, after := strings.Index(rendered, "before"), strings.Index(rendered, "• bash"), strings.Index(rendered, "after")
 	if before < 0 || tool < 0 || after < 0 || !(before < tool && tool < after) {
 		t.Fatalf("live tool order mismatch: before=%d tool=%d after=%d\n%s", before, tool, after, rendered)
 	}
