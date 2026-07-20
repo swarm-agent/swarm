@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   preferenceFromAgentModelLock,
+  resolveDesktopV3AgentModelLock,
   resolveDesktopV3SessionAgentModelLock,
 } from './agent-model-preferences'
 import type { ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
@@ -51,6 +52,12 @@ test('stored session agent profile resolves its plan and action models without g
   assert.deepEqual(autoLock && preferenceFromAgentModelLock(autoLock, current, options), {
     provider: 'anthropic', model: 'profile-action', thinking: 'medium', serviceTier: 'fast', contextMode: '', updatedAt: 1,
   })
+})
+
+test('Swarm never claims model authority from agent profile state', () => {
+  const swarmMetadata = { agent_profile: { ...metadata.agent_profile, name: 'swarm' } }
+  assert.equal(resolveDesktopV3SessionAgentModelLock(swarmMetadata, 'auto'), null)
+  assert.equal(resolveDesktopV3AgentModelLock([{ ...metadata.agent_profile, name: 'swarm' } as never], 'swarm', 'auto').locked, false)
 })
 
 test('missing stored agent profile does not claim session authority', () => {

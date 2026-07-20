@@ -242,6 +242,9 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if !reflect.DeepEqual(swarm.ToolContract, SwarmAgentToolContract()) {
 		t.Fatalf("Swarm exact tool contract mismatch: got %+v want %+v", swarm.ToolContract, SwarmAgentToolContract())
 	}
+	if swarm.Provider != "" || swarm.Model != "" || swarm.ModelMode != "" || swarm.PlanProvider != "" || swarm.PlanModel != "" || swarm.AutoProvider != "" || swarm.AutoModel != "" {
+		t.Fatalf("Swarm system identity retained model-bearing profile fields: %+v", swarm)
+	}
 
 	clone, err := registry.ReconcileSnapshot(CoderAgentID, pebblestore.AgentProfile{
 		Name: CoderAgentID, Provider: "codex", Model: "parent-model", Thinking: "high", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeRead,

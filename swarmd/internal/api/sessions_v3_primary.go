@@ -603,7 +603,7 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		title = "New Session"
 	}
 	now := time.Now().UnixMilli()
-	modelProfileSnapshot, err := s.resolveSessionsV3ModelProfileChoice(identity.ContextWithPrincipal(r.Context(), principal), req.ModelProfile, true, now)
+	modelProfileSnapshot, err := s.resolveSessionsV3ModelProfileChoice(identity.ContextWithPrincipal(r.Context(), principal), req.ModelProfile, now)
 	if err != nil {
 		writeModelProfileError(w, err)
 		return
@@ -621,6 +621,9 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		Metadata:       sessionsV3ModelProfileMetadata(sessionsV3CreateServerMetadata(req.Metadata, resolvedAgent, binding), modelProfileSnapshot),
 		CreatedAt:      now,
 		UpdatedAt:      now,
+	}
+	if profilePreference, ok := sessionsV3ProfilePreference(session); ok {
+		session.Preference = normalizeSessionsV3ModelPreference(profilePreference)
 	}
 	payloadHash, err := sessionsV3CreatePayloadHash(sessionID, req, workspacePath, workspaceName, title, session.Metadata)
 	if err != nil {

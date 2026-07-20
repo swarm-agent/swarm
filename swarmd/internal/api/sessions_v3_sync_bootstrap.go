@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -945,6 +946,9 @@ func (s *Server) sessionsV3AgentModelPolicyWithResolver(session pebblestore.Sess
 	}
 	profile, err := sessionV3AgentProfileFromMetadata(session.Metadata)
 	if err != nil {
+		return policy
+	}
+	if strings.EqualFold(strings.TrimSpace(profile.Name), agentruntime.SwarmAgentID) {
 		return policy
 	}
 	if strings.TrimSpace(profile.Name) != "" {

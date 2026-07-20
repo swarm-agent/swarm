@@ -520,6 +520,40 @@ func TestPageRendersComposerAboveCanonicalHomeFooterWithDesktopContext(t *testin
 	}
 }
 
+func TestPageLongGeneralErrorRendersRightAlignedOnComposerSeparator(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
+	page.SetRouteLabel("Primary Desk")
+	page.SetCommandEmission("command output")
+	page.finishAsync("", fmt.Errorf("provider rejected the request because the selected model is unavailable for this workspace and profile"))
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(60, 14)
+	page.Draw(screen)
+	screen.Show()
+
+	separator := simulationRow(screen, 60, 10)
+	footer := simulationRow(screen, 60, 13)
+	if !strings.Contains(separator, "error • provider rejected") || !strings.Contains(separator, "…") {
+		t.Fatalf("long error missing or not visibly truncated on composer separator: %q", separator)
+	}
+	if strings.HasSuffix(separator, "─") || !strings.HasSuffix(separator, " ") {
+		t.Fatalf("composer error is not right-aligned against the separator edge: %q", separator)
+	}
+	if strings.Contains(footer, "error •") || strings.Contains(footer, "provider rejected") {
+		t.Fatalf("general error remains in footer: %q", footer)
+	}
+	if !strings.Contains(footer, "Primary Desk") {
+		t.Fatalf("footer metadata was displaced by general error: %q", footer)
+	}
+	if strings.Contains(separator, "command output") {
+		t.Fatalf("command emission overlaps the higher-priority general error: %q", separator)
+	}
+}
+
 func TestPageComposerDefaultsToOneRowAndExpandsForMultilineInput(t *testing.T) {
 	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
 	screen := tcell.NewSimulationScreen("UTF-8")

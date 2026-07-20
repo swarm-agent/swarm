@@ -66,7 +66,7 @@ export function resolveDesktopV3SessionAgentModelLock(
 ): AgentModelLockState | null {
   const profile = record(record(metadata).agent_profile)
   const agentName = String(profile.name ?? '').trim()
-  if (!agentName) return null
+  if (!agentName || agentName.toLowerCase() === 'swarm') return null
   const normalizedMode = normalizeSessionMode(mode)
   const splitModelActive = String(profile.model_mode ?? '').trim().toLowerCase() === 'split'
     && storedAgentSupportsPlan(profile)
@@ -105,6 +105,9 @@ export function resolveDesktopV3AgentModelLock(
   const normalizedMode = normalizeSessionMode(mode)
   const profile = findAgentProfile(agents, selectedAgentName)
   const agentName = profile?.name.trim() || selectedAgentName.trim()
+  if (agentName.toLowerCase() === 'swarm') {
+    return { profile, locked: false, customized: false, agentName, provider: '', model: '', thinking: '', serviceTier: '', mode: normalizedMode, disabledReason: '' }
+  }
   const splitModelActive = profile?.modelMode === 'split' && agentIsPlanCapable(profile)
   const preference = splitModelActive
     ? splitPreferenceForMode(profile, normalizedMode)

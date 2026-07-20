@@ -886,7 +886,7 @@ func TestSessionsV3SyncHydrateReturnsLatestSealedExecutionEpoch(t *testing.T) {
 	}
 }
 
-func TestSessionsV3SyncHydrateSplitAgentPolicyUsesSessionMode(t *testing.T) {
+func TestSessionsV3SyncHydrateSwarmUsesSessionPreferenceInsteadOfAgentModelFields(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{
 		Name:                "swarm",
@@ -942,7 +942,7 @@ func TestSessionsV3SyncHydrateSplitAgentPolicyUsesSessionMode(t *testing.T) {
 		}
 	}
 
-	hydrate(sessionruntime.ModeAuto, "agent_auto_preset", "auto-provider", "auto-model", "high")
+	hydrate(sessionruntime.ModeAuto, "default", "test-provider", "stored-model", "medium")
 	modeReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/mode", bytes.NewBufferString(`{"mode":"plan"}`))
 	modeReq.Header.Set("Content-Type", "application/json")
 	modeRec := httptest.NewRecorder()
@@ -950,7 +950,7 @@ func TestSessionsV3SyncHydrateSplitAgentPolicyUsesSessionMode(t *testing.T) {
 	if modeRec.Code != http.StatusOK {
 		t.Fatalf("set plan mode status = %d body=%s", modeRec.Code, modeRec.Body.String())
 	}
-	hydrate(sessionruntime.ModePlan, "agent_plan_preset", "test-provider", "plan-model", "low")
+	hydrate(sessionruntime.ModePlan, "default", "test-provider", "stored-model", "medium")
 }
 
 func TestSessionsV3SyncHydrateCanonicalizesSessionIDSelectorForCursorScope(t *testing.T) {

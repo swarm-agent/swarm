@@ -2,7 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -26,9 +30,13 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 		t.Fatalf("create profile: %v", err)
 	}
 
-	saved, err := server.resolveSessionsV3ModelProfileChoice(ctx, nil, true, 10)
+	omitted, err := server.resolveSessionsV3ModelProfileChoice(ctx, nil, 10)
+	if err != nil || omitted != nil {
+		t.Fatalf("omitted model profile = %+v err=%v, want nil", omitted, err)
+	}
+	saved, err := server.resolveSessionsV3ModelProfileChoice(ctx, &sessionsV3ModelProfileChoice{UseAccountDefault: boolPtr(true)}, 10)
 	if err != nil {
-		t.Fatalf("resolve default: %v", err)
+		t.Fatalf("resolve explicit default: %v", err)
 	}
 	if saved == nil || saved.Source != pebblestore.SessionModelProfileSourceSaved || saved.SavedProfileID != created.ProfileID || saved.Single.Model != "saved-model" || saved.Single.ContextMode != "full" {
 		t.Fatalf("saved snapshot = %+v", saved)
@@ -48,7 +56,7 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 		t.Fatalf("session snapshot changed after saved profile update/delete: %+v", saved)
 	}
 
-	temporary, err := server.resolveSessionsV3ModelProfileChoice(ctx, &sessionsV3ModelProfileChoice{Temporary: &sessionsV3ModelProfileInline{Name: "Scratch", ModelMode: pebblestore.ModelProfileModeSplit, Plan: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "plan-model", Thinking: "high"}, Auto: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "action-model", Thinking: "medium"}}}, false, 20)
+	temporary, err := server.resolveSessionsV3ModelProfileChoice(ctx, &sessionsV3ModelProfileChoice{Temporary: &sessionsV3ModelProfileInline{Name: "Scratch", ModelMode: pebblestore.ModelProfileModeSplit, Plan: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "plan-model", Thinking: "high"}, Auto: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "action-model", Thinking: "medium"}}}, 20)
 	if err != nil {
 		t.Fatalf("resolve temporary: %v", err)
 	}
@@ -85,6 +93,35 @@ func TestSessionsV3ModelProfileMetadataPersistsExactSavedProfileIdentity(t *test
 	}
 	if cleared["agent_name"] != "swarm" {
 		t.Fatalf("clearing model profile removed unrelated metadata: %+v", cleared)
+	}
+}
+
+func TestSessionsV3ExplicitModelProfilePreferenceMatchesDurableSessionPreference(t *testing.T) {
+	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, filepath.Join(t.TempDir(), "explicit-profile-create.pebble"))
+	defer func() { _ = closeStore() }()
+	principal := testPrincipal()
+	ctx := identity.ContextWithPrincipal(context.Background(), principal)
+	selection := pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "profile-model", Thinking: "high"}
+	profile, err := server.modelProfiles.Create(ctx, modelprofile.Input{Name: "Explicit", ModelMode: pebblestore.ModelProfileModeSingle, Single: &selection})
+	if err != nil {
+		t.Fatalf("create model profile: %v", err)
+	}
+	body := `{"client_request_id":"explicit-profile-create","workspace_path":"/workspace/v3","workspace_binding_id":"workspace-binding","swarm_id":"local-swarm","agent_name":"swarm","preference":{"provider":"test-provider","model":"stale-model","thinking":"low"},"model_profile":{"saved_profile_id":"` + profile.ProfileID + `"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create session status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if response.Session.ModelProfile == nil || response.Session.ModelProfile.SavedProfileID != profile.ProfileID || response.Session.Preference.Provider != "test-provider" || response.Session.Preference.Model != "profile-model" || response.Session.Preference.Thinking != "high" {
+		t.Fatalf("created session authorities diverged: %+v", response.Session)
 	}
 }
 

@@ -1581,7 +1581,9 @@ export function DesktopV3ExistingConversationPane({
       : null,
     [modelOptions, preference, sessionAgentModelLock],
   );
-  const displayedPreference = sessionProfilePreference ?? sessionAgentPreference ?? preference;
+  const displayedPreference = cachedPolicyMatchesSelectedMode
+    ? (lockedPolicyPreference ?? preference)
+    : (sessionProfilePreference ?? sessionAgentPreference ?? preference);
   const selectedModelKey = modelOptionKey(
     displayedPreference.provider,
     displayedPreference.model,
@@ -1902,6 +1904,14 @@ export function DesktopV3ExistingConversationPane({
   }, [normalizedSessionId, settingsBaseline]);
 
   useEffect(() => {
+    if (cachedPolicyMatchesSelectedMode && lockedPolicyPreference) {
+      setPreference((current) =>
+        preferencesEqual(current, lockedPolicyPreference)
+          ? current
+          : lockedPolicyPreference,
+      );
+      return;
+    }
     if (sessionProfilePreference) {
       setPreference((current) =>
         preferencesEqual(current, sessionProfilePreference)
@@ -1915,14 +1925,6 @@ export function DesktopV3ExistingConversationPane({
         preferencesEqual(current, sessionAgentPreference)
           ? current
           : sessionAgentPreference,
-      );
-      return;
-    }
-    if (cachedPolicyMatchesSelectedMode && lockedPolicyPreference) {
-      setPreference((current) =>
-        preferencesEqual(current, lockedPolicyPreference)
-          ? current
-          : lockedPolicyPreference,
       );
       return;
     }

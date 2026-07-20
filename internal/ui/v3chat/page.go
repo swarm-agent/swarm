@@ -997,9 +997,6 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if stale {
 		statusLine = "stale • Ctrl-R to rehydrate • " + reason
 		statusStyle = styles.Warning
-	} else if errText != "" {
-		statusLine = "error • " + errText
-		statusStyle = styles.Error
 	} else if status != "" {
 		statusLine = status
 	}
@@ -1057,7 +1054,11 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 		composerY = 2
 	}
 	drawHLine(screen, 0, composerY, width, styles.Border)
-	drawCommandEmission(screen, width, composerY, styles, commandEmission)
+	if strings.TrimSpace(errText) != "" {
+		drawComposerError(screen, width, composerY, styles, errText)
+	} else {
+		drawCommandEmission(screen, width, composerY, styles, commandEmission)
+	}
 	modelState := SelectModel(state)
 	footerY := height - footerHeight
 	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, routeLabel, profileLabel, statusLine, statusStyle)
@@ -1197,6 +1198,19 @@ func drawCommandEmission(screen tcell.Screen, width, y int, styles PageStyles, e
 	label := " " + truncateRunes(emission, maxWidth-2) + " "
 	labelRunes := []rune(label)
 	drawText(screen, maxInt(0, width-len(labelRunes)-1), y, len(labelRunes), styles.Secondary, label)
+}
+
+func drawComposerError(screen tcell.Screen, width, y int, styles PageStyles, errText string) {
+	errText = strings.TrimSpace(errText)
+	if errText == "" || width < 14 {
+		return
+	}
+	maxWidth := minInt(width-2, maxInt(18, width*2/3))
+	prefix, suffix := " error • ", " "
+	messageWidth := maxInt(1, maxWidth-utf8.RuneCountInString(prefix)-utf8.RuneCountInString(suffix))
+	label := prefix + truncateRunes(errText, messageWidth) + suffix
+	labelWidth := utf8.RuneCountInString(label)
+	drawText(screen, width-labelWidth, y, labelWidth, styleWithForeground(styles.Border, styles.Error).Bold(true), label)
 }
 
 func truncateRunes(value string, width int) string {

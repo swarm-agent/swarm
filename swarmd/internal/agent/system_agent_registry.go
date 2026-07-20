@@ -464,11 +464,11 @@ func PlanSidechatAgentToolContract() *pebblestore.AgentToolContract {
 }
 
 func SwarmAgentProfileForContext(context pebblestore.AgentProfile) pebblestore.AgentProfile {
+	// Swarm is a compiled system identity, not a model-bearing user profile.
+	// Provider/model selection belongs to the session preference or an explicit
+	// session model profile, just like the other compiled system agents.
 	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: SwarmAgentID, Mode: ModePrimary, Description: "Compiled primary orchestrator",
-		Provider: strings.TrimSpace(context.Provider), Model: strings.TrimSpace(context.Model), Thinking: strings.TrimSpace(context.Thinking),
-		ModelMode: context.ModelMode, PlanProvider: context.PlanProvider, PlanModel: context.PlanModel, PlanThinking: context.PlanThinking, PlanServiceTier: context.PlanServiceTier,
-		AutoProvider: context.AutoProvider, AutoModel: context.AutoModel, AutoThinking: context.AutoThinking, AutoServiceTier: context.AutoServiceTier,
 		Prompt: SwarmAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, DefaultSessionMode: firstNonEmptyProfileValue(pebblestore.NormalizeAgentDefaultSessionMode(context.DefaultSessionMode), pebblestore.AgentDefaultSessionModeAuto),
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: SwarmAgentToolContract(), Enabled: true, Protected: true, UpdatedAt: context.UpdatedAt,
 	})

@@ -151,7 +151,7 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 		title = "New Session"
 	}
 	now := time.Now().UnixMilli()
-	modelProfileSnapshot, err := s.resolveSessionsV3ModelProfileChoice(identity.ContextWithPrincipal(r.Context(), principal), req.ModelProfile, true, now)
+	modelProfileSnapshot, err := s.resolveSessionsV3ModelProfileChoice(identity.ContextWithPrincipal(r.Context(), principal), req.ModelProfile, now)
 	if err != nil {
 		writeModelProfileError(w, err)
 		return
@@ -170,6 +170,9 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 		Metadata:       metadata,
 		CreatedAt:      now,
 		UpdatedAt:      now,
+	}
+	if profilePreference, ok := sessionsV3ProfilePreference(session); ok {
+		session.Preference = normalizeSessionsV3ModelPreference(profilePreference)
 	}
 	payloadHash, err := sessionsV3TUICreatePayloadHash(sessionID, req, cwdPath, title, metadata)
 	if err != nil {

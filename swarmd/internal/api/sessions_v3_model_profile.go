@@ -13,16 +13,12 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func (s *Server) resolveSessionsV3ModelProfileChoice(ctx context.Context, choice *sessionsV3ModelProfileChoice, useDefaultWhenOmitted bool, appliedAt int64) (*pebblestore.SessionModelProfileSnapshot, error) {
+func (s *Server) resolveSessionsV3ModelProfileChoice(ctx context.Context, choice *sessionsV3ModelProfileChoice, appliedAt int64) (*pebblestore.SessionModelProfileSnapshot, error) {
 	if choice == nil {
-		if !useDefaultWhenOmitted || s.modelProfiles == nil {
-			return nil, nil
-		}
-		profile, ok, err := s.modelProfiles.GetDefault(ctx)
-		if err != nil || !ok {
-			return nil, err
-		}
-		return sessionModelProfileSnapshotFromSaved(profile, appliedAt), nil
+		// Omission means the caller's explicit session preference remains
+		// authoritative. A saved profile is applied only when the caller chooses
+		// one (including an explicit account-default choice).
+		return nil, nil
 	}
 
 	useDefault := choice.UseAccountDefault != nil && *choice.UseAccountDefault
@@ -183,7 +179,7 @@ func (s *Server) handleSessionV3PrimaryModelProfile(w http.ResponseWriter, r *ht
 	}
 	now := time.Now().UnixMilli()
 	ctx := identity.ContextWithPrincipal(r.Context(), principal)
-	snapshot, err := s.resolveSessionsV3ModelProfileChoice(ctx, &req.Choice, false, now)
+	snapshot, err := s.resolveSessionsV3ModelProfileChoice(ctx, &req.Choice, now)
 	if err != nil {
 		writeModelProfileError(w, err)
 		return
@@ -191,6 +187,9 @@ func (s *Server) handleSessionV3PrimaryModelProfile(w http.ResponseWriter, r *ht
 	next := current
 	next.ModelProfile = snapshot
 	next.Metadata = sessionsV3ModelProfileMetadata(current.Metadata, snapshot)
+	if profilePreference, ok := sessionsV3ProfilePreference(next); ok {
+		next.Preference = normalizeSessionsV3ModelPreference(profilePreference)
+	}
 	next.UpdatedAt = now
 	payload := map[string]any{"session_id": sessionID, "model_profile": snapshot, "updated_at": now}
 	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateModelProfile, payload)

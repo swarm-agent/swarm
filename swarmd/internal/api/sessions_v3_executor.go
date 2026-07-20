@@ -3128,7 +3128,10 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if _, _, err := compiler.CompileStoredV3AgentToolContract(session.AccountScopeID, agentProfile); err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
-	effectivePreference := applySessionV3AgentPreferenceOverridesForMode(session.Preference, agentProfile, session.Mode)
+	effectivePreference := session.Preference
+	if !strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmAgentID) {
+		effectivePreference = applySessionV3AgentPreferenceOverridesForMode(effectivePreference, agentProfile, session.Mode)
+	}
 	if profilePreference, ok := sessionsV3ProfilePreference(session); ok {
 		effectivePreference = profilePreference
 	}
