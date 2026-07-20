@@ -216,6 +216,9 @@ func compactAgentStateForDesktop(state agentruntime.State) map[string]any {
 		if agentruntime.IsReservedSystemAgentName(profile.Name) && profile.Name != agentruntime.SwarmAgentID {
 			continue
 		}
+		if profile.Name == agentruntime.SwarmAgentID {
+			profile = agentruntime.SwarmAgentProfileForContext(profile)
+		}
 		profiles = append(profiles, compactAgentProfileForDesktop{
 			Name:               profile.Name,
 			Mode:               profile.Mode,

@@ -32,6 +32,10 @@ test('new Desktop sessions fall back to built-in Swarm when active primary is in
   assert.equal(resolveDesktopV3StartupAgent(state([profile('swarm')], 'missing')), 'swarm')
 })
 
+test('new Desktop sessions keep compiled Swarm selectable when stale stored state marks it disabled', () => {
+  assert.equal(resolveDesktopV3StartupAgent(state([{ ...profile('swarm'), enabled: false, protected: true }], 'swarm')), 'swarm')
+})
+
 test('an explicit requested agent remains authoritative', () => {
   assert.equal(resolveDesktopV3StartupAgent(state([profile('swarm')], 'swarm'), 'other'), 'other')
 })

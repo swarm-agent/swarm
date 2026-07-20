@@ -58,3 +58,35 @@ func TestCompactAgentStateForDesktopOmitsSettingsOnlyPayload(t *testing.T) {
 		}
 	}
 }
+
+func TestCompactAgentStateForDesktopMaterializesCompiledSwarmAsEnabled(t *testing.T) {
+	compact := compactAgentStateForDesktop(agentruntime.State{
+		Profiles: []pebblestore.AgentProfile{{
+			Name:               agentruntime.SwarmAgentID,
+			Mode:               agentruntime.ModePrimary,
+			ModelMode:          "split",
+			PlanProvider:       "codex",
+			PlanModel:          "gpt-plan",
+			PlanThinking:       "high",
+			AutoProvider:       "codex",
+			AutoModel:          "gpt-auto",
+			AutoThinking:       "medium",
+			RuntimeMode:        pebblestore.AgentRuntimeModePlanAuto,
+			DefaultSessionMode: pebblestore.AgentDefaultSessionModeAuto,
+			Enabled:            false,
+		}},
+		ActivePrimary: agentruntime.SwarmAgentID,
+	})
+
+	profiles, ok := compact["profiles"].([]compactAgentProfileForDesktop)
+	if !ok || len(profiles) != 1 {
+		t.Fatalf("compact profiles = %#v, want one compiled swarm profile", compact["profiles"])
+	}
+	profile := profiles[0]
+	if profile.Name != agentruntime.SwarmAgentID || !profile.Enabled || !profile.Protected {
+		t.Fatalf("compact swarm profile = %+v, want enabled protected compiled profile", profile)
+	}
+	if profile.AutoProvider != "codex" || profile.AutoModel != "gpt-auto" || profile.AutoThinking != "medium" {
+		t.Fatalf("compact swarm auto model context = %+v", profile)
+	}
+}
