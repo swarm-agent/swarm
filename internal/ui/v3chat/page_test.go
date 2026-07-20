@@ -398,16 +398,16 @@ func TestPageCanonicalHeaderKeepsPlanStateAndShowsRunStateAboveComposer(t *testi
 	if !strings.HasPrefix(header, "Canonical title") || !strings.Contains(header, "In Progress") || !strings.Contains(header, "cp-1 Wire live plan state") {
 		t.Fatalf("canonical header missing live title/checkpoint state: %q", header)
 	}
-	if strings.Contains(header, "5s") || strings.Contains(header, "1:35") {
+	if strings.Contains(header, "0:05") || strings.Contains(header, "1:35") {
 		t.Fatalf("run indicator leaked into canonical header: %q", header)
 	}
 	conversationState := simulationRow(screen, 100, 13)
-	if !strings.Contains(conversationState, "Running  5s") {
+	if !strings.Contains(conversationState, "Running  0:05 (1:35)") {
 		t.Fatalf("running state and timer missing above composer: %q", conversationState)
 	}
 	separator := simulationRow(screen, 100, 14)
 	footerSeparator := simulationRow(screen, 100, 16)
-	if strings.Contains(separator, "Running") || strings.Contains(separator, "5s") || strings.Contains(footerSeparator, "Running") || strings.Contains(footerSeparator, "5s") {
+	if strings.Contains(separator, "Running") || strings.Contains(separator, "0:05") || strings.Contains(footerSeparator, "Running") || strings.Contains(footerSeparator, "0:05") {
 		t.Fatalf("run state remains on a composer/footer separator: composer=%q footer=%q", separator, footerSeparator)
 	}
 	if strings.Contains(conversationState, "Swarming") {

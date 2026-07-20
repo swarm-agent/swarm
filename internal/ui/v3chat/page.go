@@ -1140,14 +1140,14 @@ func BuildRunStatus(state State, now time.Time) (RunStatus, bool) {
 		}
 	}
 	if hasCurrentTiming {
-		if model.Active {
-			model.Timer = formatActiveDurationMS(currentMS)
-		} else {
-			model.Timer = formatDurationMS(currentMS)
-		}
+		model.Timer = formatDurationMS(currentMS)
 	}
-	if !model.Active && run.CumulativeDurationMS > 0 {
-		total := formatDurationMS(run.CumulativeDurationMS)
+	if run.CumulativeDurationMS > 0 {
+		totalMS := run.CumulativeDurationMS
+		if model.Active && hasCurrentTiming {
+			totalMS += currentMS
+		}
+		total := formatDurationMS(totalMS)
 		if model.Timer == "" {
 			model.Timer = total
 		} else if total != model.Timer {
@@ -1162,20 +1162,6 @@ func formatDurationMS(elapsedMS int64) string {
 		return ""
 	}
 	totalSeconds := elapsedMS / 1000
-	seconds := totalSeconds % 60
-	minutes := (totalSeconds / 60) % 60
-	hours := totalSeconds / 3600
-	if hours > 0 {
-		return fmt.Sprintf("%d:%02d:%02d", hours, minutes, seconds)
-	}
-	return fmt.Sprintf("%d:%02d", minutes, seconds)
-}
-
-func formatActiveDurationMS(elapsedMS int64) string {
-	totalSeconds := maxInt64(1, elapsedMS/1000)
-	if totalSeconds < 60 {
-		return fmt.Sprintf("%ds", totalSeconds)
-	}
 	seconds := totalSeconds % 60
 	minutes := (totalSeconds / 60) % 60
 	hours := totalSeconds / 3600

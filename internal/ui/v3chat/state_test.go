@@ -18,7 +18,7 @@ func TestRunIntentLifecycleUsesAuthoritativeTimingAndTerminalState(t *testing.T)
 		},
 	}})
 	status, ok := BuildRunStatus(state, time.UnixMilli(3_500))
-	if !ok || !status.Active || status.Label != "Running" || status.Timer != "2s" {
+	if !ok || !status.Active || status.Label != "Running" || status.Timer != "0:02 (1:02)" {
 		t.Fatalf("pending run status = %#v/%t", status, ok)
 	}
 	payload, _ := json.Marshal(map[string]any{"run_intent": client.SessionV3RunIntent{
@@ -31,6 +31,44 @@ func TestRunIntentLifecycleUsesAuthoritativeTimingAndTerminalState(t *testing.T)
 	status, ok = BuildRunStatus(state, time.UnixMilli(999_000))
 	if !ok || status.Active || status.Label != "Stopped" || status.Timer != "0:05 (1:05)" {
 		t.Fatalf("terminal run status = %#v/%t", status, ok)
+	}
+}
+
+func TestSecondRunShowsCurrentAndAccumulatedTimersAcrossLifecycle(t *testing.T) {
+	state := NewState()
+	firstTerminal, _ := json.Marshal(map[string]any{"run_intent": client.SessionV3RunIntent{
+		RunID: "run-a", Status: "completed", StartedAt: 1_000, CompletedAt: 5_000,
+		DurationMS: 4_000, CumulativeDurationMS: 4_000,
+	}})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{
+		Kind: "event", Event: &client.SessionV3Event{SessionID: "s", Seq: 1, Payload: firstTerminal},
+	}})
+	status, ok := BuildRunStatus(state, time.UnixMilli(5_000))
+	if !ok || status.Active || status.Timer != "0:04" {
+		t.Fatalf("first terminal run status = %#v/%t, want 0:04", status, ok)
+	}
+
+	secondActive, _ := json.Marshal(map[string]any{"run_intent": client.SessionV3RunIntent{
+		RunID: "run-b", Status: "running", StartedAt: 10_000, CumulativeDurationMS: 4_000,
+	}})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{
+		Kind: "event", Event: &client.SessionV3Event{SessionID: "s", Seq: 2, Payload: secondActive},
+	}})
+	status, ok = BuildRunStatus(state, time.UnixMilli(28_000))
+	if !ok || !status.Active || status.Timer != "0:18 (0:22)" {
+		t.Fatalf("second active run status = %#v/%t, want 0:18 (0:22)", status, ok)
+	}
+
+	secondTerminal, _ := json.Marshal(map[string]any{"run_intent": client.SessionV3RunIntent{
+		RunID: "run-b", Status: "completed", StartedAt: 10_000, CompletedAt: 28_000,
+		DurationMS: 18_000, CumulativeDurationMS: 22_000,
+	}})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{
+		Kind: "event", Event: &client.SessionV3Event{SessionID: "s", Seq: 3, Payload: secondTerminal},
+	}})
+	status, ok = BuildRunStatus(state, time.UnixMilli(99_000))
+	if !ok || status.Active || status.Timer != "0:18 (0:22)" {
+		t.Fatalf("second terminal run status = %#v/%t, want 0:18 (0:22)", status, ok)
 	}
 }
 
@@ -49,7 +87,7 @@ func TestRepeatedRunIntentUpdatesPreserveCanonicalTimerAnchor(t *testing.T) {
 			t.Fatalf("run status = %#v/%t, want timer %q", status, ok, want)
 		}
 	}
-	assertTimer("5s")
+	assertTimer("0:05 (1:05)")
 
 	// Executor phase/progress payloads can omit timing while the durable run
 	// intent already has the authoritative anchor. They must not reset it.
@@ -60,7 +98,7 @@ func TestRepeatedRunIntentUpdatesPreserveCanonicalTimerAnchor(t *testing.T) {
 		state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{
 			Kind: "event", Event: &client.SessionV3Event{SessionID: "s", Seq: uint64(seq + 2), Payload: payload},
 		}})
-		assertTimer("5s")
+		assertTimer("0:05 (1:05)")
 	}
 
 	run, ok := SelectActiveRun(state)
@@ -73,7 +111,7 @@ func TestRepeatedRunIntentUpdatesPreserveCanonicalTimerAnchor(t *testing.T) {
 	state = Reduce(state, MessageResultAction{Result: client.SessionV3MessageResult{RunIntent: client.SessionV3RunIntent{
 		RunID: "run", Status: "running", CreatedAt: 6_900, UpdatedAt: 6_900, EventSeq: 2,
 	}}})
-	assertTimer("5s")
+	assertTimer("0:05 (1:05)")
 }
 
 func TestRunTimerStartsAtOneSecondAndNeverUsesUpdatedAtFallback(t *testing.T) {
@@ -81,8 +119,8 @@ func TestRunTimerStartsAtOneSecondAndNeverUsesUpdatedAtFallback(t *testing.T) {
 	state.CurrentRun = &RunState{ID: "run", Status: "running", StartedAt: 10_000, UpdatedAt: 10_000}
 	state.LatestRun = state.CurrentRun
 	status, ok := BuildRunStatus(state, time.UnixMilli(10_000))
-	if !ok || !status.Active || status.Timer != "1s" {
-		t.Fatalf("new active run timer = %#v/%t, want 1s", status, ok)
+	if !ok || !status.Active || status.Timer != "0:00" {
+		t.Fatalf("new active run timer = %#v/%t, want 0:00", status, ok)
 	}
 
 	state.CurrentRun = &RunState{ID: "run", Status: "running", UpdatedAt: 9_000}
