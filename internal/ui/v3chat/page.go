@@ -59,6 +59,7 @@ type PageAction int
 const (
 	PageActionNone PageAction = iota
 	PageActionHome
+	PageActionCommand
 )
 
 type cachedRows struct {
@@ -73,49 +74,111 @@ type Page struct {
 	runtime *Runtime
 	styles  PageStyles
 
-	mu             sync.Mutex
-	input          []rune
-	cursor         int
-	pasteActive    bool
-	pasteBuffer    []rune
-	scroll         int
-	follow         bool
-	status         string
-	errText        string
-	busy           bool
-	rowCache       map[string]cachedRows
-	lastWidth      int
-	lastHeight     int
-	modelTarget    footerbar.Rect
-	routeLabel     string
-	profileLabel   string
-	modelPicker    bool
-	modelLoading   bool
-	modelOptions   []client.ModelCatalogRecord
-	modelIndex     int
-	matchCycleMode func(*tcell.EventKey) bool
-	runTimer       *time.Timer
+	mu                  sync.Mutex
+	input               []rune
+	cursor              int
+	pasteActive         bool
+	pasteBuffer         []rune
+	scroll              int
+	follow              bool
+	status              string
+	errText             string
+	busy                bool
+	rowCache            map[string]cachedRows
+	lastWidth           int
+	lastHeight          int
+	modelTarget         footerbar.Rect
+	routeLabel          string
+	profileLabel        string
+	modelPicker         bool
+	modelLoading        bool
+	modelOptions        []client.ModelCatalogRecord
+	modelIndex          int
+	commandSuggestions  []CommandSuggestion
+	commandPaletteIndex int
+	pendingCommand      string
+	matchKey            func(*tcell.EventKey, string) bool
+	runTimer            *time.Timer
 }
+
+const (
+	KeyEscape        = "escape"
+	KeyMoveUp        = "move_up"
+	KeyMoveDown      = "move_down"
+	KeyMoveUpAlt     = "move_up_alt"
+	KeyMoveDownAlt   = "move_down_alt"
+	KeyPageUp        = "page_up"
+	KeyPageDown      = "page_down"
+	KeyJumpHome      = "jump_home"
+	KeyJumpEnd       = "jump_end"
+	KeyBackspace     = "backspace"
+	KeyMoveLeft      = "move_left"
+	KeyMoveRight     = "move_right"
+	KeyClear         = "clear"
+	KeyCycleMode     = "cycle_mode"
+	KeyComplete      = "complete"
+	KeyInsertNewline = "insert_newline"
+	KeySubmit        = "submit"
+)
 
 func NewPage(runtime *Runtime, styles PageStyles) *Page {
-	return &Page{runtime: runtime, styles: styles, follow: true, rowCache: make(map[string]cachedRows), matchCycleMode: defaultCycleModeKey}
+	return &Page{runtime: runtime, styles: styles, follow: true, rowCache: make(map[string]cachedRows), matchKey: defaultKeyMatcher}
 }
 
-func (p *Page) SetCycleModeMatcher(match func(*tcell.EventKey) bool) {
+func (p *Page) SetKeyMatcher(match func(*tcell.EventKey, string) bool) {
 	if p == nil {
 		return
 	}
 	p.mu.Lock()
 	if match == nil {
-		p.matchCycleMode = defaultCycleModeKey
+		p.matchKey = defaultKeyMatcher
 	} else {
-		p.matchCycleMode = match
+		p.matchKey = match
 	}
 	p.mu.Unlock()
 }
 
-func defaultCycleModeKey(ev *tcell.EventKey) bool {
-	return ev != nil && (ev.Key() == tcell.KeyBacktab || ev.Key() == tcell.KeyTab && ev.Modifiers()&tcell.ModShift != 0)
+func defaultKeyMatcher(ev *tcell.EventKey, action string) bool {
+	if ev == nil {
+		return false
+	}
+	switch action {
+	case KeyEscape:
+		return ev.Key() == tcell.KeyEscape
+	case KeyMoveUp:
+		return ev.Key() == tcell.KeyUp
+	case KeyMoveDown:
+		return ev.Key() == tcell.KeyDown
+	case KeyMoveUpAlt:
+		return ev.Key() == tcell.KeyRune && ev.Rune() == 'k' && ev.Modifiers()&tcell.ModAlt != 0
+	case KeyMoveDownAlt:
+		return ev.Key() == tcell.KeyRune && ev.Rune() == 'j' && ev.Modifiers()&tcell.ModAlt != 0
+	case KeyPageUp:
+		return ev.Key() == tcell.KeyPgUp
+	case KeyPageDown:
+		return ev.Key() == tcell.KeyPgDn
+	case KeyJumpHome:
+		return ev.Key() == tcell.KeyHome
+	case KeyJumpEnd:
+		return ev.Key() == tcell.KeyEnd
+	case KeyBackspace:
+		return ev.Key() == tcell.KeyBackspace || ev.Key() == tcell.KeyBackspace2
+	case KeyMoveLeft:
+		return ev.Key() == tcell.KeyLeft
+	case KeyMoveRight:
+		return ev.Key() == tcell.KeyRight
+	case KeyClear:
+		return ev.Key() == tcell.KeyCtrlU
+	case KeyCycleMode:
+		return ev.Key() == tcell.KeyBacktab || ev.Key() == tcell.KeyTab && ev.Modifiers()&tcell.ModShift != 0
+	case KeyComplete:
+		return ev.Key() == tcell.KeyTab
+	case KeyInsertNewline:
+		return ev.Key() == tcell.KeyCtrlJ
+	case KeySubmit:
+		return ev.Key() == tcell.KeyEnter
+	}
+	return false
 }
 
 func (p *Page) Runtime() *Runtime { return p.runtime }
@@ -187,6 +250,17 @@ func (p *Page) InputValue() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return string(p.input)
+}
+
+func (p *Page) ConsumeCommand() string {
+	if p == nil {
+		return ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	command := p.pendingCommand
+	p.pendingCommand = ""
+	return command
 }
 
 func (p *Page) ClearInput() {
@@ -355,12 +429,13 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 		p.handlePasteKeyLocked(ev)
 		return PageActionNone
 	}
-	if p.matchCycleMode != nil && p.matchCycleMode(ev) {
+	match := func(action string) bool { return p.matchKey != nil && p.matchKey(ev, action) }
+	if match(KeyCycleMode) {
 		p.cycleModeLocked()
 		return PageActionNone
 	}
-	switch ev.Key() {
-	case tcell.KeyEscape:
+	switch {
+	case match(KeyEscape):
 		if p.runtime != nil {
 			if _, active := SelectActiveRun(p.runtime.Store().Snapshot()); active {
 				go p.StopRun()
@@ -368,8 +443,47 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			}
 		}
 		return PageActionHome
-	case tcell.KeyEnter:
+	case match(KeyMoveUp):
+		if !p.moveCommandPaletteSelectionLocked(-1) {
+			p.scroll++
+			p.follow = false
+		}
+	case match(KeyMoveDown):
+		if !p.moveCommandPaletteSelectionLocked(1) {
+			p.scroll--
+			if p.scroll <= 0 {
+				p.scroll = 0
+				p.follow = true
+			}
+		}
+	case match(KeyPageUp):
+		p.scroll += 8
+		p.follow = false
+	case match(KeyPageDown):
+		p.scroll -= 8
+		if p.scroll <= 0 {
+			p.scroll = 0
+			p.follow = true
+		}
+	case match(KeyJumpHome):
+		p.scroll = 1 << 30
+		p.follow = false
+	case match(KeyJumpEnd):
+		p.scroll = 0
+		p.follow = true
+	case match(KeyComplete):
+		p.completeCommandFromPaletteLocked()
+	case match(KeySubmit):
+		if p.acceptCommandPaletteEnterLocked() {
+			return PageActionNone
+		}
 		text := strings.TrimSpace(string(p.input))
+		if strings.HasPrefix(text, "/") {
+			p.pendingCommand = text
+			p.input = nil
+			p.cursor = 0
+			return PageActionCommand
+		}
 		if text != "" && !p.busy {
 			p.input = nil
 			p.cursor = 0
@@ -377,47 +491,57 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			p.scroll = 0
 			go p.Send(text)
 		}
-	case tcell.KeyCtrlJ:
+	case match(KeyInsertNewline):
 		p.insertRunesLocked([]rune{'\n'})
-	case tcell.KeyBackspace, tcell.KeyBackspace2:
+	case match(KeyBackspace):
 		if p.cursor > 0 {
 			p.input = append(p.input[:p.cursor-1], p.input[p.cursor:]...)
 			p.cursor--
 		}
-	case tcell.KeyDelete:
+	case ev.Key() == tcell.KeyDelete:
 		if p.cursor < len(p.input) {
 			p.input = append(p.input[:p.cursor], p.input[p.cursor+1:]...)
 		}
-	case tcell.KeyLeft:
+	case match(KeyMoveLeft):
 		if p.cursor > 0 {
 			p.cursor--
 		}
-	case tcell.KeyRight:
+	case match(KeyMoveRight):
 		if p.cursor < len(p.input) {
 			p.cursor++
 		}
-	case tcell.KeyHome:
+	case ev.Key() == tcell.KeyHome:
 		p.cursor = 0
-	case tcell.KeyEnd:
+	case ev.Key() == tcell.KeyEnd:
 		p.cursor = len(p.input)
-	case tcell.KeyPgUp:
-		p.scroll += 8
-		p.follow = false
-	case tcell.KeyPgDn:
-		p.scroll -= 8
-		if p.scroll <= 0 {
-			p.scroll = 0
-			p.follow = true
-		}
-	case tcell.KeyF2:
+	case match(KeyClear):
+		p.input = nil
+		p.cursor = 0
+		p.pasteBuffer = nil
+		p.commandPaletteIndex = 0
+	case ev.Key() == tcell.KeyF2:
 		p.openModelPickerLocked()
-	case tcell.KeyCtrlX:
+	case ev.Key() == tcell.KeyCtrlX:
 		go p.StopRun()
-	case tcell.KeyCtrlR:
+	case ev.Key() == tcell.KeyCtrlR:
 		// Recovery scope is already retained by the runtime's hydrated session.
 		go p.Recover("", "")
-	case tcell.KeyRune:
+	case ev.Key() == tcell.KeyRune:
+		if match(KeyMoveUpAlt) {
+			p.scroll++
+			p.follow = false
+			break
+		}
+		if match(KeyMoveDownAlt) {
+			p.scroll--
+			if p.scroll <= 0 {
+				p.scroll = 0
+				p.follow = true
+			}
+			break
+		}
 		p.insertRunesLocked([]rune{ev.Rune()})
+		p.syncCommandPaletteSelectionLocked()
 	}
 	return PageActionNone
 }
@@ -611,11 +735,13 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	input := append([]rune(nil), p.input...)
 	cursor := p.cursor
 	scroll := p.scroll
-	errText := p.errText
+	errText, status := p.errText, p.status
 	routeLabel, profileLabel := p.routeLabel, p.profileLabel
 	p.lastWidth, p.lastHeight = width, height
 	modelPicker, modelLoading, modelIndex := p.modelPicker, p.modelLoading, p.modelIndex
 	modelOptions := append([]client.ModelCatalogRecord(nil), p.modelOptions...)
+	commandSuggestions := append([]CommandSuggestion(nil), p.commandSuggestions...)
+	commandPaletteIndex := p.commandPaletteIndex
 	p.mu.Unlock()
 
 	fill(screen, 0, 0, width, height, styles.Background)
@@ -645,6 +771,8 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	} else if errText != "" {
 		statusLine = "error • " + errText
 		statusStyle = styles.Error
+	} else if status != "" {
+		statusLine = status
 	}
 	p.scheduleRunTimer(runStatus.Active)
 
@@ -708,6 +836,8 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	}
 	if modelPicker {
 		p.drawModelPicker(screen, width, height, styles, modelOptions, modelIndex, modelLoading, modelState)
+	} else {
+		p.drawCommandPalette(screen, width, transcriptTop, composerY, styles, string(input), commandPaletteIndex, commandSuggestions)
 	}
 }
 
@@ -1304,6 +1434,22 @@ func drawHLine(s tcell.Screen, x, y, width int, style tcell.Style) {
 	for i := 0; i < width; i++ {
 		s.SetContent(x+i, y, tcell.RuneHLine, nil, style)
 	}
+}
+
+func drawBox(s tcell.Screen, x, y, width, height int, style tcell.Style) {
+	if width < 2 || height < 2 {
+		return
+	}
+	drawHLine(s, x+1, y, width-2, style)
+	drawHLine(s, x+1, y+height-1, width-2, style)
+	for row := y + 1; row < y+height-1; row++ {
+		s.SetContent(x, row, tcell.RuneVLine, nil, style)
+		s.SetContent(x+width-1, row, tcell.RuneVLine, nil, style)
+	}
+	s.SetContent(x, y, tcell.RuneULCorner, nil, style)
+	s.SetContent(x+width-1, y, tcell.RuneURCorner, nil, style)
+	s.SetContent(x, y+height-1, tcell.RuneLLCorner, nil, style)
+	s.SetContent(x+width-1, y+height-1, tcell.RuneLRCorner, nil, style)
 }
 func padRight(value string, width int) string {
 	count := utf8.RuneCountInString(value)

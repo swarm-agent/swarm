@@ -433,6 +433,9 @@ func (a *App) Run() error {
 		if dirty {
 			if a.route == "v3chat" && a.v3Chat != nil {
 				a.v3Chat.Draw(a.screen)
+				if a.home != nil {
+					a.home.DrawChatOverlay(a.screen)
+				}
 			} else if a.route == "chat" && a.chat != nil {
 				a.chat.Draw(a.screen)
 				if a.home != nil {
@@ -523,7 +526,7 @@ func (a *App) Run() error {
 			if a.quitRequested {
 				continue
 			}
-			if a.route == "chat" && a.home != nil && a.home.ChatOverlayVisible() {
+			if (a.route == "chat" || a.route == "v3chat") && a.home != nil && a.home.ChatOverlayVisible() {
 				if a.home.HandleChatOverlayMouse(e) {
 					a.consumeHomeOverlayActions()
 				}
@@ -613,7 +616,7 @@ func (a *App) Run() error {
 				a.setPasteActive(false)
 				dirty = true
 			}
-			if a.route == "chat" && a.home != nil {
+			if (a.route == "chat" || a.route == "v3chat") && a.home != nil {
 				if a.home.HandleChatOverlayKey(e) {
 					a.consumeHomeOverlayActions()
 					a.consumeHomeActions()
@@ -625,7 +628,7 @@ func (a *App) Run() error {
 				dirty = true
 				continue
 			}
-			if a.route == "chat" && a.home != nil && a.home.ChatOverlayVisible() {
+			if (a.route == "chat" || a.route == "v3chat") && a.home != nil && a.home.ChatOverlayVisible() {
 				dirty = true
 				continue
 			}
@@ -634,10 +637,13 @@ func (a *App) Run() error {
 				continue
 			}
 			if a.route == "v3chat" && a.v3Chat != nil {
-				if a.v3Chat.HandleKey(e) == v3chat.PageActionHome {
+				switch a.v3Chat.HandleKey(e) {
+				case v3chat.PageActionHome:
 					a.closeV3Chat()
 					a.route = "home"
 					a.home.SetStatus("home")
+				case v3chat.PageActionCommand:
+					a.handleV3ChatCommand()
 				}
 				dirty = true
 				continue
@@ -1795,6 +1801,10 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 			a.openAgentsModal()
 			return false
 		}
+		if a.route == "v3chat" && a.v3Chat != nil {
+			a.openAgentsModal()
+			return false
+		}
 		if a.route == "chat" {
 			a.route = "home"
 			a.chat = nil
@@ -1879,6 +1889,11 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		if a.route == "chat" {
 			a.route = "home"
 			a.chat = nil
+			return true
+		}
+		if a.route == "v3chat" {
+			a.closeV3Chat()
+			a.route = "home"
 			return true
 		}
 	}
@@ -2039,6 +2054,12 @@ func (a *App) executeCommand(raw string) {
 		a.showHelp()
 	case "home":
 		a.home.ClearCommandOverlay()
+		if a.route == "v3chat" && a.v3Chat != nil {
+			a.closeV3Chat()
+			a.route = "home"
+			a.home.SetStatus("home")
+			return
+		}
 		if a.route != "chat" || a.chat == nil {
 			a.home.SetStatus("/home is available in chat only")
 			return

@@ -89,10 +89,76 @@ func (a *App) newV3ChatPage(runtime *v3chat.Runtime, routeLabel, profileLabel st
 	page := v3chat.NewPage(runtime, a.v3ChatStyles())
 	page.SetRouteLabel(routeLabel)
 	page.SetProfileLabel(profileLabel)
-	page.SetCycleModeMatcher(func(ev *tcell.EventKey) bool {
-		return a.activeKeyBindings().Match(ev, ui.KeybindChatCycleMode)
+	page.SetCommandSuggestions(v3ChatCommandSuggestions(buildHomeCommandSuggestions(a.startupDevMode())))
+	page.SetKeyMatcher(func(ev *tcell.EventKey, action string) bool {
+		keybinds := a.activeKeyBindings()
+		switch action {
+		case v3chat.KeyEscape:
+			return keybinds.Match(ev, ui.KeybindChatEscape)
+		case v3chat.KeyMoveUp:
+			return keybinds.Match(ev, ui.KeybindChatMoveUp)
+		case v3chat.KeyMoveDown:
+			return keybinds.Match(ev, ui.KeybindChatMoveDown)
+		case v3chat.KeyMoveUpAlt:
+			return keybinds.Match(ev, ui.KeybindChatMoveUpAlt)
+		case v3chat.KeyMoveDownAlt:
+			return keybinds.Match(ev, ui.KeybindChatMoveDownAlt)
+		case v3chat.KeyPageUp:
+			return keybinds.Match(ev, ui.KeybindChatPageUp)
+		case v3chat.KeyPageDown:
+			return keybinds.Match(ev, ui.KeybindChatPageDown)
+		case v3chat.KeyJumpHome:
+			return keybinds.Match(ev, ui.KeybindChatJumpHome)
+		case v3chat.KeyJumpEnd:
+			return keybinds.Match(ev, ui.KeybindChatJumpEnd)
+		case v3chat.KeyBackspace:
+			return keybinds.Match(ev, ui.KeybindChatBackspace)
+		case v3chat.KeyMoveLeft:
+			return keybinds.Match(ev, ui.KeybindEditorMoveLeft)
+		case v3chat.KeyMoveRight:
+			return keybinds.Match(ev, ui.KeybindEditorMoveRight)
+		case v3chat.KeyClear:
+			return keybinds.Match(ev, ui.KeybindChatClear)
+		case v3chat.KeyCycleMode:
+			return keybinds.Match(ev, ui.KeybindChatCycleMode)
+		case v3chat.KeyComplete:
+			return keybinds.Match(ev, ui.KeybindChatComplete)
+		case v3chat.KeyInsertNewline:
+			return keybinds.Match(ev, ui.KeybindChatInsertNewline)
+		case v3chat.KeySubmit:
+			return keybinds.Match(ev, ui.KeybindChatSubmit)
+		default:
+			return false
+		}
 	})
 	return page
+}
+
+func (a *App) handleV3ChatCommand() {
+	if a == nil || a.v3Chat == nil {
+		return
+	}
+	raw := strings.TrimSpace(a.v3Chat.ConsumeCommand())
+	if raw == "" {
+		return
+	}
+	a.executeCommand(raw)
+	if a.route != "v3chat" || a.v3Chat == nil {
+		return
+	}
+	if overlay := a.home.CommandOverlayLines(); len(overlay) > 0 {
+		a.v3Chat.SetStatus(strings.Join(overlay, " • "))
+	} else if status := strings.TrimSpace(a.home.Status()); status != "" {
+		a.v3Chat.SetStatus(status)
+	}
+}
+
+func v3ChatCommandSuggestions(items []ui.CommandSuggestion) []v3chat.CommandSuggestion {
+	out := make([]v3chat.CommandSuggestion, 0, len(items))
+	for _, item := range items {
+		out = append(out, v3chat.CommandSuggestion{Command: item.Command, Hint: item.Hint, QuickTips: append([]string(nil), item.QuickTips...)})
+	}
+	return out
 }
 
 func v3ChatHomeProfileLabel(profile model.ActiveModelProfile) string {
