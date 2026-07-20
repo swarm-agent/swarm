@@ -374,7 +374,7 @@ func TestRunTimerWakeIsOneShotAndReschedulesWithoutHeartbeat(t *testing.T) {
 	}
 }
 
-func TestPageCanonicalHeaderKeepsPlanStateAndShowsRunIndicatorByComposer(t *testing.T) {
+func TestPageCanonicalHeaderKeepsPlanStateAndShowsRunStateAboveComposer(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
 		Session: client.SessionSummary{ID: "s", Title: "Canonical title"},
@@ -401,15 +401,48 @@ func TestPageCanonicalHeaderKeepsPlanStateAndShowsRunIndicatorByComposer(t *test
 	if strings.Contains(header, "5s") || strings.Contains(header, "1:35") {
 		t.Fatalf("run indicator leaked into canonical header: %q", header)
 	}
-	indicator := simulationRow(screen, 100, 16)
-	if !strings.Contains(indicator, "• 5s") {
-		t.Fatalf("spinner/timer indicator missing beside composer: %q", indicator)
+	conversationState := simulationRow(screen, 100, 13)
+	if !strings.Contains(conversationState, "Running  5s") {
+		t.Fatalf("running state and timer missing above composer: %q", conversationState)
 	}
-	if strings.Contains(indicator, "Swarming") {
-		t.Fatalf("legacy Swarming label remains in active run indicator: %q", indicator)
+	separator := simulationRow(screen, 100, 14)
+	footerSeparator := simulationRow(screen, 100, 16)
+	if strings.Contains(separator, "Running") || strings.Contains(separator, "5s") || strings.Contains(footerSeparator, "Running") || strings.Contains(footerSeparator, "5s") {
+		t.Fatalf("run state remains on a composer/footer separator: composer=%q footer=%q", separator, footerSeparator)
+	}
+	if strings.Contains(conversationState, "Swarming") {
+		t.Fatalf("legacy Swarming label remains in active run state: %q", conversationState)
 	}
 	if strings.Contains(simulationText(screen, 100, 18), "Connected") || strings.Contains(simulationText(screen, 100, 18), "connected") || strings.Contains(header, "Swarm") {
 		t.Fatalf("redundant connection/header chrome remains:\n%s", simulationText(screen, 100, 18))
+	}
+}
+
+func TestPageRendersTerminalConversationStateAboveComposerWithoutFooterDisplacement(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session: client.SessionSummary{ID: "s", Title: "Canonical title"},
+		ActiveRunIntent: &client.SessionV3RunIntent{
+			RunID: "run", Status: "cancelled", DurationMS: 5_000,
+		},
+	}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	page.SetRouteLabel("Primary Desk")
+	defer page.Close()
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 18)
+	page.DrawAt(screen, time.UnixMilli(125_000))
+	screen.Show()
+
+	if stateRow := simulationRow(screen, 80, 13); !strings.Contains(stateRow, "Stopped  0:05") {
+		t.Fatalf("terminal conversation state missing above composer: %q", stateRow)
+	}
+	if footer := simulationRow(screen, 80, 17); !strings.Contains(footer, "Primary Desk") || strings.Contains(footer, "Stopped") || strings.Contains(footer, "0:05") {
+		t.Fatalf("terminal state displaced canonical footer metadata: %q", footer)
 	}
 }
 

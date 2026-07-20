@@ -23,8 +23,6 @@ const (
 	maxRowCacheItems       = maxResidentMessages
 )
 
-var runIndicatorFrames = []string{"·", "•", "◦", "•"}
-
 // PageStyles are supplied by the app shell so this package does not depend on
 // the legacy UI package or its chat rendering implementation.
 type PageStyles struct {
@@ -991,7 +989,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 		drawCanonicalHeader(screen, width, styles, title, SelectPlanHeader(state))
 		transcriptTop = 1
 	}
-	runStatus, _ := BuildRunStatus(state, now)
+	runStatus, hasRunStatus := BuildRunStatus(state, now)
 	statusLine := ""
 	statusStyle := styles.Muted
 	if stale {
@@ -1015,10 +1013,14 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	footerHeight := 2
 	composerLines, composerCursorLine, composerCursorCol := composerLayout(string(input), cursor, width)
 	composerVisibleRows := minInt(len(composerLines), maxComposerVisibleRows)
-	composerVisibleRows = minInt(composerVisibleRows, maxInt(1, height-footerHeight-3))
+	conversationStatusHeight := 0
+	if hasRunStatus {
+		conversationStatusHeight = 1
+	}
+	composerVisibleRows = minInt(composerVisibleRows, maxInt(1, height-footerHeight-conversationStatusHeight-3))
 	composerStart := inputVisibleWindow(len(composerLines), composerVisibleRows, composerCursorLine)
 	composerHeight := 1 + composerVisibleRows + footerHeight
-	transcriptHeight := height - transcriptTop - composerHeight
+	transcriptHeight := height - transcriptTop - composerHeight - conversationStatusHeight
 	if transcriptHeight < 1 {
 		transcriptHeight = 1
 	}
@@ -1059,6 +1061,9 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if composerY < 2 {
 		composerY = 2
 	}
+	if hasRunStatus {
+		drawConversationStatus(screen, width, composerY-1, styles, runStatus)
+	}
 	drawHLine(screen, 0, composerY, width, styles.Border)
 	if strings.TrimSpace(errText) != "" {
 		drawComposerError(screen, width, composerY, styles, errText)
@@ -1070,7 +1075,6 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	modelState := SelectModel(state)
 	footerY := height - footerHeight
 	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, routeLabel, profileLabel)
-	drawActiveRunIndicator(screen, width, footerY, styles, runStatus, now)
 	composerEnd := minInt(len(composerLines), composerStart+composerVisibleRows)
 	for i := composerStart; i < composerEnd; i++ {
 		drawText(screen, 0, composerY+1+i-composerStart, width, styles.Prompt, composerLines[i])
@@ -1264,13 +1268,27 @@ func truncateRunes(value string, width int) string {
 	return string(runes[:width-1]) + "…"
 }
 
-func drawActiveRunIndicator(screen tcell.Screen, width, y int, styles PageStyles, status RunStatus, now time.Time) {
-	if !status.Active || strings.TrimSpace(status.Timer) == "" || width < 8 {
+func drawConversationStatus(screen tcell.Screen, width, y int, styles PageStyles, status RunStatus) {
+	label := strings.TrimSpace(status.Label)
+	if timer := strings.TrimSpace(status.Timer); timer != "" {
+		label += "  " + timer
+	}
+	if label == "" || width < 4 || y < 0 {
 		return
 	}
-	frame := runIndicatorFrames[int(now.Unix())%len(runIndicatorFrames)]
-	label := " " + frame + " " + strings.TrimSpace(status.Timer) + " "
-	drawText(screen, 1, y, minInt(width-2, utf8.RuneCountInString(label)), styleWithForeground(styles.Border, styles.Accent).Bold(true), label)
+	style := styles.Muted
+	switch status.Label {
+	case "Running":
+		style = styles.Accent
+	case "Completed":
+		style = styles.Success
+	case "Paused":
+		style = styles.Warning
+	case "Failed", "Interrupted", "Expired":
+		style = styles.Error
+	}
+	label = " " + label + " "
+	drawText(screen, 0, y, minInt(width, utf8.RuneCountInString(label)), styleWithForeground(styles.Background, style).Bold(status.Active), label)
 }
 
 func drawCanonicalHeader(screen tcell.Screen, width int, styles PageStyles, title string, plan PlanHeader) {
