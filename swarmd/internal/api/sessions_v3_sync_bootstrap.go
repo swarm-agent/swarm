@@ -556,7 +556,6 @@ type sessionsV3SessionView struct {
 	AgenticSettings       sessionsV3AgenticSettings        `json:"agentic_settings"`
 	CurrentExecutionEpoch *sessionsV3ExecutionEpochView    `json:"current_execution_epoch,omitempty"`
 	PendingPermissions    []pebblestore.PermissionRecord   `json:"pending_permissions"`
-	BashAuthorizations    []pebblestore.PermissionRecord   `json:"bash_authorizations"`
 	UsageSummary          *pebblestore.SessionUsageSummary `json:"usage_summary,omitempty"`
 	CurrentRunState       *pebblestore.V3SessionRunState   `json:"current_run_state,omitempty"`
 	HasActivePlan         *bool                            `json:"has_active_plan,omitempty"`

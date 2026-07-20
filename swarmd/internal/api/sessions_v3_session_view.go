@@ -57,25 +57,12 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 		return sessionsV3SessionView{}, errors.New("session is outside principal account scope")
 	}
 	pendingPermissions := []pebblestore.PermissionRecord{}
-	bashAuthorizations := []pebblestore.PermissionRecord{}
 	if s.perm != nil {
 		permissions, err := s.perm.ListPending(session.ID, 200)
 		if err != nil {
 			return sessionsV3SessionView{}, err
 		}
 		pendingPermissions = permissions
-		authorizations, err := s.perm.ListPermissions(session.ID, 4000)
-		if err != nil {
-			return sessionsV3SessionView{}, err
-		}
-		for _, authorization := range authorizations {
-			if strings.EqualFold(strings.TrimSpace(authorization.ToolName), "bash") {
-				bashAuthorizations = append(bashAuthorizations, authorization)
-			}
-		}
-		if len(bashAuthorizations) > 200 {
-			bashAuthorizations = bashAuthorizations[len(bashAuthorizations)-200:]
-		}
 	}
 	var usageSummary *pebblestore.SessionUsageSummary
 	if summary, hasSummary, err := s.sessions.Store().GetUsageSummary(session.ID); err != nil {
@@ -149,7 +136,6 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 		},
 		CurrentExecutionEpoch: currentExecutionEpoch,
 		PendingPermissions:    pendingPermissions,
-		BashAuthorizations:    bashAuthorizations,
 		UsageSummary:          usageSummary,
 		CurrentRunState:       currentRunState,
 		HasActivePlan:         hasActivePlan,

@@ -8,33 +8,6 @@ import (
 	"testing"
 )
 
-func TestBashDefinitionSeparatesExplanationFromExactCommand(t *testing.T) {
-	rt := NewRuntime(1)
-	var bash Definition
-	for _, definition := range rt.Definitions() {
-		if definition.Name == "bash" {
-			bash = definition
-			break
-		}
-	}
-	properties, _ := bash.Parameters["properties"].(map[string]any)
-	if _, ok := properties["command"]; !ok {
-		t.Fatal("bash schema is missing exact command")
-	}
-	explanation, ok := properties["explanation"].(map[string]any)
-	if !ok {
-		t.Fatalf("bash explanation schema = %#v", properties["explanation"])
-	}
-	description, _ := explanation["description"].(string)
-	if !strings.Contains(description, "non-authoritative") || !strings.Contains(description, "does not affect permission policy or execution") {
-		t.Fatalf("bash explanation description does not define trust boundary: %q", description)
-	}
-	required, _ := bash.Parameters["required"].([]string)
-	if len(required) != 1 || required[0] != "command" {
-		t.Fatalf("bash required fields = %#v, want command only", required)
-	}
-}
-
 func TestBashKeepsLargeTextForOutputViewer(t *testing.T) {
 	workspace := t.TempDir()
 	line := strings.Repeat("x", 1024)

@@ -396,46 +396,6 @@ func TestProviderManagedAskUserReasonBecomesProviderResponse(t *testing.T) {
 	}
 }
 
-func TestProviderManagedV3BypassedBashPersistsAuthorizationAndExactArguments(t *testing.T) {
-	workspace := t.TempDir()
-	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
-	defer cleanup()
-	permissions.SetBypassPermissions(true)
-	invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{
-		sessionID:            sessionID,
-		permissionSessionID:  sessionID,
-		runID:                "run-v3-bash-bypass",
-		step:                 1,
-		sessionMode:          sessionruntime.ModeAuto,
-		workspacePath:        workspace,
-		workspaceRoots:       []string{workspace},
-		workspaceOriginPath:  workspace,
-		workspaceOriginRoots: []string{workspace},
-		workspaceName:        "workspace",
-		applySessionMutation: providerManagedV3NoopMutation,
-		providerManagedV3:    true,
-	})
-	arguments := `{"command":"printf exact","explanation":"Print the exact value."}`
-	result, err := invoker.ExecuteTool(context.Background(), toolInvocation("call-bash", "bash", arguments))
-	if err != nil || result.Error != "" {
-		t.Fatalf("execute bypassed bash: result=%#v err=%v", result, err)
-	}
-	records, err := permissions.ListPermissions(sessionID, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(records) != 1 {
-		t.Fatalf("authorization records = %#v", records)
-	}
-	record := records[0]
-	if record.Status != pebblestore.PermissionStatusNotRequired || record.Decision != string(permission.AuthorizationApprove) || record.AuthorizationSource != "bypass_permissions" || record.PermissionRequested != 0 || record.ExecutionStatus != pebblestore.PermissionExecCompleted {
-		t.Fatalf("bypassed bash authorization state = %#v", record)
-	}
-	if record.ToolCallArguments != arguments {
-		t.Fatalf("bypassed bash arguments = %q, want %q", record.ToolCallArguments, arguments)
-	}
-}
-
 func TestProviderManagedV3BypassPermissionsAllowsControlPlaneTool(t *testing.T) {
 	workspace := t.TempDir()
 	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestService(t, workspace)

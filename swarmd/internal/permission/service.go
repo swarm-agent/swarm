@@ -65,20 +65,15 @@ type permissionStateCacheEntry struct {
 }
 
 type CreateInput struct {
-	SessionID           string
-	RunID               string
-	Step                int
-	CallID              string
-	ToolName            string
-	ToolArguments       string
-	ToolCallArguments   string
-	Requirement         string
-	Mode                string
-	Status              string
-	Decision            string
-	AuthorizationSource string
-	Reason              string
-	ExecutionStatus     string
+	SessionID         string
+	RunID             string
+	Step              int
+	CallID            string
+	ToolName          string
+	ToolArguments     string
+	ToolCallArguments string
+	Requirement       string
+	Mode              string
 }
 
 type AuthorizationDecision string
@@ -458,20 +453,15 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 
 func (s *Service) createPendingAuthorization(input AuthorizationInput, sessionID, requirement, reason, source, rulePreview string) (AuthorizationResult, error) {
 	record, err := s.CreatePending(CreateInput{
-		SessionID:           sessionID,
-		RunID:               input.RunID,
-		Step:                input.Step,
-		CallID:              input.CallID,
-		ToolName:            input.ToolName,
-		ToolArguments:       input.ToolArguments,
-		ToolCallArguments:   input.ToolCallArguments,
-		Requirement:         requirement,
-		Mode:                input.Mode,
-		Status:              pebblestore.PermissionStatusPending,
-		Decision:            string(AuthorizationPending),
-		AuthorizationSource: source,
-		Reason:              reason,
-		ExecutionStatus:     pebblestore.PermissionExecWaitingApproval,
+		SessionID:         sessionID,
+		RunID:             input.RunID,
+		Step:              input.Step,
+		CallID:            input.CallID,
+		ToolName:          input.ToolName,
+		ToolArguments:     input.ToolArguments,
+		ToolCallArguments: input.ToolCallArguments,
+		Requirement:       requirement,
+		Mode:              input.Mode,
 	})
 	if err != nil {
 		return AuthorizationResult{}, err
@@ -563,24 +553,7 @@ func parsePermissionJSONMap(raw string) map[string]any {
 	return payload
 }
 
-// RecordAuthorization persists an authorization outcome for canonical tool-call
-// history. Pending outcomes participate in run waits; approved automatic or
-// bypassed outcomes remain durable but never create an approval wait.
-func (s *Service) RecordAuthorization(input CreateInput) (pebblestore.PermissionRecord, error) {
-	if strings.EqualFold(strings.TrimSpace(input.Status), pebblestore.PermissionStatusPending) || strings.TrimSpace(input.Status) == "" {
-		return s.CreatePending(input)
-	}
-	return s.createAuthorizationRecord(input, false)
-}
-
 func (s *Service) CreatePending(input CreateInput) (pebblestore.PermissionRecord, error) {
-	input.Status = pebblestore.PermissionStatusPending
-	input.Decision = string(AuthorizationPending)
-	input.ExecutionStatus = pebblestore.PermissionExecWaitingApproval
-	return s.createAuthorizationRecord(input, true)
-}
-
-func (s *Service) createAuthorizationRecord(input CreateInput, pending bool) (pebblestore.PermissionRecord, error) {
 	sessionID := strings.TrimSpace(input.SessionID)
 	if sessionID == "" {
 		return pebblestore.PermissionRecord{}, errors.New("session id is required")
@@ -599,13 +572,12 @@ func (s *Service) createAuthorizationRecord(input CreateInput, pending bool) (pe
 		ToolCallArguments:   permissionStoredArguments(input.ToolCallArguments),
 		Requirement:         strings.TrimSpace(strings.ToLower(input.Requirement)),
 		Mode:                strings.TrimSpace(strings.ToLower(input.Mode)),
-		Status:              strings.TrimSpace(strings.ToLower(input.Status)),
-		Decision:            strings.TrimSpace(strings.ToLower(input.Decision)),
-		AuthorizationSource: strings.TrimSpace(strings.ToLower(input.AuthorizationSource)),
-		Reason:              strings.TrimSpace(input.Reason),
-		PermissionRequested: 0,
+		Status:              pebblestore.PermissionStatusPending,
+		Decision:            "",
+		Reason:              "",
+		PermissionRequested: now,
 		ResolvedAt:          0,
-		ExecutionStatus:     strings.TrimSpace(strings.ToLower(input.ExecutionStatus)),
+		ExecutionStatus:     pebblestore.PermissionExecWaitingApproval,
 		Output:              "",
 		Error:               "",
 		DurationMS:          0,
@@ -613,9 +585,6 @@ func (s *Service) createAuthorizationRecord(input CreateInput, pending bool) (pe
 		CompletedAt:         0,
 		CreatedAt:           now,
 		UpdatedAt:           now,
-	}
-	if pending {
-		record.PermissionRequested = now
 	}
 	if record.ToolName == "" {
 		record.ToolName = "tool"
@@ -625,23 +594,6 @@ func (s *Service) createAuthorizationRecord(input CreateInput, pending bool) (pe
 	}
 	if record.Mode == "" {
 		record.Mode = "plan"
-	}
-	if record.Status == "" {
-		if pending {
-			record.Status = pebblestore.PermissionStatusPending
-		} else {
-			record.Status = pebblestore.PermissionStatusNotRequired
-		}
-	}
-	if record.Decision == "" && record.Status == pebblestore.PermissionStatusPending {
-		record.Decision = string(AuthorizationPending)
-	}
-	if record.ExecutionStatus == "" {
-		if pending {
-			record.ExecutionStatus = pebblestore.PermissionExecWaitingApproval
-		} else {
-			record.ExecutionStatus = pebblestore.PermissionExecQueued
-		}
 	}
 	if isPendingPlanProposalRecord(record) {
 		record.ProposalRevision = 1
@@ -701,18 +653,12 @@ func (s *Service) createAuthorizationRecord(input CreateInput, pending bool) (pe
 	if err := s.store.PutPermissionWithSummary(record, previous, summary); err != nil {
 		return pebblestore.PermissionRecord{}, err
 	}
-	if pending {
-		if err := s.attachRunWaitLocked(record, now); err != nil {
-			return pebblestore.PermissionRecord{}, err
-		}
+	if err := s.attachRunWaitLocked(record, now); err != nil {
+		return pebblestore.PermissionRecord{}, err
 	}
 
-	eventType := "permission.updated"
-	if pending {
-		eventType = "permission.requested"
-	}
-	s.syncNotification(record, s.localSwarmID(), s.originSwarmIDForSession(sessionID), eventType)
-	_, _ = s.emitLocked("session:"+sessionID, eventType, sessionID, map[string]any{
+	s.syncNotification(record, s.localSwarmID(), s.originSwarmIDForSession(sessionID), "permission.requested")
+	_, _ = s.emitLocked("session:"+sessionID, "permission.requested", sessionID, map[string]any{
 		"permission": record,
 	})
 	s.publishPermissionSummaryUpdatedLocked(sessionID, summary)
@@ -1048,7 +994,6 @@ func (s *Service) resolveLocked(sessionID, permissionID, action, reason, approve
 		updated.Status = pebblestore.PermissionStatusCancelled
 	}
 	updated.Decision = action
-	updated.AuthorizationSource = "user"
 	updated.Reason = strings.TrimSpace(reason)
 	updated.ApprovedArguments, err = approvedArgumentsForResolution(record, action, approvedArguments)
 	if err != nil {
@@ -1335,9 +1280,7 @@ func (s *Service) MarkToolStarted(sessionID, runID, callID string, step int, sta
 	if previous.Step == 0 && step > 0 {
 		record.Step = step
 	}
-	if record.Status != pebblestore.PermissionStatusNotRequired {
-		record.PermissionRequested = firstNonZero(record.PermissionRequested, record.CreatedAt)
-	}
+	record.PermissionRequested = firstNonZero(record.PermissionRequested, record.CreatedAt)
 	record.StartedAt = startedAt
 	record.ExecutionStatus = pebblestore.PermissionExecRunning
 	record.UpdatedAt = startedAt
@@ -1381,9 +1324,7 @@ func (s *Service) MarkToolCompleted(sessionID, runID, callID string, step int, r
 	if previous.Step == 0 && step > 0 {
 		record.Step = step
 	}
-	if record.Status != pebblestore.PermissionStatusNotRequired {
-		record.PermissionRequested = firstNonZero(record.PermissionRequested, record.CreatedAt)
-	}
+	record.PermissionRequested = firstNonZero(record.PermissionRequested, record.CreatedAt)
 	record.StartedAt = firstNonZero(record.StartedAt, completedAt)
 	record.CompletedAt = completedAt
 	record.UpdatedAt = completedAt

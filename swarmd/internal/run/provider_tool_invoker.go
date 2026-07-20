@@ -358,19 +358,6 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 					runtimeCalls = scopeApprovedCalls
 				}
 				if len(runtimeCalls) > 0 {
-					if s.permissions != nil && canonicalToolName(call.Name) == "bash" {
-						if record, updated, markErr := s.permissions.MarkToolStarted(permissionSessionID, config.runID, call.CallID, config.step, time.Now().UnixMilli()); markErr == nil && updated && config.emit != nil {
-							config.emit(StreamEvent{
-								Type:       StreamEventPermissionUpdate,
-								SessionID:  permissionSessionID,
-								Step:       config.step,
-								ToolName:   strings.TrimSpace(call.Name),
-								CallID:     strings.TrimSpace(call.CallID),
-								Arguments:  strings.TrimSpace(firstNonEmptyString(record.ToolCallArguments, record.ToolArguments)),
-								Permission: &record,
-							})
-						}
-					}
 					if config.emit != nil {
 						config.emit(StreamEvent{
 							Type:      StreamEventToolStarted,
@@ -436,20 +423,6 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 					}
 				}
 			}
-		}
-	}
-
-	if s.permissions != nil && canonicalToolName(call.Name) == "bash" {
-		if record, updated, markErr := s.permissions.MarkToolCompleted(permissionSessionID, config.runID, call.CallID, config.step, result, time.Now().UnixMilli()); markErr == nil && updated && config.emit != nil {
-			config.emit(StreamEvent{
-				Type:       StreamEventPermissionUpdate,
-				SessionID:  permissionSessionID,
-				Step:       config.step,
-				ToolName:   strings.TrimSpace(call.Name),
-				CallID:     strings.TrimSpace(call.CallID),
-				Arguments:  strings.TrimSpace(firstNonEmptyString(record.ToolCallArguments, record.ToolArguments)),
-				Permission: &record,
-			})
 		}
 	}
 

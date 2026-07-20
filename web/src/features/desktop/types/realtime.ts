@@ -173,7 +173,6 @@ export interface DesktopPermissionRecord {
   callId: string
   toolName: string
   toolArguments: string
-  toolCallArguments?: string
   approvedArguments?: string
   savedRule?: {
     id: string
@@ -186,7 +185,6 @@ export interface DesktopPermissionRecord {
   }
   status: string
   decision: string
-  authorizationSource?: string
   reason: string
   requirement: string
   mode: string
@@ -194,10 +192,6 @@ export interface DesktopPermissionRecord {
   updatedAt: number
   resolvedAt: number
   permissionRequestedAt: number
-  executionStatus?: string
-  startedAt?: number
-  completedAt?: number
-  durationMs?: number
 }
 
 export interface DesktopNotificationRecord {

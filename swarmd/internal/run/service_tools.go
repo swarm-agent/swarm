@@ -772,41 +772,6 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 		switch auth.Decision {
 		case permission.AuthorizationApprove:
 			decisions[i].Approved = true
-			if canonicalToolName(toolCalls[i].Name) == "bash" {
-				record, recordErr := s.permissions.RecordAuthorization(permission.CreateInput{
-					SessionID:           sessionID,
-					RunID:               runID,
-					Step:                step,
-					CallID:              toolCalls[i].CallID,
-					ToolName:            toolCalls[i].Name,
-					ToolArguments:       permissionArguments,
-					ToolCallArguments:   strings.TrimSpace(toolCalls[i].Arguments),
-					Requirement:         auth.Requirement,
-					Mode:                sessionMode,
-					Status:              pebblestore.PermissionStatusNotRequired,
-					Decision:            string(permission.AuthorizationApprove),
-					AuthorizationSource: auth.Source,
-					Reason:              auth.Reason,
-					ExecutionStatus:     pebblestore.PermissionExecQueued,
-				})
-				if recordErr != nil {
-					decisions[i].Err = recordErr
-					decisions[i].Approved = false
-					decisions[i].Result.Error = fmt.Sprintf("record tool authorization: %v", recordErr)
-					continue
-				}
-				if emit != nil {
-					emit(StreamEvent{
-						Type:       StreamEventPermissionUpdate,
-						SessionID:  sessionID,
-						Step:       step,
-						ToolName:   strings.TrimSpace(toolCalls[i].Name),
-						CallID:     strings.TrimSpace(toolCalls[i].CallID),
-						Arguments:  strings.TrimSpace(firstNonEmptyString(record.ToolCallArguments, record.ToolArguments)),
-						Permission: &record,
-					})
-				}
-			}
 			canonical := canonicalToolName(toolCalls[i].Name)
 			if canonical == "manage_sessions" && permission.ManageSessionsAction(toolCalls[i].Arguments) == "deploy" {
 				if markErr := s.permissions.MarkSessionDeployApproved(sessionID, runID, toolCalls[i].CallID, selectedCount); markErr != nil {
