@@ -13,12 +13,17 @@ test('provider onboarding refreshes the canonical profile query while skip remai
   assert.doesNotMatch(onboardingSource, /createModelProfile|\/v2\/agent-model-profiles/)
 })
 
-test('new sessions adopt the account default without overwriting a manual profile choice', () => {
+test('new sessions render and submit the account default without a stale draft-model frame', () => {
+  assert.match(newSessionSource, /const defaultModelProfilePreference = defaultModelProfile/)
+  assert.match(newSessionSource, /defaultModelProfilePreference \? \{ kind: 'account-default' \} : undefined/)
+  assert.match(newSessionSource, /defaultModelProfilePreference \?\? \(\{/)
+  assert.match(newSessionSource, /modelProfileAuthorityPending/)
+  assert.match(newSessionSource, /preference: preferenceForRequest\(effectivePreference\)/)
+  assert.match(newSessionSource, /modelProfileChoice: effectiveModelProfileChoice/)
   assert.match(newSessionSource, /profileManuallyChangedRef\.current \|\| modelProfileChoice \|\| !modelProfileState\.defaultProfileId/)
   assert.match(newSessionSource, /setModelProfileChoice\(\{ kind: 'account-default' \}\)/)
   assert.match(newSessionSource, /profileManuallyChangedRef\.current = true/)
   assert.match(newSessionSource, /preferenceManuallyChangedRef\.current = true/)
-  assert.match(newSessionSource, /modelProfileChoice,/)
 })
 
 test('existing sessions route temporary and saved choices through the V3 profile mutation only', () => {

@@ -188,9 +188,17 @@ export function DesktopV3NewSessionPane({
   const agentManuallySelectedRef = useRef(false)
   const preferenceManuallyChangedRef = useRef(false)
   const profileManuallyChangedRef = useRef(false)
-  const [modelProfileChoice, setModelProfileChoice] = useState<ModelProfileChoice | undefined>(() => currentOperation?.createRequest.model_profile ? undefined : undefined)
-  const [activeModelProfile, setActiveModelProfile] = useState<ActiveModelProfileState>({ source: '', profileId: '', name: '', modelMode: '' })
-  const [preference, setPreference] = useState<SessionPreferenceRecord>(() => ({
+  const defaultModelProfile = modelProfileState.profiles.find((candidate) => candidate.profileId === modelProfileState.defaultProfileId) ?? null
+  const defaultModelProfilePreference = defaultModelProfile
+    ? preferenceFromModelProfile(defaultModelProfile, mode, defaultModelProfile.updatedAt)
+    : null
+  const [modelProfileChoice, setModelProfileChoice] = useState<ModelProfileChoice | undefined>(() => (
+    defaultModelProfilePreference ? { kind: 'account-default' } : undefined
+  ))
+  const [activeModelProfile, setActiveModelProfile] = useState<ActiveModelProfileState>(() => defaultModelProfile
+    ? { source: 'saved', profileId: defaultModelProfile.profileId, name: defaultModelProfile.name, modelMode: defaultModelProfile.modelMode }
+    : { source: '', profileId: '', name: '', modelMode: '' })
+  const [preference, setPreference] = useState<SessionPreferenceRecord>(() => defaultModelProfilePreference ?? ({
     ...preferenceFromResolved(draftPreferenceQuery.data),
     provider: preferenceProp?.provider ?? draftPreferenceQuery.data?.preference.provider ?? '',
     model: preferenceProp?.model ?? draftPreferenceQuery.data?.preference.model ?? '',
@@ -246,6 +254,7 @@ export function DesktopV3NewSessionPane({
   }, [mode, modelProfileChoice, modelProfileState.defaultProfileId, modelProfileState.profiles])
 
   useEffect(() => {
+    if (defaultModelProfilePreference && !profileManuallyChangedRef.current) return
     const resolved = preferenceFromResolved(draftPreferenceQuery.data)
     const nextPreference = {
       ...resolved,
@@ -269,7 +278,7 @@ export function DesktopV3NewSessionPane({
       unlockedPreferenceRef.current = nextPreference
       return nextPreference
     })
-  }, [draftPreferenceQuery.data, preferenceProp])
+  }, [defaultModelProfilePreference, draftPreferenceQuery.data, preferenceProp])
 
   const selectedAgentModelLock = useMemo(
     () => resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent, mode),
@@ -308,11 +317,25 @@ export function DesktopV3NewSessionPane({
     operationRef.current = null
   }, [selectedRoute, workspace.path])
 
-  const selectedModelKey = modelOptionKey(preference.provider, preference.model, preference.contextMode)
+  const accountDefaultProfileActive = !profileManuallyChangedRef.current
+    && (!modelProfileChoice || modelProfileChoice.kind === 'account-default')
+  const effectiveModelProfileChoice: ModelProfileChoice | undefined = accountDefaultProfileActive && defaultModelProfilePreference
+    ? { kind: 'account-default' }
+    : modelProfileChoice
+  const effectiveActiveModelProfile = accountDefaultProfileActive && defaultModelProfile
+    ? { source: 'saved', profileId: defaultModelProfile.profileId, name: defaultModelProfile.name, modelMode: defaultModelProfile.modelMode } satisfies ActiveModelProfileState
+    : activeModelProfile
+  const modelProfileAuthorityPending = modelProfilesQuery.isLoading && !profileManuallyChangedRef.current && !modelProfileChoice
+  const effectivePreference = accountDefaultProfileActive && defaultModelProfilePreference
+    ? defaultModelProfilePreference
+    : modelProfileAuthorityPending
+      ? { provider: '', model: '', thinking: '', serviceTier: '', contextMode: '', updatedAt: 0 }
+      : preference
+  const selectedModelKey = modelOptionKey(effectivePreference.provider, effectivePreference.model, effectivePreference.contextMode)
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
-  const hasResolvedPreference = Boolean(preference.provider.trim() && preference.model.trim() && preference.thinking.trim())
+  const hasResolvedPreference = Boolean(effectivePreference.provider.trim() && effectivePreference.model.trim() && effectivePreference.thinking.trim())
   const selectedModelAvailable = Boolean(selectedModelOption && hasResolvedPreference)
-  const needsAuth = desktopProviderNeedsAuth(preference.provider, authCredentialsQuery.data)
+  const needsAuth = desktopProviderNeedsAuth(effectivePreference.provider, authCredentialsQuery.data)
   const selectedContextWindow = selectedModelOption
     ? effectiveContextWindow(selectedModelOption.provider, selectedModelOption.model, selectedModelOption.contextMode, selectedModelOption.contextWindow)
     : draftPreferenceQuery.data?.contextWindow ?? 0
@@ -487,8 +510,8 @@ export function DesktopV3NewSessionPane({
           prompt: submittedDraft,
           mode,
           agentName,
-          preference: preferenceForRequest(preference),
-          modelProfileChoice,
+          preference: preferenceForRequest(effectivePreference),
+          modelProfileChoice: effectiveModelProfileChoice,
           sessionMetadata: {
             source: 'desktop-v3',
             workspace_path: workspace.path,
@@ -570,7 +593,7 @@ export function DesktopV3NewSessionPane({
         selectedPrimaryAgent={selectedAgentName || agentState.activePrimary || ''}
         agents={agentState.profiles}
         modelProfiles={modelProfileState.profiles}
-        activeModelProfile={activeModelProfile}
+        activeModelProfile={effectiveActiveModelProfile}
         modelProfilesLoading={modelProfilesQuery.isLoading}
         modelProfilesError={modelProfilesQuery.error instanceof Error ? modelProfilesQuery.error.message : null}
         onModelProfileSetDefault={async (profileId) => {
@@ -616,19 +639,19 @@ export function DesktopV3NewSessionPane({
         }}
         modelOptions={modelOptions}
         selectedModelKey={selectedModelKey}
-        selectedServiceTier={preference.serviceTier}
+        selectedServiceTier={effectivePreference.serviceTier}
         agentSettingsOpenSignal={agentSettingsOpenSignal}
         agentSettingsInitialAgent={agentSettingsInitialAgent}
         modelPickerDisabled={selectedAgentModelLock.locked}
         modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
         modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
-        modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, serviceTier: serviceTierFromPreference(preference) })}
+        modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, modelLabel: selectedModelOption?.label || effectivePreference.model, thinking: effectivePreference.thinking, serviceTier: serviceTierFromPreference(effectivePreference) })}
         onAgentSelect={handleAgentSelect}
         needsAuth={needsAuth}
         onOpenAuthSettings={handleOpenAuthSettings}
         onConfirmAgentSettings={handleConfirmAgentSettings}
         agentModelControlBusy={agentModelSaving}
-        thinking={preference.thinking}
+        thinking={effectivePreference.thinking}
         thinkingTagsEnabled={thinkingTagsEnabled}
         onThinkingTagsToggle={(enabled) => { void handleThinkingTagsToggle(enabled) }}
         thinkingTagsBusy={thinkingTagsSaving}
