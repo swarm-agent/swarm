@@ -57,6 +57,9 @@ func (a *App) applyHeaderSetting(enabled bool) {
 	if a.chat != nil {
 		a.chat.SetHeaderVisible(enabled)
 	}
+	if a.v3Chat != nil {
+		a.v3Chat.SetHeaderVisible(enabled)
+	}
 
 	a.home.SetCommandOverlay(a.headerStatusLines())
 	if err := saveHeaderSetting(a.api, enabled); err != nil {

@@ -89,6 +89,7 @@ func (a *App) newV3ChatPage(runtime *v3chat.Runtime, routeLabel, profileLabel st
 	page := v3chat.NewPage(runtime, a.v3ChatStyles())
 	page.SetRouteLabel(routeLabel)
 	page.SetProfileLabel(profileLabel)
+	page.SetHeaderVisible(a.config.Chat.ShowHeader)
 	page.SetCommandSuggestions(v3ChatCommandSuggestions(buildHomeCommandSuggestions(a.startupDevMode())))
 	page.SetKeyMatcher(func(ev *tcell.EventKey, action string) bool {
 		keybinds := a.activeKeyBindings()
@@ -146,11 +147,7 @@ func (a *App) handleV3ChatCommand() {
 	if a.route != "v3chat" || a.v3Chat == nil {
 		return
 	}
-	if overlay := a.home.CommandOverlayLines(); len(overlay) > 0 {
-		a.v3Chat.SetStatus(strings.Join(overlay, " • "))
-	} else if status := strings.TrimSpace(a.home.Status()); status != "" {
-		a.v3Chat.SetStatus(status)
-	}
+	a.v3Chat.SetCommandEmission("Used " + raw)
 }
 
 func v3ChatCommandSuggestions(items []ui.CommandSuggestion) []v3chat.CommandSuggestion {

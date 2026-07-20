@@ -74,31 +74,35 @@ type Page struct {
 	runtime *Runtime
 	styles  PageStyles
 
-	mu                  sync.Mutex
-	input               []rune
-	cursor              int
-	pasteActive         bool
-	pasteBuffer         []rune
-	scroll              int
-	follow              bool
-	status              string
-	errText             string
-	busy                bool
-	rowCache            map[string]cachedRows
-	lastWidth           int
-	lastHeight          int
-	modelTarget         footerbar.Rect
-	routeLabel          string
-	profileLabel        string
-	modelPicker         bool
-	modelLoading        bool
-	modelOptions        []client.ModelCatalogRecord
-	modelIndex          int
-	commandSuggestions  []CommandSuggestion
-	commandPaletteIndex int
-	pendingCommand      string
-	matchKey            func(*tcell.EventKey, string) bool
-	runTimer            *time.Timer
+	mu                        sync.Mutex
+	input                     []rune
+	cursor                    int
+	pasteActive               bool
+	pasteBuffer               []rune
+	scroll                    int
+	follow                    bool
+	status                    string
+	errText                   string
+	busy                      bool
+	rowCache                  map[string]cachedRows
+	lastWidth                 int
+	lastHeight                int
+	modelTarget               footerbar.Rect
+	routeLabel                string
+	profileLabel              string
+	showHeader                bool
+	commandEmission           string
+	modelPicker               bool
+	modelLoading              bool
+	modelOptions              []client.ModelCatalogRecord
+	modelIndex                int
+	commandSuggestions        []CommandSuggestion
+	commandPaletteIndex       int
+	commandPaletteOptionIndex int
+	commandPaletteOptionOwner string
+	pendingCommand            string
+	matchKey                  func(*tcell.EventKey, string) bool
+	runTimer                  *time.Timer
 }
 
 const (
@@ -122,7 +126,7 @@ const (
 )
 
 func NewPage(runtime *Runtime, styles PageStyles) *Page {
-	return &Page{runtime: runtime, styles: styles, follow: true, rowCache: make(map[string]cachedRows), matchKey: defaultKeyMatcher}
+	return &Page{runtime: runtime, styles: styles, showHeader: true, follow: true, rowCache: make(map[string]cachedRows), matchKey: defaultKeyMatcher}
 }
 
 func (p *Page) SetKeyMatcher(match func(*tcell.EventKey, string) bool) {
@@ -225,6 +229,24 @@ func (p *Page) SetProfileLabel(label string) {
 	p.mu.Unlock()
 }
 
+func (p *Page) SetHeaderVisible(show bool) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.showHeader = show
+	p.mu.Unlock()
+}
+
+func (p *Page) SetCommandEmission(emission string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.commandEmission = strings.TrimSpace(emission)
+	p.mu.Unlock()
+}
+
 func (p *Page) RouteLabel() string {
 	if p == nil {
 		return ""
@@ -271,6 +293,8 @@ func (p *Page) ClearInput() {
 	p.input = nil
 	p.cursor = 0
 	p.pasteBuffer = nil
+	p.commandPaletteIndex = 0
+	p.resetCommandPaletteOptionSelectionLocked()
 	p.mu.Unlock()
 }
 
@@ -293,6 +317,8 @@ func (p *Page) flushPasteBufferLocked() {
 	}
 	p.insertRunesLocked(p.pasteBuffer)
 	p.pasteBuffer = nil
+	p.syncCommandPaletteSelectionLocked()
+	p.resetCommandPaletteOptionSelectionLocked()
 }
 
 func (p *Page) insertRunesLocked(chunk []rune) {
@@ -308,6 +334,14 @@ func (p *Page) insertRunesLocked(chunk []rune) {
 	copy(p.input[p.cursor+len(inserted):], p.input[p.cursor:len(p.input)-len(inserted)])
 	copy(p.input[p.cursor:], inserted)
 	p.cursor += len(inserted)
+	p.clearCommandEmissionForConversationLocked()
+}
+
+func (p *Page) clearCommandEmissionForConversationLocked() {
+	input := strings.TrimSpace(string(p.input))
+	if input != "" && !strings.HasPrefix(input, "/") {
+		p.commandEmission = ""
+	}
 }
 
 func (p *Page) handlePasteKeyLocked(ev *tcell.EventKey) {
@@ -475,6 +509,7 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 		p.completeCommandFromPaletteLocked()
 	case match(KeySubmit):
 		if p.executeCommandPaletteSelectionLocked() {
+			p.status = ""
 			return PageActionCommand
 		}
 		text := strings.TrimSpace(string(p.input))
@@ -482,6 +517,7 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			p.pendingCommand = text
 			p.input = nil
 			p.cursor = 0
+			p.status = ""
 			return PageActionCommand
 		}
 		if text != "" && !p.busy {
@@ -497,17 +533,27 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 		if p.cursor > 0 {
 			p.input = append(p.input[:p.cursor-1], p.input[p.cursor:]...)
 			p.cursor--
+			p.syncCommandPaletteSelectionLocked()
+			p.resetCommandPaletteOptionSelectionLocked()
+			p.clearCommandEmissionForConversationLocked()
 		}
 	case ev.Key() == tcell.KeyDelete:
 		if p.cursor < len(p.input) {
 			p.input = append(p.input[:p.cursor], p.input[p.cursor+1:]...)
+			p.syncCommandPaletteSelectionLocked()
+			p.resetCommandPaletteOptionSelectionLocked()
+			p.clearCommandEmissionForConversationLocked()
 		}
 	case match(KeyMoveLeft):
-		if !p.moveCommandPaletteSelectionLocked(-1) && p.cursor > 0 {
+		if p.commandPaletteActiveLocked() {
+			p.moveCommandPaletteOptionSelectionLocked(-1)
+		} else if p.cursor > 0 {
 			p.cursor--
 		}
 	case match(KeyMoveRight):
-		if !p.moveCommandPaletteSelectionLocked(1) && p.cursor < len(p.input) {
+		if p.commandPaletteActiveLocked() {
+			p.moveCommandPaletteOptionSelectionLocked(1)
+		} else if p.cursor < len(p.input) {
 			p.cursor++
 		}
 	case ev.Key() == tcell.KeyHome:
@@ -519,6 +565,7 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 		p.cursor = 0
 		p.pasteBuffer = nil
 		p.commandPaletteIndex = 0
+		p.resetCommandPaletteOptionSelectionLocked()
 	case ev.Key() == tcell.KeyF2:
 		p.openModelPickerLocked()
 	case ev.Key() == tcell.KeyCtrlX:
@@ -542,6 +589,7 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 		}
 		p.insertRunesLocked([]rune{ev.Rune()})
 		p.syncCommandPaletteSelectionLocked()
+		p.resetCommandPaletteOptionSelectionLocked()
 	}
 	return PageActionNone
 }
@@ -737,11 +785,14 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	scroll := p.scroll
 	errText, status := p.errText, p.status
 	routeLabel, profileLabel := p.routeLabel, p.profileLabel
+	showHeader, commandEmission := p.showHeader, p.commandEmission
 	p.lastWidth, p.lastHeight = width, height
 	modelPicker, modelLoading, modelIndex := p.modelPicker, p.modelLoading, p.modelIndex
 	modelOptions := append([]client.ModelCatalogRecord(nil), p.modelOptions...)
 	commandSuggestions := append([]CommandSuggestion(nil), p.commandSuggestions...)
 	commandPaletteIndex := p.commandPaletteIndex
+	commandPaletteOptionIndex := p.commandPaletteOptionIndex
+	commandPaletteOptionOwner := p.commandPaletteOptionOwner
 	p.mu.Unlock()
 
 	fill(screen, 0, 0, width, height, styles.Background)
@@ -762,7 +813,11 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 			headerRight += "  " + runStatus.Timer
 		}
 	}
-	drawHeader(screen, width, styles.Panel.Bold(true), title, headerRight)
+	transcriptTop := 0
+	if showHeader {
+		drawHeader(screen, width, styles.Panel.Bold(true), title, headerRight)
+		transcriptTop = 1
+	}
 	statusLine := ""
 	statusStyle := styles.Muted
 	if stale {
@@ -784,7 +839,6 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	composerVisibleRows = minInt(composerVisibleRows, maxInt(1, height-footerHeight-3))
 	composerStart := inputVisibleWindow(len(composerLines), composerVisibleRows, composerCursorLine)
 	composerHeight := 1 + composerVisibleRows + footerHeight
-	transcriptTop := 1
 	transcriptHeight := height - transcriptTop - composerHeight
 	if transcriptHeight < 1 {
 		transcriptHeight = 1
@@ -817,6 +871,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 		composerY = 2
 	}
 	drawHLine(screen, 0, composerY, width, styles.Border)
+	drawCommandEmission(screen, width, composerY, styles, commandEmission)
 	modelState := SelectModel(state)
 	footerY := height - footerHeight
 	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, routeLabel, profileLabel, statusLine, statusStyle)
@@ -837,7 +892,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if modelPicker {
 		p.drawModelPicker(screen, width, height, styles, modelOptions, modelIndex, modelLoading, modelState)
 	} else {
-		p.drawCommandPalette(screen, width, transcriptTop, composerY, styles, string(input), commandPaletteIndex, commandSuggestions)
+		p.drawCommandPalette(screen, width, transcriptTop, composerY, styles, string(input), commandPaletteIndex, commandPaletteOptionOwner, commandPaletteOptionIndex, commandSuggestions)
 	}
 }
 
@@ -930,6 +985,31 @@ func maxInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+func drawCommandEmission(screen tcell.Screen, width, y int, styles PageStyles, emission string) {
+	emission = strings.TrimSpace(emission)
+	if emission == "" || width < 12 {
+		return
+	}
+	maxWidth := maxInt(1, width/2)
+	label := " " + truncateRunes(emission, maxWidth-2) + " "
+	labelRunes := []rune(label)
+	drawText(screen, maxInt(0, width-len(labelRunes)-1), y, len(labelRunes), styles.Secondary, label)
+}
+
+func truncateRunes(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= width {
+		return value
+	}
+	if width == 1 {
+		return "…"
+	}
+	return string(runes[:width-1]) + "…"
 }
 
 func drawHeader(screen tcell.Screen, width int, style tcell.Style, title, right string) {
