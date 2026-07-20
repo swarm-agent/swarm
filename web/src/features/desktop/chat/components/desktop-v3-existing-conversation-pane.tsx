@@ -143,8 +143,10 @@ import type { AgentModelControlConfirmInput } from "./agent-model-control";
 import { DesktopPermissionModal } from "../../permissions/components/desktop-permission-modal";
 import {
   isPlanProposalPermission,
+  permissionDisplayToolName,
   permissionRequiresApproval,
 } from "../../permissions/services/permission-payload";
+import { DesktopInlineBashPermissionCard } from "./desktop-inline-bash-permission-card";
 import {
   DesktopInlinePlanReviewCard,
   structuredPlanDocumentFromPermission,
@@ -1458,8 +1460,13 @@ export function DesktopV3ExistingConversationPane({
   const pendingPlanPermissions = pendingPermissions.filter(
     isPlanProposalPermission,
   );
+  const pendingBashPermissions = pendingPermissions.filter(
+    (permission) => permissionDisplayToolName(permission.toolName) === "bash",
+  );
   const pendingModalPermissions = pendingPermissions.filter(
-    (permission) => !isPlanProposalPermission(permission),
+    (permission) =>
+      !isPlanProposalPermission(permission) &&
+      permissionDisplayToolName(permission.toolName) !== "bash",
   );
   const selectedPermission = pendingModalPermissions[0] ?? null;
   const pendingPlanPermission = pendingPlanPermissions[0] ?? null;
@@ -2451,6 +2458,14 @@ export function DesktopV3ExistingConversationPane({
     });
   }
 
+  async function handleResolveBashPermission(
+    permission: DesktopPermissionRecord,
+    action: "approve" | "deny" | "approve_always" | "always_deny",
+    reason: string,
+  ) {
+    await resolvePermission(permission, action, reason);
+  }
+
   async function handleResolvePermission(
     action:
       "approve" | "deny" | "approve_always" | "always_allow" | "always_deny",
@@ -2621,6 +2636,15 @@ export function DesktopV3ExistingConversationPane({
                     </div>
                   );
                 })}
+                {pendingBashPermissions.map((permission) => (
+                  <DesktopInlineBashPermissionCard
+                    key={`bash-permission:${permission.id}`}
+                    permission={permission}
+                    pendingCount={pendingBashPermissions.length}
+                    sessionMode={sessionMode}
+                    onResolve={handleResolveBashPermission}
+                  />
+                ))}
                 {pendingPlanPermissions.map((permission, index) => (
                   <DesktopInlinePlanReviewCard
                     key={permission.id}
