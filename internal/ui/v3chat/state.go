@@ -30,11 +30,12 @@ const (
 )
 
 type Session struct {
-	ID        string
-	Title     string
-	Mode      string
-	CreatedAt int64
-	UpdatedAt int64
+	ID            string
+	Title         string
+	Mode          string
+	TargetSwarmID string
+	CreatedAt     int64
+	UpdatedAt     int64
 }
 
 type ModelState struct {
@@ -622,7 +623,14 @@ func reconcileDurableLive(state State) State {
 }
 
 func sessionFromClient(value client.SessionSummary, fallbackID string) Session {
-	return Session{ID: firstNonEmpty(value.ID, fallbackID), Title: strings.TrimSpace(value.Title), Mode: strings.TrimSpace(value.Mode), CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+	return Session{
+		ID:            firstNonEmpty(value.ID, fallbackID),
+		Title:         strings.TrimSpace(value.Title),
+		Mode:          strings.TrimSpace(value.Mode),
+		TargetSwarmID: metadataString(value.Metadata, "swarm_v3_runtime_swarm_id"),
+		CreatedAt:     value.CreatedAt,
+		UpdatedAt:     value.UpdatedAt,
+	}
 }
 
 func mergeMessages(existing []Message, incoming []client.SessionMessage) []Message {

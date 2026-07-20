@@ -699,7 +699,7 @@ func TestEscapeStopsActiveRunThroughCanonicalV3Path(t *testing.T) {
 	transport := &fakeTransport{}
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
-		Session:         client.SessionSummary{ID: "session"},
+		Session:         client.SessionSummary{ID: "session", Metadata: map[string]any{"swarm_v3_runtime_swarm_id": "session-swarm"}},
 		ActiveRunIntent: &client.SessionV3RunIntent{RunID: "run", Status: "running", StartedAt: 1},
 	}})
 	page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
@@ -713,7 +713,7 @@ func TestEscapeStopsActiveRunThroughCanonicalV3Path(t *testing.T) {
 		request := transport.stopRequest
 		transport.mu.Unlock()
 		if request.runID != "" {
-			if request.sessionID != "session" || request.runID != "run" || request.reason != "stopped from TUI" {
+			if request.sessionID != "session" || request.runID != "run" || request.targetSwarmID != "session-swarm" || request.reason != "stopped from TUI" {
 				t.Fatalf("stop request = %#v", request)
 			}
 			return

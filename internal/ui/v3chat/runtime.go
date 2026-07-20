@@ -292,7 +292,11 @@ func (r *Runtime) StopActiveRun(ctx context.Context, reason string) error {
 	if !ok || strings.TrimSpace(run.ID) == "" {
 		return errors.New("v3 chat has no active run")
 	}
-	return r.transport.StopSessionV3Run(ctx, state.Session.ID, run.ID, "", strings.TrimSpace(reason))
+	targetSwarmID := strings.TrimSpace(state.Session.TargetSwarmID)
+	if targetSwarmID == "" {
+		return errors.New("v3 chat session swarm target is not configured")
+	}
+	return r.transport.StopSessionV3Run(ctx, state.Session.ID, run.ID, targetSwarmID, strings.TrimSpace(reason))
 }
 
 func (r *Runtime) Stop() {

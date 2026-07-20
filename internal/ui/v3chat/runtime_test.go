@@ -36,9 +36,10 @@ type fakeTransport struct {
 		reason       string
 	}
 	stopRequest struct {
-		sessionID string
-		runID     string
-		reason    string
+		sessionID     string
+		runID         string
+		targetSwarmID string
+		reason        string
 	}
 }
 
@@ -85,11 +86,12 @@ func (f *fakeTransport) StreamV3Realtime(ctx context.Context, options client.V3R
 		return errors.New("closed")
 	}
 }
-func (f *fakeTransport) StopSessionV3Run(_ context.Context, sessionID, runID, _ string, reason string) error {
+func (f *fakeTransport) StopSessionV3Run(_ context.Context, sessionID, runID, targetSwarmID, reason string) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, "stop")
 	f.stopRequest.sessionID = sessionID
 	f.stopRequest.runID = runID
+	f.stopRequest.targetSwarmID = targetSwarmID
 	f.stopRequest.reason = reason
 	f.mu.Unlock()
 	return nil
