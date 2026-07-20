@@ -8,7 +8,7 @@ const markdownSource = readFileSync(new URL('./chat-markdown.tsx', import.meta.u
 test('file action cards span the transcript and grouped actions stack vertically', () => {
   assert.match(paneSource, /max-w-\[70rem\] flex-col gap-5/)
   assert.doesNotMatch(paneSource, /md:grid-cols-2/)
-  assert.match(paneSource, /toolName === "bash" \|\| toolName === "task" \|\| \["read", "list", "search", "edit"\]\.includes/)
+  assert.match(paneSource, /toolName === "bash" \|\| toolName === "task" \|\| \["read", "list", "search", "edit", "plan-manage", "plan_manage"\]\.includes/)
   assert.match(paneSource, /usesFullWidthCard \? "w-full max-w-full" : "max-w-\[calc\(100%-2rem\)\]"/)
   assert.match(markdownSource, /<div className="flex min-w-0 flex-col gap-2">/)
   assert.doesNotMatch(markdownSource, /grid min-w-0 grid-cols-1 gap-2 md:grid-cols-2/)

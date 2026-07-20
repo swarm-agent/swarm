@@ -45,6 +45,7 @@ type PermissionRecord struct {
 	Mode                string `json:"mode"`
 	Status              string `json:"status"`
 	Decision            string `json:"decision"`
+	AuthorizationSource string `json:"authorization_source,omitempty"`
 	Reason              string `json:"reason"`
 	PermissionRequested int64  `json:"permission_requested_at,omitempty"`
 	ResolvedAt          int64  `json:"resolved_at"`

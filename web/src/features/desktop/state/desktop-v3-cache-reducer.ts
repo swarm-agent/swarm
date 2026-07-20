@@ -31,7 +31,7 @@ import type {
 } from './desktop-v3-cache-types'
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
-import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktopPendingPermissions, normalizeDesktopPermissionSummary, normalizeDesktopPermissionSummaries, safeString } from '../permissions/services/desktop-permission-normalization'
+import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktopPermissionSummary, normalizeDesktopPermissionSummaries, safeString } from '../permissions/services/desktop-permission-normalization'
 import { normalizeDesktopSessionPlan } from '../chat/services/session-plan-record'
 import { decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
 import { isDesktopV3NavigationHiddenRecord } from './desktop-v3-session-visibility'
@@ -91,6 +91,7 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     hasActivePlanBySession: {},
     planRevisionsBySession: {},
     permissionsBySession: {},
+    bashAuthorizationHistoryBySession: {},
     permissionSummaryBySessionId: {},
     notificationsById: {},
     notificationSummary: { ...EMPTY_NOTIFICATION_SUMMARY },
@@ -175,7 +176,10 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'realtime.applyLivePatchBatch':
       return applyDesktopV3LivePatchBatch(state, action.patches)
     case 'permission.resolveResult':
-      if (action.permission) {
+      if (action.permission?.toolName.trim().toLowerCase().replaceAll('-', '_') === 'bash') {
+        upsertBashAuthorizationHistoryRecord(state, action.permission)
+      }
+      if (action.permission?.status.toLowerCase() === 'pending') {
         upsertPermissionRecord(state, action.permission)
       } else {
         removePermissionRecord(state, action.sessionId, action.permissionId)
@@ -1314,7 +1318,14 @@ function applyPermissionEvent(state: DesktopV3CacheState, event: CacheEvent): vo
   if (event.eventType !== 'permission.requested' && event.eventType !== 'permission.updated' && !event.payload.permission) return
   const permission = normalizeDesktopPermission(event.payload.permission, event.sessionId)
   if (permission) {
-    upsertPermissionRecord(state, permission)
+    if (permission.toolName.trim().toLowerCase().replaceAll('-', '_') === 'bash') {
+      upsertBashAuthorizationHistoryRecord(state, permission)
+    }
+    if (permission.status.toLowerCase() === 'pending') {
+      upsertPermissionRecord(state, permission)
+    } else {
+      removePermissionRecord(state, permission.sessionId, permission.id)
+    }
     return
   }
   const identity = desktopPermissionIdentity(event.payload.permission, event.sessionId)
@@ -1542,6 +1553,18 @@ function applyPermissionSummary(
   const existing = state.permissionSummaryBySessionId[normalizedSessionId]
   if (existing && summary.updatedAt > 0 && existing.updatedAt > summary.updatedAt) return
   state.permissionSummaryBySessionId[normalizedSessionId] = { ...summary }
+}
+
+function upsertBashAuthorizationHistoryRecord(state: DesktopV3CacheState, permission: DesktopPermissionRecord): void {
+  const sessionId = permission.sessionId || ''
+  if (!sessionId) return
+  const current = state.bashAuthorizationHistoryBySession[sessionId] ?? []
+  const existing = current.find((entry) => entry.id === permission.id)
+  if (existing && comparePermissionFreshness(permission, existing) < 0) return
+  state.bashAuthorizationHistoryBySession[sessionId] = [
+    ...current.filter((entry) => entry.id !== permission.id),
+    permission,
+  ].sort(comparePermissions)
 }
 
 function upsertPermissionRecord(state: DesktopV3CacheState, permission: DesktopPermissionRecord): void {
@@ -2379,6 +2402,7 @@ function applySessionViews(
       if (options.clearMissing) {
         delete state.sessionViewsById[sessionId]
         delete state.permissionsBySession[sessionId]
+        delete state.bashAuthorizationHistoryBySession[sessionId]
         delete state.usageBySession[sessionId]
         delete state.plansBySession[sessionId]
         delete state.hasActivePlanBySession[sessionId]
@@ -2392,7 +2416,21 @@ function applySessionViews(
     }
     // A null recovery view may race a newer retained boundary. Boundaries are the
     // authoritative way to advance or complete the cached epoch, so do not erase it.
-    if (view.pending_permissions !== undefined) state.permissionsBySession[sessionId] = normalizeDesktopPendingPermissions(view.pending_permissions, sessionId)
+    if (view.pending_permissions !== undefined) {
+      state.permissionsBySession[sessionId] = (view.pending_permissions as unknown[])
+        .map((permission) => normalizeDesktopPermission(permission, sessionId))
+        .filter((permission): permission is DesktopPermissionRecord => permission?.status.toLowerCase() === 'pending')
+    }
+    if (view.bash_authorizations !== undefined) {
+      state.bashAuthorizationHistoryBySession[sessionId] = (view.bash_authorizations as unknown[])
+        .map((permission) => normalizeDesktopPermission(permission, sessionId))
+        .filter((permission): permission is DesktopPermissionRecord => (
+          permission?.toolName.trim().toLowerCase().replaceAll('-', '_') === 'bash'
+        ))
+        .sort(comparePermissions)
+    } else if (options.clearMissing) {
+      delete state.bashAuthorizationHistoryBySession[sessionId]
+    }
     if (view.usage_summary !== undefined) state.usageBySession[sessionId] = view.usage_summary
     applyPlanSnapshotFromSessionView(state, sessionId, view)
 

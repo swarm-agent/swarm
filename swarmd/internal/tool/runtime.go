@@ -534,8 +534,9 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"command":    map[string]any{"type": "string", "description": "Shell command to execute"},
-					"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds (default 120000, max 1800000)"},
+					"command":     map[string]any{"type": "string", "description": "Exact shell command to execute"},
+					"explanation": map[string]any{"type": "string", "description": "Optional short model-provided display explanation for the command. This is non-authoritative context and does not affect permission policy or execution."},
+					"timeout_ms":  map[string]any{"type": "integer", "description": "Timeout in milliseconds (default 120000, max 1800000)"},
 				},
 				"required":             []string{"command"},
 				"additionalProperties": false,

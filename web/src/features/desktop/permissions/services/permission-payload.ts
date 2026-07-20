@@ -2195,6 +2195,56 @@ function buildPermissionArgumentsMarkdown(permission: DesktopPermissionRecord): 
   return fields.join('\n\n')
 }
 
+export interface BashPermissionDisplayData {
+  command: string
+  explanation: string
+  pending: boolean
+  authorizationSource: string
+  executionStatus: string
+  statusLabel: string
+}
+
+function bashPermissionStatusLabel(permission: DesktopPermissionRecord): string {
+  if (safeString(permission.status).toLowerCase() === 'pending') return 'Approval required'
+  const execution = safeString(permission.executionStatus).toLowerCase()
+  const source = safeString(permission.authorizationSource).toLowerCase()
+  if (execution === 'running') return 'Running'
+  if (execution === 'failed') return 'Execution failed'
+  if (execution === 'completed') {
+    if (source.includes('bypass')) return 'Permission bypassed · Executed'
+    if (source.includes('rule') || source.includes('policy')) return 'Allowed by policy · Executed'
+    return 'Executed'
+  }
+  if (execution === 'queued') return 'Authorized automatically'
+  if (source.includes('bypass')) return 'Permission bypassed'
+  if (source.includes('rule') || source.includes('policy')) return 'Allowed by policy'
+  if (safeString(permission.decision).toLowerCase() === 'approve') return 'Approved'
+  return 'No approval required'
+}
+
+export function bashPermissionDisplayData(permission: DesktopPermissionRecord): BashPermissionDisplayData | null {
+  if (normalizePermissionToolName(permission.toolName) !== 'bash') return null
+  const payload = decodePermissionArguments(permission.toolCallArguments || permission.toolArguments)
+    ?? decodePermissionArguments(permission.toolArguments)
+  const normalized = payload
+    ? normalizePermissionPayloadValue(payload) as Record<string, unknown>
+    : null
+  const command = normalized && typeof normalized.command === 'string'
+    ? normalized.command
+    : ''
+  if (!command) return null
+  return {
+    command,
+    explanation: normalized && typeof normalized.explanation === 'string'
+      ? normalized.explanation.trim()
+      : '',
+    pending: safeString(permission.status).toLowerCase() === 'pending',
+    authorizationSource: safeString(permission.authorizationSource).toLowerCase(),
+    executionStatus: safeString(permission.executionStatus).toLowerCase(),
+    statusLabel: bashPermissionStatusLabel(permission),
+  }
+}
+
 export function buildGenericPermissionMarkdown(permission: DesktopPermissionRecord): string {
   const sections: string[] = []
   const bashPrefix = bashSavedRulePrefix(permission.savedRule)

@@ -15,6 +15,7 @@ import {
   ArrowRight,
   CheckCircle2,
   ChevronDown,
+  ChevronUp,
   CircleAlert,
   CircleDot,
   Loader2,
@@ -142,6 +143,7 @@ import {
 import type { AgentModelControlConfirmInput } from "./agent-model-control";
 import { DesktopPermissionModal } from "../../permissions/components/desktop-permission-modal";
 import {
+  bashPermissionDisplayData,
   isPlanProposalPermission,
   permissionRequiresApproval,
 } from "../../permissions/services/permission-payload";
@@ -471,17 +473,23 @@ function pendingPermissionsEqual(
       a.callId !== b.callId ||
       a.toolName !== b.toolName ||
       a.toolArguments !== b.toolArguments ||
+      a.toolCallArguments !== b.toolCallArguments ||
       a.approvedArguments !== b.approvedArguments ||
       !permissionSavedRuleEqual(a.savedRule, b.savedRule) ||
       a.status !== b.status ||
       a.decision !== b.decision ||
+      a.authorizationSource !== b.authorizationSource ||
       a.reason !== b.reason ||
       a.requirement !== b.requirement ||
       a.mode !== b.mode ||
       a.createdAt !== b.createdAt ||
       a.updatedAt !== b.updatedAt ||
       a.resolvedAt !== b.resolvedAt ||
-      a.permissionRequestedAt !== b.permissionRequestedAt
+      a.permissionRequestedAt !== b.permissionRequestedAt ||
+      a.executionStatus !== b.executionStatus ||
+      a.startedAt !== b.startedAt ||
+      a.completedAt !== b.completedAt ||
+      a.durationMs !== b.durationMs
     )
       return false;
   }
@@ -1446,6 +1454,7 @@ export function DesktopV3ExistingConversationPane({
     (state: DesktopV3CacheState) =>
       [...(state.permissionsBySession[normalizedSessionId] ?? [])]
         .filter((permission) =>
+          permission.status.toLowerCase() === "pending" &&
           permissionRequiresApproval(permission, sessionMode),
         )
         .sort(comparePendingPermissions),
@@ -1455,12 +1464,25 @@ export function DesktopV3ExistingConversationPane({
     selectPendingPermissionsForSession,
     pendingPermissionsEqual,
   );
+  const bashAuthorizationHistory = useDesktopV3CacheSelector(
+    (state) => state.bashAuthorizationHistoryBySession[normalizedSessionId] ?? [],
+    pendingPermissionsEqual,
+  );
   const pendingPlanPermissions = pendingPermissions.filter(
     isPlanProposalPermission,
   );
-  const pendingModalPermissions = pendingPermissions.filter(
-    (permission) => !isPlanProposalPermission(permission),
+  const pendingBashPermissions = pendingPermissions.filter(
+    (permission) => bashPermissionDisplayData(permission) !== null,
   );
+  const pendingModalPermissions = pendingPermissions.filter(
+    (permission) => !isPlanProposalPermission(permission) && bashPermissionDisplayData(permission) === null,
+  );
+  const bashAuthorizationCards = useMemo(() => {
+    const byId = new Map<string, DesktopPermissionRecord>();
+    for (const permission of bashAuthorizationHistory) byId.set(permission.id, permission);
+    for (const permission of pendingBashPermissions) byId.set(permission.id, permission);
+    return [...byId.values()].sort(comparePendingPermissions);
+  }, [bashAuthorizationHistory, pendingBashPermissions]);
   const selectedPermission = pendingModalPermissions[0] ?? null;
   const pendingPlanPermission = pendingPlanPermissions[0] ?? null;
   const pendingPlanDocument = useMemo(
@@ -2451,6 +2473,13 @@ export function DesktopV3ExistingConversationPane({
     });
   }
 
+  async function handleResolveBashPermission(
+    permission: DesktopPermissionRecord,
+    action: "approve" | "deny",
+  ) {
+    await resolvePermission(permission, action, "");
+  }
+
   async function handleResolvePermission(
     action:
       "approve" | "deny" | "approve_always" | "always_allow" | "always_deny",
@@ -2621,6 +2650,13 @@ export function DesktopV3ExistingConversationPane({
                     </div>
                   );
                 })}
+                {bashAuthorizationCards.map((permission) => (
+                  <DesktopInlineBashPermissionCard
+                    key={`bash-permission:${permission.id}`}
+                    permission={permission}
+                    onResolve={handleResolveBashPermission}
+                  />
+                ))}
                 {pendingPlanPermissions.map((permission, index) => (
                   <DesktopInlinePlanReviewCard
                     key={permission.id}
@@ -2842,6 +2878,73 @@ export function DesktopV3ExistingConversationPane({
         onResolve={handleResolvePermission}
       />
     </div>
+  );
+}
+
+export function DesktopInlineBashPermissionCard({
+  permission,
+  onResolve,
+}: {
+  permission: DesktopPermissionRecord;
+  onResolve: (permission: DesktopPermissionRecord, action: "approve" | "deny") => Promise<void>;
+}) {
+  const display = bashPermissionDisplayData(permission);
+  const [expanded, setExpanded] = useState(false);
+  const [busyAction, setBusyAction] = useState<"approve" | "deny" | null>(null);
+  const [error, setError] = useState("");
+  if (!display) return null;
+
+  const resolve = async (action: "approve" | "deny") => {
+    if (!display.pending || busyAction) return;
+    setBusyAction(action);
+    setError("");
+    try {
+      await onResolve(permission, action);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  return (
+    <section
+      className="min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)]"
+      data-testid="desktop-inline-bash-permission-card"
+      data-permission-pending={display.pending ? "true" : "false"}
+    >
+      <header className="flex min-w-0 items-center gap-3 border-b border-[var(--app-border)] px-3 py-2.5">
+        <div className="min-w-0 flex-1">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Bash command</div>
+          <div className="mt-0.5 text-xs font-medium text-[var(--app-text)]">{display.statusLabel}</div>
+        </div>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? "Collapse" : "Expand"}
+          {expanded ? <ChevronUp size={14} aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}
+        </button>
+      </header>
+      <div className={cn("min-w-0 max-h-[50vh] overflow-x-hidden overflow-y-auto overscroll-contain px-3 py-3", !expanded && "max-h-44")}>
+        {display.explanation ? (
+          <div className="mb-3 text-sm leading-5 text-[var(--app-text-muted)]" data-testid="desktop-inline-bash-explanation">
+            {display.explanation}
+            <span className="ml-1 text-[10px] uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Model context</span>
+          </div>
+        ) : null}
+        <pre className="min-w-0 whitespace-pre-wrap break-words rounded-lg bg-[var(--app-code-bg)] p-3 font-mono text-xs leading-5 text-[var(--app-text)]" data-testid="desktop-inline-bash-command"><code>{display.command}</code></pre>
+        {error ? <div className="mt-2 text-xs text-[var(--app-danger)]" role="alert">{error}</div> : null}
+      </div>
+      {display.pending ? (
+        <footer className="flex items-center justify-end gap-2 border-t border-[var(--app-border)] px-3 py-2.5" data-testid="desktop-inline-bash-controls">
+          <button type="button" disabled={Boolean(busyAction)} onClick={() => void resolve("deny")} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-xs font-semibold text-[var(--app-text)] disabled:opacity-50">{busyAction === "deny" ? "Denying…" : "Deny"}</button>
+          <button type="button" disabled={Boolean(busyAction)} onClick={() => void resolve("approve")} className="rounded-lg bg-[var(--app-primary)] px-3 py-1.5 text-xs font-semibold text-[var(--app-primary-text)] disabled:opacity-50">{busyAction === "approve" ? "Approving…" : "Approve"}</button>
+        </footer>
+      ) : null}
+    </section>
   );
 }
 

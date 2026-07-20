@@ -198,6 +198,7 @@ export interface DesktopV3SessionView {
   agentic_settings?: DesktopV3AgenticSettings
   current_execution_epoch?: V3ExecutionEpoch | null
   pending_permissions?: unknown[]
+  bash_authorizations?: unknown[]
   usage_summary?: unknown
   current_run_state?: V3SessionRunState
   has_active_plan?: boolean
@@ -865,6 +866,7 @@ export interface DesktopV3CacheState {
   hasActivePlanBySession: Record<string, boolean>
   planRevisionsBySession: Record<string, unknown[]>
   permissionsBySession: Record<string, DesktopPermissionRecord[]>
+  bashAuthorizationHistoryBySession: Record<string, DesktopPermissionRecord[]>
   permissionSummaryBySessionId: Record<string, DesktopPermissionSummary>
   notificationsById: Record<string, DesktopNotificationCenterRecord>
   notificationSummary: DesktopNotificationSummary

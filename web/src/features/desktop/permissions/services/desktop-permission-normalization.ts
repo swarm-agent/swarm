@@ -13,6 +13,8 @@ export interface DesktopPermissionWire {
   toolName?: unknown
   tool_arguments?: unknown
   toolArguments?: unknown
+  tool_call_arguments?: unknown
+  toolCallArguments?: unknown
   approved_arguments?: unknown
   approvedArguments?: unknown
   saved_rule?: unknown
@@ -21,6 +23,8 @@ export interface DesktopPermissionWire {
   mode?: unknown
   status?: unknown
   decision?: unknown
+  authorization_source?: unknown
+  authorizationSource?: unknown
   reason?: unknown
   created_at?: unknown
   createdAt?: unknown
@@ -30,6 +34,14 @@ export interface DesktopPermissionWire {
   resolvedAt?: unknown
   permission_requested_at?: unknown
   permissionRequestedAt?: unknown
+  execution_status?: unknown
+  executionStatus?: unknown
+  started_at?: unknown
+  startedAt?: unknown
+  completed_at?: unknown
+  completedAt?: unknown
+  duration_ms?: unknown
+  durationMs?: unknown
 }
 
 export const safeString = (value: unknown): string =>
@@ -104,9 +116,10 @@ export function normalizeDesktopPermission(
   if (!source || !identity) return null
 
   const status = pickString(source, 'status', 'status')
-  if (status.toLowerCase() !== 'pending') return null
+  if (!status) return null
 
   const toolArguments = pickRawString(source, 'tool_arguments', 'toolArguments')
+  const toolCallArguments = pickRawString(source, 'tool_call_arguments', 'toolCallArguments')
   const savedRule = normalizeSavedRule(source.saved_rule ?? source.savedRule)
 
   return {
@@ -115,11 +128,13 @@ export function normalizeDesktopPermission(
     runId: pickString(source, 'run_id', 'runId'),
     callId: pickString(source, 'call_id', 'callId'),
     toolName: pickString(source, 'tool_name', 'toolName'),
-    toolArguments: toolArguments || '{}',
+    toolArguments: toolArguments || toolCallArguments || '{}',
+    toolCallArguments: toolCallArguments || undefined,
     approvedArguments: pickString(source, 'approved_arguments', 'approvedArguments') || undefined,
     savedRule,
     status,
     decision: pickString(source, 'decision', 'decision'),
+    authorizationSource: pickString(source, 'authorization_source', 'authorizationSource'),
     reason: pickString(source, 'reason', 'reason'),
     requirement: pickString(source, 'requirement', 'requirement'),
     mode: pickString(source, 'mode', 'mode'),
@@ -127,6 +142,10 @@ export function normalizeDesktopPermission(
     updatedAt: pickNumber(source, 'updated_at', 'updatedAt'),
     resolvedAt: pickNumber(source, 'resolved_at', 'resolvedAt'),
     permissionRequestedAt: pickNumber(source, 'permission_requested_at', 'permissionRequestedAt'),
+    executionStatus: pickString(source, 'execution_status', 'executionStatus'),
+    startedAt: pickNumber(source, 'started_at', 'startedAt'),
+    completedAt: pickNumber(source, 'completed_at', 'completedAt'),
+    durationMs: pickNumber(source, 'duration_ms', 'durationMs'),
   }
 }
 
@@ -137,7 +156,7 @@ export function normalizeDesktopPendingPermissions(
   if (!Array.isArray(values)) return []
   return values
     .map((value) => normalizeDesktopPermission(value, expectedSessionId))
-    .filter((permission): permission is DesktopPermissionRecord => Boolean(permission))
+    .filter((permission): permission is DesktopPermissionRecord => permission?.status.toLowerCase() === 'pending')
     .sort((left, right) => (
       (left.permissionRequestedAt || left.createdAt || left.updatedAt || 0)
       - (right.permissionRequestedAt || right.createdAt || right.updatedAt || 0)
