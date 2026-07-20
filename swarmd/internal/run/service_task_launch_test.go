@@ -17,6 +17,7 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	"swarm/packages/swarmd/internal/uisettings"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
@@ -1586,7 +1587,9 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 		cleanup()
 		t.Fatalf("set account model preference: %v", err)
 	}
-	return NewService(sessions, models, nil, tool.NewRuntime(1), nil, agents, nil, events), parent.ID, cleanup
+	service := NewService(sessions, models, nil, tool.NewRuntime(1), nil, agents, nil, events)
+	service.SetUISettingsService(uisettings.NewService(pebblestore.NewUISettingsStore(store)))
+	return service, parent.ID, cleanup
 }
 
 func TestGateToolCallsRejectsMalformedXMLToolArgumentsWithoutPermissionService(t *testing.T) {

@@ -208,12 +208,12 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Reconcile:                reconcileAISidechatAgentProfile,
 	},
 	{
-		ID:                       CompactAgentID,
-		DisplayName:              CompactAgentName,
-		SidechatKind:             SystemSidechatKindCompact,
-		RequiresSidechatMetadata: true,
-		Materialize:              CompactAgentProfileForParent,
-		Reconcile:                reconcileCompactAgentProfile,
+		ID:           CompactAgentID,
+		DisplayName:  CompactAgentName,
+		UserVisible:  true,
+		SidechatKind: SystemSidechatKindCompact,
+		Materialize:  CompactAgentProfileForParent,
+		Reconcile:    reconcileCompactAgentProfile,
 	},
 	{
 		ID:          AITaskPreparerAgentID,
@@ -494,7 +494,7 @@ func PlanSidechatAgentProfileForParent(parent pebblestore.AgentProfile) pebblest
 func CompactAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: CompactAgentID, Mode: ModeSubagent, Description: "Compiled tool-free context compaction and titling utility",
-		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking),
+		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
 		Prompt: CompactAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: CompactAgentToolContract(), Enabled: true,
 	})
@@ -599,6 +599,7 @@ func reconcileAISidechatAgentProfile(snapshot pebblestore.AgentProfile) pebblest
 func reconcileCompactAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := CompactAgentProfileForParent(snapshot)
 	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
+	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
 	return profile
 }
 

@@ -120,11 +120,11 @@ test('saveDefaultNewSessionMode preserves existing chat fields and writes defaul
   }
 })
 
-test('saveSystemAgentSettings sends the Coder model patch through the canonical UI settings API', async () => {
+test('saveSystemAgentSettings sends the Compact model patch through the canonical UI settings API', async () => {
   let capturedBody = ''
   const restore = installFetchMock(async (_input, init) => {
     capturedBody = String(init?.body ?? '')
-    return new Response(JSON.stringify({ agents: { coder: { provider: 'codex', model: 'gpt-5.6', thinking: 'high', service_tier: 'priority' } } }), {
+    return new Response(JSON.stringify({ agents: { compact: { provider: 'codex', model: 'gpt-5.6', thinking: 'high', service_tier: 'priority' } } }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     })
@@ -133,14 +133,14 @@ test('saveSystemAgentSettings sends the Coder model patch through the canonical 
   try {
     const response = await saveSystemAgentSettings({
       current: { agents: { explorer: { provider: 'anthropic', model: 'claude-sonnet-4-5' } } },
-      agent: 'coder',
+      agent: 'compact',
       settings: { provider: 'CODEX', model: 'gpt-5.6', thinking: 'high', service_tier: 'PRIORITY' },
     })
-    assert.equal(response.agents?.coder?.model, 'gpt-5.6')
+    assert.equal(response.agents?.compact?.model, 'gpt-5.6')
     assert.deepEqual(JSON.parse(capturedBody), {
       agents: {
         explorer: { provider: 'anthropic', model: 'claude-sonnet-4-5' },
-        coder: { provider: 'codex', model: 'gpt-5.6', thinking: 'high', service_tier: 'priority' },
+        compact: { provider: 'codex', model: 'gpt-5.6', thinking: 'high', service_tier: 'priority' },
       },
     })
   } finally {

@@ -8,6 +8,7 @@ import (
 	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/provider/registry"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/uisettings"
 )
 
 func TestGenerateSessionV3CompactTitleUsesUtilityRecommendationAndTitleOnlyPrompt(t *testing.T) {
@@ -32,6 +33,14 @@ func TestGenerateSessionV3CompactTitleUsesUtilityRecommendationAndTitleOnlyPromp
 	providers := registry.New()
 	providers.RegisterRunner(runner)
 	server.providers = providers
+	settings, err := server.uiSettings.GetForAccount(testPrincipal().AccountScopeID)
+	if err != nil {
+		t.Fatalf("read Compact settings: %v", err)
+	}
+	settings.Agents.Compact = uisettings.CompactAgentSettings{Provider: "anthropic", Model: "claude-sonnet-5-test", Thinking: "low"}
+	if _, err = server.uiSettings.SetForAccount(testPrincipal().AccountScopeID, settings); err != nil {
+		t.Fatalf("set Compact settings: %v", err)
+	}
 
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "compact-title-catalog-create", "compact title catalog", pebblestore.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-5-test", Thinking: "high"})
 	title, err := newSessionV3Executor(server).generateSessionV3CompactTitle(created, "User asked Anthropic Sonnet 5 to speak back.", testPrincipal())
@@ -47,7 +56,7 @@ func TestGenerateSessionV3CompactTitleUsesUtilityRecommendationAndTitleOnlyPromp
 	if lastReq.ModelCatalog == nil || lastReq.ToolChoice != "none" {
 		t.Fatalf("Compact title request catalog=%T tool_choice=%q", lastReq.ModelCatalog, lastReq.ToolChoice)
 	}
-	if lastReq.Model != "claude-sonnet-5-test" || lastReq.Thinking != "medium" || lastReq.ContextWindow != 200000 {
+	if lastReq.Model != "claude-sonnet-5-test" || lastReq.Thinking != "low" || lastReq.ContextWindow != 200000 {
 		t.Fatalf("Compact title settings model=%q thinking=%q context=%d", lastReq.Model, lastReq.Thinking, lastReq.ContextWindow)
 	}
 	if !strings.Contains(lastReq.Instructions, "Title-only case") || strings.Contains(lastReq.Instructions, "Required sections:") || strings.Contains(lastReq.Instructions, "Compaction mode:") {

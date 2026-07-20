@@ -136,6 +136,10 @@ func parseManageSessionsDeployArguments(arguments string) ([]manageSessionsDeplo
 }
 
 func (s *Service) buildManageSessionsDeployManifest(sessionID string, call tool.Call) (manageSessionsDeployManifest, error) {
+	return s.buildManageSessionsDeployManifestBound(sessionID, call, nil)
+}
+
+func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call tool.Call, aiTask *AITaskDeployBinding) (manageSessionsDeployManifest, error) {
 	inputs, err := parseManageSessionsDeployArguments(call.Arguments)
 	if err != nil {
 		return manageSessionsDeployManifest{}, err
@@ -143,14 +147,30 @@ func (s *Service) buildManageSessionsDeployManifest(sessionID string, call tool.
 	if s == nil || s.sessions == nil || s.agents == nil || s.workspace == nil {
 		return manageSessionsDeployManifest{}, fmt.Errorf("manage-sessions deploy resolution services are not configured")
 	}
-	parent, ok, err := s.sessions.GetSession(sessionID)
-	if err != nil {
-		return manageSessionsDeployManifest{}, err
+	var parent pebblestore.SessionSnapshot
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID != "" {
+		var ok bool
+		parent, ok, err = s.sessions.GetSession(sessionID)
+		if err != nil {
+			return manageSessionsDeployManifest{}, err
+		}
+		if !ok {
+			return manageSessionsDeployManifest{}, fmt.Errorf("session %q not found", sessionID)
+		}
+	} else {
+		if aiTask == nil {
+			return manageSessionsDeployManifest{}, errors.New("manage-sessions deploy requires a calling session")
+		}
+		parent = pebblestore.SessionSnapshot{UserID: strings.TrimSpace(aiTask.UserID), AccountScopeID: strings.TrimSpace(aiTask.AccountScopeID), WorkspacePath: strings.TrimSpace(aiTask.WorkspacePath)}
 	}
-	if !ok {
-		return manageSessionsDeployManifest{}, fmt.Errorf("session %q not found", sessionID)
+	if aiTask != nil && (strings.TrimSpace(aiTask.UserID) != strings.TrimSpace(parent.UserID) || strings.TrimSpace(aiTask.AccountScopeID) != strings.TrimSpace(parent.AccountScopeID) || strings.TrimSpace(aiTask.WorkspacePath) != strings.TrimSpace(parent.WorkspacePath)) {
+		return manageSessionsDeployManifest{}, errors.New("AI task deployment binding does not match the authorized origin")
 	}
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+	if parent.ID == "" {
+		principal.AccountScopeSource = identity.AccountScopeSourceServerState
+	}
 	if !principal.Valid() {
 		return manageSessionsDeployManifest{}, identity.ErrPrincipalRequired
 	}
@@ -176,7 +196,7 @@ func (s *Service) buildManageSessionsDeployManifest(sessionID string, call tool.
 		return manageSessionsDeployManifest{}, fmt.Errorf("active primary agent is missing, disabled, or invalid")
 	}
 	caller, err := sessionV3AgentProfileFromMetadataMap(parent.Metadata)
-	if err != nil {
+	if err != nil || parent.ID == "" {
 		caller = active
 	}
 	callerContract, _, err := s.CompileStoredV3AgentToolContract(parent.AccountScopeID, caller)

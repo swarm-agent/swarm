@@ -162,13 +162,11 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 	if err != nil {
 		t.Fatalf("get onboarding system-agent settings: %v", err)
 	}
-	for name, configured := range map[string]uisettings.CompactAgentSettings{
-		"compact":  uiSettings.Agents.Compact,
-		"explorer": uiSettings.Agents.Explorer,
-	} {
-		if configured.Provider != "openai" || configured.Model != "snapshot-utility-model" || configured.Thinking != "medium" {
-			t.Fatalf("%s system-agent settings not hydrated from snapshot: %+v", name, configured)
-		}
+	if uiSettings.Agents.Compact != uiSettings.Agents.Explorer {
+		t.Fatalf("Compact onboarding settings %+v differ from Explorer %+v", uiSettings.Agents.Compact, uiSettings.Agents.Explorer)
+	}
+	if configured := uiSettings.Agents.Compact; configured.Provider != "openai" || configured.Model != "snapshot-utility-model" || configured.Thinking != "medium" {
+		t.Fatalf("Compact/Explorer system-agent settings not hydrated from snapshot: %+v", configured)
 	}
 }
 

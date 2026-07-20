@@ -60,6 +60,13 @@ func SelectLiveSegments(state State) []LiveSegment {
 	}
 	return out
 }
+func SelectLiveTools(state State) []ToolTimelineItem {
+	out := make([]ToolTimelineItem, 0, len(state.Tools))
+	for _, item := range state.Tools {
+		out = append(out, item)
+	}
+	return out
+}
 func SelectReconnect(state State) (ConnectionStatus, bool, string) {
 	return state.Connection, state.NeedsRehydrate, state.StaleReason
 }

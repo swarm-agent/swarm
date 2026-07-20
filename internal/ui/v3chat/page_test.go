@@ -423,6 +423,60 @@ func TestPageUserMessagesUseThemedTextWithoutBackgroundBlock(t *testing.T) {
 	}
 }
 
+func TestPageRendersToolCallAndResultInCanonicalTimelineOrder(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), testPageStyles())
+	state := State{
+		Messages: []Message{
+			{ID: "user", GlobalSeq: 1, Role: "user", Content: "start"},
+			{ID: "assistant-before", GlobalSeq: 2, Role: "assistant", Content: "before tool"},
+			{ID: "tool", GlobalSeq: 3, Role: "tool", Content: `{"path_id":"run.tool-history.v2","tool":"read","call_id":"call-read","arguments":"{\"path\":\"README.md\"}","completed_output":"README contents","duration_ms":25}`},
+			{ID: "assistant-after", GlobalSeq: 4, Role: "assistant", Content: "after tool"},
+		},
+	}
+
+	rows := page.renderRows(state, 80, testPageStyles())
+	joined := make([]string, 0, len(rows))
+	for _, row := range rows {
+		joined = append(joined, row.text)
+	}
+	text := strings.Join(joined, "\n")
+	for _, want := range []string{"✓ tool read · completed · 25ms", `call   {"path":"README.md"}`, "result README contents"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("tool timeline missing %q:\n%s", want, text)
+		}
+	}
+	before := strings.Index(text, "before tool")
+	tool := strings.Index(text, "✓ tool read")
+	after := strings.Index(text, "after tool")
+	if before < 0 || tool < 0 || after < 0 || !(before < tool && tool < after) {
+		t.Fatalf("canonical order mismatch: before=%d tool=%d after=%d\n%s", before, tool, after, text)
+	}
+}
+
+func TestPageRendersLiveToolAtItsEventSequence(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), testPageStyles())
+	state := State{
+		Messages: []Message{
+			{ID: "assistant-before", GlobalSeq: 2, Role: "assistant", Content: "before"},
+			{ID: "assistant-after", GlobalSeq: 6, Role: "assistant", Content: "after"},
+		},
+		Tools: map[string]ToolTimelineItem{"call": {
+			ID: "live-tool:call", CallID: "call", GlobalSeq: 5, Name: "bash", Arguments: `{"command":"pwd"}`, Status: "running",
+		}},
+	}
+	rows := page.renderRows(state, 80, testPageStyles())
+	var text strings.Builder
+	for _, row := range rows {
+		text.WriteString(row.text)
+		text.WriteByte('\n')
+	}
+	rendered := text.String()
+	before, tool, after := strings.Index(rendered, "before"), strings.Index(rendered, "• tool bash · running"), strings.Index(rendered, "after")
+	if before < 0 || tool < 0 || after < 0 || !(before < tool && tool < after) {
+		t.Fatalf("live tool order mismatch: before=%d tool=%d after=%d\n%s", before, tool, after, rendered)
+	}
+}
+
 func TestPageAssistantRowsOmitRoleLabels(t *testing.T) {
 	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), testPageStyles())
 	state := State{

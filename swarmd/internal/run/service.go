@@ -17,6 +17,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	compactruntime "swarm/packages/swarmd/internal/compact"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
@@ -3114,49 +3115,10 @@ func compactedActivePlanLabel(activePlan *pebblestore.SessionPlanSnapshot) strin
 }
 
 func (s *Service) resolveCompactPreference(accountScopeID string, basePreference pebblestore.ModelPreference) (model.ResolvedPreference, pebblestore.AgentProfile, error) {
-	if s == nil || s.model == nil || s.agents == nil {
-		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, errors.New("compact model and agent services are not configured")
+	if s == nil {
+		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, errors.New("run service is not configured")
 	}
-	providerID := strings.ToLower(strings.TrimSpace(basePreference.Provider))
-	override := uisettings.CompactAgentSettings{}
-	if s.uiSettings != nil {
-		if settings, settingsErr := s.uiSettings.GetForAccount(strings.TrimSpace(accountScopeID)); settingsErr == nil {
-			override = settings.Agents.Compact
-		}
-	}
-	if strings.TrimSpace(override.Provider) != "" {
-		providerID = strings.ToLower(strings.TrimSpace(override.Provider))
-	}
-	if providerID == "" {
-		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, errors.New("compact utility provider is empty")
-	}
-	_, _, utility, ok, err := s.model.RecommendedCatalogDefaults(providerID)
-	if err != nil {
-		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, fmt.Errorf("resolve compact utility recommendation: %w", err)
-	}
-	if !ok || strings.TrimSpace(utility.Model) == "" {
-		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, fmt.Errorf("compact utility recommendation for provider %q is unavailable", providerID)
-	}
-	modelName := strings.TrimSpace(override.Model)
-	if modelName == "" {
-		modelName = strings.TrimSpace(utility.Model)
-	}
-	thinking := strings.TrimSpace(override.Thinking)
-	for _, recommendation := range utility.Recommendations {
-		if thinking == "" && strings.EqualFold(strings.TrimSpace(recommendation.Role), "utility") {
-			thinking = strings.TrimSpace(recommendation.Thinking)
-			break
-		}
-	}
-	resolved, err := s.model.ResolvePreference(pebblestore.ModelPreference{Provider: providerID, Model: modelName, Thinking: thinking, ContextMode: basePreference.ContextMode})
-	if err != nil {
-		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, fmt.Errorf("resolve compact utility preference: %w", err)
-	}
-	profile, err := s.agents.ResolveSystemAgent(agentruntime.CompactAgentID, pebblestore.AgentProfile{Provider: resolved.Preference.Provider, Model: resolved.Preference.Model, Thinking: resolved.Preference.Thinking})
-	if err != nil {
-		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, fmt.Errorf("resolve compiled Compact agent: %w", err)
-	}
-	return resolved, profile, nil
+	return compactruntime.ResolvePreference(s.model, s.agents, s.uiSettings, accountScopeID, basePreference)
 }
 
 func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, _ string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, preferV3Messages bool, step, attempt int, emit StreamHandler, streamOut ...**memoryCompactionToolStream) (string, error) {
@@ -3273,7 +3235,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	{
 		oneShotStatus := fmt.Sprintf("compacting bounded chat with Compact (one shot, attempt %d)", attempt)
 		emitProgress(oneShotStatus)
-		oneShotResult, reqErr := executeMemoryCompactionRequest(ctx, runner, modelName, thinking, preference.ContextMode, instructions, oneShotPrompt, contextWindow, summaryMaxRunes, func(message string) {
+		oneShotResult, reqErr := executeMemoryCompactionRequest(ctx, runner, modelName, thinking, preference.ServiceTier, preference.ContextMode, instructions, oneShotPrompt, contextWindow, summaryMaxRunes, func(message string) {
 			emitProgress(oneShotStatus + "; " + strings.TrimSpace(message))
 		})
 		if reqErr == nil {
@@ -4030,7 +3992,7 @@ func providerToolsLineageHash(tools []provideriface.ToolDefinition) string {
 	return provideriface.ShortProviderLineageKey(string(raw))
 }
 
-func executeMemoryCompactionRequest(ctx context.Context, runner provideriface.Runner, modelName, thinking, contextMode, instructions, userPrompt string, contextWindow, summaryMaxRunes int, emitHeartbeat func(string)) (memoryCompactionResult, error) {
+func executeMemoryCompactionRequest(ctx context.Context, runner provideriface.Runner, modelName, thinking, serviceTier, contextMode, instructions, userPrompt string, contextWindow, summaryMaxRunes int, emitHeartbeat func(string)) (memoryCompactionResult, error) {
 	providerLineageID := provideriface.ShortProviderLineageKey("compact_context", modelName, thinking, contextMode, instructions)
 	req := provideriface.Request{
 		ProviderLineageID:         providerLineageID,
@@ -4041,6 +4003,7 @@ func executeMemoryCompactionRequest(ctx context.Context, runner provideriface.Ru
 		ForceFreshProviderContext: true,
 		Model:                     modelName,
 		Thinking:                  thinking,
+		ServiceTier:               strings.TrimSpace(serviceTier),
 		Instructions:              instructions,
 		ContextMode:               contextMode,
 		ContextWindow:             contextWindow,
@@ -4078,6 +4041,13 @@ func executeMemoryCompactionRequest(ctx context.Context, runner provideriface.Ru
 }
 
 func runMemoryCompactionProviderCall(ctx context.Context, runner provideriface.Runner, req provideriface.Request, emitHeartbeat func(string)) (provideriface.Response, error) {
+	return runCompactProviderCall(ctx, runner, req, emitHeartbeat)
+}
+
+// runCompactProviderCall is the canonical tool-free provider boundary for all
+// Compact cases. Case-specific callers own instructions and response validation;
+// this boundary owns streaming assembly, cancellation, and optional heartbeats.
+func runCompactProviderCall(ctx context.Context, runner provideriface.Runner, req provideriface.Request, emitHeartbeat func(string)) (provideriface.Response, error) {
 	resultCh := make(chan struct {
 		response provideriface.Response
 		err      error
@@ -4393,6 +4363,7 @@ func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWor
 		ForceFreshProviderContext: true,
 		Model:                     modelName,
 		Thinking:                  thinking,
+		ServiceTier:               strings.TrimSpace(preference.ServiceTier),
 		Instructions:              instructions,
 		Input: []map[string]any{
 			{
@@ -4410,7 +4381,7 @@ func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWor
 	}
 	ctx, cancel := context.WithTimeout(bgCtx, sessionTitleGenerationTimeout)
 	defer cancel()
-	response, err := runner.CreateResponseStreaming(ctx, req, nil)
+	response, err := runCompactProviderCall(ctx, runner, req, nil)
 	if err != nil {
 		return "", err
 	}

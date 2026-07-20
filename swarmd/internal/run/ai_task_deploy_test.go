@@ -4,15 +4,18 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/provider/codex"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/todo"
+	"swarm/packages/swarmd/internal/uisettings"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -26,6 +29,8 @@ func TestParseAITaskPreparationStrict(t *testing.T) {
 		`{"title":"x","worktree_name":"y","prompt":"escape"}`,
 		`{"title":"x","worktree_name":"y","session_id":"escape"}`,
 		`{"title":"","worktree_name":"y"}`,
+		`{"title":"x","worktree_name":""}`,
+		`{"title":"x","worktree_name":"---"}`,
 	} {
 		if _, err := ParseAITaskPreparation(raw); err == nil {
 			t.Fatalf("expected rejection for %s", raw)
@@ -34,11 +39,19 @@ func TestParseAITaskPreparationStrict(t *testing.T) {
 }
 
 type principalCapturingAITaskRunner struct {
-	principal identity.Principal
-	request   provideriface.Request
+	id                   string
+	principal            identity.Principal
+	request              provideriface.Request
+	calls                int
+	convertedServiceTier string
 }
 
-func (*principalCapturingAITaskRunner) ID() string { return "codex" }
+func (r *principalCapturingAITaskRunner) ID() string {
+	if strings.TrimSpace(r.id) == "" {
+		return "codex"
+	}
+	return r.id
+}
 
 func (r *principalCapturingAITaskRunner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	principal, ok := identity.PrincipalFromContext(ctx)
@@ -46,6 +59,8 @@ func (r *principalCapturingAITaskRunner) CreateResponse(ctx context.Context, req
 		return provideriface.Response{}, identity.ErrPrincipalRequired
 	}
 	r.principal, r.request = principal, req
+	r.calls++
+	r.convertedServiceTier = codex.ToRequest(req).ServiceTier
 	return provideriface.Response{Text: `{"title":"Fix trusted task","worktree_name":"fix-trusted-task"}`}, nil
 }
 
@@ -61,6 +76,14 @@ func TestPrepareAITaskMetadataPropagatesTrustedPrincipalToCompact(t *testing.T) 
 	svc.providers = registry.New()
 	svc.providers.RegisterRunner(runner)
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account", SessionID: "origin-session", AccountScopeSource: identity.AccountScopeSourceSession}
+	settings, err := svc.uiSettings.GetForAccount(principal.AccountScopeID)
+	if err != nil {
+		t.Fatalf("read Compact settings: %v", err)
+	}
+	settings.Agents.Compact = uisettings.CompactAgentSettings{Provider: "codex", Model: "gpt-5.4", Thinking: "medium", ServiceTier: "fast"}
+	if _, err = svc.uiSettings.SetForAccount(principal.AccountScopeID, settings); err != nil {
+		t.Fatalf("set Compact settings: %v", err)
+	}
 	preparation, err := svc.PrepareAITaskMetadata(context.Background(), "task-1", "preserve this exact request", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "high"}, principal)
 	if err != nil {
 		t.Fatalf("prepare AI task metadata: %v", err)
@@ -71,8 +94,34 @@ func TestPrepareAITaskMetadataPropagatesTrustedPrincipalToCompact(t *testing.T) 
 	if runner.principal.UserID != principal.UserID || runner.principal.AccountScopeID != principal.AccountScopeID || runner.principal.SessionID != principal.SessionID {
 		t.Fatalf("Compact principal = %#v, want %#v", runner.principal, principal)
 	}
+	if runner.request.Model != "gpt-5.4" || runner.request.Thinking != "medium" || runner.request.ServiceTier != "fast" {
+		t.Fatalf("Compact configured preference not used: model=%q thinking=%q tier=%q", runner.request.Model, runner.request.Thinking, runner.request.ServiceTier)
+	}
+	catalog, ok := runner.request.ModelCatalog.(pebblestore.ModelCatalogRecord)
+	if !ok || catalog.Provider != "codex" || catalog.Model != "gpt-5.4" {
+		t.Fatalf("Compact request model catalog = %#v", runner.request.ModelCatalog)
+	}
+	fastMappingFound := false
+	for _, mapping := range catalog.ServiceTierMappings {
+		if mapping.Tier == "fast" && mapping.ProviderParameter == "service_tier" && mapping.ProviderValue == "priority" {
+			fastMappingFound = true
+			break
+		}
+	}
+	if !fastMappingFound {
+		t.Fatalf("Compact request fast service tier mapping missing: %#v", catalog.ServiceTierMappings)
+	}
+	if runner.convertedServiceTier != "priority" {
+		t.Fatalf("Codex Compact service tier = %q, want catalog-mapped priority", runner.convertedServiceTier)
+	}
 	if runner.request.ToolChoice != "none" || len(runner.request.Tools) != 0 {
 		t.Fatalf("Compact request gained tools: choice=%q tools=%#v", runner.request.ToolChoice, runner.request.Tools)
+	}
+	if runner.request.BoundaryReason != "ai_task_metadata" || !runner.request.ForceFreshProviderContext || runner.request.NativeContinuationAllowed {
+		t.Fatalf("Compact request boundary = %#v", runner.request)
+	}
+	if !strings.Contains(runner.request.Instructions, "only title and worktree_name") {
+		t.Fatalf("Compact metadata instructions = %q", runner.request.Instructions)
 	}
 	if len(runner.request.Input) != 1 {
 		t.Fatalf("Compact input = %#v", runner.request.Input)
@@ -82,7 +131,77 @@ func TestPrepareAITaskMetadataPropagatesTrustedPrincipalToCompact(t *testing.T) 
 	}
 }
 
-func TestExecutePreparedAITaskCreatesManagedWorktreeSessionAndDurableLinkage(t *testing.T) {
+func TestPrepareAITaskMetadataAttachesSelectedCatalogForEveryRunnableModelProvider(t *testing.T) {
+	for _, providerID := range []string{"anthropic", "codex", "fireworks", "google", "openai", "openrouter"} {
+		t.Run(providerID, func(t *testing.T) {
+			svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+			defer cleanup()
+
+			_, _, utility, ok, err := svc.model.RecommendedCatalogDefaults(providerID)
+			if err != nil || !ok || strings.TrimSpace(utility.Model) == "" {
+				t.Fatalf("resolve %s utility catalog: ok=%t record=%#v err=%v", providerID, ok, utility, err)
+			}
+			thinking := ""
+			if len(utility.ThinkingMappings) > 0 {
+				thinking = utility.ThinkingMappings[0].SwarmSetting
+			}
+			if thinking == "" {
+				thinking = utility.DefaultThinking
+			}
+			runner := &principalCapturingAITaskRunner{id: providerID}
+			svc.providers = registry.New()
+			svc.providers.RegisterRunner(runner)
+			principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account-" + providerID}
+			settings, err := svc.uiSettings.GetForAccount(principal.AccountScopeID)
+			if err != nil {
+				t.Fatalf("read Compact settings: %v", err)
+			}
+			settings.Agents.Compact = uisettings.CompactAgentSettings{Provider: providerID, Model: utility.Model, Thinking: thinking}
+			if _, err = svc.uiSettings.SetForAccount(principal.AccountScopeID, settings); err != nil {
+				t.Fatalf("set Compact settings: %v", err)
+			}
+
+			if _, err = svc.PrepareAITaskMetadata(context.Background(), "task-"+providerID, "request", pebblestore.ModelPreference{Provider: providerID, Model: utility.Model, Thinking: thinking}, principal); err != nil {
+				t.Fatalf("prepare %s AI task metadata: %v", providerID, err)
+			}
+			catalog, ok := runner.request.ModelCatalog.(pebblestore.ModelCatalogRecord)
+			if !ok || !strings.EqualFold(catalog.Provider, providerID) || catalog.Model != utility.Model {
+				t.Fatalf("%s Compact catalog = %#v, want exact selected %s/%s record", providerID, runner.request.ModelCatalog, providerID, utility.Model)
+			}
+			if runner.request.Thinking != thinking {
+				t.Fatalf("%s Compact thinking = %q, want catalog setting %q", providerID, runner.request.Thinking, thinking)
+			}
+		})
+	}
+}
+
+func TestPrepareAITaskMetadataRejectsMissingSelectedModelCatalogBeforeDispatch(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	runner := &principalCapturingAITaskRunner{}
+	svc.providers = registry.New()
+	svc.providers.RegisterRunner(runner)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account"}
+	settings, err := svc.uiSettings.GetForAccount(principal.AccountScopeID)
+	if err != nil {
+		t.Fatalf("read Compact settings: %v", err)
+	}
+	settings.Agents.Compact = uisettings.CompactAgentSettings{Provider: "codex", Model: "missing-compact-model", Thinking: "medium", ServiceTier: "fast"}
+	if _, err = svc.uiSettings.SetForAccount(principal.AccountScopeID, settings); err != nil {
+		t.Fatalf("set Compact settings: %v", err)
+	}
+
+	_, err = svc.PrepareAITaskMetadata(context.Background(), "task-missing-catalog", "request", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "high"}, principal)
+	if err == nil || !strings.Contains(err.Error(), `record for provider "codex" model "missing-compact-model" is unavailable`) {
+		t.Fatalf("missing catalog error = %v", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("provider dispatched %d times with missing selected-model catalog", runner.calls)
+	}
+}
+
+func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurableLinkage(t *testing.T) {
 	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 
@@ -189,7 +308,7 @@ func TestExecutePreparedAITaskCreatesManagedWorktreeSessionAndDurableLinkage(t *
 	if err := todoSvc.BindAITask(parent.AccountScopeID, workspacePath, queued.ID, "queued", "preparing", "", false, "", ""); err != nil {
 		t.Fatalf("claim queued AI task: %v", err)
 	}
-	if _, err := svc.ExecutePreparedAITask(context.Background(), parent.ID, parent.AccountScopeID, workspacePath, queued.ID, queued.AIRequest, preparation, svc.sessions.ApplySessionMutation); err != nil {
+	if _, err := svc.ExecutePreparedAITask(context.Background(), "", parent.UserID, parent.AccountScopeID, workspacePath, queued.ID, queued.AIRequest, preparation, svc.sessions.ApplySessionMutation); err != nil {
 		t.Fatalf("execute prepared AI task: %v", err)
 	}
 
@@ -200,7 +319,7 @@ func TestExecutePreparedAITaskCreatesManagedWorktreeSessionAndDurableLinkage(t *
 	if linked.AIState != pebblestore.WorkspaceTodoAIStateInProgress || !linked.InProgress || linked.AIMode != sessionruntime.ModeAuto || !linked.AIWorktree {
 		t.Fatalf("task execution state = %#v", linked)
 	}
-	if linked.ManagedSessionID == "" || linked.ManagedSessionID != enqueuedSessionID || enqueuedRunID == "" || enqueuedParentID != parent.ID {
+	if linked.ManagedSessionID == "" || linked.ManagedSessionID != enqueuedSessionID || enqueuedRunID == "" || enqueuedParentID != linked.ManagedSessionID {
 		t.Fatalf("task/run linkage: task=%q enqueue=%q/%q parent=%q", linked.ManagedSessionID, enqueuedSessionID, enqueuedRunID, enqueuedParentID)
 	}
 	managed, ok, err := svc.sessions.GetSession(linked.ManagedSessionID)
@@ -216,15 +335,36 @@ func TestExecutePreparedAITaskCreatesManagedWorktreeSessionAndDurableLinkage(t *
 	if mapString(managed.Metadata, "ai_task_id") != queued.ID || mapString(managed.Metadata, "ai_task_workspace_path") != workspacePath {
 		t.Fatalf("reciprocal AI task metadata = %#v", managed.Metadata)
 	}
+	if mapString(managed.Metadata, "parent_session_id") != "" || mapString(managed.Metadata, "lineage_kind") != "" {
+		t.Fatalf("sessionless AI task gained origin lineage = %#v", managed.Metadata)
+	}
 	messages, err := svc.sessions.ListSessionMessages(managed.ID, 0, 10)
 	if err != nil || len(messages) != 1 || messages[0].Content != queued.AIRequest {
 		t.Fatalf("managed prompt messages=%#v err=%v", messages, err)
 	}
 	firstSessionID := managed.ID
-	if _, err := svc.ExecutePreparedAITask(context.Background(), parent.ID, parent.AccountScopeID, workspacePath, queued.ID, queued.AIRequest, preparation, svc.sessions.ApplySessionMutation); err != nil {
+	if _, err := svc.ExecutePreparedAITask(context.Background(), "", parent.UserID, parent.AccountScopeID, workspacePath, queued.ID, queued.AIRequest, preparation, svc.sessions.ApplySessionMutation); err != nil {
 		t.Fatalf("replay prepared AI task: %v", err)
 	}
 	if enqueuedSessionID != firstSessionID {
 		t.Fatalf("replay created a different visible session: first=%q replay=%q", firstSessionID, enqueuedSessionID)
+	}
+
+	linkedOriginTask, _, _, err := todoSvc.CreateAITask(todo.CreateAITaskInput{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath, OriginSessionID: parent.ID, Request: "Fix a linked task", IdempotencyKey: "request-2"})
+	if err != nil {
+		t.Fatalf("create origin-linked AI task: %v", err)
+	}
+	if err := todoSvc.BindAITask(parent.AccountScopeID, workspacePath, linkedOriginTask.ID, "queued", "preparing", "", false, "", ""); err != nil {
+		t.Fatalf("claim origin-linked AI task: %v", err)
+	}
+	if _, err := svc.ExecutePreparedAITask(context.Background(), parent.ID, parent.UserID, parent.AccountScopeID, workspacePath, linkedOriginTask.ID, linkedOriginTask.AIRequest, AITaskPreparation{Title: "Fix linked task", WorktreeName: "fix-linked-task"}, svc.sessions.ApplySessionMutation); err != nil {
+		t.Fatalf("execute origin-linked AI task: %v", err)
+	}
+	originLinkedSession, ok, err := svc.sessions.GetSession(enqueuedSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load origin-linked managed session: ok=%t err=%v", ok, err)
+	}
+	if enqueuedParentID != parent.ID || mapString(originLinkedSession.Metadata, "parent_session_id") != parent.ID || mapString(originLinkedSession.Metadata, "lineage_kind") != "session_deploy" {
+		t.Fatalf("optional origin linkage was not preserved: parent=%q metadata=%#v", enqueuedParentID, originLinkedSession.Metadata)
 	}
 }

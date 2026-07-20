@@ -173,6 +173,8 @@ type LiveSegment struct {
 	RunID      string
 	StreamID   string
 	Text       string
+	GlobalSeq  uint64
+	CreatedAt  int64
 	LiveSeqEnd uint64
 	OffsetEnd  uint64
 }
@@ -184,6 +186,7 @@ type State struct {
 	CurrentRun     *RunState
 	LatestRun      *RunState
 	Live           map[string]LiveSegment
+	Tools          map[string]ToolTimelineItem
 	Connection     ConnectionStatus
 	EndpointCursor string
 	LastEventSeq   uint64
@@ -277,6 +280,7 @@ func reduceHydrated(state State, hydrated client.SessionV3Hydrated) State {
 	applyAgentModelPolicy(&state.Model, preference, hydrated.ContextWindow, hydrated.MaxOutputTokens, hydrated.AgentModelPolicy)
 	state.Usage = usageStateFromSummary(hydrated.UsageSummary)
 	state.Messages = mergeMessages(nil, hydrated.Messages)
+	state.Tools = make(map[string]ToolTimelineItem)
 	state.LastEventSeq = 0
 	state.EndpointCursor = strings.TrimSpace(hydrated.SnapshotEndpointCursor)
 	state.CurrentRun = nil
@@ -294,6 +298,7 @@ func reduceHydrated(state State, hydrated client.SessionV3Hydrated) State {
 		state.LastEventSeq = hydrated.Projection.LastEventSeq
 	}
 	state = reconcilePending(state)
+	state = reconcileDurableTools(state)
 	state = reconcileDurableLive(state)
 	state.NeedsRehydrate = false
 	state.StaleReason = ""
@@ -331,6 +336,7 @@ func reduceMessageResult(state State, result client.SessionV3MessageResult) Stat
 		state.EndpointCursor = strings.TrimSpace(result.RealtimeOutbox.EndpointCursor)
 	}
 	state = reconcilePending(state)
+	state = reconcileDurableTools(state)
 	return reconcileDurableLive(state)
 }
 
@@ -353,6 +359,7 @@ func reduceRealtimeFrame(state State, frame client.V3RealtimeFrame) State {
 			state = applyEvent(state, *frame.Event)
 			state.LastEventSeq = frame.Event.Seq
 			state = reconcilePending(state)
+			state = reconcileDurableTools(state)
 			state = reconcileDurableLive(state)
 		}
 	case "projection.high_watermark", "endpoint.watermark", "hello", "keepalive", "replay.started", "replay.complete":
@@ -407,6 +414,8 @@ func applyEvent(state State, event client.SessionV3Event) State {
 			state = applyRunIntent(state, value, event.Seq)
 		}
 	}
+	state = applyAssistantTimelineEvent(state, event, payload)
+	state = applyToolEvent(state, clientSessionV3Event{Seq: event.Seq, EventType: event.EventType, Timestamp: event.TsUnixMS}, payload)
 	if event.Seq > state.LastEventSeq {
 		state.LastEventSeq = event.Seq
 	}
@@ -442,6 +451,7 @@ func applyLivePatch(state State, patch *client.V3RealtimeLivePatch) State {
 	}
 	current.RunID = strings.TrimSpace(patch.RunID)
 	current.StreamID = strings.TrimSpace(patch.StreamID)
+	current.CreatedAt = firstPositiveInt64(current.CreatedAt, patch.RecordedAt)
 	current.Text += patch.Text
 	current.LiveSeqEnd = patch.LiveSeqEnd
 	current.OffsetEnd = patch.OffsetEnd
@@ -457,6 +467,42 @@ func reconcilePending(state State) State {
 				if pending.OperationID == message.OperationID {
 					delete(state.Pending, id)
 				}
+			}
+		}
+	}
+	return state
+}
+
+func applyAssistantTimelineEvent(state State, event client.SessionV3Event, payload map[string]json.RawMessage) State {
+	switch strings.ToLower(strings.TrimSpace(event.EventType)) {
+	case "session.assistant.delta", "session.message.delta":
+	default:
+		return state
+	}
+	runID := rawString(payload, "run_id")
+	streamID := rawString(payload, "stream_id")
+	if runID == "" || streamID == "" {
+		return state
+	}
+	key := liveKey(runID, streamID)
+	segment := state.Live[key]
+	segment.RunID = runID
+	segment.StreamID = streamID
+	segment.GlobalSeq = maxUint64(segment.GlobalSeq, event.Seq)
+	segment.CreatedAt = firstPositiveInt64(segment.CreatedAt, event.TsUnixMS)
+	state.Live[key] = segment
+	return state
+}
+
+func reconcileDurableTools(state State) State {
+	for _, message := range state.Messages {
+		tool, ok := parseToolMessage(message)
+		if !ok {
+			continue
+		}
+		for key, live := range state.Tools {
+			if (tool.CallID != "" && live.CallID == tool.CallID) || (tool.ToolInstanceID != "" && live.ToolInstanceID == tool.ToolInstanceID) {
+				delete(state.Tools, key)
 			}
 		}
 	}
@@ -539,6 +585,10 @@ func cloneState(value State) State {
 	out.Live = make(map[string]LiveSegment, len(value.Live))
 	for key, segment := range value.Live {
 		out.Live[key] = segment
+	}
+	out.Tools = make(map[string]ToolTimelineItem, len(value.Tools))
+	for key, item := range value.Tools {
+		out.Tools[key] = item
 	}
 	if value.CurrentRun != nil {
 		run := *value.CurrentRun

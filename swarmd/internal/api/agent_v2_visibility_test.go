@@ -7,7 +7,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestCompactAgentStateForDesktopHidesInternalSystemAgents(t *testing.T) {
+func TestCompactAgentStateForDesktopHidesSystemAgentsFromSummary(t *testing.T) {
 	state := agentruntime.State{Profiles: []pebblestore.AgentProfile{
 		{Name: agentruntime.SwarmAgentID, Mode: agentruntime.ModePrimary, Enabled: true},
 		{Name: agentruntime.PlanSidechatAgentID, Mode: agentruntime.ModeSubagent, Enabled: true},

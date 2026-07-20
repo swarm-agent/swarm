@@ -19,6 +19,7 @@ import (
 )
 
 type AITaskDeployBinding struct {
+	UserID               string
 	AccountScopeID       string
 	WorkspacePath        string
 	TaskID               string
@@ -79,15 +80,28 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 	if err != nil {
 		return "", err
 	}
-	parent, ok, err := s.sessions.GetSession(parentSessionID)
-	if err != nil || !ok {
-		if err == nil {
-			err = errors.New("parent session not found")
+	var parent pebblestore.SessionSnapshot
+	parentSessionID = strings.TrimSpace(parentSessionID)
+	if parentSessionID != "" {
+		var ok bool
+		parent, ok, err = s.sessions.GetSession(parentSessionID)
+		if err != nil || !ok {
+			if err == nil {
+				err = errors.New("parent session not found")
+			}
+			return "", err
 		}
-		return "", err
+	} else {
+		if aiTask == nil {
+			return "", errors.New("session deployment requires a calling session")
+		}
+		parent = pebblestore.SessionSnapshot{UserID: strings.TrimSpace(aiTask.UserID), AccountScopeID: strings.TrimSpace(aiTask.AccountScopeID), WorkspacePath: strings.TrimSpace(aiTask.WorkspacePath)}
+	}
+	if aiTask != nil && (strings.TrimSpace(aiTask.UserID) != strings.TrimSpace(parent.UserID) || strings.TrimSpace(aiTask.AccountScopeID) != strings.TrimSpace(parent.AccountScopeID) || strings.TrimSpace(aiTask.WorkspacePath) != strings.TrimSpace(parent.WorkspacePath)) {
+		return "", errors.New("AI task deployment binding does not match the authorized origin")
 	}
 	if approved.ParentSessionID != "" && approved.ParentSessionID != parent.ID || approved.AccountScopeID != "" && approved.AccountScopeID != parent.AccountScopeID || approved.UserID != "" && approved.UserID != parent.UserID {
-		return "", errors.New("approved session deployment identity binding does not match the calling session")
+		return "", errors.New("approved session deployment identity binding does not match the deployment principal")
 	}
 	selected := make(map[string]struct{}, len(approved.SelectedProposalIDs))
 	for _, id := range approved.SelectedProposalIDs {
@@ -101,6 +115,9 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 		selected[id] = struct{}{}
 	}
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+	if parent.ID == "" {
+		principal.AccountScopeSource = identity.AccountScopeSourceServerState
+	}
 	profilesState, err := s.agents.ListStateForAccount(parent.AccountScopeID, 2000)
 	if err != nil {
 		return "", err
@@ -123,7 +140,7 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 		return "", errors.New("active primary agent is missing, disabled, or invalid")
 	}
 	caller, callerErr := sessionV3AgentProfileFromMetadataMap(parent.Metadata)
-	if callerErr != nil {
+	if callerErr != nil || parent.ID == "" {
 		caller = active
 	}
 	callerContract, _, err := s.CompileStoredV3AgentToolContract(parent.AccountScopeID, caller)
@@ -276,7 +293,11 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 			continue
 		}
 		message := pebblestore.MessageSnapshot{ID: deterministicDeployID(digest, item.proposal.ID, "message"), SessionID: item.session.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, Role: "user", Content: item.proposal.Prompt, Metadata: map[string]any{"source": "session_deploy"}, CreatedAt: time.Now().UnixMilli()}
-		intent := sessionDeployRunIntent(item.session.ID, item.runID, parent.ID, parent.UserID, parent.AccountScopeID)
+		intentParentSessionID := parent.ID
+		if intentParentSessionID == "" {
+			intentParentSessionID = item.session.ID
+		}
+		intent := sessionDeployRunIntent(item.session.ID, item.runID, intentParentSessionID, parent.UserID, parent.AccountScopeID)
 		messageKey := "session-deploy:message:" + digest + ":" + item.proposal.ID
 		appended, appendErr := apply(sessionruntime.SessionMutationInput{SessionID: item.session.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: messageKey, IdempotencyKey: messageKey, PayloadHash: messageKey, RequestHash: messageKey, Kind: sessionruntime.SessionMutationAppendMessage, Message: &message, RunIntent: &intent, NowUnixMs: time.Now().UnixMilli()})
 		if appendErr == nil && aiTask != nil && s.aiTaskBinder != nil {
@@ -301,15 +322,17 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 			continue
 		}
 		if aiTask != nil {
-			parentMetadata := cloneStringAnyMap(parent.Metadata)
-			parentMetadata["ai_task_final_session_id"] = item.session.ID
-			parentMetadata["ai_task_final_run_id"] = item.runID
-			linkedParent := parent
-			linkedParent.Metadata = parentMetadata
-			linkKey := "ai-task:preparation:link:" + strings.TrimSpace(aiTask.TaskID)
-			if _, linkErr := apply(sessionruntime.SessionMutationInput{SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: linkKey, IdempotencyKey: linkKey, PayloadHash: linkKey, RequestHash: linkKey, Kind: sessionruntime.SessionMutationUpdateMetadata, Session: &linkedParent, NowUnixMs: time.Now().UnixMilli()}); linkErr != nil {
-				results[i].Status, results[i].Error = "error", linkErr.Error()
-				continue
+			if parent.ID != "" {
+				parentMetadata := cloneStringAnyMap(parent.Metadata)
+				parentMetadata["ai_task_final_session_id"] = item.session.ID
+				parentMetadata["ai_task_final_run_id"] = item.runID
+				linkedParent := parent
+				linkedParent.Metadata = parentMetadata
+				linkKey := "ai-task:preparation:link:" + strings.TrimSpace(aiTask.TaskID)
+				if _, linkErr := apply(sessionruntime.SessionMutationInput{SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: linkKey, IdempotencyKey: linkKey, PayloadHash: linkKey, RequestHash: linkKey, Kind: sessionruntime.SessionMutationUpdateMetadata, Session: &linkedParent, NowUnixMs: time.Now().UnixMilli()}); linkErr != nil {
+					results[i].Status, results[i].Error = "error", linkErr.Error()
+					continue
+				}
 			}
 			if s.aiTaskBinder == nil {
 				results[i].Status, results[i].Error = "error", "AI task binder is not configured"
@@ -322,7 +345,11 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 				}
 			}
 		}
-		if !s.sessionDeployEnqueue(principal, item.session.ID, item.runID, parent.ID) {
+		enqueueParentSessionID := parent.ID
+		if enqueueParentSessionID == "" {
+			enqueueParentSessionID = item.session.ID
+		}
+		if !s.sessionDeployEnqueue(principal, item.session.ID, item.runID, enqueueParentSessionID) {
 			if results[i].Status == "replayed" {
 				continue
 			}
@@ -352,14 +379,17 @@ func cloneStringAnyMap(input map[string]any) map[string]any {
 }
 
 func sessionDeployCreationMetadata(parentSessionID, workspacePath, digest, proposalID string) map[string]any {
-	return map[string]any{
+	metadata := map[string]any{
 		"source":                     "desktop-v3",
 		"workspace_path":             strings.TrimSpace(workspacePath),
-		"parent_session_id":          strings.TrimSpace(parentSessionID),
-		"lineage_kind":               "session_deploy",
 		"deployment_manifest_digest": strings.TrimSpace(digest),
 		"deployment_proposal_id":     strings.TrimSpace(proposalID),
 	}
+	if parentSessionID = strings.TrimSpace(parentSessionID); parentSessionID != "" {
+		metadata["parent_session_id"] = parentSessionID
+		metadata["lineage_kind"] = "session_deploy"
+	}
+	return metadata
 }
 
 func sessionDeployRunIntent(sessionID, runID, parentSessionID, userID, accountScopeID string) pebblestore.V3SessionRunIntent {

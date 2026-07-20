@@ -179,6 +179,53 @@ func TestLivePatchContinuityAndDurableHandoff(t *testing.T) {
 	}
 }
 
+func TestToolEventsProjectOrderedLiveStateAndDurableMessageReplacesIt(t *testing.T) {
+	startedPayload, _ := json.Marshal(map[string]any{
+		"run_id": "run", "call_id": "call-read", "tool_instance_id": "step-1:call-read",
+		"tool_name": "read", "arguments": `{"path":"README.md"}`, "recorded_at": int64(200),
+	})
+	state := Reduce(NewState(), RealtimeFrameAction{Frame: client.V3RealtimeFrame{
+		Kind: "event", Event: &client.SessionV3Event{SessionID: "s", Seq: 2, EventType: "session.tool.started", Payload: startedPayload, TsUnixMS: 200},
+	}})
+	live := state.Tools["call-read"]
+	if live.Name != "read" || live.Arguments != `{"path":"README.md"}` || live.Status != "running" || live.GlobalSeq != 2 {
+		t.Fatalf("live tool = %#v", live)
+	}
+
+	completedPayload, _ := json.Marshal(map[string]any{
+		"run_id": "run", "call_id": "call-read", "tool_instance_id": "step-1:call-read",
+		"tool_name": "read", "status": "completed", "raw_output": "file contents", "duration_ms": int64(25),
+		"message": client.SessionMessage{
+			ID: "tool-message", SessionID: "s", GlobalSeq: 3, Role: "tool",
+			Content: `{"path_id":"run.tool-history.v2","tool":"read","call_id":"call-read","tool_instance_id":"step-1:call-read","arguments":"{\"path\":\"README.md\"}","completed_output":"file contents","duration_ms":25}`,
+		},
+	})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{
+		Kind: "event", Event: &client.SessionV3Event{SessionID: "s", Seq: 3, EventType: "session.tool.completed", Payload: completedPayload, TsUnixMS: 225},
+	}})
+	if len(state.Tools) != 0 {
+		t.Fatalf("durable tool did not replace live projection: %#v", state.Tools)
+	}
+	if len(state.Messages) != 1 || state.Messages[0].Role != "tool" || state.Messages[0].GlobalSeq != 3 {
+		t.Fatalf("durable tool messages = %#v", state.Messages)
+	}
+	tool, ok := parseToolMessage(state.Messages[0])
+	if !ok || tool.Name != "read" || tool.Output != "file contents" || tool.DurationMS != 25 {
+		t.Fatalf("parsed durable tool = %#v/%t", tool, ok)
+	}
+}
+
+func TestAssistantAndToolEventsRetainCanonicalTimelineSequences(t *testing.T) {
+	assistantPayload, _ := json.Marshal(map[string]any{"run_id": "run", "stream_id": "assistant:run", "delta": "before"})
+	toolPayload, _ := json.Marshal(map[string]any{"run_id": "run", "call_id": "call", "tool_name": "bash", "arguments": `{"command":"pwd"}`})
+	state := NewState()
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{Seq: 4, EventType: "session.assistant.delta", Payload: assistantPayload}}})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{Seq: 5, EventType: "session.tool.started", Payload: toolPayload}}})
+	if state.Live["run:assistant:run"].GlobalSeq != 4 || state.Tools["call"].GlobalSeq != 5 {
+		t.Fatalf("timeline projections = live %#v tools %#v", state.Live, state.Tools)
+	}
+}
+
 func TestReducerBoundsResidentMessagesAndLiveText(t *testing.T) {
 	incoming := make([]client.SessionMessage, 0, maxResidentMessages+25)
 	for i := 0; i < maxResidentMessages+25; i++ {

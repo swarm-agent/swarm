@@ -274,15 +274,19 @@ func (s *Service) executeAITaskV2(ctx context.Context, store AITaskV2Store, task
 		return task, permanentAITaskV2Error(errors.New("AI task V2 canonical deployment services are not configured"))
 	}
 	parentID := strings.TrimSpace(task.OriginSessionID)
-	if parentID == "" {
-		return task, permanentAITaskV2Error(errors.New("AI task V2 requires an authorized origin session for canonical deployment"))
-	}
-	parent, ok, err := s.sessions.GetSession(parentID)
-	if err != nil {
-		return task, fmt.Errorf("load AI task V2 deployment parent: %w", err)
-	}
-	if !ok || parent.UserID != task.UserID || parent.AccountScopeID != task.AccountScopeID {
-		return task, permanentAITaskV2Error(errors.New("AI task V2 deployment parent ownership is invalid"))
+	var (
+		parent pebblestore.SessionSnapshot
+		err    error
+	)
+	if parentID != "" {
+		var ok bool
+		parent, ok, err = s.sessions.GetSession(parentID)
+		if err != nil {
+			return task, fmt.Errorf("load AI task V2 deployment parent: %w", err)
+		}
+		if !ok || parent.UserID != task.UserID || parent.AccountScopeID != task.AccountScopeID || strings.TrimSpace(parent.WorkspacePath) != strings.TrimSpace(task.WorkspacePath) {
+			return task, permanentAITaskV2Error(errors.New("AI task V2 deployment origin ownership or workspace is invalid"))
+		}
 	}
 
 	preparation := AITaskPreparation{Title: task.AIDisplayTitle, WorktreeName: task.AIWorktreeName}
@@ -299,6 +303,9 @@ func (s *Service) executeAITaskV2(ctx context.Context, store AITaskV2Store, task
 			}
 		}
 		principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: task.UserID, AccountScopeID: task.AccountScopeID, SessionID: parentID, AccountScopeSource: identity.AccountScopeSourceSession}
+		if parentID == "" {
+			principal.AccountScopeSource = identity.AccountScopeSourceServerState
+		}
 		preparation, err = s.PrepareAITaskMetadata(ctx, task.ID, task.AIRequest, basePreference, principal)
 		if err != nil {
 			return task, err
@@ -313,7 +320,7 @@ func (s *Service) executeAITaskV2(ctx context.Context, store AITaskV2Store, task
 		}
 		task = prepared
 	}
-	if _, err := s.ExecutePreparedAITask(ctx, parentID, task.AccountScopeID, task.WorkspacePath, task.ID, task.AIRequest, preparation, apply); err != nil {
+	if _, err := s.ExecutePreparedAITask(ctx, parentID, task.UserID, task.AccountScopeID, task.WorkspacePath, task.ID, task.AIRequest, preparation, apply); err != nil {
 		return task, err
 	}
 	return task, nil

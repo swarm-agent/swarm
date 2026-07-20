@@ -15,6 +15,7 @@ import (
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	"swarm/packages/swarmd/internal/tool"
 	topologyruntime "swarm/packages/swarmd/internal/topology"
+	"swarm/packages/swarmd/internal/uisettings"
 )
 
 func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionruntime.Service, *permission.Service, any, any) {
@@ -58,6 +59,9 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
 	runSvc := runruntime.NewService(sessionSvc, modelSvc, nil, tool.NewRuntime(1), permissionSvc, agentSvc, nil, nil)
 	server = NewServer(nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, nil, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
+	uiSettingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	server.SetUISettingsService(uiSettingsSvc)
+	runSvc.SetUISettingsService(uiSettingsSvc)
 	server.v3SessionExecutor = nil
 	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore))
 	server.SetSwarmStore(swarmStore)

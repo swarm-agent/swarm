@@ -158,6 +158,16 @@ func TestSessionDeployCreationMetadataMatchesDesktopV3AndPreservesLineage(t *tes
 	}
 }
 
+func TestSessionDeployCreationMetadataWithoutOriginIsRootSession(t *testing.T) {
+	metadata := sessionDeployCreationMetadata("", "/workspace/source", "digest", "proposal-1")
+	if mapString(metadata, "parent_session_id") != "" || mapString(metadata, "lineage_kind") != "" {
+		t.Fatalf("sessionless deployment gained parent lineage: %#v", metadata)
+	}
+	if mapString(metadata, "workspace_path") != "/workspace/source" || mapString(metadata, "deployment_manifest_digest") != "digest" {
+		t.Fatalf("sessionless deployment metadata = %#v", metadata)
+	}
+}
+
 func TestSessionDeployRunIntentCarriesRunOwnership(t *testing.T) {
 	intent := sessionDeployRunIntent(" session-1 ", " run-1 ", " parent-session ", " user ", " account ")
 	if intent.SessionID != "session-1" || intent.RunID != "run-1" || intent.RunSessionID != "session-1" || intent.ParentSessionID != "parent-session" {

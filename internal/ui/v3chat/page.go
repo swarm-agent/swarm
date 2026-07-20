@@ -951,34 +951,118 @@ func (p *Page) drawModelPicker(screen tcell.Screen, width, height int, styles Pa
 	}
 }
 
+type timelineRenderItem struct {
+	kind      string
+	seq       uint64
+	createdAt int64
+	order     int
+	message   Message
+	tool      ToolTimelineItem
+	live      LiveSegment
+}
+
 func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow {
-	rows := make([]renderRow, 0, len(state.Messages)*3+len(state.Pending)*2+len(state.Live)*2)
-	messages := SelectMessages(state)
-	for _, message := range messages {
-		if strings.EqualFold(message.Role, "user") {
-			if len(rows) == 0 {
-				rows = append(rows, renderRow{text: "", style: styles.Text})
-			}
-			rows = append(rows, p.renderUserRows("message:"+message.ID, message.Content, width, styles)...)
-			continue
+	items := make([]timelineRenderItem, 0, len(state.Messages)+len(state.Tools)+len(state.Live))
+	for _, message := range SelectMessages(state) {
+		item := timelineRenderItem{kind: "message", seq: message.GlobalSeq, createdAt: message.CreatedAt, order: len(items), message: message}
+		if tool, ok := parseToolMessage(message); ok {
+			item.kind, item.tool = "tool", tool
 		}
-		for _, line := range p.cachedWrap("message:"+message.ID, message.Content, width) {
-			rows = append(rows, renderRow{text: line, style: styles.Text})
-		}
-		rows = append(rows, renderRow{text: "", style: styles.Text})
+		items = append(items, item)
 	}
+	for _, tool := range SelectLiveTools(state) {
+		items = append(items, timelineRenderItem{kind: "tool", seq: tool.GlobalSeq, createdAt: tool.CreatedAt, order: len(items), tool: tool})
+	}
+	for _, segment := range SelectLiveSegments(state) {
+		items = append(items, timelineRenderItem{kind: "live", seq: segment.GlobalSeq, createdAt: segment.CreatedAt, order: len(items), live: segment})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		left, right := items[i], items[j]
+		if left.seq != right.seq {
+			if left.seq == 0 {
+				return false
+			}
+			if right.seq == 0 {
+				return true
+			}
+			return left.seq < right.seq
+		}
+		if left.createdAt != right.createdAt {
+			return left.createdAt < right.createdAt
+		}
+		return left.order < right.order
+	})
+
+	rows := make([]renderRow, 0, len(items)*3+len(state.Pending)*2)
+	for _, item := range items {
+		switch item.kind {
+		case "tool":
+			rows = append(rows, p.renderToolRows(item.tool, width, styles)...)
+		case "live":
+			for _, line := range wrapText(item.live.Text, width) {
+				rows = append(rows, renderRow{text: line, style: styles.Text})
+			}
+		case "message":
+			message := item.message
+			if strings.EqualFold(message.Role, "user") {
+				if len(rows) == 0 {
+					rows = append(rows, renderRow{text: "", style: styles.Text})
+				}
+				rows = append(rows, p.renderUserRows("message:"+message.ID, message.Content, width, styles)...)
+				continue
+			}
+			for _, line := range p.cachedWrap("message:"+message.ID, message.Content, width) {
+				rows = append(rows, renderRow{text: line, style: styles.Text})
+			}
+			rows = append(rows, renderRow{text: "", style: styles.Text})
+		}
+	}
+
 	pending := SelectPending(state)
 	sort.SliceStable(pending, func(i, j int) bool { return pending[i].ID < pending[j].ID })
 	for _, message := range pending {
 		rows = append(rows, p.renderUserRows("pending:"+message.ID, message.Content, width, styles)...)
 	}
-	live := SelectLiveSegments(state)
-	sort.SliceStable(live, func(i, j int) bool { return live[i].StreamID < live[j].StreamID })
-	for _, segment := range live {
-		for _, line := range wrapText(segment.Text, width) {
-			rows = append(rows, renderRow{text: line, style: styles.Text})
+	return rows
+}
+
+func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyles) []renderRow {
+	status := strings.ToLower(strings.TrimSpace(tool.Status))
+	symbol, headerStyle := "•", styles.Accent
+	switch status {
+	case "completed", "done", "success":
+		symbol, headerStyle = "✓", styles.Success
+	case "failed", "error", "cancelled", "canceled":
+		symbol, headerStyle = "✕", styles.Error
+	}
+	header := symbol + " tool " + firstNonEmpty(tool.Name, "tool")
+	if status != "" {
+		header += " · " + status
+	}
+	if duration := toolDurationLabel(tool.DurationMS); duration != "" {
+		header += " · " + duration
+	}
+	rows := []renderRow{{text: header, style: headerStyle.Bold(true)}}
+	appendPreview := func(label, value, key string, style tcell.Style) {
+		lines := toolPreviewLines(value)
+		for i, line := range lines {
+			prefix := "       "
+			if i == 0 {
+				prefix = label + " "
+			}
+			for _, wrapped := range p.cachedWrap("tool:"+tool.ID+":"+key+":"+fmt.Sprint(i), line, maxInt(1, width-len([]rune(prefix)))) {
+				rows = append(rows, renderRow{text: prefix + wrapped, style: style})
+				prefix = strings.Repeat(" ", len([]rune(prefix)))
+			}
 		}
 	}
+	appendPreview("call  ", tool.Arguments, "arguments", styles.Muted)
+	if tool.Error != "" {
+		appendPreview("error ", tool.Error, "error", styles.Error)
+	} else if tool.Output != "" {
+		appendPreview("result", tool.Output, "result", styles.Muted)
+	}
+	rows = append(rows, renderRow{text: "", style: styles.Text})
 	return rows
 }
 

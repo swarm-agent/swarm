@@ -26,18 +26,33 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 			t.Fatalf("kind %q resolved to %+v, ok=%v", kind, definition, ok)
 		}
 	}
-	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, CompactAgentID} {
+	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID} {
 		definition, _ := registry.DefinitionByID(id)
 		if !definition.RequiresSidechatMetadata || !IsReservedSidechatAgentName(id) {
 			t.Fatalf("sidechat-only system agent %q is not protected: %+v", id, definition)
 		}
 	}
-	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, ExplorerAgentID, CoderAgentID, ReviewCommitAgentID} {
+	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, ExplorerAgentID, CoderAgentID, ReviewCommitAgentID} {
 		definition, _ := registry.DefinitionByID(id)
 		if definition.RequiresSidechatMetadata || IsReservedSidechatAgentName(id) {
 			t.Fatalf("ordinary/task system agent %q was classified as sidechat-only: %+v", id, definition)
 		}
 	}
+	visible := registry.UserVisibleIDs()
+	for _, id := range []string{SwarmAgentID, CompactAgentID, ExplorerAgentID, CoderAgentID} {
+		if !containsString(visible, id) {
+			t.Fatalf("user-visible system agents %v omit %q", visible, id)
+		}
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCoderIdentityDoesNotAcceptRetiredCloneNames(t *testing.T) {

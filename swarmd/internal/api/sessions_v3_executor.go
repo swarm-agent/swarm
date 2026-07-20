@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	compactruntime "swarm/packages/swarmd/internal/compact"
 	modelruntime "swarm/packages/swarmd/internal/model"
 
 	"swarm/packages/swarmd/internal/privacy"
@@ -1213,49 +1214,17 @@ func (e *sessionV3Executor) generateSessionV3CompactTitle(session pebblestore.Se
 	if e == nil || e.server == nil || e.server.providers == nil || e.server.model == nil || e.server.agents == nil {
 		return "", errors.New("Compact provider, model, and agent services are not configured")
 	}
-	providerID := strings.ToLower(strings.TrimSpace(session.Preference.Provider))
-	compactModel := ""
-	compactThinking := ""
-	if e.server.uiSettings != nil {
-		if settings, settingsErr := e.server.uiSettings.GetForAccount(principal.AccountScopeID); settingsErr == nil {
-			if configured := strings.ToLower(strings.TrimSpace(settings.Agents.Compact.Provider)); configured != "" {
-				providerID = configured
-			}
-			compactModel = strings.TrimSpace(settings.Agents.Compact.Model)
-			compactThinking = strings.TrimSpace(settings.Agents.Compact.Thinking)
-		}
-	}
-	_, _, utility, ok, err := e.server.model.RecommendedCatalogDefaults(providerID)
-	if err != nil {
-		return "", fmt.Errorf("resolve Compact utility recommendation: %w", err)
-	}
-	if !ok || strings.TrimSpace(utility.Model) == "" {
-		return "", fmt.Errorf("Compact utility recommendation for provider %q is unavailable", providerID)
-	}
-	if compactModel == "" {
-		compactModel = strings.TrimSpace(utility.Model)
-	}
-	if compactThinking == "" {
-		for _, recommendation := range utility.Recommendations {
-			if strings.EqualFold(strings.TrimSpace(recommendation.Role), "utility") {
-				compactThinking = strings.TrimSpace(recommendation.Thinking)
-				break
-			}
-		}
-	}
-	compactProfile, err := e.server.agents.ResolveSystemAgent(agentruntime.CompactAgentID, pebblestore.AgentProfile{Provider: providerID, Model: compactModel, Thinking: compactThinking})
+	resolvedCompact, compactProfile, err := compactruntime.ResolvePreference(e.server.model, e.server.agents, e.server.uiSettings, principal.AccountScopeID, session.Preference)
 	if err != nil {
 		return "", err
 	}
-	preference, contextWindow, err := e.resolveSessionV3ProviderPreference(applySessionV3AgentPreferenceOverridesForMode(session.Preference, compactProfile, session.Mode))
-	if err != nil {
-		return "", err
-	}
+	preference := resolvedCompact.Preference
+	contextWindow := resolvedCompact.ContextWindow
 	catalogRecord, err := e.sessionV3ModelCatalogRecord(preference)
 	if err != nil {
 		return "", err
 	}
-	providerID = strings.ToLower(strings.TrimSpace(preference.Provider))
+	providerID := strings.ToLower(strings.TrimSpace(preference.Provider))
 	if providerID == "" {
 		return "", errors.New("resolved Compact title provider is empty")
 	}

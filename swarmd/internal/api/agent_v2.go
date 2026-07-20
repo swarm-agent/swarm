@@ -145,16 +145,16 @@ func (s *Server) handleAgentsV2(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	state.Profiles, err = s.publicAgentProfiles(state.Profiles)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
 	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("view")), "summary") {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":    true,
 			"state": compactAgentStateForDesktop(state),
 		})
+		return
+	}
+	state.Profiles, err = s.publicAgentProfiles(principal.AccountScopeID, state.Profiles)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	toolInventory, err := s.agentToolInventoryForAccount(principal.AccountScopeID)
@@ -170,7 +170,7 @@ func (s *Server) handleAgentsV2(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) publicAgentProfiles(profiles []pebblestore.AgentProfile) ([]pebblestore.AgentProfile, error) {
+func (s *Server) publicAgentProfiles(accountScopeID string, profiles []pebblestore.AgentProfile) ([]pebblestore.AgentProfile, error) {
 	out := make([]pebblestore.AgentProfile, 0, len(profiles)+8)
 	contexts := make(map[string]pebblestore.AgentProfile, len(profiles))
 	for _, profile := range profiles {
@@ -184,8 +184,18 @@ func (s *Server) publicAgentProfiles(profiles []pebblestore.AgentProfile) ([]peb
 	if err != nil {
 		return nil, err
 	}
+	systemSettings := map[string]pebblestore.AgentProfile{}
+	if s.uiSettings != nil {
+		settings, settingsErr := s.uiSettings.GetForAccount(strings.TrimSpace(accountScopeID))
+		if settingsErr != nil {
+			return nil, settingsErr
+		}
+		systemSettings[agentruntime.CompactAgentID] = pebblestore.AgentProfile{Provider: settings.Agents.Compact.Provider, Model: settings.Agents.Compact.Model, Thinking: settings.Agents.Compact.Thinking, AutoServiceTier: settings.Agents.Compact.ServiceTier}
+		systemSettings[agentruntime.ExplorerAgentID] = pebblestore.AgentProfile{Provider: settings.Agents.Explorer.Provider, Model: settings.Agents.Explorer.Model, Thinking: settings.Agents.Explorer.Thinking, AutoServiceTier: settings.Agents.Explorer.ServiceTier}
+		systemSettings[agentruntime.CoderAgentID] = pebblestore.AgentProfile{Provider: settings.Agents.Coder.Provider, Model: settings.Agents.Coder.Model, Thinking: settings.Agents.Coder.Thinking, AutoServiceTier: settings.Agents.Coder.ServiceTier}
+	}
 	for _, id := range registry.UserVisibleIDs() {
-		context := pebblestore.AgentProfile{}
+		context := systemSettings[id]
 		if id == agentruntime.SwarmAgentID {
 			context = contexts[agentruntime.SwarmAgentID]
 		}
@@ -512,8 +522,23 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !ok {
-			writeError(w, http.StatusNotFound, errors.New("agent not found"))
-			return
+			if systemID, system := agentruntime.CanonicalSystemAgentID(name); system {
+				public, publicErr := s.publicAgentProfiles(principal.AccountScopeID, nil)
+				if publicErr != nil {
+					writeError(w, http.StatusInternalServerError, publicErr)
+					return
+				}
+				for _, candidate := range public {
+					if candidate.Name == systemID {
+						profile, ok = candidate, true
+						break
+					}
+				}
+			}
+			if !ok {
+				writeError(w, http.StatusNotFound, errors.New("agent not found"))
+				return
+			}
 		}
 		if _, system := agentruntime.CanonicalSystemAgentID(profile.Name); system {
 			profile.Protected = true

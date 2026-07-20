@@ -42,9 +42,13 @@ func ParseAITaskPreparation(raw string) (AITaskPreparation, error) {
 		return AITaskPreparation{}, err
 	}
 	out.Title = strings.TrimSpace(out.Title)
-	out.WorktreeName = canonicalDeployWorktreeBranchSuffix(out.WorktreeName, "ai-task")
-	if out.Title == "" || out.WorktreeName == "" {
+	rawWorktreeName := strings.TrimSpace(out.WorktreeName)
+	if out.Title == "" || rawWorktreeName == "" {
 		return AITaskPreparation{}, fmt.Errorf("AI task preparation title and worktree_name are required")
+	}
+	out.WorktreeName = canonicalDeployWorktreeBranchSuffix(rawWorktreeName, "")
+	if out.WorktreeName == "" {
+		return AITaskPreparation{}, fmt.Errorf("AI task preparation worktree_name must contain letters or digits")
 	}
 	if len([]rune(out.Title)) > 120 {
 		return AITaskPreparation{}, fmt.Errorf("AI task preparation title is too long")
@@ -55,7 +59,7 @@ func ParseAITaskPreparation(raw string) (AITaskPreparation, error) {
 // ExecutePreparedAITask creates and starts the managed session through the
 // canonical V3 deployment contract. V2 supplies the final preparation directly;
 // there is no hidden provider/preparer run before the visible session exists.
-func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, accountScopeID, workspacePath, taskID, originalRequest string, preparation AITaskPreparation, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
+func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, userID, accountScopeID, workspacePath, taskID, originalRequest string, preparation AITaskPreparation, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
 	if s == nil || s.aiTaskBinder == nil {
 		return "", fmt.Errorf("AI task binder is not configured")
 	}
@@ -71,13 +75,17 @@ func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, ac
 	// worktree base branch and branch family for both plan and auto modes.
 	arguments, _ := json.Marshal(map[string]any{"action": "deploy", "proposals": []map[string]any{{"title": preparation.Title, "prompt": originalRequest, "mode": sessionruntime.ModeAuto, "agent": agentruntime.SwarmAgentID, "workspace_path": workspacePath, "worktree": true, "worktree_name": preparation.WorktreeName}}})
 	call := tool.Call{Name: "manage_sessions", Arguments: string(arguments)}
-	manifest, err := s.buildManageSessionsDeployManifest(parentSessionID, call)
+	aiTaskBinding := &AITaskDeployBinding{UserID: userID, AccountScopeID: accountScopeID, WorkspacePath: workspacePath, TaskID: taskID, PreparationSessionID: parentSessionID}
+	manifest, err := s.buildManageSessionsDeployManifestBound(parentSessionID, call, aiTaskBinding)
 	if err != nil {
 		return "", err
 	}
 	approved, _ := json.Marshal(manifest.ApprovedArguments)
-	parent, _, _ := s.sessions.GetSession(parentSessionID)
-	result, err := s.executeManageSessionsDeployBound(ctx, parentSessionID, call, string(approved), apply, &AITaskDeployBinding{AccountScopeID: accountScopeID, WorkspacePath: workspacePath, TaskID: taskID, PreparationSessionID: parentSessionID, PreparationRunID: mapString(parent.Metadata, "ai_task_preparation_run_id")})
+	if parentSessionID != "" {
+		parent, _, _ := s.sessions.GetSession(parentSessionID)
+		aiTaskBinding.PreparationRunID = mapString(parent.Metadata, "ai_task_preparation_run_id")
+	}
+	result, err := s.executeManageSessionsDeployBound(ctx, parentSessionID, call, string(approved), apply, aiTaskBinding)
 	if err != nil {
 		return result, err
 	}
@@ -110,6 +118,13 @@ func (s *Service) PrepareAITaskMetadata(ctx context.Context, taskID, request str
 		return AITaskPreparation{}, err
 	}
 	providerID := strings.ToLower(strings.TrimSpace(resolved.Preference.Provider))
+	catalogRecord, err := modelCatalogLookup(s.model, providerID, resolved.Preference.Model)
+	if err != nil {
+		return AITaskPreparation{}, fmt.Errorf("resolve AI task Compact model catalog: %w", err)
+	}
+	if catalogRecord == nil {
+		return AITaskPreparation{}, fmt.Errorf("resolve AI task Compact model catalog: record for provider %q model %q is unavailable", providerID, resolved.Preference.Model)
+	}
 	runner, ok := s.providers.GetRunner(providerID)
 	if !ok {
 		return AITaskPreparation{}, fmt.Errorf("AI task Compact provider %q is not runnable", providerID)
@@ -125,13 +140,13 @@ func (s *Service) PrepareAITaskMetadata(ctx context.Context, taskID, request str
 	req := provideriface.Request{
 		ProviderLineageID: lineage, ProviderCacheKey: providerScopedKey("cache", lineage), SessionAffinityKey: providerScopedKey("affinity", lineage),
 		BoundaryReason: "ai_task_metadata", NativeContinuationAllowed: false, ForceFreshProviderContext: true,
-		Model: resolved.Preference.Model, Thinking: normalizeThinkingWithProvider(providerID, resolved.Preference.Thinking), Instructions: instructions,
-		Input: []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": request}}}}, ToolChoice: "none",
+		Model: resolved.Preference.Model, Thinking: normalizeThinkingWithProvider(providerID, resolved.Preference.Thinking), ServiceTier: resolvedServiceTierForProvider(providerID, resolved.Preference.ServiceTier), Instructions: instructions,
+		Input: []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": request}}}}, ToolChoice: "none", ModelCatalog: catalogRecordValue(catalogRecord),
 	}
 	trustedCtx := identity.ContextWithPrincipal(ctx, principal)
 	callCtx, cancel := context.WithTimeout(trustedCtx, 30*time.Second)
 	defer cancel()
-	response, err := runner.CreateResponseStreaming(callCtx, req, nil)
+	response, err := runCompactProviderCall(callCtx, runner, req, nil)
 	if err != nil {
 		return AITaskPreparation{}, fmt.Errorf("AI task Compact metadata request: %w", err)
 	}
