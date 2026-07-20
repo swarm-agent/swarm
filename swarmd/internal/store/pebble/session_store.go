@@ -1609,47 +1609,15 @@ func (s *SessionStore) PutPlanWithArchivedRevision(plan, archived SessionPlanSna
 	return s.putPlanWithArchivedRevision(plan, &archived)
 }
 
-// PutPlanWithArchivedRevisionAndEvent atomically persists the current plan,
-// revision history, active-plan pointer, and legacy event-log envelope. Plan
-// progress used to pay for three sequential WAL syncs here; one Pebble batch
-// preserves durability while removing that fixed rollover latency.
-func (s *SessionStore) PutPlanWithArchivedRevisionAndEvent(plan SessionPlanSnapshot, archived *SessionPlanSnapshot, activate bool, updatedAt int64, events *EventLog, event EventAppend) (EventEnvelope, error) {
-	if s == nil || s.store == nil || events == nil {
-		return EventEnvelope{}, errors.New("plan event write requires session store and event log")
-	}
-	if events.store != s.store {
-		return EventEnvelope{}, errors.New("plan event write requires one shared Pebble store")
-	}
-	envelopes, err := events.appendBatchWithMutations([]EventAppend{event}, func(batch *pebble.Batch) error {
-		if err := setPlanWithArchivedRevisionInBatch(batch, plan, archived); err != nil {
-			return err
-		}
-		if !activate {
-			return nil
-		}
-		return setActivePlanInBatch(batch, SessionPlanActive{SessionID: plan.SessionID, PlanID: plan.ID, UserID: plan.UserID, AccountScopeID: plan.AccountScopeID, UpdatedAt: updatedAt})
-	})
-	if err != nil {
-		return EventEnvelope{}, err
-	}
-	return envelopes[0], nil
-}
-
 func (s *SessionStore) putPlanWithArchivedRevision(plan SessionPlanSnapshot, archived *SessionPlanSnapshot) error {
-	batch := s.store.NewBatch()
-	defer batch.Close()
-	if err := setPlanWithArchivedRevisionInBatch(batch, plan, archived); err != nil {
-		return err
-	}
-	return batch.Commit(pebble.Sync)
-}
-
-func setPlanWithArchivedRevisionInBatch(batch *pebble.Batch, plan SessionPlanSnapshot, archived *SessionPlanSnapshot) error {
-	if batch == nil {
-		return errors.New("plan write requires batch")
-	}
 	plan.UserID = strings.TrimSpace(plan.UserID)
 	plan.AccountScopeID = strings.TrimSpace(plan.AccountScopeID)
+	payload, err := json.Marshal(plan)
+	if err != nil {
+		return fmt.Errorf("marshal plan %q/%q: %w", plan.SessionID, plan.ID, err)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
 	if archived != nil {
 		archive := *archived
 		archive.UserID = strings.TrimSpace(archive.UserID)
@@ -1665,13 +1633,14 @@ func setPlanWithArchivedRevisionInBatch(batch *pebble.Batch, plan SessionPlanSna
 	if plan.Version <= 0 {
 		plan.Version = 1
 	}
-	payload, err := json.Marshal(plan)
+	planRevisionPayload, err := json.Marshal(plan)
 	if err != nil {
 		return fmt.Errorf("marshal plan revision %q/%q/%d: %w", plan.SessionID, plan.ID, plan.Version, err)
 	}
-	if err := batch.Set([]byte(KeySessionPlanRevision(plan.SessionID, plan.ID, plan.Version)), payload, nil); err != nil {
+	if err := batch.Set([]byte(KeySessionPlanRevision(plan.SessionID, plan.ID, plan.Version)), planRevisionPayload, nil); err != nil {
 		return err
 	}
+	payload = planRevisionPayload
 	if err := batch.Set([]byte(KeySessionPlan(plan.SessionID, plan.ID)), payload, nil); err != nil {
 		return err
 	}
@@ -1680,7 +1649,7 @@ func setPlanWithArchivedRevisionInBatch(batch *pebble.Batch, plan SessionPlanSna
 			return err
 		}
 	}
-	return nil
+	return batch.Commit(pebble.Sync)
 }
 
 func (s *SessionStore) GetPlan(sessionID, planID string) (SessionPlanSnapshot, bool, error) {
@@ -1788,38 +1757,32 @@ func (s *SessionStore) GetActivePlan(sessionID string) (SessionPlanActive, bool,
 }
 
 func (s *SessionStore) SetActivePlan(sessionID, planID string, updatedAt int64) error {
-	active := SessionPlanActive{SessionID: sessionID, PlanID: planID, UpdatedAt: updatedAt}
+	active := SessionPlanActive{
+		SessionID: sessionID,
+		PlanID:    planID,
+		UpdatedAt: updatedAt,
+	}
 	if session, ok, err := s.GetSession(sessionID); err != nil {
 		return err
 	} else if ok {
 		active.UserID = strings.TrimSpace(session.UserID)
 		active.AccountScopeID = strings.TrimSpace(session.AccountScopeID)
 	}
-	batch := s.store.NewBatch()
-	defer batch.Close()
-	if err := setActivePlanInBatch(batch, active); err != nil {
-		return err
-	}
-	return batch.Commit(pebble.Sync)
-}
-
-func setActivePlanInBatch(batch *pebble.Batch, active SessionPlanActive) error {
-	if batch == nil {
-		return errors.New("active plan write requires batch")
-	}
 	payload, err := json.Marshal(active)
 	if err != nil {
-		return fmt.Errorf("marshal active plan %q: %w", active.SessionID, err)
+		return fmt.Errorf("marshal active plan %q: %w", sessionID, err)
 	}
-	if err := batch.Set([]byte(KeySessionPlanActive(active.SessionID)), payload, nil); err != nil {
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(KeySessionPlanActive(sessionID)), payload, nil); err != nil {
 		return err
 	}
 	if active.AccountScopeID != "" {
-		if err := batch.Set([]byte(KeySessionPlanActiveByAccount(active.AccountScopeID, active.SessionID)), payload, nil); err != nil {
+		if err := batch.Set([]byte(KeySessionPlanActiveByAccount(active.AccountScopeID, sessionID)), payload, nil); err != nil {
 			return err
 		}
 	}
-	return nil
+	return batch.Commit(pebble.Sync)
 }
 
 func cloneSessionMetadataMap(input map[string]any) map[string]any {

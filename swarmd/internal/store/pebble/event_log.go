@@ -79,13 +79,6 @@ func (l *EventLog) AppendWithSourceSeq(stream, eventType, entityID string, paylo
 }
 
 func (l *EventLog) AppendBatch(appends []EventAppend) ([]EventEnvelope, error) {
-	return l.appendBatchWithMutations(appends, nil)
-}
-
-// appendBatchWithMutations commits event-log rows and related projection rows
-// through one synced Pebble batch. Callers must keep mutations small: holding
-// the event-log sequence lock across the commit preserves global ordering.
-func (l *EventLog) appendBatchWithMutations(appends []EventAppend, mutate func(*pebble.Batch) error) ([]EventEnvelope, error) {
 	if len(appends) == 0 {
 		return nil, nil
 	}
@@ -121,12 +114,6 @@ func (l *EventLog) appendBatchWithMutations(appends []EventAppend, mutate func(*
 
 	batch := l.store.NewBatch()
 	defer batch.Close()
-	if mutate != nil {
-		if err := mutate(batch); err != nil {
-			l.seq = startSeq
-			return nil, err
-		}
-	}
 	for i, payload := range serialized {
 		if err := batch.Set([]byte(EventKey(envelopes[i].GlobalSeq)), payload, nil); err != nil {
 			l.seq = startSeq

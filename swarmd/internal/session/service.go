@@ -1769,16 +1769,22 @@ func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, a
 		record.CreatedAt = now
 	}
 
-	var archived *pebblestore.SessionPlanSnapshot
 	if found {
-		archivedRecord := existing
-		archivedRecord.Active = false
-		if archivedRecord.Version <= 0 {
-			archivedRecord.Version = 1
+		archived := existing
+		archived.Active = false
+		if archived.Version <= 0 {
+			archived.Version = 1
 		}
-		archived = &archivedRecord
+		if err := s.store.PutPlanWithArchivedRevision(record, archived); err != nil {
+			return pebblestore.SessionPlanSnapshot{}, nil, err
+		}
+	} else if err := s.store.PutPlan(record); err != nil {
+		return pebblestore.SessionPlanSnapshot{}, nil, err
 	}
 	if activate {
+		if err := s.store.SetActivePlan(sessionID, planID, now); err != nil {
+			return pebblestore.SessionPlanSnapshot{}, nil, err
+		}
 		record.Active = true
 	}
 
@@ -1806,7 +1812,7 @@ func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, a
 		return pebblestore.SessionPlanSnapshot{}, nil, err
 	}
 	stream := "session:" + sessionID
-	env, err := s.store.PutPlanWithArchivedRevisionAndEvent(record, archived, activate, now, s.events, pebblestore.EventAppend{Stream: stream, EventType: "session.plan.saved", EntityID: sessionID, Payload: payload})
+	env, err := s.events.Append(stream, "session.plan.saved", sessionID, payload, "", "")
 	if err != nil {
 		return pebblestore.SessionPlanSnapshot{}, nil, err
 	}
