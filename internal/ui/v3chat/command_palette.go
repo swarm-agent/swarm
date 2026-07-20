@@ -130,22 +130,28 @@ func (p *Page) completeCommandFromPaletteLocked() bool {
 	return true
 }
 
-func (p *Page) acceptCommandPaletteEnterLocked() bool {
+func (p *Page) executeCommandPaletteSelectionLocked() bool {
 	if !p.commandPaletteActiveLocked() {
 		return false
 	}
-	prompt := strings.TrimSpace(string(p.input))
-	if prompt == "" || !strings.HasPrefix(prompt, "/") {
-		return false
-	}
-	if strings.Contains(strings.TrimSpace(strings.TrimPrefix(prompt, "/")), " ") {
-		return false
-	}
 	selected, ok := p.selectedCommandSuggestionLocked()
-	if !ok || strings.EqualFold(normalizeCommand(prompt), selected.Command) {
+	if !ok {
 		return false
 	}
-	return p.completeCommandFromPaletteLocked()
+
+	command := selected.Command
+	prompt := strings.TrimSpace(string(p.input))
+	if commandEnd := strings.IndexByte(prompt, ' '); commandEnd >= 0 && strings.EqualFold(normalizeCommand(prompt[:commandEnd]), selected.Command) {
+		if args := strings.TrimSpace(prompt[commandEnd+1:]); args != "" {
+			command += " " + args
+		}
+	}
+	p.pendingCommand = command
+	p.input = nil
+	p.cursor = 0
+	p.pasteBuffer = nil
+	p.commandPaletteIndex = 0
+	return true
 }
 
 func (p *Page) drawCommandPalette(screen tcell.Screen, width, top, bottom int, styles PageStyles, input string, selected int, suggestions []CommandSuggestion) {

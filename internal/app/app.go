@@ -67,7 +67,6 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/commit", Hint: "Launch the memory agent in background to review diffs and commit changes", QuickTips: []string{"/commit [instructions]"}},
 		{Command: "/compact", Hint: "Compact current chat context via memory agent", QuickTips: []string{"/compact [threshold%] [notes]"}},
 		{Command: "/copy", Hint: "Copy chat snapshot or /copy N block to clipboard"},
-		{Command: "/git", Hint: "Show authoritative Git status for the active workspace"},
 		{Command: "/header", Hint: "Toggle chat header visibility", QuickTips: []string{"/header toggle"}},
 		{Command: "/help", Hint: "Show command help"},
 		{Command: "/home", Hint: "Return to home without ending the chat session"},
@@ -2089,8 +2088,6 @@ func (a *App) executeCommand(raw string) {
 		a.handleCompactCommand(args)
 	case "commit":
 		a.handleCommitCommand(args)
-	case "git":
-		a.handleGitCommand(args)
 	case "codex":
 		a.handleCodexCommand(args)
 	case "workspace":

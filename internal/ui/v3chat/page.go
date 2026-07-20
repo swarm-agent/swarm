@@ -346,7 +346,7 @@ func (p *Page) OpenNew(request NewSessionRequest) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_, err := p.runtime.CreateAndSend(ctx, request)
-		p.finishAsync("connected", err)
+		p.finishAsync("", err)
 	}()
 }
 
@@ -474,8 +474,8 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	case match(KeyComplete):
 		p.completeCommandFromPaletteLocked()
 	case match(KeySubmit):
-		if p.acceptCommandPaletteEnterLocked() {
-			return PageActionNone
+		if p.executeCommandPaletteSelectionLocked() {
+			return PageActionCommand
 		}
 		text := strings.TrimSpace(string(p.input))
 		if strings.HasPrefix(text, "/") {
@@ -503,11 +503,11 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			p.input = append(p.input[:p.cursor], p.input[p.cursor+1:]...)
 		}
 	case match(KeyMoveLeft):
-		if p.cursor > 0 {
+		if !p.moveCommandPaletteSelectionLocked(-1) && p.cursor > 0 {
 			p.cursor--
 		}
 	case match(KeyMoveRight):
-		if p.cursor < len(p.input) {
+		if !p.moveCommandPaletteSelectionLocked(1) && p.cursor < len(p.input) {
 			p.cursor++
 		}
 	case ev.Key() == tcell.KeyHome:
