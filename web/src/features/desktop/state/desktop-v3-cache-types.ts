@@ -1,7 +1,6 @@
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
 import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../chat/types/chat'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
-import type { PlanRuntimeClientState, PlanRuntimeDeltaWire, PlanRuntimeHydrationWire } from '../v3-runtime/plan-runtime'
 import type { WorkspaceTodoItem } from '../../workspaces/todos/types'
 
 export type SyncSelectorKind = '' | 'global' | 'recent' | 'session_ids' | 'workspace' | 'tui'
@@ -481,7 +480,6 @@ export type RealtimeKind =
   | 'live.patch'
   | 'notification.resource.updated'
   | 'task.lifecycle.updated'
-  | 'plan.execution.delta'
 
 export interface RealtimeMessage {
   protocol?: 'v3.realtime' | string
@@ -507,7 +505,6 @@ export interface RealtimeMessage {
   notification?: DesktopNotificationWire
   notification_summary?: DesktopNotificationSummaryWire
   task?: DesktopAITaskLifecycleWire
-  plan_execution?: PlanRuntimeDeltaWire
   workset_subscription_id?: string
   auto_subscribed?: boolean
   projection?: V3SessionProjection
@@ -865,7 +862,6 @@ export interface DesktopV3CacheState {
   subscriptionsById: Record<string, SubscriptionCache>
   worksetsById: Record<string, WorksetCache>
   plansBySession: Record<string, unknown>
-  planRuntimeBySession: Record<string, PlanRuntimeClientState>
   hasActivePlanBySession: Record<string, boolean>
   planRevisionsBySession: Record<string, unknown[]>
   permissionsBySession: Record<string, DesktopPermissionRecord[]>
@@ -911,8 +907,6 @@ export type DesktopV3CacheAction =
   | { type: 'realtime.applyEvent'; event: CacheEvent; endpointCursor?: string; durabilityCommitted?: boolean }
   | { type: 'realtime.applyNotificationResource'; frame: RealtimeMessage }
   | { type: 'realtime.applyAITaskResource'; frame: RealtimeMessage }
-  | { type: 'realtime.applyPlanRuntimeDelta'; sessionId: string; delta: PlanRuntimeDeltaWire; endpointCursor?: string }
-  | { type: 'planRuntime.applyHydration'; sessionId: string; hydration: PlanRuntimeHydrationWire }
   | { type: 'aiTasks.mergeItems'; items: WorkspaceTodoItem[] }
   | { type: 'realtime.applyLivePatchBatch'; patches: SessionV3RealtimeLivePatchWire[] }
   | { type: 'permission.resolveResult'; sessionId: string; permissionId: string; permission: DesktopPermissionRecord | null }

@@ -36,7 +36,6 @@ import { normalizeDesktopSessionPlan } from '../chat/services/session-plan-recor
 import { decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
 import { isDesktopV3NavigationHiddenRecord } from './desktop-v3-session-visibility'
 import { mergeWorkspaceAITaskMonotonic } from '../../workspaces/todos/ai-task-reconciliation'
-import { applyPlanRuntimeDelta, createEmptyPlanRuntimeClientState, hydratePlanRuntimeState } from '../v3-runtime/plan-runtime'
 import type { WorkspaceTodoAIState, WorkspaceTodoItem } from '../../workspaces/todos/types'
 
 export const DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS = 5
@@ -89,7 +88,6 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     subscriptionsById: {},
     worksetsById: {},
     plansBySession: {},
-    planRuntimeBySession: {},
     hasActivePlanBySession: {},
     planRevisionsBySession: {},
     permissionsBySession: {},
@@ -170,16 +168,6 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       if (action.frame.endpoint_cursor) {
         state.realtime.endpointCursor = action.frame.endpoint_cursor
       }
-      return state
-    case 'realtime.applyPlanRuntimeDelta': {
-      const runtime = state.planRuntimeBySession[action.sessionId] ?? createEmptyPlanRuntimeClientState()
-      state.planRuntimeBySession[action.sessionId] = runtime
-      applyPlanRuntimeDelta(runtime, action.delta)
-      if (action.endpointCursor) state.realtime.endpointCursor = action.endpointCursor
-      return state
-    }
-    case 'planRuntime.applyHydration':
-      state.planRuntimeBySession[action.sessionId] = hydratePlanRuntimeState(action.hydration)
       return state
     case 'aiTasks.mergeItems':
       mergeAITaskItems(state, action.items)
@@ -779,21 +767,6 @@ export function applyRealtimeFrame(
       applyAITaskResourceFrame(state, frame)
       state.realtime.endpointCursor = frame.endpoint_cursor
       return state
-
-    case 'plan.execution.delta': {
-      const delta = frame.plan_execution
-      if (!delta || !frame.session_id || delta.session_id !== frame.session_id) {
-        state.realtime.status = 'stale'
-        state.realtime.needsReconnect = true
-        state.realtime.errorCode = 'plan_runtime_delta_invalid'
-        return state
-      }
-      const runtime = state.planRuntimeBySession[frame.session_id] ?? createEmptyPlanRuntimeClientState()
-      state.planRuntimeBySession[frame.session_id] = runtime
-      applyPlanRuntimeDelta(runtime, delta)
-      state.realtime.endpointCursor = frame.endpoint_cursor
-      return state
-    }
 
     case 'replay.started':
       markSubscriptionReplaying(state, frame)

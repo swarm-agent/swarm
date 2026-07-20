@@ -1837,45 +1837,40 @@ func (e *sessionV3Executor) appendSessionV3ProviderHandoffPlanState(b *strings.B
 		write("- unavailable")
 		return
 	}
-	authority, ok, err := e.server.sessions.Store().GetPlanRuntimeAuthority(job.SessionID)
-	if err != nil || !ok {
+	plan, ok, err := e.server.sessions.GetActivePlan(job.SessionID)
+	if err != nil || !ok || plan.Document == nil {
 		write("- none")
 		return
 	}
-	definition, ok, err := e.server.sessions.Store().GetPlanDefinition(job.SessionID, authority.PlanID, authority.DefinitionRevision)
-	if err != nil || !ok {
-		write("- unavailable")
-		return
-	}
-	write("- plan_id: " + authority.PlanID)
-	if title := strings.TrimSpace(definition.Title); title != "" {
+	doc := plan.Document
+	if title := strings.TrimSpace(firstNonEmptyString(doc.Title, plan.Title)); title != "" {
 		write("- plan: " + title)
 	}
-	if goal := strings.TrimSpace(definition.Goal); goal != "" {
+	if goal := strings.TrimSpace(doc.Info.Goal); goal != "" {
 		write("- goal: " + goal)
 	}
-	summary, _, err := e.server.sessions.Store().GetPlanExecutionSummary(job.SessionID, authority.PlanID)
-	if err != nil {
-		write("- execution: unavailable")
-		return
+	if len(doc.Info.RelevantFiles) > 0 {
+		write("- relevant_files: " + strings.Join(trimStrings(doc.Info.RelevantFiles), ", "))
 	}
-	checkpointID := strings.TrimSpace(firstNonEmptyString(job.CheckpointID, summary.ActiveCheckpointID, summary.NextCheckpointID))
-	if checkpointID == "" {
-		return
-	}
-	checkpoint, ok, err := e.server.sessions.Store().GetPlanCheckpointDefinition(job.SessionID, authority.PlanID, authority.DefinitionRevision, checkpointID)
-	if err != nil || !ok {
-		write("- checkpoint: unavailable")
-		return
-	}
-	write("- checkpoint_id: " + checkpoint.CheckpointID)
-	if title := strings.TrimSpace(checkpoint.Title); title != "" {
-		write("- checkpoint_title: " + title)
-	}
-	if status, found, getErr := e.server.sessions.Store().GetPlanCheckpointExecution(job.SessionID, authority.PlanID, checkpointID); getErr == nil && found {
-		write("- checkpoint_status: " + status.Status)
-	} else {
-		write("- checkpoint_status: pending")
+	checkpointID := strings.TrimSpace(firstNonEmptyString(job.CheckpointID, doc.ActiveCheckpointID))
+	for _, checkpoint := range doc.Checkpoints {
+		if checkpointID != "" && strings.TrimSpace(checkpoint.ID) != checkpointID {
+			continue
+		}
+		write("- checkpoint_id: " + strings.TrimSpace(checkpoint.ID))
+		if title := strings.TrimSpace(checkpoint.Title); title != "" {
+			write("- checkpoint_title: " + title)
+		}
+		if status := strings.TrimSpace(checkpoint.Status); status != "" {
+			write("- checkpoint_status: " + status)
+		}
+		if len(checkpoint.ChangedFiles) > 0 {
+			write("- changed_files: " + strings.Join(trimStrings(checkpoint.ChangedFiles), ", "))
+		}
+		if len(checkpoint.Validation) > 0 {
+			write("- validation: " + strings.Join(trimStrings(checkpoint.Validation), "; "))
+		}
+		break
 	}
 }
 
@@ -2028,21 +2023,31 @@ func (e *sessionV3Executor) sessionV3ProviderCheckpointScope(job sessionV3Execut
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return scope
 	}
-	if authority, ok, err := e.server.sessions.Store().GetPlanRuntimeAuthority(job.SessionID); err == nil && ok {
+	if active, ok, err := e.server.sessions.GetActivePlan(job.SessionID); err == nil && ok && active.Document != nil {
 		if scope.PlanID == "" {
-			scope.PlanID = authority.PlanID
+			scope.PlanID = strings.TrimSpace(active.ID)
 		}
-		if summary, found, getErr := e.server.sessions.Store().GetPlanExecutionSummary(job.SessionID, authority.PlanID); getErr == nil && found {
-			if scope.CheckpointID == "" {
-				scope.CheckpointID = strings.TrimSpace(firstNonEmptyString(summary.ActiveCheckpointID, summary.NextCheckpointID))
+		if active.Document.ExecutionState != nil {
+			state := active.Document.ExecutionState
+			if scope.CheckpointID == "" && sessionV3PlanFreshContextBoundaryStatus(state.Status) {
+				scope.CheckpointID = strings.TrimSpace(firstNonEmptyString(state.LastCheckpointID, active.Document.ActiveCheckpointID))
 			}
 			if scope.AttemptID == "" {
-				scope.AttemptID = strings.TrimSpace(summary.ActiveAttemptID)
+				scope.AttemptID = strings.TrimSpace(firstNonEmptyString(state.ActiveAttemptID, state.LastAttemptID))
+			}
+			if scope.ParentSessionID == "" {
+				scope.ParentSessionID = strings.TrimSpace(state.ParentSessionID)
 			}
 		}
-		if scope.CheckpointID != "" && scope.AttemptID == "" {
-			if checkpoint, found, getErr := e.server.sessions.Store().GetPlanCheckpointExecution(job.SessionID, authority.PlanID, scope.CheckpointID); getErr == nil && found {
-				scope.AttemptID = strings.TrimSpace(checkpoint.ActiveAttemptID)
+		if scope.CheckpointID != "" {
+			for _, checkpoint := range active.Document.Checkpoints {
+				if strings.TrimSpace(checkpoint.ID) != scope.CheckpointID {
+					continue
+				}
+				if scope.AttemptID == "" {
+					scope.AttemptID = strings.TrimSpace(checkpoint.AttemptID)
+				}
+				break
 			}
 		}
 	}
@@ -2911,20 +2916,12 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 		}
 	}
 	if strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "post_checkpoint_followup") {
-		if authority, found, getErr := e.server.sessions.Store().GetPlanRuntimeAuthority(job.SessionID); getErr != nil {
-			return nil, getErr
-		} else if found {
-			definition, definitionFound, definitionErr := e.server.sessions.Store().GetPlanDefinition(job.SessionID, authority.PlanID, authority.DefinitionRevision)
-			if definitionErr != nil {
-				return nil, definitionErr
-			}
-			checkpoint, checkpointFound, checkpointErr := e.server.sessions.Store().GetPlanCheckpointDefinition(job.SessionID, authority.PlanID, authority.DefinitionRevision, epoch.Boundary.CheckpointID)
-			if checkpointErr != nil {
-				return nil, checkpointErr
-			}
-			if definitionFound && checkpointFound {
-				summary := strings.TrimSpace("Plan: " + definition.Title + "\nCompleted checkpoint: " + checkpoint.Title)
-				content, metadata := runruntime.BuildProviderContextBoundaryMessage(summary, runruntime.ContextCompactionOriginPlanFreshContext, 1, nil)
+		if activePlan, planOK, planErr := e.server.sessions.GetActivePlan(job.SessionID); planErr != nil {
+			return nil, planErr
+		} else if planOK {
+			summary := sessionV3PlanFreshContextBoundarySummary(activePlan, epoch.Boundary.CheckpointID, "")
+			if summary != "" {
+				content, metadata := runruntime.BuildProviderContextBoundaryMessage(summary, runruntime.ContextCompactionOriginPlanFreshContext, 1, &activePlan)
 				if metadata == nil {
 					metadata = map[string]any{}
 				}

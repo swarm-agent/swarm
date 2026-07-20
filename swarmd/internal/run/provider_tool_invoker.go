@@ -446,10 +446,8 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		})
 	}
 
-	if !isPassiveNativePlanRuntimeCall(call) {
-		if err := s.storeProviderManagedToolResult(config, call, metadata, result); err != nil {
-			return tool.Result{}, err
-		}
+	if err := s.storeProviderManagedToolResult(config, call, metadata, result); err != nil {
+		return tool.Result{}, err
 	}
 	if err := s.appendPlanLifecycleMessageForToolResult(config.sessionID, call, result, config.applySessionMutation); err != nil {
 		return tool.Result{}, err
@@ -580,22 +578,6 @@ func (s *Service) appendExitPlanModeLifecycleMessage(sessionID string, payload m
 	lifecyclePayload := cloneGenericMap(payload)
 	lifecyclePayload["action"] = "approve_and_start"
 	return s.appendPlanExecutionLifecycleSystemMessage(sessionID, "approve_and_start", plan, lifecyclePayload, applySessionMutation)
-}
-
-func isPassiveNativePlanRuntimeCall(call tool.Call) bool {
-	if !strings.EqualFold(strings.TrimSpace(call.Name), "plan_manage") {
-		return false
-	}
-	args := decodeToolPayload(strings.TrimSpace(call.Arguments))
-	if args == nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(mapString(args, "action"))) {
-	case "activate_plan", "focus_subtask", "complete_subtask", "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed":
-		return true
-	default:
-		return false
-	}
 }
 
 func (s *Service) storeProviderManagedToolResult(config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result) error {
