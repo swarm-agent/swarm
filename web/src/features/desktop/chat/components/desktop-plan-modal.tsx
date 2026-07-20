@@ -28,7 +28,7 @@ interface DesktopPlanModalProps {
   executing?: boolean
   onCopy: (text: string) => Promise<boolean>
   onRestoreRevision: (revision: DesktopSessionPlanRevisionRecord, input?: DesktopPlanRecoveryInput) => Promise<void>
-  onApproveStart?: (input: { checkpointId?: string; executionGranularity: 'checkpointed'; continueAutomatically: boolean; continuationPolicy: 'automatic' | 'review_each_checkpoint' }) => Promise<void>
+  onApproveStart?: (input: { checkpointId?: string; executionGranularity: 'checkpointed'; continueAutomatically: true; continuationPolicy: 'automatic' }) => Promise<void>
 }
 
 export interface DesktopPlanRecoveryInput {
@@ -323,13 +323,11 @@ function PlanRecoveryPanel({
   executing,
   recoveryMode,
   selectedCheckpointId,
-  pauseForReview,
   recoveryAction,
   canApproveStart,
   onRecoveryModeChange,
   onSelectRevision,
   onCheckpointSelect,
-  onPauseForReviewChange,
   onRecoveryActionChange,
   onConfirmRecovery,
 }: {
@@ -342,13 +340,11 @@ function PlanRecoveryPanel({
   executing: boolean
   recoveryMode: boolean
   selectedCheckpointId: string
-  pauseForReview: boolean
   recoveryAction: PlanRecoveryAction
   canApproveStart: boolean
   onRecoveryModeChange: (value: boolean) => void
   onSelectRevision: (key: string) => void
   onCheckpointSelect: (checkpointId: string) => void
-  onPauseForReviewChange: (value: boolean) => void
   onRecoveryActionChange: (value: PlanRecoveryAction) => void
   onConfirmRecovery: (action: PlanRecoveryAction, input: DesktopPlanRecoveryInput) => void
 }) {
@@ -358,8 +354,8 @@ function PlanRecoveryPanel({
   const requestedCheckpointId = selectedCheckpointId || document?.activeCheckpointId || checkpoints[0]?.id || ''
   const selectedCheckpoint = checkpoints.find((checkpoint) => checkpoint.id === requestedCheckpointId) ?? checkpoints[0] ?? null
   const effectiveCheckpointId = selectedCheckpoint?.id || ''
-  const continueAutomatically = !pauseForReview
-  const continuationPolicy: 'automatic' | 'review_each_checkpoint' = pauseForReview ? 'review_each_checkpoint' : 'automatic'
+  const continueAutomatically = true as const
+  const continuationPolicy = 'automatic' as const
   const disabled = saving || executing
   const selectedTimestamp = selectedRevision ? formatTimestamp(selectedRevision.createdAt || selectedRevision.updatedAt) : ''
   const snapshotLabel = selectedRevision ? revisionOptionLabel(selectedRevision) : 'Current live plan'
@@ -443,14 +439,8 @@ function PlanRecoveryPanel({
           </label>
         </div>
 
-        <div className="grid gap-3">
-          <label className="flex items-start gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
-            <input type="checkbox" className="mt-1" checked={pauseForReview} onChange={(event) => onPauseForReviewChange(event.target.checked)} disabled={disabled || !document} />
-            <span className="grid gap-1">
-              <span className="font-medium">Pause for review after each checkpoint</span>
-              <span className="text-xs text-[var(--app-text-muted)]">Unchecked continues automatically after successful checkpoints.</span>
-            </span>
-          </label>
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text-muted)]">
+          Starts automatically after approval. Permission prompts still appear when required.
         </div>
       </div>
 
@@ -498,7 +488,6 @@ export function DesktopPlanModal({
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const [selectedRevisionKey, setSelectedRevisionKey] = useState('current')
   const [selectedCheckpointId, setSelectedCheckpointId] = useState('')
-  const [pauseForReview, setPauseForReview] = useState(false)
   const [recoveryMode, setRecoveryMode] = useState(false)
   const [recoveryAction, setRecoveryAction] = useState<PlanRecoveryAction>('start_selected')
   const modalWasOpenRef = useRef(false)
@@ -523,7 +512,6 @@ export function DesktopPlanModal({
       setSelectedCheckpointId(plan?.document?.activeCheckpointId || plan?.document?.checkpoints[0]?.id || '')
       setRecoveryMode(false)
       setRecoveryAction('start_selected')
-      setPauseForReview(false)
     }
   }, [open, plan?.id, plan?.document])
 
@@ -577,8 +565,6 @@ export function DesktopPlanModal({
     }
   }
 
-  const continueAutomatically = !pauseForReview
-  const continuationPolicy: 'automatic' | 'review_each_checkpoint' = pauseForReview ? 'review_each_checkpoint' : 'automatic'
   const canApproveStart = Boolean(onApproveStart && plan?.document && !viewingRevision)
   const selectedApprovalCheckpointId = selectedCheckpointId || selectedDocument?.activeCheckpointId || selectedDocument?.checkpoints[0]?.id || ''
 
@@ -587,8 +573,8 @@ export function DesktopPlanModal({
     await onApproveStart({
       checkpointId: input?.checkpointId || selectedApprovalCheckpointId || undefined,
       executionGranularity: 'checkpointed',
-      continueAutomatically: input?.continueAutomatically ?? continueAutomatically,
-      continuationPolicy: input?.continuationPolicy || continuationPolicy,
+      continueAutomatically: true,
+      continuationPolicy: 'automatic',
     })
   }
 
@@ -645,13 +631,11 @@ export function DesktopPlanModal({
                       executing={executing}
                       recoveryMode={recoveryMode}
                       selectedCheckpointId={selectedCheckpointId}
-                      pauseForReview={pauseForReview}
                       recoveryAction={recoveryAction}
                       canApproveStart={canApproveStart}
                       onRecoveryModeChange={handleRecoveryModeChange}
                       onSelectRevision={handleSelectRevision}
                       onCheckpointSelect={setSelectedCheckpointId}
-                      onPauseForReviewChange={setPauseForReview}
                       onRecoveryActionChange={setRecoveryAction}
                       onConfirmRecovery={(action, input) => void handleConfirmRecovery(action, input)}
                     />

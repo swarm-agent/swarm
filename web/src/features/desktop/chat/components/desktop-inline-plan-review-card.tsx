@@ -62,7 +62,6 @@ export function DesktopInlinePlanReviewCard({
     () => structuredPlanDocumentFromPermission(permission),
     [permission],
   );
-  const [pauseForReview, setPauseForReview] = useState(false);
   const [loading, setLoading] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const supportsExecutionChoice =
@@ -102,7 +101,7 @@ export function DesktopInlinePlanReviewCard({
       // only overlay execution policy, never replay a stale proposal document.
       if (action === "approve_always") await savePlanAcceptanceMode("always_allow");
       const approvedArguments = action !== "deny" && supportsExecutionChoice
-        ? exitPlanExecutionArguments(pauseForReview)
+        ? exitPlanExecutionArguments()
         : undefined;
       await onResolve(permission, action === "deny" ? "deny" : "approve", "", approvedArguments);
     } finally {
@@ -175,21 +174,7 @@ export function DesktopInlinePlanReviewCard({
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--app-border)] pt-4">
         {supportsExecutionChoice ? (
-          <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-[var(--app-text)]">
-            <input
-              type="checkbox"
-              role="switch"
-              className="peer sr-only"
-              checked={pauseForReview}
-              disabled={loading}
-              onChange={(event) => setPauseForReview(event.target.checked)}
-            />
-            <span
-              aria-hidden="true"
-              className="relative h-5 w-9 rounded-full bg-[var(--app-border-strong)] transition-colors after:absolute after:left-0.5 after:top-0.5 after:size-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-[var(--app-primary)] peer-checked:after:translate-x-4 peer-disabled:opacity-50"
-            />
-            Pause for review after each checkpoint
-          </label>
+          <span className="text-sm text-[var(--app-text-muted)]">Starts automatically after approval</span>
         ) : (
           <span />
         )}

@@ -425,7 +425,7 @@ test("Git integration reserves a visible bounded region below the plan", () => {
   assert.match(appPageSource, /min-h-\[160px\][^'\"]*flex-1[^'\"]*overflow-hidden/);
 });
 
-test("automatic checkpointed mode sidebar actions section explains continuation and exposes backend policy toggle", () => {
+test("automatic plan sidebar shows a compact run state without execution mode controls", () => {
   const markup = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar
       view={view()}
@@ -434,17 +434,14 @@ test("automatic checkpointed mode sidebar actions section explains continuation 
     />,
   );
 
-  assert.match(markup, /Automatic mode on/);
-  assert.match(markup, /Backend policy is automatic/);
+  assert.match(markup, /Run state/);
+  assert.match(markup, /Running automatically/);
+  assert.match(markup, /In Progress/);
   assert.match(markup, /data-plan-system-message=""/);
   assert.doesNotMatch(markup, /border-l-2/);
-  assert.match(markup, /Switch to checkpoint-by-checkpoint/);
-  assert.match(markup, /next checkpoint completion pauses for review/);
-  assert.match(markup, /Archive plan/);
-  assert.match(
-    markup,
-    /Archive this plan when you no longer need the chat in your active workspace/,
-  );
+  assert.doesNotMatch(markup, /Pause for review after each checkpoint/);
+  assert.doesNotMatch(markup, /Switch to automatic/);
+  assert.doesNotMatch(markup, /Archive plan/);
   assert.doesNotMatch(markup, /Continue checkpoint/);
   assert.doesNotMatch(markup, /Accept this checkpoint/);
   assert.doesNotMatch(markup, /Restart/);
@@ -699,7 +696,7 @@ test("blocked checkpoint resolve actions dispatch unblock requests", () => {
   ]);
 });
 
-test("manual review mode keeps the start-next review button visible and enabled when more checkpoints remain", () => {
+test("legacy review-required plans keep review actions without exposing a manual mode", () => {
   const base = view({
     policyMode: "review_each_checkpoint",
     reviewRequired: true,
@@ -723,11 +720,11 @@ test("manual review mode keeps the start-next review button visible and enabled 
     />,
   );
 
-  assert.match(markup, /Actions/);
-  assert.match(markup, /Review Mode/);
-  assert.match(markup, /Backend policy is checkpoint-by-checkpoint/);
-  assert.match(markup, /Switch to automatic/);
-  assert.match(markup, /next checkpoint completion can auto-start/);
+  assert.match(markup, /Run state/);
+  assert.match(markup, /Waiting review/);
+  assert.match(markup, /Review required/);
+  assert.doesNotMatch(markup, /Review Mode/);
+  assert.doesNotMatch(markup, /Switch to automatic/);
   assert.match(markup, /Accept &amp; start next checkpoint/);
   assert.match(markup, /Accepting review starts the next checkpoint/);
   assert.match(markup, /ask the AI to add or adjust checkpoints/);
@@ -745,7 +742,7 @@ test("manual review mode keeps the start-next review button visible and enabled 
   assert.doesNotMatch(markup, /Accept &amp; move to next/);
 });
 
-test("manual review mode exposes final acceptance before archiving on the final checkpoint", () => {
+test("legacy final review exposes acceptance before archiving without a mode toggle", () => {
   const markup = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar
       view={view({
@@ -758,14 +755,14 @@ test("manual review mode exposes final acceptance before archiving on the final 
     />,
   );
 
-  assert.match(markup, /Review Mode/);
-  assert.match(markup, /Backend policy is checkpoint-by-checkpoint/);
+  assert.match(markup, /Run state/);
+  assert.match(markup, /Waiting review/);
   assert.match(markup, /Accept &amp; archive plan/);
   assert.match(
     markup,
     /Accepting final review is recorded first, then this plan is archived/,
   );
-  assert.match(markup, /Switch to automatic/);
+  assert.doesNotMatch(markup, /Switch to automatic/);
   assert.doesNotMatch(markup, /Archive plan<\/button>/);
   assert.doesNotMatch(
     markup,
@@ -809,9 +806,9 @@ test("automatic final review keeps automatic copy and no policy toggle when all 
     />,
   );
 
-  assert.match(markup, /Automatic mode paused/);
-  assert.match(markup, /Backend policy is automatic/);
-  assert.match(markup, /All checkpoints are complete and waiting for final review/);
+  assert.match(markup, /Run state/);
+  assert.match(markup, /Waiting review/);
+  assert.match(markup, /Plan complete/);
   assert.match(markup, /Accept \u0026amp; archive plan/);
   assert.doesNotMatch(markup, /Review Mode/);
   assert.doesNotMatch(markup, /Backend policy is checkpoint-by-checkpoint/);
@@ -896,46 +893,18 @@ test("final review renders the terminal recommendation", () => {
   assert.match(markup, /border border-\[var\(--app-primary-border\)\]/);
 });
 
-test("automatic mode toggle dispatches checkpointed policy action", () => {
-  const actions: DesktopPlanExecutionSidebarActionInput[] = [];
-  const button = findSidebarButton(
+test("desktop plan sidebar never renders manual execution mode controls", () => {
+  const markup = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar
-      view={view()}
-      onAction={(input) => {
-        actions.push(input);
-      }}
+      view={view({ policyMode: "review_each_checkpoint", reviewRequired: true, status: "waiting_review" })}
+      onAction={() => undefined}
       onEditPlan={() => undefined}
     />,
-    "Pause for review after each checkpoint",
   );
 
-  assert.equal(button.props.disabled, false);
-  button.props.onClick?.();
-
-  assert.deepEqual(actions, [{ action: "resume_checkpointed" }]);
-});
-
-test("checkpoint-by-checkpoint mode toggle dispatches automatic policy action", () => {
-  const actions: DesktopPlanExecutionSidebarActionInput[] = [];
-  const button = findSidebarButton(
-    <DesktopPlanExecutionSidebar
-      view={view({
-        policyMode: "review_each_checkpoint",
-        reviewRequired: true,
-        status: "waiting_review",
-      })}
-      onAction={(input) => {
-        actions.push(input);
-      }}
-      onEditPlan={() => undefined}
-    />,
-    "Switch to automatic",
-  );
-
-  assert.equal(button.props.disabled, false);
-  button.props.onClick?.();
-
-  assert.deepEqual(actions, [{ action: "resume_automatic" }]);
+  assert.doesNotMatch(markup, /Pause for review after each checkpoint/);
+  assert.doesNotMatch(markup, /Switch to automatic/);
+  assert.doesNotMatch(markup, /checkpoint-by-checkpoint/);
 });
 
 test("non-final review action dispatches checkpoint acceptance to start the next checkpoint", () => {

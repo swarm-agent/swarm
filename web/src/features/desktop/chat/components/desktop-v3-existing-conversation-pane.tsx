@@ -132,8 +132,6 @@ import {
   resolveDesktopPlanBlockedCheckpoint,
   restartDesktopPlanCheckpoint,
   resumeDesktopPlanCheckpoint,
-  resumeDesktopPlanAutomatic,
-  resumeDesktopPlanCheckpointed,
 } from "../../session-v3/plan-execution-api";
 import {
   fetchSessionMessages,
@@ -2336,19 +2334,11 @@ export function DesktopV3ExistingConversationPane({
   async function handlePlanExecutionAction(
     input: DesktopPlanExecutionSidebarActionInput,
   ) {
-    const policySwitch =
-      input.action === "resume_automatic" ||
-      input.action === "resume_checkpointed";
-    if (
-      !normalizedSessionId ||
-      planExecutionBusyAction ||
-      (currentRun && !policySwitch)
-    )
-      return;
+    if (!normalizedSessionId || planExecutionBusyAction || currentRun) return;
     const busyKey = `${input.action}:${input.checkpointId ?? ""}`;
     setPlanExecutionBusyAction(busyKey);
     setSendError(null);
-    if (!policySwitch) scrollToBottom("smooth");
+    scrollToBottom("smooth");
     try {
       await persistVisibleSettings();
       switch (input.action) {
@@ -2405,12 +2395,6 @@ export function DesktopV3ExistingConversationPane({
             normalizedSessionId,
             input.checkpointId,
           );
-          break;
-        case "resume_automatic":
-          await resumeDesktopPlanAutomatic(normalizedSessionId);
-          break;
-        case "resume_checkpointed":
-          await resumeDesktopPlanCheckpointed(normalizedSessionId);
           break;
       }
     } catch (error) {

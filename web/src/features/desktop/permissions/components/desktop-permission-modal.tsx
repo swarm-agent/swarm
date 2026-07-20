@@ -515,42 +515,16 @@ function ExitPlanDocumentView({ document }: { document: StructuredPlanDocument }
   return <StructuredPlanDocumentView document={document} review />
 }
 
-export function exitPlanExecutionArguments(pauseForReview: boolean): {
+export function exitPlanExecutionArguments(): {
   execution_granularity: 'checkpointed'
-  continue_automatically: boolean
-  continuation_policy: 'automatic' | 'review_each_checkpoint'
+  continue_automatically: true
+  continuation_policy: 'automatic'
 } {
   return {
     execution_granularity: 'checkpointed',
-    continue_automatically: !pauseForReview,
-    continuation_policy: pauseForReview ? 'review_each_checkpoint' : 'automatic',
+    continue_automatically: true,
+    continuation_policy: 'automatic',
   }
-}
-
-function ExitPlanReviewControl({
-  pauseForReview,
-  loading,
-  onPauseForReviewChange,
-}: {
-  pauseForReview: boolean
-  loading: boolean
-  onPauseForReviewChange: (pauseForReview: boolean) => void
-}) {
-  return (
-    <label
-      className="flex min-h-9 items-center gap-2 text-sm text-[var(--app-text)]"
-      title="Unchecked continues automatically after successful checkpoints."
-    >
-      <input
-        type="checkbox"
-        checked={pauseForReview}
-        disabled={loading}
-        onChange={(event) => onPauseForReviewChange(event.target.checked)}
-      />
-      <span>Pause for review after each checkpoint</span>
-      <span className="sr-only">Unchecked continues automatically after successful checkpoints.</span>
-    </label>
-  )
 }
 
 function ExitPlanModal({
@@ -564,14 +538,12 @@ function ExitPlanModal({
   const [note, setNote] = useState('')
   const [loading, setLoading] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
-  const [pauseForReview, setPauseForReview] = useState(false)
 
   useEffect(() => {
     if (open) {
       setNote('')
       setLoading(false)
       setCopyState('idle')
-      setPauseForReview(false)
     }
   }, [open, permission])
 
@@ -605,7 +577,7 @@ function ExitPlanModal({
             title: payload.title || structuredDocument?.title || payload.approvedArguments.title,
             plan: payload.body,
             document: payload.document ?? payload.approvedArguments.document,
-            ...exitPlanExecutionArguments(pauseForReview),
+            ...exitPlanExecutionArguments(),
           }
         : undefined
       await onResolve(action === 'approve_always' ? 'approve' : action, note.trim(), approvedArguments)
@@ -648,11 +620,7 @@ function ExitPlanModal({
           note={note}
           onNoteChange={setNote}
           leadingAction={hasStructuredPlan ? (
-            <ExitPlanReviewControl
-              pauseForReview={pauseForReview}
-              loading={loading}
-              onPauseForReviewChange={setPauseForReview}
-            />
+            <span className="text-sm text-[var(--app-text-muted)]">Starts automatically after approval</span>
           ) : undefined}
         />
       }
@@ -936,12 +904,11 @@ export function planLifecycleApprovedArguments(payload: PlanUpdatePayload, fallb
 
 export function newPlanLifecycleApprovedArguments(
   payload: PlanUpdatePayload,
-  pauseForReview: boolean,
 ): Record<string, unknown> {
   return {
     ...planLifecycleApprovedArguments(payload, 'request_new_plan'),
     approval_confirmed: true,
-    ...exitPlanExecutionArguments(pauseForReview),
+    ...exitPlanExecutionArguments(),
   }
 }
 
@@ -1252,14 +1219,12 @@ function NewPlanRequestModal({
   const [note, setNote] = useState('')
   const [loading, setLoading] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
-  const [pauseForReview, setPauseForReview] = useState(false)
 
   useEffect(() => {
     if (open) {
       setNote('')
       setLoading(false)
       setCopyState('idle')
-      setPauseForReview(false)
     }
   }, [open, permission?.id])
 
@@ -1284,7 +1249,7 @@ function NewPlanRequestModal({
       await onResolve(
         action === 'approve_always' ? 'approve' : action,
         note.trim(),
-        action !== 'deny' ? newPlanLifecycleApprovedArguments(payload, pauseForReview) : undefined,
+        action !== 'deny' ? newPlanLifecycleApprovedArguments(payload) : undefined,
       )
     } finally {
       setLoading(false)
@@ -1327,11 +1292,7 @@ function NewPlanRequestModal({
           onNoteChange={setNote}
           noteLabel="Message to agent"
           leadingAction={
-            <ExitPlanReviewControl
-              pauseForReview={pauseForReview}
-              loading={loading}
-              onPauseForReviewChange={setPauseForReview}
-            />
+            <span className="text-sm text-[var(--app-text-muted)]">Starts automatically after approval</span>
           }
         />
       }

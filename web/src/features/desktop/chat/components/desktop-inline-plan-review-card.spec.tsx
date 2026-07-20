@@ -91,10 +91,11 @@ for (const [requirement, toolName] of [
   assert(!markup.includes("Ask Swarm"), `expected mobile plan chat control only when the opener is provided for ${requirement}`);
   assert(!markup.includes("Accept edit") && !markup.includes("Reject edit") && !markup.includes("Request another revision"), `expected legacy review labels to be removed for ${requirement}`);
   if (requirement === "permission" || requirement === "plan_new_request") {
-    const switchIndex = markup.indexOf('role="switch"');
+    const automaticIndex = markup.indexOf("Starts automatically after approval");
     const rejectIndex = markup.indexOf(">Reject<");
-    assert(markup.indexOf(">Always allow<") > rejectIndex, `expected persistence separate from continuation choice for ${requirement}`);
-    assert(switchIndex >= 0 && switchIndex < rejectIndex, `expected pause switch on the left of the bottom action row for ${requirement}`);
+    assert(markup.indexOf(">Always allow<") > rejectIndex, `expected persistence separate from automatic execution state for ${requirement}`);
+    assert(automaticIndex >= 0 && automaticIndex < rejectIndex, `expected automatic execution state on the left of the bottom action row for ${requirement}`);
+    assert(!markup.includes('role="switch"'), `expected no manual execution switch for ${requirement}`);
   }
   assert(!markup.includes("Message to Swarm (optional)"), `expected Plan Agent to replace standalone rejection note for ${requirement}`);
 }

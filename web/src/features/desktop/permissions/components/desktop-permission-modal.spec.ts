@@ -69,22 +69,20 @@ function renderPermission(permission: DesktopPermissionRecord, sessionMode = 'au
   }))
 }
 
-test('exit plan modal renders one unchecked review checkbox', () => {
+test('exit plan modal states automatic execution without a manual mode control', () => {
   const markup = renderPermission(exitPlanPermission(), 'plan')
 
-  assert.match(markup, /Pause for review after each checkpoint/)
-  assert.match(markup, /type="checkbox"/)
-  assert.doesNotMatch(markup, /type="checkbox"[^>]*checked/)
+  assert.match(markup, /Starts automatically after approval/)
+  assert.doesNotMatch(markup, /Pause for review after each checkpoint/)
+  assert.doesNotMatch(markup, /type="checkbox"/)
   assert.doesNotMatch(markup, /Single run/)
   assert.doesNotMatch(markup, /role="radiogroup"/)
-  assert(markup.indexOf('Pause for review after each checkpoint') < markup.indexOf('>Deny<'), 'expected review checkbox to the left of Deny')
-  assert.doesNotMatch(markup, /flex items-start gap-3 rounded-xl border/)
 })
 
 test('exit plan modal defaults to automatic mode without presenting an AI suggestion', () => {
   const markup = renderPermission(exitPlanPermission(), 'plan')
 
-  assert.match(markup, /Unchecked continues automatically after successful checkpoints\./)
+  assert.match(markup, /Starts automatically after approval/)
   assert.doesNotMatch(markup, /AI-suggested/)
   assert.doesNotMatch(markup, /AI suggested/)
   assert.doesNotMatch(markup, /Approval will send/)
@@ -99,7 +97,7 @@ test('exit plan modal ignores top-level backend execution recommendation', () =>
     continue_automatically: false,
   }), 'plan')
 
-  assert.match(markup, /Pause for review after each checkpoint/)
+  assert.match(markup, /Starts automatically after approval/)
   assert.match(markup, /Always allow plan acceptance/)
   assert.doesNotMatch(markup, /AI suggested/)
   assert.doesNotMatch(markup, /execution_granularity=/)
@@ -113,35 +111,29 @@ test('exit plan modal ignores approved argument execution controls when choosing
     continue_automatically: false,
   }), 'plan')
 
-  assert.match(markup, /Pause for review after each checkpoint/)
+  assert.match(markup, /Starts automatically after approval/)
   assert.match(markup, /Always allow plan acceptance/)
   assert.doesNotMatch(markup, /AI suggested/)
   assert.doesNotMatch(markup, /execution_granularity=/)
   assert.doesNotMatch(markup, /continuation_policy=automatic/)
 })
 
-test('exit plan review checkbox maps to checkpointed approved arguments', () => {
-  assert.deepEqual(exitPlanExecutionArguments(false), {
+test('exit plan approval always maps to automatic checkpoint execution', () => {
+  assert.deepEqual(exitPlanExecutionArguments(), {
     execution_granularity: 'checkpointed',
     continue_automatically: true,
     continuation_policy: 'automatic',
-  })
-
-  assert.deepEqual(exitPlanExecutionArguments(true), {
-    execution_granularity: 'checkpointed',
-    continue_automatically: false,
-    continuation_policy: 'review_each_checkpoint',
   })
 })
 
 test('exit plan and new plan approval modals use the same non-split plan layout order', () => {
   const exitPlan = renderPermission(exitPlanPermission(), 'plan')
-  const exitReviewIndex = exitPlan.indexOf('Pause for review after each checkpoint')
+  const exitReviewIndex = exitPlan.indexOf('Starts automatically after approval')
   const exitDenyIndex = exitPlan.indexOf('>Deny<')
   const exitDetailsIndex = exitPlan.indexOf('Plan details')
   const exitCheckpointsIndex = exitPlan.indexOf('Checkpoints')
-  assert(exitReviewIndex >= 0, 'expected exit plan review checkbox')
-  assert(exitReviewIndex < exitDenyIndex, 'expected exit plan review checkbox to the left of Deny')
+  assert(exitReviewIndex >= 0, 'expected exit plan automatic execution state')
+  assert(exitReviewIndex < exitDenyIndex, 'expected exit plan automatic execution state to the left of Deny')
   assert(exitCheckpointsIndex > exitDetailsIndex, 'expected exit plan checkpoints below plan details')
   assert.doesNotMatch(exitPlan, /min-\[901px\]:grid-cols/)
   assert.doesNotMatch(exitPlan, /min-\[901px\]:border-l/)
@@ -162,13 +154,13 @@ test('exit plan and new plan approval modals use the same non-split plan layout 
       }],
     },
   }))
-  const newReviewIndex = newPlan.indexOf('Pause for review after each checkpoint')
+  const newReviewIndex = newPlan.indexOf('Starts automatically after approval')
   const newDenyIndex = newPlan.indexOf('>Deny<')
   const lifecycleIndex = newPlan.indexOf('Lifecycle action')
   const newDetailsIndex = newPlan.indexOf('Plan details')
   const newCheckpointsIndex = newPlan.indexOf('Checkpoints')
-  assert(newReviewIndex >= 0, 'expected new plan review checkbox')
-  assert(newReviewIndex < newDenyIndex, 'expected new plan review checkbox to the left of Deny')
+  assert(newReviewIndex >= 0, 'expected new plan automatic execution state')
+  assert(newReviewIndex < newDenyIndex, 'expected new plan automatic execution state to the left of Deny')
   assert(newDetailsIndex > lifecycleIndex, 'expected plan details below lifecycle context')
   assert(newCheckpointsIndex > newDetailsIndex, 'expected checkpoints below plan details')
   assert.match(newPlan, /rounded-3xl/)
@@ -251,9 +243,9 @@ test('DesktopPermissionModal routes typed plan lifecycle approvals away from gen
   assert.match(newPlan, /Render checkpoint task/)
   assert.match(newPlan, /Checkpoint content is visible before approval/)
   assert.match(newPlan, /Approve new plan/)
-  assert.match(newPlan, /Pause for review after each checkpoint/)
+  assert.match(newPlan, /Starts automatically after approval/)
   assert.match(newPlan, /Always allow plan acceptance/)
-  assert.match(newPlan, /type="checkbox"/)
+  assert.doesNotMatch(newPlan, /type="checkbox"/)
   assert.doesNotMatch(newPlan, /Single run/)
   assert.doesNotMatch(newPlan, /No proposed new plan document or plan text was provided/)
   assert.doesNotMatch(newPlan, /Plan update overview/)
@@ -383,7 +375,7 @@ test('new plan lifecycle approval merges automatic checkpointed execution contro
       priorPlan: '',
       priorTitle: '',
       priorDocument: null,
-    }, false),
+    }),
     {
       action: 'request_new_plan',
       plan_id: 'plan-1',

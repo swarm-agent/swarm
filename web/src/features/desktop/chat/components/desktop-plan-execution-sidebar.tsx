@@ -20,8 +20,6 @@ type DesktopPlanExecutionSidebarAction =
   | "restart_checkpoint"
   | "resolve_blocked_checkpoint"
   | "resolve_blocked_only"
-  | "resume_automatic"
-  | "resume_checkpointed"
   | "archive_plan";
 
 export interface DesktopPlanExecutionSidebarActionInput {
@@ -670,13 +668,10 @@ function ActionsSection({
 }: DesktopPlanExecutionSidebarProps & { view: DesktopPlanExecutionView }) {
   const checkpointId =
     view.activeCheckpointId || view.activeCheckpoint?.id || "";
-  const automatic = view.policyMode === "automatic";
   const acceptBusy =
     busyAction === actionBusyKey("accept_checkpoint", checkpointId);
   const resumeBusy =
     busyAction === actionBusyKey("resume_checkpoint", checkpointId);
-  const automaticBusy = busyAction === actionBusyKey("resume_automatic");
-  const checkpointedBusy = busyAction === actionBusyKey("resume_checkpointed");
   const archiveBusy = busyAction === actionBusyKey("archive_plan");
   const resolveStartBusy =
     busyAction === actionBusyKey("resolve_blocked_checkpoint", checkpointId);
@@ -710,12 +705,6 @@ function ActionsSection({
     ? "Accepting review starts the next checkpoint. You can keep chatting first or ask the AI to add or adjust checkpoints."
     : "Accepting final review is recorded first, then this plan is archived.";
   const showDirectArchiveAction = !view.reviewRequired || hasNextCheckpoint;
-  const reviewModeLabel = automatic ? "Automatic mode paused" : "Review Mode";
-  const reviewModeHelp = automatic
-    ? view.completed
-      ? "Backend policy is automatic. All checkpoints are complete and waiting for final review."
-      : "Backend policy is automatic. Execution is paused for review before another checkpoint can start."
-    : "Backend policy is checkpoint-by-checkpoint. The next completed checkpoint pauses for review unless you switch back to automatic.";
 
   if (view.paused) {
     return (
@@ -808,7 +797,6 @@ function ActionsSection({
   }
 
   if (
-    automatic &&
     !view.reviewRequired &&
     !view.blocked &&
     !view.failed &&
@@ -817,51 +805,11 @@ function ActionsSection({
     return (
       <section className="min-w-0 pt-0.5" data-plan-section="actions">
         <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
-          Actions
+          Run state
         </div>
-        <div className="mt-2 border-y border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-2.5 py-2" data-plan-system-message>
-          <div className="text-xs font-semibold text-[var(--app-text)]">
-            Automatic mode on
-          </div>
-          <p className="mt-0.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
-            Backend policy is automatic. The next completed checkpoint starts the
-            following checkpoint unless it stops for review, a blocker, or a failure.
-          </p>
-        </div>
-        <div className="mt-3 grid gap-1.5">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className={cn(
-              "rounded-lg",
-              checkpointedBusy ? "animate-pulse" : "",
-            )}
-            onClick={() => void onAction?.({ action: "resume_checkpointed" })}
-            disabled={!onAction || checkpointedBusy}
-          >
-            Pause for review after each checkpoint
-          </Button>
-          <p className="px-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
-            Saves the backend policy immediately, even during a run, so the next
-            checkpoint completion pauses for review.
-          </p>
-        </div>
-        <div className="mt-3 grid gap-1.5">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className={cn("rounded-lg", archiveBusy ? "animate-pulse" : "")}
-            onClick={() => void onAction?.({ action: "archive_plan" })}
-            disabled={!canArchive}
-          >
-            Archive plan
-          </Button>
-          <p className="px-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
-            Archive this plan when you no longer need the chat in your active
-            workspace.
-          </p>
+        <div className="mt-2 flex items-center justify-between gap-3 border-y border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-2.5 py-2" data-plan-system-message>
+          <span className="text-xs font-semibold text-[var(--app-text)]">Running automatically</span>
+          <StatusIndicator label={statusLabel(view, view.activeCheckpoint)} tone="primary" treatment="plain-text" />
         </div>
       </section>
     );
@@ -870,38 +818,16 @@ function ActionsSection({
   return (
     <section className="min-w-0 pt-0.5" data-plan-section="actions">
       <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
-        Actions
+        Run state
       </div>
-      <div className="mt-2 border-y border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2.5 py-2" data-plan-system-message>
-        <div className="text-xs font-medium text-[var(--app-text)]">
-          {reviewModeLabel}
-        </div>
-        <p className="mt-0.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
-          {reviewModeHelp}
-        </p>
+      <div className="mt-2 flex items-center justify-between gap-3 border-y border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2.5 py-2" data-plan-system-message>
+        <span className="text-xs font-medium text-[var(--app-text)]">{statusLabel(view, view.activeCheckpoint)}</span>
+        <StatusIndicator
+          label={view.completed ? "Plan complete" : view.reviewRequired ? "Review required" : view.failed ? "Run failed" : "Automatic"}
+          tone={view.failed ? "danger" : view.reviewRequired ? "warning" : "muted"}
+          treatment="plain-text"
+        />
       </div>
-
-      {!automatic &&
-      !view.blocked &&
-      !view.failed &&
-      !view.completed ? (
-        <div className="mt-3 grid gap-1.5">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className={cn("rounded-lg", automaticBusy ? "animate-pulse" : "")}
-            onClick={() => void onAction?.({ action: "resume_automatic" })}
-            disabled={!onAction || automaticBusy}
-          >
-            Switch to automatic
-          </Button>
-          <p className="px-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
-            Saves the backend policy immediately, even during a run, so the next
-            checkpoint completion can auto-start the following checkpoint.
-          </p>
-        </div>
-      ) : null}
 
       <ReviewRecommendation checkpoint={view.activeCheckpoint} />
 
