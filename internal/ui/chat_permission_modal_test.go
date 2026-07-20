@@ -74,6 +74,61 @@ func TestBashPermissionPreviewPrefixUsesRealPrefix(t *testing.T) {
 	}
 }
 
+func TestParseBashPermissionIntentMatchesDesktopInputs(t *testing.T) {
+	record := ChatPermissionRecord{
+		ToolName:      "functions.bash",
+		ToolArguments: `{"command":"python3 listener.py","explanation":["Start a listener on port 8080.","Expose it on public interfaces."],"category":"write","critical":true}`,
+	}
+
+	got, ok := parseBashPermissionIntent(record)
+	if !ok {
+		t.Fatal("parseBashPermissionIntent() rejected valid Desktop Bash metadata")
+	}
+	if got.Command != "python3 listener.py" || got.Category != "write" || !got.Critical {
+		t.Fatalf("intent = %#v, want command/category/critical preserved", got)
+	}
+	if want := []string{"Start a listener on port 8080.", "Expose it on public interfaces."}; !reflect.DeepEqual(got.Explanation, want) {
+		t.Fatalf("explanation = %#v, want %#v", got.Explanation, want)
+	}
+}
+
+func TestParseBashPermissionIntentRejectsMissingDesktopMetadata(t *testing.T) {
+	for _, raw := range []string{
+		`{"command":"pwd"}`,
+		`{"command":"pwd","explanation":[],"category":"read","critical":false}`,
+		`{"command":"pwd","explanation":["Print the directory."],"category":"inspect","critical":false}`,
+	} {
+		if _, ok := parseBashPermissionIntent(ChatPermissionRecord{ToolName: "bash", ToolArguments: raw}); ok {
+			t.Fatalf("parseBashPermissionIntent(%s) accepted incomplete metadata", raw)
+		}
+	}
+}
+
+func TestBashPermissionCardModelUsesSharedCardContract(t *testing.T) {
+	page := &ChatPage{theme: NordTheme(), sessionMode: "auto"}
+	record := ChatPermissionRecord{
+		ToolName:         "bash",
+		Requirement:      "permission",
+		Mode:             "auto",
+		SavedRulePreview: "allow bash prefix: npm",
+		ToolArguments:    `{"command":"npm run build","explanation":["Build the workspace."],"category":"write","critical":false}`,
+	}
+
+	model := page.permissionCardModel(record, 2, 72)
+	if model.Title != "Bash permission" || model.Badge != "write" {
+		t.Fatalf("card title/badge = %q/%q, want Bash permission/write", model.Title, model.Badge)
+	}
+	if !strings.Contains(model.Meta, "Approval required") || !strings.Contains(model.Meta, "2 pending") {
+		t.Fatalf("card meta = %q, want approval state and pending count", model.Meta)
+	}
+	content := renderLineTexts(model.Content)
+	for _, want := range []string{"Build the workspace.", "npm run build", "npm", "Future Bash commands"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("card content = %q, want %q", content, want)
+		}
+	}
+}
+
 func TestBashPermissionRequestSummaryKeepsFullCommand(t *testing.T) {
 	command := strings.Repeat("echo critical-permission-command; ", 12) + "printf 'done'"
 	payload := map[string]any{"command": command}

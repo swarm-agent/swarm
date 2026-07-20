@@ -38,6 +38,149 @@ func TestPageHeaderAndLiveOverlayRenderFromStore(t *testing.T) {
 	}
 }
 
+func TestBashPermissionFromHydrationRendersThemedCardAndActions(t *testing.T) {
+	permission := client.PermissionRecord{
+		ID:            "permission-bash",
+		SessionID:     "session-bash",
+		RunID:         "run-bash",
+		CallID:        "call-bash",
+		ToolName:      "functions.bash",
+		Requirement:   "tool",
+		Mode:          "auto",
+		Status:        "pending",
+		ToolArguments: `{"command":"python3 listener.py","explanation":["Start a listener on TCP port 8080.","Expose it on public network interfaces."],"category":"write","critical":true}`,
+	}
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:            client.SessionSummary{ID: "session-bash", Title: "Bash card"},
+		PendingPermissions: []client.PermissionRecord{permission},
+	}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 28)
+
+	page.Draw(screen)
+	screen.Show()
+	drawn := simulationText(screen, 100, 28)
+	for _, want := range []string{
+		"Bash permission",
+		"WRITE",
+		"PAY ATTENTION BEFORE APPROVING",
+		"Start a listener on TCP port 8080.",
+		"python3 listener.py",
+		"available after approval",
+		"Ctrl+D Always deny",
+		"Ctrl+A Always allow",
+		"Esc Deny",
+		"Enter Approve",
+	} {
+		if !strings.Contains(drawn, want) {
+			t.Fatalf("rendered Bash permission card missing %q:\n%s", want, drawn)
+		}
+	}
+	if strings.Contains(drawn, "> ") {
+		t.Fatalf("ordinary composer rendered behind Bash permission card:\n%s", drawn)
+	}
+}
+
+func TestBashPermissionCardUsesBackendRulePreviewLikeDesktop(t *testing.T) {
+	permission := client.PermissionRecord{
+		ID: "permission-bash", SessionID: "session-bash", ToolName: "bash", Mode: "auto", Status: "pending",
+		ToolArguments: `{"command":"npm run build","explanation":["Build the workspace."],"category":"write","critical":false}`,
+	}
+	transport := &fakeTransport{permissionExplain: client.PermissionExplain{RulePreview: "allow bash prefix: npm"}}
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session: client.SessionSummary{ID: "session-bash"}, PendingPermissions: []client.PermissionRecord{permission},
+	}})
+	page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 28)
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		page.Draw(screen)
+		screen.Show()
+		if strings.Contains(simulationText(screen, 100, 28), "npm") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("backend Bash prefix preview did not render:\n%s", simulationText(screen, 100, 28))
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestBashPermissionCardApproveUsesCanonicalV3PermissionAPI(t *testing.T) {
+	permission := client.PermissionRecord{
+		ID: "permission-bash", SessionID: "session-bash", ToolName: "bash", Status: "pending",
+		ToolArguments: `{"command":"npm run build","explanation":["Build the workspace."],"category":"write","critical":false}`,
+	}
+	transport := &fakeTransport{}
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session: client.SessionSummary{ID: "session-bash"}, PendingPermissions: []client.PermissionRecord{permission},
+	}})
+	page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
+	for _, r := range "looks good" {
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	deadline := time.Now().Add(time.Second)
+	for page.PendingPermissionVisible() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if page.PendingPermissionVisible() {
+		t.Fatal("approved Bash permission stayed visible")
+	}
+	transport.mu.Lock()
+	request := transport.permissionRequest
+	transport.mu.Unlock()
+	if request.sessionID != "session-bash" || request.permissionID != "permission-bash" || request.action != "allow_once" || request.reason != "looks good" {
+		t.Fatalf("permission resolution request = %#v", request)
+	}
+}
+
+func TestBashPermissionRealtimeEventSelectsPermissionCard(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-bash", Title: "Bash card"}}})
+	permission := client.PermissionRecord{
+		ID: "permission-bash", SessionID: "session-bash", RunID: "run-bash", CallID: "call-bash",
+		ToolName: "bash", Requirement: "tool", Mode: "auto", Status: "pending",
+		ToolArguments: `{"command":"npm run build","explanation":["Build the workspace."],"category":"write","critical":false}`,
+	}
+	payload, err := json.Marshal(map[string]any{"permission": permission})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Dispatch(RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{SessionID: "session-bash", Seq: 1, EventType: "permission.requested", Payload: payload}}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	if !page.PendingPermissionVisible() {
+		t.Fatal("realtime Bash permission did not activate permission card")
+	}
+
+	resolved := permission
+	resolved.Status = "approved"
+	resolved.Decision = "allow_once"
+	payload, err = json.Marshal(map[string]any{"permission": resolved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Dispatch(RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{SessionID: "session-bash", Seq: 2, EventType: "permission.updated", Payload: payload}}})
+	if page.PendingPermissionVisible() {
+		t.Fatal("resolved realtime Bash permission left permission card visible")
+	}
+}
+
 func TestRunTimerWakeIsOneShotAndReschedulesWithoutHeartbeat(t *testing.T) {
 	wake := make(chan struct{}, 3)
 	runtime := NewRuntime(&fakeTransport{}, NewStore(), func() { wake <- struct{}{} })

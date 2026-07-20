@@ -76,6 +76,45 @@ type PendingMessage struct {
 	ClientRequestID string
 }
 
+type PermissionState struct {
+	Records []client.PermissionRecord
+}
+
+func pendingPermissionsFromClient(records []client.PermissionRecord) PermissionState {
+	pending := make([]client.PermissionRecord, 0, len(records))
+	for _, record := range records {
+		if strings.EqualFold(strings.TrimSpace(record.Status), "pending") {
+			pending = append(pending, record)
+		}
+	}
+	sort.SliceStable(pending, func(i, j int) bool {
+		left := firstPositiveInt64(pending[i].PermissionRequestedAt, pending[i].CreatedAt)
+		right := firstPositiveInt64(pending[j].PermissionRequestedAt, pending[j].CreatedAt)
+		if left != right {
+			return left < right
+		}
+		return pending[i].ID < pending[j].ID
+	})
+	return PermissionState{Records: pending}
+}
+
+func applyPermissionRecord(state State, record client.PermissionRecord) State {
+	records := append([]client.PermissionRecord(nil), state.Permissions.Records...)
+	replaced := false
+	for index := range records {
+		if strings.TrimSpace(records[index].ID) == strings.TrimSpace(record.ID) {
+			records[index] = record
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		records = append(records, record)
+	}
+	state.Permissions = pendingPermissionsFromClient(records)
+	return state
+}
+
 type RunState struct {
 	ID                   string
 	Status               string
@@ -200,6 +239,7 @@ type State struct {
 	Model          ModelState
 	Usage          UsageState
 	Plan           PlanState
+	Permissions    PermissionState
 }
 
 type Action interface{ isV3ChatAction() }
@@ -239,6 +279,18 @@ type ModeAction struct {
 
 func (ModeAction) isV3ChatAction() {}
 
+type PermissionsAction struct {
+	Records []client.PermissionRecord
+}
+
+func (PermissionsAction) isV3ChatAction() {}
+
+type PermissionAction struct {
+	Record client.PermissionRecord
+}
+
+func (PermissionAction) isV3ChatAction() {}
+
 // Reduce returns a detached next state. Maps and slices are copied before they
 // are changed so render selectors can safely retain an older snapshot.
 func Reduce(current State, action Action) State {
@@ -272,6 +324,10 @@ func Reduce(current State, action Action) State {
 	case ModeAction:
 		next.Session.Mode = strings.ToLower(strings.TrimSpace(value.Resolved.Mode))
 		applyAgentModelPolicy(&next.Model, value.Resolved.Preference, value.Resolved.ContextWindow, value.Resolved.MaxOutputTokens, value.Resolved.AgentModelPolicy)
+	case PermissionsAction:
+		next.Permissions = pendingPermissionsFromClient(value.Records)
+	case PermissionAction:
+		next = applyPermissionRecord(next, value.Record)
 	}
 	return next
 }
@@ -286,6 +342,7 @@ func reduceHydrated(state State, hydrated client.SessionV3Hydrated) State {
 	applyAgentModelPolicy(&state.Model, preference, hydrated.ContextWindow, hydrated.MaxOutputTokens, hydrated.AgentModelPolicy)
 	state.Usage = usageStateFromSummary(hydrated.UsageSummary)
 	state.Plan = planStateFromHydrated(hydrated)
+	state.Permissions = pendingPermissionsFromClient(hydrated.PendingPermissions)
 	state.Messages = mergeMessages(nil, hydrated.Messages)
 	state.Tools = make(map[string]ToolTimelineItem)
 	state.LastEventSeq = 0
@@ -416,6 +473,12 @@ func applyEvent(state State, event client.SessionV3Event) State {
 		var message client.SessionMessage
 		if json.Unmarshal(raw, &message) == nil && strings.TrimSpace(message.ID) != "" {
 			state.Messages = mergeMessages(state.Messages, []client.SessionMessage{message})
+		}
+	}
+	if raw := payload["permission"]; len(raw) > 0 {
+		var permission client.PermissionRecord
+		if json.Unmarshal(raw, &permission) == nil && strings.TrimSpace(permission.ID) != "" {
+			state = applyPermissionRecord(state, permission)
 		}
 	}
 	if raw := payload["run_intent"]; len(raw) > 0 {
@@ -588,6 +651,7 @@ func sortedEvents(events []client.SessionV3Event) []client.SessionV3Event {
 func cloneState(value State) State {
 	out := value
 	out.Messages = append([]Message(nil), value.Messages...)
+	out.Permissions.Records = append([]client.PermissionRecord(nil), value.Permissions.Records...)
 	out.Pending = make(map[string]PendingMessage, len(value.Pending))
 	for key, pending := range value.Pending {
 		out.Pending[key] = pending

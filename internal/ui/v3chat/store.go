@@ -78,6 +78,9 @@ func SelectReconnect(state State) (ConnectionStatus, bool, string) {
 func SelectModel(state State) ModelState        { return state.Model }
 func SelectUsage(state State) UsageState        { return state.Usage }
 func SelectCursor(state State) (string, uint64) { return state.EndpointCursor, state.LastEventSeq }
+func SelectPendingPermissions(state State) []client.PermissionRecord {
+	return append([]client.PermissionRecord(nil), state.Permissions.Records...)
+}
 
 type PlanHeader struct {
 	Active          bool

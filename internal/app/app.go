@@ -1789,6 +1789,9 @@ func (a *App) loadSessionSummary(ctx context.Context, sessionID string) (model.S
 
 func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 	keybinds := a.activeKeyBindings()
+	if a.route == "v3chat" && a.v3Chat != nil && a.v3Chat.PendingPermissionVisible() {
+		return false
+	}
 	if a.home != nil && a.home.OnboardingVisible() {
 		return false
 	}

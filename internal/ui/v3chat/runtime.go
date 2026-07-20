@@ -26,6 +26,11 @@ type Transport interface {
 	ListModelCatalog(context.Context, string, int) ([]client.ModelCatalogRecord, error)
 }
 
+type permissionTransport interface {
+	ResolvePermission(context.Context, string, string, string, string) (client.PermissionRecord, error)
+	ExplainPermission(context.Context, string, string, string) (client.PermissionExplain, error)
+}
+
 type Runtime struct {
 	transport Transport
 	store     *Store
@@ -169,6 +174,32 @@ func (r *Runtime) Send(ctx context.Context, prompt string, metadata map[string]a
 	r.store.Dispatch(MessageResultAction{Result: result})
 	r.signalWake()
 	return result, nil
+}
+
+func (r *Runtime) ResolvePermission(ctx context.Context, permissionID, action, reason string) (client.PermissionRecord, error) {
+	if r == nil || r.transport == nil {
+		return client.PermissionRecord{}, errors.New("v3 chat transport is not configured")
+	}
+	resolver, ok := r.transport.(permissionTransport)
+	if !ok {
+		return client.PermissionRecord{}, errors.New("v3 chat permission transport is not configured")
+	}
+	state := r.store.Snapshot()
+	sessionID := strings.TrimSpace(state.Session.ID)
+	if sessionID == "" {
+		return client.PermissionRecord{}, errors.New("v3 chat session is not connected")
+	}
+	permissionID = strings.TrimSpace(permissionID)
+	if permissionID == "" {
+		return client.PermissionRecord{}, errors.New("permission id is required")
+	}
+	record, err := resolver.ResolvePermission(ctx, sessionID, permissionID, strings.TrimSpace(action), strings.TrimSpace(reason))
+	if err != nil {
+		return client.PermissionRecord{}, err
+	}
+	r.store.Dispatch(PermissionAction{Record: record})
+	r.signalWake()
+	return record, nil
 }
 
 func (r *Runtime) SetMode(ctx context.Context, mode string) (client.SessionV3ModeResult, error) {

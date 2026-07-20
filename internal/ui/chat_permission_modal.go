@@ -28,21 +28,20 @@ func (p *ChatPage) permissionComposerDesiredHeight(width int) int {
 		p.syncPermissionDetailTarget()
 	}
 	selected := p.pendingPerms[p.permSelected]
-	detailRows := len(p.permissionArgumentRenderLines(selected, maxInt(1, width-6)))
-	if detailRows < 4 {
-		detailRows = 4
+	detailRows := len(p.permissionCardContent(selected, maxInt(1, width-6)))
+	if detailRows < 5 {
+		detailRows = 5
 	}
 	if detailRows > 14 {
 		detailRows = 14
 	}
-	listRows := minInt(2, len(indexes))
-	insideRows := 1 + listRows + 1 + detailRows + 3 + 1
-	height := insideRows + 2
-	if height < 10 {
-		height = 10
+	// Border, two header rows, divider, content, divider, response note, actions.
+	height := detailRows + 8
+	if height < 13 {
+		height = 13
 	}
-	if height > 24 {
-		height = 24
+	if height > 22 {
+		height = 22
 	}
 	return height
 }
@@ -425,6 +424,124 @@ func (p *ChatPage) renderPermissionArgumentText(prefix, continuationPrefix, valu
 	return out
 }
 
+type bashPermissionIntent struct {
+	Command     string
+	Explanation []string
+	Category    string
+	Critical    bool
+}
+
+func parseBashPermissionIntent(record ChatPermissionRecord) (bashPermissionIntent, bool) {
+	if normalizePermissionToolName(record.ToolName) != "bash" {
+		return bashPermissionIntent{}, false
+	}
+	payload := decodePermissionArguments(record.ToolArguments)
+	if payload == nil {
+		return bashPermissionIntent{}, false
+	}
+	command := strings.TrimSpace(jsonString(payload, "command"))
+	category := strings.ToLower(strings.TrimSpace(jsonString(payload, "category")))
+	explanation := jsonStringSlice(payload, "explanation")
+	cleanExplanation := make([]string, 0, len(explanation))
+	for _, item := range explanation {
+		if item = strings.TrimSpace(item); item != "" {
+			cleanExplanation = append(cleanExplanation, item)
+		}
+	}
+	critical, hasCritical := payload["critical"].(bool)
+	if command == "" || len(cleanExplanation) == 0 || !hasCritical {
+		return bashPermissionIntent{}, false
+	}
+	switch category {
+	case "read", "write", "update":
+	default:
+		return bashPermissionIntent{}, false
+	}
+	return bashPermissionIntent{Command: command, Explanation: cleanExplanation, Category: category, Critical: critical}, true
+}
+
+func (p *ChatPage) permissionCardModel(record ChatPermissionRecord, pendingCount, width int) permissionCardModel {
+	mode := strings.TrimSpace(record.Mode)
+	if mode == "" {
+		mode = strings.TrimSpace(p.sessionMode)
+	}
+	meta := fmt.Sprintf("Approval required  ·  %s  ·  mode %s", permissionRequirementLabel(record.Requirement), mode)
+	if pendingCount > 1 {
+		meta += fmt.Sprintf("  ·  %d pending", pendingCount)
+	}
+	model := permissionCardModel{
+		Title:      permissionDisplayToolName(record.ToolName) + " permission",
+		Meta:       meta,
+		Content:    p.permissionCardContent(record, width),
+		FooterRows: 2,
+	}
+	if intent, ok := parseBashPermissionIntent(record); ok {
+		model.Title = "Bash permission"
+		model.Badge = intent.Category
+		preview := bashPermissionPreviewPrefix(record.SavedRulePreview)
+		if preview == "" {
+			if explained, err := p.permissionAlwaysAllowPreview(record); err == nil {
+				preview = strings.TrimSpace(explained)
+			}
+		}
+		if preview == "" {
+			preview = "available after approval"
+		}
+		model.Content = append(model.Content,
+			chatRenderLine{Text: "", Style: p.theme.TextMuted},
+			chatRenderLine{Text: "ALWAYS ALLOW PREFIX", Style: p.theme.TextMuted.Bold(true)},
+			chatRenderLine{Text: preview, Style: p.theme.Accent},
+			chatRenderLine{Text: "Future Bash commands starting with this prefix will be approved automatically.", Style: p.theme.TextMuted},
+		)
+	}
+	return model
+}
+
+func (p *ChatPage) permissionCardContent(record ChatPermissionRecord, width int) []chatRenderLine {
+	intent, ok := parseBashPermissionIntent(record)
+	if !ok {
+		if normalizePermissionToolName(record.ToolName) == "bash" {
+			return []chatRenderLine{{
+				Text:  "Invalid Bash request: explanation, read/write/update category, and critical flag are required.",
+				Style: p.theme.Error,
+			}}
+		}
+		return p.permissionArgumentRenderLines(record, width)
+	}
+
+	lines := make([]chatRenderLine, 0, len(intent.Explanation)+8)
+	if intent.Critical {
+		lines = append(lines,
+			chatRenderLine{Text: "! PAY ATTENTION BEFORE APPROVING", Style: p.theme.Warning.Bold(true)},
+			chatRenderLine{Text: "The AI marked this command as critical.", Style: p.theme.Warning},
+			chatRenderLine{Text: "", Style: p.theme.TextMuted},
+		)
+	}
+	lines = append(lines, chatRenderLine{Text: "WHAT THIS COMMAND WILL DO", Style: p.theme.TextMuted.Bold(true)})
+	for _, item := range intent.Explanation {
+		for lineIndex, wrapped := range Wrap(item, maxInt(1, width-2)) {
+			prefix := "  "
+			if lineIndex == 0 {
+				prefix = "• "
+			}
+			lines = append(lines, chatRenderLine{Text: prefix + wrapped, Style: p.theme.Text})
+		}
+	}
+	lines = append(lines,
+		chatRenderLine{Text: "", Style: p.theme.TextMuted},
+		chatRenderLine{Text: "COMMAND", Style: p.theme.TextMuted.Bold(true)},
+	)
+	for _, commandLine := range Wrap(intent.Command, width) {
+		lines = append(lines, p.styleSyntaxLine(commandLine, chatSyntaxRequest{
+			Surface:            chatSyntaxSurfaceTool,
+			PreferredTool:      "bash",
+			PreferCommand:      true,
+			AllowInlineCommand: true,
+		}, p.theme.MarkdownCode))
+	}
+	return lines
+}
+
 func (p *ChatPage) drawPermissionComposer(s tcell.Screen, rect Rect) {
 	p.permRows = p.permRows[:0]
 	p.permIndexes = p.permIndexes[:0]
@@ -455,128 +572,41 @@ func (p *ChatPage) drawPermissionComposer(s tcell.Screen, rect Rect) {
 		p.syncPermissionDetailTarget()
 	}
 	selected := p.pendingPerms[p.permSelected]
-	preview, previewErr := p.permissionAlwaysAllowPreview(selected)
-
-	listY := rect.Y + 2
-	maxListRows := minInt(2, len(indexes))
-	if rect.H <= 11 {
-		maxListRows = minInt(1, len(indexes))
-	}
-	start := selectedPos
-	if start > len(indexes)-maxListRows {
-		start = len(indexes) - maxListRows
-	}
-	if start < 0 {
-		start = 0
-	}
-
-	argsLabelY := listY + maxListRows
-	inputBox := Rect{X: rect.X + 2, Y: rect.Y + rect.H - 5, W: rect.W - 4, H: 2}
-	detailTop := argsLabelY + 1
-	detailH := inputBox.Y - detailTop
-	if detailH < 0 {
-		detailH = 0
-	}
-	detailRect := Rect{X: rect.X + 3, Y: detailTop, W: maxInt(1, rect.W-6), H: detailH}
-	detailLines := p.permissionArgumentRenderLines(selected, detailRect.W)
-	p.permDetailMaxScroll = maxInt(0, len(detailLines)-detailRect.H)
+	model := p.permissionCardModel(selected, len(indexes), maxInt(1, rect.W-4))
+	p.permDetailMaxScroll = maxInt(0, len(model.Content)-maxInt(0, rect.H-8))
 	p.clampPermissionDetailScroll()
+	layout := drawPermissionCard(s, rect, p.theme, model, p.permDetailScroll)
 
-	DrawBox(s, rect, p.theme.Warning)
-	header := fmt.Sprintf("permission %d/%d  ·  mode %s", selectedPos+1, len(indexes), p.sessionMode)
 	if p.permDetailMaxScroll > 0 {
 		current, total := p.permissionDetailScrollSummary()
-		header = fmt.Sprintf("%s  ·  args %d/%d", header, current, total)
-	}
-	DrawText(s, rect.X+2, rect.Y+1, rect.W-4, p.theme.Warning, clampEllipsis(header, rect.W-4))
-
-	for i := 0; i < maxListRows && start+i < len(indexes); i++ {
-		idx := indexes[start+i]
-		record := p.pendingPerms[idx]
-		prefix := "  "
-		style := p.theme.TextMuted
-		if idx == p.permSelected {
-			prefix = "› "
-			style = p.theme.Primary
-		}
-		label := fmt.Sprintf("%s%s · %s", prefix, permissionDisplayToolName(record.ToolName), permissionRequirementLabel(record.Requirement))
-		p.permRows = append(p.permRows, Rect{X: rect.X + 1, Y: listY, W: rect.W - 2, H: 1})
-		p.permIndexes = append(p.permIndexes, idx)
-		DrawText(s, rect.X+2, listY, rect.W-4, style, clampEllipsis(label, rect.W-4))
-		listY++
+		summary := fmt.Sprintf("content %d/%d", current, total)
+		DrawTextRight(s, rect.X+rect.W-3, rect.Y+2, rect.W-4, styleOnPermissionCard(p.theme.TextMuted, p.theme.Panel), summary)
 	}
 
-	if argsLabelY < inputBox.Y {
-		DrawText(s, rect.X+2, argsLabelY, rect.W-4, p.theme.TextMuted, "arguments")
+	noteY := layout.FooterY
+	noteX := rect.X + 2
+	noteW := rect.W - 4
+	prefix := "note › "
+	prefixW := utf8.RuneCountInString(prefix)
+	DrawText(s, noteX, noteY, noteW, styleOnPermissionCard(p.theme.TextMuted, p.theme.Panel), prefix)
+	visible := clampTail(p.permInput, maxInt(1, noteW-prefixW-1))
+	if visible != "" {
+		DrawText(s, noteX+prefixW, noteY, maxInt(1, noteW-prefixW), styleOnPermissionCard(p.theme.Text, p.theme.Panel), visible)
+	}
+	if (p.frameTick/chatCursorBlinkOn)%2 == 0 {
+		cursorX := minInt(rect.X+rect.W-3, noteX+prefixW+utf8.RuneCountInString(visible))
+		s.SetContent(cursorX, noteY, chatCursorRune, nil, styleOnPermissionCard(p.theme.Primary, p.theme.Panel))
 	}
 
-	if strings.TrimSpace(preview) != "" && argsLabelY < inputBox.Y {
-		style := p.theme.TextMuted
-		if previewErr == nil {
-			style = p.theme.Accent
-		}
-		DrawText(s, rect.X+2, argsLabelY, rect.W-4, style, clampEllipsis("always allow prefix: "+preview, rect.W-4))
-		argsLabelY++
-		detailTop = argsLabelY + 1
-		detailH = inputBox.Y - detailTop
-		if detailH < 0 {
-			detailH = 0
-		}
-		detailRect = Rect{X: rect.X + 3, Y: detailTop, W: maxInt(1, rect.W-6), H: detailH}
-		detailLines = p.permissionArgumentRenderLines(selected, detailRect.W)
-		p.permDetailMaxScroll = maxInt(0, len(detailLines)-detailRect.H)
-		p.clampPermissionDetailScroll()
-	}
-
-	if detailRect.H > 0 {
-		startLine := p.permDetailScroll
-		if startLine < 0 {
-			startLine = 0
-		}
-		if startLine > len(detailLines) {
-			startLine = len(detailLines)
-		}
-		endLine := minInt(len(detailLines), startLine+detailRect.H)
-		y := detailRect.Y
-		for i := startLine; i < endLine && y < detailRect.Y+detailRect.H; i++ {
-			DrawTimelineLine(s, detailRect.X, y, detailRect.W, detailLines[i])
-			y++
-		}
-	}
-
-	if inputBox.W >= 8 && inputBox.H >= 2 {
-		textX := inputBox.X + 2
-		textY := inputBox.Y + 1
-		textW := inputBox.W - 4
-		if textW > 0 {
-			prefix := "› "
-			prefixW := utf8.RuneCountInString(prefix)
-			if prefixW >= textW {
-				prefix = ">"
-				prefixW = utf8.RuneCountInString(prefix)
-			}
-			DrawText(s, textX, textY, textW, p.theme.Primary, prefix)
-			visible := clampTail(p.permInput, maxInt(1, textW-prefixW-1))
-			if visible != "" {
-				DrawText(s, textX+prefixW, textY, maxInt(1, textW-prefixW), p.theme.Text, visible)
-			}
-			if (p.frameTick/chatCursorBlinkOn)%2 == 0 {
-				cursorX := textX + prefixW + utf8.RuneCountInString(visible)
-				maxX := inputBox.X + inputBox.W - 3
-				if cursorX > maxX {
-					cursorX = maxX
-				}
-				s.SetContent(cursorX, textY, chatCursorRune, nil, p.theme.Primary)
-			}
-		}
-	}
-
-	actionY := rect.Y + rect.H - 2
+	actionY := layout.FooterY + 1
 	actionX := rect.X + 2
 	p.permApproveRect, actionX = drawPermissionActionButton(s, actionX, actionY, rect.X+rect.W-2, "Enter Approve", p.theme.Success)
 	p.permDenyRect, actionX = drawPermissionActionButton(s, actionX, actionY, rect.X+rect.W-2, "Esc Deny", p.theme.Error)
 	p.alwaysAllowRect, actionX = drawPermissionActionButton(s, actionX, actionY, rect.X+rect.W-2, "Ctrl+A Always Allow", p.theme.Accent)
 	p.alwaysDenyRect, _ = drawPermissionActionButton(s, actionX, actionY, rect.X+rect.W-2, "Ctrl+D Always Deny", p.theme.Warning)
+
+	p.permRows = append(p.permRows, Rect{X: rect.X + 1, Y: rect.Y + 1, W: rect.W - 2, H: 2})
+	p.permIndexes = append(p.permIndexes, p.permSelected)
 }
 
 func (p *ChatPage) drawPermissionComposerCompact(s tcell.Screen, rect Rect, indexes []int) {

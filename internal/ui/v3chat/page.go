@@ -74,35 +74,47 @@ type Page struct {
 	runtime *Runtime
 	styles  PageStyles
 
-	mu                        sync.Mutex
-	input                     []rune
-	cursor                    int
-	pasteActive               bool
-	pasteBuffer               []rune
-	scroll                    int
-	follow                    bool
-	status                    string
-	errText                   string
-	busy                      bool
-	rowCache                  map[string]cachedRows
-	lastWidth                 int
-	lastHeight                int
-	modelTarget               footerbar.Rect
-	routeLabel                string
-	profileLabel              string
-	showHeader                bool
-	commandEmission           string
-	modelPicker               bool
-	modelLoading              bool
-	modelOptions              []client.ModelCatalogRecord
-	modelIndex                int
-	commandSuggestions        []CommandSuggestion
-	commandPaletteIndex       int
-	commandPaletteOptionIndex int
-	commandPaletteOptionOwner string
-	pendingCommand            string
-	matchKey                  func(*tcell.EventKey, string) bool
-	runTimer                  *time.Timer
+	mu                         sync.Mutex
+	input                      []rune
+	cursor                     int
+	pasteActive                bool
+	pasteBuffer                []rune
+	scroll                     int
+	follow                     bool
+	status                     string
+	errText                    string
+	busy                       bool
+	rowCache                   map[string]cachedRows
+	lastWidth                  int
+	lastHeight                 int
+	modelTarget                footerbar.Rect
+	routeLabel                 string
+	profileLabel               string
+	showHeader                 bool
+	commandEmission            string
+	modelPicker                bool
+	modelLoading               bool
+	modelOptions               []client.ModelCatalogRecord
+	modelIndex                 int
+	commandSuggestions         []CommandSuggestion
+	commandPaletteIndex        int
+	commandPaletteOptionIndex  int
+	commandPaletteOptionOwner  string
+	pendingCommand             string
+	matchKey                   func(*tcell.EventKey, string) bool
+	runTimer                   *time.Timer
+	permissionIndex            int
+	permissionInput            []rune
+	permissionBusy             bool
+	permissionError            string
+	permissionScroll           int
+	permissionPrefix           string
+	permissionPrefixID         string
+	permissionPrefixLoading    bool
+	permissionApproveTarget    footerbar.Rect
+	permissionDenyTarget       footerbar.Rect
+	permissionAlwaysTarget     footerbar.Rect
+	permissionAlwaysDenyTarget footerbar.Rect
 }
 
 const (
@@ -285,6 +297,22 @@ func (p *Page) ConsumeCommand() string {
 	return command
 }
 
+func (p *Page) permissionVisibleLocked() bool {
+	if p == nil || p.runtime == nil || p.runtime.Store() == nil {
+		return false
+	}
+	return len(SelectPendingPermissions(p.runtime.Store().Snapshot())) > 0
+}
+
+func (p *Page) PendingPermissionVisible() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.permissionVisibleLocked()
+}
+
 func (p *Page) ClearInput() {
 	if p == nil {
 		return
@@ -456,6 +484,10 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.permissionVisibleLocked() {
+		p.ensurePermissionPrefixLocked()
+		return p.handlePermissionKeyLocked(ev)
+	}
 	if p.modelPicker {
 		return p.handleModelPickerKeyLocked(ev)
 	}
@@ -719,6 +751,116 @@ func (p *Page) handleModelPickerKeyLocked(ev *tcell.EventKey) PageAction {
 	return PageActionNone
 }
 
+func (p *Page) ensurePermissionPrefixLocked() {
+	permissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
+	if len(permissions) == 0 {
+		p.permissionPrefix, p.permissionPrefixID, p.permissionPrefixLoading = "", "", false
+		return
+	}
+	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
+	permission := permissions[p.permissionIndex]
+	if normalizePermissionToolName(permission.ToolName) != "bash" || p.permissionPrefixID == permission.ID || p.permissionPrefixLoading {
+		return
+	}
+	resolver, ok := p.runtime.transport.(permissionTransport)
+	if !ok {
+		return
+	}
+	p.permissionPrefixID = permission.ID
+	p.permissionPrefixLoading = true
+	go func(record client.PermissionRecord) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		explain, err := resolver.ExplainPermission(ctx, record.Mode, record.ToolName, record.ToolArguments)
+		p.mu.Lock()
+		if p.permissionPrefixID == record.ID {
+			p.permissionPrefixLoading = false
+			if err == nil {
+				p.permissionPrefix = bashPermissionPreviewPrefix(explain.RulePreview)
+			}
+		}
+		p.mu.Unlock()
+		p.runtime.signalWake()
+	}(permission)
+}
+
+func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
+	permissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
+	if len(permissions) == 0 {
+		return PageActionNone
+	}
+	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
+	if p.permissionBusy {
+		return PageActionNone
+	}
+	switch ev.Key() {
+	case tcell.KeyUp:
+		if p.permissionIndex > 0 {
+			p.permissionIndex--
+			p.permissionScroll = 0
+			p.permissionPrefixID = ""
+			p.ensurePermissionPrefixLocked()
+		}
+	case tcell.KeyDown:
+		if p.permissionIndex+1 < len(permissions) {
+			p.permissionIndex++
+			p.permissionScroll = 0
+			p.permissionPrefixID = ""
+			p.ensurePermissionPrefixLocked()
+		}
+	case tcell.KeyPgUp:
+		p.permissionScroll = maxInt(0, p.permissionScroll-6)
+	case tcell.KeyPgDn:
+		p.permissionScroll += 6
+	case tcell.KeyHome:
+		p.permissionScroll = 0
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(p.permissionInput) > 0 {
+			p.permissionInput = p.permissionInput[:len(p.permissionInput)-1]
+		}
+	case tcell.KeyCtrlU:
+		p.permissionInput = nil
+	case tcell.KeyCtrlA:
+		p.resolvePermissionLocked(permissions[p.permissionIndex], "allow_always")
+	case tcell.KeyCtrlD:
+		p.resolvePermissionLocked(permissions[p.permissionIndex], "deny_always")
+	case tcell.KeyEscape:
+		p.resolvePermissionLocked(permissions[p.permissionIndex], "deny_once")
+	case tcell.KeyEnter:
+		p.resolvePermissionLocked(permissions[p.permissionIndex], "allow_once")
+	case tcell.KeyRune:
+		if utf8.ValidRune(ev.Rune()) && ev.Rune() >= ' ' && len(p.permissionInput) < maxComposerRunes {
+			p.permissionInput = append(p.permissionInput, ev.Rune())
+		}
+	}
+	return PageActionNone
+}
+
+func (p *Page) resolvePermissionLocked(permission client.PermissionRecord, action string) {
+	p.permissionBusy = true
+	p.permissionError = ""
+	reason := strings.TrimSpace(string(p.permissionInput))
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, err := p.runtime.ResolvePermission(ctx, permission.ID, action, reason)
+		p.mu.Lock()
+		p.permissionBusy = false
+		if err != nil {
+			p.permissionError = err.Error()
+		} else {
+			p.permissionInput = nil
+			p.permissionScroll = 0
+			permissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
+			if p.permissionIndex >= len(permissions) {
+				p.permissionIndex = maxInt(0, len(permissions)-1)
+			}
+		}
+		p.mu.Unlock()
+		p.runtime.signalWake()
+	}()
+}
+
 func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 	if p == nil || ev == nil {
 		return
@@ -727,6 +869,32 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 	defer p.mu.Unlock()
 	x, y := ev.Position()
 	buttons := ev.Buttons()
+	if p.permissionVisibleLocked() {
+		permissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
+		if len(permissions) == 0 || p.permissionBusy {
+			return
+		}
+		p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
+		if buttons&tcell.Button1 != 0 {
+			switch {
+			case containsFooterPoint(p.permissionApproveTarget, x, y):
+				p.resolvePermissionLocked(permissions[p.permissionIndex], "allow_once")
+			case containsFooterPoint(p.permissionDenyTarget, x, y):
+				p.resolvePermissionLocked(permissions[p.permissionIndex], "deny_once")
+			case containsFooterPoint(p.permissionAlwaysTarget, x, y):
+				p.resolvePermissionLocked(permissions[p.permissionIndex], "allow_always")
+			case containsFooterPoint(p.permissionAlwaysDenyTarget, x, y):
+				p.resolvePermissionLocked(permissions[p.permissionIndex], "deny_always")
+			}
+		}
+		if buttons&tcell.WheelUp != 0 {
+			p.permissionScroll = maxInt(0, p.permissionScroll-3)
+		}
+		if buttons&tcell.WheelDown != 0 {
+			p.permissionScroll += 3
+		}
+		return
+	}
 	if buttons&tcell.Button1 != 0 && containsFooterPoint(p.modelTarget, x, y) {
 		p.openModelPickerLocked()
 		return
@@ -790,6 +958,11 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	modelPicker, modelLoading, modelIndex := p.modelPicker, p.modelLoading, p.modelIndex
 	modelOptions := append([]client.ModelCatalogRecord(nil), p.modelOptions...)
 	commandSuggestions := append([]CommandSuggestion(nil), p.commandSuggestions...)
+	permissionIndex := p.permissionIndex
+	permissionInput := append([]rune(nil), p.permissionInput...)
+	p.ensurePermissionPrefixLocked()
+	permissionBusy, permissionError, permissionScroll := p.permissionBusy, p.permissionError, p.permissionScroll
+	permissionPrefix := p.permissionPrefix
 	commandPaletteIndex := p.commandPaletteIndex
 	commandPaletteOptionIndex := p.commandPaletteOptionIndex
 	commandPaletteOptionOwner := p.commandPaletteOptionOwner
@@ -824,6 +997,12 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	// The canonical header deliberately omits elapsed run time. Stop any timer
 	// left by an older render rather than waking the page for text that is not shown.
 	p.scheduleRunTimer(false)
+
+	permissions := SelectPendingPermissions(state)
+	if len(permissions) > 0 {
+		p.drawPermissionSurface(screen, width, height, styles, state, permissions, permissionIndex, permissionInput, permissionBusy, permissionError, permissionPrefix, permissionScroll, transcriptTop, routeLabel, profileLabel, statusLine, statusStyle)
+		return
+	}
 
 	// Keep the footer to its separator and token row so the separator is also
 	// the composer's bottom border, directly beneath the editable rows.
@@ -888,6 +1067,61 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	} else {
 		p.drawCommandPalette(screen, width, transcriptTop, composerY, styles, string(input), commandPaletteIndex, commandPaletteOptionOwner, commandPaletteOptionIndex, commandSuggestions)
 	}
+}
+
+func (p *Page) drawPermissionSurface(screen tcell.Screen, width, height int, styles PageStyles, state State, permissions []client.PermissionRecord, selected int, note []rune, busy bool, errorText, prefixPreview string, scroll, transcriptTop int, routeLabel, profileLabel, statusLine string, statusStyle tcell.Style) {
+	selected = maxInt(0, minInt(selected, len(permissions)-1))
+	permission := permissions[selected]
+	footerHeight := 2
+	cardHeight := minInt(22, maxInt(13, height-transcriptTop-footerHeight-1))
+	cardY := maxInt(transcriptTop, height-footerHeight-cardHeight)
+	cardWidth := minInt(width, maxInt(44, width-4))
+	cardX := maxInt(0, (width-cardWidth)/2)
+	model := permissionCardModelForRecord(permission, len(permissions), maxInt(1, cardWidth-4), styles, prefixPreview)
+	layout := drawPermissionCard(screen, cardX, cardY, cardWidth, cardHeight, styles, model, scroll)
+	panel := styles.Panel
+	muted := styleOnPermissionCard(styles.Muted, panel)
+	textStyle := styleOnPermissionCard(styles.Text, panel)
+	if errorText != "" {
+		drawText(screen, cardX+2, layout.FooterY, cardWidth-4, styleOnPermissionCard(styles.Error, panel), truncateRunes("error · "+errorText, cardWidth-4))
+	} else {
+		prefix := "note › "
+		drawText(screen, cardX+2, layout.FooterY, cardWidth-4, muted, prefix)
+		drawText(screen, cardX+2+utf8.RuneCountInString(prefix), layout.FooterY, cardWidth-4-utf8.RuneCountInString(prefix), textStyle, string(note))
+	}
+	if len(permissions) > 1 {
+		drawText(screen, cardX+2, layout.FooterY+1, cardWidth-4, muted, fmt.Sprintf("Up/Down select  ·  %d/%d", selected+1, len(permissions)))
+	}
+	actionY := layout.FooterY + 2
+	x := cardX + 2
+	limit := cardX + cardWidth - 2
+	p.mu.Lock()
+	p.permissionAlwaysDenyTarget, x = drawPermissionAction(screen, x, actionY, limit, "Ctrl+D Always deny", styleOnPermissionCard(styles.Warning, panel))
+	p.permissionAlwaysTarget, x = drawPermissionAction(screen, x, actionY, limit, "Ctrl+A Always allow", styleOnPermissionCard(styles.Accent, panel))
+	p.permissionDenyTarget, x = drawPermissionAction(screen, x, actionY, limit, "Esc Deny", styleOnPermissionCard(styles.Error, panel))
+	p.permissionApproveTarget, _ = drawPermissionAction(screen, x, actionY, limit, "Enter Approve", styleOnPermissionCard(styles.Success, panel))
+	p.mu.Unlock()
+	if busy {
+		drawText(screen, cardX+2, cardY+2, cardWidth-4, muted, "Resolving permission…")
+	}
+	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: height - footerHeight, W: width, H: footerHeight}, state, routeLabel, profileLabel, statusLine, statusStyle)
+}
+
+func drawPermissionAction(screen tcell.Screen, x, y, limit int, label string, style tcell.Style) (footerbar.Rect, int) {
+	label = "[" + label + "]"
+	width := utf8.RuneCountInString(label)
+	if x >= limit || width <= 0 {
+		return footerbar.Rect{}, x
+	}
+	if x+width > limit {
+		width = limit - x
+		label = truncateRunes(label, width)
+	}
+	if width <= 0 {
+		return footerbar.Rect{}, x
+	}
+	drawText(screen, x, y, width, style, label)
+	return footerbar.Rect{X: x, Y: y, W: width, H: 1}, x + width + 1
 }
 
 type RunStatus struct {

@@ -13,21 +13,29 @@ import (
 )
 
 type fakeTransport struct {
-	mu                sync.Mutex
-	calls             []string
-	created           client.SessionV3Hydrated
-	result            client.SessionV3MessageResult
-	streamBlock       chan struct{}
-	streamFrames      []client.V3RealtimeFrame
-	streamOptions     []client.V3RealtimeResumeOptions
-	hydrateCount      int
-	preference        client.ModelResolved
-	mode              client.SessionV3ModeResult
-	modeRequest       string
-	providers         []client.ProviderStatus
-	catalog           map[string][]client.ModelCatalogRecord
-	preferenceRequest map[string]any
-	stopRequest       struct {
+	mu                 sync.Mutex
+	calls              []string
+	created            client.SessionV3Hydrated
+	result             client.SessionV3MessageResult
+	streamBlock        chan struct{}
+	streamFrames       []client.V3RealtimeFrame
+	streamOptions      []client.V3RealtimeResumeOptions
+	hydrateCount       int
+	preference         client.ModelResolved
+	mode               client.SessionV3ModeResult
+	modeRequest        string
+	providers          []client.ProviderStatus
+	catalog            map[string][]client.ModelCatalogRecord
+	preferenceRequest  map[string]any
+	resolvedPermission client.PermissionRecord
+	permissionExplain  client.PermissionExplain
+	permissionRequest  struct {
+		sessionID    string
+		permissionID string
+		action       string
+		reason       string
+	}
+	stopRequest struct {
 		sessionID string
 		runID     string
 		reason    string
@@ -108,6 +116,25 @@ func (f *fakeTransport) ListModelCatalog(_ context.Context, provider string, _ i
 	f.record("list-catalog:" + provider)
 	return append([]client.ModelCatalogRecord(nil), f.catalog[provider]...), nil
 }
+func (f *fakeTransport) ExplainPermission(context.Context, string, string, string) (client.PermissionExplain, error) {
+	return f.permissionExplain, nil
+}
+
+func (f *fakeTransport) ResolvePermission(_ context.Context, sessionID, permissionID, action, reason string) (client.PermissionRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "resolve-permission")
+	f.permissionRequest.sessionID = sessionID
+	f.permissionRequest.permissionID = permissionID
+	f.permissionRequest.action = action
+	f.permissionRequest.reason = reason
+	record := f.resolvedPermission
+	if record.ID == "" {
+		record = client.PermissionRecord{ID: permissionID, SessionID: sessionID, Status: "approved", Decision: action}
+	}
+	return record, nil
+}
+
 func (f *fakeTransport) SendSessionV3Message(_ context.Context, sessionID string, options client.SessionV3MessageOptions) (client.SessionV3MessageResult, error) {
 	f.record("send")
 	f.result.Session.ID = sessionID
