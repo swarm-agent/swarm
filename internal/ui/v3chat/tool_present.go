@@ -24,6 +24,7 @@ type toolPresentationLine struct {
 type toolPresentation struct {
 	Summary string
 	Lines   []toolPresentationLine
+	Kind    string
 }
 
 func buildToolPresentation(tool ToolTimelineItem) toolPresentation {
@@ -47,6 +48,8 @@ func buildToolPresentation(tool ToolTimelineItem) toolPresentation {
 		presentation = presentListTool(arguments, output)
 	case "websearch", "webfetch", "webdownload":
 		presentation = presentWebTool(name, arguments, output)
+	case "plan-manage":
+		presentation = presentPlanManageTool(tool, arguments, output)
 	default:
 		presentation = presentGenericTool(name, tool.Output, arguments, output)
 	}
@@ -477,6 +480,83 @@ func presentWebTool(name string, arguments, output map[string]any) toolPresentat
 	return toolPresentation{Summary: summary, Lines: lines}
 }
 
+func presentPlanManageTool(tool ToolTimelineItem, arguments, output map[string]any) toolPresentation {
+	payload := planToolPayload(tool, arguments, output)
+	if payload == nil {
+		return toolPresentation{Summary: "plan", Kind: "plan"}
+	}
+	document := planDocumentFromToolPayload(payload)
+	plan := toolObject(payload, "plan")
+	action := firstNonEmptyToolRaw(
+		toolString(payload, "action"),
+		toolString(payload, "document_operation"),
+		toolString(payload, "update_kind"),
+	)
+	summary := "plan"
+	if action != "" {
+		summary += " " + strings.ReplaceAll(action, "_", " ")
+	}
+	facts := make([]string, 0, 2)
+	if checkpoints := toolObjectSlice(document, "checkpoints"); len(checkpoints) > 0 {
+		facts = append(facts, toolCountLabel(len(checkpoints), "checkpoint", "checkpoints"))
+	}
+	if status := firstNonEmptyToolRaw(toolString(document, "status"), toolString(plan, "status"), toolString(payload, "status")); status != "" && !strings.EqualFold(status, "ok") {
+		facts = append(facts, strings.ReplaceAll(status, "_", " "))
+	}
+	lines := make([]toolPresentationLine, 0, 3)
+	info := toolObject(document, "info")
+	title := firstNonEmptyToolRaw(
+		toolString(plan, "title"),
+		toolString(document, "title"),
+		toolString(payload, "title"),
+		toolString(info, "goal"),
+	)
+	if title != "" {
+		lines = append(lines, toolPresentationLine{Text: title, Tone: "label"})
+	}
+	if goal := toolString(info, "goal"); goal != "" && !strings.EqualFold(goal, title) {
+		lines = append(lines, toolPresentationLine{Text: goal})
+	} else if update := firstNonEmptyToolRaw(toolString(plan, "update_summary"), toolString(payload, "update_summary")); update != "" && !strings.EqualFold(update, title) {
+		lines = append(lines, toolPresentationLine{Text: update, Tone: "muted"})
+	}
+	return toolPresentation{Summary: appendToolFacts(summary, facts), Lines: lines, Kind: "plan"}
+}
+
+func planToolPayload(tool ToolTimelineItem, arguments, output map[string]any) map[string]any {
+	for _, payload := range []map[string]any{output, arguments} {
+		if planDocumentFromToolPayload(payload) != nil {
+			return payload
+		}
+	}
+	for _, candidate := range []string{tool.Output, tool.Arguments} {
+		var envelope map[string]any
+		if json.Unmarshal([]byte(strings.TrimSpace(candidate)), &envelope) != nil {
+			continue
+		}
+		for _, key := range []string{"completed_output", "raw_output", "output", "arguments"} {
+			if nested := parseToolObject(toolStringRaw(envelope, key)); planDocumentFromToolPayload(nested) != nil {
+				return nested
+			}
+		}
+	}
+	if output != nil {
+		return output
+	}
+	return arguments
+}
+
+func planDocumentFromToolPayload(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	if plan := toolObject(payload, "plan"); plan != nil {
+		if document := toolObject(plan, "document"); document != nil {
+			return document
+		}
+	}
+	return toolObject(payload, "document")
+}
+
 func presentGenericTool(name, rawOutput string, arguments, output map[string]any) toolPresentation {
 	summary := toolString(output, "summary")
 	if summary == "" {
@@ -569,6 +649,14 @@ func toolStringRaw(object map[string]any, key string) string {
 		return ""
 	}
 	value, _ := object[key].(string)
+	return value
+}
+
+func toolObject(object map[string]any, key string) map[string]any {
+	if object == nil {
+		return nil
+	}
+	value, _ := object[key].(map[string]any)
 	return value
 }
 

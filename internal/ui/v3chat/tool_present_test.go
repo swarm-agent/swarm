@@ -49,6 +49,37 @@ func TestToolPresentationSearchGroupsFilesAndLineMatches(t *testing.T) {
 	}
 }
 
+func TestToolPresentationPlanManageUsesStructuredCardSummaryWithoutJSON(t *testing.T) {
+	payload := `{"path_id":"tool.plan-new-request.v1","document_operation":"request_new_plan","title":"Two-step completion plan","document":{"id":"plan-1","title":"Two-step completion plan","info":{"goal":"Finish the target work end-to-end."},"checkpoints":[{"id":"cp-1","title":"Verify","status":"pending"},{"id":"cp-2","title":"Finish","status":"pending"}]}}`
+	presentation := buildToolPresentation(ToolTimelineItem{Name: "plan_manage", Output: payload})
+	if presentation.Kind != "plan" || presentation.Summary != "plan request new plan · 2 checkpoints" {
+		t.Fatalf("plan presentation = %#v", presentation)
+	}
+	joined := presentationText(presentation)
+	for _, want := range []string{"Two-step completion plan", "Finish the target work end-to-end."} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("plan presentation missing %q:\n%s", want, joined)
+		}
+	}
+	for _, raw := range []string{"path_id", "document_operation", `"checkpoints"`, "acceptance_criteria"} {
+		if strings.Contains(joined, raw) {
+			t.Fatalf("plan presentation leaked raw payload key %q:\n%s", raw, joined)
+		}
+	}
+}
+
+func TestToolPresentationPlanManageUnwrapsDurableHistoryEnvelope(t *testing.T) {
+	planPayload := `{"tool":"plan_manage","action":"save","plan":{"title":"Envelope plan","document":{"title":"Envelope plan","info":{"goal":"Keep the complete document"},"checkpoints":[{"id":"cp-1","title":"One"}]}}}`
+	envelope, err := json.Marshal(map[string]any{"path_id": "run.tool-history.v2", "tool": "plan_manage", "completed_output": planPayload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	presentation := buildToolPresentation(ToolTimelineItem{Name: "plan_manage", Output: string(envelope)})
+	if presentation.Kind != "plan" || !strings.Contains(presentationText(presentation), "Envelope plan") || strings.Contains(presentationText(presentation), "completed_output") {
+		t.Fatalf("durable plan envelope presentation = %#v\n%s", presentation, presentationText(presentation))
+	}
+}
+
 func TestToolPresentationEditShowsBoundedDiff(t *testing.T) {
 	tool := ToolTimelineItem{
 		Name:   "edit",

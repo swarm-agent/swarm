@@ -92,6 +92,88 @@ func TestBashPermissionFromHydrationRendersInlineThemedCardAndActions(t *testing
 	}
 }
 
+func TestPlanPermissionFromHydrationUsesStructuredCardAndFullPlanModal(t *testing.T) {
+	permission := client.PermissionRecord{
+		ID: "permission-plan", SessionID: "session-plan", ToolName: "plan_manage", Requirement: "plan_new_request", Mode: "auto", Status: "pending",
+		ToolArguments: `{"path_id":"tool.plan-new-request.v1","document_operation":"request_new_plan","title":"Two-step completion plan","document":{"id":"plan-proposal","title":"Two-step completion plan","info":{"goal":"Finish the target work end-to-end.","scope":"Implement the focused target."},"checkpoints":[{"id":"cp-1","title":"Verify the work","status":"pending","order":1,"tasks":["Inspect the target"],"acceptance_criteria":["Scope is explicit"]},{"id":"cp-2","title":"Finish the work","status":"pending","order":2,"tasks":["Implement the target"],"acceptance_criteria":["Work is complete"]}]}}`,
+	}
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-plan", Title: "Plan card"}, PendingPermissions: []client.PermissionRecord{permission}}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 30)
+	page.Draw(screen)
+	screen.Show()
+	drawn := simulationText(screen, 100, 30)
+	for _, want := range []string{"Plan approval", "PLAN", "Two-step completion plan", "Finish the target work end-to-end.", "2 checkpoints", "p  Open full plan", "Enter Approve"} {
+		if !strings.Contains(drawn, want) {
+			t.Fatalf("structured plan card missing %q:\n%s", want, drawn)
+		}
+	}
+	for _, raw := range []string{"path_id", "document_operation", "acceptance_criteria", `{"`} {
+		if strings.Contains(drawn, raw) {
+			t.Fatalf("structured plan card leaked raw JSON marker %q:\n%s", raw, drawn)
+		}
+	}
+
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'p', tcell.ModNone))
+	page.Draw(screen)
+	screen.Show()
+	modal := simulationText(screen, 100, 30)
+	for _, want := range []string{"PLAN  ·  Two-step completion plan", "Goal: Finish the target work end-to-end.", "1. Verify the work", "Tasks:", "Acceptance:", "Work is complete"} {
+		if !strings.Contains(modal, want) {
+			t.Fatalf("full plan modal missing %q:\n%s", want, modal)
+		}
+	}
+	if !page.planModal || page.planModalPlan == nil || page.planModalPlan.Document == nil {
+		t.Fatal("proposal document was not retained for the full-plan modal")
+	}
+}
+
+func TestPlanToolRowsRenderDedicatedCardAndWideTextKeepsBorder(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-plan"}, HasActivePlan: true, ActivePlan: &client.SessionPlan{ID: "plan", Document: &client.SessionPlanDocument{Title: "界 plan"}}}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	tool := ToolTimelineItem{ID: "plan-tool", Name: "plan_manage", Status: "completed", Output: `{"action":"save","plan":{"title":"界 plan","document":{"title":"界 plan","info":{"goal":"Render safely"},"checkpoints":[{"id":"cp-1","title":"One"}]}}}`}
+	rows := page.renderToolRows(tool, 40, testPageStyles())
+	if len(rows) < 5 || !strings.HasPrefix(rows[0].text, "┌") || !strings.Contains(rows[1].text, "PLAN") || !strings.Contains(renderRowsText(rows), "p  Open full plan") || strings.Contains(renderRowsText(rows), `{"`) {
+		t.Fatalf("plan tool rows are not a dedicated structured card: %#v", rows)
+	}
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(44, len(rows)+2)
+	for index, row := range rows {
+		if len(row.spans) > 0 {
+			drawSpans(screen, 2, index+1, 40, row.spans)
+		} else {
+			drawText(screen, 2, index+1, 40, row.style, row.text)
+		}
+	}
+	screen.Show()
+	for index, row := range rows[:len(rows)-1] {
+		if strings.HasSuffix(row.text, "┐") || strings.HasSuffix(row.text, "│") || strings.HasSuffix(row.text, "┘") {
+			if got := simulationRow(screen, 44, index+1); !strings.Contains(got, string([]rune(row.text)[len([]rune(row.text))-1])) {
+				t.Fatalf("wide plan text overwrote card border on row %d: %q", index, got)
+			}
+		}
+	}
+}
+
+func renderRowsText(rows []renderRow) string {
+	parts := make([]string, 0, len(rows))
+	for _, row := range rows {
+		parts = append(parts, row.text)
+	}
+	return strings.Join(parts, "\n")
+}
+
 func TestPermissionCardRowsMatchOldChatHierarchyAndFilledActions(t *testing.T) {
 	styles := PageStyles{
 		Panel:        tcell.StyleDefault.Background(tcell.ColorBlack),

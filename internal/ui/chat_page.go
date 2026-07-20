@@ -3404,6 +3404,30 @@ func toolTimelinePayload(message chatMessageItem) (map[string]any, bool) {
 	return payload, true
 }
 
+func (p *ChatPage) retainPlanTimelineDocument(payload map[string]any) {
+	if p == nil {
+		return
+	}
+	document := planManageDocument(payload)
+	if len(document) == 0 {
+		return
+	}
+	planID := firstNonEmptyToolValue(jsonString(payload, "plan_id"), jsonString(document, "id"))
+	if planID == "" {
+		return
+	}
+	title := firstNonEmptyToolValue(jsonString(payload, "title"), jsonString(document, "title"), jsonString(jsonObject(document, "info"), "goal"), "Plan")
+	if strings.TrimSpace(p.planExecutionPlan.ID) == planID && p.planExecutionPlan.Document != nil {
+		return
+	}
+	p.planExecutionPlan = ChatSessionPlan{
+		ID:       planID,
+		Title:    title,
+		Document: cloneGenericJSONMap(document),
+		Status:   firstNonEmptyToolValue(jsonString(document, "status"), jsonString(payload, "status")),
+	}
+}
+
 func toolTimelineMessageToolName(message chatMessageItem) string {
 	if len(message.Metadata) == 0 {
 		return ""

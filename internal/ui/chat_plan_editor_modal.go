@@ -458,9 +458,9 @@ func (p *ChatPage) drawPlanEditorModal(s tcell.Screen, screen Rect) {
 		titleW = modal.W - 4
 	}
 	DrawText(s, modal.X+2, modal.Y+1, titleW, onPanel(p.theme.Warning.Bold(true)), clampEllipsis(header, titleW))
-	subtitle := "Static viewing/copying is separate from execution. Press R for recovery controls."
+	subtitle := "Structured plan • display only in TUI • press R for recovery controls"
 	if len(p.planEditorPlans) > 1 {
-		subtitle = "R recovery • select current/saved snapshot • A explicitly activates a saved plan."
+		subtitle = "Structured plan • R recovery • select current or saved snapshot"
 	}
 	DrawText(s, modal.X+2, modal.Y+2, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(subtitle, modal.W-4))
 
@@ -571,8 +571,13 @@ func (p *ChatPage) planEditorDetailLines(doc map[string]any, width int) []planEd
 	}
 	info, _ := doc["info"].(map[string]any)
 	appendPlanEditorField(&lines, width, "Goal", mapStringArg(info, "goal"), p.theme.Text)
-	appendPlanEditorField(&lines, width, "Scope", firstNonEmptyToolValue(mapStringArg(info, "scope"), mapStringArg(info, "context")), p.theme.Text)
+	appendPlanEditorField(&lines, width, "Scope", mapStringArg(info, "scope"), p.theme.Text)
+	appendPlanEditorField(&lines, width, "Context", mapStringArg(info, "context"), p.theme.Text)
 	appendPlanEditorList(&lines, width, "Decisions", mapAnyStringSlice(info, "decisions"), p.theme.Text)
+	appendPlanEditorList(&lines, width, "Success criteria", firstNonEmptyStringSlice(mapAnyStringSlice(info, "success_criteria"), mapAnyStringSlice(info, "successCriteria")), p.theme.Text)
+	appendPlanEditorList(&lines, width, "Constraints", mapAnyStringSlice(info, "constraints"), p.theme.Text)
+	appendPlanEditorList(&lines, width, "Assumptions", mapAnyStringSlice(info, "assumptions"), p.theme.Text)
+	appendPlanEditorList(&lines, width, "Open questions", firstNonEmptyStringSlice(mapAnyStringSlice(info, "open_questions"), mapAnyStringSlice(info, "openQuestions")), p.theme.Text)
 	appendPlanEditorList(&lines, width, "Files", firstNonEmptyStringSlice(mapAnyStringSlice(info, "relevant_files"), mapAnyStringSlice(info, "relevantFiles"), mapAnyStringSlice(info, "files")), p.theme.Text)
 	appendPlanEditorField(&lines, width, "Validation", firstNonEmptyToolValue(mapStringArg(info, "validation_strategy"), mapStringArg(info, "validationStrategy"), mapStringArg(info, "validation"), strings.Join(mapAnyStringSlice(info, "validation"), "; ")), p.theme.Text)
 	if len(lines) == 1 {

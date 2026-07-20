@@ -2,6 +2,7 @@ package v3chat
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -11,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/uniseg"
 
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
@@ -95,6 +97,9 @@ type Page struct {
 	commandEmission            string
 	modelPicker                bool
 	modelLoading               bool
+	planModal                  bool
+	planModalScroll            int
+	planModalPlan              *client.SessionPlan
 	modelOptions               []client.ModelCatalogRecord
 	modelIndex                 int
 	commandSuggestions         []CommandSuggestion
@@ -484,6 +489,9 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.planModal {
+		return p.handlePlanModalKeyLocked(ev)
+	}
 	if p.permissionVisibleLocked() {
 		p.ensurePermissionPrefixLocked()
 		return p.handlePermissionKeyLocked(ev)
@@ -619,9 +627,82 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			}
 			break
 		}
+		if ev.Rune() == 'p' && len(p.input) == 0 && p.openPlanModalLocked() {
+			break
+		}
 		p.insertRunesLocked([]rune{ev.Rune()})
 		p.syncCommandPaletteSelectionLocked()
 		p.resetCommandPaletteOptionSelectionLocked()
+	}
+	return PageActionNone
+}
+
+func (p *Page) openPlanPermissionModalLocked() bool {
+	if p.runtime == nil || p.runtime.Store() == nil {
+		return false
+	}
+	permissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
+	if len(permissions) == 0 {
+		return false
+	}
+	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
+	intent, ok := parsePlanPermissionIntent(permissions[p.permissionIndex])
+	if !ok {
+		return false
+	}
+	raw, err := json.Marshal(intent.Document)
+	if err != nil {
+		return false
+	}
+	var document client.SessionPlanDocument
+	if json.Unmarshal(raw, &document) != nil {
+		return false
+	}
+	p.planModal = true
+	p.planModalScroll = 0
+	p.planModalPlan = &client.SessionPlan{ID: toolString(intent.Document, "id"), Title: intent.Title, Document: &document}
+	return true
+}
+
+func (p *Page) openPlanModalLocked() bool {
+	if p.runtime == nil || p.runtime.Store() == nil {
+		return false
+	}
+	plan := p.runtime.Store().Snapshot().Plan.ActivePlan
+	if plan == nil || plan.Document == nil {
+		return false
+	}
+	p.planModal = true
+	p.planModalScroll = 0
+	p.planModalPlan = nil
+	return true
+}
+
+func (p *Page) handlePlanModalKeyLocked(ev *tcell.EventKey) PageAction {
+	if ev == nil {
+		return PageActionNone
+	}
+	switch ev.Key() {
+	case tcell.KeyEscape:
+		p.planModal = false
+		p.planModalScroll = 0
+		p.planModalPlan = nil
+	case tcell.KeyUp:
+		p.planModalScroll = maxInt(0, p.planModalScroll-1)
+	case tcell.KeyDown:
+		p.planModalScroll++
+	case tcell.KeyPgUp:
+		p.planModalScroll = maxInt(0, p.planModalScroll-8)
+	case tcell.KeyPgDn:
+		p.planModalScroll += 8
+	case tcell.KeyHome:
+		p.planModalScroll = 0
+	case tcell.KeyRune:
+		if ev.Rune() == 'p' || ev.Rune() == 'q' {
+			p.planModal = false
+			p.planModalScroll = 0
+			p.planModalPlan = nil
+		}
 	}
 	return PageActionNone
 }
@@ -830,6 +911,9 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 	case tcell.KeyEnter:
 		p.resolvePermissionLocked(permissions[p.permissionIndex], "allow_once")
 	case tcell.KeyRune:
+		if ev.Rune() == 'p' && len(p.permissionInput) == 0 && p.openPlanPermissionModalLocked() {
+			break
+		}
 		if utf8.ValidRune(ev.Rune()) && ev.Rune() >= ' ' && len(p.permissionInput) < maxComposerRunes {
 			p.permissionInput = append(p.permissionInput, ev.Rune())
 		}
@@ -966,6 +1050,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	showHeader, commandEmission := p.showHeader, p.commandEmission
 	p.lastWidth, p.lastHeight = width, height
 	modelPicker, modelLoading, modelIndex := p.modelPicker, p.modelLoading, p.modelIndex
+	planModal, planModalScroll, planModalPlan := p.planModal, p.planModalScroll, p.planModalPlan
 	modelOptions := append([]client.ModelCatalogRecord(nil), p.modelOptions...)
 	commandSuggestions := append([]CommandSuggestion(nil), p.commandSuggestions...)
 	p.ensurePermissionPrefixLocked()
@@ -1089,7 +1174,13 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 		}
 		screen.SetContent(cursorX, cursorY, r, nil, styles.Cursor)
 	}
-	if modelPicker {
+	if planModal {
+		plan := state.Plan.ActivePlan
+		if planModalPlan != nil {
+			plan = planModalPlan
+		}
+		p.drawPlanModal(screen, width, height, styles, plan, planModalScroll)
+	} else if modelPicker {
 		p.drawModelPicker(screen, width, height, styles, modelOptions, modelIndex, modelLoading, modelState)
 	} else {
 		p.drawCommandPalette(screen, width, transcriptTop, composerY, styles, string(input), commandPaletteIndex, commandPaletteOptionOwner, commandPaletteOptionIndex, commandSuggestions)
@@ -1419,6 +1510,103 @@ func containsFold(values []string, value string) bool {
 	return false
 }
 
+func (p *Page) drawPlanModal(screen tcell.Screen, width, height int, styles PageStyles, plan *client.SessionPlan, scroll int) {
+	if plan == nil || plan.Document == nil || width < 38 || height < 12 {
+		return
+	}
+	modalWidth := minInt(112, width-4)
+	modalHeight := minInt(height-4, maxInt(12, height-6))
+	x, y := (width-modalWidth)/2, (height-modalHeight)/2
+	fill(screen, x, y, modalWidth, modalHeight, styles.Panel)
+	drawBox(screen, x, y, modalWidth, modalHeight, styles.BorderActive)
+	title := firstNonEmpty(plan.Document.Title, plan.Title, "Structured plan")
+	drawText(screen, x+2, y+1, modalWidth-4, styles.Primary.Bold(true), "PLAN  ·  "+title)
+	drawText(screen, x+2, y+2, modalWidth-4, styles.Muted, "Structured plan  ·  ↑/↓ scroll  ·  p or q close")
+	lines := structuredPlanModalLines(plan.Document, modalWidth-4, styles)
+	visibleRows := maxInt(1, modalHeight-5)
+	maxScroll := maxInt(0, len(lines)-visibleRows)
+	scroll = minInt(maxInt(0, scroll), maxScroll)
+	p.mu.Lock()
+	p.planModalScroll = scroll
+	p.mu.Unlock()
+	for row := 0; row < visibleRows && scroll+row < len(lines); row++ {
+		line := lines[scroll+row]
+		drawText(screen, x+2, y+3+row, modalWidth-4, line.Style, line.Text)
+	}
+	if maxScroll > 0 {
+		indicator := fmt.Sprintf("%d/%d", scroll+1, maxScroll+1)
+		drawText(screen, x+modalWidth-2-utf8.RuneCountInString(indicator), y+modalHeight-2, utf8.RuneCountInString(indicator), styles.Muted, indicator)
+	}
+}
+
+func structuredPlanModalLines(document *client.SessionPlanDocument, width int, styles PageStyles) []permissionCardLine {
+	if document == nil {
+		return nil
+	}
+	lines := make([]permissionCardLine, 0, 32)
+	appendWrapped := func(label, value string, style tcell.Style) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		for _, line := range wrapText(label+value, maxInt(1, width)) {
+			lines = append(lines, permissionCardLine{Text: line, Style: style})
+		}
+	}
+	appendList := func(label string, values []string) {
+		if len(values) == 0 {
+			return
+		}
+		lines = append(lines, permissionCardLine{Text: label + ":", Style: styles.Secondary.Bold(true)})
+		for _, value := range values {
+			for index, line := range wrapText(strings.TrimSpace(value), maxInt(1, width-2)) {
+				prefix := "  "
+				if index == 0 {
+					prefix = "• "
+				}
+				lines = append(lines, permissionCardLine{Text: prefix + line, Style: styles.Text})
+			}
+		}
+	}
+	appendWrapped("Goal: ", document.Info.Goal, styles.Text.Bold(true))
+	appendWrapped("Scope: ", document.Info.Scope, styles.Text)
+	appendWrapped("Context: ", document.Info.Context, styles.Text)
+	appendList("Decisions", document.Info.Decisions)
+	appendList("Success criteria", document.Info.SuccessCriteria)
+	appendList("Constraints", document.Info.Constraints)
+	appendList("Assumptions", document.Info.Assumptions)
+	appendList("Open questions", document.Info.OpenQuestions)
+	appendList("Files", document.Info.RelevantFiles)
+	appendWrapped("Validation: ", document.Info.ValidationStrategy, styles.Text)
+	for index, checkpoint := range document.Checkpoints {
+		if len(lines) > 0 {
+			lines = append(lines, permissionCardLine{Text: "", Style: styles.Muted})
+		}
+		order := checkpoint.Order
+		if order <= 0 {
+			order = index + 1
+		}
+		status := strings.ReplaceAll(strings.TrimSpace(checkpoint.Status), "_", " ")
+		heading := fmt.Sprintf("%d. %s", order, firstNonEmpty(checkpoint.Title, checkpoint.ID, "Untitled checkpoint"))
+		if status != "" {
+			heading += "  [" + status + "]"
+		}
+		appendWrapped("", heading, styles.Primary.Bold(true))
+		appendWrapped("Objective: ", checkpoint.Objective, styles.Text)
+		appendList("Tasks", checkpoint.Tasks)
+		appendList("Acceptance", checkpoint.AcceptanceCriteria)
+		appendWrapped("Notes: ", checkpoint.Notes, styles.Muted)
+		appendWrapped("Report: ", checkpoint.Report, styles.Text)
+		appendWrapped("Result: ", checkpoint.Result, styles.Text)
+		appendList("Changed files", checkpoint.ChangedFiles)
+		appendList("Validation", checkpoint.Validation)
+	}
+	if len(lines) == 0 {
+		lines = append(lines, permissionCardLine{Text: "No structured plan content was provided.", Style: styles.Muted})
+	}
+	return lines
+}
+
 func (p *Page) drawModelPicker(screen tcell.Screen, width, height int, styles PageStyles, options []client.ModelCatalogRecord, selected int, loading bool, modelState ModelState) {
 	modalWidth := minInt(maxInt(44, width-12), 84)
 	modalHeight := minInt(maxInt(8, height-6), 18)
@@ -1588,6 +1776,9 @@ func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyle
 	}
 
 	presentation := buildToolPresentation(tool)
+	if presentation.Kind == "plan" {
+		return p.renderPlanToolRows(tool, presentation, width, styles)
+	}
 	toolName := normalizeToolDisplayName(tool.Name)
 	summary := strings.TrimSpace(presentation.Summary)
 	if summary != toolName && !strings.HasPrefix(summary, toolName+" ") {
@@ -1642,6 +1833,56 @@ func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyle
 	if bodyClipped && bodyRows > 0 {
 		rows[len(rows)-1] = renderRow{text: "  … output clipped", style: styles.Muted}
 	}
+	rows = append(rows, renderRow{text: "", style: styles.Text})
+	return rows
+}
+
+func (p *Page) renderPlanToolRows(tool ToolTimelineItem, presentation toolPresentation, width int, styles PageStyles) []renderRow {
+	if width < 12 {
+		return nil
+	}
+	borderStyle := styles.Border
+	status := strings.ToLower(strings.TrimSpace(tool.Status))
+	if status == "running" || status == "pending" || status == "started" {
+		borderStyle = styles.Accent
+	} else if status == "failed" || status == "error" || status == "cancelled" || status == "canceled" {
+		borderStyle = styles.Error
+	}
+	innerWidth := maxInt(1, width-2)
+	rows := make([]renderRow, 0, len(presentation.Lines)+3)
+	rows = append(rows, renderRow{text: "┌" + strings.Repeat("─", innerWidth) + "┐", style: borderStyle})
+	appendBody := func(text string, style tcell.Style) {
+		text = truncateRunes(strings.TrimSpace(text), maxInt(1, innerWidth-2))
+		padding := strings.Repeat(" ", maxInt(0, innerWidth-utf8.RuneCountInString(text)-2))
+		rows = append(rows, renderRow{
+			text:  "│ " + text + padding + " │",
+			style: style,
+			spans: []renderSpan{
+				{text: "│ ", style: borderStyle},
+				{text: text + padding, style: style},
+				{text: " │", style: borderStyle},
+			},
+		})
+	}
+	appendBody("PLAN  ·  "+strings.TrimPrefix(strings.TrimSpace(presentation.Summary), "plan "), styles.Secondary.Bold(true))
+	for _, line := range presentation.Lines {
+		style := styles.Text
+		if line.Tone == "label" {
+			style = styles.Text.Bold(true)
+		} else if line.Tone == "muted" {
+			style = styles.Muted
+		}
+		for _, wrapped := range p.cachedWrap("plan-tool:"+tool.ID+":"+line.Tone+":"+line.Text, line.Text, maxInt(1, innerWidth-2)) {
+			appendBody(wrapped, style)
+		}
+	}
+	if p.runtime != nil && p.runtime.Store() != nil {
+		plan := p.runtime.Store().Snapshot().Plan.ActivePlan
+		if plan != nil && plan.Document != nil {
+			appendBody("p  Open full plan", styles.Muted)
+		}
+	}
+	rows = append(rows, renderRow{text: "└" + strings.Repeat("─", innerWidth) + "┘", style: borderStyle})
 	rows = append(rows, renderRow{text: "", style: styles.Text})
 	return rows
 }
@@ -1781,30 +2022,47 @@ func runeSlice(value string, start, end int) string {
 }
 
 func drawText(s tcell.Screen, x, y, width int, style tcell.Style, text string) {
-	if width <= 0 {
-		return
-	}
-	col := 0
-	for _, r := range text {
-		if col >= width {
-			break
-		}
-		s.SetContent(x+col, y, r, nil, style)
-		col++
-	}
+	drawStyledText(s, x, y, width, style, text)
 }
 
 func drawSpans(s tcell.Screen, x, y, width int, spans []renderSpan) {
 	col := 0
 	for _, span := range spans {
-		for _, r := range span.text {
-			if col >= width {
-				return
-			}
-			s.SetContent(x+col, y, r, nil, span.style)
-			col++
+		written := drawStyledText(s, x+col, y, width-col, span.style, span.text)
+		col += written
+		if col >= width {
+			return
 		}
 	}
+}
+
+// drawStyledText follows tcell's grapheme-aware Put contract: Put writes one
+// grapheme and reports its occupied cell width, so wide and combining content
+// cannot overwrite the following card border or styled span.
+func drawStyledText(s tcell.Screen, x, y, width int, style tcell.Style, text string) int {
+	if width <= 0 || text == "" {
+		return 0
+	}
+	col := 0
+	for text != "" && col < width {
+		cluster, rest, clusterWidth, _ := uniseg.FirstGraphemeClusterInString(text, -1)
+		if cluster == "" {
+			break
+		}
+		if clusterWidth <= 0 {
+			clusterWidth = 1
+		}
+		if col+clusterWidth > width {
+			break
+		}
+		_, displayedWidth := s.Put(x+col, y, cluster, style)
+		if displayedWidth <= 0 {
+			displayedWidth = clusterWidth
+		}
+		col += displayedWidth
+		text = rest
+	}
+	return col
 }
 func drawHLine(s tcell.Screen, x, y, width int, style tcell.Style) {
 	for i := 0; i < width; i++ {

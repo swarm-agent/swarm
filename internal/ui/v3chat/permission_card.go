@@ -75,6 +75,9 @@ func permissionCardModelForRecord(record client.PermissionRecord, pendingCount, 
 	if normalizePermissionToolName(record.ToolName) == "bash" {
 		return bashPermissionCardModel(record, pendingCount, width, styles, prefixPreview)
 	}
+	if intent, ok := parsePlanPermissionIntent(record); ok {
+		return planPermissionCardModel(record, intent, pendingCount, width, styles)
+	}
 	mode := strings.TrimSpace(record.Mode)
 	if mode == "" {
 		mode = "auto"
@@ -92,6 +95,64 @@ func permissionCardModelForRecord(record client.PermissionRecord, pendingCount, 
 	}
 	for _, line := range wrapText(arguments, maxInt(1, width)) {
 		model.Content = append(model.Content, permissionCardLine{Text: line, Style: styles.Text})
+	}
+	return model
+}
+
+type planPermissionIntent struct {
+	Title       string
+	Summary     string
+	Goal        string
+	Document    map[string]any
+	Checkpoints int
+}
+
+func parsePlanPermissionIntent(record client.PermissionRecord) (planPermissionIntent, bool) {
+	if normalizePermissionToolName(record.ToolName) != "plan_manage" {
+		return planPermissionIntent{}, false
+	}
+	requirement := strings.ToLower(strings.TrimSpace(record.Requirement))
+	if requirement != "plan_new_request" && requirement != "plan_revision_request" && requirement != "plan_amendment_request" && requirement != "plan_followup_request" {
+		return planPermissionIntent{}, false
+	}
+	var payload map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(record.ToolArguments)), &payload) != nil || payload == nil {
+		return planPermissionIntent{}, false
+	}
+	document := toolObject(payload, "document")
+	if document == nil {
+		if approved := toolObject(payload, "approved_arguments"); approved != nil {
+			document = toolObject(approved, "document")
+		}
+	}
+	if document == nil {
+		return planPermissionIntent{}, false
+	}
+	info := toolObject(document, "info")
+	return planPermissionIntent{
+		Title:       firstNonEmptyToolRaw(toolString(payload, "title"), toolString(document, "title"), toolString(info, "goal"), "Plan proposal"),
+		Summary:     firstNonEmptyToolRaw(toolString(payload, "update_summary"), toolString(payload, "summary")),
+		Goal:        toolString(info, "goal"),
+		Document:    document,
+		Checkpoints: len(toolObjectSlice(document, "checkpoints")),
+	}, true
+}
+
+func planPermissionCardModel(record client.PermissionRecord, intent planPermissionIntent, pendingCount, width int, styles PageStyles) permissionCardModel {
+	mode := firstNonEmpty(strings.TrimSpace(record.Mode), "auto")
+	model := permissionCardModel{Title: "Plan approval", Badge: "PLAN", Meta: permissionCardMeta(record, pendingCount, mode), FooterRows: permissionCardFooterRows(record)}
+	model.Content = append(model.Content, permissionCardLine{Text: intent.Title, Style: styles.Text.Bold(true)})
+	if intent.Goal != "" && !strings.EqualFold(intent.Goal, intent.Title) {
+		for _, line := range wrapText(intent.Goal, maxInt(1, width)) {
+			model.Content = append(model.Content, permissionCardLine{Text: line, Style: styles.Text})
+		}
+	} else if intent.Summary != "" && !strings.EqualFold(intent.Summary, intent.Title) {
+		for _, line := range wrapText(intent.Summary, maxInt(1, width)) {
+			model.Content = append(model.Content, permissionCardLine{Text: line, Style: styles.Muted})
+		}
+	}
+	if intent.Checkpoints > 0 {
+		model.Content = append(model.Content, permissionCardLine{Text: toolCountLabel(intent.Checkpoints, "checkpoint", "checkpoints") + "  ·  p  Open full plan", Style: styles.Muted})
 	}
 	return model
 }

@@ -539,11 +539,8 @@ func isManageTodosPayload(entry chatToolStreamEntry, payload map[string]any) boo
 }
 
 func formatPlanManageToolEntry(entry chatToolStreamEntry, maxRunes int) string {
-	payload := parseToolJSON(strings.TrimSpace(entry.Output))
+	payload := planManageToolPayload(entry)
 	if payload == nil {
-		payload = parseToolJSON(strings.TrimSpace(entry.Raw))
-	}
-	if payload == nil || !isPlanManagePayload(entry, payload) {
 		return ""
 	}
 
@@ -552,16 +549,78 @@ func formatPlanManageToolEntry(entry chatToolStreamEntry, maxRunes int) string {
 		headline = "plan"
 	}
 	lines := []string{headline}
-	for _, line := range structuredPlanManagePreviewLines(payload, maxInt(maxRunes, 160), 6) {
-		if strings.EqualFold(strings.TrimSpace(line), strings.TrimSpace(headline)) {
-			continue
-		}
-		lines = append(lines, line)
+	if summary := planManageCardSummary(payload); summary != "" && !strings.EqualFold(summary, strings.TrimSpace(headline)) {
+		lines = append(lines, summary)
 	}
 	if errText := strings.TrimSpace(entry.Error); errText != "" && len(lines) == 1 {
 		lines = append(lines, clampEllipsis("error: "+errText, maxRunes))
 	}
 	return clampEllipsis(strings.Join(lines, "\n"), maxInt(maxRunes, 640))
+}
+
+func planManageToolPayload(entry chatToolStreamEntry) map[string]any {
+	preferred := preferredStructuredToolText("plan_manage", strings.TrimSpace(entry.Output), strings.TrimSpace(entry.Raw))
+	payload := parseToolJSON(preferred)
+	if payload == nil && preferred != strings.TrimSpace(entry.Raw) {
+		payload = parseToolJSON(strings.TrimSpace(entry.Raw))
+	}
+	if payload == nil || !isPlanManagePayload(entry, payload) {
+		return nil
+	}
+	return payload
+}
+
+func planManageDocument(payload map[string]any) map[string]any {
+	plan := jsonObject(payload, "plan")
+	if document := jsonObject(plan, "document"); len(document) > 0 {
+		return document
+	}
+	if document := jsonObject(payload, "document"); len(document) > 0 {
+		return document
+	}
+	return nil
+}
+
+func planManageCardSummary(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	plan := jsonObject(payload, "plan")
+	document := planManageDocument(payload)
+	info := jsonObject(document, "info")
+	title := firstNonEmptyToolValue(
+		jsonString(plan, "title"),
+		jsonString(document, "title"),
+		jsonString(info, "goal"),
+		jsonString(payload, "title"),
+	)
+	checkpoints := jsonObjectSlice(document, "checkpoints")
+	status := firstNonEmptyToolValue(
+		jsonString(document, "status"),
+		jsonString(plan, "status"),
+		jsonString(payload, "status"),
+	)
+	parts := make([]string, 0, 4)
+	if title != "" {
+		parts = append(parts, title)
+	}
+	if update := firstNonEmptyToolValue(
+		jsonString(plan, "update_summary"),
+		jsonString(plan, "updateSummary"),
+		jsonString(payload, "update_summary"),
+	); update != "" {
+		parts = append(parts, "update: "+update)
+	}
+	if len(checkpoints) > 0 {
+		parts = append(parts, toolCountLabel(len(checkpoints), "checkpoint", "checkpoints"))
+	}
+	if status != "" && !strings.EqualFold(status, "ok") {
+		parts = append(parts, quietPlanStatus(status))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "  ·  ")
 }
 
 func isPlanManagePayload(entry chatToolStreamEntry, payload map[string]any) bool {
@@ -575,7 +634,8 @@ func isPlanManagePayload(entry chatToolStreamEntry, payload map[string]any) bool
 	if strings.EqualFold(strings.TrimSpace(jsonString(payload, "tool")), "plan_manage") {
 		return true
 	}
-	return strings.EqualFold(strings.TrimSpace(jsonString(payload, "path_id")), "tool.plan-manage.v3")
+	pathID := strings.ToLower(strings.TrimSpace(jsonString(payload, "path_id")))
+	return pathID == "tool.plan-manage.v3" || pathID == "tool.plan-new-request.v1"
 }
 
 func structuredWebSearchTimelineLines(payload map[string]any, maxRunes, maxLines int) []string {
