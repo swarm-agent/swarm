@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronUp, Terminal } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronUp, Terminal } from 'lucide-react'
+
+import { parseBashIntentMetadata } from '../services/bash-intent-metadata'
 
 import { requestJson } from '../../../../app/api'
 import { Button } from '../../../../components/ui/button'
@@ -7,11 +9,7 @@ import { Textarea } from '../../../../components/ui/textarea'
 import { cn } from '../../../../lib/cn'
 import type { DesktopPermissionRecord } from '../../types/realtime'
 import { safeString } from '../../permissions/services/desktop-permission-normalization'
-import {
-  buildGenericPermissionMarkdown,
-  permissionRequirementLabel,
-} from '../../permissions/services/permission-payload'
-import { ChatMarkdown } from './chat-markdown'
+import { permissionRequirementLabel } from '../../permissions/services/permission-payload'
 
 const COLLAPSED_CONTENT_HEIGHT = 176
 
@@ -68,7 +66,7 @@ export function DesktopInlineBashPermissionCard({
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
   const [persistentPrefix, setPersistentPrefix] = useState(() => savedBashPrefix(permission))
-  const body = buildGenericPermissionMarkdown(permission)
+  const intent = parseBashIntentMetadata(permission.toolArguments)
   const modeLabel = (permission.mode || sessionMode).trim() || 'auto'
 
   useEffect(() => {
@@ -103,7 +101,7 @@ export function DesktopInlineBashPermissionCard({
       observer?.disconnect()
       window.removeEventListener('resize', measure)
     }
-  }, [body, noteOpen, persistentPrefix])
+  }, [intent, noteOpen, persistentPrefix])
 
   const resolve = async (action: BashPermissionAction) => {
     if (busyAction) return
@@ -125,7 +123,14 @@ export function DesktopInlineBashPermissionCard({
       <div className="flex min-w-0 items-center gap-2.5 px-3 py-2.5 sm:px-4">
         <Terminal className="size-4 shrink-0 text-[var(--app-text-muted)]" aria-hidden="true" />
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-semibold text-[var(--app-text)]">Bash permission</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="text-xs font-semibold text-[var(--app-text)]">Bash permission</div>
+            {intent ? (
+              <span className="rounded-sm border border-[var(--app-border-strong)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-muted)]">
+                {intent.category}
+              </span>
+            ) : null}
+          </div>
           <div className="mt-0.5 flex flex-wrap gap-x-2 text-[11px] text-[var(--app-text-subtle)]">
             <span>Approval required</span>
             <span aria-hidden="true">·</span>
@@ -157,10 +162,30 @@ export function DesktopInlineBashPermissionCard({
         )}
       >
         <div ref={contentRef} className="min-w-0">
-          <ChatMarkdown
-            content={body}
-            className="text-sm leading-6 [&_pre]:rounded-none [&_pre]:border-0 [&_pre]:bg-transparent [&_pre]:p-0 [&_pre]:shadow-none [&_pre_code]:text-[13px]"
-          />
+          {intent ? (
+            <>
+              {intent.critical ? (
+                <div className="mb-3 flex items-start gap-2 border-l-2 border-[var(--app-warning)] pl-2.5 text-xs leading-5 text-[var(--app-warning)]" role="alert">
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                  <div><span className="font-semibold">Pay attention before approving.</span> The AI marked this command as critical.</div>
+                </div>
+              ) : null}
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">What this command will do</div>
+              {intent.explanation.length === 1 ? (
+                <p className="mt-1.5 text-sm leading-5 text-[var(--app-text)]">{intent.explanation[0]}</p>
+              ) : (
+                <ul className="mt-2 grid list-disc gap-2 pl-5 text-sm leading-5 text-[var(--app-text)]">
+                  {intent.explanation.map((item, index) => <li key={`${index}-${item}`} className="pl-1 marker:text-[var(--app-text-subtle)]">{item}</li>)}
+                </ul>
+              )}
+              <div className="mt-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Command</div>
+              <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap break-words bg-transparent p-0 font-mono text-[12px] leading-5 text-[var(--app-text)] [overflow-wrap:anywhere]">{intent.command}</pre>
+            </>
+          ) : (
+            <div className="border-l-2 border-[var(--app-danger)] pl-2.5 text-sm leading-5 text-[var(--app-danger)]" role="alert">
+              Invalid Bash request: precise explanation, read/write/update category, and critical flag are required.
+            </div>
+          )}
           <div className="mt-3 border-t border-[var(--app-border)] pt-2 text-[11px] leading-5 text-[var(--app-text-subtle)]">
             <span className="font-medium text-[var(--app-text-muted)]">Always allow prefix: </span>
             <span className="whitespace-pre-wrap break-words font-mono text-[var(--app-text)] [overflow-wrap:anywhere]">

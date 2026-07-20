@@ -362,7 +362,11 @@ func taskOwnedScopesOverlap(left, right []string) bool {
 }
 
 func rejectMalformedToolCallArguments(call tool.Call) error {
-	if canonicalToolName(call.Name) != "task" {
+	canonical := canonicalToolName(call.Name)
+	if canonical == "bash" {
+		return tool.ValidateBashCallArguments(call.Arguments)
+	}
+	if canonical != "task" {
 		return nil
 	}
 	arguments := strings.TrimSpace(call.Arguments)

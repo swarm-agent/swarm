@@ -530,14 +530,22 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "bash",
-			Description: "Execute a shell command in the current workspace directory",
+			Description: "Execute a shell command in the current workspace directory. Summarize routine intent in one direct line; use more explanation items only for distinct material effects. Always name consequential environmental changes and whether the user should pay special attention.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"command":    map[string]any{"type": "string", "description": "Shell command to execute"},
+					"command": map[string]any{"type": "string", "description": "Shell command to execute"},
+					"explanation": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"minItems":    1,
+						"description": "Ordered plain-English effects. Prefer one concise, human-scannable sentence for routine commands; do not narrate obvious shell mechanics, output capture, exit status, working directory, lack of source edits, or generic artifacts. Use multiple concise items only for distinct material effects. Name concrete filesystem mutations, processes, listeners, ports, network exposure, privileges, destructive actions, and other consequential changes when present.",
+					},
+					"category":   map[string]any{"type": "string", "enum": []string{"read", "write", "update"}, "description": "Overall effect category: read only observes state; write creates new state, resources, or processes; update changes or removes existing state. Use the highest-impact applicable category."},
+					"critical":   map[string]any{"type": "boolean", "description": "Set true when the user should pay special attention before execution, including public listeners or network exposure, destructive or privileged operations, security-sensitive changes, or other unusually consequential effects."},
 					"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds (default 120000, max 1800000)"},
 				},
-				"required":             []string{"command"},
+				"required":             []string{"command", "explanation", "category", "critical"},
 				"additionalProperties": false,
 			},
 		},
@@ -1584,7 +1592,7 @@ func (r *Runtime) executeCustomTool(ctx context.Context, scope WorkspaceScope, n
 	}
 	switch definition.Kind {
 	case pebblestore.AgentCustomToolKindFixedBash:
-		return executeBash(ctx, scope, map[string]any{"command": definition.Command}, func(chunk string) {
+		return executeBashCommand(ctx, scope, map[string]any{}, strings.TrimSpace(definition.Command), func(chunk string) {
 			if onProgress == nil {
 				return
 			}
@@ -1776,8 +1784,59 @@ func executeWrite(scope WorkspaceScope, args map[string]any) (string, error) {
 	return string(encoded), nil
 }
 
-func executeBash(parent context.Context, scope WorkspaceScope, args map[string]any, onDelta func(string)) (string, error) {
+// ValidateBashCallArguments enforces the canonical AI-authored Bash request contract
+// before a command can reach permission or execution handling.
+func ValidateBashCallArguments(arguments string) error {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
+		return fmt.Errorf("bash arguments must be a JSON object: %w", err)
+	}
+	_, err := validateBashArguments(args)
+	return err
+}
+
+func validateBashArguments(args map[string]any) (string, error) {
 	command := strings.TrimSpace(asString(args["command"]))
+	if command == "" {
+		return "", errors.New("bash requires command")
+	}
+
+	rawExplanation, ok := args["explanation"].([]any)
+	if !ok || len(rawExplanation) == 0 {
+		return "", errors.New("bash requires explanation as a non-empty list of precise command effects")
+	}
+	for index, entry := range rawExplanation {
+		text, ok := entry.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return "", fmt.Errorf("bash explanation item %d must be a non-empty string", index+1)
+		}
+	}
+
+	category, ok := args["category"].(string)
+	if !ok {
+		return "", errors.New("bash requires category to be one of read, write, or update")
+	}
+	switch strings.ToLower(strings.TrimSpace(category)) {
+	case "read", "write", "update":
+	default:
+		return "", errors.New("bash category must be one of read, write, or update")
+	}
+	if _, ok := args["critical"].(bool); !ok {
+		return "", errors.New("bash requires critical as an explicit boolean")
+	}
+	return command, nil
+}
+
+func executeBash(parent context.Context, scope WorkspaceScope, args map[string]any, onDelta func(string)) (string, error) {
+	command, err := validateBashArguments(args)
+	if err != nil {
+		return "", err
+	}
+	return executeBashCommand(parent, scope, args, command, onDelta)
+}
+
+func executeBashCommand(parent context.Context, scope WorkspaceScope, args map[string]any, command string, onDelta func(string)) (string, error) {
+	command = strings.TrimSpace(command)
 	if command == "" {
 		return "", errors.New("bash requires command")
 	}
