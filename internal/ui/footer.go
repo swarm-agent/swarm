@@ -9,6 +9,10 @@ import (
 type FooterState footerbar.State
 type footerToken = footerbar.Token
 
+func responsiveFooterHeight(width, normalHeight int) int {
+	return footerbar.ResponsiveHeight(width, normalHeight)
+}
+
 func footerBarStyles(theme Theme) footerbar.Styles {
 	return footerbar.Styles{
 		Border:    theme.Border,

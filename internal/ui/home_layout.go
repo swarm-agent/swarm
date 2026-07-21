@@ -45,9 +45,7 @@ func resolveHomeResponsiveLayout(width, height int) homeResponsiveLayout {
 		profile.PinMetaTop = true
 	}
 
-	if height < 12 || width < 50 {
-		profile.BottomBarHeight = 1
-	}
+	profile.BottomBarHeight = responsiveFooterHeight(width, profile.BottomBarHeight)
 	if profile.BottomBarHeight < 1 {
 		profile.BottomBarHeight = 1
 	}

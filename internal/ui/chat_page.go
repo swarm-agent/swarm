@@ -1499,10 +1499,7 @@ func (p *ChatPage) Draw(s tcell.Screen) {
 		headerH = 1
 	}
 
-	footerH := 2
-	if w < 54 || h < 12 {
-		footerH = 1
-	}
+	footerH := responsiveFooterHeight(mainW, 2)
 	if footerH > h-1 {
 		footerH = maxInt(0, h-1)
 	}

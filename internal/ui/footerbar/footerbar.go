@@ -46,6 +46,24 @@ type Rect struct {
 	H int
 }
 
+const stackedWidthThreshold = 54
+
+// ResponsiveHeight preserves the caller's normal footer height while reserving
+// enough rows to stack controls on ultra-thin terminals.
+func ResponsiveHeight(width, normalHeight int) int {
+	minimum := normalHeight
+	switch {
+	case width < 32:
+		minimum = 5
+	case width < stackedWidthThreshold:
+		minimum = 4
+	}
+	if normalHeight < minimum {
+		return minimum
+	}
+	return normalHeight
+}
+
 func Tokens(styles Styles, state State) []Token {
 	routeLabel := fallback(strings.TrimSpace(state.RouteLabel), "Local")
 	if state.NotificationCount > 0 {
@@ -104,7 +122,10 @@ func Draw(screen tcell.Screen, styles Styles, rect Rect, state State, register f
 		return
 	}
 	lineY := rect.Y + rect.H - 1
-	if rect.H >= 2 {
+	stacked := rect.W < stackedWidthThreshold && rect.H >= 3
+	if stacked {
+		drawHLine(screen, rect.X, rect.Y, rect.W, styles.Border)
+	} else if rect.H >= 2 {
 		drawHLine(screen, rect.X, lineY-1, rect.W, styles.Border)
 	}
 	textX, textW := rect.X, rect.W
@@ -112,6 +133,10 @@ func Draw(screen tcell.Screen, styles Styles, rect Rect, state State, register f
 		textX, textW = rect.X+1, rect.W-2
 	}
 	if textW <= 0 {
+		return
+	}
+	if stacked {
+		drawTokenRows(screen, textX, rect.Y+1, textW, rect.H-1, Tokens(styles, state), register)
 		return
 	}
 	right := RightLine(state, 28)
@@ -132,6 +157,33 @@ func Draw(screen tcell.Screen, styles Styles, rect Rect, state State, register f
 	DrawTokenRow(screen, textX, lineY, leftW, Tokens(styles, state), register)
 	if rightW > 0 && textW > rightW+2 {
 		drawTextRight(screen, textX+textW-1, lineY, rightW, styles.Secondary, right)
+	}
+}
+
+func drawTokenRows(screen tcell.Screen, x, y, maxWidth, maxRows int, tokens []Token, register func(Rect, Token)) {
+	for row := 0; row < maxRows && len(tokens) > 0; row++ {
+		used := 0
+		end := 0
+		for end < len(tokens) {
+			labelWidth := utf8.RuneCountInString(strings.TrimSpace(tokens[end].Text)) + 2
+			if end > 0 {
+				labelWidth++
+			}
+			if used+labelWidth > maxWidth {
+				break
+			}
+			used += labelWidth
+			end++
+		}
+		if end == 0 {
+			end = 1
+			shrunken := tokens[0]
+			shrunken.Shrink = true
+			DrawTokenRow(screen, x, y+row, maxWidth, []Token{shrunken}, register)
+		} else {
+			DrawTokenRow(screen, x, y+row, maxWidth, tokens[:end], register)
+		}
+		tokens = tokens[end:]
 	}
 }
 

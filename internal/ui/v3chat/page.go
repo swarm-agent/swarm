@@ -1160,9 +1160,9 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	// heartbeat: each draw schedules exactly one wake for the next second.
 	p.scheduleRunTimer(runStatus.Active)
 
-	// Keep the footer to its separator and token row so the separator is also
-	// the composer's bottom border, directly beneath the editable rows.
-	footerHeight := 2
+	// Keep the normal footer to its separator and token row, but reserve extra
+	// token rows when the canonical footer stacks on ultra-thin terminals.
+	footerHeight := footerbar.ResponsiveHeight(width, 2)
 	composerLines, composerCursorLine, composerCursorCol := composerLayout(string(input), cursor, width)
 	composerVisibleRows := minInt(len(composerLines), maxComposerVisibleRows)
 	conversationStatusHeight := 0
