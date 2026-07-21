@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +72,51 @@ func TestSearchSessionsV3ReviewWorktreePagesIncludesOlderUnresolvedSessions(t *t
 	}
 	if got.Items[56].ID != "session-56" {
 		t.Fatalf("last item = %q, want session-56", got.Items[56].ID)
+	}
+}
+
+func TestSessionsV3ReviewRepositoryBulkInventoryIncludesSiblingAndExcludesUnrelated(t *testing.T) {
+	repo := initGitCommitTestRepo(t)
+	sibling := t.TempDir()
+	runGitCommitTestCommand(t, repo, "worktree", "add", "-b", "agent/review-inventory", sibling, "HEAD")
+	otherRepo := initGitCommitTestRepo(t)
+	otherWorktree := t.TempDir()
+	runGitCommitTestCommand(t, otherRepo, "worktree", "add", "-b", "agent/other-inventory", otherWorktree, "HEAD")
+
+	checkout, commonDir := sessionsV3ReviewCheckoutTarget(context.Background(), repo)
+	repository := newSessionsV3ReviewRepository(context.Background(), checkout, commonDir)
+	if !repository.inventoryLoaded {
+		t.Fatal("expected bulk worktree inventory")
+	}
+	if !repository.worktreeMatchesCheckout(sibling) {
+		t.Fatal("expected sibling worktree in bulk repository inventory")
+	}
+	if !repository.worktreeMatchesCheckout(filepath.Join(sibling, "nested")) {
+		t.Fatal("expected sibling worktree subdirectory in bulk repository inventory")
+	}
+	if repository.worktreeMatchesCheckout(otherWorktree) {
+		t.Fatal("expected unrelated worktree excluded by bulk repository inventory")
+	}
+}
+
+func TestSessionsV3ReviewRepositoryPrefetchSnapshotsDeduplicatesWorktrees(t *testing.T) {
+	repo := initGitCommitTestRepo(t)
+	worktree := t.TempDir()
+	runGitCommitTestCommand(t, repo, "worktree", "add", "-b", "agent/review-prefetch", worktree, "HEAD")
+	checkout, commonDir := sessionsV3ReviewCheckoutTarget(context.Background(), repo)
+	repository := newSessionsV3ReviewRepository(context.Background(), checkout, commonDir)
+	sessions := []pebblestore.SessionSnapshot{
+		{WorktreeEnabled: true, WorktreeRootPath: worktree},
+		{WorktreeEnabled: true, WorktreeRootPath: worktree},
+	}
+
+	started := time.Now()
+	repository.prefetchSnapshots(context.Background(), sessions)
+	if len(repository.snapshots) != 1 {
+		t.Fatalf("snapshot cache size = %d, want 1", len(repository.snapshots))
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("prefetch took %s, want under 2s", elapsed)
 	}
 }
 

@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"swarm/packages/swarmd/internal/gitstatus"
@@ -65,6 +67,7 @@ func (s *Server) handleSessionsV3ReviewWorktrees(w http.ResponseWriter, r *http.
 
 func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principal identity.Principal, req sessionsV3ReviewWorktreesRequest) (map[string]any, error) {
 	checkoutSnapshot, checkoutCommonDir := sessionsV3ReviewCheckoutTarget(ctx, req.WorkspacePath)
+	repository := newSessionsV3ReviewRepository(ctx, checkoutSnapshot, checkoutCommonDir)
 	checkoutBranch := strings.TrimSpace(checkoutSnapshot.Branch)
 	search, err := searchSessionsV3ReviewWorktreePages(s.sessions.SearchSessions, pebblestore.V3SessionSearchOptions{
 		AccountScopeID: principal.AccountScopeID,
@@ -88,7 +91,7 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 	}
 	recentlyArchived := make([]map[string]any, 0, len(archivedSearch.Items))
 	for _, item := range archivedSearch.Items {
-		if strings.TrimSpace(req.WorkspacePath) != "" && !sessionsV3ReviewSearchItemMatchesCheckout(ctx, item, checkoutSnapshot, checkoutCommonDir) {
+		if strings.TrimSpace(req.WorkspacePath) != "" && !repository.searchItemMatchesCheckout(item) {
 			continue
 		}
 		recentlyArchived = append(recentlyArchived, map[string]any{"session_id": item.ID, "title": item.Title, "updated_at": item.UpdatedAt, "worktree_branch": item.WorktreeBranch, "worktree_path": item.WorktreeRootPath, "target_branch": item.WorktreeBaseBranch})
@@ -125,24 +128,41 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 	done := make([]sessionreview.Classification, 0)
 	byID := make(map[string]sessionreview.Classification)
 	versions := make(map[string]int64)
+	reviewSessions := make([]pebblestore.SessionSnapshot, 0, len(search.Items))
 	for _, item := range search.Items {
 		session, found, getErr := s.sessions.GetSession(item.ID)
 		if getErr != nil || !found {
 			continue
 		}
-		if strings.TrimSpace(req.WorkspacePath) != "" && !sessionsV3ReviewSessionMatchesCheckout(ctx, session, checkoutSnapshot, checkoutCommonDir) {
+		if strings.TrimSpace(req.WorkspacePath) != "" && !repository.sessionMatchesCheckout(session) {
 			continue
 		}
-		targetBranch := session.WorktreeBaseBranch
-		var classification sessionreview.Classification
-		if sessionsV3ReviewSessionUsesCheckout(ctx, session, checkoutSnapshot, checkoutCommonDir) {
-			classification = sessionreview.ClassifyCurrentCheckout(session, checkoutSnapshot, now, grace)
-		} else {
-			if checkoutBranch != "" && sessionsV3ReviewWorktreeMatchesCheckout(ctx, session.WorktreeRootPath, checkoutCommonDir) {
+		reviewSessions = append(reviewSessions, session)
+	}
+	// Worktree status and patch-equivalence checks dominate classification latency.
+	// Resolve independent Git work concurrently, once per unique worktree, before
+	// deterministic metadata updates and sorting.
+	repository.prefetchSnapshots(ctx, reviewSessions)
+	classifications := make([]sessionreview.Classification, len(reviewSessions))
+	var classificationWait sync.WaitGroup
+	for index, session := range reviewSessions {
+		classificationWait.Add(1)
+		go func() {
+			defer classificationWait.Done()
+			targetBranch := session.WorktreeBaseBranch
+			if repository.sessionUsesCheckout(session) {
+				classifications[index] = sessionreview.ClassifyCurrentCheckout(session, checkoutSnapshot, now, grace)
+				return
+			}
+			if checkoutBranch != "" && repository.worktreeMatchesCheckout(session.WorktreeRootPath) {
 				targetBranch = checkoutBranch
 			}
-			classification = sessionreview.ClassifyAgainstTarget(ctx, sessionreview.ExecGitRunner{}, session, now, grace, targetBranch)
-		}
+			classifications[index] = repository.classifyAgainstTarget(ctx, session, now, grace, targetBranch)
+		}()
+	}
+	classificationWait.Wait()
+	for index, session := range reviewSessions {
+		classification := classifications[index]
 		classification.CommitJob = sessionReviewCommitJob(session)
 		if classification.Classification == "done" {
 			doneAt := sessionReviewDoneAt(session)
@@ -356,6 +376,167 @@ func sessionsV3ReviewCheckoutTarget(ctx context.Context, workspacePath string) (
 		return gitstatus.Snapshot{}, ""
 	}
 	return snapshot, gitstatus.NormalizePath(watch.CommonDir)
+}
+
+type sessionsV3ReviewRepository struct {
+	ctx               context.Context
+	checkout          gitstatus.Snapshot
+	checkoutCommonDir string
+	worktreeRoots     map[string]struct{}
+	inventoryLoaded   bool
+	mu                sync.Mutex
+	snapshots         map[string]gitstatus.Snapshot
+	snapshotErrors    map[string]error
+}
+
+func newSessionsV3ReviewRepository(ctx context.Context, checkout gitstatus.Snapshot, checkoutCommonDir string) *sessionsV3ReviewRepository {
+	repository := &sessionsV3ReviewRepository{
+		ctx:               ctx,
+		checkout:          checkout,
+		checkoutCommonDir: strings.TrimSpace(checkoutCommonDir),
+		worktreeRoots:     make(map[string]struct{}),
+		snapshots:         make(map[string]gitstatus.Snapshot),
+		snapshotErrors:    make(map[string]error),
+	}
+	root := strings.TrimSpace(checkout.RepoRoot)
+	if root == "" {
+		return repository
+	}
+	output, err := (sessionreview.ExecGitRunner{}).Run(ctx, root, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return repository
+	}
+	repository.inventoryLoaded = true
+	for _, record := range strings.Split(output, "\x00") {
+		if !strings.HasPrefix(record, "worktree ") {
+			continue
+		}
+		if path := gitstatus.NormalizePath(strings.TrimSpace(strings.TrimPrefix(record, "worktree "))); path != "" {
+			repository.worktreeRoots[path] = struct{}{}
+		}
+	}
+	return repository
+}
+
+func (r *sessionsV3ReviewRepository) searchItemMatchesCheckout(item pebblestore.V3SessionSearchItem) bool {
+	return r.sessionMatchesCheckout(pebblestore.SessionSnapshot{
+		WorkspacePath:      item.WorkspacePath,
+		WorktreeEnabled:    item.WorktreeEnabled,
+		WorktreeRootPath:   item.WorktreeRootPath,
+		WorktreeBaseBranch: item.WorktreeBaseBranch,
+		WorktreeBranch:     item.WorktreeBranch,
+		Metadata:           item.Metadata,
+	})
+}
+
+func (r *sessionsV3ReviewRepository) sessionMatchesCheckout(session pebblestore.SessionSnapshot) bool {
+	if r == nil || r.checkoutCommonDir == "" {
+		return false
+	}
+	if !session.WorktreeEnabled {
+		return r.sessionUsesCheckout(session)
+	}
+	worktreePath := strings.TrimSpace(session.WorktreeRootPath)
+	if worktreePath == "" {
+		worktreePath = strings.TrimSpace(session.WorkspacePath)
+	}
+	if r.worktreeMatchesCheckout(worktreePath) {
+		return true
+	}
+	sourcePath := strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_path"))
+	return sourcePath != "" && r.worktreeMatchesCheckout(sourcePath)
+}
+
+func (r *sessionsV3ReviewRepository) sessionUsesCheckout(session pebblestore.SessionSnapshot) bool {
+	if r == nil || session.WorktreeEnabled || !r.checkout.HasGit || r.checkoutCommonDir == "" {
+		return false
+	}
+	sessionPath := gitstatus.NormalizePath(session.WorkspacePath)
+	checkoutRoot := gitstatus.NormalizePath(r.checkout.RepoRoot)
+	if sessionPath == "" || checkoutRoot == "" {
+		return false
+	}
+	if sessionPath == checkoutRoot {
+		return true
+	}
+	// Workspace paths can point at a subdirectory. Resolve only this uncommon case;
+	// exact checkout roots and all listed sibling worktrees stay subprocess-free.
+	return sessionsV3ReviewSessionUsesCheckout(r.ctx, session, r.checkout, r.checkoutCommonDir)
+}
+
+func (r *sessionsV3ReviewRepository) worktreeMatchesCheckout(worktreePath string) bool {
+	if r == nil || strings.TrimSpace(worktreePath) == "" || r.checkoutCommonDir == "" {
+		return false
+	}
+	path := gitstatus.NormalizePath(worktreePath)
+	for root := range r.worktreeRoots {
+		if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	if r.inventoryLoaded {
+		return false
+	}
+	// Preserve the prior repository-resolution path when the bulk inventory query
+	// itself failed; an unavailable inventory must not silently hide sessions.
+	return sessionsV3ReviewWorktreeMatchesCheckout(r.ctx, worktreePath, r.checkoutCommonDir)
+}
+
+func (r *sessionsV3ReviewRepository) prefetchSnapshots(ctx context.Context, sessions []pebblestore.SessionSnapshot) {
+	var wait sync.WaitGroup
+	seen := make(map[string]struct{}, len(sessions))
+	for _, session := range sessions {
+		if !session.WorktreeEnabled {
+			continue
+		}
+		path := gitstatus.NormalizePath(session.WorktreeRootPath)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			r.loadSnapshot(ctx, path)
+		}()
+	}
+	wait.Wait()
+}
+
+func (r *sessionsV3ReviewRepository) loadSnapshot(ctx context.Context, path string) (gitstatus.Snapshot, error) {
+	r.mu.Lock()
+	if snapshot, ok := r.snapshots[path]; ok {
+		r.mu.Unlock()
+		return snapshot, nil
+	}
+	if err, ok := r.snapshotErrors[path]; ok {
+		r.mu.Unlock()
+		return gitstatus.Snapshot{}, err
+	}
+	r.mu.Unlock()
+
+	watch := gitstatus.WatchPaths{RepoRoot: path, CommonDir: r.checkoutCommonDir}
+	snapshot, err := gitstatus.SnapshotForResolvedPaths(ctx, path, watch, gitstatus.Options{})
+	r.mu.Lock()
+	if err != nil {
+		r.snapshotErrors[path] = err
+	} else {
+		r.snapshots[path] = snapshot
+	}
+	r.mu.Unlock()
+	return snapshot, err
+}
+
+func (r *sessionsV3ReviewRepository) classifyAgainstTarget(ctx context.Context, session pebblestore.SessionSnapshot, now time.Time, grace time.Duration, targetBranch string) sessionreview.Classification {
+	path := gitstatus.NormalizePath(session.WorktreeRootPath)
+	snapshot, err := r.loadSnapshot(ctx, path)
+	if path == "" || err != nil {
+		snapshot = gitstatus.Snapshot{}
+	}
+	return sessionreview.ClassifySnapshotAgainstTarget(ctx, sessionreview.ExecGitRunner{}, session, snapshot, now, grace, targetBranch)
 }
 
 func sessionsV3ReviewSearchItemMatchesCheckout(ctx context.Context, item pebblestore.V3SessionSearchItem, checkout gitstatus.Snapshot, checkoutCommonDir string) bool {

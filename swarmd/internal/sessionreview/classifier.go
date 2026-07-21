@@ -95,7 +95,14 @@ func ClassifyAgainstTarget(ctx context.Context, runner GitRunner, session pebble
 }
 
 func ClassifySnapshot(ctx context.Context, runner GitRunner, session pebblestore.SessionSnapshot, snapshot gitstatus.Snapshot, now time.Time, grace time.Duration) Classification {
-	return classifySnapshotAgainstTarget(ctx, runner, session, snapshot, now, grace, session.WorktreeBaseBranch)
+	return ClassifySnapshotAgainstTarget(ctx, runner, session, snapshot, now, grace, session.WorktreeBaseBranch)
+}
+
+// ClassifySnapshotAgainstTarget classifies an already-collected snapshot against an
+// explicit target branch. Callers that resolve repository/worktree identity in bulk
+// can use this to avoid repeating rev-parse queries for every session.
+func ClassifySnapshotAgainstTarget(ctx context.Context, runner GitRunner, session pebblestore.SessionSnapshot, snapshot gitstatus.Snapshot, now time.Time, grace time.Duration, targetBranch string) Classification {
+	return classifySnapshotAgainstTarget(ctx, runner, session, snapshot, now, grace, targetBranch)
 }
 
 // ClassifyCurrentCheckout handles regular sessions that run directly in the checkout being
