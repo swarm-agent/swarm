@@ -3,6 +3,10 @@ package sessionreview
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +53,101 @@ func TestClassifySnapshotTreatsPatchEquivalentCommitAsDoneWithGrace(t *testing.T
 	if got.Classification != "done" || got.Reason != "clean_and_integrated" || got.Equivalent != 1 || got.ArchiveReady {
 		t.Fatalf("classification = %#v", got)
 	}
+}
+
+func TestClassifyAgainstTargetRecognizesConflictResolvedManualCherryPick(t *testing.T) {
+	repo := initSessionReviewRepo(t)
+	runSessionReviewGit(t, repo, "checkout", "-b", "source")
+	writeSessionReviewFile(t, repo, "feature.txt", "source change\n")
+	runSessionReviewGit(t, repo, "add", "feature.txt")
+	runSessionReviewGit(t, repo, "commit", "-m", "add review feature")
+	sourceCommit := sessionReviewGitOutput(t, repo, "rev-parse", "HEAD")
+
+	runSessionReviewGit(t, repo, "checkout", "dev")
+	writeSessionReviewFile(t, repo, "feature.txt", "target context\n")
+	runSessionReviewGit(t, repo, "add", "feature.txt")
+	runSessionReviewGit(t, repo, "commit", "-m", "prepare target context")
+	cmd := exec.Command("git", "cherry-pick", sourceCommit)
+	cmd.Dir = repo
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected the manual cherry-pick to conflict")
+	}
+	writeSessionReviewFile(t, repo, "feature.txt", "target context\nsource change\n")
+	runSessionReviewGit(t, repo, "add", "feature.txt")
+	runSessionReviewGit(t, repo, "cherry-pick", "--continue")
+
+	cherry := sessionReviewGitOutput(t, repo, "cherry", "dev", sourceCommit)
+	if !strings.HasPrefix(cherry, "+ ") {
+		t.Fatalf("git cherry = %q, want false-positive missing source commit", cherry)
+	}
+	session := reviewSession(1)
+	session.WorktreeRootPath = repo
+	session.WorktreeBranch = "source"
+	got := ClassifySnapshotAgainstTarget(context.Background(), ExecGitRunner{}, session, gitstatus.Snapshot{HasGit: true, HeadOID: sourceCommit, Clean: true}, time.Now(), time.Hour, "dev")
+	if got.Classification != "done" || got.Reason != "clean_and_integrated" || got.MissingCommits != 0 || got.Equivalent != 1 {
+		t.Fatalf("classification = %#v", got)
+	}
+}
+
+func TestClassifyAgainstTargetDoesNotReconcileDifferentCommitWithSameSubject(t *testing.T) {
+	repo := initSessionReviewRepo(t)
+	runSessionReviewGit(t, repo, "checkout", "-b", "source")
+	writeSessionReviewFile(t, repo, "source.txt", "source\n")
+	runSessionReviewGit(t, repo, "add", "source.txt")
+	runSessionReviewGit(t, repo, "commit", "-m", "shared subject")
+	sourceCommit := sessionReviewGitOutput(t, repo, "rev-parse", "HEAD")
+
+	runSessionReviewGit(t, repo, "checkout", "dev")
+	writeSessionReviewFile(t, repo, "other.txt", "different\n")
+	runSessionReviewGit(t, repo, "add", "other.txt")
+	runSessionReviewGit(t, repo, "commit", "-m", "shared subject")
+
+	session := reviewSession(1)
+	session.WorktreeRootPath = repo
+	session.WorktreeBranch = "source"
+	got := ClassifySnapshotAgainstTarget(context.Background(), ExecGitRunner{}, session, gitstatus.Snapshot{HasGit: true, HeadOID: sourceCommit, Clean: true}, time.Now(), time.Hour, "dev")
+	if got.Classification != "retained" || got.Reason != "commits_missing_from_target" || got.MissingCommits != 1 || got.Equivalent != 0 {
+		t.Fatalf("classification = %#v", got)
+	}
+}
+
+func initSessionReviewRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	runSessionReviewGit(t, repo, "init", "-b", "dev")
+	runSessionReviewGit(t, repo, "config", "user.name", "Test User")
+	runSessionReviewGit(t, repo, "config", "user.email", "test@example.invalid")
+	writeSessionReviewFile(t, repo, "base.txt", "base\n")
+	runSessionReviewGit(t, repo, "add", "base.txt")
+	runSessionReviewGit(t, repo, "commit", "-m", "base")
+	return repo
+}
+
+func writeSessionReviewFile(t *testing.T, repo, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runSessionReviewGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
+}
+
+func sessionReviewGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func TestClassifySnapshotFailsClosedWhenTargetUnavailable(t *testing.T) {

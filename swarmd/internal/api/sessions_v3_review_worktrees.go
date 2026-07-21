@@ -265,7 +265,7 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 		"ok":                        true,
 		"target_detection":          "current_checkout_branch_for_matching_repository_then_session_worktree_base_branch",
 		"current_target_branch":     checkoutBranch,
-		"comparison":                "git cherry target_branch worktree_head (patch-equivalent commits count as integrated)",
+		"comparison":                "git cherry target_branch worktree_head (patch-equivalent and conflict-resolved cherry-picks with matching author identity, message, and changed paths count as integrated)",
 		"retained":                  retained,
 		"done":                      done,
 		"archived_session_ids":      archived,

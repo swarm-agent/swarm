@@ -3,7 +3,9 @@ package sessionreview
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -184,7 +186,17 @@ func classifySnapshotAgainstTarget(ctx context.Context, runner GitRunner, sessio
 		if fields[0] == "-" {
 			result.Equivalent++
 		} else if fields[0] == "+" {
-			result.MissingCommits++
+			reconciled, reconcileErr := CommitMatchesResolvedIntegration(ctx, runner, session.WorktreeRootPath, result.TargetBranch, fields[1])
+			if reconcileErr != nil {
+				result.Classification = "retained"
+				result.Reason = "target_branch_unavailable"
+				return result
+			}
+			if reconciled {
+				result.Equivalent++
+			} else {
+				result.MissingCommits++
+			}
 		}
 	}
 	if result.MissingCommits > 0 {
@@ -199,6 +211,83 @@ func classifySnapshotAgainstTarget(ctx context.Context, runner GitRunner, sessio
 	result.ArchiveAfter = session.UpdatedAt + grace.Milliseconds()
 	result.ArchiveReady = now.UnixMilli() >= result.ArchiveAfter
 	return result
+}
+
+// CommitMatchesResolvedIntegration recognizes a source commit whose cherry-pick
+// required conflict resolution and therefore no longer has the same patch ID.
+// A normal or cleanly rebased cherry-pick remains covered by git cherry. This
+// secondary check requires Git-preserved author identity, author timestamp, full
+// message, and changed-path set to match a commit already reachable from target.
+func CommitMatchesResolvedIntegration(ctx context.Context, runner GitRunner, dir, target, sourceCommit string) (bool, error) {
+	if runner == nil {
+		return false, errors.New("git runner is required")
+	}
+	dir = strings.TrimSpace(dir)
+	target = strings.TrimSpace(target)
+	sourceCommit = strings.TrimSpace(sourceCommit)
+	if dir == "" || target == "" || sourceCommit == "" {
+		return false, errors.New("repository, target, and source commit are required")
+	}
+
+	subject, err := runner.Run(ctx, dir, "show", "-s", "--format=%s", sourceCommit)
+	if err != nil {
+		return false, fmt.Errorf("read source commit subject: %w", err)
+	}
+	subject = strings.TrimSpace(subject)
+	if subject == "" {
+		return false, nil
+	}
+	identity, err := reviewCommitIdentity(ctx, runner, dir, sourceCommit)
+	if err != nil {
+		return false, err
+	}
+	paths, err := reviewCommitPaths(ctx, runner, dir, sourceCommit)
+	if err != nil {
+		return false, err
+	}
+	candidates, err := runner.Run(ctx, dir, "log", target, "--format=%H", "--fixed-strings", "--grep="+subject)
+	if err != nil {
+		return false, fmt.Errorf("search target commit history: %w", err)
+	}
+	for _, candidate := range strings.Fields(candidates) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || candidate == sourceCommit {
+			continue
+		}
+		candidateIdentity, identityErr := reviewCommitIdentity(ctx, runner, dir, candidate)
+		if identityErr != nil {
+			return false, identityErr
+		}
+		if candidateIdentity != identity {
+			continue
+		}
+		candidatePaths, pathsErr := reviewCommitPaths(ctx, runner, dir, candidate)
+		if pathsErr != nil {
+			return false, pathsErr
+		}
+		if strings.Join(candidatePaths, "\x00") == strings.Join(paths, "\x00") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func reviewCommitIdentity(ctx context.Context, runner GitRunner, dir, commit string) (string, error) {
+	identity, err := runner.Run(ctx, dir, "show", "-s", "--format=%an%x00%ae%x00%aI%x00%B", commit)
+	if err != nil {
+		return "", fmt.Errorf("read commit identity for %s: %w", commit, err)
+	}
+	return strings.TrimSpace(identity), nil
+}
+
+func reviewCommitPaths(ctx context.Context, runner GitRunner, dir, commit string) ([]string, error) {
+	output, err := runner.Run(ctx, dir, "diff-tree", "--root", "--no-commit-id", "--name-only", "--no-renames", "-r", commit)
+	if err != nil {
+		return nil, fmt.Errorf("read changed paths for %s: %w", commit, err)
+	}
+	paths := strings.Fields(output)
+	sort.Strings(paths)
+	return paths, nil
 }
 
 func firstNonEmpty(values ...string) string {
