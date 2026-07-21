@@ -199,6 +199,41 @@ func TestReducerOrdersDeduplicatesAndReconcilesPending(t *testing.T) {
 	}
 }
 
+func TestFinalHandoffMetadataProjectsFromHydrationAndRealtime(t *testing.T) {
+	metadata := map[string]any{
+		"source": "plan_execution_final_handoff",
+		"kind":   "plan_final_checkpoint_handoff",
+		"final_handoff": map[string]any{
+			"schema_version": 1,
+			"title":          "Ready to review",
+			"overview":       "The focused change is complete.",
+			"impact_bullets": []any{"Compact card", "Ordinary chat continuation"},
+			"suggested_prompts": []any{
+				map[string]any{"label": "Review", "prompt": "Review the final handoff."},
+			},
+			"details": map[string]any{"report": "Full report", "changed_files": []any{"internal/ui/v3chat/page.go"}},
+		},
+	}
+	state := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:  client.SessionSummary{ID: "s"},
+		Messages: []client.SessionMessage{{ID: "handoff-1", SessionID: "s", Role: "system", Content: "compact", Metadata: metadata}},
+	}})
+	if len(state.Messages) != 1 || !isStructuredFinalHandoffMessage(state.Messages[0]) || state.Messages[0].FinalHandoff.Title != "Ready to review" {
+		t.Fatalf("hydrated final handoff = %#v", state.Messages)
+	}
+	if metadataString(state.Messages[0].Metadata, "kind") != "plan_final_checkpoint_handoff" || state.Messages[0].FinalHandoff.Details.Report != "Full report" {
+		t.Fatalf("hydrated metadata/evidence was not preserved: %#v", state.Messages[0])
+	}
+
+	payload, _ := json.Marshal(map[string]any{"message": client.SessionMessage{
+		ID: "handoff-2", SessionID: "s", GlobalSeq: 2, Role: "system", Content: "compact", Metadata: metadata,
+	}})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{SessionID: "s", Seq: 2, EventType: "session.message.created", Payload: payload}}})
+	if len(state.Messages) != 2 || !isStructuredFinalHandoffMessage(state.Messages[1]) || len(state.Messages[1].FinalHandoff.SuggestedPrompts) != 1 {
+		t.Fatalf("realtime final handoff = %#v", state.Messages)
+	}
+}
+
 func TestReducerProjectsTitleAndCursorOnlyAfterDurableFrame(t *testing.T) {
 	payload, _ := json.Marshal(map[string]any{"title": "Immediate title"})
 	state := Reduce(NewState(), RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", EndpointCursor: "cursor-2", Event: &client.SessionV3Event{ID: "e1", SessionID: "s", Seq: 2, Payload: payload}}})

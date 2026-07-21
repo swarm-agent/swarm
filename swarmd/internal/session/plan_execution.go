@@ -98,6 +98,7 @@ type PlanCheckpointOutcomeOptions struct {
 	ChangedFiles    []string
 	Validation      []string
 	Recommendation  *pebblestore.SessionPlanCheckpointRecommendation
+	Handoff         *pebblestore.SessionPlanCheckpointHandoff
 	StartedAt       int64
 	CompletedAt     int64
 }
@@ -230,6 +231,19 @@ func normalizePlanCheckpointRuntime(checkpoint *pebblestore.SessionPlanCheckpoin
 		normalizePlanCheckpointReview(checkpoint.Review)
 		if isZeroPlanCheckpointReview(*checkpoint.Review) {
 			checkpoint.Review = nil
+		}
+	}
+	if checkpoint.Recommendation != nil {
+		recommendation := normalizePlanCheckpointRecommendation(*checkpoint.Recommendation)
+		checkpoint.Recommendation = &recommendation
+	}
+	if checkpoint.Handoff != nil {
+		checkpoint.Handoff.Title = strings.TrimSpace(checkpoint.Handoff.Title)
+		checkpoint.Handoff.Overview = strings.TrimSpace(checkpoint.Handoff.Overview)
+		checkpoint.Handoff.ImpactBullets = trimStringSlice(checkpoint.Handoff.ImpactBullets)
+		for i := range checkpoint.Handoff.SuggestedPrompts {
+			checkpoint.Handoff.SuggestedPrompts[i].Label = strings.TrimSpace(checkpoint.Handoff.SuggestedPrompts[i].Label)
+			checkpoint.Handoff.SuggestedPrompts[i].Prompt = strings.TrimSpace(checkpoint.Handoff.SuggestedPrompts[i].Prompt)
 		}
 	}
 	for i := range checkpoint.Attempts {
@@ -538,6 +552,16 @@ func validatePlanCheckpointRuntime(checkpoint pebblestore.SessionPlanCheckpoint)
 	if checkpoint.Review != nil {
 		if err := validatePlanCheckpointReview(*checkpoint.Review, checkpoint.ID); err != nil {
 			return err
+		}
+	}
+	if checkpoint.Recommendation != nil {
+		if err := validatePlanCheckpointRecommendation(*checkpoint.Recommendation); err != nil {
+			return fmt.Errorf("plan document checkpoint %q: %w", checkpoint.ID, err)
+		}
+	}
+	if checkpoint.Handoff != nil {
+		if _, err := NormalizePlanCheckpointHandoff(*checkpoint.Handoff); err != nil {
+			return fmt.Errorf("plan document checkpoint %q: %w", checkpoint.ID, err)
 		}
 	}
 	seenAttempts := make(map[string]struct{}, len(checkpoint.Attempts))
@@ -1020,6 +1044,13 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 		}
 		checkpoint.Recommendation = &recommendation
 	}
+	if options.Handoff != nil {
+		handoff, err := NormalizePlanCheckpointHandoff(*options.Handoff)
+		if err != nil {
+			return PlanCheckpointOutcomeDecision{}, err
+		}
+		checkpoint.Handoff = &handoff
+	}
 	if options.StartedAt > 0 && checkpoint.StartedAt == 0 {
 		checkpoint.StartedAt = options.StartedAt
 	}
@@ -1463,6 +1494,8 @@ func resetPlanCheckpointRuntimeForFreshStart(checkpoint *pebblestore.SessionPlan
 	checkpoint.Result = ""
 	checkpoint.ChangedFiles = nil
 	checkpoint.Validation = nil
+	checkpoint.Recommendation = nil
+	checkpoint.Handoff = nil
 	checkpoint.AttemptID = ""
 	checkpoint.RunID = ""
 	checkpoint.SessionID = ""

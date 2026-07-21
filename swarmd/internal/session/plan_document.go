@@ -243,6 +243,7 @@ type PlanDocumentPatch struct {
 	ChangedFiles       []string                                         `json:"changed_files,omitempty"`
 	Validation         []string                                         `json:"validation,omitempty"`
 	Recommendation     *pebblestore.SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	Handoff            *pebblestore.SessionPlanCheckpointHandoff        `json:"handoff,omitempty"`
 	Operations         []PlanDocumentPatchOperation                     `json:"operations,omitempty"`
 }
 
@@ -448,6 +449,7 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 			ChangedFiles:    op.ChangedFiles,
 			Validation:      op.Validation,
 			Recommendation:  op.Recommendation,
+			Handoff:         op.Handoff,
 			StartedAt:       op.StartedAt,
 			CompletedAt:     op.CompletedAt,
 		})
@@ -483,6 +485,7 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 			ChangedFiles:    op.ChangedFiles,
 			Validation:      op.Validation,
 			Recommendation:  op.Recommendation,
+			Handoff:         op.Handoff,
 			StartedAt:       op.StartedAt,
 			CompletedAt:     op.CompletedAt,
 		})
@@ -837,6 +840,10 @@ func applyCheckpointCompletionFields(checkpoint *pebblestore.SessionPlanCheckpoi
 		if validatePlanCheckpointRecommendation(recommendation) == nil {
 			checkpoint.Recommendation = &recommendation
 		}
+	}
+	if op.Handoff != nil {
+		handoff := *op.Handoff
+		checkpoint.Handoff = &handoff
 	}
 }
 

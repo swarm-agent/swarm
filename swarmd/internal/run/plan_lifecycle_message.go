@@ -425,20 +425,28 @@ func BuildFinalPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMes
 		return PlanExecutionLifecycleMessage{}, false
 	}
 	checkpointTitle := planLifecycleCheckpointTitle(doc, checkpointID)
+	finalHandoff, err := planLifecycleFinalHandoff(doc, checkpointID)
+	if err != nil {
+		return PlanExecutionLifecycleMessage{}, false
+	}
 	completionNotice := "The last checkpoint is complete. No additional checkpoint will start unless the user explicitly requests it."
 	if !allPlanLifecycleCheckpointsCompleted(doc) {
 		completionNotice = "The follow-up checkpoint is complete and waiting for review. No additional checkpoint will start until that review is resolved."
 	}
-	lines := []string{
-		"Final checkpoint handoff",
-		"",
-		completionNotice,
-	}
-	if detailLines := planLifecycleOutcomeDetailLines(input.Payload, true); len(detailLines) > 0 {
+	lines := []string{"Final checkpoint handoff", "", completionNotice}
+	if finalHandoff != nil {
+		lines = []string{finalHandoff.Title, "", finalHandoff.Overview}
+		for _, impact := range finalHandoff.ImpactBullets {
+			lines = append(lines, "- "+impact)
+		}
+	} else if detailLines := planLifecycleOutcomeDetailLines(input.Payload, true); len(detailLines) > 0 {
 		lines = append(lines, "")
 		lines = append(lines, detailLines...)
 	}
 	metadata := planExecutionHandoffMetadata(input, action, doc, checkpointID, checkpointTitle, nextAction, PlanExecutionFinalHandoffMessageSource, "plan_final_checkpoint_handoff")
+	if finalHandoff != nil {
+		metadata["final_handoff"] = finalHandoff
+	}
 	return PlanExecutionLifecycleMessage{Content: strings.Join(lines, "\n"), Metadata: metadata}, true
 }
 
@@ -476,6 +484,18 @@ func BuildBlockedPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleM
 	}
 	metadata := planExecutionHandoffMetadata(input, action, doc, checkpointID, checkpointTitle, nextAction, PlanExecutionBlockedHandoffMessageSource, "plan_blocked_checkpoint_handoff")
 	return PlanExecutionLifecycleMessage{Content: strings.Join(lines, "\n"), Metadata: metadata}, true
+}
+
+func planLifecycleFinalHandoff(doc *pebblestore.SessionPlanDocument, checkpointID string) (*pebblestore.PlanFinalHandoff, error) {
+	if doc == nil {
+		return nil, nil
+	}
+	for _, checkpoint := range doc.Checkpoints {
+		if strings.TrimSpace(checkpoint.ID) == strings.TrimSpace(checkpointID) {
+			return sessionruntime.BuildPlanFinalHandoff(checkpoint)
+		}
+	}
+	return nil, nil
 }
 
 func planExecutionHandoffMetadata(input PlanExecutionLifecycleMessageInput, action string, doc *pebblestore.SessionPlanDocument, checkpointID, checkpointTitle, nextAction, source, kind string) map[string]any {

@@ -893,6 +893,36 @@ test("final review renders the terminal recommendation", () => {
   assert.match(markup, /border border-\[var\(--app-primary-border\)\]/);
 });
 
+test("final review sidebar prefers the same canonical handoff recommendation as the inline card", () => {
+  const base = view({ reviewRequired: true, status: "waiting_review" });
+  base.activeCheckpoint = {
+    ...base.activeCheckpoint!,
+    recommendation: {
+      decision: "change",
+      action: "old_action",
+      reason: "Stale checkpoint value.",
+      actionState: "ready",
+    },
+  };
+  base.plan.document.checkpoints = [base.activeCheckpoint];
+  const markup = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar
+      view={base}
+      canonicalRecommendation={{
+        decision: "ship",
+        action: "review",
+        reason: "Canonical projected value.",
+        actionState: "ready",
+      }}
+      onAction={() => undefined}
+      onEditPlan={() => undefined}
+    />,
+  );
+  assert.match(markup, /Ship — Review/);
+  assert.match(markup, /Canonical projected value/);
+  assert.doesNotMatch(markup, /Stale checkpoint value/);
+});
+
 test("desktop plan sidebar never renders manual execution mode controls", () => {
   const markup = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar

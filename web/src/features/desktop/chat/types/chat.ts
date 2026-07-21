@@ -455,6 +455,28 @@ export interface DesktopSessionPlanCheckpointRecommendation {
   actionState: string;
 }
 
+export interface DesktopPlanFinalHandoffSuggestedPrompt {
+  label: string;
+  prompt: string;
+}
+
+export interface DesktopPlanFinalHandoffDetails {
+  report: string;
+  result: string;
+  changedFiles: string[];
+  validation: string[];
+}
+
+export interface DesktopPlanFinalHandoff {
+  schemaVersion: number;
+  title: string;
+  overview: string;
+  impactBullets: string[];
+  recommendation: DesktopSessionPlanCheckpointRecommendation | null;
+  suggestedPrompts: DesktopPlanFinalHandoffSuggestedPrompt[];
+  details: DesktopPlanFinalHandoffDetails;
+}
+
 export interface DesktopSessionPlanCheckpointAttempt {
   id: string;
   checkpointId: string;
@@ -503,6 +525,7 @@ export interface DesktopSessionPlanCheckpoint {
   completedAt: number;
   review: DesktopSessionPlanCheckpointReview | null;
   recommendation?: DesktopSessionPlanCheckpointRecommendation | null;
+  finalHandoff?: DesktopPlanFinalHandoff | null;
   attempts: DesktopSessionPlanCheckpointAttempt[];
   order: number;
 }

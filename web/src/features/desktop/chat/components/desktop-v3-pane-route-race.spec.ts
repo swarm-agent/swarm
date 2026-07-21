@@ -17,6 +17,7 @@ import {
   resolveDesktopV3StickyBottomAttachment,
   completeDesktopV3ExistingMessage,
   resolveDesktopV3StopRunRequest,
+  selectDesktopV3SuggestedPrompt,
 } from './desktop-v3-existing-conversation-pane'
 import { resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import {
@@ -396,6 +397,75 @@ test('Desktop V3 final checkpoint handoff renders separately after lifecycle bre
     assert.match(markup, /ready to review/)
     assert.equal((markup.match(/data-testid="desktop-v3-plan-final-handoff-summary"/g) ?? []).length, 1)
   }
+})
+
+
+test('Desktop V3 structured final handoff is compact, keeps evidence collapsed, and exposes inert chat suggestions', () => {
+  const prompt = 'Review the completed Desktop handoff.'
+  const handoff = {
+    id: 'plan-handoff-structured',
+    session_id: 'session-a',
+    global_seq: 402,
+    role: 'system',
+    content: 'Ready to ship\n\nThe Desktop handoff is complete.',
+    metadata: {
+      source: 'plan_execution_final_handoff',
+      kind: 'plan_final_checkpoint_handoff',
+      checkpoint_id: 'cp-2',
+      outcome: 'completed',
+      final_handoff: {
+        schema_version: 1,
+        title: 'Ready to ship',
+        overview: 'The Desktop now shows one compact final focus card.',
+        impact_bullets: ['Full evidence is opt-in', 'Suggestions remain ordinary messages'],
+        recommendation: { decision: 'ship', action: 'review', reason: 'Acceptance criteria are met', action_state: 'ready' },
+        suggested_prompts: [{ label: 'Review changes', prompt }],
+        details: {
+          report: '## Full report\nSensitive-to-space **Markdown** evidence.',
+          result: 'done',
+          changed_files: ['web/src/final.tsx'],
+          validation: ['focused test passed'],
+        },
+      },
+    },
+    created_at: 9,
+  }
+
+  const items = buildDesktopV3ConversationRenderItems({ committed: [handoff], pendingUser: [], liveRuns: [], runIntents: [] })
+  assert.equal(items[0]?.type, 'plan-final-handoff')
+  if (items[0]?.type !== 'plan-final-handoff') return
+  assert.equal(items[0].finalHandoff?.overview, 'The Desktop now shows one compact final focus card.')
+  assert.equal(items[0].body, '')
+  assert.equal(items[0].summary, '')
+
+  let selectedPrompt = ''
+  const element = createElement(DesktopV3RenderItemView, {
+    item: items[0], thinkingTagsEnabled: true, timerNow: 0, index: 0,
+    onSuggestedPrompt: (selected: string) => { selectedPrompt = selected },
+  })
+  const markup = renderToStaticMarkup(element)
+  assert.match(markup, /data-testid="desktop-v3-structured-final-handoff"/)
+  assert.match(markup, /Ready to ship/)
+  assert.match(markup, /The Desktop now shows one compact final focus card/)
+  assert.match(markup, /Recommendation/)
+  assert.match(markup, /Next steps/)
+  assert.equal((markup.match(/<details>/g) ?? []).length, 3)
+  assert.match(markup, /<summary[^>]*>Details<\/summary>/)
+  assert.match(markup, /<summary[^>]*>Files \(1\)<\/summary>/)
+  assert.match(markup, /<summary[^>]*>Validation \(1\)<\/summary>/)
+  assert.doesNotMatch(markup, /<details open/)
+  assert.match(markup, />Full report</)
+  assert.match(markup, />Markdown</)
+  assert.match(markup, /web\/src\/final\.tsx/)
+  assert.match(markup, /focused test passed/)
+  assert.doesNotMatch(markup, /swarm-handoff-summary/)
+  assert.equal((markup.match(/Recommendation/g) ?? []).length, 1)
+
+  selectDesktopV3SuggestedPrompt(prompt, (selected) => { selectedPrompt = selected })
+  assert.equal(selectedPrompt, prompt)
+  assert.equal(Object.hasOwn(handoff.metadata, 'action'), false)
+  assert.equal(Object.hasOwn(handoff.metadata, 'tool'), false)
+  assert.equal(Object.hasOwn(handoff.metadata, 'command'), false)
 })
 
 

@@ -62,14 +62,16 @@ type PlanState struct {
 }
 
 type Message struct {
-	ID          string
-	SessionID   string
-	GlobalSeq   uint64
-	Role        string
-	Content     string
-	CreatedAt   int64
-	RunID       string
-	OperationID string
+	ID           string
+	SessionID    string
+	GlobalSeq    uint64
+	Role         string
+	Content      string
+	CreatedAt    int64
+	RunID        string
+	OperationID  string
+	Metadata     map[string]any
+	FinalHandoff *client.PlanFinalHandoff
 }
 
 type PendingMessage struct {
@@ -672,7 +674,80 @@ func mergeMessages(existing []Message, incoming []client.SessionMessage) []Messa
 }
 
 func messageFromClient(value client.SessionMessage) Message {
-	return Message{ID: strings.TrimSpace(value.ID), SessionID: strings.TrimSpace(value.SessionID), GlobalSeq: value.GlobalSeq, Role: strings.TrimSpace(value.Role), Content: value.Content, CreatedAt: value.CreatedAt, RunID: metadataString(value.Metadata, "run_id"), OperationID: firstNonEmpty(metadataString(value.Metadata, "operation_id"), metadataString(value.Metadata, "client_request_id"))}
+	metadata := cloneAnyMap(value.Metadata)
+	return Message{
+		ID:           strings.TrimSpace(value.ID),
+		SessionID:    strings.TrimSpace(value.SessionID),
+		GlobalSeq:    value.GlobalSeq,
+		Role:         strings.TrimSpace(value.Role),
+		Content:      value.Content,
+		CreatedAt:    value.CreatedAt,
+		RunID:        metadataString(metadata, "run_id"),
+		OperationID:  firstNonEmpty(metadataString(metadata, "operation_id"), metadataString(metadata, "client_request_id")),
+		Metadata:     metadata,
+		FinalHandoff: finalHandoffFromMetadata(metadata),
+	}
+}
+
+func finalHandoffFromMetadata(metadata map[string]any) *client.PlanFinalHandoff {
+	value, ok := metadata["final_handoff"]
+	if !ok || value == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var handoff client.PlanFinalHandoff
+	if json.Unmarshal(raw, &handoff) != nil || handoff.SchemaVersion != 1 || strings.TrimSpace(handoff.Title) == "" || strings.TrimSpace(handoff.Overview) == "" {
+		return nil
+	}
+	handoff.Title = strings.TrimSpace(handoff.Title)
+	handoff.Overview = strings.TrimSpace(handoff.Overview)
+	handoff.ImpactBullets = cleanStrings(handoff.ImpactBullets, 3)
+	handoff.SuggestedPrompts = cleanHandoffPrompts(handoff.SuggestedPrompts, 3)
+	handoff.Details.ChangedFiles = cleanStrings(handoff.Details.ChangedFiles, 0)
+	handoff.Details.Validation = cleanStrings(handoff.Details.Validation, 0)
+	return &handoff
+}
+
+func cleanStrings(values []string, limit int) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+			if limit > 0 && len(out) == limit {
+				break
+			}
+		}
+	}
+	return out
+}
+
+func cleanHandoffPrompts(values []client.PlanFinalHandoffSuggestedPrompt, limit int) []client.PlanFinalHandoffSuggestedPrompt {
+	out := make([]client.PlanFinalHandoffSuggestedPrompt, 0, len(values))
+	for _, value := range values {
+		value.Label = strings.TrimSpace(value.Label)
+		value.Prompt = strings.TrimSpace(value.Prompt)
+		if value.Label != "" && value.Prompt != "" {
+			out = append(out, value)
+			if limit > 0 && len(out) == limit {
+				break
+			}
+		}
+	}
+	return out
+}
+
+func cloneAnyMap(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	out := make(map[string]any, len(value))
+	for key, item := range value {
+		out[key] = item
+	}
+	return out
 }
 
 func sortedEvents(events []client.SessionV3Event) []client.SessionV3Event {
@@ -684,6 +759,17 @@ func sortedEvents(events []client.SessionV3Event) []client.SessionV3Event {
 func cloneState(value State) State {
 	out := value
 	out.Messages = append([]Message(nil), value.Messages...)
+	for index := range out.Messages {
+		out.Messages[index].Metadata = cloneAnyMap(value.Messages[index].Metadata)
+		if value.Messages[index].FinalHandoff != nil {
+			handoff := *value.Messages[index].FinalHandoff
+			handoff.ImpactBullets = append([]string(nil), handoff.ImpactBullets...)
+			handoff.SuggestedPrompts = append([]client.PlanFinalHandoffSuggestedPrompt(nil), handoff.SuggestedPrompts...)
+			handoff.Details.ChangedFiles = append([]string(nil), handoff.Details.ChangedFiles...)
+			handoff.Details.Validation = append([]string(nil), handoff.Details.Validation...)
+			out.Messages[index].FinalHandoff = &handoff
+		}
+	}
 	out.Permissions.Records = append([]PermissionTimelineItem(nil), value.Permissions.Records...)
 	out.Pending = make(map[string]PendingMessage, len(value.Pending))
 	for key, pending := range value.Pending {

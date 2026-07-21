@@ -69,3 +69,41 @@ test('normalizeDesktopSessionPlan preserves execution policy state review attemp
   assert.equal(checkpoint?.attempts[0]?.parentSessionId, 'parent-session')
   assert.deepEqual(checkpoint?.attempts[0]?.changedFiles, ['web/src/features/desktop/chat/services/session-plan-record.ts'])
 })
+
+test('normalizeDesktopSessionPlan decodes the versioned final handoff projection without parsing report Markdown', () => {
+  const plan = normalizeDesktopSessionPlan({
+    id: 'plan-final',
+    document: {
+      title: 'Final plan',
+      info: { goal: 'Ship it' },
+      checkpoints: [{
+        id: 'cp-1',
+        title: 'Finish',
+        final_handoff: {
+          schema_version: 1,
+          title: 'Ready to ship',
+          overview: 'The requested Desktop behavior is complete.',
+          impact_bullets: ['Compact by default', 'Evidence remains available'],
+          recommendation: { decision: 'ship', action: 'review', reason: 'All criteria met', action_state: 'ready' },
+          suggested_prompts: [{ label: 'Review changes', prompt: 'Review the completed changes.' }],
+          details: {
+            report: '## Report\nFull **Markdown** evidence.',
+            result: 'done',
+            changed_files: ['web/src/final.tsx'],
+            validation: ['focused test passed'],
+          },
+        },
+        order: 1,
+      }],
+    },
+  })
+
+  const handoff = plan.document?.checkpoints[0]?.finalHandoff
+  assert.equal(handoff?.schemaVersion, 1)
+  assert.equal(handoff?.overview, 'The requested Desktop behavior is complete.')
+  assert.deepEqual(handoff?.impactBullets, ['Compact by default', 'Evidence remains available'])
+  assert.equal(handoff?.recommendation?.actionState, 'ready')
+  assert.deepEqual(handoff?.suggestedPrompts, [{ label: 'Review changes', prompt: 'Review the completed changes.' }])
+  assert.equal(handoff?.details.report, '## Report\nFull **Markdown** evidence.')
+  assert.deepEqual(handoff?.details.changedFiles, ['web/src/final.tsx'])
+})

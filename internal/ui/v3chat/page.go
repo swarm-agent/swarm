@@ -120,6 +120,14 @@ type Page struct {
 	permissionDenyTarget       footerbar.Rect
 	permissionAlwaysTarget     footerbar.Rect
 	permissionAlwaysDenyTarget footerbar.Rect
+	handoffFocus               bool
+	handoffMessageID           string
+	handoffControl             int
+	handoffTargets             map[string]footerbar.Rect
+	handoffDetailsModal        bool
+	handoffDetailsScroll       int
+	handoffDetailsMessageID    string
+	handoffDetails             *client.PlanFinalHandoff
 }
 
 const (
@@ -143,7 +151,7 @@ const (
 )
 
 func NewPage(runtime *Runtime, styles PageStyles) *Page {
-	return &Page{runtime: runtime, styles: styles, showHeader: true, follow: true, rowCache: make(map[string]cachedRows), matchKey: defaultKeyMatcher}
+	return &Page{runtime: runtime, styles: styles, showHeader: true, follow: true, rowCache: make(map[string]cachedRows), handoffTargets: make(map[string]footerbar.Rect), matchKey: defaultKeyMatcher}
 }
 
 func (p *Page) SetKeyMatcher(match func(*tcell.EventKey, string) bool) {
@@ -489,6 +497,9 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.handoffDetailsModal {
+		return p.handleFinalHandoffDetailsKeyLocked(ev)
+	}
 	if p.planModal {
 		return p.handlePlanModalKeyLocked(ev)
 	}
@@ -503,7 +514,21 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 		p.handlePasteKeyLocked(ev)
 		return PageActionNone
 	}
+	if p.handleFinalHandoffKeyLocked(ev) {
+		return PageActionNone
+	}
 	match := func(action string) bool { return p.matchKey != nil && p.matchKey(ev, action) }
+	if len(p.input) == 0 && ev.Key() == tcell.KeyRune && ev.Rune() >= '1' && ev.Rune() <= '3' {
+		if message, ok := p.latestFinalHandoffLocked(); ok {
+			index := int(ev.Rune() - '1')
+			action := finalHandoffPromptAction(message.ID, index)
+			if message.FinalHandoff != nil && index < len(message.FinalHandoff.SuggestedPrompts) && p.handoffTargets[action].W > 0 {
+				p.handoffMessageID, p.handoffControl, p.handoffFocus = message.ID, index, true
+				p.activateFinalHandoffControlLocked(message, index)
+				return PageActionNone
+			}
+		}
+	}
 	if match(KeyCycleMode) {
 		p.cycleModeLocked()
 		return PageActionNone
@@ -546,6 +571,9 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 		p.scroll = 0
 		p.follow = true
 	case match(KeyComplete):
+		if len(p.input) == 0 && p.focusLatestFinalHandoffLocked() {
+			break
+		}
 		p.completeCommandFromPaletteLocked()
 	case match(KeySubmit):
 		if p.executeCommandPaletteSelectionLocked() {
@@ -953,6 +981,15 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 	defer p.mu.Unlock()
 	x, y := ev.Position()
 	buttons := ev.Buttons()
+	if p.handoffDetailsModal {
+		if buttons&tcell.WheelUp != 0 {
+			p.handoffDetailsScroll = maxInt(0, p.handoffDetailsScroll-3)
+		}
+		if buttons&tcell.WheelDown != 0 {
+			p.handoffDetailsScroll += 3
+		}
+		return
+	}
 	if p.permissionVisibleLocked() {
 		permissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
 		if len(permissions) == 0 || p.permissionBusy {
@@ -981,9 +1018,14 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 		}
 		return
 	}
-	if buttons&tcell.Button1 != 0 && containsFooterPoint(p.modelTarget, x, y) {
-		p.openModelPickerLocked()
-		return
+	if buttons&tcell.Button1 != 0 {
+		if action := finalHandoffTargetAt(p.handoffTargets, x, y); action != "" && p.activateFinalHandoffTargetLocked(action) {
+			return
+		}
+		if containsFooterPoint(p.modelTarget, x, y) {
+			p.openModelPickerLocked()
+			return
+		}
 	}
 	if buttons&tcell.WheelUp != 0 {
 		p.scroll += 3
@@ -1051,6 +1093,12 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	p.lastWidth, p.lastHeight = width, height
 	modelPicker, modelLoading, modelIndex := p.modelPicker, p.modelLoading, p.modelIndex
 	planModal, planModalScroll, planModalPlan := p.planModal, p.planModalScroll, p.planModalPlan
+	handoffDetailsModal, handoffDetailsScroll := p.handoffDetailsModal, p.handoffDetailsScroll
+	var handoffDetails *client.PlanFinalHandoff
+	if p.handoffDetails != nil {
+		copy := cloneFinalHandoff(p.handoffDetails)
+		handoffDetails = &copy
+	}
 	modelOptions := append([]client.ModelCatalogRecord(nil), p.modelOptions...)
 	commandSuggestions := append([]CommandSuggestion(nil), p.commandSuggestions...)
 	p.ensurePermissionPrefixLocked()
@@ -1115,7 +1163,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 		start = 0
 	}
 	end := minInt(len(rows), start+transcriptHeight)
-	permissionTargets := map[string]footerbar.Rect{}
+	actionTargets := map[string]footerbar.Rect{}
 	for i := start; i < end; i++ {
 		row := rows[i]
 		y := transcriptTop + i - start
@@ -1125,7 +1173,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 			drawText(screen, 2, y, width-4, row.style, row.text)
 		}
 		for _, target := range row.actions {
-			permissionTargets[target.action] = footerbar.Rect{X: 2 + target.x, Y: y, W: target.width, H: 1}
+			actionTargets[target.action] = footerbar.Rect{X: 2 + target.x, Y: y, W: target.width, H: 1}
 		}
 		if row.prefixWidth > 0 {
 			drawText(screen, 2, y, minInt(width-4, row.prefixWidth), row.prefixStyle, row.text)
@@ -1136,10 +1184,16 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 		}
 	}
 	p.mu.Lock()
-	p.permissionApproveTarget = permissionTargets["allow_once"]
-	p.permissionDenyTarget = permissionTargets["deny_once"]
-	p.permissionAlwaysTarget = permissionTargets["allow_always"]
-	p.permissionAlwaysDenyTarget = permissionTargets["deny_always"]
+	p.permissionApproveTarget = actionTargets["allow_once"]
+	p.permissionDenyTarget = actionTargets["deny_once"]
+	p.permissionAlwaysTarget = actionTargets["allow_always"]
+	p.permissionAlwaysDenyTarget = actionTargets["deny_always"]
+	p.handoffTargets = make(map[string]footerbar.Rect)
+	for action, target := range actionTargets {
+		if strings.HasPrefix(action, "handoff:") {
+			p.handoffTargets[action] = target
+		}
+	}
 	p.mu.Unlock()
 
 	composerY := height - composerHeight
@@ -1174,7 +1228,9 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 		}
 		screen.SetContent(cursorX, cursorY, r, nil, styles.Cursor)
 	}
-	if planModal {
+	if handoffDetailsModal {
+		p.drawFinalHandoffDetailsModal(screen, width, height, styles, handoffDetails, handoffDetailsScroll)
+	} else if planModal {
 		plan := state.Plan.ActivePlan
 		if planModalPlan != nil {
 			plan = planModalPlan
@@ -1731,6 +1787,10 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 			rows = append(rows, p.renderAssistantRows(item.live.Text, width, styles)...)
 		case "message":
 			message := item.message
+			if isStructuredFinalHandoffMessage(message) {
+				rows = append(rows, p.renderFinalHandoffRows(message, width, styles)...)
+				continue
+			}
 			if strings.EqualFold(message.Role, "user") {
 				if len(rows) == 0 {
 					rows = append(rows, renderRow{text: "", style: styles.Text})
@@ -1772,6 +1832,7 @@ func planToolCoalescedWithPermission(tool ToolTimelineItem, permissions []Permis
 }
 
 func (p *Page) renderAssistantRows(content string, width int, styles PageStyles) []renderRow {
+	content = sanitizeLegacyHandoffMarkers(content)
 	if styles.RenderMarkdown == nil {
 		rows := make([]renderRow, 0)
 		for _, line := range wrapText(content, width) {

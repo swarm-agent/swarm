@@ -211,6 +211,7 @@ type SessionPlanCheckpoint struct {
 	CompletedAt        int64                                `json:"completed_at,omitempty"`
 	Review             *SessionPlanCheckpointReview         `json:"review,omitempty"`
 	Recommendation     *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	Handoff            *SessionPlanCheckpointHandoff        `json:"handoff,omitempty"`
 	Attempts           []SessionPlanCheckpointAttempt       `json:"attempts,omitempty"`
 	Order              int                                  `json:"order,omitempty"`
 }
@@ -258,6 +259,44 @@ type SessionPlanCheckpointRecommendation struct {
 	Action      string `json:"action,omitempty"`
 	Reason      string `json:"reason,omitempty"`
 	ActionState string `json:"action_state,omitempty"`
+}
+
+// SessionPlanCheckpointHandoff stores only the concise author-authored fields.
+// Full terminal evidence remains canonical on SessionPlanCheckpoint and is
+// joined into PlanFinalHandoff only when a lifecycle message is projected.
+type SessionPlanCheckpointHandoff struct {
+	Title            string                            `json:"title,omitempty"`
+	Overview         string                            `json:"overview"`
+	ImpactBullets    []string                          `json:"impact_bullets,omitempty"`
+	SuggestedPrompts []PlanFinalHandoffSuggestedPrompt `json:"suggested_prompts,omitempty"`
+}
+
+// PlanFinalHandoffSuggestedPrompt is inert chat input. Clients may send Prompt
+// through the ordinary V3 user-message path; it is never a direct operation.
+type PlanFinalHandoffSuggestedPrompt struct {
+	Label  string `json:"label"`
+	Prompt string `json:"prompt"`
+}
+
+// PlanFinalHandoff is the versioned client projection persisted in lifecycle
+// message metadata. Details is a lossless copy of the checkpoint evidence.
+type PlanFinalHandoff struct {
+	SchemaVersion    int                                  `json:"schema_version"`
+	Title            string                               `json:"title"`
+	Overview         string                               `json:"overview"`
+	ImpactBullets    []string                             `json:"impact_bullets,omitempty"`
+	Recommendation   *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	SuggestedPrompts []PlanFinalHandoffSuggestedPrompt    `json:"suggested_prompts,omitempty"`
+	Details          PlanFinalHandoffDetails              `json:"details"`
+}
+
+// PlanFinalHandoffDetails keeps the complete terminal evidence available to
+// clients without expanding it in the default handoff presentation.
+type PlanFinalHandoffDetails struct {
+	Report       string   `json:"report,omitempty"`
+	Result       string   `json:"result,omitempty"`
+	ChangedFiles []string `json:"changed_files,omitempty"`
+	Validation   []string `json:"validation,omitempty"`
 }
 
 type SessionPlanActive struct {

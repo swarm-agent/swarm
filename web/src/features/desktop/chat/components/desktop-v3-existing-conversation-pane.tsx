@@ -53,6 +53,8 @@ import type {
   AgentStateRecord,
   SessionPreferenceRecord,
   ChatMessageRecord,
+  DesktopPlanFinalHandoff,
+  DesktopSessionPlanCheckpointRecommendation,
   TaskChildCardActions,
   TaskToolRow,
 } from "../types/chat";
@@ -154,6 +156,7 @@ import {
   DesktopPlanExecutionSidebar,
   type DesktopPlanExecutionSidebarActionInput,
 } from "./desktop-plan-execution-sidebar";
+import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
 import {
   effectiveDesktopSidebarDisplayMode,
   loadDesktopSidebarDisplayMode,
@@ -529,6 +532,15 @@ function scrollFollowKeyPart(value: unknown): string {
 
 type DesktopV3PlanTransitionTone = "primary" | "success" | "warning" | "danger";
 
+type DesktopV3PlanHandoffRenderFields = {
+  message: MessageSnapshot;
+  headline: string;
+  body: string;
+  summary: string;
+  finalHandoff: DesktopPlanFinalHandoff | null;
+  timelineSeq?: number;
+};
+
 export type DesktopV3RenderItem =
   | {
       type: "plan-break";
@@ -538,30 +550,15 @@ export type DesktopV3RenderItem =
       tone: DesktopV3PlanTransitionTone;
       timelineSeq?: number;
     }
-  | {
+  | ({
       type: "plan-checkpoint-handoff";
-      message: MessageSnapshot;
-      headline: string;
-      body: string;
-      summary: string;
-      timelineSeq?: number;
-    }
-  | {
+    } & DesktopV3PlanHandoffRenderFields)
+  | ({
       type: "plan-final-handoff";
-      message: MessageSnapshot;
-      headline: string;
-      body: string;
-      summary: string;
-      timelineSeq?: number;
-    }
-  | {
+    } & DesktopV3PlanHandoffRenderFields)
+  | ({
       type: "plan-blocked-handoff";
-      message: MessageSnapshot;
-      headline: string;
-      body: string;
-      summary: string;
-      timelineSeq?: number;
-    }
+    } & DesktopV3PlanHandoffRenderFields)
   | {
       type: "message";
       message: MessageSnapshot;
@@ -1180,13 +1177,19 @@ function buildDesktopV3PlanHandoffItem(
   const headlineIndex = lines.findIndex((line) => line.trim());
   const bodyLines = headlineIndex >= 0 ? lines.slice(headlineIndex + 1) : [];
   const rawBody = bodyLines.join("\n").trim() || message.content.trim();
-  const parsed = parseDesktopV3HandoffSummary(rawBody);
+  const finalHandoff = type === "plan-final-handoff"
+    ? normalizeDesktopPlanFinalHandoff(message.metadata?.final_handoff)
+    : null;
+  const parsed = finalHandoff
+    ? { body: "", summary: "" }
+    : parseDesktopV3HandoffSummary(rawBody);
   return {
     type,
     message,
-    headline,
+    headline: finalHandoff?.title || headline,
     body: parsed.body,
     summary: parsed.summary,
+    finalHandoff,
     timelineSeq: message.global_seq,
   } as Extract<DesktopV3RenderItem, { type: DesktopV3PlanHandoffType }>;
 }
@@ -1713,6 +1716,16 @@ export function DesktopV3ExistingConversationPane({
     () => buildDesktopV3ConversationRenderItems(renderedMessages),
     [renderedMessages],
   );
+  const canonicalFinalHandoffRecommendation = useMemo<DesktopSessionPlanCheckpointRecommendation | null>(() => {
+    const checkpointId = planExecutionView?.activeCheckpointId || planExecutionView?.activeCheckpoint?.id || "";
+    for (let index = renderItems.length - 1; index >= 0; index -= 1) {
+      const item = renderItems[index];
+      if (item.type !== "plan-final-handoff" || !item.finalHandoff?.recommendation) continue;
+      const handoffCheckpointId = metadataString(item.message.metadata, "checkpoint_id");
+      if (!checkpointId || handoffCheckpointId === checkpointId) return item.finalHandoff.recommendation;
+    }
+    return null;
+  }, [planExecutionView, renderItems]);
   const taskChildRows = useMemo<TaskToolRow[]>(() => {
     const rows: TaskToolRow[] = [];
     for (const item of renderItems) {
@@ -2618,6 +2631,7 @@ export function DesktopV3ExistingConversationPane({
                         timerNow={timerNow}
                         index={index}
                         taskChildActions={taskChildActions}
+                        onSuggestedPrompt={(prompt) => handleSubmit(prompt)}
                       />
                     </div>
                   );
@@ -2698,6 +2712,7 @@ export function DesktopV3ExistingConversationPane({
                     onStop={stableStop}
                     onEditPlan={stableOpenPlan}
                     belowActions={planSidebarBelowActions}
+                    canonicalRecommendation={canonicalFinalHandoffRecommendation}
                   />
                 </div>
               </details>
@@ -2837,6 +2852,7 @@ export function DesktopV3ExistingConversationPane({
               displayMode={planSidebarDisplayMode}
               taskChildren={taskChildren}
               taskChildActions={taskChildActions}
+              canonicalRecommendation={canonicalFinalHandoffRecommendation}
             />
           </div>
         ) : null}
@@ -2860,12 +2876,14 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   thinkingTagsEnabled,
   timerNow,
   taskChildActions,
+  onSuggestedPrompt,
 }: {
   item: DesktopV3RenderItem;
   thinkingTagsEnabled: boolean;
   timerNow: number;
   index: number;
   taskChildActions?: TaskChildCardActions;
+  onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
 }) {
   switch (item.type) {
     case "plan-break":
@@ -2873,7 +2891,7 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
     case "plan-checkpoint-handoff":
       return <DesktopV3PlanCheckpointHandoff item={item} />;
     case "plan-final-handoff":
-      return <DesktopV3PlanFinalHandoff item={item} />;
+      return <DesktopV3PlanFinalHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} />;
     case "plan-blocked-handoff":
       return <DesktopV3PlanBlockedHandoff item={item} />;
     case "message":
@@ -2973,15 +2991,156 @@ function DesktopV3PlanCheckpointHandoff({
 
 function DesktopV3PlanFinalHandoff({
   item,
+  onSuggestedPrompt,
 }: {
   item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }>;
+  onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
 }) {
+  if (item.finalHandoff) {
+    return (
+      <DesktopV3StructuredFinalHandoff
+        item={item}
+        handoff={item.finalHandoff}
+        onSuggestedPrompt={onSuggestedPrompt}
+      />
+    );
+  }
   return (
     <DesktopV3PlanHandoff
       item={item}
       icon={<CheckCircle2 size={12} className="text-[var(--app-primary)]" />}
       testId="desktop-v3-plan-final-handoff"
     />
+  );
+}
+
+function finalHandoffOutcome(item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }>): string {
+  const value = metadataString(item.message.metadata, "outcome")
+    || metadataString(item.message.metadata, "execution_status")
+    || item.finalHandoff?.recommendation?.decision
+    || "completed";
+  return value.replace(/[-_]+/g, " ");
+}
+
+export function selectDesktopV3SuggestedPrompt(
+  prompt: string,
+  onSuggestedPrompt?: (prompt: string) => void | Promise<void>,
+): void {
+  if (!prompt || !onSuggestedPrompt) return;
+  void onSuggestedPrompt(prompt);
+}
+
+function DesktopV3StructuredFinalHandoff({
+  item,
+  handoff,
+  onSuggestedPrompt,
+}: {
+  item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }>;
+  handoff: DesktopPlanFinalHandoff;
+  onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
+}) {
+  const recommendation = handoff.recommendation;
+  const details = handoff.details;
+  const hasDetails = Boolean(details.report || details.result);
+  return (
+    <div className="flex w-full min-w-0 justify-start py-1" data-testid="desktop-v3-plan-final-handoff">
+      <section
+        aria-label="Final handoff"
+        className="w-full min-w-0 rounded-xl border border-[var(--app-border-active)] bg-[var(--app-surface-subtle)] px-4 py-3 text-sm text-[var(--app-text)]"
+        data-testid="desktop-v3-structured-final-handoff"
+      >
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-primary)]">
+              <CheckCircle2 size={13} aria-hidden="true" />
+              Final handoff
+            </div>
+            <h3 className="mt-1 break-words text-base font-semibold leading-6">{handoff.title}</h3>
+          </div>
+          <span className="shrink-0 rounded-full bg-[var(--app-success-bg)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-success)]">
+            {finalHandoffOutcome(item)}
+          </span>
+        </div>
+
+        <div className="mt-2 text-sm leading-6 text-[var(--app-text-muted)]" data-final-handoff-overview>
+          <ChatMarkdown content={handoff.overview} />
+        </div>
+        {handoff.impactBullets.length > 0 ? (
+          <ul className="mt-2 grid gap-1.5 text-sm leading-5 text-[var(--app-text-muted)]" data-final-handoff-impact>
+            {handoff.impactBullets.map((impact, index) => (
+              <li key={`${item.message.id}:impact:${index}`} className="flex min-w-0 items-start gap-2">
+                <span aria-hidden="true" className="mt-2 size-1 shrink-0 rounded-full bg-[var(--app-primary)]" />
+                <span className="min-w-0 break-words">{impact}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
+        {recommendation ? (
+          <div className="mt-3 border-l-2 border-[var(--app-primary)] pl-3" data-final-handoff-recommendation>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Recommendation</div>
+            <div className="mt-0.5 font-medium text-[var(--app-text)]">
+              {recommendation.decision.replace(/[-_]+/g, " ")} — {recommendation.action.replace(/[-_]+/g, " ")}
+            </div>
+            {recommendation.reason ? <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">{recommendation.reason}</p> : null}
+          </div>
+        ) : null}
+
+        {handoff.suggestedPrompts.length > 0 ? (
+          <div className="mt-3" data-final-handoff-suggestions>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Next steps</div>
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {handoff.suggestedPrompts.map((suggestion, index) => (
+                <button
+                  key={`${item.message.id}:prompt:${index}`}
+                  type="button"
+                  className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-left text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={!onSuggestedPrompt}
+                  title={suggestion.prompt}
+                  onClick={() => selectDesktopV3SuggestedPrompt(suggestion.prompt, onSuggestedPrompt)}
+                  data-final-handoff-prompt={suggestion.prompt}
+                >
+                  {suggestion.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        <div className="mt-3 grid gap-1 border-t border-[var(--app-border)] pt-2 text-xs" data-final-handoff-evidence>
+          {hasDetails ? (
+            <details>
+              <summary className="cursor-pointer py-1 font-medium text-[var(--app-text-muted)]">Details</summary>
+              <div className="mt-1 border-l border-[var(--app-border)] pl-3">
+                {details.report ? <ChatMarkdown content={details.report} /> : null}
+                {details.result ? (
+                  <div className="mt-2">
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Result</div>
+                    <ChatMarkdown content={details.result} />
+                  </div>
+                ) : null}
+              </div>
+            </details>
+          ) : null}
+          {details.changedFiles.length > 0 ? (
+            <details>
+              <summary className="cursor-pointer py-1 font-medium text-[var(--app-text-muted)]">Files ({details.changedFiles.length})</summary>
+              <ul className="mt-1 grid gap-1 border-l border-[var(--app-border)] pl-3 font-mono text-[11px] text-[var(--app-text-muted)]">
+                {details.changedFiles.map((file, index) => <li key={`${item.message.id}:file:${index}`} className="break-all">{file}</li>)}
+              </ul>
+            </details>
+          ) : null}
+          {details.validation.length > 0 ? (
+            <details>
+              <summary className="cursor-pointer py-1 font-medium text-[var(--app-text-muted)]">Validation ({details.validation.length})</summary>
+              <ul className="mt-1 grid gap-1 border-l border-[var(--app-border)] pl-3 text-[var(--app-text-muted)]">
+                {details.validation.map((entry, index) => <li key={`${item.message.id}:validation:${index}`} className="break-words">{entry}</li>)}
+              </ul>
+            </details>
+          ) : null}
+        </div>
+      </section>
+    </div>
   );
 }
 

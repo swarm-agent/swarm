@@ -968,6 +968,31 @@ type SessionPlanCheckpointRecommendation struct {
 	ActionState string `json:"action_state,omitempty"`
 }
 
+// PlanFinalHandoff is the versioned compact projection carried in durable V3
+// message metadata. Suggested prompts are inert text and must be sent through
+// the ordinary user-message API.
+type PlanFinalHandoff struct {
+	SchemaVersion    int                                  `json:"schema_version"`
+	Title            string                               `json:"title"`
+	Overview         string                               `json:"overview"`
+	ImpactBullets    []string                             `json:"impact_bullets,omitempty"`
+	Recommendation   *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	SuggestedPrompts []PlanFinalHandoffSuggestedPrompt    `json:"suggested_prompts,omitempty"`
+	Details          PlanFinalHandoffDetails              `json:"details"`
+}
+
+type PlanFinalHandoffSuggestedPrompt struct {
+	Label  string `json:"label"`
+	Prompt string `json:"prompt"`
+}
+
+type PlanFinalHandoffDetails struct {
+	Report       string   `json:"report,omitempty"`
+	Result       string   `json:"result,omitempty"`
+	ChangedFiles []string `json:"changed_files,omitempty"`
+	Validation   []string `json:"validation,omitempty"`
+}
+
 type SessionPlanExecutionSummary struct {
 	PolicyMode           string `json:"policy_mode"`
 	ExecutionShape       string `json:"execution_shape"`

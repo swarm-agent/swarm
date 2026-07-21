@@ -93,18 +93,16 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		"Final checkpoint handoff required",
 		"last remaining checkpoint",
 		"final waiting_review/final-review state",
-		"substantive, skimmable durable handoff",
-		"clearly state what was accomplished or directly answer the user's request",
-		"Adapt the content to the work instead of forcing empty sections",
-		"exactly one non-empty <swarm-handoff-summary>...</swarm-handoff-summary> block",
-		"Place it near the bottom of the report, after the substantive outcome, impact, and risk details",
-		"it should normally be the report's final section, with only an essential brief trailing note allowed after it",
-		"outcome or direct answer and the next action only when one is actually applicable",
-		"Do not label the block TLDR",
-		"stable client-highlighted 'At a glance' view",
-		"Desktop V3 preserves the raw durable content",
-		"report/result/validation text may use markdown where helpful",
-		"Do not save the compact user-facing handoff in the plan document",
+		"keep report substantive and lossless",
+		"handoff_overview is required and concise",
+		"handoff_title is optional",
+		"impact_bullets contains at most three",
+		"suggested_prompts contains at most three inert label/prompt objects",
+		"ordinary future user chat messages only",
+		"never be tool calls, shell commands, Git operations, or lifecycle mutations",
+		"single canonical recommendation",
+		"Do not put handoff content inside XML-like tags",
+		"joins report, result, changed_files, and validation as lossless details",
 		`"final_checkpoint": true`,
 	} {
 		if !strings.Contains(text, want) {
@@ -114,6 +112,7 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	for _, unwanted := range []string{
 		"do not issue repeated complete_subtask calls first",
 		"do not call complete_subtask repeatedly first",
+		"<swarm-handoff-summary>",
 	} {
 		if strings.Contains(strings.ToLower(text), unwanted) {
 			t.Fatalf("prompt retained contradictory subtask suppression %q: %s", unwanted, text)

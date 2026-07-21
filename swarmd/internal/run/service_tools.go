@@ -2291,6 +2291,9 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 			if documentPatch.Recommendation != nil {
 				payload["recommendation"] = documentPatch.Recommendation
 			}
+			if documentPatch.Handoff != nil {
+				payload["handoff"] = documentPatch.Handoff
+			}
 			for key, value := range map[string]string{
 				"checkpoint_id":     documentPatch.CheckpointID,
 				"attempt_id":        documentPatch.AttemptID,

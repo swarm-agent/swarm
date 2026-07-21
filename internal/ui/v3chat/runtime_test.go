@@ -29,6 +29,7 @@ type fakeTransport struct {
 	preferenceRequest  map[string]any
 	resolvedPermission client.PermissionRecord
 	permissionExplain  client.PermissionExplain
+	messageRequest     client.SessionV3MessageOptions
 	permissionRequest  struct {
 		sessionID    string
 		permissionID string
@@ -139,6 +140,9 @@ func (f *fakeTransport) ResolvePermission(_ context.Context, sessionID, permissi
 
 func (f *fakeTransport) SendSessionV3Message(_ context.Context, sessionID string, options client.SessionV3MessageOptions) (client.SessionV3MessageResult, error) {
 	f.record("send")
+	f.mu.Lock()
+	f.messageRequest = options
+	f.mu.Unlock()
 	f.result.Session.ID = sessionID
 	f.result.Message.ID = options.MessageID
 	f.result.Message.SessionID = sessionID

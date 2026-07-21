@@ -10,6 +10,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 
 	"swarm-refactor/swarmtui/internal/client"
+	"swarm-refactor/swarmtui/internal/ui/footerbar"
 )
 
 func TestPageHeaderAndLiveOverlayRenderFromStore(t *testing.T) {
@@ -35,6 +36,207 @@ func TestPageHeaderAndLiveOverlayRenderFromStore(t *testing.T) {
 	}
 	if !strings.Contains(drawn, "streaming") {
 		t.Fatalf("live assistant overlay missing:\n%s", drawn)
+	}
+}
+
+func TestStructuredFinalHandoffRendersCompactCardAndLegacyMarkersAreSanitized(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session: client.SessionSummary{ID: "session-handoff", Title: "Handoff"},
+		Messages: []client.SessionMessage{
+			{ID: "legacy", SessionID: "session-handoff", GlobalSeq: 1, Role: "assistant", Content: "Before\n<swarm-handoff-summary>\nLegacy summary\n</swarm-handoff-summary>\nAfter"},
+			{ID: "handoff", SessionID: "session-handoff", GlobalSeq: 2, Role: "system", Content: "compact", Metadata: testFinalHandoffMetadata()},
+		},
+	}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 34)
+	page.Draw(screen)
+	screen.Show()
+	drawn := simulationText(screen, 100, 34)
+	for _, want := range []string{
+		"FINAL HANDOFF  ·  ship",
+		"Ready to review",
+		"The focused change is complete.",
+		"• Compact card",
+		"RECOMMENDATION",
+		"ship — review",
+		"NEXT STEPS",
+		"1. Review",
+		"Details  ·  report  ·  result  ·  files 2  ·  validation 1",
+		"Legacy summary",
+	} {
+		if !strings.Contains(drawn, want) {
+			t.Fatalf("final handoff card missing %q:\n%s", want, drawn)
+		}
+	}
+	if strings.Contains(drawn, "swarm-handoff-summary") {
+		t.Fatalf("legacy marker leaked into transcript:\n%s", drawn)
+	}
+}
+
+func TestFinalHandoffGraphemeWrappingPreservesCellWidthsAndClusters(t *testing.T) {
+	text := "A界e\u0301👩‍💻B"
+	lines := wrapDisplayText(text, 3)
+	if got := strings.Join(lines, ""); got != text {
+		t.Fatalf("grapheme wrapping changed content: got %q want %q", got, text)
+	}
+	for _, line := range lines {
+		if width := displayCellWidth(line); width > 3 {
+			t.Fatalf("wrapped line %q is %d cells wide", line, width)
+		}
+	}
+	if strings.Contains(lines[0], "\u0301") && !strings.Contains(lines[0], "e\u0301") {
+		t.Fatalf("combining grapheme was split: %#v", lines)
+	}
+	if !strings.Contains(strings.Join(lines, "|"), "👩‍💻") {
+		t.Fatalf("emoji grapheme was split: %#v", lines)
+	}
+
+	card := (&Page{}).renderFinalHandoffRows(Message{
+		ID: "wide", Role: "system", Metadata: map[string]any{"source": finalHandoffSource},
+		FinalHandoff: &client.PlanFinalHandoff{SchemaVersion: 1, Title: "界界", Overview: "e\u0301 and 👩‍💻", Details: client.PlanFinalHandoffDetails{}},
+	}, 12, testPageStyles())
+	for _, row := range card {
+		if width := displayCellWidth(row.text); width > 12 {
+			t.Fatalf("card row exceeded requested width: width=%d row=%q", width, row.text)
+		}
+	}
+}
+
+func TestFinalHandoffKeyboardSuggestionUsesOrdinaryMessagePath(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:  client.SessionSummary{ID: "session-handoff"},
+		Messages: []client.SessionMessage{{ID: "handoff", SessionID: "session-handoff", Role: "system", Metadata: testFinalHandoffMetadata()}},
+	}})
+	transport := &fakeTransport{}
+	page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 30)
+	page.Draw(screen)
+	page.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
+	if !page.handoffFocus || page.handoffControl != 0 {
+		t.Fatalf("Tab did not focus the first handoff control: focus=%t control=%d", page.handoffFocus, page.handoffControl)
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
+	if page.handoffControl != 1 {
+		t.Fatalf("Tab did not move handoff control: %d", page.handoffControl)
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	if page.handoffControl != 2 {
+		t.Fatalf("arrow did not move to details control: %d", page.handoffControl)
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if !page.handoffDetailsModal {
+		t.Fatal("Enter did not activate the focused details control")
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	if page.handoffDetailsModal || !page.handoffFocus {
+		t.Fatal("Esc did not close details and return to the handoff controls")
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	if page.handoffFocus {
+		t.Fatal("Esc did not return focus to the composer")
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, '1', tcell.ModNone))
+	deadline := time.Now().Add(time.Second)
+	for {
+		transport.mu.Lock()
+		request := transport.messageRequest
+		transport.mu.Unlock()
+		if request.Content != "Review the final handoff." {
+			if time.Now().After(deadline) {
+				t.Fatalf("suggestion was not sent through V3 message path: %#v", request)
+			}
+			time.Sleep(time.Millisecond)
+			continue
+		}
+		if request.Role != "user" || strings.TrimSpace(request.RunID) == "" || request.Metadata["operation_id"] == nil || len(request.Metadata) != 1 {
+			t.Fatalf("suggestion bypassed ordinary user-message semantics: %#v", request)
+		}
+		break
+	}
+}
+
+func TestFinalHandoffMouseDetailsModalScrollsAtNarrowWidthAndReturnsToTranscript(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:  client.SessionSummary{ID: "session-handoff"},
+		Messages: []client.SessionMessage{{ID: "handoff", SessionID: "session-handoff", Role: "system", Metadata: testFinalHandoffMetadata()}},
+	}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(48, 24)
+	page.Draw(screen)
+	screen.Show()
+	var details footerbar.Rect
+	page.mu.Lock()
+	for action, target := range page.handoffTargets {
+		if strings.Contains(action, ":details:") {
+			details = target
+			break
+		}
+	}
+	page.mu.Unlock()
+	if details.W == 0 {
+		t.Fatalf("details hit target was not rendered: %#v", page.handoffTargets)
+	}
+	page.HandleMouse(tcell.NewEventMouse(details.X, details.Y, tcell.Button1, tcell.ModNone))
+	if !page.handoffDetailsModal {
+		t.Fatal("details mouse target did not open modal")
+	}
+	screen.SetSize(30, 12)
+	page.Draw(screen)
+	screen.Show()
+	modal := simulationText(screen, 30, 12)
+	if !strings.Contains(modal, "FINAL HANDOFF DETAILS") || !strings.Contains(modal, "REPORT") || !strings.Contains(modal, "Full durable report") {
+		t.Fatalf("narrow details modal missing durable evidence:\n%s", modal)
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyPgDn, 0, tcell.ModNone))
+	if page.handoffDetailsScroll == 0 {
+		t.Fatal("details modal did not scroll")
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	if page.handoffDetailsModal || page.handoffDetails != nil {
+		t.Fatal("details modal did not return cleanly to transcript")
+	}
+}
+
+func testFinalHandoffMetadata() map[string]any {
+	return map[string]any{
+		"source":  "plan_execution_final_handoff",
+		"kind":    "plan_final_checkpoint_handoff",
+		"outcome": "ship",
+		"final_handoff": map[string]any{
+			"schema_version": 1,
+			"title":          "Ready to review",
+			"overview":       "The focused change is complete.",
+			"impact_bullets": []any{"Compact card", "Ordinary chat continuation"},
+			"recommendation": map[string]any{"decision": "ship", "action": "review", "reason": "The requested behavior is complete.", "action_state": "ready"},
+			"suggested_prompts": []any{
+				map[string]any{"label": "Review", "prompt": "Review the final handoff."},
+				map[string]any{"label": "Continue", "prompt": "Continue with the next task."},
+			},
+			"details": map[string]any{
+				"report":        "Full durable report\nwith additional evidence lines.",
+				"result":        "done",
+				"changed_files": []any{"internal/ui/v3chat/page.go", "internal/ui/v3chat/state.go"},
+				"validation":    []any{"Focused regression passed"},
+			},
+		},
 	}
 }
 

@@ -1,4 +1,4 @@
-import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanInfo, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
+import type { DesktopPlanFinalHandoff, DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanInfo, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 
 export interface DesktopSessionPlanWire {
   id?: string
@@ -187,6 +187,7 @@ function normalizeDesktopSessionPlanCheckpoints(value: unknown): DesktopSessionP
         completedAt: numberValue(checkpoint.completedAt ?? checkpoint.completed_at),
         review: normalizeDesktopSessionPlanCheckpointReview(checkpoint.review),
         recommendation: normalizeDesktopSessionPlanCheckpointRecommendation(checkpoint.recommendation),
+        finalHandoff: normalizeDesktopPlanFinalHandoff(checkpoint.finalHandoff ?? checkpoint.final_handoff ?? checkpoint.handoff),
         attempts: normalizeDesktopSessionPlanCheckpointAttempts(checkpoint.attempts),
         order: numberValue(checkpoint.order) || index + 1,
       }
@@ -238,6 +239,42 @@ function normalizeDesktopSessionPlanCheckpointRecommendation(value: unknown): De
     actionState: stringValue(record, 'actionState', 'action_state'),
   }
   return recommendation.decision || recommendation.action || recommendation.reason || recommendation.actionState ? recommendation : null
+}
+
+export function normalizeDesktopPlanFinalHandoff(value: unknown): DesktopPlanFinalHandoff | null {
+  const record = objectValue(value)
+  if (!record) return null
+  const schemaVersion = numberValue(record.schemaVersion ?? record.schema_version)
+  if (schemaVersion !== 1) return null
+  const detailsRecord = objectValue(record.details) ?? {}
+  const recommendation = normalizeDesktopSessionPlanCheckpointRecommendation(record.recommendation) ?? null
+  const suggestedPromptValue = record.suggestedPrompts ?? record.suggested_prompts
+  const suggestedPromptEntries: unknown[] = Array.isArray(suggestedPromptValue) ? suggestedPromptValue : []
+  const suggestedPrompts = suggestedPromptEntries
+    .map((entry: unknown) => {
+      const prompt = objectValue(entry) ?? {}
+      return {
+        label: stringValue(prompt, 'label'),
+        prompt: stringValue(prompt, 'prompt'),
+      }
+    })
+    .filter((entry: { label: string; prompt: string }) => entry.label && entry.prompt)
+    .slice(0, 3)
+  const handoff: DesktopPlanFinalHandoff = {
+    schemaVersion,
+    title: stringValue(record, 'title'),
+    overview: stringValue(record, 'overview'),
+    impactBullets: stringArrayValue(record, 'impactBullets', 'impact_bullets').slice(0, 3),
+    recommendation,
+    suggestedPrompts,
+    details: {
+      report: rawStringValue(detailsRecord, 'report'),
+      result: rawStringValue(detailsRecord, 'result'),
+      changedFiles: stringArrayValue(detailsRecord, 'changedFiles', 'changed_files'),
+      validation: stringArrayValue(detailsRecord, 'validation'),
+    },
+  }
+  return handoff.title && handoff.overview ? handoff : null
 }
 
 function normalizeDesktopSessionPlanCheckpointAttempts(value: unknown): DesktopSessionPlanCheckpoint['attempts'] {
