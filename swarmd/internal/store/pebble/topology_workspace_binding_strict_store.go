@@ -27,9 +27,6 @@ func normalizeStrictTopologyWorkspaceBindingDefaults(record TopologyWorkspaceBin
 	if record.DestinationHostSwarmID == "" {
 		record.DestinationHostSwarmID = record.DestinationAuthorityHostSwarmID
 	}
-	if record.DestinationRuntimeKind == "" && record.DestinationContainerID != "" {
-		record.DestinationRuntimeKind = TopologyRuntimeKindContainer
-	}
 	if record.BindingGeneration <= 0 {
 		record.BindingGeneration = 1
 	}
@@ -73,15 +70,6 @@ func validateStrictTopologyWorkspaceBinding(record TopologyWorkspaceBindingRecor
 	}
 	if record.DestinationRuntimeKind == "" && !legacyRecord {
 		return errors.New("topology destination runtime kind is required")
-	}
-	if record.DestinationRuntimeKind != "" && record.DestinationRuntimeKind != TopologyRuntimeKindHost && record.DestinationRuntimeKind != TopologyRuntimeKindContainer {
-		return errors.New("topology destination runtime kind must be host or container")
-	}
-	if record.DestinationRuntimeKind == TopologyRuntimeKindHost && record.DestinationContainerID != "" {
-		return errors.New("topology host workspace binding destination container id must be empty")
-	}
-	if record.DestinationRuntimeKind == TopologyRuntimeKindContainer && record.DestinationContainerID == "" {
-		return errors.New("topology container workspace binding destination container id is required")
 	}
 	if record.DestinationWorkspacePath == "" {
 		return errors.New("topology destination workspace path is required")

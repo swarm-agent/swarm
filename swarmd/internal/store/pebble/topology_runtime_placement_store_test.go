@@ -90,12 +90,9 @@ func TestTopologyRuntimePlacementValidation(t *testing.T) {
 		record TopologyRuntimePlacementRecord
 		want   string
 	}{
-		{name: "host authority mismatch", record: TopologyRuntimePlacementRecord{RuntimeSwarmID: "runtime", AccountScopeID: "account-a", AuthorityHostSwarmID: "other", RuntimeKind: TopologyRuntimeKindHost}, want: "must equal runtime swarm id"},
-		{name: "host container authority", record: TopologyRuntimePlacementRecord{RuntimeSwarmID: "runtime", AccountScopeID: "account-a", AuthorityHostSwarmID: "runtime", AuthorityContainerID: "container", RuntimeKind: TopologyRuntimeKindHost}, want: "must be empty"},
-		{name: "container missing host", record: TopologyRuntimePlacementRecord{RuntimeSwarmID: "runtime", AccountScopeID: "account-a", AuthorityContainerID: "container", RuntimeKind: TopologyRuntimeKindContainer}, want: "authority host swarm id is required"},
-		{name: "container missing container", record: TopologyRuntimePlacementRecord{RuntimeSwarmID: "runtime", AccountScopeID: "account-a", AuthorityHostSwarmID: "host", RuntimeKind: TopologyRuntimeKindContainer}, want: "authority container id is required"},
-		{name: "container self authority", record: TopologyRuntimePlacementRecord{RuntimeSwarmID: "runtime", AccountScopeID: "account-a", AuthorityHostSwarmID: "runtime", AuthorityContainerID: "container", RuntimeKind: TopologyRuntimeKindContainer}, want: "must not equal runtime swarm id"},
-		{name: "missing kind", record: TopologyRuntimePlacementRecord{RuntimeSwarmID: "runtime", AccountScopeID: "account-a", AuthorityHostSwarmID: "runtime"}, want: "runtime kind must be host or container"},
+		{name: "arbitrary kind accepted", record: TopologyRuntimePlacementRecord{RuntimeSwarmID: "runtime-custom", AccountScopeID: "account-a", AuthorityHostSwarmID: "authority", RuntimeKind: "future-runner"}, want: ""},
+		{name: "container-shaped metadata accepted generically", record: TopologyRuntimePlacementRecord{RuntimeSwarmID: "runtime-container-shaped", AccountScopeID: "account-a", AuthorityHostSwarmID: "authority", AuthorityContainerID: "opaque-destination", RuntimeKind: TopologyRuntimeKindContainer}, want: ""},
+		{name: "missing kind", record: TopologyRuntimePlacementRecord{RuntimeSwarmID: "runtime", AccountScopeID: "account-a", AuthorityHostSwarmID: "runtime"}, want: "runtime kind is required"},
 		{name: "missing runtime", record: TopologyRuntimePlacementRecord{AccountScopeID: "account-a", AuthorityHostSwarmID: "runtime", RuntimeKind: TopologyRuntimeKindHost}, want: "topology runtime swarm id is required"},
 		{name: "missing account scope defaults from account key", record: TopologyRuntimePlacementRecord{RuntimeSwarmID: "runtime-default-account", AuthorityHostSwarmID: "runtime-default-account", RuntimeKind: TopologyRuntimeKindHost}, want: ""},
 		{name: "placement id is accepted when provided", record: TopologyRuntimePlacementRecord{PlacementID: "rtp_existing", RuntimeSwarmID: "runtime-existing-placement", AccountScopeID: "account-a", AuthorityHostSwarmID: "runtime-existing-placement", RuntimeKind: TopologyRuntimeKindHost}, want: ""},
@@ -147,100 +144,3 @@ func TestTopologyRuntimePlacementValidation(t *testing.T) {
 	}
 }
 
-func TestTopologyRuntimePlacementContainerShape(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "runtime-placement-container.pebble"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() { _ = store.Close() }()
-
-	topology := NewTopologyStore(store)
-	if _, err := topology.PutRuntimePlacementForAccount("account-a", TopologyRuntimePlacementRecord{
-		RuntimeSwarmID:       "host-swarm",
-		AccountScopeID:       "account-a",
-		AuthorityHostSwarmID: "host-swarm",
-		RuntimeKind:          TopologyRuntimeKindHost,
-	}); err != nil {
-		t.Fatalf("put host placement: %v", err)
-	}
-	if err := UpsertTopologyHostContainerForAccount(topology, "account-a", TopologyHostContainerRecord{
-		HostContainerID:     "container-1",
-		AccountScopeID:      "account-a",
-		UserID:              "user-a",
-		HostSwarmID:         "host-swarm",
-		RuntimeContainerRef: "container-1",
-		Name:                "Container One",
-	}); err != nil {
-		t.Fatalf("put host container: %v", err)
-	}
-	placement, err := topology.PutRuntimePlacementForAccount("account-a", TopologyRuntimePlacementRecord{
-		RuntimeSwarmID:       "container-runtime",
-		AccountScopeID:       "account-a",
-		AuthorityHostSwarmID: "host-swarm",
-		AuthorityContainerID: "container-1",
-		RuntimeKind:          TopologyRuntimeKindContainer,
-	})
-	if err != nil {
-		t.Fatalf("put container placement: %v", err)
-	}
-	if placement.RuntimeKind != TopologyRuntimeKindContainer || placement.AuthorityHostSwarmID != "host-swarm" || placement.AuthorityContainerID != "container-1" {
-		t.Fatalf("unexpected container placement: %+v", placement)
-	}
-}
-
-func TestTopologyRuntimePlacementRejectsKnownContainerAuthority(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "runtime-placement-container-authority.pebble"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() { _ = store.Close() }()
-
-	topology := NewTopologyStore(store)
-	if _, err := topology.PutRuntimePlacementForAccount("account-a", TopologyRuntimePlacementRecord{
-		RuntimeSwarmID:       "host-swarm",
-		AccountScopeID:       "account-a",
-		AuthorityHostSwarmID: "host-swarm",
-		RuntimeKind:          TopologyRuntimeKindHost,
-	}); err != nil {
-		t.Fatalf("put host placement: %v", err)
-	}
-	if err := UpsertTopologyHostContainerForAccount(topology, "account-a", TopologyHostContainerRecord{
-		HostContainerID:     "container-1",
-		AccountScopeID:      "account-a",
-		UserID:              "user-a",
-		HostSwarmID:         "host-swarm",
-		RuntimeContainerRef: "container-1",
-		Name:                "Container One",
-	}); err != nil {
-		t.Fatalf("put host container: %v", err)
-	}
-	if _, err := topology.PutRuntimePlacementForAccount("account-a", TopologyRuntimePlacementRecord{
-		RuntimeSwarmID:       "container-runtime",
-		AccountScopeID:       "account-a",
-		AuthorityHostSwarmID: "host-swarm",
-		AuthorityContainerID: "container-1",
-		RuntimeKind:          TopologyRuntimeKindContainer,
-	}); err != nil {
-		t.Fatalf("put container placement: %v", err)
-	}
-	if err := UpsertTopologyHostContainerForAccount(topology, "account-a", TopologyHostContainerRecord{
-		HostContainerID:     "container-2",
-		AccountScopeID:      "account-a",
-		UserID:              "user-a",
-		HostSwarmID:         "container-runtime",
-		RuntimeContainerRef: "container-2",
-		Name:                "Container Two",
-	}); err != nil {
-		t.Fatalf("put nested host container: %v", err)
-	}
-	_, err = topology.PutRuntimePlacementForAccount("account-a", TopologyRuntimePlacementRecord{
-		RuntimeSwarmID:       "nested-container-runtime",
-		AccountScopeID:       "account-a",
-		AuthorityHostSwarmID: "container-runtime",
-		AuthorityContainerID: "container-2",
-		RuntimeKind:          TopologyRuntimeKindContainer,
-	})
-	if err == nil || !strings.Contains(err.Error(), "must reference a host runtime") {
-		t.Fatalf("expected container authority rejection, got %v", err)
-	}
-}

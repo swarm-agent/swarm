@@ -1,9 +1,6 @@
 package pebblestore
 
-import (
-	"errors"
-	"strings"
-)
+import "strings"
 
 const topologyRuntimeSourceLocalNode = "swarm_local_node"
 
@@ -47,7 +44,7 @@ func UpsertTopologyRuntimeRecord(topology *TopologyStore, incoming TopologyRunti
 		if _, err := enforceTopologyRuntimeAccount(incoming.AccountScopeID, incoming); err != nil {
 			return err
 		}
-		if err := ensureTopologyRuntimePlacementForRuntime(topology, incoming.AccountScopeID, incoming); err != nil {
+		if err := ensureTopologyLocalSelfPlacementForRuntime(topology, incoming.AccountScopeID, incoming); err != nil {
 			return err
 		}
 		_, err = topology.PutRuntimeForAccount(incoming.AccountScopeID, incoming)
@@ -82,46 +79,34 @@ func UpsertTopologyRuntimeRecordForAccount(topology *TopologyStore, accountScope
 	if _, err := enforceTopologyRuntimeAccount(accountScopeID, incoming); err != nil {
 		return err
 	}
-	if err := ensureTopologyRuntimePlacementForRuntime(topology, accountScopeID, incoming); err != nil {
+	if err := ensureTopologyLocalSelfPlacementForRuntime(topology, accountScopeID, incoming); err != nil {
 		return err
 	}
 	_, err = topology.PutRuntimeForAccount(accountScopeID, incoming)
 	return err
 }
 
-func ensureTopologyRuntimePlacementForRuntime(topology *TopologyStore, accountScopeID string, runtime TopologyRuntimeRecord) error {
+func ensureTopologyLocalSelfPlacementForRuntime(topology *TopologyStore, accountScopeID string, runtime TopologyRuntimeRecord) error {
 	if topology == nil {
 		return nil
 	}
 	runtime = normalizeTopologyRuntimeRecord(runtime)
-	if runtime.SwarmID == "" {
+	if runtime.SwarmID == "" || !strings.EqualFold(runtime.Relationship, "self") {
 		return nil
 	}
 	accountScopeID = strings.TrimSpace(firstNonEmpty(accountScopeID, runtime.AccountScopeID))
 	if accountScopeID == "" {
 		return nil
 	}
-
-	authorityHostSwarmID := strings.TrimSpace(runtime.OwnerHostSwarmID)
-	authorityContainerID := strings.TrimSpace(runtime.OwnerHostContainerID)
-	placement := TopologyRuntimePlacementRecord{
+	if _, ok, err := topology.GetRuntimePlacementForAccount(accountScopeID, runtime.SwarmID); err != nil || ok {
+		return err
+	}
+	_, err := topology.PutRuntimePlacementForAccount(accountScopeID, TopologyRuntimePlacementRecord{
 		RuntimeSwarmID:       runtime.SwarmID,
 		AccountScopeID:       accountScopeID,
-		AuthorityHostSwarmID: authorityHostSwarmID,
-		AuthorityContainerID: authorityContainerID,
-	}
-	if authorityHostSwarmID == "" && authorityContainerID == "" {
-		placement.RuntimeKind = TopologyRuntimeKindHost
-		placement.AuthorityHostSwarmID = runtime.SwarmID
-	} else if authorityHostSwarmID != "" && authorityContainerID != "" {
-		placement.RuntimeKind = TopologyRuntimeKindContainer
-	} else {
-		if authorityHostSwarmID != "" {
-			return errors.New("topology container runtime placement authority container id is required")
-		}
-		return errors.New("topology container runtime placement authority host swarm id is required")
-	}
-	_, err := topology.PutRuntimePlacementForAccount(accountScopeID, placement)
+		AuthorityHostSwarmID: runtime.SwarmID,
+		RuntimeKind:          TopologyRuntimeKindHost,
+	})
 	return err
 }
 
@@ -147,6 +132,35 @@ func mergeTopologyRuntimeRecord(existing, incoming TopologyRuntimeRecord) Topolo
 		incoming.UpdatedAt = existing.UpdatedAt
 	}
 	return incoming
+}
+
+func RemoveTopologyRuntimeObservedSource(topology *TopologyStore, swarmID, source string) error {
+	return removeTopologyRuntimeObservedSource(topology, swarmID, source)
+}
+
+func RemoveTopologyRuntimeObservedSourceForAccount(topology *TopologyStore, accountScopeID, swarmID, source string) error {
+	accountScopeID, err := requireTopologyAccountScopeID(accountScopeID)
+	if err != nil {
+		return err
+	}
+	if topology == nil {
+		return nil
+	}
+	swarmID = strings.TrimSpace(swarmID)
+	source = strings.TrimSpace(source)
+	if swarmID == "" || source == "" {
+		return nil
+	}
+	record, ok, err := topology.GetRuntimeForAccount(accountScopeID, swarmID)
+	if err != nil || !ok {
+		return err
+	}
+	record.ObservedSources = removeTopologyObservedSource(record.ObservedSources, source)
+	if len(record.ObservedSources) == 0 {
+		return topology.DeleteRuntimeForAccount(accountScopeID, swarmID)
+	}
+	_, err = topology.PutRuntimeForAccount(accountScopeID, record)
+	return err
 }
 
 func removeTopologyRuntimeObservedSource(topology *TopologyStore, swarmID, source string) error {

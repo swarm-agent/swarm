@@ -84,10 +84,6 @@ const (
 	KeyTopologyRuntimeAccountPrefix                = "topology/runtime_by_account/"
 	KeyTopologyRuntimePlacementPrefix              = "topology/runtime_placement/" // legacy global prefix; retained for explicit migration only.
 	KeyTopologyRuntimePlacementAccountPrefix       = "topology/runtime_placement_by_account/"
-	KeyTopologyHostContainerPrefix                 = "topology/host_container/" // legacy global prefix; retained for explicit migration only.
-	KeyTopologyHostContainerAccountPrefix          = "topology/host_container_by_account/"
-	KeyTopologyAttachmentPrefix                    = "topology/attachment/" // legacy global prefix; retained for explicit migration only.
-	KeyTopologyAttachmentAccountPrefix             = "topology/attachment_by_account/"
 	KeyTopologyWorkspaceBindingPrefix              = "topology/workspace_binding/" // legacy global prefix; retained for explicit migration only.
 	KeyTopologyWorkspaceBindingAccountPrefix       = "topology/workspace_binding_by_account/"
 	KeyTopologyWorkspaceBindingActiveAccountPrefix = "topology/workspace_binding_active_by_account/"
@@ -562,46 +558,6 @@ func TopologyRuntimePlacementPrefixForAccount(accountScopeID string) string {
 		return KeyTopologyRuntimePlacementAccountPrefix
 	}
 	return fmt.Sprintf("%s%s/", KeyTopologyRuntimePlacementAccountPrefix, accountPart)
-}
-
-func KeyTopologyHostContainer(hostContainerID string) string {
-	return KeyTopologyHostContainerPrefix + keyPart(hostContainerID)
-}
-
-func TopologyHostContainerPrefix() string {
-	return KeyTopologyHostContainerPrefix
-}
-
-func KeyTopologyHostContainerForAccount(accountScopeID, hostContainerID string) string {
-	return fmt.Sprintf("%s%s/%s", KeyTopologyHostContainerAccountPrefix, keyPart(accountScopeID), keyPart(hostContainerID))
-}
-
-func TopologyHostContainerPrefixForAccount(accountScopeID string) string {
-	accountPart := keyPart(accountScopeID)
-	if accountPart == "" {
-		return KeyTopologyHostContainerAccountPrefix
-	}
-	return fmt.Sprintf("%s%s/", KeyTopologyHostContainerAccountPrefix, accountPart)
-}
-
-func KeyTopologyAttachment(attachmentID string) string {
-	return KeyTopologyAttachmentPrefix + keyPart(attachmentID)
-}
-
-func TopologyAttachmentPrefix() string {
-	return KeyTopologyAttachmentPrefix
-}
-
-func KeyTopologyAttachmentForAccount(accountScopeID, attachmentID string) string {
-	return fmt.Sprintf("%s%s/%s", KeyTopologyAttachmentAccountPrefix, keyPart(accountScopeID), keyPart(attachmentID))
-}
-
-func TopologyAttachmentPrefixForAccount(accountScopeID string) string {
-	accountPart := keyPart(accountScopeID)
-	if accountPart == "" {
-		return KeyTopologyAttachmentAccountPrefix
-	}
-	return fmt.Sprintf("%s%s/", KeyTopologyAttachmentAccountPrefix, accountPart)
 }
 
 func KeyTopologyWorkspaceBinding(bindingID string) string {

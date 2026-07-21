@@ -238,41 +238,6 @@ func (s *Service) EnsureLocalWorkspaceSelfBindingForPrincipal(accountScopeID, us
 	return s.topologyStore.EnsureLocalWorkspaceSelfBindingForAccount(accountScopeID, binding)
 }
 
-func (s *Service) ListHostContainersByHost(hostSwarmID string, limit int) ([]pebblestore.TopologyHostContainerRecord, error) {
-	if s == nil || s.topologyStore == nil {
-		return nil, fmt.Errorf("topology service is not configured")
-	}
-	return s.topologyStore.ListHostContainersByHost(hostSwarmID, limit)
-}
-
-func (s *Service) ListHostContainersByHostForAccount(accountScopeID, hostSwarmID string, limit int) ([]pebblestore.TopologyHostContainerRecord, error) {
-	if s == nil || s.topologyStore == nil {
-		return nil, fmt.Errorf("topology service is not configured")
-	}
-	return s.topologyStore.ListHostContainersByHostForAccount(accountScopeID, hostSwarmID, limit)
-}
-
-func (s *Service) GetHostContainer(hostContainerID string) (pebblestore.TopologyHostContainerRecord, bool, error) {
-	if s == nil || s.topologyStore == nil {
-		return pebblestore.TopologyHostContainerRecord{}, false, fmt.Errorf("topology service is not configured")
-	}
-	return s.topologyStore.GetHostContainer(hostContainerID)
-}
-
-func (s *Service) GetAttachment(attachmentID string) (pebblestore.TopologyAttachmentRecord, bool, error) {
-	if s == nil || s.topologyStore == nil {
-		return pebblestore.TopologyAttachmentRecord{}, false, fmt.Errorf("topology service is not configured")
-	}
-	return s.topologyStore.GetAttachment(attachmentID)
-}
-
-func (s *Service) FindHostContainer(hostSwarmID string, refs ...string) (pebblestore.TopologyHostContainerRecord, bool, error) {
-	if s == nil || s.topologyStore == nil {
-		return pebblestore.TopologyHostContainerRecord{}, false, fmt.Errorf("topology service is not configured")
-	}
-	return pebblestore.FindTopologyHostContainerByRefs(s.topologyStore, hostSwarmID, refs...)
-}
-
 func (s *Service) PutRuntimeForAccount(accountScopeID string, record pebblestore.TopologyRuntimeRecord) (pebblestore.TopologyRuntimeRecord, error) {
 	if s == nil || s.topologyStore == nil {
 		return pebblestore.TopologyRuntimeRecord{}, fmt.Errorf("topology service is not configured")
@@ -288,26 +253,6 @@ func (s *Service) UpsertRuntime(record pebblestore.TopologyRuntimeRecord) error 
 		return pebblestore.UpsertTopologyRuntimeRecordForAccount(s.topologyStore, record.AccountScopeID, record)
 	}
 	return pebblestore.UpsertTopologyRuntimeRecord(s.topologyStore, record)
-}
-
-func (s *Service) UpsertHostContainer(record pebblestore.TopologyHostContainerRecord) error {
-	if s == nil || s.topologyStore == nil {
-		return fmt.Errorf("topology service is not configured")
-	}
-	if strings.TrimSpace(record.AccountScopeID) != "" {
-		return pebblestore.UpsertTopologyHostContainerForAccount(s.topologyStore, record.AccountScopeID, record)
-	}
-	return pebblestore.UpsertTopologyHostContainer(s.topologyStore, record)
-}
-
-func (s *Service) UpsertAttachment(record pebblestore.TopologyAttachmentRecord) error {
-	if s == nil || s.topologyStore == nil {
-		return fmt.Errorf("topology service is not configured")
-	}
-	if strings.TrimSpace(record.AccountScopeID) != "" {
-		return pebblestore.UpsertTopologyAttachmentForAccount(s.topologyStore, record.AccountScopeID, record)
-	}
-	return pebblestore.UpsertTopologyAttachment(s.topologyStore, record)
 }
 
 func (s *Service) UpsertWorkspaceBinding(record pebblestore.TopologyWorkspaceBindingRecord) (pebblestore.TopologyWorkspaceBindingRecord, error) {
@@ -341,83 +286,11 @@ func (s *Service) DeleteWorkspaceBindingForAccount(accountScopeID, bindingID str
 	return s.topologyStore.DeleteWorkspaceBindingForAccount(accountScopeID, bindingID)
 }
 
-func (s *Service) ListAttachmentsByHostContainer(hostContainerID string, limit int) ([]pebblestore.TopologyAttachmentRecord, error) {
-	if s == nil || s.topologyStore == nil {
-		return nil, fmt.Errorf("topology service is not configured")
-	}
-	return s.topologyStore.ListAttachmentsByHostContainer(hostContainerID, limit)
-}
-
-func (s *Service) ListAttachmentsByHostContainerForAccount(accountScopeID, hostContainerID string, limit int) ([]pebblestore.TopologyAttachmentRecord, error) {
-	if s == nil || s.topologyStore == nil {
-		return nil, fmt.Errorf("topology service is not configured")
-	}
-	return s.topologyStore.ListAttachmentsByHostContainerForAccount(accountScopeID, hostContainerID, limit)
-}
-
-func (s *Service) DeleteHostContainer(hostContainerID string) error {
-	if s == nil || s.topologyStore == nil {
-		return fmt.Errorf("topology service is not configured")
-	}
-	return s.topologyStore.DeleteHostContainer(hostContainerID)
-}
-
-func (s *Service) DeleteAttachment(attachmentID string) error {
-	if s == nil || s.topologyStore == nil {
-		return fmt.Errorf("topology service is not configured")
-	}
-	return s.topologyStore.DeleteAttachment(attachmentID)
-}
-
-func (s *Service) DeleteHostContainerForAccount(accountScopeID, hostContainerID string) error {
-	if s == nil || s.topologyStore == nil {
-		return fmt.Errorf("topology service is not configured")
-	}
-	return s.topologyStore.DeleteHostContainerForAccount(accountScopeID, hostContainerID)
-}
-
-func (s *Service) DeleteAttachmentForAccount(accountScopeID, attachmentID string) error {
-	if s == nil || s.topologyStore == nil {
-		return fmt.Errorf("topology service is not configured")
-	}
-	return s.topologyStore.DeleteAttachmentForAccount(accountScopeID, attachmentID)
-}
-
 func (s *Service) RemoveRuntimeObservedSource(swarmID, source string) error {
 	if s == nil || s.topologyStore == nil {
 		return fmt.Errorf("topology service is not configured")
 	}
 	return pebblestore.RemoveTopologyRuntimeObservedSource(s.topologyStore, swarmID, source)
-}
-
-func (s *Service) ResolveRuntimeHostContainer(runtimeSwarmID string) (pebblestore.TopologyHostContainerRecord, pebblestore.TopologyAttachmentRecord, bool, error) {
-	if s == nil || s.topologyStore == nil {
-		return pebblestore.TopologyHostContainerRecord{}, pebblestore.TopologyAttachmentRecord{}, false, fmt.Errorf("topology service is not configured")
-	}
-	attachment, ok, err := s.topologyStore.FindAttachmentByRuntime(runtimeSwarmID)
-	if err != nil || !ok {
-		return pebblestore.TopologyHostContainerRecord{}, attachment, ok, err
-	}
-	hostContainer, ok, err := s.topologyStore.GetHostContainer(attachment.HostContainerID)
-	if err != nil || !ok {
-		return pebblestore.TopologyHostContainerRecord{}, attachment, ok, err
-	}
-	return hostContainer, attachment, true, nil
-}
-
-func (s *Service) ResolveRuntimeHostContainerForAccount(accountScopeID, runtimeSwarmID string) (pebblestore.TopologyHostContainerRecord, pebblestore.TopologyAttachmentRecord, bool, error) {
-	if s == nil || s.topologyStore == nil {
-		return pebblestore.TopologyHostContainerRecord{}, pebblestore.TopologyAttachmentRecord{}, false, fmt.Errorf("topology service is not configured")
-	}
-	attachment, ok, err := s.topologyStore.FindAttachmentByRuntimeForAccount(accountScopeID, runtimeSwarmID)
-	if err != nil || !ok {
-		return pebblestore.TopologyHostContainerRecord{}, attachment, ok, err
-	}
-	hostContainer, ok, err := s.topologyStore.GetHostContainerForAccount(accountScopeID, attachment.HostContainerID)
-	if err != nil || !ok {
-		return pebblestore.TopologyHostContainerRecord{}, attachment, ok, err
-	}
-	return hostContainer, attachment, true, nil
 }
 
 func (s *Service) ListWorkspaceBindings(limit int) ([]pebblestore.TopologyWorkspaceBindingRecord, error) {
@@ -486,8 +359,6 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 
 	runtimeMap := map[string]pebblestore.TopologyRuntimeRecord{}
 	runtimePlacementMap := map[string]pebblestore.TopologyRuntimePlacementRecord{}
-	hostContainerMap := map[string]pebblestore.TopologyHostContainerRecord{}
-	attachmentMap := map[string]pebblestore.TopologyAttachmentRecord{}
 
 	if strings.TrimSpace(localNode.SwarmID) != "" {
 		mergeRuntime(runtimeMap, pebblestore.TopologyRuntimeRecord{
@@ -533,32 +404,13 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 	if err != nil {
 		return pebblestore.TopologySnapshot{}, err
 	}
-	for _, runtime := range runtimeMap {
-		if _, ok := runtimePlacementMap[runtime.SwarmID]; ok {
-			continue
-		}
-		if strings.TrimSpace(runtime.OwnerHostSwarmID) != "" && strings.TrimSpace(runtime.OwnerHostContainerID) != "" {
-			mergeRuntimePlacement(runtimePlacementMap, pebblestore.TopologyRuntimePlacementRecord{
-				RuntimeSwarmID:       runtime.SwarmID,
-				AuthorityHostSwarmID: runtime.OwnerHostSwarmID,
-				AuthorityContainerID: runtime.OwnerHostContainerID,
-				RuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
-				CreatedAt:            runtime.CreatedAt,
-				UpdatedAt:            runtime.UpdatedAt,
-			})
-		}
-	}
 	runtimes := runtimeMapValues(runtimeMap)
 	for i := range runtimes {
 		runtimes[i].GroupIDs = normalizeGroupIDs(groupIDsBySwarm[runtimes[i].SwarmID])
 	}
 	runtimePlacements := runtimePlacementMapValues(runtimePlacementMap)
-	hostContainers := hostContainerMapValues(hostContainerMap)
-	attachments := attachmentMapValues(attachmentMap)
 	sortTopologyRuntimes(runtimes)
 	sortTopologyRuntimePlacements(runtimePlacements)
-	sortTopologyHostContainers(hostContainers)
-	sortTopologyAttachments(attachments)
 	sortTopologyWorkspaceBindings(workspaceBindings)
 
 	migrationStatus := pebblestore.TopologyMigrationStatusRecord{
@@ -566,15 +418,11 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 		Version:               SnapshotVersion,
 		RebuiltAt:             now,
 		RuntimeCount:          len(runtimes),
-		HostContainerCount:    len(hostContainers),
-		AttachmentCount:       len(attachments),
 		WorkspaceBindingCount: len(workspaceBindings),
 	}
 	return pebblestore.TopologySnapshot{
 		Runtimes:          runtimes,
 		RuntimePlacements: runtimePlacements,
-		HostContainers:    hostContainers,
-		Attachments:       attachments,
 		WorkspaceBindings: workspaceBindings,
 		MigrationStatus:   migrationStatus,
 	}, nil
@@ -822,24 +670,6 @@ func sortTopologyRuntimePlacements(records []pebblestore.TopologyRuntimePlacemen
 	})
 }
 
-func sortTopologyHostContainers(records []pebblestore.TopologyHostContainerRecord) {
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].UpdatedAt == records[j].UpdatedAt {
-			return strings.ToLower(records[i].HostContainerID) < strings.ToLower(records[j].HostContainerID)
-		}
-		return records[i].UpdatedAt > records[j].UpdatedAt
-	})
-}
-
-func sortTopologyAttachments(records []pebblestore.TopologyAttachmentRecord) {
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].UpdatedAt == records[j].UpdatedAt {
-			return strings.ToLower(records[i].AttachmentID) < strings.ToLower(records[j].AttachmentID)
-		}
-		return records[i].UpdatedAt > records[j].UpdatedAt
-	})
-}
-
 func sortTopologyWorkspaceBindings(records []pebblestore.TopologyWorkspaceBindingRecord) {
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].UpdatedAt == records[j].UpdatedAt {
@@ -865,18 +695,3 @@ func runtimePlacementMapValues(input map[string]pebblestore.TopologyRuntimePlace
 	return out
 }
 
-func hostContainerMapValues(input map[string]pebblestore.TopologyHostContainerRecord) []pebblestore.TopologyHostContainerRecord {
-	out := make([]pebblestore.TopologyHostContainerRecord, 0, len(input))
-	for _, value := range input {
-		out = append(out, value)
-	}
-	return out
-}
-
-func attachmentMapValues(input map[string]pebblestore.TopologyAttachmentRecord) []pebblestore.TopologyAttachmentRecord {
-	out := make([]pebblestore.TopologyAttachmentRecord, 0, len(input))
-	for _, value := range input {
-		out = append(out, value)
-	}
-	return out
-}
