@@ -313,7 +313,6 @@ func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFoll
 			return s.StartSessionCheckpoint(PlanLifecycleSessionCheckpointInput{
 				SessionID:          input.SessionID,
 				ChangeRequest:      input.ChangeRequest,
-				UserRequest:        input.UserRequest,
 				Title:              input.Title,
 				Tasks:              input.Tasks,
 				AcceptanceCriteria: input.AcceptanceCriteria,
