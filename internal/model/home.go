@@ -67,6 +67,8 @@ type SessionSummary struct {
 	WorktreeRootPath           string
 	WorktreeBaseBranch         string
 	WorktreeBranch             string
+	CreatedAt                  int64
+	UpdatedAt                  int64
 	UpdatedAgo                 string
 	Depth                      int
 	SessionAPI                 string

@@ -643,6 +643,60 @@ type SessionV3Hydrated struct {
 	PlanRevisions          []SessionPlan             `json:"plan_revisions,omitempty"`
 }
 
+type SessionV3SyncBootstrapRequest struct {
+	Surface       string                  `json:"surface"`
+	Selector      SessionV3SyncSelector   `json:"selector"`
+	History       SessionV3WorksetHistory `json:"history"`
+	Resources     SessionV3SyncResources  `json:"resources"`
+	IncludeActive bool                    `json:"include_active"`
+}
+
+type SessionV3SyncSelector struct {
+	Kind      string                 `json:"kind"`
+	Global    bool                   `json:"global,omitempty"`
+	Recent    SessionV3WorksetRecent `json:"recent,omitempty"`
+	Attention SessionV3SyncAttention `json:"attention,omitempty"`
+}
+
+type SessionV3SyncAttention struct {
+	PendingPermissions bool `json:"pending_permissions,omitempty"`
+}
+
+type SessionV3SyncResources struct {
+	CurrentRunState     bool `json:"current_run_state,omitempty"`
+	PermissionSummaries bool `json:"permission_summaries,omitempty"`
+}
+
+type SessionV3SyncPermissionSummary struct {
+	SessionID            string `json:"session_id"`
+	PendingApprovalCount int    `json:"pending_approval_count"`
+}
+
+type SessionV3RunState struct {
+	SessionID     string `json:"session_id"`
+	RunID         string `json:"run_id"`
+	Active        bool   `json:"active"`
+	Status        string `json:"status"`
+	BlockedReason string `json:"blocked_reason,omitempty"`
+	CreatedAt     int64  `json:"created_at"`
+	StartedAt     int64  `json:"started_at,omitempty"`
+	CompletedAt   int64  `json:"completed_at,omitempty"`
+	DurationMS    int64  `json:"duration_ms,omitempty"`
+	UpdatedAt     int64  `json:"updated_at"`
+	EventSeq      uint64 `json:"event_seq,omitempty"`
+}
+
+type SessionV3SyncSnapshot struct {
+	OK                           bool                                      `json:"ok"`
+	SnapshotEndpointCursor       string                                    `json:"snapshot_endpoint_cursor"`
+	SessionsByID                 map[string]SessionSummary                 `json:"sessions_by_id"`
+	ProjectionsBySession         map[string]SessionV3Projection            `json:"projections_by_session"`
+	CurrentRunStateBySession     map[string]SessionV3RunState              `json:"current_run_state_by_session,omitempty"`
+	PermissionSummariesBySession map[string]SessionV3SyncPermissionSummary `json:"permission_summaries_by_session,omitempty"`
+	ActiveSessionIDs             []string                                  `json:"active_session_ids,omitempty"`
+	SessionOrder                 []string                                  `json:"session_order"`
+}
+
 type SessionV3WorksetRequest struct {
 	SessionIDs []string                  `json:"session_ids,omitempty"`
 	Workspace  SessionV3WorksetWorkspace `json:"workspace,omitempty"`
@@ -3095,6 +3149,17 @@ func (c *API) GetSessionV3TUI(ctx context.Context, sessionID, workspacePath, cwd
 	}
 	resp.Session = markSessionV3(resp.Session, resp.Projection)
 	return resp, nil
+}
+
+func (c *API) GetSessionV3SyncBootstrap(ctx context.Context, req SessionV3SyncBootstrapRequest) (SessionV3SyncSnapshot, error) {
+	var snapshot SessionV3SyncSnapshot
+	if err := c.postJSON(ctx, "/v3/sync/bootstrap", req, &snapshot, true); err != nil {
+		return SessionV3SyncSnapshot{}, err
+	}
+	for id, session := range snapshot.SessionsByID {
+		snapshot.SessionsByID[id] = markSessionV3(session, snapshot.ProjectionsBySession[id])
+	}
+	return snapshot, nil
 }
 
 func (c *API) GetSessionV3Workset(ctx context.Context, req SessionV3WorksetRequest) (SessionV3Workset, error) {

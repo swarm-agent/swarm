@@ -416,6 +416,13 @@ func (p *HomePage) drawTipsRow(s tcell.Screen, rect Rect, centered bool) {
 	if p.CanCycleSessionMode() {
 		modeHint = fmt.Sprintf("%s toggles Plan on/off", modeKeyLabel)
 	}
+	sessionsKeyLabel := "Ctrl+X"
+	if p.keybinds != nil {
+		if label := strings.TrimSpace(p.keybinds.Label(KeybindHomeOpenSessions)); label != "" {
+			sessionsKeyLabel = label
+		}
+	}
+	sessionsHint := fmt.Sprintf("%s sessions", sessionsKeyLabel)
 	line := ""
 	switch {
 	case hint != "" && tip != "":
@@ -430,6 +437,7 @@ func (p *HomePage) drawTipsRow(s tcell.Screen, rect Rect, centered bool) {
 	if !strings.Contains(strings.ToLower(line), "toggles plan") {
 		line = fmt.Sprintf("%s • %s", line, modeHint)
 	}
+	line = fmt.Sprintf("%s • %s", line, sessionsHint)
 	if centered {
 		DrawCenteredText(s, rect.X, rect.Y, rect.W, p.theme.TextMuted, line)
 		return

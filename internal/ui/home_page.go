@@ -410,6 +410,7 @@ func (p *HomePage) ChatOverlayVisible() bool {
 	}
 	return p.onboarding.Visible ||
 		p.alertsModal.Visible ||
+		p.sessionsModal.Visible ||
 		p.keybindsModal.Visible ||
 		p.authDefaultsInfoModal.Visible ||
 		p.authModal.Visible ||
@@ -458,6 +459,9 @@ func (p *HomePage) HandleChatOverlayKey(ev *tcell.EventKey) bool {
 	switch {
 	case p.alertsModal.Visible:
 		p.handleAlertsModalKey(ev)
+		return true
+	case p.sessionsModal.Visible:
+		p.handleSessionsModalKey(ev)
 		return true
 	case p.keybindsModal.Visible:
 		p.handleKeybindsModalKey(ev)
@@ -513,6 +517,7 @@ func (p *HomePage) DrawChatOverlay(s tcell.Screen) {
 	p.drawVoiceModal(s)
 	p.drawThemeModal(s)
 	p.drawKeybindsModal(s)
+	p.drawSessionsModal(s)
 	p.drawAlertsModal(s)
 }
 

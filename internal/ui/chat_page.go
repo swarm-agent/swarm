@@ -82,7 +82,13 @@ type ChatSessionTab struct {
 	WorkspaceName   string
 	WorkspacePath   string
 	Mode            string
+	CreatedAt       int64
+	UpdatedAt       int64
+	ActiveStartedAt int64
 	UpdatedAgo      string
+	Active          bool
+	NeedsAttention  bool
+	ActivityLabel   string
 	Provider        string
 	ModelName       string
 	ServiceTier     string
@@ -103,7 +109,13 @@ type ChatSessionPaletteItem struct {
 	WorkspaceName   string
 	WorkspacePath   string
 	Mode            string
+	CreatedAt       int64
+	UpdatedAt       int64
+	ActiveStartedAt int64
 	UpdatedAgo      string
+	Active          bool
+	NeedsAttention  bool
+	ActivityLabel   string
 	Provider        string
 	ModelName       string
 	ServiceTier     string

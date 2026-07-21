@@ -43,6 +43,7 @@ const (
 	KeybindGlobalWorkspaceSlot9  KeybindID = "global.workspace_slot_9"
 	KeybindGlobalWorkspaceSlot10 KeybindID = "global.workspace_slot_10"
 
+	KeybindHomeOpenSessions        KeybindID = "home.open_sessions"
 	KeybindHomePaletteMoveUp       KeybindID = "home.palette.move_up"
 	KeybindHomePaletteMoveDown     KeybindID = "home.palette.move_down"
 	KeybindHomePromptBackspace     KeybindID = "home.prompt.backspace"
@@ -224,6 +225,7 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindGlobalWorkspaceSlot9, Group: "Global", Action: "Activate workspace slot 9", Default: "alt+9", Editable: true},
 	{ID: KeybindGlobalWorkspaceSlot10, Group: "Global", Action: "Activate workspace slot 10", Default: "alt+0", Editable: true},
 
+	{ID: KeybindHomeOpenSessions, Group: "Home", Action: "Open session manager (/sessions)", Default: "ctrl+x", Editable: true},
 	{ID: KeybindHomePaletteMoveUp, Group: "Home", Action: "Command palette up", Default: "up", Editable: true},
 	{ID: KeybindHomePaletteMoveDown, Group: "Home", Action: "Command palette down", Default: "down", Editable: true},
 	{ID: KeybindHomePromptBackspace, Group: "Home", Action: "Prompt backspace", Default: "backspace", Editable: true},

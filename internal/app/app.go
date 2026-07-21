@@ -80,7 +80,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/quit", Hint: "Exit swarmtui"},
 		{Command: "/reload", Hint: "Reload home state from swarmd"},
 		{Command: "/rebuild", Hint: "Rebuild the active lane, then exit swarmtui"},
-		{Command: "/sessions", Hint: "Open recent sessions modal"},
+		{Command: "/sessions", Hint: "Open the card-style session manager (active conversations first)"},
 		{Command: "/swarm", Hint: "Set the primary swarm display name", QuickTips: []string{"/swarm set <name>", "/swarm name <name>", "/swarm role master"}},
 		{Command: "/update", Hint: updateHint, QuickTips: updateQuickTips},
 		{Command: "/themes", Hint: "Open theme modal with live preview", QuickTips: []string{"/themes list", "/themes set <id>", "/themes create <id> from <base>", "/themes edit <id> <slot> <#RRGGBB>", "/themes delete <id>"}},
@@ -98,11 +98,14 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 }
 
 type homeReloadResult struct {
-	model     model.HomeModel
-	hydrated  *client.SessionV3Hydrated
-	sessionID string
-	err       error
-	silent    bool
+	model            model.HomeModel
+	hydrated         *client.SessionV3Hydrated
+	sessionSnapshot  *client.SessionV3SyncSnapshot
+	sessionQuery     string
+	sessionOpenRoute string
+	sessionID        string
+	err              error
+	silent           bool
 }
 
 type gitStatusRefreshResult struct {
@@ -1818,6 +1821,28 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 			return false
 		}
 	}
+	if keybinds.Match(ev, ui.KeybindHomeOpenSessions) {
+		if a.route == "home" && a.home != nil {
+			if a.home.SessionsModalVisible() {
+				a.home.HideSessionsModal()
+				a.home.SetStatus("session manager closed")
+				return true
+			}
+			if a.home.AuthModalVisible() ||
+				a.home.VaultModalVisible() ||
+				a.home.WorkspaceModalVisible() ||
+				a.home.WorktreesModalVisible() ||
+				a.home.ModelsModalVisible() ||
+				a.home.AgentsModalVisible() ||
+				a.home.VoiceModalVisible() ||
+				a.home.ThemeModalVisible() ||
+				a.home.KeybindsModalVisible() {
+				return true
+			}
+			a.openHomeSessionsModal("")
+			return true
+		}
+	}
 	if keybinds.Match(ev, ui.KeybindGlobalWorkspaceSelect) {
 		if a.workspaceCycleHotkeyBlocked() {
 			return true
@@ -2147,7 +2172,7 @@ func (a *App) executeCommand(raw string) {
 func (a *App) showHelp() {
 	keybinds := a.activeKeyBindings()
 	lines := []string{
-		"/sessions   (open recent sessions modal)",
+		fmt.Sprintf("/sessions   (open session manager; shortcut %s)", keybinds.Label(ui.KeybindHomeOpenSessions)),
 		"/new   (create and open a new session)",
 		"/home   (return to home from chat)",
 		"/plan exit [title]   (open plan-exit approval modal in chat)",
@@ -3460,6 +3485,52 @@ func chatTitleFromPrompt(prompt string) string {
 	return trimmed
 }
 
+func sessionSummaryActive(summary model.SessionSummary) bool {
+	if summary.PendingPermissionCount > 0 {
+		return true
+	}
+	if summary.ActiveRunIntent != nil {
+		status := strings.ToLower(strings.TrimSpace(summary.ActiveRunIntent.Status))
+		if strings.TrimSpace(summary.ActiveRunIntent.RunID) != "" && (status == "pending_executor" || status == "running") {
+			return true
+		}
+	}
+	return summary.Lifecycle != nil && summary.Lifecycle.Active
+}
+
+func sessionSummaryActiveStartedAt(summary model.SessionSummary) int64 {
+	if summary.ActiveRunIntent != nil {
+		if summary.ActiveRunIntent.StartedAt > 0 {
+			return summary.ActiveRunIntent.StartedAt
+		}
+		if summary.ActiveRunIntent.CreatedAt > 0 {
+			return summary.ActiveRunIntent.CreatedAt
+		}
+	}
+	if summary.Lifecycle != nil && summary.Lifecycle.StartedAt > 0 {
+		return summary.Lifecycle.StartedAt
+	}
+	if summary.CreatedAt > 0 {
+		return summary.CreatedAt
+	}
+	return summary.UpdatedAt
+}
+
+func sessionSummaryActivityLabel(summary model.SessionSummary) string {
+	if summary.PendingPermissionCount > 0 {
+		return "NEEDS APPROVAL"
+	}
+	if sessionSummaryActive(summary) {
+		if summary.Lifecycle != nil {
+			if phase := strings.TrimSpace(summary.Lifecycle.Phase); phase != "" {
+				return strings.ToUpper(strings.ReplaceAll(phase, "_", " "))
+			}
+		}
+		return "ACTIVE"
+	}
+	return ""
+}
+
 func chatSessionTabsFromSummaries(summaries []model.SessionSummary) []ui.ChatSessionTab {
 	tabs := make([]ui.ChatSessionTab, 0, len(summaries))
 	seen := make(map[string]struct{}, len(summaries))
@@ -3484,7 +3555,13 @@ func chatSessionTabsFromSummaries(summaries []model.SessionSummary) []ui.ChatSes
 			WorkspaceName:   strings.TrimSpace(summary.WorkspaceName),
 			WorkspacePath:   strings.TrimSpace(summary.WorkspacePath),
 			Mode:            strings.TrimSpace(summary.Mode),
+			CreatedAt:       summary.CreatedAt,
+			UpdatedAt:       summary.UpdatedAt,
+			ActiveStartedAt: sessionSummaryActiveStartedAt(summary),
 			UpdatedAgo:      strings.TrimSpace(summary.UpdatedAgo),
+			Active:          sessionSummaryActive(summary),
+			NeedsAttention:  summary.PendingPermissionCount > 0,
+			ActivityLabel:   sessionSummaryActivityLabel(summary),
 			Provider:        strings.TrimSpace(summary.Preference.Provider),
 			ModelName:       strings.TrimSpace(summary.Preference.Model),
 			ServiceTier:     strings.TrimSpace(summary.Preference.ServiceTier),
@@ -3539,7 +3616,13 @@ func summariesBackgroundTabs(summaries []model.SessionSummary) []ui.ChatSessionT
 			WorkspaceName:   strings.TrimSpace(summary.WorkspaceName),
 			WorkspacePath:   strings.TrimSpace(summary.WorkspacePath),
 			Mode:            mode,
+			CreatedAt:       summary.CreatedAt,
+			UpdatedAt:       summary.UpdatedAt,
+			ActiveStartedAt: sessionSummaryActiveStartedAt(summary),
 			UpdatedAgo:      strings.TrimSpace(summary.UpdatedAgo),
+			Active:          sessionSummaryActive(summary),
+			NeedsAttention:  summary.PendingPermissionCount > 0,
+			ActivityLabel:   sessionSummaryActivityLabel(summary),
 			Provider:        strings.TrimSpace(summary.Preference.Provider),
 			ModelName:       strings.TrimSpace(summary.Preference.Model),
 			ServiceTier:     strings.TrimSpace(summary.Preference.ServiceTier),
@@ -4330,6 +4413,12 @@ func mergeHomeSessionSummary(current, incoming model.SessionSummary) model.Sessi
 	if value := strings.TrimSpace(incoming.WorktreeBranch); value != "" || !merged.WorktreeEnabled {
 		merged.WorktreeBranch = value
 	}
+	if incoming.CreatedAt > 0 {
+		merged.CreatedAt = incoming.CreatedAt
+	}
+	if incoming.UpdatedAt > 0 {
+		merged.UpdatedAt = incoming.UpdatedAt
+	}
 	if value := strings.TrimSpace(incoming.UpdatedAgo); value != "" {
 		merged.UpdatedAgo = value
 	}
@@ -4373,6 +4462,8 @@ func modelSessionSummaryFromClient(record client.SessionSummary) model.SessionSu
 		WorktreeRootPath:           strings.TrimSpace(record.WorktreeRootPath),
 		WorktreeBaseBranch:         strings.TrimSpace(record.WorktreeBaseBranch),
 		WorktreeBranch:             strings.TrimSpace(record.WorktreeBranch),
+		CreatedAt:                  record.CreatedAt,
+		UpdatedAt:                  record.UpdatedAt,
 		UpdatedAgo:                 formatAgo(record.UpdatedAt),
 		SessionAPI:                 strings.TrimSpace(record.SessionAPI),
 		LastEventSeq:               record.LastEventSeq,
@@ -4653,7 +4744,13 @@ func chatSessionPaletteItemsFromTabs(tabs []ui.ChatSessionTab) []ui.ChatSessionP
 			WorkspaceName:   strings.TrimSpace(tab.WorkspaceName),
 			WorkspacePath:   strings.TrimSpace(tab.WorkspacePath),
 			Mode:            strings.TrimSpace(tab.Mode),
+			CreatedAt:       tab.CreatedAt,
+			UpdatedAt:       tab.UpdatedAt,
+			ActiveStartedAt: tab.ActiveStartedAt,
 			UpdatedAgo:      strings.TrimSpace(tab.UpdatedAgo),
+			Active:          tab.Active,
+			NeedsAttention:  tab.NeedsAttention,
+			ActivityLabel:   strings.TrimSpace(tab.ActivityLabel),
 			Provider:        strings.TrimSpace(tab.Provider),
 			ModelName:       strings.TrimSpace(tab.ModelName),
 			ServiceTier:     strings.TrimSpace(tab.ServiceTier),
@@ -4672,66 +4769,168 @@ func chatSessionPaletteItemsFromTabs(tabs []ui.ChatSessionTab) []ui.ChatSessionP
 	return items
 }
 
+func modelSessionSummariesFromV3SyncSnapshot(snapshot client.SessionV3SyncSnapshot) []model.SessionSummary {
+	ordered := make([]model.SessionSummary, 0, len(snapshot.SessionsByID))
+	seen := make(map[string]struct{}, len(snapshot.SessionsByID))
+	activeIDs := make(map[string]struct{}, len(snapshot.ActiveSessionIDs))
+	for _, id := range snapshot.ActiveSessionIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			activeIDs[id] = struct{}{}
+		}
+	}
+	appendSession := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		session, ok := snapshot.SessionsByID[id]
+		if !ok {
+			return
+		}
+		seen[id] = struct{}{}
+		if projection, ok := snapshot.ProjectionsBySession[id]; ok {
+			session.SessionAPI = "v3"
+			session.LastEventSeq = projection.LastEventSeq
+			session.ProjectionHighWatermarkSeq = projection.ProjectionHighWatermarkSeq
+		}
+		summary := modelSessionSummaryFromClient(session)
+		if permission, ok := snapshot.PermissionSummariesBySession[id]; ok {
+			summary.PendingPermissionCount = permission.PendingApprovalCount
+		}
+		if runState, ok := snapshot.CurrentRunStateBySession[id]; ok {
+			intent := client.SessionV3RunIntent{
+				SessionID:     id,
+				RunID:         strings.TrimSpace(runState.RunID),
+				Status:        strings.TrimSpace(runState.Status),
+				BlockedReason: strings.TrimSpace(runState.BlockedReason),
+				CreatedAt:     runState.CreatedAt,
+				StartedAt:     runState.StartedAt,
+				CompletedAt:   runState.CompletedAt,
+				DurationMS:    runState.DurationMS,
+				UpdatedAt:     runState.UpdatedAt,
+				EventSeq:      runState.EventSeq,
+			}
+			summary.ActiveRunIntent = &intent
+			summary.Lifecycle = &client.SessionLifecycleSnapshot{
+				SessionID: id,
+				RunID:     intent.RunID,
+				Active:    runState.Active,
+				Phase:     intent.Status,
+				StartedAt: intent.StartedAt,
+				EndedAt:   intent.CompletedAt,
+				UpdatedAt: intent.UpdatedAt,
+				Error:     intent.BlockedReason,
+			}
+		} else if _, active := activeIDs[id]; active {
+			summary.Lifecycle = &client.SessionLifecycleSnapshot{SessionID: id, Active: true, Phase: "active", UpdatedAt: summary.UpdatedAt}
+		}
+		ordered = append(ordered, summary)
+	}
+	for _, id := range snapshot.SessionOrder {
+		appendSession(id)
+	}
+	if len(seen) < len(snapshot.SessionsByID) {
+		ids := make([]string, 0, len(snapshot.SessionsByID)-len(seen))
+		for id := range snapshot.SessionsByID {
+			if _, ok := seen[id]; !ok {
+				ids = append(ids, id)
+			}
+		}
+		sort.SliceStable(ids, func(i, j int) bool {
+			left, right := snapshot.SessionsByID[ids[i]], snapshot.SessionsByID[ids[j]]
+			if left.UpdatedAt != right.UpdatedAt {
+				return left.UpdatedAt > right.UpdatedAt
+			}
+			return ids[i] < ids[j]
+		})
+		for _, id := range ids {
+			appendSession(id)
+		}
+	}
+	return applySessionDepths(ordered)
+}
+
+func (a *App) queueSessionManagerOpen(query, openRoute string) error {
+	if a == nil || a.api == nil {
+		return errors.New("api is unavailable")
+	}
+	if !a.reloading.CompareAndSwap(false, true) {
+		return errors.New("session data is already loading")
+	}
+	query = strings.TrimSpace(query)
+	openRoute = strings.TrimSpace(openRoute)
+	if a.home != nil {
+		a.home.SetStatus("loading V3 sessions...")
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		snapshot, err := a.api.GetSessionV3SyncBootstrap(ctx, client.SessionV3SyncBootstrapRequest{
+			Surface: "tui",
+			Selector: client.SessionV3SyncSelector{
+				Kind:      "recent",
+				Global:    true,
+				Recent:    client.SessionV3WorksetRecent{Limit: workspaceOverviewDesktopSessionLimit},
+				Attention: client.SessionV3SyncAttention{PendingPermissions: true},
+			},
+			History: client.SessionV3WorksetHistory{Mode: "none"},
+			Resources: client.SessionV3SyncResources{
+				CurrentRunState:     true,
+				PermissionSummaries: true,
+			},
+			IncludeActive: true,
+		})
+		result := homeReloadResult{sessionQuery: query, sessionOpenRoute: openRoute, err: err}
+		if err == nil {
+			result.sessionSnapshot = &snapshot
+		}
+		select {
+		case a.reloadCh <- result:
+		default:
+		}
+		if a.screen != nil {
+			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptReloadReady))
+		}
+	}()
+	return nil
+}
+
+func (a *App) openLoadedHomeSessionsModal(query string) {
+	items := chatSessionPaletteItemsFromTabs(chatSessionTabsFromSummaries(a.homeModel.RecentSessions))
+	if !a.home.OpenSessionsModal(items, strings.TrimSpace(query)) {
+		a.home.SetStatus("session manager unavailable while another modal is open")
+		return
+	}
+	a.home.SetStatus("session manager")
+}
+
 func (a *App) openHomeSessionsModal(query string) {
 	a.home.ClearCommandOverlay()
-	if a.api == nil {
-		a.home.SetStatus("sessions modal failed: api unavailable")
+	if err := a.queueSessionManagerOpen(query, "home"); err != nil {
+		a.home.SetStatus(fmt.Sprintf("/sessions failed: %v", err))
+	}
+}
+
+func (a *App) openLoadedChatSessionsPalette(query string) {
+	if a.chat == nil {
 		return
 	}
-	workspacePath := strings.TrimSpace(a.activeContextPath())
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.startupCWD)
-	}
-	if workspacePath == "" {
-		a.home.SetStatus("sessions modal failed: workspace path is required")
+	a.chat.SetSessionTabs(chatSessionTabsFromSummaries(a.homeModel.RecentSessions))
+	if !a.chat.OpenSessionsPalette(a.chat.SessionPaletteItems(), strings.TrimSpace(query)) {
+		a.home.SetStatus("sessions palette unavailable while another modal is open")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	sessions, err := a.listSessionsForActiveContext(ctx, workspaceOverviewDesktopSessionLimit, workspacePath)
-	if err != nil {
-		a.home.SetStatus(fmt.Sprintf("sessions modal failed: %v", err))
-		return
-	}
-	items := chatSessionPaletteItemsFromTabs(scopedSessionTabsForPath(workspacePath, a.homeModel.RecentSessions, sessions))
-	if !a.home.OpenSessionsModal(items, strings.TrimSpace(query)) {
-		a.home.SetStatus("sessions modal unavailable while another modal is open")
-		return
-	}
-	a.home.SetStatus("sessions modal")
+	a.home.SetStatus("sessions palette")
 }
 
 func (a *App) openChatSessionsPalette(query string) error {
 	if a.chat == nil {
 		return errors.New("chat is unavailable")
 	}
-	if a.api == nil {
-		return errors.New("api is unavailable")
-	}
-	workspacePath := strings.TrimSpace(a.activeContextPath())
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.startupCWD)
-	}
-	if workspacePath == "" {
-		return errors.New("workspace path is required")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	sessions, err := a.listSessionsForActiveContext(ctx, workspaceOverviewDesktopSessionLimit, workspacePath)
-	if err != nil {
-		return err
-	}
-	tabs := scopedSessionTabsForPath(workspacePath, a.homeModel.RecentSessions, sessions)
-	a.chat.SetSessionTabs(tabs)
-	if query == "" {
-		query = strings.TrimSpace(a.chat.SessionID())
-	}
-	if !a.chat.OpenSessionsPalette(a.chat.SessionPaletteItems(), strings.TrimSpace(query)) {
-		a.home.SetStatus("sessions palette unavailable while another modal is open")
-		return nil
-	}
-	a.home.SetStatus("sessions palette")
-	return nil
+	return a.queueSessionManagerOpen(query, "chat")
 }
 
 func (a *App) consumeChatActions() {
@@ -7394,9 +7593,26 @@ func (a *App) consumeReloadResult() {
 			a.applyTUISessionHydratedReload(*result.hydrated, result.sessionID)
 			return
 		}
+		if result.sessionSnapshot != nil {
+			a.homeModel.RecentSessions = modelSessionSummariesFromV3SyncSnapshot(*result.sessionSnapshot)
+			if a.home != nil {
+				a.home.SetModel(a.homeModel)
+			}
+			switch result.sessionOpenRoute {
+			case "chat":
+				a.openLoadedChatSessionsPalette(result.sessionQuery)
+			default:
+				a.openLoadedHomeSessionsModal(result.sessionQuery)
+			}
+			return
+		}
 		if result.err != nil {
 			if !result.silent {
-				a.home.SetStatus(fmt.Sprintf("reload failed: %v", result.err))
+				if result.sessionOpenRoute != "" {
+					a.home.SetStatus(fmt.Sprintf("sessions load failed: %v", result.err))
+				} else {
+					a.home.SetStatus(fmt.Sprintf("reload failed: %v", result.err))
+				}
 			}
 			return
 		}
