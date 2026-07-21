@@ -3209,7 +3209,7 @@ export function DesktopAppPage() {
         workspaceName: topWorkspaceLabel,
         route,
         prompt: buildReviewWorktreeFixPrompt(failure, topWorkspacePath),
-        title: `Fix integration: ${failure.candidate.title || failure.candidate.worktree_branch || failure.candidate.session_id}`,
+        title: `${failure.operation === 'commit_and_integrate' ? 'Fix commit and integration' : 'Fix integration'}: ${failure.candidate.title || failure.candidate.worktree_branch || failure.candidate.session_id}`,
         mode: 'auto',
         agentName: reviewFixAgent,
         preference: {

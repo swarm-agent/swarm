@@ -91,4 +91,15 @@ describe('review worktrees modal helpers', () => {
     expect(prompt).toContain('Workspace: /workspace')
     expect(prompt).toContain('CONFLICT in app.tsx')
   })
+
+  it('tells Swarm to recover either side of a combined commit-and-integration failure', () => {
+    const item = candidate({ session_id: 'failed-session', title: 'Failed commit', worktree_branch: 'agent/fix', target_branch: 'dev', worktree_path: '/worktrees/fix' })
+    const failure = { candidate: item, error: 'cherry-pick conflict in app.tsx', operation: 'commit_and_integrate' as const }
+    const prompt = buildReviewWorktreeFixPrompt(failure, '/workspace')
+    expect(prompt).toContain('source commit may or may not have been created')
+    expect(prompt).toContain('create the intended commit if it is still missing')
+    expect(prompt).toContain('do not duplicate a commit that already succeeded')
+    expect(prompt).toContain('cherry-pick conflict in app.tsx')
+    expect(reviewWorktreeIntegrationFailureDisplay(failure.error, false, failure.operation).summary).toContain('Swarm was given the error')
+  })
 })
