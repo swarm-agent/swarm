@@ -7,6 +7,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -47,6 +48,63 @@ func TestParseManageSessionsDeployArgumentsBoundsAndModes(t *testing.T) {
 	}
 	if len(named) != 1 || named[0].WorktreeName != "subagent live cards" {
 		t.Fatalf("worktree name suggestion = %#v", named)
+	}
+}
+
+func TestResolveManageSessionsDeploySwarmSeparatesCompiledIdentityFromModePreferences(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	split := pebblestore.AgentProfile{
+		Name: agentruntime.SwarmAgentID, Mode: agentruntime.ModePrimary, Enabled: true, ModelMode: "split",
+		PlanProvider: "codex", PlanModel: "plan-model", PlanThinking: "high",
+		AutoProvider: "openai", AutoModel: "auto-model", AutoThinking: "medium",
+	}
+	resolution, found, err := svc.resolveManageSessionsDeployAgent(map[string]pebblestore.AgentProfile{agentruntime.SwarmAgentID: split}, agentruntime.SwarmAgentID)
+	if err != nil || !found {
+		t.Fatalf("resolve Swarm: found=%t err=%v", found, err)
+	}
+	identity := resolution.ExecutionProfile
+	if identity.Name != agentruntime.SwarmAgentID || identity.Mode != agentruntime.ModePrimary || identity.RuntimeMode != pebblestore.AgentRuntimeModePlanAuto || identity.Prompt != agentruntime.SwarmAgentPrompt() || identity.ToolContract == nil {
+		t.Fatalf("compiled Swarm identity = %#v", identity)
+	}
+	if identity.Provider != "" || identity.Model != "" || identity.Thinking != "" || identity.ModelMode != "" {
+		t.Fatalf("compiled Swarm identity became model-bearing: %#v", identity)
+	}
+	for _, test := range []struct {
+		name, mode, provider, model, thinking string
+	}{
+		{name: "split auto", mode: sessionruntime.ModeAuto, provider: "openai", model: "auto-model", thinking: "medium"},
+		{name: "split plan", mode: sessionruntime.ModePlan, provider: "codex", model: "plan-model", thinking: "high"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := resolution.preferenceForMode(pebblestore.ModelPreference{}, test.mode)
+			if got.Provider != test.provider || got.Model != test.model || got.Thinking != test.thinking {
+				t.Fatalf("preference = %#v", got)
+			}
+		})
+	}
+
+	single := split
+	single.ModelMode = "single"
+	single.Provider, single.Model, single.Thinking = "anthropic", "single-model", "low"
+	resolution, found, err = svc.resolveManageSessionsDeployAgent(map[string]pebblestore.AgentProfile{agentruntime.SwarmAgentID: single}, agentruntime.SwarmAgentID)
+	if err != nil || !found {
+		t.Fatalf("resolve single-model Swarm: found=%t err=%v", found, err)
+	}
+	for _, mode := range []string{sessionruntime.ModeAuto, sessionruntime.ModePlan} {
+		got := resolution.preferenceForMode(pebblestore.ModelPreference{}, mode)
+		if got.Provider != "anthropic" || got.Model != "single-model" || got.Thinking != "low" {
+			t.Fatalf("single %s preference = %#v", mode, got)
+		}
+	}
+
+	otherPrimary := pebblestore.AgentProfile{Name: "other-primary", Mode: agentruntime.ModePrimary, Enabled: true}
+	if err := validateManageSessionsDeployAgent(otherPrimary, identity, true); err != nil {
+		t.Fatalf("authorized explicit Swarm target rejected: %v", err)
+	}
+	if err := validateManageSessionsDeployAgent(otherPrimary, identity, false); err == nil || !strings.Contains(err.Error(), "requires calling primary") {
+		t.Fatalf("ordinary alternate-agent gating changed: %v", err)
 	}
 }
 

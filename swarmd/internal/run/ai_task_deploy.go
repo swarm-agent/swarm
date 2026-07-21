@@ -59,13 +59,17 @@ func ParseAITaskPreparation(raw string) (AITaskPreparation, error) {
 // ExecutePreparedAITask creates and starts the managed session through the
 // canonical V3 deployment contract. V2 supplies the final preparation directly;
 // there is no hidden provider/preparer run before the visible session exists.
-func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, userID, accountScopeID, workspacePath, taskID, originalRequest string, preparation AITaskPreparation, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
+func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, userID, accountScopeID, workspacePath, taskID, originalRequest, mode string, preparation AITaskPreparation, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
 	if s == nil || s.aiTaskBinder == nil {
 		return "", fmt.Errorf("AI task binder is not configured")
 	}
 	workspacePath, taskID = strings.TrimSpace(workspacePath), strings.TrimSpace(taskID)
+	mode = strings.ToLower(strings.TrimSpace(mode))
 	if workspacePath == "" || taskID == "" || strings.TrimSpace(originalRequest) == "" {
 		return "", fmt.Errorf("AI task workspace, id, and original request are required")
+	}
+	if mode != sessionruntime.ModePlan && mode != sessionruntime.ModeAuto {
+		return "", fmt.Errorf("AI task mode must be plan or auto")
 	}
 	if _, err := ParseAITaskPreparation(marshalAITaskPreparation(preparation)); err != nil {
 		return "", err
@@ -73,7 +77,7 @@ func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, us
 	// Queued AI tasks always deploy through the managed-worktree branch of the
 	// canonical session deploy path. The manifest builder resolves the user's
 	// worktree base branch and branch family for both plan and auto modes.
-	arguments, _ := json.Marshal(map[string]any{"action": "deploy", "proposals": []map[string]any{{"title": preparation.Title, "prompt": originalRequest, "mode": sessionruntime.ModeAuto, "agent": agentruntime.SwarmAgentID, "workspace_path": workspacePath, "worktree": true, "worktree_name": preparation.WorktreeName}}})
+	arguments, _ := json.Marshal(map[string]any{"action": "deploy", "proposals": []map[string]any{{"title": preparation.Title, "prompt": originalRequest, "mode": mode, "agent": agentruntime.SwarmAgentID, "workspace_path": workspacePath, "worktree": true, "worktree_name": preparation.WorktreeName}}})
 	call := tool.Call{Name: "manage_sessions", Arguments: string(arguments)}
 	aiTaskBinding := &AITaskDeployBinding{UserID: userID, AccountScopeID: accountScopeID, WorkspacePath: workspacePath, TaskID: taskID, PreparationSessionID: parentSessionID}
 	manifest, err := s.buildManageSessionsDeployManifestBound(parentSessionID, call, aiTaskBinding)

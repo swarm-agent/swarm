@@ -54,7 +54,7 @@ func (s *recordingAITaskV2Store) TransitionAITaskV2(input AITaskV2Transition) (p
 func completeAITaskV2Fixture(id string) pebblestore.WorkspaceTodoItem {
 	return pebblestore.WorkspaceTodoItem{
 		ID: id, AccountScopeID: "account", UserID: "user", WorkspaceID: "workspace-id",
-		WorkspacePath: "/workspace", AIRequest: "do the work", AIState: pebblestore.WorkspaceTodoAIStateQueued,
+		WorkspacePath: "/workspace", AIRequest: "do the work", AIState: pebblestore.WorkspaceTodoAIStateQueued, AIMode: sessionruntime.ModeAuto,
 		CreatedAt: time.Now().UnixMilli(), AIStateVersion: 1,
 	}
 }

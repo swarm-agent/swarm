@@ -46,7 +46,7 @@ import { createDesktopV3CreateOnlySessionOperation, createDesktopV3NewSessionOpe
 import { DesktopPlanModal, type DesktopPlanRecoveryInput } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
-import type { DesktopSlashCommand } from '../chat/services/slash-commands'
+import { parseDesktopTaskCommand, type DesktopSlashCommand } from '../chat/services/slash-commands'
 import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, startDesktopUpdate, type DesktopUpdateJob } from '../update/api'
@@ -3829,7 +3829,7 @@ export function DesktopAppPage() {
         return
       }
       case 'queue-ai-task': {
-        const request = draft.trimStart().replace(/^\/task(?:\s+|$)/i, '').trim()
+        const { request, mode } = parseDesktopTaskCommand(draft)
         if (!request) {
           const error = new Error('Enter a task request after /task.')
           setDesktopToast({ message: error.message, tone: 'error' })
@@ -3843,7 +3843,7 @@ export function DesktopAppPage() {
         }
         const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `task-${Date.now()}-${Math.random().toString(36).slice(2)}`
         try {
-          const result = await createWorkspaceAITask(workspacePath, request, idempotencyKey, routeSessionId ?? undefined)
+          const result = await createWorkspaceAITask(workspacePath, request, idempotencyKey, mode, routeSessionId ?? undefined)
           dispatchDesktopV3Cache({ type: 'aiTasks.mergeItems', items: [result.item] })
           setTodoItems((current) => ({ ...current, [workspacePath]: upsertWorkspaceTodoItem(current[workspacePath] ?? [], result.item) }))
           setTodoSummaries((current) => ({ ...current, [workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
@@ -4261,7 +4261,7 @@ export function DesktopAppPage() {
     setBackgroundTaskError(null)
     const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `task-${Date.now()}-${Math.random().toString(36).slice(2)}`
     try {
-      const result = await createWorkspaceAITask(workspacePath, request, idempotencyKey)
+      const result = await createWorkspaceAITask(workspacePath, request, idempotencyKey, 'auto')
       dispatchDesktopV3Cache({ type: 'aiTasks.mergeItems', items: [result.item] })
       setTodoItems((current) => ({ ...current, [workspacePath]: upsertWorkspaceTodoItem(current[workspacePath] ?? [], result.item) }))
       setTodoSummaries((current) => ({ ...current, [workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))

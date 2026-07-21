@@ -1,4 +1,4 @@
-import { getDesktopSlashCommands, buildDesktopSlashPaletteState } from './slash-commands'
+import { getDesktopSlashCommands, buildDesktopSlashPaletteState, parseDesktopTaskCommand } from './slash-commands'
 import type { DesktopSlashCommandAction } from './slash-commands'
 
 function assert(condition: boolean, message: string): void {
@@ -60,6 +60,20 @@ function testTaskCommandAcceptsFullArguments(): void {
   assert(palette.hasArguments === true, 'expected /task request to be recognized as arguments')
 }
 
+function testTaskCommandParsesModeDirective(): void {
+  const automatic = parseDesktopTaskCommand('/task fix the sidebar plan later')
+  assert(automatic.mode === 'auto', 'expected ordinary /task to default to auto')
+  assert(automatic.request === 'fix the sidebar plan later', 'expected ordinary /task text to be preserved')
+
+  const planned = parseDesktopTaskCommand('  /TASK   plan   fix the sidebar\nwithout rewriting this ')
+  assert(planned.mode === 'plan', 'expected first plan token to select plan mode')
+  assert(planned.request === 'fix the sidebar\nwithout rewriting this', 'expected plan directive to be removed from the request')
+
+  const planWordLater = parseDesktopTaskCommand('/task fix plan handling')
+  assert(planWordLater.mode === 'auto', 'expected plan outside the first token to remain request text')
+  assert(planWordLater.request === 'fix plan handling', 'expected later plan text to remain intact')
+}
+
 function testKeybindingsWarnsAboutDesktopShortcuts(): void {
   const keybindings = getDesktopSlashCommands().find((command) => command.id === 'keybindings')
   assert(Boolean(keybindings), 'expected /keybindings command to exist')
@@ -76,6 +90,7 @@ function main(): void {
   testFastCommandIsReady()
   testMCPCommandIsDeferredAndExaRequiresAPIKey()
   testTaskCommandAcceptsFullArguments()
+  testTaskCommandParsesModeDirective()
   testKeybindingsWarnsAboutDesktopShortcuts()
   console.log('slash-commands tests passed')
 }

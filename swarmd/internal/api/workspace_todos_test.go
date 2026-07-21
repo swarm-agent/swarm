@@ -30,32 +30,40 @@ func TestWorkspaceTodosRestoresScopedRetrievalAndIdempotentDirectEnqueue(t *test
 	queue := &recordingAITaskEnqueuer{}
 	server.SetAITaskEnqueuer(queue)
 
-	body := func(origin string) *bytes.Reader {
-		raw, err := json.Marshal(map[string]any{"action": "ai_task", "workspace_path": workspacePath, "owner_kind": "user", "text": "repair task API", "origin_session_id": origin})
+	body := func(origin, mode string) *bytes.Reader {
+		raw, err := json.Marshal(map[string]any{"action": "ai_task", "workspace_path": workspacePath, "owner_kind": "user", "text": "repair task API", "origin_session_id": origin, "mode": mode})
 		if err != nil {
 			t.Fatalf("marshal request: %v", err)
 		}
 		return bytes.NewReader(raw)
 	}
-	submit := func(origin string) *httptest.ResponseRecorder {
+	submit := func(origin, mode, key string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
-		request := withTestPrincipal(httptest.NewRequest(http.MethodPost, "/v1/workspace/todos", body(origin)))
+		request := withTestPrincipal(httptest.NewRequest(http.MethodPost, "/v1/workspace/todos", body(origin, mode)))
 		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("Idempotency-Key", "stable-task-key")
+		request.Header.Set("Idempotency-Key", key)
 		server.Handler().ServeHTTP(recorder, request)
 		return recorder
 	}
 
-	first := submit("")
+	first := submit("", "", "stable-task-key")
 	if first.Code != http.StatusAccepted {
 		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
 	}
-	second := submit("")
+	second := submit("", "auto", "stable-task-key")
 	if second.Code != http.StatusAccepted {
 		t.Fatalf("replay status=%d body=%s", second.Code, second.Body.String())
 	}
-	if len(queue.items) != 1 {
-		t.Fatalf("enqueued jobs=%d, want 1", len(queue.items))
+	if len(queue.items) != 1 || queue.items[0].AIMode != "auto" {
+		t.Fatalf("enqueued jobs=%#v, want one auto task", queue.items)
+	}
+	plan := submit("", "plan", "plan-task-key")
+	if plan.Code != http.StatusAccepted || len(queue.items) != 2 || queue.items[1].AIMode != "plan" {
+		t.Fatalf("plan acceptance status=%d queue=%#v body=%s", plan.Code, queue.items, plan.Body.String())
+	}
+	invalid := submit("", "manual", "invalid-mode-key")
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid mode status=%d body=%s", invalid.Code, invalid.Body.String())
 	}
 
 	list := httptest.NewRecorder()
@@ -70,7 +78,7 @@ func TestWorkspaceTodosRestoresScopedRetrievalAndIdempotentDirectEnqueue(t *test
 	if err := json.Unmarshal(list.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
-	if len(response.Items) != 1 || response.Items[0].ID != queue.items[0].ID {
+	if len(response.Items) != 2 || response.Items[0].ID != queue.items[0].ID || response.Items[1].ID != queue.items[1].ID {
 		t.Fatalf("listed items=%#v", response.Items)
 	}
 }

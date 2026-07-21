@@ -127,16 +127,12 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 		profiles[strings.ToLower(strings.TrimSpace(profile.Name))] = profile
 	}
 	activeName := strings.TrimSpace(profilesState.ActivePrimary)
-	active, activeFound := profiles[strings.ToLower(activeName)]
-	if strings.EqualFold(activeName, agentruntime.SwarmAgentID) {
-		active, err = s.agents.ResolveSystemAgent(agentruntime.SwarmAgentID, active)
-		if err != nil {
-			return "", fmt.Errorf("resolve active primary system agent: %w", err)
-		}
-		activeFound = true
-		profiles[strings.ToLower(active.Name)] = active
+	activeResolution, activeFound, err := s.resolveManageSessionsDeployAgent(profiles, activeName)
+	if err != nil {
+		return "", fmt.Errorf("resolve active primary agent: %w", err)
 	}
-	if !activeFound || !active.Enabled || active.Mode != "primary" {
+	active := activeResolution.ExecutionProfile
+	if !activeFound || !active.Enabled || active.Mode != agentruntime.ModePrimary {
 		return "", errors.New("active primary agent is missing, disabled, or invalid")
 	}
 	caller, callerErr := sessionV3AgentProfileFromMetadataMap(parent.Metadata)
@@ -150,18 +146,30 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 	canDelegate := callerContract.Tools["task"].Enabled
 	for i := range approved.Proposals {
 		proposal := approved.Proposals[i]
-		profile, found := profiles[strings.ToLower(strings.TrimSpace(proposal.AgentName))]
-		if !found || !profile.Enabled || (profile.Mode != "primary" && profile.Mode != "subagent") {
+		targetName := proposal.AgentName
+		if aiTask != nil {
+			targetName = agentruntime.SwarmAgentID
+		}
+		resolution, found, agentErr := s.resolveManageSessionsDeployAgent(profiles, targetName)
+		if agentErr != nil {
+			return "", fmt.Errorf("proposal %q agent resolution: %w", proposal.ID, agentErr)
+		}
+		profile := resolution.ExecutionProfile
+		if !found || !profile.Enabled || (profile.Mode != agentruntime.ModePrimary && profile.Mode != agentruntime.ModeSubagent) {
 			return "", fmt.Errorf("proposal %q agent binding is no longer valid", proposal.ID)
 		}
-		if !strings.EqualFold(profile.Name, active.Name) && !canDelegate {
-			return "", fmt.Errorf("proposal %q alternate agent requires calling primary task/delegation capability", proposal.ID)
+		if aiTask == nil {
+			if err := validateManageSessionsDeployAgent(active, profile, canDelegate); err != nil {
+				return "", fmt.Errorf("proposal %q: %w", proposal.ID, err)
+			}
+		} else if profile.Mode != agentruntime.ModePrimary || !strings.EqualFold(profile.Name, agentruntime.SwarmAgentID) {
+			return "", fmt.Errorf("proposal %q queued AI task requires primary Swarm", proposal.ID)
 		}
 		executionMode, _, resolveErr := s.resolveExecutionMode(proposal.Mode, profile)
 		if resolveErr != nil {
 			return "", fmt.Errorf("proposal %q execution mode: %w", proposal.ID, resolveErr)
 		}
-		preference := applyAgentPreferenceOverridesForMode(parent.Preference, profile, proposal.Mode)
+		preference := resolution.preferenceForMode(parent.Preference, proposal.Mode)
 		scope, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, proposal.WorkspacePath)
 		if scopeErr != nil || !scope.Matched || scope.WorkspaceID != proposal.WorkspaceID || scope.WorkspaceGeneration != proposal.WorkspaceGeneration {
 			return "", fmt.Errorf("proposal %q workspace binding is no longer valid", proposal.ID)
@@ -201,7 +209,11 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 	}
 	ready := make([]prepared, 0, len(proposals))
 	for _, proposal := range proposals {
-		profile, found := profiles[strings.ToLower(strings.TrimSpace(proposal.AgentName))]
+		resolution, found, agentErr := s.resolveManageSessionsDeployAgent(profiles, proposal.AgentName)
+		if agentErr != nil {
+			return "", fmt.Errorf("proposal %q agent resolution: %w", proposal.ID, agentErr)
+		}
+		profile := resolution.ExecutionProfile
 		if !found || !profile.Enabled || profile.Mode != proposal.AgentMode {
 			return "", fmt.Errorf("proposal %q agent binding is no longer valid", proposal.ID)
 		}

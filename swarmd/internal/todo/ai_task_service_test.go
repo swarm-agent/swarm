@@ -19,7 +19,7 @@ func TestAITaskV2AcceptanceAtomicallyCreatesDurableRecoveryRecord(t *testing.T) 
 	svc := NewService(store, nil, nil, nil)
 	workspace := t.TempDir()
 
-	item, _, _, err := svc.CreateAITask(CreateAITaskInput{AccountScopeID: "account-v2", UserID: "user-v2", WorkspaceID: "workspace-v2", WorkspacePath: workspace, Request: "durably queue this", IdempotencyKey: "key-v2"})
+	item, _, _, err := svc.CreateAITask(CreateAITaskInput{AccountScopeID: "account-v2", UserID: "user-v2", WorkspaceID: "workspace-v2", WorkspacePath: workspace, Request: "durably queue this", Mode: "plan", IdempotencyKey: "key-v2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestAITaskV2AcceptanceAtomicallyCreatesDurableRecoveryRecord(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recovery) != 1 || recovery[0].Task.ID != item.ID || recovery[0].Task.AIState != pebblestore.WorkspaceTodoAIStateQueued {
+	if len(recovery) != 1 || recovery[0].Task.ID != item.ID || recovery[0].Task.AIState != pebblestore.WorkspaceTodoAIStateQueued || recovery[0].Task.AIMode != "plan" {
 		t.Fatalf("recovery records=%#v", recovery)
 	}
 	preparing, err := svc.TransitionAITaskAuthority(AITaskTransitionInput{AccountScopeID: item.AccountScopeID, WorkspacePath: workspace, ID: item.ID, ExpectedState: item.AIState, ExpectedVersion: item.AIStateVersion, State: pebblestore.WorkspaceTodoAIStatePreparing})
@@ -35,7 +35,7 @@ func TestAITaskV2AcceptanceAtomicallyCreatesDurableRecoveryRecord(t *testing.T) 
 		t.Fatal(err)
 	}
 	recovery, err = store.LoadAITaskV2RecoveryQueue(10)
-	if err != nil || len(recovery) != 1 || recovery[0].Task.AIState != pebblestore.WorkspaceTodoAIStatePreparing || recovery[0].Task.AIStateVersion != preparing.AIStateVersion {
+	if err != nil || len(recovery) != 1 || recovery[0].Task.AIState != pebblestore.WorkspaceTodoAIStatePreparing || recovery[0].Task.AIStateVersion != preparing.AIStateVersion || recovery[0].Task.AIMode != "plan" {
 		t.Fatalf("preparing recovery=%#v err=%v", recovery, err)
 	}
 	if _, err := svc.BindAITaskLifecycle(item.AccountScopeID, workspace, item.ID, preparing.AIState, pebblestore.WorkspaceTodoAIStateInProgress, "auto", true, "session-v2", "Task", "run-v2", "", ""); err != nil {
@@ -163,7 +163,7 @@ func TestAITaskAuthorityIsAccountScopedIdempotentAndMergeSafe(t *testing.T) {
 	svc := NewService(store, nil, nil, nil)
 	const workspace = "/shared/workspace"
 	create := func(account, request, key string) (TodoItem, error) {
-		item, _, _, err := svc.CreateAITask(CreateAITaskInput{AccountScopeID: account, UserID: "user-" + account, WorkspaceID: "workspace-1", WorkspacePath: workspace, OriginSessionID: "origin-1", Request: request, IdempotencyKey: key})
+		item, _, _, err := svc.CreateAITask(CreateAITaskInput{AccountScopeID: account, UserID: "user-" + account, WorkspaceID: "workspace-1", WorkspacePath: workspace, OriginSessionID: "origin-1", Request: request, Mode: "auto", IdempotencyKey: key})
 		return item, err
 	}
 
@@ -213,6 +213,12 @@ func TestAITaskAuthorityIsAccountScopedIdempotentAndMergeSafe(t *testing.T) {
 	}
 	if _, err := create("account-a", "different request", "stable-key"); err == nil || !strings.Contains(err.Error(), "conflicts") {
 		t.Fatalf("conflicting key error = %v", err)
+	}
+	if _, _, _, err := svc.CreateAITask(CreateAITaskInput{AccountScopeID: "account-a", UserID: "user-account-a", WorkspaceID: "workspace-1", WorkspacePath: workspace, OriginSessionID: "origin-1", Request: "repair queue", Mode: "plan", IdempotencyKey: "stable-key"}); err == nil || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("conflicting mode error = %v", err)
+	}
+	if _, _, _, err := svc.CreateAITask(CreateAITaskInput{AccountScopeID: "account-a", UserID: "user-account-a", WorkspaceID: "workspace-1", WorkspacePath: workspace, Request: "bad mode", Mode: "manual", IdempotencyKey: "invalid-mode"}); err == nil || !strings.Contains(err.Error(), "mode must be plan or auto") {
+		t.Fatalf("invalid mode error = %v", err)
 	}
 
 	priority := "urgent"

@@ -59,6 +59,9 @@ func newAITaskV2Job(item pebblestore.WorkspaceTodoItem, recoveryKey string) (AIT
 	if item.ID == "" || item.AccountScopeID == "" || item.UserID == "" || item.WorkspaceID == "" || item.WorkspacePath == "" || strings.TrimSpace(item.AIRequest) == "" {
 		return AITaskV2Job{}, errors.New("AI task V2 job requires complete trusted task payload")
 	}
+	if item.AIMode != sessionruntime.ModePlan && item.AIMode != sessionruntime.ModeAuto {
+		return AITaskV2Job{}, errors.New("AI task V2 job requires plan or auto mode")
+	}
 	if item.AIState != pebblestore.WorkspaceTodoAIStateQueued && item.AIState != pebblestore.WorkspaceTodoAIStatePreparing {
 		return AITaskV2Job{}, fmt.Errorf("AI task V2 job state %q is not recoverable", item.AIState)
 	}
@@ -312,7 +315,7 @@ func (s *Service) executeAITaskV2(ctx context.Context, store AITaskV2Store, task
 		}
 		prepared, persistErr := store.TransitionAITaskV2(AITaskV2Transition{
 			Item: task, ExpectedState: pebblestore.WorkspaceTodoAIStatePreparing, State: pebblestore.WorkspaceTodoAIStatePreparing,
-			Mode: sessionruntime.ModeAuto, Worktree: true, WorktreeName: preparation.WorktreeName, DisplayTitle: preparation.Title,
+			Mode: task.AIMode, Worktree: true, WorktreeName: preparation.WorktreeName, DisplayTitle: preparation.Title,
 			RetryCount: task.AIRetryCount, Disposition: "v2_metadata_prepared",
 		})
 		if persistErr != nil {
@@ -320,7 +323,7 @@ func (s *Service) executeAITaskV2(ctx context.Context, store AITaskV2Store, task
 		}
 		task = prepared
 	}
-	if _, err := s.ExecutePreparedAITask(ctx, parentID, task.UserID, task.AccountScopeID, task.WorkspacePath, task.ID, task.AIRequest, preparation, apply); err != nil {
+	if _, err := s.ExecutePreparedAITask(ctx, parentID, task.UserID, task.AccountScopeID, task.WorkspacePath, task.ID, task.AIRequest, task.AIMode, preparation, apply); err != nil {
 		return task, err
 	}
 	return task, nil

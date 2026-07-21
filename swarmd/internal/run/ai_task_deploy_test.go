@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -213,19 +214,28 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 		t.Fatalf("restore account agents: %v", err)
 	}
 	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
-		Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "codex", Model: "configured-auto-model", Thinking: "high",
+		Name: "swarm", Mode: agentruntime.ModePrimary, ModelMode: "split",
+		PlanProvider: "codex", PlanModel: "configured-plan-model", PlanThinking: "high",
+		AutoProvider: "openai", AutoModel: "configured-auto-model", AutoThinking: "medium",
 		RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, Enabled: pebblestore.BoolPtr(true),
 	}); err != nil {
 		t.Fatalf("configure account Swarm: %v", err)
 	}
-	if _, _, _, err := svc.agents.ActivatePrimaryForAccount(accountScopeID, "swarm"); err != nil {
-		t.Fatalf("activate account Swarm: %v", err)
+	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
+		Name: "other-primary", Mode: agentruntime.ModePrimary, Provider: "codex", Model: "other-model", Thinking: "low",
+		Prompt: "Other primary.", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
+		ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}, Enabled: pebblestore.BoolPtr(true),
+	}); err != nil {
+		t.Fatalf("configure alternate account primary: %v", err)
+	}
+	if _, _, _, err := svc.agents.ActivatePrimaryForAccount(accountScopeID, "other-primary"); err != nil {
+		t.Fatalf("activate alternate account primary: %v", err)
 	}
 	state, err := svc.agents.ListStateForAccount(accountScopeID, 20)
 	if err != nil {
 		t.Fatalf("list account agents: %v", err)
 	}
-	if state.ActivePrimary != "swarm" {
+	if state.ActivePrimary != "other-primary" {
 		t.Fatalf("active account primary = %q, profiles=%#v", state.ActivePrimary, state.Profiles)
 	}
 	resolvedSwarm, err := svc.agents.ResolveSystemAgent("swarm", pebblestore.AgentProfile{})
@@ -269,7 +279,7 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 		t.Fatalf("open todo event log: %v", err)
 	}
 	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(todoStore), todoEvents, nil, svc.sessions)
-	queued, _, _, err := todoSvc.CreateAITask(todo.CreateAITaskInput{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath, Request: "Fix the queued task", IdempotencyKey: "request-1"})
+	queued, _, _, err := todoSvc.CreateAITask(todo.CreateAITaskInput{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath, Request: "Fix the queued task", Mode: sessionruntime.ModeAuto, IdempotencyKey: "request-1"})
 	if err != nil {
 		t.Fatalf("create queued AI task: %v", err)
 	}
@@ -284,7 +294,9 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 		},
 	}
 	svc.SetWorktreeService(worktrees)
+	var canonicalProfiles []pebblestore.AgentProfile
 	svc.SetSessionDeployCanonicalizer(func(input SessionDeployCanonicalizeInput) (SessionDeployCanonicalization, error) {
+		canonicalProfiles = append(canonicalProfiles, input.AgentProfile)
 		metadata := input.Metadata
 		metadata["swarm_v3_source_workspace_path"] = workspacePath
 		metadata["swarm_v3_source_workspace_name"] = "AI task workspace"
@@ -308,7 +320,7 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 	if err := todoSvc.BindAITask(parent.AccountScopeID, workspacePath, queued.ID, "queued", "preparing", "", false, "", ""); err != nil {
 		t.Fatalf("claim queued AI task: %v", err)
 	}
-	if _, err := svc.ExecutePreparedAITask(context.Background(), "", parent.UserID, parent.AccountScopeID, workspacePath, queued.ID, queued.AIRequest, preparation, svc.sessions.ApplySessionMutation); err != nil {
+	if _, err := svc.ExecutePreparedAITask(context.Background(), "", parent.UserID, parent.AccountScopeID, workspacePath, queued.ID, queued.AIRequest, queued.AIMode, preparation, svc.sessions.ApplySessionMutation); err != nil {
 		t.Fatalf("execute prepared AI task: %v", err)
 	}
 
@@ -329,6 +341,12 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 	if !managed.WorktreeEnabled || managed.WorkspacePath != managedPath || managed.WorktreeBaseBranch != "release" || managed.WorktreeBranch != "feature/fix-queued-task" {
 		t.Fatalf("managed worktree session = %#v", managed)
 	}
+	if managed.Mode != sessionruntime.ModeAuto || managed.Preference.Provider != "openai" || managed.Preference.Model != "configured-auto-model" || managed.Preference.Thinking != "medium" {
+		t.Fatalf("split-auto managed session = %#v", managed)
+	}
+	if len(canonicalProfiles) == 0 || canonicalProfiles[0].Name != agentruntime.SwarmAgentID || canonicalProfiles[0].Mode != agentruntime.ModePrimary || canonicalProfiles[0].Prompt != agentruntime.SwarmAgentPrompt() || canonicalProfiles[0].ToolContract == nil || canonicalProfiles[0].Provider != "" || canonicalProfiles[0].Model != "" {
+		t.Fatalf("AI task execution identity = %#v", canonicalProfiles)
+	}
 	if worktrees.requestedBase != "release" || worktrees.requestedBranch != "feature/fix-queued-task" {
 		t.Fatalf("worktree allocation used base=%q branch=%q", worktrees.requestedBase, worktrees.requestedBranch)
 	}
@@ -343,28 +361,64 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 		t.Fatalf("managed prompt messages=%#v err=%v", messages, err)
 	}
 	firstSessionID := managed.ID
-	if _, err := svc.ExecutePreparedAITask(context.Background(), "", parent.UserID, parent.AccountScopeID, workspacePath, queued.ID, queued.AIRequest, preparation, svc.sessions.ApplySessionMutation); err != nil {
+	if _, err := svc.ExecutePreparedAITask(context.Background(), "", parent.UserID, parent.AccountScopeID, workspacePath, queued.ID, queued.AIRequest, queued.AIMode, preparation, svc.sessions.ApplySessionMutation); err != nil {
 		t.Fatalf("replay prepared AI task: %v", err)
 	}
 	if enqueuedSessionID != firstSessionID {
 		t.Fatalf("replay created a different visible session: first=%q replay=%q", firstSessionID, enqueuedSessionID)
 	}
 
-	linkedOriginTask, _, _, err := todoSvc.CreateAITask(todo.CreateAITaskInput{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath, OriginSessionID: parent.ID, Request: "Fix a linked task", IdempotencyKey: "request-2"})
+	linkedOriginTask, _, _, err := todoSvc.CreateAITask(todo.CreateAITaskInput{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath, OriginSessionID: parent.ID, Request: "Fix a linked task", Mode: sessionruntime.ModePlan, IdempotencyKey: "request-2"})
 	if err != nil {
 		t.Fatalf("create origin-linked AI task: %v", err)
 	}
 	if err := todoSvc.BindAITask(parent.AccountScopeID, workspacePath, linkedOriginTask.ID, "queued", "preparing", "", false, "", ""); err != nil {
 		t.Fatalf("claim origin-linked AI task: %v", err)
 	}
-	if _, err := svc.ExecutePreparedAITask(context.Background(), parent.ID, parent.UserID, parent.AccountScopeID, workspacePath, linkedOriginTask.ID, linkedOriginTask.AIRequest, AITaskPreparation{Title: "Fix linked task", WorktreeName: "fix-linked-task"}, svc.sessions.ApplySessionMutation); err != nil {
+	if _, err := svc.ExecutePreparedAITask(context.Background(), parent.ID, parent.UserID, parent.AccountScopeID, workspacePath, linkedOriginTask.ID, linkedOriginTask.AIRequest, linkedOriginTask.AIMode, AITaskPreparation{Title: "Fix linked task", WorktreeName: "fix-linked-task"}, svc.sessions.ApplySessionMutation); err != nil {
 		t.Fatalf("execute origin-linked AI task: %v", err)
 	}
 	originLinkedSession, ok, err := svc.sessions.GetSession(enqueuedSessionID)
 	if err != nil || !ok {
 		t.Fatalf("load origin-linked managed session: ok=%t err=%v", ok, err)
 	}
+	if originLinkedSession.Mode != sessionruntime.ModePlan {
+		t.Fatalf("origin-linked managed session mode = %q, want plan", originLinkedSession.Mode)
+	}
+	if originLinkedSession.Preference.Provider != "codex" || originLinkedSession.Preference.Model != "configured-plan-model" || originLinkedSession.Preference.Thinking != "high" {
+		t.Fatalf("split-plan managed session = %#v", originLinkedSession)
+	}
 	if enqueuedParentID != parent.ID || mapString(originLinkedSession.Metadata, "parent_session_id") != parent.ID || mapString(originLinkedSession.Metadata, "lineage_kind") != "session_deploy" {
 		t.Fatalf("optional origin linkage was not preserved: parent=%q metadata=%#v", enqueuedParentID, originLinkedSession.Metadata)
+	}
+
+	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
+		Name: "swarm", Mode: agentruntime.ModePrimary, ModelMode: "single",
+		Provider: "anthropic", Model: "configured-single-model", Thinking: "low",
+		RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, Enabled: pebblestore.BoolPtr(true),
+	}); err != nil {
+		t.Fatalf("configure single-model Swarm: %v", err)
+	}
+	for index, mode := range []string{sessionruntime.ModePlan, sessionruntime.ModeAuto} {
+		task, _, _, createErr := todoSvc.CreateAITask(todo.CreateAITaskInput{
+			AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath,
+			Request: "Use single model in " + mode, Mode: mode, IdempotencyKey: fmt.Sprintf("single-%d", index),
+		})
+		if createErr != nil {
+			t.Fatalf("create single-model %s task: %v", mode, createErr)
+		}
+		if bindErr := todoSvc.BindAITask(parent.AccountScopeID, workspacePath, task.ID, "queued", "preparing", "", false, "", ""); bindErr != nil {
+			t.Fatalf("claim single-model %s task: %v", mode, bindErr)
+		}
+		if _, executeErr := svc.ExecutePreparedAITask(context.Background(), "", parent.UserID, parent.AccountScopeID, workspacePath, task.ID, task.AIRequest, task.AIMode, AITaskPreparation{Title: "Single " + mode, WorktreeName: "single-" + mode}, svc.sessions.ApplySessionMutation); executeErr != nil {
+			t.Fatalf("execute single-model %s task: %v", mode, executeErr)
+		}
+		deployed, exists, getErr := svc.sessions.GetSession(enqueuedSessionID)
+		if getErr != nil || !exists {
+			t.Fatalf("load single-model %s session: exists=%t err=%v", mode, exists, getErr)
+		}
+		if deployed.Mode != mode || deployed.Preference.Provider != "anthropic" || deployed.Preference.Model != "configured-single-model" || deployed.Preference.Thinking != "low" {
+			t.Fatalf("single-model %s session = %#v", mode, deployed)
+		}
 	}
 }

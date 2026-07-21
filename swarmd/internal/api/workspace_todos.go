@@ -80,6 +80,7 @@ func (s *Server) handleWorkspaceTodoMutation(w http.ResponseWriter, r *http.Requ
 		InProgress      *bool    `json:"in_progress"`
 		SessionID       string   `json:"session_id"`
 		OriginSessionID string   `json:"origin_session_id"`
+		Mode            string   `json:"mode"`
 		ParentID        string   `json:"parent_id"`
 		OrderedIDs      []string `json:"ordered_ids"`
 		Operations      []struct {
@@ -143,7 +144,7 @@ func (s *Server) handleWorkspaceTodoMutation(w http.ResponseWriter, r *http.Requ
 				return
 			}
 		}
-		item, summary, _, replayed, err := s.todos.CreateAITaskWithReplay(todo.CreateAITaskInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspaceID: workspaceScope.WorkspaceID, WorkspacePath: workspacePath, OriginSessionID: originSessionID, Request: req.Text, IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key"))})
+		item, summary, _, replayed, err := s.todos.CreateAITaskWithReplay(todo.CreateAITaskInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspaceID: workspaceScope.WorkspaceID, WorkspacePath: workspacePath, OriginSessionID: originSessionID, Request: req.Text, Mode: req.Mode, IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key"))})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

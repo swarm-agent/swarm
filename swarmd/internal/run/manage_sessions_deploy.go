@@ -73,6 +73,44 @@ type manageSessionsDeployInput struct {
 	WorktreeName  string
 }
 
+// manageSessionsDeployAgentResolution deliberately separates the immutable
+// execution identity from the stored profile that owns model preferences.
+// Swarm's compiled profile is model-less; its account row remains the model
+// selection authority without becoming executable identity metadata.
+type manageSessionsDeployAgentResolution struct {
+	ExecutionProfile  pebblestore.AgentProfile
+	PreferenceProfile pebblestore.AgentProfile
+}
+
+func (r manageSessionsDeployAgentResolution) preferenceForMode(base pebblestore.ModelPreference, mode string) pebblestore.ModelPreference {
+	source := r.PreferenceProfile
+	if strings.EqualFold(r.ExecutionProfile.Name, agentruntime.SwarmAgentID) {
+		// The stored Swarm row intentionally has no executable runtime/tool
+		// metadata. Borrow only the compiled identity's plan capability so the
+		// generic selector can choose the stored split lane.
+		source.RuntimeMode = r.ExecutionProfile.RuntimeMode
+		source.ExitPlanModeEnabled = pebblestore.CloneBoolPtr(r.ExecutionProfile.ExitPlanModeEnabled)
+		source.ToolContract = pebblestore.CloneAgentToolContract(r.ExecutionProfile.ToolContract)
+	}
+	return applyAgentPreferenceOverridesForMode(base, source, mode)
+}
+
+func (s *Service) resolveManageSessionsDeployAgent(profiles map[string]pebblestore.AgentProfile, name string) (manageSessionsDeployAgentResolution, bool, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	stored, found := profiles[name]
+	if strings.EqualFold(name, agentruntime.SwarmAgentID) {
+		execution, err := s.agents.ResolveSystemAgent(agentruntime.SwarmAgentID, stored)
+		if err != nil {
+			return manageSessionsDeployAgentResolution{}, false, fmt.Errorf("resolve Swarm system agent: %w", err)
+		}
+		return manageSessionsDeployAgentResolution{ExecutionProfile: execution, PreferenceProfile: stored}, true, nil
+	}
+	if !found {
+		return manageSessionsDeployAgentResolution{}, false, nil
+	}
+	return manageSessionsDeployAgentResolution{ExecutionProfile: stored, PreferenceProfile: stored}, true, nil
+}
+
 func parseManageSessionsDeployArguments(arguments string) ([]manageSessionsDeployInput, error) {
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &root); err != nil {
@@ -183,15 +221,11 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 		profiles[strings.ToLower(strings.TrimSpace(profile.Name))] = profile
 	}
 	activeName := strings.TrimSpace(state.ActivePrimary)
-	active, found := profiles[strings.ToLower(activeName)]
-	if strings.EqualFold(activeName, agentruntime.SwarmAgentID) {
-		active, err = s.agents.ResolveSystemAgent(agentruntime.SwarmAgentID, active)
-		if err != nil {
-			return manageSessionsDeployManifest{}, fmt.Errorf("resolve active primary system agent: %w", err)
-		}
-		found = true
-		profiles[strings.ToLower(active.Name)] = active
+	activeResolution, found, err := s.resolveManageSessionsDeployAgent(profiles, activeName)
+	if err != nil {
+		return manageSessionsDeployManifest{}, fmt.Errorf("resolve active primary agent: %w", err)
 	}
+	active := activeResolution.ExecutionProfile
 	if !found || !active.Enabled || active.Mode != agentruntime.ModePrimary {
 		return manageSessionsDeployManifest{}, fmt.Errorf("active primary agent is missing, disabled, or invalid")
 	}
@@ -222,22 +256,35 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 		manifest.AllowedWorkspaces = append(manifest.AllowedWorkspaces, manageSessionsDeployWorkspace{ID: workspace.WorkspaceID, Generation: workspace.WorkspaceGeneration, Path: workspace.Path, Name: workspace.WorkspaceName})
 	}
 	for i, input := range inputs {
-		profile := active
+		targetName := active.Name
 		if input.Agent != "" {
-			var exists bool
-			profile, exists = profiles[strings.ToLower(input.Agent)]
-			if !exists {
-				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] agent %q not found", i, input.Agent)
-			}
+			targetName = input.Agent
 		}
-		if err := validateManageSessionsDeployAgent(active, profile, canDelegate); err != nil {
-			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d]: %w", i, err)
+		if aiTask != nil {
+			// A queued /task is a direct primary Swarm session, not alternate-agent
+			// delegation from whichever primary happens to be active.
+			targetName = agentruntime.SwarmAgentID
+		}
+		resolution, exists, resolveErr := s.resolveManageSessionsDeployAgent(profiles, targetName)
+		if resolveErr != nil {
+			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] agent resolution: %w", i, resolveErr)
+		}
+		if !exists {
+			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] agent %q not found", i, targetName)
+		}
+		profile := resolution.ExecutionProfile
+		if aiTask == nil {
+			if err := validateManageSessionsDeployAgent(active, profile, canDelegate); err != nil {
+				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d]: %w", i, err)
+			}
+		} else if !profile.Enabled || profile.Mode != agentruntime.ModePrimary || !strings.EqualFold(profile.Name, agentruntime.SwarmAgentID) {
+			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d]: queued AI task requires primary Swarm", i)
 		}
 		executionMode, _, err := s.resolveExecutionMode(input.Mode, profile)
 		if err != nil {
 			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] execution mode: %w", i, err)
 		}
-		preference := applyAgentPreferenceOverridesForMode(parent.Preference, profile, input.Mode)
+		preference := resolution.preferenceForMode(parent.Preference, input.Mode)
 		bindingPath, bindingPathErr := resolveManageSessionsDeployBindingPath(parent, input)
 		if bindingPathErr != nil {
 			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] workspace: %w", i, bindingPathErr)

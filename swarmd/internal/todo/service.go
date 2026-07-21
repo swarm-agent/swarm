@@ -71,6 +71,7 @@ type CreateAITaskInput struct {
 	WorkspacePath   string
 	OriginSessionID string
 	Request         string
+	Mode            string
 	IdempotencyKey  string
 }
 
@@ -275,13 +276,20 @@ func (s *Service) CreateAITaskWithReplay(input CreateAITaskInput) (TodoItem, Tod
 	accountScopeID, userID := strings.TrimSpace(input.AccountScopeID), strings.TrimSpace(input.UserID)
 	workspacePath, workspaceID := strings.TrimSpace(input.WorkspacePath), strings.TrimSpace(input.WorkspaceID)
 	request, key := input.Request, strings.TrimSpace(input.IdempotencyKey)
+	mode := strings.ToLower(strings.TrimSpace(input.Mode))
+	if mode == "" {
+		mode = "auto"
+	}
+	if mode != "plan" && mode != "auto" {
+		return TodoItem{}, TodoSummary{}, nil, false, fmt.Errorf("AI task mode must be plan or auto")
+	}
 	if accountScopeID == "" || userID == "" || workspacePath == "" || workspaceID == "" || strings.TrimSpace(request) == "" || key == "" {
 		return TodoItem{}, TodoSummary{}, nil, false, fmt.Errorf("account, user, canonical workspace, request, and idempotency key are required")
 	}
 	now := time.Now().UnixMilli()
 	keyHash, requestHash := hashAITaskValue(key), hashAITaskValue(request)
 	idSeed := hashAITaskValue(accountScopeID + "\x00" + workspaceID + "\x00" + keyHash)
-	item := TodoItem{ID: "ai_task_" + idSeed[:24], AccountScopeID: accountScopeID, UserID: userID, WorkspaceID: workspaceID, WorkspacePath: workspacePath, OriginSessionID: strings.TrimSpace(input.OriginSessionID), OwnerKind: pebblestore.WorkspaceTodoOwnerKindUser, Text: request, AIState: pebblestore.WorkspaceTodoAIStateQueued, AIRequest: request, CreatedAt: now, UpdatedAt: now}
+	item := TodoItem{ID: "ai_task_" + idSeed[:24], AccountScopeID: accountScopeID, UserID: userID, WorkspaceID: workspaceID, WorkspacePath: workspacePath, OriginSessionID: strings.TrimSpace(input.OriginSessionID), OwnerKind: pebblestore.WorkspaceTodoOwnerKindUser, Text: request, AIState: pebblestore.WorkspaceTodoAIStateQueued, AIMode: mode, AIRequest: request, CreatedAt: now, UpdatedAt: now}
 	created, replayed, err := s.store.CreateAITask(pebblestore.CreateAITaskStoreInput{Item: item, IdempotencyHash: keyHash, RequestHash: requestHash, Audit: pebblestore.AITaskAuditRecord{StageKey: "000001_queued", Stage: "queued", Disposition: "created", CreatedAt: now}})
 	if err != nil {
 		return TodoItem{}, TodoSummary{}, nil, false, err

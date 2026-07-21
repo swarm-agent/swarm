@@ -223,14 +223,14 @@ export async function fetchWorkspaceTodos(workspacePath: string, ownerKind?: Wor
   return { items: Array.isArray(response.items) ? response.items.map(mapWorkspaceTodoItem) : [], summary: mapWorkspaceTodoSummary(response.summary) }
 }
 
-export async function createWorkspaceAITask(workspacePath: string, request: string, idempotencyKey: string, originSessionId?: string): Promise<{ item: WorkspaceTodoItem; summary: WorkspaceTodoSummary; status: string }> {
+export async function createWorkspaceAITask(workspacePath: string, request: string, idempotencyKey: string, mode: 'plan' | 'auto' = 'auto', originSessionId?: string): Promise<{ item: WorkspaceTodoItem; summary: WorkspaceTodoSummary; status: string }> {
   const normalizedRequest = request.trim()
   if (!normalizedRequest) throw new Error('Enter a task request after /task.')
   if (!idempotencyKey.trim()) throw new Error('AI task idempotency key is required')
   const response = await requestJson<WorkspaceAITaskResponseWire>('/v1/workspace/todos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey.trim() },
-    body: JSON.stringify({ action: 'ai_task', workspace_path: workspacePath, owner_kind: 'user', text: normalizedRequest, origin_session_id: originSessionId?.trim() || undefined }),
+    body: JSON.stringify({ action: 'ai_task', workspace_path: workspacePath, owner_kind: 'user', text: normalizedRequest, mode, origin_session_id: originSessionId?.trim() || undefined }),
   })
   if (!response.item) throw new Error('AI task request returned no task')
   return { item: mapWorkspaceTodoItem(response.item), summary: mapWorkspaceTodoSummary(response.summary), status: response.status?.trim() || 'queued' }

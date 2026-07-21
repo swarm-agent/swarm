@@ -37,6 +37,13 @@ export interface DesktopSlashPaletteState {
   matches: DesktopSlashCommand[]
 }
 
+export type DesktopTaskMode = 'plan' | 'auto'
+
+export interface DesktopTaskCommandRequest {
+  request: string
+  mode: DesktopTaskMode
+}
+
 const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
   {
     id: 'help',
@@ -104,7 +111,7 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     aliases: [],
     hint: 'Queue a durable AI task for Swarm',
     actionLabel: 'Queue AI Task',
-    tips: ['/task <request>', 'Swarm chooses plan or auto mode', 'The task opens a managed worktree session'],
+    tips: ['/task <request> (auto)', '/task plan <request>', 'The task opens a managed worktree session'],
     state: 'ready',
     action: { kind: 'queue-ai-task' },
   },
@@ -286,6 +293,18 @@ function sortCommands(left: DesktopSlashCommand, right: DesktopSlashCommand, que
 
 export function getDesktopSlashCommands(): DesktopSlashCommand[] {
   return DESKTOP_SLASH_COMMANDS.slice()
+}
+
+export function parseDesktopTaskCommand(input: string): DesktopTaskCommandRequest {
+  const taskBody = input.trimStart().replace(/^\/task(?:\s+|$)/i, '').trim()
+  if (!taskBody) {
+    return { request: '', mode: 'auto' }
+  }
+  const firstToken = taskBody.match(/^(\S+)(?:\s+([\s\S]*))?$/)
+  if (firstToken?.[1].toLowerCase() === 'plan') {
+    return { request: (firstToken[2] ?? '').trim(), mode: 'plan' }
+  }
+  return { request: taskBody, mode: 'auto' }
 }
 
 export function buildDesktopSlashPaletteState(input: string): DesktopSlashPaletteState {

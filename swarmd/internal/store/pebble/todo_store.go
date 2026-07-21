@@ -235,12 +235,16 @@ func (s *WorkspaceTodoStore) CreateAITask(input CreateAITaskStoreInput) (Workspa
 	var reservation struct {
 		TaskID      string `json:"task_id"`
 		RequestHash string `json:"request_hash"`
+		Mode        string `json:"mode,omitempty"`
 	}
 	if ok, err := s.store.GetJSON(indexKey, &reservation); err != nil {
 		return WorkspaceTodoItem{}, false, err
 	} else if ok {
 		if reservation.RequestHash != input.RequestHash {
 			return WorkspaceTodoItem{}, false, fmt.Errorf("idempotency key conflicts with a different AI task request")
+		}
+		if reservation.Mode != "" && reservation.Mode != item.AIMode {
+			return WorkspaceTodoItem{}, false, fmt.Errorf("idempotency key conflicts with a different AI task mode")
 		}
 		existing, found, err := s.GetForAccount(accountScopeID, item.WorkspacePath, reservation.TaskID)
 		if err != nil {
@@ -270,7 +274,8 @@ func (s *WorkspaceTodoStore) CreateAITask(input CreateAITaskStoreInput) (Workspa
 	reservationPayload, err := json.Marshal(struct {
 		TaskID      string `json:"task_id"`
 		RequestHash string `json:"request_hash"`
-	}{item.ID, input.RequestHash})
+		Mode        string `json:"mode"`
+	}{item.ID, input.RequestHash, item.AIMode})
 	if err != nil {
 		return WorkspaceTodoItem{}, false, err
 	}
