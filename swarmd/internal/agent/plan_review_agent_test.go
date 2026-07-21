@@ -7,7 +7,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestPlanSidechatInheritsModelWithoutInheritingCapabilities(t *testing.T) {
+func TestPlanSidechatMaterializationDoesNotOwnParentModelSelection(t *testing.T) {
 	parent := pebblestore.AgentProfile{
 		Provider: "provider-a", Model: "model-a", Thinking: "high",
 		PlanProvider: "provider-plan", PlanModel: "model-plan", PlanThinking: "xhigh",
@@ -15,8 +15,8 @@ func TestPlanSidechatInheritsModelWithoutInheritingCapabilities(t *testing.T) {
 		ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"write": {Enabled: pebblestore.BoolPtr(true)}}},
 	}
 	profile := PlanSidechatAgentProfileForParent(parent)
-	if profile.Provider != parent.PlanProvider || profile.Model != parent.PlanModel || profile.Thinking != parent.PlanThinking {
-		t.Fatalf("plan model settings not selected: %+v", profile)
+	if profile.Provider != "" || profile.Model != "" || profile.Thinking != "" || profile.PlanServiceTier != "" {
+		t.Fatalf("Plan system profile inferred model settings instead of waiting for the parent session setup: %+v", profile)
 	}
 	if profile.Prompt == parent.Prompt || strings.Contains(profile.Prompt, "private parent prompt") {
 		t.Fatalf("parent prompt leaked into review profile: %q", profile.Prompt)

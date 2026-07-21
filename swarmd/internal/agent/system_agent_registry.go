@@ -480,15 +480,12 @@ func PlanSidechatAgentProfile() pebblestore.AgentProfile {
 	return PlanSidechatAgentProfileForParent(pebblestore.AgentProfile{})
 }
 
-func PlanSidechatAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
-	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+func PlanSidechatAgentProfileForParent(_ pebblestore.AgentProfile) pebblestore.AgentProfile {
+	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: PlanSidechatAgentID, Mode: ModeSubagent, Description: "Reserved hidden parent-owned Plan sidechat",
-		Provider: firstNonEmptyProfileValue(parent.PlanProvider, parent.Provider), Model: firstNonEmptyProfileValue(parent.PlanModel, parent.Model), Thinking: firstNonEmptyProfileValue(parent.PlanThinking, parent.Thinking),
 		Prompt: PlanSidechatAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: PlanSidechatAgentToolContract(), Enabled: true,
 	})
-	profile.PlanServiceTier = firstNonEmptyProfileValue(parent.PlanServiceTier)
-	return profile
 }
 
 func CompactAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {

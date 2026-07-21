@@ -108,7 +108,8 @@ func TestSessionsV3SystemSidechatsExecuteFromRegistryAfterStoreReopen(t *testing
 	}); err != nil {
 		t.Fatalf("configure parent agent: %v", err)
 	}
-	parent := createSessionsV3PrimaryTestSessionWithPreference(t, server, "system-sidechat-parent", "system sidechat parent", pebblestore.ModelPreference{Provider: "test-provider", Model: "single-model", Thinking: "medium"})
+	parentPreference := pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "xhigh", ServiceTier: "priority", ContextMode: "full"}
+	parent := createSessionsV3PrimaryTestSessionWithPreference(t, server, "system-sidechat-parent", "system sidechat parent", parentPreference)
 	planArgs := mustSessionsV3TestJSON(t, map[string]any{
 		"plan_id": "plan-sidechat-regression", "proposal_revision": 3,
 		"document": map[string]any{"info": map[string]any{"goal": "Prove Plan sidechat execution"}, "checkpoints": []any{}},
@@ -150,7 +151,10 @@ func TestSessionsV3SystemSidechatsExecuteFromRegistryAfterStoreReopen(t *testing
 
 	restarted, sessions, closeRestarted := newSessionsV3PrimaryAPITestServer(t, storePath)
 	defer func() { _ = closeRestarted() }()
-	runner := installSessionsV3TestProvider(restarted, "system sidechat response")
+	runner := &sessionsV3RecordingProviderRunner{id: "codex", text: "system sidechat response"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	restarted.providers = providers
 	exec := newSessionV3Executor(restarted)
 	exec.startDelay = 0
 	restarted.v3SessionExecutor = exec
@@ -158,7 +162,7 @@ func TestSessionsV3SystemSidechatsExecuteFromRegistryAfterStoreReopen(t *testing
 		kind, sessionID, agentID, model string
 		wantEditPendingPlan             bool
 	}{
-		{kind: "plan", sessionID: planID, agentID: agentruntime.PlanSidechatAgentID, model: "plan-model", wantEditPendingPlan: true},
+		{kind: "plan", sessionID: planID, agentID: agentruntime.PlanSidechatAgentID, model: parentPreference.Model, wantEditPendingPlan: true},
 		{kind: "ai", sessionID: aiID, agentID: agentruntime.AISidechatAgentID, model: "auto-model"},
 	} {
 		t.Run(test.kind, func(t *testing.T) {
@@ -178,6 +182,9 @@ func TestSessionsV3SystemSidechatsExecuteFromRegistryAfterStoreReopen(t *testing
 			request := runner.requests[len(runner.requests)-1]
 			if request.Model != test.model || !strings.Contains(request.Instructions, "- name: "+test.agentID) {
 				t.Fatalf("%s request model=%q instructions=%q", test.kind, request.Model, request.Instructions)
+			}
+			if test.kind == "plan" && (request.Thinking != parentPreference.Thinking || request.ServiceTier != parentPreference.ServiceTier || request.ContextMode != parentPreference.ContextMode) {
+				t.Fatalf("Plan request did not preserve parent model setup: request=%+v parent=%+v", request, parentPreference)
 			}
 			tools := sessionsV3ProviderRequestToolNames(request.Tools)
 			if tools["edit_pending_plan"] != test.wantEditPendingPlan {

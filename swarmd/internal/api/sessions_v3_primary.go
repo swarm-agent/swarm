@@ -387,6 +387,10 @@ func sessionsV3SystemSidechatID(parentSessionID, kind string) (string, string) {
 	return "system-sidechat-" + strings.ToLower(strings.TrimSpace(kind)) + "-" + hex.EncodeToString(sum[:16]), hex.EncodeToString(sum[:])
 }
 
+func sessionsV3PlanSidechatPreference(parent pebblestore.SessionSnapshot) pebblestore.ModelPreference {
+	return parent.Preference
+}
+
 func sessionsV3SidechatInt64(value any) int64 {
 	switch typed := value.(type) {
 	case float64:
@@ -479,14 +483,24 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 	clientRequestID := "system-sidechat:" + kind + ":" + bindingHash
 	parentProfile, err := sessionV3AgentProfileFromMetadata(parent.Metadata)
 	if err != nil {
-		parentProfile = pebblestore.AgentProfile{}
+		writeError(w, http.StatusConflict, fmt.Errorf("resolve parent agent snapshot: %w", err))
+		return
 	}
 	profile, err := s.agents.ResolveSystemSidechat(kind, parentProfile)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("resolve system sidechat %q: %w", kind, err))
 		return
 	}
+	var planPreference pebblestore.ModelPreference
 	if kind == "plan" {
+		// The parent session's durable preference is the selected model setup and
+		// therefore the authority for Plan. Do not infer a separate Plan model
+		// from the agent snapshot or re-resolve a model profile here.
+		planPreference = sessionsV3PlanSidechatPreference(parent)
+		profile.Provider = planPreference.Provider
+		profile.Model = planPreference.Model
+		profile.Thinking = planPreference.Thinking
+		profile.PlanServiceTier = planPreference.ServiceTier
 		contextJSON, marshalErr := json.Marshal(planContext)
 		if marshalErr != nil {
 			writeError(w, http.StatusConflict, fmt.Errorf("encode pending plan context: %w", marshalErr))
@@ -507,11 +521,10 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 	if kind == "ai" {
 		title = agentruntime.AISidechatAgentName
 	}
-	serviceTier := profile.PlanServiceTier
+	preference := planPreference
 	if kind == "ai" {
-		serviceTier = profile.AutoServiceTier
+		preference = pebblestore.ModelPreference{Provider: profile.Provider, Model: profile.Model, Thinking: profile.Thinking, ServiceTier: profile.AutoServiceTier}
 	}
-	preference := pebblestore.ModelPreference{Provider: profile.Provider, Model: profile.Model, Thinking: profile.Thinking, ServiceTier: serviceTier}
 	if existing, exists, getErr := s.sessions.GetSession(sidecarID); getErr != nil {
 		writeError(w, http.StatusBadRequest, getErr)
 		return

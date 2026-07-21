@@ -125,6 +125,31 @@ func TestSessionsV3ExplicitModelProfilePreferenceMatchesDurableSessionPreference
 	}
 }
 
+func TestSessionsV3PlanSidechatPreferencePassesThroughParentModelSetup(t *testing.T) {
+	parentPreference := pebblestore.ModelPreference{Provider: "codex", Model: "parent-model", Thinking: "xhigh", ServiceTier: "priority", ContextMode: "full", UpdatedAt: 42}
+	withoutProfile := pebblestore.SessionSnapshot{Preference: parentPreference}
+	if got := sessionsV3PlanSidechatPreference(withoutProfile); got != parentPreference {
+		t.Fatalf("explicit parent preference changed: got %+v want %+v", got, parentPreference)
+	}
+
+	profilePreference := pebblestore.ModelPreference{Provider: "openrouter", Model: "profile-parent-model", Thinking: "high", ServiceTier: "fast", ContextMode: "session", UpdatedAt: 77}
+	parent := pebblestore.SessionSnapshot{
+		Mode:       sessionruntime.ModePlan,
+		Preference: profilePreference,
+		ModelProfile: &pebblestore.SessionModelProfileSnapshot{
+			ModelMode: pebblestore.ModelProfileModeSplit,
+			AppliedAt: 77,
+			Plan: &pebblestore.ModelProfileSelection{
+				Provider: "openrouter", Model: "profile-parent-model", Thinking: "high", ServiceTier: "fast", ContextMode: "session",
+			},
+			Auto: &pebblestore.ModelProfileSelection{Provider: "codex", Model: "auto-model", Thinking: "medium"},
+		},
+	}
+	if got := sessionsV3PlanSidechatPreference(parent); got != profilePreference {
+		t.Fatalf("durable model-profile preference changed: got %+v want %+v", got, profilePreference)
+	}
+}
+
 func TestSessionsV3ProfilePreferenceUsesCurrentMode(t *testing.T) {
 	session := pebblestore.SessionSnapshot{Mode: "plan", ModelProfile: &pebblestore.SessionModelProfileSnapshot{ModelMode: pebblestore.ModelProfileModeSplit, AppliedAt: 7, Plan: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "plan", Thinking: "high", ContextMode: "full"}, Auto: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "action", Thinking: "medium", ServiceTier: "fast"}}}
 	plan, ok := sessionsV3ProfilePreference(session)
