@@ -18,6 +18,7 @@ import (
 
 const (
 	sessionsV3ReviewWorktreeLimit        = 200
+	sessionsV3ReviewWorktreePageLimit    = 50
 	sessionsV3ReviewAutoArchiveBatchSize = 32
 )
 
@@ -63,33 +64,34 @@ func (s *Server) handleSessionsV3ReviewWorktrees(w http.ResponseWriter, r *http.
 }
 
 func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principal identity.Principal, req sessionsV3ReviewWorktreesRequest) (map[string]any, error) {
-	search, err := s.sessions.SearchSessions(pebblestore.V3SessionSearchOptions{
+	checkoutSnapshot, checkoutCommonDir := sessionsV3ReviewCheckoutTarget(ctx, req.WorkspacePath)
+	checkoutBranch := strings.TrimSpace(checkoutSnapshot.Branch)
+	search, err := searchSessionsV3ReviewWorktreePages(s.sessions.SearchSessions, pebblestore.V3SessionSearchOptions{
 		AccountScopeID: principal.AccountScopeID,
 		UserID:         principal.UserID,
-		Global:         strings.TrimSpace(req.WorkspacePath) == "",
-		WorkspacePaths: compactStrings([]string{req.WorkspacePath}),
+		Global:         true,
 		State:          "needs_review",
 		ArchivedMode:   "exclude",
-		Limit:          sessionsV3ReviewWorktreeLimit,
-	})
+	}, sessionsV3ReviewWorktreeLimit)
 	if err != nil {
 		return nil, err
 	}
-	archivedSearch, err := s.sessions.SearchSessions(pebblestore.V3SessionSearchOptions{
+	archivedSearch, err := searchSessionsV3ReviewWorktreePages(s.sessions.SearchSessions, pebblestore.V3SessionSearchOptions{
 		AccountScopeID: principal.AccountScopeID,
 		UserID:         principal.UserID,
-		Global:         strings.TrimSpace(req.WorkspacePath) == "",
-		WorkspacePaths: compactStrings([]string{req.WorkspacePath}),
+		Global:         true,
 		State:          "needs_review",
 		ArchivedMode:   "only",
-		Limit:          sessionsV3ReviewWorktreeLimit,
-	})
+	}, sessionsV3ReviewWorktreeLimit)
 	if err != nil {
 		return nil, err
 	}
 	recentlyArchived := make([]map[string]any, 0, len(archivedSearch.Items))
 	for _, item := range archivedSearch.Items {
-		recentlyArchived = append(recentlyArchived, map[string]any{"session_id": item.ID, "title": item.Title, "updated_at": item.UpdatedAt, "worktree_branch": item.WorktreeBranch, "target_branch": item.WorktreeBaseBranch})
+		if strings.TrimSpace(req.WorkspacePath) != "" && !sessionsV3ReviewSearchItemMatchesCheckout(ctx, item, checkoutSnapshot, checkoutCommonDir) {
+			continue
+		}
+		recentlyArchived = append(recentlyArchived, map[string]any{"session_id": item.ID, "title": item.Title, "updated_at": item.UpdatedAt, "worktree_branch": item.WorktreeBranch, "worktree_path": item.WorktreeRootPath, "target_branch": item.WorktreeBaseBranch})
 	}
 	grace := sessionreview.ParseGraceHours(req.GraceHours)
 	now := time.Now()
@@ -99,11 +101,10 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 		if err != nil {
 			return nil, err
 		}
-		search, err = s.sessions.SearchSessions(pebblestore.V3SessionSearchOptions{
-			AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
-			Global: strings.TrimSpace(req.WorkspacePath) == "", WorkspacePaths: compactStrings([]string{req.WorkspacePath}),
-			State: "needs_review", ArchivedMode: "exclude", Limit: sessionsV3ReviewWorktreeLimit,
-		})
+		search, err = searchSessionsV3ReviewWorktreePages(s.sessions.SearchSessions, pebblestore.V3SessionSearchOptions{
+			AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Global: true,
+			State: "needs_review", ArchivedMode: "exclude",
+		}, sessionsV3ReviewWorktreeLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -112,17 +113,14 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 		if err := s.integrateSessionsV3ReviewWorktrees(ctx, principal, req.WorkspacePath, req.IntegrateIDs, now); err != nil {
 			return nil, err
 		}
-		search, err = s.sessions.SearchSessions(pebblestore.V3SessionSearchOptions{
-			AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
-			Global: strings.TrimSpace(req.WorkspacePath) == "", WorkspacePaths: compactStrings([]string{req.WorkspacePath}),
-			State: "needs_review", ArchivedMode: "exclude", Limit: sessionsV3ReviewWorktreeLimit,
-		})
+		search, err = searchSessionsV3ReviewWorktreePages(s.sessions.SearchSessions, pebblestore.V3SessionSearchOptions{
+			AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Global: true,
+			State: "needs_review", ArchivedMode: "exclude",
+		}, sessionsV3ReviewWorktreeLimit)
 		if err != nil {
 			return nil, err
 		}
 	}
-	checkoutSnapshot, checkoutCommonDir := sessionsV3ReviewCheckoutTarget(ctx, req.WorkspacePath)
-	checkoutBranch := strings.TrimSpace(checkoutSnapshot.Branch)
 	retained := make([]sessionreview.Classification, 0)
 	done := make([]sessionreview.Classification, 0)
 	byID := make(map[string]sessionreview.Classification)
@@ -130,6 +128,9 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 	for _, item := range search.Items {
 		session, found, getErr := s.sessions.GetSession(item.ID)
 		if getErr != nil || !found {
+			continue
+		}
+		if strings.TrimSpace(req.WorkspacePath) != "" && !sessionsV3ReviewSessionMatchesCheckout(ctx, session, checkoutSnapshot, checkoutCommonDir) {
 			continue
 		}
 		targetBranch := session.WorktreeBaseBranch
@@ -303,6 +304,44 @@ func (s *Server) handleSessionsV3Unarchive(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unarchived_session_ids": ids})
 }
 
+func searchSessionsV3ReviewWorktreePages(search func(pebblestore.V3SessionSearchOptions) (pebblestore.V3SessionSearchResult, error), options pebblestore.V3SessionSearchOptions, limit int) (pebblestore.V3SessionSearchResult, error) {
+	if limit <= 0 {
+		limit = sessionsV3ReviewWorktreeLimit
+	}
+	var combined pebblestore.V3SessionSearchResult
+	for len(combined.Items) < limit {
+		remaining := limit - len(combined.Items)
+		options.Limit = min(sessionsV3ReviewWorktreePageLimit, remaining)
+		page, err := search(options)
+		if err != nil {
+			return pebblestore.V3SessionSearchResult{}, err
+		}
+		combined.Items = append(combined.Items, page.Items...)
+		combined.Pagination = page.Pagination
+		combined.Summary = page.Summary
+		if !page.Pagination.HasMore {
+			break
+		}
+		beforeAt := page.Pagination.NextBeforeUpdatedAt
+		beforeID := strings.TrimSpace(page.Pagination.NextBeforeSessionID)
+		if beforeAt == nil || beforeID == "" {
+			beforeAt, beforeID, err = pebblestore.DecodeV3SessionSearchCursor(page.Pagination.NextCursor)
+			if err != nil {
+				return pebblestore.V3SessionSearchResult{}, err
+			}
+		}
+		if beforeAt == nil || beforeID == "" {
+			return pebblestore.V3SessionSearchResult{}, errors.New("review worktree search returned an incomplete pagination cursor")
+		}
+		options.BeforeUpdatedAt = beforeAt
+		options.BeforeSessionID = beforeID
+	}
+	if len(combined.Items) > limit {
+		combined.Items = combined.Items[:limit]
+	}
+	return combined, nil
+}
+
 func sessionsV3ReviewCheckoutTarget(ctx context.Context, workspacePath string) (gitstatus.Snapshot, string) {
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
@@ -317,6 +356,35 @@ func sessionsV3ReviewCheckoutTarget(ctx context.Context, workspacePath string) (
 		return gitstatus.Snapshot{}, ""
 	}
 	return snapshot, gitstatus.NormalizePath(watch.CommonDir)
+}
+
+func sessionsV3ReviewSearchItemMatchesCheckout(ctx context.Context, item pebblestore.V3SessionSearchItem, checkout gitstatus.Snapshot, checkoutCommonDir string) bool {
+	return sessionsV3ReviewSessionMatchesCheckout(ctx, pebblestore.SessionSnapshot{
+		WorkspacePath:      item.WorkspacePath,
+		WorktreeEnabled:    item.WorktreeEnabled,
+		WorktreeRootPath:   item.WorktreeRootPath,
+		WorktreeBaseBranch: item.WorktreeBaseBranch,
+		WorktreeBranch:     item.WorktreeBranch,
+		Metadata:           item.Metadata,
+	}, checkout, checkoutCommonDir)
+}
+
+func sessionsV3ReviewSessionMatchesCheckout(ctx context.Context, session pebblestore.SessionSnapshot, checkout gitstatus.Snapshot, checkoutCommonDir string) bool {
+	if strings.TrimSpace(checkoutCommonDir) == "" {
+		return false
+	}
+	if !session.WorktreeEnabled {
+		return sessionsV3ReviewSessionUsesCheckout(ctx, session, checkout, checkoutCommonDir)
+	}
+	worktreePath := strings.TrimSpace(session.WorktreeRootPath)
+	if worktreePath == "" {
+		worktreePath = strings.TrimSpace(session.WorkspacePath)
+	}
+	if sessionsV3ReviewWorktreeMatchesCheckout(ctx, worktreePath, checkoutCommonDir) {
+		return true
+	}
+	sourcePath := strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_path"))
+	return sourcePath != "" && sessionsV3ReviewWorktreeMatchesCheckout(ctx, sourcePath, checkoutCommonDir)
 }
 
 func sessionsV3ReviewSessionUsesCheckout(ctx context.Context, session pebblestore.SessionSnapshot, checkout gitstatus.Snapshot, checkoutCommonDir string) bool {

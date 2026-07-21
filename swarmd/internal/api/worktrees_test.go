@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,6 +30,78 @@ type fakeWorktreeService struct {
 	lastNameSeed    string
 	lastBaseBranch  string
 	lastBranchName  string
+}
+
+func TestSearchSessionsV3ReviewWorktreePagesIncludesOlderUnresolvedSessions(t *testing.T) {
+	items := make([]pebblestore.V3SessionSearchItem, 57)
+	for i := range items {
+		items[i] = pebblestore.V3SessionSearchItem{ID: fmt.Sprintf("session-%02d", i)}
+	}
+	calls := 0
+	search := func(options pebblestore.V3SessionSearchOptions) (pebblestore.V3SessionSearchResult, error) {
+		calls++
+		start := 0
+		if options.BeforeSessionID != "" {
+			if _, err := fmt.Sscanf(options.BeforeSessionID, "session-%02d", &start); err != nil {
+				return pebblestore.V3SessionSearchResult{}, err
+			}
+		}
+		end := min(start+options.Limit, len(items))
+		page := pebblestore.V3SessionSearchResult{Items: append([]pebblestore.V3SessionSearchItem(nil), items[start:end]...)}
+		if end < len(items) {
+			updatedAt := int64(end)
+			page.Pagination = pebblestore.V3SessionSearchPagination{
+				HasMore:             true,
+				NextBeforeUpdatedAt: &updatedAt,
+				NextBeforeSessionID: fmt.Sprintf("session-%02d", end),
+			}
+		}
+		return page, nil
+	}
+
+	got, err := searchSessionsV3ReviewWorktreePages(search, pebblestore.V3SessionSearchOptions{}, sessionsV3ReviewWorktreeLimit)
+	if err != nil {
+		t.Fatalf("page review worktree sessions: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("search calls = %d, want 2", calls)
+	}
+	if len(got.Items) != len(items) {
+		t.Fatalf("items = %d, want %d", len(got.Items), len(items))
+	}
+	if got.Items[56].ID != "session-56" {
+		t.Fatalf("last item = %q, want session-56", got.Items[56].ID)
+	}
+}
+
+func TestSessionsV3ReviewSessionMatchesCheckoutIncludesSiblingWorktree(t *testing.T) {
+	repo := initGitCommitTestRepo(t)
+	worktree := t.TempDir()
+	runGitCommitTestCommand(t, repo, "worktree", "add", "-b", "agent/review-sibling", worktree, "HEAD")
+
+	checkout, commonDir := sessionsV3ReviewCheckoutTarget(context.Background(), repo)
+	if !checkout.HasGit || commonDir == "" {
+		t.Fatal("expected available checkout repository")
+	}
+	session := pebblestore.SessionSnapshot{
+		WorkspacePath:    worktree,
+		WorktreeEnabled:  true,
+		WorktreeRootPath: worktree,
+		WorktreeBranch:   "agent/review-sibling",
+	}
+	if !sessionsV3ReviewSessionMatchesCheckout(context.Background(), session, checkout, commonDir) {
+		t.Fatal("expected sibling managed worktree to remain in the current repository review set")
+	}
+
+	otherRepo := initGitCommitTestRepo(t)
+	otherWorktree := t.TempDir()
+	runGitCommitTestCommand(t, otherRepo, "worktree", "add", "-b", "agent/other-review", otherWorktree, "HEAD")
+	session.WorkspacePath = otherWorktree
+	session.WorktreeRootPath = otherWorktree
+	session.WorktreeBranch = "agent/other-review"
+	if sessionsV3ReviewSessionMatchesCheckout(context.Background(), session, checkout, commonDir) {
+		t.Fatal("expected an unrelated repository worktree to be excluded")
+	}
 }
 
 func (f *fakeWorktreeService) GetConfig(workspacePath string) (worktreeruntime.Config, error) {
