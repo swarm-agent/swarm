@@ -65,6 +65,13 @@ func SelectLiveSegments(state State) []LiveSegment {
 	}
 	return out
 }
+func SelectReasoningSegments(state State) []ReasoningSegment {
+	out := make([]ReasoningSegment, 0, len(state.Reasoning))
+	for _, segment := range state.Reasoning {
+		out = append(out, segment)
+	}
+	return out
+}
 func SelectLiveTools(state State) []ToolTimelineItem {
 	out := make([]ToolTimelineItem, 0, len(state.Tools))
 	for _, item := range state.Tools {

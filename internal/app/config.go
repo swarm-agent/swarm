@@ -236,9 +236,22 @@ func saveHeaderSetting(api *client.API, enabled bool) error {
 }
 
 func saveThinkingTagsSetting(api *client.API, enabled bool) error {
-	return updateUISettings(api, func(settings *client.UISettings) {
-		settings.Chat.ThinkingTags = enabled
-	})
+	if api == nil {
+		return fmt.Errorf("ui settings client not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), uiSettingsRequestLimit)
+	defer cancel()
+	if strings.TrimSpace(api.Token()) == "" {
+		if err := api.EnsureLocalAuth(ctx); err != nil {
+			return fmt.Errorf("bootstrap ui settings auth: %w", err)
+		}
+	}
+	if _, err := api.PatchUISettings(ctx, client.UISettingsPatch{
+		Chat: &client.UIChatSettingsPatch{ThinkingTags: boolPtr(enabled)},
+	}); err != nil {
+		return fmt.Errorf("persist ui settings: %w", err)
+	}
+	return nil
 }
 
 func saveDefaultNewSessionModeSetting(api *client.API, mode string) error {

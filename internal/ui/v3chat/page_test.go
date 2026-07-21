@@ -39,6 +39,27 @@ func TestPageHeaderAndLiveOverlayRenderFromStore(t *testing.T) {
 	}
 }
 
+func TestPageReasoningFollowsSharedThinkingTagsSettingDuringStreaming(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s"}, SnapshotEndpointCursor: "cursor"}})
+	payload, _ := json.Marshal(map[string]any{
+		"run_id": "run", "step": 1, "step_id": "step-1", "reasoning_id": "reasoning-1", "reasoning_key": "analysis", "delta": "Inspecting current project state", "delta_mode": "replace", "recorded_at": int64(100),
+	})
+	store.Dispatch(RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{Seq: 1, EventType: "session.reasoning.delta", Payload: payload, TsUnixMS: 100}}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	rows := page.renderRows(store.Snapshot(), 80, testPageStyles())
+	visible := renderRowsText(rows)
+	if !strings.Contains(visible, "Thinking") || !strings.Contains(visible, "Inspecting current project state") {
+		t.Fatalf("enabled thinking tags did not render streaming reasoning: %q", visible)
+	}
+	page.SetThinkingTagsVisible(false)
+	rows = page.renderRows(store.Snapshot(), 80, testPageStyles())
+	hidden := renderRowsText(rows)
+	if !strings.Contains(hidden, "Thinking") || strings.Contains(hidden, "Inspecting current project state") {
+		t.Fatalf("disabled thinking tags did not preserve label and hide body: %q", hidden)
+	}
+}
+
 func TestStructuredFinalHandoffRendersCompactCardAndLegacyMarkersAreSanitized(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
@@ -905,7 +926,7 @@ func TestPageRendersComposerAboveCanonicalHomeFooterWithDesktopContext(t *testin
 	}
 }
 
-func TestPageComposerNoticePolicyShowsOnlyWarningsAndStopsWithoutTruncatingFooter(t *testing.T) {
+func TestPageComposerNoticePolicyShowsThinkingTagStatusWarningsAndStopsWithoutTruncatingFooter(t *testing.T) {
 	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
 	page.SetRouteLabel("Primary Desk")
 	page.SetProfileLabel("Focused work")
@@ -926,7 +947,7 @@ func TestPageComposerNoticePolicyShowsOnlyWarningsAndStopsWithoutTruncatingFoote
 		}
 	}
 
-	for _, visible := range []string{"stop requested", "settings warning: profile unavailable"} {
+	for _, visible := range []string{"thinking tags off", "stop requested", "settings warning: profile unavailable"} {
 		page.SetStatus(visible)
 		page.Draw(screen)
 		screen.Show()

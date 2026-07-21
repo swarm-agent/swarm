@@ -31,7 +31,7 @@ func (a *App) handleHeaderCommand(args []string) {
 func (a *App) handleThinkingCommand(args []string) {
 	if len(args) == 0 {
 		a.home.SetCommandOverlay(a.thinkingTagsStatusLines())
-		a.home.SetStatus("use /thinking on to show reasoning tags, /thinking off to hide them")
+		a.home.SetStatus("thinking tags " + enabledLabel(a.config.Chat.ThinkingTags) + " · use /thinking on or /thinking off to change")
 		return
 	}
 
@@ -70,14 +70,26 @@ func (a *App) applyHeaderSetting(enabled bool) {
 }
 
 func (a *App) applyThinkingTagsSetting(enabled bool) {
+	previous := a.config.Chat.ThinkingTags
 	a.config.Chat.ThinkingTags = enabled
 	if a.chat != nil {
 		a.chat.SetThinkingTagsVisible(enabled)
 	}
+	if a.v3Chat != nil {
+		a.v3Chat.SetThinkingTagsVisible(enabled)
+	}
 
 	a.home.SetCommandOverlay(a.thinkingTagsStatusLines())
 	if err := saveThinkingTagsSetting(a.api, enabled); err != nil {
-		a.home.SetStatus(fmt.Sprintf("thinking tags %s (settings save failed: %v)", enabledLabel(enabled), err))
+		a.config.Chat.ThinkingTags = previous
+		if a.chat != nil {
+			a.chat.SetThinkingTagsVisible(previous)
+		}
+		if a.v3Chat != nil {
+			a.v3Chat.SetThinkingTagsVisible(previous)
+		}
+		a.home.SetCommandOverlay(a.thinkingTagsStatusLines())
+		a.home.SetStatus(fmt.Sprintf("thinking tags unchanged (%s): settings save failed: %v", enabledLabel(previous), err))
 		return
 	}
 	a.home.SetStatus("thinking tags " + enabledLabel(enabled))

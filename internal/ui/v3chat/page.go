@@ -94,6 +94,7 @@ type Page struct {
 	routeLabel                 string
 	profileLabel               string
 	showHeader                 bool
+	showThinkingTags           bool
 	commandEmission            string
 	modelPicker                bool
 	modelLoading               bool
@@ -153,7 +154,7 @@ const (
 )
 
 func NewPage(runtime *Runtime, styles PageStyles) *Page {
-	return &Page{runtime: runtime, styles: styles, showHeader: true, follow: true, rowCache: make(map[string]cachedRows), handoffTargets: make(map[string]footerbar.Rect), matchKey: defaultKeyMatcher}
+	return &Page{runtime: runtime, styles: styles, showHeader: true, showThinkingTags: true, follow: true, rowCache: make(map[string]cachedRows), handoffTargets: make(map[string]footerbar.Rect), matchKey: defaultKeyMatcher}
 }
 
 func (p *Page) SetKeyMatcher(match func(*tcell.EventKey, string) bool) {
@@ -262,6 +263,16 @@ func (p *Page) SetHeaderVisible(show bool) {
 	}
 	p.mu.Lock()
 	p.showHeader = show
+	p.mu.Unlock()
+}
+
+func (p *Page) SetThinkingTagsVisible(show bool) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.showThinkingTags = show
+	p.rowCache = make(map[string]cachedRows)
 	p.mu.Unlock()
 }
 
@@ -1154,6 +1165,8 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 		case "warning":
 			statusLine = status
 			statusStyle = styles.Warning
+		case "notice":
+			statusLine = status
 		}
 	}
 	// Keep the activity indicator moving without turning the page into a
@@ -1378,6 +1391,9 @@ func composerNoticeKind(status string) string {
 		if strings.Contains(normalized, marker) {
 			return "warning"
 		}
+	}
+	if strings.HasPrefix(normalized, "thinking tags ") {
+		return "notice"
 	}
 	return ""
 }
@@ -1854,12 +1870,13 @@ type timelineRenderItem struct {
 	message    Message
 	tool       ToolTimelineItem
 	live       LiveSegment
+	reasoning  ReasoningSegment
 	permission PermissionTimelineItem
 }
 
 func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow {
 	permissions := SelectPermissions(state)
-	items := make([]timelineRenderItem, 0, len(state.Messages)+len(state.Tools)+len(state.Live)+len(permissions))
+	items := make([]timelineRenderItem, 0, len(state.Messages)+len(state.Tools)+len(state.Live)+len(state.Reasoning)+len(permissions))
 	for _, message := range SelectMessages(state) {
 		item := timelineRenderItem{kind: "message", seq: message.GlobalSeq, createdAt: message.CreatedAt, order: len(items), message: message}
 		if tool, ok := parseToolMessage(message); ok {
@@ -1878,6 +1895,9 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 	}
 	for _, segment := range SelectLiveSegments(state) {
 		items = append(items, timelineRenderItem{kind: "live", seq: segment.GlobalSeq, createdAt: segment.CreatedAt, order: len(items), live: segment})
+	}
+	for _, segment := range SelectReasoningSegments(state) {
+		items = append(items, timelineRenderItem{kind: "reasoning", seq: segment.GlobalSeq, createdAt: segment.StartedAt, order: len(items), reasoning: segment})
 	}
 	for _, permission := range permissions {
 		createdAt := firstPositiveInt64(permission.Record.PermissionRequestedAt, permission.Record.CreatedAt)
@@ -1904,6 +1924,7 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 	permissionIndex := p.permissionIndex
 	permissionNote := append([]rune(nil), p.permissionInput...)
 	permissionBusy, permissionError, permissionPrefix := p.permissionBusy, p.permissionError, p.permissionPrefix
+	showThinkingTags := p.showThinkingTags
 	p.mu.Unlock()
 	pendingPermissions := SelectPendingPermissions(state)
 	selectedPermissionID := ""
@@ -1927,6 +1948,8 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 			rows = append(rows, p.renderToolRows(item.tool, width, styles)...)
 		case "live":
 			rows = append(rows, p.renderAssistantRows(item.live.Text, width, styles)...)
+		case "reasoning":
+			rows = append(rows, p.renderReasoningRows(item.reasoning, showThinkingTags, width, styles)...)
 		case "message":
 			message := item.message
 			if isStructuredFinalHandoffMessage(message) {
@@ -1971,6 +1994,34 @@ func planToolCoalescedWithPermission(tool ToolTimelineItem, permissions []Permis
 		}
 	}
 	return false
+}
+
+func (p *Page) renderReasoningRows(segment ReasoningSegment, showThinkingTags bool, width int, styles PageStyles) []renderRow {
+	status := strings.ToLower(strings.TrimSpace(segment.Status))
+	symbol, headline := "•", "Thinking"
+	style := styles.Accent
+	switch status {
+	case "done", "completed":
+		symbol, style = "✓", styles.Success
+	case "error", "failed":
+		symbol, headline, style = "✕", "Thinking failed", styles.Error
+	}
+	rows := []renderRow{{text: symbol + " " + headline, style: style.Bold(true)}}
+	if !showThinkingTags {
+		return rows
+	}
+	body := strings.TrimSpace(firstNonEmpty(segment.Text, segment.Summary))
+	if body == "" && status == "running" {
+		body = "Thinking…"
+	}
+	for _, row := range p.renderAssistantRows(body, maxInt(1, width-2), styles) {
+		row.text = "  " + row.text
+		if len(row.spans) > 0 {
+			row.spans = append([]renderSpan{{text: "  ", style: styles.Muted}}, row.spans...)
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 func (p *Page) renderAssistantRows(content string, width int, styles PageStyles) []renderRow {

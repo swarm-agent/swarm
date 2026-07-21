@@ -246,6 +246,33 @@ func TestReducerProjectsTitleAndCursorOnlyAfterDurableFrame(t *testing.T) {
 	}
 }
 
+func TestReasoningEventsAccumulateAndCompleteFromCanonicalRealtime(t *testing.T) {
+	state := NewState()
+	started, _ := json.Marshal(map[string]any{
+		"run_id": "run", "step": 1, "step_id": "step-1", "reasoning_id": "reasoning-1", "reasoning_key": "analysis", "recorded_at": int64(100),
+	})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{Seq: 1, EventType: "session.reasoning.started", Payload: started, TsUnixMS: 100}}})
+	for seq, payload := range []map[string]any{
+		{"run_id": "run", "step": 1, "step_id": "step-1", "reasoning_id": "reasoning-1", "delta": "Inspecting", "delta_mode": "replace", "recorded_at": int64(101)},
+		{"run_id": "run", "step": 1, "step_id": "step-1", "reasoning_id": "reasoning-1", "delta": " files", "delta_mode": "append", "recorded_at": int64(102)},
+	} {
+		raw, _ := json.Marshal(payload)
+		state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{Seq: uint64(seq + 2), EventType: "session.reasoning.delta", Payload: raw, TsUnixMS: int64(101 + seq)}}})
+	}
+	segments := SelectReasoningSegments(state)
+	if len(segments) != 1 || segments[0].Text != "Inspecting files" || segments[0].Status != "running" || segments[0].GlobalSeq != 1 {
+		t.Fatalf("streaming reasoning = %#v", segments)
+	}
+	completed, _ := json.Marshal(map[string]any{
+		"run_id": "run", "step": 1, "step_id": "step-1", "reasoning_id": "reasoning-1", "summary": "Inspecting files", "recorded_at": int64(103),
+	})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{Seq: 4, EventType: "session.reasoning.completed", Payload: completed, TsUnixMS: 103}}})
+	segments = SelectReasoningSegments(state)
+	if len(segments) != 1 || segments[0].Summary != "Inspecting files" || segments[0].Status != "done" || segments[0].CompletedAt != 103 {
+		t.Fatalf("completed reasoning = %#v", segments)
+	}
+}
+
 func TestLivePatchContinuityAndDurableHandoff(t *testing.T) {
 	state := NewState()
 	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "live.patch", Live: &client.V3RealtimeLivePatch{RunID: "r", StreamID: "out", LiveSeqStart: 1, LiveSeqEnd: 1, OffsetStart: 0, OffsetEnd: 2, Text: "hi"}}})

@@ -1287,6 +1287,14 @@ type UIChatSettings struct {
 	ToolStream             UIChatToolStreamSettings `json:"tool_stream,omitempty"`
 }
 
+type UIChatSettingsPatch struct {
+	ThinkingTags *bool `json:"thinking_tags,omitempty"`
+}
+
+type UISettingsPatch struct {
+	Chat *UIChatSettingsPatch `json:"chat,omitempty"`
+}
+
 type UISwarmingSettings struct {
 	Title  string `json:"title,omitempty"`
 	Status string `json:"status,omitempty"`
@@ -1757,8 +1765,15 @@ func (c *API) GetUISettings(ctx context.Context) (UISettings, error) {
 }
 
 func (c *API) UpdateUISettings(ctx context.Context, settings UISettings) (UISettings, error) {
+	return c.PatchUISettings(ctx, settings)
+}
+
+// PatchUISettings sends only the canonical daemon-backed setting fields the
+// caller intends to change. Desktop and TUI use the same endpoint and keys;
+// neither client owns a separate settings identity.
+func (c *API) PatchUISettings(ctx context.Context, patch any) (UISettings, error) {
 	var saved UISettings
-	if err := c.postJSON(ctx, "/v1/ui/settings", settings, &saved, true); err != nil {
+	if err := c.postJSON(ctx, "/v1/ui/settings", patch, &saved, true); err != nil {
 		return UISettings{}, err
 	}
 	return saved, nil

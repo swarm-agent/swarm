@@ -7700,6 +7700,10 @@ func (a *App) applyLoadedAppConfig(cfg AppConfig) {
 		a.chat.SetThinkingTagsVisible(a.config.Chat.ThinkingTags)
 		a.chat.SetSwarmName(a.config.Swarm.Name)
 	}
+	if a.v3Chat != nil {
+		a.v3Chat.SetHeaderVisible(a.config.Chat.ShowHeader)
+		a.v3Chat.SetThinkingTagsVisible(a.config.Chat.ThinkingTags)
+	}
 	a.setMouseCapture(a.config.Input.MouseEnabled)
 	a.mouseHintShown = false
 	a.syncConfiguredCustomThemes()

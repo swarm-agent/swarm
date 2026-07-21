@@ -6,6 +6,7 @@ package v3chat
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -251,6 +252,22 @@ type LiveSegment struct {
 	OffsetEnd  uint64
 }
 
+type ReasoningSegment struct {
+	Key          string
+	RunID        string
+	Step         int
+	StepID       string
+	ReasoningID  string
+	ReasoningKey string
+	Text         string
+	Summary      string
+	Status       string
+	GlobalSeq    uint64
+	StartedAt    int64
+	CompletedAt  int64
+	UpdatedAt    int64
+}
+
 type State struct {
 	Session        Session
 	Messages       []Message
@@ -258,6 +275,7 @@ type State struct {
 	CurrentRun     *RunState
 	LatestRun      *RunState
 	Live           map[string]LiveSegment
+	Reasoning      map[string]ReasoningSegment
 	Tools          map[string]ToolTimelineItem
 	Connection     ConnectionStatus
 	EndpointCursor string
@@ -372,6 +390,7 @@ func reduceHydrated(state State, hydrated client.SessionV3Hydrated) State {
 	state.Plan = planStateFromHydrated(hydrated)
 	state.Permissions = permissionsFromClient(hydrated.PendingPermissions)
 	state.Messages = mergeMessages(nil, hydrated.Messages)
+	state.Reasoning = make(map[string]ReasoningSegment)
 	state.Tools = make(map[string]ToolTimelineItem)
 	state.LastEventSeq = 0
 	state.EndpointCursor = strings.TrimSpace(hydrated.SnapshotEndpointCursor)
@@ -516,6 +535,7 @@ func applyEvent(state State, event client.SessionV3Event) State {
 		}
 	}
 	state = applyAssistantTimelineEvent(state, event, payload)
+	state = applyReasoningEvent(state, event, payload)
 	state = applyToolEvent(state, clientSessionV3Event{Seq: event.Seq, EventType: event.EventType, Timestamp: event.TsUnixMS}, payload)
 	if event.Seq > state.LastEventSeq {
 		state.LastEventSeq = event.Seq
@@ -571,6 +591,70 @@ func reconcilePending(state State) State {
 			}
 		}
 	}
+	return state
+}
+
+func applyReasoningEvent(state State, event client.SessionV3Event, payload map[string]json.RawMessage) State {
+	eventType := strings.ToLower(strings.TrimSpace(event.EventType))
+	switch eventType {
+	case "session.reasoning.started", "session.reasoning.delta", "session.reasoning.completed", "session.reasoning.error", "session.reasoning.failed":
+	default:
+		return state
+	}
+
+	runID := rawString(payload, "run_id")
+	step := int(rawInt64(payload, "step"))
+	if step <= 0 {
+		step = 1
+	}
+	stepID := firstNonEmpty(rawString(payload, "step_id"), fmt.Sprintf("step-%d", step))
+	reasoningID := firstNonEmpty(rawString(payload, "reasoning_id"), rawString(payload, "reasoning_key"), fmt.Sprintf("reasoning-%d", step))
+	key := strings.Join([]string{runID, stepID, reasoningID}, ":")
+	segment := state.Reasoning[key]
+	if segment.Key == "" {
+		segment = ReasoningSegment{
+			Key:          key,
+			RunID:        runID,
+			Step:         step,
+			StepID:       stepID,
+			ReasoningID:  reasoningID,
+			ReasoningKey: firstNonEmpty(rawString(payload, "reasoning_key"), reasoningID),
+			Status:       "running",
+			GlobalSeq:    event.Seq,
+			StartedAt:    firstPositiveInt64(rawInt64(payload, "recorded_at"), event.TsUnixMS),
+		}
+	}
+	if segment.GlobalSeq == 0 {
+		segment.GlobalSeq = event.Seq
+	}
+	recordedAt := firstPositiveInt64(rawInt64(payload, "recorded_at"), event.TsUnixMS)
+	segment.UpdatedAt = maxInt64Value(segment.UpdatedAt, recordedAt)
+
+	switch eventType {
+	case "session.reasoning.delta":
+		delta := rawText(payload, "delta")
+		switch strings.ToLower(rawString(payload, "delta_mode")) {
+		case "append":
+			segment.Text += delta
+		default:
+			if delta != "" {
+				segment.Text = delta
+			}
+		}
+		segment.Status = "running"
+	case "session.reasoning.completed":
+		segment.Summary = rawText(payload, "summary")
+		if segment.Summary == "" {
+			segment.Summary = segment.Text
+		}
+		segment.Status = "done"
+		segment.CompletedAt = recordedAt
+	case "session.reasoning.error", "session.reasoning.failed":
+		segment.Summary = firstNonEmpty(rawText(payload, "summary"), segment.Text)
+		segment.Status = "error"
+		segment.CompletedAt = recordedAt
+	}
+	state.Reasoning[key] = segment
 	return state
 }
 
@@ -778,6 +862,10 @@ func cloneState(value State) State {
 	out.Live = make(map[string]LiveSegment, len(value.Live))
 	for key, segment := range value.Live {
 		out.Live[key] = segment
+	}
+	out.Reasoning = make(map[string]ReasoningSegment, len(value.Reasoning))
+	for key, segment := range value.Reasoning {
+		out.Reasoning[key] = segment
 	}
 	out.Tools = make(map[string]ToolTimelineItem, len(value.Tools))
 	for key, item := range value.Tools {

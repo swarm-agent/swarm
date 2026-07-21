@@ -10,34 +10,17 @@ import (
 	"swarm-refactor/swarmtui/internal/client"
 )
 
-func TestSaveThinkingTagsSettingPreservesUnrelatedUISettings(t *testing.T) {
-	var getCalls int
-	var postBody client.UISettings
+func TestSaveThinkingTagsSettingUsesCanonicalPartialPatch(t *testing.T) {
+	var postBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			getCalls++
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(client.UISettings{
-				Theme: client.UIThemeSettings{ActiveID: "midnight"},
-				Input: client.UIInputSettings{MouseEnabled: false},
-				Chat: client.UIChatSettings{
-					ShowHeader:            false,
-					ThinkingTags:          true,
-					DefaultNewSessionMode: "plan",
-					ToolStream:            client.UIChatToolStreamSettings{ShowAnchor: true},
-				},
-				Swarm: client.UISwarmSettings{Name: "Desk"},
-			})
-		case http.MethodPost:
-			if err := json.NewDecoder(r.Body).Decode(&postBody); err != nil {
-				t.Fatalf("decode post body: %v", err)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(postBody)
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected thinking tags request: %s %s", r.Method, r.URL.Path)
 		}
+		if err := json.NewDecoder(r.Body).Decode(&postBody); err != nil {
+			t.Fatalf("decode post body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(client.UISettings{Chat: client.UIChatSettings{ThinkingTags: false}})
 	}))
 	defer server.Close()
 
@@ -47,20 +30,9 @@ func TestSaveThinkingTagsSettingPreservesUnrelatedUISettings(t *testing.T) {
 	if err := saveThinkingTagsSetting(api, false); err != nil {
 		t.Fatalf("saveThinkingTagsSetting: %v", err)
 	}
-	if getCalls != 1 {
-		t.Fatalf("GET calls = %d, want 1", getCalls)
-	}
-	if postBody.Chat.ThinkingTags {
-		t.Fatal("posted thinking tags = true, want false")
-	}
-	if postBody.Theme.ActiveID != "midnight" {
-		t.Fatalf("posted theme active id = %q, want midnight", postBody.Theme.ActiveID)
-	}
-	if postBody.Swarm.Name != "Desk" {
-		t.Fatalf("posted swarm name = %q, want Desk", postBody.Swarm.Name)
-	}
-	if postBody.Chat.DefaultNewSessionMode != "plan" {
-		t.Fatalf("posted default mode = %q, want plan", postBody.Chat.DefaultNewSessionMode)
+	chat, ok := postBody["chat"].(map[string]any)
+	if !ok || chat["thinking_tags"] != false || len(chat) != 1 || len(postBody) != 1 {
+		t.Fatalf("thinking tags patch = %#v, want only chat.thinking_tags=false", postBody)
 	}
 }
 
