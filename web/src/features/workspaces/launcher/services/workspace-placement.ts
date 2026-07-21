@@ -49,9 +49,6 @@ export function workspaceRouteTargetType(route: WorkspaceOverviewTopologyRoute, 
   const relationship = normalizeTargetValue(target?.relationship || route.runtimeRelationship)
   const role = normalizeTargetValue(target?.role)
   const kind = workspaceRouteKind(route, target)
-  if (kind === 'local' || kind === 'container') {
-    return 'Container'
-  }
   if (relationship === 'self' || role === 'self' || kind === 'host' || kind === 'self') {
     return 'Host'
   }

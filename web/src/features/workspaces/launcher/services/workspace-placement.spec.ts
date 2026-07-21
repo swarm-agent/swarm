@@ -37,7 +37,7 @@ function route(overrides: Partial<WorkspaceOverviewTopologyRoute> = {}): Workspa
 function target(overrides: Partial<SwarmTarget> = {}): SwarmTarget {
   return {
     swarm_id: 'target-swarm',
-    name: 'Container target',
+    name: 'Worker target',
     role: '',
     relationship: '',
     kind: 'host',
@@ -48,10 +48,13 @@ function target(overrides: Partial<SwarmTarget> = {}): SwarmTarget {
   }
 }
 
-function testContainerTargetTopologyRouteIsVisibleFromTopologyBinding(): void {
+function testFormerContainerTargetTopologyRouteIsVisibleAsGenericTarget(): void {
   const targetRoute = route({ runtimeSwarmName: 'Worker' })
-  assertEqual(workspaceRouteTargetType(targetRoute, null), 'Container', 'container topology bindings should use the container label')
-  assertEqual(workspaceRoutePlacementLabel(targetRoute, null), 'Worker (Container)', 'topology placement label should lead with the route name')
+  const formerContainerTarget = target({ kind: 'container', relationship: 'child' })
+  const links = workspacePlacementLinks([targetRoute], [formerContainerTarget])
+  assertEqual(String(links.length), '1', 'former container-shaped topology bindings must remain visible')
+  assertEqual(links[0]?.targetType ?? '', 'Target', 'former container-shaped targets should use the generic target label')
+  assertEqual(workspaceRoutePlacementLabel(targetRoute, formerContainerTarget), 'Worker target (Target)', 'topology placement label should use the resolved generic target')
 }
 
 function testRuntimePathCanProvideVisibleRouteName(): void {
@@ -76,7 +79,7 @@ function testTopologyRoutesRenderWithoutTargetRecord(): void {
 }
 
 function main(): void {
-  testContainerTargetTopologyRouteIsVisibleFromTopologyBinding()
+  testFormerContainerTargetTopologyRouteIsVisibleAsGenericTarget()
   testRuntimePathCanProvideVisibleRouteName()
   testNonTopologyRoutesAreRemovedFromVisibleLinks()
   testSelfHostMapsToHost()
