@@ -65,15 +65,23 @@ func TestSessionsV3TUIDirectoryCreateOpenAndWorkset(t *testing.T) {
 		t.Fatalf("open status = %d, want %d, body=%s", openRec.Code, http.StatusOK, openRec.Body.String())
 	}
 	var opened struct {
-		OK      bool                          `json:"ok"`
-		Session pebblestore.SessionSnapshot   `json:"session"`
-		Events  []sessionruntime.SessionEvent `json:"events"`
+		OK                     bool                          `json:"ok"`
+		Session                pebblestore.SessionSnapshot   `json:"session"`
+		Events                 []sessionruntime.SessionEvent `json:"events"`
+		SnapshotEndpointCursor string                        `json:"snapshot_endpoint_cursor"`
 	}
 	if err := json.Unmarshal(openRec.Body.Bytes(), &opened); err != nil {
 		t.Fatalf("decode open response: %v", err)
 	}
 	if !opened.OK || opened.Session.ID != created.Session.ID || len(opened.Events) != 0 {
 		t.Fatalf("opened = %+v", opened)
+	}
+	cursorPayload, err := server.verifyV3SyncCursor(opened.SnapshotEndpointCursor)
+	if err != nil {
+		t.Fatalf("verify TUI open snapshot cursor: %v", err)
+	}
+	if cursorPayload.Surface != "tui" || cursorPayload.StreamKind != "v3.realtime" {
+		t.Fatalf("TUI open snapshot cursor scope = surface %q stream %q", cursorPayload.Surface, cursorPayload.StreamKind)
 	}
 
 	wrongOpenReq := httptest.NewRequest(http.MethodGet, "/v3/tui/sessions/"+created.Session.ID+"?cwd_path="+filepath.Join(t.TempDir(), "other"), nil)

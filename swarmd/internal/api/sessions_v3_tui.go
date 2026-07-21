@@ -221,7 +221,7 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	hydrated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	hydrated, found, err := s.hydrateSessionsV3PrimaryForSurface(principal, sessionID, "tui")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -249,7 +249,7 @@ func (s *Server) handleSessionV3TUIOpen(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	hydrated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	hydrated, found, err := s.hydrateSessionsV3PrimaryForSurface(principal, sessionID, "tui")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -286,7 +286,7 @@ func (s *Server) handleSessionV3TUIRebind(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, errors.New("tui directory rebind requires workspace_path to match cwd_path"))
 		return
 	}
-	hydrated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	hydrated, found, err := s.hydrateSessionsV3PrimaryForSurface(principal, sessionID, "tui")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -362,7 +362,7 @@ func (s *Server) handleSessionV3TUIRebind(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	updated, found, err := s.hydrateSessionsV3Primary(principal, sessionID)
+	updated, found, err := s.hydrateSessionsV3PrimaryForSurface(principal, sessionID, "tui")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

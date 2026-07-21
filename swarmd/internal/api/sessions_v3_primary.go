@@ -2541,7 +2541,11 @@ func (s *Server) validateSessionsV3PrimaryStopTarget(principal identity.Principa
 }
 
 func (s *Server) hydrateSessionsV3Primary(principal identity.Principal, sessionID string) (sessionsV3HydratedSession, bool, error) {
-	return s.hydrateSessionsV3PrimaryWithLimits(principal, sessionID, sessionsV3PrimaryDefaultMessageTailLimit, sessionsV3PrimaryDefaultEventLimit)
+	return s.hydrateSessionsV3PrimaryWithLimitsForSurface(principal, sessionID, sessionsV3PrimaryDefaultMessageTailLimit, sessionsV3PrimaryDefaultEventLimit, "desktop")
+}
+
+func (s *Server) hydrateSessionsV3PrimaryForSurface(principal identity.Principal, sessionID, surface string) (sessionsV3HydratedSession, bool, error) {
+	return s.hydrateSessionsV3PrimaryWithLimitsForSurface(principal, sessionID, sessionsV3PrimaryDefaultMessageTailLimit, sessionsV3PrimaryDefaultEventLimit, surface)
 }
 
 func (s *Server) sessionsV3PrimaryUsageResponse(principal identity.Principal, sessionID string) (map[string]any, bool, error) {
@@ -2617,6 +2621,10 @@ func (s *Server) sessionsV3PrimaryPreferenceResponse(principal identity.Principa
 }
 
 func (s *Server) hydrateSessionsV3PrimaryWithLimits(principal identity.Principal, sessionID string, messageLimit, eventLimit int) (sessionsV3HydratedSession, bool, error) {
+	return s.hydrateSessionsV3PrimaryWithLimitsForSurface(principal, sessionID, messageLimit, eventLimit, "desktop")
+}
+
+func (s *Server) hydrateSessionsV3PrimaryWithLimitsForSurface(principal identity.Principal, sessionID string, messageLimit, eventLimit int, surface string) (sessionsV3HydratedSession, bool, error) {
 	hydrated, ok, err := s.sessions.HydrateSessionSnapshot(sessionID, messageLimit, eventLimit)
 	if err != nil || !ok {
 		return sessionsV3HydratedSession{}, ok, err
@@ -2644,7 +2652,7 @@ func (s *Server) hydrateSessionsV3PrimaryWithLimits(principal identity.Principal
 	contextWindow := view.AgenticSettings.ContextWindow
 	maxOutputTokens := view.AgenticSettings.MaxOutputTokens
 	agentModelPolicy := view.AgenticSettings.AgentModelPolicy
-	snapshotEndpointCursor, err := s.signV3SyncEndpointCursorFromLegacy(v3SyncCursorScopeForRealtime(principal, "desktop"), hydrated.SnapshotEndpointCursor)
+	snapshotEndpointCursor, err := s.signV3SyncEndpointCursorFromLegacy(v3SyncCursorScopeForRealtime(principal, surface), hydrated.SnapshotEndpointCursor)
 	if err != nil {
 		return sessionsV3HydratedSession{}, false, err
 	}
