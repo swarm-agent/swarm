@@ -79,8 +79,6 @@ type sessionsV3PlanLifecycleFollowupRequest struct {
 	PlanID                   string   `json:"plan_id,omitempty"`
 	CheckpointID             string   `json:"checkpoint_id,omitempty"`
 	ChangeRequest            string   `json:"change_request,omitempty"`
-	UserRequest              string   `json:"user_request,omitempty"`
-	Request                  string   `json:"request,omitempty"`
 	CheckpointTitle          string   `json:"checkpoint_title,omitempty"`
 	Title                    string   `json:"title,omitempty"`
 	Tasks                    []string `json:"tasks,omitempty"`
@@ -400,7 +398,7 @@ func (s *Server) handleSessionV3PrimaryPlanModeStartSessionCheckpoint(w http.Res
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	result, err := s.planLifecycle.StartSessionCheckpoint(sessionruntime.PlanLifecycleSessionCheckpointInput{SessionID: sessionID, ChangeRequest: req.ChangeRequest, UserRequest: firstNonEmptyString(req.UserRequest, req.Request), Title: firstNonEmptyString(req.CheckpointTitle, req.Title), CheckpointID: checkpointID, Tasks: req.Tasks, AcceptanceCriteria: req.AcceptanceCriteria, Notes: req.Notes, SourceMessageID: req.SourceMessageID, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, StartedAt: input.StartedAt})
+	result, err := s.planLifecycle.StartSessionCheckpoint(sessionruntime.PlanLifecycleSessionCheckpointInput{SessionID: sessionID, ChangeRequest: req.ChangeRequest, Title: firstNonEmptyString(req.CheckpointTitle, req.Title), CheckpointID: checkpointID, Tasks: req.Tasks, AcceptanceCriteria: req.AcceptanceCriteria, Notes: req.Notes, SourceMessageID: req.SourceMessageID, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, StartedAt: input.StartedAt})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -431,7 +429,7 @@ func (s *Server) handleSessionV3PrimaryPlanModeRequestFollowupCheckpoint(w http.
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	result, err := s.planLifecycle.RequestFollowupCheckpoint(sessionruntime.PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: req.PlanID, ChangeRequest: req.ChangeRequest, UserRequest: firstNonEmptyString(req.UserRequest, req.Request), Title: firstNonEmptyString(req.CheckpointTitle, req.Title), Tasks: req.Tasks, AcceptanceCriteria: req.AcceptanceCriteria, Notes: req.Notes, SourceMessageID: req.SourceMessageID, GlobalDefaultPolicy: req.FollowupCheckpointPolicy, ApprovalConfirmed: true, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, StartedAt: input.StartedAt})
+	result, err := s.planLifecycle.RequestFollowupCheckpoint(sessionruntime.PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: req.PlanID, ChangeRequest: req.ChangeRequest, Title: firstNonEmptyString(req.CheckpointTitle, req.Title), Tasks: req.Tasks, AcceptanceCriteria: req.AcceptanceCriteria, Notes: req.Notes, SourceMessageID: req.SourceMessageID, GlobalDefaultPolicy: req.FollowupCheckpointPolicy, ApprovalConfirmed: true, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, StartedAt: input.StartedAt})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

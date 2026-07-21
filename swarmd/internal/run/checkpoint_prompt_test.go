@@ -29,7 +29,7 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		ID:    "plan-cp",
 		Title: "Plan CP",
 		Info: pebblestore.SessionPlanInfo{
-			Goal:               "Ship deterministic checkpoint runs",
+			Goal:               "Stale original plan goal that must not govern cp-2",
 			Scope:              "Backend only",
 			Decisions:          []string{"clear history"},
 			RelevantFiles:      []string{"swarmd/internal/run/service.go"},
@@ -61,6 +61,15 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	}
 	if !strings.Contains(text, "Execute exactly one checkpoint: cp-2") {
 		t.Fatalf("prompt missing one-checkpoint assignment: %s", text)
+	}
+	if !strings.Contains(text, "checkpoint.objective is the sole current objective") {
+		t.Fatalf("prompt missing canonical objective instruction: %s", text)
+	}
+	if strings.Contains(text, "Stale original plan goal that must not govern cp-2") || strings.Contains(text, `"goal"`) {
+		t.Fatalf("prompt injected the plan goal as a competing current objective: %s", text)
+	}
+	if !strings.Contains(text, `"objective": "Use plan context only"`) {
+		t.Fatalf("prompt missing selected checkpoint objective: %s", text)
 	}
 	if !strings.Contains(text, "a final complete_subtask call with complete_checkpoint=true, mark_needs_review, mark_blocked, or mark_failed") {
 		t.Fatalf("prompt missing terminal outcome instruction: %s", text)
@@ -165,7 +174,7 @@ func TestRunTurnCheckpointContextSendsFreshProviderInput(t *testing.T) {
 		ID:                 "plan-cp",
 		Info:               pebblestore.SessionPlanInfo{Goal: "Fresh provider input"},
 		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
-		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Fresh", Status: sessionruntime.PlanCheckpointStatusPending}},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Fresh", Status: sessionruntime.PlanCheckpointStatusPending, Objective: "Current replacement objective"}},
 		ActiveCheckpointID: "cp-1",
 	}}); err != nil {
 		t.Fatalf("save plan: %v", err)
@@ -188,8 +197,11 @@ func TestRunTurnCheckpointContextSendsFreshProviderInput(t *testing.T) {
 	if strings.Contains(text, "legacy context should be absent") {
 		t.Fatalf("provider input leaked prior conversation: %s", text)
 	}
-	if !strings.Contains(text, "Fresh provider input") || !strings.Contains(text, "cp-1") {
-		t.Fatalf("provider input missing plan/checkpoint payload: %s", text)
+	if !strings.Contains(text, "Current replacement objective") || !strings.Contains(text, "cp-1") {
+		t.Fatalf("provider input missing selected checkpoint objective: %s", text)
+	}
+	if strings.Contains(text, "Fresh provider input") || strings.Contains(text, `"goal"`) {
+		t.Fatalf("provider input retained stale plan goal as a competing objective: %s", text)
 	}
 	if runner.requests[0].SessionID != sessionID {
 		t.Fatalf("durable session id = %q, want %q", runner.requests[0].SessionID, sessionID)

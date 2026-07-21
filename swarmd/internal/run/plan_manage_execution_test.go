@@ -1388,8 +1388,11 @@ func TestExecutePlanManageRestartCheckpointAtomicallyReplacesChangedRequirements
 	if payload.NextAction != "run_checkpoint_with_fresh_context" || checkpoint.Title != "New behavior" || checkpoint.Objective != "redirect the same feature to the new behavior" || strings.Join(checkpoint.Tasks, ",") != "implement redirected behavior,remove stale assumptions" || strings.Join(checkpoint.AcceptanceCriteria, ",") != "new behavior works,old requirement is not retained" || checkpoint.SourceMessageID != "redirect-message" {
 		t.Fatalf("replacement restart did not carry new requirements: raw=%s checkpoint=%#v", raw, checkpoint)
 	}
-	if len(checkpoint.Attempts) != 1 || checkpoint.Attempts[0].Status != sessionruntime.PlanCheckpointStatusInProgress || checkpoint.AttemptID == "" || checkpoint.Status != sessionruntime.PlanCheckpointStatusInProgress || !strings.Contains(checkpoint.Notes, "replacement handoff") {
-		t.Fatalf("replacement restart did not create a fresh execution attempt: %#v", checkpoint)
+	if checkpoint.Status != sessionruntime.PlanCheckpointStatusPending || checkpoint.AttemptID != "" || len(checkpoint.Attempts) != 0 || !strings.Contains(checkpoint.Notes, "replacement handoff") {
+		t.Fatalf("replacement restart did not reset the checkpoint for a fresh execution attempt: %#v", checkpoint)
+	}
+	if !strings.Contains(checkpoint.Notes, "Current user request / change_request:") || strings.Contains(checkpoint.Notes, "Original user request/context:") || strings.Contains(checkpoint.Notes, "old objective") {
+		t.Fatalf("replacement restart retained a competing prior objective: %#v", checkpoint)
 	}
 }
 

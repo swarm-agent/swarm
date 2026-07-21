@@ -12,7 +12,6 @@ import (
 type checkpointRunPromptPayload struct {
 	PlanID           string                                 `json:"plan_id"`
 	PlanTitle        string                                 `json:"plan_title,omitempty"`
-	Goal             string                                 `json:"goal,omitempty"`
 	Scope            string                                 `json:"scope,omitempty"`
 	Decisions        []string                               `json:"decisions,omitempty"`
 	RelevantFiles    []string                               `json:"relevant_files,omitempty"`
@@ -73,6 +72,10 @@ func (s *Service) buildPlanCheckpointRunInput(sessionID, runID string, options R
 		return nil, true, fmt.Errorf("checkpoint %q was not found in active plan", checkpointID)
 	}
 	checkpoint := doc.Checkpoints[idx]
+	checkpoint.Objective = checkpointRunObjective(checkpoint)
+	if checkpoint.Objective == "" {
+		return nil, true, fmt.Errorf("checkpoint %q requires a current objective, task, or title", checkpointID)
+	}
 	attemptID := strings.TrimSpace(ctx.AttemptID)
 	if attemptID == "" {
 		attemptID = strings.TrimSpace(checkpoint.AttemptID)
@@ -87,7 +90,6 @@ func (s *Service) buildPlanCheckpointRunInput(sessionID, runID string, options R
 	payload := checkpointRunPromptPayload{
 		PlanID:           planID,
 		PlanTitle:        firstNonEmptyString(strings.TrimSpace(doc.Title), strings.TrimSpace(plan.Title)),
-		Goal:             strings.TrimSpace(doc.Info.Goal),
 		Scope:            strings.TrimSpace(doc.Info.Scope),
 		Decisions:        trimStringSliceForPrompt(doc.Info.Decisions),
 		RelevantFiles:    trimStringSliceForPrompt(doc.Info.RelevantFiles),
@@ -129,7 +131,7 @@ func renderCheckpointRunPrompt(payload checkpointRunPromptPayload) (string, erro
 	parts := []string{
 		"[checkpoint-run] Deterministic checkpoint execution context.",
 		"Conversation history has been intentionally cleared for this run. Use only this payload plus the system/developer instructions and tool results from this run.",
-		"Execute exactly one checkpoint: " + checkpointID + ". Do not begin later checkpoints in this run.",
+		"Execute exactly one checkpoint: " + checkpointID + ". Its checkpoint.objective is the sole current objective for this run; plan metadata and completed checkpoints are context only. Do not revive an earlier plan goal or checkpoint objective, and do not begin later checkpoints in this run.",
 		"Use plan_manage as the only checkpoint lifecycle surface for this run. Do not use manage_todos for agent self-tracking, checkpoint progress, or terminal outcomes; manage_todos is reserved for user-owned workspace todos.",
 		"Do not call plan_manage update_checkpoint or structured document patches merely to record routine progress or summarize completed work. Keep typed subtask state durable while a multi-task checkpoint is underway: at a genuine boundary call complete_subtask for one task, or pass subtask_ids to atomically record every task completed since the last progress call. If work continues, that transition advances the next task and makes live client state visible. Do not call complete_subtask for discovery-only activity or for a single-step checkpoint.",
 	}
@@ -183,6 +185,16 @@ func findPlanRunCheckpointIndex(checkpoints []pebblestore.SessionPlanCheckpoint,
 		}
 	}
 	return -1
+}
+
+func checkpointRunObjective(checkpoint pebblestore.SessionPlanCheckpoint) string {
+	if objective := strings.TrimSpace(checkpoint.Objective); objective != "" {
+		return objective
+	}
+	if tasks := trimStringSliceForPrompt(checkpoint.Tasks); len(tasks) != 0 {
+		return strings.Join(tasks, "\n")
+	}
+	return strings.TrimSpace(checkpoint.Title)
 }
 
 func trimStringSliceForPrompt(values []string) []string {

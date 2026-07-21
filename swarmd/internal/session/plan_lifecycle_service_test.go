@@ -676,7 +676,6 @@ func TestPlanLifecycleStartSessionCheckpointCreatesApprovedStartedPlan(t *testin
 	result, err := NewPlanLifecycleService(svc).StartSessionCheckpoint(PlanLifecycleSessionCheckpointInput{
 		SessionID:          sessionID,
 		ChangeRequest:      request,
-		UserRequest:        request + " with original chat context",
 		Title:              "Fix sidebar visibility",
 		Tasks:              []string{"Inspect sidebar state", "Keep the active item visible"},
 		AcceptanceCriteria: []string{"Active item remains visible after navigation"},
@@ -712,7 +711,7 @@ func TestPlanLifecycleStartSessionCheckpointCreatesApprovedStartedPlan(t *testin
 	if len(checkpoint.Tasks) != 2 || len(checkpoint.AcceptanceCriteria) != 1 {
 		t.Fatalf("handoff fields not preserved: %#v", checkpoint)
 	}
-	for _, want := range []string{"Verbatim user request / change_request:", request, "Original user request/context:", "Handoff notes:", "Relevant files:"} {
+	for _, want := range []string{"Current user request / change_request:", request, "Handoff notes:", "Relevant files:"} {
 		if !strings.Contains(checkpoint.Notes, want) {
 			t.Fatalf("checkpoint notes missing %q: %s", want, checkpoint.Notes)
 		}
@@ -810,11 +809,11 @@ func TestPlanLifecycleRequestFollowupCheckpointBuildsSelfContainedHandoff(t *tes
 		SessionID:          sessionID,
 		PlanID:             plan.ID,
 		ChangeRequest:      request,
-		UserRequest:        request + " plus parent-session context",
 		Title:              "Design session-checkpoint handoff payload requirements",
 		Tasks:              []string{"Define full request preservation", "Specify handoff fields"},
 		AcceptanceCriteria: []string{"The checkpoint preserves material parts of the original request", "The checkpoint reads as a self-contained handoff"},
 		Notes:              "Relevant files: swarmd/internal/run/service_prompt.go; validation: targeted tests only.",
+		ApprovalConfirmed:  true,
 	})
 	if err != nil {
 		t.Fatalf("request follow-up handoff: %v", err)
@@ -824,15 +823,18 @@ func TestPlanLifecycleRequestFollowupCheckpointBuildsSelfContainedHandoff(t *tes
 	}
 	checkpoint := result.Plan.Document.Checkpoints[1]
 	if checkpoint.Objective != request {
-		t.Fatalf("objective = %q, want verbatim request", checkpoint.Objective)
+		t.Fatalf("objective = %q, want current request", checkpoint.Objective)
 	}
 	if checkpoint.Title != "Design session-checkpoint handoff payload requirements" || len(checkpoint.Tasks) != 2 || len(checkpoint.AcceptanceCriteria) != 2 {
 		t.Fatalf("handoff fields not preserved: %#v", checkpoint)
 	}
-	for _, want := range []string{"Verbatim user request / change_request:", request, "Original user request/context:", "Handoff notes:", "Relevant files:"} {
+	for _, want := range []string{"Current user request / change_request:", request, "Handoff notes:", "Relevant files:"} {
 		if !strings.Contains(checkpoint.Notes, want) {
 			t.Fatalf("checkpoint notes missing %q: %s", want, checkpoint.Notes)
 		}
+	}
+	if strings.Contains(checkpoint.Notes, "Original user request/context:") {
+		t.Fatalf("follow-up checkpoint retained a competing original request: %s", checkpoint.Notes)
 	}
 }
 

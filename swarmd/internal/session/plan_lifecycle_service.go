@@ -51,7 +51,6 @@ type PlanLifecycleFollowupCheckpointInput struct {
 	SessionID           string
 	PlanID              string
 	ChangeRequest       string
-	UserRequest         string
 	Title               string
 	Tasks               []string
 	AcceptanceCriteria  []string
@@ -69,7 +68,6 @@ type PlanLifecycleFollowupCheckpointInput struct {
 type PlanLifecycleSessionCheckpointInput struct {
 	SessionID          string
 	ChangeRequest      string
-	UserRequest        string
 	Title              string
 	CheckpointID       string
 	Tasks              []string
@@ -349,7 +347,7 @@ func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFoll
 		Objective:          request,
 		Tasks:              tasks,
 		AcceptanceCriteria: trimStringSlice(input.AcceptanceCriteria),
-		Notes:              buildFollowupCheckpointHandoffNotes(request, input.UserRequest, input.Notes),
+		Notes:              buildCheckpointHandoffNotes(request, input.Notes),
 		SourceMessageID:    strings.TrimSpace(input.SourceMessageID),
 		Order:              insertionPoint.Index + 1,
 	}
@@ -431,7 +429,7 @@ func (s *PlanLifecycleService) StartSessionCheckpoint(input PlanLifecycleSession
 			Objective:          request,
 			Tasks:              tasks,
 			AcceptanceCriteria: trimStringSlice(input.AcceptanceCriteria),
-			Notes:              buildFollowupCheckpointHandoffNotes(request, input.UserRequest, input.Notes),
+			Notes:              buildCheckpointHandoffNotes(request, input.Notes),
 			SourceMessageID:    strings.TrimSpace(input.SourceMessageID),
 			Order:              1,
 		}},
@@ -496,16 +494,12 @@ func renderSessionCheckpointPlanText(title, request string, tasks, criteria []st
 	return strings.TrimSpace(b.String())
 }
 
-func buildFollowupCheckpointHandoffNotes(changeRequest, userRequest, notes string) string {
+func buildCheckpointHandoffNotes(changeRequest, notes string) string {
 	changeRequest = strings.TrimSpace(changeRequest)
-	userRequest = strings.TrimSpace(userRequest)
 	notes = strings.TrimSpace(notes)
-	sections := make([]string, 0, 3)
+	sections := make([]string, 0, 2)
 	if changeRequest != "" {
-		sections = append(sections, "Verbatim user request / change_request:\n"+changeRequest)
-	}
-	if userRequest != "" && userRequest != changeRequest {
-		sections = append(sections, "Original user request/context:\n"+userRequest)
+		sections = append(sections, "Current user request / change_request:\n"+changeRequest)
 	}
 	if notes != "" {
 		sections = append(sections, "Handoff notes:\n"+notes)
@@ -1036,7 +1030,7 @@ func replaceRestartedCheckpointRequirements(doc *pebblestore.SessionPlanDocument
 	checkpoint.ActiveSubtaskID = ""
 	normalizePlanCheckpointSubtasks(checkpoint)
 	checkpoint.AcceptanceCriteria = criteria
-	checkpoint.Notes = buildFollowupCheckpointHandoffNotes(request, request, input.ReplacementNotes)
+	checkpoint.Notes = buildCheckpointHandoffNotes(request, input.ReplacementNotes)
 	checkpoint.SourceMessageID = strings.TrimSpace(input.ReplacementSourceID)
 	return ValidatePlanDocument(doc)
 }

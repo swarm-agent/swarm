@@ -2611,7 +2611,6 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		input := sessionruntime.PlanLifecycleSessionCheckpointInput{
 			SessionID:          sessionID,
 			ChangeRequest:      strings.TrimSpace(mapString(args, "change_request")),
-			UserRequest:        strings.TrimSpace(firstNonEmptyString(mapString(args, "user_request"), mapString(args, "request"), mapString(args, "prompt"), mapString(args, "text"))),
 			Title:              strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title"))),
 			CheckpointID:       strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_id"), mapString(args, "id"))),
 			Tasks:              mapStringSlice(args, "tasks"),
@@ -2630,7 +2629,6 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 			SessionID:          sessionID,
 			PlanID:             planID,
 			ChangeRequest:      strings.TrimSpace(mapString(args, "change_request")),
-			UserRequest:        strings.TrimSpace(firstNonEmptyString(mapString(args, "user_request"), mapString(args, "request"), mapString(args, "prompt"), mapString(args, "text"))),
 			Title:              strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title"))),
 			Tasks:              mapStringSlice(args, "tasks"),
 			AcceptanceCriteria: mapStringSlice(args, "acceptance_criteria"),

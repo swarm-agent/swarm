@@ -36,6 +36,7 @@ func TestDurableRunStateInstructionsUsesActivePlanInsteadOfTranscript(t *testing
 		"Do not call plan_manage get-active merely to determine whether a plan exists", "An active plan exists; the injected plan and checkpoint fields are authoritative",
 		"do not blindly restart the stale definition", "classify whether it is the same deliverable or an independent task",
 		"restart_checkpoint with change_request and complete replacement title/tasks/acceptance_criteria/notes", "request_followup_checkpoint",
+		"selected checkpoint's current objective governs its run", "earlier plan goals and checkpoint objectives are historical context", "objective is derived only from the current request",
 	} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("run state missing %q: %s", want, instructions)
