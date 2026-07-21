@@ -23,7 +23,8 @@ If this file conflicts with convenience, this file wins. If this file conflicts 
 
 - Current priority: make the core Swarm command center work properly before expanding runtime planes.
 - Essentials: local daemon/app, Desktop/TUI, V3 durable sessions/sync/realtime, agents, tools, permissions, plans, model preferences, workspace selection, and Flows.
-- Runner direction: containers and other non-local execution are future runner targets unless the user explicitly asks to work on them.
+- Dedicated local-container execution and its APIs are retired; do not restore their profiles, stores, routes, image builds, or harnesses.
+- Runner direction: containers and other non-local execution remain possible future Flow-driven runner targets unless the user explicitly asks to work on them.
 - Do not add new feature behavior to retired runner or route-mirroring paths as a shortcut.
 - When retired runner code appears, remove it in the scoped migration rather than restoring public contracts or compatibility paths.
 - Do not rename current product language to `master` in new docs or UI. Use `primary`, `self`, `host`, `runner`, or the exact existing code term required for compatibility.
@@ -56,9 +57,9 @@ If this file conflicts with convenience, this file wins. If this file conflicts 
 - A user asking whether something is “ready to test” is not permission to run broad tests. Report safe next test options.
 - Do not run `./scripts/check-precommit.sh` for routine local commits.
 - The protected-branch pre-push hook runs `./scripts/check-prepush.sh`, which invokes `./scripts/check-precommit.sh` before pushes to `dev` or `main`; do not bypass that hook.
-- Before opening or updating a pull request, run `./scripts/check-precommit.sh` once for the reviewed PR head. Pull requests targeting `dev` or `main`, and pushes to either branch, also run the checked-in dependency vulnerability workflow. Container-related changes run the checked-in container CVE workflow.
+- Before opening or updating a pull request, run `./scripts/check-precommit.sh` once for the reviewed PR head. Pull requests targeting `dev` or `main`, and pushes to either branch, also run the checked-in dependency vulnerability workflow.
 - `./scripts/check-precommit.sh` includes path, secrets, policy, and vulnerability scans and must skip tests by default.
-- Before publishing any container/package artifact, run the appropriate checked-in publish gate. If the current gate is stale because runner packaging is being redesigned, stop and report that rather than publishing.
+- Before publishing any package artifact, run the appropriate checked-in publish gate. Future runner packaging needs an explicit checked-in gate before it can be published.
 - Never pass raw secrets on command lines. Use env-name flags consumed by checked-in harnesses.
 - If tests or validation were not requested or not run, say so explicitly.
 
@@ -79,6 +80,7 @@ If this file conflicts with convenience, this file wins. If this file conflicts 
 
 ### Flows and Runners
 
+- Swarm targets and V3 sessions/sync/realtime are current critical contracts; local-container retirement must not narrow target routing or bypass V3 durability.
 - Flows are the intended scheduling/orchestration surface. Keep Flow behavior explicit, durable, and target-aware.
 - For now, avoid expanding non-local execution behavior. Treat it as a future runner concern, not the core product path.
 - Do not route Flow or session work through retired runner paths.

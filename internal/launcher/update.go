@@ -53,7 +53,6 @@ var (
 	buildSwarmTUIForUpdate                         = BuildSwarmTUI
 	devFrontendAssetsNeedRebuildForUpdate          = DevFrontendAssetsNeedRebuild
 	buildAndInstallWebAssetsForUpdate              = BuildAndInstallWebAssets
-	syncDevContainerImagesWithFingerprintForUpdate = SyncDevContainerImagesWithFingerprint
 	installLaunchersForUpdate                      = InstallLaunchers
 	ensureSystemdServiceUnitForUpdate              = EnsureSystemdServiceUnit
 	rollbackPendingUpdateAndRestartForUpdate       = rollbackPendingUpdateAndRestart

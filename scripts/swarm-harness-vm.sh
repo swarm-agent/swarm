@@ -30,9 +30,6 @@ Usage:
   ./scripts/swarm-harness-vm.sh sync [--repo-root PATH]
   ./scripts/swarm-harness-vm.sh provision [--repo-root PATH] [--no-sync] [--rebootstrap]
   ./scripts/swarm-harness-vm.sh run [--repo-root PATH] [--no-sync] -- <command...>
-  ./scripts/swarm-harness-vm.sh local-replicate [--repo-root PATH] [--no-sync] -- [harness-args...]
-  ./scripts/swarm-harness-vm.sh local-replicate-recovery [--repo-root PATH] [--no-sync] -- [harness-args...]
-  ./scripts/swarm-harness-vm.sh topology [--repo-root PATH] [--no-sync] -- [bench-args...]
   ./scripts/swarm-harness-vm.sh live-prod-update [--repo-root PATH] [--no-sync] -- [harness-args...]
 
 Environment overrides:
@@ -58,7 +55,7 @@ Behavior:
   - keeps repo sync explicit via rsync; no host bind mounts are used
   - refuses to boot without writable /dev/kvm unless SWARM_HARNESS_VM_ALLOW_TCG=true
   - installs guest-side test prerequisites with apt during bootstrap, then skips repeat bootstrap when the stamp exists unless --rebootstrap is passed
-  - run/local-replicate/local-replicate-recovery/topology/live-prod-update sync by default; pass --no-sync only when the existing guest checkout is already current
+  - run/live-prod-update sync by default; pass --no-sync only when the existing guest checkout is already current
   - can install required Ubuntu host packages with install-host-deps
 EOF
 }
@@ -528,18 +525,11 @@ sudo apt-get install -y \
   build-essential \
   ca-certificates \
   curl \
-  docker.io \
-  fuse-overlayfs \
   git \
   jq \
   npm \
-  podman \
   pkg-config \
-  rsync \
-  slirp4netns \
-  uidmap
-sudo systemctl enable --now docker > /dev/null 2>&1 || true
-sudo usermod -aG docker "$(id -un)" || true
+  rsync
 EOF
   require_command qemu-img
   local tmp_bootstrap_image="${BOOTSTRAP_IMAGE_FILE}.tmp"
@@ -576,7 +566,6 @@ sync_repo() {
     --exclude '.swarm/' \
     --exclude '.tmp/' \
     --exclude 'tmp/' \
-    --exclude 'libpod/' \
     --exclude 'web/dist/' \
     --exclude 'web/tsconfig.tsbuildinfo' \
     -e "$(rsync_ssh_command)" \
@@ -602,7 +591,7 @@ provision_vm() {
 verify_guest_ready() {
   start_vm
   local repo_dir_literal="${GUEST_REPO_DIR/#\~/$HOME}"
-  remote_ssh_command "test -d $(shell_quote "${repo_dir_literal}") && test -f $(shell_quote "${repo_dir_literal}/go.mod") && test -x $(shell_quote "${repo_dir_literal}/.tools/go/bin/go") && PATH=$(shell_quote "${repo_dir_literal}/.tools/go/bin"):\$PATH command -v go > /dev/null && command -v bash > /dev/null && command -v git > /dev/null && command -v npm > /dev/null && command -v podman > /dev/null && command -v docker > /dev/null"
+  remote_ssh_command "test -d $(shell_quote "${repo_dir_literal}") && test -f $(shell_quote "${repo_dir_literal}/go.mod") && test -x $(shell_quote "${repo_dir_literal}/.tools/go/bin/go") && PATH=$(shell_quote "${repo_dir_literal}/.tools/go/bin"):\$PATH command -v go > /dev/null && command -v bash > /dev/null && command -v git > /dev/null && command -v npm > /dev/null"
 }
 
 fast_vm() {
@@ -667,18 +656,6 @@ ssh_in_guest() {
     return 0
   fi
   remote_ssh_command "$(join_quoted "${ARGS[@]}")"
-}
-
-run_local_replicate() {
-  run_in_guest_repo ./tests/swarmd/local_replicate_e2e.sh "$@"
-}
-
-run_local_replicate_recovery() {
-  run_in_guest_repo ./tests/swarmd/local_replicate_recovery_e2e.sh "$@"
-}
-
-run_topology_bench() {
-  run_in_guest_repo ./tests/swarmd/topology_e2e.sh "$@"
 }
 
 run_live_prod_update() {
@@ -750,7 +727,7 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "${COMMAND}" in
-  create|start|stop|restart|reset|nuke|fast|status|track|logs|doctor|install-host-deps|setup|bootstrap|sync|provision|ssh|shell|run|local-replicate|local-replicate-recovery|topology|live-prod-update)
+  create|start|stop|restart|reset|nuke|fast|status|track|logs|doctor|install-host-deps|setup|bootstrap|sync|provision|ssh|shell|run|live-prod-update)
     ;;
   ""|help|-h|--help)
     usage
@@ -797,7 +774,7 @@ case "${COMMAND}" in
     [[ "${NO_SYNC}" != "true" ]] || fail "--no-sync is not supported for sync"
     [[ "${FORCE_REBOOTSTRAP}" != "true" ]] || fail "--rebootstrap is not supported for sync"
     ;;
-  run|local-replicate|local-replicate-recovery|topology|live-prod-update)
+  run|live-prod-update)
     [[ "${FORCE_REBOOTSTRAP}" != "true" ]] || fail "--rebootstrap is not supported for ${COMMAND}; run bootstrap/provision --rebootstrap first"
     ;;
   create|start|stop|restart|reset|nuke|fast|status|track|logs|doctor|install-host-deps|ssh|shell)
@@ -873,18 +850,6 @@ case "${COMMAND}" in
     (( ${#ARGS[@]} > 0 )) || fail "run requires a command after --"
     load_vm_config || create_vm
     run_in_guest_repo "${ARGS[@]}"
-    ;;
-  local-replicate)
-    load_vm_config || create_vm
-    run_local_replicate "${ARGS[@]}"
-    ;;
-  local-replicate-recovery)
-    load_vm_config || create_vm
-    run_local_replicate_recovery "${ARGS[@]}"
-    ;;
-  topology)
-    load_vm_config || create_vm
-    run_topology_bench "${ARGS[@]}"
     ;;
   live-prod-update)
     load_vm_config || create_vm

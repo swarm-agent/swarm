@@ -8,8 +8,10 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Fixed
 
-- Removed the retired hosted remote-deploy product surface while preserving local/container targets, topology runtime placement, and workspace bindings.
-- Hardened default daemon storage so local, install, and container paths use system roots instead of user home, XDG, repository, workspace, or relative current-directory locations.
+- Removed the retired hosted remote-deploy product surface while preserving Swarm targets, topology runtime placement, and workspace bindings.
+- Retired dedicated local-container execution and its APIs, including dev image synchronization, image release artifacts, container-only harness commands, and container-specific configuration.
+- Preserved V3 sessions/sync/realtime and generic Swarm-target routing as current critical contracts; containers and other non-local execution remain possible future Flow-driven runner targets rather than current local-container behavior.
+- Hardened default daemon storage so local and install paths use system roots instead of user home, XDG, repository, workspace, or relative current-directory locations.
 - Added a daemon storage path regression gate that rejects new home/XDG/workspace defaults and verifies the gate with a negative fixture.
 - Replaced silent legacy storage migration/reuse with explicit read-only detection and operator-facing diagnostics.
 - Prepared the storage contract for future macOS system roots under `/Library` and `/var/run`, while keeping the current installer path Linux-focused.
@@ -19,7 +21,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Docs impact
 
-- Public docs should describe the system storage contract, Linux root locations, container roots, no-silent-migration behavior, and future macOS system-root expectations.
+- Public docs should describe the system storage contract, Linux root locations, no-silent-migration behavior, and future macOS system-root expectations.
+- Public product docs must describe dedicated local containers as retired while retaining V3 and Swarm targets as current critical contracts and future non-local runners as Flow-driven direction.
 - Public install docs should point users to the release installer fast lane before source checkout workflows.
 - Public provider docs must not list Copilot as currently supported or runnable.
 - Public command docs should describe `/voice` as experimental terminal voice input only, not as a fully supported voice product.

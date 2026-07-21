@@ -23,7 +23,6 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 	originalBuildTUI := buildSwarmTUIForUpdate
 	originalWebNeedsRebuild := devFrontendAssetsNeedRebuildForUpdate
 	originalBuildWeb := buildAndInstallWebAssetsForUpdate
-	originalSyncContainers := syncDevContainerImagesWithFingerprintForUpdate
 	originalInstallLaunchers := installLaunchersForUpdate
 	originalEnsureUnit := ensureSystemdServiceUnitForUpdate
 	defer func() {
@@ -38,7 +37,6 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 		buildSwarmTUIForUpdate = originalBuildTUI
 		devFrontendAssetsNeedRebuildForUpdate = originalWebNeedsRebuild
 		buildAndInstallWebAssetsForUpdate = originalBuildWeb
-		syncDevContainerImagesWithFingerprintForUpdate = originalSyncContainers
 		installLaunchersForUpdate = originalInstallLaunchers
 		ensureSystemdServiceUnitForUpdate = originalEnsureUnit
 	}()
@@ -88,10 +86,6 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 		t.Fatalf("web asset build should not run when assets are current")
 		return nil
 	}
-	syncDevContainerImagesWithFingerprintForUpdate = func(Profile, string, bool, string) error {
-		calls = append(calls, "sync-container-images")
-		return nil
-	}
 	installLaunchersForUpdate = func(string) (InstallReport, error) {
 		calls = append(calls, "install-launchers")
 		return InstallReport{}, nil
@@ -124,7 +118,7 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 	if !(installIndex < ensureIndex && ensureIndex < restartIndex) {
 		t.Fatalf("systemd unit reconciliation order wrong: calls=%v", calls)
 	}
-	want := []string{"preflight", "resolve-lifecycle", "service-active", "stop", "build-swarmd", "build-tools", "build-tui", "web-check", "sync-container-images", "install-launchers", "ensure-unit", "restart-systemd"}
+	want := []string{"preflight", "resolve-lifecycle", "service-active", "stop", "build-swarmd", "build-tools", "build-tui", "web-check", "install-launchers", "ensure-unit", "restart-systemd"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %v, want %v", calls, want)
 	}
@@ -166,7 +160,6 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 	originalBuildTUI := buildSwarmTUIForUpdate
 	originalWebNeedsRebuild := devFrontendAssetsNeedRebuildForUpdate
 	originalBuildWeb := buildAndInstallWebAssetsForUpdate
-	originalSyncContainers := syncDevContainerImagesWithFingerprintForUpdate
 	originalInstallLaunchers := installLaunchersForUpdate
 	originalEnsureUnit := ensureSystemdServiceUnitForUpdate
 	defer func() {
@@ -181,7 +174,6 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 		buildSwarmTUIForUpdate = originalBuildTUI
 		devFrontendAssetsNeedRebuildForUpdate = originalWebNeedsRebuild
 		buildAndInstallWebAssetsForUpdate = originalBuildWeb
-		syncDevContainerImagesWithFingerprintForUpdate = originalSyncContainers
 		installLaunchersForUpdate = originalInstallLaunchers
 		ensureSystemdServiceUnitForUpdate = originalEnsureUnit
 	}()
@@ -199,7 +191,6 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 	buildSwarmTUIForUpdate = func(Profile) error { return nil }
 	devFrontendAssetsNeedRebuildForUpdate = func(Profile) (bool, error) { return false, nil }
 	buildAndInstallWebAssetsForUpdate = func(Profile) error { return nil }
-	syncDevContainerImagesWithFingerprintForUpdate = func(Profile, string, bool, string) error { return nil }
 	installLaunchersForUpdate = func(string) (InstallReport, error) { return InstallReport{}, nil }
 	ensureSystemdServiceUnitForUpdate = func() error { return errors.New("unit denied") }
 	restartSystemdServiceForUpdate = func(systemdServiceScope, string, bool) error {
@@ -224,22 +215,11 @@ func newDevUpdateTestProfile(t *testing.T) Profile {
 	root := t.TempDir()
 	for _, path := range []string{
 		filepath.Join(root, "scripts"),
-		filepath.Join(root, "deploy", "container-mvp"),
 		filepath.Join(root, "web", "dist"),
 		filepath.Join(root, "swarmd", "internal", "fff", "lib", "linux-amd64-gnu"),
 	} {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", path, err)
-		}
-	}
-	for _, path := range []string{
-		filepath.Join(root, "scripts", "rebuild-container.sh"),
-		filepath.Join(root, "deploy", "container-mvp", "Containerfile.base"),
-		filepath.Join(root, "deploy", "container-mvp", "Containerfile"),
-		filepath.Join(root, "deploy", "container-mvp", "entrypoint.sh"),
-	} {
-		if err := os.WriteFile(path, []byte("test\n"), 0o755); err != nil {
-			t.Fatalf("write %s: %v", path, err)
 		}
 	}
 	binDir := t.TempDir()

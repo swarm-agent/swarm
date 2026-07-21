@@ -145,7 +145,7 @@ if [[ "${REQUIRE_CLEAN}" == "1" ]]; then
 fi
 
 section "tracked content"
-env_hits="$(git ls-files | rg '(^|/)\.env($|\.)|(^|/)\.swarmenv($|\.)' | rg -v '(^|/)\.env\.example$|(^|/)\.swarmenv\.example$' || true)"
+env_hits="$(git ls-files | rg '(^|/)\.env($|\.)' | rg -v '(^|/)\.env\.example$' || true)"
 if [[ -n "${env_hits}" ]]; then
   fail "tracked local env files" "${env_hits}"
 else

@@ -19,6 +19,7 @@ This repository is under active development. The README below is intentionally c
 - Uses attach-token authenticated local API endpoints for non-health daemon access.
 - Includes provider adapters and auth/status plumbing for Anthropic, Codex, Google, Fireworks, OpenRouter, and Exa search support. Copilot is not currently available as a selectable or runnable provider.
 - Includes repository guardrails for public-repo hygiene, pre-commit checks, secret scanning, policy checks, and vulnerability scanning.
+- Dedicated local-container execution and APIs are retired. V3 session durability and generic Swarm targets remain current contracts; containers or other non-local execution may return only as future Flow-driven runner targets.
 
 ## Install
 

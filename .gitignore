@@ -51,9 +51,6 @@ coverage.out
 .env
 .env.*
 !.env.example
-.swarmenv
-.swarmenv.*
-!.swarmenv.example
 
 # Local investigation/tooling artifacts
 /tmp/

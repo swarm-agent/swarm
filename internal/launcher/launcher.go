@@ -24,7 +24,6 @@ import (
 	"syscall"
 	"time"
 
-	"swarm-refactor/swarmtui/pkg/devmode"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm-refactor/swarmtui/pkg/storagecontract"
 )
@@ -686,135 +685,6 @@ func BuildSwarmdBinaries(profile Profile) error {
 	}
 	if err := copyFile(filepath.Join(swarmdRoot, "internal", "fff", "lib", fffLibraryPlatformDir(), "libfff_c.so"), filepath.Join(profile.LibDir, "libfff_c.so")); err != nil {
 		return err
-	}
-	return nil
-}
-
-func SyncDevContainerImages(profile Profile, reason string, skipLocalArtifactRebuild bool) error {
-	return SyncDevContainerImagesWithFingerprint(profile, reason, skipLocalArtifactRebuild, "")
-}
-
-func SyncDevContainerImagesWithFingerprint(profile Profile, reason string, skipLocalArtifactRebuild bool, fingerprint string) error {
-	startupCfg, err := syncDevModeStartupConfig(profile)
-	if err != nil {
-		return err
-	}
-	if !startupCfg.DevMode {
-		return nil
-	}
-	devRoot, err := devmode.ResolveRoot(startupCfg.DevRoot)
-	if err != nil {
-		return fmt.Errorf("resolve dev container build root: %w", err)
-	}
-	if err := devmode.SyncStagedContainerBinaries(devRoot, profile.BinDir); err != nil {
-		return fmt.Errorf("stage dev container image binaries: %w", err)
-	}
-	stagedFingerprint, err := devmode.ContainerImageFingerprint(devRoot)
-	if err != nil {
-		return fmt.Errorf("compute dev container image fingerprint: %w", err)
-	}
-	fingerprint = strings.TrimSpace(fingerprint)
-	if fingerprint != "" && fingerprint != stagedFingerprint {
-		fmt.Fprintf(os.Stderr, "dev container fingerprint changed after staging current binaries; using %s instead of %s\n", stagedFingerprint, fingerprint)
-	}
-	fingerprint = stagedFingerprint
-	runtimes := availableDevContainerBuildRuntimes()
-	if len(runtimes) == 0 {
-		return errors.New("dev_mode is enabled but no local container runtime is available to build the canonical child image")
-	}
-	for _, runtimeName := range runtimes {
-		if err := rebuildDevContainerImage(devRoot, runtimeName, fingerprint, reason, skipLocalArtifactRebuild); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func syncDevModeStartupConfig(profile Profile) (startupconfig.FileConfig, error) {
-	cfg := profile.Startup
-	if !cfg.DevMode {
-		return cfg, nil
-	}
-	if strings.TrimSpace(profile.Root) == "" {
-		return startupconfig.FileConfig{}, errors.New("dev_mode requires a source checkout; run rebuild from the repo root so the dev child image can be tracked")
-	}
-	devRoot, err := devmode.ResolveRoot(profile.Root)
-	if err != nil {
-		return startupconfig.FileConfig{}, err
-	}
-	if cfg.DevRoot == devRoot {
-		return cfg, nil
-	}
-	cfg.DevRoot = devRoot
-	if err := startupconfig.Write(cfg); err != nil {
-		return startupconfig.FileConfig{}, fmt.Errorf("record dev_root in startup config: %w", err)
-	}
-	return cfg, nil
-}
-
-func availableDevContainerBuildRuntimes() []string {
-	preferredRuntime := strings.TrimSpace(os.Getenv("BUILD_RUNTIME"))
-	candidates := []string{"podman", "docker"}
-	if preferredRuntime != "" {
-		candidates = append([]string{preferredRuntime}, candidates...)
-	}
-	out := make([]string, 0, 2)
-	seen := map[string]struct{}{}
-	for _, runtimeName := range candidates {
-		runtimeName = strings.ToLower(strings.TrimSpace(runtimeName))
-		if runtimeName == "" || (runtimeName != "podman" && runtimeName != "docker") {
-			continue
-		}
-		if _, ok := seen[runtimeName]; ok {
-			continue
-		}
-		seen[runtimeName] = struct{}{}
-		if _, err := exec.LookPath(runtimeName); err != nil {
-			continue
-		}
-		if !runtimeAvailable(runtimeName) {
-			continue
-		}
-		out = append(out, runtimeName)
-	}
-	return out
-}
-
-func runtimeAvailable(runtimeName string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	args := []string{"info", "--format", "{{.ServerVersion}}"}
-	if runtimeName == "podman" {
-		args = []string{"info", "--format", "{{.Version.Version}}"}
-	}
-	cmd := exec.CommandContext(ctx, runtimeName, args...)
-	if err := cmd.Run(); err != nil {
-		return false
-	}
-	return true
-}
-
-func rebuildDevContainerImage(devRoot, runtimeName, fingerprint, reason string, skipLocalArtifactRebuild bool) error {
-	scriptPath, err := devmode.RebuildScriptPath(devRoot)
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command("bash", scriptPath, "--image-only")
-	cmd.Dir = devRoot
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(),
-		"BUILD_RUNTIME="+runtimeName,
-		"IMAGE_NAME="+devmode.DefaultContainerImageRef,
-		"SWARM_REBUILD_REASON="+strings.TrimSpace(reason),
-		"SWARM_CONTAINER_DEV_FINGERPRINT="+strings.TrimSpace(fingerprint),
-		"SWARM_BIN_DIR="+filepath.Join(devRoot, ".bin", "main"),
-	)
-	if skipLocalArtifactRebuild {
-		cmd.Env = append(cmd.Env, "SWARM_SKIP_LOCAL_ARTIFACT_REBUILD=1")
-	}
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("rebuild dev child image for %s: %w", runtimeName, err)
 	}
 	return nil
 }
@@ -1676,19 +1546,6 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 		}
 	} else {
 		_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Desktop web assets are current.", "")
-	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Staging dev container image binaries.", "")
-	if err := devmode.SyncStagedContainerBinaries(profile.Root, profile.BinDir); err != nil {
-		return fmt.Errorf("stage dev container image binaries: %w", err)
-	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Preparing dev container image fingerprint.", "")
-	fingerprint, err := devmode.ContainerImageFingerprint(profile.Root)
-	if err != nil {
-		return err
-	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding/syncing dev container image.", "")
-	if err := syncDevContainerImagesWithFingerprintForUpdate(profile, envOrString("SWARM_REBUILD_REASON", "swarmtui-update-dev"), true, fingerprint); err != nil {
-		return err
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Installing Swarm launchers.", "")
 	if _, err := installLaunchersForUpdate(profile.Root); err != nil {

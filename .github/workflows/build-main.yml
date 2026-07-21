@@ -12,7 +12,6 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 concurrency:
   group: build-main-${{ github.ref }}
@@ -87,37 +86,6 @@ jobs:
       - name: Build release bundle
         run: ./scripts/build-main-dist.sh --output-dir dist --version "${{ steps.version.outputs.version }}"
 
-      - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and inspect container image artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-          image_ref="localhost/swarm:${{ steps.version.outputs.version }}"
-          base_ref="localhost/swarm-base:ubuntu26.04-tailscale-stable-v1"
-          push_args=()
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
-            image_ref="ghcr.io/${{ github.repository_owner }}/swarm:${{ steps.version.outputs.version }}"
-            base_ref="ghcr.io/${{ github.repository_owner }}/swarm-base:ubuntu26.04-tailscale-stable-v1"
-            push_args+=(--push)
-          fi
-          ./scripts/build-container-artifact.sh \
-            --dist-dir dist \
-            --output-dir dist/container \
-            --runtime docker \
-            --base-image-name "${base_ref}" \
-            --image-name "${image_ref}" \
-            --source-repository "https://github.com/${{ github.repository }}" \
-            --source-revision "${{ github.sha }}" \
-            --github-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            "${push_args[@]}"
-
       - name: Upload build artifacts
         uses: actions/upload-artifact@v5
         with:
@@ -127,8 +95,6 @@ jobs:
             dist/web
             dist/build-info.txt
             dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
-            dist/container/swarm-container-image.tar
-            dist/container/container-image-info.txt
           if-no-files-found: error
 
       - name: Publish GitHub release
@@ -143,5 +109,3 @@ jobs:
           files: |
             dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
             dist/build-info.txt
-            dist/container/swarm-container-image.tar
-            dist/container/container-image-info.txt
