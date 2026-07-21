@@ -708,6 +708,7 @@ func TestPageCanonicalHeaderWrapsToSecondLineAtNarrowWidth(t *testing.T) {
 		Session:       client.SessionSummary{ID: "s", Title: "A deliberately long canonical session title"},
 		HasActivePlan: true,
 		ActivePlan:    activePlanFixture("running", "in_progress", "cp-1", "A long checkpoint title that needs the second header row"),
+		Messages:      []client.SessionMessage{{ID: "user-1", Role: "user", Content: "message below wrapped title"}},
 	}})
 	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
 	defer page.Close()
@@ -723,6 +724,49 @@ func TestPageCanonicalHeaderWrapsToSecondLineAtNarrowWidth(t *testing.T) {
 	first, second := simulationRow(screen, 42, 0), simulationRow(screen, 42, 1)
 	if !strings.Contains(first, "A deliberately long canonical session") || strings.TrimSpace(second) == "" {
 		t.Fatalf("narrow header did not use two rows: first=%q second=%q", first, second)
+	}
+	if transcript := simulationRow(screen, 42, 3); !strings.Contains(transcript, "> message below wrapped title") {
+		t.Fatalf("wrapped header did not advance transcript offset: %q", transcript)
+	}
+}
+
+func TestPageToolHeaderAndStyledAssistantContentWrapAtChatEdges(t *testing.T) {
+	styles := testPageStyles()
+	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), styles)
+
+	tool := ToolTimelineItem{
+		ID:     "tool-wrap",
+		Name:   "custom_tool",
+		Output: `{"summary":"custom-tool a deliberately long tool summary that must wrap inside the transcript edge"}`,
+		Status: "completed",
+	}
+	toolRows := page.renderToolRows(tool, 24, styles)
+	if len(toolRows) < 4 || !strings.Contains(toolRows[0].text, "custom-tool") || !strings.Contains(toolRows[1].text, "deliberately") {
+		t.Fatalf("tool header did not wrap across styled rows: %#v", toolRows)
+	}
+	for _, row := range toolRows {
+		if width := displayCellWidth(row.text); width > 24 {
+			t.Fatalf("tool row %q is %d cells wide, want at most 24", row.text, width)
+		}
+	}
+
+	styles.RenderMarkdown = func(_ string, _ int) []MarkdownLine {
+		return []MarkdownLine{{
+			Style: styles.Text,
+			Spans: []MarkdownSpan{
+				{Text: "styled assistant content ", Style: styles.Text.Bold(true)},
+				{Text: "that reaches the edge and wraps", Style: styles.Secondary},
+			},
+		}}
+	}
+	assistantRows := page.renderAssistantRows("ignored", 18, styles)
+	if len(assistantRows) < 2 {
+		t.Fatalf("styled assistant content did not wrap: %#v", assistantRows)
+	}
+	for _, row := range assistantRows {
+		if width := displayCellWidth(row.text); width > 18 {
+			t.Fatalf("assistant row %q is %d cells wide, want at most 18", row.text, width)
+		}
 	}
 }
 

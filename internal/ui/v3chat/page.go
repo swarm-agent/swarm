@@ -1452,33 +1452,114 @@ func drawCanonicalHeader(screen tcell.Screen, width, height int, styles PageStyl
 }
 
 func wrapHeaderSpans(spans []renderSpan, width, maxRows int) [][]renderSpan {
-	if width <= 0 || maxRows <= 0 {
+	return wrapStyledSpans(spans, width, maxRows)
+}
+
+// wrapStyledSpans is the V3 transcript's final edge guard. It wraps on word
+// boundaries when possible, falls back to grapheme boundaries for long tokens,
+// and measures terminal cells rather than bytes or runes while retaining each
+// span's style.
+func wrapStyledSpans(spans []renderSpan, width, maxRows int) [][]renderSpan {
+	if width <= 0 || maxRows < 0 {
 		return nil
 	}
-	rows := make([][]renderSpan, 1, maxRows)
-	used := 0
+	type cluster struct {
+		text           string
+		style          tcell.Style
+		keepBackground bool
+		width          int
+	}
+	clusters := make([]cluster, 0)
 	for _, span := range spans {
-		for _, r := range []rune(span.text) {
-			if used >= width && len(rows) < maxRows {
-				rows = append(rows, nil)
-				used = 0
+		remaining := span.text
+		for remaining != "" {
+			text, rest, cells, _ := uniseg.FirstGraphemeClusterInString(remaining, -1)
+			if text == "" {
+				break
 			}
-			if used >= width {
-				return rows
+			if cells <= 0 {
+				cells = 1
 			}
-			row := len(rows) - 1
-			text := string(r)
-			if len(rows[row]) > 0 {
-				last := len(rows[row]) - 1
-				if rows[row][last].style == span.style && rows[row][last].keepBackground == span.keepBackground {
-					rows[row][last].text += text
-					used++
+			clusters = append(clusters, cluster{text: text, style: span.style, keepBackground: span.keepBackground, width: cells})
+			remaining = rest
+		}
+	}
+	if len(clusters) == 0 {
+		return [][]renderSpan{{}}
+	}
+
+	rows := make([][]renderSpan, 0, 4)
+	appendRow := func(items []cluster) bool {
+		for len(items) > 0 && strings.TrimSpace(items[len(items)-1].text) == "" {
+			items = items[:len(items)-1]
+		}
+		row := make([]renderSpan, 0, len(items))
+		for _, item := range items {
+			if len(row) > 0 {
+				last := len(row) - 1
+				if row[last].style == item.style && row[last].keepBackground == item.keepBackground {
+					row[last].text += item.text
 					continue
 				}
 			}
-			rows[row] = append(rows[row], renderSpan{text: text, style: span.style, keepBackground: span.keepBackground})
-			used++
+			row = append(row, renderSpan{text: item.text, style: item.style, keepBackground: item.keepBackground})
 		}
+		rows = append(rows, row)
+		return maxRows > 0 && len(rows) >= maxRows
+	}
+
+	trimLeading := false
+	for len(clusters) > 0 {
+		if trimLeading {
+			for len(clusters) > 0 && strings.TrimSpace(clusters[0].text) == "" && clusters[0].text != "\n" {
+				clusters = clusters[1:]
+			}
+			trimLeading = false
+		}
+		if len(clusters) == 0 {
+			break
+		}
+		used, fit, newline := 0, 0, false
+		for fit < len(clusters) {
+			if clusters[fit].text == "\n" {
+				newline = true
+				break
+			}
+			if used > 0 && used+clusters[fit].width > width {
+				break
+			}
+			used += clusters[fit].width
+			fit++
+			if used >= width {
+				break
+			}
+		}
+		if newline {
+			if appendRow(clusters[:fit]) {
+				return rows
+			}
+			clusters = clusters[fit+1:]
+			continue
+		}
+		if fit >= len(clusters) {
+			appendRow(clusters)
+			break
+		}
+		if fit == 0 {
+			fit = 1
+		}
+		cut := fit
+		for index := fit - 1; index > 0; index-- {
+			if strings.TrimSpace(clusters[index].text) == "" {
+				cut = index
+				break
+			}
+		}
+		if appendRow(clusters[:cut]) {
+			return rows
+		}
+		clusters = clusters[cut:]
+		trimLeading = true
 	}
 	return rows
 }
@@ -1884,11 +1965,16 @@ func (p *Page) renderAssistantRows(content string, width int, styles PageStyles)
 	lines := styles.RenderMarkdown(content, width)
 	rows := make([]renderRow, 0, len(lines))
 	for _, line := range lines {
-		row := renderRow{text: line.Text, style: line.Style, spans: make([]renderSpan, 0, len(line.Spans))}
+		spans := make([]renderSpan, 0, maxInt(1, len(line.Spans)))
 		for _, span := range line.Spans {
-			row.spans = append(row.spans, renderSpan{text: span.Text, style: span.Style})
+			spans = append(spans, renderSpan{text: span.Text, style: span.Style})
 		}
-		rows = append(rows, row)
+		if len(spans) == 0 {
+			spans = append(spans, renderSpan{text: line.Text, style: line.Style})
+		}
+		for _, wrapped := range wrapStyledSpans(spans, width, 0) {
+			rows = append(rows, renderRow{text: renderSpansText(wrapped), style: line.Style, spans: wrapped})
+		}
 	}
 	return rows
 }
@@ -1912,19 +1998,31 @@ func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyle
 	if summary != toolName && !strings.HasPrefix(summary, toolName+" ") {
 		summary = toolName + " · " + summary
 	}
-	header := symbol + " " + summary
-	if duration := toolDurationLabel(tool.DurationMS); duration != "" {
-		header += " · " + duration
+	headerStyle = headerStyle.Bold(true)
+	textStyle := styles.Text.Bold(true)
+	nameStyle := styleWithForeground(textStyle, styles.Primary)
+	headerSpans := []renderSpan{
+		{text: symbol, style: headerStyle},
+		{text: " ", style: textStyle},
+		{text: toolName, style: nameStyle},
+		{text: strings.TrimPrefix(summary, toolName), style: textStyle},
 	}
-	rows := []renderRow{{
-		text:           header,
-		style:          styles.Text.Bold(true),
-		prefixWidth:    utf8.RuneCountInString(symbol),
-		prefixStyle:    headerStyle.Bold(true),
-		highlightStart: utf8.RuneCountInString(symbol + " "),
-		highlightWidth: utf8.RuneCountInString(toolName),
-		highlightStyle: styleWithForeground(styles.Text.Bold(true), styles.Primary),
-	}}
+	if duration := toolDurationLabel(tool.DurationMS); duration != "" {
+		headerSpans = append(headerSpans, renderSpan{text: " · " + duration, style: textStyle})
+	}
+	wrappedHeader := wrapStyledSpans(headerSpans, width, 0)
+	rows := make([]renderRow, 0, len(wrappedHeader)+4)
+	for index, spans := range wrappedHeader {
+		row := renderRow{text: renderSpansText(spans), style: textStyle, spans: spans}
+		if index == 0 {
+			row.prefixWidth = utf8.RuneCountInString(symbol)
+			row.prefixStyle = headerStyle
+			row.highlightStart = utf8.RuneCountInString(symbol + " ")
+			row.highlightWidth = utf8.RuneCountInString(toolName)
+			row.highlightStyle = nameStyle
+		}
+		rows = append(rows, row)
+	}
 	bodyLimit := 14
 	if normalizeToolDisplayName(tool.Name) == "bash" {
 		bodyLimit = 10
@@ -1992,7 +2090,10 @@ func (p *Page) renderPlanToolRows(tool ToolTimelineItem, presentation toolPresen
 			},
 		})
 	}
-	appendBody("PLAN  ·  "+strings.TrimPrefix(strings.TrimSpace(presentation.Summary), "plan "), styles.Secondary.Bold(true))
+	planTitle := "PLAN  ·  " + strings.TrimPrefix(strings.TrimSpace(presentation.Summary), "plan ")
+	for _, wrapped := range p.cachedWrap("plan-tool:"+tool.ID+":title", planTitle, maxInt(1, innerWidth-2)) {
+		appendBody(wrapped, styles.Secondary.Bold(true))
+	}
 	for _, line := range presentation.Lines {
 		style := styles.Text
 		if line.Tone == "label" {
@@ -2107,34 +2208,20 @@ func inputVisibleWindow(totalLines, visibleHeight, cursorLine int) int {
 }
 
 func wrapText(text string, width int) []string {
-	if width <= 0 {
-		return nil
-	}
-	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
-	var out []string
-	for _, paragraph := range strings.Split(text, "\n") {
-		runes := []rune(paragraph)
-		if len(runes) == 0 {
-			out = append(out, "")
-			continue
-		}
-		for len(runes) > width {
-			cut := width
-			for i := width - 1; i > 0; i-- {
-				if runes[i] == ' ' || runes[i] == '\t' {
-					cut = i
-					break
-				}
-			}
-			out = append(out, string(runes[:cut]))
-			runes = runes[cut:]
-			for len(runes) > 0 && (runes[0] == ' ' || runes[0] == '\t') {
-				runes = runes[1:]
-			}
-		}
-		out = append(out, string(runes))
+	rows := wrapStyledSpans([]renderSpan{{text: strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")}}, width, 0)
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, renderSpansText(row))
 	}
 	return out
+}
+
+func renderSpansText(spans []renderSpan) string {
+	var text strings.Builder
+	for _, span := range spans {
+		text.WriteString(span.text)
+	}
+	return text.String()
 }
 
 func fill(s tcell.Screen, x, y, width, height int, style tcell.Style) {
