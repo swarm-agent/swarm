@@ -4,7 +4,11 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import type { DesktopPermissionRecord } from '../../types/realtime'
 import { parseBashIntentMetadata } from '../services/bash-intent-metadata'
-import { DesktopInlineBashPermissionCard } from './desktop-inline-bash-permission-card'
+import {
+  bashPermissionCollapsedHeight,
+  bashPermissionShouldStartExpanded,
+  DesktopInlineBashPermissionCard,
+} from './desktop-inline-bash-permission-card'
 
 function permission(explanation: string[]): DesktopPermissionRecord {
   return {
@@ -69,6 +73,22 @@ test('parseBashIntentMetadata rejects requests without required metadata', () =>
   assert.equal(parseBashIntentMetadata('{"command":"pwd"}'), null)
   assert.equal(parseBashIntentMetadata('{"command":"pwd","explanation":[],"category":"read","critical":false}'), null)
   assert.equal(parseBashIntentMetadata('{"command":"pwd","explanation":["Print the directory."],"category":"inspect","critical":false}'), null)
+})
+
+test('Bash permission overflow uses 40% of the viewport and expands only above it', () => {
+  assert.equal(bashPermissionCollapsedHeight(1000), 400)
+  assert.equal(bashPermissionShouldStartExpanded(400, 1000), false)
+  assert.equal(bashPermissionShouldStartExpanded(401, 1000), true)
+})
+
+test('pending Bash card puts the command below the always-allow prefix', () => {
+  const markup = render(['Build the workspace.'])
+  const prefixIndex = markup.indexOf('Always allow prefix:')
+  const commandIndex = markup.indexOf('>Command<')
+
+  assert(prefixIndex >= 0, 'expected always-allow prefix')
+  assert(commandIndex > prefixIndex, 'expected command below always-allow prefix')
+  assert.doesNotMatch(markup, /max-h-44/)
 })
 
 test('pending Bash card renders one routine explanation as compact prose', () => {

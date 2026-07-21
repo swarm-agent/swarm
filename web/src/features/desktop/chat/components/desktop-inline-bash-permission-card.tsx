@@ -6,12 +6,21 @@ import { parseBashIntentMetadata } from '../services/bash-intent-metadata'
 import { requestJson } from '../../../../app/api'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
-import { cn } from '../../../../lib/cn'
 import type { DesktopPermissionRecord } from '../../types/realtime'
 import { safeString } from '../../permissions/services/desktop-permission-normalization'
 import { permissionRequirementLabel } from '../../permissions/services/permission-payload'
 
 const COLLAPSED_CONTENT_HEIGHT = 176
+const COLLAPSED_VIEWPORT_RATIO = 0.4
+
+export function bashPermissionCollapsedHeight(viewportHeight: number): number {
+  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) return COLLAPSED_CONTENT_HEIGHT
+  return Math.floor(viewportHeight * COLLAPSED_VIEWPORT_RATIO)
+}
+
+export function bashPermissionShouldStartExpanded(contentHeight: number, viewportHeight: number): boolean {
+  return contentHeight > bashPermissionCollapsedHeight(viewportHeight)
+}
 
 type BashPermissionAction = 'approve' | 'deny' | 'approve_always' | 'always_deny'
 
@@ -59,8 +68,11 @@ export function DesktopInlineBashPermissionCard({
   onResolve,
 }: DesktopInlineBashPermissionCardProps) {
   const contentRef = useRef<HTMLDivElement | null>(null)
+  const expansionWasChosenRef = useRef(false)
+  const measuredPermissionIdRef = useRef(permission.id)
   const [expanded, setExpanded] = useState(false)
   const [canExpand, setCanExpand] = useState(false)
+  const [collapsedContentHeight, setCollapsedContentHeight] = useState(COLLAPSED_CONTENT_HEIGHT)
   const [busyAction, setBusyAction] = useState<BashPermissionAction | null>(null)
   const [noteOpen, setNoteOpen] = useState(false)
   const [note, setNote] = useState('')
@@ -70,7 +82,6 @@ export function DesktopInlineBashPermissionCard({
   const modeLabel = (permission.mode || sessionMode).trim() || 'auto'
 
   useEffect(() => {
-    setExpanded(false)
     setBusyAction(null)
     setNoteOpen(false)
     setNote('')
@@ -92,7 +103,23 @@ export function DesktopInlineBashPermissionCard({
     const content = contentRef.current
     if (!content) return undefined
 
-    const measure = () => setCanExpand(content.scrollHeight > COLLAPSED_CONTENT_HEIGHT + 1)
+    const measure = () => {
+      if (measuredPermissionIdRef.current !== permission.id) {
+        measuredPermissionIdRef.current = permission.id
+        expansionWasChosenRef.current = false
+      }
+      const viewportHeight = typeof window === 'undefined' ? 0 : window.innerHeight
+      const nextCollapsedHeight = bashPermissionCollapsedHeight(viewportHeight)
+      const nextCanExpand = bashPermissionShouldStartExpanded(content.scrollHeight, viewportHeight)
+      setCollapsedContentHeight(nextCollapsedHeight)
+      setCanExpand(nextCanExpand)
+      if (!nextCanExpand) {
+        expansionWasChosenRef.current = false
+        setExpanded(false)
+      } else if (!expansionWasChosenRef.current) {
+        setExpanded(true)
+      }
+    }
     measure()
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
     observer?.observe(content)
@@ -101,7 +128,7 @@ export function DesktopInlineBashPermissionCard({
       observer?.disconnect()
       window.removeEventListener('resize', measure)
     }
-  }, [intent, noteOpen, persistentPrefix])
+  }, [intent, noteOpen, permission.id, persistentPrefix])
 
   const resolve = async (action: BashPermissionAction) => {
     if (busyAction) return
@@ -146,7 +173,10 @@ export function DesktopInlineBashPermissionCard({
             className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
             aria-expanded={expanded}
             aria-controls={`bash-permission-content-${permission.id}`}
-            onClick={() => setExpanded((current) => !current)}
+            onClick={() => {
+              expansionWasChosenRef.current = true
+              setExpanded((current) => !current)
+            }}
           >
             {expanded ? 'Collapse' : 'Expand'}
             {expanded ? <ChevronUp className="size-3.5" aria-hidden="true" /> : <ChevronDown className="size-3.5" aria-hidden="true" />}
@@ -156,10 +186,8 @@ export function DesktopInlineBashPermissionCard({
 
       <div
         id={`bash-permission-content-${permission.id}`}
-        className={cn(
-          'min-w-0 overflow-hidden border-t border-[var(--app-border)] px-3 py-3 sm:px-4',
-          expanded ? 'max-h-none' : 'max-h-44',
-        )}
+        className="min-w-0 overflow-hidden border-t border-[var(--app-border)] px-3 py-3 sm:px-4"
+        style={{ maxHeight: expanded ? undefined : collapsedContentHeight }}
       >
         <div ref={contentRef} className="min-w-0">
           {intent ? (
@@ -178,8 +206,6 @@ export function DesktopInlineBashPermissionCard({
                   {intent.explanation.map((item, index) => <li key={`${index}-${item}`} className="pl-1 marker:text-[var(--app-text-subtle)]">{item}</li>)}
                 </ul>
               )}
-              <div className="mt-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Command</div>
-              <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap break-words bg-transparent p-0 font-mono text-[12px] leading-5 text-[var(--app-text)] [overflow-wrap:anywhere]">{intent.command}</pre>
             </>
           ) : (
             <div className="border-l-2 border-[var(--app-danger)] pl-2.5 text-sm leading-5 text-[var(--app-danger)]" role="alert">
@@ -193,6 +219,12 @@ export function DesktopInlineBashPermissionCard({
             </span>
             <div>Future Bash commands starting with this prefix will be approved automatically.</div>
           </div>
+          {intent ? (
+            <>
+              <div className="mt-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Command</div>
+              <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap break-words bg-transparent p-0 font-mono text-[12px] leading-5 text-[var(--app-text)] [overflow-wrap:anywhere]">{intent.command}</pre>
+            </>
+          ) : null}
           {noteOpen ? (
             <label className="mt-3 grid gap-1.5">
               <span className="text-[11px] font-medium text-[var(--app-text-subtle)]">Response note</span>
