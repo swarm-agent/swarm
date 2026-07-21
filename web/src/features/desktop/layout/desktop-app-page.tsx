@@ -11,7 +11,7 @@ import { cn } from '../../../lib/cn'
 import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-workspace-launcher'
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
-import { agentStateQueryOptions, draftModelQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
+import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import type { DesktopNotificationCenterRecord, DesktopSessionRecord } from '../types/realtime'
 import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../chat/types/chat'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
@@ -46,6 +46,7 @@ import { createDesktopV3CreateOnlySessionOperation, createDesktopV3NewSessionOpe
 import { DesktopPlanModal, type DesktopPlanRecoveryInput } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
+import { resolveDesktopWorktreeSessionDefaults } from '../chat/services/desktop-worktree-session-defaults'
 import { parseDesktopTaskCommand, type DesktopSlashCommand } from '../chat/services/slash-commands'
 import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
@@ -952,13 +953,14 @@ function BackgroundTaskForm({ presentation, workspaceName, request, busy, error,
   )
 }
 
-function WorktreeSessionForm({ presentation, state, title, branch, selectedExistingPath, busy, error, onTitleChange, onBranchChange, onSelectedExistingPathChange, onSubmit, onClose }: {
+function WorktreeSessionForm({ presentation, state, title, branch, selectedExistingPath, busy, authorityPending, error, onTitleChange, onBranchChange, onSelectedExistingPathChange, onSubmit, onClose }: {
   presentation: 'dialog' | 'page'
   state: WorktreeSessionModalState | null
   title: string
   branch: string
   selectedExistingPath: string
   busy: boolean
+  authorityPending: boolean
   error: string | null
   onTitleChange: (value: string) => void
   onBranchChange: (value: string) => void
@@ -1042,8 +1044,8 @@ function WorktreeSessionForm({ presentation, state, title, branch, selectedExist
           </div>
           <div className="grid shrink-0 grid-cols-2 gap-3 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 max-sm:pb-[calc(0.75rem+var(--app-safe-area-bottom))] sm:flex sm:justify-end sm:px-5">
             <Button className="min-h-11" type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
-            <Button className="min-h-11" type="submit" disabled={busy || state.settingsLoading || !state.branchPrefix.trim() || !title.trim() || (!reusingExistingWorktree && !normalizeWorktreeBranchSuffix(branch))}>
-              {busy ? 'Creating…' : 'Create session'}
+            <Button className="min-h-11" type="submit" disabled={busy || authorityPending || state.settingsLoading || !state.branchPrefix.trim() || !title.trim() || (!reusingExistingWorktree && !normalizeWorktreeBranchSuffix(branch))}>
+              {busy ? 'Creating…' : authorityPending ? 'Loading settings…' : 'Create session'}
             </Button>
           </div>
         </form>
@@ -2690,6 +2692,8 @@ export function DesktopAppPage() {
     staleTime: 30_000,
   })
   const agentStateQuery = useQuery(agentStateQueryOptions())
+  const modelOptionsQuery = useQuery(modelOptionsQueryOptions())
+  const modelProfilesQuery = useQuery(modelProfilesQueryOptions())
   const draftPreferenceQuery = useQuery(draftModelQueryOptions())
   useEffect(() => {
     if (uiSettingsQuery.data) {
@@ -3622,10 +3626,30 @@ export function DesktopAppPage() {
       setWorktreeSessionError('No writable self/host Desktop V3 route is available for this workspace.')
       return
     }
-    const activeAgent = agentStateQuery.data?.activePrimary?.trim() || 'swarm'
-    const preference = draftPreferenceQuery.data?.preference
-    if (!preference?.provider?.trim() || !preference.model?.trim() || !preference.thinking?.trim()) {
-      setWorktreeSessionError('Select a default provider, model, and thinking level before creating a worktree session.')
+    if (agentStateQuery.isPending || modelOptionsQuery.isPending || modelProfilesQuery.isPending || draftPreferenceQuery.isPending) {
+      setWorktreeSessionError('Desktop agent and model-profile settings are still loading.')
+      return
+    }
+    if (agentStateQuery.error || modelOptionsQuery.error || modelProfilesQuery.error || draftPreferenceQuery.error) {
+      setWorktreeSessionError('Desktop agent and model-profile settings could not be loaded.')
+      return
+    }
+    if (!agentStateQuery.data || !modelOptionsQuery.data || !modelProfilesQuery.data) {
+      setWorktreeSessionError('Desktop agent and model-profile settings are unavailable.')
+      return
+    }
+    let defaults: ReturnType<typeof resolveDesktopWorktreeSessionDefaults>
+    try {
+      defaults = resolveDesktopWorktreeSessionDefaults({
+        agentState: agentStateQuery.data,
+        modelProfiles: modelProfilesQuery.data,
+        modelOptions: modelOptionsQuery.data,
+        draftPreference: draftPreferenceQuery.data,
+        explicitMode: newSessionModeByWorkspace[worktreeSessionModal.workspacePath],
+        globalDefaultMode: normalizeDefaultNewSessionMode((uiSettingsQuery.data ?? uiSettings)?.chat?.default_new_session_mode),
+      })
+    } catch (error) {
+      setWorktreeSessionError(error instanceof Error ? error.message : 'Desktop worktree session settings are unresolved.')
       return
     }
     setWorktreeSessionCreating(true)
@@ -3636,16 +3660,16 @@ export function DesktopAppPage() {
         workspaceName: worktreeSessionModal.workspaceName,
         route: selectedRoute,
         title,
-        mode: newSessionModeByWorkspace[worktreeSessionModal.workspacePath]
-          ?? normalizeDefaultNewSessionMode((uiSettingsQuery.data ?? uiSettings)?.chat?.default_new_session_mode),
-        agentName: activeAgent,
+        mode: defaults.mode,
+        agentName: defaults.agentName,
         preference: {
-          provider: preference.provider,
-          model: preference.model,
-          thinking: preference.thinking,
-          serviceTier: preference.serviceTier,
-          contextMode: preference.contextMode,
+          provider: defaults.preference.provider,
+          model: defaults.preference.model,
+          thinking: defaults.preference.thinking,
+          serviceTier: defaults.preference.serviceTier,
+          contextMode: defaults.preference.contextMode,
         },
+        modelProfileChoice: defaults.modelProfileChoice,
         sessionMetadata: {
           source: 'desktop-v3',
           workspace_path: worktreeSessionModal.workspacePath,
@@ -3669,7 +3693,7 @@ export function DesktopAppPage() {
     } finally {
       setWorktreeSessionCreating(false)
     }
-  }, [agentStateQuery.data?.activePrimary, draftPreferenceQuery.data?.preference, navigate, newSessionModeByWorkspace, uiSettings, uiSettingsQuery.data, worktreeSessionBranch, worktreeSessionCreating, worktreeSessionExistingPath, worktreeSessionModal, worktreeSessionTitle])
+  }, [agentStateQuery.data, agentStateQuery.error, agentStateQuery.isPending, draftPreferenceQuery.data, draftPreferenceQuery.error, draftPreferenceQuery.isPending, modelOptionsQuery.data, modelOptionsQuery.error, modelOptionsQuery.isPending, modelProfilesQuery.data, modelProfilesQuery.error, modelProfilesQuery.isPending, navigate, newSessionModeByWorkspace, uiSettings, uiSettingsQuery.data, worktreeSessionBranch, worktreeSessionCreating, worktreeSessionExistingPath, worktreeSessionModal, worktreeSessionTitle])
 
   useEffect(() => {
     if (mobileCreationPage !== 'worktree' || !routeWorkspace?.path || worktreeSessionModal?.presentation === 'page') return
@@ -4880,6 +4904,7 @@ export function DesktopAppPage() {
             branch={worktreeSessionBranch}
             selectedExistingPath={worktreeSessionExistingPath}
             busy={worktreeSessionCreating}
+            authorityPending={agentStateQuery.isPending || modelOptionsQuery.isPending || modelProfilesQuery.isPending || draftPreferenceQuery.isPending}
             error={worktreeSessionError}
             onTitleChange={(value) => {
               setWorktreeSessionTitle(value)
@@ -5258,6 +5283,7 @@ export function DesktopAppPage() {
         branch={worktreeSessionBranch}
         selectedExistingPath={worktreeSessionExistingPath}
         busy={worktreeSessionCreating}
+        authorityPending={agentStateQuery.isPending || modelOptionsQuery.isPending || modelProfilesQuery.isPending || draftPreferenceQuery.isPending}
         error={worktreeSessionError}
         onTitleChange={(value) => {
           setWorktreeSessionTitle(value)
