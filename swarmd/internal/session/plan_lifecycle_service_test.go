@@ -8,6 +8,40 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestRequestFollowupCheckpointWithoutActivePlanUsesAtomicSessionStart(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	lifecycle := NewPlanLifecycleService(svc)
+	result, err := lifecycle.RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{
+		SessionID:          sessionID,
+		ChangeRequest:      "fix the timer",
+		Title:              "Fix timer",
+		Tasks:              []string{"Repair timer"},
+		AcceptanceCriteria: []string{"Timer refreshes"},
+		RunID:              "run-atomic",
+		RunSessionID:       sessionID,
+		ParentSessionID:    sessionID,
+		StartedAt:          1234,
+	})
+	if err != nil {
+		t.Fatalf("request follow-up without plan: %v", err)
+	}
+	if result.Action != "start_session_checkpoint" || result.CheckpointID != "cp-1" || result.AttemptID != "cp-1:attempt-1" {
+		t.Fatalf("normalized lifecycle result = %#v", result)
+	}
+	if result.Plan.Document == nil || result.Plan.Document.ExecutionState == nil || result.Plan.Document.ExecutionState.CurrentRunID != "run-atomic" {
+		t.Fatalf("normalized lifecycle document = %#v", result.Plan.Document)
+	}
+	if got := result.Plan.Document.Checkpoints[0].Status; got != PlanCheckpointStatusInProgress {
+		t.Fatalf("checkpoint status = %q, want in_progress", got)
+	}
+}
+
 func TestPlanLifecycleCheckpointSavePreservesSessionMetadataAndNamespacesPlanFields(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()

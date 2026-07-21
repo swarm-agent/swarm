@@ -117,6 +117,56 @@ func TestProviderManagedAutoStartSessionCheckpointContinuesCurrentRun(t *testing
 	}
 }
 
+func TestProviderManagedAutoFollowupWithoutPlanNormalizesToAtomicStart(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	if _, _, err := sessionSvc.SetMode(sessionID, sessionruntime.ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-test", AccountScopeID: "account-test"}
+	invoker := runSvc.NewProviderManagedToolInvoker(ProviderManagedToolInvokerConfig{
+		SessionID: sessionID, PermissionSessionID: sessionID, RunID: "run-normalized", Step: 3,
+		SessionMode: sessionruntime.ModeAuto, Principal: principal, ProviderManagedV3: true,
+		ApplySessionMutation: func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+			if input.UserID == "" {
+				input.UserID = principal.UserID
+			}
+			if input.AccountScopeID == "" {
+				input.AccountScopeID = principal.AccountScopeID
+			}
+			return sessionSvc.ApplySessionMutation(input)
+		},
+	})
+	result, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-normalized", Name: "plan_manage", Arguments: `{"action":"request_followup_checkpoint","change_request":"fix the timer","checkpoint_title":"Fix timer","tasks":["Repair timer"],"acceptance_criteria":["Timer refreshes"]}`})
+	if err != nil {
+		t.Fatalf("normalize no-plan follow-up: %v", err)
+	}
+	if result.Error != "" || result.RestartTurn {
+		t.Fatalf("normalized result = %#v", result)
+	}
+	var payload struct {
+		Action           string `json:"action"`
+		NextAction       string `json:"next_action"`
+		ContextPreserved bool   `json:"context_preserved"`
+		CheckpointID     string `json:"checkpoint_id"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &payload); err != nil {
+		t.Fatalf("decode normalized output: %v", err)
+	}
+	if payload.Action != "start_session_checkpoint" || payload.NextAction != "continue_current_run" || !payload.ContextPreserved || payload.CheckpointID != "cp-1" {
+		t.Fatalf("normalized payload = %#v output=%s", payload, result.Output)
+	}
+	plan, ok, err := sessionSvc.GetActivePlan(sessionID)
+	if err != nil || !ok || plan.Document == nil {
+		t.Fatalf("active plan after normalization: ok=%v err=%v plan=%#v", ok, err, plan)
+	}
+	if plan.Document.ExecutionState == nil || plan.Document.ExecutionState.CurrentRunID != "run-normalized" || plan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusInProgress {
+		t.Fatalf("normalized plan was not atomically started: %#v", plan.Document)
+	}
+}
+
 func TestExecutePlanManageStartSessionCheckpointRejectsActivePlan(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()

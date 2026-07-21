@@ -25,6 +25,17 @@ func TestEditPendingPlanDefinitionRequiresNativeStructuredDocument(t *testing.T)
 	}
 }
 
+func TestPlanManageContractMakesNoPlanCheckpointAtomic(t *testing.T) {
+	definition := mustFindDefinition(t, "plan_manage")
+	if !containsAll(definition.Description,
+		"atomically creates an approved one-checkpoint active plan and starts that checkpoint in the current run",
+		"Never call request_followup_checkpoint when no active plan exists",
+		"never call start_checkpoint after start_session_checkpoint",
+	) {
+		t.Fatalf("plan_manage description does not enforce atomic no-plan checkpoint routing: %s", definition.Description)
+	}
+}
+
 func TestPlanManageDefinitionIncludesExplicitNewOverride(t *testing.T) {
 	definition := mustFindDefinition(t, "plan_manage")
 	if definition.Description == "" {

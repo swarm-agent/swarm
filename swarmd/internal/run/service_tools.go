@@ -2633,15 +2633,18 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 			Tasks:              mapStringSlice(args, "tasks"),
 			AcceptanceCriteria: mapStringSlice(args, "acceptance_criteria"),
 			Notes:              strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context"))),
-			SourceMessageID:    strings.TrimSpace(firstNonEmptyString(mapString(args, "source_message_id"), mapString(args, "source_message"))),
+			SourceMessageID:    strings.TrimSpace(firstNonEmptyString(mapString(args, "source_message_id"), mapString(args, "source_message"), lifecycleRun.SourceMessageID)),
 			ApprovalConfirmed:  mapBool(args, "approval_confirmed"),
-			RunID:              strings.TrimSpace(mapString(args, "run_id")),
-			RunSessionID:       strings.TrimSpace(firstNonEmptyString(mapString(args, "run_session_id"), mapString(args, "session_id"))),
-			ParentSessionID:    strings.TrimSpace(mapString(args, "parent_session_id")),
+			RunID:              strings.TrimSpace(firstNonEmptyString(lifecycleRun.RunID, mapString(args, "run_id"))),
+			RunSessionID:       strings.TrimSpace(firstNonEmptyString(lifecycleRun.RunSessionID, mapString(args, "run_session_id"), mapString(args, "session_id"))),
+			ParentSessionID:    strings.TrimSpace(firstNonEmptyString(lifecycleRun.ParentSessionID, mapString(args, "parent_session_id"))),
 			StartedAt:          int64(mapInt(args, "started_at")),
 			AttemptID:          strings.TrimSpace(mapString(args, "attempt_id")),
 		}
 		result, err = lifecycle.RequestFollowupCheckpoint(input)
+		if err == nil && result.Action == "start_session_checkpoint" {
+			action = result.Action
+		}
 	case "request_plan_revision":
 		result, err = lifecycle.RequestPlanRevision(sessionruntime.PlanLifecycleProposalInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, Reason: strings.TrimSpace(firstNonEmptyString(mapString(args, "reason"), mapString(args, "update_summary"), mapString(args, "summary")))})
 	case "amend_plan":

@@ -299,6 +299,34 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 }
 
 func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFollowupCheckpointInput) (PlanLifecycleResult, error) {
+	if strings.TrimSpace(input.PlanID) == "" {
+		if err := s.requireConfigured(); err != nil {
+			return PlanLifecycleResult{}, err
+		}
+		if _, ok, err := s.sessions.GetActivePlan(strings.TrimSpace(input.SessionID)); err != nil {
+			return PlanLifecycleResult{}, err
+		} else if !ok {
+			// A follow-up requires an existing structured plan. Auto mode with no
+			// active plan uses the same payload as the atomic create-and-start path,
+			// so normalize stale model routing instead of forcing a failed call and
+			// a second manual lifecycle action.
+			return s.StartSessionCheckpoint(PlanLifecycleSessionCheckpointInput{
+				SessionID:          input.SessionID,
+				ChangeRequest:      input.ChangeRequest,
+				UserRequest:        input.UserRequest,
+				Title:              input.Title,
+				Tasks:              input.Tasks,
+				AcceptanceCriteria: input.AcceptanceCriteria,
+				Notes:              input.Notes,
+				SourceMessageID:    input.SourceMessageID,
+				RunID:              input.RunID,
+				RunSessionID:       input.RunSessionID,
+				ParentSessionID:    input.ParentSessionID,
+				StartedAt:          input.StartedAt,
+				AttemptID:          input.AttemptID,
+			})
+		}
+	}
 	pebblestore.ObserveV3PlanLifecycleMutation()
 	state, err := s.loadApprovedPlan(input.SessionID, input.PlanID, "request_followup_checkpoint")
 	if err != nil {
