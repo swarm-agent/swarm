@@ -46,6 +46,7 @@ import { createDesktopV3CreateOnlySessionOperation, createDesktopV3NewSessionOpe
 import { DesktopPlanModal, type DesktopPlanRecoveryInput } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
+import { preferenceFromModelProfile } from '../chat/services/model-profiles'
 import { resolveDesktopWorktreeSessionDefaults } from '../chat/services/desktop-worktree-session-defaults'
 import { parseDesktopTaskCommand, type DesktopSlashCommand } from '../chat/services/slash-commands'
 import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
@@ -3187,8 +3188,13 @@ export function DesktopAppPage() {
     if (!reviewFixAgent || !topWorkspacePath) return
     const route = globalSessionRouteOptions.find((option) => getDesktopSessionCreateTarget(option).endpoint === '/v3/sessions') ?? null
     const draftPreference = draftPreferenceQuery.data?.preference
+    const modelProfileState = modelProfilesQuery.data
+    const defaultModelProfile = modelProfileState?.profiles.find((candidate) => candidate.profileId === modelProfileState.defaultProfileId) ?? null
+    const defaultModelProfilePreference = defaultModelProfile
+      ? preferenceFromModelProfile(defaultModelProfile, 'auto', defaultModelProfile.updatedAt)
+      : null
     const agentModel = resolveDesktopV3AgentModelLock(agentStateQuery.data?.profiles ?? [], reviewFixAgent, 'auto')
-    const preference = agentModel.locked
+    const preference = defaultModelProfilePreference ?? (agentModel.locked
       ? {
           provider: agentModel.provider,
           model: agentModel.model,
@@ -3196,7 +3202,8 @@ export function DesktopAppPage() {
           serviceTier: agentModel.serviceTier,
           contextMode: draftPreference?.contextMode || '',
         }
-      : draftPreference
+      : draftPreference)
+    const modelProfileChoice = defaultModelProfilePreference ? { kind: 'account-default' as const } : undefined
     if (!route || !preference?.provider?.trim() || !preference.model?.trim() || !preference.thinking?.trim()) {
       setNeedsReviewCleanupOpen(false)
       setDesktopToast({ message: 'Swarm could not start a repair session because its Desktop V3 route or model preference is unavailable.', tone: 'error' })
@@ -3212,6 +3219,8 @@ export function DesktopAppPage() {
         title: `${failure.operation === 'commit_and_integrate' ? 'Fix commit and integration' : 'Fix integration'}: ${failure.candidate.title || failure.candidate.worktree_branch || failure.candidate.session_id}`,
         mode: 'auto',
         agentName: reviewFixAgent,
+        modelProfileChoice,
+        worktree: { mode: 'off' },
         preference: {
           provider: preference.provider,
           model: preference.model,
@@ -3234,7 +3243,7 @@ export function DesktopAppPage() {
     } catch (cause) {
       setDesktopToast({ message: cause instanceof Error ? cause.message : 'Could not start a Swarm repair session.', tone: 'error' })
     }
-  }, [agentStateQuery.data?.profiles, draftPreferenceQuery.data?.preference, globalSessionRouteOptions, navigate, reviewFixAgent, topWorkspaceLabel, topWorkspacePath, topWorkspaceSlug])
+  }, [agentStateQuery.data?.profiles, draftPreferenceQuery.data?.preference, globalSessionRouteOptions, modelProfilesQuery.data, navigate, reviewFixAgent, topWorkspaceLabel, topWorkspacePath, topWorkspaceSlug])
 
   useEffect(() => {
     if (!routeSessionId) return
