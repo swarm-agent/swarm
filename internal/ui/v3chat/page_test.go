@@ -52,11 +52,17 @@ func TestPageReasoningFollowsSharedThinkingTagsSettingDuringStreaming(t *testing
 	if !strings.Contains(visible, "Thinking") || !strings.Contains(visible, "Inspecting current project state") {
 		t.Fatalf("enabled thinking tags did not render streaming reasoning: %q", visible)
 	}
+	if len(rows) == 0 || rows[len(rows)-1].text != "" {
+		t.Fatalf("enabled thinking tags did not leave space below reasoning: %#v", rows)
+	}
 	page.SetThinkingTagsVisible(false)
 	rows = page.renderRows(store.Snapshot(), 80, testPageStyles())
 	hidden := renderRowsText(rows)
 	if !strings.Contains(hidden, "Thinking") || strings.Contains(hidden, "Inspecting current project state") {
 		t.Fatalf("disabled thinking tags did not preserve label and hide body: %q", hidden)
+	}
+	if len(rows) == 0 || rows[len(rows)-1].text != "" {
+		t.Fatalf("disabled thinking tags did not leave space below reasoning: %#v", rows)
 	}
 }
 

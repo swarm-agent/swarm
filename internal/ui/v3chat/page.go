@@ -2008,7 +2008,7 @@ func (p *Page) renderReasoningRows(segment ReasoningSegment, showThinkingTags bo
 	}
 	rows := []renderRow{{text: symbol + " " + headline, style: style.Bold(true)}}
 	if !showThinkingTags {
-		return rows
+		return append(rows, renderRow{text: "", style: styles.Text})
 	}
 	body := strings.TrimSpace(firstNonEmpty(segment.Text, segment.Summary))
 	if body == "" && status == "running" {
@@ -2021,7 +2021,7 @@ func (p *Page) renderReasoningRows(segment ReasoningSegment, showThinkingTags bo
 		}
 		rows = append(rows, row)
 	}
-	return rows
+	return append(rows, renderRow{text: "", style: styles.Text})
 }
 
 func (p *Page) renderAssistantRows(content string, width int, styles PageStyles) []renderRow {
