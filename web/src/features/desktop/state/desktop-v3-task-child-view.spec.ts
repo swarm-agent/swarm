@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createEmptyDesktopV3CacheState as createInitialDesktopV3CacheState } from './desktop-v3-cache-reducer'
-import { selectDesktopV3TaskChildViewModel } from './desktop-v3-cache-selectors'
+import { DESKTOP_V3_TASK_TOOL_ACTIVITY_CALL_LIMIT, DESKTOP_V3_TASK_TOOL_ACTIVITY_GROUP_LIMIT, selectDesktopV3TaskChildViewModel, summarizeDesktopV3TaskToolActivity } from './desktop-v3-cache-selectors'
 import type { TaskToolRow } from '../chat/types/chat'
 
 const row: TaskToolRow = {
@@ -50,10 +50,37 @@ test('task child view joins canonical child run, usage, target, and bounded tool
 
   assert.deepEqual(selectDesktopV3TaskChildViewModel(state, row), {
     sessionId: 'child-1', hydrated: true, loading: false, unavailable: false, stale: false, terminal: false,
-    status: 'running', runId: 'run-1', currentTool: 'search', startedAt: 20, elapsedMs: 0,
+    status: 'running', runId: 'run-1', currentTool: 'search', toolActivitySummary: 'search', startedAt: 20, elapsedMs: 0,
     modelLabel: 'model-x', contextWindow: 1000, remainingTokens: 250, contextUpdatedAt: 40,
     workspacePath: '/workspace', workspaceName: 'Workspace', targetSwarmId: 'swarm-local', error: '',
   })
+})
+
+test('task child view groups repeated tools, retains completed calls, and prioritizes active tools', () => {
+  const summary = summarizeDesktopV3TaskToolActivity([
+    { callId: 'read-1', toolName: 'read', status: 'completed', updatedAt: 50 },
+    { callId: 'search-1', toolName: 'search', status: 'completed', updatedAt: 40 },
+    { callId: 'read-2', toolName: 'read', status: 'completed', updatedAt: 30 },
+    { callId: 'search-active', toolName: 'search', status: 'running', updatedAt: 10 },
+    { callId: 'read-3', toolName: 'read', status: 'done', updatedAt: 20 },
+  ])
+
+  assert.equal(summary, 'search ×2 · read ×3')
+})
+
+test('task child tool activity summary remains bounded', () => {
+  const summary = summarizeDesktopV3TaskToolActivity(Array.from(
+    { length: DESKTOP_V3_TASK_TOOL_ACTIVITY_CALL_LIMIT + 20 },
+    (_, index) => ({
+      callId: `call-${index}`,
+      toolName: `tool-${index}`,
+      status: 'completed',
+      updatedAt: index,
+    }),
+  ))
+
+  assert.equal(summary.split(' · ').length, DESKTOP_V3_TASK_TOOL_ACTIVITY_GROUP_LIMIT)
+  assert.equal(summary.includes('tool-0'), false)
 })
 
 test('task child view keeps launch metadata bounded before child hydration', () => {

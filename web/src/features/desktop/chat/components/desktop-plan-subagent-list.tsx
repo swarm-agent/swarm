@@ -26,6 +26,23 @@ function formatElapsed(ms: number): string {
   return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+export function desktopPlanSubagentActivityLabel(
+  view: DesktopV3TaskChildViewModel | null,
+  row: TaskToolRow,
+  status: string,
+  terminal: boolean,
+): string {
+  if (view?.loading) return "loading";
+  if (view?.unavailable) return "unavailable";
+  if (view?.stale) return "stale";
+  if (terminal) return status;
+  const active = ["running", "pending_executor", "dispatch_blocked", "active", "in_progress"].includes(status.trim().toLowerCase());
+  if (active && view?.toolActivitySummary.trim()) return view.toolActivitySummary.trim();
+  if (view?.currentTool) return view.currentTool;
+  if (row.tool && row.tool !== "-") return row.tool;
+  return status;
+}
+
 function contextPercent(view: DesktopV3TaskChildViewModel | null): number | null {
   if (!view || view.contextWindow <= 0 || view.remainingTokens === null) return null;
   return Math.max(0, Math.min(100, ((view.contextWindow - view.remainingTokens) / view.contextWindow) * 100));
@@ -51,9 +68,10 @@ export function DesktopPlanSubagentList({ children, actions, mode }: DesktopPlan
           const title = row.assignmentLabel || row.agent || "Subagent";
           const status = view?.loading ? "loading" : view?.unavailable ? "unavailable" : view?.stale ? "stale" : view?.status || row.status || "pending";
           const terminal = view?.terminal ?? row.terminal;
+          const activity = desktopPlanSubagentActivityLabel(view, row, status, terminal);
           const percent = contextPercent(view);
           const canStop = Boolean(row.childSessionId.trim() && view && !view.terminal);
-          const details = `${title}. ${status}. ${percent === null ? "Context unavailable" : `${Math.round(percent)}% context used`}. ${formatElapsed(view?.elapsedMs || row.elapsedMs)} elapsed.`;
+          const details = `${title}. ${activity}. ${percent === null ? "Context unavailable" : `${Math.round(percent)}% context used`}. ${formatElapsed(view?.elapsedMs || row.elapsedMs)} elapsed.`;
           if (mode === "thin") {
             return <button key={row.launchKey || row.childSessionId || row.launchIndex} type="button" className="relative grid min-h-11 place-items-center rounded-lg border border-[var(--app-border)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" title={details} aria-label={`Open ${details}`} onClick={() => actions?.onNavigate(row.childSessionId, view?.workspacePath || "")} disabled={!row.childSessionId}>
               <span aria-hidden="true" className={cn("size-2.5 rounded-full", statusTone(status, terminal))} />
@@ -65,7 +83,7 @@ export function DesktopPlanSubagentList({ children, actions, mode }: DesktopPlan
             <button type="button" className="min-w-0 text-left focus-visible:outline-none" title={title} aria-label={`Open ${details}`} onClick={() => actions?.onNavigate(row.childSessionId, view?.workspacePath || "")} disabled={!row.childSessionId}>
               <div className="truncate text-xs font-medium text-[var(--app-text)]">{title}</div>
               <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-[var(--app-text-muted)]">
-                <span className="truncate">{view?.currentTool || status}</span><span>·</span><span className="shrink-0">{formatElapsed(view?.elapsedMs || row.elapsedMs)}</span>
+                <span className="truncate">{activity}</span><span>·</span><span className="shrink-0">{formatElapsed(view?.elapsedMs || row.elapsedMs)}</span>
               </div>
               <div className="mt-1 h-1 overflow-hidden rounded-full bg-[var(--app-surface-subtle)]" title={percent === null ? "Context unavailable" : `${Math.round(percent)}% context used`} aria-label={percent === null ? "Context unavailable" : `${Math.round(percent)} percent context used`}>
                 {percent !== null ? <div className="h-full bg-[var(--app-primary)]" style={{ width: `${percent}%` }} /> : null}

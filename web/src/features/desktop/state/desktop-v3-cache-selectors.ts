@@ -100,6 +100,7 @@ export interface DesktopV3TaskChildViewModel {
   status: string
   runId: string
   currentTool: string
+  toolActivitySummary: string
   startedAt: number
   elapsedMs: number
   modelLabel: string
@@ -113,6 +114,48 @@ export interface DesktopV3TaskChildViewModel {
 }
 
 const DESKTOP_V3_ACTIVE_TASK_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
+const DESKTOP_V3_TERMINAL_TOOL_STATUSES = new Set(['completed', 'done', 'failed', 'error', 'cancelled', 'canceled'])
+export const DESKTOP_V3_TASK_TOOL_ACTIVITY_CALL_LIMIT = 100
+export const DESKTOP_V3_TASK_TOOL_ACTIVITY_GROUP_LIMIT = 4
+
+interface DesktopV3TaskToolActivityCall {
+  callId: string
+  toolName?: string
+  status?: string
+  updatedAt: number
+  timelineSeq?: number
+}
+
+export function summarizeDesktopV3TaskToolActivity(toolCalls: DesktopV3TaskToolActivityCall[]): string {
+  const ordered = toolCalls
+    .filter((tool) => Boolean(tool.toolName?.trim()))
+    .sort((left, right) => {
+      const activeOrder = Number(isActiveTaskToolCall(right)) - Number(isActiveTaskToolCall(left))
+      if (activeOrder !== 0) return activeOrder
+      if (left.updatedAt !== right.updatedAt) return right.updatedAt - left.updatedAt
+      const leftSeq = left.timelineSeq ?? 0
+      const rightSeq = right.timelineSeq ?? 0
+      if (leftSeq !== rightSeq) return rightSeq - leftSeq
+      return left.callId.localeCompare(right.callId)
+    })
+    .slice(0, DESKTOP_V3_TASK_TOOL_ACTIVITY_CALL_LIMIT)
+
+  const counts = new Map<string, number>()
+  for (const tool of ordered) {
+    const name = tool.toolName?.trim()
+    if (!name) continue
+    counts.set(name, (counts.get(name) ?? 0) + 1)
+  }
+
+  return [...counts.entries()]
+    .slice(0, DESKTOP_V3_TASK_TOOL_ACTIVITY_GROUP_LIMIT)
+    .map(([name, count]) => count > 1 ? `${name} ×${count}` : name)
+    .join(' · ')
+}
+
+function isActiveTaskToolCall(tool: DesktopV3TaskToolActivityCall): boolean {
+  return !DESKTOP_V3_TERMINAL_TOOL_STATUSES.has((tool.status || '').trim().toLowerCase())
+}
 
 export function selectDesktopV3TaskChildViewModel(
   state: DesktopV3CacheState,
@@ -135,8 +178,9 @@ export function selectDesktopV3TaskChildViewModel(
   const toolCalls = liveRun ? Object.values(liveRun.toolCallsByCallId) : []
   const currentTool = [...toolCalls]
     .sort((left, right) => right.updatedAt - left.updatedAt)
-    .find((tool) => !['completed', 'done', 'failed', 'error', 'cancelled', 'canceled'].includes((tool.status || '').toLowerCase()))?.toolName?.trim()
+    .find(isActiveTaskToolCall)?.toolName?.trim()
     || row.tool.trim()
+  const toolActivitySummary = terminal ? '' : summarizeDesktopV3TaskToolActivity(toolCalls)
   const preference = objectRecord(state.preferencesBySession[sessionId])
   const metadata = session?.metadata
   const targetSwarmId = metadataString(metadata, 'swarm_v3_runtime_swarm_id')
@@ -153,6 +197,7 @@ export function selectDesktopV3TaskChildViewModel(
     status,
     runId: intent?.run_id?.trim() || view?.current_run_state?.run_id?.trim() || '',
     currentTool: currentTool && currentTool !== '-' ? currentTool : '',
+    toolActivitySummary,
     startedAt,
     elapsedMs,
     modelLabel: stringValue(usage?.model) || stringValue(preference?.model) || stringValue(settings?.effective_preference && objectRecord(settings.effective_preference)?.model) || row.modelLabel,

@@ -587,6 +587,7 @@ function taskRowsEqual(left: TaskToolRow, right: TaskToolRow, options: { compare
     || left.assignmentLabel !== right.assignmentLabel
     || left.modelLabel !== right.modelLabel
     || left.tool !== right.tool
+    || left.toolActivitySummary !== right.toolActivitySummary
     || left.time !== right.time
     || left.terminal !== right.terminal) return false;
 
@@ -629,6 +630,7 @@ function taskRowWithChildState(row: TaskToolRow, child: DesktopV3TaskChildViewMo
     ...row,
     status: child.status || row.status,
     tool: child.currentTool || row.tool,
+    toolActivitySummary: child.toolActivitySummary || row.toolActivitySummary,
     modelLabel: child.modelLabel || row.modelLabel,
     launchStartedAtMs: child.startedAt || row.launchStartedAtMs,
     elapsedMs: child.elapsedMs || row.elapsedMs,
@@ -636,6 +638,13 @@ function taskRowWithChildState(row: TaskToolRow, child: DesktopV3TaskChildViewMo
     previewKind: child.error ? 'error' : row.previewKind,
     previewText: child.error || row.previewText,
   };
+}
+
+export function taskActivityLabel(row: TaskToolRow): string {
+  const kind = taskStatusKind(row);
+  if (kind === 'running' && row.toolActivitySummary?.trim()) return row.toolActivitySummary.trim();
+  if (row.tool && row.tool !== '-') return row.tool;
+  return taskStatusText(kind);
 }
 
 function taskContextLabel(child: DesktopV3TaskChildViewModel | null): string {
@@ -806,7 +815,7 @@ function TaskAgentListRow({ row, index, dense, actions }: { row: TaskToolRow; in
 function TaskNarrowRowContent({ row, index }: { row: TaskToolRow; index: number }) {
   const kind = taskStatusKind(row);
   const rowNumber = row.launchIndex || index + 1;
-  const detail = row.tool && row.tool !== '-' ? row.tool : taskStatusText(kind);
+  const detail = taskActivityLabel(row);
 
   return (
     <div className="task-card-narrow-only min-w-0 items-center gap-2 px-2 py-2">
@@ -831,7 +840,7 @@ function TaskAgentListRowContent({ row, index, dense }: { row: TaskToolRow; inde
   const displayAgent = displayAgentName(row.agent);
   const agentLabel = displayAgent && row.assignmentLabel ? `@${displayAgent}` : displayAgent;
   const secondaryLabel = [agentLabel, row.modelLabel].filter(Boolean).join(' · ');
-  const toolLabel = row.tool && row.tool !== '-' ? row.tool : taskStatusText(kind);
+  const toolLabel = taskActivityLabel(row);
   const errorText = row.status.trim().toLowerCase() === 'failed' || row.status.trim().toLowerCase() === 'error' ? row.previewText.trim() : '';
   const previewText = errorText ? '' : row.previewText.trim();
   const rowNumber = row.launchIndex || index + 1;
@@ -949,7 +958,7 @@ function TaskSwarmCompactRowContent({ row, index }: { row: TaskToolRow; index: n
   const rowNumber = row.launchIndex || index + 1;
   const agent = displayAgentName(row.agent) || 'subagent';
   const agentLabel = agent.startsWith('@') ? agent : `@${agent}`;
-  const toolLabel = row.tool && row.tool !== '-' ? row.tool : taskStatusText(kind);
+  const toolLabel = taskActivityLabel(row);
   const title = row.assignmentLabel && row.assignmentLabel !== row.agent ? row.assignmentLabel : '';
 
   return (

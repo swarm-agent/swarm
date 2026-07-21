@@ -39,6 +39,7 @@ export interface TaskToolRow {
   assignmentLabel: string;
   modelLabel: string;
   tool: string;
+  toolActivitySummary?: string;
   time: string;
   previewKind: string;
   previewText: string;

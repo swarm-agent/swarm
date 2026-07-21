@@ -1,6 +1,6 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TASK_ELAPSED_TICK_MS, ToolMessageView, bashCopyText } from "./chat-markdown";
+import { TASK_ELAPSED_TICK_MS, ToolMessageView, bashCopyText, taskActivityLabel } from "./chat-markdown";
 import { buildStructuredToolMessage } from "../services/tool-message";
 
 function assert(condition: boolean, message: string): void {
@@ -437,6 +437,21 @@ function testTaskHeaderDoesNotShiftBetweenLaunchAssignments(): void {
   assert(!secondMarkup.includes("Frontend explorer title</span><svg"), "second header should not end with launch assignment title");
 }
 
+function testTaskActivityPrefersSummaryOnlyForActiveRows(): void {
+  const row = buildStructuredToolMessage({
+    tool: "task",
+    outputText: JSON.stringify({
+      tool: "task",
+      launches: [{ launch_index: 1, status: "running", current_tool: "search" }],
+    }),
+    state: "running",
+  })!.taskRows[0]!;
+
+  assert(taskActivityLabel({ ...row, toolActivitySummary: "read ×5 · search ×2" }) === "read ×5 · search ×2", "active row should prefer activity summary");
+  assert(taskActivityLabel({ ...row, status: "pending", phase: "spawned", tool: "-", toolActivitySummary: "read ×5" }) === "queued", "pending row should retain status fallback");
+  assert(taskActivityLabel({ ...row, status: "completed", terminal: true, tool: "-", toolActivitySummary: "read ×5" }) === "done", "terminal row should retain status fallback");
+}
+
 function testTaskElapsedClockUsesDisplayCadence(): void {
   assert(TASK_ELAPSED_TICK_MS === 1_000, `expected one-second elapsed cadence, got ${TASK_ELAPSED_TICK_MS}`);
 }
@@ -448,6 +463,7 @@ function main(): void {
   testTaskRunningTimerUsesStartTimestamp();
   testTaskTerminalTimerUsesFinalElapsed();
   testTaskElapsedClockUsesDisplayCadence();
+  testTaskActivityPrefersSummaryOnlyForActiveRows();
   testBashCopyUsesOutputOnly();
   testBashToolUsesDedicatedFullWidthCard();
   testManageSessionsUsesRelativeDesktopNavigation();
