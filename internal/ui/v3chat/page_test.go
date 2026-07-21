@@ -702,6 +702,30 @@ func TestPageCanonicalHeaderKeepsPlanStateAndShowsRunStateAboveComposer(t *testi
 	}
 }
 
+func TestPageCanonicalHeaderWrapsToSecondLineAtNarrowWidth(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:       client.SessionSummary{ID: "s", Title: "A deliberately long canonical session title"},
+		HasActivePlan: true,
+		ActivePlan:    activePlanFixture("running", "in_progress", "cp-1", "A long checkpoint title that needs the second header row"),
+	}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	defer page.Close()
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(42, 18)
+	page.Draw(screen)
+	screen.Show()
+
+	first, second := simulationRow(screen, 42, 0), simulationRow(screen, 42, 1)
+	if !strings.Contains(first, "A deliberately long canonical session") || strings.TrimSpace(second) == "" {
+		t.Fatalf("narrow header did not use two rows: first=%q second=%q", first, second)
+	}
+}
+
 func TestPageRendersTerminalConversationStateAboveComposerWithoutFooterDisplacement(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
@@ -814,8 +838,8 @@ func TestPageRendersComposerAboveCanonicalHomeFooterWithDesktopContext(t *testin
 	if !strings.Contains(drawn, "> hi") {
 		t.Fatalf("composer input missing:\n%s", drawn)
 	}
-	if !strings.Contains(drawn, "Primary Desk") || !strings.Contains(drawn, "Plan: off") || !strings.Contains(drawn, "[gpt-test · high · fast]") {
-		t.Fatalf("canonical home footer tokens missing:\n%s", drawn)
+	if !strings.Contains(drawn, "Primary Desk") || strings.Contains(drawn, "Plan: off") || strings.Contains(drawn, " Plan ") || !strings.Contains(drawn, "[gpt-test · high · fast]") {
+		t.Fatalf("canonical home footer tokens or hidden plan state are wrong:\n%s", drawn)
 	}
 	for _, redundant := range []string{"Agent", "model default", "[a:", "[m:", "[t:"} {
 		if strings.Contains(drawn, redundant) {
@@ -871,7 +895,10 @@ func TestPageComposerNoticePolicyShowsOnlyWarningsAndStopsWithoutTruncatingFoote
 	if strings.Contains(footer, "warning") || strings.Contains(footer, "stop requested") || strings.Contains(footer, "sent") {
 		t.Fatalf("composer notice remains in footer: %q", footer)
 	}
-	for _, want := range []string{"Primary Desk", "Plan: off", "[Focused work"} {
+	if strings.Contains(footer, "Plan: off") || strings.Contains(footer, " Plan ") {
+		t.Fatalf("inactive plan indicator remains in footer: %q", footer)
+	}
+	for _, want := range []string{"Primary Desk", "[Focused work"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("footer token %q was displaced or truncated: %q", want, footer)
 		}

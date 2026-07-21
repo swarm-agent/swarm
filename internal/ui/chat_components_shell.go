@@ -227,6 +227,7 @@ func (p *ChatPage) chatFooterState() FooterState {
 		Agent:             strings.TrimSpace(p.meta.Agent),
 		ModelLabel:        model.DisplayModelLabel(p.modelProvider, p.modelName, p.serviceTier, p.contextMode),
 		Thinking:          strings.TrimSpace(p.thinkingLevel),
+		PlanToggle:        true,
 		RightFacts:        p.chatFooterRightFacts(),
 	}
 }

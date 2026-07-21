@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"swarm-refactor/swarmtui/internal/model"
@@ -64,6 +65,10 @@ func TestHomeModelStateAndFooterUseEffectiveModeSelection(t *testing.T) {
 	if footer.ModelLabel != model.DisplayModelLabel(provider, modelName, serviceTier, contextMode) || footer.Thinking != thinking || footer.ServiceTier != serviceTier {
 		t.Fatalf("footer does not match plan effective state: %#v", footer)
 	}
+	planTokens := footerTokensFromState(page.theme, footer)
+	if len(planTokens) < 2 || strings.TrimSpace(planTokens[1].Text) != "Plan" {
+		t.Fatalf("plan footer indicator = %#v, want concise Plan token", planTokens)
+	}
 
 	page.sessionMode = "auto"
 	provider, modelName, thinking, serviceTier, contextMode = page.ModelState()
@@ -73,6 +78,11 @@ func TestHomeModelStateAndFooterUseEffectiveModeSelection(t *testing.T) {
 	footer = page.homeFooterState()
 	if footer.ModelLabel != model.DisplayModelLabel(provider, modelName, serviceTier, contextMode) || footer.Thinking != thinking || footer.ServiceTier != serviceTier {
 		t.Fatalf("footer does not match auto effective state: %#v", footer)
+	}
+	for _, token := range footerTokensFromState(page.theme, footer) {
+		if strings.Contains(strings.ToLower(token.Text), "plan") {
+			t.Fatalf("inactive plan indicator remains in footer token %#v", token)
+		}
 	}
 }
 

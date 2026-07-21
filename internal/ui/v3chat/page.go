@@ -1119,8 +1119,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	_, stale, reason := SelectReconnect(state)
 	transcriptTop := 0
 	if showHeader {
-		drawCanonicalHeader(screen, width, styles, title, SelectPlanHeader(state))
-		transcriptTop = 1
+		transcriptTop = drawCanonicalHeader(screen, width, height, styles, title, SelectPlanHeader(state))
 	}
 	runStatus, hasRunStatus := BuildRunStatus(state, now)
 	statusLine := ""
@@ -1424,7 +1423,10 @@ func drawConversationStatus(screen tcell.Screen, width, y int, styles PageStyles
 	drawText(screen, 0, y, minInt(width, utf8.RuneCountInString(label)), styleWithForeground(styles.Background, style).Bold(status.Active), label)
 }
 
-func drawCanonicalHeader(screen tcell.Screen, width int, styles PageStyles, title string, plan PlanHeader) {
+func drawCanonicalHeader(screen tcell.Screen, width, height int, styles PageStyles, title string, plan PlanHeader) int {
+	if width <= 0 || height <= 0 {
+		return 0
+	}
 	panel := styles.Panel.Bold(true)
 	text := styleWithForeground(panel, styles.Text)
 	muted := styleWithForeground(panel, styles.Muted)
@@ -1438,8 +1440,47 @@ func drawCanonicalHeader(screen tcell.Screen, width int, styles PageStyles, titl
 		}
 	}
 
-	drawText(screen, 0, 0, width, panel, padRight("", width))
-	drawSpans(screen, 0, 0, width, spans)
+	rows := wrapHeaderSpans(spans, width, 2)
+	if height < 2 && len(rows) > 1 {
+		rows = rows[:1]
+	}
+	for y, row := range rows {
+		drawText(screen, 0, y, width, panel, padRight("", width))
+		drawSpans(screen, 0, y, width, row)
+	}
+	return len(rows)
+}
+
+func wrapHeaderSpans(spans []renderSpan, width, maxRows int) [][]renderSpan {
+	if width <= 0 || maxRows <= 0 {
+		return nil
+	}
+	rows := make([][]renderSpan, 1, maxRows)
+	used := 0
+	for _, span := range spans {
+		for _, r := range []rune(span.text) {
+			if used >= width && len(rows) < maxRows {
+				rows = append(rows, nil)
+				used = 0
+			}
+			if used >= width {
+				return rows
+			}
+			row := len(rows) - 1
+			text := string(r)
+			if len(rows[row]) > 0 {
+				last := len(rows[row]) - 1
+				if rows[row][last].style == span.style && rows[row][last].keepBackground == span.keepBackground {
+					rows[row][last].text += text
+					used++
+					continue
+				}
+			}
+			rows[row] = append(rows[row], renderSpan{text: text, style: span.style, keepBackground: span.keepBackground})
+			used++
+		}
+	}
+	return rows
 }
 
 func (p *Page) scheduleRunTimer(active bool) {

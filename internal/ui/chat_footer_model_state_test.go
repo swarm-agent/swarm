@@ -21,6 +21,9 @@ func TestChatFooterClearsModelStateWhenSetModelStateReceivesEmptyValues(t *testi
 	if !strings.Contains(before, "[m:gpt-5-codex]") {
 		t.Fatalf("expected seeded footer model chip, got %q", before)
 	}
+	if strings.Contains(strings.ToLower(before), "plan") {
+		t.Fatalf("inactive plan indicator remains in chat footer: %q", before)
+	}
 
 	page.SetModelState("", "", "", "", "")
 

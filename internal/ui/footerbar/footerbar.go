@@ -56,12 +56,13 @@ func Tokens(styles Styles, state State) []Token {
 	modeStyle := currentCellBackground(styles.Secondary.Bold(true))
 	metaStyle := currentCellBackground(styles.Text)
 	modeText := fallback(strings.TrimSpace(state.DisplayedMode), "plan")
+	tokens := []Token{{Text: routeLabel, Style: primaryStyle, Action: "cycle-route"}}
 	if state.PlanToggle {
-		modeText = "Plan: " + fallback(strings.TrimSpace(state.DisplayedMode), "on")
-	}
-	tokens := []Token{
-		{Text: routeLabel, Style: primaryStyle, Action: "cycle-route"},
-		{Text: modeText, Style: modeStyle},
+		if planIndicatorVisible(modeText) {
+			tokens = append(tokens, Token{Text: "Plan", Style: modeStyle})
+		}
+	} else {
+		tokens = append(tokens, Token{Text: modeText, Style: modeStyle})
 	}
 	if state.UnifiedProfile {
 		return append(tokens, Token{Text: ProfileUnit(state), Style: metaStyle, Action: "open-profiles-modal", Shrink: true})
@@ -236,6 +237,15 @@ func clampSwarmNotificationLabel(label string, count, width int) string {
 		return clamp(strings.TrimSpace(suffix), width)
 	}
 	return clamp(base, baseWidth) + suffix
+}
+
+func planIndicatorVisible(mode string) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "on", "plan":
+		return true
+	default:
+		return false
+	}
 }
 
 func fallback(value, fallbackValue string) string {
