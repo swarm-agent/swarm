@@ -80,7 +80,7 @@ func TestStructuredFinalHandoffRendersCompactCardAndLegacyMarkersAreSanitized(t 
 }
 
 func TestFinalHandoffGraphemeWrappingPreservesCellWidthsAndClusters(t *testing.T) {
-	text := "A界e\u0301👩‍💻B"
+	text := "A界e\u0301👩\u200d💻B"
 	lines := wrapDisplayText(text, 3)
 	if got := strings.Join(lines, ""); got != text {
 		t.Fatalf("grapheme wrapping changed content: got %q want %q", got, text)
@@ -93,13 +93,13 @@ func TestFinalHandoffGraphemeWrappingPreservesCellWidthsAndClusters(t *testing.T
 	if strings.Contains(lines[0], "\u0301") && !strings.Contains(lines[0], "e\u0301") {
 		t.Fatalf("combining grapheme was split: %#v", lines)
 	}
-	if !strings.Contains(strings.Join(lines, "|"), "👩‍💻") {
+	if !strings.Contains(strings.Join(lines, "|"), "👩\u200d💻") {
 		t.Fatalf("emoji grapheme was split: %#v", lines)
 	}
 
 	card := (&Page{}).renderFinalHandoffRows(Message{
 		ID: "wide", Role: "system", Metadata: map[string]any{"source": finalHandoffSource},
-		FinalHandoff: &client.PlanFinalHandoff{SchemaVersion: 1, Title: "界界", Overview: "e\u0301 and 👩‍💻", Details: client.PlanFinalHandoffDetails{}},
+		FinalHandoff: &client.PlanFinalHandoff{SchemaVersion: 1, Title: "界界", Overview: "e\u0301 and 👩\u200d💻", Details: client.PlanFinalHandoffDetails{}},
 	}, 12, testPageStyles())
 	for _, row := range card {
 		if width := displayCellWidth(row.text); width > 12 {
