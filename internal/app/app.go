@@ -608,8 +608,9 @@ func (a *App) Run() error {
 					continue
 				}
 				if a.route == "v3chat" && a.v3Chat != nil {
-					a.v3Chat.HandleKey(e)
-					dirty = true
+					if a.v3Chat.HandlePasteKey(e) {
+						dirty = true
+					}
 					continue
 				}
 				a.setPasteActive(false)

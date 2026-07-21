@@ -1023,6 +1023,36 @@ func TestPageComposerDefaultsToOneRowAndExpandsForMultilineInput(t *testing.T) {
 	}
 }
 
+func TestPageComposerLargePasteFlushesInBatchesAtCursor(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
+	for _, r := range "after" {
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyHome, 0, tcell.ModNone))
+
+	paste := strings.Repeat("界", composerPasteFlushChunkRunes) + "\nsecond line"
+	page.SetPasteActive(true)
+	for i, r := range paste {
+		flushed := page.HandlePasteKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+		if i < composerPasteFlushChunkRunes-1 && flushed {
+			t.Fatalf("paste flushed early after %d runes", i+1)
+		}
+		if i == composerPasteFlushChunkRunes-1 && !flushed {
+			t.Fatalf("paste did not flush at %d-rune batch boundary", composerPasteFlushChunkRunes)
+		}
+	}
+	page.SetPasteActive(false)
+
+	want := paste + "after"
+	if got := page.InputValue(); got != want {
+		t.Fatalf("large pasted input = %q, want %q", got, want)
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, '!', tcell.ModNone))
+	if got := page.InputValue(); got != paste+"!after" {
+		t.Fatalf("cursor after large paste = %q, want insertion before suffix", got)
+	}
+}
+
 func TestPageComposerPastePreservesMultilineContentAndFollowsCursor(t *testing.T) {
 	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
 	page.SetPasteActive(true)

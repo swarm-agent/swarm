@@ -131,6 +131,8 @@ type Page struct {
 }
 
 const (
+	composerPasteFlushChunkRunes = 256
+
 	KeyEscape        = "escape"
 	KeyMoveUp        = "move_up"
 	KeyMoveDown      = "move_down"
@@ -385,7 +387,23 @@ func (p *Page) clearCommandEmissionForConversationLocked() {
 	}
 }
 
-func (p *Page) handlePasteKeyLocked(ev *tcell.EventKey) {
+// HandlePasteKey buffers bracketed-paste key events and reports whether a
+// complete chunk was inserted. Callers can defer redraws until this returns
+// true (or SetPasteActive(false) flushes the final partial chunk), matching the
+// legacy chat composer's large-paste behavior.
+func (p *Page) HandlePasteKey(ev *tcell.EventKey) bool {
+	if p == nil || ev == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.pasteActive {
+		return false
+	}
+	return p.handlePasteKeyLocked(ev)
+}
+
+func (p *Page) handlePasteKeyLocked(ev *tcell.EventKey) bool {
 	switch ev.Key() {
 	case tcell.KeyRune:
 		r := ev.Rune()
@@ -407,9 +425,11 @@ func (p *Page) handlePasteKeyLocked(ev *tcell.EventKey) {
 			p.pasteBuffer = p.pasteBuffer[:len(p.pasteBuffer)-1]
 		}
 	}
-	if len(p.pasteBuffer) >= 256 {
+	if len(p.pasteBuffer) >= composerPasteFlushChunkRunes {
 		p.flushPasteBufferLocked()
+		return true
 	}
+	return false
 }
 
 func (p *Page) OpenNew(request NewSessionRequest) {
