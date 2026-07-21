@@ -193,7 +193,7 @@ func TestPrepareAITaskMetadataRejectsMissingSelectedModelCatalogBeforeDispatch(t
 	}
 
 	_, err = svc.PrepareAITaskMetadata(context.Background(), "task-missing-catalog", "request", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "high"}, principal)
-	if err == nil || !strings.Contains(err.Error(), `record for provider "codex" model "missing-compact-model" is unavailable`) {
+	if err == nil || !strings.Contains(err.Error(), `Compact model catalog record for provider "codex" model "missing-compact-model" is unavailable`) {
 		t.Fatalf("missing catalog error = %v", err)
 	}
 	if runner.calls != 0 {

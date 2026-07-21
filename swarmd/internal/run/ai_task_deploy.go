@@ -117,14 +117,11 @@ func (s *Service) PrepareAITaskMetadata(ctx context.Context, taskID, request str
 	if err != nil {
 		return AITaskPreparation{}, err
 	}
-	providerID := strings.ToLower(strings.TrimSpace(resolved.Preference.Provider))
-	catalogRecord, err := modelCatalogLookup(s.model, providerID, resolved.Preference.Model)
+	compactModel, err := resolveCompactModelRuntime(s.model, resolved)
 	if err != nil {
-		return AITaskPreparation{}, fmt.Errorf("resolve AI task Compact model catalog: %w", err)
+		return AITaskPreparation{}, fmt.Errorf("resolve AI task Compact model runtime: %w", err)
 	}
-	if catalogRecord == nil {
-		return AITaskPreparation{}, fmt.Errorf("resolve AI task Compact model catalog: record for provider %q model %q is unavailable", providerID, resolved.Preference.Model)
-	}
+	providerID := compactModel.ProviderID
 	runner, ok := s.providers.GetRunner(providerID)
 	if !ok {
 		return AITaskPreparation{}, fmt.Errorf("AI task Compact provider %q is not runnable", providerID)
@@ -136,13 +133,14 @@ func (s *Service) PrepareAITaskMetadata(ctx context.Context, taskID, request str
 		"worktree_name: a short lowercase branch seed using letters, digits, and hyphens.",
 		"Do not rewrite, summarize, or return an execution prompt. Do not include markdown or explanation.",
 	}, "\n"))
-	lineage := provideriface.ShortProviderLineageKey("ai_task_metadata", taskID, resolved.Preference.Model, resolved.Preference.Thinking, instructions)
+	lineage := provideriface.ShortProviderLineageKey("ai_task_metadata", taskID, compactModel.Preference.Model, compactModel.Preference.Thinking, instructions)
 	req := provideriface.Request{
 		ProviderLineageID: lineage, ProviderCacheKey: providerScopedKey("cache", lineage), SessionAffinityKey: providerScopedKey("affinity", lineage),
 		BoundaryReason: "ai_task_metadata", NativeContinuationAllowed: false, ForceFreshProviderContext: true,
-		Model: resolved.Preference.Model, Thinking: normalizeThinkingWithProvider(providerID, resolved.Preference.Thinking), ServiceTier: resolvedServiceTierForProvider(providerID, resolved.Preference.ServiceTier), Instructions: instructions,
-		Input: []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": request}}}}, ToolChoice: "none", ModelCatalog: catalogRecordValue(catalogRecord),
+		Instructions: instructions,
+		Input:        []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": request}}}}, ToolChoice: "none",
 	}
+	req = compactModel.apply(req)
 	trustedCtx := identity.ContextWithPrincipal(ctx, principal)
 	callCtx, cancel := context.WithTimeout(trustedCtx, 30*time.Second)
 	defer cancel()

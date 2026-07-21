@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	modelruntime "swarm/packages/swarmd/internal/model"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -113,22 +114,7 @@ func normalizeUsageSource(source string) string {
 }
 
 func resolvedServiceTierForProvider(providerID, serviceTier string) string {
-	providerID = strings.ToLower(strings.TrimSpace(providerID))
-	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
-	if serviceTier == "" || serviceTier == "standard" || serviceTier == "off" {
-		return ""
-	}
-	switch providerID {
-	case "codex", "fireworks":
-		return serviceTier
-	case "anthropic":
-		if serviceTier == "batch" {
-			return ""
-		}
-		return serviceTier
-	default:
-		return ""
-	}
+	return modelruntime.NormalizeServiceTierForProvider(providerID, serviceTier)
 }
 
 func shouldPersistProviderUsage(providerID string, usage provideriface.TokenUsage) bool {

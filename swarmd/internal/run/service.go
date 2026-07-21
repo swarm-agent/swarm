@@ -3155,8 +3155,13 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 		finishFailure(err)
 		return "", err
 	}
-	preference := resolvedCompact.Preference
-	providerID := strings.ToLower(strings.TrimSpace(preference.Provider))
+	compactModel, err := resolveCompactModelRuntime(s.model, resolvedCompact)
+	if err != nil {
+		finishFailure(err)
+		return "", err
+	}
+	preference := compactModel.Preference
+	providerID := compactModel.ProviderID
 	if providerID == "" {
 		err := errors.New("resolved memory compact provider is empty")
 		finishFailure(err)
@@ -3174,7 +3179,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 		finishFailure(err)
 		return "", err
 	}
-	thinking := normalizeThinkingWithProvider(providerID, preference.Thinking)
+	thinking := preference.Thinking
 	if resolvedCompact.ContextWindow > 0 {
 		contextWindow = resolvedCompact.ContextWindow
 	}
@@ -3235,7 +3240,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	{
 		oneShotStatus := fmt.Sprintf("compacting bounded chat with Compact (one shot, attempt %d)", attempt)
 		emitProgress(oneShotStatus)
-		oneShotResult, reqErr := executeMemoryCompactionRequest(ctx, runner, modelName, thinking, preference.ServiceTier, preference.ContextMode, instructions, oneShotPrompt, contextWindow, summaryMaxRunes, func(message string) {
+		oneShotResult, reqErr := executeMemoryCompactionRequest(ctx, runner, compactModel, instructions, oneShotPrompt, contextWindow, summaryMaxRunes, func(message string) {
 			emitProgress(oneShotStatus + "; " + strings.TrimSpace(message))
 		})
 		if reqErr == nil {
@@ -3992,8 +3997,9 @@ func providerToolsLineageHash(tools []provideriface.ToolDefinition) string {
 	return provideriface.ShortProviderLineageKey(string(raw))
 }
 
-func executeMemoryCompactionRequest(ctx context.Context, runner provideriface.Runner, modelName, thinking, serviceTier, contextMode, instructions, userPrompt string, contextWindow, summaryMaxRunes int, emitHeartbeat func(string)) (memoryCompactionResult, error) {
-	providerLineageID := provideriface.ShortProviderLineageKey("compact_context", modelName, thinking, contextMode, instructions)
+func executeMemoryCompactionRequest(ctx context.Context, runner provideriface.Runner, compactModel compactModelRuntime, instructions, userPrompt string, contextWindow, summaryMaxRunes int, emitHeartbeat func(string)) (memoryCompactionResult, error) {
+	preference := compactModel.Preference
+	providerLineageID := provideriface.ShortProviderLineageKey("compact_context", preference.Model, preference.Thinking, preference.ContextMode, instructions)
 	req := provideriface.Request{
 		ProviderLineageID:         providerLineageID,
 		ProviderCacheKey:          providerScopedKey("cache", providerLineageID),
@@ -4001,11 +4007,7 @@ func executeMemoryCompactionRequest(ctx context.Context, runner provideriface.Ru
 		BoundaryReason:            "compact_context",
 		NativeContinuationAllowed: false,
 		ForceFreshProviderContext: true,
-		Model:                     modelName,
-		Thinking:                  thinking,
-		ServiceTier:               strings.TrimSpace(serviceTier),
 		Instructions:              instructions,
-		ContextMode:               contextMode,
 		ContextWindow:             contextWindow,
 		Input: []map[string]any{
 			{
@@ -4017,6 +4019,7 @@ func executeMemoryCompactionRequest(ctx context.Context, runner provideriface.Ru
 		},
 		ToolChoice: "none",
 	}
+	req = compactModel.apply(req)
 	response, reqErr := runMemoryCompactionProviderCall(ctx, runner, req, emitHeartbeat)
 	if reqErr != nil {
 		return memoryCompactionResult{}, reqErr
@@ -4316,16 +4319,20 @@ func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWor
 		promptContext = sessionTitleDefault
 	}
 
-	preference := applyAgentPreferenceOverrides(basePreference, compactProfile)
-	if s.model != nil && s.agents != nil {
-		resolvedCompact, resolvedProfile, err := s.resolveCompactPreference(principal.AccountScopeID, basePreference)
-		if err != nil {
-			return "", err
-		}
-		preference = resolvedCompact.Preference
-		compactProfile = resolvedProfile
+	if s.model == nil || s.agents == nil {
+		return "", errors.New("Compact model and agent services are not configured")
 	}
-	providerID := strings.ToLower(strings.TrimSpace(preference.Provider))
+	resolvedCompact, resolvedProfile, err := s.resolveCompactPreference(principal.AccountScopeID, basePreference)
+	if err != nil {
+		return "", err
+	}
+	compactModel, err := resolveCompactModelRuntime(s.model, resolvedCompact)
+	if err != nil {
+		return "", err
+	}
+	preference := compactModel.Preference
+	compactProfile = resolvedProfile
+	providerID := compactModel.ProviderID
 	if providerID == "" {
 		return "", errors.New("resolved memory title provider is empty")
 	}
@@ -4338,7 +4345,7 @@ func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWor
 	if modelName == "" {
 		return "", errors.New("resolved memory title model is empty")
 	}
-	thinking := normalizeThinkingWithProvider(providerID, preference.Thinking)
+	thinking := preference.Thinking
 	stageLabel := stage
 	if stageLabel == "" {
 		stageLabel = "provisional"
@@ -4361,9 +4368,6 @@ func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWor
 		BoundaryReason:            "session_title",
 		NativeContinuationAllowed: false,
 		ForceFreshProviderContext: true,
-		Model:                     modelName,
-		Thinking:                  thinking,
-		ServiceTier:               strings.TrimSpace(preference.ServiceTier),
 		Instructions:              instructions,
 		Input: []map[string]any{
 			{
@@ -4375,6 +4379,7 @@ func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWor
 		},
 		ToolChoice: "none",
 	}
+	req = compactModel.apply(req)
 	bgCtx := context.Background()
 	if principal.Valid() {
 		bgCtx = identity.ContextWithPrincipal(bgCtx, principal)

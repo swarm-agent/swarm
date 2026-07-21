@@ -6,8 +6,80 @@ import (
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/provider/codex"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+func TestCompactModelRuntimeUsesCanonicalProviderMappings(t *testing.T) {
+	preference := pebblestore.ModelPreference{
+		Provider:    "codex",
+		Model:       "gpt-5.4",
+		Thinking:    "xhigh",
+		ServiceTier: "fast",
+		ContextMode: "full",
+	}
+	catalog := pebblestore.ModelCatalogRecord{
+		Provider: "codex",
+		Model:    "gpt-5.4",
+		ThinkingMappings: []pebblestore.ModelCatalogThinkingMapping{{
+			SwarmSetting: "xhigh", ProviderParameter: "reasoning.effort", ProviderValue: "xhigh",
+		}},
+		ServiceTierMappings: []pebblestore.ModelCatalogServiceTierMapping{{
+			Tier: "fast", SwarmSetting: "fast", ProviderParameter: "service_tier", ProviderValue: "priority",
+		}},
+	}
+	compactModel := compactModelRuntime{ProviderID: "codex", Preference: preference, Catalog: catalog}
+	req := compactModel.apply(provideriface.Request{ToolChoice: "none"})
+	converted := codex.ToRequest(req)
+	if req.ServiceTier != "fast" {
+		t.Fatalf("Swarm Compact tier = %q, want fast", req.ServiceTier)
+	}
+	if converted.ServiceTier != "priority" {
+		t.Fatalf("Codex Compact tier = %q, want canonical catalog-mapped priority", converted.ServiceTier)
+	}
+	if converted.ReasoningProviderValue != "xhigh" {
+		t.Fatalf("Codex Compact reasoning = %q, want canonical catalog-mapped xhigh", converted.ReasoningProviderValue)
+	}
+	if _, ok := req.ModelCatalog.(pebblestore.ModelCatalogRecord); !ok {
+		t.Fatalf("Compact request catalog = %#v", req.ModelCatalog)
+	}
+	if req.ToolChoice != "none" || len(req.Tools) != 0 {
+		t.Fatalf("Compact request gained tools: choice=%q tools=%#v", req.ToolChoice, req.Tools)
+	}
+}
+
+func TestCompactModelRuntimeNormalizesEveryRunnableProvider(t *testing.T) {
+	for _, tc := range []struct {
+		provider     string
+		thinking     string
+		tier         string
+		wantTier     string
+		wantThinking string
+	}{
+		{provider: "anthropic", thinking: "high", tier: "fast", wantTier: "fast", wantThinking: "high"},
+		{provider: "codex", thinking: "high", tier: "fast", wantTier: "fast", wantThinking: "high"},
+		{provider: "copilot", thinking: "xhigh", tier: "fast", wantTier: "", wantThinking: "high"},
+		{provider: "fireworks", thinking: "xhigh", tier: "priority", wantTier: "priority", wantThinking: "high"},
+		{provider: "google", thinking: "xhigh", tier: "fast", wantTier: "", wantThinking: "xhigh"},
+		{provider: "openai", thinking: "xhigh", tier: "priority", wantTier: "priority", wantThinking: "xhigh"},
+		{provider: "openrouter", thinking: "xhigh", tier: "priority", wantTier: "priority", wantThinking: "high"},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			runtime := compactModelRuntime{ProviderID: tc.provider, Preference: pebblestore.ModelPreference{Provider: tc.provider, Model: "model", Thinking: normalizeThinkingWithProvider(tc.provider, tc.thinking), ServiceTier: resolvedServiceTierForProvider(tc.provider, tc.tier)}, Catalog: pebblestore.ModelCatalogRecord{Provider: tc.provider, Model: "model"}}
+			req := runtime.apply(provideriface.Request{})
+			if req.ServiceTier != tc.wantTier {
+				t.Fatalf("%s Compact tier = %q, want %q", tc.provider, req.ServiceTier, tc.wantTier)
+			}
+			if req.Thinking != tc.wantThinking {
+				t.Fatalf("%s Compact thinking = %q, want %q", tc.provider, req.Thinking, tc.wantThinking)
+			}
+			if catalog, ok := req.ModelCatalog.(pebblestore.ModelCatalogRecord); !ok || catalog.Provider != tc.provider {
+				t.Fatalf("%s Compact catalog = %#v", tc.provider, req.ModelCatalog)
+			}
+		})
+	}
+}
 
 func TestCompactInstructionsAreCaseSpecificAndToolFree(t *testing.T) {
 	profile := agentruntime.CompactAgentProfileForParent(pebblestore.AgentProfile{Provider: "codex", Model: "utility"})
