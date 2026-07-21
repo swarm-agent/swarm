@@ -155,17 +155,13 @@ function checkpointTaskView(value: string): CheckpointTaskView {
   };
 }
 
-const DEFAULT_VISIBLE_PENDING_TASKS = 1;
 const MIN_TASK_VIEWPORT_HEIGHT = 88;
-const MAX_TASK_VIEWPORT_HEIGHT = 240;
+const ALL_PENDING_TASKS = Number.MAX_SAFE_INTEGER;
 
 type SidebarTask = CheckpointTaskView & { active: boolean };
 
 function taskViewportHeight(sidebarHeight: number): number {
-  return Math.max(
-    MIN_TASK_VIEWPORT_HEIGHT,
-    Math.min(MAX_TASK_VIEWPORT_HEIGHT, Math.floor(sidebarHeight * 0.28)),
-  );
+  return Math.max(MIN_TASK_VIEWPORT_HEIGHT, Math.floor(sidebarHeight * 0.5));
 }
 
 function CheckpointDetails({
@@ -180,7 +176,7 @@ function CheckpointDetails({
   const [expanded, setExpanded] = useState(false);
   const [viewportHeight, setViewportHeight] = useState(MIN_TASK_VIEWPORT_HEIGHT);
   const [visiblePendingCount, setVisiblePendingCount] = useState(
-    DEFAULT_VISIBLE_PENDING_TASKS,
+    ALL_PENDING_TASKS,
   );
 
   const tasks: SidebarTask[] = checkpoint
@@ -206,7 +202,7 @@ function CheckpointDetails({
   const completedTasks = tasks.filter((task) => task.checked === true);
   const reservedPendingCount = Math.min(
     visiblePendingCount,
-    Math.max(0, pendingTasks.length - 1),
+    pendingTasks.length,
   );
   const visiblePendingTasks = pendingTasks.slice(0, reservedPendingCount);
   const overflowPendingTasks = pendingTasks.slice(reservedPendingCount);
@@ -248,19 +244,29 @@ function CheckpointDetails({
     const activeHeight = rows
       .slice(0, activeTasks.length)
       .reduce((height, row) => height + row.getBoundingClientRect().height + 6, 0);
-    const disclosureHeight =
-      pendingTasks.length > 0 || completedTasks.length > 0 ? 30 : 0;
-    const availablePendingHeight = Math.max(
-      0,
-      nextViewportHeight - activeHeight - disclosureHeight,
-    );
-    let usedHeight = 0;
-    let nextVisiblePendingCount = 0;
-    for (const row of rows.slice(activeTasks.length)) {
-      const rowHeight = row.getBoundingClientRect().height + 6;
-      if (usedHeight + rowHeight > availablePendingHeight) break;
-      usedHeight += rowHeight;
-      nextVisiblePendingCount += 1;
+    const pendingRows = rows.slice(activeTasks.length);
+    const countPendingRowsThatFit = (reservedDisclosureHeight: number) => {
+      const availablePendingHeight = Math.max(
+        0,
+        nextViewportHeight - activeHeight - reservedDisclosureHeight,
+      );
+      let usedHeight = 0;
+      let count = 0;
+      for (const row of pendingRows) {
+        const rowHeight = row.getBoundingClientRect().height + 6;
+        if (usedHeight + rowHeight > availablePendingHeight) break;
+        usedHeight += rowHeight;
+        count += 1;
+      }
+      return count;
+    };
+    const completedDisclosureHeight = completedTasks.length > 0 ? 30 : 0;
+    let nextVisiblePendingCount = countPendingRowsThatFit(completedDisclosureHeight);
+    if (
+      nextVisiblePendingCount < pendingTasks.length &&
+      completedDisclosureHeight === 0
+    ) {
+      nextVisiblePendingCount = countPendingRowsThatFit(30);
     }
     if (activeTasks.length === 0 && pendingTasks.length > 0) {
       nextVisiblePendingCount = Math.max(1, nextVisiblePendingCount);
@@ -803,31 +809,13 @@ function ActionsSection({
     !view.failed &&
     !view.completed
   ) {
-    return (
-      <section className="min-w-0 pt-0.5" data-plan-section="actions">
-        <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
-          Run state
-        </div>
-        <div className="mt-2 flex items-center justify-between gap-3 border-y border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-2.5 py-2" data-plan-system-message>
-          <span className="text-xs font-semibold text-[var(--app-text)]">Running automatically</span>
-          <StatusIndicator label={statusLabel(view, view.activeCheckpoint)} tone="primary" treatment="plain-text" />
-        </div>
-      </section>
-    );
+    return null;
   }
 
   return (
     <section className="min-w-0 pt-0.5" data-plan-section="actions">
       <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
-        Run state
-      </div>
-      <div className="mt-2 flex items-center justify-between gap-3 border-y border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2.5 py-2" data-plan-system-message>
-        <span className="text-xs font-medium text-[var(--app-text)]">{statusLabel(view, view.activeCheckpoint)}</span>
-        <StatusIndicator
-          label={view.completed ? "Plan complete" : view.reviewRequired ? "Review required" : view.failed ? "Run failed" : "Automatic"}
-          tone={view.failed ? "danger" : view.reviewRequired ? "warning" : "muted"}
-          treatment="plain-text"
-        />
+        Actions
       </div>
 
       <ReviewRecommendation recommendation={canonicalRecommendation ?? view.activeCheckpoint?.recommendation} />

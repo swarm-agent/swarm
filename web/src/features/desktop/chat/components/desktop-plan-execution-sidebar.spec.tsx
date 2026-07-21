@@ -285,7 +285,7 @@ function view(
   };
 }
 
-test("plan sidebar renders a flat sectioned layout with session content below Actions", () => {
+test("plan sidebar renders session content without a passive run-state section", () => {
   const html = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar
       view={view()}
@@ -295,7 +295,7 @@ test("plan sidebar renders a flat sectioned layout with session content below Ac
   );
 
   assert.match(html, /data-plan-section="checkpoint"/);
-  assert.match(html, /data-plan-section="actions"/);
+  assert.doesNotMatch(html, /data-plan-section="actions"/);
   assert.match(html, /data-plan-section="session"/);
   assert.match(html, /data-plan-scroll-region=""/);
   assert.match(
@@ -309,7 +309,8 @@ test("plan sidebar renders a flat sectioned layout with session content below Ac
   assert.match(html, /shrink basis-auto overflow-y-auto/);
   assert.doesNotMatch(html, /max-h-\[40%\]/);
   assert.doesNotMatch(html, /shadow-\[0_12px_34px/);
-  assert.ok(html.indexOf("Actions") < html.indexOf("Scoped Git changes"));
+  assert.doesNotMatch(html, /Run state/);
+  assert.doesNotMatch(html, /Running automatically/);
 });
 
 test("active checkpoint heading has balanced spacing before Progress", () => {
@@ -366,7 +367,8 @@ test("checkpoint sidebar bounds overflow while prioritizing active work and pres
   assert.match(markup, /data-plan-task-chevron=""/);
   assert.match(markup, /aria-expanded="false"/);
   assert.match(markup, /aria-controls="desktop-plan-overflow-tasks"/);
-  assert.match(markup, /Show 3 more tasks and 1 completed/);
+  assert.match(markup, /Show 1 completed task/);
+  assert.doesNotMatch(markup, /Show \d+ more tasks?/);
   assert.ok(
     markup.indexOf("Render sidebar state") < markup.indexOf("Keep the layout compact"),
     "expected active work before pending work",
@@ -378,7 +380,7 @@ test("checkpoint sidebar bounds overflow while prioritizing active work and pres
   assert.match(markup, /Open full plan/);
 });
 
-test("pending-only overflow always exposes a keyboard-accessible chevron disclosure", () => {
+test("pending tasks are initially visible and become height-bounded rather than count-capped", () => {
   const base = view();
   base.activeCheckpoint = {
     ...base.activeCheckpoint!,
@@ -399,14 +401,19 @@ test("pending-only overflow always exposes a keyboard-accessible chevron disclos
   const markup = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar view={base} onAction={() => undefined} />,
   );
+  const source = readFileSync(
+    new URL("./desktop-plan-execution-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
 
   assert.match(markup, /Active task must stay visible/);
+  assert.match(markup, /Pending task 6/);
   assert.match(markup, /data-plan-task-active="true"/);
-  assert.match(markup, /data-plan-task-expansion=""/);
+  assert.doesNotMatch(markup, /data-plan-task-expansion=""/);
   assert.doesNotMatch(markup, /data-plan-completed-tasks/);
-  assert.match(markup, /<button[^>]*type="button"[^>]*aria-expanded="false"/);
-  assert.match(markup, /data-plan-task-chevron=""/);
-  assert.match(markup, /Show 4 more tasks/);
+  assert.doesNotMatch(markup, /Show \d+ more tasks?/);
+  assert.match(source, /Math\.floor\(sidebarHeight \* 0\.5\)/);
+  assert.doesNotMatch(source, /pendingTasks\.length - 1/);
 });
 
 test("Git integration reserves a visible bounded region below the plan", () => {
@@ -425,7 +432,7 @@ test("Git integration reserves a visible bounded region below the plan", () => {
   assert.match(appPageSource, /min-h-\[160px\][^'\"]*flex-1[^'\"]*overflow-hidden/);
 });
 
-test("automatic plan sidebar shows a compact run state without execution mode controls", () => {
+test("automatic plan sidebar omits passive run state and execution mode controls", () => {
   const markup = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar
       view={view()}
@@ -434,10 +441,10 @@ test("automatic plan sidebar shows a compact run state without execution mode co
     />,
   );
 
-  assert.match(markup, /Run state/);
-  assert.match(markup, /Running automatically/);
+  assert.doesNotMatch(markup, /Run state/);
+  assert.doesNotMatch(markup, /Running automatically/);
   assert.match(markup, /In Progress/);
-  assert.match(markup, /data-plan-system-message=""/);
+  assert.doesNotMatch(markup, /data-plan-system-message=""/);
   assert.doesNotMatch(markup, /border-l-2/);
   assert.doesNotMatch(markup, /Pause for review after each checkpoint/);
   assert.doesNotMatch(markup, /Switch to automatic/);
@@ -720,9 +727,9 @@ test("legacy review-required plans keep review actions without exposing a manual
     />,
   );
 
-  assert.match(markup, /Run state/);
+  assert.doesNotMatch(markup, /Run state/);
   assert.match(markup, /Waiting review/);
-  assert.match(markup, /Review required/);
+  assert.match(markup, />Actions</);
   assert.doesNotMatch(markup, /Review Mode/);
   assert.doesNotMatch(markup, /Switch to automatic/);
   assert.match(markup, /Accept &amp; start next checkpoint/);
@@ -755,8 +762,9 @@ test("legacy final review exposes acceptance before archiving without a mode tog
     />,
   );
 
-  assert.match(markup, /Run state/);
+  assert.doesNotMatch(markup, /Run state/);
   assert.match(markup, /Waiting review/);
+  assert.match(markup, />Actions</);
   assert.match(markup, /Accept &amp; archive plan/);
   assert.match(
     markup,
@@ -806,9 +814,10 @@ test("automatic final review keeps automatic copy and no policy toggle when all 
     />,
   );
 
-  assert.match(markup, /Run state/);
+  assert.doesNotMatch(markup, /Run state/);
   assert.match(markup, /Waiting review/);
-  assert.match(markup, /Plan complete/);
+  assert.match(markup, />Actions</);
+  assert.doesNotMatch(markup, /Plan complete/);
   assert.match(markup, /Accept \u0026amp; archive plan/);
   assert.doesNotMatch(markup, /Review Mode/);
   assert.doesNotMatch(markup, /Backend policy is checkpoint-by-checkpoint/);
