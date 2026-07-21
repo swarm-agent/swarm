@@ -503,7 +503,7 @@ func presentPlanManageTool(tool ToolTimelineItem, arguments, output map[string]a
 	if status := firstNonEmptyToolRaw(toolString(document, "status"), toolString(plan, "status"), toolString(payload, "status")); status != "" && !strings.EqualFold(status, "ok") {
 		facts = append(facts, strings.ReplaceAll(status, "_", " "))
 	}
-	lines := make([]toolPresentationLine, 0, 3)
+	lines := make([]toolPresentationLine, 0, 4+len(toolObjectSlice(document, "checkpoints")))
 	info := toolObject(document, "info")
 	title := firstNonEmptyToolRaw(
 		toolString(plan, "title"),
@@ -518,6 +518,19 @@ func presentPlanManageTool(tool ToolTimelineItem, arguments, output map[string]a
 		lines = append(lines, toolPresentationLine{Text: goal})
 	} else if update := firstNonEmptyToolRaw(toolString(plan, "update_summary"), toolString(payload, "update_summary")); update != "" && !strings.EqualFold(update, title) {
 		lines = append(lines, toolPresentationLine{Text: update, Tone: "muted"})
+	}
+	checkpoints := toolObjectSlice(document, "checkpoints")
+	if len(checkpoints) > 0 {
+		lines = append(lines, toolPresentationLine{Text: "CHECKPOINTS  ·  " + toolCountLabel(len(checkpoints), "checkpoint", "checkpoints"), Tone: "muted"})
+		for index, checkpoint := range checkpoints {
+			order := toolInt(checkpoint, "order")
+			if order <= 0 {
+				order = index + 1
+			}
+			title := firstNonEmptyToolRaw(toolString(checkpoint, "title"), toolString(checkpoint, "id"), "Untitled checkpoint")
+			status := humanizePlanStatus(firstNonEmptyToolRaw(toolString(checkpoint, "status"), "pending"))
+			lines = append(lines, toolPresentationLine{Text: fmt.Sprintf("%d. %s  ·  %s", order, title, status), Tone: "checkpoint:" + strings.ToLower(status)})
+		}
 	}
 	return toolPresentation{Summary: appendToolFacts(summary, facts), Lines: lines, Kind: "plan"}
 }

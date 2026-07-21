@@ -104,15 +104,20 @@ type planPermissionIntent struct {
 	Summary     string
 	Goal        string
 	Document    map[string]any
-	Checkpoints int
+	Checkpoints []map[string]any
+}
+
+func isPlanProposalRequirement(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "plan_new_request", "plan_revision_request", "plan_amendment_request", "plan_followup_request":
+		return true
+	default:
+		return false
+	}
 }
 
 func parsePlanPermissionIntent(record client.PermissionRecord) (planPermissionIntent, bool) {
-	if normalizePermissionToolName(record.ToolName) != "plan_manage" {
-		return planPermissionIntent{}, false
-	}
-	requirement := strings.ToLower(strings.TrimSpace(record.Requirement))
-	if requirement != "plan_new_request" && requirement != "plan_revision_request" && requirement != "plan_amendment_request" && requirement != "plan_followup_request" {
+	if normalizePermissionToolName(record.ToolName) != "plan_manage" || !isPlanProposalRequirement(record.Requirement) {
 		return planPermissionIntent{}, false
 	}
 	var payload map[string]any
@@ -134,13 +139,13 @@ func parsePlanPermissionIntent(record client.PermissionRecord) (planPermissionIn
 		Summary:     firstNonEmptyToolRaw(toolString(payload, "update_summary"), toolString(payload, "summary")),
 		Goal:        toolString(info, "goal"),
 		Document:    document,
-		Checkpoints: len(toolObjectSlice(document, "checkpoints")),
+		Checkpoints: toolObjectSlice(document, "checkpoints"),
 	}, true
 }
 
 func planPermissionCardModel(record client.PermissionRecord, intent planPermissionIntent, pendingCount, width int, styles PageStyles) permissionCardModel {
 	mode := firstNonEmpty(strings.TrimSpace(record.Mode), "auto")
-	model := permissionCardModel{Title: "Plan approval", Badge: "PLAN", Meta: permissionCardMeta(record, pendingCount, mode), FooterRows: permissionCardFooterRows(record)}
+	model := permissionCardModel{Title: "Plan approval", Badge: "PLAN", Meta: planPermissionCardMeta(record, pendingCount, mode), FooterRows: permissionCardFooterRows(record)}
 	model.Content = append(model.Content, permissionCardLine{Text: intent.Title, Style: styles.Text.Bold(true)})
 	if intent.Goal != "" && !strings.EqualFold(intent.Goal, intent.Title) {
 		for _, line := range wrapText(intent.Goal, maxInt(1, width)) {
@@ -151,10 +156,40 @@ func planPermissionCardModel(record client.PermissionRecord, intent planPermissi
 			model.Content = append(model.Content, permissionCardLine{Text: line, Style: styles.Muted})
 		}
 	}
-	if intent.Checkpoints > 0 {
-		model.Content = append(model.Content, permissionCardLine{Text: toolCountLabel(intent.Checkpoints, "checkpoint", "checkpoints") + "  ·  p  Open full plan", Style: styles.Muted})
+	if len(intent.Checkpoints) > 0 {
+		model.Content = append(model.Content, permissionCardLine{
+			Text:  "CHECKPOINTS  ·  " + toolCountLabel(len(intent.Checkpoints), "checkpoint", "checkpoints"),
+			Style: styles.Muted.Bold(true),
+		})
+		for index, checkpoint := range intent.Checkpoints {
+			order := toolInt(checkpoint, "order")
+			if order <= 0 {
+				order = index + 1
+			}
+			title := firstNonEmptyToolRaw(toolString(checkpoint, "title"), toolString(checkpoint, "id"), "Untitled checkpoint")
+			status := humanizePlanStatus(firstNonEmptyToolRaw(toolString(checkpoint, "status"), "pending"))
+			for _, line := range wrapText(fmt.Sprintf("%d. %s  ·  %s", order, title, status), maxInt(1, width)) {
+				model.Content = append(model.Content, permissionCardLine{Text: line, Style: planCheckpointCardStyle(status, styles)})
+			}
+		}
+		model.Content = append(model.Content, permissionCardLine{Text: "p  Open full plan", Style: styles.Muted})
 	}
 	return model
+}
+
+func planCheckpointCardStyle(status string, styles PageStyles) tcell.Style {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "approved":
+		return styles.Success
+	case "blocked", "paused", "waiting review", "needs review":
+		return styles.Warning
+	case "failed", "cancelled", "canceled":
+		return styles.Error
+	case "in progress", "running":
+		return styles.Accent.Bold(true)
+	default:
+		return styles.Text
+	}
 }
 
 func bashPermissionCardModel(record client.PermissionRecord, pendingCount, width int, styles PageStyles, prefixPreview string) permissionCardModel {
@@ -233,6 +268,26 @@ func permissionCardMeta(record client.PermissionRecord, pendingCount int, mode s
 		meta += fmt.Sprintf("  ·  %d pending", pendingCount)
 	}
 	return meta
+}
+
+func planPermissionCardMeta(record client.PermissionRecord, pendingCount int, mode string) string {
+	if permissionPending(record) {
+		return permissionCardMeta(record, pendingCount, mode)
+	}
+	state := "Resolved · " + permissionResolvedLabel(record)
+	switch strings.ToLower(strings.TrimSpace(record.ExecutionStatus)) {
+	case "running":
+		state = "Approved · Running"
+	case "completed":
+		state = "Approved · Completed"
+	case "failed":
+		state = "Approved · Failed"
+	case "cancelled", "canceled":
+		state = "Approved · Cancelled"
+	case "skipped":
+		state = "Resolved · Skipped"
+	}
+	return fmt.Sprintf("%s  ·  %s  ·  mode %s", state, permissionRequirementLabel(record.Requirement), mode)
 }
 
 func permissionCardFooterRows(record client.PermissionRecord) int {

@@ -1665,11 +1665,17 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 	for _, message := range SelectMessages(state) {
 		item := timelineRenderItem{kind: "message", seq: message.GlobalSeq, createdAt: message.CreatedAt, order: len(items), message: message}
 		if tool, ok := parseToolMessage(message); ok {
+			if planToolCoalescedWithPermission(tool, permissions) {
+				continue
+			}
 			item.kind, item.tool = "tool", tool
 		}
 		items = append(items, item)
 	}
 	for _, tool := range SelectLiveTools(state) {
+		if planToolCoalescedWithPermission(tool, permissions) {
+			continue
+		}
 		items = append(items, timelineRenderItem{kind: "tool", seq: tool.GlobalSeq, createdAt: tool.CreatedAt, order: len(items), tool: tool})
 	}
 	for _, segment := range SelectLiveSegments(state) {
@@ -1743,6 +1749,26 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 		rows = append(rows, p.renderUserRows("pending:"+message.ID, message.Content, width, styles)...)
 	}
 	return rows
+}
+
+// A proposal-gated plan_manage call is one interaction. The permission record
+// owns its initial timeline position and evolves through approval and execution;
+// rendering the correlated tool result would produce a second PLAN box.
+func planToolCoalescedWithPermission(tool ToolTimelineItem, permissions []PermissionTimelineItem) bool {
+	if normalizeToolDisplayName(tool.Name) != "plan-manage" {
+		return false
+	}
+	callID := strings.TrimSpace(tool.CallID)
+	if callID == "" {
+		return false
+	}
+	for _, item := range permissions {
+		record := item.Record
+		if strings.TrimSpace(record.CallID) == callID && normalizePermissionToolName(record.ToolName) == "plan_manage" && isPlanProposalRequirement(record.Requirement) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Page) renderAssistantRows(content string, width int, styles PageStyles) []renderRow {
@@ -1871,6 +1897,8 @@ func (p *Page) renderPlanToolRows(tool ToolTimelineItem, presentation toolPresen
 			style = styles.Text.Bold(true)
 		} else if line.Tone == "muted" {
 			style = styles.Muted
+		} else if strings.HasPrefix(line.Tone, "checkpoint:") {
+			style = planCheckpointCardStyle(strings.TrimPrefix(line.Tone, "checkpoint:"), styles)
 		}
 		for _, wrapped := range p.cachedWrap("plan-tool:"+tool.ID+":"+line.Tone+":"+line.Text, line.Text, maxInt(1, innerWidth-2)) {
 			appendBody(wrapped, style)

@@ -109,7 +109,7 @@ func TestPlanPermissionFromHydrationUsesStructuredCardAndFullPlanModal(t *testin
 	page.Draw(screen)
 	screen.Show()
 	drawn := simulationText(screen, 100, 30)
-	for _, want := range []string{"Plan approval", "PLAN", "Two-step completion plan", "Finish the target work end-to-end.", "2 checkpoints", "p  Open full plan", "Enter Approve"} {
+	for _, want := range []string{"Plan approval", "PLAN", "Two-step completion plan", "Finish the target work end-to-end.", "CHECKPOINTS", "2 checkpoints", "1. Verify the work  ·  Pending", "2. Finish the work  ·  Pending", "p  Open full plan", "Enter Approve"} {
 		if !strings.Contains(drawn, want) {
 			t.Fatalf("structured plan card missing %q:\n%s", want, drawn)
 		}
@@ -138,9 +138,9 @@ func TestPlanToolRowsRenderDedicatedCardAndWideTextKeepsBorder(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-plan"}, HasActivePlan: true, ActivePlan: &client.SessionPlan{ID: "plan", Document: &client.SessionPlanDocument{Title: "界 plan"}}}})
 	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
-	tool := ToolTimelineItem{ID: "plan-tool", Name: "plan_manage", Status: "completed", Output: `{"action":"save","plan":{"title":"界 plan","document":{"title":"界 plan","info":{"goal":"Render safely"},"checkpoints":[{"id":"cp-1","title":"One"}]}}}`}
+	tool := ToolTimelineItem{ID: "plan-tool", Name: "plan_manage", Status: "completed", Output: `{"action":"save","plan":{"title":"界 plan","document":{"title":"界 plan","info":{"goal":"Render safely"},"checkpoints":[{"id":"cp-1","title":"One","status":"completed"}]}}}`}
 	rows := page.renderToolRows(tool, 40, testPageStyles())
-	if len(rows) < 5 || !strings.HasPrefix(rows[0].text, "┌") || !strings.Contains(rows[1].text, "PLAN") || !strings.Contains(renderRowsText(rows), "p  Open full plan") || strings.Contains(renderRowsText(rows), `{"`) {
+	if len(rows) < 5 || !strings.HasPrefix(rows[0].text, "┌") || !strings.Contains(rows[1].text, "PLAN") || !strings.Contains(renderRowsText(rows), "1. One  ·  Completed") || !strings.Contains(renderRowsText(rows), "p  Open full plan") || strings.Contains(renderRowsText(rows), `{"`) {
 		t.Fatalf("plan tool rows are not a dedicated structured card: %#v", rows)
 	}
 	screen := tcell.NewSimulationScreen("UTF-8")
@@ -1057,6 +1057,66 @@ func TestPageRendersToolCallAndResultInCanonicalTimelineOrder(t *testing.T) {
 	after := strings.Index(text, "after tool")
 	if before < 0 || tool < 0 || after < 0 || !(before < tool && tool < after) {
 		t.Fatalf("canonical order mismatch: before=%d tool=%d after=%d\n%s", before, tool, after, text)
+	}
+}
+
+func TestPageCoalescesPlanPermissionAndCorrelatedToolResultIntoOneCard(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), testPageStyles())
+	arguments := `{"title":"One plan interaction","document":{"title":"One plan interaction","info":{"goal":"Avoid duplicate boxes."},"checkpoints":[{"id":"cp-1","title":"Do the work","status":"pending","order":1}]}}`
+	permission := client.PermissionRecord{
+		ID: "permission-plan", CallID: "call-plan", ToolName: "plan_manage", Requirement: "plan_new_request", Mode: "auto",
+		Status: "approved", Decision: "allow_once", ExecutionStatus: "completed", ToolArguments: arguments,
+	}
+	toolPayload, err := json.Marshal(map[string]any{
+		"path_id": "run.tool-history.v2", "tool": "plan_manage", "call_id": "call-plan",
+		"arguments": arguments, "completed_output": `{"action":"request_new_plan","title":"One plan interaction","document":{"title":"One plan interaction","info":{"goal":"Avoid duplicate boxes."},"checkpoints":[{"id":"cp-1","title":"Do the work","status":"pending","order":1}]}}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := State{
+		Messages:    []Message{{ID: "tool-plan", GlobalSeq: 4, Role: "tool", Content: string(toolPayload)}},
+		Permissions: PermissionState{Records: []PermissionTimelineItem{{Record: permission, GlobalSeq: 2}}},
+	}
+
+	rendered := renderRowsText(page.renderRows(state, 100, testPageStyles()))
+	if got := strings.Count(rendered, "Plan approval"); got != 1 {
+		t.Fatalf("plan approval card count = %d, want 1:\n%s", got, rendered)
+	}
+	if got := strings.Count(rendered, "┌"); got != 1 {
+		t.Fatalf("plan interaction rendered %d card boxes, want 1:\n%s", got, rendered)
+	}
+	for _, want := range []string{"Approved · Completed", "One plan interaction", "1. Do the work  ·  Pending", "p  Open full plan"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("coalesced plan card missing %q:\n%s", want, rendered)
+		}
+	}
+	for _, raw := range []string{"completed_output", "acceptance_criteria", `{"`} {
+		if strings.Contains(rendered, raw) {
+			t.Fatalf("coalesced plan card leaked raw JSON marker %q:\n%s", raw, rendered)
+		}
+	}
+}
+
+func TestPageDoesNotCoalesceUncorrelatedPlanToolResult(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), testPageStyles())
+	state := State{
+		Messages: []Message{{
+			ID: "tool-plan", GlobalSeq: 4, Role: "tool",
+			Content: `{"path_id":"run.tool-history.v2","tool":"plan_manage","call_id":"call-other","completed_output":"{\"action\":\"save\",\"document\":{\"title\":\"Independent update\",\"checkpoints\":[{\"id\":\"cp-1\",\"title\":\"One\"}]}}"}`,
+		}},
+		Permissions: PermissionState{Records: []PermissionTimelineItem{{Record: client.PermissionRecord{
+			ID: "permission-plan", CallID: "call-plan", ToolName: "plan_manage", Requirement: "plan_new_request", Status: "approved",
+			ToolArguments: `{"document":{"title":"Proposal","checkpoints":[{"id":"cp-1","title":"Propose"}]}}`,
+		}, GlobalSeq: 2}}},
+	}
+
+	rendered := renderRowsText(page.renderRows(state, 100, testPageStyles()))
+	if got := strings.Count(rendered, "┌"); got != 2 {
+		t.Fatalf("uncorrelated plan interactions rendered %d card boxes, want 2:\n%s", got, rendered)
+	}
+	if !strings.Contains(rendered, "Independent update") {
+		t.Fatalf("uncorrelated plan tool result was hidden:\n%s", rendered)
 	}
 }
 
