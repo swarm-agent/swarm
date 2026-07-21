@@ -45,6 +45,7 @@ import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-
 import { createDesktopV3CreateOnlySessionOperation, createDesktopV3NewSessionOperation, startDesktopV3CreateOnlySession, startNewDesktopV3Session } from '../session-v3/new-session-flow'
 import { DesktopPlanModal, type DesktopPlanRecoveryInput } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
+import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
 import { resolveDesktopWorktreeSessionDefaults } from '../chat/services/desktop-worktree-session-defaults'
 import { parseDesktopTaskCommand, type DesktopSlashCommand } from '../chat/services/slash-commands'
 import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
@@ -3185,41 +3186,20 @@ export function DesktopAppPage() {
   const handleAskSwarmToFixReviewIntegration = useCallback(async (failure: ReviewWorktreeIntegrationFailure) => {
     if (!reviewFixAgent || !topWorkspacePath) return
     const route = globalSessionRouteOptions.find((option) => getDesktopSessionCreateTarget(option).endpoint === '/v3/sessions') ?? null
-    if (!route) {
+    const draftPreference = draftPreferenceQuery.data?.preference
+    const agentModel = resolveDesktopV3AgentModelLock(agentStateQuery.data?.profiles ?? [], reviewFixAgent, 'auto')
+    const preference = agentModel.locked
+      ? {
+          provider: agentModel.provider,
+          model: agentModel.model,
+          thinking: agentModel.thinking || draftPreference?.thinking || '',
+          serviceTier: agentModel.serviceTier,
+          contextMode: draftPreference?.contextMode || '',
+        }
+      : draftPreference
+    if (!route || !preference?.provider?.trim() || !preference.model?.trim() || !preference.thinking?.trim()) {
       setNeedsReviewCleanupOpen(false)
-      setDesktopToast({ message: 'Swarm could not start a repair session because its Desktop V3 route is unavailable.', tone: 'error' })
-      return
-    }
-    if (agentStateQuery.isPending || modelOptionsQuery.isPending || modelProfilesQuery.isPending || draftPreferenceQuery.isPending) {
-      setNeedsReviewCleanupOpen(false)
-      setDesktopToast({ message: 'Swarm could not start a repair session because Desktop agent and model-profile settings are still loading.', tone: 'error' })
-      return
-    }
-    if (agentStateQuery.error || modelOptionsQuery.error || modelProfilesQuery.error || draftPreferenceQuery.error || !agentStateQuery.data || !modelOptionsQuery.data || !modelProfilesQuery.data) {
-      setNeedsReviewCleanupOpen(false)
-      setDesktopToast({ message: 'Swarm could not start a repair session because Desktop agent and model-profile settings are unavailable.', tone: 'error' })
-      return
-    }
-    let defaults: ReturnType<typeof resolveDesktopWorktreeSessionDefaults>
-    try {
-      defaults = resolveDesktopWorktreeSessionDefaults({
-        agentState: agentStateQuery.data,
-        modelProfiles: modelProfilesQuery.data,
-        modelOptions: modelOptionsQuery.data,
-        draftPreference: draftPreferenceQuery.data,
-        explicitMode: 'auto',
-        globalDefaultMode: 'auto',
-      })
-    } catch (cause) {
-      setNeedsReviewCleanupOpen(false)
-      setDesktopToast({ message: cause instanceof Error ? cause.message : 'Desktop repair-session settings are unresolved.', tone: 'error' })
-      return
-    }
-    const candidateWorktreePath = failure.candidate.worktree_path?.trim() || ''
-    const candidateWorktreeBranch = failure.candidate.worktree_branch?.trim() || ''
-    if (!candidateWorktreePath || !candidateWorktreeBranch) {
-      setNeedsReviewCleanupOpen(false)
-      setDesktopToast({ message: 'Swarm could not start a repair session because the failed session worktree binding is incomplete.', tone: 'error' })
+      setDesktopToast({ message: 'Swarm could not start a repair session because its Desktop V3 route or model preference is unavailable.', tone: 'error' })
       return
     }
     setNeedsReviewCleanupOpen(false)
@@ -3229,25 +3209,18 @@ export function DesktopAppPage() {
         workspaceName: topWorkspaceLabel,
         route,
         prompt: buildReviewWorktreeFixPrompt(failure, topWorkspacePath),
-        title: `${failure.operation === 'commit_and_integrate' ? 'Fix commit and integration' : 'Fix integration'}: ${failure.candidate.title || candidateWorktreeBranch || failure.candidate.session_id}`,
-        mode: defaults.mode,
-        agentName: defaults.agentName,
+        title: `${failure.operation === 'commit_and_integrate' ? 'Fix commit and integration' : 'Fix integration'}: ${failure.candidate.title || failure.candidate.worktree_branch || failure.candidate.session_id}`,
+        mode: 'auto',
+        agentName: reviewFixAgent,
         preference: {
-          provider: defaults.preference.provider,
-          model: defaults.preference.model,
-          thinking: defaults.preference.thinking,
-          serviceTier: defaults.preference.serviceTier,
-          contextMode: defaults.preference.contextMode,
+          provider: preference.provider,
+          model: preference.model,
+          thinking: preference.thinking,
+          serviceTier: preference.serviceTier,
+          contextMode: preference.contextMode,
         },
-        modelProfileChoice: defaults.modelProfileChoice,
-        sessionMetadata: {
-          source: 'desktop-v3-review-worktrees-recovery',
-          workspace_path: topWorkspacePath,
-          repair_source_session_id: failure.candidate.session_id,
-          repair_source_worktree_path: candidateWorktreePath,
-        },
+        sessionMetadata: { source: 'desktop-v3-review-worktrees-recovery', workspace_path: topWorkspacePath },
         messageMetadata: { source: 'desktop-v3-review-worktrees-recovery', failed_session_id: failure.candidate.session_id },
-        worktree: { mode: 'on', branchName: candidateWorktreeBranch, existingPath: candidateWorktreePath },
       })
       await startNewDesktopV3Session({
         operation,
@@ -3261,7 +3234,7 @@ export function DesktopAppPage() {
     } catch (cause) {
       setDesktopToast({ message: cause instanceof Error ? cause.message : 'Could not start a Swarm repair session.', tone: 'error' })
     }
-  }, [agentStateQuery.data, agentStateQuery.error, agentStateQuery.isPending, draftPreferenceQuery.data, draftPreferenceQuery.error, draftPreferenceQuery.isPending, globalSessionRouteOptions, modelOptionsQuery.data, modelOptionsQuery.error, modelOptionsQuery.isPending, modelProfilesQuery.data, modelProfilesQuery.error, modelProfilesQuery.isPending, navigate, reviewFixAgent, topWorkspaceLabel, topWorkspacePath, topWorkspaceSlug])
+  }, [agentStateQuery.data?.profiles, draftPreferenceQuery.data?.preference, globalSessionRouteOptions, navigate, reviewFixAgent, topWorkspaceLabel, topWorkspacePath, topWorkspaceSlug])
 
   useEffect(() => {
     if (!routeSessionId) return

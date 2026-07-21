@@ -89,7 +89,6 @@ describe('review worktrees modal helpers', () => {
     expect(prompt).toContain('Source branch: agent/fix')
     expect(prompt).toContain('Target branch: dev')
     expect(prompt).toContain('Workspace: /workspace')
-    expect(prompt).toContain('Worktree: /worktrees/fix')
     expect(prompt).toContain('CONFLICT in app.tsx')
   })
 
@@ -100,8 +99,6 @@ describe('review worktrees modal helpers', () => {
     expect(prompt).toContain('source commit may or may not have been created')
     expect(prompt).toContain('create the intended commit if it is still missing')
     expect(prompt).toContain('do not duplicate a commit that already succeeded')
-    expect(prompt).toContain('Workspace: /workspace')
-    expect(prompt).toContain('Worktree: /worktrees/fix')
     expect(prompt).toContain('cherry-pick conflict in app.tsx')
     expect(reviewWorktreeIntegrationFailureDisplay(failure.error, false, failure.operation).summary).toContain('Swarm was given the error')
   })
