@@ -30,14 +30,67 @@ func TestDurableRunStateInstructionsUsesActivePlanInsteadOfTranscript(t *testing
 		t.Fatalf("run state instructions: %v", err)
 	}
 	for _, want := range []string{
-		"Durable run state (authoritative", `"session_mode":"auto"`, `"run_kind":"inline_checkpoint"`, `"context_policy":"session_history"`,
+		"Durable run state (authoritative", `"session_mode":"auto"`, `"active_plan_present":true`, `"run_kind":"inline_checkpoint"`, `"context_policy":"session_history"`,
 		`"execution_origin":"auto_session"`, `"plan_id":"plan-state"`, `"active_attempt_id":"attempt-1"`,
 		`"next_lifecycle_action":"continue_or_start_next_checkpoint"`, "Do not trust old transcript",
+		"Do not call plan_manage get-active merely to determine whether a plan exists", "An active plan exists; the injected plan and checkpoint fields are authoritative",
 		"do not blindly restart the stale definition", "classify whether it is the same deliverable or an independent task",
 		"restart_checkpoint with change_request and complete replacement title/tasks/acceptance_criteria/notes", "request_followup_checkpoint",
 	} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("run state missing %q: %s", want, instructions)
+		}
+	}
+	for _, forbidden := range []string{"No active plan exists", "for a clear bounded task call plan_manage start_session_checkpoint", "make exactly one approval-gated plan_manage request_new_plan call"} {
+		if strings.Contains(instructions, forbidden) {
+			t.Fatalf("active-plan run state unexpectedly contains %q: %s", forbidden, instructions)
+		}
+	}
+}
+
+func TestDurableRunStateInstructionsRoutesAutoModeWithoutActivePlan(t *testing.T) {
+	svc, sessionID, cleanup := newCheckpointRunPromptTestService(t)
+	defer cleanup()
+
+	instructions, err := svc.durableRunStateInstructions(sessionID, sessionruntime.ModeAuto, "run-auto", RunOptions{})
+	if err != nil {
+		t.Fatalf("auto run state: %v", err)
+	}
+	for _, want := range []string{
+		`"session_mode":"auto"`, `"active_plan_present":false`,
+		"Do not call plan_manage get-active merely to determine whether a plan exists",
+		"for a clear bounded task call plan_manage start_session_checkpoint directly",
+		"make exactly one approval-gated plan_manage request_new_plan call with a complete multi-checkpoint structured document",
+		"Do not create a draft with new/save", "do not propose a plan and then manually start it",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("auto/no-plan run state missing %q: %s", want, instructions)
+		}
+	}
+}
+
+func TestDurableRunStateInstructionsRoutesPlanModeWithoutActivePlan(t *testing.T) {
+	svc, sessionID, cleanup := newCheckpointRunPromptTestService(t)
+	defer cleanup()
+
+	instructions, err := svc.durableRunStateInstructions(sessionID, sessionruntime.ModePlan, "run-plan", RunOptions{})
+	if err != nil {
+		t.Fatalf("plan run state: %v", err)
+	}
+	for _, want := range []string{
+		`"session_mode":"plan"`, `"active_plan_present":false`,
+		"Do not call plan_manage get-active merely to determine whether a plan exists",
+		"run only the targeted discovery needed to make the plan actionable",
+		"call exit_plan_mode exactly once with the complete structured plan document",
+		"Do not call start_session_checkpoint",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("plan/no-plan run state missing %q: %s", want, instructions)
+		}
+	}
+	for _, forbidden := range []string{"for a clear bounded task call plan_manage start_session_checkpoint", "approval-gated plan_manage request_new_plan"} {
+		if strings.Contains(instructions, forbidden) {
+			t.Fatalf("plan/no-plan run state unexpectedly contains %q: %s", forbidden, instructions)
 		}
 	}
 }

@@ -613,7 +613,7 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 		)
 		if currentMode == sessionruntime.ModeAuto && exitPlanModeEnabled {
 			lines = append(lines,
-				fmt.Sprintf("If an active plan exists, use plan_manage get-active to inspect it and amend_plan/request_followup_checkpoint/request_plan_revision/request_new_plan to revise it without switching modes. Do not call exit_plan_mode from auto; it only applies when leaving plan mode. For active whole-plan amendments, use plan_manage amend_plan with base_revision and future-checkpoint scope, for example: %s", autoModePlanManageAmendSnippet),
+				fmt.Sprintf("Use the injected durable run state's active_plan_present field as the authoritative plan-existence signal; do not call plan_manage get-active merely to probe for a plan. When that state says an active plan exists, continue its scoped lifecycle and use get-active only if full plan details are materially needed beyond the injected state. Use amend_plan/request_followup_checkpoint/request_plan_revision/request_new_plan as appropriate to revise active work without switching modes. Do not call exit_plan_mode from auto; it only applies when leaving plan mode. For active whole-plan amendments, use plan_manage amend_plan with base_revision and future-checkpoint scope, for example: %s", autoModePlanManageAmendSnippet),
 			)
 		}
 		if !exitPlanModeEnabled && hasExecutionSetting {

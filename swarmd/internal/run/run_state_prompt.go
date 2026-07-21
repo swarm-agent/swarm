@@ -23,6 +23,7 @@ const (
 // provider run. It intentionally excludes rendered plans and transcript data.
 type compactRunState struct {
 	SessionMode         string                  `json:"session_mode"`
+	ActivePlanPresent   bool                    `json:"active_plan_present"`
 	RunKind             string                  `json:"run_kind"`
 	ContextPolicy       string                  `json:"context_policy"`
 	CurrentRunID        string                  `json:"current_run_id,omitempty"`
@@ -89,6 +90,7 @@ func (s *Service) durableRunStateInstructions(sessionID, mode, runID string, opt
 func renderDurablePlanRunState(state compactRunState, plan pebblestore.SessionPlanSnapshot, options RunOptions) (string, error) {
 	doc := plan.Document
 	origin := sessionruntime.NormalizePlanExecutionOrigin(doc.ExecutionOrigin)
+	state.ActivePlanPresent = true
 	state.ExecutionOrigin = origin
 	state.RunKind = runKindForOptions(state.SessionMode, options, origin)
 	state.PlanID = strings.TrimSpace(plan.ID)
@@ -133,7 +135,20 @@ func renderCompactRunState(state compactRunState) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal durable run state: %w", err)
 	}
-	return "Durable run state (authoritative; do not infer or override it from transcript or UI):\n" + string(raw) + "\nContinue the current work when it is runnable. Maintain the active checkpoint's typed subtasks inline: small fixes, validation, documentation, review, and commit preparation for the same deliverable are subtasks; an independent deliverable or separate failure/review boundary is a new checkpoint. If new user feedback changes requirements for a stopped or paused checkpoint, do not blindly restart the stale definition: classify whether it is the same deliverable or an independent task. For the same deliverable, use restart_checkpoint with change_request and complete replacement title/tasks/acceptance_criteria/notes so replacement and restart are atomic; for an independent redirected deliverable, create a new ordered checkpoint with request_followup_checkpoint. Routine subtask mutations do not require plan approval. Ask the user only for a real product decision or a risky operation.", nil
+	return "Durable run state (authoritative; do not infer or override it from transcript or UI):\n" + string(raw) + "\n" + compactRunStateLifecycleInstructions(state), nil
+}
+
+func compactRunStateLifecycleInstructions(state compactRunState) string {
+	const planPresenceInstruction = "The active_plan_present field is authoritative. Do not call plan_manage get-active merely to determine whether a plan exists; use get-active only when full plan details are materially needed beyond this injected durable state."
+	if !state.ActivePlanPresent {
+		switch sessionruntime.NormalizeMode(state.SessionMode) {
+		case sessionruntime.ModePlan:
+			return planPresenceInstruction + " No active plan exists. In plan mode, run only the targeted discovery needed to make the plan actionable, then call exit_plan_mode exactly once with the complete structured plan document (info and checkpoints). Do not call start_session_checkpoint, and do not save a draft merely to submit the same plan afterward."
+		default:
+			return planPresenceInstruction + " No active plan exists. In auto mode, for a clear bounded task call plan_manage start_session_checkpoint directly with a self-contained checkpoint definition. For broad, uncertain, high-risk, or multi-phase work, make exactly one approval-gated plan_manage request_new_plan call with a complete multi-checkpoint structured document. Do not create a draft with new/save, do not propose a plan and then manually start it, and do not call exit_plan_mode from auto."
+		}
+	}
+	return planPresenceInstruction + " An active plan exists; the injected plan and checkpoint fields are authoritative. Continue the current work when it is runnable without injecting or following any no-plan bootstrap path. Maintain the active checkpoint's typed subtasks inline: small fixes, validation, documentation, review, and commit preparation for the same deliverable are subtasks; an independent deliverable or separate failure/review boundary is a new checkpoint. If new user feedback changes requirements for a stopped or paused checkpoint, do not blindly restart the stale definition: classify whether it is the same deliverable or an independent task. For the same deliverable, use restart_checkpoint with change_request and complete replacement title/tasks/acceptance_criteria/notes so replacement and restart are atomic; for an independent redirected deliverable, create a new ordered checkpoint with request_followup_checkpoint. Routine subtask mutations do not require plan approval. Ask the user only for a real product decision or a risky operation."
 }
 
 func runKindForOptions(mode string, options RunOptions, origin string) string {

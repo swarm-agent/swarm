@@ -67,6 +67,29 @@ func TestModeCapabilityInstructionsUseSessionModeWhenPlanModeEnabled(t *testing.
 	}
 }
 
+func TestModeCapabilityInstructionsUseInjectedPlanPresenceInsteadOfGetActiveProbe(t *testing.T) {
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name:                "swarm",
+		Mode:                "primary",
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+	})
+
+	instructions := modeCapabilityInstructions(sessionruntime.ModeAuto, false, profile)
+	for _, want := range []string{
+		"active_plan_present field as the authoritative plan-existence signal",
+		"do not call plan_manage get-active merely to probe for a plan",
+		"use get-active only if full plan details are materially needed beyond the injected state",
+		"When that state says an active plan exists, continue its scoped lifecycle",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("auto instructions missing %q\n--- instructions ---\n%s", want, instructions)
+		}
+	}
+	if strings.Contains(instructions, "If an active plan exists, use plan_manage get-active to inspect it") {
+		t.Fatalf("auto instructions still encourage get-active as a startup probe\n--- instructions ---\n%s", instructions)
+	}
+}
+
 func TestProviderRequestRuntimeContextUsesResolvedIdentityAndUTC(t *testing.T) {
 	now := time.Date(2026, time.July, 12, 9, 8, 7, 0, time.FixedZone("test", 2*60*60))
 	base := provideriface.Request{
