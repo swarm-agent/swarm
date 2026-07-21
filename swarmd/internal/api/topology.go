@@ -34,7 +34,6 @@ type topologyWorkspaceBindingResponse struct {
 	DestinationAuthorityHostSwarmID string                               `json:"destination_authority_host_swarm_id,omitempty"`
 	DestinationRuntimeKind          string                               `json:"destination_runtime_kind,omitempty"`
 	DestinationHostSwarmID          string                               `json:"destination_host_swarm_id,omitempty"`
-	DestinationContainerID          string                               `json:"destination_container_id,omitempty"`
 	DestinationWorkspacePath        string                               `json:"destination_workspace_path,omitempty"`
 	PlacementGeneration             int                                  `json:"placement_generation,omitempty"`
 	BindingGeneration               int                                  `json:"binding_generation,omitempty"`
@@ -224,7 +223,6 @@ func mapTopologyWorkspaceBindingResponse(record pebblestore.TopologyWorkspaceBin
 		DestinationAuthorityHostSwarmID: record.DestinationAuthorityHostSwarmID,
 		DestinationRuntimeKind:          record.DestinationRuntimeKind,
 		DestinationHostSwarmID:          record.DestinationHostSwarmID,
-		DestinationContainerID:          record.DestinationContainerID,
 		DestinationWorkspacePath:        record.DestinationWorkspacePath,
 		PlacementGeneration:             record.PlacementGeneration,
 		BindingGeneration:               record.BindingGeneration,

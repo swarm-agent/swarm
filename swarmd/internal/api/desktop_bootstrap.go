@@ -52,7 +52,6 @@ type workspaceOverviewTopologyRoute struct {
 	HostWorkspacePath    string                               `json:"host_workspace_path"`
 	HostWorkspaceName    string                               `json:"host_workspace_name,omitempty"`
 	RuntimeWorkspacePath string                               `json:"runtime_workspace_path"`
-	ContainerID          string                               `json:"container_id,omitempty"`
 	ReplicationMode      string                               `json:"replication_mode,omitempty"`
 	Writable             bool                                 `json:"writable"`
 	Sync                 pebblestore.WorkspaceReplicationSync `json:"sync,omitempty"`
@@ -456,7 +455,6 @@ func (s *Server) workspaceOverviewTopologyRouteForBinding(binding pebblestore.To
 		HostWorkspacePath:    strings.TrimSpace(hostWorkspacePath),
 		HostWorkspaceName:    strings.TrimSpace(hostWorkspaceName),
 		RuntimeWorkspacePath: runtimeWorkspacePath,
-		ContainerID:          strings.TrimSpace(binding.DestinationContainerID),
 		ReplicationMode:      strings.TrimSpace(binding.ReplicationMode),
 		Writable:             binding.Writable,
 		Sync:                 binding.Sync,
@@ -481,7 +479,7 @@ func localWorkspaceBindingIDsByWorkspaceID(workspaces []workspace.Entry, routesB
 			continue
 		}
 		for _, route := range routes {
-			if strings.EqualFold(strings.TrimSpace(route.RuntimeSwarmID), strings.TrimSpace(route.AuthorityHostSwarmID)) && strings.TrimSpace(route.ContainerID) == "" {
+			if strings.EqualFold(strings.TrimSpace(route.RuntimeSwarmID), strings.TrimSpace(route.AuthorityHostSwarmID)) {
 				out[workspaceID] = strings.TrimSpace(route.WorkspaceBindingID)
 				break
 			}

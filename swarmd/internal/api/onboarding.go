@@ -678,7 +678,6 @@ func isPrimarySelfPlacement(placement pebblestore.TopologyRuntimePlacementRecord
 	return runtimeSwarmID != "" &&
 		strings.TrimSpace(placement.AuthorityHostSwarmID) == runtimeSwarmID &&
 		strings.TrimSpace(placement.RuntimeKind) == pebblestore.TopologyRuntimeKindHost &&
-		strings.TrimSpace(placement.AuthorityContainerID) == "" &&
 		strings.TrimSpace(placement.State) == pebblestore.TopologyRuntimePlacementStateActive &&
 		placement.PlacementGeneration > 0
 }
@@ -690,7 +689,6 @@ func isPrimarySelfWorkspaceBinding(placement pebblestore.TopologyRuntimePlacemen
 		strings.TrimSpace(binding.DestinationAuthorityHostSwarmID) == runtimeSwarmID &&
 		strings.TrimSpace(binding.DestinationHostSwarmID) == runtimeSwarmID &&
 		strings.TrimSpace(binding.DestinationRuntimeKind) == pebblestore.TopologyRuntimeKindHost &&
-		strings.TrimSpace(binding.DestinationContainerID) == "" &&
 		strings.TrimSpace(binding.State) == pebblestore.TopologyWorkspaceBindingStateBound &&
 		binding.PlacementGeneration == placement.PlacementGeneration &&
 		binding.BindingGeneration > 0 &&

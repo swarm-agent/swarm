@@ -141,7 +141,7 @@ func TestOnboardingPostBootstrapsPrimarySelfPlacement(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("primary placement ok=%v err=%v", ok, err)
 	}
-	if placement.RuntimeSwarmID != "onboarding-primary-test" || placement.AuthorityHostSwarmID != "onboarding-primary-test" || placement.RuntimeKind != pebblestore.TopologyRuntimeKindHost || placement.AuthorityContainerID != "" || placement.State != pebblestore.TopologyRuntimePlacementStateActive {
+	if placement.RuntimeSwarmID != "onboarding-primary-test" || placement.AuthorityHostSwarmID != "onboarding-primary-test" || placement.RuntimeKind != pebblestore.TopologyRuntimeKindHost || placement.State != pebblestore.TopologyRuntimePlacementStateActive {
 		t.Fatalf("primary placement = %+v", placement)
 	}
 }
@@ -177,7 +177,7 @@ func TestOnboardingRepairsPrimaryWorkspaceSelfBinding(t *testing.T) {
 	if binding.SourceWorkspaceID != entry.WorkspaceID || binding.SourceWorkspaceGeneration != entry.WorkspaceGeneration || binding.SourceWorkspacePath != entry.Path {
 		t.Fatalf("binding source = %+v entry=%+v", binding, entry)
 	}
-	if binding.DestinationRuntimeSwarmID != "onboarding-primary-test" || binding.DestinationAuthorityHostSwarmID != "onboarding-primary-test" || binding.DestinationRuntimeKind != pebblestore.TopologyRuntimeKindHost || binding.DestinationContainerID != "" || binding.DestinationWorkspacePath != entry.Path {
+	if binding.DestinationRuntimeSwarmID != "onboarding-primary-test" || binding.DestinationAuthorityHostSwarmID != "onboarding-primary-test" || binding.DestinationRuntimeKind != pebblestore.TopologyRuntimeKindHost || binding.DestinationWorkspacePath != entry.Path {
 		t.Fatalf("binding destination = %+v", binding)
 	}
 }

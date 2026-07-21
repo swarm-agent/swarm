@@ -28,7 +28,6 @@ func TestSwarmTopologySnapshotReturnsCanonicalRuntimes(t *testing.T) {
 		Relationship:         "child",
 		DesktopURL:           "https://retired-desktop.example.test",
 		OwnerHostSwarmID:     "retired-owner",
-		OwnerHostContainerID: "retired-container",
 	})
 	if err != nil {
 		t.Fatalf("put runtime: %v", err)
@@ -51,7 +50,7 @@ func TestSwarmTopologySnapshotReturnsCanonicalRuntimes(t *testing.T) {
 	if !response.OK || len(response.Runtimes) != 1 || response.Runtimes[0].SwarmID != runtimeRecord.SwarmID {
 		t.Fatalf("unexpected topology response: %+v", response)
 	}
-	for _, retiredField := range []string{"backend_url", "desktop_url", "owner_host_swarm_id", "owner_host_container_id", "host_containers", "attachments", "session_routes", "migration_status"} {
+	for _, retiredField := range []string{"backend_url", "desktop_url", "owner_host_swarm_id", "owner_host_container_id", "destination_container_id", "host_containers", "attachments", "session_routes", "migration_status"} {
 		if strings.Contains(rr.Body.String(), `"`+retiredField+`"`) {
 			t.Fatalf("retired topology field %q leaked in response: %s", retiredField, rr.Body.String())
 		}

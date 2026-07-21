@@ -78,8 +78,6 @@ const (
 	KeySwarmGroupPrefix                            = "swarm/group/"
 	KeySwarmGroupMembershipPrefix                  = "swarm/group_membership/"
 	KeySwarmGroupBySwarmPrefix                     = "swarm/group_membership_by_swarm/"
-	KeySwarmContainerProfilePrefix                 = "swarm/container_profile/"
-	KeySwarmContainerProfileByAccountPrefix        = "swarm/container_profile_by_account/"
 	KeySwarmDesktopTargetCurrent                   = "swarm/desktop_target/current" // legacy global current target; retained for explicit migration only.
 	KeySwarmDesktopTargetCurrentAccountPrefix      = "swarm/desktop_target/current_by_account/"
 	KeyTopologyRuntimePrefix                       = "topology/runtime/" // legacy global prefix; retained for explicit migration only.
@@ -1776,26 +1774,6 @@ func IntegrationWorkspaceSessionUpdatedPrefixForAccount(accountScopeID, workspac
 		return fmt.Sprintf("%s%s/", KeyIntegrationWorkspaceSessionUpdatedPrefix, accountPart)
 	}
 	return fmt.Sprintf("%s%s/%s/", KeyIntegrationWorkspaceSessionUpdatedPrefix, accountPart, workspacePart)
-}
-
-func KeySwarmContainerProfile(profileID string) string {
-	return KeySwarmContainerProfilePrefix + keyPart(profileID)
-}
-
-func KeySwarmContainerProfileByAccount(accountScopeID, profileID string) string {
-	return fmt.Sprintf("%s%s/%s", KeySwarmContainerProfileByAccountPrefix, keyPart(accountScopeID), keyPart(profileID))
-}
-
-func SwarmContainerProfilePrefix() string {
-	return KeySwarmContainerProfilePrefix
-}
-
-func SwarmContainerProfileByAccountPrefix(accountScopeID string) string {
-	accountPart := keyPart(accountScopeID)
-	if accountPart == "" {
-		return KeySwarmContainerProfileByAccountPrefix
-	}
-	return fmt.Sprintf("%s%s/", KeySwarmContainerProfileByAccountPrefix, accountPart)
 }
 
 func AgentActiveSubagentPrefix() string {

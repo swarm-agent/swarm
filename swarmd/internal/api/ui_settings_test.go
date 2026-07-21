@@ -135,64 +135,6 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenChatOmitted(t *testing.T
 	}
 }
 
-func TestUISettingsPostPreservesThemeWhenUpdatesOnlyPayloadSent(t *testing.T) {
-	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-updates-only.pebble"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() { _ = store.Close() }()
-
-	events, err := pebblestore.NewEventLog(store)
-	if err != nil {
-		t.Fatalf("new event log: %v", err)
-	}
-	hub := stream.NewHub(nil)
-	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
-	settingsSvc.SetEventPublisher(events, hub.Publish)
-	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
-	server.SetUISettingsService(settingsSvc)
-
-	_, err = settingsSvc.Set(uisettings.UISettings{
-		Theme: uisettings.ThemeSettings{ActiveID: "midnight"},
-		Chat: uisettings.ChatSettings{
-			ShowHeader:            true,
-			ThinkingTags:          false,
-			DefaultNewSessionMode: "plan",
-			ToolStream:            uisettings.ChatToolStreamSettings{ShowAnchor: true, RunningSymbol: "•"},
-		},
-		Swarm: uisettings.SwarmSettings{Name: "Local"},
-	})
-	if err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
-
-	reqBody := []byte(`{"updates":{"local_container_warning_dismissed":true}}`)
-	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader(reqBody))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	var response uisettings.UISettings
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if response.Theme.ActiveID != "midnight" {
-		t.Fatalf("theme active id = %q, want midnight", response.Theme.ActiveID)
-	}
-	if !response.Updates.LocalContainerWarningDismissed {
-		t.Fatal("local container warning dismissed = false, want true")
-	}
-	if response.Swarm.Name != "Local" {
-		t.Fatalf("swarm name = %q, want Local", response.Swarm.Name)
-	}
-	if response.Chat.DefaultNewSessionMode != "plan" || response.Chat.ThinkingTags {
-		t.Fatalf("chat settings were not preserved: %+v", response.Chat)
-	}
-}
-
 func TestUISettingsPostPersistsImageDefaultModel(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-image-default.pebble"))
 	if err != nil {

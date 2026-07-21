@@ -3248,7 +3248,6 @@ type uiSettingsPatchPresence struct {
 	Chat      *uiChatSettingsPatchPresence     `json:"chat"`
 	Swarming  *uiSwarmingSettingsPatchPresence `json:"swarming"`
 	Swarm     *uiSwarmSettingsPatchPresence    `json:"swarm"`
-	Updates   *uiUpdateSettingsPatchPresence   `json:"updates"`
 	Tools     *uiToolSettingsPatchPresence     `json:"tools"`
 	Agents    *uiAgentSettingsPatchPresence    `json:"agents"`
 	UpdatedAt *int64                           `json:"updated_at"`
@@ -3292,10 +3291,6 @@ type uiSwarmingSettingsPatchPresence struct {
 type uiSwarmSettingsPatchPresence struct {
 	Name             *string   `json:"name"`
 	RemoteSSHTargets *[]string `json:"remote_ssh_targets"`
-}
-
-type uiUpdateSettingsPatchPresence struct {
-	LocalContainerWarningDismissed *bool `json:"local_container_warning_dismissed"`
 }
 
 type uiToolImageSettingsPatchPresence struct {
@@ -3395,9 +3390,6 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 		if raw.Swarm.RemoteSSHTargets != nil {
 			settings.Swarm.RemoteSSHTargets = patch.Swarm.RemoteSSHTargets
 		}
-	}
-	if raw.Updates != nil && raw.Updates.LocalContainerWarningDismissed != nil {
-		settings.Updates.LocalContainerWarningDismissed = patch.Updates.LocalContainerWarningDismissed
 	}
 	if raw.Tools != nil && raw.Tools.Image != nil {
 		if raw.Tools.Image.DefaultModel != nil {

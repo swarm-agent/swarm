@@ -226,7 +226,7 @@ func (s *Server) workspaceCWDRoutesForScope(principal identity.Principal, swarmT
 		}
 		seen[routeID] = struct{}{}
 		out = append(out, route)
-		if localBindingID == "" && strings.TrimSpace(route.ContainerID) == "" && strings.EqualFold(strings.TrimSpace(route.RuntimeSwarmID), primarySwarmID) {
+		if localBindingID == "" && strings.EqualFold(strings.TrimSpace(route.RuntimeSwarmID), primarySwarmID) {
 			localBindingID = strings.TrimSpace(route.WorkspaceBindingID)
 		}
 	}
@@ -274,7 +274,7 @@ func (s *Server) workspaceCWDPrimaryBindingRoute(primaryTarget *swarmTarget, sco
 		if bindingWorkspaceID == "" || !strings.EqualFold(bindingWorkspaceID, workspaceID) {
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(binding.DestinationRuntimeSwarmID), primarySwarmID) && strings.TrimSpace(binding.DestinationContainerID) == "" && strings.EqualFold(strings.TrimSpace(binding.State), pebblestore.TopologyWorkspaceBindingStateBound) {
+		if strings.EqualFold(strings.TrimSpace(binding.DestinationRuntimeSwarmID), primarySwarmID) && strings.EqualFold(strings.TrimSpace(binding.State), pebblestore.TopologyWorkspaceBindingStateBound) {
 			route := workspaceCWDPrimaryRoute(primaryTarget, workspacePath, false, "")
 			route.RouteID = workspaceOverviewTopologyRouteID(primarySwarmID, strings.TrimSpace(binding.BindingID))
 			route.RouteSource = workspaceOverviewTopologyRouteSource

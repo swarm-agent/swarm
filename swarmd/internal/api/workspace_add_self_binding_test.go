@@ -47,7 +47,7 @@ func TestWorkspaceAddCreatesLocalSelfBinding(t *testing.T) {
 	if binding.BindingID != bindingID || binding.SourceWorkspaceID != workspaceID || binding.SourceWorkspaceGeneration != 1 {
 		t.Fatalf("unexpected source binding: %+v", binding)
 	}
-	if binding.DestinationRuntimeSwarmID != "local-swarm" || binding.DestinationAuthorityHostSwarmID != "local-swarm" || binding.DestinationHostSwarmID != "local-swarm" || binding.DestinationContainerID != "" {
+	if binding.DestinationRuntimeSwarmID != "local-swarm" || binding.DestinationAuthorityHostSwarmID != "local-swarm" || binding.DestinationHostSwarmID != "local-swarm" {
 		t.Fatalf("unexpected destination binding: %+v", binding)
 	}
 	if binding.DestinationRuntimeKind != pebblestore.TopologyRuntimeKindHost || binding.State != pebblestore.TopologyWorkspaceBindingStateBound || binding.AccessMode != pebblestore.TopologyWorkspaceBindingAccessModeReadWrite || binding.MaterializationKind != pebblestore.TopologyWorkspaceBindingMaterializationSource || binding.PlacementGeneration != 1 || binding.BindingGeneration != 1 {

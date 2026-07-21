@@ -87,10 +87,6 @@ type SwarmSettings struct {
 	RemoteSSHTargets []string `json:"remote_ssh_targets,omitempty"`
 }
 
-type UpdateSettings struct {
-	LocalContainerWarningDismissed bool `json:"local_container_warning_dismissed,omitempty"`
-}
-
 type ToolImageSettings struct {
 	DefaultModel string `json:"default_model,omitempty"`
 }
@@ -118,7 +114,6 @@ type UISettings struct {
 	Chat      ChatSettings     `json:"chat,omitempty"`
 	Swarming  SwarmingSettings `json:"swarming,omitempty"`
 	Swarm     SwarmSettings    `json:"swarm,omitempty"`
-	Updates   UpdateSettings   `json:"updates,omitempty"`
 	Tools     ToolSettings     `json:"tools,omitempty"`
 	Agents    AgentSettings    `json:"agents,omitempty"`
 	UpdatedAt int64            `json:"updated_at"`
@@ -174,7 +169,6 @@ func (s *Service) SetForAccount(accountScopeID string, settings UISettings) (UIS
 		Chat:     chatRecordFromSettings(settings.Chat),
 		Swarming: swarmingRecordFromSettings(settings.Swarming),
 		Swarm:    swarmRecordFromSettings(settings.Swarm),
-		Updates:  updateRecordFromSettings(settings.Updates),
 		Tools:    toolRecordFromSettings(settings.Tools),
 		Agents:   agentRecordFromSettings(settings.Agents),
 	})
@@ -243,9 +237,6 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 		Swarm: SwarmSettings{
 			Name:             strings.TrimSpace(record.Swarm.Name),
 			RemoteSSHTargets: append([]string(nil), record.Swarm.RemoteSSHTargets...),
-		},
-		Updates: UpdateSettings{
-			LocalContainerWarningDismissed: record.Updates.LocalContainerWarningDismissed,
 		},
 		Tools: ToolSettings{
 			Image: ToolImageSettings{
@@ -351,12 +342,6 @@ func swarmRecordFromSettings(settings SwarmSettings) *pebblestore.UISwarmSetting
 	return &pebblestore.UISwarmSettingsRecord{
 		Name:             strings.TrimSpace(settings.Name),
 		RemoteSSHTargets: append([]string(nil), settings.RemoteSSHTargets...),
-	}
-}
-
-func updateRecordFromSettings(settings UpdateSettings) *pebblestore.UIUpdateSettingsRecord {
-	return &pebblestore.UIUpdateSettingsRecord{
-		LocalContainerWarningDismissed: settings.LocalContainerWarningDismissed,
 	}
 }
 

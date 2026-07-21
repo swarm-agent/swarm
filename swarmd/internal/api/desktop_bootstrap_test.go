@@ -62,13 +62,11 @@ func TestWorkspaceOverviewIncludesTopologyRoutesFromWorkspaceBindings(t *testing
 		SwarmID:              "managed-swarm-1",
 		Name:                 "managed-host",
 		Relationship:         "managed",
-		OwnerHostSwarmID:     "host-swarm-id",
-		OwnerHostContainerID: "container-1",
 		ObservedSources:      []string{"swarm_trusted_peer"},
 	}); err != nil {
 		t.Fatalf("upsert topology runtime: %v", err)
 	}
-	if _, err := topologyStore.PutRuntimePlacementForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: "managed-swarm-1", AccountScopeID: testPrincipal().AccountScopeID, AuthorityHostSwarmID: "host-swarm-id", AuthorityContainerID: "container-1", RuntimeKind: pebblestore.TopologyRuntimeKindContainer, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
+	if _, err := topologyStore.PutRuntimePlacementForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: "managed-swarm-1", AccountScopeID: testPrincipal().AccountScopeID, AuthorityHostSwarmID: "managed-swarm-1", RuntimeKind: pebblestore.TopologyRuntimeKindHost, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
 		t.Fatalf("put runtime placement: %v", err)
 	}
 	if _, err := topologyStore.PutWorkspaceBindingForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
@@ -80,10 +78,9 @@ func TestWorkspaceOverviewIncludesTopologyRoutesFromWorkspaceBindings(t *testing
 		SourceWorkspacePath:             workspacePath,
 		SourceWorkspaceName:             "workspace-one",
 		DestinationRuntimeSwarmID:       "managed-swarm-1",
-		DestinationAuthorityHostSwarmID: "host-swarm-id",
-		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
-		DestinationHostSwarmID:          "host-swarm-id",
-		DestinationContainerID:          "container-1",
+		DestinationAuthorityHostSwarmID: "managed-swarm-1",
+		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindHost,
+		DestinationHostSwarmID:          "managed-swarm-1",
 		DestinationWorkspacePath:        "/workspaces/workspace-one",
 		PlacementGeneration:             1,
 		BindingGeneration:               1,
@@ -205,7 +202,7 @@ func TestWorkspaceOverviewTopologyRouteIDRemainsStableWhenRuntimePathChanges(t *
 	if err != nil || !ok {
 		t.Fatalf("get workspace entry ok=%t err=%v", ok, err)
 	}
-	if _, err := topologyStore.PutRuntimePlacementForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: "managed-swarm-1", AccountScopeID: testPrincipal().AccountScopeID, AuthorityHostSwarmID: "host-swarm-id", AuthorityContainerID: "container-1", RuntimeKind: pebblestore.TopologyRuntimeKindContainer, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
+	if _, err := topologyStore.PutRuntimePlacementForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: "managed-swarm-1", AccountScopeID: testPrincipal().AccountScopeID, AuthorityHostSwarmID: "managed-swarm-1", RuntimeKind: pebblestore.TopologyRuntimeKindHost, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
 		t.Fatalf("put runtime placement: %v", err)
 	}
 	binding := pebblestore.TopologyWorkspaceBindingRecord{
@@ -217,10 +214,9 @@ func TestWorkspaceOverviewTopologyRouteIDRemainsStableWhenRuntimePathChanges(t *
 		SourceWorkspacePath:             workspacePath,
 		SourceWorkspaceName:             "workspace-one",
 		DestinationRuntimeSwarmID:       "managed-swarm-1",
-		DestinationAuthorityHostSwarmID: "host-swarm-id",
-		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
-		DestinationHostSwarmID:          "host-swarm-id",
-		DestinationContainerID:          "container-1",
+		DestinationAuthorityHostSwarmID: "managed-swarm-1",
+		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindHost,
+		DestinationHostSwarmID:          "managed-swarm-1",
 		DestinationWorkspacePath:        "/workspaces/workspace-one",
 		PlacementGeneration:             1,
 		BindingGeneration:               1,
@@ -359,10 +355,9 @@ func TestWorkspaceOverviewSkipsOfflineChildEvenWhenOwnerHostIsSelectable(t *test
 		SourceWorkspaceGeneration:       workspaceEntry.WorkspaceGeneration,
 		SourceWorkspacePath:             workspacePath,
 		DestinationRuntimeSwarmID:       "offline-child",
-		DestinationAuthorityHostSwarmID: "owner-swarm",
-		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
-		DestinationHostSwarmID:          "owner-swarm",
-		DestinationContainerID:          "container-1",
+		DestinationAuthorityHostSwarmID: "offline-child",
+		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindHost,
+		DestinationHostSwarmID:          "offline-child",
 		DestinationWorkspacePath:        "/workspaces/offline-child",
 		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
 		Writable:                        true,

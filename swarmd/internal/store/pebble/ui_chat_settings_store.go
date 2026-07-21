@@ -87,10 +87,6 @@ type UISwarmSettingsRecord struct {
 	RemoteSSHTargets []string `json:"remote_ssh_targets,omitempty"`
 }
 
-type UIUpdateSettingsRecord struct {
-	LocalContainerWarningDismissed bool `json:"local_container_warning_dismissed,omitempty"`
-}
-
 type UIToolImageSettingsRecord struct {
 	DefaultModel string `json:"default_model,omitempty"`
 }
@@ -118,7 +114,6 @@ type UISettingsRecord struct {
 	Chat      UIChatSettingsRecord     `json:"chat,omitempty"`
 	Swarming  UISwarmingSettingsRecord `json:"swarming,omitempty"`
 	Swarm     UISwarmSettingsRecord    `json:"swarm,omitempty"`
-	Updates   UIUpdateSettingsRecord   `json:"updates,omitempty"`
 	Tools     UIToolSettingsRecord     `json:"tools,omitempty"`
 	Agents    UIAgentSettingsRecord    `json:"agents,omitempty"`
 	UpdatedAt int64                    `json:"updated_at"`
@@ -130,7 +125,6 @@ type UISettingsPatch struct {
 	Chat     *UIChatSettingsRecord
 	Swarming *UISwarmingSettingsRecord
 	Swarm    *UISwarmSettingsRecord
-	Updates  *UIUpdateSettingsRecord
 	Tools    *UIToolSettingsRecord
 	Agents   *UIAgentSettingsRecord
 }
@@ -192,9 +186,6 @@ func (s *UISettingsStore) UpdateForAccount(accountScopeID string, patch UISettin
 	}
 	if patch.Swarm != nil {
 		record.Swarm = *patch.Swarm
-	}
-	if patch.Updates != nil {
-		record.Updates = *patch.Updates
 	}
 	if patch.Tools != nil {
 		record.Tools = *patch.Tools
