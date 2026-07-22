@@ -28,6 +28,9 @@ type sessionsModalState struct {
 
 func sessionManagerBadge(item ChatSessionPaletteItem) string {
 	label := strings.TrimSpace(item.ActivityLabel)
+	if strings.EqualFold(label, "CHILD") {
+		label = ""
+	}
 	if strings.EqualFold(strings.TrimSpace(item.Group), "needs_review") && strings.EqualFold(label, "REVIEW") {
 		label = ""
 	}
@@ -404,7 +407,7 @@ func (p *HomePage) drawSessionsModal(s tcell.Screen) {
 			workspace := sessionManagerWorkspaceLabel(item)
 
 			modelLabel := model.DisplayModelLabel(item.Provider, item.ModelName, item.ServiceTier, item.ContextMode)
-			line := sessionListPrimaryLine(prefix+SessionIndentedPrefix(item.Depth), sessionDisplayTitle(item.Title, item.ID), SessionLineageDisplay(SessionLineageFromPaletteItem(item)), workspace, modelLabel, compact)
+			line := sessionListPrimaryLine(prefix+SessionIndentedPrefix(item.Depth), sessionDisplayTitle(item.Title, item.ID), sessionManagerLineageLabel(item), workspace, modelLabel, compact)
 			childCount := sessionManagerChildCount(p.sessionsModal.Items, item.ID)
 			if suffix := sessionManagerItemSuffix(item, childCount, p.sessionsModal.Expanded[strings.TrimSpace(item.ID)]); suffix != "" {
 				line += " · " + suffix

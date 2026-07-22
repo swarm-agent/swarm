@@ -232,6 +232,21 @@ func sessionManagerParentID(item ChatSessionPaletteItem) string {
 	return strings.TrimSpace(item.ParentSessionID)
 }
 
+func sessionManagerLineageLabel(item ChatSessionPaletteItem) string {
+	lineage := SessionLineageFromPaletteItem(item)
+	if strings.EqualFold(strings.TrimSpace(lineage.AssignmentLabel), "child") {
+		lineage.AssignmentLabel = ""
+	}
+	if strings.EqualFold(strings.TrimSpace(lineage.LineageLabel), "child") {
+		lineage.LineageLabel = ""
+	}
+	label := strings.TrimSpace(SessionLineageDisplay(lineage))
+	if strings.EqualFold(label, "child") {
+		return ""
+	}
+	return label
+}
+
 func sessionManagerWorkspaceLabel(item ChatSessionPaletteItem) string {
 	workspace := strings.TrimSpace(item.WorkspaceName)
 	if workspace == "" {

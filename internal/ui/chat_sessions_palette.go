@@ -371,7 +371,7 @@ func (p *ChatPage) drawSessionsPalette(s tcell.Screen, screen Rect) {
 			}
 			ws := sessionManagerWorkspaceLabel(item)
 			modelLabel := model.DisplayModelLabel(item.Provider, item.ModelName, item.ServiceTier, item.ContextMode)
-			line := sessionListPrimaryLine(prefix+SessionIndentedPrefix(item.Depth), sessionDisplayTitle(item.Title, item.ID), SessionLineageDisplay(SessionLineageFromPaletteItem(item)), ws, modelLabel, compact)
+			line := sessionListPrimaryLine(prefix+SessionIndentedPrefix(item.Depth), sessionDisplayTitle(item.Title, item.ID), sessionManagerLineageLabel(item), ws, modelLabel, compact)
 			if badge := sessionManagerBadge(item); badge != "" {
 				line = badge + "  " + line
 			}
