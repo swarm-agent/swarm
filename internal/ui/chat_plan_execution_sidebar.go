@@ -116,15 +116,15 @@ func (p *ChatPage) drawPlanExecutionSidebar(s tcell.Screen, rect Rect) {
 func (p *ChatPage) planExecutionControlHint(v planExecutionView) string {
 	switch v.status {
 	case "needs_review", "final_review":
-		return "[p] plan  [a] accept  [o] archive"
+		return "[Ctrl+P] plan  [a] accept  [o] archive"
 	case "blocked":
-		return "[p] plan  [r] resolve  [n] resolve + next"
+		return "[Ctrl+P] plan  [r] resolve  [n] resolve + next"
 	case "failed":
-		return "[p] plan  [t] restart  [w] rewind  [x] recovery"
+		return "[Ctrl+P] plan  [t] restart  [w] rewind  [x] recovery"
 	case "in_progress", "running":
-		return "[p] plan  [s] stop  [m] policy  [x] recovery"
+		return "[Ctrl+P] plan  [s] stop  [m] policy  [x] recovery"
 	default:
-		return "[p] full plan  [m] policy  [x] recovery"
+		return "[Ctrl+P] full plan  [m] policy  [x] recovery"
 	}
 }
 
@@ -140,12 +140,17 @@ func (p *ChatPage) queuePlanExecutionOperation(operation string, startNext bool)
 
 func (p *ChatPage) handlePlanExecutionKey(ev *tcell.EventKey) bool {
 	v, ok := p.planExecutionView()
-	if !ok || ev.Key() != tcell.KeyRune || strings.TrimSpace(p.input) != "" {
+	if !ok || strings.TrimSpace(p.input) != "" {
+		return false
+	}
+	if ev.Key() == tcell.KeyCtrlP {
+		p.openPlanEditorModalWithPlans(p.planExecutionPlan, p.planExecutionRevisions, p.planExecutionPlan.ID)
+		return true
+	}
+	if ev.Key() != tcell.KeyRune {
 		return false
 	}
 	switch ev.Rune() {
-	case 'p':
-		p.openPlanEditorModalWithPlans(p.planExecutionPlan, p.planExecutionRevisions, p.planExecutionPlan.ID)
 	case 's':
 		if v.status != "in_progress" && v.status != "running" {
 			return false

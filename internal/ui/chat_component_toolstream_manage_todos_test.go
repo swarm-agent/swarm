@@ -85,7 +85,7 @@ func TestRenderPlanManageToolUsesCollapsedPlanCardAndKeepsDocumentForModal(t *te
 		rendered = append(rendered, chatRenderLineText(line))
 	}
 	joined := strings.Join(rendered, "\n")
-	for _, want := range []string{"┌", "PLAN  ·  save  ·  2 checkpoints  ·  Approved", "Implementation Plan", "Ship a readable TUI plan", "p  Open full plan", "└"} {
+	for _, want := range []string{"┌", "PLAN  ·  save  ·  2 checkpoints  ·  Approved", "Implementation Plan", "Ship a readable TUI plan", "Ctrl+P  Open full plan", "└"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("collapsed plan card missing %q:\n%s", want, joined)
 		}
@@ -135,7 +135,7 @@ func TestRenderRequestNewPlanPermissionPayloadUsesPlanCardAndRetainsModalDocumen
 		rendered = append(rendered, chatRenderLineText(line))
 	}
 	joined := strings.Join(rendered, "\n")
-	for _, want := range []string{"PLAN  ·  request new plan  ·  2 checkpoints", "Two-step completion plan", "Finish the target work end-to-end.", "p  Open full plan"} {
+	for _, want := range []string{"PLAN  ·  request new plan  ·  2 checkpoints", "Two-step completion plan", "Finish the target work end-to-end.", "Ctrl+P  Open full plan"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("request_new_plan card missing %q:\n%s", want, joined)
 		}

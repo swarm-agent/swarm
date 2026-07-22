@@ -172,7 +172,7 @@ func planPermissionCardModel(record client.PermissionRecord, intent planPermissi
 				model.Content = append(model.Content, permissionCardLine{Text: line, Style: planCheckpointCardStyle(status, styles)})
 			}
 		}
-		model.Content = append(model.Content, permissionCardLine{Text: "p  Open full plan", Style: styles.Muted})
+		model.Content = append(model.Content, permissionCardLine{Text: "Ctrl+P  Open full plan", Style: styles.Muted})
 	}
 	return model
 }
@@ -336,10 +336,12 @@ type permissionCardView struct {
 	Note      string
 	Busy      bool
 	ErrorText string
+	HideNote  bool
 	Actions   []permissionCardAction
 }
 
 func inlinePermissionCardRows(record client.PermissionRecord, pendingCount, width int, styles PageStyles, prefixPreview string, selected bool, note []rune, busy bool, errorText string) []renderRow {
+	_, planPermission := parsePlanPermissionIntent(record)
 	view := permissionCardView{
 		Model:     permissionCardModelForRecord(record, pendingCount, maxInt(1, width-4), styles, prefixPreview),
 		Selected:  selected,
@@ -347,6 +349,7 @@ func inlinePermissionCardRows(record client.PermissionRecord, pendingCount, widt
 		Note:      string(note),
 		Busy:      busy,
 		ErrorText: errorText,
+		HideNote:  planPermission,
 		Actions: []permissionCardAction{
 			{Label: "Enter Approve", Action: "allow_once", Tone: styles.Success},
 			{Label: "Esc Deny", Action: "deny_once", Tone: styles.Error},
@@ -432,7 +435,7 @@ func permissionCardRows(view permissionCardView, width int, styles PageStyles) [
 		appendEdge("├", "─", "┤")
 		if strings.TrimSpace(view.ErrorText) != "" {
 			appendText("error · "+strings.TrimSpace(view.ErrorText), styles.Error)
-		} else {
+		} else if !view.HideNote {
 			appendBody([]renderSpan{
 				{text: "note › ", style: styles.Muted},
 				{text: view.Note, style: styles.Text},

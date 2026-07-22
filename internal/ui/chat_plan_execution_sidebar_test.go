@@ -33,6 +33,19 @@ func TestPlanExecutionSidebarProjectionAndResponsiveLayout(t *testing.T) {
 	}
 }
 
+func TestPlanExecutionPlanViewerRequiresCtrlP(t *testing.T) {
+	p := planExecutionTestPage("in_progress")
+	if p.handlePlanExecutionKey(tcell.NewEventKey(tcell.KeyRune, 'p', tcell.ModNone)) {
+		t.Fatal("plain p should remain available to the composer")
+	}
+	if p.planEditorVisible {
+		t.Fatal("plain p opened the plan viewer")
+	}
+	if !p.handlePlanExecutionKey(tcell.NewEventKey(tcell.KeyCtrlP, 0, tcell.ModNone)) || !p.planEditorVisible {
+		t.Fatal("Ctrl+P did not open the plan viewer")
+	}
+}
+
 func TestPlanExecutionActionsRespectCheckpointState(t *testing.T) {
 	p := planExecutionTestPage("blocked")
 	if !p.handlePlanExecutionKey(tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone)) {

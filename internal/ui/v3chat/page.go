@@ -721,6 +721,8 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	case ev.Key() == tcell.KeyCtrlR:
 		// Recovery scope is already retained by the runtime's hydrated session.
 		go p.Recover("", "")
+	case ev.Key() == tcell.KeyCtrlP:
+		p.openPlanModalLocked()
 	case ev.Key() == tcell.KeyRune:
 		if match(KeyMoveUpAlt) {
 			p.scroll++
@@ -733,9 +735,6 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 				p.scroll = 0
 				p.follow = true
 			}
-			break
-		}
-		if ev.Rune() == 'p' && len(p.input) == 0 && p.openPlanModalLocked() {
 			break
 		}
 		p.insertRunesLocked([]rune{ev.Rune()})
@@ -791,7 +790,7 @@ func (p *Page) handlePlanModalKeyLocked(ev *tcell.EventKey) PageAction {
 		return PageActionNone
 	}
 	switch ev.Key() {
-	case tcell.KeyEscape:
+	case tcell.KeyEscape, tcell.KeyCtrlP:
 		p.planModal = false
 		p.planModalScroll = 0
 		p.planModalPlan = nil
@@ -806,7 +805,7 @@ func (p *Page) handlePlanModalKeyLocked(ev *tcell.EventKey) PageAction {
 	case tcell.KeyHome:
 		p.planModalScroll = 0
 	case tcell.KeyRune:
-		if ev.Rune() == 'p' || ev.Rune() == 'q' {
+		if ev.Rune() == 'q' {
 			p.planModal = false
 			p.planModalScroll = 0
 			p.planModalPlan = nil
@@ -979,6 +978,7 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 		return PageActionNone
 	}
 	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
+	_, planPermission := parsePlanPermissionIntent(permissions[p.permissionIndex])
 	if p.permissionBusy {
 		return PageActionNone
 	}
@@ -1005,11 +1005,21 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 		p.scroll = 1 << 30
 		p.follow = false
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		if len(p.permissionInput) > 0 {
+		if planPermission {
+			if p.cursor > 0 {
+				p.input = append(p.input[:p.cursor-1], p.input[p.cursor:]...)
+				p.cursor--
+			}
+		} else if len(p.permissionInput) > 0 {
 			p.permissionInput = p.permissionInput[:len(p.permissionInput)-1]
 		}
 	case tcell.KeyCtrlU:
-		p.permissionInput = nil
+		if planPermission {
+			p.input = nil
+			p.cursor = 0
+		} else {
+			p.permissionInput = nil
+		}
 	case tcell.KeyCtrlA:
 		p.resolvePermissionLocked(permissions[p.permissionIndex], "allow_always")
 	case tcell.KeyCtrlD:
@@ -1018,11 +1028,17 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 		p.resolvePermissionLocked(permissions[p.permissionIndex], "deny_once")
 	case tcell.KeyEnter:
 		p.resolvePermissionLocked(permissions[p.permissionIndex], "allow_once")
+	case tcell.KeyCtrlP:
+		p.openPlanPermissionModalLocked()
 	case tcell.KeyRune:
-		if ev.Rune() == 'p' && len(p.permissionInput) == 0 && p.openPlanPermissionModalLocked() {
+		if !utf8.ValidRune(ev.Rune()) || ev.Rune() < ' ' {
 			break
 		}
-		if utf8.ValidRune(ev.Rune()) && ev.Rune() >= ' ' && len(p.permissionInput) < maxComposerRunes {
+		if planPermission {
+			if len(p.input) < maxComposerRunes {
+				p.insertRunesLocked([]rune{ev.Rune()})
+			}
+		} else if len(p.permissionInput) < maxComposerRunes {
 			p.permissionInput = append(p.permissionInput, ev.Rune())
 		}
 	}
@@ -2230,7 +2246,7 @@ func (p *Page) renderPlanToolRows(tool ToolTimelineItem, presentation toolPresen
 	if p.runtime != nil && p.runtime.Store() != nil {
 		plan := p.runtime.Store().Snapshot().Plan.ActivePlan
 		if plan != nil && plan.Document != nil {
-			appendBody("p  Open full plan", styles.Muted)
+			appendBody("Ctrl+P  Open full plan", styles.Muted)
 		}
 	}
 	rows = append(rows, renderRow{text: "└" + strings.Repeat("─", innerWidth) + "┘", style: borderStyle})
