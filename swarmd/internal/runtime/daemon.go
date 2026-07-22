@@ -282,7 +282,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageAgentService(agentSvc)
 	toolRuntime.SetManageOrchestrationPolicyService(permissionSvc)
 	toolRuntime.SetManageTodoService(todoSvc)
-	toolRuntime.SetManageIntegrationService(integrationSvc)
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
 	toolRuntime.SetExaConfigResolver(func(ctx context.Context) (tool.ExaRuntimeConfig, error) {
 		cfg := tool.ExaRuntimeConfig{
@@ -413,7 +412,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetVideoThreadStore(pebblestore.NewVideoThreadStore(store))
 	imageThreadStore := pebblestore.NewImageThreadStore(store)
 	imageGenSvc := imagegen.NewService(codexClient, authStore, imageThreadStore)
-	toolRuntime.SetManageImageServices(imageGenSvc, imageThreadStore)
 	apiServer.SetImageGenerationService(imageGenSvc)
 	apiServer.SetImageThreadStore(imageThreadStore)
 	apiServer.SetTodoService(todoSvc)

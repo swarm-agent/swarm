@@ -902,20 +902,6 @@ func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStr
 		defer runCancel()
 
 		startSignaled := false
-		integrationCtx, contextErr := s.applyIntegrationBuilderRunContext(principal, sessionID, &sessionRunRequestAdapter{
-			agentName:       func() string { return inbound.RunRequest.AgentName },
-			setAgentName:    func(value string) { inbound.RunRequest.AgentName = value },
-			instructions:    func() string { return inbound.RunRequest.Instructions },
-			setInstructions: func(value string) { inbound.RunRequest.Instructions = value },
-		})
-		if contextErr != nil {
-			select {
-			case started <- contextErr:
-			default:
-			}
-			s.runStreams.publishError(runID, sessionID, contextErr)
-			return
-		}
 		if !principal.Valid() {
 			err := identity.ErrPrincipalRequired
 			select {
@@ -929,7 +915,6 @@ func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStr
 		result, err := s.runner.RunTurnStreaming(runCtx, sessionID, inbound.RunRequest, runruntime.RunStartMeta{
 			RunID:                runID,
 			OwnerTransport:       runStreamOwnerTransport(inbound.RunRequest),
-			IntegrationFlow:      integrationCtx.IntegrationFlow,
 			Principal:            principal,
 			ApplySessionMutation: s.applySessionV3PrimaryMutation,
 		}, func(event runruntime.StreamEvent) {

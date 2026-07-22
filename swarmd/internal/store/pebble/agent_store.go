@@ -251,6 +251,9 @@ func NormalizeAgentToolContract(contract *AgentToolContract) *AgentToolContract 
 	if len(contract.Tools) > 0 {
 		out.Tools = make(map[string]AgentToolConfig, len(contract.Tools))
 		for rawName, rawCfg := range contract.Tools {
+			if IsRemovedAgentToolName(rawName) {
+				continue
+			}
 			name := normalizeAgentToolScopeKey(rawName)
 			if name == "" {
 				continue
@@ -271,7 +274,19 @@ func NormalizeAgentToolContract(contract *AgentToolContract) *AgentToolContract 
 	return out
 }
 
+func IsRemovedAgentToolName(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "manage-integrations", "manage_integrations", "manage-image", "manage_image":
+		return true
+	default:
+		return false
+	}
+}
+
 func NormalizeAgentCustomToolName(value string) string {
+	if IsRemovedAgentToolName(value) {
+		return ""
+	}
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
@@ -358,21 +373,20 @@ func agentToolContractEnablesMutatingTools(contract *AgentToolContract) bool {
 		return true
 	}
 	readOnlyTools := map[string]struct{}{
-		"ask_user":            {},
-		"exit_plan_mode":      {},
-		"list":                {},
-		"manage_agent":        {},
-		"manage_integrations": {},
-		"manage_skill":        {},
-		"manage_theme":        {},
-		"manage_todos":        {},
-		"manage_worktree":     {},
-		"plan_manage":         {},
-		"read":                {},
-		"search":              {},
-		"skill_use":           {},
-		"webfetch":            {},
-		"websearch":           {},
+		"ask_user":        {},
+		"exit_plan_mode":  {},
+		"list":            {},
+		"manage_agent":    {},
+		"manage_skill":    {},
+		"manage_theme":    {},
+		"manage_todos":    {},
+		"manage_worktree": {},
+		"plan_manage":     {},
+		"read":            {},
+		"search":          {},
+		"skill_use":       {},
+		"webfetch":        {},
+		"websearch":       {},
 	}
 	mutatingTools := map[string]struct{}{
 		"bash":       {},
@@ -500,8 +514,6 @@ func normalizeAgentToolScopeKey(value string) string {
 		return "manage_skill"
 	case "manage-agent", "manage_agent":
 		return "manage_agent"
-	case "manage-integrations", "manage_integrations":
-		return "manage_integrations"
 	case "manage-theme", "manage_theme":
 		return "manage_theme"
 	case "manage-worktree", "manage_worktree":

@@ -96,7 +96,7 @@ func (s *Service) InspectForAccount(accountScopeID string, limit int) (map[strin
 			"adapter_output":       "credential reference names only; reference values are never returned",
 		},
 		"schema":       schemaMap(),
-		"instructions": "Use manage-integrations for Integration Pack draft inspection and CRUD only. Execution, validation, publish, assignment runtime, and host routing are intentionally inactive in this checkpoint. Store credential reference names only; never store raw secrets in pack settings or credential_refs.",
+		"instructions": "Integration Pack draft inspection and CRUD are available through the integration API. Execution, validation, publish, assignment runtime, and host routing are intentionally inactive. Store credential reference names only; never store raw secrets in pack settings or credential_refs.",
 		"summary":      fmt.Sprintf("found %d integration packs and %d workspaces", len(packs), len(workspaces)),
 	}), nil
 }
@@ -385,7 +385,7 @@ func (s *Service) Handle(req Request) (map[string]any, error) {
 	case "delete":
 		return s.Delete(req)
 	default:
-		return nil, fmt.Errorf("manage-integrations action %q is unsupported", req.Action)
+		return nil, fmt.Errorf("integration action %q is unsupported", req.Action)
 	}
 }
 

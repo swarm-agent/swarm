@@ -678,12 +678,6 @@ func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call
 			return "", err
 		}
 		return marshalPayload(payload)
-	case "manage_image":
-		payload, err := s.buildManageImagePermissionPayload(sessionID, call)
-		if err != nil {
-			return "", err
-		}
-		return marshalPayload(payload)
 	case "manage_sessions":
 		payload, err := s.buildManageSessionsPermissionPayload(sessionID, call)
 		if err != nil {
@@ -1576,7 +1570,7 @@ func (s *Service) resolveTaskLaunchProfile(parentSession pebblestore.SessionSnap
 		if sourceName == "" {
 			return pebblestore.AgentProfile{}, true, "", fmt.Errorf("Coder requires trusted parent agent profile snapshot: %w", err)
 		}
-		parentProfile, err = s.resolveAgentProfileForAccount(parentSession.AccountScopeID, sourceName, RunTargetKindAgent, false)
+		parentProfile, err = s.resolveAgentProfileForAccount(parentSession.AccountScopeID, sourceName, RunTargetKindAgent)
 		if err != nil {
 			return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("Coder cannot resolve trusted parent agent %q: %w", sourceName, err)
 		}

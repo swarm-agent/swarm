@@ -710,22 +710,6 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func isIntegrationFlowRequest(r *http.Request) bool {
-	if r == nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("flow"))) {
-	case "integration", "integrations":
-		return true
-	}
-	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("integration_flow"))) {
-	case "1", "true", "yes":
-		return true
-	default:
-		return false
-	}
-}
-
 func parsePositiveLimit(r *http.Request, defaultLimit int) (int, error) {
 	limit := defaultLimit
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {

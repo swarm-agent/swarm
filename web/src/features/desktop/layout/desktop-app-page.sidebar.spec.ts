@@ -291,10 +291,10 @@ test('sidebar labels render the direct stream tool label', () => {
       startedAt: 10_000,
       lastEventAt: 12_500,
       lastEventType: 'session.tool.delta',
-      toolName: 'manage-image',
+      toolName: 'search',
       sidebarToolName: 'read',
-      toolCallId: 'call-image',
-      summary: 'manage-image',
+      toolCallId: 'call-search',
+      summary: 'search',
     },
   })
 

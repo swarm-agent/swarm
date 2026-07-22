@@ -3,11 +3,7 @@ import type { DesktopSessionRecord } from '../../types/realtime'
 import type { ResolvedSessionPreference } from '../../chat/types/chat'
 import { mapDesktopSession } from '../../chat/queries/chat-queries'
 
-interface IntegrationBuilderSessionsResponseWire {
-  sessions?: unknown[]
-}
-
-interface IntegrationBuilderSessionResponseWire {
+interface IntegrationWorkspaceSessionResponseWire {
   session?: unknown
 }
 
@@ -63,10 +59,7 @@ export interface IntegrationWorkspaceSnapshot {
   sessions: IntegrationWorkspaceChildSession[]
 }
 
-export const INTEGRATION_BUILDER_WORKSPACE_PATH = '__swarm_integrations__'
-export const INTEGRATION_BUILDER_WORKSPACE_NAME = 'Integrations'
-export const INTEGRATION_BUILDER_SOURCE = 'integration_builder'
-export const INTEGRATION_BUILDER_AGENT_ID = 'integration-builder'
+export const INTEGRATION_WORKSPACE_SOURCE = 'integration_workspace'
 
 function stringField(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
@@ -127,8 +120,8 @@ function mapWorkspaceSnapshot(response: IntegrationWorkspaceSnapshotWire): Integ
 function integrationSessionMetadata(input?: Record<string, unknown>): Record<string, unknown> {
   return {
     ...input,
-    source: INTEGRATION_BUILDER_SOURCE,
-    session_source: INTEGRATION_BUILDER_SOURCE,
+    source: INTEGRATION_WORKSPACE_SOURCE,
+    session_source: INTEGRATION_WORKSPACE_SOURCE,
     scope: 'swarm',
     workspace_scope: 'swarm',
   }
@@ -144,54 +137,9 @@ function preferenceWire(preference: ResolvedSessionPreference['preference']) {
   }
 }
 
-export function isIntegrationBuilderSession(session: DesktopSessionRecord | null | undefined): boolean {
-  const metadata = session?.metadata
-  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return false
-  const source = typeof metadata.source === 'string' ? metadata.source.trim() : ''
-  const sessionSource = typeof metadata.session_source === 'string' ? metadata.session_source.trim() : ''
-  return source === INTEGRATION_BUILDER_SOURCE || sessionSource === INTEGRATION_BUILDER_SOURCE
-}
-
 export function workspaceIdFromName(name: string): string {
   const normalized = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
   return normalized || `integration-${Date.now().toString(36)}`
-}
-
-export async function fetchIntegrationBuilderSessions(limit = 100): Promise<DesktopSessionRecord[]> {
-  const search = new URLSearchParams({ limit: String(limit) })
-  const response = await requestJson<IntegrationBuilderSessionsResponseWire>(`/v1/integrations/builder/sessions?${search.toString()}`)
-  return Array.isArray(response.sessions)
-    ? response.sessions
-      .map((session) => mapDesktopSession(session))
-      .filter((session): session is DesktopSessionRecord => Boolean(session?.id))
-    : []
-}
-
-export async function createIntegrationBuilderSession(input: {
-  title?: string
-  mode: string
-  agentName?: string
-  workspaceId?: string
-  packId?: string
-  versionId?: string
-  metadata?: Record<string, unknown>
-  preference: ResolvedSessionPreference['preference']
-}): Promise<DesktopSessionRecord> {
-  const response = await requestJson<IntegrationBuilderSessionResponseWire>('/v1/integrations/builder/sessions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      title: input.title ?? '',
-      mode: input.mode,
-      agent_name: input.agentName?.trim() ?? INTEGRATION_BUILDER_AGENT_ID,
-      workspace_id: input.workspaceId?.trim() ?? '',
-      pack_id: input.packId?.trim() ?? '',
-      version_id: input.versionId?.trim() ?? '',
-      metadata: integrationSessionMetadata(input.metadata),
-      preference: preferenceWire(input.preference),
-    }),
-  })
-  return mapDesktopSession(response.session ?? {})
 }
 
 export async function fetchIntegrationWorkspaces(limit = 100): Promise<IntegrationWorkspaceRecord[]> {
@@ -245,7 +193,7 @@ export async function createIntegrationWorkspaceChildSession(input: {
   metadata?: Record<string, unknown>
   preference: ResolvedSessionPreference['preference']
 }): Promise<DesktopSessionRecord> {
-  const response = await requestJson<IntegrationBuilderSessionResponseWire>(`/v1/integrations/workspaces/${encodeURIComponent(input.workspaceId)}/sessions`, {
+  const response = await requestJson<IntegrationWorkspaceSessionResponseWire>(`/v1/integrations/workspaces/${encodeURIComponent(input.workspaceId)}/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -260,7 +208,7 @@ export async function createIntegrationWorkspaceChildSession(input: {
 }
 
 export async function switchIntegrationWorkspaceSession(workspaceId: string, sessionId: string): Promise<DesktopSessionRecord> {
-  const response = await requestJson<IntegrationBuilderSessionResponseWire>(`/v1/integrations/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}`, {
+  const response = await requestJson<IntegrationWorkspaceSessionResponseWire>(`/v1/integrations/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({}),

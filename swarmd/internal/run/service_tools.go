@@ -969,10 +969,6 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		output, err := s.executeManageAgentTool(sessionID, call, approvedArguments)
 		result.Output = output
 		return true, result, err
-	case "manage_integrations":
-		output, err := s.executeManageIntegrationsTool(ctx, sessionID, call)
-		result.Output = output
-		return true, result, err
 	case "manage_theme":
 		output, err := s.executeManageThemeTool(sessionID, call, approvedArguments)
 		result.Output = output
@@ -1191,36 +1187,6 @@ func (s *Service) executeManageAgentTool(sessionID string, call tool.Call, feedb
 		return "", fmt.Errorf("session %q not found", sessionID)
 	}
 	scope := buildPermissionWorkspaceScope(session)
-	if s.tools != nil {
-		output, err := s.tools.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, tool.Call{CallID: call.CallID, Name: call.Name, Arguments: arguments})
-		if err != nil {
-			return output, err
-		}
-		return output, nil
-	}
-	output, err := tool.ExecuteForWorkspaceScope(context.Background(), scope, tool.Call{CallID: call.CallID, Name: call.Name, Arguments: arguments})
-	if err != nil {
-		return output, err
-	}
-	return output, nil
-}
-
-func (s *Service) executeManageIntegrationsTool(ctx context.Context, sessionID string, call tool.Call) (string, error) {
-	arguments := strings.TrimSpace(call.Arguments)
-	if arguments == "" {
-		arguments = "{}"
-	}
-	session, ok, err := s.sessions.GetSession(sessionID)
-	if err != nil {
-		return "", err
-	}
-	if !ok {
-		return "", fmt.Errorf("session %q not found", sessionID)
-	}
-	scope := buildPermissionWorkspaceScope(session)
-	if principal, ok := identity.PrincipalFromContext(ctx); ok {
-		scope.Principal = principal
-	}
 	if s.tools != nil {
 		output, err := s.tools.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, tool.Call{CallID: call.CallID, Name: call.Name, Arguments: arguments})
 		if err != nil {
@@ -4061,8 +4027,6 @@ func canonicalToolName(name string) string {
 		return "manage_skill"
 	case "manage-agent", "manage_agent":
 		return "manage_agent"
-	case "manage-integrations", "manage_integrations":
-		return "manage_integrations"
 	case "manage-theme", "manage_theme":
 		return "manage_theme"
 	case "manage-sessions", "manage_sessions":
@@ -4071,8 +4035,6 @@ func canonicalToolName(name string) string {
 		return "manage_worktree"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
-	case "manage-image", "manage_image":
-		return "manage_image"
 	default:
 		return strings.ToLower(strings.TrimSpace(name))
 	}
@@ -4093,7 +4055,7 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 	}
 
 	switch toolName {
-	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme", "manage_integrations", "edit_pending_plan":
+	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme", "edit_pending_plan":
 		return toolName, false
 	case "manage_sessions":
 		if permission.ShouldApproveManageSessionsDeploy(arguments) {
@@ -4109,11 +4071,6 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 			return "session_unarchive", true
 		}
 		return toolName, false
-	case "manage_image":
-		if shouldApproveManageImage(arguments) {
-			return "image_generation", true
-		}
-		return "manage_image", false
 	case "plan_manage":
 		if requirement := permission.PlanManageLifecycleRequirement(arguments); requirement != "" {
 			return requirement, true

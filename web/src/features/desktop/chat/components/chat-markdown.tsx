@@ -1168,23 +1168,6 @@ function toolJsonString(record: Record<string, unknown> | null | undefined, key:
   return typeof value === "string" ? value.trim() : "";
 }
 
-function ImageToolAction({ toolMessage }: { toolMessage: StructuredToolMessage }) {
-  const outputJson = parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
-  const argsJson = toolMessage.argumentsJson ?? null;
-  const threadId = toolJsonString(outputJson, "thread_id") || toolJsonString(argsJson, "thread_id");
-  if (!threadId) return null;
-  const href = `/tools/image/${encodeURIComponent(threadId)}`;
-  return (
-    <a
-      href={href}
-      className="mt-2 inline-flex h-8 items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-xs font-medium text-[var(--app-text)] hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]"
-    >
-      <ArrowRight size={13} />
-      Open image session
-    </a>
-  );
-}
-
 interface ManageSessionNavigation {
   sessionId: string;
   href: string;
@@ -1412,8 +1395,6 @@ function shouldRenderPreviewAsPlain(toolName: string): boolean {
   switch (toolName.trim().toLowerCase()) {
     case "manage_todos":
     case "manage-todos":
-    case "manage-image":
-    case "manage_image":
     case "manage-sessions":
     case "manage_sessions":
     case "websearch":
@@ -1627,8 +1608,6 @@ export function ToolMessageView({
     || (normalizedTool === "task" && toolMessage.taskRows.length > 0)
     || (normalizedTool === "search" && toolMessage.searchData)
     || (showPreview && !isManageSessions && (toolMessage.previewLines.length > 0 || toolMessage.commandText))
-    || normalizedTool === "manage-image"
-    || normalizedTool === "manage_image"
     || isManageSessions,
   );
 
@@ -1719,9 +1698,6 @@ export function ToolMessageView({
             shell={shellPreview}
             plain={plainPreview}
           />
-        ) : null}
-        {toolMessage.tool.trim().toLowerCase() === 'manage-image' || toolMessage.tool.trim().toLowerCase() === 'manage_image' ? (
-          <ImageToolAction toolMessage={toolMessage} />
         ) : null}
         {isManageSessions ? (
           <ManageSessionsCard toolMessage={toolMessage} />

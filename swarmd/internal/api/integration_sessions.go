@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -15,27 +14,16 @@ import (
 )
 
 const (
-	integrationBuilderSessionSource = "integration_builder"
-	integrationBuilderScope         = "swarm"
-	integrationBuilderWorkspaceName = "Integrations"
-	integrationBuilderWorkspacePart = "integrations"
+	integrationWorkspaceSessionSource = "integration_workspace"
+	integrationWorkspaceScope         = "swarm"
+	integrationWorkspaceName          = "Integrations"
+	integrationWorkspacePart          = "integrations"
 
 	integrationSessionContextKeyWorkspaceID    = "integration_workspace_id"
 	integrationSessionContextKeyDisplayName    = "integration_workspace_display_name"
 	integrationSessionContextKeyPackID         = "integration_pack_id"
 	integrationSessionContextKeyDraftVersionID = "integration_draft_version_id"
 )
-
-type integrationSessionCreateRequest struct {
-	Title       string                         `json:"title"`
-	Mode        string                         `json:"mode"`
-	AgentName   string                         `json:"agent_name"`
-	WorkspaceID string                         `json:"workspace_id,omitempty"`
-	PackID      string                         `json:"pack_id,omitempty"`
-	VersionID   string                         `json:"version_id,omitempty"`
-	Metadata    map[string]any                 `json:"metadata"`
-	Preference  integrationSessionPreferenceIn `json:"preference"`
-}
 
 type integrationSessionPreferenceIn struct {
 	Provider    string `json:"provider"`
@@ -65,77 +53,6 @@ type integrationWorkspaceSessionRequest struct {
 	Mode       string                         `json:"mode"`
 	Metadata   map[string]any                 `json:"metadata"`
 	Preference integrationSessionPreferenceIn `json:"preference"`
-}
-
-func (s *Server) handleIntegrationBuilderSessions(w http.ResponseWriter, r *http.Request) {
-	if s.sessions == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
-		return
-	}
-	principal, ok := PrincipalFromRequest(r)
-	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
-		writeError(w, http.StatusUnauthorized, errors.New("authenticated account principal is required"))
-		return
-	}
-
-	switch r.Method {
-	case http.MethodGet:
-		limit := 100
-		if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-			parsed, ok := parsePositiveInt(raw)
-			if !ok {
-				writeError(w, http.StatusBadRequest, errors.New("limit must be a positive integer"))
-				return
-			}
-			limit = parsed
-		}
-		scanLimit := 10000
-		if limit > scanLimit {
-			scanLimit = limit
-		}
-		sessions, err := s.sessions.ListSessionsForAccount(principal.AccountScopeID, scanLimit)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		filtered := make([]pebblestore.SessionSnapshot, 0, len(sessions))
-		for _, session := range sessions {
-			if isIntegrationBuilderSession(session) {
-				filtered = append(filtered, session)
-				if len(filtered) >= limit {
-					break
-				}
-			}
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sessions": filtered})
-	case http.MethodPost:
-		var req integrationSessionCreateRequest
-		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		session, event, err := s.createIntegrationBuilderChildSession(principal, integrationBuilderSessionCreateOptions{
-			Title:      req.Title,
-			Mode:       req.Mode,
-			Preference: req.Preference,
-			Metadata:   req.Metadata,
-			Context: integrationWorkspaceSessionContext{
-				WorkspaceID:    req.WorkspaceID,
-				PackID:         req.PackID,
-				DraftVersionID: req.VersionID,
-			},
-		})
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		if event != nil && s.hub != nil {
-			s.hub.Publish(*event)
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session": session})
-	default:
-		methodNotAllowed(w)
-	}
 }
 
 func (s *Server) handleIntegrationWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -343,7 +260,7 @@ func (s *Server) handleIntegrationWorkspaceSessionSwitch(w http.ResponseWriter, 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace_session": join, "session": session})
 }
 
-type integrationBuilderSessionCreateOptions struct {
+type integrationWorkspaceSessionCreateOptions struct {
 	Title      string
 	Mode       string
 	Preference integrationSessionPreferenceIn
@@ -443,7 +360,7 @@ func (s *Server) integrationWorkspaceChildSessions(principal identity.Principal,
 }
 
 func (s *Server) createIntegrationWorkspaceChildSession(principal identity.Principal, workspace pebblestore.IntegrationWorkspaceRecord, req integrationWorkspaceSessionRequest) (pebblestore.SessionSnapshot, pebblestore.IntegrationWorkspaceSessionRecord, *pebblestore.EventEnvelope, error) {
-	session, event, err := s.createIntegrationBuilderChildSession(principal, integrationBuilderSessionCreateOptions{
+	session, event, err := s.createIntegrationWorkspaceSession(principal, integrationWorkspaceSessionCreateOptions{
 		Title:      firstNonEmpty(strings.TrimSpace(req.Title), workspace.DisplayName),
 		Mode:       req.Mode,
 		Preference: req.Preference,
@@ -473,11 +390,11 @@ func (s *Server) createIntegrationWorkspaceChildSession(principal identity.Princ
 	return session, join, event, nil
 }
 
-func (s *Server) createIntegrationBuilderChildSession(principal identity.Principal, options integrationBuilderSessionCreateOptions) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error) {
+func (s *Server) createIntegrationWorkspaceSession(principal identity.Principal, options integrationWorkspaceSessionCreateOptions) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error) {
 	if s.sessions == nil {
 		return pebblestore.SessionSnapshot{}, nil, errors.New("session service not configured")
 	}
-	workspacePath, err := integrationBuilderWorkspacePath()
+	workspacePath, err := integrationWorkspacePath()
 	if err != nil {
 		return pebblestore.SessionSnapshot{}, nil, err
 	}
@@ -485,14 +402,14 @@ func (s *Server) createIntegrationBuilderChildSession(principal identity.Princip
 	if strings.TrimSpace(options.Mode) == "" {
 		mode = sessionruntime.ModePlan
 	}
-	metadata := mergeSessionCreateMetadata(integrationBuilderSessionMetadata(), options.Metadata)
+	metadata := mergeSessionCreateMetadata(integrationWorkspaceSessionMetadata(), options.Metadata)
 	metadata = mergeSessionCreateMetadata(metadata, integrationWorkspaceContextMetadata(options.Context))
 	session, event, err := s.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 		UserID:         principal.UserID,
 		AccountScopeID: principal.AccountScopeID,
 		Title:          firstNonEmpty(strings.TrimSpace(options.Title), "New integration"),
 		WorkspacePath:  workspacePath,
-		WorkspaceName:  integrationBuilderWorkspaceName,
+		WorkspaceName:  integrationWorkspaceName,
 		Mode:           mode,
 		Preference: &pebblestore.ModelPreference{
 			Provider:    strings.TrimSpace(options.Preference.Provider),
@@ -546,16 +463,16 @@ func (s *Server) attachIntegrationWorkspaceSession(principal identity.Principal,
 	return join, updatedSession, nil
 }
 
-func integrationBuilderWorkspacePath() (string, error) {
-	return appstorage.DataDir("global-sessions", integrationBuilderWorkspacePart)
+func integrationWorkspacePath() (string, error) {
+	return appstorage.DataDir("global-sessions", integrationWorkspacePart)
 }
 
-func integrationBuilderSessionMetadata() map[string]any {
+func integrationWorkspaceSessionMetadata() map[string]any {
 	return map[string]any{
-		"source":          integrationBuilderSessionSource,
-		"session_source":  integrationBuilderSessionSource,
-		"scope":           integrationBuilderScope,
-		"workspace_scope": integrationBuilderScope,
+		"source":          integrationWorkspaceSessionSource,
+		"session_source":  integrationWorkspaceSessionSource,
+		"scope":           integrationWorkspaceScope,
+		"workspace_scope": integrationWorkspaceScope,
 		"title_pending":   true,
 	}
 }
@@ -595,87 +512,6 @@ func integrationWorkspaceSessionMetadata(workspace pebblestore.IntegrationWorksp
 	return out
 }
 
-func isIntegrationBuilderSession(session pebblestore.SessionSnapshot) bool {
-	return sessionMetadataEquals(session.Metadata, "source", integrationBuilderSessionSource) ||
-		sessionMetadataEquals(session.Metadata, "session_source", integrationBuilderSessionSource)
-}
-
-func (s *Server) applyIntegrationBuilderRunContext(principal identity.Principal, sessionID string, req *sessionRunRequestAdapter) (runIntegrationContext, error) {
-	if s == nil || s.sessions == nil || req == nil {
-		return runIntegrationContext{}, nil
-	}
-	session, ok, err := s.sessions.GetSession(sessionID)
-	if err != nil || !ok {
-		return runIntegrationContext{}, err
-	}
-	if principal.Valid() && strings.TrimSpace(session.AccountScopeID) != principal.AccountScopeID {
-		return runIntegrationContext{}, errors.New("session does not belong to account")
-	}
-	if !isIntegrationBuilderSession(session) {
-		return runIntegrationContext{}, nil
-	}
-	if strings.TrimSpace(req.AgentName()) == "" {
-		req.SetAgentName(agentruntime.IntegrationBuilderAgentID)
-	}
-	req.SetInstructions(appendIntegrationWorkspaceInstructions(req.Instructions(), session.Metadata))
-	return runIntegrationContext{IntegrationFlow: true}, nil
-}
-
-type runIntegrationContext struct {
-	IntegrationFlow bool
-}
-
-type sessionRunRequestAdapter struct {
-	agentName       func() string
-	setAgentName    func(string)
-	instructions    func() string
-	setInstructions func(string)
-}
-
-func (a *sessionRunRequestAdapter) AgentName() string            { return a.agentName() }
-func (a *sessionRunRequestAdapter) SetAgentName(value string)    { a.setAgentName(value) }
-func (a *sessionRunRequestAdapter) Instructions() string         { return a.instructions() }
-func (a *sessionRunRequestAdapter) SetInstructions(value string) { a.setInstructions(value) }
-
-func appendIntegrationWorkspaceInstructions(existing string, metadata map[string]any) string {
-	workspaceID := metadataString(metadata, integrationSessionContextKeyWorkspaceID)
-	packID := metadataString(metadata, integrationSessionContextKeyPackID)
-	draftVersionID := metadataString(metadata, integrationSessionContextKeyDraftVersionID)
-	displayName := metadataString(metadata, integrationSessionContextKeyDisplayName)
-	if workspaceID == "" && packID == "" && draftVersionID == "" {
-		return strings.TrimSpace(existing)
-	}
-	lines := []string{"Integration workspace context:"}
-	if workspaceID != "" {
-		lines = append(lines, "- workspace_id: "+workspaceID)
-	}
-	if displayName != "" {
-		lines = append(lines, "- workspace_display_name: "+displayName)
-	}
-	if packID != "" {
-		lines = append(lines, "- pack_id: "+packID)
-	}
-	if draftVersionID != "" {
-		lines = append(lines, "- draft_version_id: "+draftVersionID)
-	}
-	lines = append(lines, "Use this selected integration context automatically when calling manage-integrations or explaining next steps.")
-	block := strings.Join(lines, "\n")
-	if strings.TrimSpace(existing) == "" {
-		return block
-	}
-	return strings.TrimSpace(existing) + "\n\n" + block
-}
-
-func metadataString(metadata map[string]any, key string) string {
-	if len(metadata) == 0 {
-		return ""
-	}
-	if value, ok := metadata[key].(string); ok {
-		return strings.TrimSpace(value)
-	}
-	return ""
-}
-
 func stringMapFromAny(values map[string]any) map[string]string {
 	if len(values) == 0 {
 		return nil
@@ -693,18 +529,6 @@ func stringMapFromAny(values map[string]any) map[string]string {
 		return nil
 	}
 	return out
-}
-
-func sessionMetadataEquals(metadata map[string]any, key, want string) bool {
-	value, ok := metadata[key]
-	if !ok {
-		return false
-	}
-	text, ok := value.(string)
-	if !ok {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(text), strings.TrimSpace(want))
 }
 
 func parsePositiveInt(raw string) (int, bool) {

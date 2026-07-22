@@ -21,7 +21,7 @@ import {
   type IntegrationWorkspaceRecord,
   type IntegrationWorkspaceSnapshot,
   workspaceIdFromName,
-} from '../services/integration-builder-sessions'
+} from '../services/integration-workspace-sessions'
 
 function workspaceStatus(workspace: IntegrationWorkspaceRecord): string {
   if (workspace.latestChildSessionId) return 'Drafting'
@@ -88,12 +88,12 @@ export function IntegrationsPage() {
   const selectedSession = snapshotQuery.data?.session ?? null
   const childSessions = snapshotQuery.data?.sessions ?? []
   const userThemeId = normalizeGlobalThemeSettings(uiSettingsQuery.data).activeId
-  const darkOverrideButtonStyle = useMemo(() => createWorkspaceThemeStyle(userThemeId, '--integration-builder-theme'), [userThemeId])
+  const darkOverrideButtonStyle = useMemo(() => createWorkspaceThemeStyle(userThemeId, '--integration-workspace-theme'), [userThemeId])
 
   const requirePreference = useCallback(() => {
     const preference = draftModelQuery.data?.preference
     if (!preference?.provider || !preference.model || !preference.thinking) {
-      throw new Error('Select an authenticated model before starting an integration builder chat.')
+      throw new Error('Select an authenticated model before starting an integration workspace chat.')
     }
     return preference
   }, [draftModelQuery.data?.preference])
@@ -208,7 +208,7 @@ export function IntegrationsPage() {
         darkModeStyle={darkOverrideButtonStyle}
         toolIcon={<Link2 size={17} strokeWidth={1.8} />}
         toolTitle="Integrations"
-        toolDescription="Scoped Integration Packs. Select a draft to review settings and work with the hidden Integration Builder."
+        toolDescription="Scoped Integration Packs. Select a draft to review settings and related workspace chats."
         createLabel="Create"
         createTitle={newIntegrationName}
         onCreateTitleChange={setNewIntegrationName}
@@ -244,7 +244,7 @@ export function IntegrationsPage() {
                   <p className="text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--app-text-subtle)]">Swarm-wide drafts</p>
                   <h1 className="mt-2 text-4xl font-semibold tracking-[-0.065em] text-[var(--app-text)]">Integrations</h1>
                   <p className="mt-4 max-w-2xl text-sm leading-6 text-[var(--app-text-muted)]">
-                    Build scoped Integration Packs as reviewable drafts. Cards stay integration-first; the compact AI builder on the right owns reusable child chats for the selected integration.
+                    Build scoped Integration Packs as reviewable drafts. Cards stay integration-first; related workspace chats remain grouped with the selected integration.
                   </p>
                 </div>
                 <Button onClick={() => setCreateDialogOpen(true)}>
@@ -335,7 +335,7 @@ export function IntegrationsPage() {
                       <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
                         <Bot className="text-[var(--app-text-subtle)]" size={17} />
                         <div className="mt-3 text-sm font-semibold">Builder</div>
-                        <div className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">Hidden Integration Builder only.</div>
+                        <div className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">Integration workspace chats.</div>
                       </div>
                       <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
                         <Sparkles className="text-[var(--app-text-subtle)]" size={17} />
@@ -365,7 +365,7 @@ export function IntegrationsPage() {
                     <div className="min-w-0">
                       <div className="flex min-w-0 items-center gap-2 text-sm font-semibold text-[var(--app-text)]">
                         <Sparkles size={15} className="text-[var(--app-primary)]" />
-                        <span className="truncate">Integration Builder</span>
+                        <span className="truncate">Integration workspace</span>
                       </div>
                       <div className="mt-0.5 truncate text-[11px] text-[var(--app-text-muted)]">{selectedWorkspace.displayName}</div>
                     </div>

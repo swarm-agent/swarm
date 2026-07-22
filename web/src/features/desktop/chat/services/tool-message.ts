@@ -353,23 +353,6 @@ function summarizeToolOutput(
       if (status) parts.push("(" + status + ")");
       return parts.length ? "task " + parts.join(" ") : "task";
     }
-    case "manage-image":
-    case "manage_image": {
-      const action = jsonStr(effective, "action");
-      const status = jsonStr(effective, "status");
-      const threadId = jsonStr(effective, "thread_id");
-      const provider = jsonStr(effective, "provider");
-      const model = jsonStr(effective, "model");
-      const requestedCount = jsonNum(effective, "requested_count");
-      const savedCount = jsonNum(effective, "saved_count");
-      if (action === "inspect") return "manage-image inspect";
-      const parts = ["manage-image"];
-      if (status) parts.push(status);
-      if (savedCount > 0 || requestedCount > 0) parts.push(`${savedCount || requestedCount} image${(savedCount || requestedCount) === 1 ? "" : "s"}`);
-      if (provider || model) parts.push([provider, model].filter(Boolean).join("/"));
-      if (threadId) parts.push(`session ${threadId}`);
-      return parts.join(" · ");
-    }
     case "plan_manage":
     case "plan-manage": {
       return summarizePlanManageToolOutput(effective);
@@ -1173,26 +1156,6 @@ function extractPreviewLines(
         const label = row.assignmentLabel || row.agent;
         const model = row.modelLabel ? ` · ${row.modelLabel}` : "";
         pushPreviewLine(out, `${label}${model}${tool}${time} ${status}`.trim(), 6);
-      }
-      return out;
-    }
-    case "manage-image":
-    case "manage_image": {
-      const out: string[] = [];
-      const threadId = jsonStr(effective, "thread_id");
-      const openUrl = jsonStr(effective, "open_url");
-      const provider = jsonStr(effective, "provider");
-      const model = jsonStr(effective, "model");
-      const savedCount = jsonNum(effective, "saved_count");
-      const requestedCount = jsonNum(effective, "requested_count");
-      if (threadId) pushPreviewLine(out, `image session: ${threadId}`, 6);
-      if (openUrl) pushPreviewLine(out, `open: ${openUrl}`, 6);
-      if (provider || model) pushPreviewLine(out, `model: ${[provider, model].filter(Boolean).join(" / ")}`, 6);
-      if (savedCount > 0 || requestedCount > 0) pushPreviewLine(out, `saved: ${savedCount} / ${requestedCount || savedCount}`, 6);
-      for (const asset of jsonObjectSlice(effective, "assets")) {
-        const assetId = jsonStr(asset, "asset_id");
-        const url = jsonStr(asset, "url");
-        pushPreviewLine(out, `asset: ${[assetId, url].filter(Boolean).join(" · ")}`, 6);
       }
       return out;
     }

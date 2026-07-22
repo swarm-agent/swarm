@@ -189,7 +189,6 @@ type RunOptions struct {
 	CompiledPolicy        *permission.Policy
 	ExecutionContext      *RunExecutionContext
 	PlanCheckpointContext *RunPlanCheckpointContext
-	IntegrationFlow       bool
 	Principal             identity.Principal
 	ApplySessionMutation  func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 	// SkipInitialUserMessage is trusted control-plane state for a run whose user
@@ -1114,7 +1113,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			return RunResult{}, errors.New("trusted agent profile override has empty name")
 		}
 	} else {
-		agentProfile, err = s.resolveAgentProfileForAccount(options.Principal.AccountScopeID, agentName, targetKind, options.IntegrationFlow)
+		agentProfile, err = s.resolveAgentProfileForAccount(options.Principal.AccountScopeID, agentName, targetKind)
 		if err != nil {
 			return RunResult{}, err
 		}

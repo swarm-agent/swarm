@@ -71,7 +71,6 @@ type RunStartMeta struct {
 	RunID                string
 	OwnerTransport       string
 	CompiledPolicy       *permission.Policy
-	IntegrationFlow      bool
 	Principal            identity.Principal
 	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 }
@@ -126,7 +125,6 @@ func NewRunOptions(request RunRequest, meta RunStartMeta) RunOptions {
 		CompiledPolicy:        meta.CompiledPolicy,
 		ExecutionContext:      request.ExecutionContext,
 		PlanCheckpointContext: request.PlanCheckpointContext,
-		IntegrationFlow:       meta.IntegrationFlow,
 		Principal:             meta.Principal,
 		ApplySessionMutation:  meta.ApplySessionMutation,
 	}

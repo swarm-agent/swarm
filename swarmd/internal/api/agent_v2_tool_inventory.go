@@ -56,6 +56,9 @@ func agentToolInventoryMap(definitions []tool.Definition, customTools []pebblest
 	}
 	customToolMaps := make([]map[string]any, 0, len(customTools))
 	for _, customTool := range customTools {
+		if pebblestore.IsRemovedAgentToolName(customTool.Name) {
+			continue
+		}
 		customToolMaps = append(customToolMaps, map[string]any{
 			"name":        strings.TrimSpace(customTool.Name),
 			"kind":        strings.TrimSpace(customTool.Kind),
@@ -105,8 +108,6 @@ func agentToolCanonicalName(name string) string {
 		return "manage_skill"
 	case "manage-agent", "manage_agent":
 		return "manage_agent"
-	case "manage-integrations", "manage_integrations":
-		return "manage_integrations"
 	case "manage-theme", "manage_theme":
 		return "manage_theme"
 	case "manage-worktree", "manage_worktree":
@@ -115,8 +116,6 @@ func agentToolCanonicalName(name string) string {
 		return "manage_sessions"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
-	case "manage-image", "manage_image":
-		return "manage_image"
 	default:
 		return strings.ToLower(strings.TrimSpace(name))
 	}
@@ -130,7 +129,7 @@ func agentToolGroup(name string) string {
 		return "write"
 	case "task", "ask_user", "exit_plan_mode", "plan_manage", "skill_use":
 		return "control"
-	case "manage_agent", "manage_skill", "manage_todos", "manage_worktree", "manage_theme", "manage_integrations", "manage_image":
+	case "manage_agent", "manage_skill", "manage_todos", "manage_worktree", "manage_theme":
 		return "management"
 	default:
 		return "other"
@@ -151,13 +150,6 @@ func agentToolPresetInventory() []map[string]any {
 			Label:             "Read only",
 			Description:       "Inspect workspace files and web content without file mutation or shell execution.",
 			EnabledTools:      []string{"read", "search", "list", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "exit_plan_mode"},
-			DisabledByDefault: []string{"write", "edit", "bash", "task"},
-		},
-		{
-			ID:                "integration_builder",
-			Label:             "Integration builder",
-			Description:       "Inspect local/web context and manage Integration Pack drafts without shell or file mutation tools.",
-			EnabledTools:      []string{"read", "search", "list", "websearch", "webfetch", "manage_integrations"},
 			DisabledByDefault: []string{"write", "edit", "bash", "task"},
 		},
 		{

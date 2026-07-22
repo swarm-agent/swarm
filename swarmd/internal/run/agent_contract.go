@@ -120,10 +120,26 @@ func (s *Service) listCustomAgentToolsForRun(accountScopeID string) ([]pebblesto
 		return nil, nil
 	}
 	accountScopeID = strings.TrimSpace(accountScopeID)
+	var (
+		tools []pebblestore.AgentCustomToolDefinition
+		err   error
+	)
 	if accountScopeID != "" {
-		return s.agents.ListCustomToolsForAccount(accountScopeID, 2000)
+		tools, err = s.agents.ListCustomToolsForAccount(accountScopeID, 2000)
+	} else {
+		tools, err = s.agents.ListCustomTools(2000)
 	}
-	return s.agents.ListCustomTools(2000)
+	if err != nil {
+		return nil, err
+	}
+	filtered := tools[:0]
+	for _, customTool := range tools {
+		if pebblestore.IsRemovedAgentToolName(customTool.Name) {
+			continue
+		}
+		filtered = append(filtered, customTool)
+	}
+	return filtered, nil
 }
 
 func (s *Service) ResolveAgentToolContract(profile pebblestore.AgentProfile) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
@@ -277,8 +293,6 @@ func applyNamedAgentPreset(target map[string]ResolvedAgentTool, knownTools map[s
 	switch preset {
 	case "read_only":
 		enable("read", "search", "list", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "exit_plan_mode")
-	case "integration_builder":
-		enable("read", "search", "list", "websearch", "webfetch", "manage_integrations")
 	case "read_write":
 		enable("read", "search", "list", "write", "edit", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "exit_plan_mode")
 	case "bash_git_only":
