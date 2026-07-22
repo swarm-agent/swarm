@@ -85,6 +85,29 @@ test('plan Git commit form submits on Enter through the shared commit handler an
   assert.equal((modalSource.match(/commitWorkspaceChanges/g) ?? []).length, 0)
 })
 
+test('sidebar keeps review controls first and shows compact remote and dirty Git state without an icon', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const rendererStart = source.indexOf('function renderSidebarSessionGroups')
+  const rendererEnd = source.indexOf('export function DesktopAppPage', rendererStart)
+  const rendererSource = source.slice(rendererStart, rendererEnd)
+  const toolbarIndex = rendererSource.indexOf('data-sidebar-review-toolbar')
+  const headingIndex = rendererSource.indexOf('data-sidebar-needs-review-heading')
+  const gitEntryStart = rendererSource.indexOf('data-sidebar-dirty-git-entry')
+  const gitEntryEnd = rendererSource.indexOf('</button>', gitEntryStart)
+  const gitEntrySource = rendererSource.slice(gitEntryStart, gitEntryEnd)
+
+  assert.ok(rendererStart >= 0 && rendererEnd > rendererStart)
+  assert.ok(toolbarIndex >= 0 && headingIndex > toolbarIndex)
+  assert.match(rendererSource, /data-sidebar-review-toolbar[\s\S]*\{groupControls\}[\s\S]*data-sidebar-needs-review-heading/)
+  assert.match(rendererSource, /gitAheadCount: number[\s\S]*gitBehindCount: number[\s\S]*gitDirtyCount: number/)
+  assert.match(gitEntrySource, /onClick=\{input\.onOpenGit\}/)
+  assert.match(gitEntrySource, /↑\{input\.gitAheadCount\} ↓\{input\.gitBehindCount\}/)
+  assert.match(gitEntrySource, /input\.gitDirtyCount > 0 \? `\$\{input\.gitDirtyCount\} dirty` : 'clean'/)
+  assert.doesNotMatch(gitEntrySource, /<GitBranch|\bGit ·|min-h-|border|bg-\[var\(--app-warning-bg\)\]|Commit/)
+  assert.match(source, /gitAheadCount: topWorkspaceGitAheadCount[\s\S]*gitBehindCount: topWorkspaceGitBehindCount[\s\S]*gitDirtyCount: topWorkspaceGitDirtyCount[\s\S]*onOpenGit:/)
+  assert.deepEqual(SIDEBAR_SESSION_GROUPS.slice(0, 2).map((group) => group.id), ['needs_review', 'in_progress'])
+})
+
 test('sidebar cards use explicit selection mode without hover-driven checkboxes or navigation', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const rowStart = source.indexOf('const SessionRow = memo')

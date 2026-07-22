@@ -1066,7 +1066,7 @@ function WorktreeSessionForm({ presentation, state, title, branch, selectedExist
   )
 }
 
-function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onClose }: { state: GitPanelState | null; snapshot: GitSnapshot | null; loading: boolean; error: string | null; onRefresh: () => void; onClose: () => void }) {
+function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onCommit, onClose }: { state: GitPanelState | null; snapshot: GitSnapshot | null; loading: boolean; error: string | null; onRefresh: () => void; onCommit: (files: GitFileStatus[]) => void; onClose: () => void }) {
   if (!state) return null
   const files = snapshot?.files ?? []
   return (
@@ -1088,7 +1088,7 @@ function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onClose
           </div>
         </div>
         {error ? <div className="border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs text-[var(--app-warning)]">{error}</div> : null}
-        {snapshot?.has_git ? (
+        {loading && !snapshot ? <div className="border border-[var(--app-border)] px-3 py-4 text-xs text-[var(--app-text-subtle)]">Loading Git status…</div> : snapshot?.has_git ? (
           <>
             <div className="grid gap-2 text-xs text-[var(--app-text-muted)] sm:grid-cols-4">
               <div className="border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Branch</div><div className="truncate text-[var(--app-text)]">{snapshot.branch || 'detached'}</div></div>
@@ -1107,6 +1107,7 @@ function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onClose
                 ))}
               </div>
             </div>
+            {files.length > 0 ? <div className="flex justify-end"><Button type="button" onClick={() => onCommit(files)}>Commit changes…</Button></div> : null}
           </>
         ) : <div className="border border-[var(--app-border)] px-3 py-4 text-xs text-[var(--app-text-subtle)]">No git repository detected for this workspace.</div>}
       </DialogPanel>
@@ -2364,6 +2365,11 @@ interface RenderSidebarSessionGroupsInput {
   bulkArchivePending: boolean
   masterSelectionGroup: SidebarSessionGroupID | null
   reviewCleanupOpen: boolean
+  gitHasGit: boolean
+  gitAheadCount: number
+  gitBehindCount: number
+  gitDirtyCount: number
+  onOpenGit: () => void
   onToggleReviewCleanup: () => void
   onEnterSelectionMode: (group: SidebarSessionGroupID) => void
   onClearSelection: () => void
@@ -2419,11 +2425,8 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
   return SIDEBAR_SESSION_GROUPS.flatMap((group) => {
     const nodes = grouped.get(group.id) ?? []
     if (nodes.length === 0) return []
-    return [(
-      <section key={group.id} className="group/section grid content-start gap-1.5">
-        <div className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
-          <span>{group.label}</span>
-          <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${group.id === 'needs_review' || input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
+    const groupControls = (
+      <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${group.id === 'needs_review' || input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
             {sidebarShouldShowReviewAction(group.id, input.selectionMode) ? (
               <>
                 <button
@@ -2468,8 +2471,38 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                 <button type="button" disabled={input.bulkArchivePending || input.selectedRootIDs.size === 0} className="rounded bg-[var(--app-primary)] px-1.5 py-0.5 text-[var(--app-primary-text)] disabled:opacity-50" onClick={input.onBulkArchive}>Archive</button>
               </>
             ) : null}
+      </div>
+    )
+    return [(
+      <section key={group.id} className="group/section grid content-start gap-1.5">
+        {group.id === 'needs_review' ? (
+          <>
+            <div data-sidebar-review-toolbar className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold text-[var(--app-text-subtle)]">
+              {input.gitHasGit ? (
+                <button
+                  type="button"
+                  data-sidebar-dirty-git-entry
+                  className={`flex h-5 items-center gap-1 rounded px-1 text-[9px] font-medium hover:bg-[var(--app-surface-hover)] ${input.gitDirtyCount > 0 ? 'text-[var(--app-warning)]' : 'text-[var(--app-text-muted)]'}`}
+                  onClick={input.onOpenGit}
+                  aria-label={`Open Git details: ${input.gitAheadCount} ahead, ${input.gitBehindCount} behind, ${input.gitDirtyCount} dirty files`}
+                  title="Open Git details"
+                >
+                  <span aria-hidden="true">↑{input.gitAheadCount} ↓{input.gitBehindCount}</span>
+                  <span>· {input.gitDirtyCount > 0 ? `${input.gitDirtyCount} dirty` : 'clean'}</span>
+                </button>
+              ) : null}
+              {groupControls}
+            </div>
+            <div data-sidebar-needs-review-heading className="flex min-h-6 items-center px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+              <span>{group.label}</span>
+            </div>
+          </>
+        ) : (
+          <div className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+            <span>{group.label}</span>
+            {groupControls}
           </div>
-        </div>
+        )}
         <div className="grid gap-1">
           {nodes.map((node) => (
           <SessionRow
@@ -3113,6 +3146,18 @@ export function DesktopAppPage() {
     ? workspaceSlugByPath.get(topWorkspacePath) ?? workspaceRouteSlugBase({ path: topWorkspacePath, workspaceName: topWorkspaceLabel })
     : routeWorkspaceSlug
   const topWorkspaceOptions = useMemo(() => mergedSidebarWorkspaceEntries, [mergedSidebarWorkspaceEntries])
+  const topWorkspaceGitStatusQuery = useQuery({
+    queryKey: gitStatusQueryKey(topWorkspacePath),
+    queryFn: () => fetchGitStatus(topWorkspacePath),
+    enabled: Boolean(topWorkspacePath),
+    staleTime: 5_000,
+    refetchOnWindowFocus: true,
+  })
+  const topWorkspaceGitSnapshot = topWorkspaceGitStatusQuery.data?.status ?? null
+  const topWorkspaceGitAheadCount = topWorkspaceGitSnapshot?.ahead_count ?? topWorkspace?.gitAheadCount ?? 0
+  const topWorkspaceGitBehindCount = topWorkspaceGitSnapshot?.behind_count ?? topWorkspace?.gitBehindCount ?? 0
+  const topWorkspaceGitDirtyCount = topWorkspaceGitSnapshot?.dirty_count ?? topWorkspace?.gitDirtyCount ?? 0
+  const topWorkspaceHasGit = topWorkspaceGitSnapshot?.has_git ?? topWorkspace?.gitHasGit ?? false
   const sidebarWorkspaceBranch = activeGitSession?.worktreeEnabled
     ? gitSnapshot?.branch
     : gitSnapshot?.branch || selectedWorkspace?.gitBranch || routeWorkspace?.gitBranch || topWorkspace?.gitBranch
@@ -4414,7 +4459,7 @@ export function DesktopAppPage() {
       setGitCommitModal(null)
       setGitCommitMessage('')
       setDesktopToast({ message: 'Changes committed successfully.', tone: 'success' })
-      await gitStatusQuery.refetch()
+      await queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] })
     } catch (error) {
       setGitCommitError(error instanceof Error ? error.message : String(error))
     } finally {
@@ -4754,6 +4799,11 @@ export function DesktopAppPage() {
                     bulkArchivePending,
                     masterSelectionGroup: sidebarMasterSelectionGroup,
                     reviewCleanupOpen: needsReviewCleanupOpen,
+                    gitHasGit: topWorkspaceHasGit,
+                    gitAheadCount: topWorkspaceGitAheadCount,
+                    gitBehindCount: topWorkspaceGitBehindCount,
+                    gitDirtyCount: topWorkspaceGitDirtyCount,
+                    onOpenGit: () => openGitPanel(topWorkspacePath, topWorkspaceLabel),
                     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
                     onEnterSelectionMode: handleEnterSidebarSelectionMode,
                     onClearSelection: handleClearSidebarSelection,
@@ -5258,10 +5308,17 @@ export function DesktopAppPage() {
       </Dialog> : null}
       <GitDetailsOverlay
         state={gitPanel}
-        snapshot={gitPanel ? (gitSnapshotByPath.get(gitPanel.workspacePath) ?? (gitPanel.workspacePath === selectedGitWorkspacePath ? gitSnapshot : null)) : null}
-        loading={Boolean(gitPanel && gitPanel.workspacePath === selectedGitWorkspacePath && gitStatusQuery.isFetching)}
-        error={gitPanel ? (gitRealtimeErrors[gitPanel.workspacePath] ?? (gitPanel.workspacePath === selectedGitWorkspacePath && gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : null)) : null}
+        snapshot={gitPanel ? (gitPanel.workspacePath === topWorkspacePath ? topWorkspaceGitSnapshot : gitSnapshotByPath.get(gitPanel.workspacePath) ?? null) : null}
+        loading={Boolean(gitPanel && ((gitPanel.workspacePath === selectedGitWorkspacePath && gitStatusQuery.isFetching) || (gitPanel.workspacePath === topWorkspacePath && topWorkspaceGitStatusQuery.isFetching)))}
+        error={gitPanel ? (gitRealtimeErrors[gitPanel.workspacePath] ?? (gitPanel.workspacePath === selectedGitWorkspacePath && gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : null) ?? (gitPanel.workspacePath === topWorkspacePath && topWorkspaceGitStatusQuery.error instanceof Error ? topWorkspaceGitStatusQuery.error.message : null)) : null}
         onRefresh={() => { if (gitPanel) void queryClient.invalidateQueries({ queryKey: gitStatusQueryKey(gitPanel.workspacePath) }) }}
+        onCommit={(files) => {
+          if (!gitPanel || files.length === 0) return
+          setGitCommitMessage('')
+          setGitCommitError(null)
+          setGitCommitModal({ workspacePath: gitPanel.workspacePath, sessionId: '', files })
+          setGitPanel(null)
+        }}
         onClose={closeGitPanel}
       />
       {pwaDebugEnabled ? <PwaLayoutDebugOverlay /> : null}
