@@ -2293,7 +2293,7 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 			if tombstone, tombstoneOK, tombstoneErr := s.GetV3SessionTombstone(input.SessionID); tombstoneErr != nil {
 				return SessionSnapshot{}, false, tombstoneErr
 			} else if tombstoneOK && tombstone.Archived && !tombstone.Deleted && tombstone.Session.ID != "" {
-				session = tombstone.Session
+				session = normalizeSessionForReactivation(tombstone.Session)
 				ok = true
 			}
 		}

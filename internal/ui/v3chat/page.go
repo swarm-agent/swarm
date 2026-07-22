@@ -2230,52 +2230,63 @@ func (p *Page) renderTaskToolRows(tool ToolTimelineItem, presentation toolPresen
 		return nil
 	}
 	headerStyle := styles.Secondary.Bold(true)
-	rows := []renderRow{{text: truncateRunes(strings.TrimSpace(presentation.Summary), width), style: headerStyle}}
+	rows := []renderRow{{text: truncateRunes(strings.ToUpper(strings.TrimSpace(presentation.Summary)), width), style: headerStyle}}
+	if width < 8 {
+		rows = append(rows, renderRow{text: "", style: styles.Text})
+		return rows
+	}
+
+	innerWidth := width - 2
+	contentWidth := maxInt(1, innerWidth-2)
 	for _, taskRow := range presentation.TaskRows {
 		statusLabel := taskPresentationStatusLabel(taskRow.Status)
 		statusStyle := styles.Muted
+		borderStyle := styles.Border
 		switch taskRow.Status {
 		case "done":
 			statusStyle = styles.Success
+			borderStyle = styles.Success
 		case "error", "cancelled":
 			statusStyle = styles.Error
+			borderStyle = styles.Error
 		case "running":
 			statusStyle = styles.Accent
+			borderStyle = styles.Accent
 		}
+		rows = append(rows, renderRow{text: "┌" + strings.Repeat("─", innerWidth) + "┐", style: borderStyle})
+		appendCardLine := func(key, text string, style tcell.Style) {
+			text = strings.TrimSpace(text)
+			if text == "" {
+				return
+			}
+			for _, wrapped := range p.cachedWrap("task-card:"+tool.ID+":"+fmt.Sprint(taskRow.Index)+":"+key, text, contentWidth) {
+				wrapped = truncateRunes(wrapped, contentWidth)
+				padding := strings.Repeat(" ", maxInt(0, contentWidth-utf8.RuneCountInString(wrapped)))
+				rows = append(rows, renderRow{
+					text:  "│ " + wrapped + padding + " │",
+					style: style,
+					spans: []renderSpan{
+						{text: "│ ", style: borderStyle},
+						{text: wrapped + padding, style: style},
+						{text: " │", style: borderStyle},
+					},
+				})
+			}
+		}
+
 		title := firstNonEmptyToolRaw(taskRow.Title, taskRow.Agent, "subagent")
-		if width < 52 {
-			appendTaskLine := func(prefix, text string, style tcell.Style) {
-				text = strings.TrimSpace(text)
-				if text == "" {
-					return
-				}
-				for _, wrapped := range p.cachedWrap("task-tool:"+tool.ID+":"+prefix+":"+text, prefix+text, maxInt(1, width-2)) {
-					rows = append(rows, renderRow{text: "  " + wrapped, style: style})
-				}
-			}
-			appendTaskLine(statusLabel+" ", title, statusStyle)
-			appendTaskLine("@", taskRow.Agent, styles.Secondary)
-			appendTaskLine("model: ", taskRow.Model, styles.Muted)
-			appendTaskLine("current: ", appendToolFacts(taskRow.Tool, []string{taskRow.Time}), styles.Muted)
-			appendTaskLine("", taskRow.Preview, styles.Muted)
-			appendTaskLine("error: ", taskRow.Error, styles.Error)
-			continue
+		appendCardLine("title", "["+statusLabel+"] "+title, statusStyle.Bold(true))
+		agent := strings.TrimSpace(taskRow.Agent)
+		if agent != "" && !strings.HasPrefix(agent, "@") {
+			agent = "@" + agent
 		}
-		facts := []string{"@" + taskRow.Agent, taskRow.Model, taskRow.Tool, taskRow.Time}
-		line := statusLabel + " " + appendToolFacts(title, facts)
-		for _, wrapped := range p.cachedWrap("task-tool:"+tool.ID+":"+fmt.Sprint(taskRow.Index), line, width) {
-			rows = append(rows, renderRow{text: wrapped, style: statusStyle})
-		}
-		if taskRow.Preview != "" {
-			for _, wrapped := range p.cachedWrap("task-tool-preview:"+tool.ID+":"+fmt.Sprint(taskRow.Index), taskRow.Preview, maxInt(1, width-2)) {
-				rows = append(rows, renderRow{text: "  " + wrapped, style: styles.Muted})
-			}
-		}
+		appendCardLine("identity", appendToolFacts(agent, []string{taskRow.Model}), styles.Secondary)
+		appendCardLine("activity", "current: "+appendToolFacts(taskRow.Tool, []string{taskRow.Time}), styles.Muted)
+		appendCardLine("preview", taskRow.Preview, styles.Muted)
 		if taskRow.Error != "" {
-			for _, wrapped := range p.cachedWrap("task-tool-error:"+tool.ID+":"+fmt.Sprint(taskRow.Index), taskRow.Error, maxInt(1, width-2)) {
-				rows = append(rows, renderRow{text: "  " + wrapped, style: styles.Error})
-			}
+			appendCardLine("error", "error: "+taskRow.Error, styles.Error)
 		}
+		rows = append(rows, renderRow{text: "└" + strings.Repeat("─", innerWidth) + "┘", style: borderStyle})
 	}
 	rows = append(rows, renderRow{text: "", style: styles.Text})
 	return rows

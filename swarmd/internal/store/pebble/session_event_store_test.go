@@ -617,6 +617,14 @@ func TestApplyV3SessionMutationAppendMessageReactivatesArchivedSession(t *testin
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3SessionForTest(t, sessions, "session-reactivate")
+	scheduled, ok, err := sessions.GetSession("session-reactivate")
+	if err != nil || !ok {
+		t.Fatalf("load session before archive ok=%v err=%v", ok, err)
+	}
+	scheduled.Metadata = map[string]any{reviewDoneAtMetadataKey: int64(1000), reviewAutoArchiveAfterMetadataKey: int64(1500), "keep": "value"}
+	if err := sessions.UpdateSession(scheduled); err != nil {
+		t.Fatalf("schedule review auto archive: %v", err)
+	}
 	if err := sessions.ArchiveSession("session-reactivate"); err != nil {
 		t.Fatalf("archive session: %v", err)
 	}
@@ -649,6 +657,12 @@ func TestApplyV3SessionMutationAppendMessageReactivatesArchivedSession(t *testin
 	}
 	if loaded.MessageCount != 1 || loaded.LastMessageAt != 2000 {
 		t.Fatalf("reactivated session = %+v", loaded)
+	}
+	if loaded.Metadata[reviewDoneAtMetadataKey] != nil || loaded.Metadata[reviewAutoArchiveAfterMetadataKey] != nil || loaded.Metadata["keep"] != "value" {
+		t.Fatalf("reactivated metadata = %+v", loaded.Metadata)
+	}
+	if due, err := sessions.ListDueSessionReviewAutoArchives(10_000, 10); err != nil || len(due) != 0 {
+		t.Fatalf("reactivated due rows = %+v err=%v", due, err)
 	}
 	tombstones, err := sessions.ListV3SessionTombstonesForAccount("account-1", 10)
 	if err != nil {
@@ -717,6 +731,14 @@ func TestReactivateArchivedSessionsRestoresBatchWithoutAppendingMessage(t *testi
 	ids := []string{"session-unarchive-a", "session-unarchive-b"}
 	for _, id := range ids {
 		createV3SessionForTest(t, sessions, id)
+		scheduled, ok, err := sessions.GetSession(id)
+		if err != nil || !ok {
+			t.Fatalf("load session %s before archive ok=%v err=%v", id, ok, err)
+		}
+		scheduled.Metadata = map[string]any{reviewDoneAtMetadataKey: int64(1000), reviewAutoArchiveAfterMetadataKey: int64(1500), "keep": id}
+		if err := sessions.UpdateSession(scheduled); err != nil {
+			t.Fatalf("schedule review auto archive %s: %v", id, err)
+		}
 	}
 	if err := sessions.ArchiveSessions(ids); err != nil {
 		t.Fatalf("archive sessions: %v", err)
@@ -737,6 +759,9 @@ func TestReactivateArchivedSessionsRestoresBatchWithoutAppendingMessage(t *testi
 		if err != nil || !ok || session.MessageCount != 0 {
 			t.Fatalf("restored session %s = %+v ok=%v err=%v", id, session, ok, err)
 		}
+		if session.Metadata[reviewDoneAtMetadataKey] != nil || session.Metadata[reviewAutoArchiveAfterMetadataKey] != nil || session.Metadata["keep"] != id {
+			t.Fatalf("restored metadata %s = %+v", id, session.Metadata)
+		}
 		if _, found, err := sessions.GetV3SessionTombstone(id); err != nil || found {
 			t.Fatalf("restored tombstone %s found=%v err=%v", id, found, err)
 		}
@@ -744,6 +769,9 @@ func TestReactivateArchivedSessionsRestoresBatchWithoutAppendingMessage(t *testi
 		if err != nil || len(events) != 3 || events[2].EventType != "session.reactivated" {
 			t.Fatalf("restored events %s = %+v err=%v", id, events, err)
 		}
+	}
+	if due, err := sessions.ListDueSessionReviewAutoArchives(10_000, 10); err != nil || len(due) != 0 {
+		t.Fatalf("restored due rows = %+v err=%v", due, err)
 	}
 	search, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "account-1", UserID: "user-1", Global: true, Query: "unarchive", Limit: 10})
 	if err != nil || len(search.Items) != 2 || search.Items[0].Archived || search.Items[1].Archived {

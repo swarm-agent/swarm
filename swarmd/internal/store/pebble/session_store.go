@@ -496,7 +496,7 @@ func (s *SessionStore) ReactivateArchivedSessions(sessionIDs []string, expectedU
 	batch := s.store.NewBatch()
 	defer batch.Close()
 	for i, tombstone := range tombstones {
-		session := normalizeSessionOwnership(tombstone.Session)
+		session := normalizeSessionForReactivation(normalizeSessionOwnership(tombstone.Session))
 		currentSeq, err := s.readV3SessionSequence(session.ID)
 		if err != nil {
 			return err
@@ -547,9 +547,6 @@ func (s *SessionStore) ReactivateArchivedSessions(sessionIDs []string, expectedU
 			return err
 		}
 		if err := s.setSessionInBatch(batch, session); err != nil {
-			return err
-		}
-		if err := replaceSessionReviewAutoArchiveDueInBatch(batch, nil, &session); err != nil {
 			return err
 		}
 		if session.Lifecycle != nil {

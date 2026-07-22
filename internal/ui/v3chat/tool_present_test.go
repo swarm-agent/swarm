@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestToolPresentationReadUsesHumanSummaryWithoutRawPayload(t *testing.T) {
@@ -165,9 +166,17 @@ func TestTaskStreamV2UsesKeyedRowsWithoutRawJSONOrReports(t *testing.T) {
 		rendered.WriteByte('\n')
 	}
 	text := rendered.String()
-	for _, want := range []string{"subagent stream", "Map backend", "@explorer", "current: search", "Implement TUI", "@coder", "current: edit"} {
+	for _, want := range []string{"SUBAGENT STREAM", "Map backend", "@explorer", "current: search", "Implement TUI", "@coder", "current: edit"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("task rows missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Count(text, "┌") != 2 || strings.Count(text, "└") != 2 || strings.Count(text, "│") < 8 {
+		t.Fatalf("task rows are not rendered as two cards:\n%s", text)
+	}
+	for _, row := range rows {
+		if utf8.RuneCountInString(row.text) > 34 {
+			t.Fatalf("narrow task card row exceeds width: %q", row.text)
 		}
 	}
 	for _, hidden := range []string{"tool.task.stream.v2", "launch_key", "SECRET CHILD RESPONSE"} {

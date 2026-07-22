@@ -469,6 +469,14 @@ export function applyHydrate(
   const preHydrateSessions = { ...state.sessionsById }
   writeSyncScope(state, snapshot)
   applyHydrateSessionsAndProjections(state, snapshot, requested, preHydrateProjections, preHydrateSessions)
+  for (const sessionId of requested) {
+    if (hasOwn(snapshot.sessions_by_id, sessionId)
+      && !hasOwn(snapshot.tombstones_by_session, sessionId)
+      && hydrateProjectionIsFresh(snapshot, sessionId, preHydrateProjections)) {
+      delete state.tombstonesBySession[sessionId]
+      restoreSessionToSidebar(state, sessionId)
+    }
+  }
   applyTombstonesBySession(state, snapshot.tombstones_by_session)
   applyHydrateAuthoritativeResources(state, snapshot, requested, preHydrateProjections)
 

@@ -1,5 +1,8 @@
 import { requestJson } from '../../../app/api'
 import { dispatchDesktopV3Cache } from '../state/desktop-v3-cache-store'
+import { outboxRecordToCacheEvent } from '../state/desktop-v3-cache-wire'
+import { buildDesktopV3ChildCardHydrateInput, postDesktopV3SyncHydrate } from '../state/desktop-v3-sync-api'
+import type { V3RealtimeOutboxRecord } from '../state/desktop-v3-cache-types'
 
 export type ReviewWorktreeReason =
   | 'uncommitted_work'
@@ -66,14 +69,42 @@ export interface ReviewWorktreesResponse {
   complete: boolean
 }
 
-export async function unarchiveDesktopV3ReviewSessions(versions: Record<string, number>): Promise<{ ok: boolean; unarchived_session_ids: string[] }> {
+export interface UnarchiveReviewSessionsResponse {
+  ok: boolean
+  unarchived_session_ids: string[]
+  reactivated?: Record<string, V3RealtimeOutboxRecord>
+}
+
+export async function unarchiveDesktopV3ReviewSessions(versions: Record<string, number>): Promise<UnarchiveReviewSessionsResponse> {
   const sessionIds = Object.keys(versions)
   if (sessionIds.length === 0) throw new Error('Select at least one archived session')
-  return requestJson('/v3/sessions:unarchive', {
+  const response = await requestJson<UnarchiveReviewSessionsResponse>('/v3/sessions:unarchive', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_ids: sessionIds, expected_updated_at_by_id: versions }),
   })
+
+  const restoredIds = response.unarchived_session_ids ?? sessionIds
+  for (const sessionId of restoredIds) {
+    const outbox = response.reactivated?.[sessionId]
+    if (!outbox?.event || !outbox.projection) continue
+    dispatchDesktopV3Cache({ type: 'realtime.applyEvent', event: outboxRecordToCacheEvent(outbox) })
+  }
+  if (restoredIds.length === 0) return response
+
+  // Hydrate by canonical ids even after applying the committed reactivation
+  // events. This repairs any cache resources and subscription membership that
+  // were removed when the archive tombstones were observed.
+  try {
+    const hydrate = await postDesktopV3SyncHydrate(buildDesktopV3ChildCardHydrateInput(restoredIds, { activePlan: true, permissionSummary: true }))
+    dispatchDesktopV3Cache({ type: 'hydrate.apply', source: 'hydrate', scopeId: hydrate.scope_id, requestedSessionIds: restoredIds, snapshot: hydrate })
+  } catch (error) {
+    // The durable mutation already succeeded and its committed event was applied
+    // above. Do not report the unarchive itself as failed if supplemental cache
+    // hydration is temporarily unavailable; realtime can still converge it.
+    console.error('[desktop-v3] unarchive hydrate failed', error)
+  }
+  return response
 }
 
 export async function reviewDesktopV3Worktrees(input: {

@@ -12,6 +12,25 @@ import (
 const keySessionReviewAutoArchiveDuePrefix = "session_review_auto_archive_due/"
 
 const reviewAutoArchiveAfterMetadataKey = "review_auto_archive_after"
+const reviewDoneAtMetadataKey = "review_done_at"
+
+// normalizeSessionForReactivation clears review completion scheduling state. An
+// archived snapshot can retain an already-expired deadline; restoring it would
+// recreate the due index and allow the review scheduler to archive it again
+// before the user can continue the session.
+func normalizeSessionForReactivation(session SessionSnapshot) SessionSnapshot {
+	if len(session.Metadata) == 0 {
+		return session
+	}
+	metadata := cloneSessionMetadataMap(session.Metadata)
+	delete(metadata, reviewAutoArchiveAfterMetadataKey)
+	delete(metadata, reviewDoneAtMetadataKey)
+	if len(metadata) == 0 {
+		metadata = nil
+	}
+	session.Metadata = metadata
+	return session
+}
 
 // SessionReviewAutoArchiveDue is one bounded unit of due review-archive work.
 // The index key is ordered by DueAt so callers never need to scan sessions.

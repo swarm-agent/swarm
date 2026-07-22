@@ -314,14 +314,16 @@ func (s *Server) handleSessionsV3Unarchive(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusConflict, err)
 		return
 	}
+	reactivated := make(map[string]pebblestore.V3RealtimeOutboxRecord, len(ids))
 	if head, err := s.sessions.CurrentRealtimeOutboxRevision(); err == nil {
 		for _, id := range ids {
-			if record, found, recordErr := s.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(id, head); recordErr == nil && found {
+			if record, found, recordErr := s.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(id, head); recordErr == nil && found && record.Event.EventType == "session.reactivated" {
+				reactivated[id] = record
 				_ = s.publishCommittedV3RealtimeOutbox(record)
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unarchived_session_ids": ids})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unarchived_session_ids": ids, "reactivated": reactivated})
 }
 
 func searchSessionsV3ReviewWorktreePages(search func(pebblestore.V3SessionSearchOptions) (pebblestore.V3SessionSearchResult, error), options pebblestore.V3SessionSearchOptions, limit int) (pebblestore.V3SessionSearchResult, error) {
