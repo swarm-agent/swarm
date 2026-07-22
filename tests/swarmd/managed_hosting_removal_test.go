@@ -16,6 +16,26 @@ func TestRetiredSessionHostingResidueRemoved(t *testing.T) {
 	root := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", ".."))
 
 	for _, path := range []string{
+		".containerignore",
+		".dockerignore",
+		".github/workflows/check-container-base.yml",
+		".github/workflows/container-cve-scan.yml",
+		".swarmenv.example",
+		"deploy/container-mvp",
+		"pkg/devmode/containerimage.go",
+		"scripts/build-container-artifact.sh",
+		"scripts/check-container-publish.sh",
+		"scripts/rebuild-container-local.sh",
+		"scripts/rebuild-container.sh",
+		"swarmd/internal/containerprofiles",
+		"swarmd/internal/store/pebble/container_mount.go",
+		"swarmd/internal/store/pebble/container_runtime_normalize.go",
+		"swarmd/internal/store/pebble/swarm_container_profile_store.go",
+		"swarmd/internal/store/pebble/topology_container_sync.go",
+		"tests/pkg/devmode/containerimage_test.go",
+		"tests/swarmd/auth_footer_delete_e2e.sh",
+		"tests/swarmd/container_startup_e2e.sh",
+		"tests/swarmd/topology_e2e.sh",
 		"docs/checkpoints/sessions-api-v2-primary-local-containers.md",
 		"scripts/diagnose-remote-deploy-live-ui.mjs",
 		"scripts/diagnose-remote-deploy-live.sh",
@@ -70,13 +90,20 @@ func TestRetiredSessionHostingResidueRemoved(t *testing.T) {
 		"swarmd/internal/api/server_routes.go": {
 			"/v1/deploy/container",
 			"/v2/sessions",
+			"swarm.containers.",
 		},
-		"swarmd/internal/api/sessions_v3_primary.go": {
-			"swarm_v2_",
-			"swarm_routed_",
+		"swarmd/internal/api/server.go": {
+			"local_container_warning_dismissed",
 		},
-		"swarmd/internal/api/sessions_v3_primary_test.go": {
-			"SessionsV2",
+		"swarmd/internal/api/update_test.go": {
+			"rebuild-container",
+			"deploy/container-mvp",
+		},
+		"swarmd/internal/api/update.go": {
+			"pkg/devmode",
+		},
+		"swarmd/internal/store/pebble/ui_chat_settings_store.go": {
+			"local_container_warning_dismissed",
 		},
 		"swarmd/internal/store/pebble/keys.go": {
 			"deploy/container/",
@@ -87,14 +114,20 @@ func TestRetiredSessionHostingResidueRemoved(t *testing.T) {
 			"topology/session_route/",
 			"topology/session_route_by_account/",
 			"workspace/replication/",
-		},
-		"swarmd/internal/store/pebble/topology_container_sync.go": {
-			"WorkspaceReplicationLink",
-			"TopologyHostContainerSourceDeployContainer",
-			"TopologyRuntimeSourceDeployContainer",
+			"swarm/container_profile/",
+			"swarm/container_profile_by_account/",
+			"topology/host_container/",
+			"topology/host_container_by_account/",
+			"topology/attachment/",
+			"topology/attachment_by_account/",
 		},
 		"swarmd/internal/store/pebble/topology_store.go": {
 			"deployment_id",
+			"TopologyHostContainerRecord",
+			"TopologyAttachmentRecord",
+		},
+		"web/src/features/workspaces/launcher/services/workspace-placement.ts": {
+			"return 'Container'",
 		},
 		"web/src/features/desktop/chat/services/chat-routing.ts": {
 			"swarm_v2_",
@@ -108,6 +141,9 @@ func TestRetiredSessionHostingResidueRemoved(t *testing.T) {
 			"session_execution",
 		},
 	}
+	// V3 files and generic target/runtime/container vocabulary are intentionally not
+	// included here. Those remain protected current contracts; this guard only
+	// rejects the retired local-container implementation and its direct markers.
 	for path, forbiddenMarkers := range checks {
 		body, err := os.ReadFile(filepath.Join(root, path))
 		if err != nil {

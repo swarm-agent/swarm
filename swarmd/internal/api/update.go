@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"swarm-refactor/swarmtui/pkg/devmode"
 	"swarm-refactor/swarmtui/pkg/localupdate"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/identity"
@@ -679,11 +678,33 @@ func (s *Server) configuredDevRoot() (string, error) {
 	if devRoot == "" {
 		return "", errors.New("update dev requires dev_root in swarm.conf; run rebuild once from the source checkout")
 	}
-	resolved, err := devmode.ResolveRoot(devRoot)
+	resolved, err := resolveUpdateDevRoot(devRoot)
 	if err != nil {
 		return "", fmt.Errorf("resolve dev_root %q: %w", devRoot, err)
 	}
 	return resolved, nil
+}
+
+func resolveUpdateDevRoot(root string) (string, error) {
+	absRoot, err := filepath.Abs(strings.TrimSpace(root))
+	if err != nil {
+		return "", err
+	}
+	absRoot = filepath.Clean(absRoot)
+	for _, path := range []string{
+		filepath.Join(absRoot, "go.mod"),
+		filepath.Join(absRoot, "cmd", "swarmtui", "main.go"),
+		filepath.Join(absRoot, "swarmd", "go.mod"),
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			return "", fmt.Errorf("missing required path %s", path)
+		}
+		if info.IsDir() {
+			return "", fmt.Errorf("expected file at %s", path)
+		}
+	}
+	return absRoot, nil
 }
 
 func (s *Server) readPersistedUpdateJobStatus() (desktopUpdateJob, bool) {

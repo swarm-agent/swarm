@@ -143,4 +143,3 @@ func TestTopologyRuntimePlacementValidation(t *testing.T) {
 		t.Fatalf("expected missing account placement to inherit account key/id: ok=%t err=%v record=%+v", ok, err, backfilledAccount)
 	}
 }
-

@@ -694,4 +694,3 @@ func runtimePlacementMapValues(input map[string]pebblestore.TopologyRuntimePlace
 	}
 	return out
 }
-
