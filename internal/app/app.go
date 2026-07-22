@@ -5722,6 +5722,11 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 		a.queueReload(false)
 	case ui.WorkspaceModalActionSelect:
 		selectorMode := a.home.WorkspaceModalIntent() == "select"
+		if a.workspaceSwitchRunActive() {
+			a.home.SetWorkspaceModalLoading(false)
+			a.home.SetWorkspaceModalError("workspace switching is unavailable while a run is active")
+			return
+		}
 		previousWorkspacePath := a.activeWorkspacePath()
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
@@ -7249,6 +7254,11 @@ func (a *App) handleWorkspaceCommand(args []string) {
 			a.showWorkspaceSelector()
 			return
 		}
+		if a.workspaceSwitchRunActive() {
+			a.home.ClearCommandOverlay()
+			a.home.SetStatus("workspace switching is unavailable while a run is active")
+			return
+		}
 		target := strings.TrimSpace(strings.Join(args[1:], " "))
 		path, ok := a.findWorkspacePath(target)
 		if !ok {
@@ -8746,14 +8756,28 @@ func (a *App) homeInteractionActive() bool {
 		a.home.KeybindsModalVisible()
 }
 
-func (a *App) workspaceCycleHotkeyBlocked() bool {
+func (a *App) workspaceSwitchRunActive() bool {
 	if a.route == "v3chat" && a.v3Chat != nil {
 		if runtime := a.v3Chat.Runtime(); runtime != nil && runtime.Store() != nil {
-			if _, active := v3chat.SelectActiveRun(runtime.Store().Snapshot()); active {
-				a.v3Chat.SetStatus("workspace switching is unavailable while a run is active")
-				return true
-			}
+			_, active := v3chat.SelectActiveRun(runtime.Store().Snapshot())
+			return active
 		}
+	}
+	return a.route == "chat" && a.chat != nil && a.chat.RunInProgress()
+}
+
+func (a *App) workspaceCycleHotkeyBlocked() bool {
+	if a.workspaceSwitchRunActive() {
+		message := "workspace switching is unavailable while a run is active"
+		if a.v3Chat != nil {
+			a.v3Chat.SetStatus(message)
+		}
+		if a.chat != nil {
+			a.chat.SetStatus(message)
+		}
+		return true
+	}
+	if a.route == "v3chat" && a.v3Chat != nil {
 		return a.homeInteractionActive()
 	}
 	if a.route != "home" {

@@ -353,16 +353,39 @@ func (a *App) openV3ChatDraftAfterWorkspaceChange(previousWorkspacePath string) 
 	if workspacePath == "" || pathsEqual(previousWorkspacePath, workspacePath) {
 		return nil
 	}
-	routes := buildChatRoutesForHomeModel(a.homeModel, workspacePath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	resolve, err := a.api.WorkspaceCWDResolve(ctx, workspacePath)
+	if err != nil {
+		return err
+	}
+	routes := modelChatRoutesFromCWDResolve(resolve)
+	if len(routes) == 0 {
+		return errors.New("workspace has no V3 chat route")
+	}
+	a.homeModel = applyCWDResolverToHomeModel(a.homeModel, resolve)
 	a.homeModel.ChatRoutes = routes
 	a.selectedChatRouteID = a.resolveSelectedChatRouteIDForWorkspace(workspacePath, routes)
 	a.homeModel.SelectedChatRouteID = a.selectedChatRouteID
 	a.home.SetModel(a.homeModel)
 	a.home.SetSessionIntent(buildHomeSessionIntent(a.home, a.selectedChatRouteForWorkspace(workspacePath)))
-	if a.route != "v3chat" {
-		return nil
+	switch a.route {
+	case "v3chat":
+		return a.openChatSession("New Session", "")
+	case "chat":
+		if a.chat == nil {
+			return nil
+		}
+		if a.chat.RunInProgress() {
+			return errors.New("workspace switching is unavailable while a run is active")
+		}
+		if err := a.openChatSession("New Session", ""); err != nil {
+			return err
+		}
+		a.chat = nil
 	}
-	return a.openChatSession("New Session", "")
+	return nil
 }
 
 func (a *App) openExistingV3Chat(summary model.SessionSummary) error {
