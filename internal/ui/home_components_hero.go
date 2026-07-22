@@ -22,10 +22,6 @@ func (p *HomePage) drawHeroPanel(s tcell.Screen, rect Rect, centered bool) {
 	}
 
 	headline := "Talk to Swarm"
-	hint := "Type below to begin • / for commands • ↑ to revisit recents"
 	centerY := rect.Y + maxInt(0, (rect.H-2)/2)
 	DrawCenteredText(s, startX, centerY, innerW, p.theme.Text.Bold(true), headline)
-	if centerY+1 < rect.Y+rect.H {
-		DrawCenteredText(s, startX, centerY+1, innerW, p.theme.TextMuted, hint)
-	}
 }

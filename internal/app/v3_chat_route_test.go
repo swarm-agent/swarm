@@ -11,10 +11,93 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
+	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 	"swarm-refactor/swarmtui/internal/ui"
 	"swarm-refactor/swarmtui/internal/ui/v3chat"
 )
+
+func TestArchiveCommandIsSessionChatOnlyAndHasNoArguments(t *testing.T) {
+	for _, suggestion := range buildHomeCommandSuggestions(false) {
+		if suggestion.Command == archiveCommandUsage {
+			t.Fatal("home command suggestions expose /archive")
+		}
+	}
+	for _, suggestion := range buildChatCommandSuggestions(false) {
+		if suggestion.Command != archiveCommandUsage {
+			continue
+		}
+		if len(suggestion.QuickTips) != 0 {
+			t.Fatalf("archive quick tips = %#v, want no argument options", suggestion.QuickTips)
+		}
+		return
+	}
+	t.Fatal("session chat command suggestions do not include /archive")
+}
+
+func TestV3ArchiveCommandArchivesCurrentSessionAndReturnsHome(t *testing.T) {
+	requestSeen := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v3/sessions/session-archive/archive" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		requestSeen <- struct{}{}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": "session-archive", "archived": true})
+	}))
+	defer server.Close()
+
+	store := v3chat.NewStore()
+	store.Dispatch(v3chat.HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-archive"}}})
+	page := v3chat.NewPage(v3chat.NewRuntime(nil, store, nil), v3chat.PageStyles{})
+	home := ui.NewHomePage(model.EmptyHome())
+	home.SetCommandSuggestions(buildHomeCommandSuggestions(false))
+	app := &App{api: testAPIWithToken(server.URL), home: home, v3Chat: page, route: "v3chat"}
+	app.handleArchiveCommand(nil)
+
+	select {
+	case <-requestSeen:
+	case <-time.After(time.Second):
+		t.Fatal("archive request was not sent")
+	}
+	deadline := time.Now().Add(time.Second)
+	for app.route != "home" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if app.route != "home" || app.v3Chat != nil {
+		t.Fatalf("archive navigation = route %q page %p, want home with closed page", app.route, app.v3Chat)
+	}
+	if got := app.home.Status(); got != "session archived" {
+		t.Fatalf("archive status = %q", got)
+	}
+}
+
+func TestV3ArchiveCommandFailureKeepsChatOpen(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "archive blocked", http.StatusConflict)
+	}))
+	defer server.Close()
+
+	store := v3chat.NewStore()
+	store.Dispatch(v3chat.HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-archive"}}})
+	page := v3chat.NewPage(v3chat.NewRuntime(nil, store, nil), v3chat.PageStyles{})
+	home := ui.NewHomePage(model.EmptyHome())
+	home.SetCommandSuggestions(buildHomeCommandSuggestions(false))
+	app := &App{api: testAPIWithToken(server.URL), home: home, v3Chat: page, route: "v3chat"}
+	app.handleArchiveCommand(nil)
+
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(page.Status(), "/archive failed:") && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if app.route != "v3chat" || app.v3Chat != page {
+		t.Fatalf("failed archive navigation = route %q page %p, want current chat %p", app.route, app.v3Chat, page)
+	}
+	if got := page.Status(); !strings.Contains(got, "/archive failed:") {
+		t.Fatalf("failed archive status = %q", got)
+	}
+}
 
 func TestCompactCommandIsSessionChatOnlyAndHasNoArguments(t *testing.T) {
 	for _, suggestion := range buildHomeCommandSuggestions(false) {

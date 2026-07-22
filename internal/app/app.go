@@ -91,10 +91,17 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 }
 
 func buildChatCommandSuggestions(devMode bool) []ui.CommandSuggestion {
-	items := append(buildHomeCommandSuggestions(devMode), ui.CommandSuggestion{
-		Command: compactCommandUsage,
-		Hint:    "Compact current chat context",
-	})
+	items := append([]ui.CommandSuggestion(nil), buildHomeCommandSuggestions(devMode)...)
+	items = append(items,
+		ui.CommandSuggestion{
+			Command: archiveCommandUsage,
+			Hint:    "Archive this session and return home",
+		},
+		ui.CommandSuggestion{
+			Command: compactCommandUsage,
+			Hint:    "Compact current chat context",
+		},
+	)
 	sort.SliceStable(items, func(i, j int) bool {
 		return strings.ToLower(items[i].Command) < strings.ToLower(items[j].Command)
 	})
@@ -2137,6 +2144,8 @@ func (a *App) executeCommand(raw string) {
 		a.handleNewCommand()
 	case "plan":
 		a.handlePlanCommand(args)
+	case "archive":
+		a.handleArchiveCommand(args)
 	case "compact":
 		if (a.route == "chat" && a.chat != nil) || (a.route == "v3chat" && a.v3Chat != nil) {
 			a.handleCompactCommand(args)
@@ -2643,6 +2652,71 @@ func (a *App) handlePlanCommand(args []string) {
 		a.home.SetStatus("usage: /plan [show|recover|exit|list|use|new]")
 		a.chat.AppendSystemMessage("usage:\n/plan\n/plan show\n/plan recover\n/plan exit [title]\n/plan list [limit]\n/plan use <plan_id>\n/plan new [title]")
 	}
+}
+
+func (a *App) handleArchiveCommand(args []string) {
+	a.home.ClearCommandOverlay()
+	if len(args) != 0 {
+		a.home.SetStatus("usage: " + archiveCommandUsage)
+		return
+	}
+	if a.api == nil {
+		a.home.SetStatus("/archive failed: api client is not configured")
+		return
+	}
+	var sessionID string
+	v3Page, legacyPage := a.v3Chat, a.chat
+	switch {
+	case a.route == "v3chat" && v3Page != nil && v3Page.Runtime() != nil && v3Page.Runtime().Store() != nil:
+		state := v3Page.Runtime().Store().Snapshot()
+		if _, active := v3chat.SelectActiveRun(state); active {
+			a.home.SetStatus("/archive unavailable while a run is active")
+			return
+		}
+		sessionID = strings.TrimSpace(state.Session.ID)
+		v3Page.SetStatus("archiving session…")
+	case a.route == "chat" && legacyPage != nil:
+		if legacyPage.RunInProgress() {
+			a.home.SetStatus("/archive unavailable while a run is active")
+			return
+		}
+		sessionID = strings.TrimSpace(legacyPage.SessionID())
+		legacyPage.SetStatus("archiving session…")
+	default:
+		a.home.SetStatus("unknown command: " + archiveCommandUsage)
+		return
+	}
+	if sessionID == "" {
+		a.home.SetStatus("/archive failed: session id is unavailable")
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		if _, err := a.api.ArchiveSessionV3(ctx, sessionID); err != nil {
+			message := fmt.Sprintf("/archive failed: %v", err)
+			switch {
+			case a.route == "v3chat" && a.v3Chat == v3Page:
+				v3Page.SetStatus(message)
+				a.requestV3ChatRender()
+			case a.route == "chat" && a.chat == legacyPage:
+				legacyPage.SetStatus(message)
+				a.requestChatRender()
+			}
+			return
+		}
+		switch {
+		case a.route == "v3chat" && a.v3Chat == v3Page:
+			a.closeV3Chat()
+		case a.route == "chat" && a.chat == legacyPage:
+			a.chat = nil
+		default:
+			return
+		}
+		a.route = "home"
+		a.home.SetStatus("session archived")
+		a.requestV3ChatRender()
+	}()
 }
 
 func (a *App) handleCompactCommand(args []string) {

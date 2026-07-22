@@ -825,6 +825,12 @@ type SessionV3CompactOptions struct {
 	RunID           string
 }
 
+type SessionV3ArchiveResult struct {
+	OK        bool   `json:"ok"`
+	SessionID string `json:"session_id"`
+	Archived  bool   `json:"archived"`
+}
+
 type SessionV3CompactResult struct {
 	OK             bool                        `json:"ok"`
 	SessionID      string                      `json:"session_id,omitempty"`
@@ -3243,6 +3249,22 @@ func (c *API) ReplaySessionV3Events(ctx context.Context, sessionID string, after
 		replay.Session = &marked
 	}
 	return replay, nil
+}
+
+func (c *API) ArchiveSessionV3(ctx context.Context, sessionID string) (SessionV3ArchiveResult, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return SessionV3ArchiveResult{}, errors.New("session id is required")
+	}
+	var resp SessionV3ArchiveResult
+	if err := c.postJSON(ctx, sessionV3PrimaryPath(sessionID, "archive"), nil, &resp, true); err != nil {
+		return SessionV3ArchiveResult{}, err
+	}
+	resp.SessionID = strings.TrimSpace(resp.SessionID)
+	if !resp.OK || !resp.Archived {
+		return SessionV3ArchiveResult{}, errors.New("session archive did not complete")
+	}
+	return resp, nil
 }
 
 func (c *API) CompactSessionV3(ctx context.Context, sessionID string, options SessionV3CompactOptions) (SessionV3CompactResult, error) {

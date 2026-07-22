@@ -303,6 +303,18 @@ func (p *Page) SetStatus(status string) {
 	p.mu.Unlock()
 }
 
+func (p *Page) Status() string {
+	if p == nil {
+		return ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.errText != "" {
+		return p.errText
+	}
+	return p.status
+}
+
 func (p *Page) InputValue() string {
 	if p == nil {
 		return ""

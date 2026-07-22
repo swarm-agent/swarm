@@ -404,8 +404,6 @@ func (p *HomePage) drawTipsRow(s tcell.Screen, rect Rect, centered bool) {
 	if rect.H < 1 {
 		return
 	}
-	hint := strings.TrimSpace(p.model.HintLine)
-	tip := strings.TrimSpace(p.model.TipLine)
 	modeKeyLabel := "Shift+Tab"
 	if p.keybinds != nil {
 		if label := strings.TrimSpace(p.keybinds.Label(KeybindChatCycleMode)); label != "" {
@@ -423,21 +421,7 @@ func (p *HomePage) drawTipsRow(s tcell.Screen, rect Rect, centered bool) {
 		}
 	}
 	sessionsHint := fmt.Sprintf("%s sessions", sessionsKeyLabel)
-	line := ""
-	switch {
-	case hint != "" && tip != "":
-		line = fmt.Sprintf("%s • %s", hint, tip)
-	case hint != "":
-		line = hint
-	case tip != "":
-		line = tip
-	default:
-		line = modeHint
-	}
-	if !strings.Contains(strings.ToLower(line), "toggles plan") {
-		line = fmt.Sprintf("%s • %s", line, modeHint)
-	}
-	line = fmt.Sprintf("%s • %s", line, sessionsHint)
+	line := fmt.Sprintf("%s • %s • / for commands", modeHint, sessionsHint)
 	if centered {
 		DrawCenteredText(s, rect.X, rect.Y, rect.W, p.theme.TextMuted, line)
 		return

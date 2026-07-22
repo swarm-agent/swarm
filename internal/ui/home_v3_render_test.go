@@ -36,12 +36,12 @@ func TestV3HomepageDrawsSimpleLaunchPromptOnCanonicalHomePage(t *testing.T) {
 	page.Draw(screen)
 
 	text := dumpHomeTestScreen(screen, 100, 30)
-	for _, want := range []string{"Talk to Swarm", "Type below to begin"} {
+	for _, want := range []string{"Talk to Swarm", "Ctrl+X sessions • / for commands"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("homepage missing %q:\n%s", want, text)
 		}
 	}
-	for _, unwanted := range []string{"Start a session", "Ready for a new V3 session", "/agents to personalize your profiles", "SWARM HOME", "Center hive. Start fast.", "swarm://"} {
+	for _, unwanted := range []string{"Type below to begin", "↑ to revisit recents", "Start a session", "Ready for a new V3 session", "/agents to personalize your profiles", "SWARM HOME", "Center hive. Start fast.", "swarm://"} {
 		if strings.Contains(text, unwanted) {
 			t.Fatalf("homepage retained obsolete hero treatment %q:\n%s", unwanted, text)
 		}
