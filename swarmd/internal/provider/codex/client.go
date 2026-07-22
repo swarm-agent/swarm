@@ -1243,10 +1243,15 @@ func shouldRetryStartedWebsocketStream(err error) bool {
 	}
 	var closeErr *websocket.CloseError
 	if errors.As(err, &closeErr) {
-		return closeErr.Code == websocket.CloseNormalClosure || closeErr.Code == websocket.CloseAbnormalClosure
+		return closeErr.Code == websocket.CloseNormalClosure ||
+			closeErr.Code == websocket.CloseAbnormalClosure ||
+			(closeErr.Code == websocket.CloseInternalServerErr && strings.Contains(strings.ToLower(closeErr.Text), "keepalive ping timeout"))
 	}
 	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "close 1000") || strings.Contains(message, "close 1006") || strings.Contains(message, "unexpected eof")
+	return strings.Contains(message, "close 1000") ||
+		strings.Contains(message, "close 1006") ||
+		strings.Contains(message, "unexpected eof") ||
+		(strings.Contains(message, "close 1011") && strings.Contains(message, "keepalive ping timeout"))
 }
 
 func mergeRetriedStreamText(current, attempt string) (string, string) {
@@ -1364,6 +1369,7 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 	if err != nil {
 		return nil, 0, err
 	}
+	initialConnection := !websocketReused
 	if conn == nil {
 		var failureBody map[string]any
 		var status int
@@ -1397,13 +1403,15 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 	}
 
 	firstFrameTimeout := c.effectiveWebsocketFirstFrameTimeout()
-	writeMessage := func(activeConn *websocket.Conn, encoded []byte) error {
+	writeMessage := func(activeConn *websocket.Conn, encoded []byte, initialConnection bool) error {
 		if activeConn == nil {
 			return errors.New("websocket connection is unavailable")
 		}
 		activeConn.SetReadLimit(maxCodexResponseBodyBytes)
-		if err := activeConn.SetWriteDeadline(time.Now().Add(firstFrameTimeout)); err != nil {
-			return fmt.Errorf("set websocket request deadline: %w", err)
+		if initialConnection {
+			if err := activeConn.SetWriteDeadline(time.Now().Add(firstFrameTimeout)); err != nil {
+				return fmt.Errorf("set initial websocket request deadline: %w", err)
+			}
 		}
 		if err := activeConn.WriteMessage(websocket.TextMessage, encoded); err != nil {
 			if ctxErr := contextErr(ctx); ctxErr != nil {
@@ -1411,14 +1419,16 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 			}
 			return fmt.Errorf("send websocket request: %w", err)
 		}
-		if err := activeConn.SetWriteDeadline(time.Time{}); err != nil {
-			return fmt.Errorf("clear websocket request deadline: %w", err)
+		if initialConnection {
+			if err := activeConn.SetWriteDeadline(time.Time{}); err != nil {
+				return fmt.Errorf("clear initial websocket request deadline: %w", err)
+			}
 		}
 		return nil
 	}
 	providerdiagnostics.RecordContext(ctx, codexOutboundShapeEvent("websocket_request_shape", transportContext, sendPayload, asString(sendPayload["previous_response_id"]) != "", websocketReused))
 	providerdiagnostics.LogWebsocketRequestContext(ctx, "codex", "responses.websocket", wsURL, headers, websocketPayload)
-	if err := writeMessage(conn, websocketPayload); err != nil {
+	if err := writeMessage(conn, websocketPayload, initialConnection); err != nil {
 		if ctxErr := contextErr(ctx); ctxErr != nil {
 			if session != nil {
 				closeCachedWebsocketSessionLocked(session)
@@ -1444,13 +1454,14 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 				return failureBody, status, nil
 			}
 			session.conn = conn
+			initialConnection = true
 			sendPayload = cloneMapAny(requestPayload)
 			websocketPayload, err = buildCodexWebsocketPayload(sendPayload)
 			if err != nil {
 				closeCachedWebsocketSessionLocked(session)
 				return nil, 0, err
 			}
-			if retryErr := writeMessage(conn, websocketPayload); retryErr != nil {
+			if retryErr := writeMessage(conn, websocketPayload, initialConnection); retryErr != nil {
 				closeCachedWebsocketSessionLocked(session)
 				return nil, 0, retryErr
 			}
@@ -1462,13 +1473,15 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 	state := &streamDecodeState{}
 	stopCancelWatch := watchCodexWebsocketCancel(ctx, conn)
 	defer stopCancelWatch()
-	if err := conn.SetReadDeadline(time.Now().Add(firstFrameTimeout)); err != nil {
-		if session != nil {
-			closeCachedWebsocketSessionLocked(session)
+	if initialConnection {
+		if err := conn.SetReadDeadline(time.Now().Add(firstFrameTimeout)); err != nil {
+			if session != nil {
+				closeCachedWebsocketSessionLocked(session)
+			}
+			return nil, 0, fmt.Errorf("set initial websocket first-frame deadline: %w", err)
 		}
-		return nil, 0, fmt.Errorf("set websocket first-frame deadline: %w", err)
 	}
-	waitingForFirstFrame := true
+	waitingForFirstFrame := initialConnection
 	for {
 		messageType, message, err := conn.ReadMessage()
 		if err != nil {

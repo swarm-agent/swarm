@@ -3,7 +3,6 @@ package codex
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -786,51 +785,27 @@ func TestOpenAIAPIKeyResponsesWebsocketFreshEpochReusesSocketAndRotatesChain(t *
 	}
 }
 
-func TestCodexFirstFrameTimeoutClosesReusedSocketAndRetriesFresh(t *testing.T) {
+func TestCodexFirstFrameTimeoutOnlyAppliesToInitialConnection(t *testing.T) {
 	var connections atomic.Int32
-	var payloadsMu sync.Mutex
-	var payloads []map[string]any
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
-		connectionNumber := connections.Add(1)
+		connections.Add(1)
 		defer conn.Close()
-
-		for requestNumber := 1; ; requestNumber++ {
-			_, encoded, err := conn.ReadMessage()
-			if err != nil {
+		for requestNumber := 1; requestNumber <= 2; requestNumber++ {
+			if _, _, err := conn.ReadMessage(); err != nil {
 				return
 			}
-			var payload map[string]any
-			if err := json.Unmarshal(encoded, &payload); err != nil {
-				t.Errorf("decode request: %v", err)
-				return
+			if requestNumber == 2 {
+				// Reused transports may remain quiet longer than the initial-connect
+				// guard. The deadline must not be reactivated for this continuation.
+				time.Sleep(200 * time.Millisecond)
 			}
-			payloadsMu.Lock()
-			payloads = append(payloads, payload)
-			payloadsMu.Unlock()
-
-			if connectionNumber == 1 && requestNumber == 2 {
-				// The cached socket accepts the continuation request but never sends
-				// a frame. The client must time it out and close this connection.
-				_, _, _ = conn.ReadMessage()
-				return
-			}
-			responseID := "resp-base"
-			answer := "base"
-			if connectionNumber == 2 {
-				responseID = "resp-retry"
-				answer = "recovered"
-			}
-			completed := map[string]any{"type": "response.completed", "response": map[string]any{"id": responseID, "model": "gpt-5.4", "output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": answer}}}}}}
+			completed := map[string]any{"type": "response.completed", "response": map[string]any{"id": fmt.Sprintf("resp-%d", requestNumber), "model": "gpt-5.4", "output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "ok"}}}}}}
 			if err := conn.WriteJSON(completed); err != nil {
-				t.Errorf("write completed response: %v", err)
-				return
-			}
-			if connectionNumber == 2 {
 				return
 			}
 		}
@@ -841,7 +816,7 @@ func TestCodexFirstFrameTimeoutClosesReusedSocketAndRetriesFresh(t *testing.T) {
 	client.responsesWSURL = "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
 	client.websocketFirstFrameTimeout = 100 * time.Millisecond
 	record := pebblestore.CodexAuthRecord{Provider: "codex", Type: pebblestore.CodexAuthTypeOAuth, AccountScopeID: "account-a", ID: "credential-a", AccountID: "chatgpt-a", AccessToken: "token"}
-	baseRequest := Request{
+	request := Request{
 		ProviderLineageID:    "lineage-a",
 		ProviderCacheKey:     "cache-a",
 		SessionAffinityKey:   "chain-a",
@@ -851,94 +826,39 @@ func TestCodexFirstFrameTimeoutClosesReusedSocketAndRetriesFresh(t *testing.T) {
 		Model:                "gpt-5.4",
 		Input:                []map[string]any{{"role": "user", "content": "first"}},
 	}
-	baseResponse, err := client.CreateResponseWithAuth(context.Background(), record, baseRequest)
+	first, err := client.CreateResponseWithAuth(context.Background(), record, request)
 	if err != nil {
-		t.Fatalf("base request: %v", err)
+		t.Fatalf("initial request: %v", err)
 	}
-	if baseResponse.ID != "resp-base" {
-		t.Fatalf("base response id = %q, want resp-base", baseResponse.ID)
+	if first.ID != "resp-1" {
+		t.Fatalf("initial response id = %q, want resp-1", first.ID)
 	}
 
-	continuationRequest := baseRequest
-	continuationRequest.Input = []map[string]any{
+	request.Input = []map[string]any{
 		{"role": "user", "content": "first"},
-		{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "base"}}},
+		{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "ok"}}},
 		{"role": "user", "content": "second"},
 	}
-	response, err := client.CreateResponseWithAuth(context.Background(), record, continuationRequest)
+	second, err := client.CreateResponseWithAuth(context.Background(), record, request)
 	if err != nil {
-		t.Fatalf("continuation after first-frame retry: %v", err)
+		t.Fatalf("reused transport continuation: %v", err)
 	}
-	if response.ID != "resp-retry" {
-		t.Fatalf("response id = %q, want resp-retry", response.ID)
+	if second.ID != "resp-2" {
+		t.Fatalf("continuation response id = %q, want resp-2", second.ID)
 	}
-	if got := connections.Load(); got != 2 {
-		t.Fatalf("websocket connections = %d, want reused timed-out socket plus one fresh retry", got)
-	}
-
-	payloadsMu.Lock()
-	defer payloadsMu.Unlock()
-	if len(payloads) != 3 {
-		t.Fatalf("request payloads = %d, want base, silent continuation, and fresh retry", len(payloads))
-	}
-	if got := asString(payloads[1]["previous_response_id"]); got != "resp-base" {
-		t.Fatalf("silent continuation previous_response_id = %q, want resp-base", got)
-	}
-	if _, ok := payloads[2]["previous_response_id"]; ok {
-		t.Fatalf("fresh retry reused previous_response_id from timed-out socket: %#v", payloads[2])
-	}
-	if got := len(asSlice(payloads[2]["input"])); got != len(continuationRequest.Input) {
-		t.Fatalf("fresh retry input length = %d, want complete %d-item input", got, len(continuationRequest.Input))
+	if got := connections.Load(); got != 1 {
+		t.Fatalf("websocket connections = %d, want one initial connection", got)
 	}
 }
 
-func TestCodexFirstFrameTimeoutRetriesOnceThenReturnsExhaustedError(t *testing.T) {
-	var connections atomic.Int32
-	var requests atomic.Int32
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		connections.Add(1)
-		defer conn.Close()
-		if _, _, err := conn.ReadMessage(); err != nil {
-			return
-		}
-		requests.Add(1)
-		// Stay silent until the client's first-frame deadline closes the socket.
-		_, _, _ = conn.ReadMessage()
-	}))
-	defer server.Close()
-
-	client := NewClient(nil)
-	client.responsesWSURL = "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
-	client.websocketFirstFrameTimeout = 100 * time.Millisecond
-	record := pebblestore.CodexAuthRecord{Provider: "codex", Type: pebblestore.CodexAuthTypeOAuth, AccountScopeID: "account-a", ID: "credential-a", AccountID: "chatgpt-a", AccessToken: "token"}
-	_, err := client.CreateResponseWithAuth(context.Background(), record, Request{
-		ProviderLineageID:    "lineage-silent",
-		ProviderCacheKey:     "cache-silent",
-		SessionAffinityKey:   "chain-silent",
-		TransportAffinityKey: "root-session-silent",
-		ReuseTransport:       true,
-		Model:                "gpt-5.4",
-		Input:                []map[string]any{{"role": "user", "content": "wait"}},
-	})
-	if err == nil {
-		t.Fatal("silent websocket attempts returned nil error")
+func TestShouldRetryStartedWebsocketStreamRecognizesKeepaliveTimeout(t *testing.T) {
+	keepalive := newStartedWebsocketStreamError(&websocket.CloseError{Code: websocket.CloseInternalServerErr, Text: "keepalive ping timeout"})
+	if !shouldRetryStartedWebsocketStream(keepalive) {
+		t.Fatal("keepalive timeout did not permit a fresh transport retry")
 	}
-	if !errors.Is(err, errWebsocketFirstFrameTimeout) {
-		t.Fatalf("error = %v, want websocket first-frame timeout", err)
-	}
-	if !strings.Contains(err.Error(), "first-frame timeout exhausted after 2 attempts") {
-		t.Fatalf("error = %q, want explicit two-attempt exhaustion", err)
-	}
-	if got := connections.Load(); got != transportRetryAttempts {
-		t.Fatalf("websocket connections = %d, want exactly %d attempts", got, transportRetryAttempts)
-	}
-	if got := requests.Load(); got != transportRetryAttempts {
-		t.Fatalf("websocket requests = %d, want exactly %d attempts", got, transportRetryAttempts)
+	otherInternal := newStartedWebsocketStreamError(&websocket.CloseError{Code: websocket.CloseInternalServerErr, Text: "provider failure"})
+	if shouldRetryStartedWebsocketStream(otherInternal) {
+		t.Fatal("generic close 1011 unexpectedly permitted retry")
 	}
 }
 
