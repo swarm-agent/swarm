@@ -2402,44 +2402,134 @@ func (p *Page) cachedWrap(key, text string, width int) []string {
 func composerLayout(text string, cursor, width int) ([]string, int, int) {
 	const firstPrefix = "> "
 	const continuationPrefix = "  "
+	type visualLine struct {
+		text                   string
+		prefixWidth            int
+		sourceStart, sourceEnd int
+		nextSource             int
+		logicalEnd             int
+	}
+
 	width = maxInt(1, width)
 	runes := []rune(strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n"))
 	cursor = maxInt(0, minInt(cursor, len(runes)))
-	lines := []string{firstPrefix}
-	line := []rune(firstPrefix)
-	cursorLine, cursorCol := 0, len(line)
+	visualLines := make([]visualLine, 0, 4)
+	firstLine := true
+	segmentStart := 0
 
-	startContinuation := func() {
-		lines = append(lines, continuationPrefix)
-		line = []rune(continuationPrefix)
-	}
-	commitLine := func() {
-		lines[len(lines)-1] = string(line)
-	}
-	for i, r := range runes {
-		if r != '\n' && len(line) >= width {
-			commitLine()
-			startContinuation()
+	for segmentStart <= len(runes) {
+		segmentEnd := segmentStart
+		for segmentEnd < len(runes) && runes[segmentEnd] != '\n' {
+			segmentEnd++
 		}
-		if i == cursor {
-			cursorLine, cursorCol = len(lines)-1, len(line)
+		position := segmentStart
+		if position == segmentEnd {
+			prefix := continuationPrefix
+			if firstLine {
+				prefix = firstPrefix
+			}
+			visualLines = append(visualLines, visualLine{
+				text:        prefix,
+				prefixWidth: len([]rune(prefix)),
+				sourceStart: position,
+				sourceEnd:   position,
+				nextSource:  position,
+				logicalEnd:  segmentEnd,
+			})
+			firstLine = false
+		} else {
+			for position < segmentEnd {
+				prefix := continuationPrefix
+				if firstLine {
+					prefix = firstPrefix
+				}
+				prefixWidth := len([]rune(prefix))
+				available := maxInt(1, width-prefixWidth)
+				headEnd, nextSource := composerWordWrapBreak(runes, position, segmentEnd, available)
+				visualLines = append(visualLines, visualLine{
+					text:        prefix + string(runes[position:headEnd]),
+					prefixWidth: prefixWidth,
+					sourceStart: position,
+					sourceEnd:   headEnd,
+					nextSource:  nextSource,
+					logicalEnd:  segmentEnd,
+				})
+				position = nextSource
+				firstLine = false
+			}
 		}
-		if r == '\n' {
-			commitLine()
-			startContinuation()
-			continue
+		if segmentEnd == len(runes) {
+			break
 		}
-		line = append(line, r)
+		segmentStart = segmentEnd + 1
 	}
-	if len(line) >= width {
-		commitLine()
-		startContinuation()
+
+	// Keep the insertion point visible when the final row exactly fills the
+	// composer width, matching terminal behavior at the rightmost cell.
+	terminalCursorLine := -1
+	if len(visualLines) > 0 && len([]rune(visualLines[len(visualLines)-1].text)) >= width {
+		terminalCursorLine = len(visualLines)
+		visualLines = append(visualLines, visualLine{
+			text:        continuationPrefix,
+			prefixWidth: len([]rune(continuationPrefix)),
+			sourceStart: len(runes),
+			sourceEnd:   len(runes),
+			nextSource:  len(runes),
+			logicalEnd:  len(runes),
+		})
 	}
-	if cursor == len(runes) {
-		cursorLine, cursorCol = len(lines)-1, len(line)
+
+	lines := make([]string, len(visualLines))
+	for i := range visualLines {
+		lines[i] = visualLines[i].text
 	}
-	commitLine()
-	return lines, cursorLine, cursorCol
+	if terminalCursorLine >= 0 && cursor == len(runes) {
+		return lines, terminalCursorLine, visualLines[terminalCursorLine].prefixWidth
+	}
+	for i, line := range visualLines {
+		if cursor >= line.sourceStart && cursor < line.sourceEnd {
+			return lines, i, line.prefixWidth + cursor - line.sourceStart
+		}
+		if cursor == line.sourceEnd {
+			if line.sourceEnd < line.logicalEnd && line.nextSource == line.sourceEnd && i+1 < len(visualLines) {
+				return lines, i + 1, visualLines[i+1].prefixWidth
+			}
+			return lines, i, line.prefixWidth + line.sourceEnd - line.sourceStart
+		}
+		if cursor > line.sourceEnd && cursor <= line.nextSource && i+1 < len(visualLines) {
+			return lines, i + 1, visualLines[i+1].prefixWidth
+		}
+	}
+	last := len(visualLines) - 1
+	return lines, last, len([]rune(lines[last]))
+}
+
+func composerWordWrapBreak(runes []rune, start, end, width int) (headEnd, nextStart int) {
+	if end-start <= width {
+		return end, end
+	}
+	limit := start + width
+	space := -1
+	for i := start; i < limit; i++ {
+		if runes[i] == ' ' || runes[i] == '\t' {
+			space = i
+		}
+	}
+	if space < 0 {
+		return limit, limit
+	}
+	headEnd = space
+	for headEnd > start && (runes[headEnd-1] == ' ' || runes[headEnd-1] == '\t') {
+		headEnd--
+	}
+	if headEnd == start {
+		return limit, limit
+	}
+	nextStart = space + 1
+	for nextStart < end && (runes[nextStart] == ' ' || runes[nextStart] == '\t') {
+		nextStart++
+	}
+	return headEnd, nextStart
 }
 
 func inputVisibleWindow(totalLines, visibleHeight, cursorLine int) int {

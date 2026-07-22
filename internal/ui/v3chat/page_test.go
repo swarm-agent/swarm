@@ -3,6 +3,7 @@ package v3chat
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1128,6 +1129,32 @@ func TestPageComposerLargePasteFlushesInBatchesAtCursor(t *testing.T) {
 	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, '!', tcell.ModNone))
 	if got := page.InputValue(); got != paste+"!after" {
 		t.Fatalf("cursor after large paste = %q, want insertion before suffix", got)
+	}
+}
+
+func TestComposerLayoutMovesWrappingWordToNextLine(t *testing.T) {
+	text := "alpha beta"
+	lines, cursorLine, cursorCol := composerLayout(text, len([]rune(text)), 9)
+
+	want := []string{"> alpha", "  beta"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("composer lines = %#v, want %#v", lines, want)
+	}
+	if cursorLine != 1 || cursorCol != len([]rune(want[1])) {
+		t.Fatalf("composer cursor = %d:%d, want 1:%d", cursorLine, cursorCol, len([]rune(want[1])))
+	}
+}
+
+func TestComposerLayoutPreservesNewlinesAndSplitsOnlyOverlongWords(t *testing.T) {
+	text := "123456789\nok"
+	lines, cursorLine, cursorCol := composerLayout(text, len([]rune(text)), 8)
+
+	want := []string{"> 123456", "  789", "  ok"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("composer lines = %#v, want %#v", lines, want)
+	}
+	if cursorLine != 2 || cursorCol != len([]rune(want[2])) {
+		t.Fatalf("composer cursor = %d:%d, want 2:%d", cursorLine, cursorCol, len([]rune(want[2])))
 	}
 }
 
