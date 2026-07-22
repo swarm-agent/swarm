@@ -1217,10 +1217,11 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if title == "" {
 		title = "New V3 session"
 	}
+	workspaceName := strings.TrimSpace(state.Session.WorkspaceName)
 	_, stale, reason := SelectReconnect(state)
 	transcriptTop := 0
 	if showHeader {
-		transcriptTop = drawCanonicalHeader(screen, width, height, styles, title, SelectPlanHeader(state))
+		transcriptTop = drawCanonicalHeader(screen, width, height, styles, title, workspaceName, SelectPlanHeader(state))
 	}
 	runStatus, hasRunStatus := BuildRunStatus(state, now)
 	statusLine := ""
@@ -1529,7 +1530,7 @@ func drawConversationStatus(screen tcell.Screen, width, y int, styles PageStyles
 	drawText(screen, 0, y, minInt(width, utf8.RuneCountInString(label)), styleWithForeground(styles.Background, style).Bold(status.Active), label)
 }
 
-func drawCanonicalHeader(screen tcell.Screen, width, height int, styles PageStyles, title string, plan PlanHeader) int {
+func drawCanonicalHeader(screen tcell.Screen, width, height int, styles PageStyles, title, workspaceName string, plan PlanHeader) int {
 	if width <= 0 || height <= 0 {
 		return 0
 	}
@@ -1539,6 +1540,12 @@ func drawCanonicalHeader(screen tcell.Screen, width, height int, styles PageStyl
 	accent := styleWithForeground(panel, styles.Accent).Bold(true)
 
 	spans := []renderSpan{{text: strings.TrimSpace(title), style: text}}
+	if workspaceName = strings.TrimSpace(workspaceName); workspaceName != "" {
+		spans = append(spans,
+			renderSpan{text: "  /  ", style: muted},
+			renderSpan{text: workspaceName, style: muted},
+		)
+	}
 	if plan.Active {
 		spans = append(spans, renderSpan{text: "  •  ", style: muted}, renderSpan{text: plan.StatusLabel, style: accent})
 		if checkpoint := strings.TrimSpace(plan.CheckpointLabel); checkpoint != "" {

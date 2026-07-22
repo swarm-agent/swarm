@@ -34,6 +34,7 @@ type Session struct {
 	ID            string
 	Title         string
 	WorkspacePath string
+	WorkspaceName string
 	Mode          string
 	TargetSwarmID string
 	CreatedAt     int64
@@ -390,6 +391,7 @@ func reducePrimedNewSession(create client.SessionCreateOptions) State {
 	state.Session = Session{
 		Title:         strings.TrimSpace(create.Title),
 		WorkspacePath: strings.TrimSpace(firstNonEmpty(create.WorkspacePath, create.CWDPath)),
+		WorkspaceName: strings.TrimSpace(create.WorkspaceName),
 		Mode:          strings.ToLower(strings.TrimSpace(create.Mode)),
 	}
 	state.Model.Preference = normalizeModelPreference(create.Preference)
@@ -731,6 +733,7 @@ func sessionFromClient(value client.SessionSummary, fallbackID string) Session {
 		ID:            firstNonEmpty(value.ID, fallbackID),
 		Title:         strings.TrimSpace(value.Title),
 		WorkspacePath: strings.TrimSpace(value.WorkspacePath),
+		WorkspaceName: strings.TrimSpace(value.WorkspaceName),
 		Mode:          strings.TrimSpace(value.Mode),
 		TargetSwarmID: metadataString(value.Metadata, "swarm_v3_runtime_swarm_id"),
 		CreatedAt:     value.CreatedAt,
