@@ -484,10 +484,6 @@ export function PermissionsSettingsPage() {
                 <option value="deny">Do not start the wave</option>
               </select>
             </label>
-            <label className="flex min-w-0 items-center gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 sm:col-span-2">
-              <input type="checkbox" checked={subagentPolicy.require_write_isolation} onChange={(event) => setSubagentPolicy((value) => ({ ...value, require_write_isolation: event.target.checked }))} />
-              <span className="min-w-0"><span className="block text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Require write isolation</span><span className="mt-1 block text-xs text-[var(--app-text-muted)]">Coder children use isolated managed worktrees.</span></span>
-            </label>
           </div>
           <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-3 text-xs leading-5 text-[var(--app-text-muted)]">
             <div><span className="font-medium text-[var(--app-text)]">Automatic launches per run:</span> The total number of child agents a parent can start without asking during one run.</div>

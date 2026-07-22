@@ -81,30 +81,19 @@ func (c *API) UpdateSubagentPolicy(ctx context.Context, policy SubagentPolicy) (
 	return resp.Subagents, nil
 }
 
-func (c *API) UpdateSessionDeployPolicy(ctx context.Context, policy SessionDeployPolicy) (SessionDeployPolicy, error) {
+func (c *API) UpdateCapabilityPolicies(ctx context.Context, sessionDeploy SessionDeployPolicy, planAcceptance PlanAcceptancePolicy) (SessionDeployPolicy, PlanAcceptancePolicy, error) {
 	var resp struct {
-		SessionDeploy SessionDeployPolicy `json:"session_deploy"`
-	}
-	payload := struct {
-		SessionDeploy SessionDeployPolicy `json:"session_deploy"`
-	}{SessionDeploy: policy}
-	if err := c.putJSON(ctx, "/v1/permissions/capabilities", payload, &resp, true); err != nil {
-		return SessionDeployPolicy{}, err
-	}
-	return resp.SessionDeploy, nil
-}
-
-func (c *API) UpdatePlanAcceptancePolicy(ctx context.Context, policy PlanAcceptancePolicy) (PlanAcceptancePolicy, error) {
-	var resp struct {
+		SessionDeploy  SessionDeployPolicy  `json:"session_deploy"`
 		PlanAcceptance PlanAcceptancePolicy `json:"plan_acceptance"`
 	}
 	payload := struct {
+		SessionDeploy  SessionDeployPolicy  `json:"session_deploy"`
 		PlanAcceptance PlanAcceptancePolicy `json:"plan_acceptance"`
-	}{PlanAcceptance: policy}
+	}{SessionDeploy: sessionDeploy, PlanAcceptance: planAcceptance}
 	if err := c.putJSON(ctx, "/v1/permissions/capabilities", payload, &resp, true); err != nil {
-		return PlanAcceptancePolicy{}, err
+		return SessionDeployPolicy{}, PlanAcceptancePolicy{}, err
 	}
-	return resp.PlanAcceptance, nil
+	return resp.SessionDeploy, resp.PlanAcceptance, nil
 }
 
 func (c *API) AddPermissionRule(ctx context.Context, rule PermissionRule) (PermissionRule, error) {
