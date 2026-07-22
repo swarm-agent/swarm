@@ -5,6 +5,8 @@ import { Button } from '../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../components/ui/modal-close-button'
 import { updateSessionV3Title } from '../session-v3/api'
+import { unarchiveDesktopV3ReviewSessions } from '../session-v3/review-worktrees-api'
+import { activateSearchSession } from './search-session-activation'
 import {
   deleteDesktopSessions,
   searchDesktopSessions,
@@ -87,6 +89,8 @@ export function SearchChatsModal({ open, onOpenChange, onOpenSession }: SearchCh
   const [deletePreview, setDeletePreview] = useState<DesktopSessionDeletePreview | null>(null)
   const [cleanupPending, setCleanupPending] = useState(false)
   const [confirmRecent, setConfirmRecent] = useState(false)
+  const [pendingUnarchive, setPendingUnarchive] = useState<DesktopSessionSearchItem | null>(null)
+  const [openingSessionId, setOpeningSessionId] = useState('')
 
   const runSearch = useCallback(async (cursor = '') => {
     const append = cursor.trim() !== ''
@@ -134,6 +138,43 @@ export function SearchChatsModal({ open, onOpenChange, onOpenSession }: SearchCh
       await runSearch()
     } catch (deleteError) { setError(deleteError instanceof Error ? deleteError.message : 'Delete failed') }
   }
+  const openItem = async (item: DesktopSessionSearchItem) => {
+    if (openingSessionId) return
+    if (item.archived) {
+      setError(null)
+      setPendingUnarchive(item)
+      return
+    }
+    setError(null)
+    setOpeningSessionId(item.id)
+    try {
+      await activateSearchSession(item, {
+        unarchive: unarchiveDesktopV3ReviewSessions,
+        openSession: onOpenSession,
+      })
+    } catch (openError) {
+      setError(openError instanceof Error ? openError.message : 'Open failed')
+    } finally {
+      setOpeningSessionId('')
+    }
+  }
+  const confirmUnarchive = async () => {
+    if (!pendingUnarchive || openingSessionId) return
+    const item = pendingUnarchive
+    setError(null)
+    setOpeningSessionId(item.id)
+    try {
+      await activateSearchSession(item, {
+        unarchive: unarchiveDesktopV3ReviewSessions,
+        openSession: onOpenSession,
+      })
+      setPendingUnarchive(null)
+    } catch (openError) {
+      setError(openError instanceof Error ? openError.message : 'Unarchive failed')
+    } finally {
+      setOpeningSessionId('')
+    }
+  }
   const previewCleanup = async () => {
     const updatedBefore = cleanupTimestamp(cleanupPreset, cleanupDate)
     if (!updatedBefore) { setError('Choose a cleanup date'); return }
@@ -160,8 +201,8 @@ export function SearchChatsModal({ open, onOpenChange, onOpenSession }: SearchCh
     const tag = child ? lineageTag(item) : ''
     return <div key={item.id} className={child ? 'ml-6 border-l border-[var(--app-border)] pl-3' : ''}>
       <div className="grid gap-2 px-4 py-3 hover:bg-[var(--app-surface-hover)] sm:grid-cols-[minmax(0,1fr)_auto] sm:px-5">
-        <button type="button" onClick={() => onOpenSession(item)} className="min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]">
-          <div className="flex min-w-0 items-center gap-2"><MessageSquare size={14} className="shrink-0 text-[var(--app-text-subtle)]" /><span className="truncate text-sm font-semibold">{sessionTitle(item)}</span>{tag ? <span className="rounded-full border border-[var(--app-border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-text-subtle)]">{tag}</span> : null}{item.archived ? <span className="rounded-full border border-[var(--app-border)] px-2 py-0.5 text-[10px] uppercase text-[var(--app-text-subtle)]">Archived</span> : null}</div>
+        <button type="button" disabled={Boolean(openingSessionId || pendingUnarchive)} onClick={() => void openItem(item)} className="min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:cursor-wait disabled:opacity-60">
+          <div className="flex min-w-0 items-center gap-2">{openingSessionId === item.id ? <LoaderCircle size={14} className="shrink-0 animate-spin text-[var(--app-text-subtle)]" /> : <MessageSquare size={14} className="shrink-0 text-[var(--app-text-subtle)]" />}<span className="truncate text-sm font-semibold">{sessionTitle(item)}</span>{tag ? <span className="rounded-full border border-[var(--app-border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-text-subtle)]">{tag}</span> : null}{item.archived ? <span className="rounded-full border border-[var(--app-border)] px-2 py-0.5 text-[10px] uppercase text-[var(--app-text-subtle)]">Archived</span> : null}</div>
           <div className="mt-1 truncate text-xs text-[var(--app-text-subtle)]">{item.workspace_name || item.workspace_path || 'Unknown workspace'}</div>
           {snippet?.text ? <div className="mt-2 line-clamp-2 text-sm leading-5 text-[var(--app-text-muted)]">{snippet.text}</div> : null}
         </button>
@@ -197,7 +238,15 @@ export function SearchChatsModal({ open, onOpenChange, onOpenSession }: SearchCh
         </div>
         {recentSearches.length ? <div className="flex flex-wrap gap-2"><span className="text-xs text-[var(--app-text-subtle)]">Recent:</span>{recentSearches.map((term) => <button key={term} type="button" onClick={() => { setQueryDraft(term); setSubmittedQuery(term) }} className="rounded-full border border-[var(--app-border)] px-2 py-0.5 text-xs">{term}</button>)}<button type="button" onClick={() => { setRecentSearches([]); saveRecentSearches([]) }} className="text-xs text-[var(--app-text-muted)]">Clear</button></div> : null}
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">{error ? <div className="m-4 rounded-xl border border-[var(--app-error)] p-3 text-sm text-[var(--app-error)]">{error}</div> : null}{loading ? <div className="grid min-h-[200px] place-items-center"><LoaderCircle className="animate-spin" /></div> : groups.length === 0 ? <div className="grid min-h-[200px] place-items-center text-sm text-[var(--app-text-muted)]">No chats found</div> : <div className="divide-y divide-[var(--app-border)]">{groups.map(([rootID, group]) => <div key={rootID}>{group.root ? renderResult(group.root) : <div className="px-5 py-2 text-xs font-semibold text-[var(--app-text-muted)]">Parent conversation · {rootID.replace(/^unlinked:/, '')}</div>}{group.children.map((child) => renderResult(child, true))}</div>)}</div>}</div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {error ? <div className="m-4 rounded-xl border border-[var(--app-error)] p-3 text-sm text-[var(--app-error)]">{error}</div> : null}
+        {pendingUnarchive ? <div className="m-4 rounded-2xl border border-[var(--app-warning)] bg-[color-mix(in_oklab,var(--app-warning)_8%,var(--app-surface))] p-4" role="group" aria-live="polite" aria-labelledby="search-chats-unarchive-title" aria-describedby="search-chats-unarchive-description">
+          <h3 id="search-chats-unarchive-title" className="font-semibold">Unarchive and open this chat?</h3>
+          <p id="search-chats-unarchive-description" className="mt-1 text-sm text-[var(--app-text-muted)]">“{sessionTitle(pendingUnarchive)}” will return to the active workspace view with its durable messages and history intact.</p>
+          <div className="mt-3 flex flex-wrap justify-end gap-2"><Button variant="outline" disabled={Boolean(openingSessionId)} onClick={() => setPendingUnarchive(null)}>Cancel</Button><Button disabled={Boolean(openingSessionId)} onClick={() => void confirmUnarchive()}>{openingSessionId === pendingUnarchive.id ? <LoaderCircle size={15} className="animate-spin" /> : null}Unarchive and open</Button></div>
+        </div> : null}
+        {loading ? <div className="grid min-h-[200px] place-items-center"><LoaderCircle className="animate-spin" /></div> : groups.length === 0 ? <div className="grid min-h-[200px] place-items-center text-sm text-[var(--app-text-muted)]">No chats found</div> : <div className="divide-y divide-[var(--app-border)]">{groups.map(([rootID, group]) => <div key={rootID}>{group.root ? renderResult(group.root) : <div className="px-5 py-2 text-xs font-semibold text-[var(--app-text-muted)]">Parent conversation · {rootID.replace(/^unlinked:/, '')}</div>}{group.children.map((child) => renderResult(child, true))}</div>)}</div>}
+      </div>
       <div className="flex shrink-0 items-center justify-between border-t border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-3 text-xs text-[var(--app-text-subtle)] sm:px-5"><span>Loaded {items.length.toLocaleString()} raw result{items.length === 1 ? '' : 's'} in {groups.length.toLocaleString()} conversation group{groups.length === 1 ? '' : 's'}</span>{hasMore ? <Button variant="outline" className="h-9" disabled={loadingMore} onClick={() => void runSearch(nextCursor)}>{loadingMore ? <LoaderCircle size={15} className="animate-spin" /> : null}Load 50 more</Button> : null}</div>
     </DialogPanel>
   </Dialog>
