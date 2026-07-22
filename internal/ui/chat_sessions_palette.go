@@ -314,9 +314,9 @@ func (p *ChatPage) drawSessionsPalette(s tcell.Screen, screen Rect) {
 		H: modalH,
 	}
 
-	FillRect(s, modal, p.theme.Panel)
+	FillRect(s, Rect{X: modal.X + 1, Y: modal.Y + 1, W: modal.W - 2, H: modal.H - 2}, p.theme.Panel)
 	onPanel := func(style tcell.Style) tcell.Style { return styleWithBackgroundFrom(style, p.theme.Panel) }
-	DrawBox(s, modal, onPanel(p.theme.BorderActive))
+	DrawBox(s, modal, p.theme.BorderActive)
 
 	matches := p.syncSessionsPaletteSelection()
 	header := fmt.Sprintf("Sessions (%d)", len(p.sessionsPaletteItems))
