@@ -122,6 +122,30 @@ test('sidebar keeps review controls first and opens session-independent main-wor
   assert.deepEqual(SIDEBAR_SESSION_GROUPS.slice(0, 2).map((group) => group.id), ['needs_review', 'in_progress'])
 })
 
+test('workspace dropdown rows create chats without plus icons and the standalone plus precedes worktree', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const dropdownStart = source.indexOf('<div ref={workspaceDropdownRef}')
+  const dropdownEnd = source.indexOf('{needsReviewCleanupOpen ?', dropdownStart)
+  const dropdownSource = source.slice(dropdownStart, dropdownEnd)
+  const menuStart = dropdownSource.indexOf('role="menu"')
+  const menuEnd = dropdownSource.indexOf(') : null}', menuStart)
+  const menuSource = dropdownSource.slice(menuStart, menuEnd)
+  const newChatIndex = dropdownSource.indexOf('handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel)')
+  const worktreeIndex = dropdownSource.indexOf('openWorktreeSessionModal({')
+
+  assert.ok(dropdownStart >= 0 && dropdownEnd > dropdownStart)
+  assert.ok(menuStart >= 0 && menuEnd > menuStart)
+  assert.doesNotMatch(dropdownSource, /<select|<option/)
+  assert.match(dropdownSource, /bg-\[var\(--app-surface\)\][^\n]*text-\[var\(--app-text\)\]/)
+  assert.match(dropdownSource, /border-\[var\(--app-border\)\]/)
+  assert.match(menuSource, /role="menuitem"[\s\S]*onClick=\{\(\) => \{[\s\S]*setWorkspaceDropdownOpen\(false\)[\s\S]*handleStartNewSessionInWorkspace\(workspace\.path, workspace\.workspaceName\)/)
+  assert.match(menuSource, /aria-label=\{`New chat in \$\{workspace\.workspaceName\}`\}/)
+  assert.doesNotMatch(menuSource, /<Plus/)
+  assert.ok(newChatIndex >= 0 && worktreeIndex > newChatIndex)
+  assert.match(dropdownSource, /handleStartNewSessionInWorkspace\(topWorkspacePath, topWorkspaceLabel\)[\s\S]*aria-label=\{`New chat in \$\{topWorkspaceLabel\}`\}[\s\S]*<Plus[\s\S]*openWorktreeSessionModal\(\{/)
+  assert.doesNotMatch(dropdownSource, /handleWorkspaceSelect|menuitemradio|aria-checked|event\.stopPropagation\(\)/)
+})
+
 test('sidebar cards use explicit selection mode without hover-driven checkboxes or navigation', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const rowStart = source.indexOf('const SessionRow = memo')

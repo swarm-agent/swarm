@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { JSX, ReactNode, ChangeEvent } from 'react'
+import type { JSX, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
 import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, ListChecks, LoaderCircle, Menu, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
@@ -2616,7 +2616,8 @@ export function DesktopAppPage() {
   const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
-  const [sidebarWorkspaceControlPath, setSidebarWorkspaceControlPath] = useState('')
+  const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false)
+  const workspaceDropdownRef = useRef<HTMLDivElement | null>(null)
   const [compactingSession, setCompactingSession] = useState<DesktopV3CompactingSessionState | null>(null)
   const [sidebarSessionActions, setSidebarSessionActions] = useState<Record<string, 'pin' | 'archive' | 'rename' | undefined>>({})
   const [sidebarSelectionMode, setSidebarSelectionMode] = useState(false)
@@ -2634,6 +2635,27 @@ export function DesktopAppPage() {
   const aiTaskTerminalToastRef = useRef(new Set<string>())
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
+  useEffect(() => {
+    if (!workspaceDropdownOpen) return
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null
+      if (target && !workspaceDropdownRef.current?.contains(target)) {
+        setWorkspaceDropdownOpen(false)
+      }
+    }
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setWorkspaceDropdownOpen(false)
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [workspaceDropdownOpen])
+
   const workspaceByPath = useMemo<Map<string, WorkspaceEntry>>(
     () => new Map(workspaces.map((workspace) => [workspace.path, workspace] as const)),
     [workspaces],
@@ -3131,13 +3153,9 @@ export function DesktopAppPage() {
       workspaceName: workspace.workspaceName,
     })),
   ), [mergedSidebarWorkspaceEntries])
-  const selectedSidebarControlWorkspace = sidebarWorkspaceControlPath
-    ? mergedSidebarWorkspaceEntries.find((workspace) => workspace.path === sidebarWorkspaceControlPath) ?? null
-    : null
-  const topWorkspace = selectedSidebarControlWorkspace
-    ?? mergedSidebarWorkspaceEntries[0]
-    ?? selectedWorkspace
+  const topWorkspace = selectedWorkspace
     ?? routeWorkspace
+    ?? mergedSidebarWorkspaceEntries[0]
     ?? visibleSidebarWorkspaceEntries[0]
     ?? null
   const topWorkspaceLabel = topWorkspace?.workspaceName?.trim() || 'Default Workspace'
@@ -4420,14 +4438,6 @@ export function DesktopAppPage() {
     </div>
   ) : null
 
-  const handleWorkspaceSelect = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
-    const workspacePath = event.target.value.trim()
-    if (!workspacePath) return
-    const workspace = mergedSidebarWorkspaceEntries.find((entry) => entry.path === workspacePath)
-    if (!workspace) return
-    setSidebarWorkspaceControlPath(workspace.path)
-  }, [mergedSidebarWorkspaceEntries])
-
   useEffect(() => {
     setMobileSidebarOpen(false)
   }, [routeSessionId, routeWorkspaceSlug])
@@ -4724,24 +4734,45 @@ export function DesktopAppPage() {
             <div ref={sidebarBodyRef} className="scrollbar-hidden flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
               <div className="scrollbar-hidden grid min-h-0 flex-1 content-start gap-2 overflow-y-auto font-mono">
                   <div className="grid min-h-[34px] grid-cols-[minmax(0,1fr)_24px_24px] items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1">
-                    <label className="relative min-w-0" title={topWorkspacePath || 'Default Workspace'}>
-                      <span className="sr-only">Workspace</span>
-                      <select
-                        value={topWorkspacePath}
-                        onChange={handleWorkspaceSelect}
+                    <div ref={workspaceDropdownRef} className="relative min-w-0">
+                      <button
+                        type="button"
+                        className="flex h-7 w-full min-w-0 items-center justify-between gap-2 rounded border border-transparent bg-transparent px-1 text-left text-[11px] font-semibold text-[var(--app-text)] outline-none hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] focus-visible:border-[var(--app-border-accent)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:opacity-70"
+                        onClick={() => setWorkspaceDropdownOpen((open) => !open)}
                         disabled={topWorkspaceOptions.length === 0}
-                        className="h-7 w-full min-w-0 appearance-none rounded border border-transparent bg-transparent py-0 pl-0 pr-5 text-[11px] font-semibold text-[var(--app-text)] outline-none hover:text-[var(--app-primary)] focus-visible:border-[var(--app-border-accent)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:opacity-70"
                         aria-label="Workspace"
+                        aria-haspopup="menu"
+                        aria-expanded={workspaceDropdownOpen}
+                        title={topWorkspacePath || 'Default Workspace'}
                       >
-                        {topWorkspacePath && !mergedSidebarWorkspaceEntries.some((workspace) => workspace.path === topWorkspacePath) ? (
-                          <option value={topWorkspacePath}>{topWorkspaceLabel}</option>
-                        ) : null}
-                        {topWorkspaceOptions.map((workspace) => (
-                          <option key={workspace.path} value={workspace.path}>{workspace.workspaceName}</option>
-                        ))}
-                      </select>
-                      <ChevronDown size={12} strokeWidth={1.8} className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[var(--app-text-subtle)]" />
-                    </label>
+                        <span className="min-w-0 truncate">{topWorkspaceLabel}</span>
+                        <ChevronDown size={12} strokeWidth={1.8} className={cn('shrink-0 text-[var(--app-text-subtle)] transition-transform', workspaceDropdownOpen && 'rotate-180')} />
+                      </button>
+                      {workspaceDropdownOpen ? (
+                        <div
+                          role="menu"
+                          aria-label="Workspaces"
+                          className="absolute left-0 top-[calc(100%+6px)] z-50 min-w-full w-max max-w-[280px] overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-1 text-[var(--app-text)] shadow-xl shadow-black/30"
+                        >
+                          {topWorkspaceOptions.map((workspace) => (
+                            <button
+                              key={workspace.path}
+                              type="button"
+                              role="menuitem"
+                              className="flex min-w-[190px] w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[11px] font-medium text-[var(--app-text-muted)] outline-none hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+                              onClick={() => {
+                                setWorkspaceDropdownOpen(false)
+                                handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)
+                              }}
+                              aria-label={`New chat in ${workspace.workspaceName}`}
+                              title={`New chat in ${workspace.workspaceName}`}
+                            >
+                              <span className="min-w-0 flex-1 truncate">{workspace.workspaceName}</span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
                     <button
                       type="button"
                       className={SIDEBAR_ACTION_BUTTON_CLASS}
