@@ -1170,7 +1170,7 @@ func TestProviderManagedV3ToolRequiresPrimaryMutationCallback(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 
-	_, err := svc.executeProviderManagedToolCall(context.Background(), providerToolInvokerConfig{
+	_, _, err := svc.executeProviderManagedToolCall(context.Background(), providerToolInvokerConfig{
 		sessionID:         parentSessionID,
 		providerManagedV3: true,
 	}, tool.Call{Name: "task", CallID: "call-no-v3-mutation", Arguments: "{}"}, nil)

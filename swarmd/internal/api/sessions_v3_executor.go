@@ -2377,6 +2377,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		}
 		toolResults := make([]provideriface.ToolExecutionResult, 0, len(response.FunctionCalls))
 		restartAfterTools := false
+		permissionWaited := false
 		for _, call := range response.FunctionCalls {
 			if identicalCount, key := identicalCalls.Observe(call); identicalCount >= sessionV3ProviderIdenticalToolCallLimit {
 				return sessionV3ProviderLoopResult{}, fmt.Errorf("v3 provider repeated identical tool call %d times: %s", sessionV3ProviderIdenticalToolCallLimit, key)
@@ -2387,6 +2388,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			}
 			if result.RestartTurn {
 				restartAfterTools = true
+			}
+			if result.PermissionWaitMS > 0 {
+				permissionWaited = true
 			}
 			toolResults = append(toolResults, result)
 		}
@@ -2432,12 +2436,12 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			baseReq.NativeContinuationAllowed = false
 			baseReq.ForceFreshProviderContext = true
 		} else {
-			baseReq = sessionV3ProviderContinuationRequest(baseReq, runner)
+			baseReq = sessionV3ProviderContinuationRequest(baseReq, runner, permissionWaited)
 		}
 	}
 }
 
-func sessionV3ProviderContinuationRequest(req provideriface.Request, runner provideriface.Runner) provideriface.Request {
+func sessionV3ProviderContinuationRequest(req provideriface.Request, runner provideriface.Runner, resetTransport bool) provideriface.Request {
 	if strings.TrimSpace(req.ExecutionEpochID) == "" || strings.TrimSpace(req.ProviderLineageID) == "" || runner == nil {
 		return req
 	}
@@ -2455,7 +2459,11 @@ func sessionV3ProviderContinuationRequest(req provideriface.Request, runner prov
 	// again before this promotion can happen.
 	req.StartNewChain = false
 	req.AllowContinuation = true
-	req.ResetTransport = false
+	// A provider response socket is idle while Swarm executes tools. If execution
+	// included a human permission wait, the peer may have expired its keepalive
+	// before the next response.create. Preserve provider response lineage, but
+	// explicitly redial the transport instead of reusing a potentially stale socket.
+	req.ResetTransport = resetTransport
 	req.NativeContinuationAllowed = true
 	req.ForceFreshProviderContext = false
 	return req

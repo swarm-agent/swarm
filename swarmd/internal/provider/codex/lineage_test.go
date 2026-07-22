@@ -540,6 +540,50 @@ func TestPrepareCachedWebsocketSessionNewChainReusesHealthyTransportWithoutLinea
 	}
 }
 
+func TestCodexTransportResetAfterPermissionWaitUsesFullInputWithoutPreviousResponse(t *testing.T) {
+	client := NewClient(nil)
+	ctx := contextWithCodexTransportContext(context.Background(), codexTransportContext{
+		PromptCacheKey:     "stable-runtime-cache",
+		SessionAffinityKey: "transport-root-key",
+		AllowContinuation:  true,
+		ReuseTransport:     true,
+		ResetTransport:     true,
+	})
+	session := client.cachedWebsocketSession("transport-root-key")
+	session.lastRequestProperties = map[string]any{
+		"model": "gpt-5.3-codex", "stream": true, "store": false,
+		"prompt_cache_key": "stable-runtime-cache",
+		"text":             map[string]any{"verbosity": defaultCodexTextVerbosity},
+	}
+	session.lastInputLen = 1
+	session.lastResponseID = "resp-before-permission-wait"
+	session.lastOutput = []any{map[string]any{"type": "function_call", "call_id": "call-1", "name": "bash", "arguments": `{}`}}
+
+	input := []map[string]any{
+		{"role": "user", "content": "run a command"},
+		{"type": "function_call", "call_id": "call-1", "name": "bash", "arguments": `{}`},
+		{"type": "function_call_output", "call_id": "call-1", "output": "ok"},
+	}
+	payload, _, _, err := client.codexWebsocketRequestPayload(ctx, Request{
+		ProviderCacheKey:     "stable-runtime-cache",
+		TransportAffinityKey: "transport-root-key",
+		Model:                "gpt-5.3-codex",
+		AllowContinuation:    true,
+		ReuseTransport:       true,
+		ResetTransport:       true,
+		Input:                input,
+	})
+	if err != nil {
+		t.Fatalf("reset continuation payload: %v", err)
+	}
+	if _, ok := payload["previous_response_id"]; ok {
+		t.Fatalf("reset continuation retained previous_response_id: %#v", payload)
+	}
+	if got := len(asSlice(payload["input"])); got != len(input) {
+		t.Fatalf("reset continuation input length = %d, want full %d-item input", got, len(input))
+	}
+}
+
 func TestPrepareCachedWebsocketSessionInEpochContinuationRetainsLineage(t *testing.T) {
 	conn := &websocket.Conn{}
 	session := &cachedWebsocketSession{

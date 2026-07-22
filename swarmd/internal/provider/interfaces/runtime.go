@@ -145,13 +145,14 @@ type ToolInvocation struct {
 }
 
 type ToolExecutionResult struct {
-	CallID       string
-	Name         string
-	Output       string
-	Error        string
-	DurationMS   int64
-	TextForModel string
-	RestartTurn  bool
+	CallID           string
+	Name             string
+	Output           string
+	Error            string
+	DurationMS       int64
+	PermissionWaitMS int64
+	TextForModel     string
+	RestartTurn      bool
 }
 
 type ToolInvoker interface {

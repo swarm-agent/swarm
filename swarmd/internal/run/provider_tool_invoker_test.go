@@ -190,10 +190,14 @@ func TestProviderManagedToolCallRefreshesTemporaryWorkspaceRoots(t *testing.T) {
 
 	firstArgs := mustProviderToolInvokerJSON(t, map[string]any{"path": outsideFile, "max_lines": 20})
 	firstCtx, firstCancel := context.WithCancel(context.Background())
-	firstErrCh := make(chan error, 1)
+	type toolExecution struct {
+		result provideriface.ToolExecutionResult
+		err    error
+	}
+	firstExecutionCh := make(chan toolExecution, 1)
 	go func() {
-		_, err := invoker.ExecuteTool(firstCtx, toolInvocation("call-read-outside-first", "read", firstArgs))
-		firstErrCh <- err
+		result, err := invoker.ExecuteTool(firstCtx, toolInvocation("call-read-outside-first", "read", firstArgs))
+		firstExecutionCh <- toolExecution{result: result, err: err}
 	}()
 
 	var pending []pebblestore.PermissionRecord
@@ -232,14 +236,19 @@ func TestProviderManagedToolCallRefreshesTemporaryWorkspaceRoots(t *testing.T) {
 		firstCancel()
 		t.Fatalf("temporary approval scope is file-scoped, want directory-scoped approval: %s", pending[0].ToolArguments)
 	}
+	// Ensure the permission wait is observable independently from the fast tool.
+	time.Sleep(5 * time.Millisecond)
 	if _, err := permissions.Resolve(sessionID, pending[0].ID, permission.ActionAllowOnce, string(workspaceScopeDecisionSessionAllow)); err != nil {
 		firstCancel()
 		t.Fatalf("approve temporary workspace scope permission: %v", err)
 	}
 	select {
-	case err := <-firstErrCh:
-		if err != nil {
-			t.Fatalf("first provider tool execution after approval: %v", err)
+	case execution := <-firstExecutionCh:
+		if execution.err != nil {
+			t.Fatalf("first provider tool execution after approval: %v", execution.err)
+		}
+		if execution.result.PermissionWaitMS <= 0 {
+			t.Fatalf("permission wait = %dms, want a separately reported positive wait", execution.result.PermissionWaitMS)
 		}
 	case <-time.After(2 * time.Second):
 		firstCancel()

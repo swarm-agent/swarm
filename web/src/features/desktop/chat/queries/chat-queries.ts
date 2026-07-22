@@ -396,6 +396,13 @@ interface SessionPlanCheckpointAttemptWire {
   validation?: string[];
 }
 
+interface SessionPlanArtifactReferenceWire {
+  path?: string;
+  role?: string;
+  description?: string;
+  media_type?: string;
+}
+
 interface SessionPlanCheckpointWire {
   id?: string;
   title?: string;
@@ -403,6 +410,7 @@ interface SessionPlanCheckpointWire {
   objective?: string;
   tasks?: string[];
   acceptance_criteria?: string[];
+  artifacts?: SessionPlanArtifactReferenceWire[] | null;
   notes?: string;
   report?: string;
   result?: string;
@@ -427,6 +435,7 @@ interface SessionPlanDocumentWire {
   info?: SessionPlanInfoWire | null;
   execution_policy?: SessionPlanExecutionPolicyWire | null;
   execution_state?: SessionPlanExecutionStateWire | null;
+  artifacts?: SessionPlanArtifactReferenceWire[] | null;
   checkpoints?: SessionPlanCheckpointWire[] | null;
   original_checkpoints?: SessionPlanCheckpointWire[] | null;
   active_checkpoint_id?: string;
@@ -779,6 +788,7 @@ function mapSessionPlanDocument(
     },
     executionPolicy: mapSessionPlanExecutionPolicy(document.execution_policy),
     executionState: mapSessionPlanExecutionState(document.execution_state),
+    artifacts: mapSessionPlanArtifacts(document.artifacts),
     checkpoints: mapSessionPlanCheckpoints(document.checkpoints),
     originalCheckpoints: mapSessionPlanCheckpoints(document.original_checkpoints),
     activeCheckpointId: String(document.active_checkpoint_id ?? "").trim(),
@@ -811,6 +821,7 @@ function mapSessionPlanCheckpoints(checkpoints: SessionPlanCheckpointWire[] | nu
         objective: String(checkpoint?.objective ?? "").trim(),
         tasks: mapStringArray(checkpoint?.tasks),
         acceptanceCriteria: mapStringArray(checkpoint?.acceptance_criteria),
+        artifacts: mapSessionPlanArtifacts(checkpoint?.artifacts),
         notes: String(checkpoint?.notes ?? "").trim(),
         report: String(checkpoint?.report ?? "").trim(),
         result: String(checkpoint?.result ?? "").trim(),
@@ -825,6 +836,19 @@ function mapSessionPlanCheckpoints(checkpoints: SessionPlanCheckpointWire[] | nu
         attempts: mapSessionPlanCheckpointAttempts(checkpoint?.attempts),
         order: typeof checkpoint?.order === "number" ? checkpoint.order : index + 1,
       }))
+    : [];
+}
+
+function mapSessionPlanArtifacts(artifacts: SessionPlanArtifactReferenceWire[] | null | undefined): DesktopSessionPlanDocument['artifacts'] {
+  return Array.isArray(artifacts)
+    ? artifacts
+        .map((artifact) => ({
+          path: String(artifact?.path ?? "").trim(),
+          role: String(artifact?.role ?? "").trim(),
+          description: String(artifact?.description ?? "").trim(),
+          mediaType: String(artifact?.media_type ?? "").trim(),
+        }))
+        .filter((artifact) => artifact.path)
     : [];
 }
 

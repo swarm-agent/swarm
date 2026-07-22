@@ -45,11 +45,12 @@ func (s *Service) gateWorkspaceScopeCalls(
 	workspaceCtx *runWorkspaceContext,
 	calls []tool.Call,
 	emit StreamHandler,
-) ([]tool.Result, []tool.Call, []int, bool, error) {
+) ([]tool.Result, []tool.Call, []int, bool, int64, error) {
 	results := make([]tool.Result, len(calls))
 	approvedCalls := make([]tool.Call, 0, len(calls))
 	approvedIndexes := make([]int, 0, len(calls))
 	scopeChanged := false
+	permissionWaitMS := int64(0)
 
 	hostScope := tool.WorkspaceScope{
 		PrimaryPath: strings.TrimSpace(workspaceCtx.OriginWorkspacePath),
@@ -89,8 +90,9 @@ func (s *Service) gateWorkspaceScopeCalls(
 			request,
 			emit,
 		)
+		permissionWaitMS += permissionResult.DurationMS
 		if err != nil {
-			return nil, nil, nil, scopeChanged, err
+			return nil, nil, nil, scopeChanged, permissionWaitMS, err
 		}
 		if !approved {
 			results[i] = permissionResult
@@ -115,7 +117,7 @@ func (s *Service) gateWorkspaceScopeCalls(
 		approvedIndexes = append(approvedIndexes, i)
 	}
 
-	return results, approvedCalls, approvedIndexes, scopeChanged, nil
+	return results, approvedCalls, approvedIndexes, scopeChanged, permissionWaitMS, nil
 }
 
 func (s *Service) requestWorkspaceScopePermission(

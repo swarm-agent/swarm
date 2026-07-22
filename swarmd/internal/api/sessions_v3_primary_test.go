@@ -7618,6 +7618,30 @@ func (r *sessionsV3RecordingProviderRunner) CreateResponseStreaming(ctx context.
 	return response, nil
 }
 
+func TestSessionV3ProviderContinuationResetsTransportAfterPermissionWait(t *testing.T) {
+	runner := &sessionsV3RecordingProviderRunner{id: "codex"}
+	base := provideriface.Request{
+		ExecutionEpochID:          "epoch-a",
+		ProviderLineageID:         "lineage-a",
+		StartNewChain:             true,
+		AllowContinuation:         false,
+		ReuseTransport:            true,
+		ResetTransport:            false,
+		NativeContinuationAllowed: false,
+		ForceFreshProviderContext: true,
+	}
+
+	ordinary := sessionV3ProviderContinuationRequest(base, runner, false)
+	if ordinary.StartNewChain || !ordinary.AllowContinuation || ordinary.ResetTransport || !ordinary.NativeContinuationAllowed || ordinary.ForceFreshProviderContext {
+		t.Fatalf("ordinary continuation lifecycle = %+v", ordinary)
+	}
+
+	afterPermission := sessionV3ProviderContinuationRequest(base, runner, true)
+	if afterPermission.StartNewChain || !afterPermission.AllowContinuation || !afterPermission.ResetTransport || !afterPermission.NativeContinuationAllowed || afterPermission.ForceFreshProviderContext {
+		t.Fatalf("post-permission continuation lifecycle = %+v", afterPermission)
+	}
+}
+
 func TestSessionsV3PrimaryPermissionResolvePublishesImmediateV3Update(t *testing.T) {
 	server, sessionSvc, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()

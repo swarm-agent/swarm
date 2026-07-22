@@ -117,19 +117,20 @@ func (i *providerToolInvoker) ExecuteTool(ctx context.Context, invocation provid
 		call.Arguments = "{}"
 	}
 
-	result, err := i.service.executeProviderManagedToolCall(ctx, i.config, call, cloneGenericMap(invocation.Metadata))
+	result, permissionWaitMS, err := i.service.executeProviderManagedToolCall(ctx, i.config, call, cloneGenericMap(invocation.Metadata))
 	if err != nil {
 		return provideriface.ToolExecutionResult{}, err
 	}
 
 	return provideriface.ToolExecutionResult{
-		CallID:       strings.TrimSpace(result.CallID),
-		Name:         strings.TrimSpace(result.Name),
-		Output:       strings.TrimSpace(result.Output),
-		Error:        strings.TrimSpace(result.Error),
-		DurationMS:   result.DurationMS,
-		TextForModel: prepareToolOutputForModel(call, result),
-		RestartTurn:  providerManagedToolRequiresTurnRestart(call, result),
+		CallID:           strings.TrimSpace(result.CallID),
+		Name:             strings.TrimSpace(result.Name),
+		Output:           strings.TrimSpace(result.Output),
+		Error:            strings.TrimSpace(result.Error),
+		DurationMS:       result.DurationMS,
+		PermissionWaitMS: permissionWaitMS,
+		TextForModel:     prepareToolOutputForModel(call, result),
+		RestartTurn:      providerManagedToolRequiresTurnRestart(call, result),
 	}, nil
 }
 
@@ -228,12 +229,12 @@ func providerManagedControlPlaneResponse(call tool.Call, feedback PermissionFeed
 	return strings.TrimSpace(feedback.Message)
 }
 
-func (s *Service) executeProviderManagedToolCall(ctx context.Context, config providerToolInvokerConfig, call tool.Call, metadata map[string]any) (tool.Result, error) {
+func (s *Service) executeProviderManagedToolCall(ctx context.Context, config providerToolInvokerConfig, call tool.Call, metadata map[string]any) (tool.Result, int64, error) {
 	if s == nil {
-		return tool.Result{}, errors.New("run service is not configured")
+		return tool.Result{}, 0, errors.New("run service is not configured")
 	}
 	if config.providerManagedV3 && config.applySessionMutation == nil {
-		return tool.Result{}, errors.New("v3 provider-managed tool execution requires applySessionV3PrimaryMutation")
+		return tool.Result{}, 0, errors.New("v3 provider-managed tool execution requires applySessionV3PrimaryMutation")
 	}
 
 	name := strings.TrimSpace(call.Name)
@@ -270,9 +271,13 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		config.policy,
 	)
 	if err != nil {
-		return tool.Result{}, err
+		return tool.Result{}, 0, err
 	}
 
+	permissionWaitMS := int64(0)
+	if len(gatedResults) > 0 {
+		permissionWaitMS = gatedResults[0].DurationMS
+	}
 	result := gatedResults[0]
 	if len(approvedCalls) > 0 {
 		feedback := PermissionFeedback{}
@@ -331,10 +336,10 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			} else {
 				workspaceCtx, err := s.providerManagedWorkspaceContext(config, principal)
 				if err != nil {
-					return tool.Result{}, err
+					return tool.Result{}, permissionWaitMS, err
 				}
 				runtimeCalls := []tool.Call{call}
-				scopeResults, scopeApprovedCalls, _, _, scopeErr := s.gateWorkspaceScopeCalls(
+				scopeResults, scopeApprovedCalls, _, _, scopePermissionWaitMS, scopeErr := s.gateWorkspaceScopeCalls(
 					ctx,
 					config.sessionID,
 					permissionSessionID,
@@ -348,8 +353,9 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 					[]tool.Call{call},
 					config.emit,
 				)
+				permissionWaitMS += scopePermissionWaitMS
 				if scopeErr != nil {
-					return tool.Result{}, scopeErr
+					return tool.Result{}, permissionWaitMS, scopeErr
 				}
 				if len(scopeApprovedCalls) == 0 && len(scopeResults) > 0 {
 					result = scopeResults[0]
@@ -447,13 +453,13 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	}
 
 	if err := s.storeProviderManagedToolResult(config, call, metadata, result); err != nil {
-		return tool.Result{}, err
+		return tool.Result{}, permissionWaitMS, err
 	}
 	if err := s.appendPlanLifecycleMessageForToolResult(config.sessionID, call, result, config.applySessionMutation); err != nil {
-		return tool.Result{}, err
+		return tool.Result{}, permissionWaitMS, err
 	}
 
-	return result, nil
+	return result, permissionWaitMS, nil
 }
 
 func (s *Service) rejectProviderManagedCheckpointRunFollowup(config providerToolInvokerConfig, call tool.Call) error {
@@ -483,7 +489,7 @@ func (s *Service) rejectProviderManagedCheckpointRunFollowup(config providerTool
 	if checkpointID == "" {
 		return nil
 	}
-	return fmt.Errorf("session checkpoint creation is not allowed from checkpoint run %q for active checkpoint %q; finish the current checkpoint with complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed", runID, checkpointID)
+	return fmt.Errorf("session checkpoint creation is not allowed from checkpoint run %q for active checkpoint %q; do not retry or claim a checkpoint was added: complete all work belonging to the current objective here, or record a genuinely independent proposed checkpoint in the terminal next-action evidence and tell the user that a later parent-conversation turn must append it with request_followup_checkpoint; finish the current checkpoint with complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed", runID, checkpointID)
 }
 
 func isPlanManageSessionCheckpointCreationAction(action string) bool {

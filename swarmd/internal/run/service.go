@@ -2172,7 +2172,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			markToolCompleted(step, call, controlResult)
 		}
 
-		scopeResults, scopeApprovedCalls, scopeApprovedIndexes, scopeChanged, err := s.gateWorkspaceScopeCalls(
+		scopeResults, scopeApprovedCalls, scopeApprovedIndexes, scopeChanged, _, err := s.gateWorkspaceScopeCalls(
 			ctx,
 			sessionID,
 			permissionSessionID,

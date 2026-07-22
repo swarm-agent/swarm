@@ -1308,7 +1308,10 @@ func (c *Client) codexWebsocketRequestPayload(ctx context.Context, req Request) 
 	transportContext := codexTransportContextFromContext(ctx)
 	freshContext := forceFreshProviderContextFromContext(ctx)
 	session := c.cachedWebsocketSession(transportContext.SessionAffinityKey)
-	if session == nil || freshContext {
+	if session == nil || freshContext || transportContext.ResetTransport {
+		// A forced transport reset cannot safely use previous_response_id from the
+		// socket being discarded. Reconnect with the complete selected input, as
+		// required for store=false Responses websocket recovery.
 		payload, err := buildCodexRequestBody(req, req.Input)
 		return payload, properties, requestInputLen, err
 	}
