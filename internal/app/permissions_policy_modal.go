@@ -46,7 +46,7 @@ func (a *App) openPermissionsPolicyModal(policy client.PermissionPolicy) {
 	if len(policy.Rules) == 0 {
 		selected = -1
 	}
-	status := "Press a to add a trusted bash command prefix. Press o to turn permissions OFF."
+	status := "Granular policies loaded. g subagents · d deploy · p plan acceptance · 1/2/3 session mutations."
 	if a.homeModel.BypassPermissions {
 		status = "Permissions are OFF. Press o to turn permissions ON again."
 	}
@@ -88,10 +88,28 @@ func (a *App) handlePermissionsPolicyModalKey(ev *tcell.EventKey) bool {
 			m.Err = ""
 			m.Status = "Type a bash command prefix to always allow, then press Enter."
 			return true
+		case 'g':
+			a.cyclePermissionsSubagentMode()
+			return true
+		case 'd':
+			a.cyclePermissionsSessionDeployMode()
+			return true
+		case 'p':
+			a.cyclePermissionsPlanAcceptanceMode()
+			return true
+		case '1':
+			a.cyclePermissionsSessionMutation("session_commit", "Session commits")
+			return true
+		case '2':
+			a.cyclePermissionsSessionMutation("session_archive", "Session archives")
+			return true
+		case '3':
+			a.cyclePermissionsSessionMutation("session_unarchive", "Session unarchives")
+			return true
 		case 'o':
 			a.togglePermissionsFromPolicyModal()
 			return true
-		case 'r', 'd':
+		case 'r':
 			a.removeSelectedPermissionsPolicyRule()
 			return true
 		case 'q':
@@ -216,6 +234,196 @@ func (a *App) togglePermissionsFromPolicyModal() {
 		return
 	}
 	a.openPermissionsBypassModal()
+}
+
+func (a *App) cyclePermissionsSubagentMode() {
+	if a == nil || a.api == nil || !a.permissionsPolicyModalActive() || a.permissionsPolicyModal.Busy {
+		return
+	}
+	m := &a.permissionsPolicyModal
+	next := nextPermissionsPolicyValue(m.Policy.Subagents.Mode, []string{"direct", "ask", "bounded"})
+	policy := m.Policy.Subagents
+	policy.Mode = next
+	m.Busy = true
+	m.Err = ""
+	m.Status = "Saving subagent policy..."
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		saved, err := a.api.UpdateSubagentPolicy(ctx, policy)
+		if err != nil {
+			a.finishPermissionsPolicySave("", fmt.Errorf("subagent policy save failed: %w", err))
+			return
+		}
+		if a.permissionsPolicyModal.Visible {
+			a.permissionsPolicyModal.Policy.Subagents = saved
+		}
+		a.finishPermissionsPolicySave("Subagents: "+permissionsPolicyValueLabel(saved.Mode), nil)
+	}()
+}
+
+func (a *App) cyclePermissionsSessionDeployMode() {
+	if a == nil || a.api == nil || !a.permissionsPolicyModalActive() || a.permissionsPolicyModal.Busy {
+		return
+	}
+	m := &a.permissionsPolicyModal
+	deploy := m.Policy.SessionDeploy
+	acceptance := m.Policy.PlanAcceptance
+	deploy.Mode = nextPermissionsPolicyValue(deploy.Mode, []string{"ask", "always_allow", "bounded"})
+	m.Busy = true
+	m.Err = ""
+	m.Status = "Saving session deployment policy..."
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		savedDeploy, savedAcceptance, err := a.api.UpdateCapabilityPolicies(ctx, deploy, acceptance)
+		if err != nil {
+			a.finishPermissionsPolicySave("", fmt.Errorf("capability policy save failed: %w", err))
+			return
+		}
+		if a.permissionsPolicyModal.Visible {
+			a.permissionsPolicyModal.Policy.SessionDeploy = savedDeploy
+			a.permissionsPolicyModal.Policy.PlanAcceptance = savedAcceptance
+		}
+		a.finishPermissionsPolicySave("Session deployment: "+permissionsPolicyValueLabel(savedDeploy.Mode), nil)
+	}()
+}
+
+func (a *App) cyclePermissionsPlanAcceptanceMode() {
+	if a == nil || a.api == nil || !a.permissionsPolicyModalActive() || a.permissionsPolicyModal.Busy {
+		return
+	}
+	m := &a.permissionsPolicyModal
+	deploy := m.Policy.SessionDeploy
+	acceptance := m.Policy.PlanAcceptance
+	acceptance.Mode = nextPermissionsPolicyValue(acceptance.Mode, []string{"ask", "always_allow"})
+	m.Busy = true
+	m.Err = ""
+	m.Status = "Saving plan acceptance policy..."
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		savedDeploy, savedAcceptance, err := a.api.UpdateCapabilityPolicies(ctx, deploy, acceptance)
+		if err != nil {
+			a.finishPermissionsPolicySave("", fmt.Errorf("capability policy save failed: %w", err))
+			return
+		}
+		if a.permissionsPolicyModal.Visible {
+			a.permissionsPolicyModal.Policy.SessionDeploy = savedDeploy
+			a.permissionsPolicyModal.Policy.PlanAcceptance = savedAcceptance
+		}
+		a.finishPermissionsPolicySave("Plan acceptance: "+permissionsPolicyValueLabel(savedAcceptance.Mode), nil)
+	}()
+}
+
+func (a *App) cyclePermissionsSessionMutation(toolName, title string) {
+	if a == nil || a.api == nil || !a.permissionsPolicyModalActive() || a.permissionsPolicyModal.Busy {
+		return
+	}
+	m := &a.permissionsPolicyModal
+	current := permissionsSessionMutationDecision(m.Policy.Rules, toolName)
+	next := nextPermissionsPolicyValue(current, []string{"ask", "allow", "deny"})
+	m.Busy = true
+	m.Err = ""
+	m.Status = "Saving " + strings.ToLower(title) + " policy..."
+	rules := append([]client.PermissionRule(nil), m.Policy.Rules...)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		for _, rule := range rules {
+			if strings.EqualFold(strings.TrimSpace(rule.Kind), "tool") && strings.EqualFold(strings.TrimSpace(rule.Tool), toolName) {
+				if _, err := a.api.RemovePermissionRule(ctx, rule.ID); err != nil {
+					a.finishPermissionsPolicySave("", fmt.Errorf("%s policy save failed: %w", strings.ToLower(title), err))
+					return
+				}
+			}
+		}
+		if next != "ask" {
+			if _, err := a.api.AddPermissionRule(ctx, client.PermissionRule{Kind: "tool", Decision: next, Tool: toolName}); err != nil {
+				a.finishPermissionsPolicySave("", fmt.Errorf("%s policy save failed: %w", strings.ToLower(title), err))
+				return
+			}
+		}
+		policy, err := a.api.GetPermissionPolicy(ctx)
+		if err != nil {
+			a.finishPermissionsPolicySave("", fmt.Errorf("permission policy reload failed: %w", err))
+			return
+		}
+		if a.permissionsPolicyModal.Visible {
+			a.permissionsPolicyModal.Policy = policy
+		}
+		a.finishPermissionsPolicySave(title+": "+permissionsPolicyValueLabel(next), nil)
+	}()
+}
+
+func (a *App) finishPermissionsPolicySave(status string, err error) {
+	if a == nil {
+		return
+	}
+	if a.permissionsPolicyModal.Visible {
+		a.permissionsPolicyModal.Busy = false
+		if err != nil {
+			a.permissionsPolicyModal.Err = err.Error()
+		} else {
+			a.permissionsPolicyModal.Err = ""
+			a.permissionsPolicyModal.Status = status
+		}
+	}
+	if a.home != nil {
+		if err != nil {
+			a.home.SetStatus(err.Error())
+		} else {
+			a.home.SetStatus(status)
+		}
+	}
+	if a.screen != nil {
+		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptTick))
+	}
+}
+
+func nextPermissionsPolicyValue(current string, values []string) string {
+	current = strings.ToLower(strings.TrimSpace(current))
+	for index, value := range values {
+		if value == current {
+			return values[(index+1)%len(values)]
+		}
+	}
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func permissionsSessionMutationDecision(rules []client.PermissionRule, toolName string) string {
+	for _, rule := range rules {
+		if strings.EqualFold(strings.TrimSpace(rule.Kind), "tool") && strings.EqualFold(strings.TrimSpace(rule.Tool), toolName) {
+			decision := strings.ToLower(strings.TrimSpace(rule.Decision))
+			if decision == "allow" || decision == "deny" {
+				return decision
+			}
+		}
+	}
+	return "ask"
+}
+
+func permissionsPolicyValueLabel(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "always_allow":
+		return "always allow"
+	case "bounded":
+		return "bounded automatic"
+	case "direct":
+		return "direct (no delegation)"
+	default:
+		return strings.ReplaceAll(strings.TrimSpace(value), "_", " ")
+	}
+}
+
+func permissionsPolicyBoolLabel(value bool) string {
+	if value {
+		return "required"
+	}
+	return "off"
 }
 
 func (a *App) savePermissionsPolicyModalAllowCommand() {
@@ -422,7 +630,7 @@ func (a *App) drawPermissionsPolicyModal() {
 	}
 	ui.DrawTextRight(a.screen, modal.X+modal.W-3, modal.Y+1, 28, statusStyle, statusLabel)
 
-	subtitle := "Allow trusted commands once here instead of answering future prompts. Press o to toggle permissions ON/OFF."
+	subtitle := "Account permission policy shared with Desktop. Granular controls use the same daemon-backed values."
 	ui.DrawText(a.screen, modal.X+2, modal.Y+2, modal.W-4, theme.TextMuted, permissionsModalClamp(subtitle, modal.W-4))
 
 	contentY := modal.Y + 4
@@ -430,13 +638,13 @@ func (a *App) drawPermissionsPolicyModal() {
 	if contentH < 5 {
 		contentH = 5
 	}
-	leftW := maxInt(34, (modal.W*58)/100)
-	if leftW > modal.W-28 {
-		leftW = modal.W - 28
+	leftW := maxInt(30, (modal.W*44)/100)
+	if leftW > modal.W-38 {
+		leftW = modal.W - 38
 	}
 	rightW := modal.W - leftW - 7
-	if rightW < 24 {
-		rightW = 24
+	if rightW < 34 {
+		rightW = 34
 		leftW = modal.W - rightW - 7
 	}
 	rulesRect := ui.Rect{X: modal.X + 2, Y: contentY + 2, W: leftW, H: maxInt(1, contentH-2)}
@@ -454,7 +662,7 @@ func (a *App) drawPermissionsPolicyModal() {
 		messageStyle = theme.Error
 	}
 	if message == "" {
-		message = "↑/↓ select · a add command · r remove selected · o turn OFF · Esc close"
+		message = "g subagents · d deploy · p plan · 1/2/3 session mutations · a add rule · r remove · o ON/OFF"
 	}
 	ui.DrawText(a.screen, modal.X+2, messageY, modal.W-4, messageStyle, permissionsModalClamp(message, modal.W-4))
 
@@ -517,10 +725,15 @@ func (a *App) drawPermissionsPolicyRules(theme ui.Theme, panel ui.Rect) {
 func (a *App) drawPermissionsPolicyComposer(theme ui.Theme, rect ui.Rect) {
 	m := &a.permissionsPolicyModal
 	ui.DrawBox(a.screen, rect, theme.Border)
-	ui.DrawText(a.screen, rect.X+2, rect.Y, rect.W-4, theme.TextMuted.Bold(true), " Always allow command ")
+	ui.DrawText(a.screen, rect.X+2, rect.Y, rect.W-4, theme.TextMuted.Bold(true), " Granular controls ")
+	subagents := m.Policy.Subagents
+	deploy := m.Policy.SessionDeploy
 	lines := []string{
-		"Add a bash command prefix you trust.",
-		"Examples: go test ./..., npm test, make build",
+		fmt.Sprintf("g Subagents: %s · auto/run/wave/depth %d/%d/%d/%d", permissionsPolicyValueLabel(subagents.Mode), subagents.AutomaticLaunchesPerParentRun, subagents.ActiveChildLimit, subagents.AbsoluteWaveMaximum, subagents.MaxDepth),
+		fmt.Sprintf("  over limit %s · write isolation %s", permissionsPolicyValueLabel(subagents.OverBudgetAction), permissionsPolicyBoolLabel(subagents.RequireWriteIsolation)),
+		fmt.Sprintf("d Session deployment: %s · auto/run %d · over limit %s", permissionsPolicyValueLabel(deploy.Mode), deploy.AutomaticDeploymentsPerParentRun, permissionsPolicyValueLabel(deploy.OverLimitAction)),
+		"p Plan acceptance: " + permissionsPolicyValueLabel(m.Policy.PlanAcceptance.Mode),
+		fmt.Sprintf("1 Commits %s · 2 Archives %s · 3 Unarchives %s", permissionsSessionMutationDecision(m.Policy.Rules, "session_commit"), permissionsSessionMutationDecision(m.Policy.Rules, "session_archive"), permissionsSessionMutationDecision(m.Policy.Rules, "session_unarchive")),
 	}
 	y := rect.Y + 2
 	for _, line := range lines {
