@@ -24,9 +24,10 @@ test('Codex usage modal shows an accessible spoke spinner until initial account 
   assert.match(source, /<LoaderCircle[^>]+animate-spin/)
 })
 
-test('Desktop app preserves the dedicated Codex modal without the removed slash action', async () => {
+test('Desktop app owns the dedicated Codex modal and slash action without coupling models or fast controls', async () => {
   const source = await readFile(new URL('../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /DesktopCodexUsageModal/)
-  assert.doesNotMatch(source, /action\.kind === 'open-codex-usage'/)
+  assert.match(source, /action\.kind === 'open-codex-usage'/)
+  assert.match(source, /setCodexUsageOpen\(true\)/)
 })

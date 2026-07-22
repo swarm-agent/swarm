@@ -21,19 +21,12 @@ function testSlashPaletteMatchesPlan(): void {
   assert(palette.matches[0]?.id === 'plan', 'expected /plan to be the first match')
 }
 
-function testCodexIsAbsentWhileModelsRetainsBehavior(): void {
+function testCodexOpensUsageWithoutChangingModels(): void {
   const commands = getDesktopSlashCommands()
   const codex = commands.find((command) => command.command === '/codex')
   const models = commands.find((command) => command.command === '/models')
-  assert(codex === undefined, 'expected /codex command to be absent')
+  assert((codex?.action as DesktopSlashCommandAction | undefined)?.kind === 'open-codex-usage', 'expected /codex to open Codex usage')
   assert((models?.action as DesktopSlashCommandAction | undefined)?.kind === 'open-model-picker', 'expected /models to keep opening model picker')
-
-  const codexPalette = buildDesktopSlashPaletteState('/codex')
-  assert(codexPalette.exactMatch === null, 'expected /codex not to have an exact match')
-  assert(codexPalette.matches.length === 0, 'expected /codex not to match any command')
-
-  const modelsPalette = buildDesktopSlashPaletteState('/models')
-  assert(modelsPalette.exactMatch?.id === 'models', 'expected /models to keep matching models command')
 }
 
 function testFastCommandIsReady(): void {
@@ -41,7 +34,6 @@ function testFastCommandIsReady(): void {
   assert(Boolean(fast), 'expected /fast command to exist')
   assert(fast?.state === 'ready', 'expected /fast command to be ready')
   assert((fast?.action as DesktopSlashCommandAction | undefined)?.kind === 'toggle-fast', 'expected /fast to toggle Fast')
-  assert(fast?.tips.every((tip) => !tip.includes('/codex fast')) === true, 'expected /fast tips not to mention the removed /codex fast alias')
 
   const palette = buildDesktopSlashPaletteState('/fast')
   assert(palette.exactMatch?.id === 'fast', 'expected /fast to match fast command')
@@ -94,7 +86,7 @@ function testKeybindingsWarnsAboutDesktopShortcuts(): void {
 function main(): void {
   testPlanCommandIsReady()
   testSlashPaletteMatchesPlan()
-  testCodexIsAbsentWhileModelsRetainsBehavior()
+  testCodexOpensUsageWithoutChangingModels()
   testFastCommandIsReady()
   testMCPCommandIsDeferredAndExaRequiresAPIKey()
   testTaskCommandAcceptsFullArguments()
