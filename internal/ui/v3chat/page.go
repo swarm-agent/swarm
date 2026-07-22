@@ -43,7 +43,6 @@ type PageStyles struct {
 	Prompt         tcell.Style
 	Cursor         tcell.Style
 	RenderMarkdown func(string, int) []MarkdownLine
-	RenderCode     func(path, body string, width int) []MarkdownLine
 }
 
 type MarkdownSpan struct {
@@ -2124,26 +2123,6 @@ func (p *Page) renderAssistantRows(content string, width int, styles PageStyles)
 	return rows
 }
 
-func renderCodeLineRows(lines []MarkdownLine, prefix string, fallbackStyle tcell.Style, width int) []renderRow {
-	rows := make([]renderRow, 0, len(lines))
-	for index, line := range lines {
-		linePrefix := prefix
-		if index > 0 {
-			linePrefix = strings.Repeat(" ", utf8.RuneCountInString(prefix))
-		}
-		spans := []renderSpan{{text: linePrefix, style: fallbackStyle}}
-		if len(line.Spans) == 0 {
-			spans = append(spans, renderSpan{text: line.Text, style: line.Style})
-		} else {
-			for _, span := range line.Spans {
-				spans = append(spans, renderSpan{text: span.Text, style: span.Style})
-			}
-		}
-		rows = append(rows, renderRow{text: renderSpansText(spans), style: fallbackStyle, spans: spans})
-	}
-	return rows
-}
-
 func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyles) []renderRow {
 	status := strings.ToLower(strings.TrimSpace(tool.Status))
 	symbol, headerStyle := "•", styles.Accent
@@ -2155,7 +2134,6 @@ func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyle
 	}
 
 	presentation := buildToolPresentation(tool)
-	toolPath := firstToolString(parseToolObject(tool.Output), parseToolObject(tool.Arguments), "path")
 	if presentation.Kind == "plan" {
 		return p.renderPlanToolRows(tool, presentation, width, styles)
 	}
@@ -2207,27 +2185,6 @@ func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyle
 				style = styles.Text
 			case "path":
 				style = styles.Secondary
-			}
-			if (line.Tone == "added" || line.Tone == "removed") && styles.RenderCode != nil {
-				prefix := ""
-				body := line.Text
-				if strings.HasPrefix(body, "+ ") {
-					prefix, body = "+ ", strings.TrimPrefix(body, "+ ")
-				} else if strings.HasPrefix(body, "− ") {
-					prefix, body = "− ", strings.TrimPrefix(body, "− ")
-				}
-				codeLines := styles.RenderCode(toolPath, body, maxInt(1, width-2-utf8.RuneCountInString(prefix)))
-				for _, codeRow := range renderCodeLineRows(codeLines, prefix, style, maxInt(1, width-2)) {
-					if bodyRows >= bodyLimit {
-						bodyClipped = true
-						return
-					}
-					codeRow.text = "  " + codeRow.text
-					codeRow.spans = append([]renderSpan{{text: "  ", style: styles.Muted}}, codeRow.spans...)
-					rows = append(rows, codeRow)
-					bodyRows++
-				}
-				continue
 			}
 			for _, wrapped := range p.cachedWrap("tool:"+tool.ID+":"+key+":"+fmt.Sprint(i), line.Text, maxInt(1, width-2)) {
 				if bodyRows >= bodyLimit {

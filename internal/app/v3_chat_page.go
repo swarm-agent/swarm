@@ -14,18 +14,6 @@ import (
 	"swarm-refactor/swarmtui/internal/ui/v3chat"
 )
 
-func v3ChatMarkdownLines(lines []ui.MarkdownRenderLine) []v3chat.MarkdownLine {
-	out := make([]v3chat.MarkdownLine, 0, len(lines))
-	for _, line := range lines {
-		converted := v3chat.MarkdownLine{Text: line.Text, Style: line.Style, Spans: make([]v3chat.MarkdownSpan, 0, len(line.Spans))}
-		for _, span := range line.Spans {
-			converted.Spans = append(converted.Spans, v3chat.MarkdownSpan{Text: span.Text, Style: span.Style})
-		}
-		out = append(out, converted)
-	}
-	return out
-}
-
 func (a *App) v3ChatStyles() v3chat.PageStyles {
 	theme := a.effectiveThemeOption().Theme
 	return v3chat.PageStyles{
@@ -45,10 +33,16 @@ func (a *App) v3ChatStyles() v3chat.PageStyles {
 		Prompt:       theme.Prompt,
 		Cursor:       theme.PromptCursor,
 		RenderMarkdown: func(body string, width int) []v3chat.MarkdownLine {
-			return v3ChatMarkdownLines(ui.RenderMarkdownLines(theme, body, width))
-		},
-		RenderCode: func(path, body string, width int) []v3chat.MarkdownLine {
-			return v3ChatMarkdownLines(ui.RenderCodeLines(theme, path, body, width))
+			lines := ui.RenderMarkdownLines(theme, body, width)
+			out := make([]v3chat.MarkdownLine, 0, len(lines))
+			for _, line := range lines {
+				converted := v3chat.MarkdownLine{Text: line.Text, Style: line.Style, Spans: make([]v3chat.MarkdownSpan, 0, len(line.Spans))}
+				for _, span := range line.Spans {
+					converted.Spans = append(converted.Spans, v3chat.MarkdownSpan{Text: span.Text, Style: span.Style})
+				}
+				out = append(out, converted)
+			}
+			return out
 		},
 	}
 }
