@@ -602,41 +602,41 @@ export function AgentModelControl({
   }
 
   const modal = open ? createPortal(
-    <div className="fixed inset-0 z-[9999] flex items-end justify-center bg-black/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Agent and model settings">
-      <div className="flex max-h-[min(94vh,880px)] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl">
-        <div className="flex items-start justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4">
+    <div className="fixed inset-0 z-[9999] flex items-stretch justify-center bg-black/50 sm:items-center sm:p-3" role="dialog" aria-modal="true" aria-label="Agent and model settings">
+      <div className="flex h-[100dvh] max-h-[100dvh] w-full max-w-6xl flex-col overflow-hidden bg-[var(--app-surface)] shadow-xl sm:h-auto sm:max-h-[min(94dvh,880px)] sm:rounded-xl sm:border sm:border-[var(--app-border)]">
+        <div className="flex flex-col gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 sm:flex-row sm:items-start sm:justify-between sm:px-5 sm:py-4">
           <div className="min-w-0">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent setup</div>
             <div className="mt-1 truncate text-sm font-semibold text-[var(--app-text)]">{draftProfile ? agentLabel(draftProfile) : displayAgentName(currentAgent) || 'Agent'}</div>
             <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Model setup is separate from agent identity. Choose explicitly whether to use it temporarily or save a named profile.</div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="grid w-full shrink-0 grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center">
             {onOpenAgentSettings ? (
-              <button type="button" onClick={() => { setOpen(false); onOpenAgentSettings() }} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+              <button type="button" onClick={() => { setOpen(false); onOpenAgentSettings() }} className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1">
                 <Settings2 size={12} /> Manage agent
               </button>
             ) : null}
-            <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-[var(--app-border)] px-3 py-1 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Close</button>
+            <button type="button" onClick={() => setOpen(false)} className={`min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1 ${onOpenAgentSettings ? '' : 'col-span-2'}`}>Close</button>
           </div>
         </div>
 
-        <div className="grid min-h-0 flex-1 min-[780px]:grid-cols-[280px_minmax(0,1fr)]">
+        <div className="min-h-0 flex-1 overflow-y-auto min-[780px]:grid min-[780px]:grid-cols-[280px_minmax(0,1fr)] min-[780px]:overflow-hidden">
           <div className="min-h-0 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] min-[780px]:border-b-0 min-[780px]:border-r">
             <div className="border-b border-[var(--app-border)] px-4 py-3">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent</div>
               <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Profiles use the current agent. Switch only when needed.</div>
             </div>
-            <div className="max-h-56 space-y-3 overflow-y-auto p-3 min-[780px]:max-h-[660px]">
+            <div className="max-h-44 space-y-3 overflow-y-auto p-3 min-[480px]:max-h-56 min-[780px]:max-h-[660px]">
               {agentSections.map((section) => (
                 <section key={section.label}>
                   <div className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{section.label}</div>
-                  <div className="grid gap-1">
+                  <div className="grid gap-1 min-[480px]:grid-cols-2 min-[780px]:grid-cols-1">
                     {section.profiles.map((profile) => {
                       const selected = profile.name === draftAgentName
                       return (
-                        <button key={profile.name} type="button" onClick={() => chooseAgent(profile)} aria-pressed={selected} className={`group flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-xs transition ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}>
+                        <button key={profile.name} type="button" onClick={() => chooseAgent(profile)} aria-pressed={selected} className={`group flex w-full items-start gap-2 rounded-lg border px-2.5 py-2 text-left text-xs transition min-[480px]:items-center ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}>
                           <span className="min-w-0 flex-1 truncate font-semibold">{agentLabel(profile)}</span>
-                          <span className="shrink-0 text-[10px] text-[var(--app-text-subtle)]">{agentModeLabel(profile)} · {modelBehaviorLabel(profile)}</span>
+                          <span className="max-w-[48%] shrink-0 text-right text-[10px] leading-4 text-[var(--app-text-subtle)]">{agentModeLabel(profile)} · {modelBehaviorLabel(profile)}</span>
                         </button>
                       )
                     })}
@@ -646,14 +646,14 @@ export function AgentModelControl({
             </div>
           </div>
 
-          <div className="min-h-0 overflow-y-auto p-5">
+          <div className="min-h-0 p-4 min-[780px]:overflow-y-auto min-[780px]:p-5">
             {!draftProfile || !isSystemUtility(draftProfile.name) || visibleModelProfiles.length > 0 ? <section aria-label="Saved model profiles" className="mb-4">
-              <div className="mb-2 flex items-end justify-between gap-3">
+              <div className="mb-2 flex flex-col items-stretch gap-3 sm:flex-row sm:items-end sm:justify-between">
                 <div>
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{modelProfilePolicyGroupLabel(effectiveDraftMode)} profiles</div>
                   <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Profiles are grouped by model policy to keep the current setup clear.</div>
                 </div>
-                {!draftProfile || !isSystemUtility(draftProfile.name) ? <button type="button" onClick={() => chooseModelProfile(null)} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--app-border)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"><Plus size={12} />New profile</button> : null}
+                {!draftProfile || !isSystemUtility(draftProfile.name) ? <button type="button" onClick={() => chooseModelProfile(null)} className="inline-flex min-h-10 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] sm:min-h-0 sm:py-1.5"><Plus size={12} />New profile</button> : null}
               </div>
               {profileGroupSwitchable ? <SetupProfileGroupSwitch value={effectiveDraftMode} onChange={setDraftMode} /> : null}
               {visibleModelProfiles.length ? (
@@ -686,7 +686,7 @@ export function AgentModelControl({
             </section> : null}
 
             {!draftProfile || !isSystemUtility(draftProfile.name) ? (
-              <div className="mb-4 grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+              <div className="mb-4 grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 sm:p-4">
                 <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
                   Profile name
                   <input value={draftProfileName} onChange={(event) => setDraftProfileName(event.target.value)} placeholder="Name this model setup" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm font-normal normal-case tracking-normal text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
@@ -754,11 +754,11 @@ export function AgentModelControl({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4">
-          <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Cancel</button>
-          <button type="button" disabled={busy || saving || !draftProfile || isSystemUtility(draftProfile.name)} onClick={() => { void confirm('temporary') }} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">Continue for this chat only</button>
-          {editingProfileId && (!draftProfile || !isSystemUtility(draftProfile.name)) ? <button type="button" disabled={busy || saving || !customized} onClick={() => { void confirm('create-copy') }} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">Save as new</button> : null}
-          <button type="button" disabled={busy || saving || !draftProfile || (isSystemUtility(draftProfile.name) ? !singleDraft.provider || !singleDraft.model || !singleDraft.thinking : !draftProfileName.trim() || Boolean(editingProfileId && !customized))} onClick={() => { void confirm(editingProfileId ? 'update' : 'create') }} className="rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60">
+        <div className="grid shrink-0 grid-cols-2 gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:flex sm:flex-wrap sm:items-center sm:justify-end sm:px-5 sm:py-4">
+          <button type="button" onClick={() => setOpen(false)} className="min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1.5">Cancel</button>
+          <button type="button" disabled={busy || saving || !draftProfile || isSystemUtility(draftProfile.name)} onClick={() => { void confirm('temporary') }} className="min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5">Continue for this chat only</button>
+          {editingProfileId && (!draftProfile || !isSystemUtility(draftProfile.name)) ? <button type="button" disabled={busy || saving || !customized} onClick={() => { void confirm('create-copy') }} className="min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5">Save as new</button> : null}
+          <button type="button" disabled={busy || saving || !draftProfile || (isSystemUtility(draftProfile.name) ? !singleDraft.provider || !singleDraft.model || !singleDraft.thinking : !draftProfileName.trim() || Boolean(editingProfileId && !customized))} onClick={() => { void confirm(editingProfileId ? 'update' : 'create') }} className="col-span-2 min-h-10 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-3 py-2 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5">
             {saving || busy ? 'Saving…' : draftProfile && isSystemUtility(draftProfile.name) ? `Save ${displayAgentName(draftProfile.name)} model` : editingProfileId ? customized ? 'Save and apply' : 'Saved profile in use' : 'Create profile and apply'}
           </button>
         </div>
@@ -856,18 +856,21 @@ function PrimaryAgentControlRow({
   onModelModeChange: (value: DraftMode) => void
 }) {
   return (
-    <div className="flex min-w-[640px] items-center gap-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3">
-      <div className="min-w-0 flex-1">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Default session mode</div>
-        <div className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">How new sessions start</div>
+    <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 lg:grid-cols-2 lg:gap-4">
+      <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_176px] sm:items-center">
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Default session mode</div>
+          <div className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">How new sessions start</div>
+        </div>
+        <SessionModeChoices value={sessionMode} onChange={onSessionModeChange} />
       </div>
-      <SessionModeChoices value={sessionMode} onChange={onSessionModeChange} className="min-w-[176px]" />
-      <div aria-hidden="true" className="h-8 w-px shrink-0 bg-[var(--app-border)]" />
-      <div className="min-w-0 flex-1">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
-        <div className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">One model or split by mode</div>
+      <div className="grid min-w-0 gap-2 border-t border-[var(--app-border)] pt-3 sm:grid-cols-[minmax(0,1fr)_176px] sm:items-center lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
+          <div className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">One model or split by mode</div>
+        </div>
+        <ModelPolicyChoices value={modelMode} splitModeAllowed={splitModeAllowed} onChange={onModelModeChange} />
       </div>
-      <ModelPolicyChoices value={modelMode} splitModeAllowed={splitModeAllowed} onChange={onModelModeChange} className="min-w-[176px]" />
     </div>
   )
 }
@@ -915,9 +918,9 @@ function ModelDraftEditor({
   const thinkingOptions = thinkingOptionsForOption(selectedOption)
   const normalizedThinking = thinkingOptions.includes(normalizeThinking(draft.thinking)) ? normalizeThinking(draft.thinking) : defaultThinkingForOption(selectedOption)
   return (
-    <div className="mt-4 rounded-xl border border-[var(--app-border)] p-4">
+    <div className="mt-4 rounded-xl border border-[var(--app-border)] p-3 sm:p-4">
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]"><GitBranch size={14} />{title}</div>
-      <div className="grid gap-3 md:grid-cols-[minmax(130px,0.7fr)_minmax(220px,1.4fr)_minmax(130px,0.7fr)_minmax(130px,0.7fr)]">
+      <div className="grid gap-3 sm:grid-cols-2 min-[1100px]:grid-cols-[minmax(130px,0.7fr)_minmax(220px,1.4fr)_minmax(130px,0.7fr)_minmax(130px,0.7fr)]">
         <SelectField label="Provider" value={draft.provider} onChange={onProviderChange} options={providers.map((provider) => ({ label: provider, value: provider }))} placeholder="Choose provider" />
         <ModelSelectField label="Model" value={selectedOption ? modelOptionKey(selectedOption) : ''} onChange={onModelChange} options={choices} placeholder="Choose model" disabled={!draft.provider.trim()} />
         <SelectField label="Thinking" value={normalizedThinking} onChange={onThinkingChange} options={thinkingOptions.map((option) => ({ label: option, value: option }))} disabled={!selectedOption || thinkingOptions.length <= 1} />
