@@ -2462,7 +2462,29 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
         <div className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
           <span>{group.label}</span>
           <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${group.id === 'needs_review' || input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
-            {sidebarShouldShowReviewAction(group.id, input.selectionMode) ? <button type="button" className="rounded border border-[var(--app-border)] px-1.5 py-0.5 normal-case tracking-normal" aria-expanded={input.reviewCleanupOpen} onClick={input.onToggleReviewCleanup}>Review</button> : null}
+            {sidebarShouldShowReviewAction(group.id, input.selectionMode) ? (
+              <>
+                <button
+                  type="button"
+                  className="grid h-5 w-5 place-items-center rounded border border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                  aria-label="Select sessions to archive"
+                  title="Select sessions to archive"
+                  onClick={() => input.onEnterSelectionMode(group.id)}
+                >
+                  <ListChecks size={12} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className="grid h-5 w-5 place-items-center rounded border border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                  aria-label="Review worktrees"
+                  title="Review worktrees"
+                  aria-expanded={input.reviewCleanupOpen}
+                  onClick={input.onToggleReviewCleanup}
+                >
+                  <GitBranch size={12} aria-hidden="true" />
+                </button>
+              </>
+            ) : null}
             {group.showInactiveThreshold ? (
               <label className="flex items-center gap-1 font-normal">
                 <span>Show last</span>
