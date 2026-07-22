@@ -33,7 +33,7 @@ func TestPlanExecutionSidebarProjectionAndResponsiveLayout(t *testing.T) {
 	}
 }
 
-func TestPlanExecutionPlanViewerRequiresCtrlP(t *testing.T) {
+func TestPlanExecutionPlanViewerUsesCtrlPAndKeepsPlainPForComposer(t *testing.T) {
 	p := planExecutionTestPage("in_progress")
 	if p.handlePlanExecutionKey(tcell.NewEventKey(tcell.KeyRune, 'p', tcell.ModNone)) {
 		t.Fatal("plain p should remain available to the composer")
@@ -43,6 +43,18 @@ func TestPlanExecutionPlanViewerRequiresCtrlP(t *testing.T) {
 	}
 	if !p.handlePlanExecutionKey(tcell.NewEventKey(tcell.KeyCtrlP, 0, tcell.ModNone)) || !p.planEditorVisible {
 		t.Fatal("Ctrl+P did not open the plan viewer")
+	}
+}
+
+func TestPlanExecutionPlanViewerOpensFromPlanCommand(t *testing.T) {
+	p := planExecutionTestPage("in_progress")
+	p.input = "/plan"
+	p.inputCursor = len([]rune(p.input))
+	if !p.handlePlanExecutionKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)) || !p.planEditorVisible {
+		t.Fatal("/plan did not open the plan viewer")
+	}
+	if p.input != "" || p.inputCursor != 0 {
+		t.Fatalf("composer was not cleared: input=%q cursor=%d", p.input, p.inputCursor)
 	}
 }
 
@@ -73,6 +85,13 @@ func TestPlanExecutionFailedCheckpointQueuesCanonicalRecoveryActions(t *testing.
 		if !ok || action.Kind != ChatActionPlanExecution || action.PlanExecution.Operation != tt.want || action.PlanExecution.CheckpointID != "cp-1" {
 			t.Fatalf("%s action = %#v", tt.want, action)
 		}
+	}
+}
+
+func TestPlanExecutionSidebarAdvertisesPlanCommand(t *testing.T) {
+	p := planExecutionTestPage("in_progress")
+	if hint := p.planExecutionControlHint(planExecutionView{status: "in_progress"}); !strings.Contains(hint, "Ctrl+P or /plan") {
+		t.Fatalf("control hint = %q, want Ctrl+P or /plan guidance", hint)
 	}
 }
 

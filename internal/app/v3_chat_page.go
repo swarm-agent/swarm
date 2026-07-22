@@ -137,6 +137,49 @@ func (a *App) newV3ChatPage(runtime *v3chat.Runtime, routeLabel, profileLabel st
 	return page
 }
 
+func (a *App) showV3CurrentPlan() {
+	if a == nil || a.v3Chat == nil {
+		return
+	}
+	if a.api == nil {
+		a.v3Chat.ClosePlanModal()
+		a.v3Chat.SetStatus("/plan failed: api client is not configured")
+		return
+	}
+	runtime := a.v3Chat.Runtime()
+	if runtime == nil || runtime.Store() == nil {
+		a.v3Chat.ClosePlanModal()
+		a.v3Chat.SetStatus("/plan failed: session state is unavailable")
+		return
+	}
+	sessionID := strings.TrimSpace(runtime.Store().Snapshot().Session.ID)
+	if sessionID == "" {
+		a.v3Chat.ClosePlanModal()
+		a.v3Chat.SetStatus("/plan failed: session id is unavailable")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	plan, ok, err := a.api.GetActiveSessionPlan(ctx, sessionID)
+	if err != nil {
+		a.v3Chat.ClosePlanModal()
+		a.v3Chat.SetStatus("/plan failed: " + err.Error())
+		return
+	}
+	if !ok {
+		a.v3Chat.ClosePlanModal()
+		a.v3Chat.SetStatus("current plan: no active plan")
+		return
+	}
+	if !a.v3Chat.OpenCurrentPlanModal(plan) {
+		a.v3Chat.ClosePlanModal()
+		a.v3Chat.SetStatus("/plan failed: current plan has no structured document")
+		return
+	}
+	a.v3Chat.SetStatus("current plan: " + emptyFallback(strings.TrimSpace(plan.Title), strings.TrimSpace(plan.ID)))
+}
+
 func (a *App) handleV3ChatCommand() {
 	if a == nil || a.v3Chat == nil {
 		return

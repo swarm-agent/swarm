@@ -659,6 +659,8 @@ func (a *App) Run() error {
 					a.home.SetStatus("home")
 				case v3chat.PageActionCommand:
 					a.handleV3ChatCommand()
+				case v3chat.PageActionOpenCurrentPlan:
+					a.showV3CurrentPlan()
 				}
 				dirty = true
 				continue
@@ -1818,8 +1820,13 @@ func (a *App) loadSessionSummary(ctx context.Context, sessionID string) (model.S
 
 func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 	keybinds := a.activeKeyBindings()
-	if a.route == "v3chat" && a.v3Chat != nil && a.v3Chat.PendingPermissionVisible() {
-		return false
+	if a.route == "v3chat" && a.v3Chat != nil {
+		if a.v3Chat.PendingPermissionVisible() {
+			return false
+		}
+		if a.v3Chat.PlanModalVisible() && ev != nil && ev.Key() == tcell.KeyCtrlC {
+			return false
+		}
 	}
 	if a.home != nil && a.home.OnboardingVisible() {
 		return false
@@ -2048,6 +2055,13 @@ func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
 func (a *App) handleChatKey(ev *tcell.EventKey) bool {
 	if a.chat == nil {
 		return false
+	}
+	if ev != nil && ev.Key() == tcell.KeyCtrlP && strings.TrimSpace(a.chat.InputValue()) == "" {
+		a.handlePlanCommand([]string{"show"})
+		if status := strings.TrimSpace(a.home.Status()); status != "" {
+			a.chat.SetStatus(status)
+		}
+		return true
 	}
 	if !a.activeKeyBindings().Match(ev, ui.KeybindChatSubmit) {
 		return false
@@ -2484,6 +2498,14 @@ func (a *App) handleNewCommand() {
 
 func (a *App) handlePlanCommand(args []string) {
 	a.home.ClearCommandOverlay()
+	if a.route == "v3chat" && a.v3Chat != nil {
+		if len(args) == 0 || strings.EqualFold(args[0], "show") {
+			a.showV3CurrentPlan()
+			return
+		}
+		a.v3Chat.SetStatus("usage: /plan [show]")
+		return
+	}
 	if a.route != "chat" || a.chat == nil {
 		a.home.SetStatus("plan commands are available in chat: /plan [show|exit|list|use|new]")
 		return

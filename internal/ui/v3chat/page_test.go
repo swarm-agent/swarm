@@ -356,7 +356,7 @@ func TestPlanPermissionFromHydrationUsesStructuredCardAndFullPlanModal(t *testin
 	page.Draw(screen)
 	screen.Show()
 	drawn := simulationText(screen, 100, 30)
-	for _, want := range []string{"Plan approval", "PLAN", "Two-step completion plan", "Finish the target work end-to-end.", "CHECKPOINTS", "2 checkpoints", "1. Verify the work  ·  Pending", "2. Finish the work  ·  Pending", "Ctrl+P  Open full plan", "Enter Approve"} {
+	for _, want := range []string{"Plan approval", "PLAN", "Two-step completion plan", "Finish the target work end-to-end.", "CHECKPOINTS", "2 checkpoints", "1. Verify the work  ·  Pending", "2. Finish the work  ·  Pending", "Ctrl+P or /plan  Open full plan", "Enter Approve"} {
 		if !strings.Contains(drawn, want) {
 			t.Fatalf("structured plan card missing %q:\n%s", want, drawn)
 		}
@@ -374,17 +374,43 @@ func TestPlanPermissionFromHydrationUsesStructuredCardAndFullPlanModal(t *testin
 	if got := string(page.input); got != "p" {
 		t.Fatalf("plain p input = %q, want %q", got, "p")
 	}
-	page.HandleKey(tcell.NewEventKey(tcell.KeyCtrlP, 0, tcell.ModNone))
-	page.Draw(screen)
-	screen.Show()
-	modal := simulationText(screen, 100, 30)
-	for _, want := range []string{"PLAN  ·  Two-step completion plan", "Goal: Finish the target work end-to-end.", "1. Verify the work", "Tasks:", "Acceptance:", "Work is complete"} {
-		if !strings.Contains(modal, want) {
-			t.Fatalf("full plan modal missing %q:\n%s", want, modal)
-		}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyCtrlU, 0, tcell.ModNone))
+	for _, r := range "/plan" {
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
 	}
-	if !page.planModal || page.planModalPlan == nil || page.planModalPlan.Document == nil {
-		t.Fatal("proposal document was not retained for the full-plan modal")
+	if action := page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)); action != PageActionOpenCurrentPlan {
+		t.Fatalf("/plan action = %v, want fresh current-plan request", action)
+	}
+	if page.planModal {
+		t.Fatal("/plan opened the proposal payload before the current-plan API result")
+	}
+	if action := page.HandleKey(tcell.NewEventKey(tcell.KeyCtrlP, 0, tcell.ModNone)); action != PageActionOpenCurrentPlan {
+		t.Fatalf("Ctrl+P action = %v, want fresh current-plan request", action)
+	}
+}
+
+func TestOpenCurrentPlanModalUsesFetchedPlan(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-plan"}, HasActivePlan: true, ActivePlan: &client.SessionPlan{ID: "stale", Document: &client.SessionPlanDocument{Title: "Stale plan"}}}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	fetched := client.SessionPlan{ID: "fresh", Document: &client.SessionPlanDocument{Title: "Fresh plan"}}
+	if !page.OpenCurrentPlanModal(fetched) || !page.PlanModalVisible() {
+		t.Fatal("fetched current plan did not open")
+	}
+	if page.planModalPlan == nil || page.planModalPlan.ID != "fresh" {
+		t.Fatalf("plan modal = %#v, want freshly fetched plan", page.planModalPlan)
+	}
+}
+
+func TestCtrlPRequestsFreshCurrentPlan(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-plan"}, HasActivePlan: true, ActivePlan: &client.SessionPlan{ID: "stale", Document: &client.SessionPlanDocument{Title: "Stale plan"}}}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	if action := page.HandleKey(tcell.NewEventKey(tcell.KeyCtrlP, 0, tcell.ModNone)); action != PageActionOpenCurrentPlan {
+		t.Fatalf("Ctrl+P action = %v, want fresh current-plan request", action)
+	}
+	if page.PlanModalVisible() {
+		t.Fatal("Ctrl+P opened cached plan before the API result")
 	}
 }
 
@@ -394,7 +420,7 @@ func TestPlanToolRowsRenderDedicatedCardAndWideTextKeepsBorder(t *testing.T) {
 	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
 	tool := ToolTimelineItem{ID: "plan-tool", Name: "plan_manage", Status: "completed", Output: `{"action":"save","plan":{"title":"界 plan","document":{"title":"界 plan","info":{"goal":"Render safely"},"checkpoints":[{"id":"cp-1","title":"One","status":"completed"}]}}}`}
 	rows := page.renderToolRows(tool, 40, testPageStyles())
-	if len(rows) < 5 || !strings.HasPrefix(rows[0].text, "┌") || !strings.Contains(rows[1].text, "PLAN") || !strings.Contains(renderRowsText(rows), "1. One  ·  Completed") || !strings.Contains(renderRowsText(rows), "Ctrl+P  Open full plan") || strings.Contains(renderRowsText(rows), `{"`) {
+	if len(rows) < 5 || !strings.HasPrefix(rows[0].text, "┌") || !strings.Contains(rows[1].text, "PLAN") || !strings.Contains(renderRowsText(rows), "1. One  ·  Completed") || !strings.Contains(renderRowsText(rows), "Ctrl+P or /plan  Open full plan") || strings.Contains(renderRowsText(rows), `{"`) {
 		t.Fatalf("plan tool rows are not a dedicated structured card: %#v", rows)
 	}
 	screen := tcell.NewSimulationScreen("UTF-8")
@@ -1441,7 +1467,7 @@ func TestPageCoalescesPlanPermissionAndCorrelatedToolResultIntoOneCard(t *testin
 	if got := strings.Count(rendered, "┌"); got != 1 {
 		t.Fatalf("plan interaction rendered %d card boxes, want 1:\n%s", got, rendered)
 	}
-	for _, want := range []string{"Approved · Completed", "One plan interaction", "1. Do the work  ·  Pending", "Ctrl+P  Open full plan"} {
+	for _, want := range []string{"Approved · Completed", "One plan interaction", "1. Do the work  ·  Pending", "Ctrl+P or /plan  Open full plan"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("coalesced plan card missing %q:\n%s", want, rendered)
 		}

@@ -2,7 +2,6 @@ package v3chat
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -63,6 +62,7 @@ const (
 	PageActionNone PageAction = iota
 	PageActionHome
 	PageActionCommand
+	PageActionOpenCurrentPlan
 )
 
 type cachedRows struct {
@@ -722,7 +722,7 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 		// Recovery scope is already retained by the runtime's hydrated session.
 		go p.Recover("", "")
 	case ev.Key() == tcell.KeyCtrlP:
-		p.openPlanModalLocked()
+		return PageActionOpenCurrentPlan
 	case ev.Key() == tcell.KeyRune:
 		if match(KeyMoveUpAlt) {
 			p.scroll++
@@ -744,45 +744,37 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	return PageActionNone
 }
 
-func (p *Page) openPlanPermissionModalLocked() bool {
-	if p.runtime == nil || p.runtime.Store() == nil {
+// OpenCurrentPlanModal opens the plan returned by the current-plan API.
+func (p *Page) OpenCurrentPlanModal(plan client.SessionPlan) bool {
+	if p == nil || plan.Document == nil {
 		return false
 	}
-	permissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
-	if len(permissions) == 0 {
-		return false
-	}
-	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
-	intent, ok := parsePlanPermissionIntent(permissions[p.permissionIndex])
-	if !ok {
-		return false
-	}
-	raw, err := json.Marshal(intent.Document)
-	if err != nil {
-		return false
-	}
-	var document client.SessionPlanDocument
-	if json.Unmarshal(raw, &document) != nil {
-		return false
-	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.planModal = true
 	p.planModalScroll = 0
-	p.planModalPlan = &client.SessionPlan{ID: toolString(intent.Document, "id"), Title: intent.Title, Document: &document}
+	p.planModalPlan = &plan
 	return true
 }
 
-func (p *Page) openPlanModalLocked() bool {
-	if p.runtime == nil || p.runtime.Store() == nil {
+func (p *Page) PlanModalVisible() bool {
+	if p == nil {
 		return false
 	}
-	plan := p.runtime.Store().Snapshot().Plan.ActivePlan
-	if plan == nil || plan.Document == nil {
-		return false
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.planModal
+}
+
+func (p *Page) ClosePlanModal() {
+	if p == nil {
+		return
 	}
-	p.planModal = true
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.planModal = false
 	p.planModalScroll = 0
 	p.planModalPlan = nil
-	return true
 }
 
 func (p *Page) handlePlanModalKeyLocked(ev *tcell.EventKey) PageAction {
@@ -790,7 +782,7 @@ func (p *Page) handlePlanModalKeyLocked(ev *tcell.EventKey) PageAction {
 		return PageActionNone
 	}
 	switch ev.Key() {
-	case tcell.KeyEscape, tcell.KeyCtrlP:
+	case tcell.KeyEscape:
 		p.planModal = false
 		p.planModalScroll = 0
 		p.planModalPlan = nil
@@ -804,12 +796,6 @@ func (p *Page) handlePlanModalKeyLocked(ev *tcell.EventKey) PageAction {
 		p.planModalScroll += 8
 	case tcell.KeyHome:
 		p.planModalScroll = 0
-	case tcell.KeyRune:
-		if ev.Rune() == 'q' {
-			p.planModal = false
-			p.planModalScroll = 0
-			p.planModalPlan = nil
-		}
 	}
 	return PageActionNone
 }
@@ -1027,9 +1013,17 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 	case tcell.KeyEscape:
 		p.resolvePermissionLocked(permissions[p.permissionIndex], "deny_once")
 	case tcell.KeyEnter:
+		if planPermission {
+			command := strings.ToLower(strings.TrimSpace(string(p.input)))
+			if command == "/plan" || command == "/plan show" {
+				p.input = nil
+				p.cursor = 0
+				return PageActionOpenCurrentPlan
+			}
+		}
 		p.resolvePermissionLocked(permissions[p.permissionIndex], "allow_once")
 	case tcell.KeyCtrlP:
-		p.openPlanPermissionModalLocked()
+		return PageActionOpenCurrentPlan
 	case tcell.KeyRune:
 		if !utf8.ValidRune(ev.Rune()) || ev.Rune() < ' ' {
 			break
@@ -1800,7 +1794,7 @@ func (p *Page) drawPlanModal(screen tcell.Screen, width, height int, styles Page
 	drawBox(screen, x, y, modalWidth, modalHeight, styles.BorderActive)
 	title := firstNonEmpty(plan.Document.Title, plan.Title, "Structured plan")
 	drawText(screen, x+2, y+1, modalWidth-4, styles.Primary.Bold(true), "PLAN  ·  "+title)
-	drawText(screen, x+2, y+2, modalWidth-4, styles.Muted, "Structured plan  ·  ↑/↓ scroll  ·  p or q close")
+	drawText(screen, x+2, y+2, modalWidth-4, styles.Muted, "Structured plan  ·  ↑/↓ scroll  ·  Esc close")
 	lines := structuredPlanModalLines(plan.Document, modalWidth-4, styles)
 	visibleRows := maxInt(1, modalHeight-5)
 	maxScroll := maxInt(0, len(lines)-visibleRows)
@@ -2246,7 +2240,7 @@ func (p *Page) renderPlanToolRows(tool ToolTimelineItem, presentation toolPresen
 	if p.runtime != nil && p.runtime.Store() != nil {
 		plan := p.runtime.Store().Snapshot().Plan.ActivePlan
 		if plan != nil && plan.Document != nil {
-			appendBody("Ctrl+P  Open full plan", styles.Muted)
+			appendBody("Ctrl+P or /plan  Open full plan", styles.Muted)
 		}
 	}
 	rows = append(rows, renderRow{text: "└" + strings.Repeat("─", innerWidth) + "┘", style: borderStyle})

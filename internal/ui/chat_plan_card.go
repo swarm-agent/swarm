@@ -10,7 +10,7 @@ import (
 // renderPlanToolCardLines gives plan lifecycle tools a quiet, dedicated card in
 // the transcript. The full structured document stays in the existing plan
 // modal; the timeline only carries the summary needed to decide whether to
-// open it with Ctrl+P.
+// open it with Ctrl+P or /plan.
 func (p *ChatPage) renderPlanToolCardLines(message chatMessageItem, payload map[string]any, width int) []chatRenderLine {
 	if p == nil || payload == nil || width < 12 {
 		return nil
@@ -80,7 +80,7 @@ func (p *ChatPage) renderPlanToolCardLines(message chatMessageItem, payload map[
 		content = appendPlanCardWrappedLines(content, updateSummary, innerWidth, p.theme.TextMuted)
 	}
 	if len(document) > 0 {
-		content = append(content, chatRenderLine{Text: "Ctrl+P  Open full plan", Style: p.theme.TextMuted})
+		content = append(content, chatRenderLine{Text: "Ctrl+P or /plan  Open full plan", Style: p.theme.TextMuted})
 	}
 
 	return planCardBoxLines(content, width, borderStyle)

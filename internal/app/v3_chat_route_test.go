@@ -216,6 +216,39 @@ func TestV3ChatCtrlXKeepsChatMountedThroughSessionModal(t *testing.T) {
 	}
 }
 
+func TestV3ChatPlanModalEscapeClosesButCtrlCDoesNot(t *testing.T) {
+	page := v3chat.NewPage(v3chat.NewRuntime(nil, v3chat.NewStore(), nil), v3chat.PageStyles{})
+	if !page.OpenCurrentPlanModal(client.SessionPlan{ID: "plan", Document: &client.SessionPlanDocument{Title: "Current plan"}}) {
+		t.Fatal("plan modal did not open")
+	}
+	app := &App{
+		home:   ui.NewHomePage(model.EmptyHome()),
+		v3Chat: page,
+		route:  "v3chat",
+		config: defaultAppConfig(),
+	}
+
+	ctrlC := tcell.NewEventKey(tcell.KeyCtrlC, 0, tcell.ModNone)
+	if app.handleGlobalKey(ctrlC) {
+		t.Fatal("Ctrl-C was intercepted by the global quit handler while the plan modal was open")
+	}
+	page.HandleKey(ctrlC)
+	if !page.PlanModalVisible() {
+		t.Fatal("Ctrl-C closed the plan modal")
+	}
+	if app.quitRequested {
+		t.Fatal("Ctrl-C requested quit while the plan modal was open")
+	}
+
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	if page.PlanModalVisible() {
+		t.Fatal("Escape did not close the plan modal")
+	}
+	if app.route != "v3chat" {
+		t.Fatalf("Escape left chat route = %q, want v3chat", app.route)
+	}
+}
+
 func TestV3ChatCtrlCClearsInputBeforeRequestingQuit(t *testing.T) {
 	page := v3chat.NewPage(v3chat.NewRuntime(nil, v3chat.NewStore(), nil), v3chat.PageStyles{})
 	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))

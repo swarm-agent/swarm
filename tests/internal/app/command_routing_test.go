@@ -10,6 +10,7 @@ import (
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 	"swarm-refactor/swarmtui/internal/ui"
+	"swarm-refactor/swarmtui/internal/ui/v3chat"
 )
 
 func newCommandTestApp() *App {
@@ -504,6 +505,57 @@ func TestExecuteCommand_AgentsOpenFromChatKeepsChatRoute(t *testing.T) {
 	}
 	if !a.home.AgentsModalVisible() {
 		t.Fatalf("AgentsModalVisible() = false, want true")
+	}
+}
+
+func TestExecuteCommand_V3PlanFetchesCurrentPlanEveryTime(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v3/sessions/session-plan/plans/active" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		calls++
+		if calls == 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "plan service unavailable"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true, "has_active": true,
+			"active_plan": map[string]any{
+				"id": "plan", "title": []string{"First", "Second"}[calls-1],
+				"document": map[string]any{"title": []string{"First", "Second"}[calls-1], "info": map[string]any{"goal": "current"}, "checkpoints": []any{}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	store := v3chat.NewStore()
+	store.Dispatch(v3chat.HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-plan"}, HasActivePlan: true, ActivePlan: &client.SessionPlan{ID: "stale", Document: &client.SessionPlanDocument{Title: "Stale"}}}})
+	a := newCommandTestApp()
+	a.api = client.New(server.URL)
+	a.route = "v3chat"
+	a.v3Chat = v3chat.NewPage(v3chat.NewRuntime(a.api, store, nil), v3chat.PageStyles{})
+
+	a.executeCommand("/plan")
+	if got := a.v3Chat.Status(); got != "current plan: First" {
+		t.Fatalf("first /plan status = %q", got)
+	}
+	a.executeCommand("/plan")
+	if got := a.v3Chat.Status(); got != "current plan: Second" {
+		t.Fatalf("second /plan status = %q", got)
+	}
+	if calls != 2 {
+		t.Fatalf("current-plan API calls = %d, want 2", calls)
+	}
+
+	a.executeCommand("/plan")
+	if got := a.v3Chat.Status(); !strings.Contains(got, "/plan failed:") || !strings.Contains(got, "plan service unavailable") {
+		t.Fatalf("failed /plan status = %q", got)
+	}
+	if a.v3Chat.PlanModalVisible() {
+		t.Fatal("failed /plan retained the previously fetched plan modal")
 	}
 }
 
