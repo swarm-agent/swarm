@@ -76,6 +76,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/permissions", Hint: "Show global permission policy", QuickTips: []string{"/permissions show", "/permissions allow tool <name>", "/permissions allow bash-prefix <command>", "/permissions deny phrase <text>"}},
 		{Command: "/plan", Hint: "Plan commands in chat", QuickTips: []string{"/plan exit", "/plan list", "/plan use <plan_id>", "/plan new [title]"}},
 		{Command: "/quit", Hint: "Exit swarmtui"},
+		{Command: "/rebuild", Hint: "Rebuild the current lane and exit swarmtui"},
 		{Command: "/sessions", Hint: "Open the card-style session manager (active conversations first)"},
 		{Command: "/update", Hint: updateHint, QuickTips: updateQuickTips},
 		{Command: "/themes", Hint: "Open theme modal with live preview", QuickTips: []string{"/themes list", "/themes set <id>", "/themes create <id> from <base>", "/themes edit <id> <slot> <#RRGGBB>", "/themes delete <id>"}},
