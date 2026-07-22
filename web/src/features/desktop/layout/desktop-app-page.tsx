@@ -3835,10 +3835,6 @@ export function DesktopAppPage() {
         setMobileSidebarOpen(true)
         void navigate({ to: '/' })
         return
-      case 'open-codex-usage':
-        setCodexUsageOpen(true)
-        setMobileSidebarOpen(false)
-        return
       case 'open-commit-modal': {
         const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || ''
         const workspaceName = selectedWorkspace?.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
