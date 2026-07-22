@@ -490,7 +490,11 @@ func (p *Page) OpenNew(request NewSessionRequest) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_, err := p.runtime.CreateAndSend(ctx, request)
-		p.finishAsync("", err)
+		ok := ""
+		if err == nil && strings.TrimSpace(request.InitialPrompt) == "" {
+			ok = "new session ready"
+		}
+		p.finishAsync(ok, err)
 	}()
 }
 

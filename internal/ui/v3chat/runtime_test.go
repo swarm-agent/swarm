@@ -205,6 +205,30 @@ func TestCreateAndSendOrdersCreateStoreReadyThenMessage(t *testing.T) {
 	}
 }
 
+func TestCreateAndSendWithoutInitialPromptPrimesSession(t *testing.T) {
+	transport := &fakeTransport{created: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s", Title: "New Session"}, SnapshotEndpointCursor: "cursor"}}
+	runtime := NewRuntime(transport, nil, nil)
+	result, err := runtime.CreateAndSend(context.Background(), NewSessionRequest{Create: client.SessionCreateOptions{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Stop()
+
+	transport.mu.Lock()
+	calls := append([]string(nil), transport.calls...)
+	transport.mu.Unlock()
+	if len(calls) < 3 || !reflect.DeepEqual(calls[:3], []string{"create", "stream", "ready"}) {
+		t.Fatalf("calls = %#v", calls)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("priming sent an unexpected initial message: %#v", calls)
+	}
+	state := runtime.Store().Snapshot()
+	if result.Session.ID != "s" || state.Session.ID != "s" || len(SelectMessages(state)) != 0 {
+		t.Fatalf("primed session state = %#v result=%#v", state, result)
+	}
+}
+
 func TestCreateAndSendEmptySessionStartsAtCurrentWithoutSnapshotCursor(t *testing.T) {
 	transport := &fakeTransport{created: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s", Title: "created"}, Projection: client.SessionV3Projection{SessionID: "s"}}}
 	runtime := NewRuntime(transport, nil, nil)

@@ -351,15 +351,13 @@ type NewSessionRequest struct {
 }
 
 // CreateAndSend closes the snapshot-to-live gap: create response -> store ->
-// resume sent/readiness -> first mutation response -> store.
+// resume sent/readiness -> optional first mutation response -> store. An empty
+// initial prompt deliberately primes the created session for composer input.
 func (r *Runtime) CreateAndSend(ctx context.Context, request NewSessionRequest) (client.SessionV3MessageResult, error) {
 	if r == nil || r.transport == nil {
 		return client.SessionV3MessageResult{}, errors.New("v3 chat transport is not configured")
 	}
-	prompt := request.InitialPrompt
-	if strings.TrimSpace(prompt) == "" {
-		return client.SessionV3MessageResult{}, errors.New("initial prompt is required")
-	}
+	prompt := strings.TrimSpace(request.InitialPrompt)
 	var (
 		created client.SessionV3Hydrated
 		err     error
@@ -383,6 +381,9 @@ func (r *Runtime) CreateAndSend(ctx context.Context, request NewSessionRequest) 
 	r.signalWake()
 	if err := r.connect(ctx, strings.TrimSpace(created.SnapshotEndpointCursor) == ""); err != nil {
 		return client.SessionV3MessageResult{}, fmt.Errorf("connect created v3 session: %w", err)
+	}
+	if prompt == "" {
+		return client.SessionV3MessageResult{Session: created.Session}, nil
 	}
 
 	op := strings.ReplaceAll(uuid.NewString(), "-", "")

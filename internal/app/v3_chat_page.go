@@ -241,9 +241,6 @@ func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, 
 		return errors.New("api client is not configured")
 	}
 	prompt := strings.TrimSpace(intent.InitialPrompt)
-	if prompt == "" {
-		return errors.New("initial prompt is required")
-	}
 	workspacePath := strings.TrimSpace(intent.Workspace.Path)
 	if workspacePath == "" {
 		workspacePath = strings.TrimSpace(a.activeContextPath())
