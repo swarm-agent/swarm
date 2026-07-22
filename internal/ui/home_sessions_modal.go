@@ -23,23 +23,19 @@ type sessionsModalState struct {
 	Scroll    int
 	Items     []ChatSessionPaletteItem
 	Expanded  map[string]bool
+	Filter    int
 }
 
 func sessionManagerBadge(item ChatSessionPaletteItem) string {
 	label := strings.TrimSpace(item.ActivityLabel)
+	if strings.EqualFold(strings.TrimSpace(item.Group), "needs_review") && strings.EqualFold(label, "REVIEW") {
+		label = ""
+	}
 	if item.NeedsAttention && label == "" {
 		label = "NEEDS APPROVAL"
 	}
 	if label == "" && item.Active {
 		label = "ACTIVE"
-	}
-	if label == "" {
-		switch strings.ToLower(strings.TrimSpace(item.Group)) {
-		case "needs_review":
-			label = "REVIEW"
-		case "in_progress":
-			label = "IN PROGRESS"
-		}
 	}
 	if label == "" {
 		return ""
@@ -68,6 +64,7 @@ func (p *HomePage) OpenSessionsModal(items []ChatSessionPaletteItem, query strin
 	p.sessionsModal.Visible = true
 	p.sessionsModal.Items = prepareSessionManagerItems(items)
 	p.sessionsModal.Expanded = make(map[string]bool)
+	p.sessionsModal.Filter = 0
 	p.sessionsModal.Query = strings.TrimSpace(query)
 	p.sessionsModal.Selection = 0
 	p.sessionsModal.Scroll = 0
@@ -89,6 +86,7 @@ func (p *HomePage) HideSessionsModal() {
 	p.sessionsModal.Selection = 0
 	p.sessionsModal.Scroll = 0
 	p.sessionsModal.Expanded = nil
+	p.sessionsModal.Filter = 0
 }
 
 func (p *HomePage) SessionsModalVisible() bool {
@@ -106,12 +104,13 @@ func (p *HomePage) sessionsModalMatches() []ChatSessionPaletteItem {
 	if p == nil || len(p.sessionsModal.Items) == 0 {
 		return nil
 	}
+	items := filterSessionManagerItems(p.sessionsModal.Items, p.sessionsModal.Filter)
 	query := strings.ToLower(strings.TrimSpace(p.sessionsModal.Query))
 	if query == "" {
-		return visibleSessionManagerItems(p.sessionsModal.Items, p.sessionsModal.Expanded)
+		return visibleSessionManagerItems(items, p.sessionsModal.Expanded)
 	}
-	matches := make([]ChatSessionPaletteItem, 0, len(p.sessionsModal.Items))
-	for _, item := range p.sessionsModal.Items {
+	matches := make([]ChatSessionPaletteItem, 0, len(items))
+	for _, item := range items {
 		if strings.Contains(strings.ToLower(item.Title), query) ||
 			strings.Contains(strings.ToLower(item.ID), query) ||
 			strings.Contains(strings.ToLower(item.WorkspaceName), query) ||
@@ -171,6 +170,18 @@ func (p *HomePage) moveSessionsModalSelection(delta int) {
 	}
 	p.sessionsModal.Selection = next
 	p.syncSessionsModalSelection()
+}
+
+func (p *HomePage) moveSessionsModalFilter(delta int) {
+	count := sessionManagerFilterCount()
+	if count == 0 || delta == 0 {
+		return
+	}
+	p.sessionsModal.Filter = (p.sessionsModal.Filter + delta + count) % count
+	p.sessionsModal.Selection = 0
+	p.sessionsModal.Scroll = 0
+	p.syncSessionsModalSelection()
+	p.statusLine = strings.ToLower(sessionManagerFilterLabel(p.sessionsModal.Filter)) + " sessions"
 }
 
 func (p *HomePage) selectedSessionsModalItem() (ChatSessionPaletteItem, bool) {
@@ -255,6 +266,12 @@ func (p *HomePage) handleSessionsModalKey(ev *tcell.EventKey) {
 	case p.keybinds.Match(ev, KeybindModalMoveDown), p.keybinds.Match(ev, KeybindModalMoveDownAlt):
 		p.moveSessionsModalSelection(1)
 		return
+	case ev.Key() == tcell.KeyLeft:
+		p.moveSessionsModalFilter(-1)
+		return
+	case ev.Key() == tcell.KeyRight:
+		p.moveSessionsModalFilter(1)
+		return
 	case p.keybinds.Match(ev, KeybindModalPageUp):
 		p.moveSessionsModalSelection(-homeSessionsModalVisibleCards)
 		return
@@ -335,11 +352,22 @@ func (p *HomePage) drawSessionsModal(s tcell.Screen) {
 		header = fmt.Sprintf("Sessions (%d/%d)", len(matches), len(p.sessionsModal.Items))
 	}
 	DrawText(s, modal.X+2, modal.Y+1, modal.W-4, onPanel(p.theme.Warning.Bold(true)), clampEllipsis(header, modal.W-4))
+	counts := sessionManagerFilterCounts(p.sessionsModal.Items)
+	filterParts := make([]string, 0, sessionManagerFilterCount())
+	for index := 0; index < sessionManagerFilterCount(); index++ {
+		label := fmt.Sprintf("%s %d", sessionManagerFilterLabel(index), counts[index])
+		if index == p.sessionsModal.Filter {
+			label = "[" + label + "]"
+		}
+		filterParts = append(filterParts, label)
+	}
+	filterLine := "‹ " + strings.Join(filterParts, "  ") + " ›"
+	DrawText(s, modal.X+2, modal.Y+2, modal.W-4, onPanel(p.theme.Primary.Bold(true)), clampEllipsis(filterLine, modal.W-4))
 	searchLine := "search: " + p.sessionsModal.Query
-	DrawText(s, modal.X+2, modal.Y+2, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(searchLine, modal.W-4))
+	DrawText(s, modal.X+2, modal.Y+3, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(searchLine, modal.W-4))
 
-	listTop := modal.Y + 4
-	listH := modal.H - 7
+	listTop := modal.Y + 5
+	listH := modal.H - 8
 	visibleCards := listH / homeSessionsModalCardHeight
 	if visibleCards > homeSessionsModalVisibleCards {
 		visibleCards = homeSessionsModalVisibleCards
@@ -416,7 +444,7 @@ func (p *HomePage) drawSessionsModal(s tcell.Screen) {
 		}
 	}
 
-	hint := "Enter open • s subagents • Esc close • type to search • ↑/↓ cards"
+	hint := "←/→ filter • Enter open • s subagents • Esc close • type to search • ↑/↓ cards"
 	DrawText(s, modal.X+2, modal.Y+modal.H-2, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(hint, modal.W-4))
 }
 

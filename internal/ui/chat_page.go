@@ -596,6 +596,7 @@ type ChatPage struct {
 	sessionsPaletteQuery     string
 	sessionsPaletteSelection int
 	sessionsPaletteScroll    int
+	sessionsPaletteFilter    int
 	sessionsPaletteItems     []ChatSessionPaletteItem
 	sessionsPaletteExpanded  map[string]bool
 	bashOutput               chatBashOutputState

@@ -24,6 +24,7 @@ func (p *ChatPage) OpenSessionsPalette(items []ChatSessionPaletteItem, query str
 	p.sessionsPaletteExpanded = make(map[string]bool)
 	p.sessionsPaletteVisible = true
 	p.sessionsPaletteQuery = strings.TrimSpace(query)
+	p.sessionsPaletteFilter = 0
 	p.sessionsPaletteSelection = 0
 	p.sessionsPaletteScroll = 0
 	p.syncSessionsPaletteSelection()
@@ -47,6 +48,7 @@ func (p *ChatPage) closeSessionsPalette() {
 	p.sessionsPaletteScroll = 0
 	p.sessionsPaletteSelection = 0
 	p.sessionsPaletteQuery = ""
+	p.sessionsPaletteFilter = 0
 }
 
 func (p *ChatPage) sessionsPaletteMatches() []ChatSessionPaletteItem {
@@ -56,12 +58,13 @@ func (p *ChatPage) sessionsPaletteMatches() []ChatSessionPaletteItem {
 	if len(p.sessionsPaletteItems) == 0 {
 		return nil
 	}
+	items := filterSessionManagerItems(p.sessionsPaletteItems, p.sessionsPaletteFilter)
 	query := strings.ToLower(strings.TrimSpace(p.sessionsPaletteQuery))
 	if query == "" {
-		return visibleSessionManagerItems(p.sessionsPaletteItems, p.sessionsPaletteExpanded)
+		return visibleSessionManagerItems(items, p.sessionsPaletteExpanded)
 	}
-	matches := make([]ChatSessionPaletteItem, 0, len(p.sessionsPaletteItems))
-	for _, item := range p.sessionsPaletteItems {
+	matches := make([]ChatSessionPaletteItem, 0, len(items))
+	for _, item := range items {
 		if strings.Contains(strings.ToLower(item.Title), query) ||
 			strings.Contains(strings.ToLower(item.ID), query) ||
 			strings.Contains(strings.ToLower(item.WorkspaceName), query) ||
@@ -122,6 +125,18 @@ func (p *ChatPage) moveSessionsPaletteSelection(delta int) {
 	}
 	p.sessionsPaletteSelection = next
 	p.syncSessionsPaletteSelection()
+}
+
+func (p *ChatPage) moveSessionsPaletteFilter(delta int) {
+	count := sessionManagerFilterCount()
+	if count == 0 || delta == 0 {
+		return
+	}
+	p.sessionsPaletteFilter = (p.sessionsPaletteFilter + delta + count) % count
+	p.sessionsPaletteSelection = 0
+	p.sessionsPaletteScroll = 0
+	p.syncSessionsPaletteSelection()
+	p.statusLine = strings.ToLower(sessionManagerFilterLabel(p.sessionsPaletteFilter)) + " sessions"
 }
 
 func (p *ChatPage) pageSessionsPalette(delta int) {
@@ -224,6 +239,12 @@ func (p *ChatPage) handleSessionsPaletteKey(ev *tcell.EventKey) bool {
 	case p.keybinds.Match(ev, KeybindChatMoveDown), p.keybinds.Match(ev, KeybindChatMoveDownAlt):
 		p.moveSessionsPaletteSelection(1)
 		return true
+	case ev.Key() == tcell.KeyLeft:
+		p.moveSessionsPaletteFilter(-1)
+		return true
+	case ev.Key() == tcell.KeyRight:
+		p.moveSessionsPaletteFilter(1)
+		return true
 	case p.keybinds.Match(ev, KeybindChatPageUp):
 		p.pageSessionsPalette(-1)
 		return true
@@ -303,11 +324,22 @@ func (p *ChatPage) drawSessionsPalette(s tcell.Screen, screen Rect) {
 		header = fmt.Sprintf("Sessions (%d/%d)", len(matches), len(p.sessionsPaletteItems))
 	}
 	DrawText(s, modal.X+2, modal.Y+1, modal.W-4, onPanel(p.theme.Warning.Bold(true)), clampEllipsis(header, modal.W-4))
+	counts := sessionManagerFilterCounts(p.sessionsPaletteItems)
+	filterParts := make([]string, 0, sessionManagerFilterCount())
+	for index := 0; index < sessionManagerFilterCount(); index++ {
+		label := fmt.Sprintf("%s %d", sessionManagerFilterLabel(index), counts[index])
+		if index == p.sessionsPaletteFilter {
+			label = "[" + label + "]"
+		}
+		filterParts = append(filterParts, label)
+	}
+	filterLine := "‹ " + strings.Join(filterParts, "  ") + " ›"
+	DrawText(s, modal.X+2, modal.Y+2, modal.W-4, onPanel(p.theme.Primary.Bold(true)), clampEllipsis(filterLine, modal.W-4))
 	searchLine := "search: " + p.sessionsPaletteQuery
-	DrawText(s, modal.X+2, modal.Y+2, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(searchLine, modal.W-4))
+	DrawText(s, modal.X+2, modal.Y+3, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(searchLine, modal.W-4))
 
-	listTop := modal.Y + 4
-	listH := modal.H - 7
+	listTop := modal.Y + 5
+	listH := modal.H - 8
 	if listH > chatSessionsPaletteVisibleRows {
 		listH = chatSessionsPaletteVisibleRows
 	}
@@ -356,6 +388,6 @@ func (p *ChatPage) drawSessionsPalette(s tcell.Screen, screen Rect) {
 		}
 	}
 
-	hint := "Enter open • s subagents • Esc close • type to search • ↑/↓ scroll"
+	hint := "←/→ filter • Enter open • s subagents • Esc close • type to search • ↑/↓ scroll"
 	DrawText(s, modal.X+2, modal.Y+modal.H-2, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(hint, modal.W-4))
 }

@@ -14,6 +14,63 @@ var sessionManagerGroupOrder = map[string]int{
 	"archived":     4,
 }
 
+var sessionManagerFilters = []struct {
+	Label string
+	Group string
+}{
+	{Label: "REVIEW", Group: "needs_review"},
+	{Label: "IN PROGRESS", Group: "in_progress"},
+	{Label: "CHATS", Group: "active_chats"},
+}
+
+func sessionManagerFilterCount() int {
+	return len(sessionManagerFilters)
+}
+
+func sessionManagerFilterLabel(index int) string {
+	if index < 0 || index >= len(sessionManagerFilters) {
+		return ""
+	}
+	return sessionManagerFilters[index].Label
+}
+
+func sessionManagerItemMatchesFilter(item ChatSessionPaletteItem, index int) bool {
+	if index < 0 || index >= len(sessionManagerFilters) {
+		index = 0
+	}
+	group := strings.ToLower(strings.TrimSpace(item.Group))
+	if sessionManagerFilters[index].Group == "active_chats" {
+		return group != "needs_review" && group != "in_progress" && group != "archived"
+	}
+	return group == sessionManagerFilters[index].Group
+}
+
+func filterSessionManagerItems(items []ChatSessionPaletteItem, index int) []ChatSessionPaletteItem {
+	filtered := make([]ChatSessionPaletteItem, 0, len(items))
+	for _, item := range items {
+		if sessionManagerItemMatchesFilter(item, index) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func sessionManagerFilterCounts(items []ChatSessionPaletteItem) []int {
+	counts := make([]int, len(sessionManagerFilters))
+	for _, item := range items {
+		if item.Depth > 0 {
+			continue
+		}
+		for index := range sessionManagerFilters {
+			if sessionManagerItemMatchesFilter(item, index) {
+				counts[index]++
+				break
+			}
+		}
+	}
+	return counts
+}
+
 func prepareSessionManagerItems(items []ChatSessionPaletteItem) []ChatSessionPaletteItem {
 	ordered := append([]ChatSessionPaletteItem(nil), items...)
 	itemByID := make(map[string]ChatSessionPaletteItem, len(ordered))
