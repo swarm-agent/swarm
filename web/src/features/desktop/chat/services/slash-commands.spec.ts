@@ -74,6 +74,15 @@ function testTaskCommandParsesModeDirective(): void {
   assert(planWordLater.request === 'fix plan handling', 'expected later plan text to remain intact')
 }
 
+function testRetiredCommandsAreNotSuggested(): void {
+  const retiredCommands = new Set(['/swarm', '/output', '/rebuild', '/reload', '/vault', '/voice'])
+  const commands = getDesktopSlashCommands()
+  assert(commands.every((command) => !retiredCommands.has(command.command)), 'expected retired slash commands to be absent')
+
+  const visibleCommands = buildDesktopSlashPaletteState('/').matches.map((command) => command.command)
+  assert(visibleCommands.every((command) => !retiredCommands.has(command)), 'expected retired slash commands to be absent from the composer palette')
+}
+
 function testKeybindingsWarnsAboutDesktopShortcuts(): void {
   const keybindings = getDesktopSlashCommands().find((command) => command.id === 'keybindings')
   assert(Boolean(keybindings), 'expected /keybindings command to exist')
@@ -91,6 +100,7 @@ function main(): void {
   testMCPCommandIsDeferredAndExaRequiresAPIKey()
   testTaskCommandAcceptsFullArguments()
   testTaskCommandParsesModeDirective()
+  testRetiredCommandsAreNotSuggested()
   testKeybindingsWarnsAboutDesktopShortcuts()
   console.log('slash-commands tests passed')
 }

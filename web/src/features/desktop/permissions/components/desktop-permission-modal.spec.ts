@@ -3,7 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-import { DesktopPermissionModal, exitPlanExecutionArguments, newPlanLifecycleApprovedArguments } from './desktop-permission-modal'
+import { DesktopPermissionModal, alwaysAllowSessionDeployPolicy, exitPlanExecutionArguments, newPlanLifecycleApprovedArguments } from './desktop-permission-modal'
 import type { DesktopPermissionRecord } from '../../types/realtime'
 
 function exitPlanPermission(approvedArguments: Record<string, unknown> = {}, payloadOverrides: Record<string, unknown> = {}): DesktopPermissionRecord {
@@ -65,6 +65,7 @@ function renderPermission(permission: DesktopPermissionRecord, sessionMode = 'au
     pendingCount: 1,
     sessionMode,
     onOpenChange: () => undefined,
+    onOpenPermissions: () => undefined,
     onResolve: async () => undefined,
   }))
 }
@@ -251,7 +252,7 @@ test('DesktopPermissionModal routes typed plan lifecycle approvals away from gen
   assert.doesNotMatch(newPlan, /Plan update overview/)
 })
 
-test('session deploy permission defaults to one selected proposal and offers separate persistent policy controls', () => {
+test('session deploy permission defaults to one selected proposal and separates one-time from Always allow', () => {
   const markup = renderPermission(planLifecyclePermission('session_deploy', {
     action: 'deploy',
     manifest_version: 1,
@@ -278,12 +279,13 @@ test('session deploy permission defaults to one selected proposal and offers sep
   assert.match(markup, /AI branch suggestion/)
   assert.match(markup, /agent\/primary-work/)
   assert.doesNotMatch(markup, /value="\/workspace" readonly/)
-  assert.match(markup, /Persistent deployment policy/)
-  assert.match(markup, /Save policy &amp; deploy/)
-  assert.match(markup, /Automatic deployments per parent run/)
-  assert.match(markup, /When limit is reached/)
-  assert.match(markup, /Ask every time/)
-  assert.match(markup, /Bounded automatic/)
+  assert.match(markup, />Always allow</)
+  assert.match(markup, /Need granular deployment controls\?/)
+  assert.match(markup, /Permissions settings/)
+  assert.match(markup, /Set ask, bounded automatic limits, or over-limit behavior in Permissions settings/)
+  assert.doesNotMatch(markup, /Save policy &amp; deploy/)
+  assert.doesNotMatch(markup, /Automatic deployments per parent run/)
+  assert.doesNotMatch(markup, /When limit is reached/)
   assert.match(markup, /max-h-\[calc\(100dvh_-_var\(--app-safe-area-top\)_-_var\(--app-safe-area-bottom\)_-_12px\)\]/)
   assert.match(markup, /max-w-\[1100px\]/)
   assert.match(markup, /overflow-x-hidden/)
@@ -294,6 +296,14 @@ test('session deploy permission defaults to one selected proposal and offers sep
   assert.match(markup, /sm:grid-cols-2/)
   assert.match(markup, /sm:grid-cols-3/)
   assert.match(markup, /title="Workspace"/)
+})
+
+test('session deploy Always allow uses the explicit account-wide deployment policy', () => {
+  assert.deepEqual(alwaysAllowSessionDeployPolicy(), {
+    mode: 'always_allow',
+    automatic_deployments_per_parent_run: 0,
+    over_limit_action: 'ask',
+  })
 })
 
 test('session commit permission renders exact commits and persistent choices', () => {

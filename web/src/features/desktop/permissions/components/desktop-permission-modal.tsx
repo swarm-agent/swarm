@@ -52,6 +52,7 @@ interface DesktopPermissionModalProps {
   pendingCount: number
   sessionMode: string
   onOpenChange: (open: boolean) => void
+  onOpenPermissions?: () => void
   onResolve: (
     action: 'approve' | 'deny' | 'approve_always' | 'always_allow' | 'always_deny',
     reason: string,
@@ -1526,19 +1527,27 @@ function sessionDeployInitialProposals(proposals: SessionDeployProposal[]): Sess
 
 const SESSION_DEPLOY_CONTROL_CLASS = 'block h-10 w-full min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap rounded-xl border border-[var(--app-border)] px-3 text-base text-[var(--app-text)] [field-sizing:fixed] sm:text-sm'
 
+export function alwaysAllowSessionDeployPolicy(): SessionDeployPolicy {
+  return {
+    mode: 'always_allow',
+    automatic_deployments_per_parent_run: 0,
+    over_limit_action: 'ask',
+  }
+}
+
 function SessionDeployModal({
   permission,
   open,
   pendingCount,
   sessionMode,
   onOpenChange,
+  onOpenPermissions,
   onResolve,
 }: DesktopPermissionModalProps) {
   const payload = useMemo(() => permission ? parseSessionDeployPermission(permission) : null, [permission])
   const [proposals, setProposals] = useState<SessionDeployFormProposal[]>(() => sessionDeployInitialProposals(payload?.proposals ?? []))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [persistentPolicy, setPersistentPolicy] = useState<SessionDeployPolicy>({ mode: 'always_allow', automatic_deployments_per_parent_run: 1, over_limit_action: 'ask' })
 
   useEffect(() => {
     if (!open || !payload) return
@@ -1587,7 +1596,7 @@ function SessionDeployModal({
     }))
     setLoading(true)
     try {
-      if (action === 'approve_always') await saveCapabilityPolicies({ session_deploy: persistentPolicy })
+      if (action === 'approve_always') await saveCapabilityPolicies({ session_deploy: alwaysAllowSessionDeployPolicy() })
       await onResolve('approve', '', {
         ...payload.approvedArguments,
         action: 'deploy',
@@ -1610,7 +1619,7 @@ function SessionDeployModal({
       sessionMode={sessionMode}
       widthClassName="min-w-0 w-full max-w-[1100px]"
       bodyClassName="min-w-0 overflow-x-hidden overflow-y-auto"
-      footer={<PermissionActionBar loading={loading} onApprove={() => void submit('approve')} onDeny={() => void submit('deny')} onAlwaysAllow={() => void submit('approve_always')} showPersistentActions alwaysAllowLabel="Save policy & deploy" approveLabel={selectedCount === 1 ? 'Deploy 1 session' : `Deploy ${selectedCount} sessions`} shortcutHint="Enter deploys selected · Esc denies" />}
+      footer={<PermissionActionBar loading={loading} onApprove={() => void submit('approve')} onDeny={() => void submit('deny')} onAlwaysAllow={() => void submit('approve_always')} showPersistentActions alwaysAllowLabel="Always allow" approveLabel={selectedCount === 1 ? 'Deploy 1 session' : `Deploy ${selectedCount} sessions`} shortcutHint="Enter deploys selected · Esc denies" />}
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void submit('approve')}
       onDenyShortcut={() => void submit('deny')}
@@ -1619,16 +1628,14 @@ function SessionDeployModal({
     >
       <div className="grid min-w-0 gap-3 sm:gap-4">
         <div className="min-w-0 break-words rounded-2xl border border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_8%,var(--app-surface))] px-3 py-3 text-sm leading-6 text-[var(--app-text-muted)] sm:px-4">
-          One safe default is selected. Check additional proposals to allow more in this batch. Deploy only approves this request; saving a policy is a separate choice.
+          One safe default is selected. Check additional proposals to allow more in this batch. Deploy approves only this request; Always allow also lets future session deployments run without asking.
         </div>
-        <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3 sm:p-4" aria-label="Persistent session deployment policy">
-          <div className="text-sm font-semibold text-[var(--app-text)]">Persistent deployment policy</div>
-          <div className="mt-1 break-words text-xs text-[var(--app-text-muted)]">Applied account-wide only when you choose Save policy &amp; deploy.</div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-3">
-            <SessionDeployField label="Policy"><select aria-label="Session deployment policy" value={persistentPolicy.mode} onChange={(event) => setPersistentPolicy((current) => ({ ...current, mode: event.target.value as SessionDeployPolicy['mode'] }))} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg)]')}><option value="ask">Ask every time</option><option value="always_allow">Always allow</option><option value="bounded">Bounded automatic</option></select></SessionDeployField>
-            <SessionDeployField label="Automatic deployments per parent run"><input aria-label="Automatic deployments per parent run" type="number" min={0} max={256} value={persistentPolicy.automatic_deployments_per_parent_run} disabled={persistentPolicy.mode !== 'bounded'} onChange={(event) => setPersistentPolicy((current) => ({ ...current, automatic_deployments_per_parent_run: Number(event.target.value) }))} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg)] disabled:opacity-50')} /></SessionDeployField>
-            <SessionDeployField label="When limit is reached"><select aria-label="Deployment over-limit action" value={persistentPolicy.over_limit_action} disabled={persistentPolicy.mode !== 'bounded'} onChange={(event) => setPersistentPolicy((current) => ({ ...current, over_limit_action: event.target.value as SessionDeployPolicy['over_limit_action'] }))} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg)] disabled:opacity-50')}><option value="ask">Ask</option><option value="deny">Deny</option></select></SessionDeployField>
+        <section className="flex min-w-0 flex-col gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3 sm:flex-row sm:items-center sm:justify-between sm:p-4" aria-label="Session deployment permission options">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-[var(--app-text)]">Need granular deployment controls?</div>
+            <div className="mt-1 break-words text-xs leading-5 text-[var(--app-text-muted)]">Set ask, bounded automatic limits, or over-limit behavior in Permissions settings.</div>
           </div>
+          {onOpenPermissions ? <Button type="button" variant="outline" onClick={onOpenPermissions} className="w-full shrink-0 sm:w-auto">Permissions settings</Button> : null}
         </section>
         {proposals.length === 0 ? <div className="rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">No valid deployment proposals were provided.</div> : null}
         <section className="grid min-w-0 gap-3" aria-label="Session deployment proposals">

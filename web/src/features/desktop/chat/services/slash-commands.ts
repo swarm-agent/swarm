@@ -66,16 +66,6 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     action: { kind: 'open-settings', tab: 'auth' },
   },
   {
-    id: 'vault',
-    command: '/vault',
-    aliases: [],
-    hint: 'Open vault settings and status',
-    actionLabel: 'Open Settings → Vault',
-    tips: ['/vault', 'Check vault state', 'Manage vault export and import'],
-    state: 'ready',
-    action: { kind: 'open-settings', tab: 'vault' },
-  },
-  {
     id: 'worktrees',
     command: '/worktrees',
     aliases: ['/wt'],
@@ -238,16 +228,6 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/theme', '/themes', 'Set the desktop theme or workspace overrides'],
     state: 'ready',
     action: { kind: 'open-quick-settings', tab: 'themes' },
-  },
-  {
-    id: 'voice',
-    command: '/voice',
-    aliases: [],
-    hint: 'Voice controls are not available yet',
-    actionLabel: 'Coming soon',
-    tips: ['/voice open', '/voice devices', 'Coming later'],
-    state: 'coming-soon',
-    action: { kind: 'show-help' },
   },
 ]
 

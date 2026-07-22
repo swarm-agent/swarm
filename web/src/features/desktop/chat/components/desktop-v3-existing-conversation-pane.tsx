@@ -2865,6 +2865,14 @@ export function DesktopV3ExistingConversationPane({
         pendingCount={pendingModalPermissions.length}
         sessionMode={sessionMode}
         onOpenChange={() => undefined}
+        onOpenPermissions={() => {
+          const search = { tab: "permissions" as const, returnSessionId: normalizedSessionId };
+          if (routeWorkspaceSlug) {
+            void navigate({ to: "/$workspaceSlug/settings", params: { workspaceSlug: routeWorkspaceSlug }, search });
+            return;
+          }
+          void navigate({ to: "/settings", search });
+        }}
         onResolve={handleResolvePermission}
       />
     </div>
