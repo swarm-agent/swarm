@@ -284,6 +284,16 @@ test('session deploy permission defaults to one selected proposal and offers sep
   assert.match(markup, /When limit is reached/)
   assert.match(markup, /Ask every time/)
   assert.match(markup, /Bounded automatic/)
+  assert.match(markup, /max-h-\[calc\(100dvh_-_var\(--app-safe-area-top\)_-_var\(--app-safe-area-bottom\)_-_12px\)\]/)
+  assert.match(markup, /max-w-\[1100px\]/)
+  assert.match(markup, /overflow-x-hidden/)
+  assert.match(markup, /overflow-y-auto/)
+  assert.match(markup, /max-w-full/)
+  assert.match(markup, /text-ellipsis/)
+  assert.match(markup, /\[field-sizing:fixed\]/)
+  assert.match(markup, /sm:grid-cols-2/)
+  assert.match(markup, /sm:grid-cols-3/)
+  assert.match(markup, /title="Workspace"/)
 })
 
 test('session commit permission renders exact commits and persistent choices', () => {

@@ -1524,6 +1524,8 @@ function sessionDeployInitialProposals(proposals: SessionDeployProposal[]): Sess
   }))
 }
 
+const SESSION_DEPLOY_CONTROL_CLASS = 'block h-10 w-full min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap rounded-xl border border-[var(--app-border)] px-3 text-base text-[var(--app-text)] [field-sizing:fixed] sm:text-sm'
+
 function SessionDeployModal({
   permission,
   open,
@@ -1533,7 +1535,7 @@ function SessionDeployModal({
   onResolve,
 }: DesktopPermissionModalProps) {
   const payload = useMemo(() => permission ? parseSessionDeployPermission(permission) : null, [permission])
-  const [proposals, setProposals] = useState<SessionDeployFormProposal[]>([])
+  const [proposals, setProposals] = useState<SessionDeployFormProposal[]>(() => sessionDeployInitialProposals(payload?.proposals ?? []))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [persistentPolicy, setPersistentPolicy] = useState<SessionDeployPolicy>({ mode: 'always_allow', automatic_deployments_per_parent_run: 1, over_limit_action: 'ask' })
@@ -1606,8 +1608,8 @@ function SessionDeployModal({
       subtitle="Review and select the exact local V3 sessions to create and start"
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-[min(100%,calc(100vw-12px))] sm:w-[min(1100px,calc(100vw-48px))]"
-      bodyClassName="overflow-y-auto"
+      widthClassName="min-w-0 w-full max-w-[1100px]"
+      bodyClassName="min-w-0 overflow-x-hidden overflow-y-auto"
       footer={<PermissionActionBar loading={loading} onApprove={() => void submit('approve')} onDeny={() => void submit('deny')} onAlwaysAllow={() => void submit('approve_always')} showPersistentActions alwaysAllowLabel="Save policy & deploy" approveLabel={selectedCount === 1 ? 'Deploy 1 session' : `Deploy ${selectedCount} sessions`} shortcutHint="Enter deploys selected · Esc denies" />}
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void submit('approve')}
@@ -1615,38 +1617,38 @@ function SessionDeployModal({
       shortcutsDisabled={loading}
       onRequestClose={() => void submit('deny')}
     >
-      <div className="grid gap-4">
-        <div className="rounded-2xl border border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_8%,var(--app-surface))] px-4 py-3 text-sm leading-6 text-[var(--app-text-muted)]">
+      <div className="grid min-w-0 gap-3 sm:gap-4">
+        <div className="min-w-0 break-words rounded-2xl border border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_8%,var(--app-surface))] px-3 py-3 text-sm leading-6 text-[var(--app-text-muted)] sm:px-4">
           One safe default is selected. Check additional proposals to allow more in this batch. Deploy only approves this request; saving a policy is a separate choice.
         </div>
-        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4" aria-label="Persistent session deployment policy">
+        <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3 sm:p-4" aria-label="Persistent session deployment policy">
           <div className="text-sm font-semibold text-[var(--app-text)]">Persistent deployment policy</div>
-          <div className="mt-1 text-xs text-[var(--app-text-muted)]">Applied account-wide only when you choose Save policy &amp; deploy.</div>
+          <div className="mt-1 break-words text-xs text-[var(--app-text-muted)]">Applied account-wide only when you choose Save policy &amp; deploy.</div>
           <div className="mt-3 grid gap-3 sm:grid-cols-3">
-            <SessionDeployField label="Policy"><select aria-label="Session deployment policy" value={persistentPolicy.mode} onChange={(event) => setPersistentPolicy((current) => ({ ...current, mode: event.target.value as SessionDeployPolicy['mode'] }))} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm"><option value="ask">Ask every time</option><option value="always_allow">Always allow</option><option value="bounded">Bounded automatic</option></select></SessionDeployField>
-            <SessionDeployField label="Automatic deployments per parent run"><input aria-label="Automatic deployments per parent run" type="number" min={0} max={256} value={persistentPolicy.automatic_deployments_per_parent_run} disabled={persistentPolicy.mode !== 'bounded'} onChange={(event) => setPersistentPolicy((current) => ({ ...current, automatic_deployments_per_parent_run: Number(event.target.value) }))} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm disabled:opacity-50" /></SessionDeployField>
-            <SessionDeployField label="When limit is reached"><select aria-label="Deployment over-limit action" value={persistentPolicy.over_limit_action} disabled={persistentPolicy.mode !== 'bounded'} onChange={(event) => setPersistentPolicy((current) => ({ ...current, over_limit_action: event.target.value as SessionDeployPolicy['over_limit_action'] }))} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm disabled:opacity-50"><option value="ask">Ask</option><option value="deny">Deny</option></select></SessionDeployField>
+            <SessionDeployField label="Policy"><select aria-label="Session deployment policy" value={persistentPolicy.mode} onChange={(event) => setPersistentPolicy((current) => ({ ...current, mode: event.target.value as SessionDeployPolicy['mode'] }))} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg)]')}><option value="ask">Ask every time</option><option value="always_allow">Always allow</option><option value="bounded">Bounded automatic</option></select></SessionDeployField>
+            <SessionDeployField label="Automatic deployments per parent run"><input aria-label="Automatic deployments per parent run" type="number" min={0} max={256} value={persistentPolicy.automatic_deployments_per_parent_run} disabled={persistentPolicy.mode !== 'bounded'} onChange={(event) => setPersistentPolicy((current) => ({ ...current, automatic_deployments_per_parent_run: Number(event.target.value) }))} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg)] disabled:opacity-50')} /></SessionDeployField>
+            <SessionDeployField label="When limit is reached"><select aria-label="Deployment over-limit action" value={persistentPolicy.over_limit_action} disabled={persistentPolicy.mode !== 'bounded'} onChange={(event) => setPersistentPolicy((current) => ({ ...current, over_limit_action: event.target.value as SessionDeployPolicy['over_limit_action'] }))} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg)] disabled:opacity-50')}><option value="ask">Ask</option><option value="deny">Deny</option></select></SessionDeployField>
           </div>
         </section>
         {proposals.length === 0 ? <div className="rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">No valid deployment proposals were provided.</div> : null}
-        <section className="grid gap-3" aria-label="Session deployment proposals">
+        <section className="grid min-w-0 gap-3" aria-label="Session deployment proposals">
           {proposals.map((proposal, index) => (
-            <article key={proposal.id} className={cn('rounded-2xl border p-4', proposal.selected ? 'border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_6%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface)]')}>
+            <article key={proposal.id} className={cn('min-w-0 overflow-hidden rounded-2xl border p-3 sm:p-4', proposal.selected ? 'border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_6%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface)]')}>
               <label className="flex cursor-pointer items-start gap-3">
                 <input type="checkbox" checked={proposal.selected} onChange={(event) => updateProposal(proposal.id, { selected: event.target.checked })} className="mt-1 size-4 accent-[var(--app-primary)]" />
-                <span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-[var(--app-text)]">Session {index + 1}</span><span className="text-xs text-[var(--app-text-muted)]">{proposal.agentMode === 'primary' ? 'Primary agent' : 'Subagent'} · {proposal.workspaceName || proposal.workspacePath}</span></span>
+                <span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-[var(--app-text)]">Session {index + 1}</span><span className="block min-w-0 truncate text-xs text-[var(--app-text-muted)]" title={proposal.workspaceName || proposal.workspacePath}>{proposal.agentMode === 'primary' ? 'Primary agent' : 'Subagent'} · {proposal.workspaceName || proposal.workspacePath}</span></span>
               </label>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <SessionDeployField label="Title"><input value={proposal.title} onChange={(event) => updateProposal(proposal.id, { title: event.target.value })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)]" placeholder="New session" /></SessionDeployField>
-                <SessionDeployField label="Mode"><select value={proposal.mode} onChange={(event) => updateProposal(proposal.id, { mode: event.target.value as 'plan' | 'auto' })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)]"><option value="auto">Auto</option><option value="plan">Plan</option></select></SessionDeployField>
-                <SessionDeployField label="Allowed agent"><select value={proposal.agentName} onChange={(event) => { const agent = payload.allowedAgents.find((candidate) => candidate.name === event.target.value); if (agent) updateProposal(proposal.id, { agentName: agent.name, agentMode: agent.mode }) }} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)]">{payload.allowedAgents.map((agent) => <option key={`${agent.mode}:${agent.name}`} value={agent.name}>{agent.name} ({agent.mode})</option>)}</select></SessionDeployField>
-                <SessionDeployField label="Workspace"><select value={proposal.workspacePath} disabled={payload.allowedWorkspaces.length === 0} onChange={(event) => { const workspace = payload.allowedWorkspaces.find((candidate) => candidate.path === event.target.value); if (workspace) updateProposal(proposal.id, { workspacePath: workspace.path, workspaceName: workspace.name, manifest: { ...proposal.manifest, workspace_id: workspace.id, workspace_generation: workspace.generation, workspace_path: workspace.path, workspace_name: workspace.name } }) }} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)] disabled:opacity-50">{payload.allowedWorkspaces.length === 0 ? <option value="">No saved workspaces</option> : payload.allowedWorkspaces.map((workspace) => <option key={`${workspace.id}:${workspace.generation}`} value={workspace.path}>{workspace.name || workspace.path}</option>)}</select></SessionDeployField>
+                <SessionDeployField label="Title"><input value={proposal.title} onChange={(event) => updateProposal(proposal.id, { title: event.target.value })} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)]')} placeholder="New session" /></SessionDeployField>
+                <SessionDeployField label="Mode"><select value={proposal.mode} onChange={(event) => updateProposal(proposal.id, { mode: event.target.value as 'plan' | 'auto' })} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)]')}><option value="auto">Auto</option><option value="plan">Plan</option></select></SessionDeployField>
+                <SessionDeployField label="Allowed agent"><select value={proposal.agentName} title={proposal.agentName} onChange={(event) => { const agent = payload.allowedAgents.find((candidate) => candidate.name === event.target.value); if (agent) updateProposal(proposal.id, { agentName: agent.name, agentMode: agent.mode }) }} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)]')}>{payload.allowedAgents.map((agent) => <option key={`${agent.mode}:${agent.name}`} value={agent.name}>{agent.name} ({agent.mode})</option>)}</select></SessionDeployField>
+                <SessionDeployField label="Workspace"><select value={proposal.workspacePath} title={proposal.workspaceName || proposal.workspacePath} disabled={payload.allowedWorkspaces.length === 0} onChange={(event) => { const workspace = payload.allowedWorkspaces.find((candidate) => candidate.path === event.target.value); if (workspace) updateProposal(proposal.id, { workspacePath: workspace.path, workspaceName: workspace.name, manifest: { ...proposal.manifest, workspace_id: workspace.id, workspace_generation: workspace.generation, workspace_path: workspace.path, workspace_name: workspace.name } }) }} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)] disabled:opacity-50')}>{payload.allowedWorkspaces.length === 0 ? <option value="">No saved workspaces</option> : payload.allowedWorkspaces.map((workspace) => <option key={`${workspace.id}:${workspace.generation}`} value={workspace.path}>{workspace.name || workspace.path}</option>)}</select></SessionDeployField>
               </div>
               <SessionDeployField label="Prompt" className="mt-3"><Textarea value={proposal.prompt} onChange={(event) => updateProposal(proposal.id, { prompt: event.target.value })} rows={4} className="min-h-24 resize-y bg-[var(--app-bg-alt)]" /></SessionDeployField>
               <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                <SessionDeployField label="Worktree mode"><select aria-label="Worktree mode" value={proposal.managedWorktree ? 'managed' : 'workspace'} onChange={(event) => updateProposal(proposal.id, { managedWorktree: event.target.value === 'managed' })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)]"><option value="managed">Managed worktree (recommended)</option><option value="workspace">Use current workspace</option></select></SessionDeployField>
-                <SessionDeployField label="Base branch"><input value={proposal.worktreeBaseBranch} disabled={!proposal.managedWorktree} onChange={(event) => updateProposal(proposal.id, { worktreeBaseBranch: event.target.value })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)] disabled:opacity-50" placeholder="Current branch" /></SessionDeployField>
-                <SessionDeployField label="AI branch suggestion"><input value={proposal.worktreeBranch} disabled={!proposal.managedWorktree} onChange={(event) => updateProposal(proposal.id, { worktreeBranch: event.target.value })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)] disabled:opacity-50" placeholder="Provided automatically" /></SessionDeployField>
+                <SessionDeployField label="Worktree mode"><select aria-label="Worktree mode" value={proposal.managedWorktree ? 'managed' : 'workspace'} onChange={(event) => updateProposal(proposal.id, { managedWorktree: event.target.value === 'managed' })} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)]')}><option value="managed">Managed worktree (recommended)</option><option value="workspace">Use current workspace</option></select></SessionDeployField>
+                <SessionDeployField label="Base branch"><input value={proposal.worktreeBaseBranch} disabled={!proposal.managedWorktree} onChange={(event) => updateProposal(proposal.id, { worktreeBaseBranch: event.target.value })} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)] disabled:opacity-50')} placeholder="Current branch" /></SessionDeployField>
+                <SessionDeployField label="AI branch suggestion"><input value={proposal.worktreeBranch} disabled={!proposal.managedWorktree} onChange={(event) => updateProposal(proposal.id, { worktreeBranch: event.target.value })} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)] disabled:opacity-50')} placeholder="Provided automatically" /></SessionDeployField>
               </div>
             </article>
           ))}
@@ -1658,7 +1660,7 @@ function SessionDeployModal({
 }
 
 function SessionDeployField({ label, className, children }: { label: string; className?: string; children: React.ReactNode }) {
-  return <label className={cn('grid min-w-0 gap-1.5', className)}><span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{label}</span>{children}</label>
+  return <label className={cn('grid min-w-0 max-w-full gap-1.5 overflow-hidden', className)}><span className="min-w-0 break-words text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{label}</span>{children}</label>
 }
 
 function SessionCommitModal({
