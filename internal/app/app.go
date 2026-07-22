@@ -78,6 +78,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/quit", Hint: "Exit swarmtui"},
 		{Command: "/rebuild", Hint: "Rebuild the current lane and exit swarmtui"},
 		{Command: "/sessions", Hint: "Open the card-style session manager (active conversations first)"},
+		{Command: "/task", Hint: "Queue a durable AI task for Swarm", QuickTips: []string{"/task <request>", "/task plan <request>"}},
 		{Command: "/update", Hint: updateHint, QuickTips: updateQuickTips},
 		{Command: "/themes", Hint: "Open theme modal with live preview", QuickTips: []string{"/themes list", "/themes set <id>", "/themes create <id> from <base>", "/themes edit <id> <slot> <#RRGGBB>", "/themes delete <id>"}},
 		{Command: "/thinking", Hint: "Use /thinking on, /thinking off, or /thinking status", QuickTips: []string{"/thinking on", "/thinking off", "/thinking status"}},
@@ -2159,6 +2160,8 @@ func (a *App) executeCommand(raw string) {
 		a.handleNewCommand()
 	case "plan":
 		a.handlePlanCommand(args)
+	case "task":
+		a.handleTaskCommand(args)
 	case "archive":
 		a.handleArchiveCommand(args)
 	case "compact":
@@ -2232,6 +2235,8 @@ func (a *App) showHelp() {
 		"/plan list   (list saved plans for this session)",
 		"/plan use <plan_id>   (set active plan)",
 		"/plan new [title]   (create and activate a new plan draft)",
+		"/task <request>   (queue a durable AI task in automatic mode)",
+		"/task plan <request>   (queue a durable AI task in plan mode)",
 		"/commit [instructions]   (launch memory agent in background to review diffs and commit)",
 		"/git   (show authoritative Git status for the active workspace)",
 		"/codex [refresh]   (Codex account usage and reset credits)",

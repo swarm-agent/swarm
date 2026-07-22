@@ -4286,7 +4286,11 @@ func (c *API) getJSON(ctx context.Context, path string, out any, attachAuth bool
 }
 
 func (c *API) postJSON(ctx context.Context, path string, payload any, out any, attachAuth bool) error {
-	status, body, err := c.request(ctx, http.MethodPost, path, payload, attachAuth)
+	return c.postJSONWithHeaders(ctx, path, payload, out, attachAuth, nil)
+}
+
+func (c *API) postJSONWithHeaders(ctx context.Context, path string, payload any, out any, attachAuth bool, headers map[string]string) error {
+	status, body, err := c.requestWithHeaders(ctx, http.MethodPost, path, payload, attachAuth, headers)
 	if err != nil {
 		return err
 	}
@@ -4320,6 +4324,10 @@ func (c *API) putJSON(ctx context.Context, path string, payload any, out any, at
 }
 
 func (c *API) request(ctx context.Context, method, path string, payload any, attachAuth bool) (int, []byte, error) {
+	return c.requestWithHeaders(ctx, method, path, payload, attachAuth, nil)
+}
+
+func (c *API) requestWithHeaders(ctx context.Context, method, path string, payload any, attachAuth bool, headers map[string]string) (int, []byte, error) {
 	if ctx == nil {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(context.Background(), defaultTimeout)
@@ -4349,6 +4357,13 @@ func (c *API) request(ctx context.Context, method, path string, payload any, att
 		token := strings.TrimSpace(c.Token())
 		if token != "" {
 			req.Header.Set("X-Swarm-Token", token)
+		}
+	}
+	for name, value := range headers {
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name != "" && value != "" {
+			req.Header.Set(name, value)
 		}
 	}
 	if method == http.MethodPost && path == "/v3/sessions" {

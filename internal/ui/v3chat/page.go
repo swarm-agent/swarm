@@ -324,6 +324,13 @@ func (p *Page) InputValue() string {
 	return string(p.input)
 }
 
+func (p *Page) SessionID() string {
+	if p == nil || p.runtime == nil || p.runtime.Store() == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.runtime.Store().Snapshot().Session.ID)
+}
+
 func (p *Page) ConsumeCommand() string {
 	if p == nil {
 		return ""

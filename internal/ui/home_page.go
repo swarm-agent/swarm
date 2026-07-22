@@ -519,6 +519,8 @@ func (p *HomePage) DrawChatOverlay(s tcell.Screen) {
 	p.drawKeybindsModal(s)
 	p.drawSessionsModal(s)
 	p.drawAlertsModal(s)
+	w, h := s.Size()
+	drawToastOverlay(s, p.theme, &p.toast, Rect{X: 0, Y: 0, W: w, H: h}, 1)
 }
 
 func (p *HomePage) Draw(s tcell.Screen) {
