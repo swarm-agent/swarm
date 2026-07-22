@@ -1,6 +1,9 @@
 package app
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -61,6 +64,72 @@ func TestV3ChatRenderWakeIsIdleAndCoalescesBurst(t *testing.T) {
 	app.consumeV3ChatRender()
 	if got := len(app.pendingV3ChatRender); got != 0 {
 		t.Fatalf("render queue after consume = %d", got)
+	}
+}
+
+func TestV3ChatCtrlXKeepsChatMountedThroughSessionModal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v3/sync/bootstrap" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"sessions_by_id": map[string]any{
+				"current-session":  map[string]any{"id": "current-session", "title": "Current session", "updated_at": 2000},
+				"selected-session": map[string]any{"id": "selected-session", "title": "Selected session", "updated_at": 1000},
+			},
+			"session_order": []string{"current-session", "selected-session"},
+		})
+	}))
+	defer server.Close()
+
+	page := v3chat.NewPage(v3chat.NewRuntime(nil, v3chat.NewStore(), nil), v3chat.PageStyles{})
+	app := &App{
+		api:      testAPIWithToken(server.URL),
+		home:     ui.NewHomePage(model.EmptyHome()),
+		v3Chat:   page,
+		route:    "v3chat",
+		config:   defaultAppConfig(),
+		reloadCh: make(chan homeReloadResult, 1),
+	}
+
+	if !app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlX, 0, tcell.ModNone)) {
+		t.Fatal("Ctrl-X was not handled")
+	}
+	if app.route != "v3chat" || app.v3Chat != page {
+		t.Fatalf("chat changed while session manager loaded: route=%q page=%p, want v3chat %p", app.route, app.v3Chat, page)
+	}
+	deadline := time.Now().Add(time.Second)
+	for len(app.reloadCh) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	app.consumeReloadResult()
+	if !app.home.SessionsModalVisible() {
+		t.Fatal("session manager did not open over V3 chat")
+	}
+	if app.route != "v3chat" || app.v3Chat != page {
+		t.Fatalf("chat changed after session manager opened: route=%q page=%p, want v3chat %p", app.route, app.v3Chat, page)
+	}
+
+	if !app.home.HandleChatOverlayKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone)) {
+		t.Fatal("session manager did not handle Escape")
+	}
+	if app.home.SessionsModalVisible() {
+		t.Fatal("session manager remained visible after Escape")
+	}
+	if app.route != "v3chat" || app.v3Chat != page {
+		t.Fatalf("Escape left the current chat: route=%q page=%p, want v3chat %p", app.route, app.v3Chat, page)
+	}
+
+	app.openLoadedHomeSessionsModal("")
+	app.home.HandleChatOverlayKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	app.home.HandleChatOverlayKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	action, ok := app.home.PopHomeAction()
+	if !ok || action.Kind != ui.HomeActionOpenSession || action.SessionID != "selected-session" {
+		t.Fatalf("session selection action = %#v, ok=%v", action, ok)
+	}
+	if app.route != "v3chat" || app.v3Chat != page {
+		t.Fatalf("chat changed before canonical selection navigation: route=%q page=%p, want v3chat %p", app.route, app.v3Chat, page)
 	}
 }
 

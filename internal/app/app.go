@@ -1839,6 +1839,10 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		}
 	}
 	if keybinds.Match(ev, ui.KeybindHomeOpenSessions) {
+		if a.route == "chat" || a.route == "v3chat" {
+			a.handleSessionsCommand(nil)
+			return true
+		}
 		if a.route == "home" && a.home != nil {
 			if a.home.SessionsModalVisible() {
 				a.home.HideSessionsModal()
@@ -2366,6 +2370,13 @@ func (a *App) handleSessionsCommand(args []string) {
 	if a.route == "chat" && a.chat != nil {
 		a.home.ClearCommandOverlay()
 		if err := a.openChatSessionsPalette(query); err != nil {
+			a.home.SetStatus(fmt.Sprintf("/sessions failed: %v", err))
+		}
+		return
+	}
+	if a.route == "v3chat" && a.v3Chat != nil {
+		a.home.ClearCommandOverlay()
+		if err := a.queueSessionManagerOpen(query, "v3chat"); err != nil {
 			a.home.SetStatus(fmt.Sprintf("/sessions failed: %v", err))
 		}
 		return
@@ -7619,7 +7630,7 @@ func (a *App) consumeReloadResult() {
 			switch result.sessionOpenRoute {
 			case "chat":
 				a.openLoadedChatSessionsPalette(result.sessionQuery)
-			default:
+			case "home", "v3chat":
 				a.openLoadedHomeSessionsModal(result.sessionQuery)
 			}
 			return

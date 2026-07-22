@@ -687,8 +687,6 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 		p.resetCommandPaletteOptionSelectionLocked()
 	case ev.Key() == tcell.KeyF2:
 		p.openModelPickerLocked()
-	case ev.Key() == tcell.KeyCtrlX:
-		go p.StopRun()
 	case ev.Key() == tcell.KeyCtrlR:
 		// Recovery scope is already retained by the runtime's hydrated session.
 		go p.Recover("", "")

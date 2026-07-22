@@ -24,7 +24,6 @@ import {
   createEmptyWorkspaceTodoSummary,
   createWorkspaceAITask,
   createWorkspaceTodo,
-  fetchWorkspaceTodos,
   deleteAllWorkspaceTodos,
   deleteDoneWorkspaceTodos,
   deleteWorkspaceTodo,
@@ -32,7 +31,7 @@ import {
   setWorkspaceTodoInProgress,
   updateWorkspaceTodo,
 } from '../../workspaces/todos/types'
-import { mergeWorkspaceAITaskMonotonic, mergeWorkspaceTodoListsMonotonic } from '../../workspaces/todos/ai-task-reconciliation'
+import { mergeWorkspaceAITaskMonotonic } from '../../workspaces/todos/ai-task-reconciliation'
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
@@ -2866,24 +2865,6 @@ export function DesktopAppPage() {
     }
   }, [aiTaskLifecycleByID])
 
-  const openTodoModal = useCallback((workspacePath: string, workspaceName: string) => {
-    const normalizedPath = workspacePath.trim()
-    if (!normalizedPath) return
-    setTodoModal({ workspacePath: normalizedPath, workspaceName })
-    void fetchWorkspaceTodos(normalizedPath, 'user')
-      .then((result) => {
-        dispatchDesktopV3Cache({ type: 'aiTasks.mergeItems', items: result.items.filter((item) => item.aiState) })
-        setTodoItems((current) => ({
-          ...current,
-          [normalizedPath]: mergeWorkspaceTodoListsMonotonic(current[normalizedPath] ?? [], result.items),
-        }))
-        setTodoSummaries((current) => ({ ...current, [normalizedPath]: normalizeWorkspaceTodoSummary(result.summary) }))
-      })
-      .catch((error) => {
-        setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to load tasks', tone: 'error' })
-      })
-  }, [])
-
   const closeTodoModal = useCallback(() => {
     setTodoModal(null)
   }, [])
@@ -4496,9 +4477,6 @@ export function DesktopAppPage() {
           <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => void navigate({ to: '/' })} aria-label="Back to launcher">
             <Folder size={24} className="shrink-0" />
           </Button>
-          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { if (topWorkspacePath) openTodoModal(topWorkspacePath, topWorkspaceLabel) }} aria-label="Open tasks" disabled={!topWorkspacePath}>
-            <ListChecks size={24} className="shrink-0" />
-          </Button>
           {notificationAttentionVisible ? (
             <Button variant="ghost" className={cn('relative h-12 w-12 min-w-12 p-0', notificationUnreadCount > 0 && 'text-[var(--app-primary)]')} onClick={handleOpenNotifications} aria-label="Open notifications" title={notificationUnreadCount > 0 ? `${notificationUnreadCount} unread notification${notificationUnreadCount === 1 ? '' : 's'}` : 'Notifications'}>
               <Bell size={24} className="shrink-0" />
@@ -4688,20 +4666,6 @@ export function DesktopAppPage() {
                     >
                       <Search size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                       <span className="min-w-0 truncate">Search Chats</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
-                      onClick={() => {
-                        if (topWorkspacePath) openTodoModal(topWorkspacePath, topWorkspaceLabel)
-                        setMobileSidebarOpen(false)
-                      }}
-                      disabled={!topWorkspacePath}
-                      aria-label="Open tasks"
-                      title="Tasks"
-                    >
-                      <ListChecks size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">Tasks</span>
                     </button>
                     {routeWorkspaceSlug ? (
                       <Link

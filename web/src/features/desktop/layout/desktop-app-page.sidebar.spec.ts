@@ -31,11 +31,13 @@ test('sidebar workspace context shows the Git branch before the workspace name',
   assert.equal(sidebarWorkspaceContextLabel('swarm-go', ''), 'swarm-go')
 })
 
-test('global sidebar restores Tasks and removes only the Tools shortcut', async () => {
+test('global sidebar hides Tasks and Tools without deleting the Tasks implementation', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
-  assert.match(source, /aria-label="Open tasks"/)
-  assert.match(source, />Tasks<\/span>/)
+  assert.doesNotMatch(source, /aria-label="Open tasks"/)
+  assert.doesNotMatch(source, />Tasks<\/span>/)
+  assert.match(source, /const openTodoModal = useCallback/)
   assert.match(source, /fetchWorkspaceTodos\(normalizedPath, 'user'\)/)
+  assert.match(source, /<WorkspaceTodoModal/)
   assert.doesNotMatch(source, /to="\/tools"/)
   assert.doesNotMatch(source, /\bLayoutGrid\b/)
 })
