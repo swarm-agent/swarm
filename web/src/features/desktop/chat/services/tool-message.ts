@@ -565,17 +565,6 @@ function summarizeToolOutput(
   }
 }
 
-function jsonRecord(
-  obj: Record<string, unknown> | null,
-  key: string,
-): Record<string, unknown> | null {
-  if (!obj) return null;
-  const value = obj[key];
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 function normalizePlanManageAction(action: string): string {
   switch (action.trim().toLowerCase()) {
     case "active":
@@ -617,7 +606,7 @@ function firstPlanPreviewLine(planBody: string): string {
 
 function summarizePlanManageToolOutput(payload: Record<string, unknown>): string {
   const action = normalizePlanManageAction(jsonStr(payload, "action"));
-  const plan = jsonRecord(payload, "plan");
+  const plan = jsonRecord(payload.plan);
   const title = jsonStr(plan, "title");
   const planId = firstNonEmpty(
     jsonStr(plan, "id"),
@@ -687,7 +676,7 @@ function buildPlanManagePreviewLines(
   const status = jsonStr(payload, "status");
   if (status) pushPreviewLine(out, `status: ${status}`, maxLines);
 
-  const plan = jsonRecord(payload, "plan");
+  const plan = jsonRecord(payload.plan);
   if (plan) {
     const title = jsonStr(plan, "title");
     const planId = jsonStr(plan, "id");

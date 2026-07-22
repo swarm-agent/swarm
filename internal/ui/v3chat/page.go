@@ -2,6 +2,7 @@ package v3chat
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -984,6 +985,8 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 	}
 	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
 	_, planPermission := parsePlanPermissionIntent(permissions[p.permissionIndex])
+	_, manageSessionsPermission := parseManageSessionsPermissionIntent(permissions[p.permissionIndex])
+	hidePermissionNote := planPermission || manageSessionsPermission
 	if p.permissionBusy {
 		return PageActionNone
 	}
@@ -1010,8 +1013,8 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 		p.scroll = 1 << 30
 		p.follow = false
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		if planPermission {
-			if p.cursor > 0 {
+		if hidePermissionNote {
+			if planPermission && p.cursor > 0 {
 				p.input = append(p.input[:p.cursor-1], p.input[p.cursor:]...)
 				p.cursor--
 			}
@@ -1019,16 +1022,22 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 			p.permissionInput = p.permissionInput[:len(p.permissionInput)-1]
 		}
 	case tcell.KeyCtrlU:
-		if planPermission {
-			p.input = nil
-			p.cursor = 0
+		if hidePermissionNote {
+			if planPermission {
+				p.input = nil
+				p.cursor = 0
+			}
 		} else {
 			p.permissionInput = nil
 		}
 	case tcell.KeyCtrlA:
-		p.resolvePermissionLocked(permissions[p.permissionIndex], "allow_always")
+		if !manageSessionsPermission {
+			p.resolvePermissionLocked(permissions[p.permissionIndex], "allow_always")
+		}
 	case tcell.KeyCtrlD:
-		p.resolvePermissionLocked(permissions[p.permissionIndex], "deny_always")
+		if !manageSessionsPermission {
+			p.resolvePermissionLocked(permissions[p.permissionIndex], "deny_always")
+		}
 	case tcell.KeyEscape:
 		p.resolvePermissionLocked(permissions[p.permissionIndex], "deny_once")
 	case tcell.KeyEnter:
@@ -1047,8 +1056,8 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 		if !utf8.ValidRune(ev.Rune()) || ev.Rune() < ' ' {
 			break
 		}
-		if planPermission {
-			if len(p.input) < maxComposerRunes {
+		if hidePermissionNote {
+			if planPermission && len(p.input) < maxComposerRunes {
 				p.insertRunesLocked([]rune{ev.Rune()})
 			}
 		} else if len(p.permissionInput) < maxComposerRunes {
@@ -1065,7 +1074,20 @@ func (p *Page) resolvePermissionLocked(permission client.PermissionRecord, actio
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_, err := p.runtime.ResolvePermission(ctx, permission.ID, action, reason)
+		approvedArguments := ""
+		if _, ok := parseManageSessionsPermissionIntent(permission); ok && strings.HasPrefix(action, "allow") {
+			approvedArguments = strings.TrimSpace(permission.ApprovedArguments)
+			if approvedArguments == "" {
+				if payload := parseToolObject(permission.ToolArguments); payload != nil {
+					if approved := toolObject(payload, "approved_arguments"); approved != nil {
+						if encoded, marshalErr := json.Marshal(approved); marshalErr == nil {
+							approvedArguments = string(encoded)
+						}
+					}
+				}
+			}
+		}
+		_, err := p.runtime.ResolvePermissionWithArguments(ctx, permission.ID, action, reason, approvedArguments)
 		p.mu.Lock()
 		p.permissionBusy = false
 		if err != nil {
@@ -1502,17 +1524,37 @@ func drawComposerError(screen tcell.Screen, width, y int, styles PageStyles, err
 }
 
 func truncateRunes(value string, width int) string {
+	return truncateCells(value, width)
+}
+
+func displayWidth(value string) int {
+	return uniseg.StringWidth(value)
+}
+
+func truncateCells(value string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	runes := []rune(value)
-	if len(runes) <= width {
+	if displayWidth(value) <= width {
 		return value
 	}
 	if width == 1 {
 		return "…"
 	}
-	return string(runes[:width-1]) + "…"
+	limit := width - displayWidth("…")
+	var out strings.Builder
+	used := 0
+	state := -1
+	for value != "" {
+		cluster, rest, clusterWidth, nextState := uniseg.FirstGraphemeClusterInString(value, state)
+		if cluster == "" || clusterWidth <= 0 || used+clusterWidth > limit {
+			break
+		}
+		out.WriteString(cluster)
+		used += clusterWidth
+		value, state = rest, nextState
+	}
+	return out.String() + "…"
 }
 
 func drawConversationStatus(screen tcell.Screen, width, y int, styles PageStyles, status RunStatus) {
@@ -1968,7 +2010,7 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 	for _, message := range SelectMessages(state) {
 		item := timelineRenderItem{kind: "message", seq: message.GlobalSeq, createdAt: message.CreatedAt, order: len(items), message: message}
 		if tool, ok := parseToolMessage(message); ok {
-			if planToolCoalescedWithPermission(tool, permissions) {
+			if toolCoalescedWithPermission(tool, permissions) {
 				continue
 			}
 			item.kind, item.tool = "tool", tool
@@ -1976,7 +2018,7 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 		items = append(items, item)
 	}
 	for _, tool := range SelectLiveTools(state) {
-		if planToolCoalescedWithPermission(tool, permissions) {
+		if toolCoalescedWithPermission(tool, permissions) {
 			continue
 		}
 		items = append(items, timelineRenderItem{kind: "tool", seq: tool.GlobalSeq, createdAt: tool.CreatedAt, order: len(items), tool: tool})
@@ -2064,11 +2106,12 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 	return rows
 }
 
-// A proposal-gated plan_manage call is one interaction. The permission record
-// owns its initial timeline position and evolves through approval and execution;
-// rendering the correlated tool result would produce a second PLAN box.
-func planToolCoalescedWithPermission(tool ToolTimelineItem, permissions []PermissionTimelineItem) bool {
-	if normalizeToolDisplayName(tool.Name) != "plan-manage" {
+// Approval-gated control-plane tools are one timeline interaction. Their
+// permission record owns the initial position and evolves through resolution and
+// execution; a correlated tool-history item would produce a duplicate card.
+func toolCoalescedWithPermission(tool ToolTimelineItem, permissions []PermissionTimelineItem) bool {
+	toolName := normalizeToolDisplayName(tool.Name)
+	if toolName != "plan-manage" && toolName != "manage-sessions" {
 		return false
 	}
 	callID := strings.TrimSpace(tool.CallID)
@@ -2077,7 +2120,13 @@ func planToolCoalescedWithPermission(tool ToolTimelineItem, permissions []Permis
 	}
 	for _, item := range permissions {
 		record := item.Record
-		if strings.TrimSpace(record.CallID) == callID && normalizePermissionToolName(record.ToolName) == "plan_manage" && isPlanProposalRequirement(record.Requirement) {
+		if strings.TrimSpace(record.CallID) != callID {
+			continue
+		}
+		if toolName == "plan-manage" && normalizePermissionToolName(record.ToolName) == "plan_manage" && isPlanProposalRequirement(record.Requirement) {
+			return true
+		}
+		if toolName == "manage-sessions" && normalizePermissionToolName(record.ToolName) == "manage_sessions" && isManageSessionsApprovalRequirement(record.Requirement) {
 			return true
 		}
 	}
@@ -2155,6 +2204,9 @@ func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyle
 	if presentation.Kind == "task" {
 		return p.renderTaskToolRows(tool, presentation, width, styles)
 	}
+	if presentation.Kind == "manage-sessions" {
+		return p.renderManageSessionsToolRows(tool, presentation, width, styles)
+	}
 	toolName := normalizeToolDisplayName(tool.Name)
 	summary := strings.TrimSpace(presentation.Summary)
 	if summary != toolName && !strings.HasPrefix(summary, toolName+" ") {
@@ -2223,6 +2275,55 @@ func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyle
 	}
 	rows = append(rows, renderRow{text: "", style: styles.Text})
 	return rows
+}
+
+func (p *Page) renderManageSessionsToolRows(tool ToolTimelineItem, presentation toolPresentation, width int, styles PageStyles) []renderRow {
+	if width < 12 {
+		return nil
+	}
+	borderStyle := styles.Border
+	status := strings.ToLower(strings.TrimSpace(tool.Status))
+	if status == "running" || status == "pending" || status == "started" {
+		borderStyle = styles.Accent
+	} else if status == "failed" || status == "error" || status == "cancelled" || status == "canceled" {
+		borderStyle = styles.Error
+	}
+	innerWidth := maxInt(1, width-2)
+	contentWidth := maxInt(1, innerWidth-2)
+	rows := []renderRow{{text: "┌" + strings.Repeat("─", innerWidth) + "┐", style: borderStyle}}
+	appendBody := func(text string, style tcell.Style) {
+		for _, wrapped := range p.cachedWrap("manage-sessions:"+tool.ID+":"+text, strings.TrimSpace(text), contentWidth) {
+			wrapped = truncateCells(wrapped, contentWidth)
+			padding := strings.Repeat(" ", maxInt(0, contentWidth-displayWidth(wrapped)))
+			rows = append(rows, renderRow{
+				text:  "│ " + wrapped + padding + " │",
+				style: style,
+				spans: []renderSpan{{text: "│ ", style: borderStyle}, {text: wrapped + padding, style: style}, {text: " │", style: borderStyle}},
+			})
+		}
+	}
+	appendBody("SESSIONS  ·  "+strings.TrimPrefix(strings.TrimSpace(presentation.Summary), "sessions "), styles.Secondary.Bold(true))
+	for _, line := range presentation.Lines {
+		style := styles.Text
+		switch line.Tone {
+		case "added":
+			style = styles.Success
+		case "error":
+			style = styles.Error
+		case "path":
+			style = styles.Secondary
+		case "muted":
+			style = styles.Muted
+		case "label":
+			style = styles.Text.Bold(true)
+		}
+		appendBody(line.Text, style)
+	}
+	if len(presentation.Lines) == 0 {
+		appendBody("No structured session details were returned.", styles.Muted)
+	}
+	rows = append(rows, renderRow{text: "└" + strings.Repeat("─", innerWidth) + "┘", style: borderStyle})
+	return append(rows, renderRow{text: "", style: styles.Text})
 }
 
 func (p *Page) renderTaskToolRows(tool ToolTimelineItem, presentation toolPresentation, width int, styles PageStyles) []renderRow {

@@ -33,10 +33,11 @@ type fakeTransport struct {
 	compactRequest     client.SessionV3CompactOptions
 	compactSessionID   string
 	permissionRequest  struct {
-		sessionID    string
-		permissionID string
-		action       string
-		reason       string
+		sessionID         string
+		permissionID      string
+		action            string
+		reason            string
+		approvedArguments string
 	}
 	stopRequest struct {
 		sessionID     string
@@ -125,7 +126,11 @@ func (f *fakeTransport) ExplainPermission(context.Context, string, string, strin
 	return f.permissionExplain, nil
 }
 
-func (f *fakeTransport) ResolvePermission(_ context.Context, sessionID, permissionID, action, reason string) (client.PermissionRecord, error) {
+func (f *fakeTransport) ResolvePermission(ctx context.Context, sessionID, permissionID, action, reason string) (client.PermissionRecord, error) {
+	return f.ResolvePermissionWithArguments(ctx, sessionID, permissionID, action, reason, "")
+}
+
+func (f *fakeTransport) ResolvePermissionWithArguments(_ context.Context, sessionID, permissionID, action, reason, approvedArguments string) (client.PermissionRecord, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "resolve-permission")
@@ -133,6 +138,7 @@ func (f *fakeTransport) ResolvePermission(_ context.Context, sessionID, permissi
 	f.permissionRequest.permissionID = permissionID
 	f.permissionRequest.action = action
 	f.permissionRequest.reason = reason
+	f.permissionRequest.approvedArguments = approvedArguments
 	record := f.resolvedPermission
 	if record.ID == "" {
 		record = client.PermissionRecord{ID: permissionID, SessionID: sessionID, Status: "approved", Decision: action}

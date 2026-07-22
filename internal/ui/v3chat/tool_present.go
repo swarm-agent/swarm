@@ -63,6 +63,8 @@ func buildToolPresentation(tool ToolTimelineItem) toolPresentation {
 		presentation = presentWebTool(name, arguments, output)
 	case "plan-manage":
 		presentation = presentPlanManageTool(tool, arguments, output)
+	case "manage-sessions":
+		presentation = presentManageSessionsTool(tool, arguments, output)
 	case "task":
 		presentation = presentTaskTool(tool, output)
 	default:
@@ -583,6 +585,147 @@ func planDocumentFromToolPayload(payload map[string]any) map[string]any {
 		}
 	}
 	return toolObject(payload, "document")
+}
+
+func presentManageSessionsTool(tool ToolTimelineItem, arguments, output map[string]any) toolPresentation {
+	payload := output
+	if payload == nil {
+		payload = arguments
+	}
+	action := firstNonEmptyToolRaw(toolString(payload, "action"), toolString(arguments, "action"))
+	lines := make([]toolPresentationLine, 0, 12)
+
+	// Permission denials and failures are durable terminal envelopes. Their
+	// nested tool.arguments is the original request, not display text.
+	if permission := toolObject(payload, "permission"); permission != nil {
+		status := firstNonEmptyToolRaw(toolString(permission, "status"), "resolved")
+		reason := toolString(permission, "reason")
+		if nestedTool := toolObject(payload, "tool"); nestedTool != nil {
+			if nested := parseToolObject(toolStringRaw(nestedTool, "arguments")); nested != nil {
+				action = firstNonEmptyToolRaw(action, toolString(nested, "action"))
+				appendManageSessionsProposalLines(&lines, toolObjectSlice(nested, "proposals"))
+			}
+		}
+		lines = append(lines, toolPresentationLine{Text: "Permission " + strings.ReplaceAll(status, "_", " "), Tone: "error"})
+		if reason != "" {
+			lines = append(lines, toolPresentationLine{Text: reason, Tone: "muted"})
+		}
+		return toolPresentation{Summary: manageSessionsSummary(action, len(lines)), Lines: lines, Kind: "manage-sessions"}
+	}
+
+	items := toolObjectSlice(payload, "items")
+	if len(items) == 0 && action == "get" && toolString(payload, "id") != "" {
+		items = []map[string]any{payload}
+	}
+	if len(items) > 0 {
+		appendManageSessionsItemLines(&lines, items)
+	}
+	results := toolObjectSlice(payload, "results")
+	if len(results) > 0 {
+		appendManageSessionsResultLines(&lines, results)
+	}
+	if len(lines) == 0 {
+		appendManageSessionsMutationLines(&lines, payload, action)
+	}
+	if len(lines) == 0 {
+		appendManageSessionsProposalLines(&lines, toolObjectSlice(arguments, "proposals"))
+	}
+	if len(lines) == 0 && strings.TrimSpace(tool.Error) != "" {
+		lines = append(lines, toolPresentationLine{Text: tool.Error, Tone: "error"})
+	}
+	return toolPresentation{Summary: manageSessionsSummary(action, maxInt(len(items), len(results))), Lines: lines, Kind: "manage-sessions"}
+}
+
+func manageSessionsSummary(action string, count int) string {
+	action = strings.ReplaceAll(strings.TrimSpace(action), "_", " ")
+	if action == "" {
+		action = "activity"
+	}
+	summary := "sessions " + action
+	if count > 0 {
+		summary = appendToolFacts(summary, []string{toolCountLabel(count, "item", "items")})
+	}
+	return summary
+}
+
+func appendManageSessionsProposalLines(lines *[]toolPresentationLine, proposals []map[string]any) {
+	for index, proposal := range proposals {
+		title := firstNonEmptyToolRaw(toolString(proposal, "title"), fmt.Sprintf("Proposal %d", index+1))
+		status := ""
+		if toolHasKey(proposal, "selected") && !toolBool(proposal, "selected") {
+			status = "not selected"
+		}
+		*lines = append(*lines, toolPresentationLine{Text: appendToolFacts(title, []string{status}), Tone: "label"})
+		if prompt := toolString(proposal, "prompt"); prompt != "" {
+			*lines = append(*lines, toolPresentationLine{Text: prompt})
+		}
+		identity := appendToolFacts(toolString(proposal, "agent_name"), []string{toolString(proposal, "mode")})
+		if identity != "" {
+			*lines = append(*lines, toolPresentationLine{Text: identity, Tone: "path"})
+		}
+		workspace := firstNonEmptyToolRaw(toolString(proposal, "workspace_name"), toolString(proposal, "workspace_path"))
+		if workspace != "" {
+			worktree := "current workspace"
+			if toolBool(proposal, "managed_worktree") || toolBool(proposal, "worktree") {
+				worktree = "managed worktree"
+			}
+			*lines = append(*lines, toolPresentationLine{Text: appendToolFacts(workspace, []string{worktree}), Tone: "muted"})
+		}
+	}
+}
+
+func appendManageSessionsItemLines(lines *[]toolPresentationLine, items []map[string]any) {
+	for _, item := range items {
+		title := firstNonEmptyToolRaw(toolString(item, "title"), toolString(item, "id"), toolString(item, "session_id"), "Untitled session")
+		state := strings.ReplaceAll(firstNonEmptyToolRaw(toolString(item, "state"), toolString(item, "status")), "_", " ")
+		workspace := firstNonEmptyToolRaw(toolString(item, "workspace_name"), toolString(item, "workspace_path"))
+		*lines = append(*lines, toolPresentationLine{Text: appendToolFacts(title, []string{state}), Tone: manageSessionsStatusTone(state)})
+		if workspace != "" {
+			*lines = append(*lines, toolPresentationLine{Text: workspace, Tone: "muted"})
+		}
+	}
+}
+
+func appendManageSessionsResultLines(lines *[]toolPresentationLine, results []map[string]any) {
+	for _, result := range results {
+		title := firstNonEmptyToolRaw(toolString(result, "title"), toolString(result, "session_id"), toolString(result, "proposal_id"), "Session")
+		status := strings.ReplaceAll(firstNonEmptyToolRaw(toolString(result, "status"), "completed"), "_", " ")
+		*lines = append(*lines, toolPresentationLine{Text: appendToolFacts(title, []string{status}), Tone: manageSessionsStatusTone(status)})
+		meta := appendToolFacts(toolString(result, "agent"), []string{toolString(result, "mode")})
+		if meta != "" {
+			*lines = append(*lines, toolPresentationLine{Text: meta, Tone: "path"})
+		}
+		if errText := toolString(result, "error"); errText != "" {
+			*lines = append(*lines, toolPresentationLine{Text: errText, Tone: "error"})
+		}
+	}
+}
+
+func appendManageSessionsMutationLines(lines *[]toolPresentationLine, payload map[string]any, action string) {
+	keys := []string{}
+	switch action {
+	case "archive":
+		keys = []string{"archived_session_ids", "already_archived_session_ids"}
+	case "unarchive":
+		keys = []string{"unarchived_session_ids", "already_active_session_ids"}
+	}
+	for _, key := range keys {
+		for _, id := range toolStringSlice(payload, key) {
+			*lines = append(*lines, toolPresentationLine{Text: id, Tone: "label"})
+		}
+	}
+}
+
+func manageSessionsStatusTone(status string) string {
+	status = strings.ToLower(strings.TrimSpace(status))
+	switch {
+	case strings.Contains(status, "fail"), strings.Contains(status, "error"), strings.Contains(status, "denied"), strings.Contains(status, "cancel"):
+		return "error"
+	case strings.Contains(status, "start"), strings.Contains(status, "created"), strings.Contains(status, "complete"), strings.Contains(status, "success"):
+		return "added"
+	default:
+		return "label"
+	}
 }
 
 func presentTaskTool(tool ToolTimelineItem, output map[string]any) toolPresentation {

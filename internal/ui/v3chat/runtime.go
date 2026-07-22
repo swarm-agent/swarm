@@ -32,6 +32,10 @@ type permissionTransport interface {
 	ExplainPermission(context.Context, string, string, string) (client.PermissionExplain, error)
 }
 
+type permissionArgumentsTransport interface {
+	ResolvePermissionWithArguments(context.Context, string, string, string, string, string) (client.PermissionRecord, error)
+}
+
 type Runtime struct {
 	transport Transport
 	store     *Store
@@ -215,6 +219,10 @@ func (r *Runtime) Compact(ctx context.Context) (client.SessionV3CompactResult, e
 }
 
 func (r *Runtime) ResolvePermission(ctx context.Context, permissionID, action, reason string) (client.PermissionRecord, error) {
+	return r.ResolvePermissionWithArguments(ctx, permissionID, action, reason, "")
+}
+
+func (r *Runtime) ResolvePermissionWithArguments(ctx context.Context, permissionID, action, reason, approvedArguments string) (client.PermissionRecord, error) {
 	if r == nil || r.transport == nil {
 		return client.PermissionRecord{}, errors.New("v3 chat transport is not configured")
 	}
@@ -231,7 +239,17 @@ func (r *Runtime) ResolvePermission(ctx context.Context, permissionID, action, r
 	if permissionID == "" {
 		return client.PermissionRecord{}, errors.New("permission id is required")
 	}
-	record, err := resolver.ResolvePermission(ctx, sessionID, permissionID, strings.TrimSpace(action), strings.TrimSpace(reason))
+	var record client.PermissionRecord
+	var err error
+	if approvedArguments = strings.TrimSpace(approvedArguments); approvedArguments != "" {
+		withArguments, supported := r.transport.(permissionArgumentsTransport)
+		if !supported {
+			return client.PermissionRecord{}, errors.New("v3 chat permission transport does not support approved arguments")
+		}
+		record, err = withArguments.ResolvePermissionWithArguments(ctx, sessionID, permissionID, strings.TrimSpace(action), strings.TrimSpace(reason), approvedArguments)
+	} else {
+		record, err = resolver.ResolvePermission(ctx, sessionID, permissionID, strings.TrimSpace(action), strings.TrimSpace(reason))
+	}
 	if err != nil {
 		return client.PermissionRecord{}, err
 	}

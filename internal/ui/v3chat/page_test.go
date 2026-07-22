@@ -340,6 +340,138 @@ func TestBashPermissionFromHydrationRendersInlineThemedCardAndActions(t *testing
 	}
 }
 
+func TestManageSessionsPendingDeployRendersCanonicalStructuredCardWithoutManifestJSON(t *testing.T) {
+	arguments := `{"manifest_version":1,"action":"deploy","parent_session_id":"parent","account_scope_id":"account","user_id":"user","proposals":[{"id":"proposal-1","title":"Managed session test","prompt":"Run a minimal managed-session smoke test.","mode":"auto","agent_name":"swarm","agent_mode":"primary","workspace_path":"/workspace","workspace_name":"swarm-go","managed_worktree":true,"worktree_branch":"agent/managed-session-test","selected":true}],"allowed_workspaces":[{"id":"workspace","generation":2,"path":"/workspace","name":"swarm-go"}],"manifest_digest":"secret-digest","approved_arguments":{"action":"deploy","manifest_version":1,"manifest_digest":"secret-digest","selected_proposal_ids":["proposal-1"],"proposals":[]}}`
+	permission := client.PermissionRecord{
+		ID: "permission-sessions", SessionID: "session-parent", CallID: "call-sessions", ToolName: "functions.manage-sessions", Requirement: "session_deploy", Mode: "auto", Status: "pending", ToolArguments: arguments,
+	}
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-parent"}, PendingPermissions: []client.PermissionRecord{permission}}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	rows := page.renderRows(store.Snapshot(), 96, testPageStyles())
+	drawn := renderRowsText(rows)
+	for _, want := range []string{"Manage sessions", "DEPLOY", "PROPOSALS", "Managed session test", "Run a minimal managed-session smoke test.", "swarm · auto", "swarm-go · managed worktree", "Enter Approve", "Esc Deny"} {
+		if !strings.Contains(drawn, want) {
+			t.Fatalf("manage-sessions pending card missing %q:\n%s", want, drawn)
+		}
+	}
+	for _, raw := range []string{`{"`, "manifest_version", "manifest_digest", "approved_arguments", "allowed_workspaces", "secret-digest", "Ctrl+A Always Allow", "Ctrl+D Always Deny"} {
+		if strings.Contains(drawn, raw) {
+			t.Fatalf("manage-sessions pending card leaked raw marker %q:\n%s", raw, drawn)
+		}
+	}
+}
+
+func TestManageSessionsTerminalPayloadsRenderStructuredCardsWithoutRawEnvelopes(t *testing.T) {
+	durableDenied := Message{ID: "denied-message", Role: "tool", Content: `{"path_id":"run.v3.provider-tool-result.v1","type":"v3_provider_tool_result","run_id":"run","step":1,"step_id":"step-1","tool_name":"manage-sessions","call_id":"call-denied","tool_instance_id":"step-1:call-denied","arguments":"{\"action\":\"deploy\",\"proposals\":[{\"title\":\"Managed session test\",\"prompt\":\"Run smoke test\",\"mode\":\"auto\",\"worktree\":true}]}","output":"{\"permission\":{\"approved\":false,\"reason\":\"denied by user\",\"status\":\"denied\"},\"tool\":{\"arguments\":\"{\\\"action\\\":\\\"deploy\\\",\\\"proposals\\\":[{\\\"title\\\":\\\"Managed session test\\\",\\\"prompt\\\":\\\"Run smoke test\\\",\\\"mode\\\":\\\"auto\\\",\\\"worktree\\\":true}]}\",\"name\":\"manage-sessions\"}}","completed_output":"{\"permission\":{\"approved\":false,\"reason\":\"denied by user\",\"status\":\"denied\"},\"tool\":{\"arguments\":\"{\\\"action\\\":\\\"deploy\\\",\\\"proposals\\\":[{\\\"title\\\":\\\"Managed session test\\\",\\\"prompt\\\":\\\"Run smoke test\\\",\\\"mode\\\":\\\"auto\\\",\\\"worktree\\\":true}]}\",\"name\":\"manage-sessions\"}}","error":"permission denied","duration_ms":5093}`}
+	deniedTool, ok := parseToolMessage(durableDenied)
+	if !ok {
+		t.Fatal("canonical durable denied provider-tool result did not parse")
+	}
+	success := `{"tool":"manage_sessions","action":"deploy","manifest_digest":"digest","selected_count":1,"results":[{"proposal_id":"proposal-1","session_id":"child-session","title":"Managed session test","mode":"auto","agent":"swarm","workspace_path":"/workspace","worktree":true,"status":"started","navigation":{"href":"/swarm-go/child-session"}}]}`
+	failed := `{"tool":"manage_sessions","action":"deploy","selected_count":1,"results":[{"proposal_id":"proposal-1","title":"Broken session","mode":"auto","agent":"swarm","status":"error","error":"executor rejected the run"}]}`
+	cases := []struct {
+		name   string
+		tool   ToolTimelineItem
+		want   []string
+		absent []string
+	}{
+		{name: "denied", tool: deniedTool, want: []string{"SESSIONS", "Managed session test", "Run smoke test", "Permission denied", "denied by user"}, absent: []string{"permission\":", "tool\":", `{"`}},
+		{name: "success", tool: ToolTimelineItem{ID: "success", Name: "manage-sessions", Status: "completed", Output: success}, want: []string{"SESSIONS", "deploy", "Managed session test · started", "swarm · auto"}, absent: []string{"manifest_digest", "proposal_id", "session_id", "navigation", `{"`}},
+		{name: "failed", tool: ToolTimelineItem{ID: "failed", Name: "manage-sessions", Status: "failed", Output: failed}, want: []string{"Broken session · error", "executor rejected the run"}, absent: []string{"selected_count", "proposal_id", `{"`}},
+	}
+	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			drawn := renderRowsText(page.renderToolRows(tc.tool, 72, testPageStyles()))
+			for _, want := range tc.want {
+				if !strings.Contains(drawn, want) {
+					t.Fatalf("terminal card missing %q:\n%s", want, drawn)
+				}
+			}
+			for _, raw := range tc.absent {
+				if strings.Contains(drawn, raw) {
+					t.Fatalf("terminal card leaked raw marker %q:\n%s", raw, drawn)
+				}
+			}
+		})
+	}
+}
+
+func TestManageSessionsApprovalForwardsCanonicalApprovedArguments(t *testing.T) {
+	approved := `{"action":"deploy","manifest_version":1,"manifest_digest":"digest","selected_proposal_ids":["proposal-1"],"proposals":[{"id":"proposal-1","prompt":"Do work","mode":"auto"}]}`
+	permission := client.PermissionRecord{ID: "permission", SessionID: "parent", ToolName: "manage-sessions", Requirement: "session_deploy", Status: "pending", ToolArguments: `{"action":"deploy","proposals":[{"id":"proposal-1","title":"One","prompt":"Do work","mode":"auto"}],"approved_arguments":` + approved + `}`}
+	resolved := permission
+	resolved.Status = "approved"
+	resolved.Decision = "allow_once"
+	transport := &fakeTransport{resolvedPermission: resolved}
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "parent"}, PendingPermissions: []client.PermissionRecord{permission}}})
+	page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	deadline := time.Now().Add(time.Second)
+	for page.PendingPermissionVisible() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	transport.mu.Lock()
+	request := transport.permissionRequest
+	transport.mu.Unlock()
+	var gotApproved, wantApproved map[string]any
+	gotErr := json.Unmarshal([]byte(request.approvedArguments), &gotApproved)
+	wantErr := json.Unmarshal([]byte(approved), &wantApproved)
+	if request.sessionID != "parent" || request.permissionID != "permission" || request.action != "allow_once" || gotErr != nil || wantErr != nil || !reflect.DeepEqual(gotApproved, wantApproved) {
+		t.Fatalf("manage-sessions permission request = %#v", request)
+	}
+}
+
+func TestManageSessionsPermissionCoalescesCorrelatedTerminalToolCard(t *testing.T) {
+	arguments := `{"action":"deploy","proposals":[{"id":"proposal-1","title":"One session","prompt":"Do work","mode":"auto","managed_worktree":true}],"approved_arguments":{"action":"deploy"}}`
+	permission := client.PermissionRecord{ID: "permission", CallID: "call-1", ToolName: "manage-sessions", Requirement: "session_deploy", Status: "approved", Decision: "allow_once", ExecutionStatus: "completed", ToolArguments: arguments, Output: `{"tool":"manage_sessions","action":"deploy","results":[{"title":"One session","status":"started"}]}`}
+	state := NewState()
+	state.Permissions = PermissionState{Records: []PermissionTimelineItem{{Record: permission}}}
+	state.Messages = []Message{{ID: "tool", Role: "tool", Content: `{"path_id":"run.v3.provider-tool-result.v1","tool_name":"manage-sessions","call_id":"call-1","arguments":"` + strings.ReplaceAll(arguments, `"`, `\"`) + `","output":"{\"action\":\"deploy\",\"results\":[{\"title\":\"One session\",\"status\":\"started\"}]}"}`}}
+	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
+	drawn := renderRowsText(page.renderRows(state, 80, testPageStyles()))
+	if count := strings.Count(drawn, "┌"); count != 1 {
+		t.Fatalf("correlated permission and terminal result rendered %d boxes, want one:\n%s", count, drawn)
+	}
+	for _, want := range []string{"Manage sessions", "One session · started", "RESOLVED", "Approved once"} {
+		if !strings.Contains(drawn, want) {
+			t.Fatalf("resolved manage-sessions card missing %q:\n%s", want, drawn)
+		}
+	}
+	if strings.Contains(drawn, `{"`) || strings.Contains(drawn, "manifest_digest") {
+		t.Fatalf("coalesced manage-sessions card leaked raw JSON:\n%s", drawn)
+	}
+}
+
+func TestManageSessionsCardUsesCellWidthForWideGraphemes(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
+	tool := ToolTimelineItem{ID: "wide", Name: "manage-sessions", Status: "completed", Output: `{"action":"list","items":[{"id":"session-wide","title":"界界界界界界界界界界界界界界界界界界","state":"completed"}]}`}
+	rows := page.renderToolRows(tool, 32, testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(36, len(rows)+2)
+	for index, row := range rows {
+		if len(row.spans) > 0 {
+			drawSpans(screen, 2, index+1, 32, row.spans)
+		} else {
+			drawText(screen, 2, index+1, 32, row.style, row.text)
+		}
+	}
+	screen.Show()
+	for index, row := range rows[:len(rows)-1] {
+		if strings.HasSuffix(row.text, "│") || strings.HasSuffix(row.text, "┐") || strings.HasSuffix(row.text, "┘") {
+			if got, _, _ := screen.Get(33, index+1); got != "│" && got != "┐" && got != "┘" {
+				t.Fatalf("wide session title overwrote right card border on row %d: got %q", index, got)
+			}
+		}
+	}
+}
+
 func TestPlanPermissionFromHydrationUsesStructuredCardAndFullPlanModal(t *testing.T) {
 	permission := client.PermissionRecord{
 		ID: "permission-plan", SessionID: "session-plan", ToolName: "plan_manage", Requirement: "plan_new_request", Mode: "auto", Status: "pending",

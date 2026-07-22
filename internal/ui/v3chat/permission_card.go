@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
 
@@ -75,6 +74,9 @@ func permissionCardModelForRecord(record client.PermissionRecord, pendingCount, 
 	if normalizePermissionToolName(record.ToolName) == "bash" {
 		return bashPermissionCardModel(record, pendingCount, width, styles, prefixPreview)
 	}
+	if intent, ok := parseManageSessionsPermissionIntent(record); ok {
+		return manageSessionsPermissionCardModel(record, intent, pendingCount, width, styles)
+	}
 	if intent, ok := parsePlanPermissionIntent(record); ok {
 		return planPermissionCardModel(record, intent, pendingCount, width, styles)
 	}
@@ -95,6 +97,120 @@ func permissionCardModelForRecord(record client.PermissionRecord, pendingCount, 
 	}
 	for _, line := range wrapText(arguments, maxInt(1, width)) {
 		model.Content = append(model.Content, permissionCardLine{Text: line, Style: styles.Text})
+	}
+	return model
+}
+
+type manageSessionsPermissionIntent struct {
+	Action    string
+	Proposals []map[string]any
+	Sessions  []map[string]any
+}
+
+func isManageSessionsApprovalRequirement(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "session_deploy", "session_commit", "session_archive", "session_unarchive":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseManageSessionsPermissionIntent(record client.PermissionRecord) (manageSessionsPermissionIntent, bool) {
+	if normalizePermissionToolName(record.ToolName) != "manage_sessions" || !isManageSessionsApprovalRequirement(record.Requirement) {
+		return manageSessionsPermissionIntent{}, false
+	}
+	payload := parseToolObject(record.ToolArguments)
+	if payload == nil {
+		return manageSessionsPermissionIntent{}, false
+	}
+	action := firstNonEmptyToolRaw(toolString(payload, "action"), strings.TrimPrefix(strings.ToLower(strings.TrimSpace(record.Requirement)), "session_"))
+	return manageSessionsPermissionIntent{
+		Action:    action,
+		Proposals: toolObjectSlice(payload, "proposals"),
+		Sessions:  toolObjectSlice(payload, "sessions"),
+	}, true
+}
+
+func manageSessionsPermissionCardModel(record client.PermissionRecord, intent manageSessionsPermissionIntent, pendingCount, width int, styles PageStyles) permissionCardModel {
+	mode := firstNonEmpty(strings.TrimSpace(record.Mode), "auto")
+	model := permissionCardModel{
+		Title:      "Manage sessions",
+		Badge:      strings.ToUpper(firstNonEmptyToolRaw(intent.Action, "sessions")),
+		Meta:       permissionCardMeta(record, pendingCount, mode),
+		FooterRows: permissionCardFooterRows(record),
+	}
+	appendLine := func(text string, style tcell.Style) {
+		for _, line := range wrapText(text, maxInt(1, width)) {
+			model.Content = append(model.Content, permissionCardLine{Text: line, Style: style})
+		}
+	}
+	if len(intent.Proposals) > 0 {
+		model.Content = append(model.Content, permissionCardLine{Text: "PROPOSALS  ·  " + toolCountLabel(len(intent.Proposals), "proposal", "proposals"), Style: styles.Muted.Bold(true)})
+		for index, proposal := range intent.Proposals {
+			title := firstNonEmptyToolRaw(toolString(proposal, "title"), fmt.Sprintf("Proposal %d", index+1))
+			appendLine(title, styles.Text.Bold(true))
+			if prompt := toolString(proposal, "prompt"); prompt != "" {
+				appendLine(prompt, styles.Text)
+			}
+			identity := appendToolFacts(toolString(proposal, "agent_name"), []string{toolString(proposal, "mode")})
+			if identity != "" {
+				appendLine(identity, styles.Secondary)
+			}
+			workspace := firstNonEmptyToolRaw(toolString(proposal, "workspace_name"), toolString(proposal, "workspace_path"))
+			if workspace != "" {
+				worktree := "current workspace"
+				if toolBool(proposal, "managed_worktree") {
+					worktree = "managed worktree"
+				}
+				appendLine(appendToolFacts(workspace, []string{worktree}), styles.Muted)
+			}
+		}
+	}
+	if len(intent.Sessions) > 0 {
+		model.Content = append(model.Content, permissionCardLine{Text: "SESSIONS  ·  " + toolCountLabel(len(intent.Sessions), "session", "sessions"), Style: styles.Muted.Bold(true)})
+		for _, session := range intent.Sessions {
+			title := firstNonEmptyToolRaw(toolString(session, "title"), toolString(session, "session_id"), "Untitled session")
+			state := strings.ReplaceAll(toolString(session, "state"), "_", " ")
+			appendLine(appendToolFacts(title, []string{state}), styles.Text.Bold(true))
+		}
+	}
+	if output := parseToolObject(record.Output); output != nil {
+		results := toolObjectSlice(output, "results")
+		if len(results) > 0 {
+			model.Content = append(model.Content, permissionCardLine{Text: "RESULTS  ·  " + toolCountLabel(len(results), "session", "sessions"), Style: styles.Muted.Bold(true)})
+			lines := make([]toolPresentationLine, 0, len(results)*2)
+			appendManageSessionsResultLines(&lines, results)
+			for _, line := range lines {
+				style := styles.Text
+				switch line.Tone {
+				case "added":
+					style = styles.Success
+				case "error":
+					style = styles.Error
+				case "path":
+					style = styles.Secondary
+				case "muted":
+					style = styles.Muted
+				}
+				appendLine(line.Text, style)
+			}
+		}
+	}
+	if !permissionPending(record) {
+		model.Content = append(model.Content,
+			permissionCardLine{Text: "RESOLVED", Style: styles.Muted.Bold(true)},
+			permissionCardLine{Text: permissionResolvedLabel(record), Style: permissionResolvedStyle(record, styles).Bold(true)},
+		)
+		if reason := strings.TrimSpace(record.Reason); reason != "" {
+			appendLine(reason, styles.Muted)
+		}
+		if errText := strings.TrimSpace(record.Error); errText != "" {
+			appendLine(errText, styles.Error)
+		}
+	}
+	if len(model.Content) == 0 {
+		model.Content = append(model.Content, permissionCardLine{Text: "No structured session details were provided.", Style: styles.Muted})
 	}
 	return model
 }
@@ -342,6 +458,18 @@ type permissionCardView struct {
 
 func inlinePermissionCardRows(record client.PermissionRecord, pendingCount, width int, styles PageStyles, prefixPreview string, selected bool, note []rune, busy bool, errorText string) []renderRow {
 	_, planPermission := parsePlanPermissionIntent(record)
+	_, manageSessionsPermission := parseManageSessionsPermissionIntent(record)
+	actions := []permissionCardAction{
+		{Label: "Enter Approve", Action: "allow_once", Tone: styles.Success},
+		{Label: "Esc Deny", Action: "deny_once", Tone: styles.Error},
+		{Label: "Ctrl+A Always Allow", Action: "allow_always", Tone: styles.Accent},
+		{Label: "Ctrl+D Always Deny", Action: "deny_always", Tone: styles.Warning},
+	}
+	if manageSessionsPermission {
+		// manage-sessions mutations use one fresh canonical approval; persistent
+		// permission rules are intentionally unavailable.
+		actions = actions[:2]
+	}
 	view := permissionCardView{
 		Model:     permissionCardModelForRecord(record, pendingCount, maxInt(1, width-4), styles, prefixPreview),
 		Selected:  selected,
@@ -349,13 +477,8 @@ func inlinePermissionCardRows(record client.PermissionRecord, pendingCount, widt
 		Note:      string(note),
 		Busy:      busy,
 		ErrorText: errorText,
-		HideNote:  planPermission,
-		Actions: []permissionCardAction{
-			{Label: "Enter Approve", Action: "allow_once", Tone: styles.Success},
-			{Label: "Esc Deny", Action: "deny_once", Tone: styles.Error},
-			{Label: "Ctrl+A Always Allow", Action: "allow_always", Tone: styles.Accent},
-			{Label: "Ctrl+D Always Deny", Action: "deny_always", Tone: styles.Warning},
-		},
+		HideNote:  planPermission || manageSessionsPermission,
+		Actions:   actions,
 	}
 	return permissionCardRows(view, width, styles)
 }
@@ -392,13 +515,13 @@ func permissionCardRows(view permissionCardView, width int, styles PageStyles) [
 			if remaining == 0 {
 				break
 			}
-			span.text = truncateRunes(span.text, remaining)
+			span.text = truncateCells(span.text, remaining)
 			if !span.keepBackground {
 				span.style = styleOnPermissionCard(span.style, surface)
 			}
 			body = append(body, span)
 			rowText.WriteString(span.text)
-			used += utf8.RuneCountInString(span.text)
+			used += displayWidth(span.text)
 		}
 		padding := strings.Repeat(" ", maxInt(0, width-1-used))
 		body = append(body, renderSpan{text: padding + "│", style: border})
@@ -406,18 +529,18 @@ func permissionCardRows(view permissionCardView, width int, styles PageStyles) [
 		rows = append(rows, renderRow{text: rowText.String(), style: surface, spans: body, actions: actions})
 	}
 	appendText := func(value string, style tcell.Style) {
-		appendBody([]renderSpan{{text: truncateRunes(value, maxInt(0, width-3)), style: style}}, nil)
+		appendBody([]renderSpan{{text: truncateCells(value, maxInt(0, width-3)), style: style}}, nil)
 	}
 
 	appendEdge("┌", "─", "┐")
 	title := strings.TrimSpace(view.Model.Title)
 	badge := strings.ToUpper(strings.TrimSpace(view.Model.Badge))
-	headerSpans := []renderSpan{{text: truncateRunes(title, maxInt(1, width-4)), style: styles.Text.Bold(true)}}
+	headerSpans := []renderSpan{{text: truncateCells(title, maxInt(1, width-4)), style: styles.Text.Bold(true)}}
 	if badge != "" {
 		badgeText := " " + badge + " "
 		innerWidth := maxInt(1, width-3)
-		title = truncateRunes(title, maxInt(1, innerWidth-utf8.RuneCountInString(badgeText)-1))
-		gap := maxInt(1, innerWidth-utf8.RuneCountInString(title)-utf8.RuneCountInString(badgeText))
+		title = truncateCells(title, maxInt(1, innerWidth-displayWidth(badgeText)-1))
+		gap := maxInt(1, innerWidth-displayWidth(title)-displayWidth(badgeText))
 		headerSpans = []renderSpan{
 			{text: title, style: styles.Text.Bold(true)},
 			{text: strings.Repeat(" ", gap), style: surface},
@@ -449,7 +572,7 @@ func permissionCardRows(view permissionCardView, width int, styles PageStyles) [
 			x := 2
 			for _, action := range view.Actions {
 				label := " " + strings.TrimSpace(action.Label) + " "
-				labelWidth := utf8.RuneCountInString(label)
+				labelWidth := displayWidth(label)
 				if x+labelWidth >= width-1 {
 					break
 				}
