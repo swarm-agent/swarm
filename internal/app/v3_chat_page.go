@@ -141,6 +141,11 @@ func (a *App) showV3CurrentPlan() {
 	if a == nil || a.v3Chat == nil {
 		return
 	}
+	if a.v3Chat.PlanModalVisible() {
+		a.v3Chat.ClosePlanModal()
+		a.v3Chat.SetStatus("current plan closed")
+		return
+	}
 	if a.api == nil {
 		a.v3Chat.ClosePlanModal()
 		a.v3Chat.SetStatus("/plan failed: api client is not configured")
@@ -177,7 +182,7 @@ func (a *App) showV3CurrentPlan() {
 		a.v3Chat.SetStatus("/plan failed: current plan has no structured document")
 		return
 	}
-	a.v3Chat.SetStatus("current plan: " + emptyFallback(strings.TrimSpace(plan.Title), strings.TrimSpace(plan.ID)))
+	a.v3Chat.SetStatus("current plan: " + emptyFallback(strings.TrimSpace(plan.Title), "untitled") + " · " + strings.TrimSpace(plan.ID))
 }
 
 func (a *App) handleV3ChatCommand() {

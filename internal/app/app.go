@@ -74,7 +74,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/mouse", Hint: "Toggle mouse click capture", QuickTips: []string{"/mouse toggle", "/mouse status"}},
 		{Command: "/new", Hint: "Create a new session (scaffold)"},
 		{Command: "/permissions", Hint: "Show global permission policy", QuickTips: []string{"/permissions show", "/permissions allow tool <name>", "/permissions allow bash-prefix <command>", "/permissions deny phrase <text>"}},
-		{Command: "/plan", Hint: "Plan commands in chat", QuickTips: []string{"/plan exit", "/plan list", "/plan use <plan_id>", "/plan new [title]"}},
+		{Command: "/plan", Hint: "Show or close the existing session plan"},
 		{Command: "/quit", Hint: "Exit swarmtui"},
 		{Command: "/rebuild", Hint: "Rebuild the current lane and exit swarmtui"},
 		{Command: "/sessions", Hint: "Open the card-style session manager (active conversations first)"},
@@ -2058,7 +2058,7 @@ func (a *App) handleChatKey(ev *tcell.EventKey) bool {
 		return false
 	}
 	if ev != nil && ev.Key() == tcell.KeyCtrlP && strings.TrimSpace(a.chat.InputValue()) == "" {
-		a.handlePlanCommand([]string{"show"})
+		a.handlePlanCommand(nil)
 		if status := strings.TrimSpace(a.home.Status()); status != "" {
 			a.chat.SetStatus(status)
 		}
@@ -2231,10 +2231,7 @@ func (a *App) showHelp() {
 		fmt.Sprintf("/sessions   (open session manager; shortcut %s)", keybinds.Label(ui.KeybindHomeOpenSessions)),
 		"/new   (create and open a new session)",
 		"/home   (return to home from chat)",
-		"/plan exit [title]   (open plan-exit approval modal in chat)",
-		"/plan list   (list saved plans for this session)",
-		"/plan use <plan_id>   (set active plan)",
-		"/plan new [title]   (create and activate a new plan draft)",
+		"/plan   (show or close the existing session plan)",
 		"/task <request>   (queue a durable AI task in automatic mode)",
 		"/task plan <request>   (queue a durable AI task in plan mode)",
 		"/commit [instructions]   (launch memory agent in background to review diffs and commit)",
@@ -2503,16 +2500,26 @@ func (a *App) handleNewCommand() {
 
 func (a *App) handlePlanCommand(args []string) {
 	a.home.ClearCommandOverlay()
+	if len(args) != 0 {
+		a.home.SetStatus("usage: /plan")
+		return
+	}
 	if a.route == "v3chat" && a.v3Chat != nil {
-		if len(args) == 0 || strings.EqualFold(args[0], "show") {
-			a.showV3CurrentPlan()
+		if a.v3Chat.PlanModalVisible() {
+			a.v3Chat.ClosePlanModal()
+			a.v3Chat.SetStatus("current plan closed")
 			return
 		}
-		a.v3Chat.SetStatus("usage: /plan [show]")
+		a.showV3CurrentPlan()
 		return
 	}
 	if a.route != "chat" || a.chat == nil {
-		a.home.SetStatus("plan commands are available in chat: /plan [show|exit|list|use|new]")
+		a.home.SetStatus("/plan is available in chat only")
+		return
+	}
+	if a.chat.CurrentPlanModalVisible() {
+		a.chat.CloseCurrentPlanModal()
+		a.home.SetStatus("current plan closed")
 		return
 	}
 	sessionID := strings.TrimSpace(a.chat.SessionID())
@@ -2520,166 +2527,33 @@ func (a *App) handlePlanCommand(args []string) {
 		a.home.SetStatus("session id is unavailable")
 		return
 	}
-	showCurrentPlan := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		plan, ok, err := a.api.GetActiveSessionPlan(ctx, sessionID)
-		if err != nil {
-			a.home.SetStatus(fmt.Sprintf("/plan failed: %v", err))
-			return
-		}
-		plans, activeID, listErr := a.api.ListSessionPlans(ctx, sessionID, 100)
-		if listErr != nil {
-			a.home.SetStatus(fmt.Sprintf("/plan failed: %v", listErr))
-			return
-		}
-		if !ok {
-			plan = client.SessionPlan{Title: "Current Plan", Status: "draft"}
-		}
-		uiRevisions := make([]ui.ChatSessionPlan, 0)
-		if strings.TrimSpace(plan.ID) != "" {
-			revisions, historyErr := a.api.ListSessionPlanHistory(ctx, sessionID, plan.ID, 100)
-			if historyErr != nil {
-				a.home.SetStatus(fmt.Sprintf("/plan history failed: %v", historyErr))
-			} else {
-				uiRevisions = make([]ui.ChatSessionPlan, 0, len(revisions))
-				for _, revision := range revisions {
-					uiRevisions = append(uiRevisions, ui.ChatSessionPlan{ID: strings.TrimSpace(revision.ID), Title: strings.TrimSpace(revision.Title), Plan: revision.Plan, Document: revision.Document, Status: strings.TrimSpace(revision.Status), ApprovalState: strings.TrimSpace(revision.ApprovalState), Active: revision.Active, CreatedAt: revision.CreatedAt, UpdatedAt: revision.UpdatedAt, PriorTitle: strings.TrimSpace(revision.PriorTitle), PriorPlan: revision.PriorPlan, DiffLines: append([]string(nil), revision.DiffLines...), UpdateSummary: strings.TrimSpace(revision.UpdateSummary), UpdateScope: strings.TrimSpace(revision.UpdateScope), UpdateKind: strings.TrimSpace(revision.UpdateKind), Version: revision.Version, ParentRevision: revision.ParentRevision, Checkpoint: revision.Checkpoint})
-				}
-			}
-		}
-		if len(uiRevisions) == 0 && len(plans) > 0 {
-			for _, candidate := range plans {
-				uiRevisions = append(uiRevisions, ui.ChatSessionPlan{ID: strings.TrimSpace(candidate.ID), Title: strings.TrimSpace(candidate.Title), Plan: candidate.Plan, Document: candidate.Document, Status: strings.TrimSpace(candidate.Status), ApprovalState: strings.TrimSpace(candidate.ApprovalState), Active: candidate.Active, CreatedAt: candidate.CreatedAt, UpdatedAt: candidate.UpdatedAt})
-			}
-		}
-		if !a.chat.OpenCurrentPlanModalWithPlans(ui.ChatSessionPlan{ID: strings.TrimSpace(plan.ID), Title: strings.TrimSpace(plan.Title), Plan: plan.Plan, Document: plan.Document, Status: strings.TrimSpace(plan.Status), ApprovalState: strings.TrimSpace(plan.ApprovalState), Active: ok, CreatedAt: plan.CreatedAt, UpdatedAt: plan.UpdatedAt, Version: plan.Version}, uiRevisions, activeID) {
-			a.home.SetStatus("current plan modal is unavailable while another modal is open")
-			return
-		}
-		if ok {
-			a.home.SetStatus(fmt.Sprintf("current plan: %s", emptyFallback(strings.TrimSpace(plan.Title), strings.TrimSpace(plan.ID))))
-		} else {
-			a.home.SetStatus("current plan: no active plan")
-		}
-	}
-	if len(args) == 0 || strings.EqualFold(args[0], "help") {
-		if len(args) == 0 {
-			showCurrentPlan()
-			return
-		}
-		a.home.SetStatus("usage: /plan [show|recover|exit|list|use|new]")
-		a.chat.AppendSystemMessage("usage:\n/plan\n/plan show\n/plan recover\n/plan exit [title]\n/plan list [limit]\n/plan use <plan_id>\n/plan new [title]")
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	plan, ok, err := a.api.GetActiveSessionPlan(ctx, sessionID)
+	if err != nil {
+		a.home.SetStatus(fmt.Sprintf("/plan failed: %v", err))
 		return
 	}
-
-	action := strings.ToLower(strings.TrimSpace(args[0]))
-	switch action {
-	case "show", "recover":
-		showCurrentPlan()
-		if action == "recover" {
-			a.home.SetStatus("plan recovery: press R, then Tab/arrow keys and Enter")
-		}
-	case "exit":
-		if a.chat.PermissionModalVisible() {
-			a.home.SetStatus("resolve pending permissions before exiting plan mode")
-			return
-		}
-		title := "Exit Plan Mode"
-		if len(args) > 1 {
-			title = strings.TrimSpace(strings.Join(args[1:], " "))
-		}
-		body := a.buildPlanExitModalBody(title)
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		if plan, ok, err := a.api.GetActiveSessionPlan(ctx, sessionID); err == nil && ok {
-			if documentText := ui.StructuredPlanDocumentTextFromValue(plan.Document); strings.TrimSpace(documentText) != "" {
-				body = strings.TrimSpace(body) + "\n\nStructured plan document:\n" + documentText
-			}
-		}
-		cancel()
-		if !a.chat.OpenExitPlanModeModal(title, body) {
-			a.home.SetStatus("exit plan modal is unavailable while pending permissions are open")
-			return
-		}
-		a.home.SetStatus("review plan approval and confirm")
-	case "list":
-		limit := 20
-		if len(args) > 1 {
-			if parsed, err := strconv.Atoi(strings.TrimSpace(args[1])); err == nil && parsed > 0 {
-				limit = parsed
-			}
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		plans, activeID, err := a.api.ListSessionPlans(ctx, sessionID, limit)
-		if err != nil {
-			a.home.SetStatus(fmt.Sprintf("/plan list failed: %v", err))
-			return
-		}
-		lines := []string{fmt.Sprintf("plans: %d (active: %s)", len(plans), emptyFallback(activeID, "none"))}
-		if len(plans) == 0 {
-			lines = append(lines, "No saved plans yet. Use /plan new [title].")
-		} else {
-			maxLines := len(plans)
-			if maxLines > 12 {
-				maxLines = 12
-			}
-			for i := 0; i < maxLines; i++ {
-				plan := plans[i]
-				activeMark := " "
-				if plan.Active {
-					activeMark = "*"
-				}
-				lines = append(lines, fmt.Sprintf("%s %s  %s", activeMark, plan.ID, clampText(plan.Title, 56)))
-			}
-			if len(plans) > maxLines {
-				lines = append(lines, fmt.Sprintf("... %d more", len(plans)-maxLines))
-			}
-		}
-		a.home.SetCommandOverlay(lines)
-		a.home.SetStatus("plan list loaded")
-	case "use":
-		if len(args) < 2 {
-			a.home.SetStatus("usage: /plan use <plan_id>")
-			return
-		}
-		planID := strings.TrimSpace(args[1])
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		plan, err := a.api.SetActiveSessionPlan(ctx, sessionID, planID)
-		if err != nil {
-			a.home.SetStatus(fmt.Sprintf("/plan use failed: %v", err))
-			return
-		}
-		a.home.SetStatus(fmt.Sprintf("active plan: %s", plan.ID))
-		a.chat.SetActivePlan(chatPlanLabel(plan))
-		a.chat.AppendSystemMessage(fmt.Sprintf("Active plan set to %s (%s).", plan.ID, emptyFallback(plan.Title, "untitled")))
-	case "new":
-		title := "New Plan"
-		if len(args) > 1 {
-			title = strings.TrimSpace(strings.Join(args[1:], " "))
-		}
-		activate := true
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		plan, err := a.api.SaveSessionPlan(ctx, sessionID, client.SessionPlanUpsertRequest{
-			Title:    title,
-			Plan:     "# " + title + "\n\n- [ ] next step\n",
-			Status:   "draft",
-			Activate: &activate,
-		})
-		if err != nil {
-			a.home.SetStatus(fmt.Sprintf("/plan new failed: %v", err))
-			return
-		}
-		a.home.SetStatus(fmt.Sprintf("created plan: %s", plan.ID))
-		a.chat.SetActivePlan(chatPlanLabel(plan))
-		a.chat.AppendSystemMessage(fmt.Sprintf("Created new active plan %s (%s).", plan.ID, emptyFallback(plan.Title, "untitled")))
-		showCurrentPlan()
-	default:
-		a.home.SetStatus("usage: /plan [show|recover|exit|list|use|new]")
-		a.chat.AppendSystemMessage("usage:\n/plan\n/plan show\n/plan recover\n/plan exit [title]\n/plan list [limit]\n/plan use <plan_id>\n/plan new [title]")
+	if !ok {
+		a.home.SetStatus("current plan: no active plan")
+		return
 	}
+	if !a.chat.OpenCurrentPlanModal(ui.ChatSessionPlan{
+		ID:            strings.TrimSpace(plan.ID),
+		Title:         strings.TrimSpace(plan.Title),
+		Plan:          plan.Plan,
+		Document:      plan.Document,
+		Status:        strings.TrimSpace(plan.Status),
+		ApprovalState: strings.TrimSpace(plan.ApprovalState),
+		Active:        true,
+		CreatedAt:     plan.CreatedAt,
+		UpdatedAt:     plan.UpdatedAt,
+		Version:       plan.Version,
+	}) {
+		a.home.SetStatus("current plan modal is unavailable while another modal is open")
+		return
+	}
+	a.home.SetStatus(fmt.Sprintf("current plan: %s · %s", emptyFallback(strings.TrimSpace(plan.Title), "untitled"), strings.TrimSpace(plan.ID)))
 }
 
 func (a *App) handleArchiveCommand(args []string) {

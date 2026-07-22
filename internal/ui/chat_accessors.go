@@ -294,6 +294,17 @@ func (p *ChatPage) SessionID() string {
 	return strings.TrimSpace(p.sessionID)
 }
 
+func (p *ChatPage) CurrentPlanModalVisible() bool {
+	return p != nil && p.planEditorModalActive()
+}
+
+func (p *ChatPage) CloseCurrentPlanModal() {
+	if p == nil {
+		return
+	}
+	p.closePlanEditorModal()
+}
+
 func (p *ChatPage) OpenCurrentPlanModal(plan ChatSessionPlan) bool {
 	return p.OpenCurrentPlanModalWithPlans(plan, nil, strings.TrimSpace(plan.ID))
 }

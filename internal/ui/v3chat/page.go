@@ -1799,7 +1799,10 @@ func (p *Page) drawPlanModal(screen tcell.Screen, width, height int, styles Page
 	x, y := (width-modalWidth)/2, (height-modalHeight)/2
 	fill(screen, x, y, modalWidth, modalHeight, styles.Panel)
 	drawBox(screen, x, y, modalWidth, modalHeight, styles.BorderActive)
-	title := firstNonEmpty(plan.Document.Title, plan.Title, "Structured plan")
+	title := firstNonEmpty(plan.Title, plan.Document.Title, "Structured plan")
+	if planID := strings.TrimSpace(plan.ID); planID != "" {
+		title += "  ·  " + planID
+	}
 	drawText(screen, x+2, y+1, modalWidth-4, styles.Primary.Bold(true), "PLAN  ·  "+title)
 	drawText(screen, x+2, y+2, modalWidth-4, styles.Muted, "Structured plan  ·  ↑/↓ scroll  ·  Esc close")
 	lines := structuredPlanModalLines(plan.Document, modalWidth-4, styles)

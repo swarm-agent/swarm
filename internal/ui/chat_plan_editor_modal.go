@@ -450,8 +450,15 @@ func (p *ChatPage) drawPlanEditorModal(s tcell.Screen, screen Rect) {
 	DrawTextRight(s, modal.X+modal.W-2, modal.Y+1, revisionW, revisionStyle, clampEllipsis(revisionText, revisionW))
 
 	header := "Current Plan"
-	if title := strings.TrimSpace(p.planEditorPlan.Title); title != "" {
+	title := strings.TrimSpace(p.planEditorPlan.Title)
+	planID := strings.TrimSpace(p.planEditorPlan.ID)
+	switch {
+	case title != "" && planID != "":
+		header = title + "  ·  " + planID
+	case title != "":
 		header = title
+	case planID != "":
+		header = planID
 	}
 	titleW := modal.W - 5 - revisionW
 	if titleW < 12 {
