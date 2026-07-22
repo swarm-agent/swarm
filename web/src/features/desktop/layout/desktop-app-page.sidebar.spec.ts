@@ -85,7 +85,7 @@ test('plan Git commit form submits on Enter through the shared commit handler an
   assert.equal((modalSource.match(/commitWorkspaceChanges/g) ?? []).length, 0)
 })
 
-test('sidebar keeps review controls first and shows compact remote and dirty Git state without an icon', async () => {
+test('sidebar keeps review controls first and opens session-independent main-worktree Git details', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const rendererStart = source.indexOf('function renderSidebarSessionGroups')
   const rendererEnd = source.indexOf('export function DesktopAppPage', rendererStart)
@@ -95,6 +95,12 @@ test('sidebar keeps review controls first and shows compact remote and dirty Git
   const gitEntryStart = rendererSource.indexOf('data-sidebar-dirty-git-entry')
   const gitEntryEnd = rendererSource.indexOf('</button>', gitEntryStart)
   const gitEntrySource = rendererSource.slice(gitEntryStart, gitEntryEnd)
+  const handlerStart = source.indexOf('const openMainWorktreeGitPanel = useCallback')
+  const handlerEnd = source.indexOf('const closeGitPanel', handlerStart)
+  const handlerSource = source.slice(handlerStart, handlerEnd)
+  const overlayStart = source.lastIndexOf('<GitDetailsOverlay')
+  const overlayEnd = source.indexOf('/>', overlayStart)
+  const overlaySource = source.slice(overlayStart, overlayEnd)
 
   assert.ok(rendererStart >= 0 && rendererEnd > rendererStart)
   assert.ok(toolbarIndex >= 0 && headingIndex > toolbarIndex)
@@ -104,7 +110,15 @@ test('sidebar keeps review controls first and shows compact remote and dirty Git
   assert.match(gitEntrySource, /↑\{input\.gitAheadCount\} ↓\{input\.gitBehindCount\}/)
   assert.match(gitEntrySource, /input\.gitDirtyCount > 0 \? `\$\{input\.gitDirtyCount\} dirty` : 'clean'/)
   assert.doesNotMatch(gitEntrySource, /<GitBranch|\bGit ·|min-h-|border|bg-\[var\(--app-warning-bg\)\]|Commit/)
-  assert.match(source, /gitAheadCount: topWorkspaceGitAheadCount[\s\S]*gitBehindCount: topWorkspaceGitBehindCount[\s\S]*gitDirtyCount: topWorkspaceGitDirtyCount[\s\S]*onOpenGit:/)
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
+  assert.match(handlerSource, /gitStatusQueryKey\(normalizedPath\)/)
+  assert.doesNotMatch(handlerSource, /sessionId|selectedGitSessionId/)
+  assert.match(source, /gitAheadCount: topWorkspaceGitAheadCount[\s\S]*gitBehindCount: topWorkspaceGitBehindCount[\s\S]*gitDirtyCount: topWorkspaceGitDirtyCount[\s\S]*onOpenGit: \(\) => openMainWorktreeGitPanel\(topWorkspacePath, topWorkspaceLabel\)/)
+  assert.ok(overlayStart >= 0 && overlayEnd > overlayStart)
+  assert.match(overlaySource, /snapshot=\{gitPanel \? topWorkspaceGitSnapshot : null\}/)
+  assert.match(overlaySource, /topWorkspaceGitStatusQuery\.isFetching/)
+  assert.match(overlaySource, /topWorkspaceGitStatusQuery\.error/)
+  assert.doesNotMatch(overlaySource, /selectedGitSessionId|gitRealtimeErrors|gitStatusQuery\.error/)
   assert.deepEqual(SIDEBAR_SESSION_GROUPS.slice(0, 2).map((group) => group.id), ['needs_review', 'in_progress'])
 })
 

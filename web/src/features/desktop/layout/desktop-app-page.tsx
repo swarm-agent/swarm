@@ -2882,7 +2882,7 @@ export function DesktopAppPage() {
   const closeTodoModal = useCallback(() => {
     setTodoModal(null)
   }, [])
-  const openGitPanel = useCallback((workspacePath: string, workspaceName: string) => {
+  const openMainWorktreeGitPanel = useCallback((workspacePath: string, workspaceName: string) => {
     const normalizedPath = workspacePath.trim()
     if (!normalizedPath) return
     setGitPanel({ workspacePath: normalizedPath, workspaceName })
@@ -3849,7 +3849,7 @@ export function DesktopAppPage() {
       case 'open-commit-modal': {
         const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || ''
         const workspaceName = selectedWorkspace?.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
-        if (workspacePath) openGitPanel(workspacePath, workspaceName)
+        if (workspacePath) openMainWorktreeGitPanel(workspacePath, workspaceName)
         return
       }
       case 'open-plan-modal':
@@ -3919,7 +3919,7 @@ export function DesktopAppPage() {
         return _exhaustive
       }
     }
-  }, [handleOpenSettingsTab, handleStartNewSessionInWorkspace, openGitPanel, openPlanModalForSession, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath])
+  }, [handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath])
 
   const latestNeedsApprovalSession = useMemo(() => {
     return desktopStateSessions
@@ -4803,7 +4803,7 @@ export function DesktopAppPage() {
                     gitAheadCount: topWorkspaceGitAheadCount,
                     gitBehindCount: topWorkspaceGitBehindCount,
                     gitDirtyCount: topWorkspaceGitDirtyCount,
-                    onOpenGit: () => openGitPanel(topWorkspacePath, topWorkspaceLabel),
+                    onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
                     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
                     onEnterSelectionMode: handleEnterSidebarSelectionMode,
                     onClearSelection: handleClearSidebarSelection,
@@ -5308,9 +5308,9 @@ export function DesktopAppPage() {
       </Dialog> : null}
       <GitDetailsOverlay
         state={gitPanel}
-        snapshot={gitPanel ? (gitPanel.workspacePath === topWorkspacePath ? topWorkspaceGitSnapshot : gitSnapshotByPath.get(gitPanel.workspacePath) ?? null) : null}
-        loading={Boolean(gitPanel && ((gitPanel.workspacePath === selectedGitWorkspacePath && gitStatusQuery.isFetching) || (gitPanel.workspacePath === topWorkspacePath && topWorkspaceGitStatusQuery.isFetching)))}
-        error={gitPanel ? (gitRealtimeErrors[gitPanel.workspacePath] ?? (gitPanel.workspacePath === selectedGitWorkspacePath && gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : null) ?? (gitPanel.workspacePath === topWorkspacePath && topWorkspaceGitStatusQuery.error instanceof Error ? topWorkspaceGitStatusQuery.error.message : null)) : null}
+        snapshot={gitPanel ? topWorkspaceGitSnapshot : null}
+        loading={Boolean(gitPanel && topWorkspaceGitStatusQuery.isFetching)}
+        error={gitPanel && topWorkspaceGitStatusQuery.error instanceof Error ? topWorkspaceGitStatusQuery.error.message : null}
         onRefresh={() => { if (gitPanel) void queryClient.invalidateQueries({ queryKey: gitStatusQueryKey(gitPanel.workspacePath) }) }}
         onCommit={(files) => {
           if (!gitPanel || files.length === 0) return
