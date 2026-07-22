@@ -116,15 +116,15 @@ func (p *ChatPage) drawPlanExecutionSidebar(s tcell.Screen, rect Rect) {
 func (p *ChatPage) planExecutionControlHint(v planExecutionView) string {
 	switch v.status {
 	case "needs_review", "final_review":
-		return "/plan  [a] accept  [o] archive"
+		return "[p] plan  [a] accept  [o] archive"
 	case "blocked":
-		return "/plan  [r] resolve  [n] resolve + next"
+		return "[p] plan  [r] resolve  [n] resolve + next"
 	case "failed":
-		return "/plan  [t] restart  [w] rewind  [x] recovery"
+		return "[p] plan  [t] restart  [w] rewind  [x] recovery"
 	case "in_progress", "running":
-		return "/plan  [s] stop  [m] policy  [x] recovery"
+		return "[p] plan  [s] stop  [m] policy  [x] recovery"
 	default:
-		return "/plan  [m] policy  [x] recovery"
+		return "[p] full plan  [m] policy  [x] recovery"
 	}
 }
 
@@ -144,6 +144,8 @@ func (p *ChatPage) handlePlanExecutionKey(ev *tcell.EventKey) bool {
 		return false
 	}
 	switch ev.Rune() {
+	case 'p':
+		p.openPlanEditorModalWithPlans(p.planExecutionPlan, p.planExecutionRevisions, p.planExecutionPlan.ID)
 	case 's':
 		if v.status != "in_progress" && v.status != "running" {
 			return false

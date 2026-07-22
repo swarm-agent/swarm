@@ -2214,7 +2214,6 @@ func (a *App) showHelp() {
 		fmt.Sprintf("/sessions   (open session manager; shortcut %s)", keybinds.Label(ui.KeybindHomeOpenSessions)),
 		"/new   (create and open a new session)",
 		"/home   (return to home from chat)",
-		"/plan   (check the current plan)",
 		"/plan exit [title]   (open plan-exit approval modal in chat)",
 		"/plan list   (list saved plans for this session)",
 		"/plan use <plan_id>   (set active plan)",
@@ -2485,18 +2484,6 @@ func (a *App) handleNewCommand() {
 
 func (a *App) handlePlanCommand(args []string) {
 	a.home.ClearCommandOverlay()
-	if a.route == "v3chat" && a.v3Chat != nil {
-		if len(args) == 0 || strings.EqualFold(strings.TrimSpace(args[0]), "show") {
-			if a.v3Chat.OpenPlanModal() {
-				a.home.SetStatus("current plan opened")
-			} else {
-				a.home.SetStatus("current plan: no active plan")
-			}
-			return
-		}
-		a.home.SetStatus("usage: /plan [show]")
-		return
-	}
 	if a.route != "chat" || a.chat == nil {
 		a.home.SetStatus("plan commands are available in chat: /plan [show|exit|list|use|new]")
 		return
