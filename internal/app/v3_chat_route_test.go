@@ -160,6 +160,34 @@ func TestV3ChatCtrlCClearsInputBeforeRequestingQuit(t *testing.T) {
 	}
 }
 
+func TestV3ChatCtrlCJumpsScrollbackBeforeRequestingQuit(t *testing.T) {
+	page := v3chat.NewPage(v3chat.NewRuntime(nil, v3chat.NewStore(), nil), v3chat.PageStyles{})
+	page.HandleKey(tcell.NewEventKey(tcell.KeyPgUp, 0, tcell.ModNone))
+	app := &App{
+		home:   ui.NewHomePage(model.EmptyHome()),
+		v3Chat: page,
+		route:  "v3chat",
+		config: defaultAppConfig(),
+	}
+
+	if !app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlC, 0, tcell.ModNone)) {
+		t.Fatal("first Ctrl-C was not handled")
+	}
+	if app.quitRequested {
+		t.Fatal("first Ctrl-C requested quit while transcript was scrolled up")
+	}
+	if page.ConsumeQuitScrollbackJump() {
+		t.Fatal("first Ctrl-C did not restore the live bottom position")
+	}
+
+	if !app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlC, 0, tcell.ModNone)) {
+		t.Fatal("second Ctrl-C was not handled")
+	}
+	if !app.quitRequested {
+		t.Fatal("second Ctrl-C did not request quit from the live bottom position")
+	}
+}
+
 func TestV3ChatFooterUsesBackendResolvedSwarmIdentity(t *testing.T) {
 	app := &App{
 		config: AppConfig{Swarm: SwarmConfig{Name: "Configured Desk"}},

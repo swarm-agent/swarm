@@ -13,6 +13,24 @@ import (
 	"swarm-refactor/swarmtui/internal/ui/footerbar"
 )
 
+func TestPageConsumeQuitScrollbackJumpRestoresLiveFollowWhilePausedOrBusy(t *testing.T) {
+	for _, busy := range []bool{false, true} {
+		page := NewPage(NewRuntime(nil, NewStore(), nil), PageStyles{})
+		page.busy = busy
+		page.HandleKey(tcell.NewEventKey(tcell.KeyPgUp, 0, tcell.ModNone))
+
+		if !page.ConsumeQuitScrollbackJump() {
+			t.Fatalf("busy=%v: scrolled page did not consume quit jump", busy)
+		}
+		if page.scroll != 0 || !page.follow {
+			t.Fatalf("busy=%v: scroll=%d follow=%v, want live bottom", busy, page.scroll, page.follow)
+		}
+		if page.ConsumeQuitScrollbackJump() {
+			t.Fatalf("busy=%v: page consumed quit jump again at live bottom", busy)
+		}
+	}
+}
+
 func TestPageHeaderAndLiveOverlayRenderFromStore(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s", Title: "before"}, SnapshotEndpointCursor: "cursor"}})

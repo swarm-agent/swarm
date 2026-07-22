@@ -352,6 +352,25 @@ func (p *Page) ClearInput() {
 	p.mu.Unlock()
 }
 
+// ConsumeQuitScrollbackJump returns the transcript to its live bottom position
+// before the app treats a subsequent quit key as an exit request.
+func (p *Page) ConsumeQuitScrollbackJump() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.handoffDetailsModal || p.planModal || p.permissionVisibleLocked() || p.modelPicker || p.pasteActive {
+		return false
+	}
+	if p.scroll <= 0 && p.follow {
+		return false
+	}
+	p.scroll = 0
+	p.follow = true
+	return true
+}
+
 func (p *Page) SetPasteActive(active bool) {
 	if p == nil {
 		return

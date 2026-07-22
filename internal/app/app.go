@@ -1948,6 +1948,9 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 	}
 
 	if keybinds.Match(ev, ui.KeybindGlobalQuit) {
+		if a.route == "v3chat" && a.v3Chat != nil && a.v3Chat.ConsumeQuitScrollbackJump() {
+			return true
+		}
 		if a.route == "v3chat" && a.v3Chat != nil && strings.TrimSpace(a.v3Chat.InputValue()) != "" {
 			a.v3Chat.ClearInput()
 			return true
