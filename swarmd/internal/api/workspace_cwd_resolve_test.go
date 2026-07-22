@@ -180,12 +180,12 @@ func TestWorkspaceCWDResolveIncludesRemoteBindingWhenSourceGenerationIsStale(t *
 		t.Fatalf("restore workspace path: %v", err)
 	}
 	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{
-		UserID:               testPrincipal().UserID,
-		AccountScopeID:       testPrincipal().AccountScopeID,
-		SwarmID:          "remote-swarm",
-		Name:             "check2",
-		Relationship:     swarmruntime.RelationshipChild,
-		Status:           "online",
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		SwarmID:        "remote-swarm",
+		Name:           "check2",
+		Relationship:   swarmruntime.RelationshipChild,
+		Status:         "online",
 	}); err != nil {
 		t.Fatalf("upsert topology runtime: %v", err)
 	}

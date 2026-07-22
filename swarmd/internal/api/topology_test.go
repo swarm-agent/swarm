@@ -21,13 +21,13 @@ func TestSwarmTopologySnapshotReturnsCanonicalRuntimes(t *testing.T) {
 
 	topologyStore := pebblestore.NewTopologyStore(store)
 	runtimeRecord, err := topologyStore.PutRuntimeForAccount(testAccountScopeID, pebblestore.TopologyRuntimeRecord{
-		SwarmID:              "child-1",
-		UserID:               testUserID,
-		AccountScopeID:       testAccountScopeID,
-		Name:                 "Child One",
-		Relationship:         "child",
-		DesktopURL:           "https://retired-desktop.example.test",
-		OwnerHostSwarmID:     "retired-owner",
+		SwarmID:          "child-1",
+		UserID:           testUserID,
+		AccountScopeID:   testAccountScopeID,
+		Name:             "Child One",
+		Relationship:     "child",
+		DesktopURL:       "https://retired-desktop.example.test",
+		OwnerHostSwarmID: "retired-owner",
 	})
 	if err != nil {
 		t.Fatalf("put runtime: %v", err)

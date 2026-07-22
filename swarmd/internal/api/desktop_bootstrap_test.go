@@ -57,12 +57,12 @@ func TestWorkspaceOverviewIncludesTopologyRoutesFromWorkspaceBindings(t *testing
 		t.Fatalf("upsert host topology runtime: %v", err)
 	}
 	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{
-		UserID:               testPrincipal().UserID,
-		AccountScopeID:       testPrincipal().AccountScopeID,
-		SwarmID:              "managed-swarm-1",
-		Name:                 "managed-host",
-		Relationship:         "managed",
-		ObservedSources:      []string{"swarm_trusted_peer"},
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		SwarmID:         "managed-swarm-1",
+		Name:            "managed-host",
+		Relationship:    "managed",
+		ObservedSources: []string{"swarm_trusted_peer"},
 	}); err != nil {
 		t.Fatalf("upsert topology runtime: %v", err)
 	}
