@@ -3022,14 +3022,6 @@ function DesktopV3PlanFinalHandoff({
   );
 }
 
-function finalHandoffOutcome(item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }>): string {
-  const value = metadataString(item.message.metadata, "outcome")
-    || metadataString(item.message.metadata, "execution_status")
-    || item.finalHandoff?.recommendation?.decision
-    || "completed";
-  return value.replace(/[-_]+/g, " ");
-}
-
 export function selectDesktopV3SuggestedPrompt(
   prompt: string,
   onSuggestedPrompt?: (prompt: string) => void | Promise<void>,
@@ -3063,11 +3055,8 @@ function DesktopV3StructuredFinalHandoff({
               <CheckCircle2 size={13} aria-hidden="true" />
               Final handoff
             </div>
-            <h3 className="mt-1 break-words text-base font-semibold leading-6">{handoff.title}</h3>
+            <h3 className="mt-3 break-words text-base font-semibold leading-6">{handoff.title}</h3>
           </div>
-          <span className="shrink-0 rounded-full bg-[var(--app-success-bg)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-success)]">
-            {finalHandoffOutcome(item)}
-          </span>
         </div>
 
         <div className="mt-2 text-sm leading-6 text-[var(--app-text-muted)]" data-final-handoff-overview>
