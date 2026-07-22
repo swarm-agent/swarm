@@ -84,11 +84,11 @@ func (p *ChatPage) SetSessionTitle(title string) {
 			continue
 		}
 		p.sessionTabs[i].Title = title
-		p.sessionsPaletteItems = normalizeChatSessionPaletteItems(p.sessionTabs)
+		p.sessionsPaletteItems = prepareSessionManagerItems(normalizeChatSessionPaletteItems(p.sessionTabs))
 		return
 	}
 	p.sessionTabs = normalizeChatSessionTabs(p.sessionTabs, currentID, title)
-	p.sessionsPaletteItems = normalizeChatSessionPaletteItems(p.sessionTabs)
+	p.sessionsPaletteItems = prepareSessionManagerItems(normalizeChatSessionPaletteItems(p.sessionTabs))
 }
 
 func (p *ChatPage) SetSessionBranch(branch string) {
@@ -151,7 +151,7 @@ func (p *ChatPage) SetSessionTabs(tabs []ChatSessionTab) {
 	}
 	normalized := normalizeChatSessionTabs(tabs, p.sessionID, p.sessionTitle)
 	p.sessionTabs = normalized
-	p.sessionsPaletteItems = normalizeChatSessionPaletteItems(normalized)
+	p.sessionsPaletteItems = prepareSessionManagerItems(normalizeChatSessionPaletteItems(normalized))
 }
 
 func (p *ChatPage) SetMessages(messages []ChatMessageRecord) {

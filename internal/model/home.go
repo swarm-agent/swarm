@@ -67,6 +67,8 @@ type SessionSummary struct {
 	WorktreeRootPath           string
 	WorktreeBaseBranch         string
 	WorktreeBranch             string
+	HasActivePlan              bool
+	ActivePlan                 *client.SessionPlan
 	CreatedAt                  int64
 	UpdatedAt                  int64
 	UpdatedAgo                 string

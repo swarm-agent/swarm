@@ -3075,6 +3075,8 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		Mode:                       strings.TrimSpace(summary.Mode),
 		Metadata:                   cloneMetadataMap(summary.Metadata),
 		PendingPermissionCount:     summary.PendingPermissionCount,
+		HasActivePlan:              summary.HasActivePlan,
+		ActivePlan:                 summary.ActivePlan,
 		Lifecycle:                  cloneClientSessionLifecycle(summary.Lifecycle),
 		SessionAPI:                 strings.TrimSpace(summary.SessionAPI),
 		LastEventSeq:               summary.LastEventSeq,
@@ -3528,6 +3530,13 @@ func sessionSummaryActivityLabel(summary model.SessionSummary) string {
 	if summary.PendingPermissionCount > 0 {
 		return "NEEDS APPROVAL"
 	}
+	if group := sessionSummarySidebarGroup(summary); group == "needs_review" {
+		return "REVIEW"
+	} else if group == "in_progress" {
+		if status := sessionSummaryPlanStatus(summary); status != "" {
+			return status
+		}
+	}
 	if sessionSummaryActive(summary) {
 		if summary.Lifecycle != nil {
 			if phase := strings.TrimSpace(summary.Lifecycle.Phase); phase != "" {
@@ -3537,6 +3546,136 @@ func sessionSummaryActivityLabel(summary model.SessionSummary) string {
 		return "ACTIVE"
 	}
 	return ""
+}
+
+func sessionSummarySidebarGroup(summary model.SessionSummary) string {
+	plan := summary.ActivePlan
+	if plan == nil || plan.Document == nil {
+		return "active_chats"
+	}
+	document := plan.Document
+	status := strings.ToLower(strings.TrimSpace(document.Status))
+	if document.ExecutionState != nil && strings.TrimSpace(document.ExecutionState.Status) != "" {
+		status = strings.ToLower(strings.TrimSpace(document.ExecutionState.Status))
+	}
+	checkpoint := sessionSummaryActiveCheckpoint(document)
+	checkpointStatus := ""
+	if checkpoint != nil {
+		checkpointStatus = strings.ToLower(strings.TrimSpace(checkpoint.Status))
+		if checkpointStatus == "needs_review" || (checkpoint.Review != nil && strings.EqualFold(strings.TrimSpace(checkpoint.Review.Status), "pending")) {
+			return "needs_review"
+		}
+	}
+	if status == "waiting_review" {
+		return "needs_review"
+	}
+	if sessionSummaryPlanComplete(document, status) {
+		return "active_chats"
+	}
+	return "in_progress"
+}
+
+func sessionSummaryPlanStatus(summary model.SessionSummary) string {
+	plan := summary.ActivePlan
+	if plan == nil || plan.Document == nil {
+		return ""
+	}
+	document := plan.Document
+	status := strings.ToLower(strings.TrimSpace(document.Status))
+	if document.ExecutionState != nil && strings.TrimSpace(document.ExecutionState.Status) != "" {
+		status = strings.ToLower(strings.TrimSpace(document.ExecutionState.Status))
+	}
+	checkpoint := sessionSummaryActiveCheckpoint(document)
+	checkpointStatus := ""
+	if checkpoint != nil {
+		checkpointStatus = strings.ToLower(strings.TrimSpace(checkpoint.Status))
+	}
+	switch {
+	case status == "waiting_review" || checkpointStatus == "needs_review":
+		return "REVIEW"
+	case status == "blocked" || status == "failed" || checkpointStatus == "blocked" || checkpointStatus == "failed":
+		return "BLOCKED"
+	case status == "queued" || status == "pending" || checkpointStatus == "pending":
+		return "QUEUED"
+	default:
+		return "RUNNING"
+	}
+}
+
+func sessionSummaryPlanProgress(summary model.SessionSummary) string {
+	if summary.ActivePlan == nil || summary.ActivePlan.Document == nil {
+		return ""
+	}
+	document := summary.ActivePlan.Document
+	checkpoints := append([]client.SessionPlanCheckpoint(nil), document.Checkpoints...)
+	sort.SliceStable(checkpoints, func(i, j int) bool {
+		leftOrder, rightOrder := checkpoints[i].Order, checkpoints[j].Order
+		if leftOrder <= 0 {
+			leftOrder = int(^uint(0) >> 1)
+		}
+		if rightOrder <= 0 {
+			rightOrder = int(^uint(0) >> 1)
+		}
+		if leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
+		return checkpoints[i].ID < checkpoints[j].ID
+	})
+	if len(checkpoints) == 0 {
+		return ""
+	}
+	activeID := strings.TrimSpace(document.ActiveCheckpointID)
+	if activeID == "" && document.ExecutionState != nil {
+		activeID = strings.TrimSpace(document.ExecutionState.LastCheckpointID)
+	}
+	activeIndex, completed := 0, 0
+	for index, checkpoint := range checkpoints {
+		if strings.EqualFold(strings.TrimSpace(checkpoint.Status), "completed") {
+			completed++
+		}
+		if checkpoint.ID == activeID || (activeID == "" && strings.EqualFold(strings.TrimSpace(checkpoint.Status), "in_progress")) {
+			activeIndex = index + 1
+			if activeID == "" {
+				activeID = checkpoint.ID
+			}
+		}
+	}
+	if activeIndex == 0 {
+		activeIndex = completed
+	}
+	return fmt.Sprintf("%d/%d", activeIndex, len(checkpoints))
+}
+
+func sessionSummaryActiveCheckpoint(document *client.SessionPlanDocument) *client.SessionPlanCheckpoint {
+	if document == nil {
+		return nil
+	}
+	activeID := strings.TrimSpace(document.ActiveCheckpointID)
+	if activeID == "" && document.ExecutionState != nil {
+		activeID = strings.TrimSpace(document.ExecutionState.LastCheckpointID)
+	}
+	for index := range document.Checkpoints {
+		checkpoint := &document.Checkpoints[index]
+		if checkpoint.ID == activeID || (activeID == "" && strings.EqualFold(strings.TrimSpace(checkpoint.Status), "in_progress")) {
+			return checkpoint
+		}
+	}
+	return nil
+}
+
+func sessionSummaryPlanComplete(document *client.SessionPlanDocument, normalizedStatus string) bool {
+	if normalizedStatus == "completed" {
+		return true
+	}
+	if document == nil || len(document.Checkpoints) == 0 {
+		return false
+	}
+	for _, checkpoint := range document.Checkpoints {
+		if !strings.EqualFold(strings.TrimSpace(checkpoint.Status), "completed") {
+			return false
+		}
+	}
+	return true
 }
 
 func chatSessionTabsFromSummaries(summaries []model.SessionSummary) []ui.ChatSessionTab {
@@ -3562,6 +3701,8 @@ func chatSessionTabsFromSummaries(summaries []model.SessionSummary) []ui.ChatSes
 			Title:           title,
 			WorkspaceName:   strings.TrimSpace(summary.WorkspaceName),
 			WorkspacePath:   strings.TrimSpace(summary.WorkspacePath),
+			WorktreeEnabled: summary.WorktreeEnabled,
+			WorktreeBranch:  strings.TrimSpace(summary.WorktreeBranch),
 			Mode:            strings.TrimSpace(summary.Mode),
 			CreatedAt:       summary.CreatedAt,
 			UpdatedAt:       summary.UpdatedAt,
@@ -3570,6 +3711,8 @@ func chatSessionTabsFromSummaries(summaries []model.SessionSummary) []ui.ChatSes
 			Active:          sessionSummaryActive(summary),
 			NeedsAttention:  summary.PendingPermissionCount > 0,
 			ActivityLabel:   sessionSummaryActivityLabel(summary),
+			Group:           sessionSummarySidebarGroup(summary),
+			ProgressLabel:   sessionSummaryPlanProgress(summary),
 			Provider:        strings.TrimSpace(summary.Preference.Provider),
 			ModelName:       strings.TrimSpace(summary.Preference.Model),
 			ServiceTier:     strings.TrimSpace(summary.Preference.ServiceTier),
@@ -3623,6 +3766,8 @@ func summariesBackgroundTabs(summaries []model.SessionSummary) []ui.ChatSessionT
 			Title:           title,
 			WorkspaceName:   strings.TrimSpace(summary.WorkspaceName),
 			WorkspacePath:   strings.TrimSpace(summary.WorkspacePath),
+			WorktreeEnabled: summary.WorktreeEnabled,
+			WorktreeBranch:  strings.TrimSpace(summary.WorktreeBranch),
 			Mode:            mode,
 			CreatedAt:       summary.CreatedAt,
 			UpdatedAt:       summary.UpdatedAt,
@@ -3631,6 +3776,8 @@ func summariesBackgroundTabs(summaries []model.SessionSummary) []ui.ChatSessionT
 			Active:          sessionSummaryActive(summary),
 			NeedsAttention:  summary.PendingPermissionCount > 0,
 			ActivityLabel:   sessionSummaryActivityLabel(summary),
+			Group:           sessionSummarySidebarGroup(summary),
+			ProgressLabel:   sessionSummaryPlanProgress(summary),
 			Provider:        strings.TrimSpace(summary.Preference.Provider),
 			ModelName:       strings.TrimSpace(summary.Preference.Model),
 			ServiceTier:     strings.TrimSpace(summary.Preference.ServiceTier),
@@ -3919,9 +4066,10 @@ func computeSessionDepths(summaries []model.SessionSummary) map[string]int {
 			return 0
 		}
 		visiting[id] = true
-		parentID := strings.TrimSpace(ui.SessionLineageFromSummary(summary).ParentSessionID)
+		lineage := ui.SessionLineageFromSummary(summary)
+		parentID := strings.TrimSpace(lineage.ParentSessionID)
 		depth := 0
-		if parentID != "" {
+		if parentID != "" && !strings.EqualFold(strings.TrimSpace(lineage.LineageKind), "session_deploy") {
 			depth = walk(parentID) + 1
 		}
 		visiting[id] = false
@@ -4410,6 +4558,13 @@ func mergeHomeSessionSummary(current, incoming model.SessionSummary) model.Sessi
 		merged.Metadata = cloneMetadataMap(incoming.Metadata)
 	}
 	merged.PendingPermissionCount = incoming.PendingPermissionCount
+	merged.HasActivePlan = incoming.HasActivePlan
+	if incoming.ActivePlan != nil {
+		activePlan := *incoming.ActivePlan
+		merged.ActivePlan = &activePlan
+	} else if !incoming.HasActivePlan {
+		merged.ActivePlan = nil
+	}
 	merged.Preference = mergeClientModelPreference(merged.Preference, incoming.Preference)
 	merged.WorktreeEnabled = incoming.WorktreeEnabled
 	if value := strings.TrimSpace(incoming.WorktreeRootPath); value != "" || !merged.WorktreeEnabled {
@@ -4751,6 +4906,8 @@ func chatSessionPaletteItemsFromTabs(tabs []ui.ChatSessionTab) []ui.ChatSessionP
 			Title:           title,
 			WorkspaceName:   strings.TrimSpace(tab.WorkspaceName),
 			WorkspacePath:   strings.TrimSpace(tab.WorkspacePath),
+			WorktreeEnabled: tab.WorktreeEnabled,
+			WorktreeBranch:  strings.TrimSpace(tab.WorktreeBranch),
 			Mode:            strings.TrimSpace(tab.Mode),
 			CreatedAt:       tab.CreatedAt,
 			UpdatedAt:       tab.UpdatedAt,
@@ -4759,6 +4916,8 @@ func chatSessionPaletteItemsFromTabs(tabs []ui.ChatSessionTab) []ui.ChatSessionP
 			Active:          tab.Active,
 			NeedsAttention:  tab.NeedsAttention,
 			ActivityLabel:   strings.TrimSpace(tab.ActivityLabel),
+			Group:           strings.TrimSpace(tab.Group),
+			ProgressLabel:   strings.TrimSpace(tab.ProgressLabel),
 			Provider:        strings.TrimSpace(tab.Provider),
 			ModelName:       strings.TrimSpace(tab.ModelName),
 			ServiceTier:     strings.TrimSpace(tab.ServiceTier),
@@ -4807,6 +4966,14 @@ func modelSessionSummariesFromV3SyncSnapshot(snapshot client.SessionV3SyncSnapsh
 		summary := modelSessionSummaryFromClient(session)
 		if permission, ok := snapshot.PermissionSummariesBySession[id]; ok {
 			summary.PendingPermissionCount = permission.PendingApprovalCount
+		}
+		if view, ok := snapshot.SessionViewsByID[id]; ok {
+			summary.HasActivePlan = view.HasActivePlan != nil && *view.HasActivePlan
+			if view.ActivePlan != nil {
+				activePlan := *view.ActivePlan
+				summary.ActivePlan = &activePlan
+				summary.HasActivePlan = true
+			}
 		}
 		if runState, ok := snapshot.CurrentRunStateBySession[id]; ok {
 			intent := client.SessionV3RunIntent{
@@ -4888,6 +5055,7 @@ func (a *App) queueSessionManagerOpen(query, openRoute string) error {
 			Resources: client.SessionV3SyncResources{
 				CurrentRunState:     true,
 				PermissionSummaries: true,
+				ActivePlan:          true,
 			},
 			IncludeActive: true,
 		})

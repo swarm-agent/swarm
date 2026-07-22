@@ -20,7 +20,8 @@ func (p *ChatPage) OpenSessionsPalette(items []ChatSessionPaletteItem, query str
 	if p.planPermissionModalActive() || p.manageSessionsPermissionModalActive() || p.planEditorModalActive() || p.planUpdateModalActive() || p.planExitModalActive() || p.askUserModalActive() || p.workspaceScopeModalActive() || p.ordinaryPermissionComposerActive() || p.skillChangeModalActive() {
 		return false
 	}
-	p.sessionsPaletteItems = append([]ChatSessionPaletteItem(nil), items...)
+	p.sessionsPaletteItems = prepareSessionManagerItems(items)
+	p.sessionsPaletteExpanded = make(map[string]bool)
 	p.sessionsPaletteVisible = true
 	p.sessionsPaletteQuery = strings.TrimSpace(query)
 	p.sessionsPaletteSelection = 0
@@ -57,7 +58,7 @@ func (p *ChatPage) sessionsPaletteMatches() []ChatSessionPaletteItem {
 	}
 	query := strings.ToLower(strings.TrimSpace(p.sessionsPaletteQuery))
 	if query == "" {
-		return append([]ChatSessionPaletteItem(nil), p.sessionsPaletteItems...)
+		return visibleSessionManagerItems(p.sessionsPaletteItems, p.sessionsPaletteExpanded)
 	}
 	matches := make([]ChatSessionPaletteItem, 0, len(p.sessionsPaletteItems))
 	for _, item := range p.sessionsPaletteItems {
@@ -155,6 +156,28 @@ func (p *ChatPage) selectedSessionsPaletteItem() (ChatSessionPaletteItem, bool) 
 	return matches[p.sessionsPaletteSelection], true
 }
 
+func (p *ChatPage) toggleSelectedSessionsPaletteSubagents() {
+	selected, ok := p.selectedSessionsPaletteItem()
+	if !ok {
+		return
+	}
+	id := strings.TrimSpace(selected.ID)
+	if sessionManagerChildCount(p.sessionsPaletteItems, id) == 0 {
+		p.statusLine = "selected session has no subagents"
+		return
+	}
+	if p.sessionsPaletteExpanded == nil {
+		p.sessionsPaletteExpanded = make(map[string]bool)
+	}
+	p.sessionsPaletteExpanded[id] = !p.sessionsPaletteExpanded[id]
+	p.syncSessionsPaletteSelection()
+	if p.sessionsPaletteExpanded[id] {
+		p.statusLine = "subagent sessions expanded"
+	} else {
+		p.statusLine = "subagent sessions collapsed"
+	}
+}
+
 func (p *ChatPage) confirmSessionsPaletteSelection() bool {
 	selected, ok := p.selectedSessionsPaletteItem()
 	if !ok {
@@ -226,6 +249,9 @@ func (p *ChatPage) handleSessionsPaletteKey(ev *tcell.EventKey) bool {
 		return true
 	case p.keybinds.Match(ev, KeybindChatClear):
 		p.sessionsPaletteClearQuery()
+		return true
+	case ev.Key() == tcell.KeyRune && (ev.Rune() == 's' || ev.Rune() == 'S'):
+		p.toggleSelectedSessionsPaletteSubagents()
 		return true
 	}
 
@@ -311,12 +337,16 @@ func (p *ChatPage) drawSessionsPalette(s tcell.Screen, screen Rect) {
 			if meta == "" {
 				meta = strings.TrimSpace(item.Mode)
 			}
-			ws := strings.TrimSpace(item.WorkspaceName)
-			if ws == "" {
-				ws = strings.TrimSpace(item.WorkspacePath)
-			}
+			ws := sessionManagerWorkspaceLabel(item)
 			modelLabel := model.DisplayModelLabel(item.Provider, item.ModelName, item.ServiceTier, item.ContextMode)
 			line := sessionListPrimaryLine(prefix+SessionIndentedPrefix(item.Depth), sessionDisplayTitle(item.Title, item.ID), SessionLineageDisplay(SessionLineageFromPaletteItem(item)), ws, modelLabel, compact)
+			if badge := sessionManagerBadge(item); badge != "" {
+				line = badge + "  " + line
+			}
+			childCount := sessionManagerChildCount(p.sessionsPaletteItems, item.ID)
+			if suffix := sessionManagerItemSuffix(item, childCount, p.sessionsPaletteExpanded[strings.TrimSpace(item.ID)]); suffix != "" {
+				line += " · " + suffix
+			}
 			if compact {
 				DrawText(s, modal.X+2, listTop+row, modal.W-4, style, clampEllipsis(line, modal.W-4))
 				continue
@@ -326,6 +356,6 @@ func (p *ChatPage) drawSessionsPalette(s tcell.Screen, screen Rect) {
 		}
 	}
 
-	hint := "Enter open • Esc close • type to search • ↑/↓ scroll"
+	hint := "Enter open • s subagents • Esc close • type to search • ↑/↓ scroll"
 	DrawText(s, modal.X+2, modal.Y+modal.H-2, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(hint, modal.W-4))
 }

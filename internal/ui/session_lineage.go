@@ -129,10 +129,10 @@ func sessionListPrimaryLine(prefix, title, lineageLabel, workspace, modelLabel s
 	if title = strings.TrimSpace(title); title != "" && !strings.EqualFold(title, lineageLabel) {
 		parts = append(parts, title)
 	}
+	if workspace = strings.TrimSpace(workspace); workspace != "" {
+		parts = append(parts, workspace)
+	}
 	if !compact {
-		if workspace = strings.TrimSpace(workspace); workspace != "" {
-			parts = append(parts, workspace)
-		}
 		if modelLabel = strings.TrimSpace(modelLabel); modelLabel != "" && modelLabel != "unset" {
 			parts = append(parts, modelLabel)
 		}

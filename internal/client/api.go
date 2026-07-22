@@ -665,6 +665,7 @@ type SessionV3SyncAttention struct {
 type SessionV3SyncResources struct {
 	CurrentRunState     bool `json:"current_run_state,omitempty"`
 	PermissionSummaries bool `json:"permission_summaries,omitempty"`
+	ActivePlan          bool `json:"active_plan,omitempty"`
 }
 
 type SessionV3SyncPermissionSummary struct {
@@ -686,6 +687,11 @@ type SessionV3RunState struct {
 	EventSeq      uint64 `json:"event_seq,omitempty"`
 }
 
+type SessionV3SyncSessionView struct {
+	HasActivePlan *bool        `json:"has_active_plan,omitempty"`
+	ActivePlan    *SessionPlan `json:"active_plan,omitempty"`
+}
+
 type SessionV3SyncSnapshot struct {
 	OK                           bool                                      `json:"ok"`
 	SnapshotEndpointCursor       string                                    `json:"snapshot_endpoint_cursor"`
@@ -693,6 +699,7 @@ type SessionV3SyncSnapshot struct {
 	ProjectionsBySession         map[string]SessionV3Projection            `json:"projections_by_session"`
 	CurrentRunStateBySession     map[string]SessionV3RunState              `json:"current_run_state_by_session,omitempty"`
 	PermissionSummariesBySession map[string]SessionV3SyncPermissionSummary `json:"permission_summaries_by_session,omitempty"`
+	SessionViewsByID             map[string]SessionV3SyncSessionView       `json:"session_views_by_id,omitempty"`
 	ActiveSessionIDs             []string                                  `json:"active_session_ids,omitempty"`
 	SessionOrder                 []string                                  `json:"session_order"`
 }

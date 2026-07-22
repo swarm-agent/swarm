@@ -81,6 +81,8 @@ type ChatSessionTab struct {
 	Title           string
 	WorkspaceName   string
 	WorkspacePath   string
+	WorktreeEnabled bool
+	WorktreeBranch  string
 	Mode            string
 	CreatedAt       int64
 	UpdatedAt       int64
@@ -89,6 +91,8 @@ type ChatSessionTab struct {
 	Active          bool
 	NeedsAttention  bool
 	ActivityLabel   string
+	Group           string
+	ProgressLabel   string
 	Provider        string
 	ModelName       string
 	ServiceTier     string
@@ -108,6 +112,8 @@ type ChatSessionPaletteItem struct {
 	Title           string
 	WorkspaceName   string
 	WorkspacePath   string
+	WorktreeEnabled bool
+	WorktreeBranch  string
 	Mode            string
 	CreatedAt       int64
 	UpdatedAt       int64
@@ -116,6 +122,8 @@ type ChatSessionPaletteItem struct {
 	Active          bool
 	NeedsAttention  bool
 	ActivityLabel   string
+	Group           string
+	ProgressLabel   string
 	Provider        string
 	ModelName       string
 	ServiceTier     string
@@ -589,6 +597,7 @@ type ChatPage struct {
 	sessionsPaletteSelection int
 	sessionsPaletteScroll    int
 	sessionsPaletteItems     []ChatSessionPaletteItem
+	sessionsPaletteExpanded  map[string]bool
 	bashOutput               chatBashOutputState
 	pendingChatAction        *ChatAction
 	statusLine               string
@@ -629,7 +638,8 @@ func NewChatPage(opts ChatPageOptions) *ChatPage {
 		sessionTitle:            title,
 		presets:                 append([]string(nil), opts.Presets...),
 		sessionTabs:             normalizeChatSessionTabs(opts.SessionTabs, strings.TrimSpace(opts.SessionID), title),
-		sessionsPaletteItems:    normalizeChatSessionPaletteItems(opts.SessionTabs),
+		sessionsPaletteItems:    prepareSessionManagerItems(normalizeChatSessionPaletteItems(opts.SessionTabs)),
+		sessionsPaletteExpanded: make(map[string]bool),
 		runResults:              make(chan chatRunResult, 4),
 		runStream:               make(chan chatRunStreamResult, 2048),
 		runStops:                make(chan chatRunStopResult, 4),
@@ -5116,8 +5126,18 @@ func normalizeChatSessionTabs(tabs []ChatSessionTab, currentID, currentTitle str
 			Title:           title,
 			WorkspaceName:   strings.TrimSpace(tab.WorkspaceName),
 			WorkspacePath:   strings.TrimSpace(tab.WorkspacePath),
+			WorktreeEnabled: tab.WorktreeEnabled,
+			WorktreeBranch:  strings.TrimSpace(tab.WorktreeBranch),
 			Mode:            strings.TrimSpace(tab.Mode),
+			CreatedAt:       tab.CreatedAt,
+			UpdatedAt:       tab.UpdatedAt,
+			ActiveStartedAt: tab.ActiveStartedAt,
 			UpdatedAgo:      strings.TrimSpace(tab.UpdatedAgo),
+			Active:          tab.Active,
+			NeedsAttention:  tab.NeedsAttention,
+			ActivityLabel:   strings.TrimSpace(tab.ActivityLabel),
+			Group:           strings.TrimSpace(tab.Group),
+			ProgressLabel:   strings.TrimSpace(tab.ProgressLabel),
 			Provider:        strings.TrimSpace(tab.Provider),
 			ModelName:       strings.TrimSpace(tab.ModelName),
 			ServiceTier:     strings.TrimSpace(tab.ServiceTier),

@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -23,51 +22,29 @@ type sessionsModalState struct {
 	Selection int
 	Scroll    int
 	Items     []ChatSessionPaletteItem
-}
-
-func sortSessionManagerItems(items []ChatSessionPaletteItem) []ChatSessionPaletteItem {
-	ordered := append([]ChatSessionPaletteItem(nil), items...)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		left := ordered[i]
-		right := ordered[j]
-		if left.NeedsAttention != right.NeedsAttention {
-			return left.NeedsAttention
-		}
-		if left.Active != right.Active {
-			return left.Active
-		}
-		if left.Active && right.Active {
-			leftStarted := left.ActiveStartedAt
-			rightStarted := right.ActiveStartedAt
-			if leftStarted != rightStarted {
-				if leftStarted <= 0 {
-					return false
-				}
-				if rightStarted <= 0 {
-					return true
-				}
-				return leftStarted < rightStarted
-			}
-		} else if left.UpdatedAt != right.UpdatedAt {
-			return left.UpdatedAt > right.UpdatedAt
-		}
-		return strings.TrimSpace(left.ID) < strings.TrimSpace(right.ID)
-	})
-	return ordered
+	Expanded  map[string]bool
 }
 
 func sessionManagerBadge(item ChatSessionPaletteItem) string {
-	if item.NeedsAttention {
-		return "[NEEDS APPROVAL]"
+	label := strings.TrimSpace(item.ActivityLabel)
+	if item.NeedsAttention && label == "" {
+		label = "NEEDS APPROVAL"
 	}
-	if item.Active {
-		label := strings.TrimSpace(item.ActivityLabel)
-		if label == "" {
-			label = "ACTIVE"
+	if label == "" && item.Active {
+		label = "ACTIVE"
+	}
+	if label == "" {
+		switch strings.ToLower(strings.TrimSpace(item.Group)) {
+		case "needs_review":
+			label = "REVIEW"
+		case "in_progress":
+			label = "IN PROGRESS"
 		}
-		return "[" + label + "]"
 	}
-	return ""
+	if label == "" {
+		return ""
+	}
+	return "[" + label + "]"
 }
 
 func (p *HomePage) OpenSessionsModal(items []ChatSessionPaletteItem, query string) bool {
@@ -89,7 +66,8 @@ func (p *HomePage) OpenSessionsModal(items []ChatSessionPaletteItem, query strin
 	}
 
 	p.sessionsModal.Visible = true
-	p.sessionsModal.Items = sortSessionManagerItems(items)
+	p.sessionsModal.Items = prepareSessionManagerItems(items)
+	p.sessionsModal.Expanded = make(map[string]bool)
 	p.sessionsModal.Query = strings.TrimSpace(query)
 	p.sessionsModal.Selection = 0
 	p.sessionsModal.Scroll = 0
@@ -110,6 +88,7 @@ func (p *HomePage) HideSessionsModal() {
 	p.sessionsModal.Query = ""
 	p.sessionsModal.Selection = 0
 	p.sessionsModal.Scroll = 0
+	p.sessionsModal.Expanded = nil
 }
 
 func (p *HomePage) SessionsModalVisible() bool {
@@ -129,7 +108,7 @@ func (p *HomePage) sessionsModalMatches() []ChatSessionPaletteItem {
 	}
 	query := strings.ToLower(strings.TrimSpace(p.sessionsModal.Query))
 	if query == "" {
-		return append([]ChatSessionPaletteItem(nil), p.sessionsModal.Items...)
+		return visibleSessionManagerItems(p.sessionsModal.Items, p.sessionsModal.Expanded)
 	}
 	matches := make([]ChatSessionPaletteItem, 0, len(p.sessionsModal.Items))
 	for _, item := range p.sessionsModal.Items {
@@ -200,6 +179,28 @@ func (p *HomePage) selectedSessionsModalItem() (ChatSessionPaletteItem, bool) {
 		return ChatSessionPaletteItem{}, false
 	}
 	return matches[p.sessionsModal.Selection], true
+}
+
+func (p *HomePage) toggleSelectedSessionsModalSubagents() {
+	selected, ok := p.selectedSessionsModalItem()
+	if !ok {
+		return
+	}
+	id := strings.TrimSpace(selected.ID)
+	if sessionManagerChildCount(p.sessionsModal.Items, id) == 0 {
+		p.statusLine = "selected session has no subagents"
+		return
+	}
+	if p.sessionsModal.Expanded == nil {
+		p.sessionsModal.Expanded = make(map[string]bool)
+	}
+	p.sessionsModal.Expanded[id] = !p.sessionsModal.Expanded[id]
+	p.syncSessionsModalSelection()
+	if p.sessionsModal.Expanded[id] {
+		p.statusLine = "subagent sessions expanded"
+	} else {
+		p.statusLine = "subagent sessions collapsed"
+	}
 }
 
 func (p *HomePage) confirmSessionsModalSelection() {
@@ -280,6 +281,9 @@ func (p *HomePage) handleSessionsModalKey(ev *tcell.EventKey) {
 		return
 	case p.keybinds.Match(ev, KeybindModalEnter):
 		p.confirmSessionsModalSelection()
+		return
+	case ev.Key() == tcell.KeyRune && (ev.Rune() == 's' || ev.Rune() == 'S'):
+		p.toggleSelectedSessionsModalSubagents()
 		return
 	}
 
@@ -369,13 +373,14 @@ func (p *HomePage) drawSessionsModal(s tcell.Screen) {
 			if meta == "" {
 				meta = strings.TrimSpace(item.Mode)
 			}
-			workspace := strings.TrimSpace(item.WorkspaceName)
-			if workspace == "" {
-				workspace = strings.TrimSpace(item.WorkspacePath)
-			}
+			workspace := sessionManagerWorkspaceLabel(item)
 
 			modelLabel := model.DisplayModelLabel(item.Provider, item.ModelName, item.ServiceTier, item.ContextMode)
 			line := sessionListPrimaryLine(prefix+SessionIndentedPrefix(item.Depth), sessionDisplayTitle(item.Title, item.ID), SessionLineageDisplay(SessionLineageFromPaletteItem(item)), workspace, modelLabel, compact)
+			childCount := sessionManagerChildCount(p.sessionsModal.Items, item.ID)
+			if suffix := sessionManagerItemSuffix(item, childCount, p.sessionsModal.Expanded[strings.TrimSpace(item.ID)]); suffix != "" {
+				line += " · " + suffix
+			}
 			if !compact && isBackgroundSessionPaletteItem(item) && strings.TrimSpace(item.LineageLabel) == "" {
 				line += " | background"
 			}
@@ -389,7 +394,7 @@ func (p *HomePage) drawSessionsModal(s tcell.Screen) {
 
 			badge := sessionManagerBadge(item)
 			badgeStyle := onPanel(p.theme.Success.Bold(true))
-			if item.NeedsAttention {
+			if item.NeedsAttention || strings.EqualFold(strings.TrimSpace(item.Group), "needs_review") {
 				badgeStyle = onPanel(p.theme.Warning.Bold(true))
 			}
 			if badge != "" {
@@ -411,7 +416,7 @@ func (p *HomePage) drawSessionsModal(s tcell.Screen) {
 		}
 	}
 
-	hint := "Enter open • Esc close • type to search • ↑/↓ cards"
+	hint := "Enter open • s subagents • Esc close • type to search • ↑/↓ cards"
 	DrawText(s, modal.X+2, modal.Y+modal.H-2, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(hint, modal.W-4))
 }
 
