@@ -43,6 +43,26 @@ func RenderMarkdownLines(theme Theme, body string, width int) []MarkdownRenderLi
 	}
 	page := &ChatPage{theme: theme}
 	rows := page.renderMarkdownRows(body, theme.MarkdownText, theme.Text)
+	return exportMarkdownRenderLines(rows, width)
+}
+
+// RenderCodeLines exposes the established chat page's themed code parser for
+// structured transcript surfaces such as edit-tool diffs.
+func RenderCodeLines(theme Theme, path, body string, width int) []MarkdownRenderLine {
+	if width <= 0 || body == "" {
+		return nil
+	}
+	page := &ChatPage{theme: theme}
+	language := inferCodeLanguageFromPath(path)
+	spans := flattenCodeFenceBackground(page.highlightCodeFenceLine(body, language))
+	if len(spans) == 0 {
+		spans = []chatRenderSpan{{Text: body, Style: theme.MarkdownCode}}
+	}
+	row := markdownLineWithInlineSpans("", spans, theme.MarkdownCode)
+	return exportMarkdownRenderLines([]chatRenderLine{row}, width)
+}
+
+func exportMarkdownRenderLines(rows []chatRenderLine, width int) []MarkdownRenderLine {
 	out := make([]MarkdownRenderLine, 0, len(rows))
 	for _, row := range rows {
 		for _, wrapped := range wrapMarkdownRenderLine(row, width) {
