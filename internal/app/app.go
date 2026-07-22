@@ -72,7 +72,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/keybinds", Hint: "Open keybindings modal", QuickTips: []string{"/keybinds list", "/keybinds reset [all]"}},
 		{Command: "/mode", Hint: "Toggle Plan behavior for new chats", QuickTips: []string{"/mode plan", "/mode action", "/mode status"}},
 		{Command: "/mouse", Hint: "Toggle mouse click capture", QuickTips: []string{"/mouse toggle", "/mouse status"}},
-		{Command: "/new", Hint: "Create a new session (scaffold)"},
+		{Command: "/new", Hint: "Open a new session draft"},
 		{Command: "/permissions", Hint: "Show global permission policy", QuickTips: []string{"/permissions show", "/permissions allow tool <name>", "/permissions allow bash-prefix <command>", "/permissions deny phrase <text>"}},
 		{Command: "/plan", Hint: "Show or close the existing session plan"},
 		{Command: "/quit", Hint: "Exit swarmtui"},
@@ -1931,7 +1931,10 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		return true
 	}
 	if keybinds.Match(ev, ui.KeybindGlobalCycleProfiles) {
-		if a.route != "home" || a.homeInteractionActive() {
+		if a.homeInteractionActive() {
+			return false
+		}
+		if a.route != "home" && !a.v3ChatDraftActive() {
 			return false
 		}
 		a.cycleHomeModelProfile()
@@ -2242,7 +2245,7 @@ func (a *App) showHelp() {
 	keybinds := a.activeKeyBindings()
 	lines := []string{
 		fmt.Sprintf("/sessions   (open session manager; shortcut %s)", keybinds.Label(ui.KeybindHomeOpenSessions)),
-		"/new   (create and open a new session)",
+		"/new   (open a new session draft; create on first message)",
 		"/home   (return to home from chat)",
 		"/plan   (show or close the existing session plan)",
 		"/task <request>   (queue a durable AI task in automatic mode)",
@@ -5719,6 +5722,7 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 		a.queueReload(false)
 	case ui.WorkspaceModalActionSelect:
 		selectorMode := a.home.WorkspaceModalIntent() == "select"
+		previousWorkspacePath := a.activeWorkspacePath()
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
 		resolution, err := a.api.SelectWorkspace(ctx, action.Path)
@@ -5728,6 +5732,11 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 			return
 		}
 		a.syncActiveWorkspaceSelection(resolution)
+		if err := a.openV3ChatDraftAfterWorkspaceChange(previousWorkspacePath); err != nil {
+			a.home.SetWorkspaceModalLoading(false)
+			a.home.SetWorkspaceModalError(fmt.Sprintf("workspace switched, but new chat draft failed: %v", err))
+			return
+		}
 		if selectorMode {
 			a.home.HideWorkspaceModal()
 			a.home.SetStatus(fmt.Sprintf("workspace active: %s", displayPath(resolution.ResolvedPath)))
@@ -7255,9 +7264,14 @@ func (a *App) handleWorkspaceCommand(args []string) {
 			a.home.SetStatus(fmt.Sprintf("workspace switch failed: %v", err))
 			return
 		}
+		previousWorkspacePath := a.activeWorkspacePath()
 		a.home.ClearCommandOverlay()
 		a.home.SetStatus(fmt.Sprintf("workspace active: %s", resolution.ResolvedPath))
 		a.syncActiveWorkspaceSelection(resolution)
+		if err := a.openV3ChatDraftAfterWorkspaceChange(previousWorkspacePath); err != nil {
+			a.home.SetStatus(fmt.Sprintf("workspace switched, but new chat draft failed: %v", err))
+			return
+		}
 		a.queueReload(false)
 	case "tree", "find", "scan":
 		query := strings.TrimSpace(strings.Join(args[1:], " "))
@@ -8733,6 +8747,15 @@ func (a *App) homeInteractionActive() bool {
 }
 
 func (a *App) workspaceCycleHotkeyBlocked() bool {
+	if a.route == "v3chat" && a.v3Chat != nil {
+		if runtime := a.v3Chat.Runtime(); runtime != nil && runtime.Store() != nil {
+			if _, active := v3chat.SelectActiveRun(runtime.Store().Snapshot()); active {
+				a.v3Chat.SetStatus("workspace switching is unavailable while a run is active")
+				return true
+			}
+		}
+		return a.homeInteractionActive()
+	}
 	if a.route != "home" {
 		if a.route == "chat" {
 			message := "To change workspace, do /new or go to the home screen (Ctrl+B)"
@@ -8787,6 +8810,7 @@ func (a *App) activateWorkspaceAtIndex(index int) {
 		a.home.SetStatus("selected workspace path is empty")
 		return
 	}
+	previousWorkspacePath := a.activeWorkspacePath()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	resolution, err := a.api.SelectWorkspace(ctx, target)
@@ -8795,6 +8819,10 @@ func (a *App) activateWorkspaceAtIndex(index int) {
 		return
 	}
 	a.syncActiveWorkspaceSelection(resolution)
+	if err := a.openV3ChatDraftAfterWorkspaceChange(previousWorkspacePath); err != nil {
+		a.home.SetStatus(fmt.Sprintf("workspace switched, but new chat draft failed: %v", err))
+		return
+	}
 	a.home.SetStatus(fmt.Sprintf("workspace active: %s", resolution.WorkspaceName))
 	a.queueReload(false)
 }

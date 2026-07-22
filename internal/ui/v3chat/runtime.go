@@ -37,11 +37,12 @@ type Runtime struct {
 	store     *Store
 	wake      func()
 
-	mu        sync.Mutex
-	cancel    context.CancelFunc
-	ready     chan struct{}
-	readyErr  error
-	readyOnce sync.Once
+	mu           sync.Mutex
+	cancel       context.CancelFunc
+	ready        chan struct{}
+	readyErr     error
+	readyOnce    sync.Once
+	primedCreate *client.SessionCreateOptions
 
 	workspacePath string
 	cwdPath       string
@@ -59,6 +60,24 @@ func (r *Runtime) Store() *Store {
 		return nil
 	}
 	return r.store
+}
+
+// PrimeNewSession keeps creation settings local until the first message is sent.
+// This lets /new and workspace switching open a configured composer without
+// persisting an empty session into the sidebar.
+func (r *Runtime) PrimeNewSession(request NewSessionRequest) error {
+	if r == nil || r.transport == nil {
+		return errors.New("v3 chat transport is not configured")
+	}
+	create := request.Create
+	r.mu.Lock()
+	r.primedCreate = &create
+	r.workspacePath = strings.TrimSpace(create.WorkspacePath)
+	r.cwdPath = strings.TrimSpace(create.CWDPath)
+	r.mu.Unlock()
+	r.store.Dispatch(PrimeNewSessionAction{Create: create})
+	r.signalWake()
+	return nil
 }
 
 // Hydrate performs one explicit bounded read. It is never called on a timer.
@@ -158,7 +177,13 @@ func (r *Runtime) Send(ctx context.Context, prompt string, metadata map[string]a
 	}
 	state := r.store.Snapshot()
 	if strings.TrimSpace(state.Session.ID) == "" {
-		return client.SessionV3MessageResult{}, errors.New("v3 chat session is not connected")
+		r.mu.Lock()
+		create := r.primedCreate
+		r.mu.Unlock()
+		if create == nil {
+			return client.SessionV3MessageResult{}, errors.New("v3 chat session is not connected")
+		}
+		return r.createAndSend(ctx, NewSessionRequest{Create: *create, InitialPrompt: prompt, Metadata: metadata})
 	}
 	op := strings.ReplaceAll(uuid.NewString(), "-", "")
 	messageID := "tui-v3-message:" + op
@@ -350,10 +375,19 @@ type NewSessionRequest struct {
 	Metadata      map[string]any
 }
 
-// CreateAndSend closes the snapshot-to-live gap: create response -> store ->
-// resume sent/readiness -> optional first mutation response -> store. An empty
-// initial prompt deliberately primes the created session for composer input.
+// CreateAndSend keeps an empty request local and performs the canonical create
+// only when the request includes the first message.
 func (r *Runtime) CreateAndSend(ctx context.Context, request NewSessionRequest) (client.SessionV3MessageResult, error) {
+	if strings.TrimSpace(request.InitialPrompt) == "" {
+		if err := r.PrimeNewSession(request); err != nil {
+			return client.SessionV3MessageResult{}, err
+		}
+		return client.SessionV3MessageResult{}, nil
+	}
+	return r.createAndSend(ctx, request)
+}
+
+func (r *Runtime) createAndSend(ctx context.Context, request NewSessionRequest) (client.SessionV3MessageResult, error) {
 	if r == nil || r.transport == nil {
 		return client.SessionV3MessageResult{}, errors.New("v3 chat transport is not configured")
 	}
@@ -374,6 +408,7 @@ func (r *Runtime) CreateAndSend(ctx context.Context, request NewSessionRequest) 
 		return client.SessionV3MessageResult{}, errors.New("v3 session create returned no session id")
 	}
 	r.mu.Lock()
+	r.primedCreate = nil
 	r.workspacePath = strings.TrimSpace(request.Create.WorkspacePath)
 	r.cwdPath = strings.TrimSpace(request.Create.CWDPath)
 	r.mu.Unlock()
@@ -382,10 +417,6 @@ func (r *Runtime) CreateAndSend(ctx context.Context, request NewSessionRequest) 
 	if err := r.connect(ctx, strings.TrimSpace(created.SnapshotEndpointCursor) == ""); err != nil {
 		return client.SessionV3MessageResult{}, fmt.Errorf("connect created v3 session: %w", err)
 	}
-	if prompt == "" {
-		return client.SessionV3MessageResult{Session: created.Session}, nil
-	}
-
 	op := strings.ReplaceAll(uuid.NewString(), "-", "")
 	messageID := "tui-v3-message:" + op
 	clientRequestID := "tui-v3-new-message:" + created.Session.ID + ":" + op

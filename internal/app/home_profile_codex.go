@@ -56,6 +56,7 @@ func (a *App) selectHomeModelProfile(profileID string) {
 		return
 	}
 	a.applyHomeModel(applyHomeModelProfiles(a.currentHomeModel(), state))
+	a.syncPrimedV3ChatFromHomeDraft()
 	label := strings.TrimSpace(profile.Name)
 	if label == "" {
 		label = profile.ProfileID

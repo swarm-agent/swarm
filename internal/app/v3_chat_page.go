@@ -236,11 +236,10 @@ func v3ChatCreateModelProfile(profile model.ActiveModelProfile) *client.SessionV
 	return nil
 }
 
-func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, worktreeSuffix string) error {
+func (a *App) newV3ChatCreateOptions(intent ui.HomeSessionIntent, route model.ChatRoute, worktreeSuffix string) (client.SessionCreateOptions, error) {
 	if a == nil || a.api == nil {
-		return errors.New("api client is not configured")
+		return client.SessionCreateOptions{}, errors.New("api client is not configured")
 	}
-	prompt := strings.TrimSpace(intent.InitialPrompt)
 	workspacePath := strings.TrimSpace(intent.Workspace.Path)
 	if workspacePath == "" {
 		workspacePath = strings.TrimSpace(a.activeContextPath())
@@ -249,12 +248,12 @@ func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, 
 		workspacePath = strings.TrimSpace(a.startupCWD)
 	}
 	if workspacePath == "" {
-		return errors.New("workspace path is required")
+		return client.SessionCreateOptions{}, errors.New("workspace path is required")
 	}
 	knownWorkspace := strings.TrimSpace(a.activeWorkspacePath()) != ""
 	useTUIPrimaryCWD := !knownWorkspace
 	if knownWorkspace && strings.TrimSpace(route.WorkspaceBindingID) == "" {
-		return errors.New("workspace binding id is required")
+		return client.SessionCreateOptions{}, errors.New("workspace binding id is required")
 	}
 
 	worktreeMode := "off"
@@ -265,7 +264,7 @@ func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, 
 		settings, err := a.api.GetWorktreeSettings(ctx, workspacePath)
 		cancel()
 		if err != nil {
-			return err
+			return client.SessionCreateOptions{}, err
 		}
 		if settings.Enabled || strings.TrimSpace(worktreeSuffix) != "" {
 			worktreeMode = "on"
@@ -292,7 +291,7 @@ func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, 
 	if useTUIPrimaryCWD {
 		cwdPath = workspacePath
 	}
-	create := client.SessionCreateOptions{
+	return client.SessionCreateOptions{
 		Title:                    emptyFallback(strings.TrimSpace(intent.Title), "New Session"),
 		WorkspacePath:            workspacePath,
 		CWDPath:                  cwdPath,
@@ -310,14 +309,60 @@ func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, 
 		WorktreeUseCurrentBranch: useCurrent,
 		WorktreeBaseBranch:       baseBranch,
 		WorktreeBranchName:       branchName,
+	}, nil
+}
+
+func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, worktreeSuffix string) error {
+	create, err := a.newV3ChatCreateOptions(intent, route, worktreeSuffix)
+	if err != nil {
+		return err
 	}
 	runtime := a.newV3Runtime()
 	a.closeV3Chat()
 	a.v3Chat = a.newV3ChatPage(runtime, a.v3ChatFooterRouteLabel(route), v3ChatHomeProfileLabel(intent.Profile))
 	a.route = "v3chat"
 	a.home.ClearPrompt()
-	a.v3Chat.OpenNew(v3chat.NewSessionRequest{Create: create, InitialPrompt: prompt})
+	a.v3Chat.OpenNew(v3chat.NewSessionRequest{Create: create, InitialPrompt: strings.TrimSpace(intent.InitialPrompt)})
 	return nil
+}
+
+func (a *App) v3ChatDraftActive() bool {
+	return a != nil && a.route == "v3chat" && a.v3Chat != nil && a.v3Chat.Runtime() != nil && a.v3Chat.Runtime().Store() != nil && strings.TrimSpace(a.v3Chat.Runtime().Store().Snapshot().Session.ID) == ""
+}
+
+func (a *App) syncPrimedV3ChatFromHomeDraft() {
+	if !a.v3ChatDraftActive() || a.home == nil {
+		return
+	}
+	runtime := a.v3Chat.Runtime()
+	intent := a.home.SessionIntent()
+	create, err := a.newV3ChatCreateOptions(intent, a.selectedChatRouteForWorkspace(a.activeContextPath()), "")
+	if err != nil {
+		a.v3Chat.SetStatus("refresh new session draft failed: " + err.Error())
+		return
+	}
+	_ = runtime.PrimeNewSession(v3chat.NewSessionRequest{Create: create})
+	a.v3Chat.SetProfileLabel(v3ChatHomeProfileLabel(intent.Profile))
+}
+
+func (a *App) openV3ChatDraftAfterWorkspaceChange(previousWorkspacePath string) error {
+	if a == nil || a.home == nil {
+		return nil
+	}
+	workspacePath := strings.TrimSpace(a.activeWorkspacePath())
+	if workspacePath == "" || pathsEqual(previousWorkspacePath, workspacePath) {
+		return nil
+	}
+	routes := buildChatRoutesForHomeModel(a.homeModel, workspacePath)
+	a.homeModel.ChatRoutes = routes
+	a.selectedChatRouteID = a.resolveSelectedChatRouteIDForWorkspace(workspacePath, routes)
+	a.homeModel.SelectedChatRouteID = a.selectedChatRouteID
+	a.home.SetModel(a.homeModel)
+	a.home.SetSessionIntent(buildHomeSessionIntent(a.home, a.selectedChatRouteForWorkspace(workspacePath)))
+	if a.route != "v3chat" {
+		return nil
+	}
+	return a.openChatSession("New Session", "")
 }
 
 func (a *App) openExistingV3Chat(summary model.SessionSummary) error {

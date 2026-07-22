@@ -33,6 +33,7 @@ const (
 type Session struct {
 	ID            string
 	Title         string
+	WorkspacePath string
 	Mode          string
 	TargetSwarmID string
 	CreatedAt     int64
@@ -294,6 +295,10 @@ type HydrateAction struct{ Snapshot client.SessionV3Hydrated }
 
 func (HydrateAction) isV3ChatAction() {}
 
+type PrimeNewSessionAction struct{ Create client.SessionCreateOptions }
+
+func (PrimeNewSessionAction) isV3ChatAction() {}
+
 type PendingUserAction struct{ Pending PendingMessage }
 
 func (PendingUserAction) isV3ChatAction() {}
@@ -344,6 +349,8 @@ func Reduce(current State, action Action) State {
 	switch value := action.(type) {
 	case HydrateAction:
 		next = reduceHydrated(next, value.Snapshot)
+	case PrimeNewSessionAction:
+		next = reducePrimedNewSession(value.Create)
 	case PendingUserAction:
 		pending := value.Pending
 		if id := strings.TrimSpace(pending.ID); id != "" {
@@ -376,6 +383,17 @@ func Reduce(current State, action Action) State {
 		next = applyPermissionRecord(next, value.Record, 0)
 	}
 	return next
+}
+
+func reducePrimedNewSession(create client.SessionCreateOptions) State {
+	state := NewState()
+	state.Session = Session{
+		Title:         strings.TrimSpace(create.Title),
+		WorkspacePath: strings.TrimSpace(firstNonEmpty(create.WorkspacePath, create.CWDPath)),
+		Mode:          strings.ToLower(strings.TrimSpace(create.Mode)),
+	}
+	state.Model.Preference = normalizeModelPreference(create.Preference)
+	return state
 }
 
 func reduceHydrated(state State, hydrated client.SessionV3Hydrated) State {
@@ -712,6 +730,7 @@ func sessionFromClient(value client.SessionSummary, fallbackID string) Session {
 	return Session{
 		ID:            firstNonEmpty(value.ID, fallbackID),
 		Title:         strings.TrimSpace(value.Title),
+		WorkspacePath: strings.TrimSpace(value.WorkspacePath),
 		Mode:          strings.TrimSpace(value.Mode),
 		TargetSwarmID: metadataString(value.Metadata, "swarm_v3_runtime_swarm_id"),
 		CreatedAt:     value.CreatedAt,

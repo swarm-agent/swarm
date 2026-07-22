@@ -56,6 +56,7 @@ func (a *App) applyDefaultNewSessionModeSetting(mode string) {
 		a.home.SetStatus(fmt.Sprintf("default new chat mode %s (settings save failed: %v)", mode, err))
 		return
 	}
+	a.syncPrimedV3ChatFromHomeDraft()
 	a.showToast(ui.ToastSuccess, "default new chat mode set to "+mode)
 }
 

@@ -205,10 +205,11 @@ func TestCreateAndSendOrdersCreateStoreReadyThenMessage(t *testing.T) {
 	}
 }
 
-func TestCreateAndSendWithoutInitialPromptPrimesSession(t *testing.T) {
-	transport := &fakeTransport{created: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s", Title: "New Session"}, SnapshotEndpointCursor: "cursor"}}
+func TestCreateAndSendWithoutInitialPromptPrimesDraftUntilFirstMessage(t *testing.T) {
+	transport := &fakeTransport{created: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s", Title: "New Session", WorkspacePath: "/workspace", Mode: "plan"}, Preference: client.ModelPreference{Provider: "codex", Model: "resolved"}, SnapshotEndpointCursor: "cursor"}}
 	runtime := NewRuntime(transport, nil, nil)
-	result, err := runtime.CreateAndSend(context.Background(), NewSessionRequest{Create: client.SessionCreateOptions{}})
+	request := NewSessionRequest{Create: client.SessionCreateOptions{Title: "New Session", WorkspacePath: "/workspace", Mode: "plan", Preference: client.ModelPreference{Provider: "codex", Model: "draft", Thinking: "high"}}}
+	result, err := runtime.CreateAndSend(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,15 +218,26 @@ func TestCreateAndSendWithoutInitialPromptPrimesSession(t *testing.T) {
 	transport.mu.Lock()
 	calls := append([]string(nil), transport.calls...)
 	transport.mu.Unlock()
-	if len(calls) < 3 || !reflect.DeepEqual(calls[:3], []string{"create", "stream", "ready"}) {
-		t.Fatalf("calls = %#v", calls)
-	}
-	if len(calls) != 3 {
-		t.Fatalf("priming sent an unexpected initial message: %#v", calls)
+	if len(calls) != 0 {
+		t.Fatalf("priming persisted an empty session: %#v", calls)
 	}
 	state := runtime.Store().Snapshot()
-	if result.Session.ID != "s" || state.Session.ID != "s" || len(SelectMessages(state)) != 0 {
-		t.Fatalf("primed session state = %#v result=%#v", state, result)
+	if result.Session.ID != "" || state.Session.ID != "" || state.Session.WorkspacePath != "/workspace" || state.Session.Mode != "plan" || state.Model.Preference.Model != "draft" || len(SelectMessages(state)) != 0 {
+		t.Fatalf("primed draft state = %#v result=%#v", state, result)
+	}
+
+	if _, err := runtime.Send(context.Background(), "first message", nil); err != nil {
+		t.Fatal(err)
+	}
+	transport.mu.Lock()
+	calls = append([]string(nil), transport.calls...)
+	transport.mu.Unlock()
+	if !reflect.DeepEqual(calls[:4], []string{"create", "stream", "ready", "send"}) {
+		t.Fatalf("first send calls = %#v", calls)
+	}
+	state = runtime.Store().Snapshot()
+	if state.Session.ID != "s" || state.Session.WorkspacePath != "/workspace" || state.Model.Preference.Model != "resolved" || len(SelectMessages(state)) != 1 {
+		t.Fatalf("created first-message state = %#v", state)
 	}
 }
 
