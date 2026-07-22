@@ -899,6 +899,19 @@ func cloneState(value State) State {
 	}
 	out.Tools = make(map[string]ToolTimelineItem, len(value.Tools))
 	for key, item := range value.Tools {
+		if item.TaskStream != nil {
+			stream := *item.TaskStream
+			stream.LaunchOrder = append([]string(nil), item.TaskStream.LaunchOrder...)
+			stream.LaunchesByKey = make(map[string]map[string]any, len(item.TaskStream.LaunchesByKey))
+			for launchKey, launch := range item.TaskStream.LaunchesByKey {
+				cloned := make(map[string]any, len(launch))
+				for field, fieldValue := range launch {
+					cloned[field] = fieldValue
+				}
+				stream.LaunchesByKey[launchKey] = cloned
+			}
+			item.TaskStream = &stream
+		}
 		out.Tools[key] = item
 	}
 	if value.CurrentRun != nil {

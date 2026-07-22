@@ -3,6 +3,7 @@ package v3chat
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -22,6 +23,15 @@ type ToolTimelineItem struct {
 	Status         string
 	DurationMS     int64
 	CreatedAt      int64
+	TaskStream     *TaskStreamState
+}
+
+type TaskStreamState struct {
+	PathID        string
+	Status        string
+	LaunchCount   int
+	LaunchesByKey map[string]map[string]any
+	LaunchOrder   []string
 }
 
 type toolHistoryPayload struct {
@@ -94,14 +104,16 @@ func applyToolEvent(state State, event clientSessionV3Event, payload map[string]
 		item.Arguments += argumentsDelta
 	}
 	if eventType == "session.tool.delta" {
-		// Tool progress payloads carry the next chunk in output. Preserve it
-		// byte-for-byte and append it so Bash behaves like a live terminal.
-		item.Output += firstNonEmptyRaw(
+		delta := firstNonEmptyRaw(
 			rawText(payload, "output"),
 			rawText(payload, "raw_output"),
 			rawText(payload, "output_delta"),
 			rawText(payload, "delta"),
 		)
+		if !applyTaskStreamPatch(&item, delta) {
+			// Non-task progress remains byte-for-byte so Bash behaves like a live terminal.
+			item.Output += delta
+		}
 	} else {
 		output := firstNonEmptyRaw(rawText(payload, "completed_output"), rawText(payload, "raw_output"), rawText(payload, "output"))
 		outputDelta := firstNonEmptyRaw(rawText(payload, "output_delta"), rawText(payload, "delta"))
@@ -158,6 +170,112 @@ func toolEventStatus(eventType, payloadStatus, errorText string) string {
 			return "failed"
 		}
 		return "running"
+	}
+}
+
+func applyTaskStreamPatch(item *ToolTimelineItem, output string) bool {
+	if item == nil || !strings.EqualFold(strings.TrimSpace(item.Name), "task") {
+		return false
+	}
+	var payload map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(output)), &payload) != nil || strings.TrimSpace(anyString(payload["path_id"])) != "tool.task.stream.v2" || strings.TrimSpace(anyString(payload["tool"])) != "task" {
+		return false
+	}
+	launch, ok := payload["launch"].(map[string]any)
+	if !ok || len(launch) == 0 {
+		return false
+	}
+	launchKey := firstNonEmpty(
+		anyString(payload["launch_key"]),
+		anyString(launch["launch_key"]),
+		anyString(payload["child_session_id"]),
+		anyString(launch["child_session_id"]),
+	)
+	if launchKey == "" {
+		if launchIndex := anyInt(launch["launch_index"]); launchIndex > 0 {
+			launchKey = fmt.Sprintf("launch:%d", launchIndex)
+		}
+	}
+	if launchKey == "" {
+		return false
+	}
+	stream := item.TaskStream
+	if stream == nil {
+		stream = &TaskStreamState{PathID: "tool.task.stream.v2", LaunchesByKey: make(map[string]map[string]any)}
+	}
+	if stream.LaunchesByKey == nil {
+		stream.LaunchesByKey = make(map[string]map[string]any)
+	} else {
+		launchesByKey := make(map[string]map[string]any, len(stream.LaunchesByKey))
+		for key, existingLaunch := range stream.LaunchesByKey {
+			cloned := make(map[string]any, len(existingLaunch))
+			for field, value := range existingLaunch {
+				cloned[field] = value
+			}
+			launchesByKey[key] = cloned
+		}
+		stream.LaunchesByKey = launchesByKey
+		stream.LaunchOrder = append([]string(nil), stream.LaunchOrder...)
+	}
+	merged := make(map[string]any, len(stream.LaunchesByKey[launchKey])+len(launch)+1)
+	for key, value := range stream.LaunchesByKey[launchKey] {
+		merged[key] = value
+	}
+	for key, value := range launch {
+		merged[key] = value
+	}
+	merged["launch_key"] = launchKey
+	stream.LaunchesByKey[launchKey] = merged
+	if !containsString(stream.LaunchOrder, launchKey) {
+		stream.LaunchOrder = append(stream.LaunchOrder, launchKey)
+	}
+	sort.SliceStable(stream.LaunchOrder, func(i, j int) bool {
+		left := anyInt(stream.LaunchesByKey[stream.LaunchOrder[i]]["launch_index"])
+		right := anyInt(stream.LaunchesByKey[stream.LaunchOrder[j]]["launch_index"])
+		if left > 0 && right > 0 && left != right {
+			return left < right
+		}
+		if left > 0 && right <= 0 {
+			return true
+		}
+		if left <= 0 && right > 0 {
+			return false
+		}
+		return stream.LaunchOrder[i] < stream.LaunchOrder[j]
+	})
+	stream.Status = firstNonEmpty(anyString(payload["status"]), stream.Status)
+	stream.LaunchCount = maxInt(anyInt(payload["launch_count"]), len(stream.LaunchOrder))
+	item.TaskStream = stream
+	return true
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func anyString(value any) string {
+	text, _ := value.(string)
+	return strings.TrimSpace(text)
+}
+
+func anyInt(value any) int {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed)
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case json.Number:
+		parsed, _ := typed.Int64()
+		return int(parsed)
+	default:
+		return 0
 	}
 }
 

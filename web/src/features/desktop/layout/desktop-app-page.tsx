@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, ListChecks, LoaderCircle, Menu, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, GitMerge, Keyboard, ListChecks, LoaderCircle, Menu, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -2446,7 +2446,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                   aria-expanded={input.reviewCleanupOpen}
                   onClick={input.onToggleReviewCleanup}
                 >
-                  <GitBranch size={12} aria-hidden="true" />
+                  <GitMerge size={12} aria-hidden="true" />
                 </button>
               </>
             ) : null}
@@ -3101,12 +3101,6 @@ export function DesktopAppPage() {
     refetchOnWindowFocus: true,
   })
   const gitSnapshot = gitStatusQuery.data?.status ?? null
-  const gitSnapshotByPath = useMemo(() => {
-    const entries = new Map<string, GitSnapshot>()
-    if (gitSnapshot?.workspace_path) entries.set(gitSnapshot.workspace_path, gitSnapshot)
-    if (selectedGitWorkspacePath && gitSnapshot) entries.set(selectedGitWorkspacePath, gitSnapshot)
-    return entries
-  }, [gitSnapshot, selectedGitWorkspacePath])
 
   useEffect(() => {
     if (!selectedGitWorkspacePath || document.visibilityState === 'hidden') return
@@ -4386,6 +4380,11 @@ export function DesktopAppPage() {
     bulkArchivePending,
     masterSelectionGroup: sidebarMasterSelectionGroup,
     reviewCleanupOpen: needsReviewCleanupOpen,
+    gitHasGit: topWorkspaceHasGit,
+    gitAheadCount: topWorkspaceGitAheadCount,
+    gitBehindCount: topWorkspaceGitBehindCount,
+    gitDirtyCount: topWorkspaceGitDirtyCount,
+    onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
     onEnterSelectionMode: handleEnterSidebarSelectionMode,
     onClearSelection: handleClearSidebarSelection,

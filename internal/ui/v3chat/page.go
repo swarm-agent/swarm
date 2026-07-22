@@ -2152,6 +2152,9 @@ func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyle
 	if presentation.Kind == "plan" {
 		return p.renderPlanToolRows(tool, presentation, width, styles)
 	}
+	if presentation.Kind == "task" {
+		return p.renderTaskToolRows(tool, presentation, width, styles)
+	}
 	toolName := normalizeToolDisplayName(tool.Name)
 	summary := strings.TrimSpace(presentation.Summary)
 	if summary != toolName && !strings.HasPrefix(summary, toolName+" ") {
@@ -2220,6 +2223,77 @@ func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyle
 	}
 	rows = append(rows, renderRow{text: "", style: styles.Text})
 	return rows
+}
+
+func (p *Page) renderTaskToolRows(tool ToolTimelineItem, presentation toolPresentation, width int, styles PageStyles) []renderRow {
+	if width <= 0 {
+		return nil
+	}
+	headerStyle := styles.Secondary.Bold(true)
+	rows := []renderRow{{text: truncateRunes(strings.TrimSpace(presentation.Summary), width), style: headerStyle}}
+	for _, taskRow := range presentation.TaskRows {
+		statusLabel := taskPresentationStatusLabel(taskRow.Status)
+		statusStyle := styles.Muted
+		switch taskRow.Status {
+		case "done":
+			statusStyle = styles.Success
+		case "error", "cancelled":
+			statusStyle = styles.Error
+		case "running":
+			statusStyle = styles.Accent
+		}
+		title := firstNonEmptyToolRaw(taskRow.Title, taskRow.Agent, "subagent")
+		if width < 52 {
+			appendTaskLine := func(prefix, text string, style tcell.Style) {
+				text = strings.TrimSpace(text)
+				if text == "" {
+					return
+				}
+				for _, wrapped := range p.cachedWrap("task-tool:"+tool.ID+":"+prefix+":"+text, prefix+text, maxInt(1, width-2)) {
+					rows = append(rows, renderRow{text: "  " + wrapped, style: style})
+				}
+			}
+			appendTaskLine(statusLabel+" ", title, statusStyle)
+			appendTaskLine("@", taskRow.Agent, styles.Secondary)
+			appendTaskLine("model: ", taskRow.Model, styles.Muted)
+			appendTaskLine("current: ", appendToolFacts(taskRow.Tool, []string{taskRow.Time}), styles.Muted)
+			appendTaskLine("", taskRow.Preview, styles.Muted)
+			appendTaskLine("error: ", taskRow.Error, styles.Error)
+			continue
+		}
+		facts := []string{"@" + taskRow.Agent, taskRow.Model, taskRow.Tool, taskRow.Time}
+		line := statusLabel + " " + appendToolFacts(title, facts)
+		for _, wrapped := range p.cachedWrap("task-tool:"+tool.ID+":"+fmt.Sprint(taskRow.Index), line, width) {
+			rows = append(rows, renderRow{text: wrapped, style: statusStyle})
+		}
+		if taskRow.Preview != "" {
+			for _, wrapped := range p.cachedWrap("task-tool-preview:"+tool.ID+":"+fmt.Sprint(taskRow.Index), taskRow.Preview, maxInt(1, width-2)) {
+				rows = append(rows, renderRow{text: "  " + wrapped, style: styles.Muted})
+			}
+		}
+		if taskRow.Error != "" {
+			for _, wrapped := range p.cachedWrap("task-tool-error:"+tool.ID+":"+fmt.Sprint(taskRow.Index), taskRow.Error, maxInt(1, width-2)) {
+				rows = append(rows, renderRow{text: "  " + wrapped, style: styles.Error})
+			}
+		}
+	}
+	rows = append(rows, renderRow{text: "", style: styles.Text})
+	return rows
+}
+
+func taskPresentationStatusLabel(status string) string {
+	switch status {
+	case "done":
+		return "OK"
+	case "error":
+		return "ER"
+	case "cancelled":
+		return "CX"
+	case "running":
+		return "RUN"
+	default:
+		return "…"
+	}
 }
 
 func (p *Page) renderPlanToolRows(tool ToolTimelineItem, presentation toolPresentation, width int, styles PageStyles) []renderRow {

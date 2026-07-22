@@ -22,9 +22,22 @@ type toolPresentationLine struct {
 }
 
 type toolPresentation struct {
-	Summary string
-	Lines   []toolPresentationLine
-	Kind    string
+	Summary  string
+	Lines    []toolPresentationLine
+	Kind     string
+	TaskRows []taskPresentationRow
+}
+
+type taskPresentationRow struct {
+	Index   int
+	Status  string
+	Agent   string
+	Title   string
+	Model   string
+	Tool    string
+	Time    string
+	Preview string
+	Error   string
 }
 
 func buildToolPresentation(tool ToolTimelineItem) toolPresentation {
@@ -50,6 +63,8 @@ func buildToolPresentation(tool ToolTimelineItem) toolPresentation {
 		presentation = presentWebTool(name, arguments, output)
 	case "plan-manage":
 		presentation = presentPlanManageTool(tool, arguments, output)
+	case "task":
+		presentation = presentTaskTool(tool, output)
 	default:
 		presentation = presentGenericTool(name, tool.Output, arguments, output)
 	}
@@ -568,6 +583,98 @@ func planDocumentFromToolPayload(payload map[string]any) map[string]any {
 		}
 	}
 	return toolObject(payload, "document")
+}
+
+func presentTaskTool(tool ToolTimelineItem, output map[string]any) toolPresentation {
+	launches := make([]map[string]any, 0)
+	launchCount := 0
+	if tool.TaskStream != nil {
+		launchCount = tool.TaskStream.LaunchCount
+		for _, key := range tool.TaskStream.LaunchOrder {
+			if launch := tool.TaskStream.LaunchesByKey[key]; launch != nil {
+				launches = append(launches, launch)
+			}
+		}
+	}
+	if len(launches) == 0 {
+		launches = toolObjectSlice(output, "launches")
+		launchCount = maxInt(launchCount, toolInt(output, "launch_count"))
+	}
+	if len(launches) == 0 && toolString(output, "path_id") == "tool.task.stream.v2" {
+		if launch := toolObject(output, "launch"); launch != nil {
+			launches = append(launches, launch)
+		}
+	}
+	launchCount = maxInt(launchCount, len(launches))
+	rows := make([]taskPresentationRow, 0, len(launches))
+	for index, launch := range launches {
+		launchIndex := toolInt(launch, "launch_index")
+		if launchIndex <= 0 {
+			launchIndex = index + 1
+		}
+		previewKind := strings.ToLower(toolString(launch, "current_preview_kind"))
+		preview := ""
+		if previewKind != "assistant" && previewKind != "reasoning" {
+			preview = toolString(launch, "current_preview_text")
+		}
+		currentTool := toolString(launch, "current_tool")
+		if previewKind == "reasoning" {
+			currentTool = "thinking"
+		}
+		if currentTool == "" {
+			history := toolStringSlice(launch, "tool_order")
+			if len(history) > 0 {
+				currentTool = history[len(history)-1]
+			}
+		}
+		status := normalizeTaskPresentationStatus(toolString(launch, "status"))
+		timeMS := toolInt(launch, "elapsed_ms")
+		if status == "running" {
+			timeMS = toolInt(launch, "current_tool_ms")
+		}
+		rows = append(rows, taskPresentationRow{
+			Index:   launchIndex,
+			Status:  status,
+			Agent:   firstNonEmptyToolRaw(toolString(launch, "resolved_agent_name"), toolString(launch, "requested_subagent_type"), toolString(launch, "agent_type"), toolString(launch, "subagent"), toolString(launch, "requested_subagent"), "subagent"),
+			Title:   firstNonEmptyToolRaw(toolString(launch, "assignment_label"), toolString(launch, "meta_prompt"), "subagent"),
+			Model:   taskPresentationModel(launch),
+			Tool:    firstNonEmptyToolRaw(currentTool, "-"),
+			Time:    toolDurationLabel(int64(timeMS)),
+			Preview: preview,
+			Error:   toolString(launch, "error"),
+		})
+	}
+	summary := "subagent stream"
+	if launchCount > 0 {
+		summary += " · " + toolCountLabel(launchCount, "subagent", "subagents")
+	}
+	return toolPresentation{Summary: summary, Kind: "task", TaskRows: rows}
+}
+
+func normalizeTaskPresentationStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "done", "ok", "success", "completed", "complete":
+		return "done"
+	case "error", "failed":
+		return "error"
+	case "cancelled", "canceled":
+		return "cancelled"
+	case "running", "active", "in_progress":
+		return "running"
+	case "":
+		return "pending"
+	default:
+		return strings.ToLower(strings.TrimSpace(status))
+	}
+}
+
+func taskPresentationModel(launch map[string]any) string {
+	provider := toolString(launch, "subagent_provider")
+	model := toolString(launch, "subagent_model")
+	if provider != "" && model != "" {
+		return provider + "/" + model
+	}
+	return firstNonEmptyToolRaw(provider, model)
 }
 
 func presentGenericTool(name, rawOutput string, arguments, output map[string]any) toolPresentation {

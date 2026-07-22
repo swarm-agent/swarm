@@ -139,6 +139,61 @@ func TestToolDeltaOutputAppendsVerbatimForRealtimeBash(t *testing.T) {
 	}
 }
 
+func TestTaskStreamV2UsesKeyedRowsWithoutRawJSONOrReports(t *testing.T) {
+	state := NewState()
+	state.Session.ID = "s"
+	started, _ := json.Marshal(map[string]any{"call_id": "task-1", "tool_name": "task", "arguments": `{"prompt":"inspect"}`})
+	state = applyToolEvent(state, clientSessionV3Event{Seq: 1, EventType: "session.tool.started"}, rawToolPayload(t, started))
+	firstPatch := `{"tool":"task","path_id":"tool.task.stream.v2","launch_count":2,"launch_key":"child-1","launch":{"launch_index":1,"child_session_id":"child-1","subagent":"explorer","assignment_label":"Map backend","status":"running","current_tool":"search","current_preview_kind":"assistant","current_preview_text":"SECRET CHILD RESPONSE"}}`
+	secondPatch := `{"tool":"task","path_id":"tool.task.stream.v2","launch_count":2,"launch_key":"child-2","launch":{"launch_index":2,"child_session_id":"child-2","subagent":"coder","assignment_label":"Implement TUI","status":"running","current_tool":"edit"}}`
+	for seq, patch := range []string{firstPatch, secondPatch} {
+		delta, _ := json.Marshal(map[string]any{"call_id": "task-1", "tool_name": "task", "output": patch})
+		state = applyToolEvent(state, clientSessionV3Event{Seq: uint64(seq + 2), EventType: "session.tool.delta"}, rawToolPayload(t, delta))
+	}
+	tool := state.Tools["task-1"]
+	if tool.Output != "" || tool.TaskStream == nil || len(tool.TaskStream.LaunchOrder) != 2 {
+		t.Fatalf("task stream state = %#v, raw output = %q", tool.TaskStream, tool.Output)
+	}
+	presentation := buildToolPresentation(tool)
+	if presentation.Kind != "task" || len(presentation.TaskRows) != 2 {
+		t.Fatalf("task presentation = %#v", presentation)
+	}
+	rows := NewPage(nil, testPageStyles()).renderToolRows(tool, 34, testPageStyles())
+	var rendered strings.Builder
+	for _, row := range rows {
+		rendered.WriteString(row.text)
+		rendered.WriteByte('\n')
+	}
+	text := rendered.String()
+	for _, want := range []string{"subagent stream", "Map backend", "@explorer", "current: search", "Implement TUI", "@coder", "current: edit"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("task rows missing %q:\n%s", want, text)
+		}
+	}
+	for _, hidden := range []string{"tool.task.stream.v2", "launch_key", "SECRET CHILD RESPONSE"} {
+		if strings.Contains(text, hidden) {
+			t.Fatalf("task rows leaked %q:\n%s", hidden, text)
+		}
+	}
+}
+
+func TestTaskTerminalPresentationSuppressesResolvedReportBodies(t *testing.T) {
+	tool := ToolTimelineItem{Name: "task", Status: "completed", Output: `{"tool":"task","path_id":"tool.task.v1","launch_count":1,"launches":[{"launch_index":1,"subagent":"explorer","assignment_label":"Map backend","status":"ok","elapsed_ms":3400,"report":"SECRET FULL REPORT","report_excerpt":"SECRET EXCERPT"}]}`}
+	presentation := buildToolPresentation(tool)
+	if presentation.Kind != "task" || len(presentation.TaskRows) != 1 || presentation.TaskRows[0].Status != "done" {
+		t.Fatalf("terminal task presentation = %#v", presentation)
+	}
+	rows := NewPage(nil, testPageStyles()).renderToolRows(tool, 80, testPageStyles())
+	var rendered strings.Builder
+	for _, row := range rows {
+		rendered.WriteString(row.text)
+		rendered.WriteByte('\n')
+	}
+	if text := rendered.String(); strings.Contains(text, "SECRET FULL REPORT") || strings.Contains(text, "SECRET EXCERPT") || strings.Contains(text, `"report"`) {
+		t.Fatalf("terminal task rows exposed subagent response:\n%s", text)
+	}
+}
+
 func rawToolPayload(t *testing.T, raw []byte) map[string]json.RawMessage {
 	t.Helper()
 	var payload map[string]json.RawMessage
