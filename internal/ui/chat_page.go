@@ -1716,19 +1716,6 @@ func (p *ChatPage) runRequestForPrompt(prompt string) ChatSendRequest {
 	}
 }
 
-func (p *ChatPage) startManualCompact(note string) bool {
-	note = strings.TrimSpace(note)
-	displayPrompt := "/compact"
-	if note != "" {
-		displayPrompt = displayPrompt + " " + note
-	}
-	return p.startRunRequest(ChatSendRequest{
-		Prompt:    note,
-		AgentName: strings.TrimSpace(p.meta.Agent),
-		Compact:   true,
-	}, displayPrompt, false, "compacting context")
-}
-
 func (p *ChatPage) startRunRequest(req ChatSendRequest, displayPrompt string, appendUserMessage bool, runningStatus string) bool {
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	if req.AgentName == "" && strings.TrimSpace(req.TargetKind) == "" && strings.TrimSpace(req.TargetName) == "" {
@@ -1738,10 +1725,7 @@ func (p *ChatPage) startRunRequest(req ChatSendRequest, displayPrompt string, ap
 	if displayPrompt == "" {
 		displayPrompt = req.Prompt
 	}
-	if displayPrompt == "" && req.Compact {
-		displayPrompt = "/compact"
-	}
-	if req.Prompt == "" && !req.Compact {
+	if req.Prompt == "" {
 		return false
 	}
 	if p.effectiveRunActive() {
@@ -1800,7 +1784,6 @@ func (p *ChatPage) startRunRequest(req ChatSendRequest, displayPrompt string, ap
 			Prompt:       req.Prompt,
 			AgentName:    req.AgentName,
 			Instructions: req.Instructions,
-			Compact:      req.Compact,
 			TargetKind:   req.TargetKind,
 			TargetName:   req.TargetName,
 		})

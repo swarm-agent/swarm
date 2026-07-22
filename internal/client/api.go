@@ -823,9 +823,6 @@ type SessionV3MessageOptions struct {
 type SessionV3CompactOptions struct {
 	ClientRequestID string
 	RunID           string
-	Note            string
-	AgentName       string
-	Instructions    string
 }
 
 type SessionV3CompactResult struct {
@@ -3255,9 +3252,6 @@ func (c *API) CompactSessionV3(ctx context.Context, sessionID string, options Se
 	}
 	req := map[string]any{
 		"client_request_id": strings.TrimSpace(options.ClientRequestID),
-		"note":              strings.TrimSpace(options.Note),
-		"agent_name":        strings.TrimSpace(options.AgentName),
-		"instructions":      strings.TrimSpace(options.Instructions),
 	}
 	if req["client_request_id"] == "" {
 		req["client_request_id"] = newSessionV3ClientRequestID("compact")

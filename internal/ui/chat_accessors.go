@@ -399,13 +399,6 @@ func (p *ChatPage) ToggleInlineBashOutputExpanded() bool {
 	return p.toggleInlineBashOutputExpanded()
 }
 
-func (p *ChatPage) StartManualCompact(note string) bool {
-	if p == nil {
-		return false
-	}
-	return p.startManualCompact(note)
-}
-
 func (p *ChatPage) ConsumeQuitScrollbackJump() bool {
 	if p == nil {
 		return false

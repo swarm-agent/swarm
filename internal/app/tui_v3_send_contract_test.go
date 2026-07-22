@@ -94,7 +94,7 @@ func TestSendTUIV3ChatMessageWaitsForRealtimeBeforePOST(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := app.sendTUIV3ChatMessage(context.Background(), "session-1", ui.ChatSendRequest{Prompt: "hello v3", Compact: true, Instructions: "be brief"})
+		_, err := app.sendTUIV3ChatMessage(context.Background(), "session-1", ui.ChatSendRequest{Prompt: "hello v3", Instructions: "be brief"})
 		done <- err
 	}()
 
@@ -149,8 +149,8 @@ func assertTUIV3MessagePostBody(t *testing.T, body map[string]any) {
 	if !ok {
 		t.Fatalf("metadata = %#v, want object", body["metadata"])
 	}
-	if got := metadata["compact"]; got != true {
-		t.Fatalf("metadata.compact = %v, want true", got)
+	if _, found := metadata["compact"]; found {
+		t.Fatalf("message metadata unexpectedly contains compact flag: %#v", metadata)
 	}
 	if got := metadata["instructions"]; got != "be brief" {
 		t.Fatalf("metadata.instructions = %v, want be brief", got)

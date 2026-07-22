@@ -245,10 +245,7 @@ func validateTUIV3MessageAccepted(result client.SessionV3MessageResult) error {
 }
 
 func tuiV3ChatSendMetadata(req ui.ChatSendRequest) map[string]any {
-	metadata := make(map[string]any, 2)
-	if req.Compact {
-		metadata["compact"] = true
-	}
+	metadata := make(map[string]any, 1)
 	if instructions := strings.TrimSpace(req.Instructions); instructions != "" {
 		metadata["instructions"] = instructions
 	}

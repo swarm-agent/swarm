@@ -16,12 +16,11 @@ type ChatSendRequest struct {
 	Prompt       string
 	AgentName    string
 	Instructions string
-	Compact      bool
 	TargetKind   string
 	TargetName   string
 }
 
-// ChatSendFunc commits a native V3 send/compact mutation. ChatPage rendering is
+// ChatSendFunc commits a native V3 message mutation. ChatPage rendering is
 // driven by V3 projection/realtime updates after the mutation, not by this call
 // returning a legacy run response.
 type ChatSendFunc func(ctx context.Context, sessionID string, req ChatSendRequest) error

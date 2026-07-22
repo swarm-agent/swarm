@@ -65,7 +65,6 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/auth", Hint: "Auth status or key setup", QuickTips: []string{"/auth status", "/auth key <provider> <api_key>"}},
 		{Command: "/codex", Hint: "Show Codex account usage and reset credits", QuickTips: []string{"/codex", "/codex refresh"}},
 		{Command: "/commit", Hint: "Launch the memory agent in background to review diffs and commit changes", QuickTips: []string{"/commit [instructions]"}},
-		{Command: "/compact", Hint: "Compact current chat context via memory agent", QuickTips: []string{"/compact [threshold%] [notes]"}},
 		{Command: "/copy", Hint: "Copy chat snapshot or /copy N block to clipboard"},
 		{Command: "/header", Hint: "Toggle chat header visibility", QuickTips: []string{"/header toggle"}},
 		{Command: "/help", Hint: "Show command help"},
@@ -85,6 +84,17 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/worktrees new", Hint: "Create a new session in its own worktree"},
 		{Command: "/wt new", Hint: "Create a new worktree session (short alias)"},
 	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return strings.ToLower(items[i].Command) < strings.ToLower(items[j].Command)
+	})
+	return items
+}
+
+func buildChatCommandSuggestions(devMode bool) []ui.CommandSuggestion {
+	items := append(buildHomeCommandSuggestions(devMode), ui.CommandSuggestion{
+		Command: compactCommandUsage,
+		Hint:    "Compact current chat context",
+	})
 	sort.SliceStable(items, func(i, j int) bool {
 		return strings.ToLower(items[i].Command) < strings.ToLower(items[j].Command)
 	})
@@ -467,8 +477,8 @@ func (a *App) Run() error {
 					dirty = true
 				}
 			case interruptChatAsync:
-				a.consumePendingChatRender()
-				if a.handleChatAsync() {
+				requestedRender := a.consumePendingChatRender()
+				if a.handleChatAsync() || requestedRender {
 					dirty = true
 				}
 			case interruptReloadReady:
@@ -717,13 +727,26 @@ func (a *App) handleChatAsync() bool {
 	return changed
 }
 
-func (a *App) consumePendingChatRender() {
-	if a == nil {
+func (a *App) requestChatRender() {
+	if a == nil || a.screen == nil {
 		return
 	}
 	select {
-	case <-a.pendingChatRender:
+	case a.pendingChatRender <- struct{}{}:
+		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptChatAsync))
 	default:
+	}
+}
+
+func (a *App) consumePendingChatRender() bool {
+	if a == nil {
+		return false
+	}
+	select {
+	case <-a.pendingChatRender:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -2108,7 +2131,12 @@ func (a *App) executeCommand(raw string) {
 	case "plan":
 		a.handlePlanCommand(args)
 	case "compact":
-		a.handleCompactCommand(args)
+		if (a.route == "chat" && a.chat != nil) || (a.route == "v3chat" && a.v3Chat != nil) {
+			a.handleCompactCommand(args)
+			break
+		}
+		a.home.ClearCommandOverlay()
+		a.home.SetStatus("unknown command: /compact")
 	case "commit":
 		a.handleCommitCommand(args)
 	case "codex":
@@ -2173,7 +2201,6 @@ func (a *App) showHelp() {
 		"/plan list   (list saved plans for this session)",
 		"/plan use <plan_id>   (set active plan)",
 		"/plan new [title]   (create and activate a new plan draft)",
-		"/compact [threshold%] [notes]   (compact now + optionally set auto-compact threshold)",
 		"/commit [instructions]   (launch memory agent in background to review diffs and commit)",
 		"/git   (show authoritative Git status for the active workspace)",
 		"/codex [refresh]   (Codex account usage and reset credits)",
@@ -2606,48 +2633,45 @@ func (a *App) handlePlanCommand(args []string) {
 
 func (a *App) handleCompactCommand(args []string) {
 	a.home.ClearCommandOverlay()
+	if len(args) != 0 {
+		a.home.SetStatus("usage: " + compactCommandUsage)
+		return
+	}
+	if a.route == "v3chat" && a.v3Chat != nil {
+		a.home.SetStatus("")
+		a.v3Chat.Compact()
+		return
+	}
 	if a.route != "chat" || a.chat == nil {
-		a.home.SetStatus("compact command is available in chat: /compact [threshold%] [notes]")
+		a.home.SetStatus("compact command is available in chat: " + compactCommandUsage)
 		return
 	}
-	options := parseCompactCommandArgs(args)
-	if options.HasThreshold {
-		if a.api == nil {
-			a.home.SetStatus("/compact failed: api client is not configured")
-			return
-		}
-		sessionID := strings.TrimSpace(a.chat.SessionID())
-		if sessionID == "" {
-			a.home.SetStatus("/compact failed: session id is unavailable")
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	if a.api == nil {
+		a.home.SetStatus("/compact failed: api client is not configured")
+		return
+	}
+	sessionID := strings.TrimSpace(a.chat.SessionID())
+	if sessionID == "" {
+		a.home.SetStatus("/compact failed: session id is unavailable")
+		return
+	}
+	if a.chat.RunInProgress() {
+		a.home.SetStatus("/compact ignored (run already active)")
+		return
+	}
+	a.chat.SetStatus("compacting context")
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		session, err := a.api.GetSession(ctx, sessionID)
+		_, err := a.api.CompactSessionV3(ctx, sessionID, client.SessionV3CompactOptions{})
 		if err != nil {
-			a.home.SetStatus(fmt.Sprintf("/compact failed: load session metadata: %v", err))
+			a.chat.SetStatus(fmt.Sprintf("/compact failed: %v", err))
+			a.requestChatRender()
 			return
 		}
-		metadata := cloneMetadataMap(session.Metadata)
-		if options.ThresholdPercent > 0 {
-			metadata[compactThresholdMetadataKey] = normalizeCompactThresholdPercent(options.ThresholdPercent)
-		} else {
-			delete(metadata, compactThresholdMetadataKey)
-		}
-		if _, err := a.api.UpdateSessionMetadata(ctx, sessionID, metadata); err != nil {
-			a.home.SetStatus(fmt.Sprintf("/compact failed: save threshold: %v", err))
-			return
-		}
-		if options.ThresholdPercent > 0 {
-			a.chat.AppendSystemMessage(fmt.Sprintf("Auto compact threshold set to %s remaining context.", formatCompactThresholdPercent(options.ThresholdPercent)))
-		} else {
-			a.chat.AppendSystemMessage("Auto compact threshold cleared for this session.")
-		}
-	}
-	if !a.chat.StartManualCompact(options.Note) {
-		a.home.SetStatus("/compact ignored (run already active or chat unavailable)")
-		return
-	}
+		a.chat.SetStatus("context compacted")
+		a.requestChatRender()
+	}()
 	a.home.SetStatus("compacting session context")
 }
 
@@ -3351,7 +3375,7 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 		InitialPrompt:       strings.TrimSpace(initialPrompt),
 		Presets:             a.home.ModelPresets(),
 		SessionTabs:         chatSessionTabsFromSummaries(a.homeModel.RecentSessions),
-		CommandSuggestions:  buildHomeCommandSuggestions(a.startupDevMode()),
+		CommandSuggestions:  buildChatCommandSuggestions(a.startupDevMode()),
 		ShowHeader:          a.config.Chat.ShowHeader,
 		AuthConfigured:      a.homeModel.AuthConfigured,
 		ShowThinkingTags:    boolPtr(a.config.Chat.ThinkingTags),

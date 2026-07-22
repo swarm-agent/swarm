@@ -92,7 +92,7 @@ func (a *App) newV3ChatPage(runtime *v3chat.Runtime, routeLabel, profileLabel st
 	page.SetProfileLabel(profileLabel)
 	page.SetHeaderVisible(a.config.Chat.ShowHeader)
 	page.SetThinkingTagsVisible(a.config.Chat.ThinkingTags)
-	page.SetCommandSuggestions(v3ChatCommandSuggestions(buildHomeCommandSuggestions(a.startupDevMode())))
+	page.SetCommandSuggestions(v3ChatCommandSuggestions(buildChatCommandSuggestions(a.startupDevMode())))
 	page.SetKeyMatcher(func(ev *tcell.EventKey, action string) bool {
 		keybinds := a.activeKeyBindings()
 		switch action {

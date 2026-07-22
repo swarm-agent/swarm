@@ -19,6 +19,7 @@ type Transport interface {
 	GetSessionV3TUI(context.Context, string, string, string) (client.SessionV3Hydrated, error)
 	StreamV3Realtime(context.Context, client.V3RealtimeResumeOptions, func(client.V3RealtimeFrame)) error
 	SendSessionV3Message(context.Context, string, client.SessionV3MessageOptions) (client.SessionV3MessageResult, error)
+	CompactSessionV3(context.Context, string, client.SessionV3CompactOptions) (client.SessionV3CompactResult, error)
 	StopSessionV3Run(context.Context, string, string, string, string) error
 	SetSessionV3ModeResolved(context.Context, string, string) (client.SessionV3ModeResult, error)
 	SetSessionV3Preference(context.Context, string, map[string]any) (client.ModelResolved, error)
@@ -174,6 +175,18 @@ func (r *Runtime) Send(ctx context.Context, prompt string, metadata map[string]a
 	r.store.Dispatch(MessageResultAction{Result: result})
 	r.signalWake()
 	return result, nil
+}
+
+func (r *Runtime) Compact(ctx context.Context) (client.SessionV3CompactResult, error) {
+	if r == nil || r.transport == nil {
+		return client.SessionV3CompactResult{}, errors.New("v3 chat transport is not configured")
+	}
+	state := r.store.Snapshot()
+	sessionID := strings.TrimSpace(state.Session.ID)
+	if sessionID == "" {
+		return client.SessionV3CompactResult{}, errors.New("v3 chat session is not connected")
+	}
+	return r.transport.CompactSessionV3(ctx, sessionID, client.SessionV3CompactOptions{})
 }
 
 func (r *Runtime) ResolvePermission(ctx context.Context, permissionID, action, reason string) (client.PermissionRecord, error) {

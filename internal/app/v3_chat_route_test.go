@@ -13,6 +13,27 @@ import (
 	"swarm-refactor/swarmtui/internal/ui/v3chat"
 )
 
+func TestCompactCommandIsSessionChatOnlyAndHasNoArguments(t *testing.T) {
+	for _, suggestion := range buildHomeCommandSuggestions(false) {
+		if suggestion.Command == compactCommandUsage {
+			t.Fatal("home command suggestions expose /compact")
+		}
+	}
+	for _, suggestion := range buildChatCommandSuggestions(false) {
+		if suggestion.Command != compactCommandUsage {
+			continue
+		}
+		if len(suggestion.QuickTips) != 0 {
+			t.Fatalf("compact quick tips = %#v, want no argument options", suggestion.QuickTips)
+		}
+		if strings.Contains(strings.ToLower(suggestion.Hint), "threshold") || strings.Contains(strings.ToLower(suggestion.Hint), "note") {
+			t.Fatalf("compact hint exposes removed options: %q", suggestion.Hint)
+		}
+		return
+	}
+	t.Fatal("session chat command suggestions do not include /compact")
+}
+
 func TestV3ChatRenderWakeIsIdleAndCoalescesBurst(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {

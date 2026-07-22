@@ -30,6 +30,8 @@ type fakeTransport struct {
 	resolvedPermission client.PermissionRecord
 	permissionExplain  client.PermissionExplain
 	messageRequest     client.SessionV3MessageOptions
+	compactRequest     client.SessionV3CompactOptions
+	compactSessionID   string
 	permissionRequest  struct {
 		sessionID    string
 		permissionID string
@@ -138,6 +140,15 @@ func (f *fakeTransport) ResolvePermission(_ context.Context, sessionID, permissi
 	return record, nil
 }
 
+func (f *fakeTransport) CompactSessionV3(_ context.Context, sessionID string, options client.SessionV3CompactOptions) (client.SessionV3CompactResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "compact")
+	f.compactSessionID = sessionID
+	f.compactRequest = options
+	return client.SessionV3CompactResult{OK: true, SessionID: sessionID, Status: "completed"}, nil
+}
+
 func (f *fakeTransport) SendSessionV3Message(_ context.Context, sessionID string, options client.SessionV3MessageOptions) (client.SessionV3MessageResult, error) {
 	f.record("send")
 	f.mu.Lock()
@@ -150,6 +161,25 @@ func (f *fakeTransport) SendSessionV3Message(_ context.Context, sessionID string
 	f.result.Message.Content = options.Content
 	f.result.Message.Metadata = options.Metadata
 	return f.result, nil
+}
+
+func TestCompactUsesCanonicalSessionAPIWithoutNotes(t *testing.T) {
+	transport := &fakeTransport{}
+	runtime := NewRuntime(transport, nil, nil)
+	runtime.Store().Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-compact"}}})
+
+	result, err := runtime.Compact(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if result.SessionID != "session-compact" || transport.compactSessionID != "session-compact" {
+		t.Fatalf("compact session = result %q request %q", result.SessionID, transport.compactSessionID)
+	}
+	if transport.compactRequest != (client.SessionV3CompactOptions{}) {
+		t.Fatalf("compact options = %#v, want no note or threshold options", transport.compactRequest)
+	}
 }
 
 func TestCreateAndSendOrdersCreateStoreReadyThenMessage(t *testing.T) {

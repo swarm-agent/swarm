@@ -469,6 +469,26 @@ func (p *Page) Send(text string) {
 	}()
 }
 
+func (p *Page) Compact() {
+	if p == nil || p.runtime == nil {
+		return
+	}
+	p.mu.Lock()
+	busy := p.busy
+	p.mu.Unlock()
+	if busy {
+		p.SetStatus("/compact ignored (run already active)")
+		return
+	}
+	p.setBusy("compacting context…", true)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, err := p.runtime.Compact(ctx)
+		p.finishAsync("context compacted", err)
+	}()
+}
+
 func (p *Page) StopRun() {
 	if p == nil || p.runtime == nil {
 		return
