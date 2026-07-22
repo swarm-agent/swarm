@@ -1956,10 +1956,8 @@ interface SessionRowProps {
   compactingStartedAt?: number | null
   pendingAction?: 'pin' | 'archive' | 'rename' | null
   selectionMode?: boolean
-  selectionGroup?: SidebarSessionGroupID
   selected?: boolean
   onSelect: (sessionId: string) => void | boolean
-  onEnterSelectionMode?: (group: SidebarSessionGroupID) => void
   onToggleSelected?: (sessionId: string, range: boolean) => void
   onPrefetch: (sessionId: string) => void
   onToggleAgents: (sessionId: string) => void
@@ -1968,7 +1966,7 @@ interface SessionRowProps {
   onRename: (sessionId: string, title: string) => Promise<void>
 }
 
-const SessionRow = memo(function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childAssignmentLabel = null, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
+const SessionRow = memo(function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childAssignmentLabel = null, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selected = false, onSelect, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
   const session = initialSession
   const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
   const activeSession = compactingActive || sessionIsActive(session)
@@ -2011,11 +2009,8 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
   const checkpointProgressAriaLabel = checkpointProgressLabel || `Checkpoint progress: ${checkpointCompletedCount} of ${checkpointTotalCount} complete`
   const [actionsOpen, setActionsOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
-  const [checkboxRevealSuppressed, setCheckboxRevealSuppressed] = useState(false)
   const [renameDraft, setRenameDraft] = useState(rowTitle)
   const [renameError, setRenameError] = useState<string | null>(null)
-  const checkboxPointerInsideRef = useRef(false)
-  const checkboxFocusInsideRef = useRef(false)
   const actionMenuRef = useRef<HTMLSpanElement | null>(null)
   const actionMenuCloseTimerRef = useRef<number | null>(null)
   const clearActionMenuCloseTimer = useCallback(() => {
@@ -2195,42 +2190,28 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
       to="/$workspaceSlug/$sessionId"
       params={{ workspaceSlug: rowWorkspaceSlug, sessionId: session.id }}
       onClick={(event) => {
-        if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) {
+        if (event.defaultPrevented || event.button !== 0) return
+        if (selectionMode && depth === 0) {
+          event.preventDefault()
+          onToggleSelected?.(session.id, event.shiftKey)
           return
         }
+        if (event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return
         event.preventDefault()
-        setCheckboxRevealSuppressed(true)
         onSelect(session.id)
       }}
       onKeyDown={(event) => {
         if (event.key === ' ') {
           event.preventDefault()
-          setCheckboxRevealSuppressed(true)
+          if (selectionMode && depth === 0) {
+            onToggleSelected?.(session.id, event.shiftKey)
+            return
+          }
           onSelect(session.id)
         }
       }}
-      onMouseEnter={() => {
-        checkboxPointerInsideRef.current = true
-        onPrefetch(session.id)
-      }}
-      onMouseLeave={() => {
-        checkboxPointerInsideRef.current = false
-        if (sidebarShouldReleaseCheckboxRevealSuppression(false, checkboxFocusInsideRef.current)) {
-          setCheckboxRevealSuppressed(false)
-        }
-      }}
-      onFocus={() => {
-        checkboxFocusInsideRef.current = true
-        onPrefetch(session.id)
-      }}
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) {
-          checkboxFocusInsideRef.current = false
-          if (sidebarShouldReleaseCheckboxRevealSuppression(checkboxPointerInsideRef.current, false)) {
-            setCheckboxRevealSuppressed(false)
-          }
-        }
-      }}
+      onMouseEnter={() => onPrefetch(session.id)}
+      onFocus={() => onPrefetch(session.id)}
       className={cn(
         'group relative grid w-full min-w-0 rounded-md border text-left outline-none transition-[background-color,border-color,box-shadow,transform]',
         isPlanRow ? 'gap-1.5 px-2.5 py-2' : 'gap-1 px-2.5 py-1.5',
@@ -2249,7 +2230,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
         <div className="flex min-w-0 flex-1 items-start gap-2">
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center">
-              {depth === 0 ? (
+              {selectionMode && depth === 0 ? (
                 <input
                   type="checkbox"
                   checked={selected}
@@ -2258,13 +2239,9 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
                   onClick={(event) => {
                     event.preventDefault()
                     event.stopPropagation()
-                    if (!selectionMode && selectionGroup) onEnterSelectionMode?.(selectionGroup)
                     onToggleSelected?.(session.id, event.shiftKey)
                   }}
-                  className={cn(
-                    'h-4 shrink-0 accent-[var(--app-primary)] transition-[width,opacity]',
-                    sidebarCheckboxVisibilityClass(selectionMode, checkboxRevealSuppressed),
-                  )}
+                  className="mr-2 h-4 w-4 shrink-0 accent-[var(--app-primary)]"
                 />
               ) : null}
               {renaming ? (
@@ -2419,21 +2396,6 @@ export function sidebarShouldShowReviewAction(group: SidebarSessionGroupID, sele
   return group === 'needs_review' && !selectionMode
 }
 
-export function sidebarShouldClearSelectionForSessionChange(currentSessionId: string, nextSessionId: string): boolean {
-  const normalizedNextSessionId = nextSessionId.trim()
-  return normalizedNextSessionId !== '' && normalizedNextSessionId !== currentSessionId.trim()
-}
-
-export function sidebarCheckboxVisibilityClass(selectionMode: boolean, revealSuppressed: boolean): string {
-  if (selectionMode) return 'mr-2 w-4 opacity-100'
-  if (revealSuppressed) return 'w-0 opacity-0'
-  return 'w-0 opacity-0 group-hover:mr-2 group-hover:w-4 group-hover:opacity-100 group-focus-within:mr-2 group-focus-within:w-4 group-focus-within:opacity-100'
-}
-
-export function sidebarShouldReleaseCheckboxRevealSuppression(pointerInside: boolean, focusInside: boolean): boolean {
-  return !pointerInside && !focusInside
-}
-
 export const SIDEBAR_SESSION_GROUPS = [
   { id: 'needs_review', label: 'Needs Review', showInactiveThreshold: false },
   { id: 'in_progress', label: 'In Progress', showInactiveThreshold: false },
@@ -2527,10 +2489,8 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
             compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
             pendingAction={input.pendingActions[node.session.id] ?? null}
             selectionMode={input.selectionMode}
-            selectionGroup={group.id}
             selected={input.selectedRootIDs.has(node.session.id)}
             onSelect={input.onSelect}
-            onEnterSelectionMode={input.onEnterSelectionMode}
             onToggleSelected={input.onToggleSelected}
             onPrefetch={input.onPrefetch}
             onToggleAgents={input.onToggleAgents}
@@ -2636,7 +2596,6 @@ export function DesktopAppPage() {
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
   const [previousChatSessionId, setPreviousChatSessionId] = useState<string | null>(null)
   const activeChatSessionIdRef = useRef<string | null>(null)
-  const previousSidebarRouteSessionIdRef = useRef(routeSessionId)
   const aiTaskLifecycleByID = useDesktopV3CacheSelector((state) => state.aiTasksById)
   const aiTaskObservedStateRef = useRef(new Map<string, WorkspaceTodoItem['aiState']>())
   const aiTaskTerminalToastRef = useRef(new Set<string>())
@@ -4427,13 +4386,6 @@ export function DesktopAppPage() {
   useEffect(() => {
     setMobileSidebarOpen(false)
   }, [routeSessionId, routeWorkspaceSlug])
-
-  useEffect(() => {
-    const previousRouteSessionId = previousSidebarRouteSessionIdRef.current
-    previousSidebarRouteSessionIdRef.current = routeSessionId
-    if (!sidebarShouldClearSelectionForSessionChange(previousRouteSessionId, routeSessionId)) return
-    handleClearSidebarSelection()
-  }, [handleClearSidebarSelection, routeSessionId])
 
   const handleCompactingSessionChange = useCallback((sessionId: string, startedAt: number | null) => {
     const normalizedSessionId = sessionId.trim()

@@ -16,11 +16,8 @@ import {
   sessionTimerLabel,
   sessionActiveRunIntent,
   sessionSidebarDisplayGroup,
-  sidebarCheckboxVisibilityClass,
   sidebarWorkspaceContextLabel,
   sidebarRootIDsForSelectionGroup,
-  sidebarShouldClearSelectionForSessionChange,
-  sidebarShouldReleaseCheckboxRevealSuppression,
   sidebarShouldRenderSelectionToolbar,
   sidebarShouldShowReviewAction,
 } from './desktop-app-page'
@@ -88,34 +85,23 @@ test('plan Git commit form submits on Enter through the shared commit handler an
   assert.equal((modalSource.match(/commitWorkspaceChanges/g) ?? []).length, 0)
 })
 
-test('sidebar session focus clears selection immediately, including same-route clicks', async () => {
+test('sidebar cards use explicit selection mode without hover-driven checkboxes or navigation', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
-  const handlerStart = source.indexOf('const handleSelectSession = useCallback')
-  const handlerEnd = source.indexOf('const chatWorkspacePath', handlerStart)
-  const handlerSource = source.slice(handlerStart, handlerEnd)
+  const rowStart = source.indexOf('const SessionRow = memo')
+  const rowEnd = source.indexOf('interface RenderSidebarSessionGroupsInput', rowStart)
+  const rowSource = source.slice(rowStart, rowEnd)
 
-  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
-  assert.match(handlerSource, /const normalizedSessionId = sessionId\.trim\(\)\s*handleClearSidebarSelection\(\)\s*void selectAndHydrateDesktopV3Session/)
-  assert.doesNotMatch(handlerSource, /routeSessionId\s*[!=]==?\s*normalizedSessionId/)
+  assert.ok(rowStart >= 0 && rowEnd > rowStart)
+  assert.match(rowSource, /if \(selectionMode && depth === 0\) \{\s*event\.preventDefault\(\)\s*onToggleSelected\?\.\(session\.id, event\.shiftKey\)\s*return/)
+  assert.match(rowSource, /\{selectionMode && depth === 0 \? \(\s*<input\s*type="checkbox"/)
+  assert.doesNotMatch(rowSource, /group-hover:(?:mr-2|w-4|opacity-100)/)
+  assert.doesNotMatch(rowSource, /checkboxRevealSuppressed|checkboxPointerInsideRef|checkboxFocusInsideRef/)
 })
 
-test('external sidebar session changes also clear selection mode so checkboxes hide', () => {
-  assert.equal(sidebarShouldClearSelectionForSessionChange('session-a', 'session-b'), true)
-  assert.equal(sidebarShouldClearSelectionForSessionChange('session-a', 'session-a'), false)
-  assert.equal(sidebarShouldClearSelectionForSessionChange('session-a', '  '), false)
-  assert.equal(sidebarShouldClearSelectionForSessionChange('', 'session-a'), true)
-})
-
-test('activated sidebar rows suppress checkbox reveal until hover and focus both leave', () => {
-  assert.equal(sidebarCheckboxVisibilityClass(true, true), 'w-4 opacity-100')
-  assert.equal(sidebarCheckboxVisibilityClass(false, true), 'w-0 opacity-0')
-  assert.match(sidebarCheckboxVisibilityClass(false, false), /group-hover:w-4/)
-  assert.match(sidebarCheckboxVisibilityClass(false, false), /group-focus-within:w-4/)
-
-  assert.equal(sidebarShouldReleaseCheckboxRevealSuppression(true, true), false)
-  assert.equal(sidebarShouldReleaseCheckboxRevealSuppression(false, true), false)
-  assert.equal(sidebarShouldReleaseCheckboxRevealSuppression(true, false), false)
-  assert.equal(sidebarShouldReleaseCheckboxRevealSuppression(false, false), true)
+test('selection mode exits only through explicit clear or successful archive', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  assert.equal((source.match(/setSidebarSelectionMode\(false\)/g) ?? []).length, 2)
+  assert.doesNotMatch(source, /sidebarShouldClearSelectionForSessionChange/)
 })
 
 test('search result activation clears selection before hydration, including same-session results', async () => {
