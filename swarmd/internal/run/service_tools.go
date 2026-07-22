@@ -2633,6 +2633,21 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		}
 		result, err = lifecycle.StartSessionCheckpoint(input)
 	case "request_followup_checkpoint":
+		followupRunID := strings.TrimSpace(firstNonEmptyString(lifecycleRun.RunID, mapString(args, "run_id")))
+		followupRunSessionID := strings.TrimSpace(firstNonEmptyString(lifecycleRun.RunSessionID, mapString(args, "run_session_id"), mapString(args, "session_id")))
+		followupParentSessionID := strings.TrimSpace(firstNonEmptyString(lifecycleRun.ParentSessionID, mapString(args, "parent_session_id")))
+		followupStartedAt := int64(mapInt(args, "started_at"))
+		followupAttemptID := strings.TrimSpace(mapString(args, "attempt_id"))
+		if lifecycleRun.Inline {
+			// A provider-managed parent turn only owns the request that creates the
+			// follow-up. Leave the inserted checkpoint pending so the executor can
+			// assign and start its distinct fresh-context run exactly once.
+			followupRunID = ""
+			followupRunSessionID = ""
+			followupParentSessionID = ""
+			followupStartedAt = 0
+			followupAttemptID = ""
+		}
 		input := sessionruntime.PlanLifecycleFollowupCheckpointInput{
 			SessionID:          sessionID,
 			PlanID:             planID,
@@ -2643,11 +2658,11 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 			Notes:              strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context"))),
 			SourceMessageID:    strings.TrimSpace(firstNonEmptyString(mapString(args, "source_message_id"), mapString(args, "source_message"), lifecycleRun.SourceMessageID)),
 			ApprovalConfirmed:  mapBool(args, "approval_confirmed"),
-			RunID:              strings.TrimSpace(firstNonEmptyString(lifecycleRun.RunID, mapString(args, "run_id"))),
-			RunSessionID:       strings.TrimSpace(firstNonEmptyString(lifecycleRun.RunSessionID, mapString(args, "run_session_id"), mapString(args, "session_id"))),
-			ParentSessionID:    strings.TrimSpace(firstNonEmptyString(lifecycleRun.ParentSessionID, mapString(args, "parent_session_id"))),
-			StartedAt:          int64(mapInt(args, "started_at")),
-			AttemptID:          strings.TrimSpace(mapString(args, "attempt_id")),
+			RunID:              followupRunID,
+			RunSessionID:       followupRunSessionID,
+			ParentSessionID:    followupParentSessionID,
+			StartedAt:          followupStartedAt,
+			AttemptID:          followupAttemptID,
 		}
 		input.Artifacts, err = planArtifactsFromArgs(args)
 		if err != nil {
@@ -2712,7 +2727,7 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		payload["next_action"] = "stopped"
 	} else if result.Summary.NextCheckpointID != "" {
 		payload["checkpoint_id"] = result.Summary.NextCheckpointID
-		if lifecycleRun.Inline && (action == "start_session_checkpoint" || action == "request_followup_checkpoint") && result.Plan.Document != nil && result.Plan.Document.ExecutionState != nil && sessionruntime.NormalizePlanExecutionOrigin(result.Plan.Document.ExecutionOrigin) == sessionruntime.PlanExecutionOriginAutoSession && strings.TrimSpace(result.Plan.Document.ExecutionState.CurrentRunID) == strings.TrimSpace(lifecycleRun.RunID) {
+		if lifecycleRun.Inline && action == "start_session_checkpoint" && result.Plan.Document != nil && result.Plan.Document.ExecutionState != nil && sessionruntime.NormalizePlanExecutionOrigin(result.Plan.Document.ExecutionOrigin) == sessionruntime.PlanExecutionOriginAutoSession && strings.TrimSpace(result.Plan.Document.ExecutionState.CurrentRunID) == strings.TrimSpace(lifecycleRun.RunID) {
 			payload["next_action"] = "continue_current_run"
 			payload["context_preserved"] = true
 			payload["run_ownership"] = map[string]any{"run_id": lifecycleRun.RunID, "checkpoint_id": result.Summary.NextCheckpointID, "attempt_id": result.AttemptID}

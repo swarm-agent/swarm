@@ -6417,6 +6417,97 @@ func TestSessionsV3ExecutorProviderManagedStartCheckpointDefersToAutomaticRun(t 
 	}
 }
 
+func TestSessionsV3ExecutorFinalReviewFollowupStartsFreshCheckpointExactlyOnce(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, errors.New("missing provider-managed tool invoker")
+		}
+		switch runner.callCount {
+		case 1:
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-final-review-followup", Name: "plan_manage", Arguments: `{"action":"request_followup_checkpoint","change_request":"investigate launch readiness","checkpoint_title":"Launch readiness","tasks":["Investigate launch readiness"],"acceptance_criteria":["A launch-readiness answer is appended"]}`})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if result.Error != "" || !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("final-review follow-up did not request a fresh checkpoint run: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
+		case 2:
+			if req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+				return provideriface.Response{}, fmt.Errorf("follow-up checkpoint lineage flags = boundary %q native %t fresh %t", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+			}
+			if !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: followup-1.") {
+				return provideriface.Response{}, fmt.Errorf("follow-up checkpoint input = %+v", req.Input)
+			}
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-final-review-followup", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"followup-1","report":"launch readiness investigated","result":"done"}`})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if result.Error != "" || !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("follow-up checkpoint completion failed: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		}
+	}
+	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-final-review-followup-create", "provider final-review follow-up", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	_, _, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-final-review-followup", "Plan: Final Review Follow-up", "## Plan: Final Review Follow-up", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Info:               pebblestore.SessionPlanInfo{Goal: "Complete the original work and preserve independent follow-ups."},
+		ExecutionOrigin:    sessionruntime.PlanExecutionOriginAutoSession,
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed, FollowupCheckpointPolicy: sessionruntime.PlanFollowupCheckpointPolicyAutoStart},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateWaitingReview, LastCheckpointID: "cp-1", LastAttemptID: "cp-1:attempt-1", ParentSessionID: created.ID, CurrentSessionID: created.ID},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Original", Objective: "Complete the original work.", AcceptanceCriteria: []string{"The original work is complete."}, Status: sessionruntime.PlanCheckpointStatusCompleted}},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save final-review follow-up plan: %v", err)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-final-review-followup-message", "investigate launch readiness")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		active, ok, getErr := sessionSvc.GetActivePlan(created.ID)
+		if getErr != nil {
+			t.Fatalf("get final-review follow-up plan: %v", getErr)
+		}
+		if ok && active.Document != nil && len(active.Document.Checkpoints) == 2 && active.Document.Checkpoints[1].Status == sessionruntime.PlanCheckpointStatusCompleted && active.Document.ExecutionState != nil && active.Document.ExecutionState.Status == sessionruntime.PlanExecutionStateWaitingReview {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("final-review follow-up did not complete: calls=%d plan=%+v", runner.callCount, active.Document)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if runner.callCount != 2 {
+		t.Fatalf("provider calls = %d, want parent turn plus one follow-up checkpoint run", runner.callCount)
+	}
+	intents, err := sessionSvc.ListSessionRunIntents(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list final-review follow-up run intents: %v", err)
+	}
+	if len(intents) != 2 || intents[0].RunID == intents[1].RunID || intents[0].CheckpointID == intents[1].CheckpointID {
+		t.Fatalf("final-review follow-up run intents = %+v, want distinct parent and checkpoint runs", intents)
+	}
+	for _, intent := range intents {
+		if intent.Status != sessionruntime.RunIntentCompleted {
+			t.Fatalf("final-review follow-up run did not complete: %+v", intents)
+		}
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list final-review follow-up messages: %v", err)
+	}
+	for _, message := range messages {
+		if message.Role == "system" && strings.Contains(message.Content, "checkpoint status \"pending\"") {
+			t.Fatalf("duplicate checkpoint-start failure was appended: %+v", message)
+		}
+	}
+}
+
 func TestSessionsV3PlanModeRunInputSkipsDurableRunIDCollision(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "plan-run-id-collision-create", "plan run id collision", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})

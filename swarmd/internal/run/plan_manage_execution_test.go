@@ -673,6 +673,73 @@ func TestExecutePlanManageRequestFollowupAtomicallyUnblocksAndReturnsFreshRun(t 
 	}
 }
 
+func TestExecutePlanManageInlineFinalReviewFollowupDefersCheckpointStart(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-final-review-followup", "Plan: Final Review", "# Final Review", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Info:               pebblestore.SessionPlanInfo{Goal: "Complete the plan and handle an independent final-review follow-up."},
+		ExecutionOrigin:    sessionruntime.PlanExecutionOriginAutoSession,
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed, FollowupCheckpointPolicy: sessionruntime.PlanFollowupCheckpointPolicyAutoStart},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Final", Objective: "Complete the original work.", AcceptanceCriteria: []string{"The original work is complete."}, Status: sessionruntime.PlanCheckpointStatusCompleted}},
+		ActiveCheckpointID: "cp-1",
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateWaitingReview, LastCheckpointID: "cp-1", LastAttemptID: "cp-1:attempt-1"},
+	}})
+	if err != nil {
+		t.Fatalf("save final-review plan: %v", err)
+	}
+
+	raw, err := runSvc.executePlanLifecycleControlAction(sessionID, "request_followup_checkpoint", map[string]any{
+		"plan_id":             "plan-final-review-followup",
+		"change_request":      "investigate launch readiness",
+		"checkpoint_title":    "Launch readiness",
+		"tasks":               []any{"Investigate launch readiness"},
+		"acceptance_criteria": []any{"A launch-readiness answer is appended"},
+	}, nil, planLifecycleRunContext{RunID: "parent-run", RunSessionID: sessionID, ParentSessionID: sessionID, SourceMessageID: "message-final-review-followup", Inline: true})
+	if err != nil {
+		t.Fatalf("request inline final-review follow-up: %v output=%s", err, raw)
+	}
+	var payload struct {
+		Action       string `json:"action"`
+		NextAction   string `json:"next_action"`
+		CheckpointID string `json:"checkpoint_id"`
+		RunRequest   struct {
+			Context struct {
+				CheckpointID string `json:"checkpoint_id"`
+				AttemptID    string `json:"attempt_id"`
+			} `json:"plan_checkpoint_context"`
+		} `json:"run_request"`
+		Plan struct {
+			Document *pebblestore.SessionPlanDocument `json:"document"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode inline final-review follow-up payload: %v raw=%s", err, raw)
+	}
+	if payload.Action != "request_followup_checkpoint" || payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "followup-1" || payload.RunRequest.Context.CheckpointID != "followup-1" || payload.RunRequest.Context.AttemptID != "" {
+		t.Fatalf("inline follow-up handoff = %#v raw=%s", payload, raw)
+	}
+	if payload.Plan.Document == nil || len(payload.Plan.Document.Checkpoints) != 2 {
+		t.Fatalf("inline follow-up document = %#v", payload.Plan.Document)
+	}
+	followup := payload.Plan.Document.Checkpoints[1]
+	if followup.Status != sessionruntime.PlanCheckpointStatusPending || followup.AttemptID != "" || followup.RunID != "" || len(followup.Attempts) != 0 {
+		t.Fatalf("inline follow-up was started by its parent run: %#v", followup)
+	}
+	if payload.Plan.Document.ExecutionState == nil || payload.Plan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateIdle || payload.Plan.Document.ExecutionState.CurrentRunID != "" {
+		t.Fatalf("inline follow-up execution state = %#v", payload.Plan.Document.ExecutionState)
+	}
+
+	startResult, err := sessionruntime.NewPlanLifecycleService(sessionSvc).StartCheckpoint(sessionruntime.PlanLifecycleExecutionInput{SessionID: sessionID, PlanID: "plan-final-review-followup", CheckpointID: "followup-1", RunID: "followup-run", RunSessionID: sessionID, ParentSessionID: sessionID, StartedAt: 1234})
+	if err != nil {
+		t.Fatalf("start deferred follow-up checkpoint: %v", err)
+	}
+	if startResult.Summary.NextCheckpointStatus != sessionruntime.PlanCheckpointStatusInProgress || startResult.AttemptID != "followup-1:attempt-1" || startResult.Plan.Document.Checkpoints[1].RunID != "followup-run" {
+		t.Fatalf("started deferred follow-up = %#v", startResult)
+	}
+}
+
 func checkpointIDsForRunTest(checkpoints []pebblestore.SessionPlanCheckpoint) []string {
 	ids := make([]string, 0, len(checkpoints))
 	for _, checkpoint := range checkpoints {
