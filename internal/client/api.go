@@ -3617,6 +3617,30 @@ func (c *API) SetSessionV3Preference(ctx context.Context, sessionID string, req 
 	return ModelResolved{Preference: resp.Preference, ContextWindow: resp.ContextWindow, MaxOutputTokens: resp.MaxOutputTokens}, nil
 }
 
+func (c *API) SetSessionV3ModelProfile(ctx context.Context, sessionID, profileID string) (SessionV3AgentModelPolicy, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return SessionV3AgentModelPolicy{}, errors.New("session id is required")
+	}
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		return SessionV3AgentModelPolicy{}, errors.New("model profile id is required")
+	}
+	req := map[string]any{
+		"client_request_id": newSessionV3ClientRequestID("model-profile"),
+		"choice": map[string]any{
+			"saved_profile_id": profileID,
+		},
+	}
+	var resp struct {
+		AgentModelPolicy SessionV3AgentModelPolicy `json:"agent_model_policy"`
+	}
+	if err := c.putJSON(ctx, sessionV3PrimaryPath(sessionID, "model-profile"), req, &resp, true); err != nil {
+		return SessionV3AgentModelPolicy{}, err
+	}
+	return resp.AgentModelPolicy, nil
+}
+
 func (c *API) ListSessionPlans(ctx context.Context, sessionID string, limit int) ([]SessionPlan, string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {

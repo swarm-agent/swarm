@@ -257,6 +257,14 @@ func (p *Page) SetProfileLabel(label string) {
 	p.mu.Unlock()
 }
 
+func (p *Page) ApplyModelProfile(policy client.SessionV3AgentModelPolicy) {
+	if p == nil || p.runtime == nil || p.runtime.Store() == nil {
+		return
+	}
+	p.runtime.Store().Dispatch(ModelProfileAction{Policy: policy})
+	p.SetProfileLabel(policy.ProfileName)
+}
+
 func (p *Page) SetHeaderVisible(show bool) {
 	if p == nil {
 		return

@@ -1934,7 +1934,7 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		if a.homeInteractionActive() {
 			return false
 		}
-		if a.route != "home" && !a.v3ChatDraftActive() {
+		if a.route != "home" && a.route != "v3chat" {
 			return false
 		}
 		a.cycleHomeModelProfile()

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/internal/client"
+	"swarm-refactor/swarmtui/internal/ui/v3chat"
 )
 
 func (a *App) cycleHomeModelProfile() {
@@ -16,7 +17,7 @@ func (a *App) cycleHomeModelProfile() {
 	}
 	profiles := a.homeModel.ModelProfiles
 	if len(profiles) == 0 {
-		a.home.SetStatus("no saved model profiles to cycle")
+		a.setModelProfileStatus("no saved model profiles to cycle")
 		return
 	}
 	currentID := strings.TrimSpace(a.homeModel.DefaultModelProfileID)
@@ -39,29 +40,67 @@ func (a *App) selectHomeModelProfile(profileID string) {
 	}
 	profileID = strings.TrimSpace(profileID)
 	if profileID == "" {
-		a.home.SetStatus("select profile failed: profile id is required")
+		a.setModelProfileStatus("select profile failed: profile id is required")
 		return
+	}
+	if a.route == "v3chat" && a.v3Chat != nil && a.v3Chat.Runtime() != nil && a.v3Chat.Runtime().Store() != nil {
+		if _, active := v3chat.SelectActiveRun(a.v3Chat.Runtime().Store().Snapshot()); active {
+			a.setModelProfileStatus("select profile failed: model profile cannot be changed during an active run")
+			return
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	profile, err := a.api.SetDefaultModelProfile(ctx, profileID)
 	if err != nil {
-		a.home.SetStatus(fmt.Sprintf("select profile failed: %v", err))
+		a.setModelProfileStatus(fmt.Sprintf("select profile failed: %v", err))
 		return
 	}
 	state, err := a.api.ListModelProfiles(ctx)
 	if err != nil {
-		a.home.SetStatus(fmt.Sprintf("profile selected, but refresh failed: %v", err))
+		a.setModelProfileStatus(fmt.Sprintf("profile selected, but refresh failed: %v", err))
 		a.queueReload(false)
 		return
 	}
 	a.applyHomeModel(applyHomeModelProfiles(a.currentHomeModel(), state))
-	a.syncPrimedV3ChatFromHomeDraft()
+	if err := a.applySelectedProfileToV3Chat(ctx, profileID); err != nil {
+		a.setModelProfileStatus(fmt.Sprintf("profile selected for new sessions, but chat update failed: %v", err))
+		return
+	}
 	label := strings.TrimSpace(profile.Name)
 	if label == "" {
 		label = profile.ProfileID
 	}
-	a.home.SetStatus("profile selected: " + label)
+	a.setModelProfileStatus("profile selected: " + label)
+}
+
+func (a *App) setModelProfileStatus(status string) {
+	if a == nil {
+		return
+	}
+	if a.home != nil {
+		a.home.SetStatus(status)
+	}
+	if a.route == "v3chat" && a.v3Chat != nil {
+		a.v3Chat.SetStatus(status)
+	}
+}
+
+func (a *App) applySelectedProfileToV3Chat(ctx context.Context, profileID string) error {
+	if a.v3ChatDraftActive() {
+		a.syncPrimedV3ChatFromHomeDraft()
+		return nil
+	}
+	if a == nil || a.route != "v3chat" || a.v3Chat == nil || a.v3Chat.Runtime() == nil || a.v3Chat.Runtime().Store() == nil {
+		return nil
+	}
+	sessionID := strings.TrimSpace(a.v3Chat.Runtime().Store().Snapshot().Session.ID)
+	policy, err := a.api.SetSessionV3ModelProfile(ctx, sessionID, profileID)
+	if err != nil {
+		return err
+	}
+	a.v3Chat.ApplyModelProfile(policy)
+	return nil
 }
 
 func (a *App) openCodexUsageModal() {

@@ -325,6 +325,12 @@ type ModelPreferenceAction struct {
 
 func (ModelPreferenceAction) isV3ChatAction() {}
 
+type ModelProfileAction struct {
+	Policy client.SessionV3AgentModelPolicy
+}
+
+func (ModelProfileAction) isV3ChatAction() {}
+
 type ModeAction struct {
 	Resolved client.SessionV3ModeResult
 }
@@ -375,6 +381,8 @@ func Reduce(current State, action Action) State {
 		next.Model.Preference = normalizeModelPreference(value.Resolved.Preference)
 		next.Model.ContextWindow = value.Resolved.ContextWindow
 		next.Model.MaxOutputTokens = value.Resolved.MaxOutputTokens
+	case ModelProfileAction:
+		applyAgentModelPolicy(&next.Model, value.Policy.Preference, value.Policy.ContextWindow, value.Policy.MaxOutputTokens, value.Policy)
 	case ModeAction:
 		next.Session.Mode = strings.ToLower(strings.TrimSpace(value.Resolved.Mode))
 		applyAgentModelPolicy(&next.Model, value.Resolved.Preference, value.Resolved.ContextWindow, value.Resolved.MaxOutputTokens, value.Resolved.AgentModelPolicy)
