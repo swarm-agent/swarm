@@ -538,7 +538,7 @@ func normalizeSwarmLocalNodeRecord(record SwarmLocalNodeRecord) SwarmLocalNodeRe
 func normalizeSwarmGroupRecord(record SwarmGroupRecord) SwarmGroupRecord {
 	record.ID = strings.TrimSpace(record.ID)
 	record.Name = strings.TrimSpace(record.Name)
-	record.NetworkName = normalizeContainerSlug(record.NetworkName)
+	record.NetworkName = strings.TrimSpace(record.NetworkName)
 	record.HostSwarmID = strings.TrimSpace(record.HostSwarmID)
 	return record
 }
