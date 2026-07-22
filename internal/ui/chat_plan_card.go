@@ -80,7 +80,7 @@ func (p *ChatPage) renderPlanToolCardLines(message chatMessageItem, payload map[
 		content = appendPlanCardWrappedLines(content, updateSummary, innerWidth, p.theme.TextMuted)
 	}
 	if len(document) > 0 {
-		content = append(content, chatRenderLine{Text: "p  Open full plan", Style: p.theme.TextMuted})
+		content = append(content, chatRenderLine{Text: "/plan  Open full plan", Style: p.theme.TextMuted})
 	}
 
 	return planCardBoxLines(content, width, borderStyle)

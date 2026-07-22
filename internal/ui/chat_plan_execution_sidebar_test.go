@@ -47,6 +47,16 @@ func TestPlanExecutionActionsRespectCheckpointState(t *testing.T) {
 	}
 }
 
+func TestPlanExecutionPlanUsesSlashCommandAndDoesNotCaptureP(t *testing.T) {
+	p := planExecutionTestPage("in_progress")
+	if p.handlePlanExecutionKey(tcell.NewEventKey(tcell.KeyRune, 'p', tcell.ModNone)) {
+		t.Fatal("p must remain available for chat input")
+	}
+	if !strings.Contains(p.planExecutionControlHint(planExecutionView{status: "in_progress"}), "/plan") {
+		t.Fatal("plan hint must use /plan")
+	}
+}
+
 func TestPlanExecutionFailedCheckpointQueuesCanonicalRecoveryActions(t *testing.T) {
 	p := planExecutionTestPage("failed")
 	for _, tt := range []struct {

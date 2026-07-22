@@ -172,7 +172,7 @@ func planPermissionCardModel(record client.PermissionRecord, intent planPermissi
 				model.Content = append(model.Content, permissionCardLine{Text: line, Style: planCheckpointCardStyle(status, styles)})
 			}
 		}
-		model.Content = append(model.Content, permissionCardLine{Text: "p  Open full plan", Style: styles.Muted})
+		model.Content = append(model.Content, permissionCardLine{Text: "/plan  Open full plan", Style: styles.Muted})
 	}
 	return model
 }

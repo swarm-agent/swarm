@@ -351,6 +351,15 @@ func (p *Page) PendingPermissionVisible() bool {
 	return p.permissionVisibleLocked()
 }
 
+func (p *Page) OpenPlanModal() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.openPlanModalLocked()
+}
+
 func (p *Page) ClearInput() {
 	if p == nil {
 		return
@@ -735,9 +744,6 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			}
 			break
 		}
-		if ev.Rune() == 'p' && len(p.input) == 0 && p.openPlanModalLocked() {
-			break
-		}
 		p.insertRunesLocked([]rune{ev.Rune()})
 		p.syncCommandPaletteSelectionLocked()
 		p.resetCommandPaletteOptionSelectionLocked()
@@ -1017,11 +1023,14 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 	case tcell.KeyEscape:
 		p.resolvePermissionLocked(permissions[p.permissionIndex], "deny_once")
 	case tcell.KeyEnter:
+		if strings.EqualFold(strings.TrimSpace(string(p.permissionInput)), "/plan") {
+			if p.openPlanPermissionModalLocked() || p.openPlanModalLocked() {
+				p.permissionInput = nil
+				break
+			}
+		}
 		p.resolvePermissionLocked(permissions[p.permissionIndex], "allow_once")
 	case tcell.KeyRune:
-		if ev.Rune() == 'p' && len(p.permissionInput) == 0 && p.openPlanPermissionModalLocked() {
-			break
-		}
 		if utf8.ValidRune(ev.Rune()) && ev.Rune() >= ' ' && len(p.permissionInput) < maxComposerRunes {
 			p.permissionInput = append(p.permissionInput, ev.Rune())
 		}
@@ -2230,7 +2239,7 @@ func (p *Page) renderPlanToolRows(tool ToolTimelineItem, presentation toolPresen
 	if p.runtime != nil && p.runtime.Store() != nil {
 		plan := p.runtime.Store().Snapshot().Plan.ActivePlan
 		if plan != nil && plan.Document != nil {
-			appendBody("p  Open full plan", styles.Muted)
+			appendBody("/plan  Open full plan", styles.Muted)
 		}
 	}
 	rows = append(rows, renderRow{text: "└" + strings.Repeat("─", innerWidth) + "┘", style: borderStyle})

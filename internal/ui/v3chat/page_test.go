@@ -356,7 +356,7 @@ func TestPlanPermissionFromHydrationUsesStructuredCardAndFullPlanModal(t *testin
 	page.Draw(screen)
 	screen.Show()
 	drawn := simulationText(screen, 100, 30)
-	for _, want := range []string{"Plan approval", "PLAN", "Two-step completion plan", "Finish the target work end-to-end.", "CHECKPOINTS", "2 checkpoints", "1. Verify the work  ·  Pending", "2. Finish the work  ·  Pending", "p  Open full plan", "Enter Approve"} {
+	for _, want := range []string{"Plan approval", "PLAN", "Two-step completion plan", "Finish the target work end-to-end.", "CHECKPOINTS", "2 checkpoints", "1. Verify the work  ·  Pending", "2. Finish the work  ·  Pending", "/plan  Open full plan", "Enter Approve"} {
 		if !strings.Contains(drawn, want) {
 			t.Fatalf("structured plan card missing %q:\n%s", want, drawn)
 		}
@@ -367,7 +367,10 @@ func TestPlanPermissionFromHydrationUsesStructuredCardAndFullPlanModal(t *testin
 		}
 	}
 
-	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'p', tcell.ModNone))
+	page.mu.Lock()
+	page.permissionInput = []rune("/plan")
+	page.mu.Unlock()
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	page.Draw(screen)
 	screen.Show()
 	modal := simulationText(screen, 100, 30)
@@ -387,7 +390,7 @@ func TestPlanToolRowsRenderDedicatedCardAndWideTextKeepsBorder(t *testing.T) {
 	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
 	tool := ToolTimelineItem{ID: "plan-tool", Name: "plan_manage", Status: "completed", Output: `{"action":"save","plan":{"title":"界 plan","document":{"title":"界 plan","info":{"goal":"Render safely"},"checkpoints":[{"id":"cp-1","title":"One","status":"completed"}]}}}`}
 	rows := page.renderToolRows(tool, 40, testPageStyles())
-	if len(rows) < 5 || !strings.HasPrefix(rows[0].text, "┌") || !strings.Contains(rows[1].text, "PLAN") || !strings.Contains(renderRowsText(rows), "1. One  ·  Completed") || !strings.Contains(renderRowsText(rows), "p  Open full plan") || strings.Contains(renderRowsText(rows), `{"`) {
+	if len(rows) < 5 || !strings.HasPrefix(rows[0].text, "┌") || !strings.Contains(rows[1].text, "PLAN") || !strings.Contains(renderRowsText(rows), "1. One  ·  Completed") || !strings.Contains(renderRowsText(rows), "/plan  Open full plan") || strings.Contains(renderRowsText(rows), `{"`) {
 		t.Fatalf("plan tool rows are not a dedicated structured card: %#v", rows)
 	}
 	screen := tcell.NewSimulationScreen("UTF-8")
@@ -1434,7 +1437,7 @@ func TestPageCoalescesPlanPermissionAndCorrelatedToolResultIntoOneCard(t *testin
 	if got := strings.Count(rendered, "┌"); got != 1 {
 		t.Fatalf("plan interaction rendered %d card boxes, want 1:\n%s", got, rendered)
 	}
-	for _, want := range []string{"Approved · Completed", "One plan interaction", "1. Do the work  ·  Pending", "p  Open full plan"} {
+	for _, want := range []string{"Approved · Completed", "One plan interaction", "1. Do the work  ·  Pending", "/plan  Open full plan"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("coalesced plan card missing %q:\n%s", want, rendered)
 		}
