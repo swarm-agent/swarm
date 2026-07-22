@@ -111,6 +111,9 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 	if recommendation := planLifecycleRecommendation(doc, checkpointID); recommendation != nil {
 		metadata["recommendation"] = recommendation
 	}
+	if artifacts := planLifecycleArtifacts(doc, checkpointID); len(artifacts) > 0 {
+		metadata["artifacts"] = artifacts
+	}
 	if doc.ExecutionState != nil {
 		metadata["execution_status"] = strings.TrimSpace(doc.ExecutionState.Status)
 		metadata["attempt_id"] = strings.TrimSpace(firstNonEmptyString(doc.ExecutionState.ActiveAttemptID, doc.ExecutionState.LastAttemptID))
@@ -520,7 +523,24 @@ func planExecutionHandoffMetadata(input PlanExecutionLifecycleMessageInput, acti
 		metadata["run_session_id"] = stringFromPlanPayload(input.Payload, "run_session_id")
 	}
 	metadata["parent_session_id"] = stringFromPlanPayload(input.Payload, "parent_session_id")
+	if artifacts := planLifecycleArtifacts(doc, checkpointID); len(artifacts) > 0 {
+		metadata["artifacts"] = artifacts
+	}
 	return metadata
+}
+
+func planLifecycleArtifacts(doc *pebblestore.SessionPlanDocument, checkpointID string) []pebblestore.SessionPlanArtifactReference {
+	if doc == nil {
+		return nil
+	}
+	artifacts := append([]pebblestore.SessionPlanArtifactReference(nil), doc.Artifacts...)
+	for _, checkpoint := range doc.Checkpoints {
+		if strings.TrimSpace(checkpoint.ID) == strings.TrimSpace(checkpointID) {
+			artifacts = append(artifacts, checkpoint.Artifacts...)
+			break
+		}
+	}
+	return artifacts
 }
 
 func planLifecycleOutcomeDetailLines(payload map[string]any, markdown bool) []string {

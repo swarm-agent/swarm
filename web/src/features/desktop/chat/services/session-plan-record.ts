@@ -90,6 +90,7 @@ function normalizeDesktopSessionPlanDocument(value: unknown): DesktopSessionPlan
     info,
     executionPolicy: normalizeDesktopSessionPlanExecutionPolicy(record.executionPolicy ?? record.execution_policy),
     executionState: normalizeDesktopSessionPlanExecutionState(record.executionState ?? record.execution_state),
+    artifacts: normalizeDesktopSessionPlanArtifacts(record.artifacts),
     checkpoints,
     originalCheckpoints: normalizeDesktopSessionPlanCheckpoints(record.originalCheckpoints ?? record.original_checkpoints),
     activeCheckpointId: stringValue(record, 'activeCheckpointId', 'active_checkpoint_id'),
@@ -175,6 +176,7 @@ function normalizeDesktopSessionPlanCheckpoints(value: unknown): DesktopSessionP
         subtasks: normalizeDesktopSessionPlanSubtasks(checkpoint.subtasks, stringArrayValue(checkpoint, 'tasks')),
         activeSubtaskId: stringValue(checkpoint, 'activeSubtaskId', 'active_subtask_id'),
         acceptanceCriteria: stringArrayValue(checkpoint, 'acceptanceCriteria', 'acceptance_criteria'),
+        artifacts: normalizeDesktopSessionPlanArtifacts(checkpoint.artifacts),
         notes: stringValue(checkpoint, 'notes'),
         report: stringValue(checkpoint, 'report'),
         result: stringValue(checkpoint, 'result'),
@@ -194,6 +196,18 @@ function normalizeDesktopSessionPlanCheckpoints(value: unknown): DesktopSessionP
     })
     .filter((entry): entry is DesktopSessionPlanCheckpoint => entry !== null)
     .sort((left, right) => left.order - right.order)
+}
+
+function normalizeDesktopSessionPlanArtifacts(value: unknown): DesktopSessionPlanDocument['artifacts'] {
+  return (Array.isArray(value) ? value : []).map((entry) => {
+    const record = objectValue(entry) ?? {}
+    return {
+      path: stringValue(record, 'path'),
+      role: stringValue(record, 'role'),
+      description: stringValue(record, 'description'),
+      mediaType: stringValue(record, 'mediaType', 'media_type'),
+    }
+  }).filter((entry) => entry.path)
 }
 
 function normalizeDesktopSessionPlanSubtasks(value: unknown, legacyTasks: string[]): DesktopSessionPlanCheckpoint['subtasks'] {

@@ -10,23 +10,24 @@ import (
 )
 
 type checkpointRunPromptPayload struct {
-	PlanID           string                                 `json:"plan_id"`
-	PlanTitle        string                                 `json:"plan_title,omitempty"`
-	Scope            string                                 `json:"scope,omitempty"`
-	Decisions        []string                               `json:"decisions,omitempty"`
-	RelevantFiles    []string                               `json:"relevant_files,omitempty"`
-	Validation       string                                 `json:"validation_strategy,omitempty"`
-	ExecutionPolicy  pebblestore.SessionPlanExecutionPolicy `json:"execution_policy"`
-	ExecutionOrigin  string                                 `json:"execution_origin"`
-	RunKind          string                                 `json:"run_kind"`
-	ContextPolicy    string                                 `json:"context_policy"`
-	ExecutionSummary sessionruntime.PlanExecutionSummary    `json:"execution_summary"`
-	FinalCheckpoint  bool                                   `json:"final_checkpoint,omitempty"`
-	Checkpoint       pebblestore.SessionPlanCheckpoint      `json:"checkpoint"`
-	AttemptID        string                                 `json:"attempt_id,omitempty"`
-	RunID            string                                 `json:"run_id,omitempty"`
-	RunSessionID     string                                 `json:"run_session_id,omitempty"`
-	ParentSessionID  string                                 `json:"parent_session_id,omitempty"`
+	PlanID           string                                     `json:"plan_id"`
+	PlanTitle        string                                     `json:"plan_title,omitempty"`
+	Scope            string                                     `json:"scope,omitempty"`
+	Decisions        []string                                   `json:"decisions,omitempty"`
+	RelevantFiles    []string                                   `json:"relevant_files,omitempty"`
+	Artifacts        []pebblestore.SessionPlanArtifactReference `json:"artifacts,omitempty"`
+	Validation       string                                     `json:"validation_strategy,omitempty"`
+	ExecutionPolicy  pebblestore.SessionPlanExecutionPolicy     `json:"execution_policy"`
+	ExecutionOrigin  string                                     `json:"execution_origin"`
+	RunKind          string                                     `json:"run_kind"`
+	ContextPolicy    string                                     `json:"context_policy"`
+	ExecutionSummary sessionruntime.PlanExecutionSummary        `json:"execution_summary"`
+	FinalCheckpoint  bool                                       `json:"final_checkpoint,omitempty"`
+	Checkpoint       pebblestore.SessionPlanCheckpoint          `json:"checkpoint"`
+	AttemptID        string                                     `json:"attempt_id,omitempty"`
+	RunID            string                                     `json:"run_id,omitempty"`
+	RunSessionID     string                                     `json:"run_session_id,omitempty"`
+	ParentSessionID  string                                     `json:"parent_session_id,omitempty"`
 }
 
 func (s *Service) buildPlanCheckpointRunInput(sessionID, runID string, options RunOptions) ([]map[string]any, bool, error) {
@@ -93,6 +94,7 @@ func (s *Service) buildPlanCheckpointRunInput(sessionID, runID string, options R
 		Scope:            strings.TrimSpace(doc.Info.Scope),
 		Decisions:        trimStringSliceForPrompt(doc.Info.Decisions),
 		RelevantFiles:    trimStringSliceForPrompt(doc.Info.RelevantFiles),
+		Artifacts:        combinedCheckpointArtifacts(doc.Artifacts, checkpoint.Artifacts),
 		Validation:       strings.TrimSpace(doc.Info.ValidationStrategy),
 		ExecutionPolicy:  doc.ExecutionPolicy,
 		ExecutionOrigin:  sessionruntime.NormalizePlanExecutionOrigin(doc.ExecutionOrigin),
@@ -135,8 +137,11 @@ func renderCheckpointRunPrompt(payload checkpointRunPromptPayload) (string, erro
 		"Use plan_manage as the only checkpoint lifecycle surface for this run. Do not use manage_todos for agent self-tracking, checkpoint progress, or terminal outcomes; manage_todos is reserved for user-owned workspace todos.",
 		"Do not call plan_manage update_checkpoint or structured document patches merely to record routine progress or summarize completed work. Keep typed subtask state durable while a multi-task checkpoint is underway: at a genuine boundary call complete_subtask for one task, or pass subtask_ids to atomically record every task completed since the last progress call. If work continues, that transition advances the next task and makes live client state visible. Do not call complete_subtask for discovery-only activity or for a single-step checkpoint.",
 	}
+	if len(payload.Artifacts) > 0 {
+		parts = append(parts, "Artifact references are workspace-relative metadata, not embedded file contents. Read only artifacts with role=input that are needed for this checkpoint, using the workspace file tools; do not bulk-read them. Every artifact with role=deliverable must be included or linked in the assistant response itself. A terminal report is internal execution evidence and never substitutes for delivering the requested artifact to the user.")
+	}
 	if payload.FinalCheckpoint {
-		parts = append(parts, "Final checkpoint handoff required: this is the last remaining checkpoint. Completing it will put the plan into final waiting_review/final-review state, not start another checkpoint. In the terminal plan_manage call, keep report substantive and lossless, and also author the compact structured handoff: handoff_overview is required and concise; handoff_title is optional; impact_bullets contains at most three short behavioral-impact items; suggested_prompts contains at most three inert label/prompt objects. Suggested prompts are ordinary future user chat messages only and must never be tool calls, shell commands, Git operations, or lifecycle mutations. Supply the single canonical recommendation separately with recommendation. Do not put handoff content inside XML-like tags or emit a swarm-handoff-summary marker. The backend persists the concise source fields on the checkpoint, derives schema-versioned lifecycle metadata, and joins report, result, changed_files, and validation as lossless details without duplicating that evidence in the handoff source fields.")
+		parts = append(parts, "Final checkpoint handoff required: this is the last remaining checkpoint. Completing it will put the plan into final waiting_review/final-review state, not start another checkpoint. Before the terminal tool call, ensure the assistant response actually contains or links every requested user-visible artifact; terminal report metadata is internal evidence and is not the user-facing deliverable. In the terminal plan_manage call, keep report substantive and lossless, and also author the compact structured handoff: handoff_overview is required and concise; handoff_title is optional; impact_bullets contains at most three short behavioral-impact items; suggested_prompts contains at most three inert label/prompt objects. Suggested prompts are ordinary future user chat messages only and must never be tool calls, shell commands, Git operations, or lifecycle mutations. Supply the single canonical recommendation separately with recommendation. Do not put handoff content inside XML-like tags or emit a swarm-handoff-summary marker. The backend persists the concise source fields on the checkpoint, derives schema-versioned lifecycle metadata, and joins report, result, changed_files, and validation as lossless details without duplicating that evidence in the handoff source fields.")
 	}
 	parts = append(parts,
 		"Complete this checkpoint with exactly one terminal plan_manage outcome: complete_checkpoint, a final complete_subtask call with complete_checkpoint=true, mark_needs_review, mark_blocked, or mark_failed. Always include the current checkpoint_id from the payload in that terminal call.",
@@ -195,6 +200,16 @@ func checkpointRunObjective(checkpoint pebblestore.SessionPlanCheckpoint) string
 		return strings.Join(tasks, "\n")
 	}
 	return strings.TrimSpace(checkpoint.Title)
+}
+
+func combinedCheckpointArtifacts(planArtifacts, checkpointArtifacts []pebblestore.SessionPlanArtifactReference) []pebblestore.SessionPlanArtifactReference {
+	if len(planArtifacts) == 0 && len(checkpointArtifacts) == 0 {
+		return nil
+	}
+	out := make([]pebblestore.SessionPlanArtifactReference, 0, len(planArtifacts)+len(checkpointArtifacts))
+	out = append(out, planArtifacts...)
+	out = append(out, checkpointArtifacts...)
+	return out
 }
 
 func trimStringSliceForPrompt(values []string) []string {

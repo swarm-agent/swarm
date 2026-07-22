@@ -1242,6 +1242,7 @@ func (r *Runtime) Definitions() []Definition {
 					"notes":                      map[string]any{"type": "string", "description": "Checkpoint notes for update/complete operations. For start_session_checkpoint, request_followup_checkpoint, or a requirement-changing restart_checkpoint, use this for self-contained replacement/handoff context, constraints, relevant files, and validation expectations."},
 					"tasks":                      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Proposed checkpoint tasks. Required and complete for a requirement-changing restart_checkpoint; for new/follow-up checkpoints include enough concrete steps to preserve material request parts."},
 					"acceptance_criteria":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Proposed checkpoint acceptance criteria. Required and complete for a requirement-changing restart_checkpoint; include clear completion checks and validation expectations."},
+					"artifacts":                  map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifact references for start_session_checkpoint, request_followup_checkpoint, or requirement-changing restart_checkpoint."},
 					"report":                     map[string]any{"type": "string", "description": "Checkpoint report for update/complete checkpoint operations."},
 					"result":                     map[string]any{"type": "string", "description": "Checkpoint result for update/complete checkpoint operations."},
 					"reviewed_at":                map[string]any{"type": "integer", "description": "Optional review/resolution timestamp for accept_checkpoint or resolve_blocked_checkpoint."},
@@ -1342,6 +1343,7 @@ func sessionPlanDocumentToolSchema() map[string]any {
 			"title":       map[string]any{"type": "string"},
 			"status":      map[string]any{"type": "string"},
 			"info":        sessionPlanInfoToolSchema(),
+			"artifacts":   map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifact references only; file contents are not embedded."},
 			"checkpoints": map[string]any{"type": "array", "items": sessionPlanCheckpointToolSchema()},
 		},
 		"additionalProperties": true,
@@ -1382,6 +1384,7 @@ func sessionPlanCheckpointToolSchema() map[string]any {
 			"objective":           map[string]any{"type": "string"},
 			"tasks":               stringArray(),
 			"acceptance_criteria": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}},
+			"artifacts":           map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifacts relevant to or delivered by this checkpoint."},
 			"notes":               map[string]any{"type": "string"},
 		},
 		"required": []string{"id", "title", "status", "order", "acceptance_criteria"},
@@ -1390,6 +1393,20 @@ func sessionPlanCheckpointToolSchema() map[string]any {
 			map[string]any{"required": []string{"tasks"}},
 		},
 		"additionalProperties": true,
+	}
+}
+
+func sessionPlanArtifactToolSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path":        map[string]any{"type": "string", "description": "Clean workspace-relative path; absolute and workspace-escaping paths are rejected."},
+			"role":        map[string]any{"type": "string", "enum": []string{"input", "deliverable"}, "description": "input may be selectively read; deliverable must be included or linked in the user-visible assistant response."},
+			"description": map[string]any{"type": "string"},
+			"media_type":  map[string]any{"type": "string"},
+		},
+		"required":             []string{"path"},
+		"additionalProperties": false,
 	}
 }
 

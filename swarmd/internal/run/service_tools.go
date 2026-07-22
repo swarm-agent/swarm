@@ -2583,6 +2583,10 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		input.ReplacementTitle = strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title")))
 		input.ReplacementTasks = mapStringSlice(args, "tasks")
 		input.ReplacementCriteria = mapStringSlice(args, "acceptance_criteria")
+		input.ReplacementArtifacts, err = planArtifactsFromArgs(args)
+		if err != nil {
+			return "", err
+		}
 		input.ReplacementNotes = strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context")))
 		input.ReplacementSourceID = strings.TrimSpace(firstNonEmptyString(mapString(args, "source_message_id"), mapString(args, "source_message")))
 		result, err = lifecycle.RestartCheckpointFromZero(input)
@@ -2623,6 +2627,10 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 			StartedAt:          int64(mapInt(args, "started_at")),
 			AttemptID:          strings.TrimSpace(mapString(args, "attempt_id")),
 		}
+		input.Artifacts, err = planArtifactsFromArgs(args)
+		if err != nil {
+			return "", err
+		}
 		result, err = lifecycle.StartSessionCheckpoint(input)
 	case "request_followup_checkpoint":
 		input := sessionruntime.PlanLifecycleFollowupCheckpointInput{
@@ -2640,6 +2648,10 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 			ParentSessionID:    strings.TrimSpace(firstNonEmptyString(lifecycleRun.ParentSessionID, mapString(args, "parent_session_id"))),
 			StartedAt:          int64(mapInt(args, "started_at")),
 			AttemptID:          strings.TrimSpace(mapString(args, "attempt_id")),
+		}
+		input.Artifacts, err = planArtifactsFromArgs(args)
+		if err != nil {
+			return "", err
 		}
 		result, err = lifecycle.RequestFollowupCheckpoint(input)
 		if err == nil && result.Action == "start_session_checkpoint" {

@@ -505,6 +505,13 @@ export interface DesktopSessionPlanSubtask {
   order: number;
 }
 
+export interface DesktopSessionPlanArtifactReference {
+  path: string;
+  role: string;
+  description: string;
+  mediaType: string;
+}
+
 export interface DesktopSessionPlanCheckpoint {
   id: string;
   title: string;
@@ -514,6 +521,7 @@ export interface DesktopSessionPlanCheckpoint {
   subtasks?: DesktopSessionPlanSubtask[];
   activeSubtaskId?: string;
   acceptanceCriteria: string[];
+  artifacts: DesktopSessionPlanArtifactReference[];
   notes: string;
   report: string;
   result: string;
@@ -540,6 +548,7 @@ export interface DesktopSessionPlanDocument {
   info: DesktopSessionPlanInfo;
   executionPolicy: DesktopSessionPlanExecutionPolicy | null;
   executionState: DesktopSessionPlanExecutionState | null;
+  artifacts: DesktopSessionPlanArtifactReference[];
   checkpoints: DesktopSessionPlanCheckpoint[];
   originalCheckpoints: DesktopSessionPlanCheckpoint[];
   activeCheckpointId: string;

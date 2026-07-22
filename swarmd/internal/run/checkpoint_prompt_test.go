@@ -36,9 +36,10 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 			ValidationStrategy: "targeted tests",
 		},
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		Artifacts:       []pebblestore.SessionPlanArtifactReference{{Path: "docs/plan-brief.md", Role: "input", Description: "plan context"}},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Done", Status: sessionruntime.PlanCheckpointStatusCompleted},
-			{ID: "cp-2", Title: "Fresh handoff", Status: sessionruntime.PlanCheckpointStatusPending, Objective: "Use plan context only", Tasks: []string{"Build prompt"}, AcceptanceCriteria: []string{"No old chat"}},
+			{ID: "cp-1", Title: "Done", Status: sessionruntime.PlanCheckpointStatusCompleted, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/uncited-prior.json", Role: "deliverable"}, {Path: "out/shared-result.json", Role: "deliverable"}}},
+			{ID: "cp-2", Title: "Fresh handoff", Status: sessionruntime.PlanCheckpointStatusPending, Objective: "Use plan context only", Tasks: []string{"Build prompt"}, AcceptanceCriteria: []string{"No old chat"}, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/shared-result.json", Role: "input", Description: "consume the cited prior checkpoint result", MediaType: "application/json"}, {Path: "out/user-summary.md", Role: "deliverable", Description: "user-visible deliverable", MediaType: "text/markdown"}}},
 		},
 		ActiveCheckpointID: "cp-2",
 	}}); err != nil {
@@ -70,6 +71,14 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	}
 	if !strings.Contains(text, `"objective": "Use plan context only"`) {
 		t.Fatalf("prompt missing selected checkpoint objective: %s", text)
+	}
+	for _, want := range []string{"docs/plan-brief.md", "out/shared-result.json", "consume the cited prior checkpoint result", "out/user-summary.md", "workspace-relative metadata, not embedded file contents", "Read only artifacts with role=input", "role=deliverable", "assistant response itself", "terminal report is internal execution evidence"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("prompt missing artifact contract %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "out/uncited-prior.json") {
+		t.Fatalf("prompt included an uncited prior-checkpoint artifact: %s", text)
 	}
 	if !strings.Contains(text, "a final complete_subtask call with complete_checkpoint=true, mark_needs_review, mark_blocked, or mark_failed") {
 		t.Fatalf("prompt missing terminal outcome instruction: %s", text)
@@ -103,6 +112,8 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		"last remaining checkpoint",
 		"final waiting_review/final-review state",
 		"keep report substantive and lossless",
+		"ensure the assistant response actually contains or links every requested user-visible artifact",
+		"terminal report metadata is internal evidence and is not the user-facing deliverable",
 		"handoff_overview is required and concise",
 		"handoff_title is optional",
 		"impact_bullets contains at most three",

@@ -13,8 +13,9 @@ func TestBuildFinalPlanExecutionHandoffProjectsStructuredMetadataAndConciseConte
 	doc := &pebblestore.SessionPlanDocument{
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
 		ExecutionState:  &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateWaitingReview, LastCheckpointID: "cp-1"},
+		Artifacts:       []pebblestore.SessionPlanArtifactReference{{Path: "docs/shared-index.json", Role: "input"}},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
-			ID: "cp-1", Title: "Durable handoff", Status: sessionruntime.PlanCheckpointStatusCompleted,
+			ID: "cp-1", Title: "Durable handoff", Status: sessionruntime.PlanCheckpointStatusCompleted, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/visible-list.md", Role: "deliverable"}},
 			Report: "full report sentinel", Result: "result sentinel", ChangedFiles: []string{"file.go"}, Validation: []string{"focused test"},
 			Recommendation: recommendation,
 			Handoff: &pebblestore.SessionPlanCheckpointHandoff{
@@ -46,6 +47,10 @@ func TestBuildFinalPlanExecutionHandoffProjectsStructuredMetadataAndConciseConte
 	}
 	if projection.SchemaVersion != 1 || projection.Recommendation == nil || projection.Recommendation.Action != "review" || projection.Details.Report != "full report sentinel" || projection.Details.Result != "result sentinel" {
 		t.Fatalf("projection = %#v", projection)
+	}
+	artifacts, ok := message.Metadata["artifacts"].([]pebblestore.SessionPlanArtifactReference)
+	if !ok || len(artifacts) != 2 || artifacts[0].Path != "docs/shared-index.json" || artifacts[1].Path != "out/visible-list.md" || artifacts[1].Role != "deliverable" {
+		t.Fatalf("artifact metadata = %#v", message.Metadata["artifacts"])
 	}
 }
 

@@ -147,6 +147,8 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 
 	for _, want := range []string{
 		"For multi-step implementation work, keep durable task state current",
+		"Terminal report metadata is internal execution evidence",
+		"Include or link the actual requested artifact in the assistant response before the terminal lifecycle call",
 		"batch all tasks completed since the last update with subtask_ids",
 		"combine the final task transitions and checkpoint completion via complete_subtask complete_checkpoint=true",
 		"do not waste a second tool call",

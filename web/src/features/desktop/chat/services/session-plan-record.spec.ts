@@ -28,6 +28,7 @@ test('normalizeDesktopSessionPlan preserves execution policy state review attemp
         completed_at: 0,
       },
       active_checkpoint_id: 'cp-2',
+      artifacts: [{ path: 'docs/plan-input.json', role: 'input', description: 'Shared input', media_type: 'application/json' }],
       checkpoints: [{
         id: 'cp-2',
         title: 'Expose data',
@@ -37,6 +38,7 @@ test('normalizeDesktopSessionPlan preserves execution policy state review attemp
         session_id: 'run-session',
         started_at: 11,
         review: { status: 'pending', reviewer_id: 'user-1', reviewer_type: 'user', notes: 'check it', reviewed_at: 0 },
+        artifacts: [{ path: 'out/visible-list.md', role: 'deliverable', description: 'Visible list', media_type: 'text/markdown' }],
         attempts: [{
           id: 'cp-2:attempt-1',
           checkpoint_id: 'cp-2',
@@ -59,6 +61,7 @@ test('normalizeDesktopSessionPlan preserves execution policy state review attemp
   assert.equal(plan.document?.executionState?.activeAttemptId, 'cp-2:attempt-1')
   assert.equal(plan.document?.executionState?.currentRunId, 'run-123')
   assert.equal(plan.document?.executionState?.lastOutcome, 'completed')
+  assert.deepEqual(plan.document?.artifacts, [{ path: 'docs/plan-input.json', role: 'input', description: 'Shared input', mediaType: 'application/json' }])
 
   const checkpoint = plan.document?.checkpoints[0]
   assert.equal(checkpoint?.attemptId, 'cp-2:attempt-1')
@@ -66,6 +69,7 @@ test('normalizeDesktopSessionPlan preserves execution policy state review attemp
   assert.equal(checkpoint?.sessionId, 'run-session')
   assert.equal(checkpoint?.review?.status, 'pending')
   assert.equal(checkpoint?.review?.reviewerId, 'user-1')
+  assert.deepEqual(checkpoint?.artifacts, [{ path: 'out/visible-list.md', role: 'deliverable', description: 'Visible list', mediaType: 'text/markdown' }])
   assert.equal(checkpoint?.attempts[0]?.parentSessionId, 'parent-session')
   assert.deepEqual(checkpoint?.attempts[0]?.changedFiles, ['web/src/features/desktop/chat/services/session-plan-record.ts'])
 })

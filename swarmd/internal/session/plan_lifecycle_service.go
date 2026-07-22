@@ -54,6 +54,7 @@ type PlanLifecycleFollowupCheckpointInput struct {
 	Title               string
 	Tasks               []string
 	AcceptanceCriteria  []string
+	Artifacts           []pebblestore.SessionPlanArtifactReference
 	Notes               string
 	SourceMessageID     string
 	GlobalDefaultPolicy string
@@ -72,6 +73,7 @@ type PlanLifecycleSessionCheckpointInput struct {
 	CheckpointID       string
 	Tasks              []string
 	AcceptanceCriteria []string
+	Artifacts          []pebblestore.SessionPlanArtifactReference
 	Notes              string
 	SourceMessageID    string
 	RunID              string
@@ -153,6 +155,7 @@ type PlanLifecycleExecutionInput struct {
 	ReplacementTitle        string
 	ReplacementTasks        []string
 	ReplacementCriteria     []string
+	ReplacementArtifacts    []pebblestore.SessionPlanArtifactReference
 	ReplacementNotes        string
 	ReplacementSourceID     string
 }
@@ -374,6 +377,7 @@ func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFoll
 		Objective:          request,
 		Tasks:              tasks,
 		AcceptanceCriteria: trimStringSlice(input.AcceptanceCriteria),
+		Artifacts:          trimPlanArtifacts(input.Artifacts),
 		Notes:              buildCheckpointHandoffNotes(request, input.Notes),
 		SourceMessageID:    strings.TrimSpace(input.SourceMessageID),
 		Order:              insertionPoint.Index + 1,
@@ -456,6 +460,7 @@ func (s *PlanLifecycleService) StartSessionCheckpoint(input PlanLifecycleSession
 			Objective:          request,
 			Tasks:              tasks,
 			AcceptanceCriteria: trimStringSlice(input.AcceptanceCriteria),
+			Artifacts:          trimPlanArtifacts(input.Artifacts),
 			Notes:              buildCheckpointHandoffNotes(request, input.Notes),
 			SourceMessageID:    strings.TrimSpace(input.SourceMessageID),
 			Order:              1,
@@ -1057,6 +1062,7 @@ func replaceRestartedCheckpointRequirements(doc *pebblestore.SessionPlanDocument
 	checkpoint.ActiveSubtaskID = ""
 	normalizePlanCheckpointSubtasks(checkpoint)
 	checkpoint.AcceptanceCriteria = criteria
+	checkpoint.Artifacts = trimPlanArtifacts(input.ReplacementArtifacts)
 	checkpoint.Notes = buildCheckpointHandoffNotes(request, input.ReplacementNotes)
 	checkpoint.SourceMessageID = strings.TrimSpace(input.ReplacementSourceID)
 	return ValidatePlanDocument(doc)

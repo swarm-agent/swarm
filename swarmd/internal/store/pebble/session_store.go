@@ -141,13 +141,14 @@ type SessionPlanDocument struct {
 	ExecutionPolicy SessionPlanExecutionPolicy `json:"execution_policy,omitempty"`
 	// ExecutionOrigin distinguishes lightweight auto-session work from approved
 	// full-plan execution without relying on conversation history.
-	ExecutionOrigin     string                     `json:"execution_origin,omitempty"`
-	ExecutionState      *SessionPlanExecutionState `json:"execution_state,omitempty"`
-	Checkpoints         []SessionPlanCheckpoint    `json:"checkpoints,omitempty"`
-	OriginalCheckpoints []SessionPlanCheckpoint    `json:"original_checkpoints,omitempty"`
-	ActiveCheckpointID  string                     `json:"active_checkpoint_id,omitempty"`
-	RenderedText        string                     `json:"rendered_text,omitempty"`
-	DisplayText         string                     `json:"display_text,omitempty"`
+	ExecutionOrigin     string                         `json:"execution_origin,omitempty"`
+	ExecutionState      *SessionPlanExecutionState     `json:"execution_state,omitempty"`
+	Artifacts           []SessionPlanArtifactReference `json:"artifacts,omitempty"`
+	Checkpoints         []SessionPlanCheckpoint        `json:"checkpoints,omitempty"`
+	OriginalCheckpoints []SessionPlanCheckpoint        `json:"original_checkpoints,omitempty"`
+	ActiveCheckpointID  string                         `json:"active_checkpoint_id,omitempty"`
+	RenderedText        string                         `json:"rendered_text,omitempty"`
+	DisplayText         string                         `json:"display_text,omitempty"`
 }
 
 // SessionPlanExecutionPolicy is plan-level policy. It is intentionally stored
@@ -187,6 +188,16 @@ type SessionPlanInfo struct {
 	ValidationStrategy string   `json:"validation_strategy,omitempty"`
 }
 
+// SessionPlanArtifactReference identifies a portable workspace artifact that a
+// checkpoint may selectively read or must deliver to the user. Contents are
+// never embedded in the durable plan document.
+type SessionPlanArtifactReference struct {
+	Path        string `json:"path"`
+	Role        string `json:"role,omitempty"`
+	Description string `json:"description,omitempty"`
+	MediaType   string `json:"media_type,omitempty"`
+}
+
 type SessionPlanCheckpoint struct {
 	ID        string `json:"id"`
 	Title     string `json:"title,omitempty"`
@@ -198,6 +209,7 @@ type SessionPlanCheckpoint struct {
 	Subtasks           []SessionPlanSubtask                 `json:"subtasks,omitempty"`
 	ActiveSubtaskID    string                               `json:"active_subtask_id,omitempty"`
 	AcceptanceCriteria []string                             `json:"acceptance_criteria,omitempty"`
+	Artifacts          []SessionPlanArtifactReference       `json:"artifacts,omitempty"`
 	SourceMessageID    string                               `json:"source_message_id,omitempty"`
 	Notes              string                               `json:"notes,omitempty"`
 	Report             string                               `json:"report,omitempty"`

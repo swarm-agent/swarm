@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	pathpkg "path"
 	"strings"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -46,6 +47,7 @@ func NormalizePlanDocumentForSave(planID, title string, incoming, existing *pebb
 	doc.RenderedText = strings.TrimSpace(doc.RenderedText)
 	doc.DisplayText = strings.TrimSpace(doc.DisplayText)
 	trimPlanInfo(&doc.Info)
+	doc.Artifacts = trimPlanArtifacts(doc.Artifacts)
 	for i := range doc.Checkpoints {
 		trimPlanCheckpoint(&doc.Checkpoints[i])
 		if doc.Checkpoints[i].Order == 0 {
@@ -118,6 +120,11 @@ func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error 
 		add("checkpoints", "at least one checkpoint is required")
 	}
 
+	for i, artifact := range doc.Artifacts {
+		if err := validatePlanArtifact(artifact); err != nil {
+			add(fmt.Sprintf("artifacts[%d].path", i), err.Error())
+		}
+	}
 	seenIDs := make(map[string]struct{}, len(doc.Checkpoints))
 	pendingIDs := make(map[string]struct{}, len(doc.Checkpoints))
 	firstPendingID := ""
@@ -145,6 +152,11 @@ func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error 
 		}
 		if !isValidPlanCheckpointStatus(checkpoint.Status) {
 			add(prefix+".status", fmt.Sprintf("checkpoint status %q is not supported", checkpoint.Status))
+		}
+		for artifactIndex, artifact := range checkpoint.Artifacts {
+			if err := validatePlanArtifact(artifact); err != nil {
+				add(fmt.Sprintf("%s.artifacts[%d].path", prefix, artifactIndex), err.Error())
+			}
 		}
 		if checkpoint.Status == PlanCheckpointStatusPending && id != "" {
 			pendingIDs[id] = struct{}{}
@@ -185,6 +197,9 @@ func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 	if err := validatePlanExecutionState(doc.ExecutionState); err != nil {
 		return err
 	}
+	if err := validatePlanArtifacts("artifacts", doc.Artifacts); err != nil {
+		return err
+	}
 	seen := make(map[string]struct{}, len(doc.Checkpoints))
 	for i, checkpoint := range doc.Checkpoints {
 		id := strings.TrimSpace(checkpoint.ID)
@@ -196,6 +211,9 @@ func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 		}
 		seen[id] = struct{}{}
 		if err := validatePlanCheckpointRuntime(checkpoint); err != nil {
+			return err
+		}
+		if err := validatePlanArtifacts(fmt.Sprintf("checkpoints[%d].artifacts", i), checkpoint.Artifacts); err != nil {
 			return err
 		}
 	}
@@ -704,6 +722,11 @@ func mergePlanCheckpointPatch(target *pebblestore.SessionPlanCheckpoint, checkpo
 			target.ActiveSubtaskID = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.ActiveSubtaskID))
 		case "acceptance_criteria":
 			target.AcceptanceCriteria = trimStringSlice(stringSliceFromPlanInfoRaw(raw, trimmed.AcceptanceCriteria))
+		case "artifacts":
+			var artifacts []pebblestore.SessionPlanArtifactReference
+			if len(raw) > 0 && json.Unmarshal(raw, &artifacts) == nil {
+				target.Artifacts = trimPlanArtifacts(artifacts)
+			}
 		case "notes":
 			target.Notes = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.Notes))
 		case "report":
@@ -914,6 +937,7 @@ func clonePlanDocument(doc *pebblestore.SessionPlanDocument) *pebblestore.Sessio
 		state := *doc.ExecutionState
 		clone.ExecutionState = &state
 	}
+	clone.Artifacts = clonePlanArtifacts(doc.Artifacts)
 	clone.Checkpoints = clonePlanDocumentCheckpointSlice(doc.Checkpoints)
 	clone.OriginalCheckpoints = clonePlanDocumentCheckpointSlice(doc.OriginalCheckpoints)
 	return &clone
@@ -929,6 +953,7 @@ func clonePlanDocumentCheckpointSlice(checkpoints []pebblestore.SessionPlanCheck
 		clone[i].Tasks = cloneStringSlice(checkpoints[i].Tasks)
 		clone[i].Subtasks = append([]pebblestore.SessionPlanSubtask(nil), checkpoints[i].Subtasks...)
 		clone[i].AcceptanceCriteria = cloneStringSlice(checkpoints[i].AcceptanceCriteria)
+		clone[i].Artifacts = clonePlanArtifacts(checkpoints[i].Artifacts)
 		clone[i].SourceMessageID = strings.TrimSpace(checkpoints[i].SourceMessageID)
 		clone[i].ChangedFiles = cloneStringSlice(checkpoints[i].ChangedFiles)
 		clone[i].Validation = cloneStringSlice(checkpoints[i].Validation)
@@ -985,6 +1010,7 @@ func trimPlanCheckpoint(checkpoint *pebblestore.SessionPlanCheckpoint) {
 	checkpoint.Tasks = trimStringSlice(checkpoint.Tasks)
 	checkpoint.ActiveSubtaskID = strings.TrimSpace(checkpoint.ActiveSubtaskID)
 	checkpoint.AcceptanceCriteria = trimStringSlice(checkpoint.AcceptanceCriteria)
+	checkpoint.Artifacts = trimPlanArtifacts(checkpoint.Artifacts)
 	checkpoint.SourceMessageID = strings.TrimSpace(checkpoint.SourceMessageID)
 	checkpoint.Notes = strings.TrimSpace(checkpoint.Notes)
 	checkpoint.Report = strings.TrimSpace(checkpoint.Report)
@@ -992,6 +1018,61 @@ func trimPlanCheckpoint(checkpoint *pebblestore.SessionPlanCheckpoint) {
 	checkpoint.ChangedFiles = trimStringSlice(checkpoint.ChangedFiles)
 	checkpoint.Validation = trimStringSlice(checkpoint.Validation)
 	normalizePlanCheckpointRuntime(checkpoint)
+}
+
+func clonePlanArtifacts(in []pebblestore.SessionPlanArtifactReference) []pebblestore.SessionPlanArtifactReference {
+	if in == nil {
+		return nil
+	}
+	out := make([]pebblestore.SessionPlanArtifactReference, len(in))
+	copy(out, in)
+	return out
+}
+
+func trimPlanArtifacts(in []pebblestore.SessionPlanArtifactReference) []pebblestore.SessionPlanArtifactReference {
+	if in == nil {
+		return nil
+	}
+	out := make([]pebblestore.SessionPlanArtifactReference, 0, len(in))
+	for _, artifact := range in {
+		artifact.Path = strings.TrimSpace(artifact.Path)
+		artifact.Role = strings.ToLower(strings.TrimSpace(artifact.Role))
+		artifact.Description = strings.TrimSpace(artifact.Description)
+		artifact.MediaType = strings.TrimSpace(artifact.MediaType)
+		out = append(out, artifact)
+	}
+	return out
+}
+
+func validatePlanArtifacts(field string, artifacts []pebblestore.SessionPlanArtifactReference) error {
+	for i, artifact := range artifacts {
+		if err := validatePlanArtifact(artifact); err != nil {
+			return fmt.Errorf("plan document %s[%d].path %w", field, i, err)
+		}
+	}
+	return nil
+}
+
+func validatePlanArtifact(artifact pebblestore.SessionPlanArtifactReference) error {
+	role := strings.ToLower(strings.TrimSpace(artifact.Role))
+	if role != "" && role != "input" && role != "deliverable" {
+		return errors.New("has unsupported role; use input or deliverable")
+	}
+	path := strings.TrimSpace(artifact.Path)
+	if path == "" {
+		return errors.New("is required")
+	}
+	if strings.Contains(path, "\\") || strings.HasPrefix(path, "/") || (len(path) >= 2 && path[1] == ':') {
+		return errors.New("must be a portable workspace-relative path")
+	}
+	clean := pathpkg.Clean(path)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return errors.New("must remain within the workspace")
+	}
+	if clean != path {
+		return errors.New("must be a clean portable workspace-relative path")
+	}
+	return nil
 }
 
 func trimStringSlice(in []string) []string {

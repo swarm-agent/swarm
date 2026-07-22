@@ -48,6 +48,18 @@ func planDocumentFromArgsForTool(args map[string]any, toolName string) (*pebbles
 	return &document, nil
 }
 
+func planArtifactsFromArgs(args map[string]any) ([]pebblestore.SessionPlanArtifactReference, error) {
+	value, ok := args["artifacts"]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	var artifacts []pebblestore.SessionPlanArtifactReference
+	if err := unmarshalPlanToolArg(value, &artifacts, "plan_manage artifacts"); err != nil {
+		return nil, err
+	}
+	return artifacts, nil
+}
+
 func unmarshalPlanToolArg(value any, target any, label string) error {
 	raw, err := planToolArgJSON(value)
 	if err != nil {
@@ -117,15 +129,15 @@ func planManageApprovedArgumentKeys(action string) map[string]bool {
 	case "approve_and_start":
 		add("plan_id", "id", "checkpoint_id", "active_checkpoint_id", "active_checkpoint", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically")
 	case "restart_checkpoint":
-		add("plan_id", "id", "checkpoint_id", "active_checkpoint_id", "active_checkpoint", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "notes", "handoff_notes", "context", "source_message_id", "source_message")
+		add("plan_id", "id", "checkpoint_id", "active_checkpoint_id", "active_checkpoint", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "artifacts", "notes", "handoff_notes", "context", "source_message_id", "source_message")
 	case "rewind_to_checkpoint":
 		add("plan_id", "id", "checkpoint_id", "active_checkpoint_id", "active_checkpoint")
 	case "resolve_blocked_checkpoint", "resolve_block", "clear_block", "unblock_checkpoint":
 		add("plan_id", "id", "checkpoint_id", "active_checkpoint_id", "active_checkpoint", "result", "resolution_result", "notes", "resolution_notes", "report", "reviewed_at", "start_next", "continue_next", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at")
 	case "start_session_checkpoint":
-		add("checkpoint_id", "id", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "notes", "handoff_notes", "context", "source_message_id", "source_message", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "fresh_context", "execution_context")
+		add("checkpoint_id", "id", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "artifacts", "notes", "handoff_notes", "context", "source_message_id", "source_message", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "fresh_context", "execution_context")
 	case "request_followup_checkpoint":
-		add("plan_id", "id", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "notes", "handoff_notes", "context", "source_message_id", "source_message", "approval_confirmed", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at")
+		add("plan_id", "id", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "artifacts", "notes", "handoff_notes", "context", "source_message_id", "source_message", "approval_confirmed", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at")
 	case "request_plan_revision":
 		add("plan_id", "id", "title", "plan", "document", "reason", "update_summary", "summary")
 	case "amend_plan":
