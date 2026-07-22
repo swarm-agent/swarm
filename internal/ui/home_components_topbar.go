@@ -364,23 +364,23 @@ func (p *HomePage) workspaceButtonStyle(base tcell.Style, state workspaceButtonS
 
 func (p *HomePage) workspaceItems() []topItem {
 	if len(p.model.Workspaces) == 0 {
-		return []topItem{{Label: "[+ workspace]", Style: p.theme.TextMuted, Action: "workspace-selector", Index: -1}}
+		return []topItem{{Label: "[Alt+W: workspace]", Style: p.theme.TextMuted, Action: "workspace-selector", Index: -1}}
 	}
 
-	active := -1
+	items := make([]topItem, 0, len(p.model.Workspaces)+1)
+	items = append(items, topItem{Label: "[Alt+W: switch]", Style: p.theme.Secondary, Action: "workspace-selector", Index: -1})
 	for i, workspace := range p.model.Workspaces {
-		if workspace.Active {
-			active = i
-			break
+		icon := strings.TrimSpace(workspace.Icon)
+		name := strings.TrimSpace(workspace.Name)
+		if name == "" {
+			name = strings.TrimSpace(workspace.Path)
 		}
+		label := fmt.Sprintf("[%s %s]", icon, name)
+		style := p.theme.TextMuted
+		if workspace.Active {
+			style = p.theme.Primary.Bold(true)
+		}
+		items = append(items, topItem{Label: label, Style: style, Action: "workspace-select", Index: i})
 	}
-	if active < 0 {
-		active = 0
-	}
-	workspace := p.model.Workspaces[active]
-	label := fmt.Sprintf("[%s %s]", workspace.Icon, workspace.Name)
-	if len(p.model.Workspaces) > 1 {
-		label = fmt.Sprintf("%s +%d", label, len(p.model.Workspaces)-1)
-	}
-	return []topItem{{Label: label, Style: p.theme.Primary.Bold(true), Action: "workspace-selector", Index: active}}
+	return items
 }

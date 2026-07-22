@@ -10,6 +10,29 @@ import (
 	"swarm-refactor/swarmtui/internal/client"
 )
 
+func (a *App) cycleHomeModelProfile() {
+	if a == nil || a.home == nil {
+		return
+	}
+	profiles := a.homeModel.ModelProfiles
+	if len(profiles) == 0 {
+		a.home.SetStatus("no saved model profiles to cycle")
+		return
+	}
+	currentID := strings.TrimSpace(a.homeModel.DefaultModelProfileID)
+	if currentID == "" {
+		currentID = strings.TrimSpace(a.homeModel.ActiveModelProfile.ProfileID)
+	}
+	next := 0
+	for i, profile := range profiles {
+		if strings.TrimSpace(profile.ProfileID) == currentID {
+			next = (i + 1) % len(profiles)
+			break
+		}
+	}
+	a.selectHomeModelProfile(profiles[next].ProfileID)
+}
+
 func (a *App) selectHomeModelProfile(profileID string) {
 	if a == nil || a.api == nil || a.home == nil {
 		return

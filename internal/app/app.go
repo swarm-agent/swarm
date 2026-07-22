@@ -1821,6 +1821,9 @@ func (a *App) loadSessionSummary(ctx context.Context, sessionID string) (model.S
 
 func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 	keybinds := a.activeKeyBindings()
+	if a.route == "chat" && a.chat != nil && a.chat.PermissionModalVisible() {
+		return false
+	}
 	if a.route == "v3chat" && a.v3Chat != nil {
 		if a.v3Chat.PendingPermissionVisible() {
 			return false
@@ -1881,6 +1884,9 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		}
 	}
 	if keybinds.Match(ev, ui.KeybindGlobalWorkspaceSelect) {
+		if a.route == "home" && a.homeInteractionActive() {
+			return false
+		}
 		if a.workspaceCycleHotkeyBlocked() {
 			return true
 		}
@@ -1888,6 +1894,9 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		return true
 	}
 	if keybinds.Match(ev, ui.KeybindGlobalWorkspacePrev) {
+		if a.route == "home" && a.homeInteractionActive() {
+			return false
+		}
 		if a.workspaceCycleHotkeyBlocked() {
 			return true
 		}
@@ -1902,6 +1911,9 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		if !keybinds.Match(ev, id) {
 			continue
 		}
+		if a.route == "home" && a.homeInteractionActive() {
+			return false
+		}
 		if a.workspaceCycleHotkeyBlocked() {
 			return true
 		}
@@ -1909,23 +1921,24 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		return true
 	}
 	if keybinds.Match(ev, ui.KeybindGlobalWorkspaceNext) {
+		if a.route == "home" && a.homeInteractionActive() {
+			return false
+		}
 		if a.workspaceCycleHotkeyBlocked() {
 			return true
 		}
 		a.cycleWorkspaceBy(1)
 		return true
 	}
+	if keybinds.Match(ev, ui.KeybindGlobalCycleProfiles) {
+		if a.route != "home" || a.homeInteractionActive() {
+			return false
+		}
+		a.cycleHomeModelProfile()
+		return true
+	}
 	if keybinds.Match(ev, ui.KeybindGlobalCycleThinking) {
-		if a.route == "home" &&
-			(a.home.AuthModalVisible() ||
-				a.home.VaultModalVisible() ||
-				a.home.WorkspaceModalVisible() ||
-				a.home.WorktreesModalVisible() ||
-				a.home.ModelsModalVisible() ||
-				a.home.AgentsModalVisible() ||
-				a.home.VoiceModalVisible() ||
-				a.home.ThemeModalVisible() ||
-				a.home.KeybindsModalVisible()) {
+		if a.route == "home" && a.homeInteractionActive() {
 			return true
 		}
 		a.cycleThinkingLevel()
@@ -2275,7 +2288,7 @@ func (a *App) showHelp() {
 		fmt.Sprintf("%s   (activate workspace slot 8)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot8)),
 		fmt.Sprintf("%s   (activate workspace slot 9)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot9)),
 		fmt.Sprintf("%s   (activate workspace slot 10)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot10)),
-		fmt.Sprintf("%s   (cycle thinking level)", keybinds.Label(ui.KeybindGlobalCycleThinking)),
+		fmt.Sprintf("%s   (cycle saved model profiles)", keybinds.Label(ui.KeybindGlobalCycleProfiles)),
 		"/themes   (open theme modal with live preview)",
 		"/themes [open|list|set|next|prev|status|create|edit|delete|slots]",
 		"/themes create <id> [from <theme>]",
@@ -5344,6 +5357,8 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		}
 	case ui.HomeActionOpenWorkspaceSelector:
 		a.showWorkspaceSelector()
+	case ui.HomeActionSelectWorkspace:
+		a.activateWorkspaceAtIndex(action.WorkspaceIndex)
 	case ui.HomeActionOpenAgentsModal:
 		a.openAgentsModal()
 	case ui.HomeActionOpenProfilesModal:
@@ -8696,6 +8711,27 @@ func activeWorkspaceIndex(workspaces []model.Workspace) int {
 	return -1
 }
 
+func (a *App) homeInteractionActive() bool {
+	if a.home == nil {
+		return false
+	}
+	return a.home.OnboardingVisible() ||
+		a.home.AlertsModalVisible() ||
+		a.home.AuthModalVisible() ||
+		a.home.AuthDefaultsInfoVisible() ||
+		a.home.SessionsModalVisible() ||
+		a.home.VaultModalVisible() ||
+		a.home.WorkspaceModalVisible() ||
+		a.home.WorktreesModalVisible() ||
+		a.home.CodexUsageModalVisible() ||
+		a.home.ProfilesModalVisible() ||
+		a.home.ModelsModalVisible() ||
+		a.home.AgentsModalVisible() ||
+		a.home.VoiceModalVisible() ||
+		a.home.ThemeModalVisible() ||
+		a.home.KeybindsModalVisible()
+}
+
 func (a *App) workspaceCycleHotkeyBlocked() bool {
 	if a.route != "home" {
 		if a.route == "chat" {
@@ -8708,16 +8744,7 @@ func (a *App) workspaceCycleHotkeyBlocked() bool {
 		}
 		return true
 	}
-	return a.home.AuthModalVisible() ||
-		a.home.AuthDefaultsInfoVisible() ||
-		a.home.SessionsModalVisible() ||
-		a.home.WorkspaceModalVisible() ||
-		a.home.WorktreesModalVisible() ||
-		a.home.ModelsModalVisible() ||
-		a.home.AgentsModalVisible() ||
-		a.home.VoiceModalVisible() ||
-		a.home.ThemeModalVisible() ||
-		a.home.KeybindsModalVisible()
+	return a.homeInteractionActive()
 }
 
 func (a *App) cycleWorkspaceBy(delta int) {

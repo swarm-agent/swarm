@@ -25,6 +25,7 @@ const (
 	KeybindGlobalReloadHome      KeybindID = "global.reload_home"
 	KeybindGlobalToggleMouse     KeybindID = "global.toggle_mouse"
 	KeybindGlobalOpenAgents      KeybindID = "global.open_agents"
+	KeybindGlobalCycleProfiles   KeybindID = "global.cycle_profiles"
 	KeybindGlobalCycleThinking   KeybindID = "global.cycle_thinking"
 	KeybindGlobalCycleRoute      KeybindID = "global.cycle_route"
 	KeybindGlobalVoiceInput      KeybindID = "global.voice_input"
@@ -207,11 +208,12 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindGlobalReloadHome, Group: "Global", Action: "Reload home", Default: "ctrl+r", Editable: true},
 	{ID: KeybindGlobalToggleMouse, Group: "Global", Action: "Toggle mouse capture", Default: "f8", Editable: true},
 	{ID: KeybindGlobalOpenAgents, Group: "Global", Action: "Open agents modal", Default: "ctrl+a", Aliases: []string{"alt+a"}, Editable: true},
-	{ID: KeybindGlobalCycleThinking, Group: "Global", Action: "Cycle thinking", Default: "ctrl+t", Editable: true},
+	{ID: KeybindGlobalCycleProfiles, Group: "Global", Action: "Cycle saved model profiles", Default: "ctrl+t", Editable: true},
+	{ID: KeybindGlobalCycleThinking, Group: "Global", Action: "Cycle thinking", Default: "", Editable: true},
 	{ID: KeybindGlobalCycleRoute, Group: "Global", Action: "Cycle chat route", Default: "alt+r", Editable: true},
 	{ID: KeybindGlobalVoiceInput, Group: "Global", Action: "Voice input capture", Default: "f9", Editable: true},
 	{ID: KeybindGlobalShowBackground, Group: "Global", Action: "Go home", Default: "ctrl+b", Editable: true},
-	{ID: KeybindGlobalWorkspaceSelect, Group: "Global", Action: "Open workspace selector (/workspace select)", Default: "", Editable: true},
+	{ID: KeybindGlobalWorkspaceSelect, Group: "Global", Action: "Open workspace selector (/workspace select)", Default: "alt+w", Editable: true},
 	{ID: KeybindGlobalWorkspacePrev, Group: "Global", Action: "Cycle workspace previous", Default: "", Editable: true},
 	{ID: KeybindGlobalWorkspaceNext, Group: "Global", Action: "Cycle workspace next", Default: "", Editable: true},
 	{ID: KeybindGlobalWorkspaceSlot1, Group: "Global", Action: "Activate workspace slot 1", Default: "alt+1", Editable: true},

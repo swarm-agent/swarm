@@ -79,6 +79,10 @@ func (p *HomePage) handleTopTarget(target clickTarget) {
 		p.pendingHomeAction = &HomeAction{Kind: HomeActionOpenWorkspaceSelector}
 		p.statusLine = "opening workspace selector..."
 		return
+	case "workspace-select":
+		p.pendingHomeAction = &HomeAction{Kind: HomeActionSelectWorkspace, WorkspaceIndex: target.Index}
+		p.statusLine = "switching workspace..."
+		return
 	}
 
 	p.selectedTopAction = target.Action

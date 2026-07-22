@@ -19,6 +19,7 @@ const (
 	HomeActionCycleThinking         HomeActionKind = "cycle-thinking"
 	HomeActionCycleRoute            HomeActionKind = "cycle-route"
 	HomeActionOpenWorkspaceSelector HomeActionKind = "open-workspace-selector"
+	HomeActionSelectWorkspace       HomeActionKind = "select-workspace"
 	HomeActionSetDefaultSessionMode HomeActionKind = "set-default-session-mode"
 	HomeActionOpenAlertSession      HomeActionKind = "open-alert-session"
 	HomeActionClearAlerts           HomeActionKind = "clear-alerts"
@@ -40,6 +41,7 @@ type HomeAction struct {
 	Username         string
 	SwarmName        string
 	ModelProfileID   string
+	WorkspaceIndex   int
 	ResetCreditID    string
 	IdempotencyKey   string
 }
