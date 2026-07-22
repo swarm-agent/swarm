@@ -380,7 +380,7 @@ func (s *Server) createIntegrationWorkspaceChildSession(principal identity.Princ
 		WorkspaceID:    workspace.WorkspaceID,
 		SessionID:      session.ID,
 		Title:          session.Title,
-		Metadata:       integrationWorkspaceSessionMetadata(workspace),
+		Metadata:       integrationWorkspaceJoinMetadata(workspace),
 		UpdatedAt:      time.UnixMilli(session.UpdatedAt).UTC(),
 		CreatedAt:      time.UnixMilli(session.CreatedAt).UTC(),
 	})
@@ -495,7 +495,7 @@ func integrationWorkspaceContextMetadata(ctx integrationWorkspaceSessionContext)
 	return out
 }
 
-func integrationWorkspaceSessionMetadata(workspace pebblestore.IntegrationWorkspaceRecord) map[string]string {
+func integrationWorkspaceJoinMetadata(workspace pebblestore.IntegrationWorkspaceRecord) map[string]string {
 	out := map[string]string{}
 	if workspace.PackID != "" {
 		out["pack_id"] = workspace.PackID
