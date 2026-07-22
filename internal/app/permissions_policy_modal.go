@@ -46,7 +46,7 @@ func (a *App) openPermissionsPolicyModal(policy client.PermissionPolicy) {
 	if len(policy.Rules) == 0 {
 		selected = -1
 	}
-	status := "Granular policies loaded. g subagents · d deploy · p plan acceptance · 1/2/3 session mutations."
+	status := "Granular policies loaded. g/u/c/w/x/b/z subagents · d/e/l deploy · p plan · 1/2/3 mutations."
 	if a.homeModel.BypassPermissions {
 		status = "Permissions are OFF. Press o to turn permissions ON again."
 	}
@@ -82,6 +82,23 @@ func (a *App) handlePermissionsPolicyModalKey(ev *tcell.EventKey) bool {
 	}
 
 	if ev.Key() == tcell.KeyRune {
+		switch ev.Rune() {
+		case 'U':
+			a.adjustPermissionsSubagentAutomaticLaunches(-1)
+			return true
+		case 'C':
+			a.adjustPermissionsSubagentActiveChildLimit(-1)
+			return true
+		case 'W':
+			a.adjustPermissionsSubagentWaveMaximum(-1)
+			return true
+		case 'X':
+			a.adjustPermissionsSubagentMaxDepth(-1)
+			return true
+		case 'E':
+			a.adjustPermissionsSessionDeployLimit(-1)
+			return true
+		}
 		switch unicode.ToLower(ev.Rune()) {
 		case 'a', 'i':
 			m.InputActive = true
@@ -91,8 +108,32 @@ func (a *App) handlePermissionsPolicyModalKey(ev *tcell.EventKey) bool {
 		case 'g':
 			a.cyclePermissionsSubagentMode()
 			return true
+		case 'u':
+			a.adjustPermissionsSubagentAutomaticLaunches(1)
+			return true
+		case 'c':
+			a.adjustPermissionsSubagentActiveChildLimit(1)
+			return true
+		case 'w':
+			a.adjustPermissionsSubagentWaveMaximum(1)
+			return true
+		case 'x':
+			a.adjustPermissionsSubagentMaxDepth(1)
+			return true
+		case 'b':
+			a.cyclePermissionsSubagentOverBudgetAction()
+			return true
+		case 'z':
+			a.togglePermissionsSubagentWriteIsolation()
+			return true
 		case 'd':
 			a.cyclePermissionsSessionDeployMode()
+			return true
+		case 'e':
+			a.adjustPermissionsSessionDeployLimit(1)
+			return true
+		case 'l':
+			a.cyclePermissionsSessionDeployOverLimitAction()
 			return true
 		case 'p':
 			a.cyclePermissionsPlanAcceptanceMode()
@@ -236,14 +277,84 @@ func (a *App) togglePermissionsFromPolicyModal() {
 	a.openPermissionsBypassModal()
 }
 
+const (
+	permissionsSubagentLimitMaximum = 256
+	permissionsSubagentDepthMaximum = 16
+	permissionsSessionDeployMaximum = 256
+)
+
 func (a *App) cyclePermissionsSubagentMode() {
-	if a == nil || a.api == nil || !a.permissionsPolicyModalActive() || a.permissionsPolicyModal.Busy {
+	if !a.permissionsPolicyModalReady() {
+		return
+	}
+	policy := a.permissionsPolicyModal.Policy.Subagents
+	policy.Mode = nextPermissionsPolicyValue(policy.Mode, []string{"direct", "ask", "bounded"})
+	a.savePermissionsSubagentPolicy(policy, "Subagents: "+permissionsPolicyValueLabel(policy.Mode))
+}
+
+func (a *App) adjustPermissionsSubagentAutomaticLaunches(delta int) {
+	if !a.permissionsPolicyModalReady() {
+		return
+	}
+	policy := a.permissionsPolicyModal.Policy.Subagents
+	policy.AutomaticLaunchesPerParentRun = clampPermissionsPolicyNumber(policy.AutomaticLaunchesPerParentRun+delta, 0, permissionsSubagentLimitMaximum)
+	a.savePermissionsSubagentPolicy(policy, fmt.Sprintf("Automatic subagent starts per run: %d", policy.AutomaticLaunchesPerParentRun))
+}
+
+func (a *App) adjustPermissionsSubagentActiveChildLimit(delta int) {
+	if !a.permissionsPolicyModalReady() {
+		return
+	}
+	policy := a.permissionsPolicyModal.Policy.Subagents
+	policy.ActiveChildLimit = clampPermissionsPolicyNumber(policy.ActiveChildLimit+delta, 1, permissionsSubagentLimitMaximum)
+	a.savePermissionsSubagentPolicy(policy, fmt.Sprintf("Concurrent child limit: %d", policy.ActiveChildLimit))
+}
+
+func (a *App) adjustPermissionsSubagentWaveMaximum(delta int) {
+	if !a.permissionsPolicyModalReady() {
+		return
+	}
+	policy := a.permissionsPolicyModal.Policy.Subagents
+	policy.AbsoluteWaveMaximum = clampPermissionsPolicyNumber(policy.AbsoluteWaveMaximum+delta, 1, permissionsSubagentLimitMaximum)
+	a.savePermissionsSubagentPolicy(policy, fmt.Sprintf("Largest subagent wave: %d", policy.AbsoluteWaveMaximum))
+}
+
+func (a *App) adjustPermissionsSubagentMaxDepth(delta int) {
+	if !a.permissionsPolicyModalReady() {
+		return
+	}
+	policy := a.permissionsPolicyModal.Policy.Subagents
+	policy.MaxDepth = clampPermissionsPolicyNumber(policy.MaxDepth+delta, 0, permissionsSubagentDepthMaximum)
+	a.savePermissionsSubagentPolicy(policy, fmt.Sprintf("Subagent delegation depth: %d", policy.MaxDepth))
+}
+
+func (a *App) cyclePermissionsSubagentOverBudgetAction() {
+	if !a.permissionsPolicyModalReady() {
+		return
+	}
+	policy := a.permissionsPolicyModal.Policy.Subagents
+	policy.OverBudgetAction = nextPermissionsPolicyValue(policy.OverBudgetAction, []string{"ask", "deny"})
+	a.savePermissionsSubagentPolicy(policy, "Subagent over-limit action: "+permissionsPolicyValueLabel(policy.OverBudgetAction))
+}
+
+func (a *App) togglePermissionsSubagentWriteIsolation() {
+	if !a.permissionsPolicyModalReady() {
+		return
+	}
+	policy := a.permissionsPolicyModal.Policy.Subagents
+	policy.RequireWriteIsolation = !policy.RequireWriteIsolation
+	a.savePermissionsSubagentPolicy(policy, "Subagent write isolation: "+permissionsPolicyBoolLabel(policy.RequireWriteIsolation))
+}
+
+func (a *App) permissionsPolicyModalReady() bool {
+	return a != nil && a.api != nil && a.permissionsPolicyModalActive() && !a.permissionsPolicyModal.Busy
+}
+
+func (a *App) savePermissionsSubagentPolicy(policy client.SubagentPolicy, status string) {
+	if !a.permissionsPolicyModalReady() {
 		return
 	}
 	m := &a.permissionsPolicyModal
-	next := nextPermissionsPolicyValue(m.Policy.Subagents.Mode, []string{"direct", "ask", "bounded"})
-	policy := m.Policy.Subagents
-	policy.Mode = next
 	m.Busy = true
 	m.Err = ""
 	m.Status = "Saving subagent policy..."
@@ -258,7 +369,7 @@ func (a *App) cyclePermissionsSubagentMode() {
 		if a.permissionsPolicyModal.Visible {
 			a.permissionsPolicyModal.Policy.Subagents = saved
 		}
-		a.finishPermissionsPolicySave("Subagents: "+permissionsPolicyValueLabel(saved.Mode), nil)
+		a.finishPermissionsPolicySave(status, nil)
 	}()
 }
 
@@ -266,26 +377,49 @@ func (a *App) cyclePermissionsSessionDeployMode() {
 	if a == nil || a.api == nil || !a.permissionsPolicyModalActive() || a.permissionsPolicyModal.Busy {
 		return
 	}
-	m := &a.permissionsPolicyModal
-	deploy := m.Policy.SessionDeploy
-	acceptance := m.Policy.PlanAcceptance
+	deploy := a.permissionsPolicyModal.Policy.SessionDeploy
 	deploy.Mode = nextPermissionsPolicyValue(deploy.Mode, []string{"ask", "always_allow", "bounded"})
+	a.savePermissionsSessionDeployPolicy(deploy, "Session deployment: "+permissionsPolicyValueLabel(deploy.Mode))
+}
+
+func (a *App) adjustPermissionsSessionDeployLimit(delta int) {
+	if !a.permissionsPolicyModalReady() {
+		return
+	}
+	deploy := a.permissionsPolicyModal.Policy.SessionDeploy
+	deploy.AutomaticDeploymentsPerParentRun = clampPermissionsPolicyNumber(deploy.AutomaticDeploymentsPerParentRun+delta, 0, permissionsSessionDeployMaximum)
+	a.savePermissionsSessionDeployPolicy(deploy, fmt.Sprintf("Automatic deployments per parent run: %d", deploy.AutomaticDeploymentsPerParentRun))
+}
+
+func (a *App) cyclePermissionsSessionDeployOverLimitAction() {
+	if !a.permissionsPolicyModalReady() {
+		return
+	}
+	deploy := a.permissionsPolicyModal.Policy.SessionDeploy
+	deploy.OverLimitAction = nextPermissionsPolicyValue(deploy.OverLimitAction, []string{"ask", "deny"})
+	a.savePermissionsSessionDeployPolicy(deploy, "Deployment over-limit action: "+permissionsPolicyValueLabel(deploy.OverLimitAction))
+}
+
+func (a *App) savePermissionsSessionDeployPolicy(policy client.SessionDeployPolicy, status string) {
+	if !a.permissionsPolicyModalReady() {
+		return
+	}
+	m := &a.permissionsPolicyModal
 	m.Busy = true
 	m.Err = ""
 	m.Status = "Saving session deployment policy..."
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		savedDeploy, savedAcceptance, err := a.api.UpdateCapabilityPolicies(ctx, deploy, acceptance)
+		saved, err := a.api.UpdateSessionDeployPolicy(ctx, policy)
 		if err != nil {
-			a.finishPermissionsPolicySave("", fmt.Errorf("capability policy save failed: %w", err))
+			a.finishPermissionsPolicySave("", fmt.Errorf("session deployment policy save failed: %w", err))
 			return
 		}
 		if a.permissionsPolicyModal.Visible {
-			a.permissionsPolicyModal.Policy.SessionDeploy = savedDeploy
-			a.permissionsPolicyModal.Policy.PlanAcceptance = savedAcceptance
+			a.permissionsPolicyModal.Policy.SessionDeploy = saved
 		}
-		a.finishPermissionsPolicySave("Session deployment: "+permissionsPolicyValueLabel(savedDeploy.Mode), nil)
+		a.finishPermissionsPolicySave(status, nil)
 	}()
 }
 
@@ -294,7 +428,6 @@ func (a *App) cyclePermissionsPlanAcceptanceMode() {
 		return
 	}
 	m := &a.permissionsPolicyModal
-	deploy := m.Policy.SessionDeploy
 	acceptance := m.Policy.PlanAcceptance
 	acceptance.Mode = nextPermissionsPolicyValue(acceptance.Mode, []string{"ask", "always_allow"})
 	m.Busy = true
@@ -303,16 +436,15 @@ func (a *App) cyclePermissionsPlanAcceptanceMode() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		savedDeploy, savedAcceptance, err := a.api.UpdateCapabilityPolicies(ctx, deploy, acceptance)
+		saved, err := a.api.UpdatePlanAcceptancePolicy(ctx, acceptance)
 		if err != nil {
-			a.finishPermissionsPolicySave("", fmt.Errorf("capability policy save failed: %w", err))
+			a.finishPermissionsPolicySave("", fmt.Errorf("plan acceptance policy save failed: %w", err))
 			return
 		}
 		if a.permissionsPolicyModal.Visible {
-			a.permissionsPolicyModal.Policy.SessionDeploy = savedDeploy
-			a.permissionsPolicyModal.Policy.PlanAcceptance = savedAcceptance
+			a.permissionsPolicyModal.Policy.PlanAcceptance = saved
 		}
-		a.finishPermissionsPolicySave("Plan acceptance: "+permissionsPolicyValueLabel(savedAcceptance.Mode), nil)
+		a.finishPermissionsPolicySave("Plan acceptance: "+permissionsPolicyValueLabel(saved.Mode), nil)
 	}()
 }
 
@@ -379,6 +511,16 @@ func (a *App) finishPermissionsPolicySave(status string, err error) {
 	if a.screen != nil {
 		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptTick))
 	}
+}
+
+func clampPermissionsPolicyNumber(value, minimum, maximum int) int {
+	if value < minimum {
+		return minimum
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
 }
 
 func nextPermissionsPolicyValue(current string, values []string) string {
@@ -662,7 +804,7 @@ func (a *App) drawPermissionsPolicyModal() {
 		messageStyle = theme.Error
 	}
 	if message == "" {
-		message = "g subagents · d deploy · p plan · 1/2/3 session mutations · a add rule · r remove · o ON/OFF"
+		message = "g/u/c/w/x/b/z subagents · d/e/l deploy · p plan · 1/2/3 mutations · a rule · o ON/OFF"
 	}
 	ui.DrawText(a.screen, modal.X+2, messageY, modal.W-4, messageStyle, permissionsModalClamp(message, modal.W-4))
 
@@ -729,9 +871,9 @@ func (a *App) drawPermissionsPolicyComposer(theme ui.Theme, rect ui.Rect) {
 	subagents := m.Policy.Subagents
 	deploy := m.Policy.SessionDeploy
 	lines := []string{
-		fmt.Sprintf("g Subagents: %s · auto/run/wave/depth %d/%d/%d/%d", permissionsPolicyValueLabel(subagents.Mode), subagents.AutomaticLaunchesPerParentRun, subagents.ActiveChildLimit, subagents.AbsoluteWaveMaximum, subagents.MaxDepth),
-		fmt.Sprintf("  over limit %s · write isolation %s", permissionsPolicyValueLabel(subagents.OverBudgetAction), permissionsPolicyBoolLabel(subagents.RequireWriteIsolation)),
-		fmt.Sprintf("d Session deployment: %s · auto/run %d · over limit %s", permissionsPolicyValueLabel(deploy.Mode), deploy.AutomaticDeploymentsPerParentRun, permissionsPolicyValueLabel(deploy.OverLimitAction)),
+		fmt.Sprintf("g Mode %s · u/U auto/run %d · c/C running %d", permissionsPolicyValueLabel(subagents.Mode), subagents.AutomaticLaunchesPerParentRun, subagents.ActiveChildLimit),
+		fmt.Sprintf("w/W wave %d · x/X depth %d · b over limit %s · z isolation %s", subagents.AbsoluteWaveMaximum, subagents.MaxDepth, permissionsPolicyValueLabel(subagents.OverBudgetAction), permissionsPolicyBoolLabel(subagents.RequireWriteIsolation)),
+		fmt.Sprintf("d Deploy %s · e/E auto/run %d · l over limit %s", permissionsPolicyValueLabel(deploy.Mode), deploy.AutomaticDeploymentsPerParentRun, permissionsPolicyValueLabel(deploy.OverLimitAction)),
 		"p Plan acceptance: " + permissionsPolicyValueLabel(m.Policy.PlanAcceptance.Mode),
 		fmt.Sprintf("1 Commits %s · 2 Archives %s · 3 Unarchives %s", permissionsSessionMutationDecision(m.Policy.Rules, "session_commit"), permissionsSessionMutationDecision(m.Policy.Rules, "session_archive"), permissionsSessionMutationDecision(m.Policy.Rules, "session_unarchive")),
 	}
