@@ -899,6 +899,126 @@ function testParsesV3ProviderToolResultEnvelope(): void {
   assert(!parsed?.previewLines.some((line) => line.includes("run.v3.provider-tool-result.v1")), "should not leak raw V3 envelope path_id into preview");
 }
 
+function testWebSearchParsesBatchedNestedResultsAndFailures(): void {
+  const longText = `Full durable search body ${"detail ".repeat(120)}`;
+  const message = buildStructuredToolMessage({
+    tool: "websearch",
+    callId: "call_websearch_card",
+    argumentsText: JSON.stringify({ queries: ["desktop tool cards", "failed query"] }),
+    outputText: JSON.stringify({
+      queries: ["desktop tool cards", "failed query"],
+      query_count: 2,
+      total_results: 2,
+      failed_queries: 1,
+      requested_search_type: "auto",
+      resolved_search_types: ["neural"],
+      details_truncated: true,
+      results: [
+        {
+          query: "desktop tool cards",
+          count: 2,
+          resolved_search_type: "neural",
+          results: [
+            {
+              url: "https://example.com/tools/cards",
+              title: "Polished desktop cards",
+              summary: "A concise result summary.",
+              highlights: ["A useful highlighted passage."],
+              text: longText,
+              subpages: [{ url: "https://example.com/tools/cards/details", title: "Card details" }],
+            },
+            { url: "not a valid link", title: "Non-link result", text: "Still structured." },
+          ],
+        },
+        { query: "failed query", count: 0, error: "provider unavailable", results: [] },
+      ],
+    }),
+  });
+
+  assert(Boolean(message?.webSearchData), "expected structured websearch data");
+  assert(message?.webSearchData?.queryCount === 2, "expected batched query count");
+  assert(message?.webSearchData?.totalResults === 2, "expected total result count");
+  assert(message?.webSearchData?.failedQueries === 1, "expected failed query count");
+  assert(message?.webSearchData?.truncated === true, "expected partial marker");
+  assert(message?.webSearchData?.queryResults[0]?.results[0]?.domain === "example.com", "expected parsed domain");
+  assert(message?.webSearchData?.queryResults[0]?.results[0]?.text === longText, "long search content must remain durable");
+  assert(message?.webSearchData?.queryResults[0]?.results[0]?.subpages.length === 1, "expected nested subpage");
+  assert(message?.webSearchData?.queryResults[1]?.error === "provider unavailable", "expected per-query failure");
+  assert(message?.previewLines.length === 0, "dedicated websearch data should suppress generic preview rows");
+}
+
+function testWebFetchParsesBatchedContentStatusesAndLongText(): void {
+  const longText = `Fetched page body ${"content ".repeat(150)}`;
+  const message = buildStructuredToolMessage({
+    tool: "webfetch",
+    callId: "call_webfetch_card",
+    outputText: JSON.stringify({
+      urls: ["https://docs.example.com/guide", "https://broken.example.com"],
+      count: 2,
+      success_count: 1,
+      details_truncated: true,
+      results: [
+        { url: "https://docs.example.com/guide", title: "Desktop guide", summary: "Guide summary", text: longText },
+        { url: "https://broken.example.com", title: "Unavailable page", error: "fetch failed" },
+      ],
+      statuses: [
+        { id: "guide", status: "completed", source: "https://docs.example.com/guide" },
+        { id: "broken", status: "error", source: "https://broken.example.com", error: { tag: "CRAWL_FAILED", http_status_code: 502 } },
+      ],
+    }),
+  });
+
+  assert(Boolean(message?.webFetchData), "expected structured webfetch data");
+  assert(message?.webFetchData?.urls.length === 2, "expected batched URLs");
+  assert(message?.webFetchData?.successCount === 1, "expected successful fetch count");
+  assert(message?.webFetchData?.truncated === true, "expected fetch partial marker");
+  assert(message?.webFetchData?.results[0]?.domain === "docs.example.com", "expected fetched page domain");
+  assert(message?.webFetchData?.results[0]?.text === longText, "long fetched content must remain durable");
+  assert(message?.webFetchData?.results[1]?.error === "fetch failed", "expected failed record");
+  assert(message?.webFetchData?.statuses[1]?.error === "CRAWL_FAILED", "expected nested status error");
+  assert(message?.previewLines.length === 0, "dedicated webfetch data should suppress generic preview rows");
+}
+
+function testWebSearchPrefersFullDurablePayloadOverCompactedLiveOutput(): void {
+  const fullResult = {
+    queries: ["desktop tool cards"],
+    query_count: 1,
+    total_results: 1,
+    results: [{
+      query: "desktop tool cards",
+      count: 1,
+      results: [{ url: "https://example.com/full", title: "Full result", text: "durable full body" }],
+    }],
+  };
+  const message = buildStructuredToolMessage({
+    tool: "websearch",
+    outputText: JSON.stringify({
+      query: "desktop tool cards",
+      query_count: 1,
+      total_results: 1,
+      result_details_omitted: true,
+      original_bytes: 4096,
+    }),
+    completedOutputText: JSON.stringify(fullResult),
+  });
+  assert(message?.webSearchData?.queryResults[0]?.results[0]?.text === "durable full body", "durable payload should supply full WebSearch rows after compact live output");
+}
+
+function testWebToolsRetainStructuredArgumentsWhileRunning(): void {
+  const search = buildStructuredToolMessage({
+    tool: "websearch",
+    argumentsText: JSON.stringify({ queries: ["first query", "second query"] }),
+    state: "running",
+  });
+  const fetch = buildStructuredToolMessage({
+    tool: "webfetch",
+    argumentsText: JSON.stringify({ urls: ["https://example.com/a", "invalid://local"] }),
+    state: "running",
+  });
+  assert(search?.webSearchData?.queries.length === 2, "running search should retain argument queries");
+  assert(fetch?.webFetchData?.urls.length === 2, "running fetch should retain argument URLs");
+}
+
 function main(): void {
   testExitPlanApprovedShowsMetadata();
   testExitPlanDeniedPermissionShowsFeedbackAndPlan();
@@ -926,6 +1046,10 @@ function main(): void {
   testPlanManageShowsPlanLabelAndAction();
   testToolMessagePreservesToolInstanceID();
   testParsesV3ProviderToolResultEnvelope();
+  testWebSearchParsesBatchedNestedResultsAndFailures();
+  testWebFetchParsesBatchedContentStatusesAndLongText();
+  testWebSearchPrefersFullDurablePayloadOverCompactedLiveOutput();
+  testWebToolsRetainStructuredArgumentsWhileRunning();
   console.log("tool-message tests passed");
 }
 

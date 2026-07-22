@@ -1,11 +1,14 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
-import { Archive, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clock3, Copy, GitBranch, Layers3, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
+import { Archive, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clock3, Copy, ExternalLink, GitBranch, Layers3, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
 import type {
   StructuredToolMessage,
   SearchToolFileGroup,
   SearchToolLineGroup,
+  WebFetchToolData,
+  WebResourceData,
+  WebSearchToolData,
   TaskToolRow,
   TaskChildCardActions,
 } from "../types/chat";
@@ -1530,6 +1533,241 @@ function PlanManageToolView({ toolMessage }: { toolMessage: StructuredToolMessag
   );
 }
 
+function safeExternalURL(value: string): string | null {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function webStateLabel(state: ToolState): string {
+  return state === "running" ? "running" : state === "error" ? "error" : "complete";
+}
+
+function WebResourceRow({ resource, fetchResult = false }: { resource: WebResourceData; fetchResult?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const href = safeExternalURL(resource.url);
+  const previewParts = Array.from(new Set([
+    resource.summary,
+    ...resource.highlights,
+    resource.text,
+  ].map((value) => value.trim()).filter(Boolean)));
+  const preview = previewParts.join("\n\n");
+  const expandable = preview.length > 280 || previewParts.length > 1;
+  const failed = Boolean(resource.error) || resource.status.toLowerCase() === "error" || resource.status.toLowerCase() === "failed";
+  const title = resource.title || resource.domain || resource.url || (fetchResult ? "Fetched page" : "Search result");
+
+  return (
+    <article className={cn(
+      "min-w-0 rounded-xl border bg-[color-mix(in_srgb,var(--app-surface)_90%,transparent)] p-3",
+      failed ? "border-[var(--app-danger-border)]" : "border-[var(--app-border)]",
+    )}>
+      <div className="flex min-w-0 items-start gap-2.5">
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            {href ? (
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="min-w-0 break-words text-[13px] font-semibold leading-5 text-[var(--app-text)] hover:text-[var(--app-primary)] hover:underline [overflow-wrap:anywhere]"
+                title={resource.url}
+              >
+                {title}
+              </a>
+            ) : (
+              <span className="min-w-0 break-words text-[13px] font-semibold leading-5 text-[var(--app-text)] [overflow-wrap:anywhere]">{title}</span>
+            )}
+            {fetchResult ? (
+              <span className={cn(
+                "shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide",
+                failed
+                  ? "bg-[var(--app-danger-bg)] text-[var(--app-danger)]"
+                  : "bg-[var(--app-success-bg)] text-[var(--app-success)]",
+              )}>
+                {failed ? "failed" : resource.status || "fetched"}
+              </span>
+            ) : null}
+          </div>
+          <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-[var(--app-text-subtle)]">
+            {resource.domain ? <span className="font-medium text-[var(--app-text-muted)]">{resource.domain}</span> : null}
+            {resource.author ? <span className="break-words [overflow-wrap:anywhere]">{resource.author}</span> : null}
+            {resource.publishedDate ? <span>{resource.publishedDate}</span> : null}
+          </div>
+        </div>
+        {href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`Open ${title} in browser`}
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)]"
+          >
+            <ExternalLink size={13} />
+          </a>
+        ) : null}
+      </div>
+      {resource.url ? (
+        href ? (
+          <a href={href} target="_blank" rel="noopener noreferrer" className="mt-1.5 block min-w-0 break-all text-[10px] leading-4 text-[var(--app-primary)] hover:underline" title={resource.url}>
+            {resource.url}
+          </a>
+        ) : (
+          <div className="mt-1.5 min-w-0 break-all text-[10px] leading-4 text-[var(--app-text-subtle)]">{resource.url}</div>
+        )
+      ) : null}
+      {resource.error ? <div className="mt-2 break-words text-xs leading-5 text-[var(--app-danger)] [overflow-wrap:anywhere]">{resource.error}</div> : null}
+      {preview ? (
+        <div className="mt-2 min-w-0">
+          <div className={cn(
+            "min-w-0 whitespace-pre-wrap break-words text-xs leading-5 text-[var(--app-text-muted)] [overflow-wrap:anywhere]",
+            !expanded && "line-clamp-3",
+          )}>
+            {preview}
+          </div>
+          {expandable ? (
+            <button
+              type="button"
+              className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-semibold text-[var(--app-primary)] hover:underline"
+              onClick={() => setExpanded((value) => !value)}
+              aria-expanded={expanded}
+            >
+              {expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+              {expanded ? "Show less" : "Read full preview"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {resource.subpages.length > 0 ? (
+        <div className="mt-2 border-t border-[var(--app-border)] pt-2">
+          <div className="mb-1 text-[9px] font-semibold uppercase tracking-wide text-[var(--app-text-subtle)]">Subpages</div>
+          <div className="grid min-w-0 gap-1">
+            {resource.subpages.map((subpage, index) => {
+              const subpageHref = safeExternalURL(subpage.url);
+              const subpageLabel = subpage.title || subpage.domain || subpage.url || `Subpage ${index + 1}`;
+              return subpageHref ? (
+                <a key={`${subpage.url}:${index}`} href={subpageHref} target="_blank" rel="noopener noreferrer" className="min-w-0 break-words text-[11px] text-[var(--app-primary)] hover:underline [overflow-wrap:anywhere]">{subpageLabel}</a>
+              ) : (
+                <span key={`${subpage.url}:${index}`} className="min-w-0 break-words text-[11px] text-[var(--app-text-muted)] [overflow-wrap:anywhere]">{subpageLabel}</span>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function WebToolCardHeader({
+  toolMessage,
+  title,
+  metadata,
+  partial,
+}: {
+  toolMessage: StructuredToolMessage;
+  title: string;
+  metadata: string[];
+  partial: boolean;
+}) {
+  const toolTheme = getToolTheme(toolMessage.tool);
+  const ToolIcon = toolTheme.icon;
+  const state = resolveToolState(toolMessage);
+  const StateIcon = state === "error" ? XCircle : state === "running" ? LoaderCircle : CheckCircle2;
+  return (
+    <header className="flex min-w-0 flex-wrap items-center gap-2 border-b border-[var(--app-border)] px-3 py-2.5 text-xs">
+      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg" style={{ color: toolTheme.color, backgroundColor: toolAccentWash(toolTheme.color, 14) }}>
+        <ToolIcon size={13} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="font-semibold text-[var(--app-text)]">{title}</div>
+        {metadata.length > 0 ? <div className="mt-0.5 flex min-w-0 flex-wrap gap-x-1.5 text-[10px] text-[var(--app-text-subtle)]">{metadata.map((item, index) => <span key={`${item}:${index}`}>{index ? `· ${item}` : item}</span>)}</div> : null}
+      </div>
+      {partial ? <span className="shrink-0 rounded-full bg-[var(--app-warning-bg)] px-2 py-1 text-[9px] font-semibold text-[var(--app-warning)]">Partial</span> : null}
+      {toolMessage.durationMs > 0 ? <span className="shrink-0 text-[10px] text-[var(--app-text-subtle)]">{formatDuration(toolMessage.durationMs)}</span> : null}
+      <span className={cn(
+        "inline-flex shrink-0 items-center gap-1 text-[10px] font-medium",
+        state === "error" ? "text-[var(--app-danger)]" : state === "running" ? "text-[var(--app-primary)]" : "text-[var(--app-text-muted)]",
+      )}>
+        <StateIcon size={12} className={cn(state === "running" && "animate-spin")} />
+        {webStateLabel(state)}
+      </span>
+    </header>
+  );
+}
+
+function WebSearchToolCard({ toolMessage, data, isGroupItem }: { toolMessage: StructuredToolMessage; data: WebSearchToolData; isGroupItem?: boolean }) {
+  const metadata = [
+    `${data.queryCount} ${data.queryCount === 1 ? "query" : "queries"}`,
+    `${data.totalResults} ${data.totalResults === 1 ? "result" : "results"}`,
+    data.failedQueries ? `${data.failedQueries} failed` : "",
+    data.searchType,
+  ].filter(Boolean);
+  return (
+    <div className={cn(isGroupItem ? "py-1.5" : "mb-2 py-1.5", "w-full min-w-0")} data-web-tool-card="websearch">
+      <section className="min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] shadow-sm">
+        <WebToolCardHeader toolMessage={toolMessage} title="Web Search" metadata={metadata} partial={data.truncated} />
+        {data.queries.length > 0 ? (
+          <div className="flex min-w-0 flex-wrap gap-1.5 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
+            {data.queries.map((query, index) => <span key={`${query}:${index}`} className="max-w-full break-words rounded-lg bg-[color-mix(in_srgb,var(--app-accent)_9%,transparent)] px-2 py-1 text-[11px] leading-4 text-[var(--app-text)] [overflow-wrap:anywhere]">{query}</span>)}
+          </div>
+        ) : null}
+        {toolMessage.error ? <div className="border-b border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">{toolMessage.error}</div> : null}
+        <div className={cn(TOOL_RESULT_BODY_CLASS, "min-w-0 p-2.5")}>
+          {data.queryResults.length > 0 ? <div className="grid min-w-0 gap-3">{data.queryResults.map((group, groupIndex) => (
+            <section key={`${group.query}:${groupIndex}`} className="min-w-0">
+              {(data.queryResults.length > 1 || group.error || group.timedOut) ? (
+                <div className="mb-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 px-0.5">
+                  <div className="min-w-0 flex-1 break-words text-[11px] font-semibold text-[var(--app-text)] [overflow-wrap:anywhere]">{group.query || `Query ${groupIndex + 1}`}</div>
+                  <span className="shrink-0 text-[10px] text-[var(--app-text-subtle)]">{group.error ? "failed" : group.timedOut ? "timed out" : `${group.count} results`}</span>
+                </div>
+              ) : null}
+              {group.error ? <div className="mb-2 break-words rounded-lg border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)] [overflow-wrap:anywhere]">{group.error}</div> : null}
+              {group.results.length > 0 ? <div className="grid min-w-0 gap-2">{group.results.map((resource, index) => <WebResourceRow key={`${resource.url}:${index}`} resource={resource} />)}</div> : null}
+            </section>
+          ))}</div> : <div className="px-1 py-2 text-xs text-[var(--app-text-subtle)]">{toolMessage.state === "running" ? "Searching the web…" : "No structured results returned."}</div>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function WebFetchToolCard({ toolMessage, data, isGroupItem }: { toolMessage: StructuredToolMessage; data: WebFetchToolData; isGroupItem?: boolean }) {
+  const failedCount = Math.max(0, data.count - data.successCount);
+  const metadata = [
+    `${data.urls.length || data.count} ${(data.urls.length || data.count) === 1 ? "URL" : "URLs"}`,
+    `${data.successCount} fetched`,
+    failedCount ? `${failedCount} failed` : "",
+    data.timedOut ? "timed out" : "",
+  ].filter(Boolean);
+  return (
+    <div className={cn(isGroupItem ? "py-1.5" : "mb-2 py-1.5", "w-full min-w-0")} data-web-tool-card="webfetch">
+      <section className="min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] shadow-sm">
+        <WebToolCardHeader toolMessage={toolMessage} title="Web Fetch" metadata={metadata} partial={data.truncated || data.timedOut} />
+        {data.urls.length > 0 ? (
+          <div className="grid min-w-0 gap-1 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
+            {data.urls.map((url, index) => {
+              const href = safeExternalURL(url);
+              return href ? <a key={`${url}:${index}`} href={href} target="_blank" rel="noopener noreferrer" className="min-w-0 break-all text-[10px] leading-4 text-[var(--app-primary)] hover:underline">{url}</a> : <span key={`${url}:${index}`} className="min-w-0 break-all text-[10px] leading-4 text-[var(--app-text-subtle)]">{url}</span>;
+            })}
+          </div>
+        ) : null}
+        {toolMessage.error ? <div className="border-b border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">{toolMessage.error}</div> : null}
+        <div className={cn(TOOL_RESULT_BODY_CLASS, "min-w-0 p-2.5")}>
+          {data.results.length > 0 ? <div className="grid min-w-0 gap-2">{data.results.map((resource, index) => <WebResourceRow key={`${resource.url}:${index}`} resource={resource} fetchResult />)}</div> : null}
+          {data.statuses.filter((status) => status.error || status.status).length > 0 ? (
+            <div className={cn("grid min-w-0 gap-1.5", data.results.length > 0 && "mt-2 border-t border-[var(--app-border)] pt-2")}>
+              {data.statuses.map((status, index) => <div key={`${status.id}:${index}`} className={cn("min-w-0 break-words rounded-lg px-2.5 py-1.5 text-[11px] [overflow-wrap:anywhere]", status.error ? "bg-[var(--app-danger-bg)] text-[var(--app-danger)]" : "bg-[var(--app-surface)] text-[var(--app-text-muted)]")}><span className="font-semibold">{status.source || status.id || `URL ${index + 1}`}</span>{status.status ? ` · ${status.status}` : ""}{status.error ? ` · ${status.error}` : ""}</div>)}
+            </div>
+          ) : null}
+          {data.results.length === 0 && data.statuses.length === 0 ? <div className="px-1 py-2 text-xs text-[var(--app-text-subtle)]">{toolMessage.state === "running" ? "Fetching page content…" : "No structured page content returned."}</div> : null}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function SearchToolView({
   toolMessage,
 }: {
@@ -1569,8 +1807,15 @@ export function ToolMessageView({
   thinkingTagsEnabled?: boolean;
   taskChildActions?: TaskChildCardActions;
 }) {
-  if (toolMessage.tool.trim().toLowerCase() === "bash") {
+  const normalizedToolName = toolMessage.tool.trim().toLowerCase();
+  if (normalizedToolName === "bash") {
     return <BashToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
+  }
+  if (normalizedToolName === "websearch" && toolMessage.webSearchData) {
+    return <WebSearchToolCard toolMessage={toolMessage} data={toolMessage.webSearchData} isGroupItem={isGroupItem} />;
+  }
+  if (normalizedToolName === "webfetch" && toolMessage.webFetchData) {
+    return <WebFetchToolCard toolMessage={toolMessage} data={toolMessage.webFetchData} isGroupItem={isGroupItem} />;
   }
 
   const toolTheme = getToolTheme(toolMessage.tool);

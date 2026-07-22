@@ -347,6 +347,79 @@ function testManageSessionsListRendersCardsWithoutRawJson(): void {
   assert(!markup.includes("&quot;items&quot;"), "raw JSON preview must be hidden behind the card");
 }
 
+function testWebSearchUsesDedicatedResponsiveCard(): void {
+  const longQuery = `desktop web search ${"very-long-query ".repeat(20)}`;
+  const longText = `Complete searchable content ${"result body ".repeat(90)}`;
+  const message = buildStructuredToolMessage({
+    tool: "websearch",
+    argumentsText: JSON.stringify({ queries: [longQuery, "failing query"] }),
+    outputText: JSON.stringify({
+      queries: [longQuery, "failing query"],
+      query_count: 2,
+      total_results: 2,
+      failed_queries: 1,
+      details_truncated: true,
+      results: [
+        { query: longQuery, count: 2, results: [
+          { url: "https://example.com/article", title: "An attractive result", highlights: ["Useful highlight"], text: longText },
+          { url: "javascript:alert(1)", title: "Unsafe URL remains text", summary: "No invalid link is created." },
+        ] },
+        { query: "failing query", count: 0, error: "search backend failed", results: [] },
+      ],
+    }),
+    durationMs: 1320,
+  });
+  assert(Boolean(message), "expected websearch message");
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes('data-web-tool-card="websearch"') && markup.includes("Web Search"), "expected dedicated websearch card");
+  assert(markup.includes("2 queries") && markup.includes("2 results") && markup.includes("1 failed") && markup.includes("1.3s"), "expected header metadata");
+  assert(markup.includes("example.com") && markup.includes("Useful highlight") && markup.includes("Read full preview"), "expected structured result row and expansion affordance");
+  assert(markup.includes('href="https://example.com/article"') && markup.includes('target="_blank"') && markup.includes('rel="noopener noreferrer"'), "expected safe external link behavior");
+  assert(!markup.includes('href="javascript:') && markup.includes("Unsafe URL remains text"), "unsafe URL must not become a link");
+  assert(markup.includes("max-h-[50vh]") && markup.includes("overflow-y-auto") && markup.includes("overflow-x-hidden"), "websearch body must be bounded and overflow safe");
+  assert(markup.includes("line-clamp-3") && markup.includes(longText), "visual clamping must preserve full underlying result content");
+  assert(!markup.includes("&quot;total_results&quot;"), "websearch card should not expose raw result JSON");
+}
+
+function testWebFetchUsesDedicatedFailureAwareCard(): void {
+  const longText = `Full fetched text ${"paragraph ".repeat(120)}`;
+  const message = buildStructuredToolMessage({
+    tool: "webfetch",
+    outputText: JSON.stringify({
+      urls: ["https://docs.example.com/guide", "bad-url"],
+      count: 2,
+      success_count: 1,
+      timed_out: true,
+      results: [
+        { url: "https://docs.example.com/guide", title: "Fetched guide", summary: "Readable summary", text: longText },
+        { url: "bad-url", title: "Failed page", error: "crawl failed" },
+      ],
+      statuses: [{ id: "broken", source: "bad-url", status: "error", error: { tag: "CRAWL_FAILED" } }],
+    }),
+    error: "webfetch returned partial content",
+    state: "error",
+    durationMs: 900,
+  });
+  assert(Boolean(message), "expected webfetch message");
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes('data-web-tool-card="webfetch"') && markup.includes("Web Fetch"), "expected dedicated webfetch card");
+  assert(markup.includes("2 URLs") && markup.includes("1 fetched") && markup.includes("1 failed") && markup.includes("timed out"), "expected fetch counts and status");
+  assert(markup.includes("Fetched guide") && markup.includes("docs.example.com") && markup.includes("crawl failed") && markup.includes("CRAWL_FAILED"), "expected successful and failed records");
+  assert(markup.includes("max-h-[50vh]") && markup.includes("overflow-y-auto") && markup.includes("overflow-x-hidden"), "webfetch body must be bounded and overflow safe");
+  assert(markup.includes("Read full preview") && markup.includes(longText), "long fetched content should remain expandable and durable");
+  assert(!markup.includes('href="bad-url"'), "invalid fetch URL must not become a link");
+}
+
+function testRunningWebCardsShowProgressWithoutRawJson(): void {
+  const search = buildStructuredToolMessage({ tool: "websearch", argumentsText: JSON.stringify({ queries: ["one", "two"] }), state: "running" });
+  const fetch = buildStructuredToolMessage({ tool: "webfetch", argumentsText: JSON.stringify({ urls: ["https://example.com"] }), state: "running" });
+  assert(Boolean(search && fetch), "expected running web tool messages");
+  const searchMarkup = renderToolMarkup(search!);
+  const fetchMarkup = renderToolMarkup(fetch!);
+  assert(searchMarkup.includes("running") && searchMarkup.includes("Searching the web…") && !searchMarkup.includes("&quot;queries&quot;"), "running search should use a structured progress state");
+  assert(fetchMarkup.includes("running") && fetchMarkup.includes("Fetching page content…") && !fetchMarkup.includes("&quot;urls&quot;"), "running fetch should use a structured progress state");
+}
+
 function testFileActionsUseThemeAwareCards(): void {
   const readMessage = buildStructuredToolMessage({
     tool: "read",
@@ -471,6 +544,9 @@ function main(): void {
   testManageSessionsReviewWorktreesHydratesCandidates();
   testSearchToolRendersCompactGroupedList();
   testManageSessionsListRendersCardsWithoutRawJson();
+  testWebSearchUsesDedicatedResponsiveCard();
+  testWebFetchUsesDedicatedFailureAwareCard();
+  testRunningWebCardsShowProgressWithoutRawJson();
   testFileActionsUseThemeAwareCards();
   testTaskHeaderDoesNotShiftBetweenLaunchAssignments();
   console.log("chat-markdown preview tests passed");

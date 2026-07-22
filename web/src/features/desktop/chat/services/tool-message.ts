@@ -6,6 +6,11 @@ import type {
   StructuredToolMessage,
   TodoToolData,
   TodoToolSummaryCounts,
+  WebFetchStatusData,
+  WebFetchToolData,
+  WebResourceData,
+  WebSearchQueryData,
+  WebSearchToolData,
 } from "../types/chat";
 
 interface ToolHistoryPayload {
@@ -103,6 +108,159 @@ function jsonObjectSlice(
     (entry): entry is Record<string, unknown> =>
       Boolean(entry) && typeof entry === "object" && !Array.isArray(entry),
   );
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function nestedObjectSlice(
+  obj: Record<string, unknown> | null,
+  key: string,
+): Record<string, unknown>[] {
+  const direct = jsonObjectSlice(obj, key);
+  if (direct.length > 0) return direct;
+  for (const nestedKey of ["data", "response", "output"]) {
+    const nested = jsonRecord(obj?.[nestedKey]);
+    const found = jsonObjectSlice(nested, key);
+    if (found.length > 0) return found;
+  }
+  return [];
+}
+
+function webError(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  const record = jsonRecord(value);
+  return firstNonEmpty(
+    jsonStr(record, "message"),
+    jsonStr(record, "error"),
+    jsonStr(record, "tag"),
+  );
+}
+
+function webDomain(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+      ? parsed.hostname.replace(/^www\./i, "")
+      : "";
+  } catch {
+    return "";
+  }
+}
+
+function extractWebResource(value: Record<string, unknown>): WebResourceData {
+  const url = firstNonEmpty(jsonStr(value, "url"), jsonStr(value, "source_url"));
+  const highlights = jsonStrArray(value, "highlights");
+  const subpages = jsonObjectSlice(value, "subpages").map(extractWebResource);
+  return {
+    url,
+    title: firstNonEmpty(jsonStr(value, "title"), jsonStr(value, "name")),
+    domain: webDomain(url),
+    author: jsonStr(value, "author"),
+    publishedDate: firstNonEmpty(jsonStr(value, "published_date"), jsonStr(value, "publishedDate")),
+    summary: jsonStr(value, "summary"),
+    text: firstNonEmpty(jsonRawStr(value, "text"), jsonRawStr(value, "content")),
+    highlights,
+    error: webError(value.error),
+    status: jsonStr(value, "status"),
+    subpages,
+  };
+}
+
+function extractWebSearchToolData(
+  outputJson: Record<string, unknown> | null,
+  argumentsJson: Record<string, unknown> | null,
+): WebSearchToolData | null {
+  const effective = outputJson ?? argumentsJson;
+  if (!effective) return null;
+
+  const requestedQueries = [
+    ...jsonStrArray(outputJson, "queries"),
+    ...jsonStrArray(argumentsJson, "queries"),
+  ];
+  const singleQuery = firstNonEmpty(jsonStr(outputJson, "query"), jsonStr(argumentsJson, "query"));
+  const queries = Array.from(new Set([...requestedQueries, ...(singleQuery ? [singleQuery] : [])]));
+  const rawResults = nestedObjectSlice(outputJson, "results");
+  const wrapperResults = rawResults.filter((item) => Array.isArray(item.results) || Boolean(jsonStr(item, "query")));
+  const directHits = wrapperResults.length === 0 ? rawResults : [];
+  const queryResults: WebSearchQueryData[] = wrapperResults.map((item, index) => {
+    const results = jsonObjectSlice(item, "results").map(extractWebResource);
+    const query = jsonStr(item, "query") || queries[index] || "";
+    return {
+      query,
+      count: hasJsonKey(item, "count") ? jsonNum(item, "count") : results.length,
+      searchType: firstNonEmpty(jsonStr(item, "resolved_search_type"), jsonStr(item, "requested_search_type")),
+      timedOut: jsonBool(item, "timed_out"),
+      error: webError(item.error),
+      results,
+    };
+  });
+  if (directHits.length > 0) {
+    queryResults.push({
+      query: queries[0] || "",
+      count: directHits.length,
+      searchType: firstNonEmpty(jsonStr(outputJson, "search_type"), jsonStr(argumentsJson, "search_type")),
+      timedOut: jsonBool(outputJson, "timed_out"),
+      error: webError(outputJson?.error),
+      results: directHits.map(extractWebResource),
+    });
+  }
+  if (queryResults.length === 0 && queries.length > 0) {
+    queryResults.push(...queries.map((query) => ({
+      query,
+      count: 0,
+      searchType: firstNonEmpty(jsonStr(outputJson, "search_type"), jsonStr(argumentsJson, "search_type")),
+      timedOut: jsonBool(outputJson, "timed_out"),
+      error: "",
+      results: [],
+    })));
+  }
+
+  const resultCount = queryResults.reduce((sum, item) => sum + item.results.length, 0);
+  const failedCount = queryResults.filter((item) => Boolean(item.error)).length;
+  const searchTypes = jsonStrArray(outputJson, "resolved_search_types");
+  return {
+    queries: queries.length > 0 ? queries : queryResults.map((item) => item.query).filter(Boolean),
+    queryCount: jsonNum(outputJson, "query_count") || queryResults.length || queries.length,
+    totalResults: hasJsonKey(outputJson, "total_results") ? jsonNum(outputJson, "total_results") : resultCount,
+    failedQueries: hasJsonKey(outputJson, "failed_queries") ? jsonNum(outputJson, "failed_queries") : failedCount,
+    truncated: jsonBool(outputJson, "details_truncated") || jsonBool(outputJson, "truncated_queries") || jsonBool(outputJson, "truncated"),
+    searchType: searchTypes.join(", ") || firstNonEmpty(jsonStr(outputJson, "requested_search_type"), jsonStr(argumentsJson, "search_type")),
+    queryResults,
+  };
+}
+
+function extractWebFetchToolData(
+  outputJson: Record<string, unknown> | null,
+  argumentsJson: Record<string, unknown> | null,
+): WebFetchToolData | null {
+  const effective = outputJson ?? argumentsJson;
+  if (!effective) return null;
+  const urls = Array.from(new Set([
+    ...jsonStrArray(outputJson, "urls"),
+    ...jsonStrArray(argumentsJson, "urls"),
+    ...[firstNonEmpty(jsonStr(outputJson, "url"), jsonStr(argumentsJson, "url"))].filter(Boolean),
+  ]));
+  const results = nestedObjectSlice(outputJson, "results").map(extractWebResource);
+  const statuses: WebFetchStatusData[] = nestedObjectSlice(outputJson, "statuses").map((item) => ({
+    id: jsonStr(item, "id"),
+    status: jsonStr(item, "status"),
+    source: jsonStr(item, "source"),
+    error: webError(item.error),
+  }));
+  const inferredSuccess = results.filter((item) => !item.error).length;
+  return {
+    urls,
+    count: hasJsonKey(outputJson, "count") ? jsonNum(outputJson, "count") : results.length,
+    successCount: hasJsonKey(outputJson, "success_count") ? jsonNum(outputJson, "success_count") : inferredSuccess,
+    timedOut: jsonBool(outputJson, "timed_out"),
+    truncated: jsonBool(outputJson, "details_truncated") || jsonBool(outputJson, "truncated_urls") || jsonBool(outputJson, "truncated"),
+    results,
+    statuses,
+  };
 }
 
 function firstNonEmpty(...values: string[]): string {
@@ -1676,8 +1834,12 @@ export function buildStructuredToolMessage(
   const rawCompletedOutputText = String(input.completedOutputText ?? "");
   const outputText = rawOutputText.trim();
   const completedOutputText = rawCompletedOutputText.trim();
+  const parsedOutputJson = parseJsonRecord(outputText);
+  const parsedCompletedOutputJson = parseJsonRecord(completedOutputText);
   const outputJson =
-    parseJsonRecord(outputText) ?? parseJsonRecord(completedOutputText);
+    parsedOutputJson && jsonBool(parsedOutputJson, "result_details_omitted") && parsedCompletedOutputJson
+      ? parsedCompletedOutputJson
+      : parsedOutputJson ?? parsedCompletedOutputJson;
 
   const summary = summarizeToolOutput(toolName, outputJson, argumentsJson);
   const editDiff =
@@ -1687,6 +1849,12 @@ export function buildStructuredToolMessage(
     normalizedToolName === "search"
       ? extractSearchToolData(outputJson, argumentsJson)
       : null;
+  const webSearchData = normalizedToolName === "websearch"
+    ? extractWebSearchToolData(outputJson, argumentsJson)
+    : null;
+  const webFetchData = normalizedToolName === "webfetch"
+    ? extractWebFetchToolData(outputJson, argumentsJson)
+    : null;
   const todoData =
     normalizedToolName === "manage_todos" || normalizedToolName === "manage-todos"
       ? extractTodoToolData(outputJson ?? argumentsJson)
@@ -1695,7 +1863,7 @@ export function buildStructuredToolMessage(
     normalizedToolName === "bash"
       ? extractBashToolData(outputJson, rawOutputText || rawCompletedOutputText, rawCompletedOutputText, argumentsJson)
       : null;
-  const previewLines = searchData
+  const previewLines = searchData || webSearchData || webFetchData
     ? []
     : extractPreviewLines(
         toolName,
@@ -1726,6 +1894,8 @@ export function buildStructuredToolMessage(
     state: input.state ?? (error ? "error" : "done"),
     editDiff,
     searchData,
+    webSearchData,
+    webFetchData,
     todoData,
     bashData,
     previewLines,

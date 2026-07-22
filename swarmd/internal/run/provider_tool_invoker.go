@@ -445,7 +445,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			Step:       config.step,
 			ToolName:   strings.TrimSpace(result.Name),
 			CallID:     strings.TrimSpace(result.CallID),
-			Output:     formatToolCompletedOutput(call, result),
+			Output:     formatProviderManagedToolCompletedOutput(call, result),
 			RawOutput:  liveStreamRawOutput(call, result),
 			Error:      strings.TrimSpace(result.Error),
 			DurationMS: result.DurationMS,
@@ -609,11 +609,12 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 		principal = identity.Principal{Type: identity.PrincipalTypeUser, UserID: session.UserID, AccountScopeID: session.AccountScopeID}
 	}
 	messageMetadata := providerManagedV3ToolMessageMetadata(config, call, metadata, result)
-	if strings.EqualFold(strings.TrimSpace(call.Name), "read") && len(strings.TrimSpace(result.Output)) > maxToolInputBytes {
-		// Session search needs a representative tool result, not thousands of
-		// unique line-number postings. Keep durable history/realtime content full,
-		// but index the existing read completion summary only.
-		messageMetadata["search_index_content"] = formatToolCompletedOutput(call, result)
+	toolName := canonicalToolName(call.Name)
+	if (toolName == "read" && len(strings.TrimSpace(result.Output)) > maxToolInputBytes) || toolName == "websearch" || toolName == "webfetch" {
+		// Session search needs a representative tool result, not every token in a
+		// large read or web response. Keep durable history/realtime content full,
+		// but build postings from the bounded completion summary only.
+		messageMetadata["search_index_content"] = formatProviderManagedToolCompletedOutput(call, result)
 	}
 	content, err := formatV3ProviderManagedToolResultRecord(call, messageMetadata, result)
 	if err != nil {
@@ -699,7 +700,7 @@ func providerManagedV3ToolEventPayload(eventType string, config providerToolInvo
 	if args := strings.TrimSpace(call.Arguments); args != "" {
 		payload["arguments"] = args
 	}
-	if output := formatToolCompletedOutput(call, result); output != "" {
+	if output := formatProviderManagedToolCompletedOutput(call, result); output != "" {
 		payload["output"] = output
 	}
 	if rawOutput := liveStreamRawOutput(call, result); rawOutput != "" {

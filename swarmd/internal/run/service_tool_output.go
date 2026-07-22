@@ -211,6 +211,9 @@ func buildV3ProviderManagedToolResultRecord(call tool.Call, metadata map[string]
 
 func formatV3ProviderManagedToolResultRecord(call tool.Call, metadata map[string]any, result tool.Result) (string, error) {
 	record := buildV3ProviderManagedToolResultRecord(call, metadata, result)
+	if compact, ok := compactWebToolCompletionOutput(call, result); ok {
+		record.CompletedOutput = compact
+	}
 	encoded, err := json.Marshal(record)
 	if err != nil {
 		return "", err
@@ -309,6 +312,46 @@ func buildToolHistoryInput(content string) ([]map[string]any, bool) {
 			"output":  prepareToolOutputForModel(call, result),
 		},
 	}, true
+}
+
+func compactWebToolCompletionOutput(call tool.Call, result tool.Result) (string, bool) {
+	name := canonicalToolName(firstNonEmptyString(result.Name, call.Name))
+	if name != "websearch" && name != "webfetch" {
+		return "", false
+	}
+	payload := decodeToolPayload(strings.TrimSpace(result.Output))
+	if payload == nil {
+		return "", false
+	}
+	compact := map[string]any{
+		"path_id":                mapString(payload, "path_id"),
+		"summary":                mapString(payload, "summary"),
+		"result_details_omitted": true,
+		"original_bytes":         len(strings.TrimSpace(result.Output)),
+	}
+	var fields []string
+	if name == "websearch" {
+		fields = []string{"query", "queries", "query_count", "num_results", "requested_search_type", "resolved_search_types", "total_results", "failed_queries", "truncated_queries", "details_truncated", "parallel_query_fanout"}
+	} else {
+		fields = []string{"url", "urls", "count", "success_count", "status_count", "timed_out", "truncated_urls", "details_truncated"}
+	}
+	for _, field := range fields {
+		if value, ok := payload[field]; ok {
+			compact[field] = value
+		}
+	}
+	encoded, err := json.Marshal(compact)
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
+}
+
+func formatProviderManagedToolCompletedOutput(call tool.Call, result tool.Result) string {
+	if compact, ok := compactWebToolCompletionOutput(call, result); ok {
+		return compact
+	}
+	return formatToolCompletedOutput(call, result)
 }
 
 func formatToolCompletedOutput(call tool.Call, result tool.Result) string {

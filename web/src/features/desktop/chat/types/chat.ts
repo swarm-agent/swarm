@@ -81,6 +81,56 @@ export interface SearchToolData {
   files: SearchToolFileGroup[];
 }
 
+export interface WebResourceData {
+  url: string;
+  title: string;
+  domain: string;
+  author: string;
+  publishedDate: string;
+  summary: string;
+  text: string;
+  highlights: string[];
+  error: string;
+  status: string;
+  subpages: WebResourceData[];
+}
+
+export interface WebSearchQueryData {
+  query: string;
+  count: number;
+  searchType: string;
+  timedOut: boolean;
+  error: string;
+  results: WebResourceData[];
+}
+
+export interface WebSearchToolData {
+  queries: string[];
+  queryCount: number;
+  totalResults: number;
+  failedQueries: number;
+  truncated: boolean;
+  searchType: string;
+  queryResults: WebSearchQueryData[];
+}
+
+export interface WebFetchStatusData {
+  id: string;
+  status: string;
+  source: string;
+  error: string;
+}
+
+export interface WebFetchToolData {
+  urls: string[];
+  count: number;
+  successCount: number;
+  timedOut: boolean;
+  truncated: boolean;
+  results: WebResourceData[];
+  statuses: WebFetchStatusData[];
+}
+
 export interface TodoToolSummaryCounts {
   taskCount: number;
   openCount: number;
@@ -128,6 +178,8 @@ export interface StructuredToolMessage {
   timelineSeq?: number;
   editDiff: EditDiffPreview | null;
   searchData?: SearchToolData | null;
+  webSearchData?: WebSearchToolData | null;
+  webFetchData?: WebFetchToolData | null;
   todoData?: TodoToolData | null;
   bashData?: BashToolData | null;
   previewLines: string[];

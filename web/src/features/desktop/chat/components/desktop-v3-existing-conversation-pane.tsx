@@ -3344,7 +3344,7 @@ function DesktopV3ToolMessage({
   taskChildActions?: TaskChildCardActions;
 }) {
   const toolName = toolMessage?.tool.trim().toLowerCase();
-  const usesFullWidthCard = toolName === "bash" || toolName === "task" || ["read", "list", "search", "edit", "plan-manage", "plan_manage"].includes(toolName ?? "");
+  const usesFullWidthCard = toolName === "bash" || toolName === "task" || ["read", "list", "search", "edit", "websearch", "webfetch", "plan-manage", "plan_manage"].includes(toolName ?? "");
   return (
     <div
       className={cn(

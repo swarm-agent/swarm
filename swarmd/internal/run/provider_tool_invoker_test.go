@@ -77,6 +77,58 @@ func TestProviderManagedV3ToolEventPayloadCarriesTypedClientEffects(t *testing.T
 	}
 }
 
+func TestStoreProviderManagedWebResultV3BoundsSessionSearchIndexContent(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, _, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
+	defer cleanup()
+
+	for _, toolName := range []string{"websearch", "webfetch"} {
+		t.Run(toolName, func(t *testing.T) {
+			var captured sessionruntime.SessionMutationInput
+			config := providerToolInvokerConfig{
+				sessionID:         sessionID,
+				runID:             "run-" + toolName,
+				step:              1,
+				providerManagedV3: true,
+				applySessionMutation: func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+					captured = input
+					return sessionruntime.SessionMutationResult{}, nil
+				},
+			}
+			call := tool.Call{CallID: "call-" + toolName, Name: toolName, Arguments: `{}`}
+			result := tool.Result{CallID: call.CallID, Name: call.Name, Output: `{"summary":"bounded web result","results":[{"title":"unique-index-token","text":"large page content"}]}`}
+			if err := svc.storeProviderManagedToolResultV3(config, call, nil, result); err != nil {
+				t.Fatalf("store provider web result: %v", err)
+			}
+			if captured.Message == nil {
+				t.Fatal("captured message is nil")
+			}
+			bounded, _ := captured.Message.Metadata["search_index_content"].(string)
+			if bounded == "" {
+				t.Fatal("search_index_content is empty")
+			}
+			if strings.Contains(bounded, "unique-index-token") || strings.Contains(bounded, "large page content") {
+				t.Fatalf("search index content retained raw result payload: %q", bounded)
+			}
+			if !strings.Contains(captured.Message.Content, "unique-index-token") {
+				t.Fatal("durable tool message lost the full web result")
+			}
+			var eventPayload map[string]any
+			if err := json.Unmarshal(captured.EventPayload, &eventPayload); err != nil {
+				t.Fatalf("decode event payload: %v", err)
+			}
+			rawOutput, _ := eventPayload["raw_output"].(string)
+			if !strings.Contains(rawOutput, "unique-index-token") {
+				t.Fatal("realtime event lost the full web result")
+			}
+			completedOutput, _ := eventPayload["output"].(string)
+			if strings.Contains(completedOutput, "unique-index-token") || !strings.Contains(completedOutput, `"result_details_omitted":true`) {
+				t.Fatalf("realtime completion payload was not compacted: %q", completedOutput)
+			}
+		})
+	}
+}
+
 func TestStoreProviderManagedToolResultV3PassesClientEffectsToSessionMutation(t *testing.T) {
 	workspace := t.TempDir()
 	svc, sessionID, _, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
