@@ -136,7 +136,7 @@ func (r *Runtime) connect(ctx context.Context, startAtCurrent bool) error {
 
 	subscription := client.V3RealtimeSubscription{SessionID: state.Session.ID, EndpointCursor: state.EndpointCursor, LastSeq: state.LastEventSeq, SubscriptionID: "tui-v3-chat:" + state.Session.ID}
 	go func() {
-		err := r.transport.StreamV3Realtime(streamCtx, client.V3RealtimeResumeOptions{EndpointCursor: state.EndpointCursor, Surface: "tui", Subscriptions: []client.V3RealtimeSubscription{subscription}, StartAtCurrent: startAtCurrent, OnResumeSent: func() {
+		err := r.transport.StreamV3Realtime(streamCtx, client.V3RealtimeResumeOptions{EndpointCursor: state.EndpointCursor, Surface: "tui", Subscriptions: []client.V3RealtimeSubscription{subscription}, Capabilities: []string{client.V3RealtimeCapabilityLivePatchV1}, StartAtCurrent: startAtCurrent, OnResumeSent: func() {
 			r.markReady(nil)
 			r.store.Dispatch(ConnectionAction{Status: ConnectionReady})
 			r.signalWake()

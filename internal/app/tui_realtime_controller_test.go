@@ -16,6 +16,7 @@ type tuiRealtimeFakeStreamCall struct {
 	Index          int
 	Subscriptions  []client.V3RealtimeSubscription
 	Worksets       []client.V3RealtimeWorksetSubscription
+	Capabilities   []string
 	EndpointCursor string
 }
 
@@ -37,7 +38,7 @@ func newTUIRealtimeFakeStreamer() *tuiRealtimeFakeStreamer {
 func (f *tuiRealtimeFakeStreamer) StreamV3Realtime(ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error {
 	f.mu.Lock()
 	index := len(f.calls) + 1
-	call := tuiRealtimeFakeStreamCall{Index: index, Subscriptions: cloneTUIRealtimeSubscriptions(options.Subscriptions), Worksets: cloneTUIRealtimeWorksets(options.Worksets), EndpointCursor: options.EndpointCursor}
+	call := tuiRealtimeFakeStreamCall{Index: index, Subscriptions: cloneTUIRealtimeSubscriptions(options.Subscriptions), Worksets: cloneTUIRealtimeWorksets(options.Worksets), Capabilities: append([]string(nil), options.Capabilities...), EndpointCursor: options.EndpointCursor}
 	f.calls = append(f.calls, call)
 	handler := f.handler
 	f.mu.Unlock()
@@ -165,6 +166,9 @@ func TestTUIRealtimeControllerReconcileStartsOneStreamForUnchangedState(t *testi
 	if got := sessionIDsForRealtimeSubs(first.Subscriptions); fmt.Sprint(got) != "[a b]" {
 		t.Fatalf("subscriptions order = %v, want [a b]", got)
 	}
+	if fmt.Sprint(first.Capabilities) != "[live_patch_v1]" {
+		t.Fatalf("capabilities = %v, want live_patch_v1", first.Capabilities)
+	}
 	firstCtx := waitTUIRealtimeContext(t, fake)
 	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1", LastSeq: 1}, {SessionID: "b", EndpointCursor: "cursor-1", LastSeq: 2}}, nil, "cursor-1"); err != nil {
 		t.Fatalf("second Reconcile() error = %v", err)
@@ -174,7 +178,10 @@ func TestTUIRealtimeControllerReconcileStartsOneStreamForUnchangedState(t *testi
 	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-2", LastSeq: 3}}, nil, "cursor-2"); err != nil {
 		t.Fatalf("changed Reconcile() error = %v", err)
 	}
-	waitTUIRealtimeCall(t, fake)
+	second := waitTUIRealtimeCall(t, fake)
+	if fmt.Sprint(second.Capabilities) != "[live_patch_v1]" {
+		t.Fatalf("replacement capabilities = %v, want live_patch_v1", second.Capabilities)
+	}
 	assertContextCanceled(t, firstCtx)
 	controller.Stop()
 }

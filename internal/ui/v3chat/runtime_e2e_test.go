@@ -67,7 +67,8 @@ func TestV3NewSessionServerSequenceStreamsThenCommitsVisibleState(t *testing.T) 
 				t.Errorf("decode resume: %v", err)
 				return
 			}
-			if resume["kind"] != "resume" || resume["endpoint_cursor"] != "cursor-1" {
+			capabilities, _ := resume["capabilities"].([]any)
+			if resume["kind"] != "resume" || resume["endpoint_cursor"] != "cursor-1" || len(capabilities) != 1 || capabilities[0] != client.V3RealtimeCapabilityLivePatchV1 {
 				t.Errorf("resume = %#v", resume)
 				return
 			}
@@ -141,6 +142,19 @@ func TestV3NewSessionServerSequenceStreamsThenCommitsVisibleState(t *testing.T) 
 	if live := SelectLiveSegments(liveState); len(live) != 1 || live[0].Text != "hello world" {
 		t.Fatalf("visible live state = %#v", live)
 	}
+	page := NewPage(runtime, testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 18)
+	page.Draw(screen)
+	screen.Show()
+	liveDrawn := simulationText(screen, 80, 18)
+	if !containsAll(liveDrawn, "question", "hello world") {
+		t.Fatalf("live assistant text was not rendered before durable reconciliation:\n%s", liveDrawn)
+	}
 	close(allowDurable)
 	select {
 	case <-titleSeen:
@@ -153,18 +167,11 @@ func TestV3NewSessionServerSequenceStreamsThenCommitsVisibleState(t *testing.T) 
 	if SelectTitle(state) != "renamed live" || len(messages) != 2 || messages[0].Content != "question" || messages[1].Content != "hello world" || len(SelectLiveSegments(state)) != 0 {
 		t.Fatalf("final canonical state = %#v", state)
 	}
-	page := NewPage(runtime, testPageStyles())
-	screen := tcell.NewSimulationScreen("UTF-8")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
-	defer screen.Fini()
-	screen.SetSize(80, 18)
 	page.Draw(screen)
 	screen.Show()
 	drawn := simulationText(screen, 80, 18)
-	if !containsAll(drawn, "renamed live", "question", "hello world") {
-		t.Fatalf("visible page did not reflect canonical state:\n%s", drawn)
+	if !containsAll(drawn, "renamed live", "question", "hello world") || strings.Count(drawn, "hello world") != 1 {
+		t.Fatalf("visible page did not reconcile to one durable assistant message:\n%s", drawn)
 	}
 	sequenceMu.Lock()
 	gotSequence := append([]string(nil), sequence...)

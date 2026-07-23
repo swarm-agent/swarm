@@ -31,6 +31,7 @@ const (
 	v3RealtimeKindAuthDenied               = "auth.denied"
 	v3RealtimeKindSlowConsumer             = "slow_consumer.reconnect_required"
 	v3RealtimeKindLivePatch                = "live.patch"
+	V3RealtimeCapabilityLivePatchV1        = "live_patch_v1"
 )
 
 type V3RealtimeSubscription struct {
@@ -63,6 +64,7 @@ type V3RealtimeResumeOptions struct {
 	Surface        string
 	Subscriptions  []V3RealtimeSubscription
 	Worksets       []V3RealtimeWorksetSubscription
+	Capabilities   []string
 	StartAtCurrent bool
 	OnResumeSent   func()
 }
@@ -183,6 +185,7 @@ func (c *API) StreamV3Realtime(ctx context.Context, options V3RealtimeResumeOpti
 			EndpointCursor:  endpointCursor,
 			Subscriptions:   normalized.Subscriptions,
 			Worksets:        normalized.Worksets,
+			Capabilities:    normalized.Capabilities,
 		}
 		raw, err := json.Marshal(resume)
 		if err != nil {
@@ -300,6 +303,20 @@ func startV3RealtimeAtCurrent(ctx context.Context, conn *wsClientConn, options V
 	if onFrame != nil {
 		onFrame(hello)
 	}
+	resume := V3RealtimeFrame{
+		Protocol:        v3RealtimeProtocol,
+		ProtocolVersion: v3RealtimeProtocolVersion,
+		Kind:            v3RealtimeKindResume,
+		EndpointCursor:  cursor,
+		Capabilities:    options.Capabilities,
+	}
+	rawResume, err := json.Marshal(resume)
+	if err != nil {
+		return err
+	}
+	if err := conn.WriteText(rawResume); err != nil {
+		return fmt.Errorf("send v3 realtime current-head resume: %w", err)
+	}
 	for _, sub := range options.Subscriptions {
 		subscribe := V3RealtimeFrame{
 			Protocol:        v3RealtimeProtocol,
@@ -330,6 +347,7 @@ func normalizeV3RealtimeResumeOptions(options V3RealtimeResumeOptions) (V3Realti
 		Surface:        strings.TrimSpace(options.Surface),
 		Subscriptions:  make([]V3RealtimeSubscription, 0, len(options.Subscriptions)),
 		Worksets:       make([]V3RealtimeWorksetSubscription, 0, len(options.Worksets)),
+		Capabilities:   normalizeV3RealtimeCapabilities(options.Capabilities),
 		StartAtCurrent: options.StartAtCurrent,
 		OnResumeSent:   options.OnResumeSent,
 	}
@@ -407,6 +425,26 @@ func trimNonEmptyStrings(values []string) []string {
 		if value != "" {
 			out = append(out, value)
 		}
+	}
+	return out
+}
+
+func normalizeV3RealtimeCapabilities(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
 	}
 	return out
 }

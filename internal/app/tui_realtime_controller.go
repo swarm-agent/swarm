@@ -258,7 +258,7 @@ func (c *tuiRealtimeController) runGeneration(ctx context.Context, active *tuiRe
 			EndpointCursor: endpointCursor,
 		})
 
-		err := c.streamer.StreamV3Realtime(ctx, client.V3RealtimeResumeOptions{EndpointCursor: endpointCursor, Surface: "tui", Subscriptions: cloneTUIRealtimeSubscriptions(subscriptions), Worksets: cloneTUIRealtimeWorksets(worksets), OnResumeSent: func() {
+		err := c.streamer.StreamV3Realtime(ctx, client.V3RealtimeResumeOptions{EndpointCursor: endpointCursor, Surface: "tui", Subscriptions: cloneTUIRealtimeSubscriptions(subscriptions), Worksets: cloneTUIRealtimeWorksets(worksets), Capabilities: []string{client.V3RealtimeCapabilityLivePatchV1}, OnResumeSent: func() {
 			active.markReady(nil)
 		}}, func(frame client.V3RealtimeFrame) {
 			if ctx.Err() != nil {

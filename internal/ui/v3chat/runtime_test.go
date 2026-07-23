@@ -262,7 +262,7 @@ func TestCreateAndSendEmptySessionStartsAtCurrentWithoutSnapshotCursor(t *testin
 	if !reflect.DeepEqual(calls[:4], []string{"create", "stream", "ready", "send"}) {
 		t.Fatalf("calls = %#v", calls)
 	}
-	if len(options) != 1 || !options[0].StartAtCurrent || options[0].EndpointCursor != "" || len(options[0].Subscriptions) != 1 || options[0].Subscriptions[0].SessionID != "s" {
+	if len(options) != 1 || !options[0].StartAtCurrent || options[0].EndpointCursor != "" || len(options[0].Subscriptions) != 1 || options[0].Subscriptions[0].SessionID != "s" || !reflect.DeepEqual(options[0].Capabilities, []string{client.V3RealtimeCapabilityLivePatchV1}) {
 		t.Fatalf("stream options = %#v", options)
 	}
 	state := runtime.Store().Snapshot()
@@ -329,6 +329,25 @@ func TestCreateSendAndRealtimeSequenceProjectsVisibleCanonicalState(t *testing.T
 	}
 	if cursor, seq := SelectCursor(state); cursor != "cursor-3" || seq != 2 {
 		t.Fatalf("cursor state = %q/%d", cursor, seq)
+	}
+}
+
+func TestConnectExistingSessionRequestsLivePatchCapability(t *testing.T) {
+	transport := &fakeTransport{created: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s"}, SnapshotEndpointCursor: "cursor-1"}}
+	runtime := NewRuntime(transport, nil, nil)
+	if err := runtime.Hydrate(context.Background(), "s", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Stop()
+
+	transport.mu.Lock()
+	options := append([]client.V3RealtimeResumeOptions(nil), transport.streamOptions...)
+	transport.mu.Unlock()
+	if len(options) != 1 || options[0].StartAtCurrent || options[0].EndpointCursor != "cursor-1" || !reflect.DeepEqual(options[0].Capabilities, []string{client.V3RealtimeCapabilityLivePatchV1}) {
+		t.Fatalf("stream options = %#v", options)
 	}
 }
 
