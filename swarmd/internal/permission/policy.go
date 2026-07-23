@@ -920,8 +920,18 @@ func obviousBashMutation(command string) bool {
 	return false
 }
 
+const (
+	criticalBashSystemConfigMarker = "/etc/"
+	criticalBashSystemDataMarker   = "/var/lib/"
+)
+
 func obviousCriticalBash(command string) bool {
-	for _, marker := range []string{"sudo ", "su ", "/etc/", "/var/lib/", ".env", "credentials", "secret", "private_key", "id_rsa", "curl ", "wget ", " nc ", "netcat ", "ssh ", "scp ", "rsync ", "--listen", " -l ", "pg_dump", "mysqldump", "terraform apply", "kubectl ", "systemctl "} {
+	for _, marker := range []string{
+		"sudo ", "su ", criticalBashSystemConfigMarker, criticalBashSystemDataMarker,
+		".env", "credentials", "secret", "private_key", "id_rsa",
+		"curl ", "wget ", " nc ", "netcat ", "ssh ", "scp ", "rsync ", "--listen", " -l ",
+		"pg_dump", "mysqldump", "terraform apply", "kubectl ", "systemctl ",
+	} {
 		if strings.HasPrefix(command, marker) || strings.Contains(command, marker) {
 			return true
 		}
