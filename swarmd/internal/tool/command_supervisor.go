@@ -182,7 +182,7 @@ func (s *commandSupervisor) run(ctx context.Context, scope WorkspaceScope, comma
 			if !killed {
 				reason, checkErr := s.reserveViolation(scope.PrimaryPath, tempDir)
 				if checkErr != nil {
-					// Monitoring is explicitly best effort; execution remains usable when statfs races or fails.
+					// A transient statfs failure cannot establish a reserve violation; retry on the next poll.
 					continue
 				}
 				if reason != "" {

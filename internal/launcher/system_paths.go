@@ -180,7 +180,6 @@ LogsDirectoryMode=0755
 Environment=SWARM_SYSTEMD_SCOPE=system
 Environment=SWARM_SYSTEMD_UNIT=swarm.service
 Environment=SWARMD_BASH_CONTAINMENT_POLICY=required
-Environment=SWARMD_COMMAND_TEMP_ROOT=/tmp/swarm-command-tmp
 Environment=SWARMD_DATA_DIR=%s
 Environment=SWARMD_CACHE_DIR=%s
 Environment=SWARMD_RUNTIME_DIR=%s

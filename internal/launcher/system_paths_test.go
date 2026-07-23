@@ -44,7 +44,6 @@ func TestRenderSystemdServiceUnitIncludesStorageDirectives(t *testing.T) {
 		"Environment=SWARM_SYSTEMD_SCOPE=system",
 		"Environment=SWARM_SYSTEMD_UNIT=swarm.service",
 		"Environment=SWARMD_BASH_CONTAINMENT_POLICY=required",
-		"Environment=SWARMD_COMMAND_TEMP_ROOT=/tmp/swarm-command-tmp",
 		"Delegate=cpu memory pids",
 		"PrivateTmp=yes",
 		"TemporaryFileSystem=/tmp:rw,nosuid,nodev,size=8G,mode=1777",
