@@ -179,7 +179,7 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 				metadata := cloneStringAnyMap(session.Metadata)
 				metadata["review_done_at"] = doneAt
 				if delay := s.reviewAutoArchiveDelay(session.AccountScopeID); delay > 0 {
-					metadata["review_auto_archive_after"] = doneAt + delay.Milliseconds()
+					metadata["review_auto_archive_after"] = sessionsV3ReviewArchiveDeadline(session, doneAt, delay)
 				}
 				updated, _, updateErr := s.sessions.UpdateDerivedMetadata(session.ID, metadata)
 				if updateErr != nil {
@@ -189,10 +189,7 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 				classification.UpdatedAt = updated.UpdatedAt
 			}
 			delay := s.reviewAutoArchiveDelay(session.AccountScopeID)
-			desiredArchiveAfter := int64(0)
-			if delay > 0 {
-				desiredArchiveAfter = doneAt + delay.Milliseconds()
-			}
+			desiredArchiveAfter := sessionsV3ReviewArchiveDeadline(session, doneAt, delay)
 			if scheduled := sessionsV3MetadataInt64(session.Metadata, "review_auto_archive_after"); scheduled != desiredArchiveAfter {
 				metadata := cloneStringAnyMap(session.Metadata)
 				if desiredArchiveAfter > 0 {
@@ -208,7 +205,7 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 				classification.UpdatedAt = updated.UpdatedAt
 			}
 			classification.DoneAt = doneAt
-			classification.ArchiveAfter = doneAt + grace.Milliseconds()
+			classification.ArchiveAfter = sessionsV3ReviewArchiveDeadline(session, doneAt, grace)
 			classification.ArchiveReady = now.UnixMilli() >= classification.ArchiveAfter
 		}
 		byID[classification.SessionID] = classification
@@ -643,9 +640,10 @@ func (s *Server) integrateSessionsV3ReviewWorktrees(ctx context.Context, princip
 	}
 	for _, session := range sessions {
 		metadata := cloneStringAnyMap(session.Metadata)
-		metadata["review_done_at"] = now.UnixMilli()
+		doneAt := now.UnixMilli()
+		metadata["review_done_at"] = doneAt
 		if delay := s.reviewAutoArchiveDelay(session.AccountScopeID); delay > 0 {
-			metadata["review_auto_archive_after"] = now.Add(delay).UnixMilli()
+			metadata["review_auto_archive_after"] = sessionsV3ReviewArchiveDeadline(session, doneAt, delay)
 		}
 		if _, _, err := s.sessions.UpdateDerivedMetadata(session.ID, metadata); err != nil {
 			return err
@@ -668,6 +666,17 @@ func sessionsV3MetadataInt64(metadata map[string]any, key string) int64 {
 	default:
 		return 0
 	}
+}
+
+func sessionsV3ReviewArchiveDeadline(session pebblestore.SessionSnapshot, doneAt int64, delay time.Duration) int64 {
+	if doneAt <= 0 || delay <= 0 {
+		return 0
+	}
+	lastActivityAt := session.UpdatedAt
+	if doneAt > lastActivityAt {
+		lastActivityAt = doneAt
+	}
+	return lastActivityAt + delay.Milliseconds()
 }
 
 func sessionReviewDoneAt(session pebblestore.SessionSnapshot) int64 {
@@ -761,18 +770,15 @@ func (s *Server) archiveDueSessionsV3Review(ctx context.Context, now time.Time) 
 			_, _, _ = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
 			continue
 		}
-		desiredArchiveAfter := doneAt + delay.Milliseconds()
+		desiredArchiveAfter := sessionsV3ReviewArchiveDeadline(session, doneAt, delay)
 		if desiredArchiveAfter != item.DueAt {
 			metadata := cloneStringAnyMap(session.Metadata)
 			metadata["review_auto_archive_after"] = desiredArchiveAfter
 			_, _, _ = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
-			if now.UnixMilli() < desiredArchiveAfter {
-				continue
-			}
-			session, found, getErr = s.sessions.GetSession(item.SessionID)
-			if getErr != nil || !found {
-				continue
-			}
+			// A changed deadline represents either newer activity or a setting
+			// change. Re-index it durably and require a later worker pass to
+			// re-read and re-validate the session before archival.
+			continue
 		}
 		if session.Lifecycle != nil && session.Lifecycle.Active {
 			s.deferSessionsV3ReviewAutoArchive(session, now)
