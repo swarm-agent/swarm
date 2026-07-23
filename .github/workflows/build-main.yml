@@ -100,8 +100,10 @@ jobs:
       - name: Build release candidate
         run: ./scripts/build-main-dist.sh --output-dir dist --version "${{ steps.version.outputs.version }}"
 
-      - name: Verify release candidate
-        run: ./scripts/verify-release-candidate.sh "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz" "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256"
+      - name: Smoke release archive and artifact-root install
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: ./scripts/smoke-release-archive.sh "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz" "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256" --evidence "dist/smoke-evidence.txt"
 
       - name: Upload candidate artifacts
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
@@ -111,6 +113,7 @@ jobs:
             dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
             dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256
             dist/build-info.txt
+            dist/smoke-evidence.txt
           if-no-files-found: error
           retention-days: 14
 

@@ -13,7 +13,7 @@ This is the focused backlog to finish before opening promotion PRs, publishing a
 
 1. **P0.1 complete: Swarm-controlled commit and integration operations preserve the target repository's normal Git identity.** The workspace API, generic `git_commit` tool, managed-session commit path, and worktree cherry-pick integration all use ordinary Git while filtering daemon-level `GIT_AUTHOR_*` and `GIT_COMMITTER_*` overrides. Focused worktree coverage proves cherry-pick preserves the source author and uses the target repository's configured committer (`swarmd/internal/worktree/service.go`, `swarmd/internal/worktree/service_test.go`). Generic Bash remains a separately permissioned arbitrary-command surface.
 2. **P0.2 implementation complete; repository configuration remains an operator gate.** Pull requests, pushes to `main`, and non-publishing dispatches only build verified candidates with read-only contents permission. Stable publication is a separate `workflow_dispatch` path restricted to `main`, scoped to the `stable-release` GitHub Environment, and receives `contents: write` only after the candidate build and verification job succeeds. The release archive, checksum, and metadata are transferred between jobs as immutable workflow artifacts; third-party actions are pinned to commit SHAs. Before first publication, configure required reviewers on the `stable-release` Environment and verify branch protection still enforces `dev -> main`.
-3. **No downloaded-artifact smoke gate exists in the checked-in launch gate.** `scripts/check-launch-readiness.sh` checks policy, tracked content, workspace hygiene, and binary inventory, but does not build, extract, install, start, or uninstall the release (`scripts/check-launch-readiness.sh:135-225`). `docs/main-deploy-checklist.md:85-91` leaves install/update verification until after push.
+3. **P1.1 hermetic archive/install smoke implementation complete; clean-machine systemd evidence remains an operator gate.** `scripts/smoke-release-archive.sh` verifies the checksum and required archive inputs, extracts the candidate, and runs the embedded `swarmsetup --artifact-root ... --no-service` against disposable system/storage roots under `TMPDIR`. `.github/workflows/build-main.yml` runs it before candidate upload or stable publication and stores `smoke-evidence.txt` beside the candidate artifacts. A fresh supported-Linux VM must still prove the real systemd install/start/health/restart/update-failure/uninstall lifecycle and config/data metadata preservation before first publication.
 4. **Dead code is substantial, but the obvious command needs careful scoping.** The ignored local `.bin/deadcode` is a Go RTA analyzer. Executable-only analysis completed successfully and reported 231 lines in the root module and 362 in `swarmd`; examples include `cmd/swarm/main.go:425`, legacy-looking TUI paths under `internal/app/app.go`, `swarmd/internal/agent/service.go:678`, and old API paths. A naive `-test ./...` run currently fails while loading relocated/stale tests, so its output is not a deletion list. V3 findings are excluded by this document's scope lock.
 
 ## P0 — stop before any new PR or release decision
@@ -104,30 +104,35 @@ This is the focused backlog to finish before opening promotion PRs, publishing a
 
 ## P1 — finish before the first downloadable test
 
-### P1.1 Add a hermetic release archive and install smoke path
+### P1.1 Add a hermetic release archive and install smoke path — hermetic gate complete
 
 **Why:** The build script assembles the expected archive (`scripts/build-main-dist.sh:123-174`), but launch readiness does not exercise it and the deploy checklist waits until after publication.
 
-**Tasks**
+**Implemented**
 
-- Build a candidate archive in an ignored temporary directory without publishing it.
-- Assert the archive contains every executable/library/web/build-info file required by `install.sh:503-530`.
-- Test extraction and `install.sh --artifact-root ... --no-service --yes` inside a disposable VM/container/rootfs suitable for system paths; never point the smoke test at developer `/etc`, `/var`, `/run`, or `/usr/local`.
-- In a fresh supported Linux VM, test the systemd path: install, start, `swarm status`, `swarm open`/health reachability, stop, restart, update failure behavior, and uninstall.
-- Prove reinstall preserves canonical config/data and preserves config owner/group/mode.
-- Move these checks into the pre-publication release job and update the operator checklist with exact evidence locations.
+- `scripts/build-main-dist.sh` builds and checksums the candidate archive without publishing it.
+- `scripts/smoke-release-archive.sh` consumes that archive, verifies its checksum and every launcher/daemon/library/web/build-info/service-install input, extracts it under `TMPDIR`, and runs the embedded `swarmsetup --artifact-root ... --no-service` with every system and storage root redirected below the disposable smoke root.
+- The smoke asserts the installed versioned runtime, web assets, `libfff_c.so`, launcher and daemon binaries, and launcher symlinks. It emits `smoke-evidence.txt` with the archive name, digest, version, hermetic install result, and explicit external-systemd status.
+- `.github/workflows/build-main.yml` runs this gate in `build-candidate` before artifact upload. `publish-stable` depends on that successful job, so a smoke failure cannot create a stable tag or release.
+
+**Remaining external release prerequisite**
+
+- In a fresh supported Linux VM, test the real systemd path: install, start, `swarm status`, `swarm open`/health reachability, stop, restart, update failure behavior, and uninstall.
+- Prove reinstall preserves canonical config/data and preserves config owner/group/mode. Keep that clean-machine evidence with the candidate workflow run; the hermetic no-service gate does not claim systemd coverage.
 
 **Acceptance**
 
-- One checked-in command produces a candidate archive and one checked-in smoke harness tests it without touching host system paths.
-- Missing web assets, `libfff_c.so`, launcher binaries, build metadata, or service files fail the gate.
-- Clean-machine install and uninstall leave only explicitly documented retained data.
-- No stable tag is created until this gate passes.
+- One checked-in command produces a candidate archive and one checked-in smoke harness tests it without touching host system paths. **Complete.**
+- Missing web assets, `libfff_c.so`, launcher/daemon binaries, build metadata, or service/install inputs fail the gate. **Complete.**
+- Clean-machine install and uninstall leave only explicitly documented retained data. **External VM evidence required before publication.**
+- No stable tag is created until the hermetic gate passes. **Complete in workflow; Environment approval remains required.**
 
 **Likely attack points**
 
 - `scripts/build-main-dist.sh`
 - `scripts/check-launch-readiness.sh`
+- `scripts/smoke-release-archive.sh`
+- `scripts/verify-release-candidate.sh`
 - `install.sh`
 - `cmd/swarmsetup/main.go`
 - `internal/launcher/launcher.go`

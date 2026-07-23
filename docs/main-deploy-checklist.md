@@ -39,7 +39,8 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 
 - The preferred public release version is a stable semver tag such as `v0.x.y` on the promoted `main` commit.
 - The operator selects an explicit stable semver version when manually dispatching publication from `main`. The workflow rejects missing or malformed versions and existing tags.
-- The candidate build and checksum/archive verification jobs complete before the environment-protected publication job creates the release and tag.
+- The candidate build and hermetic archive/install smoke complete before the environment-protected publication job creates the release and tag.
+- The `release-candidate-<version>` workflow artifact is the evidence bundle: it contains the candidate archive, exact `.sha256` file, `build-info.txt`, and `smoke-evidence.txt`. The build job's `Smoke release archive and artifact-root install` log is the full command transcript.
 - `dist/build-info.txt` carries release metadata (`version`, `commit`, `actor`, `ref`, `built_at`) but is not itself the tag authority.
 
 ## Main release checklist
@@ -55,6 +56,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 - [ ] Ensure the working tree is clean
 - [ ] Run `./scripts/check-precommit.sh`
 - [ ] Run `bash scripts/check-launch-readiness.sh --require-clean`
+- [ ] Build the candidate and run `TMPDIR="${TMPDIR:?}" ./scripts/smoke-release-archive.sh <archive.tar.gz> <archive.tar.gz.sha256> --evidence <smoke-evidence.txt>` when reproducing the CI smoke locally
 - [ ] Re-read clone audit findings for secrets, plaintext storage, logging, and networking gotchas relevant to the downloadable release bundle
 
 ### 3. Secrets and auth review
@@ -83,12 +85,14 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 ### 6. After push
 
 - [ ] Verify the GitHub `main` release workflow ran for the promoted commit
-- [ ] Verify the uploaded artifacts include the full Swarm runtime bundle, `build-info.txt`, and the exact `.sha256` checksum asset
+- [ ] Download the `release-candidate-<version>` workflow artifact and verify it contains the full Swarm runtime archive, exact `.sha256` checksum, `build-info.txt`, and `smoke-evidence.txt`
+- [ ] Review `smoke-evidence.txt` and the `Smoke release archive and artifact-root install` job log; confirm checksum, archive contents, disposable artifact-root install, and host-system-path isolation passed
 - [ ] Verify the candidate workflow completed without creating a tag or release
 - [ ] Manually dispatch stable publication from the reviewed `main` SHA with `publish=true` and the approved `release_version`
 - [ ] Approve the `stable-release` Environment deployment only after reviewing candidate evidence
 - [ ] Verify the GitHub release includes `swarm-<version>-linux-amd64.tar.gz` and `swarm-<version>-linux-amd64.tar.gz.sha256`
-- [ ] Verify the install flow from the extracted release works with `swarmsetup --artifact-root ...`
+- [ ] On a fresh supported Linux VM, install the exact candidate with the real systemd path; test start, `swarm status`, `swarm open`/health reachability, stop, restart, update-failure behavior, and uninstall
+- [ ] On that VM, prove reinstall preserves canonical config/data and config owner/group/mode; retain this clean-machine transcript with the release evidence because the hermetic no-service smoke does not cover systemd
 - [ ] Verify `/update apply` fails closed on missing or mismatched checksum metadata, then succeeds with the published checksum
 - [ ] Verify `/update apply` exits the TUI, shows terminal progress, relaunches, and shows the post-update success toast
 - [ ] Run the final end-to-end launch review and checked-in vulnerability scans; agents may independently inspect evidence, but the release owner must verify and synthesize the results
@@ -100,6 +104,8 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 - `scripts/build-main-dist.sh`
 - `scripts/check-precommit.sh`
 - `scripts/check-launch-readiness.sh`
+- `scripts/smoke-release-archive.sh`
+- `scripts/verify-release-candidate.sh`
 - `cmd/swarmsetup/main.go`
 - `internal/launcher/launcher.go`
 - `internal/model/home.go`

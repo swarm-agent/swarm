@@ -80,6 +80,12 @@ for entry in "${required_entries[@]}"; do
     exit 1
   fi
 done
+for entry in "${root_name}/install.sh" "${root_name}/linux-amd64/root/swarmsetup"; do
+  if ! tar -tvzf "${ARCHIVE_PATH}" | awk -v required="${entry}" '$NF == required && substr($1, 4, 1) == "x" { found = 1 } END { exit found ? 0 : 1 }'; then
+    echo "release archive service/install input is not executable: ${entry}" >&2
+    exit 1
+  fi
+done
 
 extract_dir="$(mktemp -d)"
 trap 'rm -rf "${extract_dir}"' EXIT
