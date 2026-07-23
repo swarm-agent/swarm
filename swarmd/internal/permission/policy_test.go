@@ -154,6 +154,42 @@ func TestRoutineBashReadsRemainNoncritical(t *testing.T) {
 	}
 }
 
+func TestAllowSafeReadsAcceptsReadOnlySystemctlInspection(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.BashProfile = BashApprovalProfileAllowSafeReads
+	command := `systemctl is-active prometheus-node-exporter.service 2>/dev/null || true; systemctl is-enabled prometheus-node-exporter.service 2>/dev/null || true; dpkg-query -W -f='${Status} ${Version}\n' prometheus-node-exporter 2>/dev/null || true; ss -ltn '( sport = :9100 )'`
+
+	got := ExplainPolicy("auto", "bash", bashEffectArguments(t, command, "read", false), policy)
+	if got.Decision != PolicyDecisionAllow || got.Source != "bash_profile" {
+		t.Fatalf("read-only service inspection = %+v, want profile allow", got)
+	}
+	if got.BashEffect == nil || !got.BashEffect.Valid || got.BashEffect.Category != BashEffectRead || got.BashEffect.Critical {
+		t.Fatalf("read-only service inspection effect = %+v, want valid noncritical read", got.BashEffect)
+	}
+}
+
+func TestMutatingSystemctlCommandsContradictReadMetadata(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.BashProfile = BashApprovalProfileAllowSafeReads
+	for _, command := range []string{
+		"systemctl start prometheus-node-exporter.service",
+		"sudo systemctl restart prometheus-node-exporter.service",
+		"systemctl --system enable --now prometheus-node-exporter.service",
+		"systemctl daemon-reload",
+		"systemctl status prometheus-node-exporter.service; systemctl stop prometheus-node-exporter.service",
+	} {
+		t.Run(command, func(t *testing.T) {
+			got := ExplainPolicy("auto", "bash", bashEffectArguments(t, command, "read", false), policy)
+			if got.Decision != PolicyDecisionAsk || got.Source != "bash_profile" {
+				t.Fatalf("mutating systemctl result = %+v, want profile prompt", got)
+			}
+			if got.BashEffect == nil || got.BashEffect.Valid || got.BashEffect.Reason != "read category contradicts a mutating command" {
+				t.Fatalf("mutating systemctl effect = %+v, want read contradiction", got.BashEffect)
+			}
+		})
+	}
+}
+
 func TestEnumeratedCriticalBashReadsArePromoted(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.BashProfile = BashApprovalProfileAllowSafeReads

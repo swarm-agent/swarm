@@ -912,12 +912,18 @@ func obviousBashDelete(command string) bool {
 }
 
 func obviousBashMutation(command string) bool {
-	for _, marker := range []string{" >", "> ", ">>", "tee ", "touch ", "mkdir ", "mv ", "cp ", "install ", "chmod ", "chown ", "sed -i", "git add ", "git commit ", "git checkout ", "git switch ", "git merge ", "git rebase ", "systemctl ", "docker run ", "kubectl apply ", "terraform apply"} {
+	for _, marker := range []string{" >", "> ", ">>", "tee ", "touch ", "mkdir ", "mv ", "cp ", "install ", "chmod ", "chown ", "sed -i", "git add ", "git commit ", "git checkout ", "git switch ", "git merge ", "git rebase ", "docker run ", "kubectl apply ", "terraform apply"} {
 		if strings.HasPrefix(command, marker) || strings.Contains(command, marker) {
 			return true
 		}
 	}
-	return false
+	return obviousMutatingSystemctl(command)
+}
+
+var mutatingSystemctlCommand = regexp.MustCompile(`(?:^|[;&|]\s*)(?:sudo\s+)?(?:[^\s;&|]+/)?systemctl(?:\s+[^\s;&|]+)*\s+(?:start|stop|reload|restart|try-restart|reload-or-restart|reload-or-try-restart|isolate|kill|clean|freeze|thaw|set-property|bind|mount-image|service-log-level|service-log-target|reset-failed|enable|disable|reenable|preset|preset-all|mask|unmask|link|revert|add-wants|add-requires|edit|set-default|import-environment|unset-environment|daemon-reload|daemon-reexec|cancel|emergency|rescue|halt|poweroff|reboot|kexec|exit|switch-root|suspend|hibernate|hybrid-sleep|suspend-then-hibernate|soft-reboot)(?:\s|$)`)
+
+func obviousMutatingSystemctl(command string) bool {
+	return mutatingSystemctlCommand.MatchString(command)
 }
 
 const (
@@ -926,11 +932,14 @@ const (
 )
 
 func obviousCriticalBash(command string) bool {
+	if obviousMutatingSystemctl(command) {
+		return true
+	}
 	for _, marker := range []string{
 		"sudo ", "su ", criticalBashSystemConfigMarker, criticalBashSystemDataMarker,
 		".env", "credentials", "secret", "private_key", "id_rsa",
 		"curl ", "wget ", " nc ", "netcat ", "ssh ", "scp ", "rsync ", "--listen", " -l ",
-		"pg_dump", "mysqldump", "terraform apply", "kubectl ", "systemctl ",
+		"pg_dump", "mysqldump", "terraform apply", "kubectl ",
 	} {
 		if strings.HasPrefix(command, marker) || strings.Contains(command, marker) {
 			return true
