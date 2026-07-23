@@ -64,6 +64,13 @@ func (s *Service) ListSessionEvents(sessionID string, afterSeq uint64, limit int
 	return s.store.ListV3SessionEvents(sessionID, afterSeq, limit)
 }
 
+func (s *Service) ListSessionEventsBefore(sessionID string, beforeSeq uint64, limit int) ([]SessionEvent, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListV3SessionEventsBefore(sessionID, beforeSeq, limit)
+}
+
 func (s *Service) ListSessionMessages(sessionID string, afterSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("session store is not configured")

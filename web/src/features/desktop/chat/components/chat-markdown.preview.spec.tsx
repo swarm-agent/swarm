@@ -329,6 +329,24 @@ function testSearchToolRendersCompactGroupedList(): void {
   assert(!markup.includes(longMatch), "large raw match text should be compacted before rendering");
 }
 
+function testManageSessionsDurableLogRendersTechnicalEvents(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage-sessions",
+    callId: "call_manage_sessions_durable_log",
+    argumentsText: JSON.stringify({ action: "search", search_mode: "durable_log", session_id: "session-1", query: "diagnostic" }),
+    outputText: JSON.stringify({
+      action: "search", search_mode: "durable_log", source: "durable_v3_session_events", session_id: "session-1",
+      events: [{ id: "event-8", session_id: "session-1", seq: 8, event_type: "session.diagnostic.recorded", payload: { message: "API diagnostic" } }],
+      scan_truncated: true, character_truncated: false, result_truncated: false,
+    }),
+  });
+  assert(Boolean(message), "expected durable-log tool message");
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("Durable event-log search") && markup.includes("durable V3 log"), "expected distinct technical search title");
+  assert(markup.includes("session.diagnostic.recorded") && markup.includes("#8") && markup.includes("API diagnostic"), "expected event metadata and payload");
+  assert(markup.includes("Source: durable V3 session events") && markup.includes("scan truncated"), "expected source and honest bounds");
+}
+
 function testManageSessionsListRendersCardsWithoutRawJson(): void {
   const message = buildStructuredToolMessage({
     tool: "manage-sessions",
@@ -544,6 +562,7 @@ function main(): void {
   testManageSessionsReviewWorktreesHydratesCandidates();
   testSearchToolRendersCompactGroupedList();
   testManageSessionsListRendersCardsWithoutRawJson();
+  testManageSessionsDurableLogRendersTechnicalEvents();
   testWebSearchUsesDedicatedResponsiveCard();
   testWebFetchUsesDedicatedFailureAwareCard();
   testRunningWebCardsShowProgressWithoutRawJson();

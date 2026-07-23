@@ -398,6 +398,20 @@ func TestManageSessionsTerminalPayloadsRenderStructuredCardsWithoutRawEnvelopes(
 	}
 }
 
+func TestManageSessionsDurableLogRendersTechnicalMetadata(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
+	tool := ToolTimelineItem{ID: "durable-log", Name: "manage-sessions", Status: "completed", Output: `{"action":"search","search_mode":"durable_log","source":"durable_v3_session_events","events":[{"id":"event-9","session_id":"session-1","seq":9,"event_type":"session.diagnostic.recorded","payload":{"message":"API probe"}}],"scan_truncated":true}`}
+	drawn := renderRowsText(page.renderToolRows(tool, 80, testPageStyles()))
+	for _, want := range []string{"Durable V3 event log", "1 match", "session.diagnostic.recorded", "seq 9", "API probe", "scan truncated"} {
+		if !strings.Contains(drawn, want) {
+			t.Fatalf("durable-log card missing %q:\n%s", want, drawn)
+		}
+	}
+	if strings.Contains(drawn, `{"action"`) {
+		t.Fatalf("durable-log card leaked result envelope:\n%s", drawn)
+	}
+}
+
 func TestManageSessionsApprovalForwardsCanonicalApprovedArguments(t *testing.T) {
 	approved := `{"action":"deploy","manifest_version":1,"manifest_digest":"digest","selected_proposal_ids":["proposal-1"],"proposals":[{"id":"proposal-1","prompt":"Do work","mode":"auto"}]}`
 	permission := client.PermissionRecord{ID: "permission", SessionID: "parent", ToolName: "manage-sessions", Requirement: "session_deploy", Status: "pending", ToolArguments: `{"action":"deploy","proposals":[{"id":"proposal-1","title":"One","prompt":"Do work","mode":"auto"}],"approved_arguments":` + approved + `}`}

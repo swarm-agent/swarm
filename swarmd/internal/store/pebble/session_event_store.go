@@ -985,6 +985,34 @@ func (s *SessionStore) ListV3SessionEvents(sessionID string, afterSeq uint64, li
 	return listV3SessionEventsFromReader(s.store.db, sessionID, afterSeq, limit)
 }
 
+func (s *SessionStore) ListV3SessionEventsBefore(sessionID string, beforeSeq uint64, limit int) ([]V3SessionEvent, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	out := make([]V3SessionEvent, 0, limit)
+	prefix := V3SessionEventPrefix(sessionID)
+	startKey := ""
+	if beforeSeq > 0 {
+		startKey = KeyV3SessionEvent(sessionID, beforeSeq)
+	}
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: startKey, Limit: limit, Reverse: true}, func(_ string, value []byte) (bool, error) {
+		var event V3SessionEvent
+		if err := json.Unmarshal(value, &event); err != nil {
+			return false, err
+		}
+		if beforeSeq > 0 && event.Seq >= beforeSeq {
+			return true, nil
+		}
+		out = append(out, event)
+		return len(out) < limit, nil
+	})
+	return out, err
+}
+
 func listV3SessionEventsFromReader(reader pebble.Reader, sessionID string, afterSeq uint64, limit int) ([]V3SessionEvent, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {

@@ -48,6 +48,13 @@ func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 	proposalProperties := proposal["properties"].(map[string]any)
 	worktree := proposalProperties["worktree"].(map[string]any)
 	worktreeName := proposalProperties["worktree_name"].(map[string]any)
+	searchMode := properties["search_mode"].(map[string]any)
+	if got := searchMode["enum"].([]string); len(got) != 2 || got[0] != "visible" || got[1] != "durable_log" || !strings.Contains(searchMode["description"].(string), "never auto-upgrade") {
+		t.Fatalf("search_mode schema = %#v", searchMode)
+	}
+	if !strings.Contains(definition.Description, "Never automatically escalate") || !strings.Contains(definition.Description, "explicitly asks for raw database") {
+		t.Fatalf("durable-log guidance missing: %s", definition.Description)
+	}
 	if !strings.Contains(worktree["description"].(string), "Omitted defaults to true") || !strings.Contains(worktreeName["description"].(string), "AI-suggested") {
 		t.Fatalf("proposal worktree schema = %#v", proposalProperties)
 	}
@@ -199,6 +206,8 @@ type gitManageSessionService struct {
 	sessions    map[string]pebblestore.SessionSnapshot
 	plans       map[string]pebblestore.SessionPlanSnapshot
 	searchItems []pebblestore.V3SessionSearchItem
+	events      []pebblestore.V3SessionEvent
+	searchCalls int
 }
 
 func (s *gitManageSessionService) GetSession(id string) (pebblestore.SessionSnapshot, bool, error) {
@@ -212,7 +221,50 @@ func (s *gitManageSessionService) GetActivePlan(id string) (pebblestore.SessionP
 }
 
 func (s *gitManageSessionService) SearchSessions(options pebblestore.V3SessionSearchOptions) (pebblestore.V3SessionSearchResult, error) {
+	s.searchCalls++
 	return pebblestore.V3SessionSearchResult{Items: append([]pebblestore.V3SessionSearchItem(nil), s.searchItems...)}, nil
+}
+
+func (s *gitManageSessionService) ListSessionEventsBefore(id string, beforeSeq uint64, limit int) ([]pebblestore.V3SessionEvent, error) {
+	out := make([]pebblestore.V3SessionEvent, 0, limit)
+	for _, event := range s.events {
+		if beforeSeq == 0 || event.Seq < beforeSeq {
+			out = append(out, event)
+		}
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func TestManageSessionsSearchDefaultsToVisibleAuthority(t *testing.T) {
+	service := &gitManageSessionService{searchItems: []pebblestore.V3SessionSearchItem{{ID: "visible-1", Title: "Visible"}}}
+	output, err := (&Runtime{sessions: service}).executeManageSessions(context.Background(), WorkspaceScope{}, map[string]any{"action": "search", "query": "visible"})
+	if err != nil || service.searchCalls != 1 || !strings.Contains(output, `"search_mode":"visible"`) || strings.Contains(output, "durable_v3_session_events") {
+		t.Fatalf("visible search output=%s calls=%d err=%v", output, service.searchCalls, err)
+	}
+}
+
+func TestManageSessionsDurableLogSearchChecksOwnershipMatchesAndPaginates(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{
+		sessions: map[string]pebblestore.SessionSnapshot{"owned": {ID: "owned", Title: "Owned", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}},
+		events: []pebblestore.V3SessionEvent{
+			{ID: "e3", SessionID: "owned", Seq: 3, EventType: "session.diagnostic.recorded", Payload: json.RawMessage(`{"message":"needle newest"}`)},
+			{ID: "e2", SessionID: "owned", Seq: 2, EventType: "session.message.appended", Payload: json.RawMessage(`{"content":"other"}`)},
+			{ID: "e1", SessionID: "owned", Seq: 1, EventType: "session.message.appended", Payload: json.RawMessage(`{"content":"needle older"}`)},
+		},
+	}
+	runtime := &Runtime{sessions: service}
+	output, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{"action": "search", "search_mode": "durable_log", "session_id": "owned", "query": "needle", "limit": 1})
+	if err != nil || service.searchCalls != 0 || !strings.Contains(output, `"source":"durable_v3_session_events"`) || !strings.Contains(output, `"seq":3`) || strings.Contains(output, `"seq":1`) || !strings.Contains(output, `"next_before_seq":2`) || !strings.Contains(output, `"result_truncated":true`) {
+		t.Fatalf("durable search output=%s calls=%d err=%v", output, service.searchCalls, err)
+	}
+	_, err = runtime.executeManageSessions(context.Background(), WorkspaceScope{Principal: identity.Principal{AccountScopeID: "other", UserID: "other"}}, map[string]any{"action": "search", "search_mode": "durable_log", "session_id": "owned", "query": "needle"})
+	if err == nil || !strings.Contains(err.Error(), "session not found") {
+		t.Fatalf("ownership error = %v", err)
+	}
 }
 
 func TestManageSessionsReviewWorktreesClassifiesIntegratedMissingAndDirtyWork(t *testing.T) {

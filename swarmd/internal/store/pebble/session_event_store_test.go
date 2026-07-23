@@ -10,6 +10,28 @@ import (
 	"testing"
 )
 
+func TestListV3SessionEventsBeforeReturnsNewestFirstPages(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	for i := 1; i <= 3; i++ {
+		if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+			SessionID: "event-page", UserID: "user-1", AccountScopeID: "account-1",
+			IdempotencyKey: fmt.Sprintf("event-%d", i), Kind: V3SessionMutationRecordDiagnostic,
+			EventType: "session.diagnostic.recorded", EventPayload: json.RawMessage(fmt.Sprintf(`{"message":"event %d"}`, i)), NowUnixMs: int64(i),
+		}); err != nil {
+			t.Fatalf("append event %d: %v", i, err)
+		}
+	}
+	page, err := sessions.ListV3SessionEventsBefore("event-page", 0, 2)
+	if err != nil || len(page) != 2 || page[0].Seq != 3 || page[1].Seq != 2 {
+		t.Fatalf("first page = %+v err=%v", page, err)
+	}
+	page, err = sessions.ListV3SessionEventsBefore("event-page", 2, 2)
+	if err != nil || len(page) != 1 || page[0].Seq != 1 {
+		t.Fatalf("second page = %+v err=%v", page, err)
+	}
+}
+
 func TestApplyV3SessionMutationAtomicCreateAndReplayIdempotency(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

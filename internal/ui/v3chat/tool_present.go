@@ -613,6 +613,9 @@ func presentManageSessionsTool(tool ToolTimelineItem, arguments, output map[stri
 		return toolPresentation{Summary: manageSessionsSummary(action, len(lines)), Lines: lines, Kind: "manage-sessions"}
 	}
 
+	if action == "search" && toolString(payload, "search_mode") == "durable_log" {
+		appendManageSessionsDurableEventLines(&lines, payload)
+	}
 	items := toolObjectSlice(payload, "items")
 	if len(items) == 0 && action == "get" && toolString(payload, "id") != "" {
 		items = []map[string]any{payload}
@@ -634,6 +637,35 @@ func presentManageSessionsTool(tool ToolTimelineItem, arguments, output map[stri
 		lines = append(lines, toolPresentationLine{Text: tool.Error, Tone: "error"})
 	}
 	return toolPresentation{Summary: manageSessionsSummary(action, maxInt(len(items), len(results))), Lines: lines, Kind: "manage-sessions"}
+}
+
+func appendManageSessionsDurableEventLines(lines *[]toolPresentationLine, payload map[string]any) {
+	events := toolObjectSlice(payload, "events")
+	*lines = append(*lines, toolPresentationLine{Text: appendToolFacts("Durable V3 event log", []string{toolCountLabel(len(events), "match", "matches")}), Tone: "label"})
+	for _, event := range events {
+		eventType := firstNonEmptyToolRaw(toolString(event, "event_type"), "event")
+		seq := toolInt(event, "seq")
+		*lines = append(*lines, toolPresentationLine{Text: appendToolFacts(eventType, []string{fmt.Sprintf("seq %d", seq)}), Tone: "path"})
+		if payloadValue, ok := event["payload"]; ok {
+			encoded, _ := json.Marshal(payloadValue)
+			if payloadText := strings.TrimSpace(string(encoded)); payloadText != "" && payloadText != "null" {
+				*lines = append(*lines, toolPresentationLine{Text: clampToolRunes(payloadText, 240), Tone: "muted"})
+			}
+		}
+	}
+	truncation := make([]string, 0, 3)
+	if toolBool(payload, "scan_truncated") {
+		truncation = append(truncation, "scan truncated")
+	}
+	if toolBool(payload, "character_truncated") {
+		truncation = append(truncation, "character limit")
+	}
+	if toolBool(payload, "result_truncated") {
+		truncation = append(truncation, "result limit")
+	}
+	if len(truncation) > 0 {
+		*lines = append(*lines, toolPresentationLine{Text: strings.Join(truncation, " · "), Tone: "muted"})
+	}
 }
 
 func manageSessionsSummary(action string, count int) string {

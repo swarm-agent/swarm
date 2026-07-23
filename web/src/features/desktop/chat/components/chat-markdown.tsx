@@ -1325,6 +1325,8 @@ function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessag
     return [{ proposal: toolJsonString(record, "proposal_id") || toolJsonString(record, "title") || "Session", error }];
   }) : [];
   const messages = Array.isArray(output.messages) ? output.messages : [];
+  const durableEvents = Array.isArray(output.events) ? output.events : [];
+  const isDurableLogSearch = action === "search" && toolJsonString(output, "search_mode") === "durable_log";
   const archivedIds = Array.isArray(output.archived_session_ids) ? output.archived_session_ids.filter((id): id is string => typeof id === "string") : [];
   const commits = Array.isArray(output.commits) ? output.commits.flatMap((entry) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
@@ -1332,7 +1334,7 @@ function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessag
     return [{ sessionId: typeof commit.session_id === "string" ? commit.session_id : "", message: typeof commit.message === "string" ? commit.message : "", hash: typeof commit.commit_hash === "string" ? commit.commit_hash : "", files: Array.isArray(commit.files) ? commit.files.filter((file): file is string => typeof file === "string") : [] }];
   }) : [];
   const unarchivedIds = Array.isArray(output.unarchived_session_ids) ? output.unarchived_session_ids.filter((id): id is string => typeof id === "string") : [];
-  const title = action === "deploy" ? "Session deployment" : action === "search" ? "Session search" : action === "list" ? "Your sessions" : action === "read_messages" ? "Session context" : action === "git_status" ? "Worktree status" : action === "review_worktrees" ? "Worktrees needing review" : action === "archive" ? "Sessions archived" : action === "unarchive" ? "Sessions unarchived" : action === "commit" ? "Session commits ready for testing" : action === "inspect" ? "Session manager" : "Session details";
+  const title = action === "deploy" ? "Session deployment" : isDurableLogSearch ? "Durable event-log search" : action === "search" ? "Session search" : action === "list" ? "Your sessions" : action === "read_messages" ? "Session context" : action === "git_status" ? "Worktree status" : action === "review_worktrees" ? "Worktrees needing review" : action === "archive" ? "Sessions archived" : action === "unarchive" ? "Sessions unarchived" : action === "commit" ? "Session commits ready for testing" : action === "inspect" ? "Session manager" : "Session details";
   const HeaderIcon = action === "search" ? Search : action === "archive" || action === "unarchive" ? Archive : action === "read_messages" ? MessageSquareText : action === "git_status" || action === "review_worktrees" ? GitBranch : Layers3;
   const needsReviewCount = manageSessionNumber(output, "needs_review_count");
   const worktreeSessionCount = manageSessionNumber(output, "worktree_session_count");
@@ -1348,9 +1350,11 @@ function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessag
   ].filter(Boolean).join(" · ");
   const headerSummary = isReviewWorktrees
     ? reviewSummary
-    : items.length
-      ? `${items.length} ${items.length === 1 ? "session" : "sessions"}`
-      : action.split("_").join(" ");
+    : isDurableLogSearch
+      ? `${durableEvents.length} ${durableEvents.length === 1 ? "event" : "events"} · durable V3 log`
+      : items.length
+        ? `${items.length} ${items.length === 1 ? "session" : "sessions"}`
+        : action.split("_").join(" ");
 
   return (
     <section className="mt-2 min-w-0 max-w-full overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[linear-gradient(145deg,color-mix(in_srgb,var(--app-primary)_8%,var(--app-surface)),var(--app-surface)_45%)] shadow-[0_12px_35px_rgba(0,0,0,0.08)]">
@@ -1377,6 +1381,14 @@ function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessag
           {item.navigation ? <a href={item.navigation.href} className="mt-2.5 inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--app-primary)] hover:underline" title={item.navigation.href}>Open session <ArrowRight size={12} /></a> : null}
         </article>
       ))}</div> : null}
+      {durableEvents.length > 0 ? <div className="min-w-0 space-y-2 p-3">{durableEvents.map((value, index) => {
+        const event = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+        const seq = manageSessionNumber(event, "seq");
+        const eventType = toolJsonString(event, "event_type") || "event";
+        const payload = typeof event.payload === "string" ? event.payload : JSON.stringify(event.payload ?? null);
+        return <div key={`${seq ?? index}`} className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3"><div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--app-primary)]">{eventType}{seq !== null ? ` · #${seq}` : ""}</div><pre className="min-w-0 whitespace-pre-wrap break-words font-mono text-[10px] leading-4 text-[var(--app-text-muted)] [overflow-wrap:anywhere]">{payload}</pre></div>;
+      })}</div> : null}
+      {isDurableLogSearch ? <div className="border-t border-[var(--app-border)] px-3 py-2 text-[10px] text-[var(--app-text-subtle)]">Source: durable V3 session events{output.scan_truncated === true ? " · scan truncated" : ""}{output.character_truncated === true ? " · character limit reached" : ""}{output.result_truncated === true ? " · result limit reached" : ""}</div> : null}
       {messages.length > 0 ? <div className="min-w-0 space-y-2 p-3">{messages.map((value, index) => {
         const message = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
         const role = toolJsonString(message, "role") || "message";

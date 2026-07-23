@@ -178,6 +178,7 @@ type manageSessionService interface {
 	ListMessages(sessionID string, afterGlobalSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
 	ListTopSessionsByWorkspace(workspacePaths []string, perWorkspaceLimit int) ([]pebblestore.WorkspaceSessionList, error)
 	SearchSessions(pebblestore.V3SessionSearchOptions) (pebblestore.V3SessionSearchResult, error)
+	ListSessionEventsBefore(sessionID string, beforeSeq uint64, limit int) ([]pebblestore.V3SessionEvent, error)
 	GetSessionTombstone(sessionID string) (pebblestore.V3SessionTombstone, bool, error)
 	ListSessionMessageTail(sessionID string, limit int) ([]pebblestore.MessageSnapshot, error)
 	ListSessionMessagesBefore(sessionID string, beforeSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
