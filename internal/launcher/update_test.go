@@ -385,6 +385,47 @@ func TestRollbackPendingRuntimeUpdateRestoresPreviousRuntime(t *testing.T) {
 	}
 }
 
+func TestRunUpdateHelperApplyFailureRestartsLastWorkingRuntime(t *testing.T) {
+	profile := Profile{InstallRoot: t.TempDir(), DataDir: t.TempDir()}
+	plan := client.UpdateApplyPlan{TargetVersion: "v1.2.3"}
+
+	originalStopBackend := stopBackendForUpdate
+	originalApplyRelease := applyReleaseUpdateForUpdate
+	originalStartBackend := startBackendForUpdate
+	originalResolveLifecycle := resolveLifecycleManagerForUpdate
+	defer func() {
+		stopBackendForUpdate = originalStopBackend
+		applyReleaseUpdateForUpdate = originalApplyRelease
+		startBackendForUpdate = originalStartBackend
+		resolveLifecycleManagerForUpdate = originalResolveLifecycle
+	}()
+
+	calls := []string{}
+	stopBackendForUpdate = func(Profile) error {
+		calls = append(calls, "stop")
+		return nil
+	}
+	applyReleaseUpdateForUpdate = func(context.Context, Profile, client.UpdateApplyPlan) (UpdateResult, error) {
+		calls = append(calls, "apply-failed")
+		return UpdateResult{}, errors.New("bad candidate")
+	}
+	startBackendForUpdate = func(Profile, StartBackendOptions) error {
+		calls = append(calls, "restart-last-working")
+		return nil
+	}
+	resolveLifecycleManagerForUpdate = func(Profile) (lifecycleManager, bool, error) {
+		return lifecycleManager{Kind: lifecycleKindDirect}, true, nil
+	}
+
+	err := RunUpdateHelper(profile, plan, 0, nil)
+	if err == nil || !strings.Contains(err.Error(), "last working runtime restarted") {
+		t.Fatalf("RunUpdateHelper() error = %v, want recovery evidence", err)
+	}
+	if got, want := strings.Join(calls, ","), "stop,apply-failed,restart-last-working"; got != want {
+		t.Fatalf("calls = %s, want %s", got, want)
+	}
+}
+
 func TestRunUpdateHelperDirectRestartStartsBackendThenRunsTUIForeground(t *testing.T) {
 	profile := Profile{InstallRoot: t.TempDir(), DataDir: t.TempDir()}
 	plan := client.UpdateApplyPlan{TargetVersion: "v1.2.3"}

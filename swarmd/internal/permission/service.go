@@ -994,7 +994,7 @@ func (s *Service) resolveLocked(sessionID, permissionID, action, reason, approve
 		updated.Status = pebblestore.PermissionStatusCancelled
 	}
 	updated.Decision = action
-	updated.Reason = strings.TrimSpace(reason)
+	updated.Reason = privacy.SanitizeText(strings.TrimSpace(reason))
 	updated.ApprovedArguments, err = approvedArgumentsForResolution(record, action, approvedArguments)
 	if err != nil {
 		return pebblestore.PermissionRecord{}, false, err

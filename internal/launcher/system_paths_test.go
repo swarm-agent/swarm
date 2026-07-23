@@ -1,12 +1,33 @@
 package launcher
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"swarm-refactor/swarmtui/pkg/storagecontract"
 )
+
+func TestEnsureDirsLocalPreservesExistingMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "existing")
+	if err := os.Mkdir(path, 0o750); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	if err := os.Chmod(path, 0o750); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+	if err := ensureDirsLocal([]systemDirSpec{{Path: path, Mode: 0o700, Owner: true}}); err != nil {
+		t.Fatalf("ensureDirsLocal() error = %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o750 {
+		t.Fatalf("mode = %#o, want preserved 0o750", got)
+	}
+}
 
 func TestRenderSystemdServiceUnitIncludesStorageDirectives(t *testing.T) {
 	root := t.TempDir()

@@ -187,16 +187,13 @@ func Load(path string) (FileConfig, error) {
 	if _, ok := seen["peer_transport_port"]; !ok {
 		parsed.PeerTransportPort = chooseAvailablePeerTransportPort(parsed)
 	}
-	if err := appendMissingKeys(path, textWithoutLegacyIgnoredEntries(text), info.Mode().Perm(), parsed, seen); err != nil {
-		return FileConfig{}, err
-	}
-	for _, key := range requiredKeys() {
-		seen[key] = struct{}{}
-	}
 	parsed.Path = path
 	parsed.Exists = true
 	if err := validate(parsed); err != nil {
 		return FileConfig{}, fmt.Errorf("parse startup config %q: %w", path, err)
+	}
+	if err := appendMissingKeys(path, textWithoutLegacyIgnoredEntries(text), info.Mode().Perm(), parsed, seen); err != nil {
+		return FileConfig{}, err
 	}
 	return parsed, nil
 }
@@ -238,6 +235,9 @@ func Write(cfg FileConfig) error {
 	if err := os.WriteFile(cfg.Path, []byte(content), configFileMode); err != nil {
 		return fmt.Errorf("write startup config %q: %w", cfg.Path, err)
 	}
+	if err := os.Chmod(cfg.Path, configFileMode); err != nil {
+		return fmt.Errorf("set startup config mode on %q: %w", cfg.Path, err)
+	}
 	return nil
 }
 
@@ -246,13 +246,14 @@ func DirectLANDesktopWarning(cfg FileConfig) string {
 		return ""
 	}
 	host := strings.TrimSpace(cfg.Host)
-	if host == "" || isLoopbackHost(host) {
+	if host == "" || IsLoopbackHost(host) {
 		return ""
 	}
 	return "Direct LAN desktop access is not implemented safely in this MVP. Keep host=127.0.0.1 and use an SSH tunnel, or use Tailscale, instead of opening the desktop directly on a private LAN address."
 }
 
-func isLoopbackHost(host string) bool {
+// IsLoopbackHost reports whether host names a loopback-only interface.
+func IsLoopbackHost(host string) bool {
 	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
 	if host == "" {
 		return false
@@ -735,6 +736,9 @@ func validate(cfg FileConfig) error {
 	if strings.TrimSpace(cfg.Host) == "" {
 		return errors.New("host must not be empty")
 	}
+	if !IsLoopbackHost(cfg.Host) {
+		return fmt.Errorf("unsupported non-loopback host %q: authenticated API/desktop exposure is not configured; keep host=%s and use an SSH tunnel or Tailscale forwarding", cfg.Host, DefaultHost)
+	}
 	if cfg.Port < 1 || cfg.Port > 65535 {
 		return fmt.Errorf("invalid port %d (expected 1-65535)", cfg.Port)
 	}
@@ -751,10 +755,6 @@ func validate(cfg FileConfig) error {
 		return fmt.Errorf("invalid peer_transport_port %d (expected 1-65535)", cfg.PeerTransportPort)
 	}
 	return nil
-}
-
-func requiredKeys() []string {
-	return []string{devModeKey, devRootKey, "host", "port", "advertise_host", "advertise_port", "desktop_port", "bypass_permissions", "retain_tool_output_history", "v3_diagnostics", "provider_api_diagnostics", "swarm_name", "child", "tailscale_url", "peer_transport_port"}
 }
 
 func allowsEmptyValue(key string) bool {

@@ -20,6 +20,7 @@ Usage: bash scripts/check-launch-readiness.sh [--strict-binaries] [--require-cle
 
 Checks repository launch readiness for public publication.
 - Runs existing baseline repo checks.
+- Asserts launch-blocking startup, privacy, networking, and installer defaults.
 - Scans tracked files for personal identifiers and local-only env files.
 - Detects tracked junk/artifact paths and unexpected untracked files.
 - Reports tracked non-text binary blobs for review.
@@ -134,6 +135,9 @@ scan_tracked_regex() {
 
 section "baseline"
 run_must_pass "baseline precommit scan" bash "${SCRIPT_DIR}/check-precommit.sh"
+
+section "harmful defaults"
+run_must_pass "startup and installer defaults" bash "${SCRIPT_DIR}/check-launch-defaults.sh"
 
 if [[ "${REQUIRE_CLEAN}" == "1" ]]; then
   git_status="$(git status --short || true)"

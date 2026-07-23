@@ -29,9 +29,10 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 - After extraction, the user installs it with:
 
 ```bash
-./swarmsetup --artifact-root /path/to/extracted/swarm-<version>-linux-amd64
+./swarmsetup --artifact-root /path/to/extracted/swarm-<version>-linux-amd64 --service
 ```
 
+- `--service` is explicit because direct `swarmsetup` and blank interactive install choices default to files-only and never enable/start systemd implicitly.
 - That install path provides the real installed runtime and the user-facing `swarm` launcher.
 - Fresh shells that do not yet include `${XDG_BIN_HOME:-$HOME/.local/bin}` on `PATH` must use `${XDG_BIN_HOME:-$HOME/.local/bin}/swarm` until the shell startup files are updated and a new shell is opened.
 
@@ -55,7 +56,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 
 - [ ] Ensure the working tree is clean
 - [ ] Run `./scripts/check-precommit.sh`
-- [ ] Run `bash scripts/check-launch-readiness.sh --require-clean`
+- [ ] Run `bash scripts/check-launch-readiness.sh --require-clean`; this includes `scripts/check-launch-defaults.sh` assertions for loopback-only binding, permission/diagnostic/output-retention defaults, config privacy, explicit service choice, default permission redaction, preservation-oriented uninstall, and update rollback.
 - [ ] Build the candidate and run `TMPDIR="${TMPDIR:?}" ./scripts/smoke-release-archive.sh <archive.tar.gz> <archive.tar.gz.sha256> --evidence <smoke-evidence.txt>` when reproducing the CI smoke locally
 - [ ] Re-read clone audit findings for secrets, plaintext storage, logging, and networking gotchas relevant to the downloadable release bundle
 
@@ -92,7 +93,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 - [ ] Approve the `stable-release` Environment deployment only after reviewing candidate evidence
 - [ ] Verify the GitHub release includes `swarm-<version>-linux-amd64.tar.gz` and `swarm-<version>-linux-amd64.tar.gz.sha256`
 - [ ] On a fresh supported Linux VM, install the exact candidate with the real systemd path; test start, `swarm status`, `swarm open`/health reachability, stop, restart, update-failure behavior, and uninstall
-- [ ] On that VM, prove reinstall preserves canonical config/data and config owner/group/mode; retain this clean-machine transcript with the release evidence because the hermetic no-service smoke does not cover systemd
+- [ ] On that VM, prove install/reinstall preserves canonical config/data and config owner/group/mode; force apply-time and boot-time update failures and confirm the last working runtime restarts; verify default uninstall retains config/data; retain this transcript because disposable gates do not cover privileged systemd metadata/lifecycle
 - [ ] Verify `/update apply` fails closed on missing or mismatched checksum metadata, then succeeds with the published checksum
 - [ ] Verify `/update apply` exits the TUI, shows terminal progress, relaunches, and shows the post-update success toast
 - [ ] Run the final end-to-end launch review and checked-in vulnerability scans; agents may independently inspect evidence, but the release owner must verify and synthesize the results

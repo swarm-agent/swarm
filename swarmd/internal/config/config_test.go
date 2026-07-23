@@ -44,6 +44,20 @@ func TestParseDefaultsUseSystemStorageRoots(t *testing.T) {
 	}
 }
 
+func TestParseRejectsNonLoopbackListen(t *testing.T) {
+	for _, listen := range []string{"0.0.0.0:7781", "192.0.2.10:7781", "[::]:7781"} {
+		t.Run(listen, func(t *testing.T) {
+			configDir := writeTestStartupConfig(t)
+			t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+			t.Setenv("CONFIGURATION_DIRECTORY", configDir)
+			_, err := Parse([]string{"--listen", listen})
+			if err == nil || !strings.Contains(err.Error(), "unsupported non-loopback --listen") {
+				t.Fatalf("Parse() error = %v, want unsupported non-loopback", err)
+			}
+		})
+	}
+}
+
 func TestParseExplicitCWDOverridesHomeDefault(t *testing.T) {
 	configDir := writeTestStartupConfig(t)
 	home := filepath.Join(t.TempDir(), "home")

@@ -248,7 +248,11 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Applying Swarm release update.", "")
 	result, err := applyReleaseUpdateForUpdate(context.Background(), profile, plan)
 	if err != nil {
-		return err
+		recoveryErr := restartLastWorkingRuntime(profile, restartPlan)
+		if recoveryErr != nil {
+			return errors.Join(err, fmt.Errorf("restart last working runtime after failed update apply: %w", recoveryErr))
+		}
+		return fmt.Errorf("apply release update (last working runtime restarted): %w", err)
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Restarting Swarm backend.", "")
 	if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
@@ -259,6 +263,19 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	return runTUIWithExtraEnvForUpdate(profile, relaunchArgs, map[string]string{
 		appliedUpdateToastEnv: fmt.Sprintf("Updated to %s", strings.TrimSpace(result.Version)),
 	})
+}
+
+func restartLastWorkingRuntime(profile Profile, plan updateRestartPlan) error {
+	if plan.managerKind == lifecycleKindSystemd {
+		if plan.blockedErr != nil {
+			return plan.blockedErr
+		}
+		if strings.TrimSpace(plan.systemdUnit) == "" {
+			return errors.New("systemd service unit is required to restart the last working runtime")
+		}
+		return restartSystemdServiceForUpdate(plan.systemdScope, plan.systemdUnit, false)
+	}
+	return startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true})
 }
 
 func releaseUpdateCompletedMessage(version string) string {

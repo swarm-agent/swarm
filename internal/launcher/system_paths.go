@@ -55,10 +55,17 @@ func EnsureSystemInstallReady() error {
 
 func ensureDirsLocal(dirs []systemDirSpec) error {
 	for _, dir := range dirs {
+		_, statErr := os.Stat(dir.Path)
+		existed := statErr == nil
+		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
 		if err := os.MkdirAll(dir.Path, dir.Mode); err != nil {
 			return err
 		}
-		if dir.Owner {
+		// Existing canonical config/data directories retain operator-selected
+		// ownership and mode. Only newly created directories receive defaults.
+		if dir.Owner && !existed {
 			if err := os.Chmod(dir.Path, dir.Mode); err != nil {
 				return err
 			}
@@ -92,6 +99,11 @@ func dirExists(path string) bool {
 func ensureDirsPrivileged(dirs []systemDirSpec) error {
 	uid, gid := installOwnerIDs()
 	for _, dir := range dirs {
+		if _, err := os.Stat(dir.Path); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 		args := []string{"install", "-d", "-m", fmt.Sprintf("%04o", dir.Mode.Perm())}
 		if dir.Owner {
 			args = append(args, "-o", uid, "-g", gid)

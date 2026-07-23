@@ -14,7 +14,8 @@ This is the focused backlog to finish before opening promotion PRs, publishing a
 1. **P0.1 complete: Swarm-controlled commit and integration operations preserve the target repository's normal Git identity.** The workspace API, generic `git_commit` tool, managed-session commit path, and worktree cherry-pick integration all use ordinary Git while filtering daemon-level `GIT_AUTHOR_*` and `GIT_COMMITTER_*` overrides. Focused worktree coverage proves cherry-pick preserves the source author and uses the target repository's configured committer (`swarmd/internal/worktree/service.go`, `swarmd/internal/worktree/service_test.go`). Generic Bash remains a separately permissioned arbitrary-command surface.
 2. **P0.2 implementation complete; repository configuration remains an operator gate.** Pull requests, pushes to `main`, and non-publishing dispatches only build verified candidates with read-only contents permission. Stable publication is a separate `workflow_dispatch` path restricted to `main`, scoped to the `stable-release` GitHub Environment, and receives `contents: write` only after the candidate build and verification job succeeds. The release archive, checksum, and metadata are transferred between jobs as immutable workflow artifacts; third-party actions are pinned to commit SHAs. Before first publication, configure required reviewers on the `stable-release` Environment and verify branch protection still enforces `dev -> main`.
 3. **P1.1 hermetic archive/install smoke implementation complete; clean-machine systemd evidence remains an operator gate.** `scripts/smoke-release-archive.sh` verifies the checksum and required archive inputs, extracts the candidate, and runs the embedded `swarmsetup --artifact-root ... --no-service` against disposable system/storage roots under `TMPDIR`. `.github/workflows/build-main.yml` runs it before candidate upload or stable publication and stores `smoke-evidence.txt` beside the candidate artifacts. A fresh supported-Linux VM must still prove the real systemd install/start/health/restart/update-failure/uninstall lifecycle and config/data metadata preservation before first publication.
-4. **Dead code is substantial, but the obvious command needs careful scoping.** The ignored local `.bin/deadcode` is a Go RTA analyzer. Executable-only analysis completed successfully and reported 231 lines in the root module and 362 in `swarmd`; examples include `cmd/swarm/main.go:425`, legacy-looking TUI paths under `internal/app/app.go`, `swarmd/internal/agent/service.go:678`, and old API paths. A naive `-test ./...` run currently fails while loading relocated/stale tests, so its output is not a deletion list. V3 findings are excluded by this document's scope lock.
+4. **P1.2 harmful-default implementation complete; privileged lifecycle evidence remains an operator gate.** Launch readiness asserts loopback/default-off/private defaults, blank installer choice and direct `swarmsetup` are files-only, and unsupported non-loopback API/desktop binding fails closed. Reinstall preserves existing canonical directory metadata, uninstall preserves config/data unless purge is explicit, failed release apply restarts the last working runtime, and default permission persistence redacts credentials and omits full tool output. A clean supported-Linux VM must still prove service-account config owner/group/mode and the real systemd failure lifecycle before publication.
+5. **Dead code is substantial, but the obvious command needs careful scoping.** The ignored local `.bin/deadcode` is a Go RTA analyzer. Executable-only analysis completed successfully and reported 231 lines in the root module and 362 in `swarmd`; examples include `cmd/swarm/main.go:425`, legacy-looking TUI paths under `internal/app/app.go`, `swarmd/internal/agent/service.go:678`, and old API paths. A naive `-test ./...` run currently fails while loading relocated/stale tests, so its output is not a deletion list. V3 findings are excluded by this document's scope lock.
 
 ## P0 — stop before any new PR or release decision
 
@@ -140,7 +141,21 @@ This is the focused backlog to finish before opening promotion PRs, publishing a
 - `internal/launcher/system_paths.go`
 - `docs/main-deploy-checklist.md`
 
-### P1.2 Review harmful defaults and side effects as invariants
+### P1.2 Review harmful defaults and side effects as invariants — implementation complete
+
+**Implemented**
+
+- `scripts/check-launch-defaults.sh`, called by launch readiness, asserts loopback API binding; permission bypass, diagnostics, and tool retention off; startup config `0600`; explicit service selection; files-only blank input; non-loopback fail-closed guards; default permission output omission; preservation-oriented uninstall; and update rollback coverage.
+- Direct `swarmsetup` now defaults to files-only, while `install.sh` maps blank service choice to files-only. Installing/enabling systemd requires `--service` or an explicit `1` choice.
+- Startup config validation and daemon `--listen` parsing reject non-loopback API/desktop exposure with SSH tunnel/Tailscale-forwarding remediation. No fallback authenticated mode was invented.
+- Existing canonical install directories retain their metadata rather than being chmod/chowned on reinstall. New startup config writes enforce `0600`; default uninstall retains config/data/cache/logs unless purge is explicit.
+- A release apply failure now restarts the last working direct/systemd runtime. Pending-boot rollback remains the guard for a newly applied runtime that fails startup.
+- Permission arguments, decisions, and errors are sanitized before persistence; with tool-output retention disabled, full output is replaced by a privacy placeholder. Provider API and V3 diagnostics remain opt-in and default off.
+
+**Remaining external operator evidence**
+
+- On a fresh supported-Linux VM, record config file owner/group/mode across install and reinstall, force both apply-time and boot-time failures under the real systemd service, and verify default uninstall retains config/data. This cannot be claimed from an unprivileged disposable harness.
+- Runtime logs outside provider diagnostics are broad application logs; the scoped gate proves diagnostics default off and credential redaction paths, not that arbitrary model-generated text can never appear in every future log call.
 
 **Confirmed safe defaults to preserve**
 
@@ -151,10 +166,10 @@ This is the focused backlog to finish before opening promotion PRs, publishing a
 
 **Tasks**
 
-- Convert those defaults into launch-gate assertions so they cannot regress silently.
-- Decide whether pressing Enter at the install-type prompt should select and start an always-on systemd service (`install.sh:244-268`). Prefer an explicit numbered answer; blank input should cancel or choose the least-mutating option.
-- Align `swarmsetup` with the wrapper's explicit service choice. `cmd/swarmsetup/main.go:21-45` currently defaults `installService` to true when invoked directly.
-- Forbid non-loopback API/desktop binding unless the supported authenticated transport is explicitly configured. The existing warning (`pkg/startupconfig/config.go:244-252`) is not itself an enforcement boundary.
+- Convert those defaults into launch-gate assertions so they cannot regress silently. **Complete.**
+- Decide whether pressing Enter at the install-type prompt should select and start an always-on systemd service (`install.sh:244-268`). Blank input now selects files-only. **Complete.**
+- Align `swarmsetup` with the wrapper's explicit service choice. Direct invocation defaults to files-only and requires `--service` for systemd. **Complete.**
+- Forbid non-loopback API/desktop binding unless the supported authenticated transport is explicitly configured. No approved direct exposure mode exists, so config and CLI input fail closed. **Complete.**
 - Verify permission bypass cannot be enabled accidentally by installer flags, inherited environment, or onboarding defaults, and that its enabled state remains conspicuous in TUI/Desktop.
 - Verify install/update/uninstall do not overwrite or change ownership/mode of existing `/etc/swarmd/swarm.conf`, do not delete `/var/lib/swarmd` without explicit consent, and roll back a failed runtime switch.
 - Verify logs/diagnostics never persist provider payloads, tokens, cookies, prompts, or full tool output under default settings.

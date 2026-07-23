@@ -166,12 +166,70 @@ func TestLoad_IgnoresLegacyStartupMode(t *testing.T) {
 	}
 }
 
-func TestDefault_DevDefaults(t *testing.T) {
+func TestDefault_LaunchSafetyDefaults(t *testing.T) {
 	cfg := startupconfig.Default(filepath.Join(t.TempDir(), "swarm.conf"))
+	if cfg.Host != startupconfig.DefaultHost {
+		t.Fatalf("Default().Host = %q, want %q", cfg.Host, startupconfig.DefaultHost)
+	}
+	if cfg.Host != "127.0.0.1" {
+		t.Fatalf("Default().Host = %q, want loopback", cfg.Host)
+	}
+	if cfg.BypassPermissions {
+		t.Fatal("Default().BypassPermissions = true, want prompts enabled")
+	}
+	if cfg.RetainToolOutputHistory {
+		t.Fatal("Default().RetainToolOutputHistory = true, want false")
+	}
+	if cfg.V3Diagnostics || cfg.ProviderAPIDiagnostics {
+		t.Fatal("diagnostics default enabled, want false")
+	}
 	if cfg.DevMode {
 		t.Fatal("Default().DevMode = true, want false")
 	}
 	if cfg.DevRoot != "" {
 		t.Fatalf("Default().DevRoot = %q, want empty", cfg.DevRoot)
+	}
+}
+
+func TestWrite_EnforcesPrivateModeOnExistingConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "swarm.conf")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := startupconfig.Write(startupconfig.Default(path)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode = %#o, want 0o600", got)
+	}
+}
+
+func TestWrite_RejectsNonLoopbackHost(t *testing.T) {
+	cfg := startupconfig.Default(filepath.Join(t.TempDir(), "swarm.conf"))
+	cfg.Host = "0.0.0.0"
+	if err := startupconfig.Write(cfg); err == nil || !strings.Contains(err.Error(), "unsupported non-loopback host") {
+		t.Fatalf("Write() error = %v, want unsupported non-loopback host", err)
+	}
+}
+
+func TestLoad_RejectsNonLoopbackHostWithoutMutatingConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "swarm.conf")
+	original := "host = 0.0.0.0\nport = 7781\ndesktop_port = 5555\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if _, err := startupconfig.Load(path); err == nil || !strings.Contains(err.Error(), "unsupported non-loopback host") {
+		t.Fatalf("Load() error = %v, want unsupported non-loopback host", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(data) != original {
+		t.Fatalf("invalid config was mutated:\n%s", data)
 	}
 }

@@ -169,6 +169,13 @@ dir_writable() {
 provision_owned_dir() {
   mode="$1"
   path="$2"
+  if [ -d "$path" ]; then
+    if dir_writable "$path"; then
+      return 0
+    fi
+    echo "existing directory is not writable; refusing to change its ownership or mode: $path" >&2
+    return 1
+  fi
   if mkdir -p "$path" 2>/dev/null && chmod "$mode" "$path" 2>/dev/null && dir_writable "$path"; then
     return 0
   fi
@@ -259,10 +266,10 @@ choose_service_mode() {
   fi
   answer="$PROMPT_ANSWER"
   case "$answer" in
-    1|systemd|service|s|S|"")
+    1|systemd|service|s|S)
       SERVICE_MODE="systemd"
       ;;
-    2|none|no-service|no|n|N)
+    2|none|no-service|no|n|N|"")
       SERVICE_MODE="none"
       ;;
     3|cancel|c|C|q|Q)
@@ -299,8 +306,8 @@ confirm_install_plan() {
 
 require_systemd() {
   if ! command -v systemctl >/dev/null 2>&1; then
-    echo "systemctl not found; Swarm installs as an always-on systemd service." >&2
-    echo "Install systemd/systemctl support or install manually on a supported Linux host." >&2
+    echo "systemctl not found; explicit --service installation requires systemd." >&2
+    echo "Install systemd/systemctl support or rerun with --no-service." >&2
     return 1
   fi
   if [ ! -d /run/systemd/system ]; then
