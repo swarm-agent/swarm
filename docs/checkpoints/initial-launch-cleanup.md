@@ -11,14 +11,14 @@ This is the focused backlog to finish before opening promotion PRs, publishing a
 
 ## Current stop-ship facts
 
-1. **Swarm's dedicated commit operations preserve the target repository's normal Git identity.** The project identity `swarm-agent <swarm@swarmagent.dev>` in this repository's own history is not evidence that Swarm writes identity into contributors' repositories. The workspace API, generic `git_commit` tool, and managed-session commit path all invoke ordinary Git without `git config user.*`, `--author`, or a project identity; all three remove daemon-level `GIT_AUTHOR_*` and `GIT_COMMITTER_*` overrides before Git resolves repository/global identity and signing configuration (`swarmd/internal/api/git_commit.go:122-155`, `swarmd/internal/tool/runtime.go:1882-1907`, `swarmd/internal/tool/runtime_manage_sessions_commit.go:100-107`, `swarmd/internal/tool/runtime_manage_sessions_commit.go:520-528`). V3 review commits delegate to the same generic tool. The remaining audit boundary is worktree integration: `git cherry-pick` runs through a helper that currently inherits the daemon environment (`swarmd/internal/worktree/service.go:448-475`, `swarmd/internal/worktree/service.go:1082-1095`). Generic Bash also inherits its execution environment and must not be conflated with the dedicated commit APIs. The scoped cleanup is to preserve conventional Git behavior at Swarm-controlled commit/integration boundaries, not police contributor emails or rewrite history.
-2. **The release workflow can publish immediately on a qualifying push to `main`.** It creates and pushes a stable tag before building the bundle (`.github/workflows/build-main.yml:51-87`) and grants `contents: write` to the job (`.github/workflows/build-main.yml:13-14`). The job-level actor condition is also coupled to the literal account `swarm-agent` (`.github/workflows/build-main.yml:22`). This must be intentionally reviewed before the first promotion.
+1. **P0.1 complete: Swarm-controlled commit and integration operations preserve the target repository's normal Git identity.** The workspace API, generic `git_commit` tool, managed-session commit path, and worktree cherry-pick integration all use ordinary Git while filtering daemon-level `GIT_AUTHOR_*` and `GIT_COMMITTER_*` overrides. Focused worktree coverage proves cherry-pick preserves the source author and uses the target repository's configured committer (`swarmd/internal/worktree/service.go`, `swarmd/internal/worktree/service_test.go`). Generic Bash remains a separately permissioned arbitrary-command surface.
+2. **P0.2 implementation complete; repository configuration remains an operator gate.** Pull requests, pushes to `main`, and non-publishing dispatches only build verified candidates with read-only contents permission. Stable publication is a separate `workflow_dispatch` path restricted to `main`, scoped to the `stable-release` GitHub Environment, and receives `contents: write` only after the candidate build and verification job succeeds. The release archive, checksum, and metadata are transferred between jobs as immutable workflow artifacts; third-party actions are pinned to commit SHAs. Before first publication, configure required reviewers on the `stable-release` Environment and verify branch protection still enforces `dev -> main`.
 3. **No downloaded-artifact smoke gate exists in the checked-in launch gate.** `scripts/check-launch-readiness.sh` checks policy, tracked content, workspace hygiene, and binary inventory, but does not build, extract, install, start, or uninstall the release (`scripts/check-launch-readiness.sh:135-225`). `docs/main-deploy-checklist.md:85-91` leaves install/update verification until after push.
 4. **Dead code is substantial, but the obvious command needs careful scoping.** The ignored local `.bin/deadcode` is a Go RTA analyzer. Executable-only analysis completed successfully and reported 231 lines in the root module and 362 in `swarmd`; examples include `cmd/swarm/main.go:425`, legacy-looking TUI paths under `internal/app/app.go`, `swarmd/internal/agent/service.go:678`, and old API paths. A naive `-test ./...` run currently fails while loading relocated/stale tests, so its output is not a deletion list. V3 findings are excluded by this document's scope lock.
 
 ## P0 — stop before any new PR or release decision
 
-### P0.1 Preserve the user's normal Git identity and signing behavior
+### P0.1 Preserve the user's normal Git identity and signing behavior — complete
 
 **Why:** Swarm must never choose or write a contributor identity for a user's repository. The audited dedicated commit entry points do not hardcode one and already remove inherited author/committer overrides. Worktree integration also creates commits through `git cherry-pick`, so its committer environment needs the same narrow review. Arbitrary commands run through Bash are a separate shell capability, not evidence that Swarm selected an identity.
 
@@ -63,9 +63,20 @@ This is the focused backlog to finish before opening promotion PRs, publishing a
 - `swarmd/internal/worktree/service.go`
 - `swarmd/internal/worktree/service_test.go`
 
-### P0.2 Make release publication an explicit, late action
+### P0.2 Make release publication an explicit, late action — implementation complete
 
-**Why:** The current workflow pushes a release tag before proving the bundle builds, and a push by the literal actor can publish a release.
+**Why:** Stable publication must consume a verified candidate and require an explicit operator action after promotion; ordinary pushes must never publish.
+
+**Implemented**
+
+- Candidate builds run with read-only repository permission and cannot tag or publish.
+- Stable publication is a separate manual dispatch on `main`, protected by the `stable-release` GitHub Environment and job-scoped `contents: write` permission.
+- Build and candidate verification complete before release creation. The release action creates the tag only at publication time, so build or verification failure leaves no stable tag.
+- The build emits `swarm-<version>-linux-amd64.tar.gz.sha256`; candidate verification checks the digest, archive shape, and installer artifact validation path before publication.
+- The network installer downloads the matching checksum asset and fails before extraction on a missing, malformed, or mismatched digest. The updater already requires and verifies SHA-256.
+- Every third-party action in the release workflow is pinned to an immutable commit SHA with the reviewed major version noted in a comment.
+
+**Operator prerequisite:** Configure required reviewers and deployment-branch restrictions for the `stable-release` GitHub Environment before the first stable publication.
 
 **Tasks**
 
@@ -245,7 +256,8 @@ The local binary is ignored and architecture-specific. For CI/repeatability, ins
 5. Candidate archive is built, checksummed, extracted, installed, started, updated/failure-tested, and uninstalled on a clean supported Linux machine.
 6. P2 dead-code/forgotten-end work is either merged in bounded PRs or explicitly deferred as non-blocking.
 7. Open the single reviewed `dev -> main` promotion PR.
-8. Publish only after the exact PR head's evidence is reviewed.
+8. Run one final end-to-end launch review against the exact candidate. This final pass must include the checked-in vulnerability scans and may use agents to independently inspect release, installer, dependency, and public-repository evidence; the parent must synthesize and verify every finding.
+9. Publish only after the exact PR head's build, checksum, smoke, vulnerability, and review evidence is approved through the `stable-release` Environment.
 
 ## False positives and non-blockers
 

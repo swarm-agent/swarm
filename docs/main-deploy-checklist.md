@@ -6,12 +6,9 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 
 - `dev` is the day-to-day integration branch.
 - `main` is the protected release/build branch.
-- Pushes to `main` (including approved PR merges) trigger `.github/workflows/build-main.yml`, which builds the real Swarm runtime bundle and publishes a versioned GitHub release asset.
-- Current baseline snapshot:
-  - `origin/main`: `60b516e3d7d05ad2157cf926ec6c0576f1765a6f` (`Add main branch build workflow and branch flow docs`)
-  - `origin/dev`: `8731117b2e774f62fa75a94fdc85a7426f29c611` (`Preserve desktop task rows until task completion`)
-  - `dev` is ahead of `main` by 39 commits.
-- The only current tag is `backup/pre-email-rewrite-20260419-184258`; it is a backup tag, not a release tag.
+- Pushes to `main` trigger `.github/workflows/build-main.yml`, which builds and verifies a release candidate but cannot tag or publish it.
+- Stable publication is a separate manual workflow dispatch from `main` with `publish=true` and an explicit stable `release_version`; the `publish-stable` job is protected by the `stable-release` GitHub Environment.
+- Record the exact `origin/main`, `origin/dev`, promotion range, and selected release tag during each release instead of maintaining a stale fixed snapshot here.
 
 ## Push and key model
 
@@ -28,7 +25,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 ## Canonical release artifact
 
 - The downloadable Swarm release is the full runtime bundle already defined by `cmd/swarmsetup` and `internal/launcher/launcher.go`.
-- The GitHub release asset is expected to be named `swarm-<version>-linux-amd64.tar.gz`.
+- The GitHub release assets include `swarm-<version>-linux-amd64.tar.gz` and its exact `swarm-<version>-linux-amd64.tar.gz.sha256` checksum.
 - After extraction, the user installs it with:
 
 ```bash
@@ -41,7 +38,8 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 ## Canonical version reference
 
 - The preferred public release version is a stable semver tag such as `v0.x.y` on the promoted `main` commit.
-- The `build-main` release workflow auto-resolves the next stable patch version when `HEAD` is untagged, creates the annotated release tag, and publishes the matching release assets from that version.
+- The operator selects an explicit stable semver version when manually dispatching publication from `main`. The workflow rejects missing or malformed versions and existing tags.
+- The candidate build and checksum/archive verification jobs complete before the environment-protected publication job creates the release and tag.
 - `dist/build-info.txt` carries release metadata (`version`, `commit`, `actor`, `ref`, `built_at`) but is not itself the tag authority.
 
 ## Main release checklist
@@ -85,10 +83,15 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 ### 6. After push
 
 - [ ] Verify the GitHub `main` release workflow ran for the promoted commit
-- [ ] Verify the uploaded artifacts include the full Swarm runtime bundle and `build-info.txt`
-- [ ] Verify the GitHub release includes `swarm-<version>-linux-amd64.tar.gz`
+- [ ] Verify the uploaded artifacts include the full Swarm runtime bundle, `build-info.txt`, and the exact `.sha256` checksum asset
+- [ ] Verify the candidate workflow completed without creating a tag or release
+- [ ] Manually dispatch stable publication from the reviewed `main` SHA with `publish=true` and the approved `release_version`
+- [ ] Approve the `stable-release` Environment deployment only after reviewing candidate evidence
+- [ ] Verify the GitHub release includes `swarm-<version>-linux-amd64.tar.gz` and `swarm-<version>-linux-amd64.tar.gz.sha256`
 - [ ] Verify the install flow from the extracted release works with `swarmsetup --artifact-root ...`
+- [ ] Verify `/update apply` fails closed on missing or mismatched checksum metadata, then succeeds with the published checksum
 - [ ] Verify `/update apply` exits the TUI, shows terminal progress, relaunches, and shows the post-update success toast
+- [ ] Run the final end-to-end launch review and checked-in vulnerability scans; agents may independently inspect evidence, but the release owner must verify and synthesize the results
 
 ## Relevant filepaths
 

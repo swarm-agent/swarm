@@ -7,11 +7,12 @@ INSTALL_VERSION=""
 ARTIFACT_ROOT=""
 ASSUME_YES=0
 SERVICE_MODE=""
+VERIFY_ONLY=0
 
 usage() {
   cat <<'EOF'
 Usage:
-  sh install.sh [--yes] [--service|--no-service] [--version <tag>] [--artifact-root <path>]
+  sh install.sh [--yes] [--service|--no-service] [--verify-only] [--version <tag>] [--artifact-root <path>]
 
 Options:
   --yes, -y              Run without the confirmation prompt.
@@ -19,6 +20,7 @@ Options:
   --no-service           Install files only; do not install/start a service.
   --version <tag>        Install a specific release tag.
   --artifact-root <path> Install from an extracted release artifact.
+  --verify-only          Validate an artifact root without changing the host.
 
 EOF
 }
@@ -34,6 +36,12 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --yes|-y)
+      ASSUME_YES=1
+      shift
+      ;;
+    --verify-only)
+      VERIFY_ONLY=1
+      SERVICE_MODE="none"
       ASSUME_YES=1
       shift
       ;;
@@ -535,6 +543,7 @@ need_cmd curl
 need_cmd tar
 need_cmd sed
 need_cmd grep
+need_cmd awk
 need_cmd mktemp
 need_cmd id
 need_cmd install
@@ -547,6 +556,10 @@ fi
 if [ -n "$ARTIFACT_ROOT" ]; then
   script_dir="$ARTIFACT_ROOT"
 fi
+if [ "$VERIFY_ONLY" -eq 1 ] && [ -z "$ARTIFACT_ROOT" ]; then
+  echo "--verify-only requires --artifact-root" >&2
+  exit 2
+fi
 
 platform_dir="$(printf '%s/%s\n' "$script_dir" "linux-amd64")"
 bundle_installer="$(printf '%s/%s\n' "$platform_dir" "root")/swarmsetup"
@@ -554,6 +567,14 @@ bundle_index="$(printf '%s/%s\n' "$script_dir" "web")/index.html"
 if [ -n "$script_dir" ] && [ -x "$bundle_installer" ] && [ -f "$bundle_index" ]; then
   validate_artifact_root "$script_dir"
   version="$(read_build_info_version "$script_dir" 2>/dev/null || true)"
+  if [ "$VERIFY_ONLY" -eq 1 ]; then
+    if [ -z "$version" ]; then
+      echo "artifact root build-info.txt is missing a version" >&2
+      exit 1
+    fi
+    echo "verified artifact root: $script_dir ($version)"
+    exit 0
+  fi
   print_install_plan "$version" "artifact root: $script_dir"
   confirm_install_plan
   if [ "$SERVICE_MODE" = "systemd" ]; then
@@ -627,8 +648,33 @@ if [ "$SERVICE_MODE" = "systemd" ]; then
   require_systemd
 fi
 print_installing "$release_version"
-printf 'downloading release... '
+checksum_name="${asset_name}.sha256"
+checksum_url="${asset_url}.sha256"
+checksum_path="$tmp_dir/$checksum_name"
+need_cmd sha256sum
+printf 'downloading release and checksum... '
 curl -fsSL "$asset_url" -o "$archive_path"
+curl -fsSL "$checksum_url" -o "$checksum_path"
+print_ok
+printf 'verifying release checksum... '
+checksum_line="$(awk -v name="$asset_name" '
+  NF >= 2 {
+    file = $NF
+    sub(/^\*/, "", file)
+    if (length($1) == 64 && $1 ~ /^[[:xdigit:]]+$/ && file == name) {
+      print $1 "  " name
+      exit
+    }
+  }
+' "$checksum_path")"
+if [ -z "$checksum_line" ]; then
+  echo "checksum asset does not contain an exact entry for $asset_name" >&2
+  exit 1
+fi
+(
+  cd "$tmp_dir"
+  printf '%s\n' "$checksum_line" | sha256sum -c -
+)
 print_ok
 
 mkdir -p "$extract_dir"
