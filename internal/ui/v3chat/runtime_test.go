@@ -15,6 +15,7 @@ import (
 type fakeTransport struct {
 	mu                 sync.Mutex
 	calls              []string
+	createRequests     []client.SessionCreateOptions
 	created            client.SessionV3Hydrated
 	result             client.SessionV3MessageResult
 	streamBlock        chan struct{}
@@ -52,12 +53,18 @@ func (f *fakeTransport) record(call string) {
 	f.calls = append(f.calls, call)
 	f.mu.Unlock()
 }
-func (f *fakeTransport) CreateSessionV3WithOptions(context.Context, client.SessionCreateOptions) (client.SessionV3Hydrated, error) {
-	f.record("create")
+func (f *fakeTransport) CreateSessionV3WithOptions(_ context.Context, options client.SessionCreateOptions) (client.SessionV3Hydrated, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, "create")
+	f.createRequests = append(f.createRequests, options)
+	f.mu.Unlock()
 	return f.created, nil
 }
-func (f *fakeTransport) CreateSessionV3TUIWithOptions(context.Context, client.SessionCreateOptions) (client.SessionV3Hydrated, error) {
-	f.record("create-tui")
+func (f *fakeTransport) CreateSessionV3TUIWithOptions(_ context.Context, options client.SessionCreateOptions) (client.SessionV3Hydrated, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, "create-tui")
+	f.createRequests = append(f.createRequests, options)
+	f.mu.Unlock()
 	return f.created, nil
 }
 func (f *fakeTransport) GetSessionV3TUI(context.Context, string, string, string) (client.SessionV3Hydrated, error) {
@@ -244,6 +251,93 @@ func TestCreateAndSendWithoutInitialPromptPrimesDraftUntilFirstMessage(t *testin
 	state = runtime.Store().Snapshot()
 	if state.Session.ID != "s" || state.Session.WorkspacePath != "/workspace" || state.Model.Preference.Model != "resolved" || len(SelectMessages(state)) != 1 {
 		t.Fatalf("created first-message state = %#v", state)
+	}
+}
+
+func TestDraftModeUpdatesPrimedCreateLosslesslyUntilHydration(t *testing.T) {
+	useCurrentBranch := false
+	useAccountDefault := true
+	metadata := map[string]any{"source": "draft", "nested": map[string]any{"keep": true}}
+	create := client.SessionCreateOptions{
+		Title:                    "New Session",
+		WorkspacePath:            "/workspace",
+		CWDPath:                  "/workspace/cwd",
+		HostWorkspacePath:        "/host/workspace",
+		RuntimeWorkspacePath:     "/runtime/workspace",
+		WorkspaceName:            "Workspace",
+		WorkspaceBindingID:       "binding-1",
+		TUIPrimaryCWD:            true,
+		Mode:                     "auto",
+		AgentName:                "swarm",
+		SwarmID:                  "target-1",
+		ExecutionClass:           "local",
+		TargetKind:               "host",
+		TargetRelationship:       "self",
+		Metadata:                 metadata,
+		Preference:               client.ModelPreference{Provider: "codex", Model: "draft-model", Thinking: "high", ServiceTier: "fast", ContextMode: "extended"},
+		ModelProfile:             &client.SessionV3ModelProfileChoice{UseAccountDefault: &useAccountDefault},
+		WorktreeMode:             "on",
+		WorktreeUseCurrentBranch: &useCurrentBranch,
+		WorktreeBaseBranch:       "dev",
+		WorktreeBranchName:       "agent/draft",
+	}
+	transport := &fakeTransport{created: client.SessionV3Hydrated{
+		Session:                client.SessionSummary{ID: "s", Title: "Backend title", WorkspacePath: "/backend/workspace", Mode: "auto"},
+		Preference:             client.ModelPreference{Provider: "codex", Model: "backend-model", Thinking: "medium"},
+		AgentModelPolicy:       client.SessionV3AgentModelPolicy{ProfileName: "Backend profile", ProfileSource: "saved", Locked: true},
+		SnapshotEndpointCursor: "cursor",
+	}}
+	runtime := NewRuntime(transport, nil, nil)
+	defer runtime.Stop()
+	if err := runtime.PrimeNewSession(NewSessionRequest{Create: create}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.SetDraftMode("plan"); err != nil {
+		t.Fatal(err)
+	}
+	transport.mu.Lock()
+	if len(transport.calls) != 0 || len(transport.createRequests) != 0 || transport.modeRequest != "" {
+		transport.mu.Unlock()
+		t.Fatalf("draft mode made backend calls: calls=%#v creates=%#v mode=%q", transport.calls, transport.createRequests, transport.modeRequest)
+	}
+	transport.mu.Unlock()
+	if state := runtime.Store().Snapshot(); state.Session.ID != "" || state.Session.Mode != "plan" || state.Model.Preference.Model != "draft-model" {
+		t.Fatalf("local draft mode state = %#v", state)
+	}
+	if _, err := runtime.Send(context.Background(), "first message", map[string]any{"prompt": "metadata"}); err != nil {
+		t.Fatal(err)
+	}
+	transport.mu.Lock()
+	requests := append([]client.SessionCreateOptions(nil), transport.createRequests...)
+	calls := append([]string(nil), transport.calls...)
+	transport.mu.Unlock()
+	if len(requests) != 1 {
+		t.Fatalf("create requests = %#v", requests)
+	}
+	want := create
+	want.Mode = "plan"
+	if !reflect.DeepEqual(requests[0], want) {
+		t.Fatalf("first-send create options changed beyond mode:\n got %#v\nwant %#v", requests[0], want)
+	}
+	if !reflect.DeepEqual(calls[:4], []string{"create-tui", "stream", "ready", "send"}) {
+		t.Fatalf("first-send calls = %#v", calls)
+	}
+	state := runtime.Store().Snapshot()
+	if state.Session.ID != "s" || state.Session.Mode != "auto" || state.Session.Title != "Backend title" || state.Session.WorkspacePath != "/backend/workspace" || state.Model.Preference.Model != "backend-model" || state.Model.ProfileName != "Backend profile" || !state.Model.Locked {
+		t.Fatalf("hydrated backend authority did not replace draft assumptions: %#v", state)
+	}
+}
+
+func TestDraftModeRejectsInvalidModeWithoutChangingDraft(t *testing.T) {
+	runtime := NewRuntime(&fakeTransport{}, nil, nil)
+	if err := runtime.PrimeNewSession(NewSessionRequest{Create: client.SessionCreateOptions{Mode: "auto"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.SetDraftMode("manual"); err == nil || err.Error() != "session mode must be auto or plan" {
+		t.Fatalf("SetDraftMode() error = %v", err)
+	}
+	if got := runtime.Store().Snapshot().Session.Mode; got != "auto" {
+		t.Fatalf("draft mode after invalid update = %q", got)
 	}
 }
 

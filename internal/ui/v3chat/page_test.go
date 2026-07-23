@@ -1362,6 +1362,35 @@ func TestPagePreservesHomeProfileUntilBackendModeShiftResolvesProfile(t *testing
 	}
 }
 
+func TestShiftTabCyclesPrimedDraftModeLocally(t *testing.T) {
+	transport := &fakeTransport{}
+	runtime := NewRuntime(transport, nil, nil)
+	if err := runtime.PrimeNewSession(NewSessionRequest{Create: client.SessionCreateOptions{
+		Title:              "New Session",
+		WorkspacePath:      "/workspace",
+		WorkspaceBindingID: "binding",
+		Mode:               "auto",
+		Preference:         client.ModelPreference{Provider: "codex", Model: "draft-model"},
+		Metadata:           map[string]any{"source": "home"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	page := NewPage(runtime, testPageStyles())
+	page.HandleKey(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModShift))
+	state := runtime.Store().Snapshot()
+	if state.Session.ID != "" || state.Session.Mode != "plan" || state.Model.Preference.Model != "draft-model" {
+		t.Fatalf("Shift+Tab draft state = %#v", state)
+	}
+	if got := page.Status(); got != "Plan: on" {
+		t.Fatalf("draft mode status = %q", got)
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if len(transport.calls) != 0 || len(transport.createRequests) != 0 || transport.modeRequest != "" {
+		t.Fatalf("Shift+Tab persisted or mutated draft: calls=%#v creates=%#v mode=%q", transport.calls, transport.createRequests, transport.modeRequest)
+	}
+}
+
 func TestShiftTabCyclesModeThroughBackendResolvedState(t *testing.T) {
 	transport := &fakeTransport{mode: client.SessionV3ModeResult{
 		Mode:             "plan",

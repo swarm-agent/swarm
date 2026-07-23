@@ -182,7 +182,11 @@ func (r *Runtime) Send(ctx context.Context, prompt string, metadata map[string]a
 	state := r.store.Snapshot()
 	if strings.TrimSpace(state.Session.ID) == "" {
 		r.mu.Lock()
-		create := r.primedCreate
+		var create *client.SessionCreateOptions
+		if r.primedCreate != nil {
+			copy := *r.primedCreate
+			create = &copy
+		}
 		r.mu.Unlock()
 		if create == nil {
 			return client.SessionV3MessageResult{}, errors.New("v3 chat session is not connected")
@@ -258,6 +262,36 @@ func (r *Runtime) ResolvePermissionWithArguments(ctx context.Context, permission
 	return record, nil
 }
 
+func normalizeSessionMode(mode string) (string, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode != "auto" && mode != "plan" {
+		return "", errors.New("session mode must be auto or plan")
+	}
+	return mode, nil
+}
+
+// SetDraftMode changes only the local primed create intent. Draft sessions are
+// not persisted or mutated until the first message commits them.
+func (r *Runtime) SetDraftMode(mode string) error {
+	if r == nil || r.transport == nil {
+		return errors.New("v3 chat transport is not configured")
+	}
+	mode, err := normalizeSessionMode(mode)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	if r.primedCreate == nil {
+		r.mu.Unlock()
+		return errors.New("v3 chat new session draft is not primed")
+	}
+	r.primedCreate.Mode = mode
+	r.mu.Unlock()
+	r.store.Dispatch(DraftModeAction{Mode: mode})
+	r.signalWake()
+	return nil
+}
+
 func (r *Runtime) SetMode(ctx context.Context, mode string) (client.SessionV3ModeResult, error) {
 	if r == nil || r.transport == nil {
 		return client.SessionV3ModeResult{}, errors.New("v3 chat transport is not configured")
@@ -267,9 +301,9 @@ func (r *Runtime) SetMode(ctx context.Context, mode string) (client.SessionV3Mod
 	if sessionID == "" {
 		return client.SessionV3ModeResult{}, errors.New("v3 chat session is not connected")
 	}
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode != "auto" && mode != "plan" {
-		return client.SessionV3ModeResult{}, errors.New("session mode must be auto or plan")
+	mode, err := normalizeSessionMode(mode)
+	if err != nil {
+		return client.SessionV3ModeResult{}, err
 	}
 	resolved, err := r.transport.SetSessionV3ModeResolved(ctx, sessionID, mode)
 	if err != nil {

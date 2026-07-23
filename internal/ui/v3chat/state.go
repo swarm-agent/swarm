@@ -300,6 +300,10 @@ type PrimeNewSessionAction struct{ Create client.SessionCreateOptions }
 
 func (PrimeNewSessionAction) isV3ChatAction() {}
 
+type DraftModeAction struct{ Mode string }
+
+func (DraftModeAction) isV3ChatAction() {}
+
 type PendingUserAction struct{ Pending PendingMessage }
 
 func (PendingUserAction) isV3ChatAction() {}
@@ -358,6 +362,8 @@ func Reduce(current State, action Action) State {
 		next = reduceHydrated(next, value.Snapshot)
 	case PrimeNewSessionAction:
 		next = reducePrimedNewSession(value.Create)
+	case DraftModeAction:
+		next.Session.Mode = strings.ToLower(strings.TrimSpace(value.Mode))
 	case PendingUserAction:
 		pending := value.Pending
 		if id := strings.TrimSpace(pending.ID); id != "" {

@@ -825,13 +825,19 @@ func (p *Page) cycleModeLocked() {
 		return
 	}
 	state := p.runtime.Store().Snapshot()
-	if strings.TrimSpace(state.Session.ID) == "" {
-		p.errText = "plan mode is available after the session connects"
-		return
-	}
 	next := "plan"
 	if strings.EqualFold(strings.TrimSpace(state.Session.Mode), "plan") {
 		next = "auto"
+	}
+	if strings.TrimSpace(state.Session.ID) == "" {
+		if err := p.runtime.SetDraftMode(next); err != nil {
+			p.errText = err.Error()
+			p.status = ""
+			return
+		}
+		p.errText = ""
+		p.status = "Plan: " + map[bool]string{true: "on", false: "off"}[next == "plan"]
+		return
 	}
 	p.busy = true
 	p.status = "switching Plan " + map[bool]string{true: "on", false: "off"}[next == "plan"] + "…"
