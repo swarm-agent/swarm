@@ -1,6 +1,6 @@
 # Initial Launch Cleanup
 
-This is the focused backlog to finish before opening promotion PRs, publishing a downloadable Swarm archive, and testing the first public install. It is a cleanup gate, not a feature roadmap.
+This is the focused backlog to finish before the promotion PR, followed by post-PR supported-Linux lifecycle/onboarding validation and only then publication of a downloadable Swarm archive. It is a cleanup gate, not a feature roadmap.
 
 ## Scope lock
 
@@ -13,8 +13,8 @@ This is the focused backlog to finish before opening promotion PRs, publishing a
 
 1. **P0.1 complete: Swarm-controlled commit and integration operations preserve the target repository's normal Git identity.** The workspace API, generic `git_commit` tool, managed-session commit path, and worktree cherry-pick integration all use ordinary Git while filtering daemon-level `GIT_AUTHOR_*` and `GIT_COMMITTER_*` overrides. Focused worktree coverage proves cherry-pick preserves the source author and uses the target repository's configured committer (`swarmd/internal/worktree/service.go`, `swarmd/internal/worktree/service_test.go`). Generic Bash remains a separately permissioned arbitrary-command surface.
 2. **P0.2 implementation complete; repository configuration remains an operator gate.** Pull requests, pushes to `main`, and non-publishing dispatches only build verified candidates with read-only contents permission. Stable publication is a separate `workflow_dispatch` path restricted to `main`, scoped to the `stable-release` GitHub Environment, and receives `contents: write` only after the candidate build and verification job succeeds. The release archive, checksum, and metadata are transferred between jobs as immutable workflow artifacts; third-party actions are pinned to commit SHAs. Before first publication, configure required reviewers on the `stable-release` Environment and verify branch protection still enforces `dev -> main`.
-3. **P1.1 hermetic archive/install smoke implementation complete; clean-machine systemd evidence remains an operator gate.** `scripts/smoke-release-archive.sh` verifies the checksum and required archive inputs, extracts the candidate, and runs the embedded `swarmsetup --artifact-root ... --no-service` against disposable system/storage roots under `TMPDIR`. `.github/workflows/build-main.yml` runs it before candidate upload or stable publication and stores `smoke-evidence.txt` beside the candidate artifacts. A fresh supported-Linux VM must still prove the real systemd install/start/health/restart/update-failure/uninstall lifecycle and config/data metadata preservation before first publication.
-4. **P1.2 harmful-default implementation complete; privileged lifecycle evidence remains an operator gate.** Launch readiness asserts loopback/default-off/private defaults, blank installer choice and direct `swarmsetup` are files-only, and unsupported non-loopback API/desktop binding fails closed. Reinstall preserves existing canonical directory metadata, uninstall preserves config/data unless purge is explicit, failed release apply restarts the last working runtime, and default permission persistence redacts credentials and omits full tool output. A clean supported-Linux VM must still prove service-account config owner/group/mode and the real systemd failure lifecycle before publication.
+3. **P1.1 hermetic archive/install smoke implementation complete; clean-machine systemd evidence remains an operator gate.** `scripts/smoke-release-archive.sh` verifies the checksum and required archive inputs, extracts the candidate, and runs the embedded `swarmsetup --artifact-root ... --no-service` against disposable system/storage roots under `TMPDIR`. `.github/workflows/build-main.yml` runs it before candidate upload or stable publication and stores `smoke-evidence.txt` beside the candidate artifacts. After the promotion PR is reviewed, a fresh supported-Linux VM must still prove the real systemd install/start/health/restart/update-failure/uninstall lifecycle, Desktop/terminal/TUI onboarding, and config/data metadata preservation before first publication.
+4. **P1.2 harmful-default implementation complete; privileged lifecycle evidence remains an operator gate.** Launch readiness asserts loopback/default-off/private defaults, blank installer choice and direct `swarmsetup` are files-only, and unsupported non-loopback API/desktop binding fails closed. Reinstall preserves existing canonical directory metadata, uninstall preserves config/data unless purge is explicit, failed release apply restarts the last working runtime, and default permission persistence redacts credentials and omits full tool output. After the promotion PR is reviewed, a clean supported-Linux VM must still prove service-account config owner/group/mode and the real systemd failure lifecycle before publication.
 5. **P1.3 repository hygiene is enforced; release-run evidence remains candidate-specific.** Precommit and launch-readiness now reject path, storage, secret, hidden-text, policy, dependency-vulnerability, generated-artifact, untracked-file, and unexpected non-text-blob failures. The only reviewed non-text assets are the two required vendored FFF Linux libraries and public web/PWA icons. Public installation claims remain Linux x86-64 only. Each release owner must still attach the exact candidate SHA and that run's workflow archive/checksum/smoke evidence rather than treating a checked-in branch snapshot as current truth.
 6. **Dead code is substantial, but the obvious command needs careful scoping.** The ignored local `.bin/deadcode` is a Go RTA analyzer. Executable-only analysis completed successfully and reported 231 lines in the root module and 362 in `swarmd`; examples include `cmd/swarm/main.go:425`, legacy-looking TUI paths under `internal/app/app.go`, `swarmd/internal/agent/service.go:678`, and old API paths. A naive `-test ./...` run currently fails while loading relocated/stale tests, so its output is not a deletion list. V3 findings are excluded by this document's scope lock.
 
@@ -108,7 +108,7 @@ This is the focused backlog to finish before opening promotion PRs, publishing a
 
 ### P1.1 Add a hermetic release archive and install smoke path — hermetic gate complete
 
-**Why:** The build script assembles the expected archive (`scripts/build-main-dist.sh:123-174`), but launch readiness does not exercise it and the deploy checklist waits until after publication.
+**Why:** The build script assembles the expected archive (`scripts/build-main-dist.sh:123-174`), but launch readiness does not exercise it. The deploy checklist must place real supported-Linux testing after PR review but before publication.
 
 **Implemented**
 
@@ -117,10 +117,11 @@ This is the focused backlog to finish before opening promotion PRs, publishing a
 - The smoke asserts the installed versioned runtime, web assets, `libfff_c.so`, launcher and daemon binaries, and launcher symlinks. It emits `smoke-evidence.txt` with the archive name, digest, version, hermetic install result, and explicit external-systemd status.
 - `.github/workflows/build-main.yml` runs this gate in `build-candidate` before artifact upload. `publish-stable` depends on that successful job, so a smoke failure cannot create a stable tag or release.
 
-**Remaining external release prerequisite**
+**Remaining post-PR external release prerequisite**
 
-- In a fresh supported Linux VM, test the real systemd path: install, start, `swarm status`, `swarm open`/health reachability, stop, restart, update failure behavior, and uninstall.
-- Prove reinstall preserves canonical config/data and preserves config owner/group/mode. Keep that clean-machine evidence with the candidate workflow run; the hermetic no-service gate does not claim systemd coverage.
+- After the promotion PR is reviewed, use its exact versioned candidate on a fresh supported Linux VM to test the real systemd path: install, start, `swarm status`, `swarm open`/health reachability, stop, restart, update failure behavior, and uninstall.
+- Complete Desktop, terminal, and TUI onboarding from first launch, then exercise Desktop and terminal/TUI update behavior.
+- Prove reinstall/update preserves canonical config/data, onboarding state, and config owner/group/mode. Keep that clean-machine evidence with the candidate workflow run; the hermetic no-service gate does not claim systemd or onboarding coverage.
 
 **Acceptance**
 
@@ -209,7 +210,7 @@ This is the focused backlog to finish before opening promotion PRs, publishing a
 - Freeze and print the candidate with `git rev-parse HEAD`, then require `git status --short` to be empty before running gates. Keep the exact SHA in the release record or promotion PR; do not maintain a mutable "current SHA" in this file.
 - Retain the full `./scripts/check-precommit.sh` and `bash scripts/check-launch-readiness.sh --require-clean` logs for that SHA.
 - For a workflow candidate, retain the `release-candidate-<version>` artifact containing the archive, exact `.sha256`, `build-info.txt`, and `smoke-evidence.txt`; the workflow run and build log are the evidence location.
-- Attach the separate fresh supported-Linux VM transcript for privileged config metadata, install/reinstall, real systemd start/restart, apply-time and boot-time rollback, and default uninstall retention. That external result is still required and must not be inferred from the hermetic smoke.
+- After PR review, attach the separate fresh supported-Linux VM transcript for clean install, Desktop/terminal/TUI onboarding, reinstall/update, privileged config metadata, real systemd start/restart, apply-time and boot-time rollback, and default uninstall retention. That external result is still required before publication and must not be inferred from the hermetic smoke.
 
 **Acceptance**
 
@@ -280,13 +281,14 @@ The local binary is ignored and architecture-specific. For CI/repeatability, ins
 
 1. Freeze the candidate `dev` SHA and stop unrelated changes.
 2. P0 Git identity preservation is verified for dedicated commit helpers and worktree integration; generic Bash remains a separately permissioned shell surface. No contributor-identity substitution, history checker, or history rewrite is required by this cleanup.
-3. Candidate build cannot publish; stable publication remains gated.
+3. Candidate builds cannot publish; stable publication remains gated.
 4. P1 harmful-default invariants and repository gates pass.
-5. Candidate archive is built, checksummed, extracted, installed, started, updated/failure-tested, and uninstalled on a clean supported Linux machine.
-6. P2 dead-code/forgotten-end work is either merged in bounded PRs or explicitly deferred as non-blocking.
-7. Open the single reviewed `dev -> main` promotion PR.
-8. Run one final end-to-end launch review against the exact candidate. This final pass must include the checked-in vulnerability scans and may use agents to independently inspect release, installer, dependency, and public-repository evidence; the parent must synthesize and verify every finding.
-9. Publish only after the exact PR head's build, checksum, smoke, vulnerability, and review evidence is approved through the `stable-release` Environment.
+5. P2 dead-code/forgotten-end work is either merged in bounded PRs or explicitly deferred as non-blocking.
+6. Open, review, and merge the single `dev -> main` promotion PR; retain its non-publishing candidate and exact reviewed `main` SHA.
+7. Start the protected stable workflow for the proposed version to build the exact versioned candidate, but leave the `stable-release` Environment deployment unapproved. Preparing this candidate/version is not publication.
+8. On a fresh supported Linux VM, run the full post-PR process: clean install; Desktop, terminal, and TUI onboarding; real systemd start/restart; Desktop and terminal/TUI update; reinstall/update preservation; config owner/group/`0600` checks; apply-time and boot-time rollback; and default uninstall retention.
+9. Run one final end-to-end launch review against that exact candidate. This final pass must include the checked-in vulnerability scans and may use agents to independently inspect release, installer, dependency, and public-repository evidence; the parent must synthesize and verify every finding.
+10. Publish only after the exact reviewed SHA's build, checksum, smoke, supported-Linux lifecycle/onboarding/update, vulnerability, and review evidence passes. Publication is the final Environment approval that creates the stable tag and GitHub release.
 
 ## False positives and non-blockers
 
