@@ -1603,27 +1603,72 @@ func TestExitPlanModeCanonicalEventUpdatesRenderedFooterPolicy(t *testing.T) {
 	}
 }
 
-func TestShiftTabCyclesPrimedDraftModeLocally(t *testing.T) {
+func TestShiftTabCyclesPrimedDraftModeAndEffectiveFooterLocally(t *testing.T) {
 	transport := &fakeTransport{}
 	runtime := NewRuntime(transport, nil, nil)
-	if err := runtime.PrimeNewSession(NewSessionRequest{Create: client.SessionCreateOptions{
-		Title:              "New Session",
-		WorkspacePath:      "/workspace",
-		WorkspaceBindingID: "binding",
-		Mode:               "auto",
-		Preference:         client.ModelPreference{Provider: "codex", Model: "draft-model"},
-		Metadata:           map[string]any{"source": "home"},
-	}}); err != nil {
+	autoPreference := client.ModelPreference{Provider: "openrouter", Model: "auto-model", Thinking: "medium", ServiceTier: "flex", ContextMode: "auto-context"}
+	planPreference := client.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "high", ServiceTier: "fast", ContextMode: "1m"}
+	if err := runtime.PrimeNewSession(NewSessionRequest{
+		Create: client.SessionCreateOptions{
+			Title:              "New Session",
+			WorkspacePath:      "/workspace",
+			WorkspaceBindingID: "binding",
+			Mode:               "auto",
+			Preference:         autoPreference,
+			Metadata:           map[string]any{"source": "home"},
+		},
+		DraftModeSelections: map[string]DraftModeSelection{
+			"auto": {
+				Preference: autoPreference, ContextWindow: 180000,
+				AgentModelPolicy: client.SessionV3AgentModelPolicy{ProfileName: "Automatic", ProfileSource: "saved", Preference: autoPreference, ContextWindow: 180000},
+			},
+			"plan": {
+				Preference: planPreference, ContextWindow: 1050000,
+				AgentModelPolicy: client.SessionV3AgentModelPolicy{ProfileName: "Planning", ProfileSource: "saved", Preference: planPreference, ContextWindow: 1050000},
+			},
+		},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	page := NewPage(runtime, testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 18)
+	page.Draw(screen)
+	screen.Show()
+	if footer := simulationRow(screen, 100, 17); !strings.Contains(footer, "[Automatic · auto-model · medium · flex]") || strings.Contains(footer, "Planning") {
+		t.Fatalf("initial auto draft footer = %q", footer)
+	}
+
 	page.HandleKey(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModShift))
 	state := runtime.Store().Snapshot()
-	if state.Session.ID != "" || state.Session.Mode != "plan" || state.Model.Preference.Model != "draft-model" {
-		t.Fatalf("Shift+Tab draft state = %#v", state)
+	if state.Session.ID != "" || state.Session.Mode != "plan" || state.Model.Preference != planPreference || state.Model.ProfileName != "Planning" || state.Model.ContextWindow != 1050000 {
+		t.Fatalf("Shift+Tab plan draft state = %#v", state)
 	}
 	if got := page.Status(); got != "Plan: on" {
-		t.Fatalf("draft mode status = %q", got)
+		t.Fatalf("plan draft mode status = %q", got)
+	}
+	page.Draw(screen)
+	screen.Show()
+	if footer := simulationRow(screen, 100, 17); !strings.Contains(footer, "[Planning · gpt-5.4 (fast,1m) · high · fast]") || !strings.Contains(footer, "ctx 100%") || strings.Contains(footer, "auto-model") {
+		t.Fatalf("plan draft footer = %q", footer)
+	}
+
+	page.HandleKey(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModShift))
+	state = runtime.Store().Snapshot()
+	if state.Session.Mode != "auto" || state.Model.Preference != autoPreference || state.Model.ProfileName != "Automatic" || state.Model.ContextWindow != 180000 {
+		t.Fatalf("Shift+Tab auto draft state = %#v", state)
+	}
+	if got := page.Status(); got != "Plan: off" {
+		t.Fatalf("auto draft mode status = %q", got)
+	}
+	page.Draw(screen)
+	screen.Show()
+	if footer := simulationRow(screen, 100, 17); !strings.Contains(footer, "[Automatic · auto-model · medium · flex]") || strings.Contains(footer, "Planning") || strings.Contains(footer, "gpt-5.4") {
+		t.Fatalf("auto draft footer after round trip = %q", footer)
 	}
 	transport.mu.Lock()
 	defer transport.mu.Unlock()

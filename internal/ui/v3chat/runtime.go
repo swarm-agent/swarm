@@ -41,12 +41,13 @@ type Runtime struct {
 	store     *Store
 	wake      func()
 
-	mu           sync.Mutex
-	cancel       context.CancelFunc
-	ready        chan struct{}
-	readyErr     error
-	readyOnce    sync.Once
-	primedCreate *client.SessionCreateOptions
+	mu                   sync.Mutex
+	cancel               context.CancelFunc
+	ready                chan struct{}
+	readyErr             error
+	readyOnce            sync.Once
+	primedCreate         *client.SessionCreateOptions
+	primedModeSelections map[string]DraftModeSelection
 
 	workspacePath string
 	cwdPath       string
@@ -74,12 +75,17 @@ func (r *Runtime) PrimeNewSession(request NewSessionRequest) error {
 		return errors.New("v3 chat transport is not configured")
 	}
 	create := request.Create
+	selections := cloneDraftModeSelections(request.DraftModeSelections)
+	selection := draftModeSelectionForCreate(create, selections)
+	create.Preference = selection.Preference
+	create.ModelProfile = cloneModelProfileChoice(selection.ModelProfile)
 	r.mu.Lock()
 	r.primedCreate = &create
+	r.primedModeSelections = selections
 	r.workspacePath = strings.TrimSpace(create.WorkspacePath)
 	r.cwdPath = strings.TrimSpace(create.CWDPath)
 	r.mu.Unlock()
-	r.store.Dispatch(PrimeNewSessionAction{Create: create})
+	r.store.Dispatch(PrimeNewSessionAction{Create: create, Selection: selection})
 	r.signalWake()
 	return nil
 }
@@ -285,9 +291,15 @@ func (r *Runtime) SetDraftMode(mode string) error {
 		r.mu.Unlock()
 		return errors.New("v3 chat new session draft is not primed")
 	}
+	selection := draftModeSelectionForCreate(*r.primedCreate, r.primedModeSelections)
+	if configured, ok := r.primedModeSelections[mode]; ok {
+		selection = cloneDraftModeSelection(configured)
+	}
 	r.primedCreate.Mode = mode
+	r.primedCreate.Preference = selection.Preference
+	r.primedCreate.ModelProfile = cloneModelProfileChoice(selection.ModelProfile)
 	r.mu.Unlock()
-	r.store.Dispatch(DraftModeAction{Mode: mode})
+	r.store.Dispatch(DraftModeAction{Mode: mode, Selection: selection})
 	r.signalWake()
 	return nil
 }
@@ -421,10 +433,19 @@ func (r *Runtime) RecoverStale(ctx context.Context, workspacePath, cwdPath strin
 	return r.Connect(ctx)
 }
 
+type DraftModeSelection struct {
+	Preference       client.ModelPreference
+	ModelProfile     *client.SessionV3ModelProfileChoice
+	AgentModelPolicy client.SessionV3AgentModelPolicy
+	ContextWindow    int
+	MaxOutputTokens  int
+}
+
 type NewSessionRequest struct {
-	Create        client.SessionCreateOptions
-	InitialPrompt string
-	Metadata      map[string]any
+	Create              client.SessionCreateOptions
+	DraftModeSelections map[string]DraftModeSelection
+	InitialPrompt       string
+	Metadata            map[string]any
 }
 
 // CreateAndSend keeps an empty request local and performs the canonical create
@@ -461,6 +482,7 @@ func (r *Runtime) createAndSend(ctx context.Context, request NewSessionRequest) 
 	}
 	r.mu.Lock()
 	r.primedCreate = nil
+	r.primedModeSelections = nil
 	r.workspacePath = strings.TrimSpace(request.Create.WorkspacePath)
 	r.cwdPath = strings.TrimSpace(request.Create.CWDPath)
 	r.mu.Unlock()
@@ -485,6 +507,49 @@ func (r *Runtime) createAndSend(ctx context.Context, request NewSessionRequest) 
 	r.store.Dispatch(MessageResultAction{Result: result})
 	r.signalWake()
 	return result, nil
+}
+
+func cloneModelProfileChoice(value *client.SessionV3ModelProfileChoice) *client.SessionV3ModelProfileChoice {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	if value.UseAccountDefault != nil {
+		useAccountDefault := *value.UseAccountDefault
+		cloned.UseAccountDefault = &useAccountDefault
+	}
+	if value.UseAgentDefault != nil {
+		useAgentDefault := *value.UseAgentDefault
+		cloned.UseAgentDefault = &useAgentDefault
+	}
+	return &cloned
+}
+
+func cloneDraftModeSelection(value DraftModeSelection) DraftModeSelection {
+	value.ModelProfile = cloneModelProfileChoice(value.ModelProfile)
+	return value
+}
+
+func cloneDraftModeSelections(values map[string]DraftModeSelection) map[string]DraftModeSelection {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]DraftModeSelection, len(values))
+	for mode, value := range values {
+		normalized, err := normalizeSessionMode(mode)
+		if err == nil {
+			cloned[normalized] = cloneDraftModeSelection(value)
+		}
+	}
+	return cloned
+}
+
+func draftModeSelectionForCreate(create client.SessionCreateOptions, selections map[string]DraftModeSelection) DraftModeSelection {
+	mode, _ := normalizeSessionMode(create.Mode)
+	if selection, ok := selections[mode]; ok {
+		return cloneDraftModeSelection(selection)
+	}
+	return DraftModeSelection{Preference: create.Preference, ModelProfile: cloneModelProfileChoice(create.ModelProfile)}
 }
 
 func (r *Runtime) markReady(err error) {

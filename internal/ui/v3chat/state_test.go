@@ -224,6 +224,58 @@ func TestHydrateAndRealtimeUsageShareCanonicalContextState(t *testing.T) {
 	}
 }
 
+func TestCanonicalModeEventReplacesPostDraftHydrationModelState(t *testing.T) {
+	autoDraft := client.ModelPreference{Provider: "openrouter", Model: "draft-auto", Thinking: "medium"}
+	planDraft := client.ModelPreference{Provider: "codex", Model: "draft-plan", Thinking: "high"}
+	state := Reduce(NewState(), PrimeNewSessionAction{
+		Create: client.SessionCreateOptions{Mode: "auto", Preference: autoDraft},
+		Selection: DraftModeSelection{
+			Preference: autoDraft, ContextWindow: 180000,
+			AgentModelPolicy: client.SessionV3AgentModelPolicy{ProfileName: "Draft Automatic", ProfileSource: "saved", Preference: autoDraft, ContextWindow: 180000},
+		},
+	})
+	state = Reduce(state, DraftModeAction{Mode: "plan", Selection: DraftModeSelection{
+		Preference: planDraft, ContextWindow: 200000,
+		AgentModelPolicy: client.SessionV3AgentModelPolicy{ProfileName: "Draft Planning", ProfileSource: "saved", Preference: planDraft, ContextWindow: 200000},
+	}})
+	backendPlan := client.ModelPreference{Provider: "codex", Model: "backend-plan", Thinking: "low"}
+	state = Reduce(state, HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:         client.SessionSummary{ID: "session", Mode: "plan", UpdatedAt: 100},
+		Preference:      backendPlan,
+		ContextWindow:   272000,
+		MaxOutputTokens: 12000,
+		AgentModelPolicy: client.SessionV3AgentModelPolicy{
+			Locked: true, ProfileName: "Backend Planning", ProfileSource: "saved",
+			Preference: backendPlan, ContextWindow: 272000, MaxOutputTokens: 12000,
+		},
+	}})
+	if state.Session.ID != "session" || state.Model.Preference.Model != "backend-plan" || state.Model.ProfileName != "Backend Planning" || state.Model.ProfileName == "Draft Planning" {
+		t.Fatalf("backend hydration retained draft assumptions: %#v", state)
+	}
+
+	backendAuto := client.ModelPreference{Provider: "codex", Model: "backend-auto", Thinking: "high", ServiceTier: "fast"}
+	payload, err := json.Marshal(map[string]any{
+		"mode": "auto", "updated_at": int64(200), "preference": backendAuto,
+		"context_window": 180000, "max_output_tokens": 16000,
+		"agent_model_policy": client.SessionV3AgentModelPolicy{
+			Source: "agent_auto_preset", Locked: true, ProfileName: "Backend Automatic", ProfileSource: "saved",
+			Preference: backendAuto, ContextWindow: 180000, MaxOutputTokens: 16000,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{
+		SessionID: "session", Seq: 1, EventType: "session.mode.updated", Payload: payload,
+	}}})
+	if state.Session.Mode != "auto" || state.Session.UpdatedAt != 200 || state.Model.Preference != backendAuto || state.Model.ProfileName != "Backend Automatic" || state.Model.ContextWindow != 180000 || state.Model.MaxOutputTokens != 16000 {
+		t.Fatalf("canonical mode event did not reconcile post-draft state: %#v", state)
+	}
+	if state.Model.ProfileName == "Draft Automatic" || state.Model.Preference.Model == "draft-auto" {
+		t.Fatalf("draft state leaked after canonical event: %#v", state)
+	}
+}
+
 func TestHydrateAndRealtimePreferenceShareCanonicalModelState(t *testing.T) {
 	state := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{
 		Session:       client.SessionSummary{ID: "s"},

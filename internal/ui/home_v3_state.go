@@ -95,14 +95,24 @@ func (p *HomePage) SessionIntent() HomeSessionIntent {
 	if p == nil {
 		return HomeSessionIntent{}
 	}
+	return p.SessionIntentForMode(p.SessionMode())
+}
+
+// SessionIntentForMode projects the same effective Plan/Auto selection used by
+// the homepage footer without mutating the current homepage draft mode.
+func (p *HomePage) SessionIntentForMode(mode string) HomeSessionIntent {
+	if p == nil {
+		return HomeSessionIntent{}
+	}
+	mode = normalizeHomeSessionMode(mode)
 	intent := p.sessionIntent
-	provider, modelName, thinking, serviceTier, contextMode := p.ModelState()
+	provider, modelName, thinking, serviceTier, contextMode := effectiveHomeModelState(p.model, mode)
 	intent.InitialPrompt = p.prompt
 	intent.Agent = strings.TrimSpace(p.model.ActiveAgent)
 	if intent.Agent == "" {
 		intent.Agent = "swarm"
 	}
-	intent.Mode = p.SessionMode()
+	intent.Mode = mode
 	intent.Preference = client.ModelPreference{
 		Provider:    strings.TrimSpace(provider),
 		Model:       strings.TrimSpace(modelName),

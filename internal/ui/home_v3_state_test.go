@@ -32,6 +32,14 @@ func TestSessionIntentUsesCurrentHomepageModeAndModeModel(t *testing.T) {
 	if autoIntent.Mode != "auto" || autoIntent.Preference.Model != "auto-model" || autoIntent.Preference.Thinking != "medium" {
 		t.Fatalf("auto intent = %#v, want current auto mode/model", autoIntent)
 	}
+
+	projectedPlan := page.SessionIntentForMode("plan")
+	if projectedPlan.Mode != "plan" || projectedPlan.Preference.Model != "plan-model" || projectedPlan.Preference.Thinking != "high" {
+		t.Fatalf("projected plan intent = %#v, want canonical plan selection", projectedPlan)
+	}
+	if page.SessionMode() != "auto" || page.SessionIntent().Preference.Model != "auto-model" {
+		t.Fatalf("projecting plan intent mutated homepage mode: mode=%q intent=%#v", page.SessionMode(), page.SessionIntent())
+	}
 }
 
 func TestHomepageStateCapturesComposerAndSessionIntentBoundary(t *testing.T) {

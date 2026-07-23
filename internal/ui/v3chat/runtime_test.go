@@ -254,10 +254,13 @@ func TestCreateAndSendWithoutInitialPromptPrimesDraftUntilFirstMessage(t *testin
 	}
 }
 
-func TestDraftModeUpdatesPrimedCreateLosslesslyUntilHydration(t *testing.T) {
+func TestDraftModeUpdatesEffectiveSelectionAndPrimedCreateLosslesslyUntilHydration(t *testing.T) {
 	useCurrentBranch := false
 	useAccountDefault := true
+	useAgentDefault := true
 	metadata := map[string]any{"source": "draft", "nested": map[string]any{"keep": true}}
+	autoPreference := client.ModelPreference{Provider: "openrouter", Model: "auto-model", Thinking: "medium", ServiceTier: "flex", ContextMode: "auto-context"}
+	planPreference := client.ModelPreference{Provider: "codex", Model: "plan-model", Thinking: "high", ServiceTier: "fast", ContextMode: "plan-context"}
 	create := client.SessionCreateOptions{
 		Title:                    "New Session",
 		WorkspacePath:            "/workspace",
@@ -274,12 +277,22 @@ func TestDraftModeUpdatesPrimedCreateLosslesslyUntilHydration(t *testing.T) {
 		TargetKind:               "host",
 		TargetRelationship:       "self",
 		Metadata:                 metadata,
-		Preference:               client.ModelPreference{Provider: "codex", Model: "draft-model", Thinking: "high", ServiceTier: "fast", ContextMode: "extended"},
+		Preference:               autoPreference,
 		ModelProfile:             &client.SessionV3ModelProfileChoice{UseAccountDefault: &useAccountDefault},
 		WorktreeMode:             "on",
 		WorktreeUseCurrentBranch: &useCurrentBranch,
 		WorktreeBaseBranch:       "dev",
 		WorktreeBranchName:       "agent/draft",
+	}
+	selections := map[string]DraftModeSelection{
+		"auto": {
+			Preference: autoPreference, ModelProfile: create.ModelProfile, ContextWindow: 180000,
+			AgentModelPolicy: client.SessionV3AgentModelPolicy{ProfileName: "Automatic", ProfileSource: "saved", Preference: autoPreference, ContextWindow: 180000},
+		},
+		"plan": {
+			Preference: planPreference, ModelProfile: &client.SessionV3ModelProfileChoice{UseAgentDefault: &useAgentDefault}, ContextWindow: 200000,
+			AgentModelPolicy: client.SessionV3AgentModelPolicy{ProfileName: "Planning", ProfileSource: "saved", Preference: planPreference, ContextWindow: 200000},
+		},
 	}
 	transport := &fakeTransport{created: client.SessionV3Hydrated{
 		Session:                client.SessionSummary{ID: "s", Title: "Backend title", WorkspacePath: "/backend/workspace", Mode: "auto"},
@@ -289,8 +302,11 @@ func TestDraftModeUpdatesPrimedCreateLosslesslyUntilHydration(t *testing.T) {
 	}}
 	runtime := NewRuntime(transport, nil, nil)
 	defer runtime.Stop()
-	if err := runtime.PrimeNewSession(NewSessionRequest{Create: create}); err != nil {
+	if err := runtime.PrimeNewSession(NewSessionRequest{Create: create, DraftModeSelections: selections}); err != nil {
 		t.Fatal(err)
+	}
+	if state := runtime.Store().Snapshot(); state.Session.Mode != "auto" || state.Model.Preference != autoPreference || state.Model.ProfileName != "Automatic" || state.Model.ContextWindow != 180000 {
+		t.Fatalf("initial auto draft selection = %#v", state)
 	}
 	if err := runtime.SetDraftMode("plan"); err != nil {
 		t.Fatal(err)
@@ -301,8 +317,17 @@ func TestDraftModeUpdatesPrimedCreateLosslesslyUntilHydration(t *testing.T) {
 		t.Fatalf("draft mode made backend calls: calls=%#v creates=%#v mode=%q", transport.calls, transport.createRequests, transport.modeRequest)
 	}
 	transport.mu.Unlock()
-	if state := runtime.Store().Snapshot(); state.Session.ID != "" || state.Session.Mode != "plan" || state.Model.Preference.Model != "draft-model" {
-		t.Fatalf("local draft mode state = %#v", state)
+	if state := runtime.Store().Snapshot(); state.Session.ID != "" || state.Session.Mode != "plan" || state.Model.Preference != planPreference || state.Model.ProfileName != "Planning" || state.Model.ContextWindow != 200000 {
+		t.Fatalf("local plan draft selection = %#v", state)
+	}
+	if err := runtime.SetDraftMode("auto"); err != nil {
+		t.Fatal(err)
+	}
+	if state := runtime.Store().Snapshot(); state.Session.Mode != "auto" || state.Model.Preference != autoPreference || state.Model.ProfileName != "Automatic" || state.Model.ContextWindow != 180000 {
+		t.Fatalf("local auto draft selection after round trip = %#v", state)
+	}
+	if err := runtime.SetDraftMode("plan"); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := runtime.Send(context.Background(), "first message", map[string]any{"prompt": "metadata"}); err != nil {
 		t.Fatal(err)
@@ -316,8 +341,10 @@ func TestDraftModeUpdatesPrimedCreateLosslesslyUntilHydration(t *testing.T) {
 	}
 	want := create
 	want.Mode = "plan"
+	want.Preference = planPreference
+	want.ModelProfile = selections["plan"].ModelProfile
 	if !reflect.DeepEqual(requests[0], want) {
-		t.Fatalf("first-send create options changed beyond mode:\n got %#v\nwant %#v", requests[0], want)
+		t.Fatalf("first-send create options did not preserve unrelated fields:\n got %#v\nwant %#v", requests[0], want)
 	}
 	if !reflect.DeepEqual(calls[:4], []string{"create-tui", "stream", "ready", "send"}) {
 		t.Fatalf("first-send calls = %#v", calls)

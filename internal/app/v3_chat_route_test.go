@@ -365,6 +365,34 @@ func TestV3ChatHomeProfileUsesCanonicalCreateAndFooterHandoff(t *testing.T) {
 	}
 }
 
+func TestV3ChatDraftSelectionsReuseHomepagePlanAutoProjection(t *testing.T) {
+	profile := model.ActiveModelProfile{Source: "saved", ProfileID: "profile-1", Name: "Focused work", ModelMode: "split"}
+	home := ui.NewHomePage(model.HomeModel{
+		ActiveAgent:             "swarm",
+		ActiveAgentExitPlanMode: true,
+		ActiveModelProfile:      profile,
+		PlanModelProvider:       "codex", PlanModelName: "gpt-5.4", PlanThinkingLevel: "high", PlanServiceTier: "fast", PlanContextMode: "1m",
+		AutoModelProvider: "openrouter", AutoModelName: "auto-model", AutoThinkingLevel: "medium", AutoServiceTier: "flex", AutoContextMode: "auto-context",
+		ContextWindow: 180000,
+	})
+	home.SetSessionMode("auto")
+	app := &App{home: home, homeModel: model.HomeModel{ContextWindow: 180000}}
+	selections := app.v3ChatDraftModeSelections()
+	plan, auto := selections["plan"], selections["auto"]
+	if plan.Preference.Model != "gpt-5.4" || plan.Preference.Thinking != "high" || plan.Preference.ServiceTier != "fast" || plan.Preference.ContextMode != "1m" || plan.ContextWindow != model.CodexGPT54LargeContextWindow {
+		t.Fatalf("plan draft selection = %#v", plan)
+	}
+	if auto.Preference.Provider != "openrouter" || auto.Preference.Model != "auto-model" || auto.Preference.Thinking != "medium" || auto.Preference.ServiceTier != "flex" || auto.Preference.ContextMode != "auto-context" || auto.ContextWindow != 180000 {
+		t.Fatalf("auto draft selection = %#v", auto)
+	}
+	if plan.AgentModelPolicy.ProfileName != "Focused work" || auto.AgentModelPolicy.ProfileName != "Focused work" || plan.ModelProfile == nil || plan.ModelProfile.SavedProfileID != "profile-1" || auto.ModelProfile == nil || auto.ModelProfile.SavedProfileID != "profile-1" {
+		t.Fatalf("draft profile choices = plan %#v auto %#v", plan, auto)
+	}
+	if home.SessionMode() != "auto" {
+		t.Fatalf("draft selection projection mutated homepage mode to %q", home.SessionMode())
+	}
+}
+
 func TestNewHomepageChatRouteUsesV3PageBoundary(t *testing.T) {
 	appRaw, err := os.ReadFile("app.go")
 	if err != nil {

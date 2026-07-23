@@ -296,11 +296,17 @@ type HydrateAction struct{ Snapshot client.SessionV3Hydrated }
 
 func (HydrateAction) isV3ChatAction() {}
 
-type PrimeNewSessionAction struct{ Create client.SessionCreateOptions }
+type PrimeNewSessionAction struct {
+	Create    client.SessionCreateOptions
+	Selection DraftModeSelection
+}
 
 func (PrimeNewSessionAction) isV3ChatAction() {}
 
-type DraftModeAction struct{ Mode string }
+type DraftModeAction struct {
+	Mode      string
+	Selection DraftModeSelection
+}
 
 func (DraftModeAction) isV3ChatAction() {}
 
@@ -361,9 +367,10 @@ func Reduce(current State, action Action) State {
 	case HydrateAction:
 		next = reduceHydrated(next, value.Snapshot)
 	case PrimeNewSessionAction:
-		next = reducePrimedNewSession(value.Create)
+		next = reducePrimedNewSession(value.Create, value.Selection)
 	case DraftModeAction:
 		next.Session.Mode = strings.ToLower(strings.TrimSpace(value.Mode))
+		applyDraftModeSelection(&next.Model, value.Selection)
 	case PendingUserAction:
 		pending := value.Pending
 		if id := strings.TrimSpace(pending.ID); id != "" {
@@ -400,7 +407,7 @@ func Reduce(current State, action Action) State {
 	return next
 }
 
-func reducePrimedNewSession(create client.SessionCreateOptions) State {
+func reducePrimedNewSession(create client.SessionCreateOptions, selection DraftModeSelection) State {
 	state := NewState()
 	state.Session = Session{
 		Title:         strings.TrimSpace(create.Title),
@@ -408,8 +415,16 @@ func reducePrimedNewSession(create client.SessionCreateOptions) State {
 		WorkspaceName: strings.TrimSpace(create.WorkspaceName),
 		Mode:          strings.ToLower(strings.TrimSpace(create.Mode)),
 	}
-	state.Model.Preference = normalizeModelPreference(create.Preference)
+	applyDraftModeSelection(&state.Model, selection)
 	return state
+}
+
+func applyDraftModeSelection(state *ModelState, selection DraftModeSelection) {
+	if state == nil {
+		return
+	}
+	*state = ModelState{}
+	applyAgentModelPolicy(state, selection.Preference, selection.ContextWindow, selection.MaxOutputTokens, selection.AgentModelPolicy)
 }
 
 func reduceHydrated(state State, hydrated client.SessionV3Hydrated) State {

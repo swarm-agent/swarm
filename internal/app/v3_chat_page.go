@@ -236,6 +236,33 @@ func v3ChatCreateModelProfile(profile model.ActiveModelProfile) *client.SessionV
 	return nil
 }
 
+func (a *App) v3ChatDraftModeSelections() map[string]v3chat.DraftModeSelection {
+	if a == nil || a.home == nil {
+		return nil
+	}
+	selections := make(map[string]v3chat.DraftModeSelection, 2)
+	for _, mode := range []string{"plan", "auto"} {
+		intent := a.home.SessionIntentForMode(mode)
+		preference := intent.Preference
+		profile := intent.Profile
+		contextWindow := model.CodexContextWindow(preference.Provider, preference.Model, preference.ContextMode, a.homeModel.ContextWindow)
+		selections[mode] = v3chat.DraftModeSelection{
+			Preference:    preference,
+			ModelProfile:  v3ChatCreateModelProfile(profile),
+			ContextWindow: contextWindow,
+			AgentModelPolicy: client.SessionV3AgentModelPolicy{
+				Preference:    preference,
+				ContextWindow: contextWindow,
+				ProfileID:     strings.TrimSpace(profile.ProfileID),
+				ProfileName:   strings.TrimSpace(profile.Name),
+				ProfileSource: strings.TrimSpace(profile.Source),
+				ProfileMode:   strings.TrimSpace(profile.ModelMode),
+			},
+		}
+	}
+	return selections
+}
+
 func (a *App) newV3ChatCreateOptions(intent ui.HomeSessionIntent, route model.ChatRoute, worktreeSuffix string) (client.SessionCreateOptions, error) {
 	if a == nil || a.api == nil {
 		return client.SessionCreateOptions{}, errors.New("api client is not configured")
@@ -322,7 +349,7 @@ func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, 
 	a.v3Chat = a.newV3ChatPage(runtime, a.v3ChatFooterRouteLabel(route), v3ChatHomeProfileLabel(intent.Profile))
 	a.route = "v3chat"
 	a.home.ClearPrompt()
-	a.v3Chat.OpenNew(v3chat.NewSessionRequest{Create: create, InitialPrompt: strings.TrimSpace(intent.InitialPrompt)})
+	a.v3Chat.OpenNew(v3chat.NewSessionRequest{Create: create, DraftModeSelections: a.v3ChatDraftModeSelections(), InitialPrompt: strings.TrimSpace(intent.InitialPrompt)})
 	return nil
 }
 
@@ -341,7 +368,7 @@ func (a *App) syncPrimedV3ChatFromHomeDraft() {
 		a.v3Chat.SetStatus("refresh new session draft failed: " + err.Error())
 		return
 	}
-	_ = runtime.PrimeNewSession(v3chat.NewSessionRequest{Create: create})
+	_ = runtime.PrimeNewSession(v3chat.NewSessionRequest{Create: create, DraftModeSelections: a.v3ChatDraftModeSelections()})
 	a.v3Chat.SetProfileLabel(v3ChatHomeProfileLabel(intent.Profile))
 }
 
