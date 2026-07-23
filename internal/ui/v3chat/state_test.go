@@ -3,6 +3,7 @@ package v3chat
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -146,6 +147,65 @@ func TestModeActionShiftsModelAndProfileFromBackendPolicy(t *testing.T) {
 	}})
 	if state.Session.Mode != "plan" || state.Model.Preference.Model != "resolved-plan-model" || state.Model.ProfileName != "Plan profile" || state.Model.ProfileSource != "saved" || !state.Model.Locked {
 		t.Fatalf("mode/model shift state = %#v", state)
+	}
+}
+
+func TestSessionModeUpdatedEventAppliesPresentFieldsWithoutErasingCanonicalState(t *testing.T) {
+	state := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:         client.SessionSummary{ID: "s", Mode: "plan", UpdatedAt: 100},
+		Preference:      client.ModelPreference{Provider: "codex", Model: "plan-model", Thinking: "high"},
+		ContextWindow:   200000,
+		MaxOutputTokens: 12000,
+		AgentModelPolicy: client.SessionV3AgentModelPolicy{
+			Locked: true, Reason: "plan preset", ProfileName: "Planning", ProfileSource: "saved", ProfileMode: "split",
+			Preference: client.ModelPreference{Provider: "codex", Model: "plan-model", Thinking: "high"}, ContextWindow: 200000, MaxOutputTokens: 12000,
+		},
+	}})
+	payload, _ := json.Marshal(map[string]any{"mode": "auto", "updated_at": int64(200)})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{
+		SessionID: "s", Seq: 2, EventType: "session.mode.updated", Payload: payload,
+	}}})
+	if state.Session.Mode != "auto" || state.Session.UpdatedAt != 200 {
+		t.Fatalf("mode event session state = %#v", state.Session)
+	}
+	if state.Model.Preference.Model != "plan-model" || state.Model.ContextWindow != 200000 || state.Model.MaxOutputTokens != 12000 || state.Model.ProfileName != "Planning" || !state.Model.Locked {
+		t.Fatalf("absent mode event fields erased canonical model state: %#v", state.Model)
+	}
+
+	older, _ := json.Marshal(map[string]any{"mode": "plan", "updated_at": int64(150)})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{
+		SessionID: "s", Seq: 1, EventType: "session.mode.updated", Payload: older,
+	}}})
+	if state.Session.Mode != "auto" || state.Session.UpdatedAt != 200 {
+		t.Fatalf("older mode event rewound canonical state: %#v", state.Session)
+	}
+}
+
+func TestExitPlanModeRealtimeAndHydrationResolveTheSameCanonicalState(t *testing.T) {
+	preference := client.ModelPreference{Provider: "codex", Model: "auto-model", Thinking: "high", ServiceTier: "fast"}
+	policy := client.SessionV3AgentModelPolicy{
+		Source: "agent_auto_preset", Locked: true, Reason: "auto preset", ProfileName: "Automatic", ProfileSource: "saved", ProfileMode: "split",
+		Preference: preference, ContextWindow: 180000, MaxOutputTokens: 16000,
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"mode": "auto", "updated_at": int64(300), "preference": preference,
+		"context_window": 180000, "max_output_tokens": 16000, "agent_model_policy": policy,
+	})
+	realtime := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:         client.SessionSummary{ID: "s", Mode: "plan", UpdatedAt: 100},
+		Preference:      client.ModelPreference{Provider: "codex", Model: "plan-model", Thinking: "low"},
+		ContextWindow:   200000,
+		MaxOutputTokens: 12000,
+	}})
+	realtime = Reduce(realtime, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{
+		SessionID: "s", Seq: 3, EventType: "session.mode.updated", Payload: payload,
+	}}})
+	hydrated := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session: client.SessionSummary{ID: "s", Mode: "auto", UpdatedAt: 300}, Preference: preference,
+		ContextWindow: 180000, MaxOutputTokens: 16000, AgentModelPolicy: policy,
+	}})
+	if realtime.Session.Mode != hydrated.Session.Mode || realtime.Session.UpdatedAt != hydrated.Session.UpdatedAt || !reflect.DeepEqual(realtime.Model, hydrated.Model) {
+		t.Fatalf("realtime and hydrated canonical state differ:\nrealtime=%#v\nhydrated=%#v", realtime, hydrated)
 	}
 }
 

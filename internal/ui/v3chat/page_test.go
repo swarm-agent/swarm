@@ -1362,6 +1362,57 @@ func TestPagePreservesHomeProfileUntilBackendModeShiftResolvesProfile(t *testing
 	}
 }
 
+func TestExitPlanModeCanonicalEventUpdatesRenderedFooterPolicy(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:         client.SessionSummary{ID: "s", Title: "chat", Mode: "plan", UpdatedAt: 100},
+		Preference:      client.ModelPreference{Provider: "codex", Model: "plan-model", Thinking: "low"},
+		ContextWindow:   200000,
+		MaxOutputTokens: 12000,
+		AgentModelPolicy: client.SessionV3AgentModelPolicy{
+			Locked: true, ProfileName: "Planning", ProfileSource: "saved",
+			Preference: client.ModelPreference{Provider: "codex", Model: "plan-model", Thinking: "low"}, ContextWindow: 200000, MaxOutputTokens: 12000,
+		},
+	}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	page.SetRouteLabel("Primary Desk")
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(90, 18)
+	page.Draw(screen)
+	screen.Show()
+	before := simulationRow(screen, 90, 17)
+	if !strings.Contains(before, " Plan ") || !strings.Contains(before, "[Planning · plan-model · low]") {
+		t.Fatalf("plan footer = %q", before)
+	}
+
+	preference := client.ModelPreference{Provider: "codex", Model: "auto-model", Thinking: "high", ServiceTier: "fast"}
+	policy := client.SessionV3AgentModelPolicy{
+		Source: "agent_auto_preset", Locked: true, ProfileName: "Automatic", ProfileSource: "saved",
+		Preference: preference, ContextWindow: 180000, MaxOutputTokens: 16000,
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"mode": "auto", "updated_at": int64(200), "preference": preference,
+		"context_window": 180000, "max_output_tokens": 16000, "agent_model_policy": policy,
+	})
+	store.Dispatch(RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{
+		SessionID: "s", Seq: 2, EventType: "session.mode.updated", Payload: payload,
+	}}})
+	page.Draw(screen)
+	screen.Show()
+	after := simulationRow(screen, 90, 17)
+	if strings.Contains(after, " Plan ") || !strings.Contains(after, "[Automatic · auto-model · high · fast]") || strings.Contains(after, "plan-model") {
+		t.Fatalf("auto footer after canonical exit_plan_mode event = %q", after)
+	}
+	state := store.Snapshot()
+	if state.Session.Mode != "auto" || state.Session.UpdatedAt != 200 || state.Model.ContextWindow != 180000 || state.Model.MaxOutputTokens != 16000 {
+		t.Fatalf("canonical footer state = %#v", state)
+	}
+}
+
 func TestShiftTabCyclesPrimedDraftModeLocally(t *testing.T) {
 	transport := &fakeTransport{}
 	runtime := NewRuntime(transport, nil, nil)

@@ -541,6 +541,9 @@ func applyEvent(state State, event client.SessionV3Event) State {
 			state.Model.Preference = normalizeModelPreference(preference)
 		}
 	}
+	if strings.EqualFold(strings.TrimSpace(event.EventType), "session.mode.updated") {
+		state = applySessionModeUpdatedEvent(state, payload)
+	}
 	if raw := payload["usage_summary"]; len(raw) > 0 {
 		var summary client.SessionUsageSummary
 		if json.Unmarshal(raw, &summary) == nil {
@@ -573,6 +576,40 @@ func applyEvent(state State, event client.SessionV3Event) State {
 	state = applyToolEvent(state, clientSessionV3Event{Seq: event.Seq, EventType: event.EventType, Timestamp: event.TsUnixMS}, payload)
 	if event.Seq > state.LastEventSeq {
 		state.LastEventSeq = event.Seq
+	}
+	return state
+}
+
+func applySessionModeUpdatedEvent(state State, payload map[string]json.RawMessage) State {
+	if raw := payload["mode"]; len(raw) > 0 {
+		var mode string
+		if json.Unmarshal(raw, &mode) == nil {
+			state.Session.Mode = strings.ToLower(strings.TrimSpace(mode))
+		}
+	}
+	if raw := payload["updated_at"]; len(raw) > 0 {
+		var updatedAt int64
+		if json.Unmarshal(raw, &updatedAt) == nil {
+			state.Session.UpdatedAt = updatedAt
+		}
+	}
+	if raw := payload["context_window"]; len(raw) > 0 {
+		var contextWindow int
+		if json.Unmarshal(raw, &contextWindow) == nil {
+			state.Model.ContextWindow = contextWindow
+		}
+	}
+	if raw := payload["max_output_tokens"]; len(raw) > 0 {
+		var maxOutputTokens int
+		if json.Unmarshal(raw, &maxOutputTokens) == nil {
+			state.Model.MaxOutputTokens = maxOutputTokens
+		}
+	}
+	if raw := payload["agent_model_policy"]; len(raw) > 0 {
+		var policy client.SessionV3AgentModelPolicy
+		if json.Unmarshal(raw, &policy) == nil {
+			applyAgentModelPolicy(&state.Model, state.Model.Preference, state.Model.ContextWindow, state.Model.MaxOutputTokens, policy)
+		}
 	}
 	return state
 }
