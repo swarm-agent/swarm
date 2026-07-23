@@ -10,7 +10,7 @@ If this file conflicts with convenience, this file wins. If this file conflicts 
 
 - Never commit secrets: API keys, tokens, cookies, OAuth artifacts, private keys, `.env` values, auth dumps, real credentials, or screenshots/logs containing them.
 - Never commit personal or machine-specific identifiers: local usernames, workstation paths, home-directory references, hostnames, private URLs, or private network details unless they are intentional public product defaults.
-- Never hardcode local paths in runtime code, scripts, tests, or docs. Use XDG-aware paths, `os.UserHomeDir`, `filepath.Join`, `filepath.Clean`, `filepath.Abs`, `mktemp`, or `os.MkdirTemp` as appropriate.
+- Never hardcode local paths in runtime code, scripts, tests, or docs. Use XDG-aware paths, `os.UserHomeDir`, `filepath.Join`, `filepath.Clean`, or `filepath.Abs` as appropriate. For disposable command scratch, use the run-provided `TMPDIR` (for example, `mktemp -d "$TMPDIR/..."`) or APIs such as `os.MkdirTemp("", ...)` that honor it; never target a literal `/tmp` path.
 - Never invent product/runtime state locations such as `~/.local`, `.local`, hidden scratch dirs, or ad-hoc local fallbacks. Preserve the canonical path. If unclear, verify from code/harnesses or ask.
 - Never add fallback behavior that hides real failures or makes a failed operation look successful. Fail clearly and explain what is missing.
 - Never overload an API, handler, route, tool, command, or workflow with unrelated jobs. Prefer explicit modes or separate APIs.
@@ -133,12 +133,12 @@ Use these instead of one-off scripts when the user asks for the matching task:
 - If the user asks for a remote DB dump through SSH and explicitly names an SSH alias or forbids helper/runner scripts, use the exact SSH alias with direct `ssh <alias>` and run `./scripts/local-session-db-inspect.sh` on the remote checkout. Do not substitute a hostname, do not use `ssh-fast-test.sh`, and do not use `ssh-session-db-inspect.sh` when the user forbids it. Stop or restore the remote service exactly as requested.
 - Use each script’s `--help` for current flags.
 
-## 4. Safe Throwaway / Scratch Locations
+## 4. Temporary Data and Repository Scratch
 
-Safe ignored scratch areas include `tmp/`, `.cache/`, `.runtime/`, `.swarm/`, `.tools/`, and `.tmp-tools/`.
-
-- Treat scratch paths as local-only, never canonical product storage.
-- Prefer ignored scratch paths for investigation notes. Do not add tracked docs unless they are intentional user-facing documentation.
+- Use the run-provided `TMPDIR` for disposable command files and directories. Its contents are command-scoped and may be removed immediately after the command exits.
+- Keep requested or durable deliverables in the workspace; never leave the only copy in `TMPDIR`.
+- Do not create repository scratch by default. When repository-local scratch is genuinely required, use only an existing contract-approved ignored area such as `tmp/`, `.cache/`, `.runtime/`, `.swarm/`, `.tools/`, or `.tmp-tools/`, and verify it is ignored before writing.
+- Treat approved repository scratch as local-only, never canonical product storage or a durable deliverable.
 - Do not make runtime behavior depend on scratch files.
 - Before finishing cleanup or commit work, verify throwaway artifacts are not staged.
 - For public cleanup, remove temporary plans, audit scratchpads, private logs, generated outputs, caches, and local notes unless explicitly kept.

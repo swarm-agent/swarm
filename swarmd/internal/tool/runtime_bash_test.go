@@ -46,3 +46,12 @@ func TestBashKeepsLargeTextForOutputViewer(t *testing.T) {
 		t.Fatalf("large bash output length = %d, want %d", len(got), len(expected))
 	}
 }
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal JSON: %v", err)
+	}
+	return string(encoded)
+}

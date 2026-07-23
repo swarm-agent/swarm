@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"swarm-refactor/swarmtui/pkg/startupconfig"
 )
 
 func TestDevToolchainEnvDefaultsToAutomaticToolchainSelection(t *testing.T) {
