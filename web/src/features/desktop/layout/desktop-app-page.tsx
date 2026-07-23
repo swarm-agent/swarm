@@ -2445,13 +2445,13 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
               <>
                 <button
                   type="button"
-                  className="grid h-5 w-5 place-items-center rounded border border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                  className="inline-flex h-5 items-center gap-1 rounded border border-[var(--app-border)] px-1.5 text-[9px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                   aria-label="Review worktrees"
                   title="Review worktrees"
                   aria-expanded={input.reviewCleanupOpen}
                   onClick={input.onToggleReviewCleanup}
                 >
-                  <GitMerge size={12} aria-hidden="true" />
+                  <span>Manage</span>
                 </button>
               </>
             ) : null}
