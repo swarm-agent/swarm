@@ -538,6 +538,14 @@ func applyEvent(state State, event client.SessionV3Event) State {
 	}
 	var payload map[string]json.RawMessage
 	_ = json.Unmarshal(event.Payload, &payload)
+	if strings.EqualFold(strings.TrimSpace(event.EventType), "session.mode.updated") {
+		if updatedAt := rawInt64(payload, "updated_at"); updatedAt > 0 && state.Session.UpdatedAt > 0 && updatedAt < state.Session.UpdatedAt {
+			if event.Seq > state.LastEventSeq {
+				state.LastEventSeq = event.Seq
+			}
+			return state
+		}
+	}
 	if raw := payload["session"]; len(raw) > 0 {
 		var session client.SessionSummary
 		if json.Unmarshal(raw, &session) == nil && strings.TrimSpace(session.ID) != "" {

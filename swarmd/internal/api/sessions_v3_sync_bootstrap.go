@@ -13,6 +13,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/modelpolicy"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -908,6 +909,21 @@ func (s *Server) resolveSessionsV3SyncPreference(preference pebblestore.ModelPre
 }
 
 func (s *Server) sessionsV3AgentModelPolicyWithResolver(session pebblestore.SessionSnapshot, defaultPreference pebblestore.ModelPreference, defaultContextWindow, defaultMaxOutputTokens int, resolvePreference func(pebblestore.ModelPreference) sessionsV3SyncResolvedPreference) sessionsV3AgentModelPolicy {
+	if session.ModelProfile == nil && strings.EqualFold(strings.TrimSpace(session.Mode), sessionruntime.ModeAuto) && s != nil && s.agents != nil {
+		if name := firstNonEmpty(sessionsV3MetadataString(session.Metadata, "resolved_agent_name"), sessionsV3MetadataString(session.Metadata, "agent_name")); name != "" {
+			if current, err := s.agents.ResolveAgentForAccount(session.AccountScopeID, name); err == nil {
+				if transition, err := modelpolicy.ResolveModeTransition(session, current, session.Mode, func(preference pebblestore.ModelPreference) (modelpolicy.ResolvedPreference, error) {
+					resolved := sessionsV3SyncResolvedPreference{Preference: preference}
+					if resolvePreference != nil {
+						resolved = resolvePreference(preference)
+					}
+					return modelpolicy.ResolvedPreference{Preference: resolved.Preference, ContextWindow: resolved.ContextWindow, MaxOutputTokens: resolved.MaxOutputTokens}, nil
+				}); err == nil && transition.Preference == defaultPreference {
+					return transition.AgentModelPolicy
+				}
+			}
+		}
+	}
 	policy := sessionsV3AgentModelPolicy{
 		AgentName:       sessionsV3MetadataString(session.Metadata, "agent_name"),
 		ResolvedAgent:   sessionsV3MetadataString(session.Metadata, "resolved_agent_name"),

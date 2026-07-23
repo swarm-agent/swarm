@@ -117,6 +117,49 @@ func TestExecuteExitPlanModePersistsStructuredDocument(t *testing.T) {
 	}
 }
 
+func TestExecuteExitPlanModeFailsBeforeMutationWhenAutoPolicyCannotResolve(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	runSvc.model = nil
+	mutationCalls := 0
+	apply := func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		mutationCalls++
+		return sessionruntime.SessionMutationResult{}, nil
+	}
+	args := mustMarshalPlanToolTestArgs(t, map[string]any{
+		"title": "Fail closed",
+		"document": pebblestore.SessionPlanDocument{
+			Title:       "Fail closed",
+			Info:        pebblestore.SessionPlanInfo{Goal: "do not half-transition"},
+			Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Only", Status: "pending", Tasks: []string{"work"}, AcceptanceCriteria: []string{"done"}}},
+		},
+	})
+	profile := pebblestore.AgentProfile{Name: "custom", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ModelMode: "split", AutoProvider: "codex", AutoModel: "action-model"}
+	if _, err := runSvc.executeExitPlanModeTool(sessionID, sessionruntime.ModePlan, profile, args, "", apply); err == nil {
+		t.Fatal("exit_plan_mode unexpectedly succeeded without model policy resolver")
+	}
+	if mutationCalls != 0 {
+		t.Fatalf("mutation calls = %d, want zero", mutationCalls)
+	}
+	stored, ok, err := sessionSvc.GetSession(sessionID)
+	if err != nil || !ok || stored.Mode != sessionruntime.ModePlan {
+		t.Fatalf("session after failed exit: ok=%t err=%v session=%+v", ok, err, stored)
+	}
+	if _, ok, err := sessionSvc.GetActivePlan(sessionID); err != nil || ok {
+		t.Fatalf("plan persisted during failed exit: ok=%t err=%v", ok, err)
+	}
+}
+
+func mustMarshalPlanToolTestArgs(t *testing.T, value any) string {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
 func TestExitPlanModePermissionPayloadIncludesStructuredDocument(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()

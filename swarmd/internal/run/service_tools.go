@@ -14,6 +14,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/modelpolicy"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/privacy"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -1556,12 +1557,22 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 		return &pebblestore.MessageSnapshot{Role: "system", Content: message.Content, Metadata: message.Metadata}
 	}
 	if applySessionMutation != nil {
-		if current, ok, getErr := s.sessions.GetSession(sessionID); getErr == nil && ok {
-			current.Mode = sessionruntime.ModeAuto
-			preference, contextWindow, maxOutputTokens, policy, resolveErr := s.resolvePlanLifecycleModePreference(sessionruntime.PlanLifecycleResult{Session: current})
-			if resolveErr == nil && strings.TrimSpace(preference.Provider) != "" && strings.TrimSpace(preference.Model) != "" {
-				input.ModeEventFields = map[string]any{"preference": preference, "context_window": contextWindow, "max_output_tokens": maxOutputTokens, "agent_model_policy": policy, "swarm_conf_v3_diagnostics_enabled": os.Getenv("SWARM_V3_DIAGNOSTICS") == "1"}
-			}
+		current, ok, getErr := s.sessions.GetSession(sessionID)
+		if getErr != nil {
+			return "", fmt.Errorf("exit_plan_mode failed to load current session policy: %w", getErr)
+		}
+		if !ok {
+			return "", fmt.Errorf("exit_plan_mode failed to load current session policy: session %q not found", sessionID)
+		}
+		transition, resolveErr := s.resolvePlanLifecycleModeTransition(current, agentProfile, sessionruntime.ModeAuto)
+		if resolveErr != nil {
+			return "", fmt.Errorf("exit_plan_mode failed to resolve auto model policy: %w", resolveErr)
+		}
+		input.ModePreference = transition.Preference
+		input.ModeAgentProfile = &transition.ActiveProfile
+		input.ModeEventFields = map[string]any{
+			"preference": transition.Preference, "context_window": transition.ContextWindow, "max_output_tokens": transition.MaxOutputTokens,
+			"agent_model_policy": transition.AgentModelPolicy, "swarm_conf_v3_diagnostics_enabled": os.Getenv("SWARM_V3_DIAGNOSTICS") == "1",
 		}
 	}
 	lifecycleResult, lifecycleErr := sessionruntime.NewPlanLifecycleService(s.sessions).SubmitPlanForApproval(input)
@@ -1768,34 +1779,30 @@ func (s *Service) persistPlanLifecycleResult(result sessionruntime.PlanLifecycle
 	return nil
 }
 
-func (s *Service) resolvePlanLifecycleModePreference(result sessionruntime.PlanLifecycleResult) (pebblestore.ModelPreference, int, int, map[string]any, error) {
+func (s *Service) resolvePlanLifecycleModePreference(result sessionruntime.PlanLifecycleResult) (pebblestore.ModelPreference, int, int, modelpolicy.AgentModelPolicy, error) {
+	transition, err := s.resolvePlanLifecycleModeTransition(result.Session, pebblestore.AgentProfile{}, result.Session.Mode)
+	return transition.Preference, transition.ContextWindow, transition.MaxOutputTokens, transition.AgentModelPolicy, err
+}
+
+func (s *Service) resolvePlanLifecycleModeTransition(session pebblestore.SessionSnapshot, activeProfile pebblestore.AgentProfile, targetMode string) (modelpolicy.ModeTransition, error) {
 	if s == nil || s.model == nil {
-		return pebblestore.ModelPreference{}, 0, 0, nil, nil
+		return modelpolicy.ModeTransition{}, errors.New("model service is not configured")
 	}
-	profile, err := sessionV3AgentProfileFromMetadataMap(result.Session.Metadata)
-	if err != nil {
-		return pebblestore.ModelPreference{}, 0, 0, nil, nil
+	profileName := strings.TrimSpace(activeProfile.Name)
+	if profileName == "" {
+		profileName = strings.TrimSpace(firstNonEmptyString(mapString(session.Metadata, "resolved_agent_name"), mapString(session.Metadata, "agent_name")))
 	}
-	preference := applyAgentPreferenceOverridesForMode(result.Session.Preference, profile, result.Session.Mode)
-	resolved, err := s.model.ResolvePreference(preference)
-	if err != nil {
-		resolved.Preference = preference
+	if profileName != "" && s.agents != nil {
+		current, resolveErr := s.resolveAgentForAccount(session.AccountScopeID, profileName)
+		if resolveErr != nil {
+			return modelpolicy.ModeTransition{}, fmt.Errorf("resolve active agent %q: %w", profileName, resolveErr)
+		}
+		activeProfile = current
 	}
-	policy := map[string]any{
-		"agent_name":          strings.TrimSpace(profile.Name),
-		"resolved_agent_name": strings.TrimSpace(profile.Name),
-		"source":              "default",
-		"locked":              false,
-		"preference":          resolved.Preference,
-		"context_window":      resolved.ContextWindow,
-		"max_output_tokens":   resolved.MaxOutputTokens,
-	}
-	if pebblestore.AgentModelMode(profile) == "split" && pebblestore.AgentSupportsSplitModel(profile) {
-		policy["source"] = "agent_auto_preset"
-		policy["locked"] = true
-		policy["reason"] = "Session exited plan mode; active model switched to the configured auto model."
-	}
-	return resolved.Preference, resolved.ContextWindow, resolved.MaxOutputTokens, policy, nil
+	return modelpolicy.ResolveModeTransition(session, activeProfile, targetMode, func(preference pebblestore.ModelPreference) (modelpolicy.ResolvedPreference, error) {
+		resolved, err := s.model.ResolvePreference(preference)
+		return modelpolicy.ResolvedPreference{Preference: resolved.Preference, ContextWindow: resolved.ContextWindow, MaxOutputTokens: resolved.MaxOutputTokens}, err
+	})
 }
 
 func sessionV3AgentProfileFromMetadataMap(metadata map[string]any) (pebblestore.AgentProfile, error) {

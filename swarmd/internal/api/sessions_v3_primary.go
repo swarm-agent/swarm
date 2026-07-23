@@ -15,6 +15,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/modelpolicy"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -182,20 +183,7 @@ type sessionsV3HydratedSession struct {
 	SnapshotEndpointCursor string                            `json:"snapshot_endpoint_cursor"`
 }
 
-type sessionsV3AgentModelPolicy struct {
-	AgentName       string                      `json:"agent_name"`
-	ResolvedAgent   string                      `json:"resolved_agent_name"`
-	Source          string                      `json:"source"`
-	Locked          bool                        `json:"locked"`
-	Reason          string                      `json:"reason,omitempty"`
-	Preference      pebblestore.ModelPreference `json:"preference"`
-	ContextWindow   int                         `json:"context_window"`
-	MaxOutputTokens int                         `json:"max_output_tokens"`
-	ProfileID       string                      `json:"profile_id,omitempty"`
-	ProfileName     string                      `json:"profile_name,omitempty"`
-	ProfileSource   string                      `json:"profile_source,omitempty"`
-	ProfileMode     string                      `json:"profile_mode,omitempty"`
-}
+type sessionsV3AgentModelPolicy = modelpolicy.AgentModelPolicy
 
 type sessionsV3ArchiveBatchRequest struct {
 	SessionIDs []string `json:"session_ids"`
@@ -1478,14 +1466,28 @@ func (s *Server) handleSessionV3PrimaryMode(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	next := session
+	transition, err := s.resolveSessionsV3ModeTransition(session, mode)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("resolve %s model policy: %w", mode, err))
+		return
+	}
 	next.Mode = mode
+	next.Preference = transition.Preference
+	next.Metadata = cloneSessionsV3Metadata(next.Metadata)
+	next.Metadata["agent_profile"] = cloneSessionsV3AgentProfile(transition.ActiveProfile)
+	next.Metadata["agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
+	next.Metadata["resolved_agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
 	next.UpdatedAt = time.Now().UnixMilli()
-	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMode, map[string]any{"mode": mode})
+	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMode, map[string]any{"mode": mode, "preference": transition.Preference, "agent_model_policy": transition.AgentModelPolicy})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	eventPayload, err := json.Marshal(map[string]any{"session_id": sessionID, "mode": mode, "updated_at": next.UpdatedAt})
+	eventPayload, err := json.Marshal(map[string]any{
+		"session_id": sessionID, "mode": mode, "updated_at": next.UpdatedAt,
+		"preference": transition.Preference, "context_window": transition.ContextWindow, "max_output_tokens": transition.MaxOutputTokens,
+		"agent_model_policy": transition.AgentModelPolicy,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1614,16 +1616,6 @@ func (s *Server) handleSessionV3PrimarySettings(w http.ResponseWriter, r *http.R
 	}
 	next := current
 	payload := map[string]any{"session_id": sessionID}
-	if req.Mode != nil {
-		mode := strings.ToLower(strings.TrimSpace(*req.Mode))
-		if !sessionruntime.IsValidMode(mode) {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid mode %q", *req.Mode))
-			return
-		}
-		mode = sessionruntime.NormalizeMode(mode)
-		next.Mode = mode
-		payload["mode"] = mode
-	}
 	if req.AgentName != nil {
 		resolvedAgent, err := s.resolveSessionsV3PrimaryCreateAgent(principal, *req.AgentName)
 		if err != nil {
@@ -1635,6 +1627,31 @@ func (s *Server) handleSessionV3PrimarySettings(w http.ResponseWriter, r *http.R
 		payload["resolved_agent_name"] = resolvedAgent.ResolvedName
 		payload["agent_mode"] = resolvedAgent.Mode
 		payload["runtime_mode"] = resolvedAgent.RuntimeMode
+		payload["metadata"] = next.Metadata
+	}
+	if req.Mode != nil {
+		mode := strings.ToLower(strings.TrimSpace(*req.Mode))
+		if !sessionruntime.IsValidMode(mode) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid mode %q", *req.Mode))
+			return
+		}
+		mode = sessionruntime.NormalizeMode(mode)
+		transition, resolveErr := s.resolveSessionsV3ModeTransition(next, mode)
+		if resolveErr != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("resolve %s model policy: %w", mode, resolveErr))
+			return
+		}
+		next.Mode = mode
+		next.Preference = transition.Preference
+		next.Metadata = cloneSessionsV3Metadata(next.Metadata)
+		next.Metadata["agent_profile"] = cloneSessionsV3AgentProfile(transition.ActiveProfile)
+		next.Metadata["agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
+		next.Metadata["resolved_agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
+		payload["mode"] = mode
+		payload["preference"] = transition.Preference
+		payload["context_window"] = transition.ContextWindow
+		payload["max_output_tokens"] = transition.MaxOutputTokens
+		payload["agent_model_policy"] = transition.AgentModelPolicy
 		payload["metadata"] = next.Metadata
 	}
 	if req.Preference != nil {
@@ -2657,6 +2674,27 @@ func (s *Server) hydrateSessionsV3PrimaryWithLimitsForSurface(principal identity
 		return sessionsV3HydratedSession{}, false, err
 	}
 	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: view.PendingPermissions, UsageSummary: view.UsageSummary, ActiveRunIntent: activeRunIntent, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, AgentModelPolicy: agentModelPolicy, PlanRevisions: []pebblestore.SessionPlanSnapshot{}, AppliedSeq: hydrated.Projection.LastEventSeq, HighWatermark: hydrated.Projection.ProjectionHighWatermarkSeq, SnapshotEndpointCursor: snapshotEndpointCursor}, true, nil
+}
+
+func (s *Server) resolveSessionsV3ModeTransition(session pebblestore.SessionSnapshot, targetMode string) (modelpolicy.ModeTransition, error) {
+	if s == nil || s.model == nil {
+		return modelpolicy.ModeTransition{}, errors.New("model service is not configured")
+	}
+	if s.agents == nil {
+		return modelpolicy.ModeTransition{}, errors.New("agent service is not configured")
+	}
+	name := firstNonEmpty(sessionsV3MetadataString(session.Metadata, "resolved_agent_name"), sessionsV3MetadataString(session.Metadata, "agent_name"))
+	if name == "" {
+		return modelpolicy.ModeTransition{}, errors.New("session active agent is not configured")
+	}
+	profile, err := s.agents.ResolveAgentForAccount(session.AccountScopeID, name)
+	if err != nil {
+		return modelpolicy.ModeTransition{}, fmt.Errorf("resolve active agent %q: %w", name, err)
+	}
+	return modelpolicy.ResolveModeTransition(session, profile, targetMode, func(preference pebblestore.ModelPreference) (modelpolicy.ResolvedPreference, error) {
+		resolved, err := s.model.ResolvePreference(preference)
+		return modelpolicy.ResolvedPreference{Preference: resolved.Preference, ContextWindow: resolved.ContextWindow, MaxOutputTokens: resolved.MaxOutputTokens}, err
+	})
 }
 
 func (s *Server) sessionsV3AgentModelPolicy(session pebblestore.SessionSnapshot, defaultPreference pebblestore.ModelPreference, defaultContextWindow, defaultMaxOutputTokens int) sessionsV3AgentModelPolicy {

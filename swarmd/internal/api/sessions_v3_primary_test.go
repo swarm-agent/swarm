@@ -5867,6 +5867,16 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	if stored.Mode != sessionruntime.ModeAuto {
 		t.Fatalf("session mode after exit_plan_mode = %q, want auto", stored.Mode)
 	}
+	if stored.Preference.Provider != "auto-provider" || stored.Preference.Model != "auto-model" || stored.Preference.Thinking != "high" {
+		t.Fatalf("durable session preference after exit_plan_mode = %+v", stored.Preference)
+	}
+	hydrated, hydratedOK, hydrateErr := server.hydrateSessionsV3PrimaryWithLimits(testPrincipal(), created.ID, 20, 40)
+	if hydrateErr != nil || !hydratedOK {
+		t.Fatalf("hydrate after exit_plan_mode: ok=%t err=%v", hydratedOK, hydrateErr)
+	}
+	if hydrated.Session.Mode != sessionruntime.ModeAuto || hydrated.Preference != stored.Preference || hydrated.AgentModelPolicy.Preference != stored.Preference || hydrated.AgentModelPolicy.Source != "agent_auto_preset" || !hydrated.AgentModelPolicy.Locked {
+		t.Fatalf("hydrated auto policy disagrees with durable session: hydrated=%+v policy=%+v stored=%+v", hydrated.Preference, hydrated.AgentModelPolicy, stored.Preference)
+	}
 	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 5)
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
 	if err != nil {

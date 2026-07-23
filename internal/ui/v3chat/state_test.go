@@ -172,12 +172,13 @@ func TestSessionModeUpdatedEventAppliesPresentFieldsWithoutErasingCanonicalState
 		t.Fatalf("absent mode event fields erased canonical model state: %#v", state.Model)
 	}
 
-	older, _ := json.Marshal(map[string]any{"mode": "plan", "updated_at": int64(150)})
+	olderPolicy := client.SessionV3AgentModelPolicy{Locked: true, ProfileName: "Planning", Preference: client.ModelPreference{Provider: "codex", Model: "older-plan-model"}, ContextWindow: 100000}
+	older, _ := json.Marshal(map[string]any{"mode": "plan", "updated_at": int64(150), "preference": olderPolicy.Preference, "context_window": 100000, "agent_model_policy": olderPolicy})
 	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{
-		SessionID: "s", Seq: 1, EventType: "session.mode.updated", Payload: older,
+		SessionID: "s", Seq: 3, EventType: "session.mode.updated", Payload: older,
 	}}})
-	if state.Session.Mode != "auto" || state.Session.UpdatedAt != 200 {
-		t.Fatalf("older mode event rewound canonical state: %#v", state.Session)
+	if state.Session.Mode != "auto" || state.Session.UpdatedAt != 200 || state.Model.Preference.Model != "plan-model" || state.Model.ContextWindow != 200000 || state.Model.ProfileName != "Planning" {
+		t.Fatalf("older mode event rewound canonical state: session=%#v model=%#v", state.Session, state.Model)
 	}
 }
 

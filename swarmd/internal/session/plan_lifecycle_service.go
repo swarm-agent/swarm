@@ -44,6 +44,8 @@ type PlanLifecyclePlanInput struct {
 	ContinueAutomatically *bool
 	ApplySessionMutation  func(SessionMutationInput) (SessionMutationResult, error)
 	ModeEventFields       map[string]any
+	ModePreference        pebblestore.ModelPreference
+	ModeAgentProfile      *pebblestore.AgentProfile
 	BuildLifecycleMessage func(pebblestore.SessionPlanSnapshot, PlanExecutionSummary) *pebblestore.MessageSnapshot
 }
 
@@ -272,7 +274,7 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 		return PlanLifecycleResult{}, err
 	}
 	if input.ApplySessionMutation != nil {
-		committed, err := s.sessions.CommitV3PlanAcceptance(PlanAcceptanceCommitInput{Session: session, PlanID: planID, Title: title, Plan: planText, Document: document, ApplySessionMutation: input.ApplySessionMutation, ModeEventFields: input.ModeEventFields, BuildLifecycleMessage: input.BuildLifecycleMessage})
+		committed, err := s.sessions.CommitV3PlanAcceptance(PlanAcceptanceCommitInput{Session: session, PlanID: planID, Title: title, Plan: planText, Document: document, ApplySessionMutation: input.ApplySessionMutation, ModeEventFields: input.ModeEventFields, ModePreference: input.ModePreference, ModeAgentProfile: input.ModeAgentProfile, BuildLifecycleMessage: input.BuildLifecycleMessage})
 		if err != nil {
 			return PlanLifecycleResult{}, err
 		}

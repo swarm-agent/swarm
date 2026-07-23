@@ -20,6 +20,8 @@ type PlanAcceptanceCommitInput struct {
 	Document              *pebblestore.SessionPlanDocument
 	ApplySessionMutation  func(SessionMutationInput) (SessionMutationResult, error)
 	ModeEventFields       map[string]any
+	ModePreference        pebblestore.ModelPreference
+	ModeAgentProfile      *pebblestore.AgentProfile
 	BuildLifecycleMessage func(pebblestore.SessionPlanSnapshot, PlanExecutionSummary) *pebblestore.MessageSnapshot
 }
 
@@ -108,6 +110,20 @@ func (s *Service) CommitV3PlanAcceptance(input PlanAcceptanceCommitInput) (PlanA
 	}
 	updatedSession := session
 	updatedSession.Mode = ModeAuto
+	if len(input.ModeEventFields) > 0 {
+		if strings.TrimSpace(input.ModePreference.Provider) == "" || strings.TrimSpace(input.ModePreference.Model) == "" {
+			return PlanAcceptanceCommitResult{}, errors.New("v3 plan acceptance mode policy requires a resolved auto preference")
+		}
+		updatedSession.Preference = input.ModePreference
+	}
+	if input.ModeAgentProfile != nil {
+		if updatedSession.Metadata == nil {
+			updatedSession.Metadata = make(map[string]any)
+		}
+		updatedSession.Metadata["agent_profile"] = *input.ModeAgentProfile
+		updatedSession.Metadata["agent_name"] = strings.TrimSpace(input.ModeAgentProfile.Name)
+		updatedSession.Metadata["resolved_agent_name"] = strings.TrimSpace(input.ModeAgentProfile.Name)
+	}
 	if currentTitle := strings.TrimSpace(updatedSession.Title); currentTitle == "" || strings.EqualFold(currentTitle, "New Session") {
 		updatedSession.Title = title
 	}

@@ -28,13 +28,14 @@ func (s *Service) persistModeUpdatedV3MutationWithPreference(result sessionrunti
 		return fmt.Errorf("session %q did not return a committed session.mode.updated event", result.Session.ID)
 	}
 	modePayload := append(json.RawMessage(nil), result.ModeEvent.Payload...)
-	if strings.TrimSpace(preference.Provider) != "" && strings.TrimSpace(preference.Model) != "" {
-		payload, err := planLifecycleModePayloadWithPreference(modePayload, preference, contextWindow, maxOutputTokens, agentModelPolicy)
-		if err != nil {
-			return err
-		}
-		modePayload = payload
+	if strings.TrimSpace(preference.Provider) == "" || strings.TrimSpace(preference.Model) == "" || agentModelPolicy == nil {
+		return errors.New("session.mode.updated requires a resolved model preference and agent model policy")
 	}
+	payload, err := planLifecycleModePayloadWithPreference(modePayload, preference, contextWindow, maxOutputTokens, agentModelPolicy)
+	if err != nil {
+		return err
+	}
+	modePayload = payload
 	payloadHash := planLifecycleModePayloadHashBytes(modePayload, result.Session)
 	clientRequestID := planLifecycleModeClientRequestID(*result.ModeEvent, result.Session)
 	mutation, err := applySessionMutation(sessionruntime.SessionMutationInput{

@@ -249,11 +249,54 @@ func (s *Server) handleSessionV3PrimaryPlanModeEnter(w http.ResponseWriter, r *h
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.planLifecycle.EnterPlanMode(sessionID)
+	session, found, err := s.requireSessionV3Access(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	transition, err := s.resolveSessionsV3ModeTransition(session, sessionruntime.ModePlan)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("resolve plan model policy: %w", err))
+		return
+	}
+	next := session
+	next.Mode = sessionruntime.ModePlan
+	next.Preference = transition.Preference
+	next.Metadata = cloneSessionsV3Metadata(next.Metadata)
+	next.Metadata["agent_profile"] = cloneSessionsV3AgentProfile(transition.ActiveProfile)
+	next.Metadata["agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
+	next.Metadata["resolved_agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
+	next.UpdatedAt = time.Now().UnixMilli()
+	payload := map[string]any{
+		"session_id": sessionID, "mode": next.Mode, "updated_at": next.UpdatedAt,
+		"preference": transition.Preference, "context_window": transition.ContextWindow, "max_output_tokens": transition.MaxOutputTokens,
+		"agent_model_policy": transition.AgentModelPolicy,
+	}
+	eventPayload, err := json.Marshal(payload)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMode, payload)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	clientRequestID := fmt.Sprintf("plan-mode-enter:%s:%d", sessionID, next.UpdatedAt)
+	mutation, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
+		ClientRequestID: clientRequestID, IdempotencyKey: clientRequestID, PayloadHash: payloadHash, RequestHash: payloadHash,
+		Kind: sessionruntime.SessionMutationUpdateMode, EventType: "session.mode.updated", EventPayload: eventPayload, Session: &next, NowUnixMs: next.UpdatedAt,
+	})
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
+	result := sessionruntime.PlanLifecycleResult{Session: next, Action: "enter_plan_mode", Message: "entered plan mode", ModeChanged: true, V3Mutation: &mutation}
 	s.finishSessionsV3PlanModeLifecycle(w, principal, sessionID, "enter_plan_mode", result, nil)
 }
 
