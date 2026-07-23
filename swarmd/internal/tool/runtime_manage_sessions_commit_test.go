@@ -45,6 +45,10 @@ func TestManageSessionsCommitCreatesApprovedSameRepositoryChainAndLeavesUnrelate
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
+	t.Setenv("GIT_AUTHOR_NAME", "Injected Author")
+	t.Setenv("GIT_AUTHOR_EMAIL", "injected-author@example.invalid")
+	t.Setenv("GIT_COMMITTER_NAME", "Injected Committer")
+	t.Setenv("GIT_COMMITTER_EMAIL", "injected-committer@example.invalid")
 	output, err := runtime.executeManageSessions(context.Background(), scope, permissionPayload)
 	if err != nil {
 		t.Fatalf("execute: %v\n%s", err, output)
@@ -63,6 +67,12 @@ func TestManageSessionsCommitCreatesApprovedSameRepositoryChainAndLeavesUnrelate
 	}
 	if parent := strings.TrimSpace(runManageSessionsGitOutput(t, repo, "rev-parse", response.Commits[1].Hash+"^")); parent != response.Commits[0].Hash {
 		t.Fatalf("second parent = %s, want %s", parent, response.Commits[0].Hash)
+	}
+	for _, commit := range response.Commits {
+		identity := strings.TrimSpace(runManageSessionsGitOutput(t, repo, "show", "-s", "--format=%an|%ae|%cn|%ce", commit.Hash))
+		if identity != "Test User|test@example.invalid|Test User|test@example.invalid" {
+			t.Fatalf("commit %s identity = %q, want repository-configured identity", commit.Hash, identity)
+		}
 	}
 	status := runManageSessionsGitOutput(t, repo, "status", "--short")
 	if !strings.Contains(status, "unrelated.txt") || strings.Contains(status, "one.txt") || strings.Contains(status, "two.txt") {

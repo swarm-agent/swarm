@@ -35,6 +35,26 @@ func TestRunWorkspaceGitCommitCreatesCommitWithExactMessage(t *testing.T) {
 	}
 }
 
+func TestRunWorkspaceGitCommitUsesConfiguredIdentityAndIgnoresEnvironmentOverrides(t *testing.T) {
+	repo := initGitCommitTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatalf("write changed file: %v", err)
+	}
+	t.Setenv("GIT_AUTHOR_NAME", "Injected Author")
+	t.Setenv("GIT_AUTHOR_EMAIL", "injected-author@example.invalid")
+	t.Setenv("GIT_COMMITTER_NAME", "Injected Committer")
+	t.Setenv("GIT_COMMITTER_EMAIL", "injected-committer@example.invalid")
+
+	result, err := runWorkspaceGitCommit(context.Background(), repo, "test: preserve configured identity", true)
+	if err != nil {
+		t.Fatalf("runWorkspaceGitCommit error: %v output=%s", err, result.Output)
+	}
+	got := strings.TrimSpace(runGitCommitTestCommand(t, repo, "log", "-1", "--format=%an|%ae|%cn|%ce"))
+	if got != "Swarm Test|swarm-test@example.invalid|Swarm Test|swarm-test@example.invalid" {
+		t.Fatalf("commit identity = %q, want repository-configured identity", got)
+	}
+}
+
 func TestRunWorkspaceGitCommitRequiresMessage(t *testing.T) {
 	result, err := runWorkspaceGitCommit(context.Background(), t.TempDir(), "   ", true)
 	if err == nil {

@@ -6,8 +6,33 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestExecuteGitCommitUsesConfiguredIdentityAndIgnoresEnvironmentOverrides(t *testing.T) {
+	repo := t.TempDir()
+	runGitTestCommand(t, repo, "init")
+	runGitTestCommand(t, repo, "config", "user.name", "Test User")
+	runGitTestCommand(t, repo, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, repo, "add", "note.txt")
+	t.Setenv("GIT_AUTHOR_NAME", "Injected Author")
+	t.Setenv("GIT_AUTHOR_EMAIL", "injected-author@example.invalid")
+	t.Setenv("GIT_COMMITTER_NAME", "Injected Committer")
+	t.Setenv("GIT_COMMITTER_EMAIL", "injected-committer@example.invalid")
+
+	output, err := executeGitCommit(context.Background(), WorkspaceScope{PrimaryPath: repo}, map[string]any{"message": "preserve identity"})
+	if err != nil {
+		t.Fatalf("executeGitCommit() error = %v output=%s", err, output)
+	}
+	got := strings.TrimSpace(runGitTestCommandOutput(t, repo, "log", "-1", "--format=%an|%ae|%cn|%ce"))
+	if got != "Test User|test@example.invalid|Test User|test@example.invalid" {
+		t.Fatalf("commit identity = %q, want repository-configured identity", got)
+	}
+}
 
 func TestExecuteGitCommitDoesNotRunRepositoryWidePrecommitGate(t *testing.T) {
 	repo := t.TempDir()
@@ -51,9 +76,16 @@ func TestExecuteGitCommitDoesNotRunRepositoryWidePrecommitGate(t *testing.T) {
 
 func runGitTestCommand(t *testing.T, dir string, args ...string) {
 	t.Helper()
+	_ = runGitTestCommandOutput(t, dir, args...)
+}
+
+func runGitTestCommandOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	if output, err := cmd.CombinedOutput(); err != nil {
+	output, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
+	return string(output)
 }

@@ -478,7 +478,7 @@ export function WorkspaceEditorModal({
                     ) : null}
                   </div>
                   <div className="flex gap-2 overflow-x-auto pb-1" aria-label="Workspace switcher">
-                    {workspaces.map((workspace) => {
+                    {workspaces.map((workspace, index) => {
                       const selected = workspace.path === workspacePath
                       const deleting = deletingWorkspacePath === workspace.path
                       return (

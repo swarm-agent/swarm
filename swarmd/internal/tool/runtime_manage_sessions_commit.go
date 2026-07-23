@@ -521,6 +521,7 @@ func runManageSessionsGit(ctx context.Context, repository string, first string, 
 	args := append([]string{first}, rest...)
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = repository
+	cmd.Env = filteredGitEnv(os.Environ())
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return output, fmt.Errorf("git %s: %w: %s", first, err, strings.TrimSpace(string(output)))
