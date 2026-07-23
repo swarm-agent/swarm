@@ -39,14 +39,43 @@ func (s *Service) ExplainToolForAccount(accountScopeID, mode, toolName, toolArgu
 	policy := state.Policy
 	if overlay != nil {
 		policy = NormalizePolicy(Policy{
-			Version: 1,
-			Rules:   append(append([]PolicyRule(nil), overlay.Rules...), policy.Rules...),
+			Version:        1,
+			BashProfile:    policy.BashProfile,
+			Subagents:      policy.Subagents,
+			SessionDeploy:  policy.SessionDeploy,
+			PlanAcceptance: policy.PlanAcceptance,
+			Rules:          append(append([]PolicyRule(nil), overlay.Rules...), policy.Rules...),
 		})
 	}
 	if state.BypassPermissions {
 		mode = policyModeWithBypass(strings.TrimSpace(mode), true)
 	}
 	return ExplainPolicy(mode, toolName, toolArguments, policy), nil
+}
+
+func (s *Service) UpdateBashApprovalProfileForAccount(accountScopeID string, profile BashApprovalProfile) (Policy, error) {
+	if s == nil {
+		return Policy{}, errors.New("permission service is not configured")
+	}
+	profile = BashApprovalProfile(strings.TrimSpace(strings.ToLower(string(profile))))
+	if err := ValidateBashApprovalProfile(profile); err != nil {
+		return Policy{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.loadPermissionStateLocked(accountScopeID)
+	if err != nil {
+		return Policy{}, err
+	}
+	policy := state.Policy
+	policy.BashProfile = profile
+	now := time.Now().UnixMilli()
+	policy.UpdatedAt = now
+	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
+		return Policy{}, err
+	}
+	s.cachePermissionStateLocked(accountScopeID, policy, state.BypassPermissions, now, state.BypassUpdatedAt)
+	return NormalizePolicy(policy), nil
 }
 
 func (s *Service) UpdateCapabilityPoliciesForAccount(accountScopeID string, sessionDeploy SessionDeployPolicy, planAcceptance PlanAcceptancePolicy) (Policy, error) {

@@ -27,8 +27,11 @@ interface SubagentPolicy {
   require_write_isolation: boolean
 }
 
+export type BashApprovalProfile = 'current_rules' | 'allow_every_read' | 'allow_safe_reads' | 'only_critical_prompts'
+
 interface PermissionPolicy {
   version: number
+  bash_profile: BashApprovalProfile
   rules: PermissionRule[]
   subagents?: SubagentPolicy
   updated_at?: number
@@ -41,6 +44,15 @@ interface PermissionExplain {
   tool_name?: string
   command?: string
   rule_preview?: string
+  bash_profile?: BashApprovalProfile
+  profile_decision?: string
+  profile_reason?: string
+  bash_effect?: {
+    category?: string
+    critical?: boolean
+    promoted?: boolean
+    reason?: string
+  }
 }
 
 interface PermissionPolicyResponse {
@@ -67,6 +79,17 @@ interface PermissionResetResponse {
 interface PermissionExplainResponse {
   ok?: boolean
   explain?: PermissionExplain
+}
+
+export const BASH_APPROVAL_PROFILES: ReadonlyArray<{ value: BashApprovalProfile; label: string; description: string; recommended?: boolean }> = [
+  { value: 'current_rules', label: 'Current rules', description: 'Use granular rules and the existing default Bash behavior.' },
+  { value: 'allow_every_read', label: 'Allow every read', description: 'Auto-approve every read, including reads marked critical.' },
+  { value: 'allow_safe_reads', label: 'Allow safe reads', description: 'Auto-approve routine reads; prompt for critical reads and protected changes.', recommended: true },
+  { value: 'only_critical_prompts', label: 'Only critical prompts', description: 'Auto-approve noncritical reads, writes, and updates; prompt for critical operations and every delete.' },
+]
+
+export function normalizeBashApprovalProfile(value: unknown): BashApprovalProfile {
+  return BASH_APPROVAL_PROFILES.some((profile) => profile.value === value) ? value as BashApprovalProfile : 'current_rules'
 }
 
 const DECISION_OPTIONS = [
@@ -134,7 +157,17 @@ function formatTimestamp(timestamp?: number): string {
 
 async function fetchPermissionPolicy(): Promise<{ policy: PermissionPolicy; bypassPermissions: boolean }> {
   const response = await requestJson<PermissionPolicyResponse>('/v1/permissions')
-  return { policy: response.policy ?? { version: 0, rules: [] }, bypassPermissions: Boolean(response.bypass_permissions) }
+  const policy = response.policy ?? { version: 0, bash_profile: 'current_rules', rules: [] }
+  return { policy: { ...policy, bash_profile: normalizeBashApprovalProfile(policy.bash_profile) }, bypassPermissions: Boolean(response.bypass_permissions) }
+}
+
+async function saveBashApprovalProfile(profile: BashApprovalProfile): Promise<BashApprovalProfile> {
+  const response = await requestJson<{ bash_profile?: string }>('/v1/permissions/bash-profile', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bash_profile: profile }),
+  })
+  return normalizeBashApprovalProfile(response.bash_profile)
 }
 
 async function saveSubagentPolicy(policy: SubagentPolicy): Promise<SubagentPolicy> {
@@ -187,7 +220,8 @@ async function resetPermissionPolicy(): Promise<PermissionPolicy> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
   })
-  return response.policy ?? { version: 0, rules: [] }
+  const policy = response.policy ?? { version: 0, bash_profile: 'current_rules', rules: [] }
+  return { ...policy, bash_profile: normalizeBashApprovalProfile(policy.bash_profile) }
 }
 
 async function explainPermission(toolName: string, argumentsText: string): Promise<PermissionExplain> {
@@ -201,7 +235,7 @@ async function explainPermission(toolName: string, argumentsText: string): Promi
 }
 
 export function PermissionsSettingsPage() {
-  const [policy, setPolicy] = useState<PermissionPolicy>({ version: 0, rules: [] })
+  const [policy, setPolicy] = useState<PermissionPolicy>({ version: 0, bash_profile: 'current_rules', rules: [] })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [resetting, setResetting] = useState(false)
@@ -212,6 +246,7 @@ export function PermissionsSettingsPage() {
   const [planAcceptancePolicy, setPlanAcceptancePolicy] = useState<PlanAcceptancePolicy>(DEFAULT_PLAN_ACCEPTANCE_POLICY)
   const [capabilityBusy, setCapabilityBusy] = useState(false)
   const [bypassBusy, setBypassBusy] = useState(false)
+  const [bashProfileBusy, setBashProfileBusy] = useState(false)
   const [confirmBypassOpen, setConfirmBypassOpen] = useState(false)
   const [busyRuleID, setBusyRuleID] = useState<string | null>(null)
   const [busyMutationTool, setBusyMutationTool] = useState<string | null>(null)
@@ -287,6 +322,22 @@ export function PermissionsSettingsPage() {
       setError(err instanceof Error ? err.message : 'Failed to save capability policies')
     } finally {
       setCapabilityBusy(false)
+    }
+  }
+
+  const handleBashProfile = async (profile: BashApprovalProfile) => {
+    if (bypassPermissions || bashProfileBusy || profile === policy.bash_profile) return
+    setBashProfileBusy(true)
+    setError(null)
+    setStatus(null)
+    try {
+      const saved = await saveBashApprovalProfile(profile)
+      setPolicy((current) => ({ ...current, bash_profile: saved }))
+      setStatus(`Bash approvals: ${BASH_APPROVAL_PROFILES.find((option) => option.value === saved)?.label || saved}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save Bash approval profile')
+    } finally {
+      setBashProfileBusy(false)
     }
   }
 
@@ -442,6 +493,32 @@ export function PermissionsSettingsPage() {
           </div>
         </section>
 
+        <section className={cn('rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-5 shadow-sm transition-opacity', bypassPermissions && 'opacity-50')} aria-disabled={bypassPermissions}>
+          <div className="text-sm font-semibold text-[var(--app-text)]">Bash approvals</div>
+          <div className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">Choose one account-wide Bash profile. Model metadata and backend heuristics can misclassify commands.</div>
+          <div role="radiogroup" aria-label="Bash approval profile" className="mt-4 grid gap-3 sm:grid-cols-2">
+            {BASH_APPROVAL_PROFILES.map((option) => {
+              const selected = policy.bash_profile === option.value
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  disabled={loading || bashProfileBusy || bypassPermissions}
+                  onClick={() => void handleBashProfile(option.value)}
+                  className={cn('flex min-h-24 items-start gap-3 rounded-xl border bg-[var(--app-bg-alt)] p-4 text-left transition-colors disabled:cursor-not-allowed', selected ? 'border-[var(--app-primary)] ring-1 ring-[var(--app-primary)]' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)]')}
+                >
+                  <span aria-hidden="true" className={cn('mt-0.5 size-4 shrink-0 rounded-full border-2', selected ? 'border-[var(--app-primary)] bg-[radial-gradient(circle,var(--app-primary)_0_42%,transparent_48%)]' : 'border-[var(--app-border-strong)]')} />
+                  <span className="min-w-0"><span className="flex flex-wrap items-center gap-2 text-sm font-medium text-[var(--app-text)]">{option.label}{option.recommended ? <span className="rounded-full bg-[color-mix(in_oklab,var(--app-primary)_14%,transparent)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--app-primary)]">Recommended</span> : null}</span><span className="mt-1 block text-xs leading-5 text-[var(--app-text-muted)]">{option.description}</span></span>
+                </button>
+              )
+            })}
+          </div>
+          <div className="mt-3 rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs leading-5 text-[var(--app-warning)]">Granular rules stay active in every profile. Deny rules override profile auto-approvals; Allow and Ask rules apply when the profile leaves an operation undecided. Profile safety prompts still win over ordinary Allow rules. Allow every read intentionally does not stop critical reads.</div>
+          {bypassPermissions ? <div className="mt-2 text-xs text-[var(--app-text-muted)]">Permissions are OFF. This profile is preserved and will apply when permissions are turned back ON.</div> : null}
+        </section>
+
         <section className="min-w-0 rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-5 shadow-sm">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
@@ -530,10 +607,11 @@ export function PermissionsSettingsPage() {
           </div>
         </section>
 
+        <div className={cn('grid gap-6 transition-opacity', bypassPermissions && 'pointer-events-none opacity-50')} aria-disabled={bypassPermissions}>
         <section className="rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-5 shadow-sm">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="text-sm font-semibold text-[var(--app-text)]">Permission policy</div>
+              <div className="text-sm font-semibold text-[var(--app-text)]">Granular permission rules</div>
               <div className="text-xs text-[var(--app-text-muted)]">
                 Version {policy.version || 0}{policy.updated_at ? ` · updated ${formatTimestamp(policy.updated_at)}` : ''}
               </div>
@@ -627,6 +705,7 @@ export function PermissionsSettingsPage() {
             </Button>
           </div>
         </section>
+        </div>
 
         <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-5">
           <div className="text-sm font-semibold text-[var(--app-text)]">Explain a request</div>
@@ -674,8 +753,13 @@ export function PermissionsSettingsPage() {
                 <div><span className="text-[var(--app-text-muted)]">Decision:</span> {explainResult.decision || '—'}</div>
                 <div><span className="text-[var(--app-text-muted)]">Source:</span> {explainResult.source || '—'}</div>
                 <div><span className="text-[var(--app-text-muted)]">Rule:</span> {explainResult.rule_preview || '—'}</div>
+                {explainResult.bash_profile ? <div><span className="text-[var(--app-text-muted)]">Bash profile:</span> {BASH_APPROVAL_PROFILES.find((profile) => profile.value === explainResult.bash_profile)?.label || explainResult.bash_profile}</div> : null}
+                {explainResult.bash_effect?.category ? <div><span className="text-[var(--app-text-muted)]">Effect:</span> {explainResult.bash_effect.category}{explainResult.bash_effect.critical ? ' · critical' : ''}</div> : null}
+                {explainResult.profile_decision ? <div><span className="text-[var(--app-text-muted)]">Profile decision:</span> {explainResult.profile_decision}</div> : null}
               </div>
               <div className="mt-3 text-sm text-[var(--app-text-muted)]">{explainResult.reason || 'No explanation available.'}</div>
+              {explainResult.bash_effect?.promoted ? <div className="mt-2 text-sm text-[var(--app-warning)]">Backend promotion: {explainResult.bash_effect.reason || 'metadata was conservatively promoted'}</div> : null}
+              {explainResult.profile_reason ? <div className="mt-2 text-sm text-[var(--app-text-muted)]">Profile: {explainResult.profile_reason}</div> : null}
             </div>
           ) : null}
         </section>

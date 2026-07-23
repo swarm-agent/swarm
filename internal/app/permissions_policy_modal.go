@@ -32,6 +32,7 @@ type permissionsPolicyModalState struct {
 	TurnOff     ui.Rect
 	Remove      ui.Rect
 	Close       ui.Rect
+	Profiles    [4]ui.Rect
 }
 
 func (a *App) permissionsPolicyModalActive() bool {
@@ -46,7 +47,7 @@ func (a *App) openPermissionsPolicyModal(policy client.PermissionPolicy) {
 	if len(policy.Rules) == 0 {
 		selected = -1
 	}
-	status := "Press a to add a trusted bash command prefix. Press o to turn permissions OFF."
+	status := "Press 1-4 to choose a Bash approval profile. Press a to add a trusted prefix."
 	if a.homeModel.BypassPermissions {
 		status = "Permissions are OFF. Press o to turn permissions ON again."
 	}
@@ -83,7 +84,14 @@ func (a *App) handlePermissionsPolicyModalKey(ev *tcell.EventKey) bool {
 
 	if ev.Key() == tcell.KeyRune {
 		switch unicode.ToLower(ev.Rune()) {
+		case '1', '2', '3', '4':
+			a.setPermissionsBashProfile(int(ev.Rune() - '1'))
+			return true
 		case 'a', 'i':
+			if a.homeModel.BypassPermissions {
+				m.Status = "Permissions are OFF. Turn them ON before editing granular rules."
+				return true
+			}
 			m.InputActive = true
 			m.Err = ""
 			m.Status = "Type a bash command prefix to always allow, then press Enter."
@@ -185,6 +193,8 @@ func (a *App) handlePermissionsPolicyModalMouse(ev *tcell.EventMouse) bool {
 		a.closePermissionsPolicyModal()
 	case m.TurnOff.Contains(x, y):
 		a.togglePermissionsFromPolicyModal()
+	case permissionsProfileAt(m.Profiles, x, y) >= 0:
+		a.setPermissionsBashProfile(permissionsProfileAt(m.Profiles, x, y))
 	case m.Add.Contains(x, y):
 		a.savePermissionsPolicyModalAllowCommand()
 	case m.Remove.Contains(x, y):
@@ -224,6 +234,10 @@ func (a *App) savePermissionsPolicyModalAllowCommand() {
 	}
 	m := &a.permissionsPolicyModal
 	if m.Busy {
+		return
+	}
+	if a.homeModel.BypassPermissions {
+		m.Status = "Permissions are OFF. The selected Bash profile and granular rules are preserved but disabled."
 		return
 	}
 	pattern := strings.TrimSpace(m.Input)
@@ -276,7 +290,7 @@ func (a *App) removeSelectedPermissionsPolicyRule() {
 		return
 	}
 	m := &a.permissionsPolicyModal
-	if m.Busy || m.Selected < 0 || m.Selected >= len(m.Policy.Rules) {
+	if m.Busy || a.homeModel.BypassPermissions || m.Selected < 0 || m.Selected >= len(m.Policy.Rules) {
 		return
 	}
 	rule := m.Policy.Rules[m.Selected]
@@ -387,8 +401,8 @@ func (a *App) permissionsPolicyModalVisibleRows() int {
 		return 0
 	}
 	_, h := a.screen.Size()
-	modalH := minInt(maxInt(18, h-4), 30)
-	return maxInt(1, modalH-12)
+	modalH := minInt(maxInt(24, h-4), 36)
+	return maxInt(1, modalH-18)
 }
 
 func (a *App) drawPermissionsPolicyModal() {
@@ -401,7 +415,7 @@ func (a *App) drawPermissionsPolicyModal() {
 	}
 	theme := a.effectiveThemeOption().Theme
 	modalW := minInt(maxInt(78, w-8), 118)
-	modalH := minInt(maxInt(18, h-4), 30)
+	modalH := minInt(maxInt(24, h-4), 36)
 	modal := ui.Rect{X: (w - modalW) / 2, Y: (h - modalH) / 2, W: modalW, H: modalH}
 	m := &a.permissionsPolicyModal
 	m.Rect = modal
@@ -422,11 +436,14 @@ func (a *App) drawPermissionsPolicyModal() {
 	}
 	ui.DrawTextRight(a.screen, modal.X+modal.W-3, modal.Y+1, 28, statusStyle, statusLabel)
 
-	subtitle := "Allow trusted commands once here instead of answering future prompts. Press o to toggle permissions ON/OFF."
+	subtitle := "One global toggle, one Bash profile, then granular rules. Metadata and heuristics can misclassify commands."
 	ui.DrawText(a.screen, modal.X+2, modal.Y+2, modal.W-4, theme.TextMuted, permissionsModalClamp(subtitle, modal.W-4))
 
-	contentY := modal.Y + 4
-	contentH := modal.H - 9
+	profileY := modal.Y + 4
+	a.drawPermissionsBashProfiles(theme, profileY, modal.W-4)
+
+	contentY := modal.Y + 10
+	contentH := modal.H - 15
 	if contentH < 5 {
 		contentH = 5
 	}
@@ -454,7 +471,7 @@ func (a *App) drawPermissionsPolicyModal() {
 		messageStyle = theme.Error
 	}
 	if message == "" {
-		message = "↑/↓ select · a add command · r remove selected · o turn OFF · Esc close"
+		message = "1-4 Bash profile · ↑/↓ rule · a add · r remove · o permissions · Esc close"
 	}
 	ui.DrawText(a.screen, modal.X+2, messageY, modal.W-4, messageStyle, permissionsModalClamp(message, modal.W-4))
 
@@ -466,19 +483,109 @@ func (a *App) drawPermissionsPolicyModal() {
 	}
 	m.TurnOff = drawPermissionsPolicyButton(a.screen, x, buttonY, turnOffLabel, theme.Warning)
 	x += m.TurnOff.W + 2
-	m.Add = drawPermissionsPolicyButton(a.screen, x, buttonY, " Enter Save always allow ", theme.Accent)
+	buttonStyle := theme.Accent
+	if a.homeModel.BypassPermissions {
+		buttonStyle = theme.TextMuted
+	}
+	m.Add = drawPermissionsPolicyButton(a.screen, x, buttonY, " Enter Save always allow ", buttonStyle)
 	x += m.Add.W + 2
-	m.Remove = drawPermissionsPolicyButton(a.screen, x, buttonY, " r Remove rule ", theme.Element)
+	m.Remove = drawPermissionsPolicyButton(a.screen, x, buttonY, " r Remove rule ", buttonStyle)
 	closeLabel := " Esc Close "
 	closeW := utf8.RuneCountInString(closeLabel)
 	m.Close = ui.Rect{X: modal.X + modal.W - closeW - 2, Y: buttonY, W: closeW, H: 1}
 	ui.DrawText(a.screen, m.Close.X, buttonY, m.Close.W, theme.Primary, closeLabel)
 }
 
+var permissionsBashProfiles = []struct {
+	Value       string
+	Label       string
+	Description string
+}{
+	{Value: "current_rules", Label: "Current rules", Description: "Granular rules and existing defaults."},
+	{Value: "allow_every_read", Label: "Allow every read", Description: "All reads, including critical reads."},
+	{Value: "allow_safe_reads", Label: "Allow safe reads [Recommended]", Description: "Routine reads; critical reads prompt."},
+	{Value: "only_critical_prompts", Label: "Only critical prompts", Description: "Noncritical read/write/update auto-approved."},
+}
+
+func permissionsProfileAt(rects [4]ui.Rect, x, y int) int {
+	for i, rect := range rects {
+		if rect.Contains(x, y) {
+			return i
+		}
+	}
+	return -1
+}
+
+func (a *App) setPermissionsBashProfile(index int) {
+	if a == nil || a.api == nil || !a.permissionsPolicyModalActive() || index < 0 || index >= len(permissionsBashProfiles) {
+		return
+	}
+	m := &a.permissionsPolicyModal
+	if m.Busy || a.homeModel.BypassPermissions {
+		m.Status = "Permissions are OFF. The selected Bash profile is preserved but disabled."
+		return
+	}
+	profile := permissionsBashProfiles[index]
+	if m.Policy.BashProfile == profile.Value {
+		return
+	}
+	m.Busy = true
+	m.Err = ""
+	m.Status = "Saving Bash approvals: " + profile.Label + "..."
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		saved, err := a.api.SetBashApprovalProfile(ctx, profile.Value)
+		if a.permissionsPolicyModal.Visible {
+			m := &a.permissionsPolicyModal
+			m.Busy = false
+			if err != nil {
+				m.Err = fmt.Sprintf("Bash profile save failed: %v", err)
+			} else {
+				m.Policy.BashProfile = saved
+				m.Status = "Bash approvals saved: " + profile.Label
+			}
+		}
+		if a.screen != nil {
+			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptTick))
+		}
+	}()
+}
+
+func (a *App) drawPermissionsBashProfiles(theme ui.Theme, y, width int) {
+	m := &a.permissionsPolicyModal
+	x := m.Rect.X + 2
+	ui.DrawText(a.screen, x, y, width, theme.TextMuted.Bold(true), "Bash approvals · choose one (keys 1-4)")
+	for i, profile := range permissionsBashProfiles {
+		rowY := y + 1 + i
+		selected := strings.TrimSpace(m.Policy.BashProfile) == profile.Value
+		marker := "○"
+		style := theme.Text
+		if selected {
+			marker = "●"
+			style = theme.Primary.Bold(true)
+		}
+		if a.homeModel.BypassPermissions {
+			style = theme.TextMuted
+		}
+		label := fmt.Sprintf("%d %s %s — %s", i+1, marker, profile.Label, profile.Description)
+		m.Profiles[i] = ui.Rect{X: x, Y: rowY, W: width, H: 1}
+		ui.DrawText(a.screen, x, rowY, width, style, permissionsModalClamp(label, width))
+	}
+	warning := "Metadata and heuristics can misclassify. Allow every read intentionally does not stop critical reads."
+	ui.DrawText(a.screen, x, y+5, width, theme.Warning, permissionsModalClamp(warning, width))
+}
+
 func (a *App) drawPermissionsPolicyRules(theme ui.Theme, panel ui.Rect) {
 	m := &a.permissionsPolicyModal
-	ui.DrawBox(a.screen, panel, theme.Border)
-	ui.DrawText(a.screen, panel.X+2, panel.Y, panel.W-4, theme.TextMuted.Bold(true), " Current rules ")
+	panelStyle := theme.Border
+	headingStyle := theme.TextMuted.Bold(true)
+	if a.homeModel.BypassPermissions {
+		panelStyle = theme.TextMuted
+		headingStyle = theme.TextMuted
+	}
+	ui.DrawBox(a.screen, panel, panelStyle)
+	ui.DrawText(a.screen, panel.X+2, panel.Y, panel.W-4, headingStyle, " Granular rules ")
 	count := len(m.Policy.Rules)
 	if count == 0 {
 		lines := ui.Wrap("No explicit rules yet. Add a command prefix on the right to always allow trusted bash commands.", panel.W-4)
@@ -516,7 +623,11 @@ func (a *App) drawPermissionsPolicyRules(theme ui.Theme, panel ui.Rect) {
 
 func (a *App) drawPermissionsPolicyComposer(theme ui.Theme, rect ui.Rect) {
 	m := &a.permissionsPolicyModal
-	ui.DrawBox(a.screen, rect, theme.Border)
+	panelStyle := theme.Border
+	if a.homeModel.BypassPermissions {
+		panelStyle = theme.TextMuted
+	}
+	ui.DrawBox(a.screen, rect, panelStyle)
 	ui.DrawText(a.screen, rect.X+2, rect.Y, rect.W-4, theme.TextMuted.Bold(true), " Always allow command ")
 	lines := []string{
 		"Add a bash command prefix you trust.",

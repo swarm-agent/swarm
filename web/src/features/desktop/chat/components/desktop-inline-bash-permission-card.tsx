@@ -38,7 +38,27 @@ interface DesktopInlineBashPermissionCardProps {
 interface PermissionExplainResponse {
   explain?: {
     rule_preview?: string
+    bash_profile?: string
+    profile_decision?: string
+    profile_reason?: string
+    bash_effect?: {
+      category?: string
+      critical?: boolean
+      promoted?: boolean
+      reason?: string
+    }
   }
+}
+
+interface BashExplainDetails {
+  prefix: string
+  profile: string
+  profileDecision: string
+  profileReason: string
+  category: string
+  critical: boolean
+  promoted: boolean
+  promotionReason: string
 }
 
 function savedBashPrefix(permission: DesktopPermissionRecord): string {
@@ -52,13 +72,23 @@ function prefixFromRulePreview(preview: string): string {
   return match?.[1]?.trim() || trimmed
 }
 
-async function loadBashPrefix(permission: DesktopPermissionRecord, sessionMode: string): Promise<string> {
+async function loadBashExplain(permission: DesktopPermissionRecord, sessionMode: string): Promise<BashExplainDetails> {
   const params = new URLSearchParams()
   params.set('mode', (permission.mode || sessionMode).trim())
   params.set('tool', safeString(permission.toolName))
   params.set('arguments', safeString(permission.toolArguments))
   const response = await requestJson<PermissionExplainResponse>(`/v1/permissions/explain?${params.toString()}`)
-  return prefixFromRulePreview(response.explain?.rule_preview || '') || savedBashPrefix(permission)
+  const explain = response.explain
+  return {
+    prefix: prefixFromRulePreview(explain?.rule_preview || '') || savedBashPrefix(permission),
+    profile: explain?.bash_profile || '',
+    profileDecision: explain?.profile_decision || '',
+    profileReason: explain?.profile_reason || '',
+    category: explain?.bash_effect?.category || '',
+    critical: Boolean(explain?.bash_effect?.critical),
+    promoted: Boolean(explain?.bash_effect?.promoted),
+    promotionReason: explain?.bash_effect?.reason || '',
+  }
 }
 
 export function DesktopInlineBashPermissionCard({
@@ -78,6 +108,7 @@ export function DesktopInlineBashPermissionCard({
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
   const [persistentPrefix, setPersistentPrefix] = useState(() => savedBashPrefix(permission))
+  const [explainDetails, setExplainDetails] = useState<BashExplainDetails | null>(null)
   const intent = parseBashIntentMetadata(permission.toolArguments)
   const modeLabel = (permission.mode || sessionMode).trim() || 'auto'
 
@@ -87,11 +118,15 @@ export function DesktopInlineBashPermissionCard({
     setNote('')
     setError('')
     setPersistentPrefix(savedBashPrefix(permission))
+    setExplainDetails(null)
 
     let cancelled = false
-    void loadBashPrefix(permission, sessionMode)
-      .then((prefix) => {
-        if (!cancelled && prefix) setPersistentPrefix(prefix)
+    void loadBashExplain(permission, sessionMode)
+      .then((details) => {
+        if (!cancelled) {
+          setExplainDetails(details)
+          if (details.prefix) setPersistentPrefix(details.prefix)
+        }
       })
       .catch(() => undefined)
     return () => {
@@ -154,8 +189,11 @@ export function DesktopInlineBashPermissionCard({
             <div className="text-xs font-semibold text-[var(--app-text)]">Bash permission</div>
             {intent ? (
               <span className="rounded-sm border border-[var(--app-border-strong)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-muted)]">
-                {intent.category}
+                {explainDetails?.category || intent.category}
               </span>
+            ) : null}
+            {(explainDetails?.critical || intent?.critical) ? (
+              <span className="rounded-sm border border-[var(--app-warning)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-warning)]">critical</span>
             ) : null}
           </div>
           <div className="mt-0.5 flex flex-wrap gap-x-2 text-[11px] text-[var(--app-text-subtle)]">
@@ -192,10 +230,16 @@ export function DesktopInlineBashPermissionCard({
         <div ref={contentRef} className="min-w-0">
           {intent ? (
             <>
-              {intent.critical ? (
+              {(explainDetails?.critical || intent.critical) ? (
                 <div className="mb-3 flex items-start gap-2 border-l-2 border-[var(--app-warning)] pl-2.5 text-xs leading-5 text-[var(--app-warning)]" role="alert">
                   <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-                  <div><span className="font-semibold">Pay attention before approving.</span> The AI marked this command as critical.</div>
+                  <div><span className="font-semibold">Pay attention before approving.</span> {explainDetails?.promoted ? `The backend promoted this command to critical${explainDetails.promotionReason ? `: ${explainDetails.promotionReason}` : '.'}` : 'The AI marked this command as critical.'}</div>
+                </div>
+              ) : null}
+              {explainDetails?.profile ? (
+                <div className="mb-3 text-xs leading-5 text-[var(--app-text-muted)]">
+                  <span className="font-semibold text-[var(--app-text)]">Bash profile:</span> {explainDetails.profile.split('_').join(' ')} · {explainDetails.profileDecision || 'ask'}
+                  {explainDetails.profileReason ? ` — ${explainDetails.profileReason}` : ''}
                 </div>
               ) : null}
               <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">What this command will do</div>
@@ -209,7 +253,7 @@ export function DesktopInlineBashPermissionCard({
             </>
           ) : (
             <div className="border-l-2 border-[var(--app-danger)] pl-2.5 text-sm leading-5 text-[var(--app-danger)]" role="alert">
-              Invalid Bash request: precise explanation, read/write/update category, and critical flag are required.
+              Invalid Bash request: precise explanation, read/write/update/delete category, and critical flag are required; delete requires critical=true.
             </div>
           )}
           <div className="mt-3 border-t border-[var(--app-border)] pt-2 text-[11px] leading-5 text-[var(--app-text-subtle)]">

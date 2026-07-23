@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import type { DesktopPermissionRecord } from '../../types/realtime'
@@ -67,6 +68,16 @@ test('parseBashIntentMetadata preserves precise list metadata', () => {
       critical: true,
     },
   )
+})
+
+test('parseBashIntentMetadata accepts critical deletes and rejects noncritical deletes', () => {
+  assert.deepEqual(parseBashIntentMetadata(JSON.stringify({ command: 'rm old.log', explanation: ['Remove the old log.'], category: 'delete', critical: true })), {
+    command: 'rm old.log',
+    explanation: ['Remove the old log.'],
+    category: 'delete',
+    critical: true,
+  })
+  assert.equal(parseBashIntentMetadata(JSON.stringify({ command: 'rm old.log', explanation: ['Remove the old log.'], category: 'delete', critical: false })), null)
 })
 
 test('parseBashIntentMetadata rejects requests without required metadata', () => {

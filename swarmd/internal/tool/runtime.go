@@ -503,7 +503,7 @@ func (r *Runtime) Definitions() []Definition {
 						"minItems":    1,
 						"description": "Ordered plain-English effects. Prefer one concise, human-scannable sentence for routine commands; do not narrate obvious shell mechanics, output capture, exit status, working directory, lack of source edits, or generic artifacts. Use multiple concise items only for distinct material effects. Name concrete filesystem mutations, processes, listeners, ports, network exposure, privileges, destructive actions, and other consequential changes when present.",
 					},
-					"category":   map[string]any{"type": "string", "enum": []string{"read", "write", "update"}, "description": "Overall effect category: read only observes state; write creates new state, resources, or processes; update changes or removes existing state. Use the highest-impact applicable category."},
+					"category":   map[string]any{"type": "string", "enum": []string{"read", "write", "update", "delete"}, "description": "Overall effect category: read only observes state; write creates new state, resources, or processes; update is a non-removal in-place mutation; delete removes state and always requires critical=true. Use the highest-impact applicable category."},
 					"critical":   map[string]any{"type": "boolean", "description": "Set true when the user should pay special attention before execution, including public listeners or network exposure, destructive or privileged operations, security-sensitive changes, or other unusually consequential effects."},
 					"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds (default 120000, max 1800000)"},
 				},
@@ -1746,15 +1746,20 @@ func validateBashArguments(args map[string]any) (string, error) {
 
 	category, ok := args["category"].(string)
 	if !ok {
-		return "", errors.New("bash requires category to be one of read, write, or update")
+		return "", errors.New("bash requires category to be one of read, write, update, or delete")
 	}
-	switch strings.ToLower(strings.TrimSpace(category)) {
-	case "read", "write", "update":
+	category = strings.ToLower(strings.TrimSpace(category))
+	switch category {
+	case "read", "write", "update", "delete":
 	default:
-		return "", errors.New("bash category must be one of read, write, or update")
+		return "", errors.New("bash category must be one of read, write, update, or delete")
 	}
-	if _, ok := args["critical"].(bool); !ok {
+	critical, ok := args["critical"].(bool)
+	if !ok {
 		return "", errors.New("bash requires critical as an explicit boolean")
+	}
+	if category == "delete" && !critical {
+		return "", errors.New("bash delete category requires critical=true")
 	}
 	return command, nil
 }

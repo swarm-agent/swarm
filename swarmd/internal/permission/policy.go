@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -24,6 +25,7 @@ const (
 
 type Policy struct {
 	Version        int                  `json:"version"`
+	BashProfile    BashApprovalProfile  `json:"bash_profile"`
 	Rules          []PolicyRule         `json:"rules,omitempty"`
 	Subagents      SubagentPolicy       `json:"subagents"`
 	SessionDeploy  SessionDeployPolicy  `json:"session_deploy"`
@@ -36,6 +38,10 @@ type SubagentOrchestrationMode string
 type SubagentOverBudgetAction string
 
 type CapabilityPolicyMode string
+
+type BashApprovalProfile string
+
+type BashEffectCategory string
 
 type SessionDeployOverLimitAction string
 
@@ -50,6 +56,16 @@ const (
 	CapabilityModeAsk         CapabilityPolicyMode = "ask"
 	CapabilityModeAlwaysAllow CapabilityPolicyMode = "always_allow"
 	CapabilityModeBounded     CapabilityPolicyMode = "bounded"
+
+	BashApprovalProfileCurrentRules        BashApprovalProfile = "current_rules"
+	BashApprovalProfileAllowEveryRead      BashApprovalProfile = "allow_every_read"
+	BashApprovalProfileAllowSafeReads      BashApprovalProfile = "allow_safe_reads"
+	BashApprovalProfileOnlyCriticalPrompts BashApprovalProfile = "only_critical_prompts"
+
+	BashEffectRead   BashEffectCategory = "read"
+	BashEffectWrite  BashEffectCategory = "write"
+	BashEffectUpdate BashEffectCategory = "update"
+	BashEffectDelete BashEffectCategory = "delete"
 
 	SessionDeployOverLimitAsk  SessionDeployOverLimitAction = "ask"
 	SessionDeployOverLimitDeny SessionDeployOverLimitAction = "deny"
@@ -92,6 +108,19 @@ func DefaultSessionDeployPolicy() SessionDeployPolicy {
 
 func DefaultPlanAcceptancePolicy() PlanAcceptancePolicy {
 	return PlanAcceptancePolicy{Mode: CapabilityModeAsk}
+}
+
+func DefaultBashApprovalProfile() BashApprovalProfile {
+	return BashApprovalProfileCurrentRules
+}
+
+func ValidateBashApprovalProfile(profile BashApprovalProfile) error {
+	switch profile {
+	case BashApprovalProfileCurrentRules, BashApprovalProfileAllowEveryRead, BashApprovalProfileAllowSafeReads, BashApprovalProfileOnlyCriticalPrompts:
+		return nil
+	default:
+		return fmt.Errorf("unsupported bash approval profile %q", profile)
+	}
 }
 
 func ValidateSessionDeployPolicy(policy SessionDeployPolicy) error {
@@ -177,13 +206,17 @@ type PolicyRule struct {
 }
 
 type PolicyExplain struct {
-	Decision    PolicyDecision `json:"decision"`
-	Source      string         `json:"source"`
-	Reason      string         `json:"reason"`
-	ToolName    string         `json:"tool_name,omitempty"`
-	Command     string         `json:"command,omitempty"`
-	Rule        *PolicyRule    `json:"rule,omitempty"`
-	RulePreview string         `json:"rule_preview,omitempty"`
+	Decision        PolicyDecision        `json:"decision"`
+	Source          string                `json:"source"`
+	Reason          string                `json:"reason"`
+	ToolName        string                `json:"tool_name,omitempty"`
+	Command         string                `json:"command,omitempty"`
+	Rule            *PolicyRule           `json:"rule,omitempty"`
+	RulePreview     string                `json:"rule_preview,omitempty"`
+	BashEffect      *BashEffectAssessment `json:"bash_effect,omitempty"`
+	BashProfile     BashApprovalProfile   `json:"bash_profile,omitempty"`
+	ProfileDecision PolicyDecision        `json:"profile_decision,omitempty"`
+	ProfileReason   string                `json:"profile_reason,omitempty"`
 }
 
 type policyEvalContext struct {
@@ -192,11 +225,21 @@ type policyEvalContext struct {
 	NormalizedArgs string
 	BashCommand    string
 	BashPrefix     string
+	BashEffect     BashEffectAssessment
+}
+
+type BashEffectAssessment struct {
+	Category BashEffectCategory `json:"category"`
+	Critical bool               `json:"critical"`
+	Valid    bool               `json:"valid"`
+	Promoted bool               `json:"promoted,omitempty"`
+	Reason   string             `json:"reason,omitempty"`
 }
 
 func DefaultPolicy() Policy {
 	return Policy{
 		Version:        1,
+		BashProfile:    DefaultBashApprovalProfile(),
 		Subagents:      DefaultSubagentPolicy(),
 		SessionDeploy:  DefaultSessionDeployPolicy(),
 		PlanAcceptance: DefaultPlanAcceptancePolicy(),
@@ -221,6 +264,10 @@ func NormalizePolicy(policy Policy) Policy {
 		out = append(out, normalized)
 	}
 	policy.Rules = out
+	policy.BashProfile = BashApprovalProfile(strings.TrimSpace(strings.ToLower(string(policy.BashProfile))))
+	if err := ValidateBashApprovalProfile(policy.BashProfile); err != nil {
+		policy.BashProfile = DefaultBashApprovalProfile()
+	}
 	if err := ValidateSubagentPolicy(policy.Subagents); err != nil {
 		policy.Subagents = DefaultSubagentPolicy()
 	}
@@ -237,6 +284,30 @@ func NormalizePolicy(policy Policy) Policy {
 }
 
 func ExplainPolicy(mode, toolName, toolArguments string, policy Policy) PolicyExplain {
+	policy = NormalizePolicy(policy)
+	ctx := buildPolicyEvalContext(toolName, toolArguments)
+	explain := explainPolicyDecision(mode, toolName, toolArguments, policy)
+	if ctx.ToolName != "bash" {
+		return explain
+	}
+	assessment := ctx.BashEffect
+	explain.BashEffect = &assessment
+	explain.BashProfile = policy.BashProfile
+	if profileExplain, ok := explainBashProfile(ctx, policy.BashProfile); ok {
+		explain.ProfileDecision = profileExplain.Decision
+		explain.ProfileReason = profileExplain.Reason
+	} else {
+		explain.ProfileDecision = explain.Decision
+		if policy.BashProfile == BashApprovalProfileCurrentRules {
+			explain.ProfileReason = "current rules use existing granular and default bash authorization"
+		} else {
+			explain.ProfileReason = "selected bash profile leaves this operation to granular and default authorization"
+		}
+	}
+	return explain
+}
+
+func explainPolicyDecision(mode, toolName, toolArguments string, policy Policy) PolicyExplain {
 	ctx := buildPolicyEvalContext(toolName, toolArguments)
 	policy = NormalizePolicy(policy)
 	mode, bypass := splitPolicyMode(mode)
@@ -268,10 +339,19 @@ func ExplainPolicy(mode, toolName, toolArguments string, policy Policy) PolicyEx
 		}
 		return PolicyExplain{Decision: decision, Source: "plan_acceptance_policy", Reason: reason, ToolName: ctx.ToolName}
 	}
-	if explain, ok := explainExplicitRule(ctx, policy); ok {
+	if explain, ok := explainBuiltinDeny(mode, ctx); ok {
 		return explain
 	}
-	if explain, ok := explainBuiltinDeny(mode, ctx); ok {
+	if explain, ok := explainExplicitDeny(ctx, policy); ok {
+		return explain
+	}
+	if ctx.ToolName == "bash" && !ctx.BashEffect.Valid {
+		return bashProfileExplain(ctx, PolicyDecisionAsk, "bash effect metadata is malformed or contradictory: "+ctx.BashEffect.Reason)
+	}
+	if explain, ok := explainBashProfile(ctx, policy.BashProfile); ok {
+		return explain
+	}
+	if explain, ok := explainExplicitRule(ctx, policy); ok {
 		return explain
 	}
 	if explain, ok := explainBuiltinAllow(mode, ctx); ok {
@@ -348,6 +428,7 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	if toolName == "bash" {
 		ctx.BashCommand = extractNormalizedBashCommand(toolArguments)
 		ctx.BashPrefix = extractBashCommandPrefix(ctx.BashCommand)
+		ctx.BashEffect = assessBashEffect(toolArguments, ctx.BashCommand)
 	}
 	return ctx
 }
@@ -473,9 +554,73 @@ func explainPhraseDeny(ctx policyEvalContext, policy Policy) (PolicyExplain, boo
 	return PolicyExplain{}, false
 }
 
+func explainExplicitDeny(ctx policyEvalContext, policy Policy) (PolicyExplain, bool) {
+	for _, rule := range policy.Rules {
+		if rule.Decision != PolicyDecisionDeny || !policyRuleMatches(ctx, rule) {
+			continue
+		}
+		matched := rule
+		return PolicyExplain{
+			Decision:    PolicyDecisionDeny,
+			Source:      "rule",
+			Reason:      fmt.Sprintf("denied by %s", previewPolicyRule(matched)),
+			ToolName:    ctx.ToolName,
+			Command:     ctx.BashCommand,
+			Rule:        &matched,
+			RulePreview: previewPolicyRule(matched),
+		}, true
+	}
+	return PolicyExplain{}, false
+}
+
+func explainBashProfile(ctx policyEvalContext, profile BashApprovalProfile) (PolicyExplain, bool) {
+	if ctx.ToolName != "bash" || profile == BashApprovalProfileCurrentRules {
+		return PolicyExplain{}, false
+	}
+	assessment := ctx.BashEffect
+	if !assessment.Valid {
+		reason := "bash effect metadata is malformed or contradictory"
+		if strings.TrimSpace(assessment.Reason) != "" {
+			reason += ": " + assessment.Reason
+		}
+		return bashProfileExplain(ctx, PolicyDecisionAsk, reason), true
+	}
+	if assessment.Category == BashEffectDelete {
+		return bashProfileExplain(ctx, PolicyDecisionAsk, "every bash delete requires approval"), true
+	}
+	if assessment.Critical {
+		if profile == BashApprovalProfileAllowEveryRead && assessment.Category == BashEffectRead {
+			return bashProfileExplain(ctx, PolicyDecisionAllow, "allow every read profile includes critical bash reads"), true
+		}
+		return bashProfileExplain(ctx, PolicyDecisionAsk, "critical bash operation requires approval"), true
+	}
+	switch profile {
+	case BashApprovalProfileAllowEveryRead, BashApprovalProfileAllowSafeReads:
+		if assessment.Category == BashEffectRead {
+			return bashProfileExplain(ctx, PolicyDecisionAllow, "bash read is auto-approved by the selected profile"), true
+		}
+	case BashApprovalProfileOnlyCriticalPrompts:
+		switch assessment.Category {
+		case BashEffectRead, BashEffectWrite, BashEffectUpdate:
+			return bashProfileExplain(ctx, PolicyDecisionAllow, "noncritical bash operation is auto-approved by the selected profile"), true
+		}
+	}
+	return PolicyExplain{}, false
+}
+
+func bashProfileExplain(ctx policyEvalContext, decision PolicyDecision, reason string) PolicyExplain {
+	return PolicyExplain{
+		Decision: decision,
+		Source:   "bash_profile",
+		Reason:   reason,
+		ToolName: ctx.ToolName,
+		Command:  ctx.BashCommand,
+	}
+}
+
 func explainExplicitRule(ctx policyEvalContext, policy Policy) (PolicyExplain, bool) {
 	for _, rule := range policy.Rules {
-		if rule.Kind == PolicyRuleKindPhrase && rule.Decision == PolicyDecisionDeny {
+		if rule.Decision == PolicyDecisionDeny {
 			continue
 		}
 		if !policyRuleMatches(ctx, rule) {
@@ -673,6 +818,115 @@ func policyRuleSignature(rule PolicyRule) string {
 		rule.Tool,
 		rule.Pattern,
 	}, "\x00")
+}
+
+func assessBashEffect(arguments, normalizedCommand string) BashEffectAssessment {
+	invalid := func(reason string) BashEffectAssessment {
+		return BashEffectAssessment{Valid: false, Reason: reason}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &payload); err != nil || payload == nil {
+		return invalid("arguments must be a JSON object")
+	}
+	command, ok := payload["command"].(string)
+	if !ok || strings.TrimSpace(command) == "" {
+		return invalid("command is required")
+	}
+	explanation, ok := payload["explanation"].([]any)
+	if !ok || len(explanation) == 0 {
+		return invalid("explanation must contain at least one item")
+	}
+	for _, item := range explanation {
+		text, ok := item.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return invalid("explanation items must be non-empty strings")
+		}
+	}
+	categoryText, ok := payload["category"].(string)
+	if !ok {
+		return invalid("category is required")
+	}
+	category := BashEffectCategory(strings.TrimSpace(strings.ToLower(categoryText)))
+	switch category {
+	case BashEffectRead, BashEffectWrite, BashEffectUpdate, BashEffectDelete:
+	default:
+		return invalid("category must be read, write, update, or delete")
+	}
+	critical, ok := payload["critical"].(bool)
+	if !ok {
+		return invalid("critical must be a boolean")
+	}
+	if category == BashEffectDelete && !critical {
+		return invalid("delete requires critical=true")
+	}
+
+	assessment := BashEffectAssessment{Category: category, Critical: critical, Valid: true}
+	commandLower := strings.TrimSpace(strings.ToLower(normalizedCommand))
+	if commandLower == "" {
+		commandLower = strings.ToLower(strings.Join(strings.Fields(command), " "))
+	}
+	promote := func(next BashEffectCategory, reason string) {
+		if assessment.Category != next {
+			assessment.Category = next
+			assessment.Promoted = true
+		}
+		if !assessment.Critical {
+			assessment.Critical = true
+			assessment.Promoted = true
+		}
+		if assessment.Reason == "" {
+			assessment.Reason = reason
+		}
+	}
+	if obviousBashDelete(commandLower) {
+		promote(BashEffectDelete, "backend detected a delete operation")
+		return assessment
+	}
+	if obviousBashMutation(commandLower) && assessment.Category == BashEffectRead {
+		return invalid("read category contradicts a mutating command")
+	}
+	if obviousCriticalBash(commandLower) {
+		if !assessment.Critical {
+			assessment.Critical = true
+			assessment.Promoted = true
+		}
+		if assessment.Reason == "" {
+			assessment.Reason = "backend detected a sensitive, privileged, expensive, or outbound operation"
+		}
+	}
+	return assessment
+}
+
+var obviousBashDeleteCommand = regexp.MustCompile(`(?:^|[;&|]\s*)(?:sudo\s+)?(?:[^\s;&|]+/)?(?:rm|rmdir|unlink|shred)(?:\s|$)`)
+
+func obviousBashDelete(command string) bool {
+	if obviousBashDeleteCommand.MatchString(command) {
+		return true
+	}
+	for _, marker := range []string{" -delete", "git clean ", "truncate -s 0 "} {
+		if strings.Contains(command, marker) || strings.HasPrefix(command, strings.TrimSpace(marker)+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+func obviousBashMutation(command string) bool {
+	for _, marker := range []string{" >", "> ", ">>", "tee ", "touch ", "mkdir ", "mv ", "cp ", "install ", "chmod ", "chown ", "sed -i", "git add ", "git commit ", "git checkout ", "git switch ", "git merge ", "git rebase ", "systemctl ", "docker run ", "kubectl apply ", "terraform apply"} {
+		if strings.HasPrefix(command, marker) || strings.Contains(command, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func obviousCriticalBash(command string) bool {
+	for _, marker := range []string{"sudo ", "su ", "/etc/", "/var/lib/", ".env", "credentials", "secret", "private_key", "id_rsa", "curl ", "wget ", " nc ", "netcat ", "ssh ", "scp ", "rsync ", "--listen", " -l ", "pg_dump", "mysqldump", "terraform apply", "kubectl ", "systemctl "} {
+		if strings.HasPrefix(command, marker) || strings.Contains(command, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func extractNormalizedBashCommand(arguments string) string {

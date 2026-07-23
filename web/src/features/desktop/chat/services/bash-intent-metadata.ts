@@ -1,4 +1,4 @@
-export type BashCategory = 'read' | 'write' | 'update'
+export type BashCategory = 'read' | 'write' | 'update' | 'delete'
 
 export interface BashIntentMetadata {
   command: string
@@ -15,7 +15,10 @@ export function parseBashIntentMetadata(raw: string): BashIntentMetadata | null 
     const explanation = Array.isArray(parsed.explanation)
       ? parsed.explanation.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean)
       : []
-    if (!command || explanation.length === 0 || !['read', 'write', 'update'].includes(category) || typeof parsed.critical !== 'boolean') {
+    if (!command || explanation.length === 0 || !['read', 'write', 'update', 'delete'].includes(category) || typeof parsed.critical !== 'boolean') {
+      return null
+    }
+    if (category === 'delete' && !parsed.critical) {
       return null
     }
     return { command, explanation, category: category as BashCategory, critical: parsed.critical }

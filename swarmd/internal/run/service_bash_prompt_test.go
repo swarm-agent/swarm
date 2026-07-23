@@ -25,6 +25,29 @@ func TestMasterHarnessPromptRequiresConciseRiskFocusedBashIntent(t *testing.T) {
 	}
 }
 
+func TestMasterHarnessPromptDefinesEffectAwareBashClassification(t *testing.T) {
+	prompt := masterHarnessPrompt(t.TempDir())
+
+	for _, want := range []string{
+		"category as exactly read, write, update, or delete",
+		"Critical reads are exceptional",
+		"secrets or credentials",
+		"production databases",
+		"private customer data",
+		"protected system files",
+		"large or expensive queries",
+		"reads coupled to outbound exfiltration",
+		"update is a non-removal in-place mutation and never means removal",
+		"delete removes state and always requires critical=true",
+		"Routine source reads, listings, searches, status checks, and ordinary local logs are noncritical",
+		"For mixed commands, use the highest-impact category",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("effect-aware Bash guidance missing %q", want)
+		}
+	}
+}
+
 func TestMasterHarnessPromptRequiresBoundedTemporaryAndRecursiveWork(t *testing.T) {
 	prompt := masterHarnessPrompt(t.TempDir())
 
