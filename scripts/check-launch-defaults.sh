@@ -39,8 +39,8 @@ assert_absent "blank install choice cannot select systemd" install.sh '1\|system
 assert_fixed "non-loopback startup config fails closed" pkg/startupconfig/config.go 'unsupported non-loopback host'
 assert_fixed "non-loopback CLI listen fails closed" swarmd/internal/config/config.go 'unsupported non-loopback --listen'
 assert_fixed "default permission output omits details" swarmd/internal/permission/service.go 'detailed output omitted for privacy'
-assert_fixed "uninstall preserves canonical config by default" internal/launcher/service_lifecycle.go 'preserve /etc/swarmd'
-assert_fixed "uninstall preserves canonical data by default" internal/launcher/service_lifecycle.go 'preserve /var/lib/swarmd'
+assert_fixed "uninstall preserves canonical config by default" internal/launcher/service_lifecycle.go 'preserve .etc.swarmd'
+assert_fixed "uninstall preserves canonical data by default" internal/launcher/service_lifecycle.go 'preserve .var/lib/swarmd'
 assert_fixed "failed runtime boot has rollback path" internal/launcher/update.go 'rollbackPendingRuntimeUpdate'
 
 printf 'launch-default assertions passed\n'

@@ -23,10 +23,10 @@ Checks repository launch readiness for public publication.
 - Asserts launch-blocking startup, privacy, networking, and installer defaults.
 - Scans tracked files for personal identifiers and local-only env files.
 - Detects tracked junk/artifact paths and unexpected untracked files.
-- Reports tracked non-text binary blobs for review.
+- Rejects unexpected tracked non-text blobs and reports the reviewed release/runtime assets.
 
 Flags:
-  --strict-binaries  fail when tracked non-text binary blobs are present
+  --strict-binaries  fail even when tracked non-text blobs are on the reviewed asset list
   --require-clean    fail when git status is not clean
   --forbid-token X   fail if tracked files contain exact token X (repeatable)
 USAGE
@@ -198,7 +198,8 @@ else
   pass "unexpected untracked files"
 fi
 
-binary_report=""
+reviewed_binary_report=""
+unexpected_binary_report=""
 while IFS= read -r tracked_file; do
   [[ -n "${tracked_file}" ]] || continue
   [[ -f "${tracked_file}" ]] || continue
@@ -214,18 +215,36 @@ while IFS= read -r tracked_file; do
       continue
       ;;
   esac
-  binary_report+="${tracked_file} :: ${mime_type} :: ${desc}"$'\n'
+  binary_line="${tracked_file} :: ${mime_type} :: ${desc}"
+  case "${tracked_file}" in
+    internal/fff/lib/linux-amd64-gnu/libfff_c.so|swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so)
+      reviewed_binary_report+="${binary_line} :: required vendored FFF runtime library"$'\n'
+      ;;
+    web/public/apple-touch-icon.png|web/public/favicon.svg|web/public/pwa-icon-192.png|web/public/pwa-icon-512.png|web/public/pwa-maskable-512.png)
+      reviewed_binary_report+="${binary_line} :: required public web icon"$'\n'
+      ;;
+    *)
+      unexpected_binary_report+="${binary_line}"$'\n'
+      ;;
+  esac
 done < <(git ls-files)
 
-binary_report="$(printf '%s' "${binary_report}" | sed '/^$/d' || true)"
-if [[ -n "${binary_report}" ]]; then
+reviewed_binary_report="$(printf '%s' "${reviewed_binary_report}" | sed '/^$/d' || true)"
+unexpected_binary_report="$(printf '%s' "${unexpected_binary_report}" | sed '/^$/d' || true)"
+if [[ -n "${unexpected_binary_report}" ]]; then
+  fail "unexpected tracked non-text binary blobs" "${unexpected_binary_report}"
+else
+  pass "unexpected tracked non-text binary blobs"
+fi
+if [[ -n "${reviewed_binary_report}" ]]; then
   if [[ "${STRICT_BINARIES}" == "1" ]]; then
-    fail "tracked non-text binary blobs" "${binary_report}"
+    fail "reviewed tracked non-text release/runtime assets (strict mode)" "${reviewed_binary_report}"
   else
-    warn "tracked non-text binary blobs (manual launch-shape review required)" "${binary_report}"
+    pass "reviewed tracked non-text release/runtime assets"
+    printf '%s\n' "${reviewed_binary_report}" | sed 's/^/    /'
   fi
 else
-  pass "tracked non-text binary blobs"
+  pass "reviewed tracked non-text release/runtime assets"
 fi
 
 section "summary"

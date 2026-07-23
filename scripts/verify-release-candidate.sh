@@ -59,19 +59,21 @@ fi
 )
 
 root_name="${archive_name%.tar.gz}"
+platform_root="${root_name}/linux-amd64/root"
+daemon_root="${root_name}/linux-amd64/swarmd"
 required_entries=(
   "${root_name}/install.sh"
   "${root_name}/build-info.txt"
   "${root_name}/web/index.html"
-  "${root_name}/linux-amd64/root/swarm"
-  "${root_name}/linux-amd64/root/swarmdev"
-  "${root_name}/linux-amd64/root/rebuild"
-  "${root_name}/linux-amd64/root/swarmsetup"
-  "${root_name}/linux-amd64/root/swarmtui"
-  "${root_name}/linux-amd64/swarmd/swarmd"
-  "${root_name}/linux-amd64/swarmd/swarmctl"
-  "${root_name}/linux-amd64/swarmd/swarm-fff-search"
-  "${root_name}/linux-amd64/swarmd/libfff_c.so"
+  "${platform_root}/swarm"
+  "${platform_root}/swarmdev"
+  "${platform_root}/rebuild"
+  "${platform_root}/swarmsetup"
+  "${platform_root}/swarmtui"
+  "${daemon_root}/swarmd"
+  "${daemon_root}/swarmctl"
+  "${daemon_root}/swarm-fff-search"
+  "${daemon_root}/libfff_c.so"
 )
 archive_listing="$(tar -tzf "${ARCHIVE_PATH}")"
 for entry in "${required_entries[@]}"; do
@@ -80,7 +82,7 @@ for entry in "${required_entries[@]}"; do
     exit 1
   fi
 done
-for entry in "${root_name}/install.sh" "${root_name}/linux-amd64/root/swarmsetup"; do
+for entry in "${root_name}/install.sh" "${platform_root}/swarmsetup"; do
   if ! tar -tvzf "${ARCHIVE_PATH}" | awk -v required="${entry}" '$NF == required && substr($1, 4, 1) == "x" { found = 1 } END { exit found ? 0 : 1 }'; then
     echo "release archive service/install input is not executable: ${entry}" >&2
     exit 1

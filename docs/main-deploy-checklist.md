@@ -8,7 +8,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 - `main` is the protected release/build branch.
 - Pushes to `main` trigger `.github/workflows/build-main.yml`, which builds and verifies a release candidate but cannot tag or publish it.
 - Stable publication is a separate manual workflow dispatch from `main` with `publish=true` and an explicit stable `release_version`; the `publish-stable` job is protected by the `stable-release` GitHub Environment.
-- Record the exact `origin/main`, `origin/dev`, promotion range, and selected release tag during each release instead of maintaining a stale fixed snapshot here.
+- Record the exact `origin/main`, `origin/dev`, promotion range, and selected release tag in the promotion PR or release record instead of maintaining a stale fixed snapshot here.
 
 ## Push and key model
 
@@ -42,6 +42,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 - The operator selects an explicit stable semver version when manually dispatching publication from `main`. The workflow rejects missing or malformed versions and existing tags.
 - The candidate build and hermetic archive/install smoke complete before the environment-protected publication job creates the release and tag.
 - The `release-candidate-<version>` workflow artifact is the evidence bundle: it contains the candidate archive, exact `.sha256` file, `build-info.txt`, and `smoke-evidence.txt`. The build job's `Smoke release archive and artifact-root install` log is the full command transcript.
+- Candidate evidence is per SHA and workflow run. Never treat an older artifact, checksum, smoke transcript, or fixed branch snapshot in documentation as evidence for a newer commit.
 - `dist/build-info.txt` carries release metadata (`version`, `commit`, `actor`, `ref`, `built_at`) but is not itself the tag authority.
 
 ## Main release checklist
@@ -50,14 +51,17 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 
 - [ ] Confirm the exact promotion range with `git log --oneline main..dev`
 - [ ] Confirm whether the `main`-only commit (`Add main branch build workflow and branch flow docs`) must be preserved, merged, or recreated in the promoted history
-- [ ] Freeze the release candidate to one explicit `dev` SHA
+- [ ] Freeze the release candidate to one explicit `dev` SHA and record it in the promotion PR or release record with `git rev-parse HEAD`
 
 ### 2. Repo safety and hygiene
 
 - [ ] Ensure the working tree is clean
 - [ ] Run `./scripts/check-precommit.sh`
-- [ ] Run `bash scripts/check-launch-readiness.sh --require-clean`; this includes `scripts/check-launch-defaults.sh` assertions for loopback-only binding, permission/diagnostic/output-retention defaults, config privacy, explicit service choice, default permission redaction, preservation-oriented uninstall, and update rollback.
+- [ ] Run `bash scripts/check-launch-readiness.sh --require-clean`; this includes `scripts/check-launch-defaults.sh` assertions for loopback-only binding, permission/diagnostic/output-retention defaults, config privacy, explicit service choice, default permission redaction, preservation-oriented uninstall, and update rollback. It also rejects untracked artifacts and unexpected non-text blobs while reporting the explicitly reviewed FFF libraries and public web/PWA icons.
+- [ ] Retain full precommit and launch-readiness output with the exact candidate SHA
 - [ ] Build the candidate and run `TMPDIR="${TMPDIR:?}" ./scripts/smoke-release-archive.sh <archive.tar.gz> <archive.tar.gz.sha256> --evidence <smoke-evidence.txt>` when reproducing the CI smoke locally
+- [ ] Record the candidate archive/checksum/build metadata/smoke evidence location, or mark it pending until the exact-SHA workflow runs; do not fabricate or reuse evidence from another SHA
+- [ ] Record the fresh supported-Linux VM transcript location separately, or mark it external/pending until privileged config metadata and real systemd lifecycle checks are complete
 - [ ] Re-read clone audit findings for secrets, plaintext storage, logging, and networking gotchas relevant to the downloadable release bundle
 
 ### 3. Secrets and auth review

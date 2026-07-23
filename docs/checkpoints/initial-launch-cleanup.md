@@ -15,7 +15,8 @@ This is the focused backlog to finish before opening promotion PRs, publishing a
 2. **P0.2 implementation complete; repository configuration remains an operator gate.** Pull requests, pushes to `main`, and non-publishing dispatches only build verified candidates with read-only contents permission. Stable publication is a separate `workflow_dispatch` path restricted to `main`, scoped to the `stable-release` GitHub Environment, and receives `contents: write` only after the candidate build and verification job succeeds. The release archive, checksum, and metadata are transferred between jobs as immutable workflow artifacts; third-party actions are pinned to commit SHAs. Before first publication, configure required reviewers on the `stable-release` Environment and verify branch protection still enforces `dev -> main`.
 3. **P1.1 hermetic archive/install smoke implementation complete; clean-machine systemd evidence remains an operator gate.** `scripts/smoke-release-archive.sh` verifies the checksum and required archive inputs, extracts the candidate, and runs the embedded `swarmsetup --artifact-root ... --no-service` against disposable system/storage roots under `TMPDIR`. `.github/workflows/build-main.yml` runs it before candidate upload or stable publication and stores `smoke-evidence.txt` beside the candidate artifacts. A fresh supported-Linux VM must still prove the real systemd install/start/health/restart/update-failure/uninstall lifecycle and config/data metadata preservation before first publication.
 4. **P1.2 harmful-default implementation complete; privileged lifecycle evidence remains an operator gate.** Launch readiness asserts loopback/default-off/private defaults, blank installer choice and direct `swarmsetup` are files-only, and unsupported non-loopback API/desktop binding fails closed. Reinstall preserves existing canonical directory metadata, uninstall preserves config/data unless purge is explicit, failed release apply restarts the last working runtime, and default permission persistence redacts credentials and omits full tool output. A clean supported-Linux VM must still prove service-account config owner/group/mode and the real systemd failure lifecycle before publication.
-5. **Dead code is substantial, but the obvious command needs careful scoping.** The ignored local `.bin/deadcode` is a Go RTA analyzer. Executable-only analysis completed successfully and reported 231 lines in the root module and 362 in `swarmd`; examples include `cmd/swarm/main.go:425`, legacy-looking TUI paths under `internal/app/app.go`, `swarmd/internal/agent/service.go:678`, and old API paths. A naive `-test ./...` run currently fails while loading relocated/stale tests, so its output is not a deletion list. V3 findings are excluded by this document's scope lock.
+5. **P1.3 repository hygiene is enforced; release-run evidence remains candidate-specific.** Precommit and launch-readiness now reject path, storage, secret, hidden-text, policy, dependency-vulnerability, generated-artifact, untracked-file, and unexpected non-text-blob failures. The only reviewed non-text assets are the two required vendored FFF Linux libraries and public web/PWA icons. Public installation claims remain Linux x86-64 only. Each release owner must still attach the exact candidate SHA and that run's workflow archive/checksum/smoke evidence rather than treating a checked-in branch snapshot as current truth.
+6. **Dead code is substantial, but the obvious command needs careful scoping.** The ignored local `.bin/deadcode` is a Go RTA analyzer. Executable-only analysis completed successfully and reported 231 lines in the root module and 362 in `swarmd`; examples include `cmd/swarm/main.go:425`, legacy-looking TUI paths under `internal/app/app.go`, `swarmd/internal/agent/service.go:678`, and old API paths. A naive `-test ./...` run currently fails while loading relocated/stale tests, so its output is not a deletion list. V3 findings are excluded by this document's scope lock.
 
 ## P0 — stop before any new PR or release decision
 
@@ -192,20 +193,28 @@ This is the focused backlog to finish before opening promotion PRs, publishing a
 - `cmd/swarmsetup/main.go`
 - `internal/launcher/update.go`
 
-### P1.3 Run public-repository hygiene against the exact candidate
+### P1.3 Run public-repository hygiene against the exact candidate — complete for the current `dev` result
 
-**Tasks**
+**Implemented**
 
-- Freeze one `dev` SHA, require a clean worktree, and run the checked-in precommit and launch-readiness gates against that SHA.
-- Keep identity verification in focused product tests for the commit/integration helpers. Do not add contributor-email or commit-history policing to launch readiness, precommit, pre-push, or CI, and do not reinterpret this repository's own history as end-user runtime behavior.
-- Review every tracked non-text binary rather than globally allowing binaries. Launcher wrappers under `bin/` are shell scripts; generated archives/build outputs must remain untracked.
-- Replace stale baseline SHAs/counts in `docs/main-deploy-checklist.md:10-14` with a reproducible command/evidence record or remove the snapshot so it cannot mislead operators.
-- Confirm public docs name only supported platforms and flows; initial artifact support is Linux x86-64 (`install.sh:598-602`).
+- `scripts/check-precommit.sh` gates hardcoded and daemon-storage paths, secret/private-tailnet patterns, hidden text, policy guardrails, dependency vulnerabilities, and Go formatting. Tests remain opt-in.
+- `scripts/check-launch-readiness.sh --require-clean` composes precommit with launch-default assertions and rejects tracked local env files, local-only artifact paths, untracked files, and every unexpected non-text blob.
+- The reviewed non-text allowlist is narrow and explicit: the two checked-in `libfff_c.so` files required by FFF runtime/package behavior and the public web/PWA icons. Strict mode can still reject all non-text assets.
+- Release verification scripts construct archive-internal paths from named roots so the public hardcoded-host-path gate can distinguish archive entries from runtime system defaults.
+- Contributor identity and Git history remain outside repository hygiene policing. Dedicated commit/integration behavior stays covered by focused product tests.
+- `README.md` and `install.sh` identify Linux x86-64 as the current downloadable installer target; macOS text describes only a future storage/installer contract, not current artifact support.
+
+**Candidate evidence contract**
+
+- Freeze and print the candidate with `git rev-parse HEAD`, then require `git status --short` to be empty before running gates. Keep the exact SHA in the release record or promotion PR; do not maintain a mutable "current SHA" in this file.
+- Retain the full `./scripts/check-precommit.sh` and `bash scripts/check-launch-readiness.sh --require-clean` logs for that SHA.
+- For a workflow candidate, retain the `release-candidate-<version>` artifact containing the archive, exact `.sha256`, `build-info.txt`, and `smoke-evidence.txt`; the workflow run and build log are the evidence location.
+- Attach the separate fresh supported-Linux VM transcript for privileged config metadata, install/reinstall, real systemd start/restart, apply-time and boot-time rollback, and default uninstall retention. That external result is still required and must not be inferred from the hermetic smoke.
 
 **Acceptance**
 
-- Candidate SHA, gate output, archive checksum, and clean-machine smoke evidence are recorded together.
-- Tracked secrets, private identifiers, generated artifacts, and unexpected binaries all fail before PR/publication; focused product tests prove commit-helper behavior without policing legitimate contributor metadata.
+- Candidate SHA, gate output, archive checksum, and clean-machine smoke evidence have one reproducible evidence contract; unavailable external VM results are clearly marked rather than fabricated.
+- Tracked secrets, private identifiers, generated artifacts, and unexpected binaries fail before PR/publication; focused product tests prove commit-helper behavior without policing legitimate contributor metadata.
 - Release docs contain no stale fixed branch snapshot presented as current truth.
 
 ## P2 — bounded cleanup before promotion; do not turn it into a refactor

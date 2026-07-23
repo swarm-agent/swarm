@@ -72,7 +72,8 @@ mkdir -p "${extract_root}" "${system_root}" "${home_root}" "${command_tmp}"
 tar -xzf "${ARCHIVE_PATH}" -C "${extract_root}"
 archive_name="$(basename -- "${ARCHIVE_PATH}")"
 artifact_root="${extract_root}/${archive_name%.tar.gz}"
-installer="${artifact_root}/linux-amd64/root/swarmsetup"
+platform_root="${artifact_root}/linux-amd64/root"
+installer="${platform_root}/swarmsetup"
 service_input="${artifact_root}/install.sh"
 if [[ ! -x "${installer}" ]]; then
   echo "release archive is missing executable installer: ${installer}" >&2
