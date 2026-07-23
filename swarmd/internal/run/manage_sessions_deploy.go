@@ -21,27 +21,28 @@ const (
 )
 
 type manageSessionsDeployProposal struct {
-	ID                  string `json:"id"`
-	Title               string `json:"title,omitempty"`
-	Prompt              string `json:"prompt"`
-	Mode                string `json:"mode"`
-	AgentName           string `json:"agent_name"`
-	AgentMode           string `json:"agent_mode"`
-	RuntimeMode         string `json:"runtime_mode"`
-	Provider            string `json:"provider,omitempty"`
-	Model               string `json:"model,omitempty"`
-	Thinking            string `json:"thinking,omitempty"`
-	ServiceTier         string `json:"service_tier,omitempty"`
-	ContextMode         string `json:"context_mode,omitempty"`
-	WorkspaceID         string `json:"workspace_id,omitempty"`
-	WorkspaceBindingID  string `json:"workspace_binding_id,omitempty"`
-	WorkspaceGeneration int64  `json:"workspace_generation,omitempty"`
-	WorkspacePath       string `json:"workspace_path"`
-	WorkspaceName       string `json:"workspace_name,omitempty"`
-	ManagedWorktree     bool   `json:"managed_worktree"`
-	WorktreeBaseBranch  string `json:"worktree_base_branch,omitempty"`
-	WorktreeBranch      string `json:"worktree_branch,omitempty"`
-	Selected            bool   `json:"selected"`
+	ID                  string                                   `json:"id"`
+	Title               string                                   `json:"title,omitempty"`
+	Prompt              string                                   `json:"prompt"`
+	Mode                string                                   `json:"mode"`
+	AgentName           string                                   `json:"agent_name"`
+	AgentMode           string                                   `json:"agent_mode"`
+	RuntimeMode         string                                   `json:"runtime_mode"`
+	Provider            string                                   `json:"provider,omitempty"`
+	Model               string                                   `json:"model,omitempty"`
+	Thinking            string                                   `json:"thinking,omitempty"`
+	ServiceTier         string                                   `json:"service_tier,omitempty"`
+	ContextMode         string                                   `json:"context_mode,omitempty"`
+	ModelProfile        *pebblestore.SessionModelProfileSnapshot `json:"model_profile,omitempty"`
+	WorkspaceID         string                                   `json:"workspace_id,omitempty"`
+	WorkspaceBindingID  string                                   `json:"workspace_binding_id,omitempty"`
+	WorkspaceGeneration int64                                    `json:"workspace_generation,omitempty"`
+	WorkspacePath       string                                   `json:"workspace_path"`
+	WorkspaceName       string                                   `json:"workspace_name,omitempty"`
+	ManagedWorktree     bool                                     `json:"managed_worktree"`
+	WorktreeBaseBranch  string                                   `json:"worktree_base_branch,omitempty"`
+	WorktreeBranch      string                                   `json:"worktree_branch,omitempty"`
+	Selected            bool                                     `json:"selected"`
 }
 
 type manageSessionsDeployWorkspace struct {
@@ -214,10 +215,13 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 		if aiTask == nil {
 			return manageSessionsDeployManifest{}, errors.New("manage-sessions deploy requires a calling session")
 		}
-		parent = pebblestore.SessionSnapshot{UserID: strings.TrimSpace(aiTask.UserID), AccountScopeID: strings.TrimSpace(aiTask.AccountScopeID), WorkspacePath: strings.TrimSpace(aiTask.WorkspacePath)}
+		parent = pebblestore.SessionSnapshot{UserID: strings.TrimSpace(aiTask.UserID), AccountScopeID: strings.TrimSpace(aiTask.AccountScopeID), WorkspacePath: strings.TrimSpace(aiTask.WorkspacePath), ModelProfile: cloneManageSessionsDeployModelProfile(aiTask.ModelProfile)}
 	}
 	if aiTask != nil && (strings.TrimSpace(aiTask.UserID) != strings.TrimSpace(parent.UserID) || strings.TrimSpace(aiTask.AccountScopeID) != strings.TrimSpace(parent.AccountScopeID) || strings.TrimSpace(aiTask.WorkspacePath) != strings.TrimSpace(parent.WorkspacePath)) {
 		return manageSessionsDeployManifest{}, errors.New("AI task deployment binding does not match the authorized origin")
+	}
+	if aiTask != nil {
+		parent.ModelProfile = cloneManageSessionsDeployModelProfile(aiTask.ModelProfile)
 	}
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
 	if parent.ID == "" {
@@ -301,6 +305,14 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] execution mode: %w", i, err)
 		}
 		preference := resolution.preferenceForMode(parent.Preference, input.Mode)
+		modelProfile := (*pebblestore.SessionModelProfileSnapshot)(nil)
+		if aiTask != nil && parent.ModelProfile != nil {
+			modelProfile = cloneManageSessionsDeployModelProfile(parent.ModelProfile)
+			preference, err = manageSessionsDeployModelProfilePreference(modelProfile, input.Mode)
+			if err != nil {
+				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] model profile: %w", i, err)
+			}
+		}
 		bindingPath, bindingPathErr := resolveManageSessionsDeployBindingPath(parent, input)
 		if bindingPathErr != nil {
 			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] workspace: %w", i, bindingPathErr)
@@ -312,7 +324,7 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 			}
 			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] workspace: %w", i, err)
 		}
-		proposal := manageSessionsDeployProposal{ID: fmt.Sprintf("proposal-%d", i+1), Title: input.Title, Prompt: input.Prompt, Mode: input.Mode, AgentName: profile.Name, AgentMode: profile.Mode, RuntimeMode: executionMode, Provider: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, ServiceTier: preference.ServiceTier, ContextMode: preference.ContextMode, WorkspaceID: workspace.WorkspaceID, WorkspaceGeneration: workspace.WorkspaceGeneration, WorkspacePath: workspace.WorkspacePath, WorkspaceName: workspace.WorkspaceName, ManagedWorktree: input.Worktree, Selected: i == 0}
+		proposal := manageSessionsDeployProposal{ID: fmt.Sprintf("proposal-%d", i+1), Title: input.Title, Prompt: input.Prompt, Mode: input.Mode, AgentName: profile.Name, AgentMode: profile.Mode, RuntimeMode: executionMode, Provider: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, ServiceTier: preference.ServiceTier, ContextMode: preference.ContextMode, ModelProfile: modelProfile, WorkspaceID: workspace.WorkspaceID, WorkspaceGeneration: workspace.WorkspaceGeneration, WorkspacePath: workspace.WorkspacePath, WorkspaceName: workspace.WorkspaceName, ManagedWorktree: input.Worktree, Selected: i == 0}
 		if input.Worktree {
 			if s.worktrees == nil {
 				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] requires the managed worktree service", i)
@@ -335,6 +347,51 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 	selected := []string{manifest.Proposals[0].ID}
 	manifest.ApprovedArguments = map[string]any{"action": "deploy", "manifest_version": manifest.ManifestVersion, "manifest_digest": digest, "parent_session_id": manifest.ParentSessionID, "account_scope_id": manifest.AccountScopeID, "user_id": manifest.UserID, "selected_proposal_ids": selected, "proposals": manifest.Proposals}
 	return manifest, nil
+}
+
+func cloneManageSessionsDeployModelProfile(profile *pebblestore.SessionModelProfileSnapshot) *pebblestore.SessionModelProfileSnapshot {
+	if profile == nil {
+		return nil
+	}
+	cloned := *profile
+	if profile.Single != nil {
+		selection := *profile.Single
+		cloned.Single = &selection
+	}
+	if profile.Plan != nil {
+		selection := *profile.Plan
+		cloned.Plan = &selection
+	}
+	if profile.Auto != nil {
+		selection := *profile.Auto
+		cloned.Auto = &selection
+	}
+	return &cloned
+}
+
+func manageSessionsDeployModelProfilePreference(profile *pebblestore.SessionModelProfileSnapshot, mode string) (pebblestore.ModelPreference, error) {
+	if profile == nil {
+		return pebblestore.ModelPreference{}, errors.New("model profile is required")
+	}
+	selection := profile.Single
+	if strings.EqualFold(strings.TrimSpace(profile.ModelMode), pebblestore.ModelProfileModeSplit) {
+		if sessionruntime.NormalizeMode(mode) == sessionruntime.ModePlan {
+			selection = profile.Plan
+		} else {
+			selection = profile.Auto
+		}
+	}
+	if selection == nil || strings.TrimSpace(selection.Provider) == "" || strings.TrimSpace(selection.Model) == "" {
+		return pebblestore.ModelPreference{}, fmt.Errorf("session model profile %q has no %s provider/model", strings.TrimSpace(profile.Name), sessionruntime.NormalizeMode(mode))
+	}
+	return pebblestore.ModelPreference{
+		Provider:    strings.ToLower(strings.TrimSpace(selection.Provider)),
+		Model:       strings.TrimSpace(selection.Model),
+		Thinking:    strings.TrimSpace(selection.Thinking),
+		ServiceTier: strings.TrimSpace(selection.ServiceTier),
+		ContextMode: strings.TrimSpace(selection.ContextMode),
+		UpdatedAt:   profile.AppliedAt,
+	}, nil
 }
 
 func resolveManageSessionsDeployBindingPath(parent pebblestore.SessionSnapshot, input manageSessionsDeployInput) (string, error) {

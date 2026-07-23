@@ -323,7 +323,7 @@ func (s *Service) executeAITaskV2(ctx context.Context, store AITaskV2Store, task
 		}
 		task = prepared
 	}
-	if _, err := s.ExecutePreparedAITask(ctx, parentID, task.UserID, task.AccountScopeID, task.WorkspacePath, task.ID, task.AIRequest, task.AIMode, preparation, apply); err != nil {
+	if _, err := s.ExecutePreparedAITask(ctx, parentID, task.UserID, task.AccountScopeID, task.WorkspacePath, task.ID, task.AIRequest, task.AIMode, task.AIModelProfile, preparation, apply); err != nil {
 		return task, err
 	}
 	return task, nil

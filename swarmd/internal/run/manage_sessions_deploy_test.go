@@ -309,6 +309,22 @@ func TestDeploySessionNavigationUsesActualSourceWorkspace(t *testing.T) {
 	}
 }
 
+func TestAITaskDeploymentDigestBindsModelProfileSnapshot(t *testing.T) {
+	profile := &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceSaved, SavedProfileID: "profile-1", ModelMode: pebblestore.ModelProfileModeSplit, Plan: &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan"}, Auto: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "auto"}}
+	first, err := aiTaskDeploymentDigest("account", "/workspace", "task", profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.Auto.Model = "different"
+	second, err := aiTaskDeploymentDigest("account", "/workspace", "task", profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("AI task deployment digest did not bind model profile snapshot")
+	}
+}
+
 func TestDeterministicDeployIDStableAndProposalBound(t *testing.T) {
 	first := deterministicDeployID("digest", "proposal-1", "session")
 	if first != deterministicDeployID("digest", "proposal-1", "session") {

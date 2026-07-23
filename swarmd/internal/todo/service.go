@@ -70,6 +70,7 @@ type CreateAITaskInput struct {
 	WorkspaceID     string
 	WorkspacePath   string
 	OriginSessionID string
+	ModelProfile    *pebblestore.SessionModelProfileSnapshot
 	Request         string
 	Mode            string
 	IdempotencyKey  string
@@ -289,7 +290,7 @@ func (s *Service) CreateAITaskWithReplay(input CreateAITaskInput) (TodoItem, Tod
 	now := time.Now().UnixMilli()
 	keyHash, requestHash := hashAITaskValue(key), hashAITaskValue(request)
 	idSeed := hashAITaskValue(accountScopeID + "\x00" + workspaceID + "\x00" + keyHash)
-	item := TodoItem{ID: "ai_task_" + idSeed[:24], AccountScopeID: accountScopeID, UserID: userID, WorkspaceID: workspaceID, WorkspacePath: workspacePath, OriginSessionID: strings.TrimSpace(input.OriginSessionID), OwnerKind: pebblestore.WorkspaceTodoOwnerKindUser, Text: request, AIState: pebblestore.WorkspaceTodoAIStateQueued, AIMode: mode, AIRequest: request, CreatedAt: now, UpdatedAt: now}
+	item := TodoItem{ID: "ai_task_" + idSeed[:24], AccountScopeID: accountScopeID, UserID: userID, WorkspaceID: workspaceID, WorkspacePath: workspacePath, OriginSessionID: strings.TrimSpace(input.OriginSessionID), AIModelProfile: cloneAITaskModelProfile(input.ModelProfile), OwnerKind: pebblestore.WorkspaceTodoOwnerKindUser, Text: request, AIState: pebblestore.WorkspaceTodoAIStateQueued, AIMode: mode, AIRequest: request, CreatedAt: now, UpdatedAt: now}
 	created, replayed, err := s.store.CreateAITask(pebblestore.CreateAITaskStoreInput{Item: item, IdempotencyHash: keyHash, RequestHash: requestHash, Audit: pebblestore.AITaskAuditRecord{StageKey: "000001_queued", Stage: "queued", Disposition: "created", CreatedAt: now}})
 	if err != nil {
 		return TodoItem{}, TodoSummary{}, nil, false, err
@@ -304,6 +305,26 @@ func (s *Service) CreateAITaskWithReplay(input CreateAITaskInput) (TodoItem, Tod
 	}
 	event, err := s.appendEventForAccount(accountScopeID, workspacePath, "workspace.todo.created", created.ID, map[string]any{"account_scope_id": accountScopeID, "workspace_path": workspacePath, "item": created, "summary": summary})
 	return created, summary, event, false, err
+}
+
+func cloneAITaskModelProfile(profile *pebblestore.SessionModelProfileSnapshot) *pebblestore.SessionModelProfileSnapshot {
+	if profile == nil {
+		return nil
+	}
+	cloned := *profile
+	if profile.Single != nil {
+		selection := *profile.Single
+		cloned.Single = &selection
+	}
+	if profile.Plan != nil {
+		selection := *profile.Plan
+		cloned.Plan = &selection
+	}
+	if profile.Auto != nil {
+		selection := *profile.Auto
+		cloned.Auto = &selection
+	}
+	return &cloned
 }
 
 func hashAITaskValue(value string) string {

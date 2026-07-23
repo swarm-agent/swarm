@@ -23,6 +23,7 @@ type AITaskDeployBinding struct {
 	AccountScopeID       string
 	WorkspacePath        string
 	TaskID               string
+	ModelProfile         *pebblestore.SessionModelProfileSnapshot
 	PreparationSessionID string
 	PreparationRunID     string
 }
@@ -95,10 +96,13 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 		if aiTask == nil {
 			return "", errors.New("session deployment requires a calling session")
 		}
-		parent = pebblestore.SessionSnapshot{UserID: strings.TrimSpace(aiTask.UserID), AccountScopeID: strings.TrimSpace(aiTask.AccountScopeID), WorkspacePath: strings.TrimSpace(aiTask.WorkspacePath)}
+		parent = pebblestore.SessionSnapshot{UserID: strings.TrimSpace(aiTask.UserID), AccountScopeID: strings.TrimSpace(aiTask.AccountScopeID), WorkspacePath: strings.TrimSpace(aiTask.WorkspacePath), ModelProfile: cloneManageSessionsDeployModelProfile(aiTask.ModelProfile)}
 	}
 	if aiTask != nil && (strings.TrimSpace(aiTask.UserID) != strings.TrimSpace(parent.UserID) || strings.TrimSpace(aiTask.AccountScopeID) != strings.TrimSpace(parent.AccountScopeID) || strings.TrimSpace(aiTask.WorkspacePath) != strings.TrimSpace(parent.WorkspacePath)) {
 		return "", errors.New("AI task deployment binding does not match the authorized origin")
+	}
+	if aiTask != nil {
+		parent.ModelProfile = cloneManageSessionsDeployModelProfile(aiTask.ModelProfile)
 	}
 	if approved.ParentSessionID != "" && approved.ParentSessionID != parent.ID || approved.AccountScopeID != "" && approved.AccountScopeID != parent.AccountScopeID || approved.UserID != "" && approved.UserID != parent.UserID {
 		return "", errors.New("approved session deployment identity binding does not match the deployment principal")
@@ -173,13 +177,21 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 			return "", fmt.Errorf("proposal %q execution mode: %w", proposal.ID, resolveErr)
 		}
 		preference := resolution.preferenceForMode(parent.Preference, proposal.Mode)
+		modelProfile := (*pebblestore.SessionModelProfileSnapshot)(nil)
+		if aiTask != nil && parent.ModelProfile != nil {
+			modelProfile = cloneManageSessionsDeployModelProfile(parent.ModelProfile)
+			preference, err = manageSessionsDeployModelProfilePreference(modelProfile, proposal.Mode)
+			if err != nil {
+				return "", fmt.Errorf("proposal %q model profile: %w", proposal.ID, err)
+			}
+		}
 		scope, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, proposal.WorkspacePath)
 		if scopeErr != nil || !scope.Matched || scope.WorkspaceID != proposal.WorkspaceID || scope.WorkspaceGeneration != proposal.WorkspaceGeneration {
 			return "", fmt.Errorf("proposal %q workspace binding is no longer valid", proposal.ID)
 		}
 		proposal.AgentName, proposal.AgentMode, proposal.RuntimeMode = profile.Name, profile.Mode, executionMode
 		proposal.Provider, proposal.Model, proposal.Thinking = preference.Provider, preference.Model, preference.Thinking
-		proposal.ServiceTier, proposal.ContextMode = preference.ServiceTier, preference.ContextMode
+		proposal.ServiceTier, proposal.ContextMode, proposal.ModelProfile = preference.ServiceTier, preference.ContextMode, modelProfile
 		proposal.WorkspaceID, proposal.WorkspaceGeneration = scope.WorkspaceID, scope.WorkspaceGeneration
 		proposal.WorkspacePath, proposal.WorkspaceName = scope.WorkspacePath, scope.WorkspaceName
 		approved.Proposals[i] = proposal
@@ -189,7 +201,7 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 	// limited to user-authorized fields; resolved authority remains server-owned.
 	digest, err := manageSessionsDeployDigest(manifest)
 	if aiTask != nil {
-		digest = aiTaskDeploymentDigest(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID)
+		digest, err = aiTaskDeploymentDigest(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID, aiTask.ModelProfile)
 	}
 	if err != nil {
 		return "", fmt.Errorf("bind approved session deployment manifest: %w", err)
@@ -265,7 +277,7 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 			lineageMetadata["ai_task_preparation_session_id"] = strings.TrimSpace(aiTask.PreparationSessionID)
 			lineageMetadata["ai_task_preparation_run_id"] = strings.TrimSpace(aiTask.PreparationRunID)
 		}
-		canonical, canonicalErr := s.sessionDeployCanonicalize(SessionDeployCanonicalizeInput{Principal: principal, WorkspacePath: scope.WorkspacePath, WorkspaceBindingID: proposal.WorkspaceBindingID, AgentProfile: profile, RuntimeMode: proposal.RuntimeMode, Metadata: lineageMetadata})
+		canonical, canonicalErr := s.sessionDeployCanonicalize(SessionDeployCanonicalizeInput{Principal: principal, WorkspacePath: scope.WorkspacePath, WorkspaceBindingID: proposal.WorkspaceBindingID, AgentProfile: profile, ModelProfile: cloneManageSessionsDeployModelProfile(proposal.ModelProfile), RuntimeMode: proposal.RuntimeMode, Metadata: lineageMetadata})
 		if canonicalErr != nil {
 			return "", fmt.Errorf("proposal %q resolve canonical V3 session metadata: %w", proposal.ID, canonicalErr)
 		}
@@ -284,7 +296,7 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 		} else {
 			workspacePath = canonical.RuntimeWorkspacePath
 		}
-		snapshot := pebblestore.SessionSnapshot{ID: sessionID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, WorkspacePath: workspacePath, WorkspaceName: workspaceName, Title: title, Mode: proposal.Mode, Preference: pebblestore.ModelPreference{Provider: proposal.Provider, Model: proposal.Model, Thinking: proposal.Thinking, ServiceTier: proposal.ServiceTier, ContextMode: proposal.ContextMode}, Metadata: metadata, CreatedAt: now, UpdatedAt: now, WorktreeEnabled: proposal.ManagedWorktree, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName}
+		snapshot := pebblestore.SessionSnapshot{ID: sessionID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, WorkspacePath: workspacePath, WorkspaceName: workspaceName, Title: title, Mode: proposal.Mode, Preference: pebblestore.ModelPreference{Provider: proposal.Provider, Model: proposal.Model, Thinking: proposal.Thinking, ServiceTier: proposal.ServiceTier, ContextMode: proposal.ContextMode}, ModelProfile: cloneManageSessionsDeployModelProfile(proposal.ModelProfile), Metadata: metadata, CreatedAt: now, UpdatedAt: now, WorktreeEnabled: proposal.ManagedWorktree, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName}
 		if !proposal.ManagedWorktree {
 			snapshot.WorktreeBranch = sessionruntime.DetectCurrentBranch(snapshot.WorkspacePath)
 		}
@@ -419,9 +431,13 @@ func sessionDeployRunIntent(sessionID, runID, parentSessionID, userID, accountSc
 	}
 }
 
-func aiTaskDeploymentDigest(accountScopeID, workspacePath, taskID string) string {
-	sum := sha256.Sum256([]byte("ai-task-deploy\x00" + strings.TrimSpace(accountScopeID) + "\x00" + strings.TrimSpace(workspacePath) + "\x00" + strings.TrimSpace(taskID)))
-	return hex.EncodeToString(sum[:])
+func aiTaskDeploymentDigest(accountScopeID, workspacePath, taskID string, modelProfile *pebblestore.SessionModelProfileSnapshot) (string, error) {
+	profileRaw, err := json.Marshal(cloneManageSessionsDeployModelProfile(modelProfile))
+	if err != nil {
+		return "", fmt.Errorf("marshal AI task deployment model profile: %w", err)
+	}
+	sum := sha256.Sum256([]byte("ai-task-deploy\x00" + strings.TrimSpace(accountScopeID) + "\x00" + strings.TrimSpace(workspacePath) + "\x00" + strings.TrimSpace(taskID) + "\x00" + string(profileRaw)))
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func deterministicDeployID(digest, proposalID, kind string) string {

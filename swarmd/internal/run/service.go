@@ -124,6 +124,7 @@ type SessionDeployCanonicalizeInput struct {
 	WorkspacePath      string
 	WorkspaceBindingID string
 	AgentProfile       pebblestore.AgentProfile
+	ModelProfile       *pebblestore.SessionModelProfileSnapshot
 	RuntimeMode        string
 	Metadata           map[string]any
 }

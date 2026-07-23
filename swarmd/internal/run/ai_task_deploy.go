@@ -58,7 +58,7 @@ func ParseAITaskPreparation(raw string) (AITaskPreparation, error) {
 // ExecutePreparedAITask creates and starts the managed session through the
 // canonical V3 deployment contract. V2 supplies the final preparation directly;
 // there is no hidden provider/preparer run before the visible session exists.
-func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, userID, accountScopeID, workspacePath, taskID, originalRequest, mode string, preparation AITaskPreparation, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
+func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, userID, accountScopeID, workspacePath, taskID, originalRequest, mode string, modelProfile *pebblestore.SessionModelProfileSnapshot, preparation AITaskPreparation, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
 	if s == nil || s.aiTaskBinder == nil {
 		return "", fmt.Errorf("AI task binder is not configured")
 	}
@@ -78,7 +78,7 @@ func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, us
 	// worktree base branch and branch family for both plan and auto modes.
 	arguments, _ := json.Marshal(map[string]any{"action": "deploy", "proposals": []map[string]any{{"title": preparation.Title, "prompt": originalRequest, "mode": mode, "workspace_path": workspacePath, "worktree": true, "worktree_name": preparation.WorktreeName}}})
 	call := tool.Call{Name: "manage_sessions", Arguments: string(arguments)}
-	aiTaskBinding := &AITaskDeployBinding{UserID: userID, AccountScopeID: accountScopeID, WorkspacePath: workspacePath, TaskID: taskID, PreparationSessionID: parentSessionID}
+	aiTaskBinding := &AITaskDeployBinding{UserID: userID, AccountScopeID: accountScopeID, WorkspacePath: workspacePath, TaskID: taskID, ModelProfile: cloneManageSessionsDeployModelProfile(modelProfile), PreparationSessionID: parentSessionID}
 	manifest, err := s.buildManageSessionsDeployManifestBound(parentSessionID, call, aiTaskBinding)
 	if err != nil {
 		return "", err

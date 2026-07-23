@@ -133,6 +133,7 @@ func (s *Server) handleWorkspaceTodoMutation(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		originSessionID := strings.TrimSpace(req.OriginSessionID)
+		var originModelProfile *pebblestore.SessionModelProfileSnapshot
 		if originSessionID != "" {
 			if s.sessions == nil {
 				writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
@@ -143,8 +144,9 @@ func (s *Server) handleWorkspaceTodoMutation(w http.ResponseWriter, r *http.Requ
 				writeError(w, http.StatusBadRequest, errors.New("origin session must belong to the request principal and canonical workspace"))
 				return
 			}
+			originModelProfile = cloneSessionsV3ModelProfileSnapshotPointer(origin.ModelProfile)
 		}
-		item, summary, _, replayed, err := s.todos.CreateAITaskWithReplay(todo.CreateAITaskInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspaceID: workspaceScope.WorkspaceID, WorkspacePath: workspacePath, OriginSessionID: originSessionID, Request: req.Text, Mode: req.Mode, IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key"))})
+		item, summary, _, replayed, err := s.todos.CreateAITaskWithReplay(todo.CreateAITaskInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspaceID: workspaceScope.WorkspaceID, WorkspacePath: workspacePath, OriginSessionID: originSessionID, ModelProfile: originModelProfile, Request: req.Text, Mode: req.Mode, IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key"))})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

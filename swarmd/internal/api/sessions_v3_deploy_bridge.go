@@ -58,7 +58,8 @@ func (s *Server) CanonicalizeSessionDeploy(input runruntime.SessionDeployCanonic
 	if err != nil {
 		return runruntime.SessionDeployCanonicalization{}, err
 	}
-	metadata := sessionsV3CreateServerMetadata(input.Metadata, resolvedAgent, binding)
+	modelProfile := cloneSessionsV3ModelProfileSnapshotPointer(input.ModelProfile)
+	metadata := sessionsV3ModelProfileMetadata(sessionsV3CreateServerMetadata(input.Metadata, resolvedAgent, binding), modelProfile)
 	return runruntime.SessionDeployCanonicalization{
 		Metadata:                  metadata,
 		SourceWorkspaceID:         binding.SourceWorkspaceID,
@@ -71,6 +72,14 @@ func (s *Server) CanonicalizeSessionDeploy(input runruntime.SessionDeployCanonic
 
 // EnqueueSessionDeployRun enters the same durable executor used after a normal
 // V3 message append. A false result means no run was accepted for execution.
+func cloneSessionsV3ModelProfileSnapshotPointer(profile *pebblestore.SessionModelProfileSnapshot) *pebblestore.SessionModelProfileSnapshot {
+	if profile == nil {
+		return nil
+	}
+	cloned := cloneSessionsV3ModelProfileSnapshot(*profile)
+	return &cloned
+}
+
 func (s *Server) EnqueueSessionDeployRun(principal identity.Principal, sessionID, runID, parentSessionID string) bool {
 	if s == nil || s.v3SessionExecutor == nil {
 		return false

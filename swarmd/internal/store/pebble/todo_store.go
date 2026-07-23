@@ -1,6 +1,8 @@
 package pebblestore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -30,44 +32,45 @@ type WorkspaceTodoOwnerSummary struct {
 }
 
 type WorkspaceTodoItem struct {
-	ID                   string   `json:"id"`
-	WorkspacePath        string   `json:"workspace_path"`
-	OwnerKind            string   `json:"owner_kind"`
-	Text                 string   `json:"text"`
-	Done                 bool     `json:"done"`
-	Priority             string   `json:"priority,omitempty"`
-	Group                string   `json:"group,omitempty"`
-	Tags                 []string `json:"tags,omitempty"`
-	InProgress           bool     `json:"in_progress,omitempty"`
-	SessionID            string   `json:"session_id,omitempty"`
-	ParentID             string   `json:"parent_id,omitempty"`
-	AIState              string   `json:"ai_state,omitempty"`
-	AIMode               string   `json:"ai_mode,omitempty"`
-	AIWorktree           bool     `json:"ai_worktree,omitempty"`
-	AIWorktreeName       string   `json:"ai_worktree_name,omitempty"`
-	AIRequest            string   `json:"ai_request,omitempty"`
-	AIDisplayTitle       string   `json:"ai_display_title,omitempty"`
-	AIResult             string   `json:"ai_result,omitempty"`
-	AIError              string   `json:"ai_error,omitempty"`
-	ManagedSessionID     string   `json:"managed_session_id,omitempty"`
-	AccountScopeID       string   `json:"account_scope_id,omitempty"`
-	UserID               string   `json:"user_id,omitempty"`
-	WorkspaceID          string   `json:"workspace_id,omitempty"`
-	OriginSessionID      string   `json:"origin_session_id,omitempty"`
-	PreparationSessionID string   `json:"preparation_session_id,omitempty"`
-	PreparationRunID     string   `json:"preparation_run_id,omitempty"`
-	PreparationAttemptID string   `json:"preparation_attempt_id,omitempty"`
-	FinalRunID           string   `json:"final_run_id,omitempty"`
-	AIIdempotencyKeyHash string   `json:"ai_idempotency_key_hash,omitempty"`
-	AIRequestHash        string   `json:"ai_request_hash,omitempty"`
-	AIStateVersion       uint64   `json:"ai_state_version,omitempty"`
-	AIClaimedAt          int64    `json:"ai_claimed_at,omitempty"`
-	AIRetryCount         uint32   `json:"ai_retry_count,omitempty"`
-	AINextAttemptAt      int64    `json:"ai_next_attempt_at,omitempty"`
-	SortIndex            int      `json:"sort_index"`
-	CreatedAt            int64    `json:"created_at"`
-	UpdatedAt            int64    `json:"updated_at"`
-	CompletedAt          int64    `json:"completed_at,omitempty"`
+	ID                   string                       `json:"id"`
+	WorkspacePath        string                       `json:"workspace_path"`
+	OwnerKind            string                       `json:"owner_kind"`
+	Text                 string                       `json:"text"`
+	Done                 bool                         `json:"done"`
+	Priority             string                       `json:"priority,omitempty"`
+	Group                string                       `json:"group,omitempty"`
+	Tags                 []string                     `json:"tags,omitempty"`
+	InProgress           bool                         `json:"in_progress,omitempty"`
+	SessionID            string                       `json:"session_id,omitempty"`
+	ParentID             string                       `json:"parent_id,omitempty"`
+	AIState              string                       `json:"ai_state,omitempty"`
+	AIMode               string                       `json:"ai_mode,omitempty"`
+	AIWorktree           bool                         `json:"ai_worktree,omitempty"`
+	AIWorktreeName       string                       `json:"ai_worktree_name,omitempty"`
+	AIRequest            string                       `json:"ai_request,omitempty"`
+	AIDisplayTitle       string                       `json:"ai_display_title,omitempty"`
+	AIResult             string                       `json:"ai_result,omitempty"`
+	AIError              string                       `json:"ai_error,omitempty"`
+	ManagedSessionID     string                       `json:"managed_session_id,omitempty"`
+	AccountScopeID       string                       `json:"account_scope_id,omitempty"`
+	UserID               string                       `json:"user_id,omitempty"`
+	WorkspaceID          string                       `json:"workspace_id,omitempty"`
+	OriginSessionID      string                       `json:"origin_session_id,omitempty"`
+	AIModelProfile       *SessionModelProfileSnapshot `json:"ai_model_profile,omitempty"`
+	PreparationSessionID string                       `json:"preparation_session_id,omitempty"`
+	PreparationRunID     string                       `json:"preparation_run_id,omitempty"`
+	PreparationAttemptID string                       `json:"preparation_attempt_id,omitempty"`
+	FinalRunID           string                       `json:"final_run_id,omitempty"`
+	AIIdempotencyKeyHash string                       `json:"ai_idempotency_key_hash,omitempty"`
+	AIRequestHash        string                       `json:"ai_request_hash,omitempty"`
+	AIStateVersion       uint64                       `json:"ai_state_version,omitempty"`
+	AIClaimedAt          int64                        `json:"ai_claimed_at,omitempty"`
+	AIRetryCount         uint32                       `json:"ai_retry_count,omitempty"`
+	AINextAttemptAt      int64                        `json:"ai_next_attempt_at,omitempty"`
+	SortIndex            int                          `json:"sort_index"`
+	CreatedAt            int64                        `json:"created_at"`
+	UpdatedAt            int64                        `json:"updated_at"`
+	CompletedAt          int64                        `json:"completed_at,omitempty"`
 }
 
 type WorkspaceTodoSummary struct {
@@ -223,6 +226,38 @@ func (s *WorkspaceTodoStore) ListForAccount(accountScopeID, workspacePath string
 	return items, nil
 }
 
+func cloneWorkspaceTodoModelProfile(profile *SessionModelProfileSnapshot) *SessionModelProfileSnapshot {
+	if profile == nil {
+		return nil
+	}
+	cloned := *profile
+	if profile.Single != nil {
+		selection := *profile.Single
+		cloned.Single = &selection
+	}
+	if profile.Plan != nil {
+		selection := *profile.Plan
+		cloned.Plan = &selection
+	}
+	if profile.Auto != nil {
+		selection := *profile.Auto
+		cloned.Auto = &selection
+	}
+	return &cloned
+}
+
+func workspaceTodoModelProfileHash(profile *SessionModelProfileSnapshot) (string, error) {
+	if profile == nil {
+		return "", nil
+	}
+	raw, err := json.Marshal(profile)
+	if err != nil {
+		return "", fmt.Errorf("marshal AI task model profile: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 func (s *WorkspaceTodoStore) CreateAITask(input CreateAITaskStoreInput) (WorkspaceTodoItem, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -233,9 +268,10 @@ func (s *WorkspaceTodoStore) CreateAITask(input CreateAITaskStoreInput) (Workspa
 	}
 	indexKey := KeyAITaskIdempotencyForAccount(accountScopeID, item.WorkspacePath, input.IdempotencyHash)
 	var reservation struct {
-		TaskID      string `json:"task_id"`
-		RequestHash string `json:"request_hash"`
-		Mode        string `json:"mode,omitempty"`
+		TaskID           string `json:"task_id"`
+		RequestHash      string `json:"request_hash"`
+		Mode             string `json:"mode,omitempty"`
+		ModelProfileHash string `json:"model_profile_hash,omitempty"`
 	}
 	if ok, err := s.store.GetJSON(indexKey, &reservation); err != nil {
 		return WorkspaceTodoItem{}, false, err
@@ -245,6 +281,13 @@ func (s *WorkspaceTodoStore) CreateAITask(input CreateAITaskStoreInput) (Workspa
 		}
 		if reservation.Mode != "" && reservation.Mode != item.AIMode {
 			return WorkspaceTodoItem{}, false, fmt.Errorf("idempotency key conflicts with a different AI task mode")
+		}
+		profileHash, hashErr := workspaceTodoModelProfileHash(item.AIModelProfile)
+		if hashErr != nil {
+			return WorkspaceTodoItem{}, false, hashErr
+		}
+		if reservation.ModelProfileHash != "" && reservation.ModelProfileHash != profileHash {
+			return WorkspaceTodoItem{}, false, fmt.Errorf("idempotency key conflicts with a different AI task model profile")
 		}
 		existing, found, err := s.GetForAccount(accountScopeID, item.WorkspacePath, reservation.TaskID)
 		if err != nil {
@@ -271,11 +314,16 @@ func (s *WorkspaceTodoStore) CreateAITask(input CreateAITaskStoreInput) (Workspa
 	if err != nil {
 		return WorkspaceTodoItem{}, false, err
 	}
+	profileHash, err := workspaceTodoModelProfileHash(item.AIModelProfile)
+	if err != nil {
+		return WorkspaceTodoItem{}, false, err
+	}
 	reservationPayload, err := json.Marshal(struct {
-		TaskID      string `json:"task_id"`
-		RequestHash string `json:"request_hash"`
-		Mode        string `json:"mode"`
-	}{item.ID, input.RequestHash, item.AIMode})
+		TaskID           string `json:"task_id"`
+		RequestHash      string `json:"request_hash"`
+		Mode             string `json:"mode"`
+		ModelProfileHash string `json:"model_profile_hash,omitempty"`
+	}{item.ID, input.RequestHash, item.AIMode, profileHash})
 	if err != nil {
 		return WorkspaceTodoItem{}, false, err
 	}
@@ -754,6 +802,7 @@ func mergeAITaskAuthority(candidate, current WorkspaceTodoItem) WorkspaceTodoIte
 	}
 	candidate.AccountScopeID, candidate.UserID, candidate.WorkspaceID, candidate.WorkspacePath = current.AccountScopeID, current.UserID, current.WorkspaceID, current.WorkspacePath
 	candidate.OriginSessionID, candidate.AIState, candidate.AIMode, candidate.AIWorktree = current.OriginSessionID, current.AIState, current.AIMode, current.AIWorktree
+	candidate.AIModelProfile = cloneWorkspaceTodoModelProfile(current.AIModelProfile)
 	candidate.AIWorktreeName = current.AIWorktreeName
 	candidate.AIRequest, candidate.AIDisplayTitle, candidate.AIResult, candidate.AIError = current.AIRequest, current.AIDisplayTitle, current.AIResult, current.AIError
 	candidate.ManagedSessionID, candidate.FinalRunID = current.ManagedSessionID, current.FinalRunID
