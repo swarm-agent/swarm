@@ -216,11 +216,16 @@ func manageSessionsPermissionCardModel(record client.PermissionRecord, intent ma
 }
 
 type planPermissionIntent struct {
-	Title       string
-	Summary     string
-	Goal        string
-	Document    map[string]any
-	Checkpoints []map[string]any
+	Title                 string
+	Summary               string
+	Goal                  string
+	Scope                 string
+	PlanID                string
+	ContinuationPolicy    string
+	ContinueAutomatically bool
+	SupportsContinuation  bool
+	Document              map[string]any
+	Checkpoints           []map[string]any
 }
 
 func isPlanProposalRequirement(value string) bool {
@@ -233,43 +238,130 @@ func isPlanProposalRequirement(value string) bool {
 }
 
 func parsePlanPermissionIntent(record client.PermissionRecord) (planPermissionIntent, bool) {
-	if normalizePermissionToolName(record.ToolName) != "plan_manage" || !isPlanProposalRequirement(record.Requirement) {
+	toolName := normalizePermissionToolName(record.ToolName)
+	if toolName != "exit_plan_mode" && (toolName != "plan_manage" || !isPlanProposalRequirement(record.Requirement)) {
 		return planPermissionIntent{}, false
 	}
-	var payload map[string]any
-	if json.Unmarshal([]byte(strings.TrimSpace(record.ToolArguments)), &payload) != nil || payload == nil {
+	payload := parseToolObject(record.ToolArguments)
+	if payload == nil {
 		return planPermissionIntent{}, false
 	}
-	document := toolObject(payload, "document")
+	approved := planPermissionApprovedObject(record, payload)
+	document := toolObject(approved, "document")
 	if document == nil {
-		if approved := toolObject(payload, "approved_arguments"); approved != nil {
-			document = toolObject(approved, "document")
-		}
+		document = toolObject(payload, "document")
 	}
 	if document == nil {
 		return planPermissionIntent{}, false
 	}
 	info := toolObject(document, "info")
+	_, payloadHasPolicy := payload["continuation_policy"]
+	_, approvedHasPolicy := approved["continuation_policy"]
+	_, payloadHasAutomatic := payload["continue_automatically"]
+	_, approvedHasAutomatic := approved["continue_automatically"]
+	policy := firstNonEmptyToolRaw(toolString(approved, "continuation_policy"), toolString(payload, "continuation_policy"))
+	continueAutomatically, hasAutomatic := toolOptionalBool(approved, "continue_automatically")
+	if !hasAutomatic {
+		continueAutomatically, hasAutomatic = toolOptionalBool(payload, "continue_automatically")
+	}
+	if !hasAutomatic {
+		continueAutomatically = policy == "" || !strings.EqualFold(policy, "review_each_checkpoint")
+	}
+	if policy == "" {
+		if continueAutomatically {
+			policy = "automatic"
+		} else {
+			policy = "review_each_checkpoint"
+		}
+	}
 	return planPermissionIntent{
-		Title:       firstNonEmptyToolRaw(toolString(payload, "title"), toolString(document, "title"), toolString(info, "goal"), "Plan proposal"),
-		Summary:     firstNonEmptyToolRaw(toolString(payload, "update_summary"), toolString(payload, "summary")),
-		Goal:        toolString(info, "goal"),
-		Document:    document,
-		Checkpoints: toolObjectSlice(document, "checkpoints"),
+		Title:                 firstNonEmptyToolRaw(toolString(approved, "title"), toolString(payload, "title"), toolString(document, "title"), toolString(info, "goal"), "Plan proposal"),
+		Summary:               firstNonEmptyToolRaw(toolString(payload, "update_summary"), toolString(payload, "summary")),
+		Goal:                  toolString(info, "goal"),
+		Scope:                 toolString(info, "scope"),
+		PlanID:                firstNonEmptyToolRaw(toolString(approved, "plan_id"), toolString(payload, "plan_id"), toolString(document, "id")),
+		ContinuationPolicy:    policy,
+		ContinueAutomatically: continueAutomatically,
+		SupportsContinuation:  toolName == "exit_plan_mode" || payloadHasPolicy || approvedHasPolicy || payloadHasAutomatic || approvedHasAutomatic,
+		Document:              document,
+		Checkpoints:           toolObjectSlice(document, "checkpoints"),
 	}, true
+}
+
+func toolOptionalBool(payload map[string]any, key string) (bool, bool) {
+	if payload == nil {
+		return false, false
+	}
+	value, ok := payload[key].(bool)
+	return value, ok
+}
+
+func planPermissionApprovedObject(record client.PermissionRecord, payload map[string]any) map[string]any {
+	if approved := parseToolObject(record.ApprovedArguments); approved != nil {
+		return approved
+	}
+	return toolObject(payload, "approved_arguments")
+}
+
+func cloneToolObject(value map[string]any) map[string]any {
+	cloned := make(map[string]any, len(value))
+	for key, item := range value {
+		cloned[key] = item
+	}
+	return cloned
+}
+
+func planPermissionApprovedArguments(record client.PermissionRecord, manualReview bool) string {
+	approved := planPermissionApprovedObject(record, parseToolObject(record.ToolArguments))
+	if approved == nil {
+		return ""
+	}
+	approved = cloneToolObject(approved)
+	approved["execution_granularity"] = "checkpointed"
+	approved["continue_automatically"] = !manualReview
+	if manualReview {
+		approved["continuation_policy"] = "review_each_checkpoint"
+	} else {
+		approved["continuation_policy"] = "automatic"
+	}
+	encoded, err := json.Marshal(approved)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 func planPermissionCardModel(record client.PermissionRecord, intent planPermissionIntent, pendingCount, width int, styles PageStyles) permissionCardModel {
 	mode := firstNonEmpty(strings.TrimSpace(record.Mode), "auto")
 	model := permissionCardModel{Title: "Plan approval", Badge: "PLAN", Meta: planPermissionCardMeta(record, pendingCount, mode), FooterRows: permissionCardFooterRows(record)}
 	model.Content = append(model.Content, permissionCardLine{Text: intent.Title, Style: styles.Text.Bold(true)})
+	if intent.Summary != "" && !strings.EqualFold(intent.Summary, intent.Title) {
+		for _, line := range wrapText("Summary · "+intent.Summary, maxInt(1, width)) {
+			model.Content = append(model.Content, permissionCardLine{Text: line, Style: styles.Muted})
+		}
+	}
 	if intent.Goal != "" && !strings.EqualFold(intent.Goal, intent.Title) {
-		for _, line := range wrapText(intent.Goal, maxInt(1, width)) {
+		for _, line := range wrapText("Goal · "+intent.Goal, maxInt(1, width)) {
 			model.Content = append(model.Content, permissionCardLine{Text: line, Style: styles.Text})
 		}
-	} else if intent.Summary != "" && !strings.EqualFold(intent.Summary, intent.Title) {
-		for _, line := range wrapText(intent.Summary, maxInt(1, width)) {
+	}
+	if intent.Scope != "" {
+		for _, line := range wrapText("Scope · "+intent.Scope, maxInt(1, width)) {
 			model.Content = append(model.Content, permissionCardLine{Text: line, Style: styles.Muted})
+		}
+	}
+	if intent.PlanID != "" {
+		model.Content = append(model.Content, permissionCardLine{Text: "plan " + intent.PlanID, Style: styles.Secondary})
+	}
+	if intent.SupportsContinuation {
+		model.Content = append(model.Content, permissionCardLine{Text: "checkpointed execution", Style: styles.Secondary})
+		continuation := "Automatic"
+		if !intent.ContinueAutomatically || strings.EqualFold(intent.ContinuationPolicy, "review_each_checkpoint") {
+			continuation = "Review each checkpoint"
+		}
+		model.Content = append(model.Content, permissionCardLine{Text: "CONTINUATION  ·  " + continuation, Style: styles.Muted.Bold(true)})
+		if permissionPending(record) && normalizePermissionToolName(record.ToolName) == "exit_plan_mode" {
+			model.Content = append(model.Content, permissionCardLine{Text: "m Toggle continuation policy", Style: styles.Muted})
 		}
 	}
 	if len(intent.Checkpoints) > 0 {
@@ -457,7 +549,19 @@ type permissionCardView struct {
 }
 
 func inlinePermissionCardRows(record client.PermissionRecord, pendingCount, width int, styles PageStyles, prefixPreview string, selected bool, note []rune, busy bool, errorText string) []renderRow {
-	_, planPermission := parsePlanPermissionIntent(record)
+	return inlinePermissionCardRowsWithPlanReview(record, pendingCount, width, styles, prefixPreview, selected, note, busy, errorText, nil)
+}
+
+func inlinePermissionCardRowsWithPlanReview(record client.PermissionRecord, pendingCount, width int, styles PageStyles, prefixPreview string, selected bool, note []rune, busy bool, errorText string, manualReview *bool) []renderRow {
+	intent, planPermission := parsePlanPermissionIntent(record)
+	if planPermission && manualReview != nil {
+		intent.ContinueAutomatically = !*manualReview
+		if *manualReview {
+			intent.ContinuationPolicy = "review_each_checkpoint"
+		} else {
+			intent.ContinuationPolicy = "automatic"
+		}
+	}
 	_, manageSessionsPermission := parseManageSessionsPermissionIntent(record)
 	actions := []permissionCardAction{
 		{Label: "Enter Approve", Action: "allow_once", Tone: styles.Success},
@@ -465,13 +569,18 @@ func inlinePermissionCardRows(record client.PermissionRecord, pendingCount, widt
 		{Label: "Ctrl+A Always Allow", Action: "allow_always", Tone: styles.Accent},
 		{Label: "Ctrl+D Always Deny", Action: "deny_always", Tone: styles.Warning},
 	}
-	if manageSessionsPermission {
-		// manage-sessions mutations use one fresh canonical approval; persistent
-		// permission rules are intentionally unavailable.
+	exitPlanPermission := planPermission && normalizePermissionToolName(record.ToolName) == "exit_plan_mode"
+	if exitPlanPermission || manageSessionsPermission {
+		// These control-plane mutations use one fresh canonical approval;
+		// persistent permission rules are intentionally unavailable.
 		actions = actions[:2]
 	}
+	model := permissionCardModelForRecord(record, pendingCount, maxInt(1, width-4), styles, prefixPreview)
+	if planPermission {
+		model = planPermissionCardModel(record, intent, pendingCount, maxInt(1, width-4), styles)
+	}
 	view := permissionCardView{
-		Model:     permissionCardModelForRecord(record, pendingCount, maxInt(1, width-4), styles, prefixPreview),
+		Model:     model,
 		Selected:  selected,
 		Pending:   permissionPending(record),
 		Note:      string(note),

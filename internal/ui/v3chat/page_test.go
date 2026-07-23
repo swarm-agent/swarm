@@ -522,6 +522,196 @@ func TestPlanPermissionFromHydrationUsesStructuredCardAndFullPlanModal(t *testin
 	}
 }
 
+func TestExitPlanPermissionFromHydrationUsesUnifiedStructuredCard(t *testing.T) {
+	permission := exitPlanPermissionRecord("permission-exit-hydration", "call-exit-hydration")
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:            client.SessionSummary{ID: "session-exit", Title: "Exit plan", Mode: "plan"},
+		PendingPermissions: []client.PermissionRecord{permission},
+	}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(110, 32)
+	page.Draw(screen)
+	screen.Show()
+	drawn := simulationText(screen, 110, 32)
+	for _, want := range []string{
+		"Plan approval", "PLAN", "Exit with the structured plan", "Implement the unified approval surface",
+		"Scope · V3 TUI permission presentation", "plan plan-exit", "checkpointed execution",
+		"CONTINUATION  ·  Review each checkpoint", "1. Unify the card  ·  Pending", "Enter Approve", "Esc Deny",
+	} {
+		if !strings.Contains(drawn, want) {
+			t.Fatalf("exit-plan card missing %q:\n%s", want, drawn)
+		}
+	}
+	if got := strings.Count(drawn, "Plan approval"); got != 1 {
+		t.Fatalf("exit-plan approval surfaces = %d, want 1:\n%s", got, drawn)
+	}
+	for _, raw := range []string{"exit_plan_mode", "approved_arguments", "path_id", "acceptance_criteria", `{"`} {
+		if strings.Contains(drawn, raw) {
+			t.Fatalf("exit-plan card leaked raw marker %q:\n%s", raw, drawn)
+		}
+	}
+}
+
+func TestExitPlanPermissionRealtimeResolutionUpdatesAndDismissesUnifiedCard(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-exit", Mode: "plan"}}})
+	permission := exitPlanPermissionRecord("permission-exit-realtime", "call-exit-realtime")
+	payload, err := json.Marshal(map[string]any{"permission": permission})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Dispatch(RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{SessionID: "session-exit", Seq: 1, EventType: "permission.requested", Payload: payload}}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	if !page.PendingPermissionVisible() {
+		t.Fatal("realtime exit-plan permission did not activate the unified card")
+	}
+	pendingRendered := renderRowsText(page.renderRows(store.Snapshot(), 100, testPageStyles()))
+	if strings.Count(pendingRendered, "Plan approval") != 1 || !strings.Contains(pendingRendered, "Exit with the structured plan") || strings.Contains(pendingRendered, `{"`) {
+		t.Fatalf("realtime exit-plan permission did not use one structured card:\n%s", pendingRendered)
+	}
+
+	resolved := permission
+	resolved.Status = "denied"
+	resolved.Decision = "deny_once"
+	resolved.ResolvedAt = 20
+	payload, err = json.Marshal(map[string]any{"permission": resolved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Dispatch(RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{SessionID: "session-exit", Seq: 2, EventType: "permission.updated", Payload: payload}}})
+	if page.PendingPermissionVisible() {
+		t.Fatal("resolved realtime exit-plan permission stayed actionable")
+	}
+	items := SelectPermissions(store.Snapshot())
+	if len(items) != 1 || items[0].GlobalSeq != 1 || items[0].Record.Status != "denied" {
+		t.Fatalf("resolved exit-plan permission did not update in place: %#v", items)
+	}
+	rendered := renderRowsText(page.renderRows(store.Snapshot(), 100, testPageStyles()))
+	if !strings.Contains(rendered, "Plan approval") || !strings.Contains(rendered, "Resolved · Denied once") || strings.Contains(rendered, "Enter Approve") {
+		t.Fatalf("resolved exit-plan card did not dismiss its approval controls:\n%s", rendered)
+	}
+}
+
+func TestPlanPermissionIntentPrefersCanonicalApprovedDocumentBackfill(t *testing.T) {
+	record := exitPlanPermissionRecord("permission-exit-backfill", "call-exit-backfill")
+	record.ApprovedArguments = `{"keep":"backfilled","title":"Backfilled title","document":{"id":"plan-backfilled","title":"Backfilled title","info":{"goal":"Use the backend-approved document"},"checkpoints":[{"id":"cp-backfilled","title":"Backfilled checkpoint","status":"pending","order":1}]},"continuation_policy":"automatic","continue_automatically":true}`
+	intent, ok := parsePlanPermissionIntent(record)
+	if !ok {
+		t.Fatal("exit-plan permission was not recognized after approved-argument backfill")
+	}
+	if intent.Title != "Backfilled title" || intent.Goal != "Use the backend-approved document" || intent.PlanID != "plan-backfilled" || len(intent.Checkpoints) != 1 || intent.Checkpoints[0]["id"] != "cp-backfilled" || !intent.ContinueAutomatically {
+		t.Fatalf("intent did not prefer canonical approved arguments: %#v", intent)
+	}
+}
+
+func TestExitPlanPermissionApprovalAndDenialUseCanonicalArguments(t *testing.T) {
+	t.Run("approval preserves document and selected continuation", func(t *testing.T) {
+		permission := exitPlanPermissionRecord("permission-exit-approve", "call-exit-approve")
+		resolved := permission
+		resolved.Status = "approved"
+		resolved.Decision = "allow_once"
+		transport := &fakeTransport{resolvedPermission: resolved}
+		store := NewStore()
+		store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-exit", Mode: "plan"}, PendingPermissions: []client.PermissionRecord{permission}}})
+		page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'm', tcell.ModNone))
+		page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+		waitForPermissionResolution(t, page)
+
+		transport.mu.Lock()
+		request := transport.permissionRequest
+		transport.mu.Unlock()
+		if request.action != "allow_once" || request.approvedArguments == "" {
+			t.Fatalf("exit-plan approval request = %#v", request)
+		}
+		var approved map[string]any
+		if err := json.Unmarshal([]byte(request.approvedArguments), &approved); err != nil {
+			t.Fatalf("approved arguments are invalid: %v (%q)", err, request.approvedArguments)
+		}
+		if approved["keep"] != "canonical" || approved["continuation_policy"] != "automatic" || approved["continue_automatically"] != true || approved["execution_granularity"] != "checkpointed" {
+			t.Fatalf("approved execution arguments = %#v", approved)
+		}
+		document, _ := approved["document"].(map[string]any)
+		if document["title"] != "Exit with the structured plan" || len(toolObjectSlice(document, "checkpoints")) != 1 {
+			t.Fatalf("approved structured document was not preserved: %#v", document)
+		}
+	})
+
+	t.Run("denial sends no approved arguments", func(t *testing.T) {
+		permission := exitPlanPermissionRecord("permission-exit-deny", "call-exit-deny")
+		resolved := permission
+		resolved.Status = "denied"
+		resolved.Decision = "deny_once"
+		transport := &fakeTransport{resolvedPermission: resolved}
+		store := NewStore()
+		store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-exit", Mode: "plan"}, PendingPermissions: []client.PermissionRecord{permission}}})
+		page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
+		page.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+		waitForPermissionResolution(t, page)
+
+		transport.mu.Lock()
+		request := transport.permissionRequest
+		transport.mu.Unlock()
+		if request.action != "deny_once" || request.approvedArguments != "" {
+			t.Fatalf("exit-plan denial request = %#v", request)
+		}
+	})
+}
+
+func TestPageCoalescesExitPlanPermissionAndCorrelatedToolResultIntoOneCard(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, nil, nil), testPageStyles())
+	permission := exitPlanPermissionRecord("permission-exit-coalesced", "call-exit-coalesced")
+	permission.Status = "approved"
+	permission.Decision = "allow_once"
+	permission.ExecutionStatus = "completed"
+	toolPayload, err := json.Marshal(map[string]any{
+		"path_id": "run.tool-history.v2", "tool": "exit_plan_mode", "call_id": permission.CallID,
+		"arguments": permission.ToolArguments, "completed_output": `{"status":"approved","mode_changed":true}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := State{
+		Messages:    []Message{{ID: "tool-exit", GlobalSeq: 4, Role: "tool", Content: string(toolPayload)}},
+		Permissions: PermissionState{Records: []PermissionTimelineItem{{Record: permission, GlobalSeq: 2}}},
+	}
+	rendered := renderRowsText(page.renderRows(state, 100, testPageStyles()))
+	if got := strings.Count(rendered, "Plan approval"); got != 1 {
+		t.Fatalf("coalesced exit-plan card count = %d, want 1:\n%s", got, rendered)
+	}
+	if got := strings.Count(rendered, "┌"); got != 1 {
+		t.Fatalf("coalesced exit-plan interaction rendered %d boxes, want 1:\n%s", got, rendered)
+	}
+	if !strings.Contains(rendered, "Approved · Completed") || !strings.Contains(rendered, "Exit with the structured plan") || strings.Contains(rendered, "mode_changed") || strings.Contains(rendered, `{"`) {
+		t.Fatalf("coalesced exit-plan card is not structured:\n%s", rendered)
+	}
+}
+
+func exitPlanPermissionRecord(id, callID string) client.PermissionRecord {
+	arguments := `{"path_id":"permission.exit-plan-mode.v1","tool":"exit_plan_mode","plan_id":"plan-exit","title":"Exit with the structured plan","document":{"id":"plan-exit","title":"Exit with the structured plan","info":{"goal":"Implement the unified approval surface","scope":"V3 TUI permission presentation"},"checkpoints":[{"id":"cp-1","title":"Unify the card","status":"pending","order":1,"tasks":["Render structured plan content"],"acceptance_criteria":["No raw JSON is shown"]}]},"execution_granularity":"checkpointed","continuation_policy":"review_each_checkpoint","continue_automatically":false,"approved_arguments":{"keep":"canonical","plan_id":"plan-exit","title":"Exit with the structured plan","document":{"id":"plan-exit","title":"Exit with the structured plan","info":{"goal":"Implement the unified approval surface","scope":"V3 TUI permission presentation"},"checkpoints":[{"id":"cp-1","title":"Unify the card","status":"pending","order":1,"tasks":["Render structured plan content"],"acceptance_criteria":["No raw JSON is shown"]}]},"execution_granularity":"checkpointed","continuation_policy":"review_each_checkpoint","continue_automatically":false}}`
+	return client.PermissionRecord{
+		ID: id, SessionID: "session-exit", RunID: "run-exit", CallID: callID, ToolName: "exit_plan_mode",
+		Requirement: "exit_plan_mode", Mode: "plan", Status: "pending", ToolArguments: arguments,
+	}
+}
+
+func waitForPermissionResolution(t *testing.T, page *Page) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for page.PendingPermissionVisible() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if page.PendingPermissionVisible() {
+		t.Fatal("permission resolution did not dismiss the pending card")
+	}
+}
+
 func TestOpenCurrentPlanModalUsesFetchedPlan(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-plan"}, HasActivePlan: true, ActivePlan: &client.SessionPlan{ID: "stale", Document: &client.SessionPlanDocument{Title: "Stale plan"}}}})

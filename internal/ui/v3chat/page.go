@@ -118,6 +118,8 @@ type Page struct {
 	permissionPrefix           string
 	permissionPrefixID         string
 	permissionPrefixLoading    bool
+	permissionPlanReview       bool
+	permissionPlanReviewID     string
 	permissionApproveTarget    footerbar.Rect
 	permissionDenyTarget       footerbar.Rect
 	permissionAlwaysTarget     footerbar.Rect
@@ -955,10 +957,17 @@ func (p *Page) ensurePermissionPrefixLocked() {
 	permissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
 	if len(permissions) == 0 {
 		p.permissionPrefix, p.permissionPrefixID, p.permissionPrefixLoading = "", "", false
+		p.permissionPlanReview, p.permissionPlanReviewID = false, ""
 		return
 	}
 	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
 	permission := permissions[p.permissionIndex]
+	if intent, ok := parsePlanPermissionIntent(permission); ok && p.permissionPlanReviewID != permission.ID {
+		p.permissionPlanReviewID = permission.ID
+		p.permissionPlanReview = !intent.ContinueAutomatically || strings.EqualFold(intent.ContinuationPolicy, "review_each_checkpoint")
+	} else if !ok {
+		p.permissionPlanReview, p.permissionPlanReviewID = false, ""
+	}
 	if normalizePermissionToolName(permission.ToolName) != "bash" || p.permissionPrefixID == permission.ID || p.permissionPrefixLoading {
 		return
 	}
@@ -990,7 +999,11 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 		return PageActionNone
 	}
 	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
-	_, planPermission := parsePlanPermissionIntent(permissions[p.permissionIndex])
+	planIntent, planPermission := parsePlanPermissionIntent(permissions[p.permissionIndex])
+	if planPermission && p.permissionPlanReviewID != permissions[p.permissionIndex].ID {
+		p.permissionPlanReviewID = permissions[p.permissionIndex].ID
+		p.permissionPlanReview = !planIntent.ContinueAutomatically || strings.EqualFold(planIntent.ContinuationPolicy, "review_each_checkpoint")
+	}
 	_, manageSessionsPermission := parseManageSessionsPermissionIntent(permissions[p.permissionIndex])
 	hidePermissionNote := planPermission || manageSessionsPermission
 	if p.permissionBusy {
@@ -1037,12 +1050,16 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 			p.permissionInput = nil
 		}
 	case tcell.KeyCtrlA:
-		if !manageSessionsPermission {
-			p.resolvePermissionLocked(permissions[p.permissionIndex], "allow_always")
+		if !planPermission || normalizePermissionToolName(permissions[p.permissionIndex].ToolName) != "exit_plan_mode" {
+			if !manageSessionsPermission {
+				p.resolvePermissionLocked(permissions[p.permissionIndex], "allow_always")
+			}
 		}
 	case tcell.KeyCtrlD:
-		if !manageSessionsPermission {
-			p.resolvePermissionLocked(permissions[p.permissionIndex], "deny_always")
+		if !planPermission || normalizePermissionToolName(permissions[p.permissionIndex].ToolName) != "exit_plan_mode" {
+			if !manageSessionsPermission {
+				p.resolvePermissionLocked(permissions[p.permissionIndex], "deny_always")
+			}
 		}
 	case tcell.KeyEscape:
 		p.resolvePermissionLocked(permissions[p.permissionIndex], "deny_once")
@@ -1062,6 +1079,10 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 		if !utf8.ValidRune(ev.Rune()) || ev.Rune() < ' ' {
 			break
 		}
+		if planPermission && normalizePermissionToolName(permissions[p.permissionIndex].ToolName) == "exit_plan_mode" && (ev.Rune() == 'm' || ev.Rune() == 'M') && len(p.input) == 0 {
+			p.permissionPlanReview = !p.permissionPlanReview
+			break
+		}
 		if hidePermissionNote {
 			if planPermission && len(p.input) < maxComposerRunes {
 				p.insertRunesLocked([]rune{ev.Rune()})
@@ -1077,17 +1098,22 @@ func (p *Page) resolvePermissionLocked(permission client.PermissionRecord, actio
 	p.permissionBusy = true
 	p.permissionError = ""
 	reason := strings.TrimSpace(string(p.permissionInput))
+	manualReview := p.permissionPlanReview
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		approvedArguments := ""
-		if _, ok := parseManageSessionsPermissionIntent(permission); ok && strings.HasPrefix(action, "allow") {
-			approvedArguments = strings.TrimSpace(permission.ApprovedArguments)
-			if approvedArguments == "" {
-				if payload := parseToolObject(permission.ToolArguments); payload != nil {
-					if approved := toolObject(payload, "approved_arguments"); approved != nil {
-						if encoded, marshalErr := json.Marshal(approved); marshalErr == nil {
-							approvedArguments = string(encoded)
+		if strings.HasPrefix(action, "allow") {
+			if _, ok := parsePlanPermissionIntent(permission); ok && normalizePermissionToolName(permission.ToolName) == "exit_plan_mode" {
+				approvedArguments = planPermissionApprovedArguments(permission, manualReview)
+			} else if _, ok := parseManageSessionsPermissionIntent(permission); ok {
+				approvedArguments = strings.TrimSpace(permission.ApprovedArguments)
+				if approvedArguments == "" {
+					if payload := parseToolObject(permission.ToolArguments); payload != nil {
+						if approved := toolObject(payload, "approved_arguments"); approved != nil {
+							if encoded, marshalErr := json.Marshal(approved); marshalErr == nil {
+								approvedArguments = string(encoded)
+							}
 						}
 					}
 				}
@@ -2060,6 +2086,7 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 	permissionIndex := p.permissionIndex
 	permissionNote := append([]rune(nil), p.permissionInput...)
 	permissionBusy, permissionError, permissionPrefix := p.permissionBusy, p.permissionError, p.permissionPrefix
+	permissionPlanReview, permissionPlanReviewID := p.permissionPlanReview, p.permissionPlanReviewID
 	showThinkingTags := p.showThinkingTags
 	p.mu.Unlock()
 	pendingPermissions := SelectPendingPermissions(state)
@@ -2079,7 +2106,11 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 			if selected && strings.TrimSpace(permissionPrefix) != "" {
 				prefix = permissionPrefix
 			}
-			rows = append(rows, inlinePermissionCardRows(record, len(pendingPermissions), width, styles, prefix, selected, permissionNote, permissionBusy, permissionError)...)
+			var manualReview *bool
+			if record.ID == permissionPlanReviewID {
+				manualReview = &permissionPlanReview
+			}
+			rows = append(rows, inlinePermissionCardRowsWithPlanReview(record, len(pendingPermissions), width, styles, prefix, selected, permissionNote, permissionBusy, permissionError, manualReview)...)
 		case "tool":
 			rows = append(rows, p.renderToolRows(item.tool, width, styles)...)
 		case "live":
@@ -2117,7 +2148,7 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 // execution; a correlated tool-history item would produce a duplicate card.
 func toolCoalescedWithPermission(tool ToolTimelineItem, permissions []PermissionTimelineItem) bool {
 	toolName := normalizeToolDisplayName(tool.Name)
-	if toolName != "plan-manage" && toolName != "manage-sessions" {
+	if toolName != "plan-manage" && toolName != "exit-plan-mode" && toolName != "manage-sessions" {
 		return false
 	}
 	callID := strings.TrimSpace(tool.CallID)
@@ -2129,8 +2160,10 @@ func toolCoalescedWithPermission(tool ToolTimelineItem, permissions []Permission
 		if strings.TrimSpace(record.CallID) != callID {
 			continue
 		}
-		if toolName == "plan-manage" && normalizePermissionToolName(record.ToolName) == "plan_manage" && isPlanProposalRequirement(record.Requirement) {
-			return true
+		if toolName == "plan-manage" || toolName == "exit-plan-mode" {
+			if _, ok := parsePlanPermissionIntent(record); ok && normalizePermissionToolName(record.ToolName) == strings.ReplaceAll(toolName, "-", "_") {
+				return true
+			}
 		}
 		if toolName == "manage-sessions" && normalizePermissionToolName(record.ToolName) == "manage_sessions" && isManageSessionsApprovalRequirement(record.Requirement) {
 			return true
