@@ -2432,15 +2432,6 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                 <button
                   type="button"
                   className="grid h-5 w-5 place-items-center rounded border border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                  aria-label="Select sessions to archive"
-                  title="Select sessions to archive"
-                  onClick={() => input.onEnterSelectionMode(group.id)}
-                >
-                  <ListChecks size={12} aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  className="grid h-5 w-5 place-items-center rounded border border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                   aria-label="Review worktrees"
                   title="Review worktrees"
                   aria-expanded={input.reviewCleanupOpen}
