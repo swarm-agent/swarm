@@ -16,6 +16,7 @@ import (
 
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/flowdiaglog"
+	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
@@ -457,7 +458,7 @@ func (s *Service) ApplyTaskIntegration(parentPath string, plan TaskIntegrationPl
 		return TaskIntegrationResult{}, errors.New("integration manifest became stale")
 	}
 	for _, commit := range current.Commits {
-		if _, err := runGit(parentPath, "cherry-pick", commit); err != nil {
+		if _, err := runGitWithEnv(parentPath, gitenv.FilterIdentityOverrides(os.Environ()), "cherry-pick", commit); err != nil {
 			rollbackErr := rollbackTaskIntegration(parentPath, current.ParentHead)
 			if rollbackErr != nil {
 				return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("cherry-pick %s failed after preflight: %w; rollback failed: %v", commit, err, rollbackErr)
@@ -1080,10 +1081,17 @@ func currentBranch(workspacePath string) (string, error) {
 }
 
 func runGit(path string, args ...string) (string, error) {
+	return runGitWithEnv(path, nil, args...)
+}
+
+func runGitWithEnv(path string, env []string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
 	defer cancel()
 	cmdArgs := append([]string(nil), args...)
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path}, cmdArgs...)...)
+	if env != nil {
+		cmd.Env = env
+	}
 	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if err != nil {

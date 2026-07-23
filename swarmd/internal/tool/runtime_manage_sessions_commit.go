@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/gitstatus"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -521,7 +522,7 @@ func runManageSessionsGit(ctx context.Context, repository string, first string, 
 	args := append([]string{first}, rest...)
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = repository
-	cmd.Env = filteredGitEnv(os.Environ())
+	cmd.Env = gitenv.FilterIdentityOverrides(os.Environ())
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return output, fmt.Errorf("git %s: %w: %s", first, err, strings.TrimSpace(string(output)))

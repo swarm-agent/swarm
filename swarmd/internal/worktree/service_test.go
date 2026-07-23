@@ -177,6 +177,67 @@ func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestApplyTaskIntegrationPreservesAuthorAndUsesConfiguredCommitter(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "config", "user.name", "Parent Committer")
+	_, _ = runGit(repo, "config", "user.email", "parent@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "add", "base.txt")
+	_, _ = runGit(repo, "commit", "-m", "base")
+	base, _ := runGit(repo, "rev-parse", "HEAD")
+
+	childPath := filepath.Join(t.TempDir(), "child")
+	if _, err := runGit(repo, "worktree", "add", "-b", "agent/identity-child", childPath, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(childPath, "child.txt"), []byte("child\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(childPath, "add", "child.txt")
+	if _, err := runGit(childPath,
+		"-c", "user.name=Child Author",
+		"-c", "user.email=child@example.invalid",
+		"commit", "-m", "child"); err != nil {
+		t.Fatal(err)
+	}
+	childHead, _ := runGit(childPath, "rev-parse", "HEAD")
+	childAuthorDate, _ := runGit(childPath, "show", "-s", "--format=%aI", childHead)
+
+	t.Setenv("GIT_AUTHOR_NAME", "Injected Author")
+	t.Setenv("GIT_AUTHOR_EMAIL", "injected-author@example.invalid")
+	t.Setenv("GIT_AUTHOR_DATE", "2001-02-03T04:05:06Z")
+	t.Setenv("GIT_COMMITTER_NAME", "Injected Committer")
+	t.Setenv("GIT_COMMITTER_EMAIL", "injected-committer@example.invalid")
+	t.Setenv("GIT_COMMITTER_DATE", "2002-03-04T05:06:07Z")
+
+	svc := &Service{}
+	plan, err := svc.PrepareTaskIntegration(repo, base, []TaskIntegrationChild{{SessionID: "identity-child", BaseCommit: base, HeadCommit: childHead}})
+	if err != nil {
+		t.Fatalf("PrepareTaskIntegration: %v", err)
+	}
+	if _, err := svc.ApplyTaskIntegration(repo, plan); err != nil {
+		t.Fatalf("ApplyTaskIntegration: %v", err)
+	}
+
+	identity, _ := runGit(repo, "show", "-s", "--format=%an|%ae|%cn|%ce", "HEAD")
+	if identity != "Child Author|child@example.invalid|Parent Committer|parent@example.invalid" {
+		t.Fatalf("integrated commit identity = %q", identity)
+	}
+	authorDate, _ := runGit(repo, "show", "-s", "--format=%aI", "HEAD")
+	if authorDate != childAuthorDate {
+		t.Fatalf("integrated author date = %q, want source author date %q", authorDate, childAuthorDate)
+	}
+	committerDate, _ := runGit(repo, "show", "-s", "--format=%cI", "HEAD")
+	if committerDate == "2002-03-04T05:06:07+00:00" {
+		t.Fatalf("integrated committer date used inherited override: %q", committerDate)
+	}
+}
+
 func TestPrepareTaskIntegrationPreflightsCompleteStackAndLeavesParentUnchangedOnConflict(t *testing.T) {
 	repo := t.TempDir()
 	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {

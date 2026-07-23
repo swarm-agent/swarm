@@ -28,6 +28,7 @@ import (
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/fff"
+	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	todoruntime "swarm/packages/swarmd/internal/todo"
@@ -1904,7 +1905,7 @@ func executeGitCommandWithTimeout(parent context.Context, scope WorkspaceScope, 
 
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = scope.PrimaryPath
-	cmd.Env = filteredGitEnv(os.Environ())
+	cmd.Env = gitenv.FilterIdentityOverrides(os.Environ())
 
 	capture := newCappedBuffer(maxCommandOutput)
 	cmd.Stdout = capture
@@ -1952,32 +1953,6 @@ func executeGitCommandWithTimeout(parent context.Context, scope WorkspaceScope, 
 		return string(encoded), fmt.Errorf("%s execution failed: %w", toolName, err)
 	}
 	return string(encoded), nil
-}
-
-func filteredGitEnv(base []string) []string {
-	if len(base) == 0 {
-		return nil
-	}
-	blocked := map[string]struct{}{
-		"GIT_AUTHOR_NAME":     {},
-		"GIT_AUTHOR_EMAIL":    {},
-		"GIT_AUTHOR_DATE":     {},
-		"GIT_COMMITTER_NAME":  {},
-		"GIT_COMMITTER_EMAIL": {},
-		"GIT_COMMITTER_DATE":  {},
-	}
-	out := make([]string, 0, len(base))
-	for _, entry := range base {
-		key := entry
-		if idx := strings.Index(entry, "="); idx >= 0 {
-			key = entry[:idx]
-		}
-		if _, deny := blocked[key]; deny {
-			continue
-		}
-		out = append(out, entry)
-	}
-	return out
 }
 
 func gitCommandSummary(toolName string, argv []string, exitCode int, timedOut, truncated, binarySuppressed bool) string {

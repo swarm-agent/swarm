@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/identity"
 )
 
@@ -128,7 +129,7 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 		stageArgv := []string{"add", "--all"}
 		stageCmd := exec.CommandContext(ctx, "git", stageArgv...)
 		stageCmd.Dir = workspacePath
-		stageCmd.Env = filteredWorkspaceGitCommitEnv(os.Environ())
+		stageCmd.Env = gitenv.FilterIdentityOverrides(os.Environ())
 		stageOutput, stageErr := stageCmd.CombinedOutput()
 		if strings.TrimSpace(string(stageOutput)) != "" {
 			combinedParts = append(combinedParts, strings.TrimSpace(string(stageOutput)))
@@ -152,7 +153,7 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = workspacePath
-	cmd.Env = filteredWorkspaceGitCommitEnv(os.Environ())
+	cmd.Env = gitenv.FilterIdentityOverrides(os.Environ())
 	output, err := cmd.CombinedOutput()
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	exitCode := workspaceGitCommandExitCode(err)
@@ -190,32 +191,6 @@ func workspaceGitCommandExitCode(err error) int {
 		return exitErr.ExitCode()
 	}
 	return -1
-}
-
-func filteredWorkspaceGitCommitEnv(base []string) []string {
-	if len(base) == 0 {
-		return nil
-	}
-	blocked := map[string]struct{}{
-		"GIT_AUTHOR_NAME":     {},
-		"GIT_AUTHOR_EMAIL":    {},
-		"GIT_AUTHOR_DATE":     {},
-		"GIT_COMMITTER_NAME":  {},
-		"GIT_COMMITTER_EMAIL": {},
-		"GIT_COMMITTER_DATE":  {},
-	}
-	out := make([]string, 0, len(base))
-	for _, entry := range base {
-		key := entry
-		if idx := strings.Index(entry, "="); idx >= 0 {
-			key = entry[:idx]
-		}
-		if _, deny := blocked[key]; deny {
-			continue
-		}
-		out = append(out, entry)
-	}
-	return out
 }
 
 func workspaceGitCommitSummary(argv []string, exitCode int, timedOut bool) string {
