@@ -2297,14 +2297,23 @@ func TestRunTurnPersistsFailureMessageOnRunnerError(t *testing.T) {
 }
 
 func TestLiveStreamRawOutputPreservesBashForOutputViewer(t *testing.T) {
-	result := tool.Result{Output: strings.Repeat("x", 2048)}
-	got := liveStreamRawOutput(tool.Call{Name: "bash"}, result)
-	if got != result.Output {
-		t.Fatalf("bash raw output should remain unchanged for /output viewer, got length %d want %d", len(got), len(result.Output))
+	plainResult := tool.Result{Output: strings.Repeat("x", 2048)}
+	got := liveStreamRawOutput(tool.Call{Name: "bash"}, plainResult)
+	if got != plainResult.Output {
+		t.Fatalf("plain bash output should remain unchanged for /output viewer, got length %d want %d", len(got), len(plainResult.Output))
 	}
 
-	nonBash := liveStreamRawOutput(tool.Call{Name: "grep"}, result)
-	if nonBash != result.Output {
+	structuredResult := tool.Result{Output: `{"command":"printf '1\\n2\\n'","exit_code":0,"output":"1\n2\n","path_id":"tool.bash.v3"}`}
+	got = liveStreamRawOutput(tool.Call{Name: "bash"}, structuredResult)
+	if got != "1\n2" {
+		t.Fatalf("structured bash result should expose command output, got %q", got)
+	}
+	if strings.Contains(got, `"path_id"`) || strings.Contains(got, `"command"`) {
+		t.Fatalf("structured bash transport envelope leaked into viewer output: %q", got)
+	}
+
+	nonBash := liveStreamRawOutput(tool.Call{Name: "grep"}, structuredResult)
+	if nonBash != structuredResult.Output {
 		t.Fatalf("non-bash raw output should remain unchanged")
 	}
 }

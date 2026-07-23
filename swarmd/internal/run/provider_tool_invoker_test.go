@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -535,6 +536,71 @@ func TestProviderManagedLegacyToolCallStillRequestsPermission(t *testing.T) {
 	}
 	if len(pending) != 1 {
 		t.Fatalf("expected one pending permission record for legacy provider tool, got %#v", pending)
+	}
+}
+
+func TestProviderManagedV3BashEmitsEachLineBeforeCompletion(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
+	defer cleanup()
+	permissions.SetBypassPermissions(true)
+
+	var mu sync.Mutex
+	var events []StreamEvent
+	firstDelta := make(chan struct{}, 1)
+	invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{
+		sessionID:            sessionID,
+		permissionSessionID:  sessionID,
+		runID:                "run-bash-stream",
+		step:                 1,
+		sessionMode:          sessionruntime.ModeAuto,
+		workspacePath:        workspace,
+		workspaceRoots:       []string{workspace},
+		workspaceOriginPath:  workspace,
+		workspaceOriginRoots: []string{workspace},
+		workspaceName:        "workspace",
+		providerManagedV3:    true,
+		applySessionMutation: providerManagedV3NoopMutation,
+		emit: func(event StreamEvent) {
+			mu.Lock()
+			events = append(events, event)
+			mu.Unlock()
+			if event.Type == StreamEventToolDelta {
+				select {
+				case firstDelta <- struct{}{}:
+				default:
+				}
+			}
+		},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := invoker.ExecuteTool(context.Background(), toolInvocation("call-bash-stream", "bash", `{"command":"printf '1\\n'; sleep 2; printf '2\\n'","timeout_ms":5000}`))
+		done <- err
+	}()
+
+	select {
+	case <-firstDelta:
+	case err := <-done:
+		t.Fatalf("bash completed before first streamed line: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("first bash line was not emitted incrementally")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("execute streaming bash: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var deltas []string
+	for _, event := range events {
+		if event.Type == StreamEventToolDelta {
+			deltas = append(deltas, event.Output)
+		}
+	}
+	if len(deltas) < 2 || deltas[0] != "1\n" || deltas[1] != "2\n" {
+		t.Fatalf("bash deltas = %#v, want separately streamed lines", deltas)
 	}
 }
 

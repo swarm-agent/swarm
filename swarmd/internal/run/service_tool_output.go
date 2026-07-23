@@ -53,7 +53,20 @@ func formatToolHistory(call tool.Call, result tool.Result) string {
 }
 
 func liveStreamRawOutput(call tool.Call, result tool.Result) string {
-	return strings.TrimSpace(result.Output)
+	output := strings.TrimSpace(result.Output)
+	if canonicalToolName(firstNonEmptyString(result.Name, call.Name)) != "bash" {
+		return output
+	}
+	payload := decodeToolPayload(output)
+	if payload == nil {
+		return output
+	}
+	for _, key := range []string{"output", "stdout", "stderr"} {
+		if value := mapString(payload, key); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func formatToolHistoryWithMetadata(call tool.Call, metadata map[string]any, result tool.Result) string {
