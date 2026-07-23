@@ -76,7 +76,10 @@ type manageSessionsDeployInput struct {
 // manageSessionsDeployAgentResolution deliberately separates the immutable
 // execution identity from the stored profile that owns model preferences.
 // Swarm's compiled profile is model-less; its account row remains the model
-// selection authority without becoming executable identity metadata.
+// selection authority without becoming executable identity metadata. Queued AI
+// tasks additionally preserve the account's active primary profile when it is a
+// plan/auto split profile, so a plan-mode task can switch to that profile's auto
+// lane after exit_plan_mode.
 type manageSessionsDeployAgentResolution struct {
 	ExecutionProfile  pebblestore.AgentProfile
 	PreferenceProfile pebblestore.AgentProfile
@@ -93,6 +96,17 @@ func (r manageSessionsDeployAgentResolution) preferenceForMode(base pebblestore.
 		source.ToolContract = pebblestore.CloneAgentToolContract(r.ExecutionProfile.ToolContract)
 	}
 	return applyAgentPreferenceOverridesForMode(base, source, mode)
+}
+
+func (s *Service) resolveQueuedAITaskDeployAgent(profiles map[string]pebblestore.AgentProfile, activeName string) (manageSessionsDeployAgentResolution, bool, error) {
+	activeName = strings.ToLower(strings.TrimSpace(activeName))
+	if active := profiles[activeName]; active.Enabled && active.Mode == agentruntime.ModePrimary && pebblestore.AgentProfileRuntimeMode(active) == pebblestore.AgentRuntimeModePlanAuto && pebblestore.AgentModelMode(active) == "split" && pebblestore.AgentSupportsSplitModel(active) {
+		if strings.EqualFold(active.Name, agentruntime.SwarmAgentID) {
+			return s.resolveManageSessionsDeployAgent(profiles, agentruntime.SwarmAgentID)
+		}
+		return manageSessionsDeployAgentResolution{ExecutionProfile: active, PreferenceProfile: active}, true, nil
+	}
+	return s.resolveManageSessionsDeployAgent(profiles, agentruntime.SwarmAgentID)
 }
 
 func (s *Service) resolveManageSessionsDeployAgent(profiles map[string]pebblestore.AgentProfile, name string) (manageSessionsDeployAgentResolution, bool, error) {
@@ -260,12 +274,14 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 		if input.Agent != "" {
 			targetName = input.Agent
 		}
+		var resolution manageSessionsDeployAgentResolution
+		var exists bool
+		var resolveErr error
 		if aiTask != nil {
-			// A queued /task is a direct primary Swarm session, not alternate-agent
-			// delegation from whichever primary happens to be active.
-			targetName = agentruntime.SwarmAgentID
+			resolution, exists, resolveErr = s.resolveQueuedAITaskDeployAgent(profiles, activeName)
+		} else {
+			resolution, exists, resolveErr = s.resolveManageSessionsDeployAgent(profiles, targetName)
 		}
-		resolution, exists, resolveErr := s.resolveManageSessionsDeployAgent(profiles, targetName)
 		if resolveErr != nil {
 			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] agent resolution: %w", i, resolveErr)
 		}
@@ -277,8 +293,8 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 			if err := validateManageSessionsDeployAgent(active, profile, canDelegate); err != nil {
 				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d]: %w", i, err)
 			}
-		} else if !profile.Enabled || profile.Mode != agentruntime.ModePrimary || !strings.EqualFold(profile.Name, agentruntime.SwarmAgentID) {
-			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d]: queued AI task requires primary Swarm", i)
+		} else if !profile.Enabled || profile.Mode != agentruntime.ModePrimary || pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModePlanAuto {
+			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d]: queued AI task requires an enabled plan/auto primary agent", i)
 		}
 		executionMode, _, err := s.resolveExecutionMode(input.Mode, profile)
 		if err != nil {

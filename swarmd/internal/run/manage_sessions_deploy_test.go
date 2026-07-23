@@ -108,6 +108,53 @@ func TestResolveManageSessionsDeploySwarmSeparatesCompiledIdentityFromModePrefer
 	}
 }
 
+func TestResolveQueuedAITaskDeployAgentPreservesActiveSplitPrimary(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	active := pebblestore.AgentProfile{
+		Name: "split-primary", Mode: agentruntime.ModePrimary, Enabled: true,
+		RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+		ModelMode: "split", PlanProvider: "codex", PlanModel: "plan-model", PlanThinking: "high",
+		AutoProvider: "openai", AutoModel: "auto-model", AutoThinking: "medium",
+	}
+	swarm := pebblestore.AgentProfile{Name: agentruntime.SwarmAgentID, Mode: agentruntime.ModePrimary, Enabled: true}
+	profiles := map[string]pebblestore.AgentProfile{active.Name: active, agentruntime.SwarmAgentID: swarm}
+
+	resolution, found, err := svc.resolveQueuedAITaskDeployAgent(profiles, active.Name)
+	if err != nil || !found {
+		t.Fatalf("resolve active split primary: found=%t err=%v", found, err)
+	}
+	if resolution.ExecutionProfile.Name != active.Name || resolution.PreferenceProfile.Name != active.Name {
+		t.Fatalf("queued task resolution = %#v, want active split primary", resolution)
+	}
+	plan := resolution.preferenceForMode(pebblestore.ModelPreference{}, sessionruntime.ModePlan)
+	auto := resolution.preferenceForMode(pebblestore.ModelPreference{}, sessionruntime.ModeAuto)
+	if plan.Provider != "codex" || plan.Model != "plan-model" || plan.Thinking != "high" {
+		t.Fatalf("plan preference = %#v", plan)
+	}
+	if auto.Provider != "openai" || auto.Model != "auto-model" || auto.Thinking != "medium" {
+		t.Fatalf("auto preference = %#v", auto)
+	}
+
+	profiles[agentruntime.SwarmAgentID] = func() pebblestore.AgentProfile {
+		swarmSplit := active
+		swarmSplit.Name = agentruntime.SwarmAgentID
+		return swarmSplit
+	}()
+	compiledSwarm, found, err := svc.resolveQueuedAITaskDeployAgent(profiles, agentruntime.SwarmAgentID)
+	if err != nil || !found || compiledSwarm.ExecutionProfile.Name != agentruntime.SwarmAgentID || compiledSwarm.ExecutionProfile.ModelMode != "" || compiledSwarm.PreferenceProfile.ModelMode != "split" {
+		t.Fatalf("active Swarm split resolution = %#v found=%t err=%v", compiledSwarm, found, err)
+	}
+
+	active.ModelMode = "single"
+	profiles[active.Name] = active
+	fallback, found, err := svc.resolveQueuedAITaskDeployAgent(profiles, active.Name)
+	if err != nil || !found || fallback.ExecutionProfile.Name != agentruntime.SwarmAgentID {
+		t.Fatalf("non-split active fallback = %#v found=%t err=%v", fallback, found, err)
+	}
+}
+
 func TestValidateManageSessionsDeployAgentDefaultsAndGating(t *testing.T) {
 	active := pebblestore.AgentProfile{Name: "swarm", Mode: agentruntime.ModePrimary, Enabled: true}
 	if err := validateManageSessionsDeployAgent(active, active, false); err != nil {

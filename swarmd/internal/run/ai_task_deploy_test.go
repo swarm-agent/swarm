@@ -222,7 +222,9 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 		t.Fatalf("configure account Swarm: %v", err)
 	}
 	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
-		Name: "other-primary", Mode: agentruntime.ModePrimary, Provider: "codex", Model: "other-model", Thinking: "low",
+		Name: "other-primary", Mode: agentruntime.ModePrimary, ModelMode: "split",
+		PlanProvider: "codex", PlanModel: "other-plan-model", PlanThinking: "low",
+		AutoProvider: "openai", AutoModel: "other-auto-model", AutoThinking: "high",
 		Prompt: "Other primary.", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
 		ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}, Enabled: pebblestore.BoolPtr(true),
 	}); err != nil {
@@ -341,11 +343,11 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 	if !managed.WorktreeEnabled || managed.WorkspacePath != managedPath || managed.WorktreeBaseBranch != "release" || managed.WorktreeBranch != "feature/fix-queued-task" {
 		t.Fatalf("managed worktree session = %#v", managed)
 	}
-	if managed.Mode != sessionruntime.ModeAuto || managed.Preference.Provider != "openai" || managed.Preference.Model != "configured-auto-model" || managed.Preference.Thinking != "medium" {
-		t.Fatalf("split-auto managed session = %#v", managed)
+	if managed.Mode != sessionruntime.ModeAuto || managed.Preference.Provider != "openai" || managed.Preference.Model != "other-auto-model" || managed.Preference.Thinking != "high" {
+		t.Fatalf("active split-primary auto session = %#v", managed)
 	}
-	if len(canonicalProfiles) == 0 || canonicalProfiles[0].Name != agentruntime.SwarmAgentID || canonicalProfiles[0].Mode != agentruntime.ModePrimary || canonicalProfiles[0].Prompt != agentruntime.SwarmAgentPrompt() || canonicalProfiles[0].ToolContract == nil || canonicalProfiles[0].Provider != "" || canonicalProfiles[0].Model != "" {
-		t.Fatalf("AI task execution identity = %#v", canonicalProfiles)
+	if len(canonicalProfiles) == 0 || canonicalProfiles[0].Name != "other-primary" || canonicalProfiles[0].Mode != agentruntime.ModePrimary || canonicalProfiles[0].RuntimeMode != pebblestore.AgentRuntimeModePlanAuto || canonicalProfiles[0].ToolContract == nil {
+		t.Fatalf("AI task active split execution profile = %#v", canonicalProfiles)
 	}
 	if worktrees.requestedBase != "release" || worktrees.requestedBranch != "feature/fix-queued-task" {
 		t.Fatalf("worktree allocation used base=%q branch=%q", worktrees.requestedBase, worktrees.requestedBranch)
@@ -385,8 +387,8 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 	if originLinkedSession.Mode != sessionruntime.ModePlan {
 		t.Fatalf("origin-linked managed session mode = %q, want plan", originLinkedSession.Mode)
 	}
-	if originLinkedSession.Preference.Provider != "codex" || originLinkedSession.Preference.Model != "configured-plan-model" || originLinkedSession.Preference.Thinking != "high" {
-		t.Fatalf("split-plan managed session = %#v", originLinkedSession)
+	if originLinkedSession.Preference.Provider != "codex" || originLinkedSession.Preference.Model != "other-plan-model" || originLinkedSession.Preference.Thinking != "low" {
+		t.Fatalf("active split-primary plan session = %#v", originLinkedSession)
 	}
 	if enqueuedParentID != parent.ID || mapString(originLinkedSession.Metadata, "parent_session_id") != parent.ID || mapString(originLinkedSession.Metadata, "lineage_kind") != "session_deploy" {
 		t.Fatalf("optional origin linkage was not preserved: parent=%q metadata=%#v", enqueuedParentID, originLinkedSession.Metadata)

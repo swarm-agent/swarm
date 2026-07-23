@@ -146,11 +146,14 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 	canDelegate := callerContract.Tools["task"].Enabled
 	for i := range approved.Proposals {
 		proposal := approved.Proposals[i]
-		targetName := proposal.AgentName
+		var resolution manageSessionsDeployAgentResolution
+		var found bool
+		var agentErr error
 		if aiTask != nil {
-			targetName = agentruntime.SwarmAgentID
+			resolution, found, agentErr = s.resolveQueuedAITaskDeployAgent(profiles, activeName)
+		} else {
+			resolution, found, agentErr = s.resolveManageSessionsDeployAgent(profiles, proposal.AgentName)
 		}
-		resolution, found, agentErr := s.resolveManageSessionsDeployAgent(profiles, targetName)
 		if agentErr != nil {
 			return "", fmt.Errorf("proposal %q agent resolution: %w", proposal.ID, agentErr)
 		}
@@ -162,8 +165,8 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 			if err := validateManageSessionsDeployAgent(active, profile, canDelegate); err != nil {
 				return "", fmt.Errorf("proposal %q: %w", proposal.ID, err)
 			}
-		} else if profile.Mode != agentruntime.ModePrimary || !strings.EqualFold(profile.Name, agentruntime.SwarmAgentID) {
-			return "", fmt.Errorf("proposal %q queued AI task requires primary Swarm", proposal.ID)
+		} else if profile.Mode != agentruntime.ModePrimary || pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModePlanAuto {
+			return "", fmt.Errorf("proposal %q queued AI task requires an enabled plan/auto primary agent", proposal.ID)
 		}
 		executionMode, _, resolveErr := s.resolveExecutionMode(proposal.Mode, profile)
 		if resolveErr != nil {
