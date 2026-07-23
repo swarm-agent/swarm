@@ -85,7 +85,7 @@ test('plan Git commit form submits on Enter through the shared commit handler an
   assert.equal((modalSource.match(/commitWorkspaceChanges/g) ?? []).length, 0)
 })
 
-test('main sidebar collapse becomes focus mode without touching the plan sidebar implementation', async () => {
+test('main sidebar focus mode stays collapsed without adding a top bar or touching the plan sidebar', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const layoutStart = source.indexOf('data-testid="desktop-workspace-sidebar"')
   const layoutEnd = source.indexOf('<DesktopV3ExistingConversationPane', layoutStart)
@@ -96,20 +96,21 @@ test('main sidebar collapse becomes focus mode without touching the plan sidebar
   const focusSidebarEnd = source.indexOf('const sidebarContent =', focusSidebarStart)
   const focusSidebarSource = source.slice(focusSidebarStart, focusSidebarEnd)
 
-  assert.match(source, /data-testid="desktop-focus-session-navigator"/)
-  assert.match(source, /aria-label="Focus mode sessions"/)
-  assert.match(source, /Needs Review[\s\S]*In Progress[\s\S]*Active Chats/)
-  assert.match(source, /checked=\{showActiveChats\}/)
-  assert.match(source, /onClick=\{\(\) => \{ onSelect\(node\.session\.id\) \}\}/)
+  assert.doesNotMatch(source, /FocusSessionNavigator|desktop-focus-session-navigator|Needs-review and in-progress chat tabs|role="tablist"/)
+  assert.doesNotMatch(source, /showActiveChats|Focused on|<span>Focus<\/span>|<Eye/)
   assert.ok(focusSidebarStart >= 0 && focusSidebarEnd > focusSidebarStart)
   assert.match(focusSidebarSource, /data-testid="desktop-focus-sidebar-controls"/)
-  assert.match(focusSidebarSource, /Expand sidebar to full width/)
+  assert.match(focusSidebarSource, /className="h-12 w-12 min-w-12 p-0"[\s\S]*onClick=\{\(\) => setSidebarDisplayMode\('full'\)\}[\s\S]*aria-label="Expand sidebar to full width"[\s\S]*title="Full-width sidebar"[\s\S]*<ChevronRight size=\{28\}/)
+  assert.doesNotMatch(focusSidebarSource, /aria-pressed|border-\[var\(--app-primary\)\]|bg-\[var\(--app-selection-bg\)\][\s\S]*aria-label="Expand sidebar to full width"/)
   assert.match(focusSidebarSource, /Back to launcher/)
+  assert.match(focusSidebarSource, /notificationAttentionVisible[\s\S]*aria-label="Open notifications"/)
+  assert.match(focusSidebarSource, /handleOpenSettingsTab\('account'\)[\s\S]*aria-label="Open settings"[\s\S]*<Settings/)
   assert.doesNotMatch(focusSidebarSource, /renderSidebarSessionGroups|globalFlattenedSessionNodes|aria-label="Sessions"|Open \$\{label\}|<Bot/)
   assert.match(layoutSource, /focusMode \? 'sm:w-\[56px\]' : 'sm:w-\[320px\]'/)
-  assert.match(layoutSource, /onClick=\{\(\) => setSidebarDisplayMode\('focus'\)\}[\s\S]*aria-label="Enter focus mode"/)
-  assert.match(layoutSource, /onExit=\{\(\) => setSidebarDisplayMode\('full'\)\}/)
+  assert.match(layoutSource, /onClick=\{\(\) => setSidebarDisplayMode\('focus'\)\}[\s\S]*aria-label="Enter focus mode"[\s\S]*title="Focus mode"[\s\S]*<ChevronLeft size=\{14\}/)
+  assert.doesNotMatch(layoutSource, /<Maximize/)
   assert.match(layoutSource, /\{focusMode \? focusedSidebarContent : sidebarContent\}/)
+  assert.match(source, /const updateAttentionVisible = !updateDevMode && \(updateActionEnabled \|\| updateRunning \|\| Boolean\(updateError\)\)/)
   assert.doesNotMatch(layoutSource, /sm:w-\[240px\]|setSidebarDisplayMode\('compact'\)|Use thin sidebar|title="Thin"/)
 
   const planPane = await readFile(new URL('../chat/components/desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8')
