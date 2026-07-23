@@ -489,7 +489,7 @@ func (s *Service) rejectProviderManagedCheckpointRunFollowup(config providerTool
 	if checkpointID == "" {
 		return nil
 	}
-	return fmt.Errorf("session checkpoint creation is not allowed from checkpoint run %q for active checkpoint %q; do not retry or claim a checkpoint was added: complete all work belonging to the current objective here, or record a genuinely independent proposed checkpoint in the terminal next-action evidence and tell the user that a later parent-conversation turn must append it with request_followup_checkpoint; finish the current checkpoint with complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed", runID, checkpointID)
+	return fmt.Errorf("recursive session checkpoint creation is not allowed from checkpoint run %q for active checkpoint %q; do not retry or claim a checkpoint was added: complete all work belonging to the current objective here; request_followup_checkpoint is reserved for related ordered work from the parent conversation, while an unrelated product goal must use request_new_plan with one checkpoint when bounded or multiple ordered checkpoints when intrinsically multi-stage, high-risk, fresh-context, or independently reviewable; if an unrelated request somehow reached this checkpoint-owned run, preserve it verbatim in terminal next-action evidence without asking the user to resend so the parent conversation can call request_new_plan; finish the current checkpoint with complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed", runID, checkpointID)
 }
 
 func isPlanManageSessionCheckpointCreationAction(action string) bool {

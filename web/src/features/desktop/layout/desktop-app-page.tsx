@@ -1957,8 +1957,10 @@ interface SessionRowProps {
   compactingStartedAt?: number | null
   pendingAction?: 'pin' | 'archive' | 'rename' | null
   selectionMode?: boolean
+  selectionGroup?: SidebarSessionGroupID
   selected?: boolean
   onSelect: (sessionId: string) => void | boolean
+  onEnterSelectionMode?: (group: SidebarSessionGroupID) => void
   onToggleSelected?: (sessionId: string, range: boolean) => void
   onPrefetch: (sessionId: string) => void
   onToggleAgents: (sessionId: string) => void
@@ -1967,7 +1969,7 @@ interface SessionRowProps {
   onRename: (sessionId: string, title: string) => Promise<void>
 }
 
-const SessionRow = memo(function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childAssignmentLabel = null, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selected = false, onSelect, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
+const SessionRow = memo(function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childAssignmentLabel = null, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
   const session = initialSession
   const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
   const activeSession = compactingActive || sessionIsActive(session)
@@ -2041,21 +2043,21 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
   }, [actionsOpen, closeActionMenu])
   const hasDetailsRowContent = Boolean(backgroundInfo)
   const showDetailsRow = !isPlanRow && hasDetailsRowContent
-  const showActionMenuInMetadataRow = !showPlanProgressBar && !showDetailsRow
   const pinned = sessionAllowsManualSidebarPin(session) && sessionManuallyPinnedInSidebar(session)
   const pinDisabled = pendingAction !== null || !sessionAllowsManualSidebarPin(session)
   const archiveDisabled = pendingAction !== null
   const actionButtonBaseClass = cn(
     'inline-flex h-6 w-full shrink-0 items-center gap-2 rounded border-0 bg-transparent px-2 text-left font-inherit text-[11px] leading-6 text-[var(--app-text-subtle)] transition-[background-color,color] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent',
   )
+  const hoverActionButtonClass = 'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border-0 bg-transparent p-0 text-[var(--app-text-subtle)] opacity-0 transition-[background-color,color,opacity] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] focus:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-default disabled:opacity-40'
   const actionMenuButtonClass = cn(
-    'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border-0 bg-transparent p-0 text-[var(--app-text-subtle)] opacity-0 transition-[background-color,color,opacity] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] focus:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100',
+    hoverActionButtonClass,
     actionsOpen ? 'opacity-100 text-[var(--app-text)]' : null,
   )
   const pinActionControl = sessionAllowsManualSidebarPin(session) ? (
     <button
       type="button"
-      className={cn(actionButtonBaseClass, pinned ? 'text-[var(--app-primary)] hover:text-[var(--app-primary-hover)]' : null)}
+      className={cn(hoverActionButtonClass, pinned ? 'text-[var(--app-primary)] hover:text-[var(--app-primary-hover)]' : null)}
       disabled={pinDisabled}
       aria-label={pinned ? `Unpin ${rowTitle}` : `Pin ${rowTitle}`}
       aria-pressed={pinned}
@@ -2070,7 +2072,6 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
       }}
     >
       {pendingAction === 'pin' ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : <Pin size={12} aria-hidden="true" />}
-      <span>{pinned ? 'Unpin' : 'Pin'}</span>
     </button>
   ) : null
   const renameActionControl = (
@@ -2095,7 +2096,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
   const archiveActionControl = (
     <button
       type="button"
-      className={actionButtonBaseClass}
+      className={hoverActionButtonClass}
       disabled={archiveDisabled}
       aria-label={`Archive ${rowTitle}`}
       title="Archive session"
@@ -2109,9 +2110,25 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
       }}
     >
       {pendingAction === 'archive' ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : <Archive size={12} aria-hidden="true" />}
-      <span>Archive</span>
     </button>
   )
+  const selectActionControl = depth === 0 && selectionGroup && onEnterSelectionMode ? (
+    <button
+      type="button"
+      className={actionButtonBaseClass}
+      disabled={selectionMode}
+      aria-label="Select sessions to archive"
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        closeActionMenu()
+        onEnterSelectionMode(selectionGroup)
+      }}
+    >
+      <ListChecks size={12} aria-hidden="true" />
+      <span>Select</span>
+    </button>
+  ) : null
   const subagentSessionsActionControl = hasAgentChildren ? (
     <button
       type="button"
@@ -2133,7 +2150,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
   const actionMenu = (
     <span
       ref={actionMenuRef}
-      className={cn('relative z-20 inline-flex translate-x-[5px] shrink-0 items-center', actionsOpen ? 'z-40' : null)}
+      className={cn('relative z-20 inline-flex shrink-0 items-center', actionsOpen ? 'z-40' : null)}
       onPointerDownCapture={(event) => {
         event.preventDefault()
         event.stopPropagation()
@@ -2167,7 +2184,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
           })
         }}
       >
-        <MoreVertical size={13} aria-hidden="true" />
+        <MoreVertical size={12} aria-hidden="true" />
       </button>
       {actionsOpen ? (
         <span
@@ -2179,9 +2196,8 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
           }}
         >
           {subagentSessionsActionControl}
-          {pinActionControl}
           {renameActionControl}
-          {archiveActionControl}
+          {selectActionControl}
         </span>
       ) : null}
     </span>
@@ -2282,6 +2298,11 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
         <span className="inline-flex shrink-0 items-center justify-end gap-1.5 text-[10px] leading-4 text-[var(--app-text-muted)]">
           {compactingActive ? <LoaderCircle size={10} className="animate-spin text-[var(--app-primary)]" aria-hidden="true" /> : null}
           {rightSideLabel ? <span className="max-w-[5.5rem] truncate text-right">{rightSideLabel}</span> : null}
+          <span className="inline-flex shrink-0 items-center gap-1">
+            {pinActionControl}
+            {archiveActionControl}
+            {actionMenu}
+          </span>
           {showStatusCircle ? (
             <span
               className={cn(
@@ -2302,7 +2323,6 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
         <span className="min-w-0 truncate">{metadataLabel}</span>
         <span className="ml-auto inline-flex shrink-0 items-center justify-end gap-1 text-right tabular-nums text-[var(--app-text-muted)]">
           {rowTimerLabel ? <span>{rowTimerLabel}</span> : null}
-          {showActionMenuInMetadataRow ? actionMenu : null}
         </span>
       </div>
 
@@ -2322,9 +2342,6 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
               style={{ width: `${checkpointProgressPercent}%` }}
             />
           </div>
-          <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
-            {actionMenu}
-          </div>
         </div>
       ) : null}
 
@@ -2337,9 +2354,6 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
               </span>
             ) : null}
             {backgroundInfo?.targetLabel ? <span className="truncate">{backgroundInfo.targetLabel}</span> : null}
-          </div>
-          <div className="ml-auto flex shrink-0 items-center gap-1.5">
-            {!isPlanRow ? actionMenu : null}
           </div>
         </div>
       ) : null}
@@ -2432,15 +2446,6 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                 <button
                   type="button"
                   className="grid h-5 w-5 place-items-center rounded border border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                  aria-label="Select sessions to archive"
-                  title="Select sessions to archive"
-                  onClick={() => input.onEnterSelectionMode(group.id)}
-                >
-                  <ListChecks size={12} aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  className="grid h-5 w-5 place-items-center rounded border border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                   aria-label="Review worktrees"
                   title="Review worktrees"
                   aria-expanded={input.reviewCleanupOpen}
@@ -2522,8 +2527,10 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
             compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
             pendingAction={input.pendingActions[node.session.id] ?? null}
             selectionMode={input.selectionMode}
+            selectionGroup={group.id}
             selected={input.selectedRootIDs.has(node.session.id)}
             onSelect={input.onSelect}
+            onEnterSelectionMode={input.onEnterSelectionMode}
             onToggleSelected={input.onToggleSelected}
             onPrefetch={input.onPrefetch}
             onToggleAgents={input.onToggleAgents}

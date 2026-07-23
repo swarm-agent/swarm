@@ -6554,9 +6554,18 @@ func TestSessionsV3WaitingReviewFollowupReturnsCanonicalDurableTriggerMessage(t 
 	}
 
 	req := sessionsV3MessageRequest{ClientRequestID: "waiting-review-followup-message", MessageID: "canonical-followup-message", RunID: "waiting-review-followup-run", Role: "user", Content: "continue after final handoff"}
-	result, _, err := server.acceptSessionsV3Message(testPrincipal(), created.ID, req)
+	result, job, err := server.acceptSessionsV3Message(testPrincipal(), created.ID, req)
 	if err != nil {
 		t.Fatalf("accept waiting-review followup: %v", err)
+	}
+	if job == nil {
+		t.Fatal("waiting-review followup did not enqueue a parent turn")
+	}
+	if job.PlanID != "" || job.CheckpointID != "" || job.AttemptID != "" || job.ParentSessionID != "" {
+		t.Fatalf("post-checkpoint user turn retained completed checkpoint ownership: %#v", job)
+	}
+	if result.RunIntent == nil || result.RunIntent.PlanID != "plan-waiting-review" || result.RunIntent.CheckpointID != "cp-1" || result.RunIntent.AttemptID != "cp-1:attempt-1" {
+		t.Fatalf("durable boundary intent lost completed checkpoint audit metadata: %#v", result.RunIntent)
 	}
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
 	if err != nil {

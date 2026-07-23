@@ -1697,6 +1697,160 @@ func TestProviderManagedPlanManageLifecycleMessageFollowsToolCompletion(t *testi
 	}
 }
 
+func TestPlanManageRequestNewPlanWithActivePlanUsesCanonicalApprovalForSingleAndMultiCheckpointDocuments(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		checkpoints []map[string]any
+	}{
+		{
+			name: "single checkpoint",
+			checkpoints: []map[string]any{{
+				"id": "cp-new-1", "title": "Implement unrelated task", "status": "pending", "order": 1,
+				"tasks": []string{"Implement the unrelated task"}, "acceptance_criteria": []string{"The unrelated task is complete"},
+			}},
+		},
+		{
+			name: "multiple checkpoints",
+			checkpoints: []map[string]any{
+				{"id": "cp-new-1", "title": "Implement phase", "status": "pending", "order": 1, "tasks": []string{"Implement the first phase"}, "acceptance_criteria": []string{"The first phase is complete"}},
+				{"id": "cp-new-2", "title": "Review phase", "status": "pending", "order": 2, "tasks": []string{"Review the independent phase"}, "acceptance_criteria": []string{"The second phase is complete"}},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+			defer cleanup()
+
+			sessionID := createPlanManageTestSession(t, sessionSvc)
+			_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-original", "Original Plan", "# Original", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+				Title:           "Original Plan",
+				Info:            pebblestore.SessionPlanInfo{Goal: "Finish the original product goal."},
+				ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+				Checkpoints:     []pebblestore.SessionPlanCheckpoint{{ID: "cp-old", Title: "Original", Objective: "Finish original work.", AcceptanceCriteria: []string{"Original work is done."}, Status: sessionruntime.PlanCheckpointStatusCompleted, Order: 1}},
+			}})
+			if err != nil {
+				t.Fatalf("save original plan: %v", err)
+			}
+
+			document := map[string]any{
+				"title":       "Unrelated Plan",
+				"info":        map[string]any{"goal": "Complete a separate unrelated product goal."},
+				"checkpoints": tc.checkpoints,
+			}
+			documentRaw, err := json.Marshal(document)
+			if err != nil {
+				t.Fatalf("marshal document: %v", err)
+			}
+			call := tool.Call{Name: "plan_manage", Arguments: `{"action":"request_new_plan","title":"Unrelated Plan","document":` + string(documentRaw) + `}`}
+			permissionPayload, needsApproval, err := runSvc.buildPlanManagePermissionPayload(sessionID, call)
+			if err != nil {
+				t.Fatalf("build request_new_plan approval: %v", err)
+			}
+			if !needsApproval || permissionPayload.Action != "request_new_plan" || permissionPayload.PathID != "tool.plan-new-request.v1" {
+				t.Fatalf("permission payload = %#v needsApproval=%v", permissionPayload, needsApproval)
+			}
+			activeBefore, ok, err := sessionSvc.GetActivePlan(sessionID)
+			if err != nil || !ok || activeBefore.ID != "plan-original" {
+				t.Fatalf("pending approval replaced active plan: ok=%v err=%v active=%#v", ok, err, activeBefore)
+			}
+
+			feedbackRaw, err := json.Marshal(map[string]any{"action": permissionPayload.Action, "approved_arguments": permissionPayload.ApprovedArguments})
+			if err != nil {
+				t.Fatalf("marshal approval feedback: %v", err)
+			}
+			raw, err := runSvc.executePlanManageTool(sessionID, call.Arguments, string(feedbackRaw))
+			if err != nil {
+				t.Fatalf("approve request_new_plan: %v output=%s", err, raw)
+			}
+			var result struct {
+				Action       string `json:"action"`
+				NextAction   string `json:"next_action"`
+				CheckpointID string `json:"checkpoint_id"`
+				RunRequest   struct {
+					Context *RunPlanCheckpointContext `json:"plan_checkpoint_context"`
+				} `json:"run_request"`
+				Plan struct {
+					ID       string                           `json:"id"`
+					Active   bool                             `json:"active"`
+					Document *pebblestore.SessionPlanDocument `json:"document"`
+				} `json:"plan"`
+			}
+			if err := json.Unmarshal([]byte(raw), &result); err != nil {
+				t.Fatalf("decode approved request_new_plan: %v", err)
+			}
+			if result.Action != "request_new_plan" || result.NextAction != "run_checkpoint_with_fresh_context" || result.CheckpointID != "cp-new-1" || result.RunRequest.Context == nil || result.RunRequest.Context.CheckpointID != "cp-new-1" {
+				t.Fatalf("approved request_new_plan did not return fresh-context start: %#v raw=%s", result, raw)
+			}
+			if !result.Plan.Active || result.Plan.ID == "" || result.Plan.ID == "plan-original" || result.Plan.Document == nil || len(result.Plan.Document.Checkpoints) != len(tc.checkpoints) {
+				t.Fatalf("approved new plan = %#v", result.Plan)
+			}
+			activeAfter, ok, err := sessionSvc.GetActivePlan(sessionID)
+			if err != nil || !ok || activeAfter.ID != result.Plan.ID {
+				t.Fatalf("approved plan was not activated: ok=%v err=%v active=%#v result=%#v", ok, err, activeAfter, result.Plan)
+			}
+		})
+	}
+}
+
+func TestProviderManagedPlanManageAllowsRequestNewPlanButRejectsRecursiveCheckpointCreation(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-provider-guard", "Provider Guard", "# Guard", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateInProgress, ActiveAttemptID: "cp-1:attempt-1", CurrentRunID: "run-provider-guard", CurrentSessionID: sessionID, ParentSessionID: sessionID},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Owned", Status: sessionruntime.PlanCheckpointStatusInProgress, AttemptID: "cp-1:attempt-1", RunID: "run-provider-guard", SessionID: sessionID}},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save provider guard plan: %v", err)
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-test", AccountScopeID: "account-test"}
+	invoker := runSvc.NewProviderManagedToolInvoker(ProviderManagedToolInvokerConfig{
+		SessionID: sessionID, PermissionSessionID: sessionID, RunID: "run-provider-guard", Step: 1,
+		SessionMode: sessionruntime.ModeAuto, Principal: principal, ProviderManagedV3: true,
+		ApplySessionMutation: func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+			if input.UserID == "" {
+				input.UserID = principal.UserID
+			}
+			if input.AccountScopeID == "" {
+				input.AccountScopeID = principal.AccountScopeID
+			}
+			return sessionSvc.ApplySessionMutation(input)
+		},
+	})
+
+	for _, action := range []string{"start_session_checkpoint", "request_followup_checkpoint"} {
+		result, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-" + action, Name: "plan_manage", Arguments: `{"action":"` + action + `","change_request":"recursive work","checkpoint_title":"Recursive"}`})
+		if err != nil {
+			t.Fatalf("execute %s: %v", action, err)
+		}
+		if !strings.Contains(result.Error, "recursive session checkpoint creation is not allowed") {
+			t.Fatalf("%s escaped checkpoint guard: %#v", action, result)
+		}
+	}
+
+	result, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-request-new-plan", Name: "plan_manage", Arguments: `{"action":"request_new_plan","title":"Unrelated Plan","approval_confirmed":true,"document":{"title":"Unrelated Plan","info":{"goal":"Complete an unrelated goal."},"checkpoints":[{"id":"cp-new","title":"Unrelated","status":"pending","order":1,"tasks":["Implement unrelated work"],"acceptance_criteria":["Unrelated work is complete"]}]}}`})
+	if err != nil {
+		t.Fatalf("execute request_new_plan: %v", err)
+	}
+	if strings.Contains(result.Error, "recursive session checkpoint creation") || result.Error != "" {
+		t.Fatalf("request_new_plan was rejected by checkpoint guard: %#v", result)
+	}
+	var payload struct {
+		Action       string `json:"action"`
+		NextAction   string `json:"next_action"`
+		CheckpointID string `json:"checkpoint_id"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &payload); err != nil {
+		t.Fatalf("decode request_new_plan result: %v output=%s", err, result.Output)
+	}
+	if payload.Action != "request_new_plan" || payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "cp-new" {
+		t.Fatalf("request_new_plan result = %#v output=%s", payload, result.Output)
+	}
+}
+
 func TestProviderManagedPlanManageRejectsFollowupFromCheckpointRun(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()
