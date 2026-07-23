@@ -6,9 +6,9 @@ require (
 	github.com/alecthomas/chroma/v2 v2.24.1
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gdamore/tcell/v2 v2.13.9
-	github.com/rivo/uniseg v0.4.7
 	github.com/github/copilot-sdk/go v0.3.0
 	github.com/google/uuid v1.6.0
+	github.com/rivo/uniseg v0.4.7
 	github.com/yuin/goldmark v1.8.2
 	golang.org/x/term v0.42.0
 )
@@ -25,5 +25,5 @@ require (
 	go.opentelemetry.io/otel/metric v1.35.0 // indirect
 	go.opentelemetry.io/otel/trace v1.35.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 )

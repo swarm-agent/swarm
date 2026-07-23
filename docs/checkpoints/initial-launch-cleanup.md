@@ -1,0 +1,287 @@
+# Initial Launch Cleanup
+
+This is the focused backlog to finish before opening promotion PRs, publishing a downloadable Swarm archive, and testing the first public install. It is a cleanup gate, not a feature roadmap.
+
+## Scope lock
+
+- **In scope:** preserving normal Git identity behavior, harmful defaults and side effects, dead-code triage, public-repo hygiene, release packaging, install/update/uninstall behavior, and one clean-machine smoke path.
+- **Out of scope:** V3 sessions/sync/realtime implementation, feature polish, architecture rewrites, new runners, and speculative refactors.
+- A V3 issue may enter this list only if a clean-machine smoke test demonstrates a launch-blocking safety or usability failure. Record the reproduction; do not broaden this cleanup into V3 work.
+- Work tasks in order. Do not start P2 cleanup until the P0/P1 gates are closed or explicitly deferred with evidence.
+
+## Current stop-ship facts
+
+1. **Swarm's dedicated commit operations preserve the target repository's normal Git identity.** The project identity `swarm-agent <swarm@swarmagent.dev>` in this repository's own history is not evidence that Swarm writes identity into contributors' repositories. The workspace API, generic `git_commit` tool, and managed-session commit path all invoke ordinary Git without `git config user.*`, `--author`, or a project identity; all three remove daemon-level `GIT_AUTHOR_*` and `GIT_COMMITTER_*` overrides before Git resolves repository/global identity and signing configuration (`swarmd/internal/api/git_commit.go:122-155`, `swarmd/internal/tool/runtime.go:1882-1907`, `swarmd/internal/tool/runtime_manage_sessions_commit.go:100-107`, `swarmd/internal/tool/runtime_manage_sessions_commit.go:520-528`). V3 review commits delegate to the same generic tool. The remaining audit boundary is worktree integration: `git cherry-pick` runs through a helper that currently inherits the daemon environment (`swarmd/internal/worktree/service.go:448-475`, `swarmd/internal/worktree/service.go:1082-1095`). Generic Bash also inherits its execution environment and must not be conflated with the dedicated commit APIs. The scoped cleanup is to preserve conventional Git behavior at Swarm-controlled commit/integration boundaries, not police contributor emails or rewrite history.
+2. **The release workflow can publish immediately on a qualifying push to `main`.** It creates and pushes a stable tag before building the bundle (`.github/workflows/build-main.yml:51-87`) and grants `contents: write` to the job (`.github/workflows/build-main.yml:13-14`). The job-level actor condition is also coupled to the literal account `swarm-agent` (`.github/workflows/build-main.yml:22`). This must be intentionally reviewed before the first promotion.
+3. **No downloaded-artifact smoke gate exists in the checked-in launch gate.** `scripts/check-launch-readiness.sh` checks policy, tracked content, workspace hygiene, and binary inventory, but does not build, extract, install, start, or uninstall the release (`scripts/check-launch-readiness.sh:135-225`). `docs/main-deploy-checklist.md:85-91` leaves install/update verification until after push.
+4. **Dead code is substantial, but the obvious command needs careful scoping.** The ignored local `.bin/deadcode` is a Go RTA analyzer. Executable-only analysis completed successfully and reported 231 lines in the root module and 362 in `swarmd`; examples include `cmd/swarm/main.go:425`, legacy-looking TUI paths under `internal/app/app.go`, `swarmd/internal/agent/service.go:678`, and old API paths. A naive `-test ./...` run currently fails while loading relocated/stale tests, so its output is not a deletion list. V3 findings are excluded by this document's scope lock.
+
+## P0 — stop before any new PR or release decision
+
+### P0.1 Preserve the user's normal Git identity and signing behavior
+
+**Why:** Swarm must never choose or write a contributor identity for a user's repository. The audited dedicated commit entry points do not hardcode one and already remove inherited author/committer overrides. Worktree integration also creates commits through `git cherry-pick`, so its committer environment needs the same narrow review. Arbitrary commands run through Bash are a separate shell capability, not evidence that Swarm selected an identity.
+
+**Audit evidence**
+
+- `runWorkspaceGitCommit` is the direct workspace commit API. It runs `git add --all` when requested and `git commit -m`, with `filteredWorkspaceGitCommitEnv` removing inherited author/committer name, email, and date variables (`swarmd/internal/api/git_commit.go:112-181`, `swarmd/internal/api/git_commit.go:195-218`).
+- `executeGitCommit` is the generic `git_commit` tool. It runs `git commit -m [--all]`; `executeGitCommandWithTimeout` uses `filteredGitEnv`, which removes the same variables (`swarmd/internal/tool/runtime.go:1882-1907`, `swarmd/internal/tool/runtime.go:1957-1980`).
+- `manageSessionsCommit` creates approved session-attributed commits with `git add -- <paths>` and `git commit -m`; `runManageSessionsGit` also uses `filteredGitEnv` (`swarmd/internal/tool/runtime_manage_sessions_commit.go:78-128`, `swarmd/internal/tool/runtime_manage_sessions_commit.go:520-529`).
+- V3 review-commit jobs grant and prompt the generic `git_commit` tool rather than implementing another Git command path (`swarmd/internal/api/sessions_v3_review_commits.go:136-187`).
+- Worktree integration invokes `git cherry-pick` through `runGit`. Cherry-pick preserves the selected commit's author but creates a new committer record; because `runGit` currently inherits the daemon environment, this is the one identified Swarm-controlled integration gap (`swarmd/internal/worktree/service.go:448-475`, `swarmd/internal/worktree/service.go:1082-1095`).
+- Generic Bash invokes `bash -lc` with its normal inherited environment and can run Git when separately permitted (`swarmd/internal/tool/runtime.go:1760-1794`). It is an arbitrary-command surface, not a hidden identity configuration path.
+- The only checked-in production `git config user.name`/`user.email` commands are in `.github/workflows/build-main.yml:81-83`, where CI configures `github-actions[bot]` to create this repository's annotated release tag. Test helpers configure identities only inside temporary repositories.
+- Focused tests already prove the three dedicated commit paths prefer repository-configured identities over conflicting daemon variables (`swarmd/internal/api/git_commit_test.go:38-55`, `swarmd/internal/tool/runtime_git_test.go:13-35`, `swarmd/internal/tool/runtime_manage_sessions_commit_test.go:48-75`).
+
+**Tasks**
+
+- Keep dedicated commit execution conventional: run ordinary `git commit` in the target repository without `git config user.name`, `git config user.email`, `--author`, `-c user.name`, `-c user.email`, or a Swarm-specific identity.
+- Preserve the existing environment filtering in the workspace API, generic `git_commit` tool, and managed-session commit path. It removes inherited `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_AUTHOR_DATE`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL`, and `GIT_COMMITTER_DATE` without changing repository/global Git config or signing settings.
+- Review the worktree `git cherry-pick` integration helper separately. If daemon-level identity variables can reach it, remove those variables for that Swarm-controlled integration operation and add focused coverage; do not alter the original commit's author or configure an identity.
+- Let Git fail normally with its standard identity guidance when the user has not configured an identity; do not synthesize a fallback identity or write configuration on the user's behalf.
+- Keep generic Bash behavior explicit: it runs user/agent-approved shell commands with the process environment and is not covered by claims about dedicated commit helpers. Do not special-case contributor addresses or silently mutate Git configuration there.
+- Keep identities used by this repository's own contributors, bots, release-tag automation, and public security contact separate from end-user product behavior. Do not add an allowlist/denylist for contributor emails, add identity-history checks to precommit/pre-push/CI, or rewrite existing commit history as part of this cleanup.
+
+**Acceptance**
+
+- The workspace API, generic `git_commit`, managed-session commits, and Swarm-controlled worktree integration use conventional Git behavior and do not write or substitute a user identity.
+- Conflicting daemon `GIT_AUTHOR_*` and `GIT_COMMITTER_*` variables cannot replace the target repository's configured identity in those dedicated commit/integration operations.
+- Missing identity fails through ordinary Git behavior; Swarm does not write or synthesize identity configuration.
+- Generic Bash remains accurately described as an approved arbitrary-command surface rather than being represented as an identity-managed commit API.
+- No production helper supplies `swarm@swarmagent.dev`, a personal address, `--author`, or `user.name`/`user.email` overrides for end-user commits.
+- This repository's own identity/history and CI-only tag identity are not treated as end-user identity violations.
+
+**Likely attack points**
+
+- `swarmd/internal/api/git_commit.go`
+- `swarmd/internal/tool/runtime.go`
+- `swarmd/internal/tool/runtime_manage_sessions_commit.go`
+- `swarmd/internal/api/git_commit_test.go`
+- `swarmd/internal/tool/runtime_git_test.go`
+- `swarmd/internal/tool/runtime_manage_sessions_commit_test.go`
+- `swarmd/internal/api/sessions_v3_review_commits.go`
+- `swarmd/internal/worktree/service.go`
+- `swarmd/internal/worktree/service_test.go`
+
+### P0.2 Make release publication an explicit, late action
+
+**Why:** The current workflow pushes a release tag before proving the bundle builds, and a push by the literal actor can publish a release.
+
+**Tasks**
+
+- Separate PR candidate builds from stable publication. A candidate build must never create/push a stable tag or GitHub release.
+- Move tag creation/publication after all build, archive-structure, checksum, and smoke gates.
+- Replace or explicitly document the literal `github.actor == 'swarm-agent'` release authority; enforce the intended protected-environment/manual-approval model.
+- Generate and publish SHA-256 checksums, then make installer/update verification fail closed on a missing or mismatched checksum.
+- Pin third-party actions to reviewed immutable commit SHAs before public release.
+
+**Acceptance**
+
+- PRs from `dev` build an installable candidate artifact but cannot tag or publish.
+- A failed build/smoke job leaves no new stable tag or release.
+- Stable publication requires the reviewed `dev -> main` path plus the configured approval boundary.
+- The downloaded archive is verified before extraction.
+
+**Likely attack points**
+
+- `.github/workflows/build-main.yml`
+- `.github/workflows/guard-main-pr-source.yml`
+- `scripts/build-main-dist.sh`
+- `scripts/resolve-release-version.sh`
+- `install.sh`
+- `internal/launcher/update.go`
+
+## P1 — finish before the first downloadable test
+
+### P1.1 Add a hermetic release archive and install smoke path
+
+**Why:** The build script assembles the expected archive (`scripts/build-main-dist.sh:123-174`), but launch readiness does not exercise it and the deploy checklist waits until after publication.
+
+**Tasks**
+
+- Build a candidate archive in an ignored temporary directory without publishing it.
+- Assert the archive contains every executable/library/web/build-info file required by `install.sh:503-530`.
+- Test extraction and `install.sh --artifact-root ... --no-service --yes` inside a disposable VM/container/rootfs suitable for system paths; never point the smoke test at developer `/etc`, `/var`, `/run`, or `/usr/local`.
+- In a fresh supported Linux VM, test the systemd path: install, start, `swarm status`, `swarm open`/health reachability, stop, restart, update failure behavior, and uninstall.
+- Prove reinstall preserves canonical config/data and preserves config owner/group/mode.
+- Move these checks into the pre-publication release job and update the operator checklist with exact evidence locations.
+
+**Acceptance**
+
+- One checked-in command produces a candidate archive and one checked-in smoke harness tests it without touching host system paths.
+- Missing web assets, `libfff_c.so`, launcher binaries, build metadata, or service files fail the gate.
+- Clean-machine install and uninstall leave only explicitly documented retained data.
+- No stable tag is created until this gate passes.
+
+**Likely attack points**
+
+- `scripts/build-main-dist.sh`
+- `scripts/check-launch-readiness.sh`
+- `install.sh`
+- `cmd/swarmsetup/main.go`
+- `internal/launcher/launcher.go`
+- `internal/launcher/service_lifecycle.go`
+- `internal/launcher/system_paths.go`
+- `docs/main-deploy-checklist.md`
+
+### P1.2 Review harmful defaults and side effects as invariants
+
+**Confirmed safe defaults to preserve**
+
+- API/desktop networking defaults to loopback (`pkg/startupconfig/config.go:21-24`, `pkg/startupconfig/config.go:133-152`).
+- Permission bypass, retained tool output, and provider diagnostics default off (`pkg/startupconfig/config.go:143-146`).
+- Startup config mode is `0600` (`pkg/startupconfig/config.go:26-27`).
+- Interactive install confirmation defaults to no (`install.sh:271-289`).
+
+**Tasks**
+
+- Convert those defaults into launch-gate assertions so they cannot regress silently.
+- Decide whether pressing Enter at the install-type prompt should select and start an always-on systemd service (`install.sh:244-268`). Prefer an explicit numbered answer; blank input should cancel or choose the least-mutating option.
+- Align `swarmsetup` with the wrapper's explicit service choice. `cmd/swarmsetup/main.go:21-45` currently defaults `installService` to true when invoked directly.
+- Forbid non-loopback API/desktop binding unless the supported authenticated transport is explicitly configured. The existing warning (`pkg/startupconfig/config.go:244-252`) is not itself an enforcement boundary.
+- Verify permission bypass cannot be enabled accidentally by installer flags, inherited environment, or onboarding defaults, and that its enabled state remains conspicuous in TUI/Desktop.
+- Verify install/update/uninstall do not overwrite or change ownership/mode of existing `/etc/swarmd/swarm.conf`, do not delete `/var/lib/swarmd` without explicit consent, and roll back a failed runtime switch.
+- Verify logs/diagnostics never persist provider payloads, tokens, cookies, prompts, or full tool output under default settings.
+
+**Acceptance**
+
+- Automated assertions cover loopback binding, permission prompts on, sensitive diagnostics off, tool-output retention off, config `0600`, and least-mutating install choices.
+- Non-loopback desktop exposure fails with a clear remediation unless an approved secure mode is configured.
+- A failed install/update preserves the last working runtime and canonical config metadata.
+- Default logs and stored permission records contain summaries/redactions rather than sensitive payloads.
+
+**Likely attack points**
+
+- `pkg/startupconfig/config.go`
+- `swarmd/internal/config/config.go`
+- `swarmd/internal/runtime/daemon.go`
+- `swarmd/internal/permission/service.go`
+- `internal/app/startup_network_warning_modal.go`
+- `install.sh`
+- `cmd/swarmsetup/main.go`
+- `internal/launcher/update.go`
+
+### P1.3 Run public-repository hygiene against the exact candidate
+
+**Tasks**
+
+- Freeze one `dev` SHA, require a clean worktree, and run the checked-in precommit and launch-readiness gates against that SHA.
+- Keep identity verification in focused product tests for the commit/integration helpers. Do not add contributor-email or commit-history policing to launch readiness, precommit, pre-push, or CI, and do not reinterpret this repository's own history as end-user runtime behavior.
+- Review every tracked non-text binary rather than globally allowing binaries. Launcher wrappers under `bin/` are shell scripts; generated archives/build outputs must remain untracked.
+- Replace stale baseline SHAs/counts in `docs/main-deploy-checklist.md:10-14` with a reproducible command/evidence record or remove the snapshot so it cannot mislead operators.
+- Confirm public docs name only supported platforms and flows; initial artifact support is Linux x86-64 (`install.sh:598-602`).
+
+**Acceptance**
+
+- Candidate SHA, gate output, archive checksum, and clean-machine smoke evidence are recorded together.
+- Tracked secrets, private identifiers, generated artifacts, and unexpected binaries all fail before PR/publication; focused product tests prove commit-helper behavior without policing legitimate contributor metadata.
+- Release docs contain no stale fixed branch snapshot presented as current truth.
+
+## P2 — bounded cleanup before promotion; do not turn it into a refactor
+
+### P2.1 Triage Go dead code by executable, configuration, and ownership
+
+**Reproducible baseline**
+
+```bash
+GOCACHE="$PWD/.cache/go-build" GOMODCACHE="$PWD/.cache/gomod" GOPATH="$PWD/.cache/gopath" \
+  .bin/deadcode ./cmd/...
+
+(
+  cd swarmd
+  GOCACHE="$PWD/../.cache/go-build" GOMODCACHE="$PWD/../.cache/gomod" GOPATH="$PWD/../.cache/gopath" \
+    ../.bin/deadcode ./cmd/...
+)
+```
+
+The local binary is ignored and architecture-specific. For CI/repeatability, install a pinned `golang.org/x/tools/cmd/deadcode` version into an ignored tool cache; do not commit `.bin/deadcode`.
+
+**Triage rules**
+
+- Analyze each supported executable and supported `GOOS/GOARCH/tags` configuration. Results are valid only for the analyzed configuration.
+- First classify findings as: safely removable implementation, public API kept intentionally, platform/build-tag path, provider/plugin/reflection path, generated code, test-only helper, retired product path, or V3 excluded.
+- Use `-whylive` for suspicious neighbors and inspect callers/interfaces before deletion.
+- Do not delete code merely because RTA reports it. Do not touch V3 files in this cleanup.
+- Run `-test` only after the relevant package/test-loading failures are repaired or narrowed. The repository-wide `-test ./...` command currently cannot load all relocated tests and is not a valid gate.
+- Remove dead code in small ownership-based PRs with focused validation; do not mix identity, installer, and dead-code changes.
+
+**Acceptance**
+
+- A pinned, documented analyzer command is reproducible for both modules.
+- Every removed symbol has a recorded classification and no supported config that reaches it.
+- V3 reports are excluded, not “cleaned up.”
+- The final report distinguishes remaining intentional findings from removed code and identifies test-loading gaps separately.
+
+**Initial non-V3 sampling for triage**
+
+- `cmd/swarm/main.go:425` — `parseYesOnly`
+- `internal/app/app.go:850-893` — old session-event stream path
+- `internal/app/chat_backend_adapter.go` — large unreachable adapter surface
+- `swarmd/internal/agent/service.go:678` — `oldDefaultClonePrompt`
+- `swarmd/internal/api/run_stream_ws.go` — old run-stream manager methods
+- `swarmd/internal/appstorage/storage.go` — unused storage accessors
+
+### P2.2 Close only launch-relevant forgotten ends
+
+**Tasks**
+
+- Search user-facing code/docs for TODO/FIXME/stub/legacy surfaces after P0/P1 changes, but require a demonstrated first-install or first-use impact before adding work.
+- Remove retired public commands/routes only when they are outside V3 and their replacement is confirmed; otherwise record them as post-launch debt.
+- Ensure unsupported/deferred features are hidden or clearly fail as unavailable rather than appearing to succeed.
+- Keep generated diagnostics, local profiles, screenshots, dumps, caches, and scratch files out of the candidate commit.
+
+**Acceptance**
+
+- Every item fixed has a clean-machine reproduction or concrete safety impact.
+- Cosmetic polish, speculative architecture work, and V3 internals remain deferred.
+- The final candidate diff contains no unrelated refactor.
+
+## Final go/no-go sequence
+
+1. Freeze the candidate `dev` SHA and stop unrelated changes.
+2. P0 Git identity preservation is verified for dedicated commit helpers and worktree integration; generic Bash remains a separately permissioned shell surface. No contributor-identity substitution, history checker, or history rewrite is required by this cleanup.
+3. Candidate build cannot publish; stable publication remains gated.
+4. P1 harmful-default invariants and repository gates pass.
+5. Candidate archive is built, checksummed, extracted, installed, started, updated/failure-tested, and uninstalled on a clean supported Linux machine.
+6. P2 dead-code/forgotten-end work is either merged in bounded PRs or explicitly deferred as non-blocking.
+7. Open the single reviewed `dev -> main` promotion PR.
+8. Publish only after the exact PR head's evidence is reviewed.
+
+## False positives and non-blockers
+
+- `swarm@swarmagent.dev` is this project's own identity and public security contact. Its use in this repository's commits or `CONTRIBUTING.md:11` is not evidence that Swarm injects it into end-user repositories and is not, by itself, a cleanup target.
+- The `github-actions[bot]` identity in `.github/workflows/build-main.yml:81-83` is configured in the CI checkout for annotated release tags, not ordinary end-user source commits; retain only if the reviewed release policy allows it.
+- `.bin/deadcode` and `.tmp/prelaunch-deadcode-*.txt` are ignored local investigation artifacts and must not be committed.
+- Deadcode reports under V3 are intentionally not tasks here.
+- A TODO/FIXME marker alone is not a launch blocker.
+
+## Relevant filepaths
+
+- `.github/workflows/build-main.yml`
+- `.github/workflows/guard-main-pr-source.yml`
+- `CONTRIBUTING.md`
+- `scripts/check-precommit.sh`
+- `scripts/check-prepush.sh`
+- `scripts/check-launch-readiness.sh`
+- `scripts/build-main-dist.sh`
+- `scripts/resolve-release-version.sh`
+- `install.sh`
+- `cmd/swarmsetup/main.go`
+- `internal/launcher/launcher.go`
+- `internal/launcher/service_lifecycle.go`
+- `internal/launcher/system_paths.go`
+- `internal/launcher/update.go`
+- `pkg/startupconfig/config.go`
+- `swarmd/internal/api/git_commit.go`
+- `swarmd/internal/tool/runtime.go`
+- `swarmd/internal/tool/runtime_manage_sessions_commit.go`
+- `swarmd/internal/api/git_commit_test.go`
+- `swarmd/internal/tool/runtime_git_test.go`
+- `swarmd/internal/tool/runtime_manage_sessions_commit_test.go`
+- `swarmd/internal/api/sessions_v3_review_commits.go`
+- `swarmd/internal/worktree/service.go`
+- `swarmd/internal/worktree/service_test.go`
+- `swarmd/internal/config/config.go`
+- `swarmd/internal/runtime/daemon.go`
+- `swarmd/internal/permission/service.go`
+- `docs/main-deploy-checklist.md`
