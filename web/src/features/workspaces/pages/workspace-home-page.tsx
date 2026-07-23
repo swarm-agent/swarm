@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type DragEvent, type ReactNode } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ArrowUp, Check, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, GripVertical, Grid2X2, Home, MoreHorizontal, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
+import { ArrowUp, Check, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, GripVertical, Home, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
 import { Button } from '../../../components/ui/button'
 import { Badge } from '../../../components/ui/badge'
@@ -145,18 +145,16 @@ function WorkspaceGlyph({ active = false }: { active?: boolean }) {
 
 interface PinnedWorkspaceCardProps {
   workspace: WorkspaceEntry
-  position: number
   current: boolean
   busy: boolean
   dragging: boolean
   onOpen: (path: string) => void
   onEdit: (path: string) => void
-  onDelete: (path: string) => void
   onSwapWith: (sourcePath: string, targetPath: string) => void
   onDraggingChange: (path: string | null) => void
 }
 
-function PinnedWorkspaceCard({ workspace, position, current, busy, dragging, onOpen, onEdit, onDelete, onSwapWith, onDraggingChange }: PinnedWorkspaceCardProps) {
+function PinnedWorkspaceCard({ workspace, current, busy, dragging, onOpen, onEdit, onSwapWith, onDraggingChange }: PinnedWorkspaceCardProps) {
   const handleDragStart = (event: DragEvent<HTMLButtonElement>) => {
     event.dataTransfer.effectAllowed = 'move'
     event.dataTransfer.setData('text/workspace-path', workspace.path)
@@ -178,7 +176,7 @@ function PinnedWorkspaceCard({ workspace, position, current, busy, dragging, onO
   return (
     <div
       className={cn(
-        'group grid min-w-0 grid-cols-[auto_auto_auto_minmax(0,1fr)_auto] items-center gap-4 rounded-2xl border px-4 py-4 text-left transition-all',
+        'group grid min-w-0 grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-4 rounded-2xl border px-4 py-4 text-left transition-all',
         current
           ? 'border-[color-mix(in_oklab,var(--app-border-accent)_72%,var(--app-border))] bg-[color-mix(in_oklab,var(--app-primary)_8%,var(--app-surface))] shadow-[0_0_0_1px_color-mix(in_oklab,var(--app-border-accent)_28%,transparent)]'
           : 'border-[color-mix(in_oklab,var(--app-border)_62%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_74%,transparent)] hover:border-[color-mix(in_oklab,var(--app-border-accent)_55%,var(--app-border))] hover:bg-[var(--app-surface-hover)]',
@@ -188,9 +186,6 @@ function PinnedWorkspaceCard({ workspace, position, current, busy, dragging, onO
       onDrop={handleDrop}
       onDragEnd={() => onDraggingChange(null)}
     >
-      <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-[color-mix(in_oklab,var(--app-border)_58%,transparent)] bg-[var(--app-surface-subtle)] font-mono text-[11px] font-semibold tabular-nums text-[var(--app-text-muted)]" title={`Pinned position ${position}`}>
-        {String(position).padStart(2, '0')}
-      </div>
       <button
         type="button"
         draggable={!busy}
@@ -222,25 +217,15 @@ function PinnedWorkspaceCard({ workspace, position, current, busy, dragging, onO
 
         </div>
       </button>
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-2">
         <button
           type="button"
-          className="rounded-md p-1.5 text-[var(--app-text-subtle)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-50"
+          className="rounded-lg border border-[color-mix(in_oklab,var(--app-border)_70%,transparent)] px-3 py-1.5 text-xs font-medium text-[var(--app-text-muted)] transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-50"
           onClick={() => onEdit(workspace.path)}
           disabled={busy}
           aria-label={`Edit ${workspace.workspaceName}`}
-          title="Edit workspace"
         >
-          <MoreHorizontal size={16} />
-        </button>
-        <button
-          type="button"
-          className="rounded-md p-1.5 text-[var(--app-text-subtle)] transition-colors hover:bg-[color-mix(in_oklab,var(--app-danger)_10%,transparent)] hover:text-[var(--app-danger)] disabled:opacity-50"
-          onClick={() => onDelete(workspace.path)}
-          disabled={busy}
-          aria-label={`Remove ${workspace.workspaceName}`}
-        >
-          <span className="text-sm leading-none">×</span>
+          Edit
         </button>
         <ChevronRight size={16} className="text-[var(--app-text-subtle)] transition-transform group-hover:translate-x-0.5" />
       </div>
@@ -841,9 +826,21 @@ export function WorkspaceHomePage() {
     if (!deleteTargetPath) {
       return
     }
+    const deletingPath = deleteTargetPath
+    const deletingIndex = workspaces.findIndex((workspace) => workspace.path === deletingPath)
+    const nextEditableWorkspace = workspaces[deletingIndex + 1] ?? workspaces[deletingIndex - 1] ?? null
+    const deletingEditedWorkspace = modalState?.mode === 'edit' && modalState.workspacePath === deletingPath
+
     void (async () => {
-      await deleteWorkspace(deleteTargetPath)
+      await deleteWorkspace(deletingPath)
       setDeleteTargetPath(null)
+      if (deletingEditedWorkspace) {
+        if (nextEditableWorkspace) {
+          startEdit(nextEditableWorkspace.path)
+        } else {
+          closeModal()
+        }
+      }
     })()
   }
 
@@ -923,15 +920,6 @@ export function WorkspaceHomePage() {
                 >
                   <Folder size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                   <span className="min-w-0 truncate">Workspaces</span>
-                </Link>
-                <Link
-                  to="/tools"
-                  className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
-                  aria-label="Open tools"
-                  title="Tools"
-                >
-                  <Grid2X2 size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                  <span className="min-w-0 truncate">Tools</span>
                 </Link>
                 <Link
                   to="/settings"
@@ -1023,17 +1011,15 @@ export function WorkspaceHomePage() {
                     <WorkspaceStatus kind="empty" title="No saved workspaces" message="Browse a folder in Explorer and add it as your first workspace." />
                   ) : (
                     <div className="grid gap-3">
-                      {workspaces.map((workspace, index) => (
+                      {workspaces.map((workspace) => (
                         <PinnedWorkspaceCard
                           key={workspace.path}
                           workspace={workspace}
-                          position={index + 1}
                           current={currentWorkspacePath === workspace.path || workspace.active}
                           busy={selectingPath === workspace.path || savingPath === workspace.path}
                           dragging={draggingWorkspacePath === workspace.path}
                           onOpen={handleOpenWorkspace}
                           onEdit={startEdit}
-                          onDelete={setDeleteTargetPath}
                           onSwapWith={(sourcePath, targetPath) => void swapWorkspacePositions(sourcePath, targetPath)}
                           onDraggingChange={setDraggingWorkspacePath}
                         />
@@ -1163,6 +1149,8 @@ export function WorkspaceHomePage() {
         onMoveWorkspaceToIndex={(path, index) => {
           void moveWorkspaceToIndex(path, index)
         }}
+        onDeleteWorkspace={setDeleteTargetPath}
+        deletingWorkspacePath={savingPath}
         onAddLinkedDirectory={addLinkedDirectory}
         onAddLinkedDirectories={addLinkedDirectories}
         onRemoveLinkedDirectory={removeLinkedDirectory}

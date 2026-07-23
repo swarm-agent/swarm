@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { ArrowUp, Check, ChevronDown, ChevronRight, Folder, FolderPlus, Home, RefreshCw, Search } from 'lucide-react'
+import { ArrowUp, Check, ChevronDown, ChevronRight, Folder, FolderPlus, Home, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { Card } from '../../../../components/ui/card'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -43,6 +43,8 @@ interface WorkspaceEditorModalProps {
   onCreateFolder?: (parentPath: string, name: string) => Promise<string>
   onSelectWorkspace?: (path: string) => void
   onMoveWorkspaceToIndex?: (path: string, index: number) => void
+  onDeleteWorkspace?: (path: string) => void
+  deletingWorkspacePath?: string | null
   onAddLinkedDirectory: (path: string) => void
   onAddLinkedDirectories?: (paths: string[]) => void
   onRemoveLinkedDirectory: (path: string) => void
@@ -134,6 +136,8 @@ export function WorkspaceEditorModal({
   onCreateFolder,
   onSelectWorkspace,
   onMoveWorkspaceToIndex,
+  onDeleteWorkspace,
+  deletingWorkspacePath = null,
   onAddLinkedDirectory,
   onAddLinkedDirectories,
   onRemoveLinkedDirectory,
@@ -474,14 +478,13 @@ export function WorkspaceEditorModal({
                     ) : null}
                   </div>
                   <div className="flex gap-2 overflow-x-auto pb-1" aria-label="Workspace switcher">
-                    {workspaces.map((workspace, index) => {
+                    {workspaces.map((workspace) => {
                       const selected = workspace.path === workspacePath
+                      const deleting = deletingWorkspacePath === workspace.path
                       return (
-                        <button
+                        <div
                           key={workspace.path}
-                          type="button"
-                          onClick={() => onSelectWorkspace(workspace.path)}
-                          draggable={Boolean(onMoveWorkspaceToIndex)}
+                          draggable={Boolean(onMoveWorkspaceToIndex) && !deleting}
                           onDragStart={(event) => {
                             if (!onMoveWorkspaceToIndex) {
                               return
@@ -519,14 +522,18 @@ export function WorkspaceEditorModal({
                               : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:text-[var(--app-text)]',
                             draggingWorkspacePath === workspace.path && 'scale-[1.01] opacity-70 shadow-[var(--shadow-card)]',
                           )}
-                          aria-pressed={selected}
                         >
-                          <span className="text-xs font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
-                            {index + 1}
-                          </span>
-                          <span className="truncate text-sm font-semibold">{workspace.workspaceName}</span>
-                          <span className="truncate text-xs">{formatWorkspacePath(workspace.path)}</span>
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => onSelectWorkspace(workspace.path)}
+                            disabled={deleting}
+                            className="grid w-full min-w-0 gap-1 text-left disabled:opacity-50"
+                            aria-pressed={selected}
+                          >
+                            <span className="truncate text-sm font-semibold">{workspace.workspaceName}</span>
+                            <span className="truncate text-xs">{formatWorkspacePath(workspace.path)}</span>
+                          </button>
+                        </div>
                       )
                     })}
                   </div>
@@ -627,6 +634,21 @@ export function WorkspaceEditorModal({
                   </div>
                 </div>
               </section>
+
+              {mode === 'edit' && onDeleteWorkspace ? (
+                <div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => onDeleteWorkspace(workspacePath)}
+                    disabled={deletingWorkspacePath === workspacePath}
+                    className="border-[var(--app-danger-border)] text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)]"
+                  >
+                    {deletingWorkspacePath === workspacePath ? <RefreshCw size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                    {deletingWorkspacePath === workspacePath ? 'Deleting…' : 'Delete workspace'}
+                  </Button>
+                </div>
+              ) : null}
 
             </div>
           </div>
