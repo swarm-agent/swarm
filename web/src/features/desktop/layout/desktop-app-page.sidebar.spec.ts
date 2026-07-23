@@ -85,6 +85,39 @@ test('plan Git commit form submits on Enter through the shared commit handler an
   assert.equal((modalSource.match(/commitWorkspaceChanges/g) ?? []).length, 0)
 })
 
+test('main sidebar collapse becomes focus mode without touching the plan sidebar implementation', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const layoutStart = source.indexOf('data-testid="desktop-workspace-sidebar"')
+  const layoutEnd = source.indexOf('<DesktopV3ExistingConversationPane', layoutStart)
+  const layoutSource = source.slice(layoutStart, layoutEnd)
+
+  assert.ok(layoutStart >= 0 && layoutEnd > layoutStart)
+  const focusSidebarStart = source.indexOf('const focusedSidebarContent =')
+  const focusSidebarEnd = source.indexOf('const sidebarContent =', focusSidebarStart)
+  const focusSidebarSource = source.slice(focusSidebarStart, focusSidebarEnd)
+
+  assert.match(source, /data-testid="desktop-focus-session-navigator"/)
+  assert.match(source, /aria-label="Focus mode sessions"/)
+  assert.match(source, /Needs Review[\s\S]*In Progress[\s\S]*Active Chats/)
+  assert.match(source, /checked=\{showActiveChats\}/)
+  assert.match(source, /onClick=\{\(\) => \{ onSelect\(node\.session\.id\) \}\}/)
+  assert.ok(focusSidebarStart >= 0 && focusSidebarEnd > focusSidebarStart)
+  assert.match(focusSidebarSource, /data-testid="desktop-focus-sidebar-controls"/)
+  assert.match(focusSidebarSource, /Expand sidebar to full width/)
+  assert.match(focusSidebarSource, /Back to launcher/)
+  assert.doesNotMatch(focusSidebarSource, /renderSidebarSessionGroups|globalFlattenedSessionNodes|aria-label="Sessions"|Open \$\{label\}|<Bot/)
+  assert.match(layoutSource, /focusMode \? 'sm:w-\[56px\]' : 'sm:w-\[320px\]'/)
+  assert.match(layoutSource, /onClick=\{\(\) => setSidebarDisplayMode\('focus'\)\}[\s\S]*aria-label="Enter focus mode"/)
+  assert.match(layoutSource, /onExit=\{\(\) => setSidebarDisplayMode\('full'\)\}/)
+  assert.match(layoutSource, /\{focusMode \? focusedSidebarContent : sidebarContent\}/)
+  assert.doesNotMatch(layoutSource, /sm:w-\[240px\]|setSidebarDisplayMode\('compact'\)|Use thin sidebar|title="Thin"/)
+
+  const planPane = await readFile(new URL('../chat/components/desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8')
+  assert.match(planPane, /loadDesktopSidebarDisplayMode/)
+  assert.match(planPane, /effectiveDesktopSidebarDisplayMode/)
+  assert.doesNotMatch(planPane, /main-sidebar-focus-state|FocusSessionNavigator/)
+})
+
 test('sidebar keeps review controls first and opens session-independent main-worktree Git details', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const rendererStart = source.indexOf('function renderSidebarSessionGroups')

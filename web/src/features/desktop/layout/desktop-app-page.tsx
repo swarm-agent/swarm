@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, ListChecks, LoaderCircle, Menu, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Eye, Folder, GitBranch, Keyboard, ListChecks, LoaderCircle, Menu, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -77,10 +77,12 @@ import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortc
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { buildReviewWorktreeFixPrompt, resolveReviewWorktreeRepairAgent, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
 import {
-  loadDesktopSidebarDisplayMode,
-  saveDesktopSidebarDisplayMode,
-  type DesktopSidebarDisplayMode,
-} from '../chat/components/desktop-sidebar-display'
+  loadDesktopFocusActiveChatsVisible,
+  loadDesktopMainSidebarMode,
+  saveDesktopFocusActiveChatsVisible,
+  saveDesktopMainSidebarMode,
+  type DesktopMainSidebarMode,
+} from './main-sidebar-focus-state'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
@@ -2423,6 +2425,147 @@ export const SIDEBAR_SESSION_GROUPS = [
   { id: 'active_chats', label: 'Active Chats', showInactiveThreshold: true },
 ] as const satisfies ReadonlyArray<{ id: SidebarSessionGroupID; label: string; showInactiveThreshold: boolean }>
 
+interface FocusSessionNavigatorProps {
+  nodes: SidebarSessionNode[]
+  routeSessionId: string
+  showActiveChats: boolean
+  onShowActiveChatsChange: (visible: boolean) => void
+  onExit: () => void
+  onSelect: (sessionId: string) => void | boolean
+  onPrefetch: (sessionId: string) => void
+}
+
+const FOCUS_SESSION_GROUPS = [
+  { id: 'needs_review', label: 'Needs Review', dotClass: 'bg-[var(--app-warning)]' },
+  { id: 'in_progress', label: 'In Progress', dotClass: 'bg-[var(--app-primary)]' },
+  { id: 'active_chats', label: 'Active Chats', dotClass: 'bg-[var(--app-success)]' },
+] as const satisfies ReadonlyArray<{ id: SidebarSessionGroupID; label: string; dotClass: string }>
+
+function focusSessionGroups(nodes: SidebarSessionNode[]): Map<SidebarSessionGroupID, SidebarSessionNode[]> {
+  const grouped = new Map<SidebarSessionGroupID, SidebarSessionNode[]>()
+  let currentRootGroup: SidebarSessionGroupID | null = null
+  for (const node of nodes) {
+    if (node.depth === 0 || !currentRootGroup) currentRootGroup = sessionSidebarDisplayGroup(node.session)
+    const groupNodes = grouped.get(currentRootGroup) ?? []
+    groupNodes.push(node)
+    grouped.set(currentRootGroup, groupNodes)
+  }
+  return grouped
+}
+
+function FocusSessionNavigator({
+  nodes,
+  routeSessionId,
+  showActiveChats,
+  onShowActiveChatsChange,
+  onExit,
+  onSelect,
+  onPrefetch,
+}: FocusSessionNavigatorProps) {
+  const grouped = focusSessionGroups(nodes)
+  const visibleGroups = FOCUS_SESSION_GROUPS.filter((group) => group.id !== 'active_chats' || showActiveChats)
+  const currentSession = nodes.find((node) => node.session.id === routeSessionId)?.session ?? null
+
+  return (
+    <nav
+      data-testid="desktop-focus-session-navigator"
+      aria-label="Focus mode sessions"
+      className="hidden h-[46px] shrink-0 items-center gap-1 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-2 shadow-sm sm:flex"
+    >
+      <button
+        type="button"
+        className="mr-1 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-2.5 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"
+        onClick={onExit}
+        aria-label="Exit focus mode and show sidebar"
+        title="Show sidebar"
+      >
+        <Eye size={14} className="text-[var(--app-primary)]" aria-hidden="true" />
+        <span>Focus</span>
+      </button>
+
+      <div className="flex min-w-0 flex-1 items-center gap-1">
+        {visibleGroups.map((group) => {
+          const groupNodes = grouped.get(group.id) ?? []
+          const rootCount = groupNodes.filter((node) => node.depth === 0).length
+          const groupHasCurrentSession = groupNodes.some((node) => node.session.id === routeSessionId)
+          return (
+            <details key={group.id} className="group/focus relative shrink-0">
+              <summary
+                className={cn(
+                  'flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] [&::-webkit-details-marker]:hidden',
+                  groupHasCurrentSession && 'bg-[var(--app-selection-bg)] text-[var(--app-primary)]',
+                )}
+              >
+                <span className={cn('size-1.5 shrink-0 rounded-full', group.dotClass)} aria-hidden="true" />
+                <span>{group.label}</span>
+                <span className="rounded-full bg-[var(--app-surface-subtle)] px-1.5 text-[9px] tabular-nums text-[var(--app-text-subtle)]">{rootCount}</span>
+                <ChevronDown size={12} className="transition-transform group-open/focus:rotate-180" aria-hidden="true" />
+              </summary>
+              <div className="absolute left-0 top-[calc(100%+6px)] z-40 w-[min(340px,calc(100vw-2rem))] overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1.5 shadow-2xl">
+                <div className="max-h-[min(420px,65vh)] overflow-y-auto">
+                  {groupNodes.length > 0 ? groupNodes.map((node) => {
+                    const label = node.assignmentLabel || node.session.title || 'Conversation'
+                    return (
+                      <button
+                        key={node.session.id}
+                        type="button"
+                        className={cn(
+                          'flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-[var(--app-surface-hover)]',
+                          node.session.id === routeSessionId && 'bg-[var(--app-selection-bg)]',
+                        )}
+                        style={{ paddingLeft: `${8 + Math.min(node.depth, 3) * 12}px` }}
+                        onMouseEnter={() => onPrefetch(node.session.id)}
+                        onFocus={() => onPrefetch(node.session.id)}
+                        onClick={() => { onSelect(node.session.id) }}
+                      >
+                        <span className={cn('size-2 shrink-0 rounded-full', sessionStatusTone(node.session) === 'error' ? 'bg-[var(--app-error)]' : sessionIsActive(node.session) ? 'animate-pulse bg-[var(--app-primary)]' : 'bg-[var(--app-text-subtle)]')} aria-hidden="true" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-xs font-medium text-[var(--app-text)]">{label}</span>
+                          <span className="block truncate text-[10px] text-[var(--app-text-subtle)]">{sessionRowMetadataLabel(node.session)}</span>
+                        </span>
+                        {node.session.id === routeSessionId ? <Check size={13} className="shrink-0 text-[var(--app-primary)]" aria-label="Current session" /> : null}
+                      </button>
+                    )
+                  }) : (
+                    <div className="px-3 py-5 text-center text-xs text-[var(--app-text-subtle)]">Nothing here right now.</div>
+                  )}
+                </div>
+              </div>
+            </details>
+          )
+        })}
+      </div>
+
+      {currentSession ? (
+        <div className="hidden min-w-0 max-w-[26vw] items-center gap-1.5 border-l border-[var(--app-border)] pl-3 text-[10px] text-[var(--app-text-subtle)] lg:flex" title={currentSession.title || 'Conversation'}>
+          <span className="shrink-0">Focused on</span>
+          <span className="truncate font-medium text-[var(--app-text)]">{currentSession.title || 'Conversation'}</span>
+        </div>
+      ) : null}
+
+      <details className="group/focus-settings relative shrink-0">
+        <summary className="grid size-8 cursor-pointer list-none place-items-center rounded-lg text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] [&::-webkit-details-marker]:hidden" aria-label="Focus mode options" title="Focus mode options">
+          <MoreVertical size={16} aria-hidden="true" />
+        </summary>
+        <div className="absolute right-0 top-[calc(100%+6px)] z-40 w-56 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2 shadow-2xl">
+          <label className="flex cursor-pointer items-start gap-2 rounded-lg p-2 hover:bg-[var(--app-surface-hover)]">
+            <input
+              type="checkbox"
+              className="mt-0.5 accent-[var(--app-primary)]"
+              checked={showActiveChats}
+              onChange={(event) => onShowActiveChatsChange(event.target.checked)}
+            />
+            <span className="min-w-0">
+              <span className="block text-xs font-medium text-[var(--app-text)]">Show Active Chats</span>
+              <span className="mt-0.5 block text-[10px] leading-4 text-[var(--app-text-subtle)]">Keep routine chats tucked away unless you need them.</span>
+            </span>
+          </label>
+        </div>
+      </details>
+    </nav>
+  )
+}
+
 function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX.Element[] | null {
   if (input.nodes.length === 0) return null
   const grouped = new Map<SidebarSessionGroupID, SidebarSessionNode[]>()
@@ -2570,11 +2713,16 @@ export function DesktopAppPage() {
   const routeSessionId = mobileCreationPage ? '' : (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, currentWorkspacePath, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
-  const [sidebarDisplayMode, setSidebarDisplayModeState] = useState<DesktopSidebarDisplayMode>(() => loadDesktopSidebarDisplayMode())
-  const sidebarCollapsed = sidebarDisplayMode === 'thin'
-  const setSidebarDisplayMode = useCallback((mode: DesktopSidebarDisplayMode) => {
+  const [sidebarDisplayMode, setSidebarDisplayModeState] = useState<DesktopMainSidebarMode>(() => loadDesktopMainSidebarMode())
+  const focusMode = sidebarDisplayMode === 'focus'
+  const [focusActiveChatsVisible, setFocusActiveChatsVisibleState] = useState(() => loadDesktopFocusActiveChatsVisible())
+  const setSidebarDisplayMode = useCallback((mode: DesktopMainSidebarMode) => {
     setSidebarDisplayModeState(mode)
-    saveDesktopSidebarDisplayMode(mode)
+    saveDesktopMainSidebarMode(mode)
+  }, [])
+  const setFocusActiveChatsVisible = useCallback((visible: boolean) => {
+    setFocusActiveChatsVisibleState(visible)
+    saveDesktopFocusActiveChatsVisible(visible)
   }, [])
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [mobilePreviousSessionsOpen, setMobilePreviousSessionsOpen] = useState(false)
@@ -4502,44 +4650,32 @@ export function DesktopAppPage() {
     </section>
   ) : null
 
+  const focusedSidebarContent = (
+    <div className="flex h-full flex-col items-center gap-1 py-3" data-testid="desktop-focus-sidebar-controls">
+      <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => setSidebarDisplayMode('full')} aria-label="Expand sidebar to full width" title="Full-width sidebar">
+        <ChevronRight size={28} className="shrink-0" />
+      </Button>
+      <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => void navigate({ to: '/' })} aria-label="Back to launcher">
+        <Folder size={24} className="shrink-0" />
+      </Button>
+      {notificationAttentionVisible ? (
+        <Button variant="ghost" className={cn('relative h-12 w-12 min-w-12 p-0', notificationUnreadCount > 0 && 'text-[var(--app-primary)]')} onClick={handleOpenNotifications} aria-label="Open notifications" title={notificationUnreadCount > 0 ? `${notificationUnreadCount} unread notification${notificationUnreadCount === 1 ? '' : 's'}` : 'Notifications'}>
+          <Bell size={24} className="shrink-0" />
+          {notificationUnreadCount > 0 ? <span aria-hidden="true" className="absolute right-2 top-2 grid h-4 min-w-4 place-items-center rounded-full bg-[var(--app-primary)] px-1 text-[9px] font-semibold text-[var(--app-primary-text)]">{notificationUnreadCount > 99 ? '99+' : notificationUnreadCount}</span> : null}
+        </Button>
+      ) : null}
+      {updateAttentionVisible ? (
+        <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label={updateActionLabel} title={updateActionTitle} disabled={updateRunning || !updateActionEnabled}>
+          <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse', updateActionEnabled && 'text-[var(--app-primary)]', updateError && 'text-[var(--app-error)]')} />
+          {updateActionEnabled ? <span aria-hidden="true" className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_10px_var(--app-primary)]" /> : null}
+        </Button>
+      ) : null}
+    </div>
+  )
+
   const sidebarContent = (
     <>
-      {sidebarCollapsed ? (
-        <div className="flex h-full flex-col items-center gap-1 py-3">
-          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => setSidebarDisplayMode('compact')} aria-label="Expand sidebar to compact mode" title="Compact sidebar">
-            <ChevronRight size={28} className="shrink-0" />
-          </Button>
-          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => void navigate({ to: '/' })} aria-label="Back to launcher">
-            <Folder size={24} className="shrink-0" />
-          </Button>
-          {notificationAttentionVisible ? (
-            <Button variant="ghost" className={cn('relative h-12 w-12 min-w-12 p-0', notificationUnreadCount > 0 && 'text-[var(--app-primary)]')} onClick={handleOpenNotifications} aria-label="Open notifications" title={notificationUnreadCount > 0 ? `${notificationUnreadCount} unread notification${notificationUnreadCount === 1 ? '' : 's'}` : 'Notifications'}>
-              <Bell size={24} className="shrink-0" />
-              {notificationUnreadCount > 0 ? <span aria-hidden="true" className="absolute right-2 top-2 grid h-4 min-w-4 place-items-center rounded-full bg-[var(--app-primary)] px-1 text-[9px] font-semibold text-[var(--app-primary-text)]">{notificationUnreadCount > 99 ? '99+' : notificationUnreadCount}</span> : null}
-            </Button>
-          ) : null}
-          {updateAttentionVisible ? (
-            <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label={updateActionLabel} title={updateActionTitle} disabled={updateRunning || !updateActionEnabled}>
-              <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse', updateActionEnabled && 'text-[var(--app-primary)]', updateError && 'text-[var(--app-error)]')} />
-              {updateActionEnabled ? <span aria-hidden="true" className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_10px_var(--app-primary)]" /> : null}
-            </Button>
-          ) : null}
-          <div className="mt-1 grid min-h-0 flex-1 content-start gap-1 overflow-y-auto border-t border-[var(--app-border)] pt-2" aria-label="Sessions">
-            {globalFlattenedSessionNodes.map((node) => {
-              const selected = routeSessionId === node.session.id
-              const pending = sessionHasPendingPermission(node.session)
-              const running = sessionHasCanonicalActiveRun(node.session)
-              const failed = sessionStatusTone(node.session) === 'error'
-              const label = node.assignmentLabel || node.session.title || 'Conversation'
-              return <button key={node.session.id} type="button" className={cn('relative grid h-11 w-11 place-items-center rounded-lg text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]', selected && 'bg-[var(--app-selection-bg)] text-[var(--app-primary)]')} onClick={() => { handleSelectSession(node.session.id) }} aria-label={`Open ${label}`} title={label}>
-                <Bot size={20} aria-hidden="true" />
-                {pending || running || failed ? <span aria-hidden="true" className={cn('absolute right-1.5 top-1.5 size-2 rounded-full', pending ? 'bg-[var(--app-warning)]' : failed ? 'bg-[var(--app-error)]' : 'animate-pulse bg-[var(--app-primary)]')} /> : null}
-              </button>
-            })}
-          </div>
-        </div>
-      ) : (
-        <div className="flex h-full flex-col min-h-0">
+      <div className="flex h-full flex-col min-h-0">
           <div className="font-mono">
             <div className="grid h-[60px] items-center border-b border-[var(--app-border)] bg-[var(--app-surface)] pl-[13px] pr-0">
                 <div className={headerActionRowClass}>
@@ -4589,9 +4725,9 @@ export function DesktopAppPage() {
                       <button
                         type="button"
                         className="min-w-0 truncate rounded-md text-left text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)] hover:text-[var(--app-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
-                        onClick={sidebarDisplayMode === 'compact' ? () => setSidebarDisplayMode('full') : handleStartSidebarSwarmNameEdit}
-                        aria-label={sidebarDisplayMode === 'compact' ? 'Expand sidebar to full mode' : 'Edit swarm name'}
-                        title={sidebarDisplayMode === 'compact' ? 'Full sidebar' : 'Click to rename swarm'}
+                        onClick={handleStartSidebarSwarmNameEdit}
+                        aria-label="Edit swarm name"
+                        title="Click to rename swarm"
                       >
                         {swarmName}
                       </button>
@@ -4643,11 +4779,11 @@ export function DesktopAppPage() {
                     <button
                       type="button"
                       className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-text-subtle)]')}
-                      onClick={() => setSidebarDisplayMode(sidebarDisplayMode === 'full' ? 'compact' : 'thin')}
-                      aria-label={sidebarDisplayMode === 'full' ? 'Compact sidebar' : 'Use thin sidebar'}
-                      title={sidebarDisplayMode === 'full' ? 'Compact' : 'Thin'}
+                      onClick={() => setSidebarDisplayMode('focus')}
+                      aria-label="Enter focus mode"
+                      title="Focus mode"
                     >
-                      {sidebarDisplayMode === 'full' ? <ChevronLeft size={14} strokeWidth={1.8} className="shrink-0" /> : <ChevronRight size={14} strokeWidth={1.8} className="shrink-0 rotate-180" />}
+                      <Eye size={14} strokeWidth={1.8} className="shrink-0" />
                     </button>
                   </SidebarActionRail>
                 </div>
@@ -4862,7 +4998,6 @@ export function DesktopAppPage() {
 
           </div>
         </div>
-      )}
     </>
   )
 
@@ -4885,10 +5020,10 @@ export function DesktopAppPage() {
         data-sidebar-display-mode={sidebarDisplayMode}
         className={cn(
           'hidden shrink-0 flex-col overflow-hidden border-r border-[var(--app-border)] bg-[var(--app-surface)] transition-[width] sm:flex',
-          sidebarDisplayMode === 'thin' ? 'sm:w-[56px]' : sidebarDisplayMode === 'compact' ? 'sm:w-[240px]' : 'sm:w-[320px]',
+          focusMode ? 'sm:w-[56px]' : 'sm:w-[320px]',
         )}
       >
-        {sidebarContent}
+        {focusMode ? focusedSidebarContent : sidebarContent}
       </aside>
       {mobileSidebarOpen ? (
         <div className="absolute inset-0 z-40 flex sm:hidden pt-[var(--app-safe-area-top)] pr-[var(--app-safe-area-right)] pb-[var(--app-safe-area-bottom)] pl-[var(--app-safe-area-left)]" aria-modal="true" role="dialog">
@@ -4919,6 +5054,17 @@ export function DesktopAppPage() {
       ) : null}
 
       <main className="flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden sm:pr-[var(--app-safe-area-right)] sm:pl-[var(--app-safe-area-left)]">
+        {focusMode ? (
+          <FocusSessionNavigator
+            nodes={globalFlattenedSessionNodes}
+            routeSessionId={routeSessionId}
+            showActiveChats={focusActiveChatsVisible}
+            onShowActiveChatsChange={setFocusActiveChatsVisible}
+            onExit={() => setSidebarDisplayMode('full')}
+            onSelect={handleSelectSession}
+            onPrefetch={handlePrefetchSession}
+          />
+        ) : null}
         {mobileCreationPage === 'task' && routeWorkspace ? (
           <BackgroundTaskForm
             presentation="page"
