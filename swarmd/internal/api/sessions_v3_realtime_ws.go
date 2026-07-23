@@ -17,6 +17,8 @@ import (
 
 const v3RealtimeReplayLimit = 500
 
+const v3RealtimeLiveFlushInterval = 8 * time.Millisecond
+
 var v3RealtimeKeepaliveInterval = 15 * time.Second
 var v3RealtimeWriteTimeout = 5 * time.Second
 
@@ -169,6 +171,39 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 
 	ticker := time.NewTicker(v3RealtimeKeepaliveInterval)
 	defer ticker.Stop()
+	var liveFlushTimer *time.Timer
+	var liveFlushC <-chan time.Time
+	stopLiveFlushTimer := func() {
+		if liveFlushTimer == nil {
+			return
+		}
+		if !liveFlushTimer.Stop() {
+			select {
+			case <-liveFlushC:
+			default:
+			}
+		}
+		liveFlushTimer = nil
+		liveFlushC = nil
+	}
+	defer stopLiveFlushTimer()
+	scheduleLiveFlush := func() {
+		if liveFlushTimer != nil {
+			return
+		}
+		liveFlushTimer = time.NewTimer(v3RealtimeLiveFlushInterval)
+		liveFlushC = liveFlushTimer.C
+	}
+	flushLivePatches := func() bool {
+		stopLiveFlushTimer()
+		patches := liveSub.drain(v3LiveWriterMaxFramesPerTurn, v3LiveWriterMaxBytesPerTurn)
+		for _, patch := range patches {
+			if err := s.sendV3RealtimeLivePatch(conn, patch); err != nil {
+				return false
+			}
+		}
+		return true
+	}
 	for {
 		select {
 		case err := <-readErr:
@@ -297,6 +332,12 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 				lastKeepaliveSeq = advanced.EndpointSeq
 			}
 		case <-sub.send:
+			// A durable checkpoint or completion must not overtake live text that
+			// was already accepted from the provider. Flush that bounded batch
+			// before advancing the durable cursor.
+			if !flushLivePatches() {
+				return
+			}
 			advanced, ok := s.v3RealtimeCatchUpEndpointCursor(conn, principal, scope, lastEndpointSeq, lastEndpointSeq, subs, worksets, true)
 			if !ok {
 				return
@@ -305,11 +346,13 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 			s.syncV3LiveSubscriptionSessions(liveSub, principal, subs, livePatchAccepted)
 			lastEndpointSeq = advanced.EndpointSeq
 		case <-liveSub.notify:
-			patches := liveSub.drain(v3LiveWriterMaxFramesPerTurn, v3LiveWriterMaxBytesPerTurn)
-			for _, patch := range patches {
-				if err := s.sendV3RealtimeLivePatch(conn, patch); err != nil {
-					return
-				}
+			// Provider adapters may emit one callback per token. Give adjacent
+			// appends a short bounded window to coalesce by stream key instead of
+			// turning a 1000 TPS model into 1000 JSON encodes and socket writes.
+			scheduleLiveFlush()
+		case <-liveFlushC:
+			if !flushLivePatches() {
+				return
 			}
 		case slow := <-liveSub.slow:
 			_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSlowConsumer, ErrorCode: "slow_consumer", Reason: slow.Reason})

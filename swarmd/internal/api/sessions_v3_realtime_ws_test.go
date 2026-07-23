@@ -2073,6 +2073,54 @@ func TestV3RealtimeCapabilitySubscribeReceivesLivePatchAfterReplayComplete(t *te
 	}
 }
 
+func TestV3RealtimeLivePatchCoalescesThousandDeltaBurst(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server.v3LivePatchEnabled = true
+	created := createV3RealtimeTestSessionResult(t, server, "session-live-thousand-tps", "create-live-thousand-tps")
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+
+	_ = readV3RealtimeFrameIncludingHello(t, conn)
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq), Capabilities: []string{V3RealtimeCapabilityLivePatchV1}, Subscriptions: []V3RealtimeSubscriptionRequest{{SessionID: created.SessionID, SubscriptionID: "sub-live-thousand-tps"}}})
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.SessionID, 0)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.SessionID, created.Event.Seq)
+
+	const deltaCount = 1000
+	for i := 0; i < deltaCount; i++ {
+		seq := uint64(i + 1)
+		patch := v3RealtimeLivePatchForTest(created.SessionID, "run-thousand-tps", "stream-thousand-tps", i+1, "x")
+		patch.LiveSeqStart = seq
+		patch.LiveSeqEnd = seq
+		patch.OffsetStart = uint64(i)
+		patch.OffsetEnd = uint64(i + 1)
+		server.v3LiveHub.publish(testPrincipal().AccountScopeID, patch)
+	}
+
+	var text strings.Builder
+	frames := 0
+	var lastSeq, lastOffset uint64
+	for lastSeq < deltaCount {
+		live := readV3RealtimeLiveFrame(t, conn)
+		frames++
+		if live.Live.LiveSeqStart != lastSeq+1 || live.Live.OffsetStart != lastOffset {
+			t.Fatalf("live frame %d starts at seq=%d offset=%d, want seq=%d offset=%d", frames, live.Live.LiveSeqStart, live.Live.OffsetStart, lastSeq+1, lastOffset)
+		}
+		text.WriteString(live.Live.Text)
+		lastSeq = live.Live.LiveSeqEnd
+		lastOffset = live.Live.OffsetEnd
+	}
+	if frames > 16 {
+		t.Fatalf("1000 contiguous deltas used %d websocket frames, want at most 16", frames)
+	}
+	if got := text.String(); got != strings.Repeat("x", deltaCount) {
+		t.Fatalf("coalesced text length = %d, want %d", len(got), deltaCount)
+	}
+	if lastOffset != deltaCount {
+		t.Fatalf("coalesced offset = %d, want %d", lastOffset, deltaCount)
+	}
+}
+
 func TestV3RealtimeLiveAndDurableUseOneSocketWriter(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	server.v3LivePatchEnabled = true
@@ -2104,8 +2152,20 @@ func TestV3RealtimeLiveAndDurableUseOneSocketWriter(t *testing.T) {
 
 	server.v3LiveHub.publish(testPrincipal().AccountScopeID, v3RealtimeLivePatchForTest(created.SessionID, "run-1", "stream-1", 1, "x"))
 	appendV3RealtimeTestMessage(t, server, created.SessionID, "message-live-single-writer", "durable")
-	_ = readV3RealtimeAnyFrame(t, conn)
-	_ = readV3RealtimeAnyFrame(t, conn)
+	firstRaw := readV3RealtimeAnyFrame(t, conn)
+	secondRaw := readV3RealtimeAnyFrame(t, conn)
+	var first, second struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal([]byte(firstRaw), &first); err != nil {
+		t.Fatalf("decode first live/durable frame: %v", err)
+	}
+	if err := json.Unmarshal([]byte(secondRaw), &second); err != nil {
+		t.Fatalf("decode second live/durable frame: %v", err)
+	}
+	if first.Kind != V3RealtimeKindLivePatch || second.Kind != V3RealtimeKindEvent {
+		t.Fatalf("live/durable frame order = %q then %q, want %q then %q", first.Kind, second.Kind, V3RealtimeKindLivePatch, V3RealtimeKindEvent)
+	}
 	if completed.Load() < 2 {
 		t.Fatalf("completed writes = %d, want at least 2", completed.Load())
 	}
