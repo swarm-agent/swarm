@@ -6,6 +6,7 @@ const appPage = new URL('./desktop-app-page.tsx', import.meta.url)
 const router = new URL('../../../app/router.tsx', import.meta.url)
 const newSessionPane = new URL('../chat/components/desktop-v3-new-session-pane.tsx', import.meta.url)
 const chatHeader = new URL('../chat/components/desktop-v3-chat-header.tsx', import.meta.url)
+const reviewWorktreesModal = new URL('./review-worktrees-modal.tsx', import.meta.url)
 
 test('mobile workspace presents only Task and Worktree actions while desktop keeps New session', async () => {
   const source = await readFile(appPage, 'utf8')
@@ -36,6 +37,35 @@ test('mobile workspace exposes active sessions and keeps prior sessions collapse
   assert.match(source, />Active sessions<\/h2>/)
   assert.match(source, /aria-expanded=\{mobilePreviousSessionsOpen\}/)
   assert.match(source, /mobilePreviousSessionsOpen \? <div className="mt-2 grid gap-2">/)
+})
+
+test('mobile Active sessions Manage opens the review worktrees view outside the desktop sidebar', async () => {
+  const source = await readFile(appPage, 'utf8')
+  const mobileStart = source.indexOf('data-testid="mobile-workspace-home"')
+  const mobileEnd = source.indexOf('const handleWorkspaceSelect', mobileStart)
+  const mobile = source.slice(mobileStart, mobileEnd)
+  const mainEnd = source.indexOf('</main>')
+  const mountedReview = source.slice(mainEnd, source.indexOf('<DesktopQuickSettingsModal', mainEnd))
+
+  assert.ok(mobileStart >= 0 && mobileEnd > mobileStart)
+  assert.match(mobile, /aria-label="Review worktrees"/)
+  assert.match(mobile, /aria-expanded=\{needsReviewCleanupOpen\}/)
+  assert.match(mobile, /onClick=\{\(\) => setNeedsReviewCleanupOpen\(true\)\}/)
+  assert.match(mobile, /min-h-11 touch-manipulation[\s\S]*?Manage/)
+  assert.match(mountedReview, /needsReviewCleanupOpen \? <ReviewWorktreesModal/)
+  assert.doesNotMatch(source.slice(0, mainEnd), /needsReviewCleanupOpen \? <ReviewWorktreesModal/)
+})
+
+test('review worktrees is a full-height, safe-area-aware mobile view with touch targets', async () => {
+  const source = await readFile(reviewWorktreesModal, 'utf8')
+
+  assert.match(source, /data-mobile-review-worktrees/)
+  assert.match(source, /max-sm:h-\[100dvh\] max-sm:max-h-none max-sm:w-full max-sm:rounded-none max-sm:border-0/)
+  assert.match(source, /max-sm:pt-\[calc\(var\(--app-safe-area-top\)\+1rem\)\]/)
+  assert.match(source, /max-sm:pb-\[calc\(var\(--app-safe-area-bottom\)\+1rem\)\]/)
+  assert.match(source, /max-sm:grid max-sm:grid-cols-2/)
+  assert.match(source, /min-h-11 touch-manipulation/)
+  assert.match(source, /\[-webkit-overflow-scrolling:touch\]/)
 })
 
 test('mobile Task and Worktree buttons navigate to dedicated routes', async () => {

@@ -4422,9 +4422,20 @@ export function DesktopAppPage() {
       </section>
 
       <Card className="flex min-h-0 w-full flex-1 flex-col border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-sm">
-        <div className="mb-2 flex shrink-0 items-center justify-between px-1">
+        <div className="mb-2 flex min-h-11 shrink-0 items-center justify-between gap-3 px-1">
           <h2 className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Active sessions</h2>
-          <span className="text-xs tabular-nums text-[var(--app-text-muted)]">{mobileActiveSessionNodes.length}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs tabular-nums text-[var(--app-text-muted)]">{mobileActiveSessionNodes.length}</span>
+            <button
+              type="button"
+              className="min-h-11 touch-manipulation rounded-xl border border-[var(--app-border)] px-3 text-xs font-semibold text-[var(--app-text)] active:bg-[var(--app-surface-hover)]"
+              aria-label="Review worktrees"
+              aria-expanded={needsReviewCleanupOpen}
+              onClick={() => setNeedsReviewCleanupOpen(true)}
+            >
+              Manage
+            </button>
+          </div>
         </div>
         <div className="grid min-h-0 content-start gap-2 overflow-y-auto pr-1 [-webkit-overflow-scrolling:touch]">
           {renderMobileSessions(mobileActiveSessionNodes) ?? (
@@ -4808,7 +4819,6 @@ export function DesktopAppPage() {
                       <GitBranch size={13} strokeWidth={1.8} className="shrink-0" />
                     </button>
                   </div>
-                  {needsReviewCleanupOpen ? <ReviewWorktreesModal workspacePath={topWorkspacePath || undefined} onClose={() => setNeedsReviewCleanupOpen(false)} repairFixAvailable={reviewFixAvailable} onAskSwarmFix={handleAskSwarmToFixReviewIntegration} /> : null}
                   {renderSidebarSessionGroups({
                     nodes: globalFlattenedSessionNodes,
                     routeSessionId,
@@ -5051,6 +5061,8 @@ export function DesktopAppPage() {
           </div>
         )}
       </main>
+
+      {needsReviewCleanupOpen ? <ReviewWorktreesModal workspacePath={topWorkspacePath || undefined} onClose={() => setNeedsReviewCleanupOpen(false)} repairFixAvailable={reviewFixAvailable} onAskSwarmFix={handleAskSwarmToFixReviewIntegration} /> : null}
 
       <DesktopQuickSettingsModal
         tab={quickSettingsTab}
