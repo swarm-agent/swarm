@@ -119,6 +119,16 @@ type Service struct {
 	activeRuns                map[string]*activeSessionRun
 }
 
+func (s *Service) LongSessionSnapshot() map[string]any {
+	if s == nil {
+		return nil
+	}
+	s.lifecycleMu.Lock()
+	active := len(s.activeRuns)
+	s.lifecycleMu.Unlock()
+	return map[string]any{"active_runs": active, "run_counter": s.runCounter.Load()}
+}
+
 type SessionDeployCanonicalizeInput struct {
 	Principal          identity.Principal
 	WorkspacePath      string

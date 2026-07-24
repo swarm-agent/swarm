@@ -30,6 +30,21 @@ func newV3RealtimeOutboxHub() *v3RealtimeOutboxHub {
 	return &v3RealtimeOutboxHub{subs: make(map[string]*v3RealtimeOutboxSubscriber)}
 }
 
+func (h *v3RealtimeOutboxHub) diagnosticsSnapshot() map[string]any {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pending := 0
+	for _, sub := range h.subs {
+		if sub != nil {
+			pending += len(sub.send)
+		}
+	}
+	return map[string]any{"subscribers": len(h.subs), "pending_records": pending}
+}
+
 func (h *v3RealtimeOutboxHub) subscribe() *v3RealtimeOutboxSubscriber {
 	if h == nil {
 		return nil

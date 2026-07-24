@@ -135,3 +135,29 @@ go run ./cmd/swarmctl model catalog get --provider openrouter
 ```
 
 All non-health endpoints require attach auth via `X-Swarm-Token` (or `Authorization: Bearer <token>`).
+
+## Long-session diagnostics
+
+`long_session_diagnostics` is an opt-in, metadata-only recorder for investigating memory growth and UI lag during multi-hour Swarm sessions. It is disabled by default and independent of `v3_diagnostics` and `provider_api_diagnostics`; leave those payload-oriented flags disabled during this capture to avoid changing the workload.
+
+### Five-hour capture
+
+1. Edit the canonical daemon startup config (`swarm.conf`) and set `long_session_diagnostics = true`.
+2. Restart the daemon. Startup fails clearly if the private diagnostics directory cannot be created. Confirm the daemon log reports the selected run directory.
+3. Open the Desktop and reproduce the same workflow for approximately five hours. The Desktop V3 runtime samples every 30 seconds and stops its timers/observers when released.
+4. Copy the run directory for analysis. Set `long_session_diagnostics = false` and restart the daemon to stop recording.
+
+The run directory is `long-session-diagnostics/run-<UTC timestamp>-<suffix>` below the platform's canonical Swarm logs root (`storagecontract.RootLogs`; `/var/log/swarmd` for the default Linux installation). Directories are mode `0700`, files are mode `0600`, and each run has a hard 512 MiB budget.
+
+Artifacts:
+
+- `manifest.json`: capture times, cadence, budget, and content policy.
+- `samples.jsonl`: daemon/runtime/subsystem snapshots, including Go memory, RSS, goroutines, Pebble size, Codex retained-size counters, queues, and fixed-label latency aggregates.
+- `desktop-samples.jsonl`: Chromium heap availability/size, event-loop drift and long tasks, DOM nodes, cache mutation timing, query-cache count/estimated bytes, V3 cache counts/estimated bytes, and largest cache-owning sessions represented only by stable hashes.
+- `operations.jsonl`: bounded metadata-only operation durations and dimensions with run-local hashed session identifiers.
+- `profile-*.pprof`: periodic heap, allocation, goroutine, block, mutex, and occasional bounded CPU profiles.
+- `latest-findings.json`: ranked baseline/current deltas for daemon, Codex/context, Desktop cache/DOM, realtime queues, storage, and provider/API latency. Rankings are correlations, not proof of causation.
+
+Inspect `latest-findings.json` first. Inspect a profile with the Go pprof CLI and the matching daemon binary: `go tool pprof <daemon-binary> <profile-file>`.
+
+The recorder omits prompts, message/tool content, headers, credentials, raw session identifiers, URLs, and workspace paths. Desktop ingestion is authenticated, flag-gated, typed, size-limited, and rate-limited. Profiling, heap estimation, DOM scans, and cache aggregation add CPU and private local disk overhead; enable only for a controlled capture, do not publish the run directory, and disable it afterward.

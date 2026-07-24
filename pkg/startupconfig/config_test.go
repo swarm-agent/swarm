@@ -34,6 +34,41 @@ func TestProviderAPIDiagnosticsConfigParsesAndFormats(t *testing.T) {
 	}
 }
 
+func TestLongSessionDiagnosticsConfigParsesFormatsAndDefaultsFalse(t *testing.T) {
+	defaults := Default(t.TempDir() + "/swarm.conf")
+	if defaults.LongSessionDiagnostics {
+		t.Fatalf("LongSessionDiagnostics default = true, want false")
+	}
+	cfg, _, err := parseEntries("long_session_diagnostics = true\n", defaults)
+	if err != nil {
+		t.Fatalf("parseEntries: %v", err)
+	}
+	if !cfg.LongSessionDiagnostics {
+		t.Fatalf("LongSessionDiagnostics = false, want true")
+	}
+	if !containsLine(Format(cfg), "long_session_diagnostics = true") {
+		t.Fatalf("formatted config missing long_session_diagnostics = true")
+	}
+	if cfg.V3Diagnostics || cfg.ProviderAPIDiagnostics {
+		t.Fatalf("long-session diagnostics must not enable payload diagnostics")
+	}
+}
+
+func TestLongSessionDiagnosticsMissingKeyMigration(t *testing.T) {
+	cfg := Default(t.TempDir() + "/swarm.conf")
+	lines := missingKeyLines(cfg, map[string]struct{}{
+		"bypass_permissions": {}, "retain_tool_output_history": {},
+		"v3_diagnostics": {}, "provider_api_diagnostics": {},
+		devModeKey: {}, devRootKey: {}, "advertise_host": {},
+		"advertise_port": {}, "swarm_name": {}, "child": {},
+		"tailscale_url": {}, "peer_transport_port": {},
+	})
+	joined := strings.Join(lines, "\n")
+	if !containsLine(joined, "long_session_diagnostics = false") {
+		t.Fatalf("missing-key migration omitted long_session_diagnostics: %q", joined)
+	}
+}
+
 func TestLegacySwarmRoleIsIgnoredBeforeEmptyValueValidation(t *testing.T) {
 	cfg, _, err := parseEntries("swarm_role =\n", Default(t.TempDir()+"/swarm.conf"))
 	if err != nil {

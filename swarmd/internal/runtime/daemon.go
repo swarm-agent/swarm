@@ -26,6 +26,7 @@ import (
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
 	"swarm/packages/swarmd/internal/lock"
+	"swarm/packages/swarmd/internal/longsessiondiag"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
@@ -83,6 +84,7 @@ type Daemon struct {
 	stopOnce                  sync.Once
 	cleanupOnce               sync.Once
 	cleanupErr                error
+	longSessionDiagnostics    *longsessiondiag.Recorder
 	bgCtx                     context.Context
 	bgCancel                  context.CancelFunc
 	copilot                   *copilot.Manager
@@ -496,6 +498,25 @@ func New(cfg config.Config) (*Daemon, error) {
 			IdleTimeout:       60 * time.Second,
 		}
 	}
+
+	diagnostics, err := longsessiondiag.Start(longsessiondiag.Options{
+		Enabled:      cfg.LongSessionDiagnostics,
+		DatabasePath: cfg.DBPath,
+	})
+	if err != nil {
+		_ = d.cleanup()
+		return nil, fmt.Errorf("start long-session diagnostics: %w", err)
+	}
+	d.longSessionDiagnostics = diagnostics
+	if diagnostics != nil {
+		codexClient.SetLongSessionDiagnostics(diagnostics)
+		apiServer.SetLongSessionDiagnostics(diagnostics)
+		diagnostics.RegisterSnapshotProvider("codex", codexClient.LongSessionSnapshot)
+		diagnostics.RegisterSnapshotProvider("run_service", runSvc.LongSessionSnapshot)
+		diagnostics.RegisterSnapshotProvider("api", apiServer.LongSessionSnapshot)
+		diagnostics.RegisterSnapshotProvider("tools", toolRuntime.LongSessionSnapshot)
+		log.Printf("long-session diagnostics enabled directory=%q", diagnostics.Directory())
+	}
 	return d, nil
 }
 
@@ -546,6 +567,12 @@ func (d *Daemon) cleanup() error {
 		if d.bgCancel != nil {
 			d.bgCancel()
 			d.bgCancel = nil
+		}
+		if d.longSessionDiagnostics != nil {
+			if err := d.longSessionDiagnostics.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close long-session diagnostics: %w", err))
+			}
+			d.longSessionDiagnostics = nil
 		}
 		if d.aiTaskDispatcher != nil {
 			d.aiTaskDispatcher.Close()

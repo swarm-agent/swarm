@@ -23,6 +23,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/longsessiondiag"
 	"swarm/packages/swarmd/internal/privacy"
 	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -72,6 +73,7 @@ type Client struct {
 	websocketFirstFrameTimeout time.Duration
 	wsMu                       sync.Mutex
 	wsSessions                 map[string]*cachedWebsocketSession
+	diagnostics                *longsessiondiag.Recorder
 }
 
 type startedWebsocketStreamError struct {
@@ -351,6 +353,109 @@ func NewClient(authStore *pebblestore.AuthStore) *Client {
 		websocketFirstFrameTimeout: defaultWebsocketFirstFrameTimeout,
 		wsSessions:                 make(map[string]*cachedWebsocketSession),
 	}
+}
+
+// SetLongSessionDiagnostics enables metadata-only cache snapshots. A nil
+// recorder restores the zero-overhead disabled path.
+func (c *Client) SetLongSessionDiagnostics(recorder *longsessiondiag.Recorder) {
+	if c != nil {
+		c.diagnostics = recorder
+	}
+}
+
+func (c *Client) LongSessionSnapshot() map[string]any {
+	if c == nil || c.diagnostics == nil {
+		return nil
+	}
+	type cacheEntry struct {
+		id      string
+		session *cachedWebsocketSession
+	}
+	c.wsMu.Lock()
+	totalEntries := len(c.wsSessions)
+	ids := make([]string, 0, totalEntries)
+	for id, session := range c.wsSessions {
+		if session != nil {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	if len(ids) > 64 {
+		ids = ids[:64]
+	}
+	entries := make([]cacheEntry, 0, len(ids))
+	for _, id := range ids {
+		entries = append(entries, cacheEntry{id: id, session: c.wsSessions[id]})
+	}
+	c.wsMu.Unlock()
+	var open, payloadBytes, requestBytes, outputBytes, inputItems int64
+	detail := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		entry.session.mu.Lock()
+		entryOpen := entry.session.conn != nil
+		entryPayloadBytes := estimatedJSONBytes(entry.session.lastPayload)
+		entryRequestBytes := estimatedJSONBytes(entry.session.lastRequestProperties)
+		entryOutputBytes := estimatedJSONBytes(entry.session.lastOutput)
+		entryInputItems := int64(entry.session.lastInputLen)
+		entry.session.mu.Unlock()
+		if entryOpen {
+			open++
+		}
+		payloadBytes += entryPayloadBytes
+		requestBytes += entryRequestBytes
+		outputBytes += entryOutputBytes
+		inputItems += entryInputItems
+		detail = append(detail, map[string]any{"session_hash": c.diagnostics.HashIdentifier(entry.id), "open": entryOpen, "last_payload_bytes": entryPayloadBytes, "request_properties_bytes": entryRequestBytes, "last_output_bytes": entryOutputBytes, "last_input_items": entryInputItems})
+	}
+	return map[string]any{"cache_entries": totalEntries, "sampled_entries": len(entries), "omitted_entries": totalEntries - len(entries), "open_connections": open, "last_payload_bytes": payloadBytes, "request_properties_bytes": requestBytes, "last_output_bytes": outputBytes, "last_input_items": inputItems, "entries": detail}
+}
+
+func estimatedJSONBytes(value any) int64 {
+	const limit = int64(64 << 20)
+	var walk func(any, int) int64
+	walk = func(current any, depth int) int64 {
+		if current == nil || depth > 64 {
+			return 0
+		}
+		switch typed := current.(type) {
+		case string:
+			return min(int64(len(typed)), limit)
+		case []byte:
+			return min(int64(len(typed)), limit)
+		case json.RawMessage:
+			return min(int64(len(typed)), limit)
+		case []any:
+			var total int64
+			for _, item := range typed {
+				total += walk(item, depth+1)
+				if total >= limit {
+					return limit
+				}
+			}
+			return total
+		case []map[string]any:
+			var total int64
+			for _, item := range typed {
+				total += walk(item, depth+1)
+				if total >= limit {
+					return limit
+				}
+			}
+			return total
+		case map[string]any:
+			var total int64
+			for key, item := range typed {
+				total += int64(len(key)) + walk(item, depth+1)
+				if total >= limit {
+					return limit
+				}
+			}
+			return total
+		default:
+			return 8
+		}
+	}
+	return walk(value, 0)
 }
 
 func (c *Client) effectiveWebsocketFirstFrameTimeout() time.Duration {
@@ -918,7 +1023,15 @@ func reasoningPayloadForRequest(req Request) map[string]any {
 	return map[string]any{"effort": providerValue, "summary": "auto"}
 }
 
-func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (map[string]any, int, error) {
+func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (decoded map[string]any, status int, err error) {
+	started := time.Now()
+	defer func() {
+		if c.diagnostics == nil {
+			return
+		}
+		failed := err != nil || status >= http.StatusBadRequest
+		c.diagnostics.ObserveOperation("codex.api_total", req.SessionID, time.Since(started), failed, map[string]int64{"input_items": int64(len(req.Input)), "tools": int64(len(req.Tools)), "status_class": int64(status / 100)}, map[string]bool{"continuation": req.AllowContinuation, "reset_transport": req.ResetTransport, "force_fresh": req.ForceFreshProviderContext})
+	}()
 	if c.sendWSFn != nil {
 		payload, _, err := buildRequestPayloadWithOptions(req)
 		if err != nil {

@@ -57,7 +57,7 @@ type SearchCoordinatorSnapshot struct {
 	ColdStarts, ResidentHits, CoalescedWaiters, NativeExecutions uint64
 	WorkerRestarts, Evictions, Shutdowns                         uint64
 	InitialScan, WatcherWait, QueueWait                          time.Duration
-	ResidentRoots                                                int
+	ResidentRoots, Inflight, PendingCalls                        int
 }
 
 type residentSearchCall struct {
@@ -134,13 +134,20 @@ func (c *SearchCoordinator) Snapshot() SearchCoordinatorSnapshot {
 	}
 	c.mu.Lock()
 	roots := len(c.workers)
+	inflight := len(c.inflight)
+	pending := 0
+	for _, worker := range c.workers {
+		if worker != nil {
+			pending += int(worker.pending.Load())
+		}
+	}
 	c.mu.Unlock()
 	return SearchCoordinatorSnapshot{
 		ColdStarts: c.stats.ColdStarts.Load(), ResidentHits: c.stats.ResidentHits.Load(),
 		CoalescedWaiters: c.stats.CoalescedWaiters.Load(), NativeExecutions: c.stats.NativeExecutions.Load(),
 		WorkerRestarts: c.stats.WorkerRestarts.Load(), Evictions: c.stats.Evictions.Load(), Shutdowns: c.stats.Shutdowns.Load(),
 		InitialScan: time.Duration(c.stats.InitialScanNanos.Load()), WatcherWait: time.Duration(c.stats.WatcherWaitNanos.Load()),
-		QueueWait: time.Duration(c.stats.QueueWaitNanos.Load()), ResidentRoots: roots,
+		QueueWait: time.Duration(c.stats.QueueWaitNanos.Load()), ResidentRoots: roots, Inflight: inflight, PendingCalls: pending,
 	}
 }
 

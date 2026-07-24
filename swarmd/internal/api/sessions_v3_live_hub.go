@@ -67,6 +67,32 @@ func newV3LiveHub() *v3LiveHub {
 	}
 }
 
+func (h *v3LiveHub) diagnosticsSnapshot() map[string]any {
+	if h == nil {
+		return nil
+	}
+	h.mu.RLock()
+	subs := make([]*v3LiveSubscriber, 0, len(h.subs))
+	sessionBindings := 0
+	for _, sub := range h.subs {
+		if sub != nil {
+			subs = append(subs, sub)
+		}
+	}
+	for _, bound := range h.bySession {
+		sessionBindings += len(bound)
+	}
+	h.mu.RUnlock()
+	pendingBytes, pendingPatches := 0, 0
+	for _, sub := range subs {
+		sub.mu.Lock()
+		pendingBytes += sub.pendingBytes
+		pendingPatches += len(sub.pendingByKey)
+		sub.mu.Unlock()
+	}
+	return map[string]any{"subscribers": len(subs), "session_bindings": sessionBindings, "pending_patches": pendingPatches, "pending_bytes": pendingBytes}
+}
+
 func (h *v3LiveHub) subscribe() *v3LiveSubscriber {
 	if h == nil {
 		return nil

@@ -269,6 +269,10 @@ bypass_permissions = false
 retain_tool_output_history = false
 v3_diagnostics = false
 provider_api_diagnostics = false
+# Metadata-only bounded diagnostics for multi-hour daemon/Desktop captures.
+# Requires a daemon restart. Adds profiling, CPU, and private local disk overhead;
+# see docs/long-session-diagnostics.md and disable it after the capture.
+long_session_diagnostics = false
 swarm_name =
 desktop_onboarding_complete = true
 child = false
@@ -476,6 +480,15 @@ EOF
 # Log sanitized outbound provider API request and response payloads to daemon logs and durable session diagnostics.
 # This is separate from v3_diagnostics and omits/redacts API keys and auth headers.
 provider_api_diagnostics = false
+EOF
+  fi
+
+  if ! swarm_startup_config_has_key long_session_diagnostics; then
+    cat >>"${config_path}" <<'EOF'
+
+# Record bounded metadata-only diagnostics for investigating long-session memory and lag.
+# Artifacts are private local files under the canonical logs root; changing this requires a restart.
+long_session_diagnostics = false
 EOF
   fi
 

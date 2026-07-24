@@ -156,6 +156,36 @@ func newRunStreamManager() *runStreamManager {
 	}
 }
 
+func (m *runStreamManager) diagnosticsSnapshot() map[string]any {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	states := make([]*runStreamState, 0, len(m.runs))
+	for _, state := range m.runs {
+		if state != nil {
+			states = append(states, state)
+		}
+	}
+	m.mu.Unlock()
+	var events, eventBytes, subscribers, pending int
+	for _, state := range states {
+		state.mu.Lock()
+		events += len(state.events)
+		for _, frame := range state.events {
+			eventBytes += len(frame.payload)
+		}
+		subscribers += len(state.subs)
+		for _, sub := range state.subs {
+			if sub != nil {
+				pending += len(sub.send)
+			}
+		}
+		state.mu.Unlock()
+	}
+	return map[string]any{"runs": len(states), "replay_events": events, "replay_bytes": eventBytes, "subscribers": subscribers, "pending_frames": pending}
+}
+
 func (m *runStreamManager) newRun(sessionID string) (*runStreamState, error) {
 	if m == nil {
 		return nil, nil

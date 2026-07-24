@@ -135,6 +135,21 @@ func newSessionV3Executor(server *Server) *sessionV3Executor {
 	return exec
 }
 
+func (e *sessionV3Executor) diagnosticsSnapshot() map[string]any {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	canceled := 0
+	for _, state := range e.runStates {
+		if state != nil && state.canceled {
+			canceled++
+		}
+	}
+	return map[string]any{"inflight_runs": len(e.inFlightRuns), "active_sessions": len(e.activeBySession), "run_states": len(e.runStates), "canceled_states": canceled}
+}
+
 func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	if e == nil || e.server == nil {
 		return false
@@ -435,7 +450,14 @@ func (e *sessionV3Executor) failStaleRunningRunForRecovery(job sessionV3Executor
 }
 
 func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
+	queueWait := time.Since(job.enqueuedAt)
 	pebblestore.ObserveExecutionEpochQueueWait(job.enqueuedAt)
+	if e == nil || e.server == nil {
+		return
+	}
+	if recorder := e.server.longSessionDiagnostics; recorder != nil {
+		recorder.ObserveOperation("v3.queue_wait", job.SessionID, queueWait, false, nil, map[string]bool{"resume_context": job.ResumeContext})
+	}
 	defer e.finish(job)
 	if e.server == nil || e.server.sessions == nil {
 		return
@@ -517,11 +539,22 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	// Commit the fixed-size lineage authority before exposing the assistant
 	// message. This closes the visibility race where a following turn could see
 	// the message before its epoch lifecycle state.
+	storeStarted := time.Now()
 	if err := e.persistSessionV3ProviderLifecycle(job, response, sessionruntime.SessionMutationResult{}); err != nil {
+		if recorder := e.server.longSessionDiagnostics; recorder != nil {
+			recorder.ObserveOperation("v3.store_lifecycle", job.SessionID, time.Since(storeStarted), true, nil, nil)
+		}
 		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
 		return
 	}
+	if recorder := e.server.longSessionDiagnostics; recorder != nil {
+		recorder.ObserveOperation("v3.store_lifecycle", job.SessionID, time.Since(storeStarted), false, nil, nil)
+	}
+	storeStarted = time.Now()
 	result, err := e.completeRun(job, response)
+	if recorder := e.server.longSessionDiagnostics; recorder != nil {
+		recorder.ObserveOperation("v3.store_completion", job.SessionID, time.Since(storeStarted), err != nil, map[string]int64{"content_bytes": int64(len(response.Content)), "stream_bytes": int64(response.StreamOffsetEnd)}, nil)
+	}
 	if err != nil {
 		if !e.isRunCanceled(job) {
 			_, _ = e.recordRunFailureSystemMessage(job, err.Error())
@@ -1325,7 +1358,11 @@ func (e *sessionV3Executor) generateSessionV3CompactTitle(session pebblestore.Se
 }
 
 func (e *sessionV3Executor) assistantResponse(ctx context.Context, job sessionV3ExecutorJob) (sessionV3AssistantResponse, error) {
+	started := time.Now()
 	resolved, err := e.resolveSessionV3Runtime(job)
+	if recorder := e.server.longSessionDiagnostics; recorder != nil {
+		recorder.ObserveOperation("v3.context_load", job.SessionID, time.Since(started), err != nil, nil, map[string]bool{"resume_context": job.ResumeContext})
+	}
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
@@ -1406,7 +1443,11 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if len(input) == 0 {
 		return sessionV3AssistantResponse{}, errors.New("v3 provider input is empty")
 	}
+	requestStarted := time.Now()
 	baseReq, err := e.sessionV3ProviderBaseRequest(job, resolved, input)
+	if recorder := e.server.longSessionDiagnostics; recorder != nil {
+		recorder.ObserveOperation("v3.request_construct", job.SessionID, time.Since(requestStarted), err != nil, map[string]int64{"messages": int64(len(messages)), "input_items": int64(len(input)), "tools": int64(len(resolved.Tools))}, map[string]bool{"checkpoint_restart": checkpointRestartInput, "resume_context": job.ResumeContext})
+	}
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
@@ -2224,10 +2265,19 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		providerStart := time.Now()
 		var firstEventOnce sync.Once
 		response, providerErr := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
-			firstEventOnce.Do(func() { pebblestore.ObserveExecutionEpochFirstEvent(providerStart) })
+			firstEventOnce.Do(func() {
+				pebblestore.ObserveExecutionEpochFirstEvent(providerStart)
+				if recorder := e.server.longSessionDiagnostics; recorder != nil {
+					recorder.ObserveOperation("v3.provider_first_event", job.SessionID, time.Since(providerStart), false, map[string]int64{"step": int64(step)}, nil)
+				}
+			})
 			streamState.Handle(event)
 		})
 		pebblestore.ObserveExecutionEpochProviderSend(providerStart)
+		if recorder := e.server.longSessionDiagnostics; recorder != nil {
+			recorder.ObserveOperation("v3.provider_total", job.SessionID, time.Since(providerStart), providerErr != nil, map[string]int64{"step": int64(step), "input_items": int64(len(req.Input)), "tools": int64(len(req.Tools)), "function_calls": int64(len(response.FunctionCalls))}, map[string]bool{"continuation": req.AllowContinuation, "reset_transport": req.ResetTransport, "force_fresh": req.ForceFreshProviderContext})
+		}
+		flushStarted := time.Now()
 		finishErr := streamState.FinishStep()
 		stepText := sessionV3ProviderStepAssistantText(response, streamState.StreamedText())
 		var ensureErr error
@@ -2235,6 +2285,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			ensureErr = streamState.EnsureResponseText(stepText)
 		}
 		barrierErr := sink.FlushBarrier(ctx)
+		if recorder := e.server.longSessionDiagnostics; recorder != nil {
+			recorder.ObserveOperation("v3.stream_flush", job.SessionID, time.Since(flushStarted), finishErr != nil || ensureErr != nil || barrierErr != nil, map[string]int64{"step": int64(step), "flush_count": int64(sink.AssistantFlushCount()), "stream_bytes": int64(streamState.OffsetEnd())}, nil)
+		}
 		stepErr := firstNonNilErr(finishErr, ensureErr, sink.Err(), providerErr, barrierErr)
 		e.recordSessionV3Diagnostic(job, "session.diagnostic.backend.flush", "backend.coalescer", fmt.Sprintf("step-%d-flush-summary", step), map[string]any{
 			"step":             step,

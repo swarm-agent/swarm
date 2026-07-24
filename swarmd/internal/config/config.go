@@ -21,6 +21,7 @@ type Config struct {
 	PeerTransportPort       int
 	BypassPermissions       bool
 	RetainToolOutputHistory bool
+	LongSessionDiagnostics  bool
 	DataDir                 string
 	DBPath                  string
 	LockPath                string
@@ -70,6 +71,7 @@ func Parse(args []string) (Config, error) {
 		PeerTransportPort:       startupCfg.PeerTransportPort,
 		BypassPermissions:       startupCfg.BypassPermissions,
 		RetainToolOutputHistory: startupCfg.RetainToolOutputHistory,
+		LongSessionDiagnostics:  startupCfg.LongSessionDiagnostics,
 	}
 	fs.StringVar(&cfg.ListenAddr, "listen", defaultListenAddr, "HTTP listen address")
 	fs.IntVar(&cfg.DesktopPort, "desktop-port", startupCfg.DesktopPort, "desktop HTTP listen port (0 disables desktop listener)")

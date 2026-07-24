@@ -26,6 +26,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
+	"swarm/packages/swarmd/internal/longsessiondiag"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
@@ -113,6 +114,7 @@ type Server struct {
 	startupConfigPath           string
 	startedAt                   time.Time
 	bypassPermissions           bool
+	longSessionDiagnostics      *longsessiondiag.Recorder
 
 	codexOAuthMu       sync.Mutex
 	codexOAuthSessions map[string]*codexOAuthSession
@@ -277,6 +279,28 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	}
 	server.gitRealtime = newGitRealtimeManager(server)
 	return server
+}
+
+func (s *Server) SetLongSessionDiagnostics(recorder *longsessiondiag.Recorder) {
+	if s != nil {
+		s.longSessionDiagnostics = recorder
+	}
+}
+
+func (s *Server) LongSessionSnapshot() map[string]any {
+	if s == nil || s.longSessionDiagnostics == nil {
+		return nil
+	}
+	legacy := map[string]any(nil)
+	if s.hub != nil {
+		stats := s.hub.Stats()
+		legacy = map[string]any{"clients": stats.ConnectedClients, "subscriptions": stats.Subscriptions, "pending_messages": stats.PendingMessages}
+	}
+	executor := map[string]any(nil)
+	if s.v3SessionExecutor != nil {
+		executor = s.v3SessionExecutor.diagnosticsSnapshot()
+	}
+	return map[string]any{"active_api_runs": s.activeRuns.Load(), "run_stream": s.runStreams.diagnosticsSnapshot(), "v3_executor": executor, "realtime_outbox": s.v3RealtimeOutbox.diagnosticsSnapshot(), "live_patch": s.v3LiveHub.diagnosticsSnapshot(), "legacy_hub": legacy}
 }
 
 func (s *Server) SetCodexAccountClient(client codexAccountClient) {

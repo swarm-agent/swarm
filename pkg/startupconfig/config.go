@@ -46,6 +46,7 @@ type FileConfig struct {
 	RetainToolOutputHistory      bool
 	V3Diagnostics                bool
 	ProviderAPIDiagnostics       bool
+	LongSessionDiagnostics       bool
 	SwarmName                    string
 	DesktopOnboardingComplete    bool
 	DesktopOnboardingCompleteSet bool
@@ -144,6 +145,7 @@ func Default(path string) FileConfig {
 		RetainToolOutputHistory:      false,
 		V3Diagnostics:                false,
 		ProviderAPIDiagnostics:       false,
+		LongSessionDiagnostics:       false,
 		SwarmName:                    "",
 		DesktopOnboardingComplete:    true,
 		DesktopOnboardingCompleteSet: false,
@@ -310,6 +312,10 @@ v3_diagnostics = %t
 # This is separate from v3_diagnostics and omits/redacts API keys and auth headers.
 provider_api_diagnostics = %t
 
+# Record bounded metadata-only diagnostics for investigating long-session memory and lag.
+# Artifacts are private local files under the canonical logs root; changing this requires a restart.
+long_session_diagnostics = %t
+
 # Human-readable Swarm name shown in onboarding and discovery surfaces.
 # Leave blank to set it later.
 swarm_name = %s
@@ -330,7 +336,7 @@ tailscale_url = %s
 # Changing it requires a restart.
 peer_transport_port = %d
 
-`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
+`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -494,6 +500,17 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 				return FileConfig{}, nil, fmt.Errorf("line %d: invalid provider_api_diagnostics %q", lineNumber+1, value)
 			}
 			cfg.ProviderAPIDiagnostics = providerAPIDiagnostics
+		case "long_session_diagnostics":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen["long_session_diagnostics"] = struct{}{}
+			longSessionDiagnostics, err := strconv.ParseBool(value)
+			if err != nil {
+				return FileConfig{}, nil, fmt.Errorf("line %d: invalid long_session_diagnostics %q", lineNumber+1, value)
+			}
+			cfg.LongSessionDiagnostics = longSessionDiagnostics
 		case "swarm_name":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
@@ -666,6 +683,13 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 			"# Log sanitized outbound provider API request and response payloads to daemon logs.",
 			"# This is separate from v3_diagnostics and omits/redacts API keys and auth headers.",
 			fmt.Sprintf("provider_api_diagnostics = %t", cfg.ProviderAPIDiagnostics),
+		)
+	}
+	if _, ok := seen["long_session_diagnostics"]; !ok {
+		lines = append(lines,
+			"# Record bounded metadata-only diagnostics for investigating long-session memory and lag.",
+			"# Artifacts are private local files under the canonical logs root; changing this requires a restart.",
+			fmt.Sprintf("long_session_diagnostics = %t", cfg.LongSessionDiagnostics),
 		)
 	}
 	if _, ok := seen[devModeKey]; !ok {

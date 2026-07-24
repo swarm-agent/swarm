@@ -8,6 +8,7 @@ export interface DesktopV3CacheMutation {
   action: DesktopV3CacheAction
   previousState: DesktopV3CacheState
   nextState: DesktopV3CacheState
+  durationMS: number
 }
 
 type DesktopV3CacheListener = (mutation?: DesktopV3CacheMutation) => void
@@ -34,10 +35,11 @@ export function dispatchDesktopV3CacheBatch(actions: DesktopV3CacheAction[]): vo
   if (actions.length === 0) return
   const previousState = store.getState()
   let nextState: DesktopV3CacheState = { ...previousState }
+  const startedAt = performance.now()
   for (const action of actions) {
     nextState = desktopV3CacheReducer(nextState, action)
   }
-  commitDesktopV3CacheSnapshot(previousState, nextState, actions)
+  commitDesktopV3CacheSnapshot(previousState, nextState, actions, performance.now() - startedAt)
 }
 
 export function commitDesktopV3LivePatchBatch(
@@ -48,18 +50,20 @@ export function commitDesktopV3LivePatchBatch(
     type: 'realtime.applyLivePatchBatch',
     patches,
   }
+  const startedAt = performance.now()
   const next = applyDesktopV3LivePatchBatch(previous, patches)
-  commitDesktopV3CacheSnapshot(previous, next, [action])
+  commitDesktopV3CacheSnapshot(previous, next, [action], performance.now() - startedAt)
 }
 
 export function commitDesktopV3CacheSnapshot(
   previousState: DesktopV3CacheState,
   nextState: DesktopV3CacheState,
   actions: DesktopV3CacheAction[],
+  durationMS = 0,
 ): void {
   store.setState(nextState, true)
   for (const action of actions) {
-    const mutation: DesktopV3CacheMutation = { action, previousState, nextState }
+    const mutation: DesktopV3CacheMutation = { action, previousState, nextState, durationMS }
     for (const listener of mutationListeners) {
       listener(mutation)
     }

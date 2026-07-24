@@ -382,6 +382,22 @@ func NewRuntime(maxParallel int) *Runtime {
 	}
 }
 
+func (r *Runtime) LongSessionSnapshot() map[string]any {
+	if r == nil {
+		return nil
+	}
+	snapshot := r.searchCoordinator.Snapshot()
+	return map[string]any{
+		"max_parallel":             r.maxParallel,
+		"search_resident_roots":    snapshot.ResidentRoots,
+		"search_inflight":          snapshot.Inflight,
+		"search_pending_calls":     snapshot.PendingCalls,
+		"search_native_executions": snapshot.NativeExecutions,
+		"search_worker_restarts":   snapshot.WorkerRestarts,
+		"search_queue_wait_ms":     snapshot.QueueWait.Milliseconds(),
+	}
+}
+
 func (r *Runtime) SetExaConfigResolver(resolver func(context.Context) (ExaRuntimeConfig, error)) {
 	if r == nil {
 		return
