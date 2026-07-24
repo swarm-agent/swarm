@@ -463,7 +463,7 @@ test("automatic plan sidebar omits passive run state and execution mode controls
   assert.doesNotMatch(markup, /role="switch"/);
 });
 
-test("plan header removes the temporary checkpoint design iteration counter", () => {
+test("plan header omits the temporary checkpoint counter", () => {
   const markup = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar view={view()} onAction={() => undefined} />,
   );

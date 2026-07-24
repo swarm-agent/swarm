@@ -305,6 +305,7 @@ function CheckpointDetails({
       className={cn(
         "flex min-w-0 items-start gap-2 leading-4",
         task.active && "font-medium text-[var(--app-primary)]",
+        "flex min-w-0 items-start gap-2.5 py-0.5 leading-relaxed",
       )}
       data-plan-task-active={task.active ? "true" : undefined}
       data-plan-task-probe-row={probe ? "" : undefined}
@@ -339,9 +340,9 @@ function CheckpointDetails({
   return (
     <section
       ref={taskSectionRef}
-      className="mt-3 min-h-0 border-t border-[var(--app-border)] pt-3 text-xs text-[var(--app-text-muted)]"
+      className="mt-4 min-h-0 border-t border-[var(--app-border)]/35 pt-4 text-xs text-[var(--app-text-muted)]/90"
     >
-      <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-[var(--app-text-subtle)]/80">
         Tasks
       </div>
       <div
@@ -377,7 +378,7 @@ function CheckpointDetails({
           >
             <button
               type="button"
-              className="flex shrink-0 items-center gap-1 py-1 text-left text-[10px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text-muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)]"
+              className="mt-2.5 flex w-full shrink-0 items-center gap-1 py-1 text-left text-[10px] font-medium text-[var(--app-text-subtle)]/80 transition-colors hover:text-[var(--app-text-muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)]"
               aria-expanded={expanded}
               aria-controls="desktop-plan-overflow-tasks"
               onClick={() => setExpanded((current) => !current)}
@@ -456,6 +457,7 @@ function StatusIndicator({
         "inline-flex max-w-[132px] shrink-0 items-center text-[10px] font-semibold leading-none",
         toneStatusClass(tone),
         className,
+        "text-[10px] font-semibold uppercase tracking-[0.12em] opacity-90",
       )}
       data-plan-status-treatment={treatment}
     >
@@ -474,17 +476,18 @@ function CurrentCheckpointTitle({
   title: string;
 }) {
   return (
-    <div className="pt-2" data-plan-checkpoint-box-wrapper>
+    <div className="mt-2.5 min-w-0 pt-2" data-plan-checkpoint-box-wrapper>
       <h3
         className={cn(
           "min-w-0 line-clamp-3 break-words text-sm font-semibold leading-5 text-[var(--app-text)] [overflow-wrap:anywhere]",
           "bg-[var(--app-surface-subtle)] px-2.5 py-2 font-mono",
+          "break-words text-sm font-medium leading-relaxed text-[var(--app-text)]/95",
         )}
         title={activeTitle}
         data-plan-checkpoint-title
         data-plan-checkpoint-treatment="console-block"
       >
-        <span className="mr-1.5 inline text-xs font-bold text-[var(--app-primary)] before:content-['>_']">
+        <span className="mr-1.5 inline font-mono text-[10px] font-bold tracking-wide text-[var(--app-primary)]/80 before:content-['>_']">
           {checkpointId}
         </span>
         <span className="inline text-[13px]">{title}</span>
@@ -517,7 +520,7 @@ function CurrentCheckpointRow({
         data-plan-current-checkpoint-row
       >
         <div
-          className="min-w-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--app-text-muted)]"
+          className="min-w-0 text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--app-text-subtle)]/90"
           data-plan-current-checkpoint-label
         >
           Current checkpoint
@@ -578,7 +581,7 @@ function ActiveCheckpointSection({
   );
 
   return (
-    <section className="min-w-0 border-b border-[var(--app-border)] pb-4" data-plan-section="checkpoint">
+    <section className="min-w-0 border-b border-[var(--app-border)]/40 pb-5" data-plan-section="checkpoint">
       <CurrentCheckpointRow
         activeTitle={activeTitle}
         checkpointId={checkpointId}
@@ -587,23 +590,23 @@ function ActiveCheckpointSection({
         tone={tone}
       />
 
-      <div className="mt-2" data-plan-progress>
-        <div className="mb-1 flex items-center justify-between text-[10px] text-[var(--app-text-subtle)]">
+      <div className="mt-3" data-plan-progress>
+        <div className="mb-1.5 flex items-center justify-between text-[10px] text-[var(--app-text-subtle)]/90">
           <span>Progress</span>
           <span className="font-medium text-[var(--app-text-muted)]">
             {completedCount} / {totalCount}
           </span>
         </div>
-        <div className="h-1 overflow-hidden rounded-full bg-[var(--app-surface-subtle)]">
+        <div className="h-1.5 overflow-hidden rounded-full bg-[var(--app-border)]/40">
           <div
-            className="h-full rounded-full bg-[var(--app-primary)] opacity-80"
+            className="h-full rounded-full bg-[var(--app-primary)]/70 transition-all duration-300"
             style={{ width: `${progressValue}%` }}
           />
         </div>
       </div>
 
       <div
-        className="mt-4 min-w-0 border-t border-[var(--app-border)] pt-3.5 text-xs"
+        className="mt-5 min-w-0 border-t border-[var(--app-border)]/35 pt-4 text-xs"
         data-plan-next-up
       >
         <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">
@@ -611,7 +614,7 @@ function ActiveCheckpointSection({
         </div>
         {nextCheckpoint ? (
           <div
-            className="mt-2 flex min-w-0 items-start gap-2.5 border-l border-[var(--app-primary-border)] pl-2.5"
+            className="mt-3 flex min-w-0 items-start gap-3 border-l-2 border-[var(--app-primary-border)]/50 pl-3"
             data-plan-next-checkpoint
             title={`${displayCheckpointId(nextCheckpoint.id, nextIndex)} ${nextCheckpoint.title || "Untitled checkpoint"}`}
           >
@@ -643,7 +646,7 @@ function ActiveCheckpointSection({
         variant="outline"
         onClick={onOpenPlan}
         disabled={!onOpenPlan}
-        className="mt-3 h-8 w-full rounded-md text-xs"
+        className="mt-4 h-8 w-full rounded-md border border-[var(--app-border)]/70 bg-[var(--app-surface-subtle)] text-xs font-medium text-[var(--app-text-muted)] transition-all hover:bg-[var(--app-surface)] hover:text-[var(--app-text)]"
       >
         Open full plan
       </Button>
@@ -712,7 +715,7 @@ function ActionsSection({
 
   if (view.paused) {
     return (
-      <section className="min-w-0 pt-0.5" data-plan-section="actions">
+      <section className="mt-4 min-w-0 border-t border-[var(--app-border)]/30 pt-1" data-plan-section="actions">
         <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
           Actions
         </div>
@@ -742,7 +745,7 @@ function ActionsSection({
 
   if (view.blocked) {
     return (
-      <section className="min-w-0 pt-0.5" data-plan-section="actions">
+      <section className="mt-4 min-w-0 border-t border-[var(--app-border)]/30 pt-1" data-plan-section="actions">
         <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
           Actions
         </div>
@@ -810,7 +813,7 @@ function ActionsSection({
   }
 
   return (
-    <section className="min-w-0 pt-0.5" data-plan-section="actions">
+    <section className="mt-4 min-w-0 border-t border-[var(--app-border)]/30 pt-1" data-plan-section="actions">
       <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
         Actions
       </div>
@@ -896,30 +899,31 @@ export const DesktopPlanExecutionSidebar = memo(
       <aside
         className={embedded
           ? "min-h-0 min-w-0 w-full overflow-visible bg-[var(--app-surface)]"
-          : "hidden h-full min-h-0 min-w-0 w-[360px] max-w-[360px] flex-1 overflow-hidden border-l border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4 min-[1300px]:flex min-[1300px]:flex-col"}
+          : "hidden h-full min-h-0 min-w-0 w-[360px] max-w-[360px] flex-1 flex-col gap-6 overflow-hidden border-l border-[var(--app-border)]/70 bg-[var(--app-surface-subtle)] px-6 py-6 font-sans shadow-sm min-[1300px]:flex"}
         aria-label="Plan execution sidebar"
         data-testid="desktop-plan-execution-sidebar"
       >
         <div
           className={cn(
-            "min-w-0 max-w-full gap-4 [&_*]:min-w-0",
+            "min-w-0 max-w-full [&_*]:min-w-0",
             embedded
-              ? "grid content-start overflow-visible"
-              : "flex min-h-0 flex-1 flex-col overflow-hidden",
+              ? "grid content-start gap-4 overflow-visible"
+              : "flex min-h-0 flex-1 flex-col gap-5 overflow-hidden",
           )}
         >
           {!embedded ? (
-            <header className="shrink-0 border-b border-[var(--app-border)] pb-3">
-              <div className="text-sm font-semibold text-[var(--app-text)]" title="Plan execution">
+            <header className="shrink-0 border-b border-[var(--app-border)]/40 pb-4">
+              <div className="text-base font-semibold tracking-tight text-[var(--app-text)]" title="Plan execution">
                 Plan
               </div>
             </header>
           ) : null}
           <div
             className={cn(
-              "grid content-start gap-4",
-              !embedded &&
-                "min-h-0 shrink basis-auto overflow-y-auto [scrollbar-gutter:stable]",
+              "grid content-start",
+              embedded
+                ? "gap-4"
+                : "min-h-0 shrink basis-auto gap-5 overflow-y-auto pr-1 [scrollbar-gutter:stable]",
             )}
             data-plan-scroll-region
           >
