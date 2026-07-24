@@ -922,16 +922,9 @@ function TaskRowsHeader({
     <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_72%,transparent)] px-3 py-2" data-task-card-header>
       <div className="flex min-w-0 items-center gap-2">
         <Bot size={14} className="text-[var(--app-primary)]" aria-hidden="true" />
-        <div className="min-w-0">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="break-words text-xs font-bold uppercase tracking-[0.12em] text-[var(--app-text)] [overflow-wrap:anywhere]">
-              {swarm ? "Swarm mode" : "Subagent stream"}
-            </span>
-          </div>
-          <div className="mt-0.5 text-[11px] text-[var(--app-text-subtle)]">
-            {counts.total} launched · {counts.running} running · {counts.done} done{counts.error > 0 ? ` · ${counts.error} errors` : ''}
-          </div>
-        </div>
+        <span className="break-words text-xs font-bold uppercase tracking-[0.12em] text-[var(--app-text)] [overflow-wrap:anywhere]">
+          {swarm ? "Swarm mode" : "Subagent stream"}
+        </span>
       </div>
       <div className="flex shrink-0 items-center gap-1.5 font-mono text-[10px]">
         <span className="rounded-md bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] px-1.5 py-0.5 text-[var(--app-primary)]">RUN {counts.running}</span>
@@ -1038,7 +1031,7 @@ function TaskAgentRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: T
   return (
     <div className="task-card-container min-w-0 overflow-hidden" data-task-card data-task-rows>
       <TaskRowsHeader counts={counts} swarm={false} />
-      <div className="task-card-column-header hidden min-w-0 grid-cols-[2.5rem_3.75rem_minmax(0,1.5fr)_minmax(0,0.9fr)_4.75rem] items-center gap-x-3 border-b border-[var(--app-border)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)] sm:grid">
+      <div className="task-card-column-header hidden min-w-0 grid-cols-[2.5rem_3.75rem_minmax(0,1.5fr)_minmax(0,0.9fr)_4.75rem] items-center gap-x-3 border-b border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_46%,transparent)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)] sm:grid">
         <div className="min-w-0 font-mono tabular-nums">#</div>
         <div className="min-w-0">Status</div>
         <div className="min-w-0">Subagent</div>

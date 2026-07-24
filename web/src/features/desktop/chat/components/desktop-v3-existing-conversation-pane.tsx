@@ -157,11 +157,6 @@ import {
   type DesktopPlanExecutionSidebarActionInput,
 } from "./desktop-plan-execution-sidebar";
 import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
-import {
-  effectiveDesktopSidebarDisplayMode,
-  loadDesktopSidebarDisplayMode,
-  type DesktopSidebarDisplayMode,
-} from "./desktop-sidebar-display";
 
 const EMPTY_AGENT_STATE: AgentStateRecord = {
   profiles: [],
@@ -1671,19 +1666,6 @@ export function DesktopV3ExistingConversationPane({
     }
     void navigate({ to: "/settings", search });
   }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
-  const [planSidebarAvailableWidth, setPlanSidebarAvailableWidth] = useState(0);
-  const planSidebarGridRef = useRef<HTMLDivElement | null>(null);
-  const preferredPlanSidebarMode = useMemo(loadDesktopSidebarDisplayMode, []);
-  const planSidebarDisplayMode: DesktopSidebarDisplayMode = effectiveDesktopSidebarDisplayMode(preferredPlanSidebarMode, planSidebarAvailableWidth);
-  useEffect(() => {
-    const element = planSidebarGridRef.current;
-    if (!element || typeof ResizeObserver === "undefined") return;
-    const update = () => setPlanSidebarAvailableWidth(element.clientWidth);
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
   const taskChildActions = useMemo<TaskChildCardActions>(() => ({
     workspaceSlug: routeWorkspaceSlug,
     parentSessionId: normalizedSessionId,
@@ -2582,14 +2564,10 @@ export function DesktopV3ExistingConversationPane({
         sessionActions={headerSessionActions}
       />
       <div
-        ref={planSidebarGridRef}
         className={cn(
           "grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden",
-          showPlanSidebar && planSidebarDisplayMode === "full" ? "min-[1300px]:grid-cols-[minmax(0,1fr)_360px]" : "",
-          showPlanSidebar && planSidebarDisplayMode === "compact" ? "min-[1300px]:grid-cols-[minmax(0,1fr)_280px]" : "",
-          showPlanSidebar && planSidebarDisplayMode === "thin" ? "min-[1300px]:grid-cols-[minmax(0,1fr)_56px]" : "",
+          showPlanSidebar ? "min-[1300px]:grid-cols-[minmax(0,1fr)_360px]" : "",
         )}
-        data-plan-sidebar-mode={planSidebarDisplayMode}
       >
         <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -2841,7 +2819,6 @@ export function DesktopV3ExistingConversationPane({
             embedded
             mobileOpen={planAgentMobileOpen}
             modelLabel={displayedPreference.model}
-            displayMode={planSidebarDisplayMode}
             onClose={() => setPlanAgentMobileOpen(false)}
 
           />
@@ -2858,7 +2835,6 @@ export function DesktopV3ExistingConversationPane({
               onStop={stableStop}
               onEditPlan={stableOpenPlan}
               belowActions={planSidebarBelowActions}
-              displayMode={planSidebarDisplayMode}
               taskChildren={taskChildren}
               taskChildActions={taskChildActions}
               canonicalRecommendation={canonicalFinalHandoffRecommendation}
