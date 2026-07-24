@@ -799,8 +799,6 @@ func (s *Service) resolveWorkspaceConfigPathForPrincipalOptional(principal ident
 	return filepath.Clean(resolved), true, nil
 }
 
-func (s *Service) migrateLegacyConfig() {}
-
 func defaultConfigForWorkspace(workspacePath string) Config {
 	return configFromRecord(workspacePath, pebblestore.WorktreeConfigRecord{WorkspacePath: workspacePath})
 }
