@@ -18,7 +18,7 @@ export function bashPermissionCollapsedHeight(viewportHeight: number): number {
   return Math.floor(viewportHeight * COLLAPSED_VIEWPORT_RATIO)
 }
 
-export function bashPermissionShouldStartExpanded(contentHeight: number, viewportHeight: number): boolean {
+export function bashPermissionContentOverflows(contentHeight: number, viewportHeight: number): boolean {
   return contentHeight > bashPermissionCollapsedHeight(viewportHeight)
 }
 
@@ -103,7 +103,6 @@ export function DesktopInlineBashPermissionCard({
   onOpenPermissions,
 }: DesktopInlineBashPermissionCardProps) {
   const contentRef = useRef<HTMLDivElement | null>(null)
-  const expansionWasChosenRef = useRef(false)
   const measuredPermissionIdRef = useRef(permission.id)
   const [expanded, setExpanded] = useState(false)
   const [canExpand, setCanExpand] = useState(false)
@@ -146,19 +145,14 @@ export function DesktopInlineBashPermissionCard({
     const measure = () => {
       if (measuredPermissionIdRef.current !== permission.id) {
         measuredPermissionIdRef.current = permission.id
-        expansionWasChosenRef.current = false
+        setExpanded(false)
       }
       const viewportHeight = typeof window === 'undefined' ? 0 : window.innerHeight
       const nextCollapsedHeight = bashPermissionCollapsedHeight(viewportHeight)
-      const nextCanExpand = bashPermissionShouldStartExpanded(content.scrollHeight, viewportHeight)
+      const nextCanExpand = bashPermissionContentOverflows(content.scrollHeight, viewportHeight)
       setCollapsedContentHeight(nextCollapsedHeight)
       setCanExpand(nextCanExpand)
-      if (!nextCanExpand) {
-        expansionWasChosenRef.current = false
-        setExpanded(false)
-      } else if (!expansionWasChosenRef.current) {
-        setExpanded(true)
-      }
+      if (!nextCanExpand) setExpanded(false)
     }
     measure()
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
@@ -216,10 +210,7 @@ export function DesktopInlineBashPermissionCard({
             className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
             aria-expanded={expanded}
             aria-controls={`bash-permission-content-${permission.id}`}
-            onClick={() => {
-              expansionWasChosenRef.current = true
-              setExpanded((current) => !current)
-            }}
+            onClick={() => setExpanded((current) => !current)}
           >
             {expanded ? 'Collapse' : 'Expand'}
             {expanded ? <ChevronUp className="size-3.5" aria-hidden="true" /> : <ChevronDown className="size-3.5" aria-hidden="true" />}
@@ -229,7 +220,7 @@ export function DesktopInlineBashPermissionCard({
 
       <div
         id={`bash-permission-content-${permission.id}`}
-        className="min-w-0 overflow-hidden border-t border-[var(--app-border)] px-3 py-3 sm:px-4"
+        className="min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain border-t border-[var(--app-border)] px-3 py-3 [-webkit-overflow-scrolling:touch] sm:px-4"
         style={{ maxHeight: expanded ? undefined : collapsedContentHeight }}
       >
         <div ref={contentRef} className="min-w-0">

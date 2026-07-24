@@ -7,7 +7,7 @@ import type { DesktopPermissionRecord } from '../../types/realtime'
 import { parseBashIntentMetadata } from '../services/bash-intent-metadata'
 import {
   bashPermissionCollapsedHeight,
-  bashPermissionShouldStartExpanded,
+  bashPermissionContentOverflows,
   DesktopInlineBashPermissionCard,
 } from './desktop-inline-bash-permission-card'
 
@@ -87,10 +87,10 @@ test('parseBashIntentMetadata rejects requests without required metadata', () =>
   assert.equal(parseBashIntentMetadata('{"command":"pwd","explanation":["Print the directory."],"category":"inspect","critical":false}'), null)
 })
 
-test('Bash permission overflow uses 40% of the viewport and expands only above it', () => {
+test('Bash permission overflow uses 40% of the viewport and exposes expansion only above it', () => {
   assert.equal(bashPermissionCollapsedHeight(1000), 400)
-  assert.equal(bashPermissionShouldStartExpanded(400, 1000), false)
-  assert.equal(bashPermissionShouldStartExpanded(401, 1000), true)
+  assert.equal(bashPermissionContentOverflows(400, 1000), false)
+  assert.equal(bashPermissionContentOverflows(401, 1000), true)
 })
 
 test('pending Bash card puts the command below the always-allow prefix', () => {
@@ -101,6 +101,8 @@ test('pending Bash card puts the command below the always-allow prefix', () => {
   assert(prefixIndex >= 0, 'expected always-allow prefix')
   assert(commandIndex > prefixIndex, 'expected command below always-allow prefix')
   assert.doesNotMatch(markup, /max-h-44/)
+  assert.match(markup, /overflow-y-auto/)
+  assert.match(markup, /overflow-x-hidden/)
 })
 
 test('pending Bash card renders one routine explanation as compact prose', () => {
