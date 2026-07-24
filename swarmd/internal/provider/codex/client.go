@@ -1683,17 +1683,6 @@ func normalizeCodexWebsocketToolParameters(decoded map[string]any) {
 	}
 }
 
-func extractSessionIDFromDecodedPayload(decoded map[string]any) string {
-	if len(decoded) == 0 {
-		return ""
-	}
-	sessionID := strings.TrimSpace(asString(decoded["prompt_cache_key"]))
-	if sessionID == "" {
-		sessionID = strings.TrimSpace(asString(decoded["session_id"]))
-	}
-	return sessionID
-}
-
 func codexWebsocketSendPayload(requestPayload map[string]any, session *cachedWebsocketSession, freshContext bool) map[string]any {
 	if session == nil || freshContext {
 		return cloneMapAny(requestPayload)
@@ -1887,21 +1876,6 @@ func shouldRetryFreshWebsocketRequest(decoded map[string]any) bool {
 	default:
 		return false
 	}
-}
-
-func extractSessionIDFromPayload(payload []byte) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return ""
-	}
-	sessionID := strings.TrimSpace(asString(decoded["prompt_cache_key"]))
-	if sessionID == "" {
-		sessionID = strings.TrimSpace(asString(decoded["session_id"]))
-	}
-	return sessionID
 }
 
 func buildCodexTransportHeaders(record pebblestore.CodexAuthRecord, transport codexTransportContext) http.Header {
@@ -3000,21 +2974,6 @@ func extractResponseID(decoded map[string]any) string {
 	return ""
 }
 
-func extractResponseOutputItems(decoded map[string]any) []any {
-	if len(decoded) == 0 {
-		return nil
-	}
-	if response, ok := decoded["response"].(map[string]any); ok {
-		if output := cloneSliceAny(asSlice(response["output"])); len(output) > 0 {
-			return normalizeCodexResponseOutputItemsForReplay(output)
-		}
-	}
-	if output := cloneSliceAny(asSlice(decoded["output"])); len(output) > 0 {
-		return normalizeCodexResponseOutputItemsForReplay(output)
-	}
-	return nil
-}
-
 func mergeOutputItemsIntoResponse(responseObj map[string]any, outputItems []map[string]any) {
 	if responseObj == nil || len(outputItems) == 0 {
 		return
@@ -3045,22 +3004,6 @@ func mergeOutputItemsIntoResponse(responseObj map[string]any, outputItems []map[
 		merged = append(merged, normalizeCodexResponseOutputItemForReplay(item))
 	}
 	responseObj["output"] = mapsToAnySlice(merged)
-}
-
-func normalizeCodexResponseOutputItemsForReplay(items []any) []any {
-	if len(items) == 0 {
-		return nil
-	}
-	out := make([]any, 0, len(items))
-	for _, item := range items {
-		itemMap, ok := item.(map[string]any)
-		if !ok {
-			out = append(out, item)
-			continue
-		}
-		out = append(out, normalizeCodexResponseOutputItemForReplay(itemMap))
-	}
-	return out
 }
 
 func normalizeCodexResponseOutputMapsForReplay(items []map[string]any) []any {
@@ -3573,10 +3516,6 @@ func sanitizeDiagnosticValue(value any) any {
 	return privacy.SanitizeValue(value)
 }
 
-func isSensitiveDiagnosticKey(key string) bool {
-	return false
-}
-
 func codexThinkingDebugEnabled() bool {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv("SWARMD_CODEX_THINKING_DEBUG")))
 	switch value {
@@ -3630,10 +3569,6 @@ func codexThinkingDebugEvent(event string, data map[string]any) {
 		return
 	}
 	codexThinkingDebugf("event=%s", event)
-}
-
-func appendCodexThinkingDebugLine(path string, line []byte) error {
-	return nil
 }
 
 func sortedMapKeys(value map[string]any) []string {

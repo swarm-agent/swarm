@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -1178,15 +1176,5 @@ func TestParseResponseUsageRequiresCanonicalAPIFields(t *testing.T) {
 	}
 	if out.Usage.CacheReadTokens != 0 {
 		t.Fatalf("cache read tokens = %d, want 0", out.Usage.CacheReadTokens)
-	}
-}
-
-func TestAppendCodexThinkingDebugLineNoops(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "codex-debug.log")
-	if err := appendCodexThinkingDebugLine(path, []byte(`{"event":"test"}`)); err != nil {
-		t.Fatalf("appendCodexThinkingDebugLine returned error: %v", err)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("expected no debug log file, stat err=%v", err)
 	}
 }
