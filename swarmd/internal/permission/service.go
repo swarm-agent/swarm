@@ -1533,10 +1533,6 @@ func ShouldApproveManageAgentMutation(toolArguments string) bool {
 	}
 }
 
-func manageAgentAction(toolArguments string) string {
-	return manageAction(toolArguments)
-}
-
 func manageAction(toolArguments string) string {
 	toolArguments = strings.TrimSpace(toolArguments)
 	if toolArguments == "" {
@@ -1717,13 +1713,6 @@ func manageThemePermissionChangeCount(toolArguments string) (int, bool) {
 	default:
 		return 0, false
 	}
-}
-
-func manageAgentPermissionChangeCount(toolArguments string) (int, bool) {
-	if ShouldApproveManageAgentMutation(toolArguments) {
-		return 1, true
-	}
-	return 0, true
 }
 
 func normalizeResolveAction(action string) (string, error) {
@@ -2065,17 +2054,6 @@ func (s *Service) localSwarmID() string {
 
 func (s *Service) originSwarmIDForSession(string) string {
 	return s.localSwarmID()
-}
-
-func (s *Service) hostSwarmIDForSession(string) string {
-	return s.localSwarmID()
-}
-
-func permissionNotificationEventType(record pebblestore.PermissionRecord) string {
-	if strings.EqualFold(strings.TrimSpace(record.Status), pebblestore.PermissionStatusPending) {
-		return "permission.requested"
-	}
-	return "permission.updated"
 }
 
 func (s *Service) permissionNotificationSessionContext(sessionID, originSwarmID string) (sessionTitle, workspaceName, workspacePath, originLabel string) {
