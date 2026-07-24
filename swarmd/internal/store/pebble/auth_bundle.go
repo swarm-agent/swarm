@@ -347,4 +347,3 @@ func credentialBundleSnapshotHash(bundle CredentialBundle) (string, error) {
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:]), nil
 }
-
