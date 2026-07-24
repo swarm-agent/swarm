@@ -1,6 +1,6 @@
 # Go deadcode safety ledger
 
-Status: **triage complete; root leaf cleanup R1/R2 integrated**
+Status: **triage complete; root leaf cleanup R1/R2 integrated; conservative TUI audit complete with no additional removals**
 Baseline commit: `301925b8f188c3e2be56342d65854e37201c49de` (`dev`)  
 Reports: `.tmp/prelaunch-deadcode-root.txt` (**232 findings**) and `.tmp/prelaunch-deadcode-swarmd.txt` (**364 findings**)  
 Total accounted for below: **596 findings**
@@ -240,6 +240,16 @@ Scopes are non-overlapping. S3 and S4 share the auth domain but own different fi
 - No directly relevant named parser, plan-exit, or commit-helper test exists, so no test command was run.
 - The documented bounded root scan reran successfully and decreased from 232 to **228 findings**, exactly matching the four removals. None of the removed symbol names remains in `.tmp/cp2-deadcode-root.txt`.
 - `git diff --check` passed; the parent source tree was clean before this ledger update.
+
+### Non-V3 TUI audit evidence
+
+- Three isolated Coder audits started from clean parent `1c56d301`: legacy app/session-stream plus `ChatPage` adapter boundaries; command/config and command-modal boundaries; and presentation/accessor/modal boundaries. Each child performed repository reference, call-chain, interface/callback, event/update wiring, registry/build-tag, and test-reference review and ended with a clean worktree.
+- The legacy stream audit retained root lines 2–4 because `startSessionEventStream`, `runSessionEventStream`, and `enqueueSessionStreamEvent` form the producer chain used by `openChatView`; the event loop drains the same queue, and `stream_jitter_test.go` and `session_global_stream_test.go` exercise its consumer/application behavior. Root lines 142–150 remain connected to the legacy route, constructor defaults, direct tests, or uncertain adapter compatibility.
+- The command/config audit retained root lines 56–65 and its assigned command-modal findings. Config helpers have direct tests; command dispatch calls the active `/mode` path; `NewChatPage` initializes command and mention suggestions; app/home dispatch consumes model and theme modal actions; and `applyThemeToChat` and `boolLabel` have direct callers. Definition-only helpers in this group remain `uncertain-retain` because the approved ledger did not establish feature/API retirement.
+- The presentation/accessor audit retained root lines 117–141 and 151–225. Exported accessors are test/integration seams; chat and home modals are connected through keyboard, mouse, draw, and action callbacks; lineage/theme/voice methods are public contracts; and private definition-only neighbors remain uncertain until their complete feature or compatibility path is formally retired.
+- No child produced a source diff, so there was no implementation commit eligible for integration. The orchestration commit gate rejected each attempted no-change handoff rather than creating artificial edits. Parent recall confirmed all three child branches remained at `1c56d301` with clean worktrees; direct branch diffs against that parent were empty. The selected integration batch was therefore empty and the parent remained unchanged.
+- Focused validation passed: `go build -o "$TMPDIR/cp3-tui-build/swarmtui" ./cmd/swarmtui`; named app tests `TestConsumeSessionStreamEventsDrainsBurst` and `TestApplySessionStreamEventCreatesAndDeletesHomeSession`; and named UI tests `TestTakePlanExitResolutionPreservesApprovedArgumentsBeforeClosing`, `TestExitPlanReviewToggleWritesCanonicalApprovedArguments`, and `TestModelsModalDrawsProvidersAboveModelsOnNarrowScreen`.
+- The bounded root analyzer rerun produced **228 findings** and byte-matched `.tmp/cp2-deadcode-root.txt`: no analyzer delta, matching the zero-removal decision. `git diff --check` passed, and ignored analyzer/build caches were not staged.
 
 ## Relevant filepaths
 
