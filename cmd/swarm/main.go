@@ -422,22 +422,6 @@ func parseInstallArgs(args []string) (bool, bool, bool, error) {
 	return assumeYes, service, false, nil
 }
 
-func parseYesOnly(args []string, usage string) (bool, bool, error) {
-	assumeYes := false
-	for _, arg := range args {
-		switch arg {
-		case "--yes", "-y":
-			assumeYes = true
-		case "help", "-h", "--help":
-			fmt.Println("usage: " + usage)
-			return false, true, nil
-		default:
-			return false, false, fmt.Errorf("usage: %s", usage)
-		}
-	}
-	return assumeYes, false, nil
-}
-
 func parseNoArgs(args []string, usage string) (bool, error) {
 	if len(args) == 0 {
 		return false, nil
