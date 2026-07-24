@@ -2363,6 +2363,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
 
 interface RenderSidebarSessionGroupsInput {
   nodes: SidebarSessionNode[]
+  presentation?: 'desktop' | 'mobile'
   routeSessionId: string
   now: number
   fallbackSwarmName: string
@@ -2445,7 +2446,9 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
               <>
                 <button
                   type="button"
-                  className="inline-flex h-5 items-center gap-1 rounded border border-[var(--app-border)] px-1.5 text-[9px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                  className={input.presentation === 'mobile'
+                    ? 'inline-flex min-h-11 touch-manipulation items-center gap-1 rounded-xl border border-[var(--app-border)] px-3 text-xs font-semibold text-[var(--app-text-muted)] active:bg-[var(--app-surface-hover)] active:text-[var(--app-text)]'
+                    : 'inline-flex h-5 items-center gap-1 rounded border border-[var(--app-border)] px-1.5 text-[9px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}
                   aria-label="Review worktrees"
                   title="Review worktrees"
                   aria-expanded={input.reviewCleanupOpen}
@@ -4371,6 +4374,7 @@ export function DesktopAppPage() {
 
   const renderMobileSessions = (nodes: SidebarSessionNode[]) => renderSidebarSessionGroups({
     nodes,
+    presentation: 'mobile',
     routeSessionId,
     now: sidebarNow,
     fallbackSwarmName: swarmName,
@@ -4422,20 +4426,8 @@ export function DesktopAppPage() {
       </section>
 
       <Card className="flex min-h-0 w-full flex-1 flex-col border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-sm">
-        <div className="mb-2 flex min-h-11 shrink-0 items-center justify-between gap-3 px-1">
+        <div data-mobile-active-sessions-header className="mb-2 flex min-h-11 shrink-0 items-center px-1">
           <h2 className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Active sessions</h2>
-          <div className="flex items-center gap-2">
-            <span className="text-xs tabular-nums text-[var(--app-text-muted)]">{mobileActiveSessionNodes.length}</span>
-            <button
-              type="button"
-              className="min-h-11 touch-manipulation rounded-xl border border-[var(--app-border)] px-3 text-xs font-semibold text-[var(--app-text)] active:bg-[var(--app-surface-hover)]"
-              aria-label="Review worktrees"
-              aria-expanded={needsReviewCleanupOpen}
-              onClick={() => setNeedsReviewCleanupOpen(true)}
-            >
-              Manage
-            </button>
-          </div>
         </div>
         <div className="grid min-h-0 content-start gap-2 overflow-y-auto pr-1 [-webkit-overflow-scrolling:touch]">
           {renderMobileSessions(mobileActiveSessionNodes) ?? (
