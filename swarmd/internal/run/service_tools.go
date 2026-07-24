@@ -1928,8 +1928,6 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 		action = "start_session_checkpoint"
 	case "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
 		action = "request_followup_checkpoint"
-	case "request-plan-revision", "request_plan_revision", "plan-revision", "plan_revision":
-		action = "request_plan_revision"
 	case "amend-plan", "amend_plan", "plan-amendment", "plan_amendment", "amend-future-checkpoints", "amend_future_checkpoints":
 		action = "amend_plan"
 	case "request-new-plan", "request_new_plan", "new-plan-proposal", "new_plan_proposal":
@@ -1946,7 +1944,7 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 	}
 
 	switch action {
-	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint", "resolve_blocked_checkpoint", "start_session_checkpoint", "request_followup_checkpoint", "request_plan_revision", "amend_plan", "request_new_plan":
+	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint", "resolve_blocked_checkpoint", "start_session_checkpoint", "request_followup_checkpoint", "amend_plan", "request_new_plan":
 		return s.executePlanLifecycleControlAction(sessionID, action, args, applySessionMutation, lifecycleRun)
 	case "list":
 		limit := mapInt(args, "limit")
@@ -2301,6 +2299,9 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 		addPlanExecutionPayloadFields(payload, executionAction, plan.Document)
 		return marshalPlanManagePayload(payload)
 	case "new":
+		if mapBool(args, "override") {
+			return "", errors.New("plan_manage new cannot replace an active plan; use request_new_plan with the current plan_id and a complete structured document so approval applies and starts the replacement")
+		}
 		if document, err := planDocumentFromArgs(args); err != nil {
 			return "", err
 		} else if document != nil || strings.TrimSpace(mapString(args, "plan")) != "" {
@@ -2314,7 +2315,7 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 		if title == "" {
 			title = "New Plan"
 		}
-		override := mapBool(args, "override")
+		override := false
 		document, err := planDocumentFromArgs(args)
 		if err != nil {
 			return "", err
@@ -2332,9 +2333,6 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 			"path_id":           "tool.plan-manage.v3",
 			"summary":           fmt.Sprintf("created plan %s", plan.ID),
 			"details_truncated": false,
-		}
-		if override {
-			payload["warning"] = "override=true intentionally created a new active plan even though this session may already have had an active plan"
 		}
 		return marshalPlanManagePayload(payload)
 	default:
@@ -2645,8 +2643,6 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		if err == nil && result.Action == "start_session_checkpoint" {
 			action = result.Action
 		}
-	case "request_plan_revision":
-		result, err = lifecycle.RequestPlanRevision(sessionruntime.PlanLifecycleProposalInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, Reason: strings.TrimSpace(firstNonEmptyString(mapString(args, "reason"), mapString(args, "update_summary"), mapString(args, "summary")))})
 	case "amend_plan":
 		result, err = lifecycle.AmendPlan(sessionruntime.PlanLifecycleAmendmentInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, BaseRevision: mapInt(args, "base_revision"), UpdateSummary: strings.TrimSpace(firstNonEmptyString(mapString(args, "update_summary"), mapString(args, "summary"), mapString(args, "reason"))), ReplaceFromCheckpointID: strings.TrimSpace(firstNonEmptyString(mapString(args, "replace_from_checkpoint_id"), mapString(args, "checkpoint_id"))), AmendFutureCheckpoints: mapBool(args, "amend_future_checkpoints"), OverrideStale: mapBool(args, "override_stale")})
 	case "request_new_plan":

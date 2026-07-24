@@ -491,7 +491,7 @@ func (s *Service) authorizeDynamicToolAction(input AuthorizationInput, sessionID
 		}
 		result, err := s.createPendingAuthorization(input, sessionID, requirement, reason, "dynamic_action_policy", "ask plan session checkpoint request")
 		return result, true, err
-	case "request_plan_revision", "amend_plan", "request_new_plan":
+	case "amend_plan", "request_new_plan":
 		result, err := s.createPendingAuthorization(input, sessionID, requirement, "typed plan lifecycle request requires approval", "dynamic_action_policy", "ask plan lifecycle request")
 		return result, true, err
 	default:
@@ -1558,7 +1558,7 @@ func ShouldApprovePlanManageUpdate(toolArguments string) bool {
 
 func IsPlanAcceptanceLifecycleRequirement(requirement string) bool {
 	switch strings.TrimSpace(requirement) {
-	case "plan_followup_request", "plan_revision_request", "plan_amendment_request", "plan_new_request":
+	case "plan_followup_request", "plan_amendment_request", "plan_new_request":
 		return true
 	default:
 		return false
@@ -1578,8 +1578,6 @@ func PlanManageLifecycleRequirement(toolArguments string) string {
 	switch action {
 	case "request_followup_checkpoint":
 		return "plan_followup_request"
-	case "request_plan_revision":
-		return "plan_revision_request"
 	case "amend_plan":
 		return "plan_amendment_request"
 	case "request_new_plan":
@@ -1634,8 +1632,6 @@ func normalizePlanManageAction(action string, op string, payload map[string]any)
 		return "start_session_checkpoint"
 	case "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
 		return "request_followup_checkpoint"
-	case "request-plan-revision", "request_plan_revision", "plan-revision", "plan_revision":
-		return "request_plan_revision"
 	case "amend-plan", "amend_plan", "plan-amendment", "plan_amendment", "amend-future-checkpoints", "amend_future_checkpoints":
 		return "amend_plan"
 	case "request-new-plan", "request_new_plan", "new-plan-proposal", "new_plan_proposal", "create-plan", "create_plan", "propose-plan", "propose_plan":
@@ -1788,7 +1784,7 @@ func isPendingPlanProposalRecord(record pebblestore.PermissionRecord) bool {
 	}
 	action := strings.ToLower(strings.TrimSpace(stringValue(payload["action"])))
 	switch action {
-	case "request_new_plan", "request_plan_revision":
+	case "request_new_plan", "amend_plan":
 		return true
 	default:
 		return false
@@ -2212,7 +2208,7 @@ func planPermissionActionLabel(action string) string {
 	switch action {
 	case "request_followup_checkpoint", "request_changes":
 		return "Plan checkpoint approval requested"
-	case "request_plan_revision", "amend_plan":
+	case "amend_plan":
 		return "Plan revision approval requested"
 	case "request_new_plan":
 		return "New plan approval requested"

@@ -170,10 +170,6 @@ func (s *Server) handleSessionV3PrimaryPlanMode(w http.ResponseWriter, r *http.R
 		s.handleSessionV3PrimaryPlanModeRequestFollowupCheckpoint(w, r, principal, sessionID)
 		return
 	}
-	if tail == "lifecycle/request-plan-revision" {
-		s.handleSessionV3PrimaryPlanModeRequestPlanRevision(w, r, principal, sessionID)
-		return
-	}
 	if tail == "lifecycle/amend-plan" {
 		s.handleSessionV3PrimaryPlanModeAmendPlan(w, r, principal, sessionID)
 		return
@@ -487,10 +483,6 @@ func (s *Server) handleSessionV3PrimaryPlanModeRequestFollowupCheckpoint(w http.
 		}
 	}
 	s.finishSessionsV3PlanModeLifecycle(w, principal, sessionID, "request_followup_checkpoint", result, runStart)
-}
-
-func (s *Server) handleSessionV3PrimaryPlanModeRequestPlanRevision(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
-	s.handleSessionV3PrimaryPlanModeProposal(w, r, principal, sessionID, "request_plan_revision", s.planLifecycle.RequestPlanRevision)
 }
 
 func (s *Server) handleSessionV3PrimaryPlanModeRequestNewPlan(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
@@ -970,7 +962,7 @@ func (s *Server) finishSessionsV3PlanModeLifecycle(w http.ResponseWriter, princi
 	if transition == "request_followup_checkpoint" && result.Plan.Document != nil {
 		policyEffective = s.resolveSessionsV3FollowupCheckpointPolicy(result)
 	}
-	approvalRequired := transition == "request_plan_revision" || transition == "amend_plan" || transition == "request_new_plan" || (transition == "request_followup_checkpoint" && policyEffective == sessionruntime.PlanFollowupCheckpointPolicyRequireApproval)
+	approvalRequired := transition == "amend_plan" || transition == "request_new_plan" || (transition == "request_followup_checkpoint" && policyEffective == sessionruntime.PlanFollowupCheckpointPolicyRequireApproval)
 	runQueued := false
 	if runStart != nil {
 		runQueued = runStart.Queued

@@ -1021,8 +1021,6 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		action = "approve_and_start"
 	case "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
 		action = "request_followup_checkpoint"
-	case "request-plan-revision", "request_plan_revision", "plan-revision", "plan_revision":
-		action = "request_plan_revision"
 	case "amend-plan", "amend_plan", "plan-amendment", "plan_amendment", "amend-future-checkpoints", "amend_future_checkpoints":
 		action = "amend_plan"
 	case "request-new-plan", "request_new_plan", "new-plan-proposal", "new_plan_proposal":
@@ -1034,7 +1032,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	case "update-section", "update_section":
 		action = "update_section"
 	}
-	if action != "save" && action != "patch" && action != "update_section" && action != "update_info" && action != "update_execution_policy" && action != "update_execution_state" && action != "upsert_checkpoint" && action != "update_checkpoint" && action != "start_checkpoint" && action != "continue_checkpoint" && action != "complete_checkpoint" && action != "checkpoint_outcome" && action != "mark_needs_review" && action != "mark_blocked" && action != "mark_failed" && action != "restart_checkpoint" && action != "rewind_to_checkpoint" && action != "resolve_blocked_checkpoint" && action != "approve_and_start" && action != "request_followup_checkpoint" && action != "request_plan_revision" && action != "amend_plan" && action != "request_new_plan" && action != "remove_checkpoint" && action != "reorder_checkpoints" && action != "set_active_checkpoint" {
+	if action != "save" && action != "patch" && action != "update_section" && action != "update_info" && action != "update_execution_policy" && action != "update_execution_state" && action != "upsert_checkpoint" && action != "update_checkpoint" && action != "start_checkpoint" && action != "continue_checkpoint" && action != "complete_checkpoint" && action != "checkpoint_outcome" && action != "mark_needs_review" && action != "mark_blocked" && action != "mark_failed" && action != "restart_checkpoint" && action != "rewind_to_checkpoint" && action != "resolve_blocked_checkpoint" && action != "approve_and_start" && action != "request_followup_checkpoint" && action != "amend_plan" && action != "request_new_plan" && action != "remove_checkpoint" && action != "reorder_checkpoints" && action != "set_active_checkpoint" {
 		return planManagePermissionPayload{}, false, nil
 	}
 	planBody := strings.TrimSpace(mapString(args, "plan"))
@@ -1220,7 +1218,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 			previewDocument = amendedPreview
 		}
 	}
-	if action == "request_plan_revision" || action == "amend_plan" || action == "request_new_plan" || action == "approve_and_start" {
+	if action == "amend_plan" || action == "request_new_plan" || action == "approve_and_start" {
 		if document == nil && action != "approve_and_start" {
 			return planManagePermissionPayload{}, false, fmt.Errorf("%s requires an explicit structured document before approval", action)
 		}
@@ -1258,7 +1256,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		AcceptanceCriteria: mapStringSlice(args, "acceptance_criteria"),
 		Notes:              strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context"))),
 		PolicyEffective:    s.resolvePlanFollowupCheckpointPolicyForPermission(existing, ""),
-		ApprovalRequired:   action == "request_plan_revision" || action == "amend_plan" || action == "request_new_plan" || (action == "request_followup_checkpoint" && s.resolvePlanFollowupCheckpointPolicyForPermission(existing, "") == sessionruntime.PlanFollowupCheckpointPolicyRequireApproval),
+		ApprovalRequired:   action == "amend_plan" || action == "request_new_plan" || (action == "request_followup_checkpoint" && s.resolvePlanFollowupCheckpointPolicyForPermission(existing, "") == sessionruntime.PlanFollowupCheckpointPolicyRequireApproval),
 		ApprovedArguments: map[string]any{
 			"action":         action,
 			"plan_id":        planID,
@@ -1293,7 +1291,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 			}
 		}
 	}
-	if action == "request_plan_revision" || action == "amend_plan" || action == "request_new_plan" {
+	if action == "amend_plan" || action == "request_new_plan" {
 		// Preserve the exact canonical document that was validated for the
 		// permission round-trip instead of copying an unvalidated raw argument.
 		payload.ApprovedArguments["document"] = previewDocument
@@ -1311,9 +1309,6 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	case "request_followup_checkpoint":
 		payload.PathID = "tool.plan-followup-request.v1"
 		payload.UpdateKind = "request_followup_checkpoint"
-	case "request_plan_revision":
-		payload.PathID = "tool.plan-revision-request.v1"
-		payload.UpdateKind = "request_plan_revision"
 	case "amend_plan":
 		payload.PathID = "tool.plan-amendment.v1"
 		payload.UpdateKind = "plan_amendment"

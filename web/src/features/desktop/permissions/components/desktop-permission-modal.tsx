@@ -1151,63 +1151,6 @@ function PlanAmendmentRequestModal({
   )
 }
 
-function PlanRevisionRequestModal({
-  permission,
-  open,
-  pendingCount,
-  sessionMode,
-  onOpenChange,
-  onResolve,
-}: DesktopPermissionModalProps) {
-  const [note, setNote] = useState('')
-  const [loading, setLoading] = useState(false)
-
-  useEffect(() => {
-    if (open) {
-      setNote('')
-      setLoading(false)
-    }
-  }, [open, permission?.id])
-
-  if (!permission) return null
-  const payload = parsePlanUpdatePermission(permission)
-  const resolve = async (action: 'approve' | 'deny' | 'approve_always') => {
-    setLoading(true)
-    try {
-      if (action === 'approve_always') await savePlanAcceptanceMode('always_allow')
-      await onResolve(action === 'approve_always' ? 'approve' : action, note.trim(), action !== 'deny' ? planLifecycleApprovedArguments(payload, 'request_plan_revision') : undefined)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <ModalShell
-      open={open}
-      title={payload.title || 'Review Plan Revision'}
-      subtitle={payload.planId ? `Plan ${payload.planId} · explicit revision approval required` : 'Explicit revision approval required'}
-      pendingCount={pendingCount}
-      sessionMode={sessionMode}
-      widthClassName="w-full sm:w-[min(1180px,calc(100vw-48px))]"
-      bodyClassName="overflow-y-auto"
-      footer={<PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} onAlwaysAllow={() => void resolve('approve_always')} showPersistentActions alwaysAllowLabel="Always allow plan acceptance" approveLabel="Approve revision" note={note} onNoteChange={setNote} noteLabel="Message to agent" />}
-      onOpenChange={onOpenChange}
-      onPrimaryShortcut={() => void resolve('approve')}
-      onDenyShortcut={() => void resolve('deny')}
-      shortcutsDisabled={loading}
-    >
-      <div className="grid gap-4">
-        <section className="rounded-2xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4 text-sm leading-6 text-[var(--app-text)]">
-          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Lifecycle action</div>
-          <p className="mt-2">Approve a structured plan revision. This is not an ordinary diff save.</p>
-          {payload.updateSummary ? <p className="mt-2 whitespace-pre-wrap break-words text-[var(--app-text-muted)]">{payload.updateSummary}</p> : null}
-        </section>
-        {planLifecycleDocumentPreview(payload, 'No proposed revision document or plan text was provided.')}
-      </div>
-    </ModalShell>
-  )
-}
-
 function NewPlanRequestModal({
   permission,
   open,
@@ -3232,9 +3175,6 @@ export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
   }
   if (kind === 'plan-followup-request') {
     return <PlanFollowupRequestModal {...props} />
-  }
-  if (kind === 'plan-revision-request') {
-    return <PlanRevisionRequestModal {...props} />
   }
   if (kind === 'plan-amendment-request') {
     return <PlanAmendmentRequestModal {...props} />

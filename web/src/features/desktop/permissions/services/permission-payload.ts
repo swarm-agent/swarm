@@ -302,7 +302,7 @@ export interface SessionDeployPermissionPayload {
   approvedArguments: Record<string, unknown>
 }
 
-export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-revision-request' | 'plan-amendment-request' | 'plan-new-request' | 'manage-todos' | 'session-commit' | 'session-archive' | 'session-unarchive' | 'session-deploy' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change'
+export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-amendment-request' | 'plan-new-request' | 'manage-todos' | 'session-commit' | 'session-archive' | 'session-unarchive' | 'session-deploy' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change'
 
 function decodePermissionArguments(raw: string): Record<string, unknown> | null {
   const trimmed = raw.trim()
@@ -538,7 +538,7 @@ export function permissionRequiresApproval(
     case 'skill_use':
       return false
     case 'plan_manage':
-      return ['plan_update', 'plan_followup_request', 'plan_revision_request', 'plan_amendment_request', 'plan_new_request'].includes(
+      return ['plan_update', 'plan_followup_request', 'plan_amendment_request', 'plan_new_request'].includes(
         safeString(permission.requirement).toLowerCase(),
       )
     case 'task':
@@ -578,15 +578,13 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
       switch (safeString(permission.requirement).toLowerCase()) {
         case 'plan_followup_request':
           return 'plan-followup-request'
-        case 'plan_revision_request':
-          return 'plan-revision-request'
         case 'plan_amendment_request':
           return 'plan-amendment-request'
         case 'plan_new_request':
           return 'plan-new-request'
         case 'plan_update':
           // Legacy generic plan updates are non-lifecycle/draft-only; active plan lifecycle
-          // changes must arrive as plan_followup_request, plan_revision_request, plan_amendment_request, or plan_new_request.
+          // changes must arrive as plan_followup_request, plan_amendment_request, or plan_new_request.
           return 'plan-update'
         default:
           return 'generic'
@@ -628,7 +626,6 @@ const PLAN_PROPOSAL_PERMISSION_KINDS: ReadonlySet<DesktopPermissionKind> = new S
   'exit-plan',
   'plan-update',
   'plan-followup-request',
-  'plan-revision-request',
   'plan-amendment-request',
   'plan-new-request',
 ])

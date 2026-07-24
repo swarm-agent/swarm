@@ -14,8 +14,8 @@ import (
 // PlanLifecycleService owns user-facing typed plan lifecycle transitions. HTTP
 // handlers and tools should call these explicit methods instead of embedding
 // lifecycle state changes inline: session checkpoint requests append one ordered
-// checkpoint to the active session chain, revision requests create approval-gated replacements for the current plan,
-// and new-plan requests create approval-gated separate proposals.
+// checkpoint to the active session chain, amendments replace or append the protected
+// future definition, and new-plan requests create or replace an approved plan.
 type PlanLifecycleService struct {
 	sessions             *Service
 	globalFollowupPolicy func(accountScopeID string) (string, error)
@@ -427,7 +427,7 @@ func (s *PlanLifecycleService) StartSessionCheckpoint(input PlanLifecycleSession
 	if active, ok, err := s.sessions.GetActivePlan(session.ID); err != nil {
 		return PlanLifecycleResult{}, err
 	} else if ok {
-		return PlanLifecycleResult{}, fmt.Errorf("start_session_checkpoint requires no active plan; active plan %q already exists, use request_followup_checkpoint for ordered session checkpoints or request_plan_revision/amend_plan for larger changes", active.ID)
+		return PlanLifecycleResult{}, fmt.Errorf("start_session_checkpoint requires no active plan; active plan %q already exists, use request_followup_checkpoint for one ordered checkpoint, amend_plan for future changes, or request_new_plan with plan_id for whole-plan replacement", active.ID)
 	}
 	request := strings.TrimSpace(input.ChangeRequest)
 	if request == "" {
@@ -539,36 +539,6 @@ func buildCheckpointHandoffNotes(changeRequest, notes string) string {
 		sections = append(sections, "Handoff notes:\n"+notes)
 	}
 	return strings.Join(sections, "\n\n")
-}
-
-func (s *PlanLifecycleService) RequestPlanRevision(input PlanLifecycleProposalInput) (PlanLifecycleResult, error) {
-	state, err := s.loadPlanForLifecycle(input.SessionID, input.PlanID, "request_plan_revision")
-	if err != nil {
-		return PlanLifecycleResult{}, err
-	}
-	doc := clonePlanLifecycleDocument(input.Document)
-	planText := strings.TrimSpace(input.Plan)
-	if doc == nil {
-		return PlanLifecycleResult{}, errors.New("request_plan_revision requires an explicit structured document before approval")
-	}
-	if planText == "" {
-		planText = state.plan.Plan
-	}
-	title := strings.TrimSpace(firstNonBlank(input.Title, doc.Title, state.plan.Title))
-	if title == "" {
-		title = "Plan revision proposal"
-	}
-	doc.ID = state.plan.ID
-	doc.Title = title
-	doc.Status = "pending_approval"
-	if err := ValidateExecutablePlanDocument(doc); err != nil {
-		return PlanLifecycleResult{}, err
-	}
-	saved, event, err := s.sessions.SavePlanWithMetadata(state.session.ID, state.plan.ID, title, planText, "pending_approval", "pending", true, PlanSaveMetadata{UpdateSummary: firstNonBlank(strings.TrimSpace(input.Reason), "Plan revision proposal pending approval"), UpdateScope: "plan", UpdateKind: "request_plan_revision", Document: doc})
-	if err != nil {
-		return PlanLifecycleResult{}, err
-	}
-	return PlanLifecycleResult{Session: state.session, Plan: saved, PlanEvent: event, Summary: SummarizePlanExecution(saved.Document), Action: "request_plan_revision", Message: "plan revision proposal saved for approval"}, nil
 }
 
 func (s *PlanLifecycleService) AmendPlan(input PlanLifecycleAmendmentInput) (PlanLifecycleResult, error) {
@@ -1622,7 +1592,7 @@ func applyPlanFutureAmendment(current, proposed *pebblestore.SessionPlanDocument
 	} else if input.AmendFutureCheckpoints {
 		replaceIndex = firstFutureAmendmentCheckpointIndex(doc)
 		if replaceIndex < 0 {
-			return nil, "", errors.New("amend_plan could not find a future checkpoint to amend")
+			return applyPlanFutureAppend(doc, proposed)
 		}
 		replaceID = strings.TrimSpace(doc.Checkpoints[replaceIndex].ID)
 	}
@@ -1662,6 +1632,87 @@ func applyPlanFutureAmendment(current, proposed *pebblestore.SessionPlanDocument
 		return nil, "", err
 	}
 	return doc, replaceID, nil
+}
+
+func applyPlanFutureAppend(current, proposed *pebblestore.SessionPlanDocument) (*pebblestore.SessionPlanDocument, string, error) {
+	if current == nil || proposed == nil {
+		return nil, "", errors.New("amend_plan append requires current and proposed structured plan documents")
+	}
+	if len(proposed.Checkpoints) == 0 {
+		return nil, "", errors.New("amend_plan append requires at least one proposed checkpoint")
+	}
+	for _, checkpoint := range current.Checkpoints {
+		status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
+		switch status {
+		case PlanCheckpointStatusCompleted:
+			continue
+		case PlanCheckpointStatusInProgress:
+			if strings.TrimSpace(checkpoint.ID) == strings.TrimSpace(current.ActiveCheckpointID) {
+				continue
+			}
+		}
+		return nil, "", fmt.Errorf("amend_plan cannot append after checkpoint %q status %q", strings.TrimSpace(checkpoint.ID), status)
+	}
+
+	existingIDs := make(map[string]int, len(current.Checkpoints))
+	for i, checkpoint := range current.Checkpoints {
+		existingIDs[strings.TrimSpace(checkpoint.ID)] = i
+	}
+	future := make([]pebblestore.SessionPlanCheckpoint, 0, len(proposed.Checkpoints))
+	lastExistingIndex := -1
+	seenNew := false
+	for _, checkpoint := range proposed.Checkpoints {
+		checkpointID := strings.TrimSpace(checkpoint.ID)
+		if checkpointID == "" {
+			return nil, "", errors.New("amend_plan append checkpoint id is required")
+		}
+		if existingIndex, exists := existingIDs[checkpointID]; exists {
+			if seenNew || existingIndex <= lastExistingIndex {
+				return nil, "", fmt.Errorf("amend_plan append existing checkpoint %q must remain in its original prefix order", checkpointID)
+			}
+			lastExistingIndex = existingIndex
+			continue
+		}
+		seenNew = true
+		existingIDs[checkpointID] = len(current.Checkpoints) + len(future)
+		future = append(future, checkpoint)
+	}
+	if len(future) == 0 {
+		return nil, "", errors.New("amend_plan append requires at least one new checkpoint id")
+	}
+	future = clonePlanCheckpointSlice(future)
+	for i := range future {
+		resetPlanCheckpointRuntimeForFreshStart(&future[i])
+		future[i].Status = PlanCheckpointStatusPending
+	}
+
+	doc := clonePlanLifecycleDocument(current)
+	doc.Info = proposed.Info
+	doc.Checkpoints = append(doc.Checkpoints, future...)
+	normalizeCheckpointOrder(doc)
+	doc.ExecutionPolicy = proposed.ExecutionPolicy
+	normalizePlanExecutionPolicy(&doc.ExecutionPolicy, len(doc.Checkpoints))
+	doc.RenderedText = strings.TrimSpace(proposed.RenderedText)
+	doc.DisplayText = strings.TrimSpace(proposed.DisplayText)
+	if !planAmendmentCurrentRunActive(doc) {
+		doc.ActiveCheckpointID = strings.TrimSpace(future[0].ID)
+		doc.ExecutionState = &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStateIdle}
+	}
+	if err := ValidatePlanDocument(doc); err != nil {
+		return nil, "", err
+	}
+	return doc, strings.TrimSpace(future[0].ID), nil
+}
+
+func planAmendmentCurrentRunActive(doc *pebblestore.SessionPlanDocument) bool {
+	if doc == nil || doc.ExecutionState == nil {
+		return false
+	}
+	if normalizePlanExecutionStateStatus(doc.ExecutionState.Status) != PlanExecutionStateInProgress {
+		return false
+	}
+	idx := findPlanCheckpointIndex(doc.Checkpoints, strings.TrimSpace(doc.ActiveCheckpointID))
+	return idx >= 0 && normalizePlanCheckpointStatusForSave(doc.Checkpoints[idx].Status) == PlanCheckpointStatusInProgress
 }
 
 func preparePlanAmendmentProposedDocumentForNormalize(doc *pebblestore.SessionPlanDocument) {

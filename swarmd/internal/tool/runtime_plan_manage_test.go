@@ -36,13 +36,13 @@ func TestPlanManageContractMakesNoPlanCheckpointAtomic(t *testing.T) {
 	}
 }
 
-func TestPlanManageDefinitionIncludesExplicitNewOverride(t *testing.T) {
+func TestPlanManageDefinitionRejectsNewOverrideReplacement(t *testing.T) {
 	definition := mustFindDefinition(t, "plan_manage")
 	if definition.Description == "" {
 		t.Fatal("plan_manage description is empty")
 	}
-	if !containsAll(definition.Description, "new", "active plan", "override=true") {
-		t.Fatalf("description %q does not make override requirement obvious", definition.Description)
+	if !containsAll(definition.Description, "new", "never replaces an active plan", "request_new_plan", "current plan_id") {
+		t.Fatalf("description %q does not expose the canonical replacement path", definition.Description)
 	}
 	if !containsAll(definition.Description, "patch", "update_section", "targeted partial edits") {
 		t.Fatalf("description %q does not advertise partial plan updates", definition.Description)
@@ -60,8 +60,8 @@ func TestPlanManageDefinitionIncludesExplicitNewOverride(t *testing.T) {
 		t.Fatalf("override type = %v, want boolean", override["type"])
 	}
 	description, _ := override["description"].(string)
-	if !containsAll(description, "action=new", "active plan", "replacement") {
-		t.Fatalf("override description %q does not explain intentional replacement", description)
+	if !containsAll(description, "action=new", "Replacement is rejected", "request_new_plan", "current plan_id") {
+		t.Fatalf("override description %q does not reject the competing replacement path", description)
 	}
 	for _, name := range []string{"patch", "operation", "section", "old_text", "new_text", "text", "checklist_item", "checked", "replace_all", "document", "document_patch", "info", "checkpoint_order", "active_checkpoint_id"} {
 		if _, ok := params[name].(map[string]any); !ok {

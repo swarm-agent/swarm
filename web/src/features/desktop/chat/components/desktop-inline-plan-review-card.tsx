@@ -65,9 +65,12 @@ export function DesktopInlinePlanReviewCard({
   const [loading, setLoading] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const supportsExecutionChoice =
-    kind === "exit-plan" || kind === "plan-new-request";
+    kind === "exit-plan" ||
+    kind === "plan-new-request" ||
+    kind === "plan-amendment-request" ||
+    kind === "plan-followup-request";
   const supportsPersistentAcceptance =
-    kind === "exit-plan" || kind === "plan-followup-request" || kind === "plan-revision-request" || kind === "plan-amendment-request" || kind === "plan-new-request";
+    kind === "exit-plan" || kind === "plan-followup-request" || kind === "plan-amendment-request" || kind === "plan-new-request";
   const title =
     document?.title ||
     exitPayload?.title ||

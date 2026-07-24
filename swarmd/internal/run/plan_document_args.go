@@ -138,8 +138,6 @@ func planManageApprovedArgumentKeys(action string) map[string]bool {
 		add("checkpoint_id", "id", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "artifacts", "notes", "handoff_notes", "context", "source_message_id", "source_message", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "fresh_context", "execution_context")
 	case "request_followup_checkpoint":
 		add("plan_id", "id", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "artifacts", "notes", "handoff_notes", "context", "source_message_id", "source_message", "approval_confirmed", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at")
-	case "request_plan_revision":
-		add("plan_id", "id", "title", "plan", "document", "reason", "update_summary", "summary")
 	case "amend_plan":
 		add("plan_id", "id", "title", "plan", "document", "base_revision", "update_summary", "summary", "reason", "replace_from_checkpoint_id", "checkpoint_id", "amend_future_checkpoints", "override_stale")
 	case "request_new_plan":

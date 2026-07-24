@@ -144,6 +144,80 @@ func TestPlanLifecycleAmendPlanReplacesFutureCheckpointsAndPreservesCompletedSta
 	}
 }
 
+func TestPlanLifecycleAmendPlanAppendsFutureToCompletedPlanAndSelectsIt(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	plan := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed,
+	}, []pebblestore.SessionPlanCheckpoint{{
+		ID: "cp-1", Title: "Done", Status: PlanCheckpointStatusCompleted, Tasks: []string{"done"}, AcceptanceCriteria: []string{"done"},
+		Report: "preserve report", Result: "preserve result", AttemptID: "cp-1:attempt-1",
+		Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "cp-1:attempt-1", CheckpointID: "cp-1", Status: PlanCheckpointStatusCompleted, Report: "preserve report"}},
+	}})
+	current := clonePlanLifecycleDocument(plan.Document)
+	current.Info.Goal = "preserve completed history and append future work"
+	current.ActiveCheckpointID = "cp-1"
+	current.ExecutionState = &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStateWaitingReview, LastCheckpointID: "cp-1", LastAttemptID: "cp-1:attempt-1", LastOutcome: PlanCheckpointStatusCompleted}
+	plan, _, err := svc.SavePlanWithMetadata(sessionID, plan.ID, plan.Title, plan.Plan, plan.Status, plan.ApprovalState, true, PlanSaveMetadata{UpdateSummary: "final review", UpdateKind: "complete_checkpoint", RevisionKind: PlanRevisionKindExecution, Checkpoint: true, Document: current})
+	if err != nil {
+		t.Fatalf("save final-review plan: %v", err)
+	}
+	proposed := &pebblestore.SessionPlanDocument{
+		Title:           plan.Title,
+		Info:            pebblestore.SessionPlanInfo{Goal: "extend completed plan"},
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Untrusted copy", Status: PlanCheckpointStatusCompleted, Tasks: []string{"untrusted"}, AcceptanceCriteria: []string{"untrusted"}},
+			{ID: "cp-2", Title: "New two", Status: PlanCheckpointStatusPending, Tasks: []string{"two"}, AcceptanceCriteria: []string{"two done"}},
+			{ID: "cp-3", Title: "New three", Status: PlanCheckpointStatusPending, Tasks: []string{"three"}, AcceptanceCriteria: []string{"three done"}},
+		},
+	}
+
+	result, err := NewPlanLifecycleService(svc).AmendPlan(PlanLifecycleAmendmentInput{
+		SessionID: sessionID, PlanID: plan.ID, Document: proposed, BaseRevision: plan.Version,
+		UpdateSummary: "append future work", AmendFutureCheckpoints: true,
+	})
+	if err != nil {
+		t.Fatalf("append future checkpoints: %v", err)
+	}
+	if got := strings.Join(checkpointIDs(result.Plan.Document.Checkpoints), ","); got != "cp-1,cp-2,cp-3" {
+		t.Fatalf("checkpoint order = %s", got)
+	}
+	kept := result.Plan.Document.Checkpoints[0]
+	if kept.Report != "preserve report" || kept.Result != "preserve result" || kept.AttemptID != "cp-1:attempt-1" || len(kept.Attempts) != 1 {
+		t.Fatalf("completed checkpoint runtime changed: %#v", kept)
+	}
+	for _, appended := range result.Plan.Document.Checkpoints[1:] {
+		if appended.Status != PlanCheckpointStatusPending || appended.AttemptID != "" || appended.Report != "" || len(appended.Attempts) != 0 {
+			t.Fatalf("appended checkpoint runtime not reset: %#v", appended)
+		}
+	}
+	if result.Plan.Document.ActiveCheckpointID != "cp-2" || result.Plan.Document.ExecutionState == nil || result.Plan.Document.ExecutionState.Status != PlanExecutionStateIdle {
+		t.Fatalf("appended future not selected: active=%q state=%#v", result.Plan.Document.ActiveCheckpointID, result.Plan.Document.ExecutionState)
+	}
+	if result.Summary.NextCheckpointID != "cp-2" || result.Summary.NextCheckpointStatus != PlanCheckpointStatusPending || !result.Summary.AutoAdvanceAllowed || result.Summary.ReviewRequired {
+		t.Fatalf("append execution summary = %#v", result.Summary)
+	}
+}
+
+func TestPlanLifecycleAmendPlanAppendRejectsDuplicateOrUnresolvedCurrentState(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+	sessionID := createPlanTestSession(t, svc)
+	plan := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed}, []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Done", Status: PlanCheckpointStatusCompleted, Tasks: []string{"done"}, AcceptanceCriteria: []string{"done"}}})
+	duplicate := &pebblestore.SessionPlanDocument{Title: plan.Title, Info: pebblestore.SessionPlanInfo{Goal: "duplicate"}, ExecutionPolicy: plan.Document.ExecutionPolicy, Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Duplicate", Status: PlanCheckpointStatusCompleted, Tasks: []string{"duplicate"}, AcceptanceCriteria: []string{"rejected"}}}}
+	_, err := NewPlanLifecycleService(svc).AmendPlan(PlanLifecycleAmendmentInput{SessionID: sessionID, PlanID: plan.ID, Document: duplicate, BaseRevision: plan.Version, UpdateSummary: "duplicate", AmendFutureCheckpoints: true})
+	if err == nil || !strings.Contains(err.Error(), "at least one new checkpoint id") {
+		t.Fatalf("duplicate append error = %v", err)
+	}
+	active, ok, getErr := svc.GetActivePlan(sessionID)
+	if getErr != nil || !ok || active.Version != plan.Version || len(active.Document.Checkpoints) != 1 {
+		t.Fatalf("invalid append mutated plan: ok=%v err=%v plan=%#v", ok, getErr, active)
+	}
+}
+
 func TestPlanLifecycleAmendPlanRejectsStaleBaseRevision(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()

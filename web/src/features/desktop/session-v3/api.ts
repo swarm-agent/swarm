@@ -303,21 +303,6 @@ export async function requestSessionV3PlanFollowupCheckpoint(
   })
 }
 
-export async function requestSessionV3PlanRevision(
-  sessionId: string,
-  input: { planId?: string; title?: string; plan?: string; document?: unknown; reason?: string },
-): Promise<unknown> {
-  const normalizedSessionId = sessionId.trim()
-  if (!normalizedSessionId) throw new Error('Desktop V3 plan revision requires session_id')
-  return requestSessionV3PlanLifecycle(normalizedSessionId, 'request-plan-revision', {
-    plan_id: input.planId?.trim() || undefined,
-    title: input.title?.trim() || undefined,
-    plan: input.plan?.trim() || undefined,
-    document: input.document,
-    reason: input.reason?.trim() || undefined,
-  })
-}
-
 export async function requestSessionV3NewPlan(
   sessionId: string,
   input: { title?: string; plan?: string; document?: unknown; reason?: string },

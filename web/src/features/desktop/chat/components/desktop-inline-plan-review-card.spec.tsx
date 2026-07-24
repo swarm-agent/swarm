@@ -51,7 +51,6 @@ for (const [requirement, toolName] of [
   ["permission", "exit_plan_mode"],
   ["plan_update", "plan_manage"],
   ["plan_followup_request", "plan_manage"],
-  ["plan_revision_request", "plan_manage"],
   ["plan_amendment_request", "plan_manage"],
   ["plan_new_request", "plan_manage"],
 ] as const) {
@@ -90,7 +89,7 @@ for (const [requirement, toolName] of [
   assert(markup.includes(">Copy<"), `expected visible plan copy control for ${requirement}`);
   assert(!markup.includes("Ask Swarm"), `expected mobile plan chat control only when the opener is provided for ${requirement}`);
   assert(!markup.includes("Accept edit") && !markup.includes("Reject edit") && !markup.includes("Request another revision"), `expected legacy review labels to be removed for ${requirement}`);
-  if (requirement === "permission" || requirement === "plan_new_request") {
+  if (requirement === "permission" || requirement === "plan_new_request" || requirement === "plan_amendment_request" || requirement === "plan_followup_request") {
     const automaticIndex = markup.indexOf("Starts automatically after approval");
     const rejectIndex = markup.indexOf(">Reject<");
     assert(markup.indexOf(">Always allow<") > rejectIndex, `expected persistence separate from automatic execution state for ${requirement}`);
