@@ -33,6 +33,7 @@ interface DesktopInlineBashPermissionCardProps {
     action: BashPermissionAction,
     reason: string,
   ) => Promise<void>
+  onOpenPermissions: () => void
 }
 
 interface PermissionExplainResponse {
@@ -99,6 +100,7 @@ export function DesktopInlineBashPermissionCard({
   pendingCount,
   sessionMode,
   onResolve,
+  onOpenPermissions,
 }: DesktopInlineBashPermissionCardProps) {
   const contentRef = useRef<HTMLDivElement | null>(null)
   const expansionWasChosenRef = useRef(false)
@@ -241,7 +243,14 @@ export function DesktopInlineBashPermissionCard({
               ) : null}
               {explainDetails?.profile ? (
                 <div className="mb-3 text-xs leading-5 text-[var(--app-text-muted)]">
-                  <span className="font-semibold text-[var(--app-text)]">Bash profile:</span> {explainDetails.profile.split('_').join(' ')} · {explainDetails.profileDecision || 'ask'}
+                  <button
+                    type="button"
+                    className="font-semibold text-[var(--app-text)] underline decoration-[var(--app-border-strong)] underline-offset-2 transition-colors hover:text-[var(--app-primary)] focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+                    onClick={onOpenPermissions}
+                  >
+                    Bash settings:
+                  </button>{' '}
+                  {explainDetails.profile.split('_').join(' ')} · {explainDetails.profileDecision || 'ask'}
                   {explainDetails.profileReason ? ` — ${explainDetails.profileReason}` : ''}
                 </div>
               ) : null}

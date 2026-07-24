@@ -43,6 +43,7 @@ function render(explanation: string[]): string {
       pendingCount={1}
       sessionMode="auto"
       onResolve={async () => undefined}
+      onOpenPermissions={() => undefined}
     />,
   )
 }

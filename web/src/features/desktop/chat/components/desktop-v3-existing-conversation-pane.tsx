@@ -1663,6 +1663,14 @@ export function DesktopV3ExistingConversationPane({
     workspaceSettingsMatch && "workspaceSlug" in workspaceSettingsMatch
       ? String(workspaceSettingsMatch.workspaceSlug ?? "").trim()
       : "";
+  const openPermissionsSettings = useCallback(() => {
+    const search = { tab: "permissions" as const, returnSessionId: normalizedSessionId };
+    if (routeWorkspaceSlug) {
+      void navigate({ to: "/$workspaceSlug/settings", params: { workspaceSlug: routeWorkspaceSlug }, search });
+      return;
+    }
+    void navigate({ to: "/settings", search });
+  }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
   const [planSidebarAvailableWidth, setPlanSidebarAvailableWidth] = useState(0);
   const planSidebarGridRef = useRef<HTMLDivElement | null>(null);
   const preferredPlanSidebarMode = useMemo(loadDesktopSidebarDisplayMode, []);
@@ -2643,6 +2651,7 @@ export function DesktopV3ExistingConversationPane({
                     pendingCount={pendingBashPermissions.length}
                     sessionMode={sessionMode}
                     onResolve={handleResolveBashPermission}
+                    onOpenPermissions={openPermissionsSettings}
                   />
                 ))}
                 {pendingPlanPermissions.map((permission, index) => (
@@ -2865,14 +2874,7 @@ export function DesktopV3ExistingConversationPane({
         pendingCount={pendingModalPermissions.length}
         sessionMode={sessionMode}
         onOpenChange={() => undefined}
-        onOpenPermissions={() => {
-          const search = { tab: "permissions" as const, returnSessionId: normalizedSessionId };
-          if (routeWorkspaceSlug) {
-            void navigate({ to: "/$workspaceSlug/settings", params: { workspaceSlug: routeWorkspaceSlug }, search });
-            return;
-          }
-          void navigate({ to: "/settings", search });
-        }}
+        onOpenPermissions={openPermissionsSettings}
         onResolve={handleResolvePermission}
       />
     </div>
