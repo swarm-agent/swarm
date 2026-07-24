@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/todo"
 )
@@ -80,6 +81,87 @@ func TestWorkspaceTodosRestoresScopedRetrievalAndIdempotentDirectEnqueue(t *test
 	}
 	if len(response.Items) != 2 || response.Items[0].ID != queue.items[0].ID || response.Items[1].ID != queue.items[1].ID {
 		t.Fatalf("listed items=%#v", response.Items)
+	}
+}
+
+func TestWorkspaceTodosAcceptsWorktreeOriginForCanonicalWorkspaceTask(t *testing.T) {
+	server, workspacePath, store := newWorkspaceOverviewTopologyTestServer(t)
+	server.SetTodoService(todo.NewService(pebblestore.NewWorkspaceTodoStore(store), nil, nil, server.sessions))
+	queue := &recordingAITaskEnqueuer{}
+	server.SetAITaskEnqueuer(queue)
+
+	workspaceScope, err := server.workspace.ScopeForPathForPrincipal(testPrincipal(), workspacePath)
+	if err != nil || !workspaceScope.Matched || workspaceScope.WorkspaceID == "" {
+		t.Fatalf("resolve canonical workspace: scope=%#v err=%v", workspaceScope, err)
+	}
+	worktreePath := t.TempDir()
+	origin, _, err := server.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		Title:          "Managed worktree origin",
+		WorkspacePath:  worktreePath,
+		WorkspaceName:  "managed-worktree",
+		Mode:           sessionruntime.ModeAuto,
+		Worktree: &sessionruntime.CreateSessionWorktree{
+			RootPath: worktreePath, BaseBranch: "dev", BranchName: "agent/origin-worktree", WorkspaceID: "worktree-origin",
+		},
+		Metadata: map[string]any{
+			"swarm_v3_source_workspace_path": workspacePath,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create worktree origin session: %v", err)
+	}
+
+	raw, _ := json.Marshal(map[string]any{
+		"action": "ai_task", "workspace_path": workspacePath, "owner_kind": "user",
+		"text": "launch from canonical workspace", "origin_session_id": origin.ID, "mode": "auto",
+	})
+	recorder := httptest.NewRecorder()
+	request := withTestPrincipal(httptest.NewRequest(http.MethodPost, "/v1/workspace/todos", bytes.NewReader(raw)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "worktree-origin-task")
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("worktree origin status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(queue.items) != 1 {
+		t.Fatalf("enqueued jobs=%#v", queue.items)
+	}
+	queued := queue.items[0]
+	if queued.WorkspacePath != workspacePath || queued.WorkspaceID != workspaceScope.WorkspaceID || queued.OriginSessionID != origin.ID {
+		t.Fatalf("queued canonical task=%#v", queued)
+	}
+	if queued.WorkspacePath == worktreePath {
+		t.Fatalf("queued task was incorrectly routed to origin worktree %q", worktreePath)
+	}
+
+	otherWorkspacePath := t.TempDir()
+	if _, err := server.workspace.AddForPrincipal(testPrincipal(), otherWorkspacePath, "other-workspace", "", true); err != nil {
+		t.Fatalf("add unrelated workspace: %v", err)
+	}
+	unrelatedOrigin, _, err := server.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		Title:          "Unrelated origin",
+		WorkspacePath:  otherWorkspacePath,
+		WorkspaceName:  "other-workspace",
+		Mode:           sessionruntime.ModeAuto,
+	})
+	if err != nil {
+		t.Fatalf("create unrelated origin session: %v", err)
+	}
+	unrelatedRaw, _ := json.Marshal(map[string]any{
+		"action": "ai_task", "workspace_path": workspacePath, "owner_kind": "user",
+		"text": "reject unrelated origin", "origin_session_id": unrelatedOrigin.ID, "mode": "auto",
+	})
+	unrelatedRecorder := httptest.NewRecorder()
+	unrelatedRequest := withTestPrincipal(httptest.NewRequest(http.MethodPost, "/v1/workspace/todos", bytes.NewReader(unrelatedRaw)))
+	unrelatedRequest.Header.Set("Content-Type", "application/json")
+	unrelatedRequest.Header.Set("Idempotency-Key", "unrelated-origin-task")
+	server.Handler().ServeHTTP(unrelatedRecorder, unrelatedRequest)
+	if unrelatedRecorder.Code != http.StatusBadRequest || len(queue.items) != 1 {
+		t.Fatalf("unrelated origin status=%d queue=%#v body=%s", unrelatedRecorder.Code, queue.items, unrelatedRecorder.Body.String())
 	}
 }
 

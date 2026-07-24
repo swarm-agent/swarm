@@ -140,7 +140,21 @@ func (s *Server) handleWorkspaceTodoMutation(w http.ResponseWriter, r *http.Requ
 				return
 			}
 			origin, found, originErr := s.sessions.GetSession(originSessionID)
-			if originErr != nil || !found || strings.TrimSpace(origin.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) || strings.TrimSpace(origin.UserID) != strings.TrimSpace(principal.UserID) || strings.TrimSpace(origin.WorkspacePath) != workspacePath {
+			originPrincipalMatches := originErr == nil && found && strings.TrimSpace(origin.AccountScopeID) == strings.TrimSpace(principal.AccountScopeID) && strings.TrimSpace(origin.UserID) == strings.TrimSpace(principal.UserID)
+			originWorkspaceMatches := false
+			if originPrincipalMatches {
+				for _, candidate := range []string{
+					sessionsV3MetadataString(origin.Metadata, "swarm_v3_source_workspace_path"),
+					origin.WorkspacePath,
+				} {
+					if originWorkspaceMatches || strings.TrimSpace(candidate) == "" {
+						continue
+					}
+					originScope, candidateErr := s.workspace.ScopeForPathForPrincipal(principal, candidate)
+					originWorkspaceMatches = candidateErr == nil && originScope.Matched && strings.TrimSpace(originScope.WorkspaceID) == strings.TrimSpace(workspaceScope.WorkspaceID)
+				}
+			}
+			if !originPrincipalMatches || !originWorkspaceMatches {
 				writeError(w, http.StatusBadRequest, errors.New("origin session must belong to the request principal and canonical workspace"))
 				return
 			}
