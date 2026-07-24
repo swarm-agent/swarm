@@ -1,5 +1,5 @@
-import { useEffect, useId, useRef, useState } from 'react'
-import { ListChecks, ListTodo, Plus } from 'lucide-react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { ChevronLeft, ChevronRight, ListChecks, ListTodo, Plus } from 'lucide-react'
 
 export type DesktopComposerTaskMode = 'action' | 'plan'
 
@@ -8,21 +8,29 @@ interface DesktopComposerActionMenuProps {
   onPrimeTask: (mode: DesktopComposerTaskMode) => void
 }
 
-const TASK_EXPLANATION = 'Your next message will be sent to a background agent in a worktree.'
+type ComposerActionMenuView = 'root' | 'task'
+
+const TASK_EXPLANATION = 'Send your next message to a background agent in a managed worktree.'
 
 export function DesktopComposerActionMenu({ disabled = false, onPrimeTask }: DesktopComposerActionMenuProps) {
   const [open, setOpen] = useState(false)
+  const [view, setView] = useState<ComposerActionMenuView>('root')
   const menuId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
+
+  const closeMenu = useCallback(() => {
+    setOpen(false)
+    setView('root')
+  }, [])
 
   useEffect(() => {
     if (!open) return
 
     const handlePointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+      if (!rootRef.current?.contains(event.target as Node)) closeMenu()
     }
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
+      if (event.key === 'Escape') closeMenu()
     }
 
     document.addEventListener('pointerdown', handlePointerDown)
@@ -31,14 +39,23 @@ export function DesktopComposerActionMenu({ disabled = false, onPrimeTask }: Des
       document.removeEventListener('pointerdown', handlePointerDown)
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [open])
+  }, [closeMenu, open])
 
   useEffect(() => {
-    if (disabled) setOpen(false)
-  }, [disabled])
+    if (disabled) closeMenu()
+  }, [closeMenu, disabled])
+
+  const toggleMenu = () => {
+    if (open) {
+      closeMenu()
+      return
+    }
+    setView('root')
+    setOpen(true)
+  }
 
   const primeTask = (mode: DesktopComposerTaskMode) => {
-    setOpen(false)
+    closeMenu()
     onPrimeTask(mode)
   }
 
@@ -48,10 +65,10 @@ export function DesktopComposerActionMenu({ disabled = false, onPrimeTask }: Des
         type="button"
         disabled={disabled}
         aria-label="Open composer actions"
-        aria-haspopup="dialog"
+        aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        onClick={() => setOpen((current) => !current)}
+        onClick={toggleMenu}
         className="inline-flex h-9 w-9 items-center justify-center rounded-lg border-0 bg-transparent p-0 text-[var(--app-text-muted)] shadow-none transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:bg-[var(--app-surface-hover)] focus-visible:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50"
       >
         <Plus size={18} aria-hidden="true" />
@@ -60,41 +77,67 @@ export function DesktopComposerActionMenu({ disabled = false, onPrimeTask }: Des
       {open ? (
         <div
           id={menuId}
-          role="dialog"
-          aria-label="Composer actions"
-          className="absolute bottom-full left-0 z-40 mb-2 w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2 shadow-[var(--shadow-panel)]"
+          role="menu"
+          aria-label={view === 'task' ? 'Task type' : 'Composer actions'}
+          className="absolute bottom-full left-0 z-40 mb-2 w-[min(18rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1.5 shadow-[var(--shadow-panel)]"
+          data-testid="desktop-composer-actions-menu"
         >
-          <div className="flex min-w-0 items-center justify-between gap-3 rounded-lg px-2 py-1.5" data-testid="desktop-composer-task-row">
-            <span className="group/task relative flex min-w-0 items-center gap-2 text-sm font-medium text-[var(--app-text)]">
-              <ListTodo size={16} className="shrink-0 text-[var(--app-text-muted)]" aria-hidden="true" />
-              <span>Task</span>
-              <span
-                role="tooltip"
-                className="pointer-events-none absolute bottom-full left-0 z-50 mb-2 hidden w-64 rounded-lg bg-[var(--app-text)] px-3 py-2 text-xs font-normal leading-5 text-[var(--app-surface)] shadow-[var(--shadow-panel)] group-hover/task:block group-focus-within/task:block"
-              >
-                {TASK_EXPLANATION}
+          {view === 'root' ? (
+            <button
+              type="button"
+              role="menuitem"
+              aria-haspopup="menu"
+              onClick={() => setView('task')}
+              className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]"
+              data-testid="desktop-composer-task-menu-item"
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--app-bg-alt)] text-[var(--app-primary)]">
+                <ListTodo size={16} aria-hidden="true" />
               </span>
-            </span>
-            <span className="flex shrink-0 items-center gap-1">
+              <span className="min-w-0 flex-1">
+                <span className="block font-semibold">Task</span>
+                <span className="block text-[11px] leading-4 text-[var(--app-text-subtle)]">Run work in the background</span>
+              </span>
+              <ChevronRight size={16} className="shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />
+            </button>
+          ) : (
+            <div data-testid="desktop-composer-task-submenu">
               <button
                 type="button"
-                onClick={() => primeTask('action')}
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg border-0 bg-transparent px-2.5 text-xs font-medium text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-border-accent)]"
+                onClick={() => setView('root')}
+                className="mb-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-[var(--app-text-muted)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:bg-[var(--app-surface-hover)]"
+                aria-label="Back to composer actions"
               >
-                <ListTodo size={14} aria-hidden="true" />
-                <span>Action</span>
+                <ChevronLeft size={15} aria-hidden="true" />
+                <span>Task</span>
               </button>
+              <p className="px-2.5 pb-2 text-[11px] leading-4 text-[var(--app-text-subtle)]">{TASK_EXPLANATION}</p>
               <button
                 type="button"
-                title="Prime a task for plan review before it starts"
+                role="menuitem"
                 onClick={() => primeTask('plan')}
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg border-0 bg-transparent px-2.5 text-xs font-medium text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-border-accent)]"
+                className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text-muted)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:bg-[var(--app-surface-hover)] focus-visible:text-[var(--app-text)]"
               >
-                <ListChecks size={14} aria-hidden="true" />
-                <span>Plan</span>
+                <ListChecks size={17} className="shrink-0" aria-hidden="true" />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-medium">Plan</span>
+                  <span className="block text-[11px] leading-4 text-[var(--app-text-subtle)]">Review the approach before work starts</span>
+                </span>
               </button>
-            </span>
-          </div>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => primeTask('action')}
+                className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text-muted)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:bg-[var(--app-surface-hover)] focus-visible:text-[var(--app-text)]"
+              >
+                <ListTodo size={17} className="shrink-0" aria-hidden="true" />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-medium">Action</span>
+                  <span className="block text-[11px] leading-4 text-[var(--app-text-subtle)]">Start the work right away</span>
+                </span>
+              </button>
+            </div>
+          )}
         </div>
       ) : null}
     </div>

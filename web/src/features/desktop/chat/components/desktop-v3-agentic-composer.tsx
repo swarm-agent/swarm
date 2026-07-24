@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
-import { AlertTriangle, ArrowUp, LoaderCircle, Mic, Minimize2, Square } from 'lucide-react'
+import { AlertTriangle, ArrowUp, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Square, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileRecord } from '../types/chat'
@@ -280,6 +280,7 @@ export function DesktopV3AgenticComposer({
   const [agentSetupInitialAgent, setAgentSetupInitialAgent] = useState('')
   const [agentSetupProfileId, setAgentSetupProfileId] = useState<string | null | undefined>(undefined)
   const [createProfileSignal, setCreateProfileSignal] = useState(0)
+  const [primedTaskMode, setPrimedTaskMode] = useState<DesktopComposerTaskMode | null>(null)
 
   const composerDisabled = disabled
   const showDictationButton = true
@@ -393,6 +394,7 @@ export function DesktopV3AgenticComposer({
     clearFinalFlushTimer()
     setDictationEnabled(false)
     setDictationListening(false)
+    setPrimedTaskMode(null)
     const recognition = recognitionRef.current
     if (recognition) {
       try {
@@ -527,20 +529,25 @@ export function DesktopV3AgenticComposer({
 
   const handlePrimeTask = useCallback((taskMode: DesktopComposerTaskMode) => {
     if (dictationEnabledRef.current) stopDictation(false)
-    const nextDraft = taskMode === 'plan' ? '/task plan ' : '/task '
-    onDraftChange(nextDraft)
+    setPrimedTaskMode(taskMode)
     if (typeof window === 'undefined') return
     window.requestAnimationFrame(() => {
       const textarea = textareaRef.current
       if (!textarea) return
       textarea.focus()
-      textarea.setSelectionRange(nextDraft.length, nextDraft.length)
+      const cursorPosition = textarea.value.length
+      textarea.setSelectionRange(cursorPosition, cursorPosition)
       resizeTextareaElement(textarea)
     })
-  }, [onDraftChange, resizeTextareaElement, stopDictation])
+  }, [resizeTextareaElement, stopDictation])
 
   const handleSubmitClick = useCallback(async () => {
-    const submittedDraft = textareaRef.current?.value ?? dictationComposer
+    const visibleDraft = textareaRef.current?.value ?? dictationComposer
+    const submittedDraft = primedTaskMode === 'plan'
+      ? `/task plan ${visibleDraft}`
+      : primedTaskMode === 'action'
+        ? `/task ${visibleDraft}`
+        : visibleDraft
     await submitDesktopComposer({
       draft: submittedDraft,
       canStop,
@@ -549,7 +556,7 @@ export function DesktopV3AgenticComposer({
       onStop,
       onSlashCommand,
     })
-  }, [canStop, clearComposerForSubmit, dictationComposer, onSlashCommand, onStop, onSubmit])
+  }, [canStop, clearComposerForSubmit, dictationComposer, onSlashCommand, onStop, onSubmit, primedTaskMode])
 
   const handleMentionInsert = useCallback((agent: string) => {
     const trimmedStartLength = draft.length - draft.replace(/^[\s\t\r\n]+/, '').length
@@ -681,6 +688,30 @@ export function DesktopV3AgenticComposer({
     onPickerOpen={openPicker}
   />
 
+  const taskModeIndicator = () => primedTaskMode ? (
+    <div
+      className="inline-flex min-w-0 items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] py-1 pl-2.5 pr-1 text-[11px] text-[var(--app-text)] shadow-sm"
+      data-testid="desktop-composer-task-mode-indicator"
+    >
+      {primedTaskMode === 'plan'
+        ? <ListChecks size={14} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+        : <ListTodo size={14} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />}
+      <span className="truncate font-semibold">
+        {primedTaskMode === 'plan' ? 'Background planning task' : 'Background action task'}
+      </span>
+      <button
+        type="button"
+        onClick={() => setPrimedTaskMode(null)}
+        disabled={composerDisabled}
+        aria-label="Clear background task mode"
+        title="Clear background task mode"
+        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--app-text-subtle)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <X size={13} aria-hidden="true" />
+      </button>
+    </div>
+  ) : null
+
   const compactButton = () => (
     <DesktopV3CompactButton
       contextLabel={contextButtonLabel}
@@ -735,7 +766,7 @@ export function DesktopV3AgenticComposer({
             <DesktopComposerActionMenu disabled={composerDisabled} onPrimeTask={handlePrimeTask} />
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                {showModePicker ? (
+                {primedTaskMode ? taskModeIndicator() : showModePicker ? (
                   <ProfileAgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} profiles={modelProfiles} activeProfile={activeModelProfile} mode={mode} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} modelDetail={modelControlDetail} renderTrigger={({ openPicker, open }) => renderComposerControl(openPicker, open)} onAgentSelect={onAgentSelect} onProfileSelect={onModelProfileSelect} onAddProfile={addModelProfile} onOpenAgentSetup={openAgentSetup} onSetDefault={async (profileId) => { if (!onModelProfileSetDefault) throw new Error('Default profile management is unavailable'); await onModelProfileSetDefault(profileId) }} onDeleteProfile={async (profileId) => { if (!onModelProfileDelete) throw new Error('Profile deletion is unavailable'); await onModelProfileDelete(profileId) }} />
                 ) : executionLabel ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
@@ -761,7 +792,7 @@ export function DesktopV3AgenticComposer({
             </div>
             <div className="flex min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:hidden">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                {showModePicker ? (
+                {primedTaskMode ? taskModeIndicator() : showModePicker ? (
                   <ProfileAgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} profiles={modelProfiles} activeProfile={activeModelProfile} mode={mode} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} compact modelDetail={modelControlDetail} renderTrigger={({ openPicker, open }) => renderComposerControl(openPicker, open)} onAgentSelect={onAgentSelect} onProfileSelect={onModelProfileSelect} onAddProfile={addModelProfile} onOpenAgentSetup={openAgentSetup} onSetDefault={async (profileId) => { if (!onModelProfileSetDefault) throw new Error('Default profile management is unavailable'); await onModelProfileSetDefault(profileId) }} onDeleteProfile={async (profileId) => { if (!onModelProfileDelete) throw new Error('Profile deletion is unavailable'); await onModelProfileDelete(profileId) }} />
                 ) : (
                   <span className="min-w-0 truncate font-medium text-[var(--app-text-muted)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
