@@ -16,7 +16,7 @@ This is the focused backlog to finish before the promotion PR, followed by post-
 3. **P1.1 hermetic archive/install smoke implementation complete; clean-machine systemd evidence remains an operator gate.** `scripts/smoke-release-archive.sh` verifies the checksum and required archive inputs, extracts the candidate, and runs the embedded `swarmsetup --artifact-root ... --no-service` against disposable system/storage roots under `TMPDIR`. `.github/workflows/build-main.yml` runs it before candidate upload or stable publication and stores `smoke-evidence.txt` beside the candidate artifacts. After the promotion PR is reviewed, a fresh supported-Linux VM must still prove the real systemd install/start/health/restart/update-failure/uninstall lifecycle, Desktop/terminal/TUI onboarding, and config/data metadata preservation before first publication.
 4. **P1.2 harmful-default implementation complete; privileged lifecycle evidence remains an operator gate.** Launch readiness asserts loopback/default-off/private defaults, blank installer choice and direct `swarmsetup` are files-only, and unsupported non-loopback API/desktop binding fails closed. Reinstall preserves existing canonical directory metadata, uninstall preserves config/data unless purge is explicit, failed release apply restarts the last working runtime, and default permission persistence redacts credentials and omits full tool output. After the promotion PR is reviewed, a clean supported-Linux VM must still prove service-account config owner/group/mode and the real systemd failure lifecycle before publication.
 5. **P1.3 repository hygiene is enforced; release-run evidence remains candidate-specific.** Precommit and launch-readiness now reject path, storage, secret, hidden-text, policy, dependency-vulnerability, generated-artifact, untracked-file, and unexpected non-text-blob failures. The only reviewed non-text assets are the two required vendored FFF Linux libraries and public web/PWA icons. Public installation claims remain Linux x86-64 only. Each release owner must still attach the exact candidate SHA and that run's workflow archive/checksum/smoke evidence rather than treating a checked-in branch snapshot as current truth.
-6. **Dead code is substantial, but the obvious command needs careful scoping.** The ignored local `.bin/deadcode` is a Go RTA analyzer. Executable-only analysis completed successfully and reported 231 lines in the root module and 362 in `swarmd`; examples include `cmd/swarm/main.go:425`, legacy-looking TUI paths under `internal/app/app.go`, `swarmd/internal/agent/service.go:678`, and old API paths. A naive `-test ./...` run currently fails while loading relocated/stale tests, so its output is not a deletion list. V3 findings are excluded by this document's scope lock.
+6. **P2.1 deadcode gate complete for the documented Linux/amd64 executable configuration.** Pinned scans established corrected baselines of 232 root and 364 `swarmd` findings. Reviewed ownership batches removed 20 proven-dead private findings (4 root, 16 daemon); final scans report 228 and 348, with no new symbols. All 576 remaining findings are classified as intentional, excluded, or uncertain-retain in `docs/checkpoints/deadcode-triage.md`; V3 implementation was unchanged. Relocated/stale test-loading gaps remain explicitly separate from the executable gate.
 
 ## P0 — stop before any new PR or release decision
 
@@ -220,17 +220,27 @@ This is the focused backlog to finish before the promotion PR, followed by post-
 
 ## P2 — bounded cleanup before promotion; do not turn it into a refactor
 
-### P2.1 Triage Go dead code by executable, configuration, and ownership
+### P2.1 Triage Go dead code by executable, configuration, and ownership — complete for the documented executable gate
 
-**Reproducible baseline**
+**Final status**
+
+- Pinned analyzer: `golang.org/x/tools/cmd/deadcode` from `golang.org/x/tools v0.45.0`; supported scan configuration: Linux/amd64 executable reachability rooted at both modules' `./cmd/...`, with `GOMAXPROCS=4`, repository-local ignored Go caches, and no `-test`, `-generated`, or custom `-tags` options.
+- Corrected baseline: root **232**, `swarmd` **364**. Final result: root **228**, `swarmd` **348**. Exactly **20** ledger-approved private findings were removed—4 root and 16 daemon—with no new symbol finding.
+- The remaining **576** findings are all reconciled in `docs/checkpoints/deadcode-triage.md` as intentional public API, test helper, platform/build-tag safety path, dormant/dynamic provider code, V3-excluded implementation, live-neighbor code, compatibility/retired-path candidate without migration proof, or uncertain-retain. A nonzero analyzer result is expected and is not a failed launch gate.
+- Aggregate review found no changed V3 implementation file, exported declaration, generated source, build-constrained source, registered route, supported provider registration, persisted storage key/format, or active vault compatibility path. Focused final builds passed for `swarm`, `swarmtui`, and `swarmd`.
+- Relocated Codex tests remain stale against current daemon APIs, and relocated Pebble encryption tests still call rejected unscoped APIs. Those pre-existing loading/contract gaps prevent a repository-wide `-test` claim and were not masked as successful coverage.
+- `bash scripts/check-launch-readiness.sh` passes after removing a historical legacy repository-path token from the ledger; the only warning is the expected skipped owner/device-specific forbidden-token scan when no `--forbid-token` values are supplied.
+- P2.1 closes the checked-in deadcode cleanup gate only. Publication still requires the operator-owned promotion, protected Environment approval, candidate archive/checksum/smoke evidence, and fresh supported-Linux VM systemd/onboarding/update/rollback/config-metadata/uninstall evidence described above.
+
+**Reproducible scan**
 
 ```bash
-GOCACHE="$PWD/.cache/go-build" GOMODCACHE="$PWD/.cache/gomod" GOPATH="$PWD/.cache/gopath" \
+GOMAXPROCS=4 GOCACHE="$PWD/.cache/go-build" GOMODCACHE="$PWD/.cache/gomod" GOPATH="$PWD/.cache/gopath" \
   .bin/deadcode ./cmd/...
 
 (
   cd swarmd
-  GOCACHE="$PWD/../.cache/go-build" GOMODCACHE="$PWD/../.cache/gomod" GOPATH="$PWD/../.cache/gopath" \
+  GOMAXPROCS=4 GOCACHE="$PWD/../.cache/go-build" GOMODCACHE="$PWD/../.cache/gomod" GOPATH="$PWD/../.cache/gopath" \
     ../.bin/deadcode ./cmd/...
 )
 ```
@@ -248,14 +258,14 @@ The local binary is ignored and architecture-specific. For CI/repeatability, ins
 
 **Acceptance**
 
-- A pinned, documented analyzer command is reproducible for both modules.
-- Every removed symbol has a recorded classification and no supported config that reaches it.
-- V3 reports are excluded, not “cleaned up.”
-- The final report distinguishes remaining intentional findings from removed code and identifies test-loading gaps separately.
+- A pinned, documented analyzer command is reproducible for both modules. **Complete.**
+- Every removed symbol has a recorded classification and no supported analyzed config that reaches it. **Complete for the documented Linux/amd64 executable configuration.**
+- V3 reports are excluded, not “cleaned up.” **Complete; aggregate review found no changed V3 implementation file.**
+- The final report distinguishes remaining intentional findings from removed code and identifies test-loading gaps separately. **Complete in `docs/checkpoints/deadcode-triage.md`.**
 
 **Initial non-V3 sampling for triage**
 
-- `cmd/swarm/main.go:425` — `parseYesOnly`
+- `cmd/swarm/main.go` — `parseYesOnly` (**removed after positive definition-only proof**)
 - `internal/app/app.go:850-893` — old session-event stream path
 - `internal/app/chat_backend_adapter.go` — large unreachable adapter surface
 - `swarmd/internal/agent/service.go:678` — `oldDefaultClonePrompt`

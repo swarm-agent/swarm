@@ -1,6 +1,6 @@
 # Go deadcode safety ledger
 
-Status: **triage complete; root R1/R2 and daemon S1–S5 cleanup integrated; conservative TUI audit complete with no additional removals**
+Status: **complete; 20 proven-dead findings removed, 576 intentional/excluded/uncertain findings retained and reconciled, final launch-readiness gate passed**
 Baseline commit: `301925b8f188c3e2be56342d65854e37201c49de` (`dev`)  
 Reports: `.tmp/prelaunch-deadcode-root.txt` (**232 findings**) and `.tmp/prelaunch-deadcode-swarmd.txt` (**364 findings**)  
 Total accounted for below: **596 findings**
@@ -44,7 +44,7 @@ Both scans were rerun at the baseline commit. Their outputs byte-match the two `
 
 | Module | Pattern | Main packages used as RTA roots |
 |---|---|---|
-| `swarm-refactor/swarmtui` | `./cmd/...` | `cmd/fffprobe`, `cmd/gofmtfiles`, `cmd/rebuild`, `cmd/swarm`, `cmd/swarmsetup`, `cmd/swarmtui` |
+| Root Go module | `./cmd/...` | `cmd/fffprobe`, `cmd/gofmtfiles`, `cmd/rebuild`, `cmd/swarm`, `cmd/swarmsetup`, `cmd/swarmtui` |
 | `swarm/packages/swarmd` | `./cmd/...` | `cmd/fffprobe`, `cmd/pebble-inspect`, `cmd/swarm-fff-search`, `cmd/swarmctl`, `cmd/swarmd`, `cmd/swarmdbpeek` |
 
 Coverage is intentionally limited to executable reachability for the current default Linux/amd64 configuration. No `-test`, `-generated`, or `-tags` option was used. Repository-wide `-test` remains an invalid gate while relocated/stale test packages cannot all load. The findings therefore cannot prove unreachability for another GOOS/GOARCH/tag set, external consumers, tests, compatibility data, or dormant registration paths.
@@ -262,6 +262,18 @@ Scopes are non-overlapping. S3 and S4 share the auth domain but own different fi
 - Focused tests passed: permission notification/manage-sessions tests; worktree principal-config tests; and current colocated Codex replay/output/privacy tests (`TestBuildRequestPayloadSanitizesNativeResponseReplayItems`, `TestPrepareIncrementalWebsocketRequestUsesCompletedOutputBaseline`, `TestCodexOutboundShapeDiagnosticsAreSafeAndCountNativeInput`).
 - Relocated Codex tests under root `tests/swarmd/...` do not currently compile against the daemon module due package/API drift (`reasoningPayload`, `EffectiveContextWindow`, and `buildCodexTransportHeaders` signatures). Relocated Pebble encryption tests likewise fail because they still call now-rejected unscoped APIs (`account scope is required`). These pre-existing test-loading gaps were not masked or used as passing evidence.
 - The bounded swarmd analyzer rerun produced **348 findings**, exactly 16 fewer than baseline after normalizing line-number shifts. The removed symbol set matches the 16 removals; no new symbol finding appeared.
+
+## Final reconciliation and launch-gate closeout
+
+- The exact documented Linux/amd64 executable scans were rerun from final integrated source with `GOMAXPROCS=4`, the same repository-local ignored Go caches, and no `-test`, `-generated`, or custom `-tags` options. Final snapshots are `.tmp/cp5-deadcode-root.txt` (**228 findings**) and `.tmp/cp5-deadcode-swarmd.txt` (**348 findings**).
+- Both final outputs byte-match their prior post-cleanup snapshots (`.tmp/cp2-deadcode-root.txt` and `.tmp/cp4-deadcode-swarmd.txt`). Symbol-normalized comparison to the 232/364 baselines shows exactly the **20 approved removals**—4 root and 16 daemon—with **no new finding**. Every one of the remaining **576 findings** maps to a retained ledger row above; none is unclassified.
+- Retained categories are intentional public APIs, test helpers, platform/build-tag safety paths, dormant/dynamic provider code, V3-excluded implementation, live-neighbor code, compatibility/retired-path candidates that lack migration proof, and uncertain code whose deletion risk exceeds cleanup value. Generated production findings remain zero. A nonzero final warning count is therefore expected and is not a launch defect.
+- Aggregate review from baseline `301925b8f188c3e2be56342d65854e37201c49de` found only the approved private symbol removals and the no-op helper's sole test. No V3 implementation path, exported declaration, generated file, build-constrained file, registered route, provider registration, persisted key/format, active vault compatibility path, or unrelated file changed. The cleanup removed 214 substantive source/test lines; `gofmt` also removed one trailing blank line.
+- Final focused builds passed for `./cmd/swarm`, `./cmd/swarmtui`, and `swarmd/cmd/swarmd`, with outputs under run-scoped temporary storage. Focused tests from the ownership batches remain recorded above; no broad test suite was run.
+- Test-loading gaps remain separate from this successful executable gate: relocated Codex tests under `tests/swarmd/...` drift from current daemon APIs (`reasoningPayload`, `EffectiveContextWindow`, and `buildCodexTransportHeaders`), and relocated Pebble encryption tests still invoke rejected unscoped APIs and fail with `account scope is required`. The analyzer was not run with `-test`, and these pre-existing gaps were not represented as passing.
+- The first final launch-readiness run correctly rejected this ledger's historical root module identifier as a legacy repository-path token. Replacing that identifier with the portable label “Root Go module” fixed the documentation defect. The corrected `bash scripts/check-launch-readiness.sh` run passed; the owner/device-specific forbidden-token scan remained the expected warning because no `--forbid-token` values were supplied.
+- This closes the checked-in P2.1 deadcode gate only. Remaining publication prerequisites are operator-owned: review/promotion through `dev` to `main`, protected `stable-release` Environment approval, candidate-specific archive/checksum/smoke evidence, and a fresh supported-Linux VM proving real systemd lifecycle, Desktop/terminal/TUI onboarding, update/rollback, canonical config owner/group/`0600` preservation, and default uninstall retention.
+- `.bin/deadcode`, `.cache/`, `.tmp/cp5-deadcode-*.txt`, and all other analyzer/build scratch remain ignored and unstaged. The final tracked documentation update must be committed before the release candidate can satisfy a literally clean worktree check.
 
 ## Relevant filepaths
 
