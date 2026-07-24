@@ -19,6 +19,38 @@ test('Desktop V3 composer hides compact controls unless the persisted preference
   assert.doesNotMatch(source, /mobile.*plus|plus.*menu/i)
 })
 
+test('Desktop V3 composer opens task actions from a borderless plus trigger and primes without submitting', async () => {
+  const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
+  const actions = await readFile(new URL('./desktop-composer-action-menu.tsx', import.meta.url), 'utf8')
+
+  assert.equal((source.match(/<DesktopComposerActionMenu disabled=\{composerDisabled\} onPrimeTask=\{handlePrimeTask\} \/>/g) ?? []).length, 1)
+  assert.match(source, /data-composer-bottom-row>\s*<DesktopComposerActionMenu disabled=\{composerDisabled\} onPrimeTask=\{handlePrimeTask\} \/>/)
+  assert.doesNotMatch(source, /data-composer-input-row>\s*<DesktopComposerActionMenu/)
+  assert.match(source, /taskMode === 'plan' \? '\/task plan ' : '\/task '/)
+  assert.match(source, /textarea\.focus\(\)/)
+  assert.match(source, /textarea\.setSelectionRange\(nextDraft\.length, nextDraft\.length\)/)
+  assert.match(source, /resizeTextareaElement\(textarea\)/)
+  assert.doesNotMatch(source.match(/const handlePrimeTask[\s\S]*?(?=\n  const handleSubmitClick)/)?.[0] ?? '', /onSubmit|handleSubmitClick/)
+
+  assert.match(actions, /<Plus size=\{18\}/)
+  assert.match(actions, /aria-label="Open composer actions"/)
+  assert.match(actions, /aria-expanded=\{open\}/)
+  assert.match(actions, /onClick=\{\(\) => setOpen\(\(current\) => !current\)\}/)
+  assert.match(actions, /className="inline-flex h-9 w-9[^\"]*border-0[^\"]*bg-transparent[^\"]*shadow-none/)
+  assert.doesNotMatch(actions.match(/aria-label="Open composer actions"[\s\S]*?<\/button>/)?.[0] ?? '', /\bborder border-/)
+  assert.match(actions, /data-testid="desktop-composer-task-row"/)
+  assert.match(actions, />Task</)
+  assert.match(actions, />Action</)
+  assert.match(actions, />Plan</)
+  assert.match(actions, /justify-between/)
+  assert.match(actions, /onPrimeTask\(mode\)/)
+  assert.match(actions, /primeTask\('action'\)/)
+  assert.match(actions, /primeTask\('plan'\)/)
+  assert.match(actions, /role="tooltip"/)
+  assert.match(actions, /Your next message will be sent to a background agent in a worktree\./)
+  assert.doesNotMatch(actions, /createPortal/)
+})
+
 test('Desktop V3 composer uses the canonical joined plan and model control without iteration naming', async () => {
   const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
   const control = await readFile(new URL('./composer-plan-model-control.tsx', import.meta.url), 'utf8')

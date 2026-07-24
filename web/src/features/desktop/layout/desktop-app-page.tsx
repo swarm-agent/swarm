@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, ListChecks, LoaderCircle, Menu, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, ListChecks, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -4671,7 +4671,7 @@ export function DesktopAppPage() {
                       aria-label={`New chat in ${defaultNewChatWorkspaceLabel}`}
                       title={`New chat in ${defaultNewChatWorkspaceLabel}`}
                     >
-                      <Plus size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <MessageSquare size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                       <span className="min-w-0 truncate">New Chat</span>
                     </button>
                     <Link
@@ -4791,7 +4791,7 @@ export function DesktopAppPage() {
                       aria-label={`New chat in ${topWorkspaceLabel}`}
                       title="New Chat"
                     >
-                      <Plus size={13} strokeWidth={1.8} className="shrink-0" />
+                      <MessageSquare size={13} strokeWidth={1.8} className="shrink-0" />
                     </button>
                     <button
                       type="button"

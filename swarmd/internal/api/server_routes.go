@@ -135,8 +135,6 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/update/status", s.handleUpdateStatus)
 	mux.HandleFunc("/v1/update/apply", s.handleUpdateApply)
 	mux.HandleFunc("/v1/update/run", s.handleUpdateRun)
-	mux.HandleFunc("/v1/git/sync/inspect", s.handleGitSyncInspect)
-	mux.HandleFunc("/v1/git/sync/apply", s.handleGitSyncApply)
 	mux.HandleFunc(SessionStorageMaintenancePath, s.handleSessionStorageMaintenance)
 	mux.HandleFunc("/v1/integrations", s.handleIntegrations)
 	mux.HandleFunc("/v1/integrations/workspaces", s.handleIntegrationWorkspaces)

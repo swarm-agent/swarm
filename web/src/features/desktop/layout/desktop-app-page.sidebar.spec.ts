@@ -156,7 +156,7 @@ test('sidebar keeps review controls first and opens session-independent main-wor
   assert.deepEqual(SIDEBAR_SESSION_GROUPS.slice(0, 2).map((group) => group.id), ['needs_review', 'in_progress'])
 })
 
-test('workspace dropdown rows create chats without plus icons and the standalone plus precedes worktree', async () => {
+test('workspace dropdown rows create chats without icons and the standalone message-square precedes worktree', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const dropdownStart = source.indexOf('<div ref={workspaceDropdownRef}')
   const dropdownEnd = source.indexOf('{needsReviewCleanupOpen ?', dropdownStart)
@@ -176,7 +176,7 @@ test('workspace dropdown rows create chats without plus icons and the standalone
   assert.match(menuSource, /aria-label=\{`New chat in \$\{workspace\.workspaceName\}`\}/)
   assert.doesNotMatch(menuSource, /<Plus/)
   assert.ok(newChatIndex >= 0 && worktreeIndex > newChatIndex)
-  assert.match(dropdownSource, /handleStartNewSessionInWorkspace\(topWorkspacePath, topWorkspaceLabel\)[\s\S]*aria-label=\{`New chat in \$\{topWorkspaceLabel\}`\}[\s\S]*<Plus[\s\S]*openWorktreeSessionModal\(\{/)
+  assert.match(dropdownSource, /handleStartNewSessionInWorkspace\(topWorkspacePath, topWorkspaceLabel\)[\s\S]*aria-label=\{`New chat in \$\{topWorkspaceLabel\}`\}[\s\S]*<MessageSquare[\s\S]*openWorktreeSessionModal\(\{/)
   assert.doesNotMatch(dropdownSource, /handleWorkspaceSelect|menuitemradio|aria-checked|event\.stopPropagation\(\)/)
 })
 

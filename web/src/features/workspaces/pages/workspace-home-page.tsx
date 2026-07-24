@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type DragEvent, type ReactNode } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ArrowUp, Check, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, GripVertical, Home, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
+import { ArrowUp, Check, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, GripVertical, Home, MessageSquare, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
 import { Button } from '../../../components/ui/button'
 import { Badge } from '../../../components/ui/badge'
@@ -909,7 +909,7 @@ export function WorkspaceHomePage() {
                   aria-label={sidebarDefaultWorkspace ? `New chat in ${sidebarDefaultWorkspace.workspaceName}` : 'New chat'}
                   title={sidebarDefaultWorkspace ? `New chat in ${sidebarDefaultWorkspace.workspaceName}` : 'New Chat'}
                 >
-                  <Plus size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                  <MessageSquare size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                   <span className="min-w-0 truncate">New Chat</span>
                 </button>
                 <Link

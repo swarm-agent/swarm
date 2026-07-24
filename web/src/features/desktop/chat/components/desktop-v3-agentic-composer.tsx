@@ -17,6 +17,7 @@ import { ProfileAgentPicker } from './profile-agent-picker'
 import { ComposerPlanModelControl } from './composer-plan-model-control'
 import { DesktopMentionPanel } from './desktop-mention-panel'
 import { DesktopSlashCommandPanel } from './desktop-slash-command-panel'
+import { DesktopComposerActionMenu, type DesktopComposerTaskMode } from './desktop-composer-action-menu'
 
 const DICTATION_RESTART_DELAY_MS = 180
 const DICTATION_FINAL_FLUSH_MS = 450
@@ -524,6 +525,20 @@ export function DesktopV3AgenticComposer({
     startRecognition()
   }, [dictationButtonDisabled, draft, startRecognition, stopDictation])
 
+  const handlePrimeTask = useCallback((taskMode: DesktopComposerTaskMode) => {
+    if (dictationEnabledRef.current) stopDictation(false)
+    const nextDraft = taskMode === 'plan' ? '/task plan ' : '/task '
+    onDraftChange(nextDraft)
+    if (typeof window === 'undefined') return
+    window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current
+      if (!textarea) return
+      textarea.focus()
+      textarea.setSelectionRange(nextDraft.length, nextDraft.length)
+      resizeTextareaElement(textarea)
+    })
+  }, [onDraftChange, resizeTextareaElement, stopDictation])
+
   const handleSubmitClick = useCallback(async () => {
     const submittedDraft = textareaRef.current?.value ?? dictationComposer
     await submitDesktopComposer({
@@ -685,8 +700,8 @@ export function DesktopV3AgenticComposer({
         ) : slashPalette.active ? (
           <DesktopSlashCommandPanel palette={slashPalette as DesktopSlashPaletteState} selectedIndex={slashSelectionIndex} onHover={setSlashSelectionIndex} onSelect={handleSlashSelect} />
         ) : null}
-        <div className="relative min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] transition-colors focus-within:border-[var(--app-border-accent)]">
-          <div className="flex min-w-0 items-end gap-3 px-4 py-2 sm:py-3 lg:py-2.5">
+        <div className="relative min-w-0 overflow-visible rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] transition-colors focus-within:border-[var(--app-border-accent)]">
+          <div className="flex min-w-0 items-end gap-3 px-4 py-2 sm:py-3 lg:py-2.5" data-composer-input-row>
             <div className="min-w-0 flex-1">
               <Textarea
                 ref={textareaRef}
@@ -716,8 +731,9 @@ export function DesktopV3AgenticComposer({
               Use ↑/↓ to choose a subagent, Tab or Enter to insert, then continue typing your task.
             </div>
           ) : null}
-          <div className="min-w-0 overflow-hidden bg-transparent px-4 py-3 text-[11px]">
-            <div className="hidden min-w-0 items-center justify-between gap-2 min-[1000px]:flex">
+          <div className="flex min-w-0 items-center gap-2 overflow-visible bg-transparent px-4 py-3 text-[11px]" data-composer-bottom-row>
+            <DesktopComposerActionMenu disabled={composerDisabled} onPrimeTask={handlePrimeTask} />
+            <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {showModePicker ? (
                   <ProfileAgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} profiles={modelProfiles} activeProfile={activeModelProfile} mode={mode} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} modelDetail={modelControlDetail} renderTrigger={({ openPicker, open }) => renderComposerControl(openPicker, open)} onAgentSelect={onAgentSelect} onProfileSelect={onModelProfileSelect} onAddProfile={addModelProfile} onOpenAgentSetup={openAgentSetup} onSetDefault={async (profileId) => { if (!onModelProfileSetDefault) throw new Error('Default profile management is unavailable'); await onModelProfileSetDefault(profileId) }} onDeleteProfile={async (profileId) => { if (!onModelProfileDelete) throw new Error('Profile deletion is unavailable'); await onModelProfileDelete(profileId) }} />
@@ -743,7 +759,7 @@ export function DesktopV3AgenticComposer({
                 </Button>
               </div>
             </div>
-            <div className="flex w-full min-w-0 items-center justify-between gap-2 min-[1000px]:hidden">
+            <div className="flex min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:hidden">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {showModePicker ? (
                   <ProfileAgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} profiles={modelProfiles} activeProfile={activeModelProfile} mode={mode} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} compact modelDetail={modelControlDetail} renderTrigger={({ openPicker, open }) => renderComposerControl(openPicker, open)} onAgentSelect={onAgentSelect} onProfileSelect={onModelProfileSelect} onAddProfile={addModelProfile} onOpenAgentSetup={openAgentSetup} onSetDefault={async (profileId) => { if (!onModelProfileSetDefault) throw new Error('Default profile management is unavailable'); await onModelProfileSetDefault(profileId) }} onDeleteProfile={async (profileId) => { if (!onModelProfileDelete) throw new Error('Profile deletion is unavailable'); await onModelProfileDelete(profileId) }} />

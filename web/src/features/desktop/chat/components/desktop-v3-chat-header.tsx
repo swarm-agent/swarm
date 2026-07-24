@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Archive, Clipboard, Download, LoaderCircle, MessageSquareText, MoreVertical, Pin, Plus } from 'lucide-react'
+import { Archive, Clipboard, Download, LoaderCircle, MessageSquare, MessageSquareText, MoreVertical, Pin } from 'lucide-react'
 import { DesktopV3RunStatusPill, formatDesktopV3RunTimerLabel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
 
 export interface DesktopV3ChatHeaderSessionActions {
@@ -185,7 +185,7 @@ export function DesktopV3ChatHeader({
             aria-label="New session"
             title="New session"
           >
-            <Plus size={19} />
+            <MessageSquare size={19} />
           </button>
         ) : null}
 
