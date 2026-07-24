@@ -2769,45 +2769,6 @@ func (a *App) handleCommitCommand(args []string) {
 	a.chat.ShowToast(ui.ToastSuccess, status)
 }
 
-func (a *App) buildPlanExitModalBody(title string) string {
-	mode := "plan"
-	if a.chat != nil {
-		mode = a.chat.SessionMode()
-	}
-	homeProvider, homeModelName, _, homeServiceTier, homeContextMode := a.home.ModelState()
-	modelLabel := model.DisplayModelLabel(homeProvider, homeModelName, homeServiceTier, homeContextMode)
-	if modelLabel == "unset" {
-		modelLabel = "unset"
-	}
-	workspace := strings.TrimSpace(a.home.ActiveWorkspaceName())
-	if workspace == "" {
-		workspace = strings.TrimSpace(a.homeModel.CWD)
-	}
-	if workspace == "" {
-		workspace = "workspace"
-	}
-	title = strings.TrimSpace(title)
-	if title == "" {
-		title = "Exit Plan Mode"
-	}
-
-	lines := []string{
-		fmt.Sprintf("Title: %s", title),
-		fmt.Sprintf("Current mode: %s", mode),
-		fmt.Sprintf("Workspace: %s", workspace),
-		fmt.Sprintf("Model: %s", modelLabel),
-		"",
-		"Confirming this request will switch this session to auto mode.",
-		"After the switch, normal auto-mode tool permission policy applies.",
-		"",
-		"Check before approve:",
-		"- implementation steps are complete and concrete",
-		"- risks and rollback notes are captured",
-		"- next execution tasks are explicit",
-	}
-	return strings.Join(lines, "\n")
-}
-
 const tuiRetiredSessionAPIMessage = "TUI v1/v2 session APIs are retired; use a v3 session"
 
 func errTUIRetiredSessionAPI(operation string) error {
@@ -4217,18 +4178,6 @@ func (a *App) removeHomeSessionSummary(sessionID string) bool {
 	return true
 }
 
-func (a *App) commitSessionTitle(parentTitle, instructions string) string {
-	parentTitle = strings.TrimSpace(parentTitle)
-	instructions = strings.TrimSpace(instructions)
-	if parentTitle == "" {
-		parentTitle = "Session"
-	}
-	if instructions == "" {
-		return fmt.Sprintf("Commit · %s", parentTitle)
-	}
-	return clampText(fmt.Sprintf("Commit · %s · %s", parentTitle, instructions), 80)
-}
-
 func (a *App) commitRunInstructions(userInstructions string) string {
 	instructions := []string{
 		"You are the memory agent handling /commit from the TUI.",
@@ -4242,18 +4191,6 @@ func (a *App) commitRunInstructions(userInstructions string) string {
 		instructions = append(instructions, "Additional user instructions: "+text)
 	}
 	return strings.Join(instructions, "\n")
-}
-
-func (a *App) commitLineageMetadata(parentSessionID string, parentSummary model.SessionSummary, instructions string) map[string]any {
-	metadata := map[string]any{
-		"parent_session_id":   strings.TrimSpace(parentSessionID),
-		"parent_title":        strings.TrimSpace(parentSummary.Title),
-		"commit_instructions": strings.TrimSpace(instructions),
-		"lineage_kind":        "background_agent",
-		"lineage_label":       commitBackgroundLineageTag,
-		"launch_source":       "commit",
-	}
-	return metadata
 }
 
 func firstNonEmpty(values ...string) string {
