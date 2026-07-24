@@ -587,6 +587,7 @@ swarm_startup_config_validate() {
       valid["retain_tool_output_history"] = 1
       valid["v3_diagnostics"] = 1
       valid["provider_api_diagnostics"] = 1
+      valid["long_session_diagnostics"] = 1
       valid["swarm_name"] = 1
       valid["desktop_onboarding_complete"] = 1
       valid["child"] = 1
@@ -674,6 +675,9 @@ swarm_startup_config_validate() {
       if (!("provider_api_diagnostics" in seen)) {
         fail(sprintf("invalid startup config %s: missing provider_api_diagnostics", config_path))
       }
+      if (!("long_session_diagnostics" in seen)) {
+        fail(sprintf("invalid startup config %s: missing long_session_diagnostics", config_path))
+      }
       if (!("swarm_name" in seen)) {
         fail(sprintf("invalid startup config %s: missing swarm_name", config_path))
       }
@@ -727,6 +731,9 @@ swarm_startup_config_validate() {
       }
       if (values["provider_api_diagnostics"] != "true" && values["provider_api_diagnostics"] != "false") {
         fail(sprintf("invalid startup config %s: provider_api_diagnostics must be true or false", config_path))
+      }
+      if (values["long_session_diagnostics"] != "true" && values["long_session_diagnostics"] != "false") {
+        fail(sprintf("invalid startup config %s: long_session_diagnostics must be true or false", config_path))
       }
       if (values["desktop_onboarding_complete"] != "true" && values["desktop_onboarding_complete"] != "false") {
         fail(sprintf("invalid startup config %s: desktop_onboarding_complete must be true or false", config_path))
