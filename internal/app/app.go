@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -38,6 +37,7 @@ const (
 	interruptVoiceReady        = "voice-ready"
 	interruptStreamReady       = "stream-ready"
 	interruptGitStatusReady    = "git-status-ready"
+	interruptNotificationReady = "notification-ready"
 	interruptV3Chat            = "v3-chat-ready"
 	interruptQuit              = "quit"
 	defaultDaemonURL           = "http://127.0.0.1:7781"
@@ -126,6 +126,18 @@ type gitStatusRefreshResult struct {
 	path       string
 	status     gitRepoStatus
 	ok         bool
+}
+
+type gitWatcherStartResult struct {
+	generation uint64
+	path       string
+	watcher    *repoGitWatcher
+	err        error
+}
+
+type notificationCountResult struct {
+	count int
+	err   error
 }
 
 type repoGitWatcher struct {
@@ -254,10 +266,13 @@ type App struct {
 	tuiRealtimeClientID    string
 	tuiRealtimeScopeSerial atomic.Uint64
 
-	gitStatusCh        chan gitStatusRefreshResult
-	gitWatcher         *repoGitWatcher
-	gitWatchGeneration atomic.Uint64
+	gitStatusCh            chan gitStatusRefreshResult
+	gitWatcherReady        chan gitWatcherStartResult
+	gitWatcher             *repoGitWatcher
+	gitWatcherStartingPath string
+	gitWatchGeneration     atomic.Uint64
 
+	notificationCountCh    chan notificationCountResult
 	swarmNotificationCount int
 
 	pendingChatRender   chan struct{}
@@ -274,6 +289,7 @@ type App struct {
 
 	devUpdateRequested     bool
 	releaseUpdateRequested bool
+	startupUpdateAnnounced bool
 
 	sessionWorksetPagination tuiSessionWorksetPagination
 }
@@ -350,6 +366,8 @@ func New() (*App, error) {
 		voiceCaptureCh:      make(chan voiceCaptureEvent, 4),
 		streamEvents:        make(chan client.StreamEventEnvelope, 256),
 		gitStatusCh:         make(chan gitStatusRefreshResult, 8),
+		gitWatcherReady:     make(chan gitWatcherStartResult, 1),
+		notificationCountCh: make(chan notificationCountResult, 1),
 		pendingChatRender:   make(chan struct{}, 1),
 		pendingV3ChatRender: make(chan struct{}, 1),
 		pendingStreamReady:  make(chan struct{}, 1),
@@ -375,48 +393,15 @@ func New() (*App, error) {
 	app.bootstrapTheme(themeID)
 	app.home.SetCommandSuggestions(buildHomeCommandSuggestions(cfg.Startup.DevMode))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-	defer cancel()
-	var (
-		next              model.HomeModel
-		loadErr           error
-		notificationCount int
-		hasNotifications  bool
-	)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		count, err := app.loadSwarmNotificationCount(ctx)
-		if err == nil {
-			notificationCount = count
-			hasNotifications = true
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		next, loadErr = app.refreshHomeV3Model(ctx)
-	}()
-	wg.Wait()
-	if hasNotifications {
-		app.setSwarmNotificationCount(notificationCount)
+	// The screen is ready now. Do not hold the first frame behind workspace,
+	// topology, notification, provider, agent, update, context, or Git status
+	// enrichment. Load those through the existing canonical refresh paths and
+	// surface any failures after Run has rendered the usable shell.
+	if cfgErr != nil {
+		app.home.SetStatus(fmt.Sprintf("settings warning: %v", cfgErr))
 	}
-	if loadErr != nil {
-		app.home.SetStatus(fmt.Sprintf("backend unavailable: %v", loadErr))
-		app.home.SetModel(app.homeModel)
-	} else {
-		app.syncActiveContextFromHomeModel(next)
-		app.applyHomeModel(next)
-		app.syncVaultUI()
-		if cfgErr != nil {
-			app.home.SetStatus(fmt.Sprintf("settings warning: %v", cfgErr))
-		}
-		app.announceStartupUpdate(next)
-	}
-	if loadErr != nil && cfgErr != nil {
-		app.home.SetStatus(fmt.Sprintf("backend unavailable: %v (settings warning: %v)", loadErr, cfgErr))
-	}
-	app.refreshGitRealtimeWatcher()
+	app.queueReload(false)
+	app.queueNotificationCount()
 	app.announceAppliedUpdate()
 	app.openStartupNetworkWarningModal()
 	return app, nil
@@ -507,6 +492,9 @@ func (a *App) Run() error {
 				if a.consumeGitStatusRefreshResults() {
 					dirty = true
 				}
+			case interruptNotificationReady:
+				a.consumeNotificationCountResult()
+				dirty = true
 			case interruptV3Chat:
 				a.consumeV3ChatRender()
 				dirty = true
@@ -7771,6 +7759,7 @@ func (a *App) consumeReloadResult() {
 		a.syncActiveContextFromHomeModel(result.model)
 		a.applyHomeModel(result.model)
 		a.syncVaultUI()
+		a.announceStartupUpdate(result.model)
 	default:
 	}
 }
@@ -7782,6 +7771,17 @@ func (a *App) consumeGitStatusRefreshResults() bool {
 	changed := false
 	for {
 		select {
+		case result := <-a.gitWatcherReady:
+			if result.generation != a.gitWatchGeneration.Load() || !pathsEqual(result.path, a.gitWatcherStartingPath) {
+				discardRepoGitWatcher(result.watcher)
+				continue
+			}
+			a.gitWatcherStartingPath = ""
+			if result.err != nil || result.watcher == nil {
+				continue
+			}
+			a.gitWatcher = result.watcher
+			a.runGitRealtimeWatcher(result.watcher, result.generation, result.path)
 		case result := <-a.gitStatusCh:
 			if result.generation != a.gitWatchGeneration.Load() {
 				continue
@@ -7922,6 +7922,41 @@ func (a *App) setSwarmNotificationCount(count int) {
 	}
 }
 
+func (a *App) queueNotificationCount() {
+	if a == nil || a.api == nil || a.notificationCountCh == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		count, err := a.loadSwarmNotificationCount(ctx)
+		select {
+		case a.notificationCountCh <- notificationCountResult{count: count, err: err}:
+		default:
+		}
+		if a.screen != nil {
+			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptNotificationReady))
+		}
+	}()
+}
+
+func (a *App) consumeNotificationCountResult() {
+	if a == nil || a.notificationCountCh == nil {
+		return
+	}
+	select {
+	case result := <-a.notificationCountCh:
+		if result.err != nil {
+			if a.home != nil {
+				a.home.SetStatus(fmt.Sprintf("notification load failed: %v", result.err))
+			}
+			return
+		}
+		a.setSwarmNotificationCount(result.count)
+	default:
+	}
+}
+
 func (a *App) loadSwarmNotificationCount(ctx context.Context) (int, error) {
 	if a == nil || a.api == nil {
 		return 0, errors.New("api client unavailable")
@@ -7944,13 +7979,14 @@ func homeUpdateVersionHint(status *client.UpdateStatus) string {
 }
 
 func (a *App) announceStartupUpdate(next model.HomeModel) {
-	if a == nil {
+	if a == nil || a.startupUpdateAnnounced {
 		return
 	}
 	status := next.UpdateStatus
 	if status == nil || !status.UpdateAvailable {
 		return
 	}
+	a.startupUpdateAnnounced = true
 	latest := strings.TrimSpace(status.LatestVersion)
 	current := strings.TrimSpace(next.Version)
 	if latest == "" {
@@ -8477,27 +8513,50 @@ func (a *App) refreshGitRealtimeWatcher() {
 		a.stopGitRealtimeWatcher()
 		return
 	}
-	if a.gitWatcher != nil && pathsEqual(a.gitWatcher.path, target) {
+	if (a.gitWatcher != nil && pathsEqual(a.gitWatcher.path, target)) || pathsEqual(a.gitWatcherStartingPath, target) {
 		return
 	}
 	a.stopGitRealtimeWatcher()
 	a.startGitRealtimeWatcher(target)
 }
 
+// startGitRealtimeWatcher keeps repository discovery and recursive watch
+// registration off the TUI event loop. Large worktrees can contain tens of
+// thousands of directories, so constructing the watcher synchronously would
+// freeze the first usable frame and every workspace switch.
 func (a *App) startGitRealtimeWatcher(path string) {
-	if a == nil {
+	if a == nil || a.gitWatcherReady == nil {
 		return
 	}
 	target := normalizePath(path)
 	if target == "" {
 		return
 	}
-	watcher, err := newRepoGitWatcher(target)
-	if err != nil {
+	generation := a.gitWatchGeneration.Add(1)
+	a.gitWatcherStartingPath = target
+	go func() {
+		watcher, err := newRepoGitWatcher(target)
+		if generation != a.gitWatchGeneration.Load() {
+			discardRepoGitWatcher(watcher)
+			return
+		}
+		result := gitWatcherStartResult{generation: generation, path: target, watcher: watcher, err: err}
+		select {
+		case a.gitWatcherReady <- result:
+		default:
+			discardRepoGitWatcher(watcher)
+			return
+		}
+		if a.screen != nil {
+			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptGitStatusReady))
+		}
+	}()
+}
+
+func (a *App) runGitRealtimeWatcher(watcher *repoGitWatcher, generation uint64, target string) {
+	if a == nil || watcher == nil {
 		return
 	}
-	generation := a.gitWatchGeneration.Add(1)
-	a.gitWatcher = watcher
 	go watcher.run(func() {
 		status, ok := gitStatusForPath(target)
 		result := gitStatusRefreshResult{generation: generation, path: target, status: status, ok: ok}
@@ -8519,8 +8578,19 @@ func (a *App) startGitRealtimeWatcher(path string) {
 	})
 }
 
+func discardRepoGitWatcher(watcher *repoGitWatcher) {
+	if watcher != nil && watcher.watcher != nil {
+		_ = watcher.watcher.Close()
+	}
+}
+
 func (a *App) stopGitRealtimeWatcher() {
-	if a == nil || a.gitWatcher == nil {
+	if a == nil {
+		return
+	}
+	a.gitWatchGeneration.Add(1)
+	a.gitWatcherStartingPath = ""
+	if a.gitWatcher == nil {
 		return
 	}
 	a.gitWatcher.stopWatching()
