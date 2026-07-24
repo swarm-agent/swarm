@@ -668,10 +668,6 @@ func (s *AuthStore) saveCredential(next AuthCredentialRecord, setActive bool) (A
 	return next, nil
 }
 
-func (s *AuthStore) getActiveCredentialID(provider string) (string, bool, error) {
-	return "", false, errAccountScopeRequired
-}
-
 func (s *AuthStore) getActiveCredentialIDForAccount(accountScopeID, provider string) (string, bool, error) {
 	accountScopeID, err := requireAccountScopeID(accountScopeID)
 	if err != nil {
@@ -686,10 +682,6 @@ func (s *AuthStore) getActiveCredentialIDForAccount(accountScopeID, provider str
 		return "", false, nil
 	}
 	return normalizeCredentialID(record.ID), true, nil
-}
-
-func (s *AuthStore) setActiveCredentialID(provider, credentialID string, updatedAt int64) error {
-	return errAccountScopeRequired
 }
 
 func (s *AuthStore) setActiveCredentialIDForAccount(accountScopeID, provider, credentialID string, updatedAt int64) error {
@@ -730,10 +722,6 @@ func (s *AuthStore) deleteTagIndexes(record AuthCredentialRecord) error {
 		}
 	}
 	return nil
-}
-
-func (s *AuthStore) migrateLegacyCodexRecord() (AuthCredentialRecord, bool, error) {
-	return AuthCredentialRecord{}, false, errAccountScopeRequired
 }
 
 func normalizeProvider(provider string) string {
