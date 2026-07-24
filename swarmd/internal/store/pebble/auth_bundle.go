@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 )
@@ -349,24 +348,3 @@ func credentialBundleSnapshotHash(bundle CredentialBundle) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func managedCredentialBundleKey(provider, credentialID string) string {
-	return normalizeProvider(provider) + "/" + normalizeCredentialID(credentialID)
-}
-
-func bundleProviderSummary(records []AuthCredentialRecord) []string {
-	seen := make(map[string]struct{}, len(records))
-	out := make([]string, 0, len(records))
-	for _, record := range records {
-		provider := normalizeProvider(record.Provider)
-		if provider == "" {
-			continue
-		}
-		if _, ok := seen[provider]; ok {
-			continue
-		}
-		seen[provider] = struct{}{}
-		out = append(out, provider)
-	}
-	sort.Strings(out)
-	return out
-}
