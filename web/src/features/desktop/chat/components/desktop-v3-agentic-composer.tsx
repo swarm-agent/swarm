@@ -731,7 +731,7 @@ export function DesktopV3AgenticComposer({
         ) : slashPalette.active ? (
           <DesktopSlashCommandPanel palette={slashPalette as DesktopSlashPaletteState} selectedIndex={slashSelectionIndex} onHover={setSlashSelectionIndex} onSelect={handleSlashSelect} />
         ) : null}
-        <div className="relative min-w-0 overflow-visible rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] transition-colors focus-within:border-[var(--app-border-accent)]">
+        <div className="relative min-w-0 overflow-visible rounded-2xl border border-[var(--app-border)]/40 bg-[var(--app-bg-alt)] shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-300 ease-out focus-within:border-transparent focus-within:ring-2 focus-within:ring-[var(--app-border-accent)]/60 focus-within:shadow-[0_8px_24px_rgba(0,0,0,0.06),0_0_12px_rgba(59,130,246,0.1)]">
           <div className="flex min-w-0 items-end gap-3 px-4 py-2 sm:py-3 lg:py-2.5" data-composer-input-row>
             <div className="min-w-0 flex-1">
               <Textarea
