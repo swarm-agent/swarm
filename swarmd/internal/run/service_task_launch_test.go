@@ -165,7 +165,7 @@ func TestParseTaskCallArgumentsValidLaunches(t *testing.T) {
 	}
 }
 
-func TestParseTaskCallArgumentsAllowsOnlyCoderAndExplorerAndAppliesCanonicalCoderScope(t *testing.T) {
+func TestParseTaskCallArgumentsSupportsCompiledTaskAgentsAndAppliesCanonicalCoderScope(t *testing.T) {
 	tests := []struct {
 		name string
 		args map[string]any
@@ -206,8 +206,35 @@ func TestParseTaskCallArgumentsAllowsOnlyCoderAndExplorerAndAppliesCanonicalCode
 	}
 	for _, rejected := range []string{"clone", "system-clone", "reviewer"} {
 		_, err := parseTaskCallArguments(mustJSON(t, map[string]any{"prompt": "reject", "agent": rejected, "role": "reject"}))
-		if err == nil || !strings.Contains(err.Error(), "subagent_type must be coder or explorer") {
-			t.Fatalf("target %q error = %v, want Coder/Explorer-only rejection", rejected, err)
+		if err == nil || !strings.Contains(err.Error(), "subagent_type must be coder, explorer, or designer") {
+			t.Fatalf("target %q error = %v, want compiled task-agent rejection", rejected, err)
+		}
+	}
+}
+
+func TestParseTaskCallArgumentsRequiresDistinctConcreteDesignerScopes(t *testing.T) {
+	valid, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt": "create two variants",
+		"launches": []any{
+			map[string]any{"subagent_type": "designer", "meta_prompt": "create compact variant", "owned_scope": []any{"web/src/variants/compact.tsx"}},
+			map[string]any{"subagent_type": agentruntime.DesignerAgentID, "meta_prompt": "create spacious variant", "owned_scope": []any{"web/src/variants/spacious.tsx"}},
+		},
+	}))
+	if err != nil || len(valid.Launches) != 2 || valid.Launches[0].RequestedSubagentType != "designer" {
+		t.Fatalf("valid Designer wave = %#v err=%v", valid.Launches, err)
+	}
+	for _, args := range []map[string]any{
+		{"prompt": "missing target", "agent": "designer", "role": "create variant"},
+		{"prompt": "absolute target", "agent": "designer", "role": "create variant", "owned_scope": []any{"/outside/variant.tsx"}},
+		{"prompt": "glob target", "agent": "designer", "role": "create variant", "owned_scope": []any{"web/src/variants/**"}},
+		{"prompt": "unclean target", "agent": "designer", "role": "create variant", "owned_scope": []any{"web/src/variants/../variant.tsx"}},
+		{"prompt": "overlap", "launches": []any{
+			map[string]any{"agent": "designer", "role": "first", "owned_scope": []any{"web/src/variants"}},
+			map[string]any{"agent": "designer", "role": "second", "owned_scope": []any{"web/src/variants/second.tsx"}},
+		}},
+	} {
+		if _, err := parseTaskCallArguments(mustJSON(t, args)); err == nil {
+			t.Fatalf("Designer scope validation accepted %#v", args)
 		}
 	}
 }
@@ -599,6 +626,81 @@ func TestApprovedExplorerInheritsParentWorktreeScopeWithoutAllocation(t *testing
 	}
 	if _, needsExpansion, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": filepath.Join(parent.WorkspacePath, "README.md")})}); err != nil || needsExpansion {
 		t.Fatalf("parent worktree read expansion: needed=%t err=%v scope=%#v", needsExpansion, err, scope)
+	}
+}
+
+func TestDesignerResolvesUtilityModelAndExplicitAccountOverride(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+
+	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "designer")
+	if err != nil || virtual || source != "" {
+		t.Fatalf("resolve Designer default: virtual=%t source=%q err=%v", virtual, source, err)
+	}
+	if profile.Name != agentruntime.DesignerAgentID || profile.Provider != "codex" || profile.Model == "" || profile.Thinking == "" {
+		t.Fatalf("Designer utility default = %+v", profile)
+	}
+
+	settings, err := svc.uiSettings.GetForAccount(parent.AccountScopeID)
+	if err != nil {
+		t.Fatalf("read Designer settings: %v", err)
+	}
+	settings.Agents.Designer = uisettings.CompactAgentSettings{Provider: "codex", Model: profile.Model, Thinking: "medium", ServiceTier: "priority"}
+	if _, err := svc.uiSettings.SetForAccount(parent.AccountScopeID, settings); err != nil {
+		t.Fatalf("save Designer override: %v", err)
+	}
+	overridden, _, _, err := svc.resolveTaskLaunchProfile(parent, agentruntime.DesignerAgentID)
+	if err != nil {
+		t.Fatalf("resolve Designer override: %v", err)
+	}
+	if overridden.Model != profile.Model || overridden.Thinking != "medium" || overridden.AutoServiceTier != "priority" {
+		t.Fatalf("Designer explicit override = %+v, default=%+v", overridden, profile)
+	}
+}
+
+func TestApprovedDesignerInheritsParentCheckoutWithoutAllocation(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	parent.WorktreeEnabled = true
+	parent.WorktreeRootPath = parent.WorkspacePath
+	parent.WorktreeBaseBranch = "dev"
+	parent.WorktreeBranch = "agent/parent"
+	stub := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{WorkspacePath: t.TempDir()}}
+	svc.SetWorktreeService(stub)
+	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "designer")
+	if err != nil || virtual {
+		t.Fatalf("resolve Designer profile: virtual=%t source=%q err=%v", virtual, source, err)
+	}
+	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex: 1, RequestedSubagent: "designer", MetaPrompt: "create variant", VirtualTarget: virtual, OwnedScope: []string{"web/src/variants/compact.tsx"},
+	}, "design", "", &profile, source, nil)
+	if err != nil {
+		t.Fatalf("prepare approved Designer: %v", err)
+	}
+	child := launch.ChildSession
+	if stub.allocations != 0 {
+		t.Fatalf("Designer allocated %d worktrees, want 0", stub.allocations)
+	}
+	if child.WorkspacePath != parent.WorkspacePath || child.WorktreeRootPath != parent.WorktreeRootPath || child.WorktreeBranch != parent.WorktreeBranch || !child.WorktreeEnabled {
+		t.Fatalf("Designer checkout facts = %#v, want inherited from %#v", child, parent)
+	}
+	if got := mapString(child.Metadata, "shared_parent_checkout"); got != "" {
+		// Boolean metadata is asserted below without converting its type.
+		t.Fatalf("unexpected string shared checkout metadata %q", got)
+	}
+	if shared, _ := child.Metadata["shared_parent_checkout"].(bool); !shared {
+		t.Fatalf("Designer child metadata missing shared checkout: %#v", child.Metadata)
+	}
+	if scope, _ := child.Metadata["owned_scope"].([]string); !slices.Equal(scope, []string{"web/src/variants/compact.tsx"}) {
+		t.Fatalf("Designer child owned scope = %#v", child.Metadata["owned_scope"])
 	}
 }
 
@@ -1372,6 +1474,37 @@ func stringSliceContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestDesignerPermissionManifestUsesCompiledSharedCheckoutProfile(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
+		"prompt": "create variant", "subagent_type": "designer", "meta_prompt": "create compact variant", "owned_scope": []any{"web/src/variants/compact.tsx"},
+	})})
+	if err != nil {
+		t.Fatalf("build Designer manifest: %v", err)
+	}
+	if len(manifest.Launches) != 1 {
+		t.Fatalf("Designer manifest launches = %#v", manifest.Launches)
+	}
+	row := manifest.Launches[0]
+	if row.ParentCopy || row.ResolvedAgentName != agentruntime.DesignerAgentID || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
+		t.Fatalf("Designer compiled shared-checkout manifest = %#v", row)
+	}
+	if !slices.Equal(row.OwnedScope, []string{"web/src/variants/compact.tsx"}) {
+		t.Fatalf("Designer manifest scope = %#v", row.OwnedScope)
+	}
+	for _, name := range []string{"read", "search", "find", "list", "write", "edit"} {
+		if !stringSliceContains(row.ResolvedTools.AllowedTools, name) {
+			t.Fatalf("Designer allowed tools %v missing %q", row.ResolvedTools.AllowedTools, name)
+		}
+	}
+	for _, name := range []string{"bash", "git_status", "git_commit", "task", "manage_worktree", "plan_manage"} {
+		if !stringSliceContains(row.ResolvedTools.DisabledTools, name) {
+			t.Fatalf("Designer disabled tools %v missing %q", row.ResolvedTools.DisabledTools, name)
+		}
+	}
 }
 
 func TestCoderPermissionSnapshotsCurrentCaller(t *testing.T) {

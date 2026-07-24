@@ -401,7 +401,7 @@ func normalizeDefaultUtilityAgentNames(values []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		name := normalizeName(value)
-		if name != "" && name != "memory" && name != "compact" && name != CompactAgentID && !IsExplorerAgentName(name) && !IsCoderAgentName(name) && !isRetiredCloneAgentName(name) {
+		if name != "" && name != "memory" && name != "compact" && name != CompactAgentID && !IsExplorerAgentName(name) && !IsCoderAgentName(name) && !IsDesignerAgentName(name) && !isRetiredCloneAgentName(name) {
 			out[name] = struct{}{}
 		}
 	}
@@ -2268,6 +2268,9 @@ func (s *Service) resolveSubagentForAccount(accountScopeID, nameOrPurpose string
 	}
 	if IsCoderAgentName(key) {
 		return s.ResolveSystemAgent(CoderAgentID, pebblestore.AgentProfile{})
+	}
+	if IsDesignerAgentName(key) {
+		return s.ResolveSystemAgent(DesignerAgentID, pebblestore.AgentProfile{})
 	}
 
 	if profile, ok, err := s.getProfileForAccountLocked(accountScopeID, key); err != nil {

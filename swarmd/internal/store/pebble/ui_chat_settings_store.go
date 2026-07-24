@@ -106,6 +106,7 @@ type UIAgentSettingsRecord struct {
 	Compact  UICompactAgentSettingsRecord `json:"compact,omitempty"`
 	Explorer UICompactAgentSettingsRecord `json:"explorer,omitempty"`
 	Coder    UICompactAgentSettingsRecord `json:"coder,omitempty"`
+	Designer UICompactAgentSettingsRecord `json:"designer,omitempty"`
 }
 
 type UISettingsRecord struct {
@@ -301,6 +302,10 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	record.Agents.Coder.Model = strings.TrimSpace(record.Agents.Coder.Model)
 	record.Agents.Coder.Thinking = strings.TrimSpace(record.Agents.Coder.Thinking)
 	record.Agents.Coder.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Coder.ServiceTier))
+	record.Agents.Designer.Provider = strings.ToLower(strings.TrimSpace(record.Agents.Designer.Provider))
+	record.Agents.Designer.Model = strings.TrimSpace(record.Agents.Designer.Model)
+	record.Agents.Designer.Thinking = strings.TrimSpace(record.Agents.Designer.Thinking)
+	record.Agents.Designer.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Designer.ServiceTier))
 	return record
 }
 

@@ -1330,6 +1330,7 @@ type UIAgentSettings struct {
 	Compact  UICompactAgentSettings `json:"compact,omitempty"`
 	Explorer UICompactAgentSettings `json:"explorer,omitempty"`
 	Coder    UICompactAgentSettings `json:"coder,omitempty"`
+	Designer UICompactAgentSettings `json:"designer,omitempty"`
 }
 
 type UISettings struct {

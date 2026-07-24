@@ -39,6 +39,7 @@ export interface UIAgentSettingsWire {
   compact?: UICompactAgentSettingsWire
   explorer?: UICompactAgentSettingsWire
   coder?: UICompactAgentSettingsWire
+  designer?: UICompactAgentSettingsWire
 }
 
 export type DesktopSessionMode = 'auto' | 'plan'
@@ -244,6 +245,15 @@ export function normalizeCoderAgentSettings(payload?: UISettingsWire | null): Re
   }
 }
 
+export function normalizeDesignerAgentSettings(payload?: UISettingsWire | null): Required<UICompactAgentSettingsWire> {
+  return {
+    provider: typeof payload?.agents?.designer?.provider === 'string' ? payload.agents.designer.provider.trim().toLowerCase() : '',
+    model: typeof payload?.agents?.designer?.model === 'string' ? payload.agents.designer.model.trim() : '',
+    thinking: typeof payload?.agents?.designer?.thinking === 'string' ? payload.agents.designer.thinking.trim() : '',
+    service_tier: typeof payload?.agents?.designer?.service_tier === 'string' ? payload.agents.designer.service_tier.trim().toLowerCase() : '',
+  }
+}
+
 export function withCompactAgentSettings(current: UISettingsWire, compact: UICompactAgentSettingsWire): UISettingsWire {
   return {
     ...current,
@@ -284,6 +294,21 @@ export function withCoderAgentSettings(current: UISettingsWire, coder: UICompact
         model: coder.model?.trim() ?? '',
         thinking: coder.thinking?.trim() ?? '',
         service_tier: coder.service_tier?.trim().toLowerCase() ?? '',
+      },
+    },
+  }
+}
+
+export function withDesignerAgentSettings(current: UISettingsWire, designer: UICompactAgentSettingsWire): UISettingsWire {
+  return {
+    ...current,
+    agents: {
+      ...(current.agents ?? {}),
+      designer: {
+        provider: designer.provider?.trim().toLowerCase() ?? '',
+        model: designer.model?.trim() ?? '',
+        thinking: designer.thinking?.trim() ?? '',
+        service_tier: designer.service_tier?.trim().toLowerCase() ?? '',
       },
     },
   }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -250,8 +251,10 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			launch.RequestedSubagentType = "coder"
 		case agentruntime.IsExplorerAgentName(launch.RequestedSubagentType):
 			launch.RequestedSubagentType = "explorer"
+		case agentruntime.IsDesignerAgentName(launch.RequestedSubagentType):
+			launch.RequestedSubagentType = "designer"
 		default:
-			return taskLaunchSpec{}, fmt.Errorf("%s subagent_type must be coder or explorer", label)
+			return taskLaunchSpec{}, fmt.Errorf("%s subagent_type must be coder, explorer, or designer", label)
 		}
 		if launch.MetaPrompt == "" {
 			return taskLaunchSpec{}, fmt.Errorf("%s requires meta_prompt or role assignment", label)
@@ -288,6 +291,9 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			return taskCallArguments{}, err
 		}
 		launches = append(launches, launch)
+	}
+	if err := validateTaskDesignerScopes(launches); err != nil {
+		return taskCallArguments{}, err
 	}
 
 	return taskCallArguments{
@@ -327,6 +333,37 @@ func parseTaskOwnedScope(raw map[string]any, label string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+func validateTaskDesignerScopes(launches []taskLaunchSpec) error {
+	designerIndexes := make([]int, 0, len(launches))
+	for i := range launches {
+		if !agentruntime.IsDesignerAgentName(launches[i].RequestedSubagentType) {
+			continue
+		}
+		if len(launches[i].OwnedScope) == 0 {
+			return fmt.Errorf("task launches[%d] Designer requires a concrete workspace-relative owned_scope or output target", i)
+		}
+		for j, raw := range launches[i].OwnedScope {
+			scope := strings.TrimSpace(raw)
+			clean := filepath.Clean(filepath.FromSlash(scope))
+			canonical := filepath.ToSlash(clean)
+			if scope == "" || filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || strings.ContainsAny(scope, "*?[]") || canonical != scope {
+				return fmt.Errorf("task launches[%d] Designer owned_scope[%d] must be a concrete clean workspace-relative path", i, j)
+			}
+			launches[i].OwnedScope[j] = canonical
+		}
+		designerIndexes = append(designerIndexes, i)
+	}
+	for left := 0; left < len(designerIndexes); left++ {
+		for right := left + 1; right < len(designerIndexes); right++ {
+			leftIndex, rightIndex := designerIndexes[left], designerIndexes[right]
+			if taskOwnedScopesOverlap(launches[leftIndex].OwnedScope, launches[rightIndex].OwnedScope) {
+				return fmt.Errorf("Designer owned scopes overlap between launches[%d] and launches[%d]; each concurrent variant requires a distinct output target", leftIndex, rightIndex)
+			}
+		}
+	}
+	return nil
 }
 
 func applyCanonicalCoderOwnedScope(launch *taskLaunchSpec) {
@@ -1686,8 +1723,8 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		var toolContract ResolvedAgentToolContract
 		var profileDisabledTools map[string]bool
 		var toolErr error
-		if virtualTarget || agentruntime.IsExplorerAgentName(resolvedName) {
-			// Compiled Coder and Explorer profiles are trusted launch snapshots, not
+		if virtualTarget || agentruntime.IsExplorerAgentName(resolvedName) || agentruntime.IsDesignerAgentName(resolvedName) {
+			// Compiled Coder, Explorer, and Designer profiles are trusted launch snapshots, not
 			// persisted agent rows. Compile their immutable
 			// contracts directly instead of looking them up in the agent store.
 			toolContract, _, profileDisabledTools, toolErr = s.compileResolvedAgentToolContract(parentSession.AccountScopeID, subagentProfile)

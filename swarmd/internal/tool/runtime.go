@@ -1196,7 +1196,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate a distinct research question to Explorer or an independent, dependency-ready owned scope to Coder. These are the only supported subagent types. Use this only when the user explicitly asks for subagents, asks for Explorer or Coder, or names the agent or agents to run. A generic request to create, make, start, or open a new session means a durable session via manage-sessions deploy, not this task tool. Keep cohesive work direct. Put child launches in the structured launches array; give every launch a concise title of about three words for cosmetic UI display, while keeping the full instructive assignment in meta_prompt. Each launch also states its deliverable, concurrency reason, owned scope, and dependency evidence for review.",
+			Description: "Delegate a distinct research question to Explorer, an independent dependency-ready implementation scope to Coder, or explicitly requested multiple UI/design iterations or variants to Designer. Designer is prohibited for ordinary UI work and single-design requests, which the parent handles directly. Eligible Designer children share the parent checkout, may inspect with read/search/find/list and implement with write/edit, have no Bash or Git, and produce ordinary reusable artifacts that remain until the user requests or chooses cleanup. A generic request to create, make, start, or open a new session means a durable session via manage-sessions deploy, not this task tool. Keep cohesive work direct. Put child launches in the structured launches array; give every launch a concise title of about three words for cosmetic UI display, while keeping the full instructive assignment in meta_prompt. Each launch also states its deliverable, concurrency reason, owned scope, and dependency evidence for review; Designer launches require complete briefs and distinct non-overlapping workspace-relative output targets, and dependency-ready variants should be batched.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1214,17 +1214,17 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"subagent_type": map[string]any{
 						"type":        "string",
-						"enum":        []string{"coder", "explorer"},
-						"description": "Subagent type for the single-launch shorthand. Supported values: coder or explorer. Requires a top-level meta_prompt or role.",
+						"enum":        []string{"coder", "explorer", "designer"},
+						"description": "Subagent type for the single-launch shorthand. Supported values: coder, explorer, or designer. Designer requires a concrete workspace-relative owned_scope. Requires a top-level meta_prompt or role.",
 					},
 					"agent": map[string]any{
 						"type":        "string",
-						"enum":        []string{"coder", "explorer"},
+						"enum":        []string{"coder", "explorer", "designer"},
 						"description": "Alias for subagent_type in the single-launch shorthand.",
 					},
 					"purpose": map[string]any{
 						"type":        "string",
-						"enum":        []string{"coder", "explorer"},
+						"enum":        []string{"coder", "explorer", "designer"},
 						"description": "Alias for subagent_type in the single-launch shorthand.",
 					},
 					"meta_prompt": map[string]any{
@@ -1241,23 +1241,23 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 					"concurrency_reason":  map[string]any{"type": "string", "description": "Why this scope is useful and safe to delegate now."},
-					"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional declared files, directories, or research scope owned by the child. An omitted Coder scope safely defaults to its entire isolated worktree."},
+					"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Required for Designer as a concrete clean workspace-relative path; an omitted Coder scope safely defaults to its entire isolated worktree."},
 					"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that the launch does not depend on unfinished child work."},
 					"launches": map[string]any{
 						"type":        "array",
-						"description": "The exact dependency-ready wave for one task approval. Do not paste JSON into prompt. Use Explorer for distinct research deliverables and Coder for implementation scopes created from the same parent HEAD on unique sibling worktrees. Intentional scope overlap is allowed and reported for sequential integration. The current backend orchestration policy defines launch limits; available budget is never a target.",
+						"description": "The exact dependency-ready wave for one task approval. Do not paste JSON into prompt. Use Explorer for distinct research deliverables, Coder for implementation scopes created from the same parent HEAD on unique sibling worktrees, and Designer only for explicit requests for multiple UI/design iterations or variants in the parent checkout. Designer may read/search/find/list/write/edit but has no Bash or Git; its ordinary reusable artifacts are retained unless the user requests or chooses cleanup. Concurrent Designer launches require complete briefs and distinct non-overlapping output scopes. The current backend orchestration policy defines launch limits; available budget is never a target.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"subagent_type":       map[string]any{"type": "string", "enum": []string{"coder", "explorer"}, "description": "Subagent type for this child. Supported values: coder or explorer."},
-								"agent":               map[string]any{"type": "string", "enum": []string{"coder", "explorer"}, "description": "Alias for subagent_type."},
-								"purpose":             map[string]any{"type": "string", "enum": []string{"coder", "explorer"}, "description": "Alias for subagent_type."},
+								"subagent_type":       map[string]any{"type": "string", "enum": []string{"coder", "explorer", "designer"}, "description": "Subagent type for this child. Supported values: coder, explorer, or designer."},
+								"agent":               map[string]any{"type": "string", "enum": []string{"coder", "explorer", "designer"}, "description": "Alias for subagent_type."},
+								"purpose":             map[string]any{"type": "string", "enum": []string{"coder", "explorer", "designer"}, "description": "Alias for subagent_type."},
 								"meta_prompt":         map[string]any{"type": "string", "description": "Required full instructive per-child assignment. Keep all scope and constraints here; this must be a field on the launch object, not text embedded in prompt."},
 								"title":               map[string]any{"type": "string", "description": "Concise cosmetic title for this child, ideally three words (for example, Frontend Security Audit). The UI displays this instead of meta_prompt."},
 								"role":                map[string]any{"type": "string", "description": "Alias for meta_prompt."},
 								"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 								"concurrency_reason":  map[string]any{"type": "string", "description": "Why this scope is useful and safe to run in the current wave."},
-								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional declared files, directories, or research scope for planning, review, and overlap warnings. An omitted Coder scope safely defaults to its entire isolated worktree; intentional overlap is allowed."},
+								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target. Required for Designer as a concrete clean workspace-relative path and must not overlap another concurrent Designer launch; an omitted Coder scope defaults to its isolated worktree."},
 								"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that this launch does not depend on another child's unfinished work."},
 							},
 							"additionalProperties": false,

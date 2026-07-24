@@ -13,7 +13,7 @@ func TestAgentsModalCompiledSubagentsOnlyOfferSingleProfiles(t *testing.T) {
 		{ProfileID: "split", Name: "Split", ModelMode: "split", Plan: &client.ModelProfileSelection{Provider: "codex", Model: "plan-model"}, Auto: &client.ModelProfileSelection{Provider: "codex", Model: "auto-model"}},
 	}
 
-	for _, agentName := range []string{"system-explorer", "system-clone", "coder"} {
+	for _, agentName := range []string{"system-explorer", "system-clone", "coder", "system-designer"} {
 		got := page.agentsModalModelProfileOptions(AgentModalProfile{Name: agentName, Mode: "subagent"})
 		if len(got) != 1 || got[0] != "single" {
 			t.Fatalf("%s profile options = %#v, want [single]", agentName, got)
@@ -32,6 +32,8 @@ func TestAgentsModalCompiledSubagentDisplayNames(t *testing.T) {
 		"clone":           "Coder",
 		"coder":           "Coder",
 		"system-explorer": "Explorer",
+		"system-designer": "Designer",
+		"designer":        "Designer",
 		"writer":          "writer",
 	} {
 		if got := agentsModalDisplayName(input); got != want {

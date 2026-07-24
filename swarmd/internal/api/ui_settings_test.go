@@ -15,6 +15,47 @@ import (
 	"swarm/packages/swarmd/internal/uisettings"
 )
 
+func TestUISettingsPostPersistsDesignerModelSettings(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-designer-api.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, hub.Publish)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server.SetUISettingsService(settingsSvc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader([]byte(`{"agents":{"designer":{"provider":"OPENAI","model":"utility-model","thinking":"medium","service_tier":"PRIORITY"}}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response uisettings.UISettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Agents.Designer.Provider != "openai" || response.Agents.Designer.Model != "utility-model" || response.Agents.Designer.Thinking != "medium" || response.Agents.Designer.ServiceTier != "priority" {
+		t.Fatalf("response Designer settings = %#v", response.Agents.Designer)
+	}
+	stored, err := settingsSvc.Get()
+	if err != nil {
+		t.Fatalf("reload settings: %v", err)
+	}
+	if stored.Agents.Designer != response.Agents.Designer {
+		t.Fatalf("stored Designer settings = %#v, want %#v", stored.Agents.Designer, response.Agents.Designer)
+	}
+}
+
 func TestUISettingsPostPersistsCoderModelSettings(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-coder-api.pebble"))
 	if err != nil {

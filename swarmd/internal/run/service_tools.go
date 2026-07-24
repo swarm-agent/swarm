@@ -31,6 +31,7 @@ type taskLaunchPrepared struct {
 	RequestedSubagent    string
 	MetaPrompt           string
 	AssignmentLabel      string
+	OwnedScope           []string
 	SubagentProvider     string
 	SubagentModel        string
 	SubagentProfile      pebblestore.AgentProfile
@@ -53,6 +54,7 @@ type taskLaunchOutcome struct {
 	ResolvedSubagent    string
 	MetaPrompt          string
 	AssignmentLabel     string
+	OwnedScope          []string
 	SubagentProvider    string
 	SubagentModel       string
 	ChildSessionID      string
@@ -137,6 +139,7 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 		ResolvedSubagent:   resolved,
 		MetaPrompt:         metaPrompt,
 		AssignmentLabel:    strings.TrimSpace(launch.AssignmentLabel),
+		OwnedScope:         append([]string(nil), launch.OwnedScope...),
 		SubagentProvider:   strings.TrimSpace(launch.SubagentProvider),
 		SubagentModel:      strings.TrimSpace(launch.SubagentModel),
 		ChildSessionID:     strings.TrimSpace(launch.ChildSession.ID),
@@ -263,6 +266,7 @@ func buildTaskStreamLaunchPayload(launch taskLaunchOutcome, status, phase string
 		"agent_type":                 strings.TrimSpace(launch.ResolvedSubagent),
 		"meta_prompt":                strings.TrimSpace(launch.MetaPrompt),
 		"assignment_label":           strings.TrimSpace(launch.AssignmentLabel),
+		"owned_scope":                append([]string(nil), launch.OwnedScope...),
 		"subagent_provider":          strings.TrimSpace(launch.SubagentProvider),
 		"subagent_model":             strings.TrimSpace(launch.SubagentModel),
 		"child_session_id":           strings.TrimSpace(launch.ChildSessionID),
@@ -367,6 +371,7 @@ func buildTaskStreamLaunchPatchPayload(launch taskLaunchOutcome, status, phase s
 		"subagent":                   strings.TrimSpace(launch.ResolvedSubagent),
 		"agent_type":                 strings.TrimSpace(launch.ResolvedSubagent),
 		"assignment_label":           strings.TrimSpace(launch.AssignmentLabel),
+		"owned_scope":                append([]string(nil), launch.OwnedScope...),
 		"subagent_provider":          strings.TrimSpace(launch.SubagentProvider),
 		"subagent_model":             strings.TrimSpace(launch.SubagentModel),
 		"child_session_id":           strings.TrimSpace(launch.ChildSessionID),
@@ -498,6 +503,8 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	childTemporaryWorkspaceRoots := append([]string(nil), parentSession.TemporaryWorkspaceRoots...)
 	childWorkspaceID := ""
 	childSessionID := sessionruntime.NewSessionID()
+	isCoderTarget := agentruntime.IsCoderAgentName(requestedSubagent)
+	isDesignerTarget := agentruntime.IsDesignerAgentName(requestedSubagent)
 	childMetadata := map[string]any{
 		"workspace_id":       worktreeruntime.WorkspaceIdentityForSession(childSessionID),
 		"runtime_state":      "standby",
@@ -515,12 +522,21 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		"requested_subagent": requestedSubagent,
 		"subagent":           strings.TrimSpace(subagentProfile.Name),
 	}
+	if len(launch.OwnedScope) > 0 {
+		childMetadata["owned_scope"] = append([]string(nil), launch.OwnedScope...)
+	}
+	if isDesignerTarget {
+		childMetadata["shared_parent_checkout"] = true
+		childMetadata["reusable_workspace_artifacts"] = true
+	}
 	if launch.VirtualTarget {
-		childWorktreeEnabled = false
-		childWorktreeRootPath = ""
-		childWorktreeBaseBranch = ""
-		childWorktreeBranch = ""
-		childTemporaryWorkspaceRoots = nil
+		if isCoderTarget {
+			childWorktreeEnabled = false
+			childWorktreeRootPath = ""
+			childWorktreeBaseBranch = ""
+			childWorktreeBranch = ""
+			childTemporaryWorkspaceRoots = nil
+		}
 		profileSnapshot, snapshotErr := cloneTaskAgentProfile(subagentProfile)
 		if snapshotErr != nil {
 			return taskLaunchPrepared{}, snapshotErr
@@ -530,7 +546,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		childMetadata["source_profile_mode"] = strings.TrimSpace(profileSnapshot.Mode)
 		childMetadata["inherited_runtime_mode"] = pebblestore.AgentProfileRuntimeMode(profileSnapshot)
 		childMetadata["agent_profile"] = profileSnapshot
-		if launch.TaskBase != nil {
+		if isCoderTarget && launch.TaskBase != nil {
 			childMetadata["repository_root"] = strings.TrimSpace(launch.TaskBase.RepoRoot)
 			childMetadata["parent_branch"] = strings.TrimSpace(launch.TaskBase.ParentBranch)
 			childMetadata["base_commit"] = strings.TrimSpace(launch.TaskBase.BaseCommit)
@@ -540,7 +556,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		childMetadata["launch_source"] = "targeted_subagent"
 		childMetadata["targeted_subagent"] = lineageSource
 	}
-	if launch.VirtualTarget {
+	if isCoderTarget {
 		if s.worktrees == nil {
 			return taskLaunchPrepared{}, errors.New("task failed to allocate Coder worktree: worktree service is unavailable")
 		}
@@ -567,7 +583,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	if childWorkspaceID != "" {
 		childMetadata["workspace_id"] = childWorkspaceID
 	}
-	if launch.VirtualTarget {
+	if isCoderTarget {
 		childMetadata["worktree_path"] = childWorktreeRootPath
 		childMetadata["child_branch"] = childWorktreeBranch
 		childMetadata["worktree_base_branch"] = childWorktreeBaseBranch
@@ -2911,6 +2927,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	for i := range launchSpecs {
 		applyCanonicalCoderOwnedScope(&launchSpecs[i])
 	}
+	if err := validateTaskDesignerScopes(launchSpecs); err != nil {
+		return "", err
+	}
 
 	parentSession := pebblestore.SessionSnapshot{}
 	if req.ParentSession != nil {
@@ -2998,6 +3017,15 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 					return "", fmt.Errorf("reconcile compiled Coder launch snapshot: %w", err)
 				}
 				trustedVirtualTargets[i] = true
+			} else if agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) {
+				if row.ParentCopy || !agentruntime.IsDesignerAgentName(row.ResolvedAgentName) || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
+					return "", fmt.Errorf("approved task manifest launch %d does not identify compiled Designer", i)
+				}
+				profile, err = s.agents.ReconcileSystemAgentSnapshot(agentruntime.DesignerAgentID, profile)
+				if err != nil {
+					return "", fmt.Errorf("reconcile compiled Designer launch snapshot: %w", err)
+				}
+				trustedVirtualTargets[i] = false
 			} else {
 				trustedVirtualTargets[i] = row.ParentCopy
 			}
@@ -3045,13 +3073,18 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if metaPrompt == "" {
 			return "", fmt.Errorf("task launches[%d] requires meta_prompt or role assignment", i)
 		}
+		launchTaskBase := (*worktreeruntime.TaskBase)(nil)
+		if agentruntime.IsCoderAgentName(requestedSubagent) {
+			launchTaskBase = coderTaskBase
+		}
 		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, taskLaunchPrepared{
 			LaunchIndex:       i + 1,
 			VirtualTarget:     trustedVirtualTargets[i],
-			TaskBase:          coderTaskBase,
+			TaskBase:          launchTaskBase,
 			RequestedSubagent: requestedSubagent,
 			MetaPrompt:        metaPrompt,
 			AssignmentLabel:   spec.AssignmentLabel,
+			OwnedScope:        append([]string(nil), spec.OwnedScope...),
 		}, description, strings.TrimSpace(req.TargetedSubagentName), trustedProfiles[i], trustedSources[i], req.ApplySessionMutation)
 		if prepareErr != nil {
 			return "", prepareErr
@@ -3091,6 +3124,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			entry["subagent"] = strings.TrimSpace(launches[0].ResolvedSubagent)
 			entry["requested_subagent"] = strings.TrimSpace(launches[0].RequestedSubagent)
 			entry["assignment_label"] = strings.TrimSpace(launches[0].AssignmentLabel)
+			entry["owned_scope"] = append([]string(nil), launches[0].OwnedScope...)
 			entry["subagent_provider"] = strings.TrimSpace(launches[0].SubagentProvider)
 			entry["subagent_model"] = strings.TrimSpace(launches[0].SubagentModel)
 			entry["child_session_id"] = strings.TrimSpace(launches[0].ChildSessionID)
@@ -3111,6 +3145,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"subagent":               strings.TrimSpace(launch.ResolvedSubagent),
 				"meta_prompt":            strings.TrimSpace(launch.MetaPrompt),
 				"assignment_label":       strings.TrimSpace(launch.AssignmentLabel),
+				"owned_scope":            append([]string(nil), launch.OwnedScope...),
 				"subagent_provider":      strings.TrimSpace(launch.SubagentProvider),
 				"subagent_model":         strings.TrimSpace(launch.SubagentModel),
 				"child_session_id":       strings.TrimSpace(launch.ChildSessionID),
@@ -3193,6 +3228,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			ParentActivePlan:     parentActivePlan,
 			PermissionSessionID:  req.PermissionSessionID,
 			TargetedSubagentName: req.TargetedSubagentName,
+			RequestedSubagent:    launch.RequestedSubagent,
+			OwnedScope:           append([]string(nil), launch.OwnedScope...),
 		})
 		subResult, runErr := s.RunTurnStreaming(runCtx, launch.ChildSession.ID, RunRequest{
 			Prompt:     delegatedPrompt,
@@ -3201,7 +3238,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			AgentName:  launch.SubagentProfile.Name,
 		}, RunStartMeta{
 			AllowSubagent:        true,
-			DisabledTools:        taskDisabledTools(launch.VirtualTarget),
+			DisabledTools:        taskDisabledTools(agentruntime.IsCoderAgentName(launch.RequestedSubagent)),
 			TrustedAgentProfile:  &launch.SubagentProfile,
 			PermissionSessionID:  sessionID,
 			Principal:            req.Principal,
@@ -3277,7 +3314,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 		})
 		if runErr != nil {
-			if launch.VirtualTarget && s.worktrees != nil {
+			if agentruntime.IsCoderAgentName(launch.RequestedSubagent) && s.worktrees != nil {
 				if state, inspectErr := s.worktrees.InspectTaskWorkspace(outcome.WorkspacePath); inspectErr == nil {
 					outcome.WorktreeBranch = strings.TrimSpace(state.BranchName)
 					outcome.HeadCommit = strings.TrimSpace(state.HeadCommit)
@@ -3331,7 +3368,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		outcome.ReportChars = len([]rune(report))
 		outcome.ReportExcerpt = report
 		outcome.ReportRef = reportRef
-		if launch.VirtualTarget && s.worktrees != nil {
+		if agentruntime.IsCoderAgentName(launch.RequestedSubagent) && s.worktrees != nil {
 			state, inspectErr := s.worktrees.InspectTaskWorkspace(outcome.WorkspacePath)
 			if inspectErr != nil {
 				return outcome, fmt.Errorf("inspect Coder handoff Git state: %w", inspectErr)
@@ -3461,7 +3498,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		launch.Phase = launchPhase
 		launch.ReportTruncated = reportTruncated
 		launchPayload := buildTaskStreamLaunchPayload(launch, status, launchPhase, true)
-		if launch.VirtualTarget {
+		if agentruntime.IsCoderAgentName(launch.RequestedSubagent) {
 			childState := "committed"
 			if status == "error" || status == "cancelled" {
 				childState = "blocked"
@@ -3597,33 +3634,43 @@ func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose st
 	if s == nil || s.agents == nil {
 		return pebblestore.AgentProfile{}, errors.New("saved agent service is not configured")
 	}
-	if agentruntime.IsExplorerAgentName(nameOrPurpose) {
+	if agentruntime.IsExplorerAgentName(nameOrPurpose) || agentruntime.IsDesignerAgentName(nameOrPurpose) {
+		agentLabel := agentruntime.ExplorerAgentName
+		agentID := agentruntime.ExplorerAgentID
+		if agentruntime.IsDesignerAgentName(nameOrPurpose) {
+			agentLabel = agentruntime.DesignerAgentName
+			agentID = agentruntime.DesignerAgentID
+		}
 		if s.model == nil {
-			return pebblestore.AgentProfile{}, errors.New("Explorer model service is not configured")
+			return pebblestore.AgentProfile{}, fmt.Errorf("%s model service is not configured", agentLabel)
 		}
 		preference, err := s.model.GetPreferenceForAccount(strings.TrimSpace(accountScopeID))
 		if err != nil {
-			return pebblestore.AgentProfile{}, fmt.Errorf("read Explorer model preference: %w", err)
+			return pebblestore.AgentProfile{}, fmt.Errorf("read %s model preference: %w", agentLabel, err)
 		}
 		providerID := strings.ToLower(strings.TrimSpace(preference.Provider))
 		override := uisettings.CompactAgentSettings{}
 		if s.uiSettings != nil {
 			if settings, settingsErr := s.uiSettings.GetForAccount(strings.TrimSpace(accountScopeID)); settingsErr == nil {
-				override = settings.Agents.Explorer
+				if agentID == agentruntime.DesignerAgentID {
+					override = settings.Agents.Designer
+				} else {
+					override = settings.Agents.Explorer
+				}
 			}
 		}
 		if override.Provider != "" {
 			providerID = strings.ToLower(strings.TrimSpace(override.Provider))
 		}
 		if providerID == "" {
-			return pebblestore.AgentProfile{}, errors.New("Explorer utility provider is empty")
+			return pebblestore.AgentProfile{}, fmt.Errorf("%s utility provider is empty", agentLabel)
 		}
 		_, _, utility, ok, err := s.model.RecommendedCatalogDefaults(providerID)
 		if err != nil {
-			return pebblestore.AgentProfile{}, fmt.Errorf("resolve Explorer utility recommendation: %w", err)
+			return pebblestore.AgentProfile{}, fmt.Errorf("resolve %s utility recommendation: %w", agentLabel, err)
 		}
 		if !ok || strings.TrimSpace(utility.Model) == "" {
-			return pebblestore.AgentProfile{}, fmt.Errorf("Explorer utility recommendation for provider %q is unavailable", providerID)
+			return pebblestore.AgentProfile{}, fmt.Errorf("%s utility recommendation for provider %q is unavailable", agentLabel, providerID)
 		}
 		modelName := strings.TrimSpace(override.Model)
 		if modelName == "" {
@@ -3638,13 +3685,13 @@ func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose st
 		}
 		resolved, err := s.model.ResolvePreference(pebblestore.ModelPreference{Provider: providerID, Model: modelName, Thinking: thinking, ContextMode: preference.ContextMode})
 		if err != nil {
-			return pebblestore.AgentProfile{}, fmt.Errorf("resolve Explorer utility preference: %w", err)
+			return pebblestore.AgentProfile{}, fmt.Errorf("resolve %s utility preference: %w", agentLabel, err)
 		}
 		serviceTier := strings.TrimSpace(override.ServiceTier)
 		if serviceTier == "" {
 			serviceTier = strings.TrimSpace(preference.ServiceTier)
 		}
-		return s.agents.ResolveSystemAgent(agentruntime.ExplorerAgentID, pebblestore.AgentProfile{Provider: resolved.Preference.Provider, Model: resolved.Preference.Model, Thinking: resolved.Preference.Thinking, AutoServiceTier: serviceTier})
+		return s.agents.ResolveSystemAgent(agentID, pebblestore.AgentProfile{Provider: resolved.Preference.Provider, Model: resolved.Preference.Model, Thinking: resolved.Preference.Thinking, AutoServiceTier: serviceTier})
 	}
 	if strings.TrimSpace(accountScopeID) != "" {
 		return s.agents.ResolveSubagentForAccount(accountScopeID, nameOrPurpose)
@@ -3660,6 +3707,8 @@ type taskDelegationPromptConfig struct {
 	ParentActivePlan     *pebblestore.SessionPlanSnapshot
 	PermissionSessionID  string
 	TargetedSubagentName string
+	RequestedSubagent    string
+	OwnedScope           []string
 }
 
 func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
@@ -3678,6 +3727,12 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 		b.WriteString("- requested subagent: @")
 		b.WriteString(targeted)
 		b.WriteString("\n")
+	}
+	if agentruntime.IsDesignerAgentName(config.RequestedSubagent) {
+		b.WriteString("- shared checkout: use the parent's exact checkout; do not run Git or create a worktree\n")
+		b.WriteString("- owned scope/output target: ")
+		b.WriteString(strings.Join(config.OwnedScope, ", "))
+		b.WriteString("\n- output contract: create or revise ordinary reusable workspace artifacts only within that declared target; artifacts remain available after this child finishes\n")
 	}
 	if parentBlock := buildTaskParentSessionContext(config.ParentSession, config.PermissionSessionID); parentBlock != "" {
 		b.WriteString("\nParent session context:\n")
@@ -3706,7 +3761,11 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 	b.WriteString("6. End with a `Relevant filepaths:` section listing the most important files and why each matters.\n")
 	b.WriteString("7. If essential files are still unknown, include an `Open questions / missing filepaths:` section with exact paths needed.\n")
 	b.WriteString("8. Keep the final response concise, factual, and implementation-focused.\n")
-	b.WriteString("9. For implementation Coder work, finish with a scoped commit. If commit permission is denied or work fails, explicitly report the uncommitted/failed state; the parent records live HEAD and status for later repair.\n")
+	if agentruntime.IsCoderAgentName(config.RequestedSubagent) {
+		b.WriteString("9. For implementation Coder work, finish with a scoped commit. If commit permission is denied or work fails, explicitly report the uncommitted/failed state; the parent records live HEAD and status for later repair.\n")
+	} else if agentruntime.IsDesignerAgentName(config.RequestedSubagent) {
+		b.WriteString("9. For Designer work, do not use Git. Inspect nearby code as needed and create or revise the assigned reusable variant artifact within the declared owned scope.\n")
+	}
 	return strings.TrimSpace(b.String())
 }
 

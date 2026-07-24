@@ -16,11 +16,11 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, ExplorerAgentID, PlanSidechatAgentID, ReviewCommitAgentID}
+	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, ExplorerAgentID, PlanSidechatAgentID, ReviewCommitAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
-	for kind, id := range map[string]string{SystemSidechatKindPlan: PlanSidechatAgentID, SystemSidechatKindAI: AISidechatAgentID, SystemSidechatKindCompact: CompactAgentID, SystemSidechatKindExplorer: ExplorerAgentID, SystemSidechatKindCoder: CoderAgentID} {
+	for kind, id := range map[string]string{SystemSidechatKindPlan: PlanSidechatAgentID, SystemSidechatKindAI: AISidechatAgentID, SystemSidechatKindCompact: CompactAgentID, SystemSidechatKindExplorer: ExplorerAgentID, SystemSidechatKindCoder: CoderAgentID, SystemSidechatKindDesigner: DesignerAgentID} {
 		definition, ok := registry.DefinitionBySidechatKind(kind)
 		if !ok || definition.ID != id {
 			t.Fatalf("kind %q resolved to %+v, ok=%v", kind, definition, ok)
@@ -32,14 +32,14 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 			t.Fatalf("sidechat-only system agent %q is not protected: %+v", id, definition)
 		}
 	}
-	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, ExplorerAgentID, CoderAgentID, ReviewCommitAgentID} {
+	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, ExplorerAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID} {
 		definition, _ := registry.DefinitionByID(id)
 		if definition.RequiresSidechatMetadata || IsReservedSidechatAgentName(id) {
 			t.Fatalf("ordinary/task system agent %q was classified as sidechat-only: %+v", id, definition)
 		}
 	}
 	visible := registry.UserVisibleIDs()
-	for _, id := range []string{SwarmAgentID, CompactAgentID, ExplorerAgentID, CoderAgentID} {
+	for _, id := range []string{SwarmAgentID, CompactAgentID, ExplorerAgentID, CoderAgentID, DesignerAgentID} {
 		if !containsString(visible, id) {
 			t.Fatalf("user-visible system agents %v omit %q", visible, id)
 		}
@@ -73,7 +73,7 @@ func TestBuiltinSystemAgentRegistryUserVisibleIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuiltinSystemAgentRegistry() error = %v", err)
 	}
-	want := []string{SwarmAgentID, CoderAgentID, ExplorerAgentID}
+	want := []string{SwarmAgentID, CoderAgentID, DesignerAgentID, ExplorerAgentID}
 	if got := registry.UserVisibleIDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("UserVisibleIDs() = %v, want %v", got, want)
 	}
@@ -229,6 +229,27 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("Explorer locked tool %q unavailable: %+v", allowed, explorer.ToolContract)
 		}
 	}
+	designer, err := registry.ReconcileSnapshot(DesignerAgentID, pebblestore.AgentProfile{Name: DesignerAgentID, Provider: "openai", Model: "utility-model", Thinking: "medium", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeRead, DefaultSessionMode: pebblestore.AgentDefaultSessionModePlan, ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if designer.Name != DesignerAgentID || designer.Mode != ModeSubagent || designer.Prompt != DesignerAgentPrompt() || designer.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || designer.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto || !designer.Enabled || !designer.Protected || designer.ExitPlanModeEnabled == nil || *designer.ExitPlanModeEnabled {
+		t.Fatalf("Designer immutable contract was not restored: %+v", designer)
+	}
+	for _, allowed := range []string{"read", "search", "find", "list", "write", "edit"} {
+		if cfg := designer.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Designer locked tool %q unavailable: %+v", allowed, designer.ToolContract)
+		}
+	}
+	for _, denied := range []string{"bash", "git_status", "git_diff", "git_add", "git_commit", "task", "skill_use", "manage_skill", "manage_agent", "manage_theme", "manage_sessions", "manage_worktree", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
+		if cfg := designer.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
+			t.Fatalf("Designer mandatory denial %q was not restored: %+v", denied, designer.ToolContract)
+		}
+	}
+	if _, exists := designer.ToolContract.Tools["create_file"]; exists || strings.Contains(DesignerAgentPrompt(), "create_file") {
+		t.Fatalf("Designer must not register or reference create_file: %+v", designer.ToolContract)
+	}
+
 	swarm, err := registry.ReconcileSnapshot(SwarmAgentID, pebblestore.AgentProfile{
 		Name: SwarmAgentID, Mode: ModeSubagent, Provider: "codex", Model: "mutable", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeRead,
 		ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}, Enabled: false,
@@ -279,7 +300,7 @@ func TestEnsureSystemAgentRegistryExposesImmutableProfilesWithoutPersistingThem(
 	if err := svc.EnsureSystemAgentRegistry(); err != nil {
 		t.Fatalf("ensure registry: %v", err)
 	}
-	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, ExplorerAgentID, CoderAgentID, ReviewCommitAgentID, SwarmAgentID} {
+	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, ExplorerAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID, SwarmAgentID} {
 		if id != SwarmAgentID {
 			if _, ok, err := agents.GetProfile(id); err != nil || ok {
 				t.Fatalf("system profile %q persisted ok=%v err=%v", id, ok, err)

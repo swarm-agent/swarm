@@ -68,6 +68,7 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 		explorerDefaults.ServiceTier = ""
 		settings.Agents.Explorer = explorerDefaults
 		settings.Agents.Compact = explorerDefaults
+		settings.Agents.Designer = explorerDefaults
 		if _, settingsErr = s.uiSettings.SetForAccount(accountScopeID, settings); settingsErr != nil {
 			return nil, fmt.Errorf("set onboarding system-agent model settings: %w", settingsErr)
 		}

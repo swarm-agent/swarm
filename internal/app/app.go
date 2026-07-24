@@ -5913,12 +5913,15 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		if isCloneSystemAgentName(action.Upsert.Name) || isExplorerSystemAgentName(action.Upsert.Name) {
+		if isCloneSystemAgentName(action.Upsert.Name) || isExplorerSystemAgentName(action.Upsert.Name) || isDesignerSystemAgentName(action.Upsert.Name) {
 			label := "Explorer"
 			settingsField := "explorer"
 			if isCloneSystemAgentName(action.Upsert.Name) {
 				label = "Coder"
 				settingsField = "coder"
+			} else if isDesignerSystemAgentName(action.Upsert.Name) {
+				label = "Designer"
+				settingsField = "designer"
 			}
 			settings, err := a.api.GetUISettings(ctx)
 			if err != nil {
@@ -5934,6 +5937,8 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 			}
 			if settingsField == "coder" {
 				settings.Agents.Coder = selection
+			} else if settingsField == "designer" {
+				settings.Agents.Designer = selection
 			} else {
 				settings.Agents.Explorer = selection
 			}
@@ -6019,6 +6024,11 @@ func isCloneSystemAgentName(name string) bool {
 func isExplorerSystemAgentName(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
 	return name == "explorer" || name == "system-explorer"
+}
+
+func isDesignerSystemAgentName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == "designer" || name == "system-designer"
 }
 
 func (a *App) handleThemeModalAction(action ui.ThemeModalAction) {
@@ -6949,6 +6959,19 @@ func enrichSystemAgentModels(state client.AgentState, settings client.UISettings
 		switch {
 		case isExplorerSystemAgentName(profile.Name):
 			override := settings.Agents.Explorer
+			if strings.TrimSpace(override.Provider) != "" {
+				profile.Provider = strings.TrimSpace(override.Provider)
+			}
+			if strings.TrimSpace(override.Model) != "" {
+				profile.Model = strings.TrimSpace(override.Model)
+			}
+			if strings.TrimSpace(override.Thinking) != "" {
+				profile.Thinking = strings.TrimSpace(override.Thinking)
+			}
+			profile.AutoServiceTier = strings.TrimSpace(override.ServiceTier)
+			profile.ModelMode = "single"
+		case isDesignerSystemAgentName(profile.Name):
+			override := settings.Agents.Designer
 			if strings.TrimSpace(override.Provider) != "" {
 				profile.Provider = strings.TrimSpace(override.Provider)
 			}

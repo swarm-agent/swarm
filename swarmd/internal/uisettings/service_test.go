@@ -37,6 +37,20 @@ func TestCoderServiceTierRoundTripsThroughUISettings(t *testing.T) {
 	}
 }
 
+func TestDesignerServiceTierRoundTripsThroughUISettings(t *testing.T) {
+	settings := UISettings{Agents: AgentSettings{Designer: CompactAgentSettings{
+		Provider: "OPENAI", Model: "utility-model", Thinking: "medium", ServiceTier: "PRIORITY",
+	}}}
+	record := agentRecordFromSettings(settings.Agents)
+	if record.Designer.Provider != "openai" || record.Designer.Model != "utility-model" || record.Designer.ServiceTier != "priority" {
+		t.Fatalf("stored Designer settings = %#v", record.Designer)
+	}
+	got := uiSettingsFromRecord(pebblestore.UISettingsRecord{Agents: *record})
+	if got.Agents.Designer.Provider != "openai" || got.Agents.Designer.Model != "utility-model" || got.Agents.Designer.Thinking != "medium" || got.Agents.Designer.ServiceTier != "priority" {
+		t.Fatalf("resolved Designer settings = %#v", got.Agents.Designer)
+	}
+}
+
 func TestDefaultUISettingsEnableThinkingTags(t *testing.T) {
 	settings := defaultUISettings()
 	if !settings.Chat.ThinkingTags {

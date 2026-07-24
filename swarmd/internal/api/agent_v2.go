@@ -193,6 +193,7 @@ func (s *Server) publicAgentProfiles(accountScopeID string, profiles []pebblesto
 		systemSettings[agentruntime.CompactAgentID] = pebblestore.AgentProfile{Provider: settings.Agents.Compact.Provider, Model: settings.Agents.Compact.Model, Thinking: settings.Agents.Compact.Thinking, AutoServiceTier: settings.Agents.Compact.ServiceTier}
 		systemSettings[agentruntime.ExplorerAgentID] = pebblestore.AgentProfile{Provider: settings.Agents.Explorer.Provider, Model: settings.Agents.Explorer.Model, Thinking: settings.Agents.Explorer.Thinking, AutoServiceTier: settings.Agents.Explorer.ServiceTier}
 		systemSettings[agentruntime.CoderAgentID] = pebblestore.AgentProfile{Provider: settings.Agents.Coder.Provider, Model: settings.Agents.Coder.Model, Thinking: settings.Agents.Coder.Thinking, AutoServiceTier: settings.Agents.Coder.ServiceTier}
+		systemSettings[agentruntime.DesignerAgentID] = pebblestore.AgentProfile{Provider: settings.Agents.Designer.Provider, Model: settings.Agents.Designer.Model, Thinking: settings.Agents.Designer.Thinking, AutoServiceTier: settings.Agents.Designer.ServiceTier}
 	}
 	for _, id := range registry.UserVisibleIDs() {
 		context := systemSettings[id]

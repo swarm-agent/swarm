@@ -28,6 +28,20 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	if !definitionTextContains(taskDefinition, "structured launches array") || !definitionTextContains(taskDefinition, "Do not embed launch JSON") || !definitionTextContains(taskDefinition, "not text embedded in prompt") {
 		t.Fatalf("task definition must warn models to use structured launch fields instead of prompt-embedded launch markup: %#v", taskDefinition)
 	}
+	for _, want := range []string{
+		"explicitly requested multiple UI/design iterations or variants",
+		"prohibited for ordinary UI work and single-design requests",
+		"share the parent checkout",
+		"read/search/find/list",
+		"write/edit",
+		"no Bash or Git",
+		"ordinary reusable artifacts",
+		"distinct non-overlapping workspace-relative",
+	} {
+		if !definitionTextContains(taskDefinition, want) {
+			t.Fatalf("task definition missing Designer contract %q: %#v", want, taskDefinition)
+		}
+	}
 	for _, key := range []string{"subagent_type", "agent", "purpose", "title", "meta_prompt", "role"} {
 		property, ok := properties[key]
 		if !ok {
@@ -75,8 +89,8 @@ func assertTaskSubagentEnum(t *testing.T, property any, label string) {
 		t.Fatalf("task %s schema = %#v, want object", label, property)
 	}
 	values, ok := schema["enum"].([]string)
-	if !ok || len(values) != 2 || values[0] != "coder" || values[1] != "explorer" {
-		t.Fatalf("task %s enum = %#v, want only coder and explorer", label, schema["enum"])
+	if !ok || len(values) != 3 || values[0] != "coder" || values[1] != "explorer" || values[2] != "designer" {
+		t.Fatalf("task %s enum = %#v, want coder, explorer, and designer", label, schema["enum"])
 	}
 }
 

@@ -873,7 +873,7 @@ func (p *HomePage) openAgentsModalUtilityAIEditor() {
 
 func (p *HomePage) openAgentsModalEditEditor(profile AgentModalProfile) {
 	profileName := strings.ToLower(strings.TrimSpace(profile.Name))
-	agentSettingsLocked := profileName == "system-clone" || profileName == "clone" || profileName == "coder" || profileName == "system-explorer" || profileName == "explorer"
+	agentSettingsLocked := profileName == "system-clone" || profileName == "clone" || profileName == "coder" || profileName == "system-explorer" || profileName == "explorer" || profileName == "system-designer" || profileName == "designer"
 	modelReadOnly := false
 	modelMode := strings.ToLower(strings.TrimSpace(profile.ModelMode))
 	if modelMode != "split" {
@@ -959,7 +959,7 @@ func agentsModalStringOptionExists(options []string, target string) bool {
 
 func isCompiledSingleModelSubagent(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
-	return name == "system-clone" || name == "clone" || name == "coder" || name == "system-explorer" || name == "explorer"
+	return name == "system-clone" || name == "clone" || name == "coder" || name == "system-explorer" || name == "explorer" || name == "system-designer" || name == "designer"
 }
 
 func (p *HomePage) agentsModalModelProfileOptions(agent AgentModalProfile) []string {
@@ -2006,6 +2006,9 @@ func agentsModalDisplayName(name string) string {
 	}
 	if strings.EqualFold(name, "system-explorer") {
 		return "Explorer"
+	}
+	if strings.EqualFold(name, "system-designer") || strings.EqualFold(name, "designer") {
+		return "Designer"
 	}
 	return name
 }

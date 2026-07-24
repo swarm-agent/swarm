@@ -48,6 +48,26 @@ func TestMasterHarnessPromptDefinesEffectAwareBashClassification(t *testing.T) {
 	}
 }
 
+func TestMasterHarnessPromptDefinesDesignerIterationLifecycle(t *testing.T) {
+	prompt := masterHarnessPrompt(t.TempDir())
+
+	for _, want := range []string{
+		"explicitly requested multiple UI/design iterations or variants",
+		"ordinary UI request or a single design is never sufficient",
+		"complete design brief",
+		"preview/selector",
+		"explicit selection",
+		"ordinary reusable source artifacts, not disposable proposals",
+		"retain several, revise one, or promote one",
+		"never mandate automatic deletion",
+		"may read/search/list/write/edit but has no Bash or Git",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("Designer lifecycle guidance missing %q", want)
+		}
+	}
+}
+
 func TestMasterHarnessPromptRequiresBoundedTemporaryAndRecursiveWork(t *testing.T) {
 	prompt := masterHarnessPrompt(t.TempDir())
 
