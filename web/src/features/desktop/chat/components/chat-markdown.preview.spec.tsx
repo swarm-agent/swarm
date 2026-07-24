@@ -524,6 +524,9 @@ function testTaskHeaderDoesNotShiftBetweenLaunchAssignments(): void {
   const secondMarkup = renderToolMarkup(secondMessage!);
   assert(firstMarkup.includes(description), "expected stable description in first header");
   assert(secondMarkup.includes(description), "expected stable description in second header");
+  assert(firstMarkup.includes('data-task-tool-card="true"') && firstMarkup.includes('data-task-rows="true"'), "task heading and subagent rows should share one card");
+  assert(firstMarkup.includes("lucide-bot"), "task card should use the Lucide bot icon");
+  assert(!firstMarkup.includes("starting…") && !firstMarkup.includes("animate-spin"), "running task cards should not show the starting spinner treatment");
   assert(!firstMarkup.includes("Backend explorer title</span><svg"), "first header should not end with launch assignment title");
   assert(!secondMarkup.includes("Frontend explorer title</span><svg"), "second header should not end with launch assignment title");
 }

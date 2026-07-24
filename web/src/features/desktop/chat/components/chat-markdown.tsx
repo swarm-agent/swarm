@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
-import { Archive, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clock3, Copy, ExternalLink, GitBranch, Layers3, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
+import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clock3, Copy, ExternalLink, GitBranch, Layers3, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
 import type {
@@ -921,7 +921,7 @@ function TaskRowsHeader({
   return (
     <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_72%,transparent)] px-3 py-2" data-task-card-header>
       <div className="flex min-w-0 items-center gap-2">
-        <LoaderCircle size={14} className={counts.running > 0 ? "animate-spin text-[var(--app-primary)]" : "text-[var(--app-text-subtle)]"} />
+        <Bot size={14} className="text-[var(--app-primary)]" aria-hidden="true" />
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
             <span className="break-words text-xs font-bold uppercase tracking-[0.12em] text-[var(--app-text)] [overflow-wrap:anywhere]">
@@ -1015,7 +1015,7 @@ const MemoizedTaskSwarmCompactRow = memo(TaskSwarmCompactRow, (previous, next) =
 function TaskSwarmRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: TaskChildCardActions }) {
   const counts = taskRowsCounts(rows);
   return (
-    <div className="task-card-container mt-2 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm" data-task-card>
+    <div className="task-card-container min-w-0 overflow-hidden" data-task-card data-task-rows>
       <TaskRowsHeader counts={counts} swarm />
       <div className={cn(TOOL_RESULT_BODY_CLASS, "task-card-swarm-grid grid grid-cols-1 gap-1.5 p-2 md:grid-cols-2 xl:grid-cols-3")}>
         {rows.map((row, index) => (
@@ -1036,7 +1036,7 @@ function TaskAgentRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: T
   const dense = rows.length >= 50;
 
   return (
-    <div className="task-card-container mt-2 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm" data-task-card>
+    <div className="task-card-container min-w-0 overflow-hidden" data-task-card data-task-rows>
       <TaskRowsHeader counts={counts} swarm={false} />
       <div className="task-card-column-header hidden min-w-0 grid-cols-[2.5rem_3.75rem_minmax(0,1.5fr)_minmax(0,0.9fr)_4.75rem] items-center gap-x-3 border-b border-[var(--app-border)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)] sm:grid">
         <div className="min-w-0 font-mono tabular-nums">#</div>
@@ -1841,7 +1841,8 @@ export function ToolMessageView({
         : CheckCircle2;
   const normalizedTool = toolMessage.tool.trim().toLowerCase();
   const label = toolTheme.label || toolMessage.tool || "tool";
-  const isTaskSwarm = toolMessage.tool === "task" && toolMessage.taskRows.length > TASK_SWARM_THRESHOLD;
+  const isTask = normalizedTool === "task";
+  const isTaskSwarm = isTask && toolMessage.taskRows.length > TASK_SWARM_THRESHOLD;
   const todoCounts = formatTodoCounts(toolMessage.todoData?.summary ?? null);
   const summary = isTaskSwarm
     ? ""
@@ -1857,7 +1858,7 @@ export function ToolMessageView({
     ? summary.replace(toolMessage.target, "").replace(/\s+in\s+(?=\()/, " ").trim()
     : summary;
   const showPreview = normalizedTool !== 'thinking' || thinkingTagsEnabled;
-  const isWindup = state === "running" && !toolMessage.output.trim() && !toolMessage.error.trim();
+  const isWindup = !isTask && state === "running" && !toolMessage.output.trim() && !toolMessage.error.trim();
   if (isPlanManage) return <PlanManageToolView toolMessage={toolMessage} />;
   const hasBody = Boolean(
     toolMessage.error
@@ -1873,29 +1874,30 @@ export function ToolMessageView({
       <div className={cn(
         "min-w-0",
         isFileAction && "overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]",
-      )}>
+        isTask && "overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm",
+      )} data-task-tool-card={isTask || undefined}>
         <div className={cn(
           "flex min-w-0 items-start gap-2 text-xs",
-          isFileAction ? "px-3 py-2.5" : "items-center",
+          isFileAction || isTask ? "px-3 py-2.5" : "items-center",
         )}>
           <span
             className={cn(
               "inline-flex shrink-0 items-center justify-center font-semibold",
-              isFileAction ? "h-7 w-7 rounded-lg" : "h-5 gap-1 rounded-md px-1.5",
+              isFileAction || isTask ? "h-7 w-7 rounded-lg" : "h-5 gap-1 rounded-md px-1.5",
             )}
             style={{ color: toolTheme.color, backgroundColor: accentWash }}
           >
-            <ToolIcon size={isFileAction ? 13 : 12} className="shrink-0" />
-            {!isFileAction ? label : null}
+            {isTask ? <Bot size={14} className="shrink-0" aria-hidden="true" /> : <ToolIcon size={isFileAction ? 13 : 12} className="shrink-0" />}
+            {!isFileAction && !isTask ? label : null}
           </span>
           <div className="min-w-0 flex-1">
-            {isFileAction ? (
+            {isFileAction || isTask ? (
               <div className="font-semibold capitalize leading-4 text-[var(--app-text)]">{label}</div>
             ) : null}
             {fileSummary ? (
               <div className={cn(
                 "min-w-0 break-words [overflow-wrap:anywhere]",
-                isFileAction ? "mt-0.5 text-[11px] font-normal leading-4 text-[var(--app-text-muted)]" : "font-medium text-[var(--app-text)]",
+                isFileAction || isTask ? "mt-0.5 text-[11px] font-normal leading-4 text-[var(--app-text-muted)]" : "font-medium text-[var(--app-text)]",
               )}>
                 {fileSummary}
               </div>
@@ -1909,20 +1911,26 @@ export function ToolMessageView({
           <div className="flex shrink-0 items-center gap-1.5 pt-0.5 text-[10px] text-[var(--app-text-subtle)]">
             {isWindup ? <span>starting…</span> : null}
             {toolMessage.durationMs > 0 ? <span>{formatDuration(toolMessage.durationMs)}</span> : null}
-            <StateIcon
-              size={12}
-              className={cn(
-                "shrink-0",
-                state === "running"
-                  ? "animate-spin text-[var(--app-primary)]"
-                  : state === "error"
-                    ? "text-[var(--app-danger)]"
-                    : "text-[var(--app-text-subtle)]",
-              )}
-            />
+            {!isTask ? (
+              <StateIcon
+                size={12}
+                className={cn(
+                  "shrink-0",
+                  state === "running"
+                    ? "animate-spin text-[var(--app-primary)]"
+                    : state === "error"
+                      ? "text-[var(--app-danger)]"
+                      : "text-[var(--app-text-subtle)]",
+                )}
+              />
+            ) : null}
           </div>
         </div>
-        <div className={cn("min-w-0", isFileAction && hasBody && "border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5")}>
+        <div className={cn(
+          "min-w-0",
+          isFileAction && hasBody && "border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5",
+          isTask && hasBody && "border-t border-[var(--app-border)]",
+        )}>
         {toolMessage.error ? (
           <div className="mt-1 break-words text-[12px] text-[var(--app-danger)]">
             {toolMessage.error}
