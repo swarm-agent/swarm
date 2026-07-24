@@ -66,7 +66,7 @@ test("plan subagent activity prefers canonical summaries while preserving state 
   assert.equal(desktopPlanSubagentActivityLabel({ ...running.view, currentTool: "", toolActivitySummary: "" }, { ...running.row, tool: "-" }, "pending", false), "pending");
 });
 
-test("plan subagents collapse to a count and retain navigable session rows", () => {
+test("plan subagents collapse to a labeled bot control and retain navigable session rows", () => {
   const markup = renderToStaticMarkup(
     <DesktopPlanSubagentList
       children={[child(1), child(2)]}
@@ -81,8 +81,8 @@ test("plan subagents collapse to a count and retain navigable session rows", () 
 
   assert.match(markup, /^<details(?![^>]* open)[^>]*data-plan-subagent-list/);
   assert.match(markup, /<summary[^>]*aria-label="Show 2 subagents"[^>]*>/);
-  assert.match(markup, /<summary[^>]*>\s*<span>2<\/span>/);
-  assert.doesNotMatch(markup, />subagents<\/span>/);
+  assert.match(markup, /<summary[^>]*>\s*<svg[^>]*class="lucide lucide-bot/);
+  assert.match(markup, /<span>2 subagents<\/span>/);
   assert.match(markup, /aria-label="Open Child session 1\./);
   assert.match(markup, /aria-label="Open Child session 2\./);
   assert.match(markup, /aria-label="Stop Child session 1"/);

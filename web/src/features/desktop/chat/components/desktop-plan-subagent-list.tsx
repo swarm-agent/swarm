@@ -1,4 +1,4 @@
-import { ChevronRight, Square } from "lucide-react";
+import { Bot, ChevronRight, Square } from "lucide-react";
 import type { TaskChildCardActions, TaskToolRow } from "../types/chat";
 import type { DesktopV3TaskChildViewModel } from "../../state/desktop-v3-cache-selectors";
 import { stopSubagentSessionV3Run } from "../../session-v3/api";
@@ -60,7 +60,8 @@ export function DesktopPlanSubagentList({ children, actions, mode }: DesktopPlan
         )}
         aria-label={`Show ${label}`}
       >
-        <span>{children.length}</span>
+        <Bot aria-hidden="true" className="size-3.5 shrink-0 text-[var(--app-text-muted)]" />
+        <span>{mode === "thin" ? children.length : label}</span>
         <ChevronRight aria-hidden="true" className={cn("size-3.5 text-[var(--app-text-muted)] transition-transform group-open:rotate-90", mode === "thin" ? "absolute ml-7" : "ml-auto")} />
       </summary>
       <div className={cn("min-w-0 overflow-x-hidden overflow-y-auto", mode === "thin" ? "mt-2 grid gap-2" : "mt-2 grid max-h-64 gap-1.5")}>
