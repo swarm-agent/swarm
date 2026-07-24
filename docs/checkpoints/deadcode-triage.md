@@ -1,6 +1,6 @@
 # Go deadcode safety ledger
 
-Status: **triage complete; no production source changed**  
+Status: **triage complete; root leaf cleanup R1/R2 integrated**
 Baseline commit: `301925b8f188c3e2be56342d65854e37201c49de` (`dev`)  
 Reports: `.tmp/prelaunch-deadcode-root.txt` (**232 findings**) and `.tmp/prelaunch-deadcode-swarmd.txt` (**364 findings**)  
 Total accounted for below: **596 findings**
@@ -78,14 +78,14 @@ Line numbers below refer to `.tmp/prelaunch-deadcode-root.txt`.
 
 | Lines | Ownership / symbols | Classification | Evidence and rationale |
 |---:|---|---|---|
-| 1 | `cmd/swarm`: `parseYesOnly` | removable-candidate | Private parser; full Go search finds only its definition. Adjacent active parsers cover current command forms. No build tag, generated marker, interface, registry, reflection, or test use found. |
+| 1 | `cmd/swarm`: `parseYesOnly` | removed (R1) | Private parser; repeated full Go search found only its definition. Adjacent active parsers cover current command forms. No build tag, generated marker, interface, registry, reflection, or test use found. Removed in integrated commit `f5e40c1f`. |
 | 2–4 | `internal/app`: old session-event stream methods | uncertain-retain | Direct neighboring calls exist and this is a transport migration boundary. Do not remove without proving the registered TUI route cannot enter it. |
-| 5 | `internal/app`: `buildPlanExitModalBody` | removable-candidate | Private method; full Go search finds only the definition. Current plan-exit modal owns its body. No interface, registry, build constraint, generated marker, or test use found. |
+| 5 | `internal/app`: `buildPlanExitModalBody` | removed (R2) | Private method; repeated full Go search found only the definition. Current plan-exit modal owns its body. No interface, registry, build constraint, generated marker, or test use found. Removed in integrated commit `f3228cde`. |
 | 6 | `internal/app`: `requireTUIV3SessionAPI` | V3-excluded | Called from V3 chat/session hydration boundaries; V3 implementation is excluded. |
 | 7 | `internal/app`: legacy chat/worktree opener | uncertain-retain | Legacy/compatibility route with tests; route retirement is not yet positively proven. |
 | 8–9 | `internal/app`: session summary/chat opening | live-neighbor-retain | Direct callers and tests exist. |
 | 10 | `internal/app`: `chatTitleFromPrompt` | live-neighbor-retain | Called at `app.go:3016`; keep with the legacy session-opening neighbor until that whole path is proven retired. |
-| 11–12 | `internal/app`: commit title/lineage metadata methods | removable-candidate | Private definition-only helpers. The active `/commit` instructions remain separate. No interface, reflection, test, registration, tag, or generated use found. |
+| 11–12 | `internal/app`: commit title/lineage metadata methods | removed (R2) | Repeated full Go search confirmed both private helpers were definition-only. The active `/commit` dispatch and instruction flow remain, and live `chatTitleFromPrompt` remains untouched. No interface, reflection, test, registration, tag, or generated use found. Removed in integrated commit `f3228cde`. |
 | 13–22 | `internal/app`: target binding, tabs, workset and context helpers | V3-excluded | Transitional V3 workset/routing state. Explicitly excluded even where current executable RTA misses an entry. |
 | 23–24 | `internal/app`: Copilot interactive auth | dynamic-provider-retain | Provider is intentionally dormant, not formally retired; auth callbacks can be registration-driven. |
 | 25–33 | `internal/app`: context/route/model helpers | uncertain-retain | Workspace routing and model-selection surfaces; no narrow deletion proof and external UI/state risk is high. |
@@ -116,7 +116,7 @@ Line numbers below refer to `.tmp/prelaunch-deadcode-root.txt`.
 
 ### Root candidate evidence summary
 
-Only lines **1, 5, 11–12** enter cleanup batches now. All are private, definition-only in full Go source search, are not in build-constrained or generated files, have no test references, and have no identified interface/registry/reflection role. Line 10 is deliberately retained because a direct caller exists, even though that caller chain is itself suspicious.
+Lines **1, 5, 11–12** were removed through reviewed isolated Coder batches R1 and R2. Repeated full Go source searches confirmed all four symbols were private and definition-only; they were not in build-constrained or generated files and had no test, interface, registry, or reflection role. Line 10 remains deliberately retained because a direct caller exists, even though that caller chain is itself suspicious.
 
 ## Swarmd module ledger — 364/364
 
@@ -196,8 +196,8 @@ These are narrow, ownership-based future implementation scopes. No batch may tou
 
 | Batch | Scope | Candidate report lines | Required pre-removal proof | Focused validation after edit |
 |---|---|---|---|---|
-| R1 — root CLI parser | `cmd/swarm/main.go` | root 1 | Repeat full symbol search; inspect command dispatch and parser tests; confirm no build-tag variant. | `gofmt`; compile `./cmd/swarm`; directly relevant parser tests if present; root deadcode rerun. |
-| R2 — root app isolated helpers | `internal/app/app.go` | root 5, 11–12 | Repeat definition/reference search; inspect plan-exit and `/commit` callback registrations/tests; do not include line 10 or any V3 code. | `gofmt`; compile affected root binaries; named plan-exit/commit tests only; root deadcode rerun. |
+| R1 — root CLI parser (integrated) | `cmd/swarm/main.go` | root 1 | Repeated full symbol search; inspected command dispatch and parser-test availability; confirmed no build-tag or dynamic variant. Child `8f4aef09`; integrated `f5e40c1f`. | `gofmt`; `go build ./cmd/swarm` to run-scoped output; no directly relevant named parser test exists; root deadcode rerun. |
+| R2 — root app isolated helpers (integrated) | `internal/app/app.go` | root 5, 11–12 | Repeated definition/reference searches; inspected plan-exit and `/commit` callback/test boundaries; retained line 10 and all V3 code. Child `fc73e1f6`; integrated `f3228cde`. | `gofmt`; `go build ./cmd/swarmtui` to run-scoped output; no directly relevant named plan-exit/commit test exists; root deadcode rerun. |
 | S1 — permission private helpers | `swarmd/internal/permission/service.go` | swarmd 102, 104–106 | Inspect permission event writers, interface assertions, notification tests and policy registration; confirm definitions remain private/unreferenced. | `gofmt`; compile permission dependents; named permission notification/manage-agent tests only; swarmd deadcode rerun. |
 | S2 — Codex obsolete internals | `swarmd/internal/provider/codex/client.go` | swarmd 108–109, 111–114 | Confirm no test/fixture/replay decoder references; verify privacy sanitization and current debug path; retain 107, 110, 115–118. | `gofmt`; compile Codex package/dependent daemon; named replay/privacy/debug tests only; swarmd deadcode rerun. |
 | S3 — auth bundle private helpers | `swarmd/internal/store/pebble/auth_bundle.go` | swarmd 235–236 | Repeat repository search; inspect bundle serialization and account-scoped callers. | `gofmt`; compile Pebble store; named auth-bundle tests only; swarmd deadcode rerun. |
@@ -227,8 +227,19 @@ Scopes are non-overlapping. S3 and S4 share the auth domain but own different fi
 - Current report snapshots reproduced exactly: root 232, swarmd 364.
 - Full report accounting: root 232/232 and swarmd 364/364.
 - Launch-readiness: exit 0, 8 pass, 1 warning, 0 failure.
-- Production source changes: none.
-- Validation deliberately not run: Go test suites or broad compile suites, because this checkpoint changes documentation only and repository policy requires explicit test permission. The two requested analyzer scans and checked-in launch-readiness gate were run.
+- Production source changes at the triage baseline: none.
+- Validation deliberately not run during the documentation-only triage checkpoint: Go test suites or broad compile suites. The two requested analyzer scans and checked-in launch-readiness gate were run.
+
+### Root cleanup R1/R2 evidence
+
+- Isolated Coder R1 committed clean child `8f4aef09`; isolated Coder R2 committed clean child `fc73e1f6`.
+- Parent recalled and reviewed both exact diffs, selected both complete handoffs, integrated them atomically, and recalled afterward. Parent integration commits are `f5e40c1f` and `f3228cde`.
+- Removed exactly four ledger-approved private leaves: `parseYesOnly`, `App.buildPlanExitModalBody`, `App.commitSessionTitle`, and `App.commitLineageMetadata` (79 lines). No V3, public, dynamic, test-only, or uncertain symbol was removed.
+- `gofmt` produced no post-integration source diff.
+- Focused builds passed: `go build -o "$TMPDIR/root-deadcode-build/swarm" ./cmd/swarm` and `go build -o "$TMPDIR/root-deadcode-build/swarmtui" ./cmd/swarmtui`.
+- No directly relevant named parser, plan-exit, or commit-helper test exists, so no test command was run.
+- The documented bounded root scan reran successfully and decreased from 232 to **228 findings**, exactly matching the four removals. None of the removed symbol names remains in `.tmp/cp2-deadcode-root.txt`.
+- `git diff --check` passed; the parent source tree was clean before this ledger update.
 
 ## Relevant filepaths
 
