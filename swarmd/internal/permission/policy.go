@@ -229,11 +229,12 @@ type policyEvalContext struct {
 }
 
 type BashEffectAssessment struct {
-	Category BashEffectCategory `json:"category"`
-	Critical bool               `json:"critical"`
-	Valid    bool               `json:"valid"`
-	Promoted bool               `json:"promoted,omitempty"`
-	Reason   string             `json:"reason,omitempty"`
+	DeclaredCategory BashEffectCategory `json:"declared_category,omitempty"`
+	Category         BashEffectCategory `json:"category"`
+	Critical         bool               `json:"critical"`
+	Valid            bool               `json:"valid"`
+	Promoted         bool               `json:"promoted,omitempty"`
+	Reason           string             `json:"reason,omitempty"`
 }
 
 func DefaultPolicy() Policy {
@@ -860,27 +861,33 @@ func assessBashEffect(arguments, normalizedCommand string) BashEffectAssessment 
 		return invalid("delete requires critical=true")
 	}
 
-	assessment := BashEffectAssessment{Category: category, Critical: critical, Valid: true}
+	assessment := BashEffectAssessment{DeclaredCategory: category, Category: category, Critical: critical, Valid: true}
 	commandLower := strings.TrimSpace(strings.ToLower(normalizedCommand))
 	if commandLower == "" {
 		commandLower = strings.ToLower(strings.Join(strings.Fields(command), " "))
 	}
-	promote := func(next BashEffectCategory, reason string) {
+	correctCategory := func(next BashEffectCategory, reason string) {
 		if assessment.Category != next {
 			assessment.Category = next
-			assessment.Promoted = true
-		}
-		if !assessment.Critical {
-			assessment.Critical = true
 			assessment.Promoted = true
 		}
 		if assessment.Reason == "" {
 			assessment.Reason = reason
 		}
 	}
+	promote := func(next BashEffectCategory, reason string) {
+		correctCategory(next, reason)
+		if !assessment.Critical {
+			assessment.Critical = true
+			assessment.Promoted = true
+		}
+	}
 	if obviousBashDelete(commandLower) {
 		promote(BashEffectDelete, "backend detected a delete operation")
 		return assessment
+	}
+	if redirect, ok := obviousBashOutputRedirect(commandLower); ok && assessment.Category == BashEffectRead {
+		correctCategory(BashEffectWrite, "backend corrected declared read to effective write after detecting output redirect "+redirect)
 	}
 	if obviousBashMutation(commandLower) && assessment.Category == BashEffectRead {
 		return invalid("read category contradicts a mutating command")
@@ -912,12 +919,69 @@ func obviousBashDelete(command string) bool {
 }
 
 func obviousBashMutation(command string) bool {
-	for _, marker := range []string{" >", "> ", ">>", "tee ", "touch ", "mkdir ", "mv ", "cp ", "install ", "chmod ", "chown ", "sed -i", "git add ", "git commit ", "git checkout ", "git switch ", "git merge ", "git rebase ", "docker run ", "kubectl apply ", "terraform apply"} {
+	if _, ok := obviousBashOutputRedirect(command); ok {
+		return true
+	}
+	for _, marker := range []string{"tee ", "touch ", "mkdir ", "mv ", "cp ", "install ", "chmod ", "chown ", "sed -i", "git add ", "git commit ", "git checkout ", "git switch ", "git merge ", "git rebase ", "docker run ", "kubectl apply ", "terraform apply"} {
 		if strings.HasPrefix(command, marker) || strings.Contains(command, marker) {
 			return true
 		}
 	}
 	return obviousMutatingSystemctl(command)
+}
+
+func obviousBashOutputRedirect(command string) (string, bool) {
+	var quote byte
+	escaped := false
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' && quote != '\'' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			continue
+		}
+		if ch != '>' || (i > 0 && command[i-1] == '<') {
+			continue
+		}
+
+		start := i
+		for start > 0 && command[start-1] >= '0' && command[start-1] <= '9' {
+			start--
+		}
+		if start > 0 && command[start-1] == '&' {
+			start--
+		}
+		end := i + 1
+		if end < len(command) && command[end] == '>' {
+			end++
+		}
+		for end < len(command) && (command[end] == ' ' || command[end] == '\t') {
+			end++
+		}
+		targetStart := end
+		for end < len(command) && !strings.ContainsRune(" \t\r\n;&|", rune(command[end])) {
+			end++
+		}
+		target := strings.Trim(strings.TrimSpace(command[targetStart:end]), "'\"")
+		if target == "" || target == "/dev/null" || strings.HasPrefix(target, "&") {
+			continue
+		}
+		return strings.TrimSpace(command[start:end]), true
+	}
+	return "", false
 }
 
 var mutatingSystemctlCommand = regexp.MustCompile(`(?:^|[;&|]\s*)(?:sudo\s+)?(?:[^\s;&|]+/)?systemctl(?:\s+[^\s;&|]+)*\s+(?:start|stop|reload|restart|try-restart|reload-or-restart|reload-or-try-restart|isolate|kill|clean|freeze|thaw|set-property|bind|mount-image|service-log-level|service-log-target|reset-failed|enable|disable|reenable|preset|preset-all|mask|unmask|link|revert|add-wants|add-requires|edit|set-default|import-environment|unset-environment|daemon-reload|daemon-reexec|cancel|emergency|rescue|halt|poweroff|reboot|kexec|exit|switch-root|suspend|hibernate|hybrid-sleep|suspend-then-hibernate|soft-reboot)(?:\s|$)`)

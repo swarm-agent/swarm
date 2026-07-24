@@ -42,6 +42,7 @@ interface PermissionExplainResponse {
     profile_decision?: string
     profile_reason?: string
     bash_effect?: {
+      declared_category?: string
       category?: string
       critical?: boolean
       promoted?: boolean
@@ -55,6 +56,7 @@ interface BashExplainDetails {
   profile: string
   profileDecision: string
   profileReason: string
+  declaredCategory: string
   category: string
   critical: boolean
   promoted: boolean
@@ -84,6 +86,7 @@ async function loadBashExplain(permission: DesktopPermissionRecord, sessionMode:
     profile: explain?.bash_profile || '',
     profileDecision: explain?.profile_decision || '',
     profileReason: explain?.profile_reason || '',
+    declaredCategory: explain?.bash_effect?.declared_category || '',
     category: explain?.bash_effect?.category || '',
     critical: Boolean(explain?.bash_effect?.critical),
     promoted: Boolean(explain?.bash_effect?.promoted),
@@ -240,6 +243,12 @@ export function DesktopInlineBashPermissionCard({
                 <div className="mb-3 text-xs leading-5 text-[var(--app-text-muted)]">
                   <span className="font-semibold text-[var(--app-text)]">Bash profile:</span> {explainDetails.profile.split('_').join(' ')} · {explainDetails.profileDecision || 'ask'}
                   {explainDetails.profileReason ? ` — ${explainDetails.profileReason}` : ''}
+                </div>
+              ) : null}
+              {explainDetails?.promoted && explainDetails.declaredCategory && explainDetails.category !== explainDetails.declaredCategory ? (
+                <div className="mb-3 border-l-2 border-[var(--app-primary)] pl-2.5 text-xs leading-5 text-[var(--app-text-muted)]">
+                  <span className="font-semibold text-[var(--app-text)]">Category corrected:</span> declared {explainDetails.declaredCategory}, effective {explainDetails.category}
+                  {explainDetails.promotionReason ? ` — ${explainDetails.promotionReason}` : ''}
                 </div>
               ) : null}
               <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">What this command will do</div>

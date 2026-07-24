@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -118,6 +119,48 @@ func TestBashApprovalProfilesKeepDangerousDeniesAndDedicatedCapabilitiesIsolated
 	deployArgs := `{"action":"deploy","proposals":[{"prompt":"work"}]}`
 	if got := ExplainPolicy("auto", "manage_sessions", deployArgs, policy); got.Decision != PolicyDecisionAsk || got.Source != "session_deploy_policy" {
 		t.Fatalf("dedicated capability result = %+v, want capability ask", got)
+	}
+}
+
+func TestBashMisdeclaredOutputRedirectUsesEffectiveWritePolicy(t *testing.T) {
+	arguments := bashEffectArguments(t, `printf '%s\n' report >"$TMPDIR/report.txt"`, "read", false)
+
+	allowWrites := DefaultPolicy()
+	allowWrites.BashProfile = BashApprovalProfileOnlyCriticalPrompts
+	got := ExplainPolicy("auto", "bash", arguments, allowWrites)
+	if got.Decision != PolicyDecisionAllow || got.Source != "bash_profile" {
+		t.Fatalf("noncritical redirect result = %+v, want profile allow", got)
+	}
+	if got.BashEffect == nil || !got.BashEffect.Valid || got.BashEffect.DeclaredCategory != BashEffectRead || got.BashEffect.Category != BashEffectWrite || got.BashEffect.Critical || !got.BashEffect.Promoted {
+		t.Fatalf("noncritical redirect effect = %+v, want declared read corrected to effective noncritical write", got.BashEffect)
+	}
+	if !strings.Contains(got.BashEffect.Reason, `output redirect >"$tmpdir/report.txt"`) {
+		t.Fatalf("noncritical redirect reason = %q, want actionable redirect evidence", got.BashEffect.Reason)
+	}
+
+	for _, profile := range []BashApprovalProfile{BashApprovalProfileAllowEveryRead, BashApprovalProfileAllowSafeReads} {
+		t.Run(string(profile), func(t *testing.T) {
+			readOnly := DefaultPolicy()
+			readOnly.BashProfile = profile
+			got := ExplainPolicy("auto", "bash", arguments, readOnly)
+			if got.Decision != PolicyDecisionAsk {
+				t.Fatalf("redirect under %s = %+v, want prompt", profile, got)
+			}
+			if got.BashEffect == nil || !got.BashEffect.Valid || got.BashEffect.Category != BashEffectWrite {
+				t.Fatalf("redirect effect under %s = %+v, want effective write", profile, got.BashEffect)
+			}
+		})
+	}
+}
+
+func TestBashOutputRedirectDetectionIgnoresNonFileRedirection(t *testing.T) {
+	for _, command := range []string{`printf "a > b"`, `check 2>/dev/null`, `check 2>&1`} {
+		t.Run(command, func(t *testing.T) {
+			assessment := assessBashEffect(bashEffectArguments(t, command, "read", false), command)
+			if !assessment.Valid || assessment.Category != BashEffectRead || assessment.Promoted {
+				t.Fatalf("assessment = %+v, want unchanged read", assessment)
+			}
+		})
 	}
 }
 
