@@ -1472,6 +1472,48 @@ function planTransitionStatus(payload: Record<string, unknown> | null): string {
   return toolJsonString(summary, "next_checkpoint_status") || toolJsonString(summary, "next_action") || toolJsonString(payload, "status");
 }
 
+function ExitPlanModeToolView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
+  const payload = parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+  const args = toolMessage.argumentsJson ?? parseToolJSON(toolMessage.argumentsText);
+  const title = toolJsonString(payload, "title") || toolJsonString(args, "title") || "Approved plan";
+  const targetMode = toolJsonString(payload, "target_mode") || "auto";
+  const summary = payload?.execution_summary && typeof payload.execution_summary === "object" && !Array.isArray(payload.execution_summary)
+    ? payload.execution_summary as Record<string, unknown>
+    : null;
+  const checkpointId = toolJsonString(summary, "active_checkpoint_id") || toolJsonString(summary, "next_checkpoint_id") || toolJsonString(payload, "checkpoint_id");
+  const nextStatus = toolJsonString(summary, "next_checkpoint_status").replace(/[-_]+/g, " ");
+  const transitioned = payload?.mode_changed === true || toolJsonString(payload, "status").toLowerCase() === "approved";
+  const isRunning = toolMessage.state === "running" && !transitioned;
+  const transitionLabel = isRunning ? "Approving plan…" : transitioned ? "Plan approved" : "Plan transition";
+  const modeLabel = `${targetMode.charAt(0).toUpperCase()}${targetMode.slice(1)} mode`;
+
+  return (
+    <div className="mb-2 w-full min-w-0 py-1.5" data-exit-plan-mode-transition>
+      <div className="w-full min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-[var(--app-success-bg)] text-[var(--app-success)]">
+            {isRunning ? <LoaderCircle size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] font-semibold leading-5 text-[var(--app-text)]">{transitionLabel}</div>
+            <div className="truncate text-[11px] leading-4 text-[var(--app-text-muted)]" title={title}>{title}</div>
+          </div>
+          <ArrowRight size={14} className="shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />
+          <div className="flex shrink-0 items-center gap-1.5 text-[var(--app-primary)]">
+            <CircleDot size={12} aria-hidden="true" />
+            <span className="text-[11px] font-medium">{modeLabel}</span>
+          </div>
+        </div>
+        {!isRunning && (checkpointId || nextStatus) ? (
+          <div className="mt-2 border-t border-[color-mix(in_srgb,var(--app-border)_75%,transparent)] pt-2 text-[10px] text-[var(--app-text-subtle)]">
+            Execution continues{checkpointId ? <> with <span className="font-mono text-[var(--app-text-muted)]">{checkpointId}</span></> : null}{nextStatus ? ` · ${nextStatus}` : ""}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function PlanManageToolView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
   const payload = parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
   const args = toolMessage.argumentsJson ?? parseToolJSON(toolMessage.argumentsText);
@@ -1846,12 +1888,14 @@ export function ToolMessageView({
   const plainPreview = shouldRenderPreviewAsPlain(toolMessage.tool);
   const isManageSessions = ["manage-sessions", "manage_sessions"].includes(normalizedTool);
   const isPlanManage = ["plan-manage", "plan_manage"].includes(normalizedTool);
+  const isExitPlanMode = ["exit-plan-mode", "exit_plan_mode"].includes(normalizedTool);
   const isFileAction = ["read", "list", "search", "edit"].includes(normalizedTool);
   const fileSummary = isFileAction && toolMessage.target
     ? summary.replace(toolMessage.target, "").replace(/\s+in\s+(?=\()/, " ").trim()
     : summary;
   const showPreview = normalizedTool !== 'thinking' || thinkingTagsEnabled;
   const isWindup = !isTask && state === "running" && !toolMessage.output.trim() && !toolMessage.error.trim();
+  if (isExitPlanMode) return <ExitPlanModeToolView toolMessage={toolMessage} />;
   if (isPlanManage) return <PlanManageToolView toolMessage={toolMessage} />;
   const hasBody = Boolean(
     toolMessage.error
