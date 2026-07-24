@@ -41,7 +41,7 @@ function child(index: number): {
       status: "running",
       runId: `run-${index}`,
       currentTool: "bash",
-      toolActivitySummary: "read ×5 · search ×2",
+      toolActivitySummary: "read x5",
       startedAt: 1,
       elapsedMs: 1_000,
       modelLabel: "model",
@@ -58,11 +58,11 @@ function child(index: number): {
 
 test("plan subagent activity prefers canonical summaries while preserving state fallbacks", () => {
   const running = child(1);
-  assert.equal(desktopPlanSubagentActivityLabel(running.view, running.row, "running", false), "read ×5 · search ×2");
+  assert.equal(desktopPlanSubagentActivityLabel(running.view, running.row, "running", false), "read x5");
   assert.equal(desktopPlanSubagentActivityLabel({ ...running.view, loading: true }, running.row, "running", false), "loading");
   assert.equal(desktopPlanSubagentActivityLabel({ ...running.view, unavailable: true }, running.row, "running", false), "unavailable");
   assert.equal(desktopPlanSubagentActivityLabel({ ...running.view, stale: true }, running.row, "running", false), "stale");
-  assert.equal(desktopPlanSubagentActivityLabel({ ...running.view, terminal: true }, running.row, "completed", true), "completed");
+  assert.equal(desktopPlanSubagentActivityLabel({ ...running.view, terminal: true }, running.row, "completed", true), "read x5");
   assert.equal(desktopPlanSubagentActivityLabel({ ...running.view, currentTool: "", toolActivitySummary: "" }, { ...running.row, tool: "-" }, "pending", false), "pending");
 });
 
@@ -86,6 +86,6 @@ test("plan subagents collapse to a labeled bot control and retain navigable sess
   assert.match(markup, /aria-label="Open Child session 1\./);
   assert.match(markup, /aria-label="Open Child session 2\./);
   assert.match(markup, /aria-label="Stop Child session 1"/);
-  assert.match(markup, /read ×5 · search ×2/);
+  assert.match(markup, /read x5/);
   assert.doesNotMatch(markup, /uppercase tracking/);
 });

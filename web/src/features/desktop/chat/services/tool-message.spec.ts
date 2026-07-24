@@ -704,6 +704,9 @@ function testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload(): void 
           subagent_provider: 'provider-a',
           subagent_model: 'model-a',
           current_tool: 'search',
+          current_tool_identity: 'search',
+          current_tool_run_count: 3,
+          current_tool_display: 'search x3',
           launch_started_at_ms: 123000,
           current_tool_started_at_ms: 124000,
         },
@@ -725,6 +728,7 @@ function testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload(): void 
   assert(message?.taskRows[0]?.launchKey === 'child-native-1', `expected launch key from native state, got ${message?.taskRows[0]?.launchKey}`)
   assert(message?.taskRows[0]?.childSessionId === 'child-native-1', `expected native child session, got ${message?.taskRows[0]?.childSessionId}`)
   assert(message?.taskRows[0]?.phase === 'tool.started', `expected phase, got ${message?.taskRows[0]?.phase}`)
+  assert(message?.taskRows[0]?.tool === 'search x3', `expected backend progression label, got ${message?.taskRows[0]?.tool}`)
   assert(message?.taskRows[0]?.previewText === '', `native lifecycle state should not render transcript preview text, got ${message?.taskRows[0]?.previewText}`)
   assert(message?.taskRows[1]?.previewText === 'subagent failed', `expected failure text, got ${message?.taskRows[1]?.previewText}`)
 }

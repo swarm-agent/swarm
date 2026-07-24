@@ -315,6 +315,9 @@ type StreamEvent struct {
 	Delta             string                                `json:"delta,omitempty"`
 	Summary           string                                `json:"summary,omitempty"`
 	ToolName          string                                `json:"tool_name,omitempty"`
+	ToolIdentity      string                                `json:"tool_identity,omitempty"`
+	ToolRunCount      int                                   `json:"tool_run_count,omitempty"`
+	ToolDisplay       string                                `json:"tool_display,omitempty"`
 	CallID            string                                `json:"call_id,omitempty"`
 	ToolCallID        string                                `json:"tool_call_id,omitempty"`
 	ToolCallIndex     *int                                  `json:"tool_call_index,omitempty"`
@@ -868,8 +871,12 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 			nowMS := time.Now().UnixMilli()
 			taskStep = maxInt(taskStep, maxInt(1, event.Step))
 			toolName := emptyToolName(strings.TrimSpace(event.ToolName))
+			progression := providerToolProgressionFromEvent(event, outcome)
 			outcome.ToolStarted++
 			outcome.CurrentTool = toolName
+			outcome.CurrentToolIdentity = progression.Identity
+			outcome.CurrentToolRunCount = progression.RunCount
+			outcome.CurrentToolDisplay = progression.Display
 			outcome.CurrentToolStarted = nowMS
 			outcome.CurrentToolMS = 0
 			if toolName != "" {
@@ -914,11 +921,7 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 				summary = fmt.Sprintf("launch %d failed %s: %s", outcome.LaunchIndex, completedTool, strings.TrimSpace(event.Error))
 			}
 			emitTaskStreamDelta(parentSession.ID, emit, taskStep, taskToolName, taskCallID, taskAction, description, 1, outcome, toolPhase, summary)
-			if strings.TrimSpace(event.Error) == "" {
-				outcome.CurrentTool = ""
-				outcome.CurrentToolStarted = 0
-				outcome.CurrentToolMS = 0
-			}
+
 		case StreamEventMessageStored, StreamEventMessageUpdated:
 			if event.Message != nil && strings.EqualFold(strings.TrimSpace(event.Message.Role), "reasoning") {
 				outcome.ReasoningSummary = strings.TrimSpace(event.Message.Content)
@@ -965,9 +968,6 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 		outcome.LaunchStartedAtMS = nowMS
 	}
 	outcome.ElapsedMS = maxInt64(0, nowMS-outcome.LaunchStartedAtMS)
-	outcome.CurrentTool = ""
-	outcome.CurrentToolStarted = 0
-	outcome.CurrentToolMS = 0
 	outcome.ReportChars = len([]rune(assistantText))
 	outcome.ReportExcerpt = assistantText
 	outcome.Summary = summarizePlainToolOutput(assistantText, taskReportPreviewChars, 2)
@@ -4611,6 +4611,15 @@ func streamEventEnvelopePayload(event StreamEvent) map[string]any {
 	}
 	if toolName := strings.TrimSpace(event.ToolName); toolName != "" {
 		payload["tool_name"] = toolName
+	}
+	if toolIdentity := strings.TrimSpace(event.ToolIdentity); toolIdentity != "" {
+		payload["tool_identity"] = toolIdentity
+	}
+	if event.ToolRunCount > 0 {
+		payload["tool_run_count"] = event.ToolRunCount
+	}
+	if toolDisplay := strings.TrimSpace(event.ToolDisplay); toolDisplay != "" {
+		payload["tool_display"] = toolDisplay
 	}
 	if callID := strings.TrimSpace(event.CallID); callID != "" {
 		payload["call_id"] = callID

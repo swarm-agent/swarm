@@ -145,7 +145,7 @@ func TestTaskStreamV2UsesKeyedRowsWithoutRawJSONOrReports(t *testing.T) {
 	state.Session.ID = "s"
 	started, _ := json.Marshal(map[string]any{"call_id": "task-1", "tool_name": "task", "arguments": `{"prompt":"inspect"}`})
 	state = applyToolEvent(state, clientSessionV3Event{Seq: 1, EventType: "session.tool.started"}, rawToolPayload(t, started))
-	firstPatch := `{"tool":"task","path_id":"tool.task.stream.v2","launch_count":2,"launch_key":"child-1","launch":{"launch_index":1,"child_session_id":"child-1","subagent":"explorer","assignment_label":"Map backend","status":"running","current_tool":"search","current_preview_kind":"assistant","current_preview_text":"SECRET CHILD RESPONSE"}}`
+	firstPatch := `{"tool":"task","path_id":"tool.task.stream.v2","launch_count":2,"launch_key":"child-1","launch":{"launch_index":1,"child_session_id":"child-1","subagent":"explorer","assignment_label":"Map backend","status":"running","current_tool":"search","current_tool_display":"search x3","current_preview_kind":"assistant","current_preview_text":"SECRET CHILD RESPONSE"}}`
 	secondPatch := `{"tool":"task","path_id":"tool.task.stream.v2","launch_count":2,"launch_key":"child-2","launch":{"launch_index":2,"child_session_id":"child-2","subagent":"coder","assignment_label":"Implement TUI","status":"running","current_tool":"edit"}}`
 	for seq, patch := range []string{firstPatch, secondPatch} {
 		delta, _ := json.Marshal(map[string]any{"call_id": "task-1", "tool_name": "task", "output": patch})
@@ -166,7 +166,7 @@ func TestTaskStreamV2UsesKeyedRowsWithoutRawJSONOrReports(t *testing.T) {
 		rendered.WriteByte('\n')
 	}
 	text := rendered.String()
-	for _, want := range []string{"SUBAGENT STREAM", "Map backend", "@explorer", "current: search", "Implement TUI", "@coder", "current: edit"} {
+	for _, want := range []string{"SUBAGENT STREAM", "Map backend", "@explorer", "current: search x3", "Implement TUI", "@coder", "current: edit"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("task rows missing %q:\n%s", want, text)
 		}
@@ -183,6 +183,19 @@ func TestTaskStreamV2UsesKeyedRowsWithoutRawJSONOrReports(t *testing.T) {
 		if strings.Contains(text, hidden) {
 			t.Fatalf("task rows leaked %q:\n%s", hidden, text)
 		}
+	}
+}
+
+func TestTaskStreamV2RetainsProgressionWhenLaterPatchHasEmptyCurrentTool(t *testing.T) {
+	item := ToolTimelineItem{Name: "task"}
+	started := `{"tool":"task","path_id":"tool.task.stream.v2","launch_key":"child-1","launch":{"launch_index":1,"current_tool":"read","current_tool_identity":"read","current_tool_run_count":2,"current_tool_display":"read x2"}}`
+	completed := `{"tool":"task","path_id":"tool.task.stream.v2","launch_key":"child-1","launch":{"launch_index":1,"status":"running","phase":"tool.completed","current_tool":""}}`
+	if !applyTaskStreamPatch(&item, started) || !applyTaskStreamPatch(&item, completed) {
+		t.Fatal("expected task stream patches to apply")
+	}
+	presentation := buildToolPresentation(item)
+	if len(presentation.TaskRows) != 1 || presentation.TaskRows[0].Tool != "read x2" {
+		t.Fatalf("retained progression = %#v, want read x2", presentation.TaskRows)
 	}
 }
 

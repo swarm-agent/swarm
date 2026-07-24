@@ -35,9 +35,8 @@ export function desktopPlanSubagentActivityLabel(
   if (view?.loading) return "loading";
   if (view?.unavailable) return "unavailable";
   if (view?.stale) return "stale";
+  if (view?.toolActivitySummary.trim()) return view.toolActivitySummary.trim();
   if (terminal) return status;
-  const active = ["running", "pending_executor", "dispatch_blocked", "active", "in_progress"].includes(status.trim().toLowerCase());
-  if (active && view?.toolActivitySummary.trim()) return view.toolActivitySummary.trim();
   if (view?.currentTool) return view.currentTool;
   if (row.tool && row.tool !== "-") return row.tool;
   return status;

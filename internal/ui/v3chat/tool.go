@@ -222,6 +222,9 @@ func applyTaskStreamPatch(item *ToolTimelineItem, output string) bool {
 		merged[key] = value
 	}
 	for key, value := range launch {
+		if key == "current_tool" && anyString(value) == "" && anyString(merged["current_tool"]) != "" {
+			continue
+		}
 		merged[key] = value
 	}
 	merged["launch_key"] = launchKey

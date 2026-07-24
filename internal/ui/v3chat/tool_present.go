@@ -792,7 +792,7 @@ func presentTaskTool(tool ToolTimelineItem, output map[string]any) toolPresentat
 		if previewKind != "assistant" && previewKind != "reasoning" {
 			preview = toolString(launch, "current_preview_text")
 		}
-		currentTool := toolString(launch, "current_tool")
+		currentTool := firstNonEmptyToolRaw(toolString(launch, "current_tool_display"), toolString(launch, "current_tool"))
 		if previewKind == "reasoning" {
 			currentTool = "thinking"
 		}

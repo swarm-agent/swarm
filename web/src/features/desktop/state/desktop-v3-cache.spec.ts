@@ -2743,6 +2743,27 @@ test('realtime task stream v2 deltas merge launch patches into keyed state witho
       status: 'running',
       subagent: 'explorer',
       current_tool: 'search',
+      current_tool_identity: 'search',
+      current_tool_run_count: 2,
+      current_tool_display: 'search x2',
+    },
+  })
+  const completionPatch = JSON.stringify({
+    path_id: 'tool.task.stream.v2',
+    stream_version: 2,
+    tool: 'task',
+    status: 'running',
+    launch_count: 2,
+    task_call_id: 'call-task',
+    launch_key: 'child-1',
+    launch_index: 1,
+    launch: {
+      launch_key: 'child-1',
+      launch_index: 1,
+      child_session_id: 'child-1',
+      status: 'running',
+      phase: 'tool.completed',
+      current_tool: '',
     },
   })
   const thirdPatch = JSON.stringify({
@@ -2772,7 +2793,7 @@ test('realtime task stream v2 deltas merge launch patches into keyed state witho
       arguments: '{"action":"spawn"}',
     }, 5, 'cursor-task-start'),
   })
-  for (const [index, output] of [firstPatch, secondPatch, thirdPatch].entries()) {
+  for (const [index, output] of [firstPatch, secondPatch, completionPatch, thirdPatch].entries()) {
     applyRealtimeFrame(state, {
       frame: deltaFrame('session.tool.delta', {
         call_id: 'call-task',
@@ -2786,6 +2807,7 @@ test('realtime task stream v2 deltas merge launch patches into keyed state witho
   assert.equal(tool.outputText, undefined)
   assert.deepEqual(tool.taskStream?.launchOrder, ['child-1', 'child-2'])
   assert.equal(tool.taskStream?.launchesByKey['child-1']?.current_tool, 'search')
+  assert.equal(tool.taskStream?.launchesByKey['child-1']?.current_tool_display, 'search x2')
   assert.equal(tool.taskStream?.launchesByKey['child-2']?.subagent, 'parallel')
 })
 

@@ -769,6 +769,9 @@ export interface LiveRunOverlay {
       stepId?: string
       toolInstanceId?: string
       toolName?: string
+      toolIdentity?: string
+      toolRunCount?: number
+      toolDisplay?: string
       argumentsText?: string
       outputText?: string
       taskStream?: LiveTaskToolStreamState

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -17,6 +18,49 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
+
+// ToolProgressionState owns the run-local consecutive-tool grouping contract.
+type ToolProgressionState struct {
+	mu           sync.Mutex
+	lastIdentity string
+	runCount     int
+}
+
+type ToolProgression struct {
+	Identity string
+	RunCount int
+	Display  string
+}
+
+func (s *ToolProgressionState) Observe(toolName string) ToolProgression {
+	identity := canonicalToolName(emptyToolName(toolName))
+	if identity == "" {
+		identity = "tool"
+	}
+	if s == nil {
+		return ToolProgression{Identity: identity, RunCount: 1, Display: toolProgressionDisplay(identity, 1)}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if identity == s.lastIdentity {
+		s.runCount++
+	} else {
+		s.lastIdentity = identity
+		s.runCount = 1
+	}
+	return ToolProgression{Identity: identity, RunCount: s.runCount, Display: toolProgressionDisplay(identity, s.runCount)}
+}
+
+func toolProgressionDisplay(identity string, runCount int) string {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return ""
+	}
+	if runCount <= 1 {
+		return identity
+	}
+	return fmt.Sprintf("%s x%d", identity, runCount)
+}
 
 // ProviderManagedToolInvokerConfig configures provider-managed tool execution for
 // callers that own the provider loop but need the canonical run.Service tool
@@ -37,6 +81,7 @@ type ProviderManagedToolInvokerConfig struct {
 	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 	ProviderManagedV3    bool
 	AgentProfile         pebblestore.AgentProfile
+	ToolProgression      *ToolProgressionState
 }
 
 type providerToolInvokerConfig struct {
@@ -56,6 +101,7 @@ type providerToolInvokerConfig struct {
 	providerManagedV3    bool
 	policy               *permission.Policy
 	agentProfile         pebblestore.AgentProfile
+	toolProgression      *ToolProgressionState
 }
 
 func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerConfig {
@@ -75,6 +121,7 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		applySessionMutation: config.ApplySessionMutation,
 		providerManagedV3:    config.ProviderManagedV3,
 		agentProfile:         config.AgentProfile,
+		toolProgression:      config.ToolProgression,
 	}
 }
 
@@ -236,6 +283,9 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	if config.providerManagedV3 && config.applySessionMutation == nil {
 		return tool.Result{}, 0, errors.New("v3 provider-managed tool execution requires applySessionV3PrimaryMutation")
 	}
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
 
 	name := strings.TrimSpace(call.Name)
 	callID := strings.TrimSpace(call.CallID)
@@ -309,13 +359,18 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			handled, controlResult, controlErr = s.executeControlPlaneToolWithLifecycleRunContext(ctx, config.sessionID, config.sessionMode, config.agentProfile, config.step, call, controlResponse, config.emit, config.applySessionMutation, lifecycleRun)
 		}
 		if handled {
+			progression := recordProviderToolProgression(config.toolProgression, metadata, name)
 			if config.emit != nil {
 				config.emit(StreamEvent{
-					Type:      StreamEventToolStarted,
-					Step:      config.step,
-					ToolName:  name,
-					CallID:    callID,
-					Arguments: call.Arguments,
+					Type:         StreamEventToolStarted,
+					Step:         config.step,
+					ToolName:     name,
+					CallID:       callID,
+					Arguments:    call.Arguments,
+					ToolIdentity: progression.Identity,
+					ToolRunCount: progression.RunCount,
+					ToolDisplay:  progression.Display,
+					Metadata:     cloneGenericMap(metadata),
 				})
 			}
 			result = controlResult
@@ -364,13 +419,18 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 					runtimeCalls = scopeApprovedCalls
 				}
 				if len(runtimeCalls) > 0 {
+					progression := recordProviderToolProgression(config.toolProgression, metadata, name)
 					if config.emit != nil {
 						config.emit(StreamEvent{
-							Type:      StreamEventToolStarted,
-							Step:      config.step,
-							ToolName:  name,
-							CallID:    callID,
-							Arguments: call.Arguments,
+							Type:         StreamEventToolStarted,
+							Step:         config.step,
+							ToolName:     name,
+							CallID:       callID,
+							Arguments:    call.Arguments,
+							ToolIdentity: progression.Identity,
+							ToolRunCount: progression.RunCount,
+							ToolDisplay:  progression.Display,
+							Metadata:     cloneGenericMap(metadata),
 						})
 					}
 					runtimeCtx := tool.WithWorkspaceScope(ctx, tool.WorkspaceScope{
@@ -419,15 +479,20 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	}
 
 	if config.emit != nil {
+		progression := providerToolProgressionFromMetadata(metadata, result.Name)
 		config.emit(StreamEvent{
-			Type:       StreamEventToolCompleted,
-			Step:       config.step,
-			ToolName:   strings.TrimSpace(result.Name),
-			CallID:     strings.TrimSpace(result.CallID),
-			Output:     formatProviderManagedToolCompletedOutput(call, result),
-			RawOutput:  liveStreamRawOutput(call, result),
-			Error:      strings.TrimSpace(result.Error),
-			DurationMS: result.DurationMS,
+			Type:         StreamEventToolCompleted,
+			Step:         config.step,
+			ToolName:     strings.TrimSpace(result.Name),
+			CallID:       strings.TrimSpace(result.CallID),
+			Output:       formatProviderManagedToolCompletedOutput(call, result),
+			RawOutput:    liveStreamRawOutput(call, result),
+			Error:        strings.TrimSpace(result.Error),
+			DurationMS:   result.DurationMS,
+			ToolIdentity: progression.Identity,
+			ToolRunCount: progression.RunCount,
+			ToolDisplay:  progression.Display,
+			Metadata:     cloneGenericMap(metadata),
 		})
 	}
 
@@ -563,6 +628,24 @@ func (s *Service) appendExitPlanModeLifecycleMessage(sessionID string, payload m
 	lifecyclePayload := cloneGenericMap(payload)
 	lifecyclePayload["action"] = "approve_and_start"
 	return s.appendPlanExecutionLifecycleSystemMessage(sessionID, "approve_and_start", plan, lifecyclePayload, applySessionMutation)
+}
+
+func recordProviderToolProgression(state *ToolProgressionState, metadata map[string]any, toolName string) ToolProgression {
+	progression := state.Observe(toolName)
+	metadata["tool_identity"] = progression.Identity
+	metadata["tool_run_count"] = progression.RunCount
+	metadata["tool_display"] = progression.Display
+	return progression
+}
+
+func providerToolProgressionFromMetadata(metadata map[string]any, toolName string) ToolProgression {
+	identity := canonicalToolName(firstNonEmptyString(mapString(metadata, "tool_identity"), toolName, "tool"))
+	runCount := mapInt(metadata, "tool_run_count")
+	if runCount <= 0 {
+		runCount = 1
+	}
+	display := firstNonEmptyString(mapString(metadata, "tool_display"), toolProgressionDisplay(identity, runCount))
+	return ToolProgression{Identity: identity, RunCount: runCount, Display: display}
 }
 
 func (s *Service) storeProviderManagedToolResult(config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result) error {

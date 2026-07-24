@@ -2237,6 +2237,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 	}
 	input := append([]map[string]any(nil), baseReq.Input...)
 	identicalCalls := sessionV3ProviderIdenticalToolCallTracker{}
+	toolProgression := &runruntime.ToolProgressionState{}
 	finalizingPlanTerminal := false
 	runtimeContextAt := time.Now()
 	for step := 1; ; step++ {
@@ -2244,7 +2245,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		var toolInvoker provideriface.ToolInvoker
 		if toolsEnabled {
 			var invokerErr error
-			toolInvoker, invokerErr = e.newSessionV3ProviderToolInvoker(resolved, job, step)
+			toolInvoker, invokerErr = e.newSessionV3ProviderToolInvoker(resolved, job, step, toolProgression)
 			if invokerErr != nil {
 				return sessionV3ProviderLoopResult{}, invokerErr
 			}
@@ -2626,7 +2627,7 @@ func sessionV3ProviderCanonicalToolCallKey(call provideriface.FunctionCall) stri
 	return name + ":" + canonicalArgs
 }
 
-func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3ResolvedRuntime, job sessionV3ExecutorJob, step int) (provideriface.ToolInvoker, error) {
+func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3ResolvedRuntime, job sessionV3ExecutorJob, step int, toolProgression *runruntime.ToolProgressionState) (provideriface.ToolInvoker, error) {
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return nil, errors.New("v3 executor is not configured")
 	}
@@ -2663,6 +2664,7 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 		ApplySessionMutation: e.applySessionV3ProviderToolMutation(job),
 		ProviderManagedV3:    true,
 		AgentProfile:         resolved.AgentProfile,
+		ToolProgression:      toolProgression,
 	})
 	if invoker == nil {
 		return nil, errors.New("provider-managed tool invoker is not configured")
@@ -2752,6 +2754,9 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 			"step":             step,
 			"step_id":          stepID,
 			"tool_name":        toolName,
+			"tool_identity":    strings.TrimSpace(event.ToolIdentity),
+			"tool_run_count":   event.ToolRunCount,
+			"tool_display":     strings.TrimSpace(event.ToolDisplay),
 			"call_id":          callID,
 			"tool_instance_id": toolInstanceID,
 			"recorded_at":      now,

@@ -3092,6 +3092,9 @@ function applyLiveRunOverlayFromEvent(
       tool.stepId = stringValue(payload.step_id) || tool.stepId
       tool.toolInstanceId = toolInstanceId || tool.toolInstanceId
       tool.toolName = stringValue(payload.tool_name) || tool.toolName
+      tool.toolIdentity = stringValue(payload.tool_identity) || tool.toolIdentity
+      tool.toolRunCount = numberValue(payload.tool_run_count) || tool.toolRunCount
+      tool.toolDisplay = stringValue(payload.tool_display) || tool.toolDisplay
 
       const argumentsText = stringValue(payload.arguments) || stringValue(payload.arguments_snapshot)
       const argumentsDelta = stringValue(payload.arguments_delta)
@@ -3971,7 +3974,7 @@ function applyTaskStreamPatch(
   stream.taskCallId = stringValue(parsed.task_call_id) || stream.taskCallId
   stream.launchCount = numberValue(parsed.launch_count) || stream.launchCount
   stream.updatedAt = updatedAt
-  stream.launchesByKey[launchKey] = { ...existing, ...launchPatch, launch_key: launchKey }
+  stream.launchesByKey[launchKey] = mergeTaskStreamLaunchPatch(existing, launchPatch, launchKey)
   if (!stream.launchOrder.includes(launchKey)) {
     stream.launchOrder = [...stream.launchOrder, launchKey]
   }
@@ -3985,6 +3988,23 @@ function applyTaskStreamPatch(
   })
   tool.taskStream = stream
   return true
+}
+
+function mergeTaskStreamLaunchPatch(
+  existing: Record<string, unknown>,
+  launchPatch: Record<string, unknown>,
+  launchKey: string,
+): Record<string, unknown> {
+  const merged = { ...existing, ...launchPatch, launch_key: launchKey }
+  if (!stringValue(launchPatch.current_tool) && stringValue(existing.current_tool)) {
+    merged.current_tool = existing.current_tool
+    merged.current_tool_identity = existing.current_tool_identity
+    merged.current_tool_run_count = existing.current_tool_run_count
+    merged.current_tool_display = existing.current_tool_display
+    merged.current_tool_started_at_ms = existing.current_tool_started_at_ms
+    merged.current_tool_ms = existing.current_tool_ms
+  }
+  return merged
 }
 
 function numberValue(value: unknown): number {

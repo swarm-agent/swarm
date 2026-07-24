@@ -7,29 +7,32 @@ import (
 
 func TestBuildTaskStreamPatchPayloadDesktopSubagentSchema(t *testing.T) {
 	payload := buildTaskStreamPatchPayload("parent-session", "call-task", "spawn", "map repo", 3, taskLaunchOutcome{
-		LaunchIndex:        2,
-		RequestedSubagent:  "explorer",
-		ResolvedSubagent:   "explorer-v2",
-		MetaPrompt:         "map backend files",
-		AssignmentLabel:    "Backend map",
-		SubagentProvider:   "test-provider",
-		SubagentModel:      "test-model",
-		ChildSessionID:     "child-session-2",
-		ChildMode:          "auto",
-		WorkspacePath:      "/workspace/project",
-		WorkspaceName:      "project",
-		WorktreeEnabled:    true,
-		WorktreeRootPath:   "/workspace/project",
-		WorktreeBranch:     "agent/child-session-2",
-		LaunchStartedAtMS:  123000,
-		CurrentTool:        "search",
-		CurrentToolStarted: 124000,
-		CurrentPreviewKind: "tool",
-		CurrentPreviewText: "matched service_tools.go",
-		ToolStarted:        1,
-		ToolCompleted:      0,
-		ToolFailed:         0,
-		ToolOrder:          []string{"search"},
+		LaunchIndex:         2,
+		RequestedSubagent:   "explorer",
+		ResolvedSubagent:    "explorer-v2",
+		MetaPrompt:          "map backend files",
+		AssignmentLabel:     "Backend map",
+		SubagentProvider:    "test-provider",
+		SubagentModel:       "test-model",
+		ChildSessionID:      "child-session-2",
+		ChildMode:           "auto",
+		WorkspacePath:       "/workspace/project",
+		WorkspaceName:       "project",
+		WorktreeEnabled:     true,
+		WorktreeRootPath:    "/workspace/project",
+		WorktreeBranch:      "agent/child-session-2",
+		LaunchStartedAtMS:   123000,
+		CurrentTool:         "search",
+		CurrentToolIdentity: "search",
+		CurrentToolRunCount: 3,
+		CurrentToolDisplay:  "search x3",
+		CurrentToolStarted:  124000,
+		CurrentPreviewKind:  "tool",
+		CurrentPreviewText:  "matched service_tools.go",
+		ToolStarted:         1,
+		ToolCompleted:       0,
+		ToolFailed:          0,
+		ToolOrder:           []string{"search"},
 	}, "tool.delta", "")
 
 	wantTop := map[string]any{
@@ -81,6 +84,9 @@ func TestBuildTaskStreamPatchPayloadDesktopSubagentSchema(t *testing.T) {
 		"child_mode":                 "auto",
 		"launch_started_at_ms":       int64(123000),
 		"current_tool":               "search",
+		"current_tool_identity":      "search",
+		"current_tool_run_count":     3,
+		"current_tool_display":       "search x3",
 		"current_tool_started_at_ms": int64(124000),
 		"current_tool_ms":            int64(0),
 		"elapsed_ms":                 int64(0),
@@ -94,10 +100,53 @@ func TestBuildTaskStreamPatchPayloadDesktopSubagentSchema(t *testing.T) {
 			t.Fatalf("launch[%q] = %#v, want %#v", key, got, want)
 		}
 	}
-	for _, forbidden := range []string{"meta_prompt", "workspace_path", "workspace_name", "worktree_enabled", "worktree_root_path", "worktree_branch", "tool_order", "current_preview_kind", "current_preview_text"} {
+	for _, forbidden := range []string{"meta_prompt", "workspace_name", "worktree_enabled", "worktree_root_path", "tool_order", "current_preview_kind", "current_preview_text"} {
 		if _, ok := launch[forbidden]; ok {
 			t.Fatalf("launch patch includes forbidden field %q: %#v", forbidden, launch[forbidden])
 		}
+	}
+}
+
+func TestToolProgressionStateGroupsNormalizedConsecutiveToolsAndResets(t *testing.T) {
+	state := &ToolProgressionState{}
+	got := []ToolProgression{
+		state.Observe("read"),
+		state.Observe("READ"),
+		state.Observe(" read "),
+		state.Observe("search"),
+		state.Observe("search"),
+	}
+	wantDisplays := []string{"read", "read x2", "read x3", "search", "search x2"}
+	for i, want := range wantDisplays {
+		if got[i].Display != want {
+			t.Fatalf("progression[%d].Display = %q, want %q", i, got[i].Display, want)
+		}
+	}
+	if got[3].RunCount != 1 || got[3].Identity != "search" {
+		t.Fatalf("reset progression = %#v, want search count 1", got[3])
+	}
+}
+
+func TestTaskLaunchProgressionPersistsAcrossCompletionUntilNextStart(t *testing.T) {
+	outcome := taskLaunchOutcome{}
+	for _, event := range []StreamEvent{
+		{Type: StreamEventToolStarted, ToolName: "read"},
+		{Type: StreamEventToolCompleted, ToolName: "read"},
+		{Type: StreamEventToolStarted, ToolName: "READ"},
+	} {
+		if event.Type == StreamEventToolStarted {
+			progression := providerToolProgressionFromEvent(event, outcome)
+			outcome.CurrentTool = emptyToolName(event.ToolName)
+			outcome.CurrentToolIdentity = progression.Identity
+			outcome.CurrentToolRunCount = progression.RunCount
+			outcome.CurrentToolDisplay = progression.Display
+		}
+		if outcome.CurrentTool == "" {
+			t.Fatalf("current tool cleared at lifecycle boundary %q", event.Type)
+		}
+	}
+	if outcome.CurrentToolDisplay != "read x2" || outcome.CurrentToolRunCount != 2 {
+		t.Fatalf("progression = %#v, want read x2", outcome)
 	}
 }
 

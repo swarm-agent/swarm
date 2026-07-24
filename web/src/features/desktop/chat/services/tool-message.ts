@@ -908,7 +908,7 @@ function buildTaskToolRow(
   const modelLabel = [jsonStr(payload, "subagent_provider"), jsonStr(payload, "subagent_model")].filter(Boolean).join(" / ");
   const rawPreviewKind = jsonStr(payload, "current_preview_kind");
   const error = jsonStr(payload, "error");
-  let tool = jsonStr(payload, "current_tool");
+  let tool = firstNonEmpty(jsonStr(payload, "current_tool_display"), jsonStr(payload, "current_tool"));
   if (!tool && rawPreviewKind.trim().toLowerCase() !== "reasoning") {
     const toolOrder = jsonStrArray(payload, "tool_order");
     tool = toolOrder[toolOrder.length - 1] || "-";

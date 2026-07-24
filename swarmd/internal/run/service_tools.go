@@ -47,47 +47,50 @@ type taskLaunchPrepared struct {
 }
 
 type taskLaunchOutcome struct {
-	LaunchIndex        int
-	VirtualTarget      bool
-	RequestedSubagent  string
-	ResolvedSubagent   string
-	MetaPrompt         string
-	AssignmentLabel    string
-	SubagentProvider   string
-	SubagentModel      string
-	ChildSessionID     string
-	ChildMode          string
-	WorkspacePath      string
-	WorkspaceName      string
-	WorktreeEnabled    bool
-	WorktreeRootPath   string
-	WorktreeBaseBranch string
-	WorktreeBranch     string
-	BaseCommit         string
-	ParentBranch       string
-	HeadCommit         string
-	GitStatus          string
-	WorktreeClean      bool
-	LaunchStartedAtMS  int64
-	CurrentTool        string
-	CurrentToolStarted int64
-	CurrentToolMS      int64
-	ElapsedMS          int64
-	ToolStarted        int
-	ToolCompleted      int
-	ToolFailed         int
-	ToolOrder          []string
-	ReasoningSummary   string
-	CurrentPreviewKind string
-	CurrentPreviewText string
-	Phase              string
-	ReportChars        int
-	ReportExcerpt      string
-	ReportRef          *taskReportRef
-	ReportTruncated    bool
-	Summary            string
-	Error              string
-	Reason             string
+	LaunchIndex         int
+	VirtualTarget       bool
+	RequestedSubagent   string
+	ResolvedSubagent    string
+	MetaPrompt          string
+	AssignmentLabel     string
+	SubagentProvider    string
+	SubagentModel       string
+	ChildSessionID      string
+	ChildMode           string
+	WorkspacePath       string
+	WorkspaceName       string
+	WorktreeEnabled     bool
+	WorktreeRootPath    string
+	WorktreeBaseBranch  string
+	WorktreeBranch      string
+	BaseCommit          string
+	ParentBranch        string
+	HeadCommit          string
+	GitStatus           string
+	WorktreeClean       bool
+	LaunchStartedAtMS   int64
+	CurrentTool         string
+	CurrentToolIdentity string
+	CurrentToolRunCount int
+	CurrentToolDisplay  string
+	CurrentToolStarted  int64
+	CurrentToolMS       int64
+	ElapsedMS           int64
+	ToolStarted         int
+	ToolCompleted       int
+	ToolFailed          int
+	ToolOrder           []string
+	ReasoningSummary    string
+	CurrentPreviewKind  string
+	CurrentPreviewText  string
+	Phase               string
+	ReportChars         int
+	ReportExcerpt       string
+	ReportRef           *taskReportRef
+	ReportTruncated     bool
+	Summary             string
+	Error               string
+	Reason              string
 }
 
 const taskLaunchReasonMaxRunes = 512
@@ -277,6 +280,9 @@ func buildTaskStreamLaunchPayload(launch taskLaunchOutcome, status, phase string
 		"phase":                      phase,
 		"launch_started_at_ms":       launch.LaunchStartedAtMS,
 		"current_tool":               strings.TrimSpace(launch.CurrentTool),
+		"current_tool_identity":      strings.TrimSpace(launch.CurrentToolIdentity),
+		"current_tool_run_count":     launch.CurrentToolRunCount,
+		"current_tool_display":       firstNonEmptyString(strings.TrimSpace(launch.CurrentToolDisplay), toolProgressionDisplay(launch.CurrentToolIdentity, launch.CurrentToolRunCount)),
 		"current_tool_started_at_ms": launch.CurrentToolStarted,
 		"current_tool_ms":            currentToolMS,
 		"current_preview_kind":       previewKind,
@@ -374,6 +380,9 @@ func buildTaskStreamLaunchPatchPayload(launch taskLaunchOutcome, status, phase s
 		"git_status":                 strings.TrimSpace(launch.GitStatus),
 		"launch_started_at_ms":       launch.LaunchStartedAtMS,
 		"current_tool":               strings.TrimSpace(launch.CurrentTool),
+		"current_tool_identity":      strings.TrimSpace(launch.CurrentToolIdentity),
+		"current_tool_run_count":     launch.CurrentToolRunCount,
+		"current_tool_display":       firstNonEmptyString(strings.TrimSpace(launch.CurrentToolDisplay), toolProgressionDisplay(launch.CurrentToolIdentity, launch.CurrentToolRunCount)),
 		"current_tool_started_at_ms": launch.CurrentToolStarted,
 		"current_tool_ms":            currentToolMS,
 		"elapsed_ms":                 elapsedMS,
@@ -3097,36 +3106,39 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		for _, launch := range launches {
 			elapsedMS, currentToolMS := taskLaunchProgressDurations(launch, strings.EqualFold(strings.TrimSpace(status), "ok") || strings.EqualFold(strings.TrimSpace(status), "error"))
 			launchRow := map[string]any{
-				"launch_index":         launch.LaunchIndex,
-				"requested_subagent":   strings.TrimSpace(launch.RequestedSubagent),
-				"subagent":             strings.TrimSpace(launch.ResolvedSubagent),
-				"meta_prompt":          strings.TrimSpace(launch.MetaPrompt),
-				"assignment_label":     strings.TrimSpace(launch.AssignmentLabel),
-				"subagent_provider":    strings.TrimSpace(launch.SubagentProvider),
-				"subagent_model":       strings.TrimSpace(launch.SubagentModel),
-				"child_session_id":     strings.TrimSpace(launch.ChildSessionID),
-				"child_mode":           strings.TrimSpace(launch.ChildMode),
-				"workspace_path":       strings.TrimSpace(launch.WorkspacePath),
-				"workspace_name":       strings.TrimSpace(launch.WorkspaceName),
-				"worktree_enabled":     launch.WorktreeEnabled,
-				"worktree_root_path":   strings.TrimSpace(launch.WorktreeRootPath),
-				"worktree_base_branch": strings.TrimSpace(launch.WorktreeBaseBranch),
-				"worktree_branch":      strings.TrimSpace(launch.WorktreeBranch),
-				"parent_branch":        strings.TrimSpace(launch.ParentBranch),
-				"base_commit":          strings.TrimSpace(launch.BaseCommit),
-				"head_commit":          strings.TrimSpace(launch.HeadCommit),
-				"worktree_clean":       launch.WorktreeClean,
-				"git_status":           strings.TrimSpace(launch.GitStatus),
-				"current_tool":         strings.TrimSpace(launch.CurrentTool),
-				"current_tool_ms":      currentToolMS,
-				"elapsed_ms":           elapsedMS,
-				"tool_started":         launch.ToolStarted,
-				"tool_completed":       launch.ToolCompleted,
-				"tool_failed":          launch.ToolFailed,
-				"tool_order":           append([]string(nil), launch.ToolOrder...),
-				"error":                strings.TrimSpace(launch.Error),
-				"reason":               strings.TrimSpace(launch.Reason),
-				"phase":                strings.TrimSpace(launch.Phase),
+				"launch_index":           launch.LaunchIndex,
+				"requested_subagent":     strings.TrimSpace(launch.RequestedSubagent),
+				"subagent":               strings.TrimSpace(launch.ResolvedSubagent),
+				"meta_prompt":            strings.TrimSpace(launch.MetaPrompt),
+				"assignment_label":       strings.TrimSpace(launch.AssignmentLabel),
+				"subagent_provider":      strings.TrimSpace(launch.SubagentProvider),
+				"subagent_model":         strings.TrimSpace(launch.SubagentModel),
+				"child_session_id":       strings.TrimSpace(launch.ChildSessionID),
+				"child_mode":             strings.TrimSpace(launch.ChildMode),
+				"workspace_path":         strings.TrimSpace(launch.WorkspacePath),
+				"workspace_name":         strings.TrimSpace(launch.WorkspaceName),
+				"worktree_enabled":       launch.WorktreeEnabled,
+				"worktree_root_path":     strings.TrimSpace(launch.WorktreeRootPath),
+				"worktree_base_branch":   strings.TrimSpace(launch.WorktreeBaseBranch),
+				"worktree_branch":        strings.TrimSpace(launch.WorktreeBranch),
+				"parent_branch":          strings.TrimSpace(launch.ParentBranch),
+				"base_commit":            strings.TrimSpace(launch.BaseCommit),
+				"head_commit":            strings.TrimSpace(launch.HeadCommit),
+				"worktree_clean":         launch.WorktreeClean,
+				"git_status":             strings.TrimSpace(launch.GitStatus),
+				"current_tool":           strings.TrimSpace(launch.CurrentTool),
+				"current_tool_identity":  strings.TrimSpace(launch.CurrentToolIdentity),
+				"current_tool_run_count": launch.CurrentToolRunCount,
+				"current_tool_display":   firstNonEmptyString(strings.TrimSpace(launch.CurrentToolDisplay), toolProgressionDisplay(launch.CurrentToolIdentity, launch.CurrentToolRunCount)),
+				"current_tool_ms":        currentToolMS,
+				"elapsed_ms":             elapsedMS,
+				"tool_started":           launch.ToolStarted,
+				"tool_completed":         launch.ToolCompleted,
+				"tool_failed":            launch.ToolFailed,
+				"tool_order":             append([]string(nil), launch.ToolOrder...),
+				"error":                  strings.TrimSpace(launch.Error),
+				"reason":                 strings.TrimSpace(launch.Reason),
+				"phase":                  strings.TrimSpace(launch.Phase),
 			}
 			if launch.ReportRef != nil {
 				launchRow["report_ref"] = launch.ReportRef
@@ -3205,8 +3217,12 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			case StreamEventToolStarted:
 				nowMS := time.Now().UnixMilli()
 				toolName := emptyToolName(strings.TrimSpace(event.ToolName))
+				progression := providerToolProgressionFromEvent(event, outcome)
 				outcome.ToolStarted++
 				outcome.CurrentTool = toolName
+				outcome.CurrentToolIdentity = progression.Identity
+				outcome.CurrentToolRunCount = progression.RunCount
+				outcome.CurrentToolDisplay = progression.Display
 				outcome.CurrentToolStarted = nowMS
 				outcome.CurrentToolMS = 0
 				if toolName != "" {
@@ -3244,9 +3260,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				}
 				emitTaskProgress(toolPhase, summary, outcome)
 				if strings.TrimSpace(event.Error) == "" {
-					outcome.CurrentTool = ""
-					outcome.CurrentToolStarted = 0
-					outcome.CurrentToolMS = 0
 					outcome.CurrentPreviewKind = ""
 					outcome.CurrentPreviewText = ""
 				}
@@ -3313,9 +3326,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			outcome.LaunchStartedAtMS = nowMS
 		}
 		outcome.ElapsedMS = maxInt64(0, nowMS-outcome.LaunchStartedAtMS)
-		outcome.CurrentTool = ""
-		outcome.CurrentToolStarted = 0
-		outcome.CurrentToolMS = 0
 		outcome.CurrentPreviewKind = ""
 		outcome.CurrentPreviewText = ""
 		outcome.ReportChars = len([]rune(report))
@@ -3990,6 +4000,20 @@ func taskReportRefFromMessage(message pebblestore.MessageSnapshot) *taskReportRe
 		Role:      strings.TrimSpace(message.Role),
 		Source:    "child_session_transcript",
 	}
+}
+
+func providerToolProgressionFromEvent(event StreamEvent, outcome taskLaunchOutcome) ToolProgression {
+	identity := canonicalToolName(firstNonEmptyString(event.ToolIdentity, event.ToolName, "tool"))
+	runCount := event.ToolRunCount
+	if runCount <= 0 {
+		if identity == strings.TrimSpace(outcome.CurrentToolIdentity) {
+			runCount = outcome.CurrentToolRunCount + 1
+		} else {
+			runCount = 1
+		}
+	}
+	display := firstNonEmptyString(event.ToolDisplay, toolProgressionDisplay(identity, runCount))
+	return ToolProgression{Identity: identity, RunCount: runCount, Display: display}
 }
 
 func emptyToolName(name string) string {
