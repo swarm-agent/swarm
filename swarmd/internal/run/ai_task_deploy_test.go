@@ -22,6 +22,94 @@ import (
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
+func TestValidateAITaskV2OriginWorkspaceRoutesManagedWorktreeToCanonicalWorkspace(t *testing.T) {
+	const (
+		accountID   = "account-worktree-task"
+		userID      = "user-worktree-task"
+		workspaceID = "workspace-worktree-task"
+	)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: userID, AccountScopeID: accountID}
+	canonicalPath := t.TempDir()
+	worktreePath := t.TempDir()
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "workspace.pebble"))
+	if err != nil {
+		t.Fatalf("open workspace store: %v", err)
+	}
+	defer store.Close()
+	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
+	if _, err := workspaceSvc.AddForPrincipal(principal, canonicalPath, "canonical", "", true); err != nil {
+		t.Fatalf("add canonical workspace: %v", err)
+	}
+	scope, err := workspaceSvc.ScopeForPathForPrincipal(principal, canonicalPath)
+	if err != nil || !scope.Matched || scope.WorkspaceID == "" {
+		t.Fatalf("resolve canonical workspace: scope=%#v err=%v", scope, err)
+	}
+	svc := &Service{workspace: workspaceSvc}
+	parent := pebblestore.SessionSnapshot{
+		ID: "origin-worktree", UserID: userID, AccountScopeID: accountID,
+		WorkspacePath: worktreePath, WorktreeEnabled: true,
+		Metadata: map[string]any{
+			"swarm_v3_source_workspace_id":   scope.WorkspaceID,
+			"swarm_v3_source_workspace_path": canonicalPath,
+		},
+	}
+	task := pebblestore.WorkspaceTodoItem{UserID: userID, AccountScopeID: accountID, WorkspaceID: scope.WorkspaceID, WorkspacePath: canonicalPath}
+	if err := svc.validateAITaskV2OriginWorkspace(parent, task); err != nil {
+		t.Fatalf("validate managed-worktree origin: %v", err)
+	}
+
+	parent.Metadata["swarm_v3_source_workspace_id"] = workspaceID
+	if err := svc.validateAITaskV2OriginWorkspace(parent, task); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("mismatched source workspace error = %v", err)
+	}
+}
+
+func TestValidateAITaskDeployBindingRoutesManagedWorktreeToCanonicalWorkspace(t *testing.T) {
+	const (
+		accountID = "account-deploy-binding"
+		userID    = "user-deploy-binding"
+	)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: userID, AccountScopeID: accountID}
+	canonicalPath := t.TempDir()
+	worktreePath := t.TempDir()
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "workspace.pebble"))
+	if err != nil {
+		t.Fatalf("open workspace store: %v", err)
+	}
+	defer store.Close()
+	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
+	if _, err := workspaceSvc.AddForPrincipal(principal, canonicalPath, "canonical", "", true); err != nil {
+		t.Fatalf("add canonical workspace: %v", err)
+	}
+	scope, err := workspaceSvc.ScopeForPathForPrincipal(principal, canonicalPath)
+	if err != nil || !scope.Matched || scope.WorkspaceID == "" {
+		t.Fatalf("resolve canonical workspace: scope=%#v err=%v", scope, err)
+	}
+	svc := &Service{workspace: workspaceSvc}
+	parent := pebblestore.SessionSnapshot{
+		ID: "origin-worktree", UserID: userID, AccountScopeID: accountID,
+		WorkspacePath: worktreePath, WorktreeEnabled: true,
+		Metadata: map[string]any{
+			"swarm_v3_source_workspace_id":   scope.WorkspaceID,
+			"swarm_v3_source_workspace_path": canonicalPath,
+		},
+	}
+	binding := &AITaskDeployBinding{UserID: userID, AccountScopeID: accountID, WorkspacePath: canonicalPath}
+	if err := svc.validateAITaskDeployBinding(parent, binding); err != nil {
+		t.Fatalf("validate managed-worktree binding: %v", err)
+	}
+
+	parent.Metadata["swarm_v3_source_workspace_id"] = "wrong-workspace"
+	if err := svc.validateAITaskDeployBinding(parent, binding); err == nil || !strings.Contains(err.Error(), "account-owned") {
+		t.Fatalf("mismatched source workspace error = %v", err)
+	}
+	parent.Metadata["swarm_v3_source_workspace_id"] = scope.WorkspaceID
+	binding.AccountScopeID = "other-account"
+	if err := svc.validateAITaskDeployBinding(parent, binding); err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("mismatched account error = %v", err)
+	}
+}
+
 func TestParseAITaskPreparationStrict(t *testing.T) {
 	got, err := ParseAITaskPreparation(`{"title":"Fix sidebar","worktree_name":"Fix Sidebar"}`)
 	if err != nil || got.Title != "Fix sidebar" || got.WorktreeName != "fix-sidebar" {

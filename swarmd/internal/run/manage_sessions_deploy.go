@@ -217,8 +217,8 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 		}
 		parent = pebblestore.SessionSnapshot{UserID: strings.TrimSpace(aiTask.UserID), AccountScopeID: strings.TrimSpace(aiTask.AccountScopeID), WorkspacePath: strings.TrimSpace(aiTask.WorkspacePath), ModelProfile: cloneManageSessionsDeployModelProfile(aiTask.ModelProfile)}
 	}
-	if aiTask != nil && (strings.TrimSpace(aiTask.UserID) != strings.TrimSpace(parent.UserID) || strings.TrimSpace(aiTask.AccountScopeID) != strings.TrimSpace(parent.AccountScopeID) || strings.TrimSpace(aiTask.WorkspacePath) != strings.TrimSpace(parent.WorkspacePath)) {
-		return manageSessionsDeployManifest{}, errors.New("AI task deployment binding does not match the authorized origin")
+	if err := s.validateAITaskDeployBinding(parent, aiTask); err != nil {
+		return manageSessionsDeployManifest{}, err
 	}
 	if aiTask != nil {
 		parent.ModelProfile = cloneManageSessionsDeployModelProfile(aiTask.ModelProfile)

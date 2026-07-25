@@ -21,6 +21,38 @@ type AITaskPreparation struct {
 	WorktreeName string `json:"worktree_name"`
 }
 
+func (s *Service) validateAITaskDeployBinding(parent pebblestore.SessionSnapshot, binding *AITaskDeployBinding) error {
+	if binding == nil {
+		return nil
+	}
+	if strings.TrimSpace(binding.UserID) != strings.TrimSpace(parent.UserID) || strings.TrimSpace(binding.AccountScopeID) != strings.TrimSpace(parent.AccountScopeID) {
+		return fmt.Errorf("AI task deployment identity does not match the authorized origin")
+	}
+	if sameAITaskV2WorkspacePath(binding.WorkspacePath, parent.WorkspacePath) {
+		return nil
+	}
+	if !parent.WorktreeEnabled {
+		return fmt.Errorf("AI task deployment workspace does not match the authorized origin")
+	}
+	sourceWorkspaceID := strings.TrimSpace(mapString(parent.Metadata, "swarm_v3_source_workspace_id"))
+	sourceWorkspacePath := strings.TrimSpace(mapString(parent.Metadata, "swarm_v3_source_workspace_path"))
+	if sourceWorkspaceID == "" || !sameAITaskV2WorkspacePath(binding.WorkspacePath, sourceWorkspacePath) {
+		return fmt.Errorf("AI task deployment canonical workspace does not match the authorized worktree origin")
+	}
+	if s == nil || s.workspace == nil {
+		return fmt.Errorf("AI task deployment workspace service is not configured")
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: binding.UserID, AccountScopeID: binding.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+	scope, err := s.workspace.ScopeForPathForPrincipal(principal, sourceWorkspacePath)
+	if err != nil {
+		return fmt.Errorf("resolve AI task deployment authorized workspace: %w", err)
+	}
+	if !scope.Matched || strings.TrimSpace(scope.WorkspaceID) != sourceWorkspaceID || !sameAITaskV2WorkspacePath(scope.WorkspacePath, binding.WorkspacePath) {
+		return fmt.Errorf("AI task deployment canonical workspace is not the account-owned worktree origin")
+	}
+	return nil
+}
+
 func ParseAITaskPreparation(raw string) (AITaskPreparation, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &fields); err != nil {

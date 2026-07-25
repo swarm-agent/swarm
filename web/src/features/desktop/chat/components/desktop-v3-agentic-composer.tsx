@@ -212,6 +212,7 @@ export function DesktopV3AgenticComposer({
   onSubmit,
   onStop,
   mode,
+  onModeSelect,
   showModePicker = true,
   executionLabel,
   currentAgent,
@@ -673,13 +674,17 @@ export function DesktopV3AgenticComposer({
     </button>
   ) : null
 
+  const planToggle = () => onModeSelect?.(mode === 'plan' ? 'auto' : 'plan')
   const renderComposerControl = (openPicker: () => void, open: boolean) => <ComposerPlanModelControl
+    mode={mode}
     provider={selectedModel?.provider}
     model={selectedModel?.model}
     thinking={selectedThinking}
     serviceTier={selectedServiceTier}
+    planDisabled={composerDisabled || agentModelControlBusy || !onModeSelect}
     pickerDisabled={composerDisabled || agentModelControlBusy}
     open={open}
+    onPlanToggle={planToggle}
     onPickerOpen={openPicker}
   />
 

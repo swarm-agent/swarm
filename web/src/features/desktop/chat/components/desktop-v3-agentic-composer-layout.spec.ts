@@ -63,18 +63,21 @@ test('Desktop V3 composer opens task actions from a borderless plus trigger and 
   assert.doesNotMatch(actions, /createPortal/)
 })
 
-test('Desktop V3 composer uses one polished model control without a left plan tab or iteration naming', async () => {
+test('Desktop V3 composer keeps the canonical joined plan and model control beside the plus menu', async () => {
   const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
   const control = await readFile(new URL('./composer-plan-model-control.tsx', import.meta.url), 'utf8')
 
   assert.equal((source.match(/<ComposerPlanModelControl/g) ?? []).length, 1)
   assert.equal((source.match(/renderComposerControl\(openPicker, open\)/g) ?? []).length, 2)
+  assert.equal((source.match(/<DesktopComposerActionMenu/g) ?? []).length, 1)
   assert.doesNotMatch(source, /iteration/i)
   assert.doesNotMatch(source, /<ModePicker/)
+  assert.match(source, /const planToggle = \(\) => onModeSelect\?\.\(mode === 'plan' \? 'auto' : 'plan'\)/)
   assert.match(control, /data-composer-plan-model-control/)
   assert.doesNotMatch(control, /iteration/i)
-  assert.doesNotMatch(control, /NotepadText|onPlanToggle|planEnabled|aria-pressed/)
-  assert.match(control, /rounded-full/)
+  assert.match(control, /NotepadText/)
+  assert.match(control, /onPlanToggle/)
+  assert.match(control, /aria-pressed=\{planEnabled\}/)
   assert.match(control, /aria-haspopup="menu"/)
   assert.match(control, />\{modelLabel\}<\/span>/)
   assert.doesNotMatch(control, /profileName|profileLabel|primaryLabel|showSeparateModel|\bBot\b|agentName|Swarm/)

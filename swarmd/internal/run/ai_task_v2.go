@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -287,7 +288,11 @@ func (s *Service) executeAITaskV2(ctx context.Context, store AITaskV2Store, task
 		if err != nil {
 			return task, fmt.Errorf("load AI task V2 deployment parent: %w", err)
 		}
-		if !ok || parent.UserID != task.UserID || parent.AccountScopeID != task.AccountScopeID || strings.TrimSpace(parent.WorkspacePath) != strings.TrimSpace(task.WorkspacePath) {
+		if !ok || parent.UserID != task.UserID || parent.AccountScopeID != task.AccountScopeID {
+			return task, permanentAITaskV2Error(errors.New("AI task V2 deployment origin ownership or workspace is invalid"))
+		}
+		if originErr := s.validateAITaskV2OriginWorkspace(parent, task); originErr != nil {
+			log.Printf("AI task V2 %s origin workspace validation failed: origin_session=%s origin_workspace=%q origin_worktree=%t source_workspace_id=%q source_workspace_path=%q task_workspace_id=%q task_workspace=%q reason=%v", task.ID, parent.ID, parent.WorkspacePath, parent.WorktreeEnabled, mapString(parent.Metadata, "swarm_v3_source_workspace_id"), mapString(parent.Metadata, "swarm_v3_source_workspace_path"), task.WorkspaceID, task.WorkspacePath, originErr)
 			return task, permanentAITaskV2Error(errors.New("AI task V2 deployment origin ownership or workspace is invalid"))
 		}
 	}
@@ -327,6 +332,41 @@ func (s *Service) executeAITaskV2(ctx context.Context, store AITaskV2Store, task
 		return task, err
 	}
 	return task, nil
+}
+
+func (s *Service) validateAITaskV2OriginWorkspace(parent pebblestore.SessionSnapshot, task pebblestore.WorkspaceTodoItem) error {
+	if sameAITaskV2WorkspacePath(parent.WorkspacePath, task.WorkspacePath) {
+		return nil
+	}
+	if !parent.WorktreeEnabled {
+		return errors.New("non-worktree origin path differs from the canonical task workspace")
+	}
+	sourceWorkspaceID := strings.TrimSpace(mapString(parent.Metadata, "swarm_v3_source_workspace_id"))
+	sourceWorkspacePath := strings.TrimSpace(mapString(parent.Metadata, "swarm_v3_source_workspace_path"))
+	if sourceWorkspaceID == "" || sourceWorkspacePath == "" {
+		return errors.New("worktree origin is missing canonical source workspace metadata")
+	}
+	if sourceWorkspaceID != strings.TrimSpace(task.WorkspaceID) || !sameAITaskV2WorkspacePath(sourceWorkspacePath, task.WorkspacePath) {
+		return errors.New("worktree origin canonical source does not match the task workspace")
+	}
+	if s == nil || s.workspace == nil {
+		return errors.New("workspace service is not configured")
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: task.UserID, AccountScopeID: task.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+	scope, err := s.workspace.ScopeForPathForPrincipal(principal, sourceWorkspacePath)
+	if err != nil {
+		return fmt.Errorf("resolve worktree origin canonical workspace: %w", err)
+	}
+	if !scope.Matched || strings.TrimSpace(scope.WorkspaceID) != strings.TrimSpace(task.WorkspaceID) || !sameAITaskV2WorkspacePath(scope.WorkspacePath, task.WorkspacePath) {
+		return errors.New("worktree origin canonical source is not an account-owned task workspace")
+	}
+	return nil
+}
+
+func sameAITaskV2WorkspacePath(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	return left != "" && right != "" && filepath.Clean(left) == filepath.Clean(right)
 }
 
 type aiTaskV2PermanentError struct{ error }
