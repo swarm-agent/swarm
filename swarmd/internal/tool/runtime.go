@@ -1196,7 +1196,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate a distinct research question to Explorer or an independent, dependency-ready owned scope to Coder. These are the only supported subagent types. Use this only when the user explicitly asks for subagents, asks for Explorer or Coder, or names the agent or agents to run. A generic request to create, make, start, or open a new session means a durable session via manage-sessions deploy, not this task tool. Keep cohesive work direct. Put child launches in the structured launches array; each launch states its assignment, deliverable, concurrency reason, owned scope, and dependency evidence for review.",
+			Description: "Delegate a distinct research question to Explorer or an independent, dependency-ready owned scope to Coder. These are the only supported subagent types. Use this only when the user explicitly asks for subagents, asks for Explorer or Coder, or names the agent or agents to run. A generic request to create, make, start, or open a new session means a durable session via manage-sessions deploy, not this task tool. Keep cohesive work direct. Put child launches in the structured launches array; give every launch a concise title of about three words for cosmetic UI display, while keeping the full instructive assignment in meta_prompt. Each launch also states its deliverable, concurrency reason, owned scope, and dependency evidence for review.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1206,7 +1206,7 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"description": map[string]any{
 						"type":        "string",
-						"description": "Short task label shown in UI.",
+						"description": "Short overall task label shown in UI.",
 					},
 					"prompt": map[string]any{
 						"type":        "string",
@@ -1229,7 +1229,11 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"meta_prompt": map[string]any{
 						"type":        "string",
-						"description": "Explicit assignment for the single-launch shorthand; required when launches is omitted. Do not put this inside prompt.",
+						"description": "Full instructive assignment for the single-launch shorthand; required when launches is omitted. Do not shorten this for display or put it inside prompt.",
+					},
+					"title": map[string]any{
+						"type":        "string",
+						"description": "Concise cosmetic title for this child, ideally three words (for example, Backend Security Audit). The UI displays this instead of meta_prompt.",
 					},
 					"role": map[string]any{
 						"type":        "string",
@@ -1248,7 +1252,8 @@ func (r *Runtime) Definitions() []Definition {
 								"subagent_type":       map[string]any{"type": "string", "enum": []string{"coder", "explorer"}, "description": "Subagent type for this child. Supported values: coder or explorer."},
 								"agent":               map[string]any{"type": "string", "enum": []string{"coder", "explorer"}, "description": "Alias for subagent_type."},
 								"purpose":             map[string]any{"type": "string", "enum": []string{"coder", "explorer"}, "description": "Alias for subagent_type."},
-								"meta_prompt":         map[string]any{"type": "string", "description": "Required per-child assignment shown in the approval modal. This must be a field on the launch object, not text embedded in prompt."},
+								"meta_prompt":         map[string]any{"type": "string", "description": "Required full instructive per-child assignment. Keep all scope and constraints here; this must be a field on the launch object, not text embedded in prompt."},
+								"title":               map[string]any{"type": "string", "description": "Concise cosmetic title for this child, ideally three words (for example, Frontend Security Audit). The UI displays this instead of meta_prompt."},
 								"role":                map[string]any{"type": "string", "description": "Alias for meta_prompt."},
 								"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 								"concurrency_reason":  map[string]any{"type": "string", "description": "Why this scope is useful and safe to run in the current wave."},

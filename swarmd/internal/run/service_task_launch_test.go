@@ -240,14 +240,30 @@ func TestCanonicalWholeWorktreeScopeOverlapsDeclaredScope(t *testing.T) {
 	}
 }
 
-func TestTaskAssignmentLabelPreservesMoreTitleContext(t *testing.T) {
+func TestTaskAssignmentLabelKeepsCosmeticTitleToThreeWords(t *testing.T) {
 	label := taskAssignmentLabel("", "Write a quick poem about the sea with a bright moon and quiet tide", "", "memory")
-	want := "Write a quick poem about the sea with a bright moon and quiet tide"
+	want := "Write a quick"
 	if label != want {
 		t.Fatalf("label = %q, want %q", label, want)
 	}
-	if strings.Contains(label, "...") {
-		t.Fatalf("label should preserve 12-word title without ellipsis: %q", label)
+}
+
+func TestParseTaskCallArgumentsSeparatesTitleFromInstructiveAssignment(t *testing.T) {
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt":        "Return evidence and relevant filepaths.",
+		"subagent_type": "explorer",
+		"title":         "Backend Security Audit",
+		"meta_prompt":   "Audit the backend authentication and authorization surfaces in depth without dropping scope or constraints.",
+	}))
+	if err != nil {
+		t.Fatalf("parse task title: %v", err)
+	}
+	launch := parsed.Launches[0]
+	if launch.AssignmentLabel != "Backend Security Audit" {
+		t.Fatalf("assignment label = %q", launch.AssignmentLabel)
+	}
+	if launch.MetaPrompt != "Audit the backend authentication and authorization surfaces in depth without dropping scope or constraints." {
+		t.Fatalf("meta prompt was shortened: %q", launch.MetaPrompt)
 	}
 }
 

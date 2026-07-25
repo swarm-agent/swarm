@@ -28,7 +28,7 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	if !definitionTextContains(taskDefinition, "structured launches array") || !definitionTextContains(taskDefinition, "Do not embed launch JSON") || !definitionTextContains(taskDefinition, "not text embedded in prompt") {
 		t.Fatalf("task definition must warn models to use structured launch fields instead of prompt-embedded launch markup: %#v", taskDefinition)
 	}
-	for _, key := range []string{"subagent_type", "agent", "purpose", "meta_prompt", "role"} {
+	for _, key := range []string{"subagent_type", "agent", "purpose", "title", "meta_prompt", "role"} {
 		property, ok := properties[key]
 		if !ok {
 			t.Fatalf("task single-launch shorthand missing %q", key)
@@ -46,7 +46,7 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	if !ok {
 		t.Fatalf("task launches item schema missing: %#v", launches)
 	}
-	for _, key := range []string{"subagent_type", "agent", "purpose", "meta_prompt", "role"} {
+	for _, key := range []string{"subagent_type", "agent", "purpose", "title", "meta_prompt", "role"} {
 		property, ok := itemsProperty(items, key)
 		if !ok {
 			t.Fatalf("task launches item missing property %q", key)
@@ -54,6 +54,9 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 		if key == "subagent_type" || key == "agent" || key == "purpose" {
 			assertTaskSubagentEnum(t, property, "launches."+key)
 		}
+	}
+	if !definitionTextContains(taskDefinition, "ideally three words") || !definitionTextContains(taskDefinition, "full instructive") {
+		t.Fatalf("task definition must separate concise cosmetic titles from full child instructions: %#v", taskDefinition)
 	}
 	for _, key := range []string{"allOf", "anyOf", "oneOf"} {
 		if _, ok := items[key]; ok {

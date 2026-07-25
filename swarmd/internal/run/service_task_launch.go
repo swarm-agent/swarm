@@ -232,6 +232,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 				mapString(raw, "role"),
 			)),
 			AssignmentLabel: strings.TrimSpace(firstNonEmptyString(
+				mapString(raw, "title"),
 				mapString(raw, "assignment_label"),
 				mapString(raw, "label"),
 			)),
@@ -542,12 +543,12 @@ func taskAssignmentLabel(explicitLabel, metaPrompt, description, resolvedSubagen
 		candidate = strings.TrimSpace(candidate)
 	}
 	fields := strings.Fields(candidate)
-	if len(fields) > 16 {
-		candidate = strings.Join(fields[:16], " ")
+	if len(fields) > 3 {
+		candidate = strings.Join(fields[:3], " ")
 	} else if len(fields) > 0 {
 		candidate = strings.Join(fields, " ")
 	}
-	candidate = truncateRunes(candidate, 128)
+	candidate = truncateRunes(candidate, 48)
 	if candidate == "" {
 		candidate = strings.TrimSpace(resolvedSubagent)
 	}
