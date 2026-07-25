@@ -95,6 +95,25 @@ func TestWorkspaceTodosAcceptsWorktreeOriginForCanonicalWorkspaceTask(t *testing
 		t.Fatalf("resolve canonical workspace: scope=%#v err=%v", workspaceScope, err)
 	}
 	worktreePath := t.TempDir()
+	const (
+		runtimeID = "runtime-worktree-origin"
+		bindingID = "binding-worktree-origin"
+	)
+	if _, err := server.topology.PutRuntimeForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: runtimeID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: runtimeID}); err != nil {
+		t.Fatalf("put origin runtime: %v", err)
+	}
+	if _, err := server.topology.PutRuntimePlacementForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: runtimeID, AccountScopeID: testPrincipal().AccountScopeID, AuthorityHostSwarmID: runtimeID, RuntimeKind: pebblestore.TopologyRuntimeKindHost, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
+		t.Fatalf("put origin placement: %v", err)
+	}
+	if _, err := server.topology.PutWorkspaceBindingForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID: bindingID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID,
+		SourceWorkspaceID: workspaceScope.WorkspaceID, SourceWorkspaceGeneration: workspaceScope.WorkspaceGeneration, SourceWorkspacePath: workspacePath, SourceWorkspaceName: workspaceScope.WorkspaceName,
+		DestinationRuntimeSwarmID: runtimeID, DestinationAuthorityHostSwarmID: runtimeID, DestinationRuntimeKind: pebblestore.TopologyRuntimeKindHost, DestinationHostSwarmID: runtimeID, DestinationWorkspacePath: workspacePath,
+		PlacementGeneration: 1, BindingGeneration: 1, State: pebblestore.TopologyWorkspaceBindingStateBound, AccessMode: pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
+		MaterializationKind: pebblestore.TopologyWorkspaceBindingMaterializationSource, AttestedByHostSwarmID: runtimeID, Writable: true,
+	}); err != nil {
+		t.Fatalf("put origin workspace binding: %v", err)
+	}
 	origin, _, err := server.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 		UserID:         testPrincipal().UserID,
 		AccountScopeID: testPrincipal().AccountScopeID,
@@ -106,7 +125,8 @@ func TestWorkspaceTodosAcceptsWorktreeOriginForCanonicalWorkspaceTask(t *testing
 			RootPath: worktreePath, BaseBranch: "dev", BranchName: "agent/origin-worktree", WorkspaceID: "worktree-origin",
 		},
 		Metadata: map[string]any{
-			"swarm_v3_source_workspace_path": workspacePath,
+			"swarm_v3_workspace_binding_id": bindingID,
+			"local_workspace_binding_id":    bindingID,
 		},
 	})
 	if err != nil {
@@ -114,7 +134,7 @@ func TestWorkspaceTodosAcceptsWorktreeOriginForCanonicalWorkspaceTask(t *testing
 	}
 
 	raw, _ := json.Marshal(map[string]any{
-		"action": "ai_task", "workspace_path": workspacePath, "owner_kind": "user",
+		"action": "ai_task", "workspace_path": worktreePath, "owner_kind": "user",
 		"text": "launch from canonical workspace", "origin_session_id": origin.ID, "mode": "auto",
 	})
 	recorder := httptest.NewRecorder()

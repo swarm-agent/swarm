@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -102,7 +103,31 @@ func (s *Server) handleWorkspaceTodoMutation(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	action := strings.ToLower(strings.TrimSpace(req.Action))
+	if action == "" {
+		action = "upsert"
+	}
+	originSessionID := strings.TrimSpace(req.OriginSessionID)
+	var origin pebblestore.SessionSnapshot
+	var err error
+	originLoaded := false
+	if action == "ai_task" && originSessionID != "" {
+		if s.sessions == nil {
+			writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
+			return
+		}
+		var found bool
+		origin, found, err = s.sessions.GetSession(originSessionID)
+		if err != nil || !found || strings.TrimSpace(origin.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) || strings.TrimSpace(origin.UserID) != strings.TrimSpace(principal.UserID) {
+			writeError(w, http.StatusBadRequest, errors.New("origin session must belong to the request principal and canonical workspace"))
+			return
+		}
+		originLoaded = true
+	}
 	workspacePath, err := resolveWorkspacePath(req.WorkspacePath)
+	if err != nil && action == "ai_task" && originLoaded {
+		workspacePath, err = s.resolveWorkspaceTodoAITaskCanonicalPath(principal, origin, req.WorkspacePath)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -111,10 +136,6 @@ func (s *Server) handleWorkspaceTodoMutation(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
-	}
-	action := strings.ToLower(strings.TrimSpace(req.Action))
-	if action == "" {
-		action = "upsert"
 	}
 	options := todo.ListOptions{AccountScopeID: principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)}
 	switch action {
@@ -132,29 +153,10 @@ func (s *Server) handleWorkspaceTodoMutation(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusBadRequest, errors.New("canonical workspace identity is required"))
 			return
 		}
-		originSessionID := strings.TrimSpace(req.OriginSessionID)
 		var originModelProfile *pebblestore.SessionModelProfileSnapshot
-		if originSessionID != "" {
-			if s.sessions == nil {
-				writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
-				return
-			}
-			origin, found, originErr := s.sessions.GetSession(originSessionID)
-			originPrincipalMatches := originErr == nil && found && strings.TrimSpace(origin.AccountScopeID) == strings.TrimSpace(principal.AccountScopeID) && strings.TrimSpace(origin.UserID) == strings.TrimSpace(principal.UserID)
-			originWorkspaceMatches := false
-			if originPrincipalMatches {
-				for _, candidate := range []string{
-					sessionsV3MetadataString(origin.Metadata, "swarm_v3_source_workspace_path"),
-					origin.WorkspacePath,
-				} {
-					if originWorkspaceMatches || strings.TrimSpace(candidate) == "" {
-						continue
-					}
-					originScope, candidateErr := s.workspace.ScopeForPathForPrincipal(principal, candidate)
-					originWorkspaceMatches = candidateErr == nil && originScope.Matched && strings.TrimSpace(originScope.WorkspaceID) == strings.TrimSpace(workspaceScope.WorkspaceID)
-				}
-			}
-			if !originPrincipalMatches || !originWorkspaceMatches {
+		if originLoaded {
+			originWorkspaceMatches, originErr := s.workspaceTodoAITaskOriginMatchesCanonical(principal, origin, workspaceScope.WorkspaceID)
+			if originErr != nil || !originWorkspaceMatches {
 				writeError(w, http.StatusBadRequest, errors.New("origin session must belong to the request principal and canonical workspace"))
 				return
 			}
@@ -247,6 +249,69 @@ func (s *Server) handleWorkspaceTodoMutation(w http.ResponseWriter, r *http.Requ
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported todo action %q", action))
 	}
+}
+
+func (s *Server) resolveWorkspaceTodoAITaskCanonicalPath(principal identity.Principal, origin pebblestore.SessionSnapshot, requestedPath string) (string, error) {
+	if !origin.WorktreeEnabled || !sameWorkspaceTodoPath(requestedPath, origin.WorkspacePath) {
+		return "", errAccountOwnedWorkspacePathRequired
+	}
+	binding, ok, err := s.workspaceTodoOriginBinding(principal, origin)
+	if err != nil || !ok {
+		return "", errAccountOwnedWorkspacePathRequired
+	}
+	return strings.TrimSpace(binding.SourceWorkspacePath), nil
+}
+
+func (s *Server) workspaceTodoAITaskOriginMatchesCanonical(principal identity.Principal, origin pebblestore.SessionSnapshot, canonicalWorkspaceID string) (bool, error) {
+	binding, bound, err := s.workspaceTodoOriginBinding(principal, origin)
+	if err != nil {
+		return false, err
+	}
+	if bound {
+		return strings.TrimSpace(binding.SourceWorkspaceID) == strings.TrimSpace(canonicalWorkspaceID), nil
+	}
+	if origin.WorktreeEnabled {
+		return false, nil
+	}
+	originScope, err := s.workspace.ScopeForPathForPrincipal(principal, origin.WorkspacePath)
+	return err == nil && originScope.Matched && strings.TrimSpace(originScope.WorkspaceID) == strings.TrimSpace(canonicalWorkspaceID), err
+}
+
+func (s *Server) workspaceTodoOriginBinding(principal identity.Principal, origin pebblestore.SessionSnapshot) (pebblestore.TopologyWorkspaceBindingRecord, bool, error) {
+	bindingID := firstNonEmpty(
+		strings.TrimSpace(sessionsV3MetadataString(origin.Metadata, "swarm_v3_workspace_binding_id")),
+		strings.TrimSpace(sessionsV3MetadataString(origin.Metadata, "local_workspace_binding_id")),
+	)
+	if bindingID == "" {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
+	}
+	if s.topology == nil {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("topology service not configured")
+	}
+	binding, ok, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, bindingID)
+	if err != nil || !ok {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
+	}
+	if strings.TrimSpace(binding.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) ||
+		(strings.TrimSpace(binding.UserID) != "" && strings.TrimSpace(binding.UserID) != strings.TrimSpace(principal.UserID)) ||
+		!strings.EqualFold(strings.TrimSpace(binding.State), pebblestore.TopologyWorkspaceBindingStateBound) ||
+		strings.TrimSpace(binding.SourceWorkspaceID) == "" || strings.TrimSpace(binding.SourceWorkspacePath) == "" {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("origin session workspace binding is invalid")
+	}
+	entry, found, err := s.workspace.GetByWorkspaceIDForPrincipal(principal, binding.SourceWorkspaceID)
+	if err != nil || !found {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
+	}
+	if !sameWorkspaceTodoPath(entry.Path, binding.SourceWorkspacePath) || entry.WorkspaceGeneration != binding.SourceWorkspaceGeneration {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("origin session workspace binding is stale")
+	}
+	return binding, true, nil
+}
+
+func sameWorkspaceTodoPath(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	return left != "" && right != "" && filepath.Clean(left) == filepath.Clean(right)
 }
 
 func stringPointerIfPresent(value string) *string {
