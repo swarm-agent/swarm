@@ -3995,7 +3995,7 @@ function mergeTaskStreamLaunchPatch(
   launchPatch: Record<string, unknown>,
   launchKey: string,
 ): Record<string, unknown> {
-  const merged = { ...existing, ...launchPatch, launch_key: launchKey }
+  const merged: Record<string, unknown> = { ...existing, ...launchPatch, launch_key: launchKey }
   if (!stringValue(launchPatch.current_tool) && stringValue(existing.current_tool)) {
     merged.current_tool = existing.current_tool
     merged.current_tool_identity = existing.current_tool_identity
