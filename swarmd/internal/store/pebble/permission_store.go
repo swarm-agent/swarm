@@ -231,10 +231,13 @@ func (s *PermissionStore) ListPermissions(sessionID string, limit int) ([]Permis
 }
 
 func (s *PermissionStore) ListPendingPermissions(sessionID string, limit int) ([]PermissionRecord, error) {
+	const defaultLimit = 200
 	if limit <= 0 {
-		limit = 200
+		limit = defaultLimit
 	}
-	out := make([]PermissionRecord, 0, limit)
+	// Large limits bound the scan; they should not eagerly allocate a matching
+	// result slice. Preserve a non-nil empty result and grow only for records found.
+	out := make([]PermissionRecord, 0)
 	err := s.store.IteratePrefix(PermissionPendingPrefix(sessionID), limit, func(_ string, value []byte) error {
 		record, ok, err := decodePendingPermissionIndexValue(s.store.db, value)
 		if err != nil {

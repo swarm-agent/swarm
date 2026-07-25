@@ -653,8 +653,10 @@ func (s *SessionStore) appendV3SessionSearchMessageInBatchV2(batch *pebble.Batch
 		}
 		keys[movedKey] = record
 	}
-	for _, token := range v3SessionSearchTokens(message.Content) {
-		messageSnippet := &V3SessionSearchSnippet{Source: "message", Role: message.Role, MessageID: message.ID, GlobalSeq: message.GlobalSeq, Text: matchCenteredV3SessionSearchSnippet(message.Content, token), CreatedAt: message.CreatedAt}
+	tokens := v3SessionSearchTokens(message.Content)
+	snippetSource := newV3SessionSearchSnippetSource(message.Content)
+	for _, token := range tokens {
+		messageSnippet := &V3SessionSearchSnippet{Source: "message", Role: message.Role, MessageID: message.ID, GlobalSeq: message.GlobalSeq, Text: snippetSource.matchCentered(token), CreatedAt: message.CreatedAt}
 		key := keyV3SessionSearchAccount(session.AccountScopeID, archived, token, session.UpdatedAt, session.ID)
 		if _, ok := keys[key]; ok {
 			continue
@@ -707,9 +709,11 @@ func (s *SessionStore) appendV3SessionSearchMessageInBatch(batch *pebble.Batch, 
 
 func appendV3SessionSearchMessagePostingsInBatch(batch *pebble.Batch, sessionID string, message MessageSnapshot) error {
 	searchContent := v3SessionSearchMessageContent(message)
-	for _, token := range v3SessionSearchTokens(searchContent) {
+	tokens := v3SessionSearchTokens(searchContent)
+	snippetSource := newV3SessionSearchSnippetSource(searchContent)
+	for _, token := range tokens {
 		key := keyV3SessionSearchPosting(sessionID, "message", token)
-		record := v3SessionSearchIndexRecord{SessionID: sessionID, Snippet: &V3SessionSearchSnippet{Source: "message", Role: message.Role, MessageID: message.ID, GlobalSeq: message.GlobalSeq, Text: matchCenteredV3SessionSearchSnippet(searchContent, token), CreatedAt: message.CreatedAt}}
+		record := v3SessionSearchIndexRecord{SessionID: sessionID, Snippet: &V3SessionSearchSnippet{Source: "message", Role: message.Role, MessageID: message.ID, GlobalSeq: message.GlobalSeq, Text: snippetSource.matchCentered(token), CreatedAt: message.CreatedAt}}
 		payload, err := json.Marshal(record)
 		if err != nil {
 			return err
@@ -735,11 +739,16 @@ func v3SessionSearchMessageContent(message MessageSnapshot) string {
 func v3SessionSearchMetadataTokens(session SessionSnapshot) map[string]v3SessionSearchIndexRecord {
 	entries := map[string]v3SessionSearchIndexRecord{}
 	add := func(text string, snippet *V3SessionSearchSnippet) {
-		for _, token := range v3SessionSearchTokens(text) {
+		tokens := v3SessionSearchTokens(text)
+		var snippetSource v3SessionSearchSnippetSource
+		if snippet != nil {
+			snippetSource = newV3SessionSearchSnippetSource(text)
+		}
+		for _, token := range tokens {
 			centered := snippet
 			if snippet != nil {
 				copy := *snippet
-				copy.Text = matchCenteredV3SessionSearchSnippet(text, token)
+				copy.Text = snippetSource.matchCentered(token)
 				centered = &copy
 			}
 			entries[token] = v3SessionSearchIndexRecord{SessionID: session.ID, Snippet: centered}
@@ -991,29 +1000,50 @@ func truncateRunes(text string, limit int) string {
 	return string([]rune(text)[:limit])
 }
 
-func matchCenteredV3SessionSearchSnippet(text, token string) string {
+type v3SessionSearchSnippetSource struct {
+	normalized string
+	runes      []rune
+	lower      []rune
+}
+
+func newV3SessionSearchSnippetSource(text string) v3SessionSearchSnippetSource {
 	normalized := strings.TrimSpace(strings.Join(strings.Fields(text), " "))
-	runes := []rune(normalized)
-	if len(runes) <= v3SessionSearchSnippetMaxRunes {
-		return normalized
+	source := v3SessionSearchSnippetSource{normalized: normalized}
+	if utf8.RuneCountInString(normalized) > v3SessionSearchSnippetMaxRunes {
+		source.runes = []rune(normalized)
+		source.lower = []rune(strings.ToLower(normalized))
 	}
-	lower := []rune(strings.ToLower(normalized))
+	return source
+}
+
+func (s v3SessionSearchSnippetSource) matchCentered(token string) string {
+	if len(s.runes) == 0 {
+		return s.normalized
+	}
 	needle := []rune(strings.ToLower(token))
 	at := 0
-	for i := 0; i+len(needle) <= len(lower); i++ {
-		if string(lower[i:i+len(needle)]) == string(needle) {
-			at = i
-			break
+search:
+	for i := 0; i+len(needle) <= len(s.lower); i++ {
+		for j := range needle {
+			if s.lower[i+j] != needle[j] {
+				continue search
+			}
 		}
+		at = i
+		break
 	}
 	start := at - v3SessionSearchSnippetMaxRunes/3
 	if start < 0 {
 		start = 0
 	}
-	if start+v3SessionSearchSnippetMaxRunes > len(runes) {
-		start = len(runes) - v3SessionSearchSnippetMaxRunes
+	if start+v3SessionSearchSnippetMaxRunes > len(s.runes) {
+		start = len(s.runes) - v3SessionSearchSnippetMaxRunes
 	}
-	return string(runes[start : start+v3SessionSearchSnippetMaxRunes])
+	return string(s.runes[start : start+v3SessionSearchSnippetMaxRunes])
+}
+
+func matchCenteredV3SessionSearchSnippet(text, token string) string {
+	return newV3SessionSearchSnippetSource(text).matchCentered(token)
 }
 
 func v3SessionSearchRecordHasTokensV2(reader pebble.Reader, sessionID string, archived bool, tokens []string) (bool, error) {

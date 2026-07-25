@@ -311,8 +311,10 @@ func (s *SessionStore) stageVerifiedV3SessionSearchRebuild(ctx context.Context, 
 	metadataRecords := v3SessionSearchMetadataTokens(session)
 	messageRecords := make(map[string]v3SessionSearchIndexRecord)
 	for _, message := range messages {
-		for _, token := range v3SessionSearchTokens(message.Content) {
-			messageRecords[token] = v3SessionSearchIndexRecord{SessionID: sessionID, Snippet: &V3SessionSearchSnippet{Source: "message", Role: message.Role, MessageID: message.ID, GlobalSeq: message.GlobalSeq, Text: matchCenteredV3SessionSearchSnippet(message.Content, token), CreatedAt: message.CreatedAt}}
+		tokens := v3SessionSearchTokens(message.Content)
+		snippetSource := newV3SessionSearchSnippetSource(message.Content)
+		for _, token := range tokens {
+			messageRecords[token] = v3SessionSearchIndexRecord{SessionID: sessionID, Snippet: &V3SessionSearchSnippet{Source: "message", Role: message.Role, MessageID: message.ID, GlobalSeq: message.GlobalSeq, Text: snippetSource.matchCentered(token), CreatedAt: message.CreatedAt}}
 		}
 	}
 	for _, records := range []map[string]v3SessionSearchIndexRecord{metadataRecords, messageRecords} {
