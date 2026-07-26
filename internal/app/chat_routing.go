@@ -17,11 +17,6 @@ func (a *App) cycleChatRoute() {
 			a.showToast(ui.ToastWarning, "route switch blocked while a run is active")
 			return
 		}
-		if summary, ok := a.sessionSummaryByID(a.chat.SessionID()); ok && isFlowSessionMetadata(summary.Metadata) {
-			a.chat.SetStatus("route switch blocked for read-only flow sessions")
-			a.showToast(ui.ToastWarning, "route switch blocked for read-only flow sessions")
-			return
-		}
 	}
 	workspacePath := strings.TrimSpace(a.activeWorkspacePath())
 	if workspacePath == "" {
@@ -91,33 +86,3 @@ func (a *App) setRouteStatus(status string) {
 	a.showToast(ui.ToastInfo, status)
 }
 
-func isFlowSessionMetadata(metadata map[string]any) bool {
-	if len(metadata) == 0 {
-		return false
-	}
-	if value := metadataString(metadata, "flow_id"); value != "" {
-		return true
-	}
-	if strings.EqualFold(metadataString(metadata, "source"), "flow") {
-		return true
-	}
-	return strings.EqualFold(metadataString(metadata, "lineage_kind"), "flow")
-}
-
-func metadataString(metadata map[string]any, key string) string {
-	if len(metadata) == 0 {
-		return ""
-	}
-	value, ok := metadata[key]
-	if !ok || value == nil {
-		return ""
-	}
-	switch typed := value.(type) {
-	case string:
-		return strings.TrimSpace(typed)
-	case fmt.Stringer:
-		return strings.TrimSpace(typed.String())
-	default:
-		return strings.TrimSpace(fmt.Sprint(typed))
-	}
-}
