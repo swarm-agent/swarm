@@ -2997,11 +2997,197 @@ function planTransitionToneClass(tone: DesktopV3PlanTransitionTone): string {
   }
 }
 
+type DesktopV3CheckpointReviewCard = {
+  title: string;
+  mode: string;
+  checkpoint: string;
+  next: string;
+  plan: string;
+  reportSummary: string;
+  report: string;
+  result: string;
+  changedFiles: string[];
+  validation: string[];
+};
+
+const CHECKPOINT_REVIEW_SECTION = /^(Report|Result|Changed files|Validation):(?:\s*(.*))?$/i;
+
+function splitCheckpointReviewEntries(value: string, section: "changed files" | "validation"): string[] {
+  if (!value.trim()) return [];
+  const separator = section === "changed files"
+    ? /;\s*/
+    : /;\s+(?=(?:PASS|FAIL|WARN|SKIP|NOT RUN|Broad)\b)/i;
+  return value
+    .split(separator)
+    .map((entry) => entry.replace(/^[-*]\s+/, "").trim())
+    .filter(Boolean);
+}
+
+function parseDesktopV3CheckpointReviewCard(
+  item: Extract<DesktopV3RenderItem, { type: "plan-break" }>,
+): DesktopV3CheckpointReviewCard | null {
+  const action = metadataString(item.message.metadata, "action").toLowerCase();
+  const nextAction = metadataString(item.message.metadata, "next_action").toLowerCase();
+  const reviewCard = action === "mark_needs_review"
+    || nextAction === "await_review"
+    || /(?:paused for review|review required)/i.test(item.headline);
+  if (!reviewCard) return null;
+
+  const headlineParts = item.headline.split(/\s+—\s+/);
+  const title = headlineParts.shift()?.trim() || "Checkpoint review";
+  const mode = headlineParts.join(" — ").trim();
+  const checkpointLine = item.details.find((detail) => /^(Checkpoint|Completed|Resolved):/i.test(detail)) || "";
+  const nextLine = item.details.find((detail) => /^Next:/i.test(detail)) || "";
+  const planLine = item.details.find((detail) => /^Plan:/i.test(detail)) || "";
+  const sectionLines = item.details.filter((detail) => detail !== checkpointLine && detail !== nextLine && detail !== planLine);
+  const sections: Record<"report" | "result" | "changed files" | "validation", string[]> = {
+    report: [],
+    result: [],
+    "changed files": [],
+    validation: [],
+  };
+  let activeSection: keyof typeof sections | null = null;
+  for (const line of sectionLines) {
+    const match = line.match(CHECKPOINT_REVIEW_SECTION);
+    if (match) {
+      activeSection = match[1]?.toLowerCase() as keyof typeof sections;
+      const firstLine = match[2]?.trim();
+      if (firstLine) sections[activeSection].push(firstLine);
+      continue;
+    }
+    if (activeSection) sections[activeSection].push(line);
+  }
+
+  const reportLines = sections.report;
+  const reportSummary = reportLines.find((line) => !/^\s*(?:[#>*-]|\d+\.)\s*/.test(line)) || "";
+  return {
+    title,
+    mode,
+    checkpoint: checkpointLine.replace(/^(Checkpoint|Completed|Resolved):\s*/i, "").trim(),
+    next: nextLine.replace(/^Next:\s*/i, "").trim(),
+    plan: planLine.replace(/^Plan:\s*/i, "").trim(),
+    reportSummary,
+    report: reportLines.join("\n"),
+    result: sections.result.join("\n"),
+    changedFiles: splitCheckpointReviewEntries(sections["changed files"].join("\n"), "changed files"),
+    validation: splitCheckpointReviewEntries(sections.validation.join("\n"), "validation"),
+  };
+}
+
+function checkpointValidationSummary(validation: string[]): string {
+  const passed = validation.filter((entry) => /^PASS\b/i.test(entry)).length;
+  const attention = validation.filter((entry) => /^(?:FAIL|WARN)\b/i.test(entry)).length;
+  return [
+    passed > 0 ? `${passed} passed` : "",
+    attention > 0 ? `${attention} need attention` : "",
+  ].filter(Boolean).join(" · ") || `${validation.length} entries`;
+}
+
+function DesktopV3CheckpointReviewCardView({
+  item,
+  card,
+}: {
+  item: Extract<DesktopV3RenderItem, { type: "plan-break" }>;
+  card: DesktopV3CheckpointReviewCard;
+}) {
+  const checkpointId = metadataString(item.message.metadata, "checkpoint_id");
+  return (
+    <div
+      className="flex w-full min-w-0 justify-start py-1"
+      data-testid="desktop-v3-checkpoint-review-card"
+      data-checkpoint-status="review"
+      data-plan-transition-tone={item.tone}
+    >
+      <section
+        aria-label="Checkpoint review"
+        className="w-full min-w-0 overflow-hidden rounded-xl border border-[color-mix(in_srgb,var(--app-warning)_42%,var(--app-border))] bg-[var(--app-surface-subtle)] text-sm text-[var(--app-text)] shadow-sm"
+      >
+        <div className="flex min-w-0 items-start gap-3 border-b border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-warning-bg)_62%,var(--app-surface-subtle))] px-4 py-3">
+          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[var(--app-warning-bg)] text-[var(--app-warning)]">
+            <CircleAlert size={16} aria-hidden="true" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-warning)]">Review required</span>
+              {card.mode ? <span className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--app-text-muted)]">{card.mode}</span> : null}
+            </div>
+            <h3 className="mt-1 break-words text-[15px] font-semibold leading-6">{card.checkpoint || card.title}</h3>
+            {card.reportSummary ? <p className="mt-1 break-words text-xs leading-5 text-[var(--app-text-muted)]">{card.reportSummary}</p> : null}
+          </div>
+        </div>
+
+        <div className="grid min-w-0 gap-3 px-4 py-3">
+          {card.next ? (
+            <div className="flex min-w-0 items-start gap-2 rounded-lg border border-[color-mix(in_srgb,var(--app-warning)_28%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-warning-bg)_42%,transparent)] px-3 py-2">
+              <ArrowRight size={14} className="mt-0.5 shrink-0 text-[var(--app-warning)]" aria-hidden="true" />
+              <div className="min-w-0">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Next</div>
+                <div className="mt-0.5 break-words text-xs leading-5 text-[var(--app-text)]">{card.next}</div>
+              </div>
+            </div>
+          ) : null}
+
+          {card.result ? (
+            <section aria-label="Review decision" className="min-w-0 border-l-2 border-[var(--app-warning)] pl-3">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Decision needed</div>
+              <ChatMarkdown content={card.result} className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]" />
+            </section>
+          ) : null}
+
+          {(card.report || card.changedFiles.length > 0 || card.validation.length > 0) ? (
+            <div className="grid min-w-0 gap-1 border-t border-[var(--app-border)] pt-2 text-xs" data-checkpoint-review-evidence>
+              {card.report ? (
+                <details>
+                  <summary className="cursor-pointer py-1.5 font-medium text-[var(--app-text-muted)] hover:text-[var(--app-text)]">Full report</summary>
+                  <div className="mt-1 min-w-0 border-l border-[var(--app-border)] pl-3 text-[var(--app-text-muted)]">
+                    <ChatMarkdown content={card.report} />
+                  </div>
+                </details>
+              ) : null}
+              {card.changedFiles.length > 0 ? (
+                <details>
+                  <summary className="cursor-pointer py-1.5 font-medium text-[var(--app-text-muted)] hover:text-[var(--app-text)]">Files changed ({card.changedFiles.length})</summary>
+                  <ul className="mt-1 grid gap-1 border-l border-[var(--app-border)] pl-3 font-mono text-[11px] text-[var(--app-text-muted)]">
+                    {card.changedFiles.map((file, index) => <li key={`${item.message.id}:review-file:${index}`} className="break-all">{file}</li>)}
+                  </ul>
+                </details>
+              ) : null}
+              {card.validation.length > 0 ? (
+                <details>
+                  <summary className="cursor-pointer py-1.5 font-medium text-[var(--app-text-muted)] hover:text-[var(--app-text)]">Validation · {checkpointValidationSummary(card.validation)}</summary>
+                  <ul className="mt-1 grid gap-1.5 border-l border-[var(--app-border)] pl-3 text-[var(--app-text-muted)]">
+                    {card.validation.map((entry, index) => (
+                      <li key={`${item.message.id}:review-validation:${index}`} className="flex min-w-0 items-start gap-2 break-words">
+                        <span className={cn("mt-2 size-1.5 shrink-0 rounded-full", /^PASS\b/i.test(entry) ? "bg-[var(--app-success)]" : /^(?:FAIL|WARN)\b/i.test(entry) ? "bg-[var(--app-warning)]" : "bg-[var(--app-text-subtle)]")} aria-hidden="true" />
+                        <span className="min-w-0">{entry}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+
+        {(card.plan || checkpointId) ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_42%,transparent)] px-4 py-2 text-[10px] text-[var(--app-text-subtle)]">
+            {card.plan ? <span className="min-w-0 truncate">Plan: {card.plan}</span> : null}
+            {checkpointId ? <code className="ml-auto shrink-0 font-mono">{checkpointId}</code> : null}
+          </div>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
 function DesktopV3PlanExecutionBreak({
   item,
 }: {
   item: Extract<DesktopV3RenderItem, { type: "plan-break" }>;
 }) {
+  const reviewCard = parseDesktopV3CheckpointReviewCard(item);
+  if (reviewCard) return <DesktopV3CheckpointReviewCardView item={item} card={reviewCard} />;
+
   const checkpoint = item.details.find((detail) => /^(Checkpoint|Completed|Resolved|Next):/i.test(detail));
   const context = item.details.find((detail) => /^(Context|Fresh context|Next):/i.test(detail) && detail !== checkpoint);
   const plan = item.details.find((detail) => /^Plan:/i.test(detail));
