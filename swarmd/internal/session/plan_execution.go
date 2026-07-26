@@ -913,6 +913,15 @@ func ApplyPlanCheckpointStart(doc *pebblestore.SessionPlanDocument, options Plan
 	}
 	checkpoint := &doc.Checkpoints[idx]
 	status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
+	if planID := strings.TrimSpace(options.PlanID); planID != "" && strings.TrimSpace(doc.ID) != planID {
+		return PlanCheckpointStartDecision{}, fmt.Errorf("checkpoint start plan_id %q does not match plan %q", planID, strings.TrimSpace(doc.ID))
+	}
+	if status == PlanCheckpointStatusInProgress {
+		if planCheckpointOwnershipMatches(doc, checkpoint, options.AttemptID, options.RunID, options.SessionID, options.ParentSessionID) {
+			return PlanCheckpointStartDecision{CheckpointID: checkpointID, AttemptID: strings.TrimSpace(checkpoint.AttemptID), Status: status, NextCheckpointID: checkpointID, AutoAdvanceAllowed: doc.ExecutionPolicy.Mode == PlanExecutionPolicyModeAutomatic}, nil
+		}
+		return PlanCheckpointStartDecision{CheckpointID: checkpointID, Status: status, NextCheckpointID: checkpointID, StopReason: PlanCheckpointStatusInProgress}, fmt.Errorf("checkpoint %q is already in_progress under different run ownership", checkpointID)
+	}
 	if inProgressID, _, ok := findInProgressPlanCheckpoint(doc.Checkpoints, checkpointID); ok {
 		return PlanCheckpointStartDecision{CheckpointID: checkpointID, Status: status, NextCheckpointID: inProgressID, StopReason: PlanCheckpointStatusInProgress}, fmt.Errorf("cannot start checkpoint %q while checkpoint %q is in_progress; resolve it first", checkpointID, inProgressID)
 	}
@@ -987,6 +996,62 @@ func ApplyPlanCheckpointStart(doc *pebblestore.SessionPlanDocument, options Plan
 	return PlanCheckpointStartDecision{CheckpointID: checkpointID, AttemptID: attemptID, Status: PlanCheckpointStatusInProgress, NextCheckpointID: checkpointID, AutoAdvanceAllowed: doc.ExecutionPolicy.Mode == PlanExecutionPolicyModeAutomatic}, nil
 }
 
+func planCheckpointOwnershipMatches(doc *pebblestore.SessionPlanDocument, checkpoint *pebblestore.SessionPlanCheckpoint, attemptID, runID, sessionID, parentSessionID string) bool {
+	if doc == nil || checkpoint == nil || doc.ExecutionState == nil {
+		return false
+	}
+	state := doc.ExecutionState
+	attemptID = strings.TrimSpace(attemptID)
+	runID = strings.TrimSpace(runID)
+	sessionID = strings.TrimSpace(sessionID)
+	parentSessionID = strings.TrimSpace(parentSessionID)
+	if attemptID == "" || runID == "" || sessionID == "" || parentSessionID == "" {
+		return false
+	}
+	return strings.TrimSpace(doc.ActiveCheckpointID) == strings.TrimSpace(checkpoint.ID) &&
+		normalizePlanExecutionStateStatus(state.Status) == PlanExecutionStateInProgress &&
+		strings.TrimSpace(state.ActiveAttemptID) == attemptID &&
+		strings.TrimSpace(state.CurrentRunID) == runID &&
+		strings.TrimSpace(state.CurrentSessionID) == sessionID &&
+		strings.TrimSpace(state.ParentSessionID) == parentSessionID &&
+		strings.TrimSpace(checkpoint.AttemptID) == attemptID &&
+		strings.TrimSpace(checkpoint.RunID) == runID &&
+		strings.TrimSpace(checkpoint.SessionID) == sessionID
+}
+
+func planCheckpointOutcomeOwnershipMatches(doc *pebblestore.SessionPlanDocument, checkpoint *pebblestore.SessionPlanCheckpoint, options PlanCheckpointOutcomeOptions) bool {
+	attemptID := strings.TrimSpace(options.AttemptID)
+	runID := strings.TrimSpace(options.RunID)
+	sessionID := strings.TrimSpace(options.SessionID)
+	parentSessionID := strings.TrimSpace(options.ParentSessionID)
+	if attemptID == "" && runID == "" && sessionID == "" && parentSessionID == "" {
+		// User-driven lifecycle actions may not be provider-run-owned. They are
+		// valid only when the persisted checkpoint has no run ownership either.
+		return strings.TrimSpace(checkpoint.AttemptID) == "" && strings.TrimSpace(checkpoint.RunID) == "" && strings.TrimSpace(checkpoint.SessionID) == ""
+	}
+	return planCheckpointOwnershipMatches(doc, checkpoint, attemptID, runID, sessionID, parentSessionID)
+}
+
+func planCheckpointTerminalOutcomeRetryMatches(checkpoint *pebblestore.SessionPlanCheckpoint, outcome string, options PlanCheckpointOutcomeOptions) bool {
+	if checkpoint == nil || normalizePlanCheckpointStatusForSave(checkpoint.Status) != outcome {
+		return false
+	}
+	attemptID := strings.TrimSpace(options.AttemptID)
+	runID := strings.TrimSpace(options.RunID)
+	sessionID := strings.TrimSpace(options.SessionID)
+	parentSessionID := strings.TrimSpace(options.ParentSessionID)
+	if attemptID == "" || runID == "" || sessionID == "" || parentSessionID == "" || strings.TrimSpace(checkpoint.AttemptID) != attemptID || strings.TrimSpace(checkpoint.RunID) != runID || strings.TrimSpace(checkpoint.SessionID) != sessionID {
+		return false
+	}
+	for i := range checkpoint.Attempts {
+		attempt := checkpoint.Attempts[i]
+		if strings.TrimSpace(attempt.ID) == attemptID && normalizePlanCheckpointStatus(attempt.Status) == outcome && strings.TrimSpace(attempt.RunID) == runID && strings.TrimSpace(attempt.SessionID) == sessionID && strings.TrimSpace(attempt.ParentSessionID) == parentSessionID {
+			return true
+		}
+	}
+	return false
+}
+
 func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options PlanCheckpointOutcomeOptions) (PlanCheckpointOutcomeDecision, error) {
 	if doc == nil {
 		return PlanCheckpointOutcomeDecision{}, errors.New("plan document is required")
@@ -1009,11 +1074,23 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 		return PlanCheckpointOutcomeDecision{}, fmt.Errorf("checkpoint outcome %q is not supported", options.Outcome)
 	}
 	checkpoint := &doc.Checkpoints[idx]
+	if planID := strings.TrimSpace(options.PlanID); planID != "" && strings.TrimSpace(doc.ID) != planID {
+		return PlanCheckpointOutcomeDecision{}, fmt.Errorf("checkpoint outcome plan_id %q does not match plan %q", planID, strings.TrimSpace(doc.ID))
+	}
+	currentStatus := normalizePlanCheckpointStatusForSave(checkpoint.Status)
+	runOwned := strings.TrimSpace(checkpoint.AttemptID) != "" || strings.TrimSpace(checkpoint.RunID) != "" || strings.TrimSpace(checkpoint.SessionID) != ""
+	exactTerminalRetry := planCheckpointTerminalOutcomeRetryMatches(checkpoint, outcome, options)
+	if (currentStatus == PlanCheckpointStatusInProgress || runOwned) && !planCheckpointOutcomeOwnershipMatches(doc, checkpoint, options) && !exactTerminalRetry {
+		return PlanCheckpointOutcomeDecision{}, fmt.Errorf("checkpoint %q outcome does not match active run ownership", checkpointID)
+	}
+	if exactTerminalRetry {
+		summary := SummarizePlanExecution(doc)
+		return PlanCheckpointOutcomeDecision{CheckpointID: checkpointID, Outcome: outcome, Status: currentStatus, NextCheckpointID: summary.NextCheckpointID, ReviewRequired: summary.ReviewRequired, AutoAdvanceAllowed: summary.AutoAdvanceAllowed, PlanComplete: summary.PlanComplete, StopReason: summary.StopReason}, nil
+	}
 	normalizePlanCheckpointSubtasks(checkpoint)
 	if outcome == PlanCheckpointStatusCompleted {
 		completeUnresolvedPlanCheckpointSubtasks(checkpoint, options.CompletedAt)
 	}
-	currentStatus := normalizePlanCheckpointStatusForSave(checkpoint.Status)
 	currentSummary := SummarizePlanExecution(doc)
 	if currentStatus == PlanCheckpointStatusCompleted && outcome == PlanCheckpointStatusCompleted && currentSummary.ReviewRequired && currentSummary.StopReason == PlanCheckpointStatusNeedsReview && allPlanCheckpointsCompleted(doc.Checkpoints) {
 		return PlanCheckpointOutcomeDecision{}, errors.New("plan is already waiting for final review; accept review or request_followup_checkpoint instead of completing the checkpoint again")

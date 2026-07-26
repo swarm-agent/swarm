@@ -2244,6 +2244,11 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 		if documentPatch != nil && documentPatch.Operation == "" {
 			documentPatch.Operation = action
 		}
+		if lifecycleRun.Inline && documentPatch != nil && isPlanCheckpointOutcomeAction(action, documentPatch) {
+			if err := s.applyTrustedCheckpointOutcomeOwnership(sessionID, planID, documentPatch, lifecycleRun); err != nil {
+				return "", err
+			}
+		}
 		if lifecycleRun.Inline && (action == "start_checkpoint" || action == "continue_checkpoint") {
 			plan, err := s.prepareProviderManagedCheckpointStart(sessionID, planID, documentPatch)
 			if err != nil {
@@ -2731,6 +2736,62 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		}
 	}
 	return marshalPlanManagePayload(payload)
+}
+
+func isPlanCheckpointOutcomeAction(action string, patch *sessionruntime.PlanDocumentPatch) bool {
+	if patch != nil && patch.CompleteCheckpoint {
+		return true
+	}
+	switch action {
+	case "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) applyTrustedCheckpointOutcomeOwnership(sessionID, planID string, patch *sessionruntime.PlanDocumentPatch, lifecycleRun planLifecycleRunContext) error {
+	var (
+		plan pebblestore.SessionPlanSnapshot
+		ok   bool
+		err  error
+	)
+	if strings.TrimSpace(planID) == "" {
+		plan, ok, err = s.sessions.GetActivePlan(sessionID)
+	} else {
+		plan, ok, err = s.sessions.GetPlan(sessionID, planID)
+	}
+	if err != nil {
+		return err
+	}
+	if !ok || plan.Document == nil || plan.Document.ExecutionState == nil {
+		return errors.New("checkpoint outcome requires an active structured plan run")
+	}
+	checkpointID := strings.TrimSpace(firstNonEmptyString(patch.CheckpointID, plan.Document.ActiveCheckpointID))
+	idx := -1
+	for i := range plan.Document.Checkpoints {
+		if strings.TrimSpace(plan.Document.Checkpoints[i].ID) == checkpointID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("checkpoint outcome checkpoint %q was not found", checkpointID)
+	}
+	checkpoint := plan.Document.Checkpoints[idx]
+	state := plan.Document.ExecutionState
+	if strings.TrimSpace(state.CurrentRunID) != strings.TrimSpace(lifecycleRun.RunID) || strings.TrimSpace(state.CurrentSessionID) != strings.TrimSpace(lifecycleRun.RunSessionID) || strings.TrimSpace(state.ParentSessionID) != strings.TrimSpace(lifecycleRun.ParentSessionID) {
+		return errors.New("checkpoint outcome trusted provider context does not own the active run")
+	}
+	patch.CheckpointID = checkpointID
+	patch.AttemptID = strings.TrimSpace(state.ActiveAttemptID)
+	patch.RunID = strings.TrimSpace(lifecycleRun.RunID)
+	patch.RunSessionID = strings.TrimSpace(lifecycleRun.RunSessionID)
+	patch.ParentSessionID = strings.TrimSpace(lifecycleRun.ParentSessionID)
+	if patch.AttemptID == "" || strings.TrimSpace(checkpoint.AttemptID) != patch.AttemptID {
+		return errors.New("checkpoint outcome active attempt ownership is missing or inconsistent")
+	}
+	return nil
 }
 
 func (s *Service) prepareProviderManagedCheckpointStart(sessionID, planID string, patch *sessionruntime.PlanDocumentPatch) (pebblestore.SessionPlanSnapshot, error) {

@@ -304,6 +304,15 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 }
 
 func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFollowupCheckpointInput) (PlanLifecycleResult, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
+	return s.requestFollowupCheckpoint(input)
+}
+
+func (s *PlanLifecycleService) requestFollowupCheckpoint(input PlanLifecycleFollowupCheckpointInput) (PlanLifecycleResult, error) {
 	if strings.TrimSpace(input.PlanID) == "" {
 		if err := s.requireConfigured(); err != nil {
 			return PlanLifecycleResult{}, err
@@ -315,7 +324,7 @@ func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFoll
 			// active plan uses the same payload as the atomic create-and-start path,
 			// so normalize stale model routing instead of forcing a failed call and
 			// a second manual lifecycle action.
-			return s.StartSessionCheckpoint(PlanLifecycleSessionCheckpointInput{
+			return s.startSessionCheckpoint(PlanLifecycleSessionCheckpointInput{
 				SessionID:          input.SessionID,
 				ChangeRequest:      input.ChangeRequest,
 				Title:              input.Title,
@@ -413,6 +422,15 @@ func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFoll
 }
 
 func (s *PlanLifecycleService) StartSessionCheckpoint(input PlanLifecycleSessionCheckpointInput) (PlanLifecycleResult, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
+	return s.startSessionCheckpoint(input)
+}
+
+func (s *PlanLifecycleService) startSessionCheckpoint(input PlanLifecycleSessionCheckpointInput) (PlanLifecycleResult, error) {
 	pebblestore.ObserveV3PlanLifecycleMutation()
 	if err := s.requireConfigured(); err != nil {
 		return PlanLifecycleResult{}, err

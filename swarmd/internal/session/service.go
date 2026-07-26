@@ -20,8 +20,10 @@ import (
 type Service struct {
 	store   *pebblestore.SessionStore
 	events  *pebblestore.EventLog
-	mu      sync.Mutex
-	counter atomic.Uint64
+	mu                    sync.Mutex
+	planLifecycleMu       sync.Mutex
+	planLifecycleSessions map[string]*sync.Mutex
+	counter               atomic.Uint64
 }
 
 type CreateSessionOptions struct {
@@ -63,7 +65,20 @@ const (
 )
 
 func NewService(store *pebblestore.SessionStore, events *pebblestore.EventLog) *Service {
-	return &Service{store: store, events: events}
+	return &Service{store: store, events: events, planLifecycleSessions: make(map[string]*sync.Mutex)}
+}
+
+func (s *Service) lockPlanLifecycleSession(sessionID string) func() {
+	sessionID = strings.TrimSpace(sessionID)
+	s.planLifecycleMu.Lock()
+	lock := s.planLifecycleSessions[sessionID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.planLifecycleSessions[sessionID] = lock
+	}
+	s.planLifecycleMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
 }
 
 func (s *Service) Store() *pebblestore.SessionStore {

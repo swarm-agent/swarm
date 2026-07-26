@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -855,6 +856,55 @@ func TestPlanLifecycleFollowupCheckpointDeduplicatesSourceMessage(t *testing.T) 
 	}
 	if len(plan.Document.Checkpoints) != 2 {
 		t.Fatalf("checkpoint count = %d, want 2: %#v", len(plan.Document.Checkpoints), plan.Document.Checkpoints)
+	}
+}
+
+func TestPlanLifecycleFollowupCheckpointDeduplicatesConcurrentSourceMessage(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+	sessionID := createPlanTestSession(t, svc)
+	_, _, err := svc.SavePlanWithMetadata(sessionID, "plan-followup-race", "Followup", "# Followup", "approved", "approved", true, PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed, FollowupCheckpointPolicy: PlanFollowupCheckpointPolicyAutoStart},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: PlanCheckpointStatusCompleted}},
+	}})
+	if err != nil {
+		t.Fatalf("save plan: %v", err)
+	}
+	lifecycle := NewPlanLifecycleService(svc)
+	start := make(chan struct{})
+	results := make(chan PlanLifecycleResult, 2)
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			result, callErr := lifecycle.RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: "plan-followup-race", ChangeRequest: "add audit", SourceMessageID: "message-race"})
+			results <- result
+			errs <- callErr
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+	for callErr := range errs {
+		if callErr != nil {
+			t.Fatalf("concurrent follow-up: %v", callErr)
+		}
+	}
+	checkpointID := ""
+	for result := range results {
+		if checkpointID == "" {
+			checkpointID = result.CheckpointID
+		} else if result.CheckpointID != checkpointID {
+			t.Fatalf("concurrent dedupe checkpoint ids = %q/%q", checkpointID, result.CheckpointID)
+		}
+	}
+	plan, ok, err := svc.GetPlan(sessionID, "plan-followup-race")
+	if err != nil || !ok || len(plan.Document.Checkpoints) != 2 {
+		t.Fatalf("concurrent dedupe plan: ok=%v err=%v checkpoints=%#v", ok, err, plan.Document.Checkpoints)
 	}
 }
 

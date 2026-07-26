@@ -67,9 +67,14 @@ func TestPlanExecutionSummaryAndOutcomeDecisionAreDeterministic(t *testing.T) {
 	}
 
 	// Simulate a user flipping the sidebar policy while this checkpoint run is still
-	// using stale automatic-mode prompt context. The backend document policy must be
-	// authoritative when the terminal checkpoint outcome is applied.
+	// using stale automatic-mode prompt context. The backend document policy and
+	// persisted run ownership must be authoritative when the terminal outcome applies.
 	doc.ExecutionPolicy.Mode = PlanExecutionPolicyModeReviewEachCheckpoint
+	doc.ExecutionState = &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStateInProgress, ActiveAttemptID: "attempt-1", CurrentRunID: "run-1", CurrentSessionID: "child-session", ParentSessionID: "parent-session"}
+	doc.Checkpoints[0].AttemptID = "attempt-1"
+	doc.Checkpoints[0].RunID = "run-1"
+	doc.Checkpoints[0].SessionID = "child-session"
+	doc.Checkpoints[0].Attempts = []pebblestore.SessionPlanCheckpointAttempt{{ID: "attempt-1", CheckpointID: "cp-1", Status: PlanCheckpointStatusInProgress, RunID: "run-1", SessionID: "child-session", ParentSessionID: "parent-session"}}
 
 	decision, err := ApplyPlanCheckpointOutcome(doc, PlanCheckpointOutcomeOptions{
 		CheckpointID:    "cp-1",
@@ -98,6 +103,36 @@ func TestPlanExecutionSummaryAndOutcomeDecisionAreDeterministic(t *testing.T) {
 	}
 	if doc.ExecutionState.LastCheckpointID != "cp-1" || doc.ExecutionState.LastOutcome != PlanCheckpointStatusCompleted || doc.ExecutionState.ParentSessionID != "parent-session" || doc.ExecutionState.Status != PlanExecutionStateWaitingReview {
 		t.Fatalf("execution state = %#v", doc.ExecutionState)
+	}
+}
+
+func TestPlanCheckpointStartAndOutcomeRequireExactRunOwnership(t *testing.T) {
+	doc := &pebblestore.SessionPlanDocument{
+		ID: "plan-owned", ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed}, ActiveCheckpointID: "cp-1",
+		ExecutionState: &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStateInProgress, ActiveAttemptID: "attempt-1", CurrentRunID: "run-1", CurrentSessionID: "child-1", ParentSessionID: "parent-1"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: PlanCheckpointStatusInProgress, AttemptID: "attempt-1", RunID: "run-1", SessionID: "child-1", Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "attempt-1", CheckpointID: "cp-1", Status: PlanCheckpointStatusInProgress, RunID: "run-1", SessionID: "child-1", ParentSessionID: "parent-1"}}}},
+	}
+	matching := PlanCheckpointStartOptions{PlanID: "plan-owned", CheckpointID: "cp-1", AttemptID: "attempt-1", RunID: "run-1", SessionID: "child-1", ParentSessionID: "parent-1"}
+	if decision, err := ApplyPlanCheckpointStart(doc, matching); err != nil || decision.AttemptID != "attempt-1" || len(doc.Checkpoints[0].Attempts) != 1 {
+		t.Fatalf("idempotent start retry: decision=%#v err=%v doc=%#v", decision, err, doc)
+	}
+	foreign := PlanCheckpointOutcomeOptions{PlanID: "plan-owned", CheckpointID: "cp-1", Outcome: PlanCheckpointStatusCompleted, AttemptID: "attempt-1", RunID: "foreign-run", SessionID: "child-1", ParentSessionID: "parent-1"}
+	if _, err := ApplyPlanCheckpointOutcome(doc, foreign); err == nil || !strings.Contains(err.Error(), "active run ownership") {
+		t.Fatalf("foreign outcome error = %v", err)
+	}
+	if doc.Checkpoints[0].Status != PlanCheckpointStatusInProgress {
+		t.Fatalf("foreign outcome mutated checkpoint: %#v", doc.Checkpoints[0])
+	}
+	owned := foreign
+	owned.RunID = "run-1"
+	if _, err := ApplyPlanCheckpointOutcome(doc, owned); err != nil {
+		t.Fatalf("owned outcome: %v", err)
+	}
+	if doc.Checkpoints[0].Status != PlanCheckpointStatusCompleted {
+		t.Fatalf("owned outcome did not complete checkpoint: %#v", doc.Checkpoints[0])
+	}
+	if _, err := ApplyPlanCheckpointOutcome(doc, owned); err != nil {
+		t.Fatalf("exact terminal outcome retry: %v", err)
 	}
 }
 
