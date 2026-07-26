@@ -611,11 +611,12 @@ func explainBashProfile(ctx policyEvalContext, profile BashApprovalProfile) (Pol
 
 func bashProfileExplain(ctx policyEvalContext, decision PolicyDecision, reason string) PolicyExplain {
 	return PolicyExplain{
-		Decision: decision,
-		Source:   "bash_profile",
-		Reason:   reason,
-		ToolName: ctx.ToolName,
-		Command:  ctx.BashCommand,
+		Decision:    decision,
+		Source:      "bash_profile",
+		Reason:      reason,
+		ToolName:    ctx.ToolName,
+		Command:     ctx.BashCommand,
+		RulePreview: previewPolicyRule(policyRuleFromContext(ctx, PolicyDecisionAllow)),
 	}
 }
 

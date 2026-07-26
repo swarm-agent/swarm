@@ -76,6 +76,9 @@ func TestBashApprovalProfileMatrix(t *testing.T) {
 			if got.Decision != tc.want {
 				t.Fatalf("decision = %s (%s), want %s", got.Decision, got.Reason, tc.want)
 			}
+			if tc.profile != BashApprovalProfileCurrentRules && got.RulePreview != "allow bash prefix: printf" {
+				t.Fatalf("rule preview = %q, want the always-allow prefix", got.RulePreview)
+			}
 		})
 	}
 }
