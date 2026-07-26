@@ -86,6 +86,25 @@ func (p *rootedWorkspacePath) mkdirParent() error {
 	return p.root.MkdirAll(parent, 0o755)
 }
 
+func (p *rootedWorkspacePath) writeFile(data []byte, perm fs.FileMode) error {
+	if err := p.mkdirParent(); err != nil {
+		return fmt.Errorf("create parent directory: %w", err)
+	}
+	file, err := p.openMutable(os.O_CREATE|os.O_WRONLY, perm)
+	if err != nil {
+		return err
+	}
+	if err := file.Truncate(0); err != nil {
+		file.Close()
+		return fmt.Errorf("truncate file: %w", err)
+	}
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	return file.Close()
+}
+
 func (p *rootedWorkspacePath) openMutable(flags int, perm fs.FileMode) (*os.File, error) {
 	file, err := p.root.OpenFile(p.relative, flags, perm)
 	if err != nil {

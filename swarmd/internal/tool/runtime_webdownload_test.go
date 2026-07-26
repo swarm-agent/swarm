@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -133,6 +134,73 @@ func TestWebDownloadExplicitOutputDirRemainsWorkspaceRelative(t *testing.T) {
 	if got := filepath.ToSlash(first["file_path"].(string)); got != "project-downloads/001-example-com-explicit.txt" {
 		t.Fatalf("file_path = %q", got)
 	}
+}
+
+func TestWriteWorkspaceFileRejectsLinksAndSymlinkedDirectories(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on some Windows hosts")
+	}
+	workspaceDir := t.TempDir()
+	outsideDir := t.TempDir()
+	scope := normalizeWorkspaceScope(workspaceDir, nil)
+
+	t.Run("ordinary new output", func(t *testing.T) {
+		path := filepath.Join(workspaceDir, "downloads", "new.txt")
+		if err := writeWorkspaceFile(scope, path, []byte("downloaded"), 0o644); err != nil {
+			t.Fatalf("writeWorkspaceFile: %v", err)
+		}
+		if got, err := os.ReadFile(path); err != nil || string(got) != "downloaded" {
+			t.Fatalf("content = %q, %v; want downloaded", got, err)
+		}
+	})
+
+	t.Run("planted child symlink", func(t *testing.T) {
+		outsidePath := filepath.Join(outsideDir, "symlink-target.txt")
+		if err := os.WriteFile(outsidePath, []byte("original"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		insidePath := filepath.Join(workspaceDir, "downloads", "symlink.txt")
+		if err := os.Symlink(outsidePath, insidePath); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeWorkspaceFile(scope, insidePath, []byte("changed"), 0o644); err == nil {
+			t.Fatal("writeWorkspaceFile unexpectedly followed child symlink")
+		}
+		if got, err := os.ReadFile(outsidePath); err != nil || string(got) != "original" {
+			t.Fatalf("outside content = %q, %v; want original", got, err)
+		}
+	})
+
+	t.Run("hard-linked existing file", func(t *testing.T) {
+		outsidePath := filepath.Join(outsideDir, "hardlink-target.txt")
+		if err := os.WriteFile(outsidePath, []byte("original"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		insidePath := filepath.Join(workspaceDir, "downloads", "hardlink.txt")
+		if err := os.Link(outsidePath, insidePath); err != nil {
+			t.Skipf("hardlinks unavailable: %v", err)
+		}
+		err := writeWorkspaceFile(scope, insidePath, []byte("changed"), 0o644)
+		if err == nil || !strings.Contains(err.Error(), "hard links") {
+			t.Fatalf("error = %v, want hard-link rejection", err)
+		}
+		if got, readErr := os.ReadFile(outsidePath); readErr != nil || string(got) != "original" {
+			t.Fatalf("outside content = %q, %v; want original", got, readErr)
+		}
+	})
+
+	t.Run("symlinked output directory", func(t *testing.T) {
+		insideDir := filepath.Join(workspaceDir, "linked-downloads")
+		if err := os.Symlink(outsideDir, insideDir); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeWorkspaceFile(scope, filepath.Join(insideDir, "escaped.txt"), []byte("changed"), 0o644); err == nil {
+			t.Fatal("writeWorkspaceFile unexpectedly followed output directory symlink")
+		}
+		if _, err := os.Stat(filepath.Join(outsideDir, "escaped.txt")); !os.IsNotExist(err) {
+			t.Fatalf("outside file exists or stat failed unexpectedly: %v", err)
+		}
+	})
 }
 
 func infoModePerm(info fs.FileInfo) fs.FileMode {

@@ -4225,7 +4225,7 @@ func (r *Runtime) executeWebDownload(parent context.Context, scope WorkspaceScop
 		if outputDirArg == "" {
 			writeErr = appstorage.WritePrivateFile(targetPath, data)
 		} else {
-			writeErr = os.WriteFile(targetPath, data, 0o644)
+			writeErr = writeWorkspaceFile(scope, targetPath, data, 0o644)
 		}
 		if writeErr != nil {
 			entry["error"] = fmt.Sprintf("write failed: %v", writeErr)
@@ -4329,6 +4329,15 @@ func resolveWebDownloadOutputDir(scope WorkspaceScope, outputDirArg string) (str
 		return "", "", fmt.Errorf("create download directory: %w", err)
 	}
 	return path, filepath.ToSlash(outputDirArg), nil
+}
+
+func writeWorkspaceFile(scope WorkspaceScope, targetPath string, data []byte, perm fs.FileMode) error {
+	target, err := openRootedWorkspacePath(scope, targetPath)
+	if err != nil {
+		return err
+	}
+	defer target.Close()
+	return target.writeFile(data, perm)
 }
 
 func displayWebDownloadFilePath(scope WorkspaceScope, targetPath string) string {
