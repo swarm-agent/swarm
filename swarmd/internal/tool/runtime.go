@@ -920,8 +920,9 @@ func (r *Runtime) Definitions() []Definition {
 					"action":  map[string]any{"type": "string", "description": "Action: inspect|list|get|create|update|delete"},
 					"skill":   map[string]any{"type": "string", "description": "Skill name or canonical id"},
 					"name":    map[string]any{"type": "string", "description": "Skill display name; used for create/update when skill is omitted"},
-					"content": map[string]any{"type": "string", "description": "Proposed SKILL.md content for create/update"},
-					"confirm": map[string]any{"type": "boolean", "description": "Set true after approval to apply the proposed change to disk"},
+					"content":           map[string]any{"type": "string", "description": "Proposed SKILL.md content for create/update"},
+					"confirm":           map[string]any{"type": "boolean", "description": "Set true after approval to apply the proposed change to disk"},
+					"expected_revision": map[string]any{"type": "string", "description": "Revision token returned by the approved proposal; required when confirm=true"},
 				},
 				"required":             []string{"action"},
 				"additionalProperties": false,
@@ -6590,15 +6591,17 @@ func (r *Runtime) manageWorktreeConfigMap(cfg manageWorktreeConfig) map[string]a
 }
 
 func manageSkillInspect(scope WorkspaceScope) (string, error) {
-	report, err := discovery.NewService().ScanScope(scope.PrimaryPath, scope.Roots)
+	store, err := openManageSkillStore(scope, false)
 	if err != nil {
 		return "", fmt.Errorf("manage-skill inspect scan failed: %w", err)
 	}
-	skills := make([]map[string]any, 0, len(report.Skills))
-	for _, skill := range report.Skills {
-		if !manageSkillSkillPathAllowed(skill.Path, scope) {
-			continue
-		}
+	defer store.Close()
+	discovered, invalid, err := store.discover()
+	if err != nil {
+		return "", fmt.Errorf("manage-skill inspect scan failed: %w", err)
+	}
+	skills := make([]map[string]any, 0, len(discovered))
+	for _, skill := range discovered {
 		skills = append(skills, map[string]any{
 			"name":           skill.Name,
 			"canonical_name": skill.CanonicalName,
@@ -6613,9 +6616,9 @@ func manageSkillInspect(scope WorkspaceScope) (string, error) {
 	response := map[string]any{
 		"status":               "ok",
 		"action":               "inspect",
-		"skill_root":           manageSkillSkillRoot(scope),
+		"skill_root":           store.rootPath,
 		"skills":               skills,
-		"invalid_skills":       report.InvalidSkills,
+		"invalid_skills":       invalid,
 		"count":                len(skills),
 		"supported_actions":    []string{"inspect", "list", "get", "create", "update", "delete"},
 		"instructions":         "Use manage-skill for workspace skill discovery and CRUD. Call inspect/list to discover available skills, get to read a skill, and create/update/delete for preview-first skill edits under .agents/skills.",
@@ -8427,7 +8430,12 @@ func manageSkillGet(scope WorkspaceScope, args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	raw, err := os.ReadFile(matched.Path)
+	store, err := openManageSkillStore(scope, false)
+	if err != nil {
+		return "", fmt.Errorf("manage-skill get open skill root failed: %w", err)
+	}
+	defer store.Close()
+	raw, err := store.read(matched.CanonicalName)
 	if err != nil {
 		return "", fmt.Errorf("manage-skill get read failed: %w", err)
 	}
@@ -8487,14 +8495,17 @@ func manageSkillProposeChange(scope WorkspaceScope, args map[string]any, mustExi
 	if err := discovery.ValidateSkillFrontmatter(frontmatter, canonical); err != nil {
 		return "", fmt.Errorf("manage-skill invalid skill content: %w", err)
 	}
-	path := manageSkillSkillPath(scope, canonical)
-	beforeBytes, readErr := os.ReadFile(path)
-	before := ""
-	if readErr == nil {
-		before = string(beforeBytes)
-	} else if !errors.Is(readErr, os.ErrNotExist) {
+	store, err := openManageSkillStore(scope, false)
+	if err != nil {
+		return "", fmt.Errorf("manage-skill open skill root failed: %w", err)
+	}
+	defer store.Close()
+	path := store.skillPath(canonical)
+	revision, beforeBytes, readErr := store.revision(canonical)
+	if readErr != nil {
 		return "", fmt.Errorf("manage-skill read existing skill failed: %w", readErr)
 	}
+	before := string(beforeBytes)
 	if mustExist && strings.TrimSpace(before) == "" {
 		return "", fmt.Errorf("skill %q does not exist", canonical)
 	}
@@ -8526,6 +8537,7 @@ func manageSkillProposeChange(scope WorkspaceScope, args map[string]any, mustExi
 			"path":      path,
 			"before":    before,
 			"after":     formatted,
+			"expected_revision": revision,
 		},
 		"path_id":              toolPathID("manage-skill"),
 		"summary":              summary,
@@ -8545,7 +8557,12 @@ func manageSkillProposeDelete(scope WorkspaceScope, args map[string]any) (string
 	if err != nil {
 		return "", err
 	}
-	beforeBytes, err := os.ReadFile(matched.Path)
+	store, err := openManageSkillStore(scope, false)
+	if err != nil {
+		return "", fmt.Errorf("manage-skill delete open skill root failed: %w", err)
+	}
+	defer store.Close()
+	revision, beforeBytes, err := store.revision(matched.CanonicalName)
 	if err != nil {
 		return "", fmt.Errorf("manage-skill delete read failed: %w", err)
 	}
@@ -8566,6 +8583,7 @@ func manageSkillProposeDelete(scope WorkspaceScope, args map[string]any) (string
 			"path":      matched.Path,
 			"before":    before,
 			"after":     "",
+			"expected_revision": revision,
 		},
 		"path_id":              toolPathID("manage-skill"),
 		"summary":              fmt.Sprintf("proposed delete for skill %s", matched.CanonicalName),
@@ -8595,13 +8613,16 @@ func manageSkillApplyChange(scope WorkspaceScope, args map[string]any, mustExist
 	if path == "" {
 		return "", errors.New("manage-skill apply proposal missing path")
 	}
-	if !manageSkillSkillPathAllowed(path, scope) {
+	canonical := manageSkillRequestedCanonical(args)
+	store, err := openManageSkillStore(scope, true)
+	if err != nil {
+		return "", fmt.Errorf("manage-skill open skill root failed: %w", err)
+	}
+	defer store.Close()
+	if path != store.skillPath(canonical) {
 		return "", fmt.Errorf("manage-skill path %q is outside workspace skill root", path)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", fmt.Errorf("manage-skill create skill directory failed: %w", err)
-	}
-	if err := os.WriteFile(path, []byte(after), 0o644); err != nil {
+	if err := store.write(canonical, []byte(after), mustExist, strings.TrimSpace(asString(args["expected_revision"]))); err != nil {
 		return "", fmt.Errorf("manage-skill write failed: %w", err)
 	}
 	response := map[string]any{
@@ -8641,13 +8662,18 @@ func manageSkillDelete(scope WorkspaceScope, args map[string]any) (string, error
 	if path == "" {
 		return "", errors.New("manage-skill delete proposal missing path")
 	}
-	if !manageSkillSkillPathAllowed(path, scope) {
+	canonical := strings.TrimSpace(asString(proposal["skill"].(map[string]any)["canonical_name"]))
+	store, err := openManageSkillStore(scope, false)
+	if err != nil {
+		return "", fmt.Errorf("manage-skill delete open skill root failed: %w", err)
+	}
+	defer store.Close()
+	if path != store.skillPath(canonical) {
 		return "", fmt.Errorf("manage-skill path %q is outside workspace skill root", path)
 	}
-	if err := os.Remove(path); err != nil {
+	if err := store.delete(canonical, strings.TrimSpace(asString(args["expected_revision"]))); err != nil {
 		return "", fmt.Errorf("manage-skill delete failed: %w", err)
 	}
-	_ = os.Remove(filepath.Dir(path))
 	response := map[string]any{
 		"status":               "ok",
 		"action":               "delete",
@@ -8679,15 +8705,17 @@ func manageSkillLookupSkill(scope WorkspaceScope, args map[string]any) (discover
 	if requested == "" {
 		return discovery.SkillSource{}, errors.New("manage-skill requires skill or name")
 	}
-	report, err := discovery.NewService().ScanScope(scope.PrimaryPath, scope.Roots)
+	store, err := openManageSkillStore(scope, false)
+	if err != nil {
+		return discovery.SkillSource{}, fmt.Errorf("manage-skill scan failed: %w", err)
+	}
+	defer store.Close()
+	skills, _, err := store.discover()
 	if err != nil {
 		return discovery.SkillSource{}, fmt.Errorf("manage-skill scan failed: %w", err)
 	}
 	target := normalizeSkillLookup(requested)
-	for _, candidate := range report.Skills {
-		if !manageSkillSkillPathAllowed(candidate.Path, scope) {
-			continue
-		}
+	for _, candidate := range skills {
 		if normalizeSkillLookup(candidate.CanonicalName) == target || normalizeSkillLookup(candidate.Name) == target {
 			return candidate, nil
 		}
@@ -8704,32 +8732,6 @@ func manageSkillRequestedCanonical(args map[string]any) string {
 		return ""
 	}
 	return discovery.NormalizeSkillName(requested)
-}
-
-func manageSkillSkillRoot(scope WorkspaceScope) string {
-	return filepath.Join(scope.PrimaryPath, ".agents", "skills")
-}
-
-func manageSkillSkillPath(scope WorkspaceScope, canonical string) string {
-	canonical = discovery.NormalizeSkillName(canonical)
-	if canonical == "" {
-		canonical = "skill"
-	}
-	return filepath.Join(manageSkillSkillRoot(scope), canonical, "SKILL.md")
-}
-
-func manageSkillSkillPathAllowed(path string, scope WorkspaceScope) bool {
-	root := manageSkillSkillRoot(scope)
-	path = filepath.Clean(strings.TrimSpace(path))
-	root = filepath.Clean(strings.TrimSpace(root))
-	if path == "" || root == "" {
-		return false
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
 func ensureTrailingNewline(value string) string {
