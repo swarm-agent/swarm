@@ -1,6 +1,8 @@
 package launcher
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"errors"
 	"os"
@@ -57,6 +59,56 @@ func writeRuntimeArtifact(t *testing.T, artifactRoot, version string, omit map[s
 	}
 	if err := os.WriteFile(filepath.Join(artifactRoot, "build-info.txt"), []byte("version="+version+"\ncommit=test\n"), 0o644); err != nil {
 		t.Fatalf("write build-info: %v", err)
+	}
+}
+
+func TestValidateUpdateDownloadURLRejectsUntrustedOrInsecureOrigins(t *testing.T) {
+	for _, raw := range []string{
+		"http://github.com/swarm-agent/swarm/releases/download/v1.2.3/a.tar.gz",
+		"https://example.com/a.tar.gz",
+		"https://github.com.evil.example/a.tar.gz",
+	} {
+		if err := validateUpdateDownloadURL(raw); err == nil {
+			t.Fatalf("validateUpdateDownloadURL(%q) succeeded", raw)
+		}
+	}
+	if err := validateUpdateDownloadURL("https://release-assets.githubusercontent.com/github-production-release-asset/file"); err != nil {
+		t.Fatalf("legitimate GitHub release asset URL rejected: %v", err)
+	}
+}
+
+func TestExtractTarGzRejectsOversizedFileBeforeWriting(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "release.tar.gz")
+	file, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(file)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: "swarm-v1.2.3/huge", Mode: 0o644, Size: maxUpdateFileBytes + 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := extractTarGz(archivePath, t.TempDir()); err == nil || !strings.Contains(err.Error(), "extraction limits") {
+		t.Fatalf("extractTarGz error = %v, want extraction limits", err)
+	}
+}
+
+func TestRequirePathWithinRejectsEscapes(t *testing.T) {
+	root := t.TempDir()
+	if err := requirePathWithin(root, filepath.Join(root, "versions", "v1.2.3")); err != nil {
+		t.Fatalf("contained path rejected: %v", err)
+	}
+	if err := requirePathWithin(root, filepath.Join(root, "..", "escape")); err == nil {
+		t.Fatal("escaping path accepted")
 	}
 }
 
@@ -338,6 +390,36 @@ func TestMarkPendingRuntimeUpdateAndBootSuccess(t *testing.T) {
 	lastKnownGood, ok = resolveRuntimeLink(filepath.Join(installRoot, "last-known-good"))
 	if !ok || lastKnownGood != targetRoot {
 		t.Fatalf("last-known-good after success = %q ok=%v, want %q", lastKnownGood, ok, targetRoot)
+	}
+}
+
+func TestMarkCurrentRuntimeBootSuccessfulRepairsUnactivatedIntent(t *testing.T) {
+	installRoot := t.TempDir()
+	currentRoot := filepath.Join(installRoot, "versions", "v1.0.0")
+	pendingRoot := filepath.Join(installRoot, "versions", "v1.1.0")
+	for _, root := range []string{currentRoot, pendingRoot} {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "build-info.txt"), []byte("version="+filepath.Base(root)+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := replaceSymlink(filepath.Join(installRoot, "current"), currentRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceSymlink(pendingRuntimeLink(installRoot), pendingRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := markCurrentRuntimeBootSuccessful(installRoot); err != nil {
+		t.Fatalf("repair unactivated intent: %v", err)
+	}
+	if _, err := os.Lstat(pendingRuntimeLink(installRoot)); !os.IsNotExist(err) {
+		t.Fatalf("stale pending intent remains: %v", err)
+	}
+	got, ok := resolveRuntimeLink(filepath.Join(installRoot, "current"))
+	if !ok || got != currentRoot {
+		t.Fatalf("current runtime changed during repair: %q ok=%v", got, ok)
 	}
 }
 

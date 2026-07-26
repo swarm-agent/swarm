@@ -4,8 +4,29 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+func TestValidateTrustedGitHubURL(t *testing.T) {
+	for _, raw := range []string{"http://github.com/a", "https://example.com/a", "https://github.com.evil.example/a"} {
+		if err := validateTrustedGitHubURL(raw); err == nil {
+			t.Fatalf("validateTrustedGitHubURL(%q) succeeded", raw)
+		}
+	}
+	for _, raw := range []string{"https://api.github.com/repos/swarm-agent/swarm/releases", "https://release-assets.githubusercontent.com/file"} {
+		if err := validateTrustedGitHubURL(raw); err != nil {
+			t.Fatalf("validateTrustedGitHubURL(%q): %v", raw, err)
+		}
+	}
+}
+
+func TestDecodeBoundedJSONRejectsOversizedResponse(t *testing.T) {
+	var dst map[string]any
+	if err := decodeBoundedJSON(strings.NewReader(`{"value":"too large"}`), 8, &dst); err == nil {
+		t.Fatal("decodeBoundedJSON accepted oversized input")
+	}
+}
 
 func TestShouldSuppressAllowsMainLaneDevVersions(t *testing.T) {
 	if shouldSuppress("0.0.0-dev+dd78c1f", "main", false) {
