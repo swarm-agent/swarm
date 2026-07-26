@@ -242,7 +242,11 @@ func presentBashTool(tool ToolTimelineItem, arguments, output map[string]any) to
 	if rawOutput == "" && (output == nil || !looksLikeTerminalBashPayload(output)) {
 		rawOutput = tool.Output
 	}
-	lines = append(lines, boundedTailToolLines(rawOutput, maxBashPresentationLines)...)
+	tailLines, outputClipped := boundedTailToolLines(rawOutput, maxBashPresentationLines)
+	lines = append(lines, tailLines...)
+	if outputClipped {
+		lines = append(lines, toolPresentationLine{Text: "use /output to open full output", Tone: "muted"})
+	}
 	if len(lines) == 0 && strings.EqualFold(strings.TrimSpace(tool.Status), "running") {
 		lines = append(lines, toolPresentationLine{Text: "waiting for output…", Tone: "muted"})
 	}
@@ -253,10 +257,10 @@ func looksLikeTerminalBashPayload(payload map[string]any) bool {
 	return toolHasKey(payload, "exit_code") || toolHasKey(payload, "path_id") || toolHasKey(payload, "timed_out")
 }
 
-func boundedTailToolLines(value string, limit int) []toolPresentationLine {
+func boundedTailToolLines(value string, limit int) ([]toolPresentationLine, bool) {
 	value = normalizeToolText(value)
 	if value == "" || limit <= 0 {
-		return nil
+		return nil, false
 	}
 	parts := strings.Split(value, "\n")
 	for len(parts) > 0 && parts[len(parts)-1] == "" {
@@ -274,7 +278,7 @@ func boundedTailToolLines(value string, limit int) []toolPresentationLine {
 	for _, part := range parts {
 		lines = append(lines, toolPresentationLine{Text: part, Tone: "code"})
 	}
-	return lines
+	return lines, omitted > 0
 }
 
 type searchPresentationFile struct {

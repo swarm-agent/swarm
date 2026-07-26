@@ -105,11 +105,11 @@ func TestToolPresentationBashKeepsTailWithinViewportBudget(t *testing.T) {
 	if presentation.Summary != "bash · exit 0" {
 		t.Fatalf("summary = %q", presentation.Summary)
 	}
-	if len(presentation.Lines) != maxBashPresentationLines+2 {
-		t.Fatalf("bash line count = %d, want command + omission + %d output lines", len(presentation.Lines), maxBashPresentationLines)
+	if len(presentation.Lines) != maxBashPresentationLines+3 {
+		t.Fatalf("bash line count = %d, want command + omission + %d output lines + command hint", len(presentation.Lines), maxBashPresentationLines)
 	}
 	joined := presentationText(presentation)
-	if !strings.Contains(joined, "$ make build") || !strings.Contains(joined, "… 22 earlier lines") || !strings.Contains(joined, "line 30") || strings.Contains(joined, "line 1\n") {
+	if !strings.Contains(joined, "$ make build") || !strings.Contains(joined, "… 22 earlier lines") || !strings.Contains(joined, "line 30") || !strings.Contains(joined, "use /output to open full output") || strings.Contains(joined, "line 1\n") {
 		t.Fatalf("bash presentation did not retain a bounded live tail:\n%s", joined)
 	}
 }
@@ -121,8 +121,32 @@ func TestToolRowsBoundWrappedBashOutput(t *testing.T) {
 	if len(rows) > 12 {
 		t.Fatalf("bash rows = %d, want header + at most 10 body rows + spacer", len(rows))
 	}
-	if !strings.Contains(rows[len(rows)-2].text, "output clipped") {
-		t.Fatalf("bounded bash output missing clipped marker: %#v", rows)
+	if !strings.Contains(rows[len(rows)-2].text, "use /output") {
+		t.Fatalf("bounded bash output missing /output command hint: %#v", rows)
+	}
+}
+
+func TestToggleLatestBashOutputOpensFullLiveOutput(t *testing.T) {
+	store := NewStore()
+	state := NewState()
+	state.Tools["bash-new"] = ToolTimelineItem{ID: "bash-new", CallID: "bash-new", GlobalSeq: 9, Name: "bash", Status: "running", Output: "new line 1\nnew line 2\n"}
+	state.Tools["bash-old"] = ToolTimelineItem{ID: "bash-old", CallID: "bash-old", GlobalSeq: 4, Name: "bash", Status: "completed", Output: "old output"}
+	store.mu.Lock()
+	store.state = state
+	store.mu.Unlock()
+	page := NewPage(NewRuntime(nil, store, nil), testPageStyles())
+
+	if !page.ToggleLatestBashOutput() {
+		t.Fatal("expected /output to open the latest Bash output")
+	}
+	if !page.bashOutputModal || page.bashOutputModalTool.CallID != "bash-new" {
+		t.Fatalf("bash output modal = %#v", page.bashOutputModalTool)
+	}
+	if got := bashToolOutputText(page.bashOutputModalTool); got != "new line 1\nnew line 2\n" {
+		t.Fatalf("full Bash output = %q", got)
+	}
+	if !page.ToggleLatestBashOutput() || page.bashOutputModal {
+		t.Fatal("second /output command should close the Bash output modal")
 	}
 }
 

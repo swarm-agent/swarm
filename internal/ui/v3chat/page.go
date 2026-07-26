@@ -102,6 +102,9 @@ type Page struct {
 	planModal                    bool
 	planModalScroll              int
 	planModalPlan                *client.SessionPlan
+	bashOutputModal              bool
+	bashOutputModalScroll        int
+	bashOutputModalTool          ToolTimelineItem
 	modelOptions                 []client.ModelCatalogRecord
 	modelIndex                   int
 	commandSuggestions           []CommandSuggestion
@@ -401,7 +404,7 @@ func (p *Page) ConsumeQuitScrollbackJump() bool {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.handoffDetailsModal || p.planModal || p.permissionVisibleLocked() || p.modelPicker || p.pasteActive {
+	if p.handoffDetailsModal || p.planModal || p.bashOutputModal || p.permissionVisibleLocked() || p.modelPicker || p.pasteActive {
 		return false
 	}
 	if p.scroll <= 0 && p.follow {
@@ -618,6 +621,9 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	if p.planModal {
 		return p.handlePlanModalKeyLocked(ev)
 	}
+	if p.bashOutputModal {
+		return p.handleBashOutputModalKeyLocked(ev)
+	}
 	if p.permissionVisibleLocked() {
 		p.ensurePermissionPrefixLocked()
 		return p.handlePermissionKeyLocked(ev)
@@ -808,6 +814,95 @@ func (p *Page) ClosePlanModal() {
 	p.planModal = false
 	p.planModalScroll = 0
 	p.planModalPlan = nil
+}
+
+// ToggleLatestBashOutput opens the complete output from the latest Bash tool in
+// a bounded, scrollable modal. Calling it again while open closes the modal.
+func (p *Page) ToggleLatestBashOutput() bool {
+	if p == nil || p.runtime == nil || p.runtime.Store() == nil {
+		return false
+	}
+	p.mu.Lock()
+	if p.bashOutputModal {
+		p.bashOutputModal = false
+		p.bashOutputModalScroll = 0
+		p.bashOutputModalTool = ToolTimelineItem{}
+		p.status = "bash output closed"
+		p.mu.Unlock()
+		return true
+	}
+	p.mu.Unlock()
+
+	tool, ok := latestBashTool(p.runtime.Store().Snapshot())
+	if !ok || strings.TrimSpace(bashToolOutputText(tool)) == "" {
+		return false
+	}
+	p.mu.Lock()
+	p.bashOutputModal = true
+	p.bashOutputModalScroll = 0
+	p.bashOutputModalTool = tool
+	p.status = "full bash output"
+	p.mu.Unlock()
+	return true
+}
+
+func latestBashTool(state State) (ToolTimelineItem, bool) {
+	var latest ToolTimelineItem
+	found := false
+	consider := func(tool ToolTimelineItem) {
+		if normalizeToolDisplayName(tool.Name) != "bash" || strings.TrimSpace(bashToolOutputText(tool)) == "" {
+			return
+		}
+		if !found || tool.GlobalSeq > latest.GlobalSeq || (tool.GlobalSeq == latest.GlobalSeq && tool.CreatedAt >= latest.CreatedAt) {
+			latest, found = tool, true
+		}
+	}
+	for _, message := range SelectMessages(state) {
+		if tool, ok := parseToolMessage(message); ok {
+			consider(tool)
+		}
+	}
+	for _, tool := range SelectLiveTools(state) {
+		consider(tool)
+	}
+	return latest, found
+}
+
+func bashToolOutputText(tool ToolTimelineItem) string {
+	output := parseToolObject(tool.Output)
+	if output != nil {
+		if raw := firstNonEmptyToolRaw(toolStringRaw(output, "output"), toolStringRaw(output, "stdout"), toolStringRaw(output, "stderr")); raw != "" {
+			return raw
+		}
+		if looksLikeTerminalBashPayload(output) {
+			return ""
+		}
+	}
+	return tool.Output
+}
+
+func (p *Page) handleBashOutputModalKeyLocked(ev *tcell.EventKey) PageAction {
+	if ev == nil {
+		return PageActionNone
+	}
+	switch ev.Key() {
+	case tcell.KeyEscape:
+		p.bashOutputModal = false
+		p.bashOutputModalScroll = 0
+		p.bashOutputModalTool = ToolTimelineItem{}
+		p.status = "bash output closed"
+	case tcell.KeyUp:
+		p.bashOutputModalScroll = maxInt(0, p.bashOutputModalScroll-1)
+	case tcell.KeyDown:
+		p.bashOutputModalScroll++
+	case tcell.KeyPgUp:
+		p.bashOutputModalScroll = maxInt(0, p.bashOutputModalScroll-8)
+	case tcell.KeyPgDn:
+		p.bashOutputModalScroll += 8
+	case tcell.KeyHome:
+		p.bashOutputModalScroll = 0
+	}
+	return PageActionNone
 }
 
 func (p *Page) handlePlanModalKeyLocked(ev *tcell.EventKey) PageAction {
@@ -1293,6 +1388,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	p.lastWidth, p.lastHeight = width, height
 	modelPicker, modelLoading, modelIndex := p.modelPicker, p.modelLoading, p.modelIndex
 	planModal, planModalScroll, planModalPlan := p.planModal, p.planModalScroll, p.planModalPlan
+	bashOutputModal, bashOutputModalScroll, bashOutputModalTool := p.bashOutputModal, p.bashOutputModalScroll, p.bashOutputModalTool
 	handoffDetailsModal, handoffDetailsScroll := p.handoffDetailsModal, p.handoffDetailsScroll
 	var handoffDetails *client.PlanFinalHandoff
 	if p.handoffDetails != nil {
@@ -1442,6 +1538,8 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 			plan = planModalPlan
 		}
 		p.drawPlanModal(screen, width, height, styles, plan, planModalScroll)
+	} else if bashOutputModal {
+		p.drawBashOutputModal(screen, width, height, styles, bashOutputModalTool, bashOutputModalScroll)
 	} else if modelPicker {
 		p.drawModelPicker(screen, width, height, styles, modelOptions, modelIndex, modelLoading, modelState)
 	} else {
@@ -1924,6 +2022,41 @@ func containsFold(values []string, value string) bool {
 	return false
 }
 
+func (p *Page) drawBashOutputModal(screen tcell.Screen, width, height int, styles PageStyles, tool ToolTimelineItem, scroll int) {
+	if width < 20 || height < 8 {
+		return
+	}
+	modalWidth := minInt(112, maxInt(20, width-2))
+	modalHeight := minInt(maxInt(8, height-2), height)
+	x, y := (width-modalWidth)/2, (height-modalHeight)/2
+	fill(screen, x, y, modalWidth, modalHeight, styles.Panel)
+	drawBox(screen, x, y, modalWidth, modalHeight, styles.BorderActive)
+	contentWidth := maxInt(1, modalWidth-4)
+	title := "BASH OUTPUT"
+	if command := firstToolString(parseToolObject(tool.Output), parseToolObject(tool.Arguments), "command"); command != "" {
+		title += "  ·  " + command
+	}
+	drawText(screen, x+2, y+1, contentWidth, styles.Primary.Bold(true), truncateCells(title, contentWidth))
+	drawText(screen, x+2, y+2, contentWidth, styles.Muted, "↑/↓ or PgUp/PgDn scroll  ·  Esc close")
+	lines := wrapText(bashToolOutputText(tool), contentWidth)
+	if len(lines) == 0 {
+		lines = []string{"No Bash output."}
+	}
+	visibleRows := maxInt(1, modalHeight-5)
+	maxScroll := maxInt(0, len(lines)-visibleRows)
+	scroll = minInt(maxInt(0, scroll), maxScroll)
+	p.mu.Lock()
+	p.bashOutputModalScroll = scroll
+	p.mu.Unlock()
+	for row := 0; row < visibleRows && scroll+row < len(lines); row++ {
+		drawText(screen, x+2, y+3+row, contentWidth, styles.Text, lines[scroll+row])
+	}
+	if maxScroll > 0 {
+		indicator := fmt.Sprintf("%d/%d", scroll+1, maxScroll+1)
+		drawText(screen, x+modalWidth-2-utf8.RuneCountInString(indicator), y+modalHeight-2, utf8.RuneCountInString(indicator), styles.Muted, indicator)
+	}
+}
+
 func (p *Page) drawPlanModal(screen tcell.Screen, width, height int, styles PageStyles, plan *client.SessionPlan, scroll int) {
 	if plan == nil || plan.Document == nil || width < 38 || height < 12 {
 		return
@@ -2364,7 +2497,11 @@ func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyle
 		appendLines([]toolPresentationLine{{Text: tool.Error, Tone: "error"}}, "error")
 	}
 	if bodyClipped && bodyRows > 0 {
-		rows[len(rows)-1] = renderRow{text: "  … output clipped", style: styles.Muted}
+		clippedText := "  … output clipped"
+		if normalizeToolDisplayName(tool.Name) == "bash" {
+			clippedText = "  … clipped · use /output"
+		}
+		rows[len(rows)-1] = renderRow{text: clippedText, style: styles.Muted}
 	}
 	rows = append(rows, renderRow{text: "", style: styles.Text})
 	return rows

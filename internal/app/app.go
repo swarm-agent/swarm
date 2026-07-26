@@ -2346,12 +2346,22 @@ func (a *App) handleCopyCommand(args []string) {
 
 func (a *App) handleOutputCommand(args []string) {
 	a.home.ClearCommandOverlay()
-	if a.chat == nil {
-		a.home.SetStatus("/output is available in chat sessions only")
-		return
-	}
 	if len(args) > 0 {
 		a.home.SetStatus("usage: /output")
+		return
+	}
+	if a.route == "v3chat" && a.v3Chat != nil {
+		if !a.v3Chat.ToggleLatestBashOutput() {
+			a.home.SetStatus("no bash output available")
+			return
+		}
+		if status := strings.TrimSpace(a.v3Chat.Status()); status != "" {
+			a.home.SetStatus(status)
+		}
+		return
+	}
+	if a.chat == nil {
+		a.home.SetStatus("/output is available in chat sessions only")
 		return
 	}
 	if !a.chat.ToggleInlineBashOutputExpanded() {
