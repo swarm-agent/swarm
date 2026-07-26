@@ -2041,18 +2041,12 @@ func (s *Server) handleContextSources(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
-	requestPath := ""
-	if r != nil && r.URL != nil {
-		requestPath = r.URL.Path
-	}
 	if s.sessions == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
 		return
 	}
 	principal, principalOK := PrincipalFromRequest(r)
-	flowRouteDiagLog("desktop_sessions_auth", "path", requestPath, "method", r.Method, "principal_ok", principalOK, "principal_valid", principal.Valid(), "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID, "principal_session_id", principal.SessionID)
 	if !principalOK || !principal.Valid() {
-		flowRouteDiagLog("desktop_sessions_reject", "path", requestPath, "method", r.Method, "reason", "principal_required")
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
@@ -2099,7 +2093,6 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			"sessions": responseSessions,
 		})
 	case http.MethodPost:
-		flowRouteDiagLog("desktop_session_create_start", "path", requestPath, "query_swarm_id", requestedSwarmTargetID(r), "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
 		req, principal, principalOK, err := s.decodeSessionCreateRequest(r)
 		if err != nil {
 			status := http.StatusBadRequest
@@ -2109,7 +2102,6 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, err)
 			return
 		}
-		flowRouteDiagLog("desktop_session_create_request", "workspace_binding_id", req.WorkspaceBindingID, "workspace_name", req.WorkspaceName, "workspace_path_present", strings.TrimSpace(req.WorkspacePath) != "", "host_workspace_path_present", strings.TrimSpace(req.HostWorkspacePath) != "", "runtime_workspace_path_present", strings.TrimSpace(req.RuntimeWorkspacePath) != "", "worktree_mode", req.WorktreeMode, "provider", req.Preference.Provider, "model", req.Preference.Model)
 		session, event, warning, modeWarning, err := s.createSessionFromRequest(req, principal, principalOK, nil, true)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -2259,39 +2251,27 @@ func overridableSessionCreateMetadataKey(key string) bool {
 
 func (s *Server) verifySessionOwnershipForRequest(w http.ResponseWriter, r *http.Request, sessionID string) (identity.Principal, pebblestore.SessionSnapshot, bool) {
 	sessionID = strings.TrimSpace(sessionID)
-	path := ""
-	if r != nil && r.URL != nil {
-		path = r.URL.Path
-	}
 	if sessionID == "" {
-		flowRouteDiagLog("verify_session_ownership_reject", "reason", "empty_session_id", "path", path)
 		writeError(w, http.StatusBadRequest, errors.New("session id is required"))
 		return identity.Principal{}, pebblestore.SessionSnapshot{}, false
 	}
 	principal, ok := PrincipalFromRequest(r)
-	flowRouteDiagLog("verify_session_ownership_start", "path", path, "session_id", sessionID, "principal_ok", ok, "principal_valid", principal.Valid(), "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID, "principal_session_id", principal.SessionID, "principal_scope_source", principal.AccountScopeSource)
 	if !ok || !principal.Valid() {
-		flowRouteDiagLog("verify_session_ownership_reject", "reason", "principal_required", "path", path, "session_id", sessionID, "principal_ok", ok, "principal_valid", principal.Valid())
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return identity.Principal{}, pebblestore.SessionSnapshot{}, false
 	}
 	session, found, err := s.sessions.GetSession(sessionID)
 	if err != nil {
-		flowRouteDiagLog("verify_session_ownership_reject", "reason", "session_lookup_error", "path", path, "session_id", sessionID, "error", err)
 		writeError(w, http.StatusBadRequest, err)
 		return identity.Principal{}, pebblestore.SessionSnapshot{}, false
 	}
-	flowRouteDiagLog("verify_session_ownership_session_lookup", "path", path, "session_id", sessionID, "found", found, "session_user_id", session.UserID, "session_account_scope_id", session.AccountScopeID)
 	if found {
 		if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
-			flowRouteDiagLog("verify_session_ownership_reject", "reason", "session_account_scope_mismatch", "path", path, "session_id", sessionID, "session_account_scope_id", session.AccountScopeID, "principal_account_scope_id", principal.AccountScopeID)
 			writeSessionNotFound(w)
 			return identity.Principal{}, pebblestore.SessionSnapshot{}, false
 		}
-		flowRouteDiagLog("verify_session_ownership_success", "source", "session", "path", path, "session_id", sessionID, "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
 		return principal, session, true
 	}
-	flowRouteDiagLog("verify_session_ownership_reject", "reason", "session_not_owned", "path", path, "session_id", sessionID, "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
 	writeSessionNotFound(w)
 	return identity.Principal{}, pebblestore.SessionSnapshot{}, false
 }

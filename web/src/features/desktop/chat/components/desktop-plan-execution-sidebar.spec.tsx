@@ -355,6 +355,10 @@ test("checkpoint sidebar bounds overflow while prioritizing active work and pres
       onEditPlan={() => undefined}
     />,
   );
+  const source = readFileSync(
+    new URL("./desktop-plan-execution-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
 
   assert.match(markup, />Tasks</);
   assert.match(markup, /Render sidebar state/);
@@ -375,6 +379,14 @@ test("checkpoint sidebar bounds overflow while prioritizing active work and pres
   );
   assert.match(markup, /overflow-y-auto/);
   assert.match(markup, /break-words \[overflow-wrap:anywhere\]/);
+  assert.match(source, /\.\.\.\(expanded \? \{ height: viewportHeight \} : \{\}\)/);
+  assert.match(source, /Math\.floor\(regionBottom - sectionTop - 60\)/);
+  assert.doesNotMatch(source, /setExpanded\(false\)/);
+  assert.match(source, /expanded \? "flex-1 overflow-hidden" : "shrink-0"/);
+  assert.match(source, /className="min-h-0 flex-1 overflow-y-auto/);
+  assert.match(source, /data-plan-task-overflow-scroll="conditional"/);
+  assert.match(source, /data-plan-scroll-region[\s\S]*?overflow-hidden/);
+  assert.doesNotMatch(source, /data-plan-scroll-region[\s\S]{0,160}?overflow-y-auto/);
   assert.doesNotMatch(markup, /\[x\] Persist task changes/);
   assert.doesNotMatch(markup, /\[ \] Render sidebar state/);
   assert.match(markup, /Open full plan/);

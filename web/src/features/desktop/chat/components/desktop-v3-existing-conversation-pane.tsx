@@ -1845,12 +1845,6 @@ export function DesktopV3ExistingConversationPane({
     itemCount: renderItems.length,
     followKey: scrollFollowKey,
   });
-  const hasRunningReasoning = renderedMessages.liveRuns.some((run) => {
-    if (run.reasoning?.state === "running") return true;
-    return Object.values(run.reasoningByKey ?? {}).some(
-      (reasoning) => reasoning.state === "running",
-    );
-  });
   const runStatusModel: DesktopV3RunStatusModel | null =
     compactStartedAt !== null
       ? {
@@ -1860,10 +1854,6 @@ export function DesktopV3ExistingConversationPane({
           active: true,
         }
       : canonicalRunStatusModel;
-  const statusTimerActive =
-    Boolean(runStatusModel?.active) || hasRunningReasoning || compacting;
-  const [timerNow, setTimerNow] = useState(() => Date.now());
-
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -1878,12 +1868,6 @@ export function DesktopV3ExistingConversationPane({
     setDraft(operation?.request.content ?? "");
     setSendError(null);
   }, [normalizedSessionId]);
-
-  useEffect(() => {
-    if (!statusTimerActive) return;
-    const timer = window.setInterval(() => setTimerNow(Date.now()), 250);
-    return () => window.clearInterval(timer);
-  }, [statusTimerActive]);
 
   useEffect(() => {
     if (!normalizedSessionId) return;
@@ -2580,7 +2564,6 @@ export function DesktopV3ExistingConversationPane({
         branchName={headerBranchLabel}
         mode={mode}
         runStatus={runStatusModel}
-        runStatusNow={timerNow}
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
         sessionActions={headerSessionActions}
@@ -2646,7 +2629,6 @@ export function DesktopV3ExistingConversationPane({
                       <DesktopV3RenderItemView
                         item={item}
                         thinkingTagsEnabled={thinkingTagsEnabled}
-                        timerNow={timerNow}
                         index={index}
                         taskChildActions={taskChildActions}
                         onSuggestedPrompt={(prompt) => handleSubmit(prompt)}
@@ -2894,13 +2876,11 @@ export function DesktopV3ExistingConversationPane({
 export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   item,
   thinkingTagsEnabled,
-  timerNow,
   taskChildActions,
   onSuggestedPrompt,
 }: {
   item: DesktopV3RenderItem;
   thinkingTagsEnabled: boolean;
-  timerNow: number;
   index: number;
   taskChildActions?: TaskChildCardActions;
   onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
@@ -2919,7 +2899,6 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
         <DesktopV3CommittedMessage
           message={item.message}
           thinkingTagsEnabled={thinkingTagsEnabled}
-          timerNow={timerNow}
           taskChildActions={taskChildActions}
         />
       );
@@ -2934,7 +2913,6 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
         <DesktopV3ReasoningMessage
           item={item}
           thinkingTagsEnabled={thinkingTagsEnabled}
-          timerNow={timerNow}
         />
       );
     case "live-tool":
@@ -3212,12 +3190,10 @@ function DesktopV3PlanHandoff({
 function DesktopV3CommittedMessage({
   message,
   thinkingTagsEnabled,
-  timerNow,
   taskChildActions,
 }: {
   message: MessageSnapshot;
   thinkingTagsEnabled: boolean;
-  timerNow: number;
   taskChildActions?: TaskChildCardActions;
 }) {
   const role = message.role || "message";
@@ -3249,7 +3225,6 @@ function DesktopV3CommittedMessage({
           timelineSeq: message.global_seq,
         }}
         thinkingTagsEnabled={thinkingTagsEnabled}
-        timerNow={timerNow}
       />
     );
   }
@@ -3384,12 +3359,16 @@ function DesktopV3ToolMessage({
 function DesktopV3ReasoningMessage({
   item,
   thinkingTagsEnabled,
-  timerNow,
 }: {
   item: Extract<DesktopV3RenderItem, { type: "live-reasoning" }>;
   thinkingTagsEnabled: boolean;
-  timerNow: number;
 }) {
+  const [timerNow, setTimerNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (item.state !== "running") return;
+    const timer = window.setInterval(() => setTimerNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [item.state]);
   const body = reasoningBody(item.text, item.summary, thinkingTagsEnabled);
   const label = reasoningHeadline(
     item.state,

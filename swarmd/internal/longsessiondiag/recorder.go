@@ -124,22 +124,31 @@ const desktopSampleMinimumInterval = 5 * time.Second
 // DesktopSample is a bounded metadata-only browser snapshot. Session hashes are
 // created in the browser for ranking only and cannot be joined to daemon IDs.
 type DesktopSample struct {
-	TimestampMS                int64                  `json:"timestamp_ms"`
-	JSHeapAvailable            bool                   `json:"js_heap_available"`
-	JSHeapUsedBytes            uint64                 `json:"js_heap_used_bytes,omitempty"`
-	JSHeapTotalBytes           uint64                 `json:"js_heap_total_bytes,omitempty"`
-	EventLoopDriftMS           float64                `json:"event_loop_drift_ms,omitempty"`
-	LongTaskCount              uint64                 `json:"long_task_count,omitempty"`
-	LongTaskDurationMS         float64                `json:"long_task_duration_ms,omitempty"`
-	DOMNodes                   uint64                 `json:"dom_nodes,omitempty"`
-	CacheMutationCount         uint64                 `json:"cache_mutation_count,omitempty"`
-	CacheMutationDurationMS    float64                `json:"cache_mutation_duration_ms,omitempty"`
-	CacheMutationMaxDurationMS float64                `json:"cache_mutation_max_duration_ms,omitempty"`
-	QueryCacheEntries          uint64                 `json:"query_cache_entries,omitempty"`
-	QueryCacheEstimatedBytes   uint64                 `json:"query_cache_estimated_bytes,omitempty"`
-	V3CacheEstimatedBytes      uint64                 `json:"v3_cache_estimated_bytes,omitempty"`
-	V3Sections                 map[string]uint64      `json:"v3_sections,omitempty"`
-	LargestSessions            []DesktopSessionSample `json:"largest_sessions,omitempty"`
+	TimestampMS                          int64                  `json:"timestamp_ms"`
+	JSHeapAvailable                      bool                   `json:"js_heap_available"`
+	JSHeapUsedBytes                      uint64                 `json:"js_heap_used_bytes,omitempty"`
+	JSHeapPeakUsedBytes                  uint64                 `json:"js_heap_peak_used_bytes,omitempty"`
+	JSHeapTotalBytes                     uint64                 `json:"js_heap_total_bytes,omitempty"`
+	JSHeapLimitBytes                     uint64                 `json:"js_heap_limit_bytes,omitempty"`
+	EventLoopDriftMS                     float64                `json:"event_loop_drift_ms,omitempty"`
+	LongTaskCount                        uint64                 `json:"long_task_count,omitempty"`
+	LongTaskDurationMS                   float64                `json:"long_task_duration_ms,omitempty"`
+	LongAnimationFrameCount              uint64                 `json:"long_animation_frame_count,omitempty"`
+	LongAnimationFrameDurationMS         float64                `json:"long_animation_frame_duration_ms,omitempty"`
+	LongAnimationFrameBlockingDurationMS float64                `json:"long_animation_frame_blocking_duration_ms,omitempty"`
+	DOMNodes                             uint64                 `json:"dom_nodes,omitempty"`
+	CacheMutationCount                   uint64                 `json:"cache_mutation_count,omitempty"`
+	CacheMutationDurationMS              float64                `json:"cache_mutation_duration_ms,omitempty"`
+	CacheMutationMaxDurationMS           float64                `json:"cache_mutation_max_duration_ms,omitempty"`
+	CacheActionCounts                    map[string]uint64      `json:"cache_action_counts,omitempty"`
+	CacheActionDurationMS                map[string]float64     `json:"cache_action_duration_ms,omitempty"`
+	CacheActionMaxDurationMS             map[string]float64     `json:"cache_action_max_duration_ms,omitempty"`
+	DiagnosticsSampleDurationMS          float64                `json:"diagnostics_sample_duration_ms,omitempty"`
+	QueryCacheEntries                    uint64                 `json:"query_cache_entries,omitempty"`
+	QueryCacheEstimatedBytes             uint64                 `json:"query_cache_estimated_bytes,omitempty"`
+	V3CacheEstimatedBytes                uint64                 `json:"v3_cache_estimated_bytes,omitempty"`
+	V3Sections                           map[string]uint64      `json:"v3_sections,omitempty"`
+	LargestSessions                      []DesktopSessionSample `json:"largest_sessions,omitempty"`
 }
 
 type DesktopSessionSample struct {
@@ -436,15 +445,26 @@ func (r *Recorder) RecordDesktopSample(sample DesktopSample) error {
 }
 
 func validateDesktopSample(sample *DesktopSample) error {
-	if sample == nil || len(sample.V3Sections) > 64 || len(sample.LargestSessions) > 10 {
+	if sample == nil || len(sample.V3Sections) > 64 || len(sample.CacheActionCounts) > 64 || len(sample.CacheActionDurationMS) > 64 || len(sample.CacheActionMaxDurationMS) > 64 || len(sample.LargestSessions) > 10 {
 		return ErrInvalidDesktopSample
 	}
-	if sample.EventLoopDriftMS < 0 || sample.LongTaskDurationMS < 0 || sample.CacheMutationDurationMS < 0 || sample.CacheMutationMaxDurationMS < 0 {
+	if sample.EventLoopDriftMS < 0 || sample.LongTaskDurationMS < 0 || sample.LongAnimationFrameDurationMS < 0 || sample.LongAnimationFrameBlockingDurationMS < 0 || sample.CacheMutationDurationMS < 0 || sample.CacheMutationMaxDurationMS < 0 || sample.DiagnosticsSampleDurationMS < 0 {
 		return ErrInvalidDesktopSample
 	}
-	for name := range sample.V3Sections {
-		if !validMetricName(name) {
-			return ErrInvalidDesktopSample
+	for _, labels := range []any{sample.V3Sections, sample.CacheActionCounts, sample.CacheActionDurationMS, sample.CacheActionMaxDurationMS} {
+		switch values := labels.(type) {
+		case map[string]uint64:
+			for name := range values {
+				if !validMetricName(name) {
+					return ErrInvalidDesktopSample
+				}
+			}
+		case map[string]float64:
+			for name, value := range values {
+				if !validMetricName(name) || value < 0 {
+					return ErrInvalidDesktopSample
+				}
+			}
 		}
 	}
 	seen := make(map[string]struct{}, len(sample.LargestSessions))

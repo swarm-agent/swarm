@@ -176,7 +176,6 @@ function CheckpointDetails({
   const taskSectionRef = useRef<HTMLElement | null>(null);
   const taskViewportRef = useRef<HTMLDivElement | null>(null);
   const taskProbeRef = useRef<HTMLUListElement | null>(null);
-  const previousViewportHeightRef = useRef(0);
   const [expanded, setExpanded] = useState(false);
   const [viewportHeight, setViewportHeight] = useState(MIN_TASK_VIEWPORT_HEIGHT);
   const [visiblePendingCount, setVisiblePendingCount] = useState(
@@ -221,25 +220,21 @@ function CheckpointDetails({
     const sidebar = viewport.closest<HTMLElement>(
       '[data-testid="desktop-plan-execution-sidebar"]',
     );
+    const scrollRegion = viewport.closest<HTMLElement>("[data-plan-scroll-region]");
     const sidebarHeight = sidebar?.clientHeight || window.innerHeight;
     const sectionTop = taskSectionRef.current?.getBoundingClientRect().top ?? 0;
-    const sidebarTop = sidebar?.getBoundingClientRect().top ?? 0;
+    const regionBottom =
+      scrollRegion?.getBoundingClientRect().bottom ??
+      sidebar?.getBoundingClientRect().bottom ??
+      window.innerHeight;
     const availableBelowSection = Math.max(
       MIN_TASK_VIEWPORT_HEIGHT,
-      sidebarHeight - Math.max(0, sectionTop - sidebarTop) - 60,
+      Math.floor(regionBottom - sectionTop - 60),
     );
     const nextViewportHeight = Math.min(
       taskViewportHeight(sidebarHeight),
       availableBelowSection,
     );
-    if (
-      previousViewportHeightRef.current > 0 &&
-      nextViewportHeight < previousViewportHeightRef.current &&
-      expanded
-    ) {
-      setExpanded(false);
-    }
-    previousViewportHeightRef.current = nextViewportHeight;
     setViewportHeight(nextViewportHeight);
 
     const rows = Array.from(
@@ -270,7 +265,6 @@ function CheckpointDetails({
     );
   }, [
     activeTasks.length,
-    expanded,
     completedTasks.length,
     pendingTasks.length,
     taskSignature,
@@ -343,7 +337,10 @@ function CheckpointDetails({
       <div
         ref={taskViewportRef}
         className="relative mt-1.5 flex min-h-0 flex-col overflow-hidden"
-        style={{ maxHeight: viewportHeight }}
+        style={{
+          maxHeight: viewportHeight,
+          ...(expanded ? { height: viewportHeight } : {}),
+        }}
         data-plan-task-list
         data-plan-task-mode="bounded"
         data-plan-task-viewport
@@ -367,7 +364,10 @@ function CheckpointDetails({
         )}
         {disclosureCount > 0 ? (
           <div
-            className="mt-1.5 flex min-h-0 shrink-0 flex-col border-t border-[var(--app-border)] pt-1"
+            className={cn(
+              "mt-1.5 flex min-h-0 flex-col border-t border-[var(--app-border)] pt-1",
+              expanded ? "flex-1 overflow-hidden" : "shrink-0",
+            )}
             data-plan-task-expansion
             data-plan-completed-tasks={completedTasks.length > 0 ? "" : undefined}
           >
@@ -391,8 +391,9 @@ function CheckpointDetails({
             {expanded ? (
               <div
                 id="desktop-plan-overflow-tasks"
-                className="min-h-0 overflow-y-auto pb-1 pr-1 [scrollbar-gutter:stable]"
+                className="min-h-0 flex-1 overflow-y-auto pb-1 pr-1 [scrollbar-gutter:stable]"
                 data-plan-task-overflow
+                data-plan-task-overflow-scroll="conditional"
               >
                 {overflowPendingTasks.length > 0 ? (
                   <ul className="mt-1 grid gap-1.5">

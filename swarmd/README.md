@@ -153,11 +153,11 @@ Artifacts:
 
 - `manifest.json`: capture times, cadence, budget, and content policy.
 - `samples.jsonl`: daemon/runtime/subsystem snapshots, including Go memory, RSS, goroutines, Pebble size, Codex retained-size counters, queues, and fixed-label latency aggregates.
-- `desktop-samples.jsonl`: Chromium heap availability/size, event-loop drift and long tasks, DOM nodes, cache mutation timing, query-cache count/estimated bytes, V3 cache counts/estimated bytes, and largest cache-owning sessions represented only by stable hashes.
+- `desktop-samples.jsonl`: Chromium JS heap used/total/limit plus one-second peak sampling (when Chrome exposes `performance.memory`), event-loop drift, long tasks, long-animation-frame duration/blocking time, DOM nodes, cache mutation timing grouped by bounded action type, sampler overhead, query-cache count/estimated bytes, V3 cache counts/estimated bytes, and largest cache-owning sessions represented only by stable hashes. These are renderer-only signals; Chrome Task Manager's tab footprint can be higher because it also includes DOM/layout, compositor/GPU, images, fonts, and browser-owned allocations.
 - `operations.jsonl`: bounded metadata-only operation durations and dimensions with run-local hashed session identifiers.
 - `profile-*.pprof`: periodic heap, allocation, goroutine, block, mutex, and occasional bounded CPU profiles.
 - `latest-findings.json`: ranked baseline/current deltas for daemon, Codex/context, Desktop cache/DOM, realtime queues, storage, and provider/API latency. Rankings are correlations, not proof of causation.
 
-Inspect `latest-findings.json` first. Inspect a profile with the Go pprof CLI and the matching daemon binary: `go tool pprof <daemon-binary> <profile-file>`.
+Inspect `latest-findings.json` first, then correlate the spike window in `desktop-samples.jsonl`. For frontend CPU, prioritize `long_animation_frame_blocking_duration_ms`, `long_task_duration_ms`, `event_loop_drift_ms`, and `cache_action_duration_ms`; for memory, compare JS heap with V3/query cache estimates and DOM nodes. Inspect a daemon profile with the Go pprof CLI and the matching daemon binary: `go tool pprof <daemon-binary> <profile-file>`.
 
 The recorder omits prompts, message/tool content, headers, credentials, raw session identifiers, URLs, and workspace paths. Desktop ingestion is authenticated, flag-gated, typed, size-limited, and rate-limited. Profiling, heap estimation, DOM scans, and cache aggregation add CPU and private local disk overhead; enable only for a controlled capture, do not publish the run directory, and disable it afterward.

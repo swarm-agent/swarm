@@ -9,6 +9,7 @@ import type { DesktopV3CacheState } from '../state/desktop-v3-cache-types'
 const CONFIG_PATH = '/v3/diagnostics/long-session/config'
 const SAMPLE_PATH = '/v3/diagnostics/long-session/samples'
 const DEFAULT_INTERVAL_MS = 30_000
+const HEAP_PEAK_INTERVAL_MS = 1_000
 const MAX_LARGEST_SESSIONS = 10
 const textEncoder = new TextEncoder()
 
@@ -22,14 +23,23 @@ export interface DesktopDiagnosticsSample {
   timestamp_ms: number
   js_heap_available: boolean
   js_heap_used_bytes?: number
+  js_heap_peak_used_bytes?: number
   js_heap_total_bytes?: number
+  js_heap_limit_bytes?: number
   event_loop_drift_ms: number
   long_task_count: number
   long_task_duration_ms: number
+  long_animation_frame_count: number
+  long_animation_frame_duration_ms: number
+  long_animation_frame_blocking_duration_ms: number
   dom_nodes: number
   cache_mutation_count: number
   cache_mutation_duration_ms: number
   cache_mutation_max_duration_ms: number
+  cache_action_counts: Record<string, number>
+  cache_action_duration_ms: Record<string, number>
+  cache_action_max_duration_ms: Record<string, number>
+  diagnostics_sample_duration_ms: number
   query_cache_entries: number
   query_cache_estimated_bytes: number
   v3_cache_estimated_bytes: number
@@ -45,8 +55,10 @@ export interface DesktopDiagnosticsSamplerDeps {
   getCacheSnapshot: () => DesktopV3CacheState
   subscribeCache: typeof subscribeDesktopV3Cache
   observeLongTasks: (callback: (durationMS: number) => void) => () => void
+  observeLongAnimationFrames: (callback: (durationMS: number, blockingDurationMS: number) => void) => () => void
   getDOMNodeCount: () => number
-  getHeap: () => { used: number; total: number } | null
+  getHeap: () => { used: number; total: number; limit?: number } | null
+  monotonicNow: () => number
   getQueryCache: () => unknown[]
 }
 
@@ -67,40 +79,76 @@ export async function retainDesktopLongSessionDiagnostics(
   let released = false
   let expectedAt = deps.now() + (config.sample_interval_ms || DEFAULT_INTERVAL_MS)
   let eventLoopDriftMS = 0
+  let jsHeapPeakUsedBytes = deps.getHeap()?.used ?? 0
   let longTaskCount = 0
   let longTaskDurationMS = 0
+  let longAnimationFrameCount = 0
+  let longAnimationFrameDurationMS = 0
+  let longAnimationFrameBlockingDurationMS = 0
   let cacheMutationCount = 0
   let cacheMutationDurationMS = 0
   let cacheMutationMaxDurationMS = 0
+  let cacheActionCounts: Record<string, number> = {}
+  let cacheActionDurationMS: Record<string, number> = {}
+  let cacheActionMaxDurationMS: Record<string, number> = {}
   const unsubscribeCache = deps.subscribeCache((mutation?: DesktopV3CacheMutation) => {
     if (!mutation) return
     cacheMutationCount++
     cacheMutationDurationMS += mutation.durationMS
     cacheMutationMaxDurationMS = Math.max(cacheMutationMaxDurationMS, mutation.durationMS)
+    const action = mutation.action.type
+    cacheActionCounts[action] = (cacheActionCounts[action] ?? 0) + 1
+    cacheActionDurationMS[action] = (cacheActionDurationMS[action] ?? 0) + mutation.durationMS
+    cacheActionMaxDurationMS[action] = Math.max(cacheActionMaxDurationMS[action] ?? 0, mutation.durationMS)
   })
   const stopLongTasks = deps.observeLongTasks((durationMS) => {
     longTaskCount++
     longTaskDurationMS += durationMS
   })
+  const stopLongAnimationFrames = deps.observeLongAnimationFrames((durationMS, blockingDurationMS) => {
+    longAnimationFrameCount++
+    longAnimationFrameDurationMS += durationMS
+    longAnimationFrameBlockingDurationMS += blockingDurationMS
+  })
   const intervalMS = Math.max(5_000, config.sample_interval_ms || DEFAULT_INTERVAL_MS)
+  const heapPeakTimer = deps.setInterval(() => {
+    jsHeapPeakUsedBytes = Math.max(jsHeapPeakUsedBytes, deps.getHeap()?.used ?? 0)
+  }, HEAP_PEAK_INTERVAL_MS)
   const timer = deps.setInterval(() => {
     const now = deps.now()
     eventLoopDriftMS = Math.max(eventLoopDriftMS, now - expectedAt)
     expectedAt = now + intervalMS
+    const sampleStartedAt = deps.monotonicNow()
     const sample = buildDesktopDiagnosticsSample(deps, {
+      js_heap_peak_used_bytes: jsHeapPeakUsedBytes,
       event_loop_drift_ms: eventLoopDriftMS,
       long_task_count: longTaskCount,
       long_task_duration_ms: longTaskDurationMS,
+      long_animation_frame_count: longAnimationFrameCount,
+      long_animation_frame_duration_ms: longAnimationFrameDurationMS,
+      long_animation_frame_blocking_duration_ms: longAnimationFrameBlockingDurationMS,
       cache_mutation_count: cacheMutationCount,
       cache_mutation_duration_ms: cacheMutationDurationMS,
       cache_mutation_max_duration_ms: cacheMutationMaxDurationMS,
+      cache_action_counts: cacheActionCounts,
+      cache_action_duration_ms: cacheActionDurationMS,
+      cache_action_max_duration_ms: cacheActionMaxDurationMS,
+      diagnostics_sample_duration_ms: 0,
     })
+    sample.diagnostics_sample_duration_ms = Math.max(0, deps.monotonicNow() - sampleStartedAt)
     eventLoopDriftMS = 0
+    jsHeapPeakUsedBytes = sample.js_heap_used_bytes ?? 0
     longTaskCount = 0
     longTaskDurationMS = 0
+    longAnimationFrameCount = 0
+    longAnimationFrameDurationMS = 0
+    longAnimationFrameBlockingDurationMS = 0
     cacheMutationCount = 0
     cacheMutationDurationMS = 0
     cacheMutationMaxDurationMS = 0
+    cacheActionCounts = {}
+    cacheActionDurationMS = {}
+    cacheActionMaxDurationMS = {}
     void deps.fetch(SAMPLE_PATH, {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
@@ -114,8 +162,10 @@ export async function retainDesktopLongSessionDiagnostics(
       if (released) return
       released = true
       deps.clearInterval(timer)
+      deps.clearInterval(heapPeakTimer)
       unsubscribeCache()
       stopLongTasks()
+      stopLongAnimationFrames()
     },
   }
 }
@@ -124,12 +174,20 @@ export function buildDesktopDiagnosticsSample(
   deps: Pick<DesktopDiagnosticsSamplerDeps, 'now' | 'getCacheSnapshot' | 'getDOMNodeCount' | 'getHeap' | 'getQueryCache'>,
   timing: Pick<
     DesktopDiagnosticsSample,
+    | 'js_heap_peak_used_bytes'
     | 'event_loop_drift_ms'
     | 'long_task_count'
     | 'long_task_duration_ms'
+    | 'long_animation_frame_count'
+    | 'long_animation_frame_duration_ms'
+    | 'long_animation_frame_blocking_duration_ms'
     | 'cache_mutation_count'
     | 'cache_mutation_duration_ms'
     | 'cache_mutation_max_duration_ms'
+    | 'cache_action_counts'
+    | 'cache_action_duration_ms'
+    | 'cache_action_max_duration_ms'
+    | 'diagnostics_sample_duration_ms'
   >,
 ): DesktopDiagnosticsSample {
   const cache = aggregateDesktopV3Cache(deps.getCacheSnapshot())
@@ -138,7 +196,11 @@ export function buildDesktopDiagnosticsSample(
   return {
     timestamp_ms: Math.round(deps.now()),
     js_heap_available: heap !== null,
-    ...(heap ? { js_heap_used_bytes: heap.used, js_heap_total_bytes: heap.total } : {}),
+    ...(heap ? {
+      js_heap_used_bytes: heap.used,
+      js_heap_total_bytes: heap.total,
+      ...(heap.limit ? { js_heap_limit_bytes: heap.limit } : {}),
+    } : {}),
     ...timing,
     dom_nodes: deps.getDOMNodeCount(),
     query_cache_entries: queryCache.length,
@@ -230,30 +292,46 @@ function estimateBytes(value: unknown): number {
   return bytes
 }
 
+function observePerformanceEntries(
+  type: string,
+  callback: (entry: PerformanceEntry) => void,
+): () => void {
+  if (typeof PerformanceObserver === 'undefined') return () => {}
+  try {
+    const observer = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) callback(entry)
+    })
+    observer.observe({ type, buffered: true })
+    return () => observer.disconnect()
+  } catch {
+    return () => {}
+  }
+}
+
 function browserDiagnosticsDeps(): DesktopDiagnosticsSamplerDeps {
   return {
     fetch: window.fetch.bind(window),
     now: Date.now,
+    monotonicNow: performance.now.bind(performance),
     setInterval: window.setInterval.bind(window),
     clearInterval: window.clearInterval.bind(window),
     getCacheSnapshot: getDesktopV3CacheSnapshot,
     subscribeCache: subscribeDesktopV3Cache,
-    observeLongTasks: (callback) => {
-      if (typeof PerformanceObserver === 'undefined') return () => {}
-      try {
-        const observer = new PerformanceObserver((list) => {
-          for (const entry of list.getEntries()) callback(entry.duration)
-        })
-        observer.observe({ type: 'longtask', buffered: true })
-        return () => observer.disconnect()
-      } catch {
-        return () => {}
-      }
-    },
+    observeLongTasks: (callback) => observePerformanceEntries('longtask', (entry) => callback(entry.duration)),
+    observeLongAnimationFrames: (callback) => observePerformanceEntries('long-animation-frame', (entry) => {
+      const blockingDuration = (entry as PerformanceEntry & { blockingDuration?: number }).blockingDuration ?? 0
+      callback(entry.duration, blockingDuration)
+    }),
     getDOMNodeCount: () => document.getElementsByTagName('*').length,
     getHeap: () => {
-      const memory = (performance as Performance & { memory?: { usedJSHeapSize: number; totalJSHeapSize: number } }).memory
-      return memory ? { used: memory.usedJSHeapSize, total: memory.totalJSHeapSize } : null
+      const memory = (performance as Performance & {
+        memory?: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit?: number }
+      }).memory
+      return memory ? {
+        used: memory.usedJSHeapSize,
+        total: memory.totalJSHeapSize,
+        limit: memory.jsHeapSizeLimit,
+      } : null
     },
     getQueryCache: () => queryClient.getQueryCache().getAll(),
   }

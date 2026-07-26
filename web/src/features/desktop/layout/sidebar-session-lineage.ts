@@ -115,7 +115,7 @@ export function sessionChildDescriptor(session: DesktopSessionRecord): SidebarSe
     return { kind: 'subagent', label: lineageLabel || '@subagent', assignmentLabel: assignmentLabel || null }
   }
   if (sessionHasBackgroundLineage(metadata)) {
-    return { kind: 'background', label: sessionBackgroundBadge(metadata), assignmentLabel: assignmentLabel || null }
+    return { kind: 'background', label: 'background', assignmentLabel: assignmentLabel || null }
   }
   if (lineageLabel) {
     return { kind: lineageLabel.startsWith('@') ? 'subagent' : 'background', label: lineageLabel, assignmentLabel: assignmentLabel || null }

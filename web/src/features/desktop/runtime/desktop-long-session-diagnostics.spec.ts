@@ -31,8 +31,10 @@ test('diagnostics sampler remains disabled on a flag-gated 404', async () => {
     getCacheSnapshot: () => state,
     subscribeCache: () => () => {},
     observeLongTasks: () => () => {},
+    observeLongAnimationFrames: () => () => {},
     getDOMNodeCount: () => 0,
     getHeap: () => null,
+    monotonicNow: () => 0,
     getQueryCache: () => [],
   })
   assert.equal(lease.enabled, false)
@@ -46,6 +48,7 @@ test('enabled sampler tears down timer, cache listener, and long-task observer',
   let cleared = 0
   let cacheReleased = 0
   let observerReleased = 0
+  let animationObserverReleased = 0
   let listener: ((mutation?: DesktopV3CacheMutation) => void) | undefined
   const requests: RequestInfo[] = []
   const lease = await retainDesktopLongSessionDiagnostics({
@@ -70,8 +73,10 @@ test('enabled sampler tears down timer, cache listener, and long-task observer',
       return () => cacheReleased++
     },
     observeLongTasks: () => () => observerReleased++,
+    observeLongAnimationFrames: () => () => animationObserverReleased++,
     getDOMNodeCount: () => 10,
-    getHeap: () => ({ used: 100, total: 200 }),
+    getHeap: () => ({ used: 100, total: 200, limit: 300 }),
+    monotonicNow: () => 1,
     getQueryCache: () => [],
   })
   listener?.({ action: { type: 'session.select', sessionId: undefined }, previousState: state, nextState: state, durationMS: 4 })
@@ -79,7 +84,8 @@ test('enabled sampler tears down timer, cache listener, and long-task observer',
   lease.release()
   lease.release()
   assert.equal(requests.length, 2)
-  assert.equal(cleared, 1)
+  assert.equal(cleared, 2)
   assert.equal(cacheReleased, 1)
   assert.equal(observerReleased, 1)
+  assert.equal(animationObserverReleased, 1)
 })

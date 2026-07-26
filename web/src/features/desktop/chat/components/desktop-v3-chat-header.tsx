@@ -48,7 +48,7 @@ export function DesktopV3ChatHeader({
   branchName,
   mode,
   runStatus = null,
-  runStatusNow = Date.now(),
+  runStatusNow: controlledRunStatusNow,
   sessionActions = null,
   onOpenChats,
   onNewSession,
@@ -58,6 +58,8 @@ export function DesktopV3ChatHeader({
   const displayWorkspace = normalizeWorkspaceName(workspaceName)
   const displayBranch = normalizeBranchName(branchName)
   const displayMode = normalizeMode(mode)
+  const [liveRunStatusNow, setLiveRunStatusNow] = useState(() => Date.now())
+  const runStatusNow = controlledRunStatusNow ?? liveRunStatusNow
   const mobileRunTimerLabel = runStatus ? formatDesktopV3RunTimerLabel(runStatus, runStatusNow) : ''
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false)
   const mobileActionsRef = useRef<HTMLSpanElement | null>(null)
@@ -67,6 +69,12 @@ export function DesktopV3ChatHeader({
   const [titleError, setTitleError] = useState('')
   const pendingAction = sessionActions?.pendingAction ?? null
   const actionDisabled = Boolean(pendingAction)
+
+  useEffect(() => {
+    if (controlledRunStatusNow !== undefined || !runStatus?.active) return
+    const timer = window.setInterval(() => setLiveRunStatusNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [controlledRunStatusNow, runStatus?.active])
 
   useEffect(() => {
     if (!sessionActions) setMobileActionsOpen(false)
