@@ -199,6 +199,9 @@ func (h *Hub) handleInbound(client *clientConn, raw []byte) error {
 		if channel == "" {
 			return fmt.Errorf("subscribe requires channel")
 		}
+		if !allowedClientChannel(channel) {
+			return fmt.Errorf("unsupported channel %q", channel)
+		}
 		client.subscribe(channel)
 		client.enqueue(outbound{Type: "subscribed", OK: true, Channel: channel, CorrelationID: msg.CorrelationID, SentAtUnixMS: time.Now().UnixMilli()})
 		if msg.LastSeenSeq > 0 {
@@ -210,6 +213,9 @@ func (h *Hub) handleInbound(client *clientConn, raw []byte) error {
 		if channel == "" {
 			return fmt.Errorf("unsubscribe requires channel")
 		}
+		if !allowedClientChannel(channel) {
+			return fmt.Errorf("unsupported channel %q", channel)
+		}
 		client.unsubscribe(channel)
 		client.enqueue(outbound{Type: "unsubscribed", OK: true, Channel: channel, CorrelationID: msg.CorrelationID, SentAtUnixMS: time.Now().UnixMilli()})
 		return nil
@@ -217,6 +223,9 @@ func (h *Hub) handleInbound(client *clientConn, raw []byte) error {
 		channel := normalizeChannel(msg.Channel)
 		if channel == "" {
 			return fmt.Errorf("resume requires channel")
+		}
+		if !allowedClientChannel(channel) {
+			return fmt.Errorf("unsupported channel %q", channel)
 		}
 		return h.replayToClient(client, channel, msg.LastSeenSeq)
 	default:
@@ -312,6 +321,10 @@ func normalizeChannel(value string) string {
 		return ""
 	}
 	return value
+}
+
+func allowedClientChannel(channel string) bool {
+	return channel == "session:*" || channel == "ui:*" || channel == "workspace:*" || channel == "system:agent"
 }
 
 func matchesChannel(pattern, stream string) bool {

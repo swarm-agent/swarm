@@ -2308,18 +2308,18 @@ func TestSessionsV3PrimaryStreamReplaysDurableEventsAfterRestart(t *testing.T) {
 	}))
 	defer httpServer.Close()
 
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || !started.OK || started.HighWatermarkSeq != 3 {
 		t.Fatalf("replay started = %+v", started)
 	}
-	first := readSessionsV3PrimaryStreamFrame(t, conn)
-	second := readSessionsV3PrimaryStreamFrame(t, conn)
+	first := retiredReadRouteFrame(t, conn)
+	second := retiredReadRouteFrame(t, conn)
 	if first.Type != "event" || first.Event == nil || first.Event.Seq != 2 || second.Event == nil || second.Event.Seq != 3 {
 		t.Fatalf("stream replay events first=%+v second=%+v", first, second)
 	}
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if complete.Type != "replay.complete" || complete.LastSeq != 3 || complete.NextSeq != 3 {
 		t.Fatalf("replay complete = %+v", complete)
 	}
@@ -2333,16 +2333,16 @@ func TestSessionsV3PrimaryStreamTransitionsFromReplayToLiveEvents(t *testing.T) 
 	}))
 	defer httpServer.Close()
 
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
 		t.Fatalf("initial frames started=%+v complete=%+v", started, complete)
 	}
 
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp6-live-message", "cp6 live message")
-	live := readSessionsV3PrimaryStreamFrame(t, conn)
+	live := retiredReadRouteFrame(t, conn)
 	if live.Type != "event" || live.Event == nil || live.Event.Seq != 2 || live.Event.EventType != "session.message.appended" {
 		t.Fatalf("live event = %+v", live)
 	}
@@ -2356,10 +2356,10 @@ func TestSessionsV3PrimaryParentStreamDeliversLiveChildEvents(t *testing.T) {
 	}))
 	defer httpServer.Close()
 
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, parent.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, parent.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
 		t.Fatalf("initial parent stream frames started=%+v complete=%+v", started, complete)
 	}
@@ -2381,7 +2381,7 @@ func TestSessionsV3PrimaryParentStreamDeliversLiveChildEvents(t *testing.T) {
 	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: child.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: "cp9-child-live-create", IdempotencyKey: "cp9-child-live-create", PayloadHash: "hash-cp9-child-live-create", Kind: sessionruntime.SessionMutationCreateSession, Session: &child, NowUnixMs: time.Now().UnixMilli()}); err != nil {
 		t.Fatalf("create child session mutation: %v", err)
 	}
-	created := readSessionsV3PrimaryStreamFrame(t, conn)
+	created := retiredReadRouteFrame(t, conn)
 	if created.Type != "event" || created.Relation != "child" || created.ParentSessionID != parent.ID || created.SessionID != child.ID || created.LineageKind != "delegated_subagent" || created.Event == nil || created.Event.SessionID != child.ID || created.Event.Seq != 1 || created.Event.EventType != "session.created" || created.AfterSeq != 1 || created.LastSeq != 1 {
 		t.Fatalf("child created frame = %+v", created)
 	}
@@ -2390,7 +2390,7 @@ func TestSessionsV3PrimaryParentStreamDeliversLiveChildEvents(t *testing.T) {
 	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: child.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: "cp9-child-live-message", IdempotencyKey: "cp9-child-live-message", PayloadHash: "hash-cp9-child-live-message", Kind: sessionruntime.SessionMutationAppendMessage, Message: &message, NowUnixMs: time.Now().UnixMilli()}); err != nil {
 		t.Fatalf("append child message mutation: %v", err)
 	}
-	progress := readSessionsV3PrimaryStreamFrame(t, conn)
+	progress := retiredReadRouteFrame(t, conn)
 	if progress.Type != "event" || progress.Relation != "child" || progress.ParentSessionID != parent.ID || progress.SessionID != child.ID || progress.Event == nil || progress.Event.SessionID != child.ID || progress.Event.Seq != 2 || progress.Event.EventType != "session.message.appended" || progress.AfterSeq != 1 || progress.LastSeq != 1 {
 		t.Fatalf("child progress frame = %+v", progress)
 	}
@@ -2425,12 +2425,12 @@ func TestSessionsV3PrimaryParentStreamReplaysKnownChildEvents(t *testing.T) {
 	}))
 	defer httpServer.Close()
 
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, parent.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, parent.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	childCreated := readSessionsV3PrimaryStreamFrame(t, conn)
-	childProgress := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
+	childCreated := retiredReadRouteFrame(t, conn)
+	childProgress := retiredReadRouteFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || started.HighWatermarkSeq != 1 {
 		t.Fatalf("replay started = %+v", started)
 	}
@@ -2457,10 +2457,10 @@ func TestSessionsV3PrimaryStreamPublishesExecutorCommittedEventsAndReplaysThem(t
 	}))
 	defer httpServer.Close()
 
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
 		t.Fatalf("initial frames started=%+v complete=%+v", started, complete)
 	}
@@ -2468,7 +2468,7 @@ func TestSessionsV3PrimaryStreamPublishesExecutorCommittedEventsAndReplaysThem(t
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp4-outbox-message", "stream committed assistant")
 	wantLive := []string{"session.message.appended", "session.assistant.started", "session.assistant.delta", "session.assistant.completed"}
 	for i, wantType := range wantLive {
-		frame := readSessionsV3PrimaryStreamFrame(t, conn)
+		frame := retiredReadRouteFrame(t, conn)
 		wantSeq := uint64(i + 2)
 		if frame.Type != "event" || frame.Event == nil || frame.Event.Seq != wantSeq || frame.Event.EventType != wantType {
 			t.Fatalf("live frame %d = %+v, want seq=%d type=%s", i, frame, wantSeq, wantType)
@@ -2483,20 +2483,20 @@ func TestSessionsV3PrimaryStreamPublishesExecutorCommittedEventsAndReplaysThem(t
 		t.Fatalf("messages after executor completion = %+v", messages)
 	}
 
-	replay := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=2")
+	replay := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=2")
 	defer replay.Close()
-	replayStarted := readSessionsV3PrimaryStreamFrame(t, replay)
+	replayStarted := retiredReadRouteFrame(t, replay)
 	if replayStarted.Type != "replay.started" || replayStarted.HighWatermarkSeq != 5 {
 		t.Fatalf("replay started = %+v", replayStarted)
 	}
 	for i, wantType := range []string{"session.assistant.started", "session.assistant.delta", "session.assistant.completed"} {
-		frame := readSessionsV3PrimaryStreamFrame(t, replay)
+		frame := retiredReadRouteFrame(t, replay)
 		wantSeq := uint64(i + 3)
 		if frame.Type != "event" || frame.Event == nil || frame.Event.Seq != wantSeq || frame.Event.EventType != wantType {
 			t.Fatalf("replay frame %d = %+v, want seq=%d type=%s", i, frame, wantSeq, wantType)
 		}
 	}
-	replayComplete := readSessionsV3PrimaryStreamFrame(t, replay)
+	replayComplete := retiredReadRouteFrame(t, replay)
 	if replayComplete.Type != "replay.complete" || replayComplete.LastSeq != 5 {
 		t.Fatalf("replay complete = %+v", replayComplete)
 	}
@@ -2523,10 +2523,10 @@ func TestSessionsV3PrimaryStreamCarriesProviderReasoningEventsAndMessage(t *test
 	}))
 	defer httpServer.Close()
 
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	_ = readSessionsV3PrimaryStreamFrame(t, conn)
-	_ = readSessionsV3PrimaryStreamFrame(t, conn)
+	_ = retiredReadRouteFrame(t, conn)
+	_ = retiredReadRouteFrame(t, conn)
 
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "reasoning-message", "think then answer")
 	seen := map[string]int{}
@@ -2536,7 +2536,7 @@ func TestSessionsV3PrimaryStreamCarriesProviderReasoningEventsAndMessage(t *test
 		ReasoningKey string `json:"reasoning_key"`
 	}
 	for {
-		frame := readSessionsV3PrimaryStreamFrame(t, conn)
+		frame := retiredReadRouteFrame(t, conn)
 		if frame.Type != "event" || frame.Event == nil {
 			continue
 		}
@@ -2605,10 +2605,10 @@ func TestSessionsV3PrimaryLiveStreamPublishesToolExecutionProgressAndCommittedCo
 	}))
 	defer httpServer.Close()
 
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
 		t.Fatalf("initial stream frames started=%+v complete=%+v", started, complete)
 	}
@@ -2617,7 +2617,7 @@ func TestSessionsV3PrimaryLiveStreamPublishesToolExecutionProgressAndCommittedCo
 	want := []string{"session.tool.started", "session.tool.delta", "session.tool.completed", "session.assistant.completed"}
 	seen := make([]string, 0, len(want))
 	for len(seen) < len(want) {
-		frame := readSessionsV3PrimaryStreamFrame(t, conn)
+		frame := retiredReadRouteFrame(t, conn)
 		if frame.Type != "event" || frame.Event == nil {
 			t.Fatalf("live stream frame = %+v, want event", frame)
 		}
@@ -2772,16 +2772,16 @@ func TestSessionsV3PrimaryStreamDoesNotRepublishReplayedMutations(t *testing.T) 
 	}))
 	defer httpServer.Close()
 
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
 		t.Fatalf("initial frames started=%+v complete=%+v", started, complete)
 	}
 
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp4-no-republish-message", "publish once")
-	live := readSessionsV3PrimaryStreamFrame(t, conn)
+	live := retiredReadRouteFrame(t, conn)
 	if live.Type != "event" || live.Event == nil || live.Event.Seq != 2 || live.Event.EventType != "session.message.appended" {
 		t.Fatalf("live event = %+v", live)
 	}
@@ -2799,15 +2799,15 @@ func TestSessionsV3PrimaryStreamCursorErrors(t *testing.T) {
 	}))
 	defer httpServer.Close()
 
-	ahead := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=2")
-	aheadFrame := readSessionsV3PrimaryStreamFrame(t, ahead)
+	ahead := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=2")
+	aheadFrame := retiredReadRouteFrame(t, ahead)
 	_ = ahead.Close()
 	if aheadFrame.Type != "cursor.error" || aheadFrame.OK || !strings.Contains(aheadFrame.Error, "refetch required") {
 		t.Fatalf("ahead cursor frame = %+v", aheadFrame)
 	}
 
-	malformed := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=not-a-number")
-	malformedFrame := readSessionsV3PrimaryStreamFrame(t, malformed)
+	malformed := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=not-a-number")
+	malformedFrame := retiredReadRouteFrame(t, malformed)
 	_ = malformed.Close()
 	if malformedFrame.Type != "error" || !strings.Contains(malformedFrame.Error, "after_seq") {
 		t.Fatalf("malformed cursor frame = %+v", malformedFrame)
@@ -2840,11 +2840,11 @@ func TestSessionsV3PrimaryStandalonePathsWorkWithDispatchServicesDisabled(t *tes
 		server.Handler().ServeHTTP(w, withTestPrincipal(r))
 	}))
 	defer httpServer.Close()
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	event := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
+	event := retiredReadRouteFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || event.Type != "event" || event.Event == nil || event.Event.Seq != 2 || complete.Type != "replay.complete" {
 		t.Fatalf("stream frames started=%+v event=%+v complete=%+v", started, event, complete)
 	}
@@ -2908,10 +2908,10 @@ func TestSessionsV3PrimaryStreamCapturesRealProviderMultiToolLoopContinuity(t *t
 	defer httpServer.Close()
 
 	created := createSessionsV3PrimaryHTTPTestSession(t, server, httpServer.URL, "stream-trace-create", "stream trace", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	replayStarted := readSessionsV3PrimaryStreamFrame(t, conn)
-	replayComplete := readSessionsV3PrimaryStreamFrame(t, conn)
+	replayStarted := retiredReadRouteFrame(t, conn)
+	replayComplete := retiredReadRouteFrame(t, conn)
 	if replayStarted.Type != "replay.started" || replayComplete.Type != "replay.complete" {
 		t.Fatalf("initial stream replay frames = %+v %+v", replayStarted, replayComplete)
 	}
@@ -2920,7 +2920,7 @@ func TestSessionsV3PrimaryStreamCapturesRealProviderMultiToolLoopContinuity(t *t
 
 	var captured []sessionsV3RawStreamFrame
 	for {
-		capture := readSessionsV3PrimaryStreamRawFrame(t, conn, 3*time.Second)
+		capture := retiredReadRouteRawFrame(t, conn, 3*time.Second)
 		captured = append(captured, capture)
 		if capture.Frame.Type == "event" && capture.Frame.Event != nil && capture.Frame.Event.EventType == "session.assistant.completed" {
 			break
@@ -3099,10 +3099,10 @@ func TestSessionsV3PrimaryStreamDisambiguatesReusedProviderToolCallIDs(t *testin
 	defer httpServer.Close()
 
 	created := createSessionsV3PrimaryHTTPTestSession(t, server, httpServer.URL, "stream-reused-call-create", "stream reused call IDs", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	startedReplay := readSessionsV3PrimaryStreamFrame(t, conn)
-	completedReplay := readSessionsV3PrimaryStreamFrame(t, conn)
+	startedReplay := retiredReadRouteFrame(t, conn)
+	completedReplay := retiredReadRouteFrame(t, conn)
 	if startedReplay.Type != "replay.started" || completedReplay.Type != "replay.complete" || completedReplay.LastSeq != 1 {
 		t.Fatalf("initial stream replay frames = %+v %+v", startedReplay, completedReplay)
 	}
@@ -3121,7 +3121,7 @@ func TestSessionsV3PrimaryStreamDisambiguatesReusedProviderToolCallIDs(t *testin
 	var startedTools []toolIdentity
 	var completedTools []toolIdentity
 	for {
-		frame := readSessionsV3PrimaryStreamFrame(t, conn)
+		frame := retiredReadRouteFrame(t, conn)
 		if frame.Type != "event" || frame.Event == nil {
 			continue
 		}
@@ -3270,7 +3270,7 @@ func TestSessionsV3PrimaryPlanModeStartCheckpointPreflightIsPrimaryOnlyAndAtomic
 		t.Fatalf("failed preflight saved partial checkpoint advancement: %+v", checkpoint)
 	}
 
-	server.runStreams = newRunStreamManager()
+	server.runStreams = newRunControlAllocator()
 	req = httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/plan-mode/checkpoints/cp-1/start", bytes.NewBufferString(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
@@ -3399,18 +3399,18 @@ func TestSessionsV3PrimaryNextMessageWithoutActiveCheckpointSplitUsesTranscriptC
 }
 
 func TestSessionsV3PrimaryStreamHandlerDoesNotUseV2RunStreamOrRuntime(t *testing.T) {
-	body, err := os.ReadFile("sessions_v3_stream_ws.go")
+	body, err := os.ReadFile("retired per-session stream implementation")
 	if err != nil {
-		t.Fatalf("read sessions_v3_stream_ws.go: %v", err)
+		t.Fatalf("read retired per-session stream implementation: %v", err)
 	}
-	for _, required := range []string{"ListRealtimeOutboxAfter", "ListRealtimeOutboxForSessionAfterSeq", "handleSessionV3PrimaryStream", "v3RealtimeOutbox"} {
+	for _, required := range []string{"ListRealtimeOutboxAfter", "ListRealtimeOutboxForSessionAfterSeq", "retiredRouteRoute", "v3RealtimeOutbox"} {
 		if !strings.Contains(string(body), required) {
-			t.Fatalf("sessions_v3_stream_ws.go missing required outbox-backed V3 stream symbol %q", required)
+			t.Fatalf("retired per-session stream implementation missing required outbox-backed V3 stream symbol %q", required)
 		}
 	}
-	for _, forbidden := range []string{"ReplaySessionEvents", "sessionV3StreamHub", "runStreamManager", "handleRunStream", "proxyManagedHostRunStream", "dispatchRemoteRuntime", "routedSessionTarget", "gorillaws"} {
+	for _, forbidden := range []string{"ReplaySessionEvents", "sessionV3StreamHub", "runControlAllocator", "handleRunStream", "proxyManagedHostRunStream", "dispatchRemoteRuntime", "routedSessionTarget", "gorillaws"} {
 		if strings.Contains(string(body), forbidden) {
-			t.Fatalf("sessions_v3_stream_ws.go contains forbidden runtime/v2 stream symbol %q", forbidden)
+			t.Fatalf("retired per-session stream implementation contains forbidden runtime/v2 stream symbol %q", forbidden)
 		}
 	}
 }
@@ -3446,19 +3446,19 @@ func TestSessionsV3PrimaryStreamRejectsLegacyResumeInputsInStrictMode(t *testing
 }
 
 func TestSessionsV3PrimaryStreamDesktopV3StaticGuards(t *testing.T) {
-	body := readSourceFileForTest(t, "sessions_v3_stream_ws.go")
-	handler := sourceBetweenForTest(t, body, "func (s *Server) handleSessionV3PrimaryStream", "func sessionV3PrimaryStreamDesktopSurface")
-	for _, required := range []string{"sessionV3PrimaryStreamDesktopSurface(r)", "sessionV3PrimaryStreamStrictMode(r)", "requireSessionV3Access", "transportws.Accept"} {
+	body := readSourceFileForTest(t, "retired per-session stream implementation")
+	handler := sourceBetweenForTest(t, body, "func (s *Server) retiredRouteRoute", "func retiredRouteDesktopSurface")
+	for _, required := range []string{"retiredRouteDesktopSurface(r)", "retiredRouteStrictMode(r)", "requireSessionV3Access", "transportws.Accept"} {
 		if !strings.Contains(handler, required) {
-			t.Fatalf("handleSessionV3PrimaryStream missing required Desktop V3 guard/access symbol %q", required)
+			t.Fatalf("retiredRouteRoute missing required Desktop V3 guard/access symbol %q", required)
 		}
 	}
-	if strings.Index(handler, "sessionV3PrimaryStreamDesktopSurface(r)") > strings.Index(handler, "transportws.Accept") {
+	if strings.Index(handler, "retiredRouteDesktopSurface(r)") > strings.Index(handler, "transportws.Accept") {
 		t.Fatalf("Desktop V3 stream surface check must happen before websocket upgrade")
 	}
 	for _, forbidden := range []string{"hydrateSessionsV3Primary", "BuildSessionWorkset", "sessionsV3WorksetRequest", "sessionsV3WorksetOptionsFromRequest", "sessionsV3WorksetResponseForResult"} {
 		if strings.Contains(handler, forbidden) {
-			t.Fatalf("handleSessionV3PrimaryStream contains forbidden hydrate/workset dependency %q", forbidden)
+			t.Fatalf("retiredRouteRoute contains forbidden hydrate/workset dependency %q", forbidden)
 		}
 	}
 
@@ -3681,7 +3681,7 @@ func getSessionsV3PrimaryTestMessages(t *testing.T, server *Server, sessionID st
 	return payload.Messages
 }
 
-func dialSessionsV3PrimaryStream(t *testing.T, baseURL, sessionID, rawQuery string) *gorillaws.Conn {
+func retiredDialSessionsV3PrimaryStream(t *testing.T, baseURL, sessionID, rawQuery string) *gorillaws.Conn {
 	t.Helper()
 	wsURL := "ws" + strings.TrimPrefix(baseURL, "http") + "/v3/sessions/" + sessionID + "/stream"
 	if rawQuery != "" {
@@ -3697,7 +3697,7 @@ func dialSessionsV3PrimaryStream(t *testing.T, baseURL, sessionID, rawQuery stri
 	return conn
 }
 
-func readSessionsV3PrimaryStreamFrame(t *testing.T, conn *gorillaws.Conn) sessionV3StreamFrame {
+func retiredReadRouteFrame(t *testing.T, conn *gorillaws.Conn) sessionV3StreamFrame {
 	t.Helper()
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
@@ -3734,7 +3734,7 @@ type sessionsV3RawStreamFrame struct {
 	Frame sessionV3StreamFrame
 }
 
-func readSessionsV3PrimaryStreamRawFrame(t *testing.T, conn *gorillaws.Conn, timeout time.Duration) sessionsV3RawStreamFrame {
+func retiredReadRouteRawFrame(t *testing.T, conn *gorillaws.Conn, timeout time.Duration) sessionsV3RawStreamFrame {
 	t.Helper()
 	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		t.Fatalf("set read deadline: %v", err)

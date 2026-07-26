@@ -22,9 +22,6 @@ import (
 const defaultTimeout = 5 * time.Second
 
 const (
-	streamErrorLogTimeout   = 2 * time.Second
-	streamClientErrorPathID = "run.stream.client.error.v3"
-	maxRunStreamReconnects  = 3
 	localTransportBaseURL   = "http://swarm-local-transport"
 	localTransportSocketEnv = "SWARMD_LOCAL_TRANSPORT_SOCKET"
 )
@@ -846,7 +843,6 @@ type SessionV3CompactResult struct {
 	OwnerTransport string                      `json:"owner_transport,omitempty"`
 	Session        SessionSummary              `json:"session"`
 	Result         SessionRunResult            `json:"result"`
-	Events         []SessionRunStreamEvent     `json:"events"`
 	RunIntent      SessionV3RunIntent          `json:"run_intent"`
 	RealtimeOutbox *SessionV3RealtimeOutboxRow `json:"realtime_outbox,omitempty"`
 }
@@ -1424,35 +1420,6 @@ type RunSessionOptions struct {
 	TargetName       string               `json:"target_name,omitempty"`
 	ToolScope        *RunToolScope        `json:"tool_scope,omitempty"`
 	ExecutionContext *RunExecutionContext `json:"execution_context,omitempty"`
-}
-
-type SessionRunStreamEvent struct {
-	Type         string                    `json:"type"`
-	SessionID    string                    `json:"session_id,omitempty"`
-	RunID        string                    `json:"run_id,omitempty"`
-	Seq          uint64                    `json:"seq,omitempty"`
-	Agent        string                    `json:"agent,omitempty"`
-	Status       string                    `json:"status,omitempty"`
-	Step         int                       `json:"step,omitempty"`
-	Delta        string                    `json:"delta,omitempty"`
-	Summary      string                    `json:"summary,omitempty"`
-	ToolName     string                    `json:"tool_name,omitempty"`
-	CallID       string                    `json:"call_id,omitempty"`
-	Arguments    string                    `json:"arguments,omitempty"`
-	Output       string                    `json:"output,omitempty"`
-	RawOutput    string                    `json:"raw_output,omitempty"`
-	Error        string                    `json:"error,omitempty"`
-	DurationMS   int64                     `json:"duration_ms,omitempty"`
-	Message      *SessionMessage           `json:"message,omitempty"`
-	Permission   *PermissionRecord         `json:"permission,omitempty"`
-	TurnUsage    *SessionTurnUsage         `json:"turn_usage,omitempty"`
-	UsageSummary *SessionUsageSummary      `json:"usage_summary,omitempty"`
-	Title        string                    `json:"title,omitempty"`
-	TitleStage   string                    `json:"title_stage,omitempty"`
-	Warning      string                    `json:"warning,omitempty"`
-	Branch       string                    `json:"branch,omitempty"`
-	Lifecycle    *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
-	Result       SessionRunResult          `json:"result"`
 }
 
 type VoiceStatus struct {
@@ -4065,10 +4032,6 @@ func (c *API) RunSessionWithOptions(ctx context.Context, sessionID, prompt, agen
 	return resp.Result, nil
 }
 
-func (c *API) RunSessionStream(ctx context.Context, sessionID, prompt, agentName, instructions string, onEvent func(SessionRunStreamEvent)) (SessionRunResult, error) {
-	return c.RunSessionStreamWithOptions(ctx, sessionID, prompt, agentName, instructions, RunSessionOptions{}, onEvent)
-}
-
 func (c *API) StopSessionRun(ctx context.Context, sessionID, runID string) error {
 	sessionID = strings.TrimSpace(sessionID)
 	runID = strings.TrimSpace(runID)
@@ -4110,140 +4073,6 @@ func (c *API) StopSessionV3Run(ctx context.Context, sessionID, runID, targetSwar
 	return c.postJSON(ctx, sessionV3PrimaryPath(sessionID, "run/stop"), body, nil, true)
 }
 
-func (c *API) RunSessionStreamWithOptions(ctx context.Context, sessionID, prompt, agentName, instructions string, options RunSessionOptions, onEvent func(SessionRunStreamEvent)) (SessionRunResult, error) {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return SessionRunResult{}, errors.New("session id is required")
-	}
-	prompt = strings.TrimSpace(prompt)
-	if prompt == "" && !options.Compact {
-		return SessionRunResult{}, errors.New("prompt is required")
-	}
-
-	if ctx == nil {
-		var cancel context.CancelFunc
-		// Streaming run requests should not time out by default.
-		ctx, cancel = context.WithCancel(context.Background())
-		defer cancel()
-	}
-
-	path := sessionV3PrimaryPath(sessionID, "run/stream")
-	connect := func() (*wsClientConn, error) {
-		baseURL, _, socketPath := c.requestTarget()
-		return dialDaemonWS(ctx, baseURL, c.Token(), socketPath, path, "")
-	}
-	conn, err := connect()
-	if err != nil {
-		c.persistRunStreamClientError(sessionID, "connect", err)
-		return SessionRunResult{}, fmt.Errorf("connect websocket %s: %w", path, err)
-	}
-	defer conn.Close()
-
-	startPayload := runSessionRequest(prompt, agentName, instructions, options)
-	startPayload["type"] = "run.start"
-
-	startMsg, err := json.Marshal(startPayload)
-	if err != nil {
-		return SessionRunResult{}, fmt.Errorf("marshal run stream start payload: %w", err)
-	}
-	if err := conn.WriteText(startMsg); err != nil {
-		c.persistRunStreamClientError(sessionID, "start", err)
-		return SessionRunResult{}, fmt.Errorf("send run stream start payload: %w", err)
-	}
-
-	var final SessionRunResult
-	runID := ""
-	lastSeq := uint64(0)
-	reconnects := 0
-
-	for {
-		var event SessionRunStreamEvent
-		raw, readErr := conn.ReadText(ctx)
-		if readErr != nil {
-			if ctx != nil && ctx.Err() != nil {
-				return SessionRunResult{}, ctx.Err()
-			}
-			if strings.TrimSpace(runID) != "" && reconnects < maxRunStreamReconnects {
-				reconnects++
-				_ = conn.Close()
-				conn, err = connect()
-				if err != nil {
-					continue
-				}
-				resumeMsg, marshalErr := json.Marshal(map[string]any{
-					"type":     "run.resume",
-					"run_id":   runID,
-					"last_seq": lastSeq,
-				})
-				if marshalErr != nil {
-					return SessionRunResult{}, fmt.Errorf("marshal run stream resume payload: %w", marshalErr)
-				}
-				if writeErr := conn.WriteText(resumeMsg); writeErr != nil {
-					continue
-				}
-				continue
-			}
-			c.persistRunStreamClientError(sessionID, "read", readErr)
-			return SessionRunResult{}, fmt.Errorf("read run stream websocket event: %w", readErr)
-		}
-		if err := json.Unmarshal(raw, &event); err != nil {
-			c.persistRunStreamClientError(sessionID, "decode", err)
-			return SessionRunResult{}, fmt.Errorf("decode run stream websocket event: %w", err)
-		}
-		if strings.TrimSpace(event.SessionID) == "" {
-			event.SessionID = sessionID
-		}
-		if seq := event.Seq; seq > lastSeq {
-			lastSeq = seq
-		}
-		if eventRunID := strings.TrimSpace(event.RunID); eventRunID != "" {
-			runID = eventRunID
-		} else if runID != "" {
-			event.RunID = runID
-		}
-
-		eventType := strings.ToLower(strings.TrimSpace(event.Type))
-		switch eventType {
-		case "run.accepted", "resume.accepted":
-			continue
-		case "resume.error":
-			msg := strings.TrimSpace(event.Error)
-			if msg == "" {
-				msg = "run stream resume cursor is no longer available; reconnect on the same run stream path and resync"
-			}
-			return SessionRunResult{}, errors.New(msg)
-		case "error":
-			msg := strings.TrimSpace(event.Error)
-			if msg == "" {
-				msg = "run stream failed"
-			}
-			return SessionRunResult{}, errors.New(msg)
-		}
-
-		reconnects = 0
-		if onEvent != nil {
-			onEvent(event)
-		}
-		switch eventType {
-		case "turn.completed":
-			if strings.TrimSpace(event.Result.SessionID) == "" && strings.TrimSpace(event.Result.AssistantMessage.ID) == "" {
-				continue
-			}
-			final = event.Result
-			if strings.TrimSpace(final.SessionID) == "" {
-				final.SessionID = sessionID
-			}
-			return final, nil
-		case "turn.error":
-			msg := strings.TrimSpace(event.Error)
-			if msg == "" {
-				msg = "stream run failed"
-			}
-			return SessionRunResult{}, errors.New(msg)
-		}
-	}
-}
-
 func (c *API) StartBackgroundSessionRun(ctx context.Context, sessionID, prompt, agentName, instructions string, options RunSessionOptions) (BackgroundRunAccepted, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -4270,37 +4099,6 @@ func (c *API) StartBackgroundSessionRun(ctx context.Context, sessionID, prompt, 
 	resp.TargetName = strings.TrimSpace(resp.TargetName)
 	resp.OwnerTransport = strings.TrimSpace(resp.OwnerTransport)
 	return resp, nil
-}
-
-func (c *API) persistRunStreamClientError(sessionID, stage string, runErr error) {
-	if c == nil || runErr == nil {
-		return
-	}
-	if errors.Is(runErr, context.Canceled) {
-		return
-	}
-	sessionID = strings.TrimSpace(sessionID)
-	stage = strings.TrimSpace(stage)
-	detail := strings.TrimSpace(runErr.Error())
-	if sessionID == "" || detail == "" {
-		return
-	}
-	content := "Run stream failed [" + streamClientErrorPathID + "]: " + detail
-	if stage != "" {
-		content = "Run stream failed [" + streamClientErrorPathID + "/" + stage + "]: " + detail
-	}
-	req := map[string]string{
-		"role":    "system",
-		"content": content,
-	}
-	path := sessionV3PrimaryPath(sessionID, "messages")
-	ctx, cancel := context.WithTimeout(context.Background(), streamErrorLogTimeout)
-	defer cancel()
-
-	var resp struct {
-		OK bool `json:"ok"`
-	}
-	_ = c.postJSON(ctx, path, req, &resp, true)
 }
 
 func (c *API) getJSON(ctx context.Context, path string, out any, attachAuth bool) error {

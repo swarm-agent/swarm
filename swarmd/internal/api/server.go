@@ -78,7 +78,7 @@ type Server struct {
 	modelProfiles               *modelprofile.Service
 	swarmProfiles               *modelprofile.SwarmService
 	runner                      runService
-	runStreams                  *runStreamManager
+	runStreams                  *runControlAllocator
 	v3RealtimeOutbox            *v3RealtimeOutboxHub
 	v3LiveHub                   *v3LiveHub
 	v3LivePatchEnabled          bool
@@ -241,7 +241,7 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		agents:               agentSvc,
 		model:                modelSvc,
 		runner:               runSvc,
-		runStreams:           newRunStreamManager(),
+		runStreams:           newRunControlAllocator(),
 		v3RealtimeOutbox:     newV3RealtimeOutboxHub(),
 		v3LiveHub:            newV3LiveHub(),
 		v3LivePatchEnabled:   v3LivePatchDefaultEnabled,
@@ -3090,28 +3090,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			"ok":     true,
 			"result": result,
 		})
-		return
-	}
-
-	if strings.HasSuffix(rest, "/run/stream") {
-		sessionID := strings.TrimSuffix(rest, "/run/stream")
-		sessionID = strings.Trim(sessionID, "/")
-		if sessionID == "" {
-			writeError(w, http.StatusBadRequest, errors.New("session id is required"))
-			return
-		}
-		principal, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID)
-		if !ok {
-			return
-		}
-		switch r.Method {
-		case http.MethodGet:
-			s.handleRunStreamWebsocket(w, r, sessionID, principal)
-		case http.MethodPost:
-			s.handleRunStreamControl(w, r, sessionID, principal)
-		default:
-			writeError(w, http.StatusUpgradeRequired, errors.New("run stream requires websocket upgrade (GET) or control POST"))
-		}
 		return
 	}
 
