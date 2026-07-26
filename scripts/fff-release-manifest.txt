@@ -1,0 +1,6 @@
+# Reviewed FFF imports. Each non-comment line is:
+# release-tag header-sha256 c-lib-x86_64-unknown-linux-gnu.so-sha256
+#
+# Updates are explicit review events: inspect the immutable tagged source and release
+# asset through an independent trusted channel, calculate both digests locally, add
+# one reviewed entry here, then run ./scripts/update-fff.sh <release-tag>.
