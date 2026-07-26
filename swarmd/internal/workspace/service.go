@@ -595,14 +595,24 @@ func (s *Service) ScopeForPathForPrincipal(principal identity.Principal, path st
 	bestIsPrimary := false
 	for i, entry := range entries {
 		primaryPath := strings.TrimSpace(entry.Path)
-		for _, root := range entry.Directories {
+		roots := entry.Directories
+		if len(roots) == 0 {
+			roots = []string{entry.Path}
+		}
+		for _, root := range roots {
 			if !pathWithinRoot(root, resolved) {
 				continue
 			}
-			trimmedRoot := strings.TrimSpace(root)
-			isPrimary := trimmedRoot != "" && trimmedRoot == primaryPath
-			if len(trimmedRoot) > len(bestRoot) || (len(trimmedRoot) == len(bestRoot) && isPrimary && !bestIsPrimary) {
-				bestRoot = trimmedRoot
+			canonicalRoot, err := revalidateStoredDirectory(root)
+			if err != nil {
+				return Scope{}, err
+			}
+			if !pathWithinRoot(canonicalRoot, resolved) {
+				continue
+			}
+			isPrimary := canonicalRoot == primaryPath
+			if len(canonicalRoot) > len(bestRoot) || (len(canonicalRoot) == len(bestRoot) && isPrimary && !bestIsPrimary) {
+				bestRoot = canonicalRoot
 				bestIndex = i
 				bestIsPrimary = isPrimary
 			}
@@ -758,14 +768,17 @@ func (s *Service) CreateFolderForPrincipal(principal identity.Principal, parentP
 	if filepath.Dir(target) != parent {
 		return CreateFolderResult{}, fmt.Errorf("folder name must stay inside the current folder")
 	}
-	if err := os.Mkdir(target, 0o755); err != nil {
-		result := CreateFolderResult{
-			Path:                   target,
-			Name:                   folderName,
-			ParentPath:             parent,
-			RequiresSudo:           isPermissionError(err),
-			PermissionErrorMessage: permissionErrorMessage(err),
+	root, err := os.OpenRoot(parent)
+	if err != nil {
+		result := createFolderErrorResult(target, folderName, parent, err)
+		if result.RequiresSudo {
+			return result, fmt.Errorf("opening %q requires sudo or read permission", parent)
 		}
+		return result, fmt.Errorf("open folder root %q: %w", parent, err)
+	}
+	defer root.Close()
+	if err := root.Mkdir(folderName, 0o755); err != nil {
+		result := createFolderErrorResult(target, folderName, parent, err)
 		if result.RequiresSudo {
 			return result, fmt.Errorf("creating %q requires sudo or write permission for %q", folderName, parent)
 		}
@@ -824,10 +837,41 @@ func resolvePath(input string) (string, error) {
 	}
 
 	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		resolved = abs
+	if err == nil {
+		return resolved, nil
 	}
-	return resolved, nil
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("resolve canonical path for %q: %w", abs, err)
+	}
+
+	// Paths used for prospective files may not exist yet. Resolve the deepest
+	// existing ancestor, but never treat a dangling symlink as lexical authority.
+	cursor := abs
+	missing := make([]string, 0, 4)
+	for {
+		if _, lstatErr := os.Lstat(cursor); lstatErr == nil {
+			return "", fmt.Errorf("resolve canonical path for %q: %w", abs, err)
+		} else if !errors.Is(lstatErr, os.ErrNotExist) {
+			return "", fmt.Errorf("inspect path %q while resolving %q: %w", cursor, abs, lstatErr)
+		}
+		parent := filepath.Dir(cursor)
+		if parent == cursor {
+			return "", fmt.Errorf("resolve canonical path for %q: %w", abs, err)
+		}
+		missing = append(missing, filepath.Base(cursor))
+		cursor = parent
+		ancestor, ancestorErr := filepath.EvalSymlinks(cursor)
+		if ancestorErr != nil {
+			if errors.Is(ancestorErr, os.ErrNotExist) {
+				continue
+			}
+			return "", fmt.Errorf("resolve canonical ancestor %q for %q: %w", cursor, abs, ancestorErr)
+		}
+		for i := len(missing) - 1; i >= 0; i-- {
+			ancestor = filepath.Join(ancestor, missing[i])
+		}
+		return ancestor, nil
+	}
 }
 
 func resolveBrowsePath(input string) (string, error) {
@@ -878,14 +922,24 @@ func (s *Service) legacyScopeForPath(path string) (Scope, error) {
 	bestIsPrimary := false
 	for i, entry := range entries {
 		primaryPath := strings.TrimSpace(entry.Path)
-		for _, root := range entry.Directories {
+		roots := entry.Directories
+		if len(roots) == 0 {
+			roots = []string{entry.Path}
+		}
+		for _, root := range roots {
 			if !pathWithinRoot(root, resolved) {
 				continue
 			}
-			trimmedRoot := strings.TrimSpace(root)
-			isPrimary := trimmedRoot != "" && trimmedRoot == primaryPath
-			if len(trimmedRoot) > len(bestRoot) || (len(trimmedRoot) == len(bestRoot) && isPrimary && !bestIsPrimary) {
-				bestRoot = trimmedRoot
+			canonicalRoot, err := revalidateStoredDirectory(root)
+			if err != nil {
+				return Scope{}, err
+			}
+			if !pathWithinRoot(canonicalRoot, resolved) {
+				continue
+			}
+			isPrimary := canonicalRoot == primaryPath
+			if len(canonicalRoot) > len(bestRoot) || (len(canonicalRoot) == len(bestRoot) && isPrimary && !bestIsPrimary) {
+				bestRoot = canonicalRoot
 				bestIndex = i
 				bestIsPrimary = isPrimary
 			}
@@ -921,6 +975,28 @@ func filesystemRootPath(path string) string {
 	return string(filepath.Separator)
 }
 
+func revalidateStoredDirectory(path string) (string, error) {
+	stored := strings.TrimSpace(path)
+	if stored == "" {
+		return "", fmt.Errorf("stored workspace directory is empty")
+	}
+	abs, err := filepath.Abs(stored)
+	if err != nil {
+		return "", fmt.Errorf("resolve stored workspace directory %q: %w", stored, err)
+	}
+	canonical, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("revalidate stored workspace directory %q: %w", stored, err)
+	}
+	if canonical != filepath.Clean(abs) {
+		return "", fmt.Errorf("stored workspace directory %q no longer resolves to its saved identity %q", stored, canonical)
+	}
+	if err := ensureWorkspaceDirectory(canonical); err != nil {
+		return "", err
+	}
+	return canonical, nil
+}
+
 func ensureWorkspaceDirectory(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -947,6 +1023,16 @@ func sanitizeCreateFolderName(name string) (string, error) {
 		return "", fmt.Errorf("folder name must be a single folder name")
 	}
 	return name, nil
+}
+
+func createFolderErrorResult(target, name, parent string, err error) CreateFolderResult {
+	return CreateFolderResult{
+		Path:                   target,
+		Name:                   name,
+		ParentPath:             parent,
+		RequiresSudo:           isPermissionError(err),
+		PermissionErrorMessage: permissionErrorMessage(err),
+	}
 }
 
 func isPermissionError(err error) bool {
