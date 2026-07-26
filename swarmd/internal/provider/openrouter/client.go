@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	chatURL          = "https://openrouter.ai/api/v1/chat/completions"
-	keyURL           = "https://openrouter.ai/api/v1/key"
+	chatURL                    = "https://openrouter.ai/api/v1/chat/completions"
+	keyURL                     = "https://openrouter.ai/api/v1/key"
 	maxResponseBytes           = 8 << 20
 	maxStreamEvents            = 16_384
 	maxStreamOutputBytes       = 4 << 20

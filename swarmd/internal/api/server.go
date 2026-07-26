@@ -73,7 +73,7 @@ const (
 	v3LivePatchDefaultEnabled = true
 
 	maxSTTDecodedAudioBytes = 25 << 20
-	maxSTTRequestBodyBytes   = (maxSTTDecodedAudioBytes*4)/3 + (64 << 10)
+	maxSTTRequestBodyBytes  = (maxSTTDecodedAudioBytes*4)/3 + (64 << 10)
 )
 
 type Server struct {

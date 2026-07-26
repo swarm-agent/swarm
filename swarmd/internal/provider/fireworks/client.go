@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	accountsURL      = "https://api.fireworks.ai/v1/accounts"
-	modelsURL        = "https://api.fireworks.ai/inference/v1/models"
-	chatURL          = "https://api.fireworks.ai/inference/v1/chat/completions"
+	accountsURL                = "https://api.fireworks.ai/v1/accounts"
+	modelsURL                  = "https://api.fireworks.ai/inference/v1/models"
+	chatURL                    = "https://api.fireworks.ai/inference/v1/chat/completions"
 	maxResponseBytes           = 8 << 20
 	maxStreamEvents            = 16_384
 	maxStreamOutputBytes       = 4 << 20

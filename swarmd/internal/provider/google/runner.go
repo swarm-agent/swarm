@@ -22,9 +22,9 @@ import (
 )
 
 const (
-	generateContentURL       = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
-	streamGenerateContentURL = "https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent"
-	googleAPIKeyHeader       = "x-goog-api-key"
+	generateContentURL         = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
+	streamGenerateContentURL   = "https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent"
+	googleAPIKeyHeader         = "x-goog-api-key"
 	maxResponseBytes           = 8 << 20
 	maxStreamEvents            = 16_384
 	maxStreamOutputBytes       = 4 << 20
