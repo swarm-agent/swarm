@@ -1998,6 +1998,7 @@ func (s *Server) handleSessionV3PrimaryActivePlan(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	prepared.Plan.Active = true
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "active_plan": prepared.Plan, "mutation": sessionV3MutationResultResponse(result), "realtime_outbox": result.RealtimeOutbox})
 }
 

@@ -110,7 +110,7 @@ func TestPlanCheckpointStartAndOutcomeRequireExactRunOwnership(t *testing.T) {
 	doc := &pebblestore.SessionPlanDocument{
 		ID: "plan-owned", ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed}, ActiveCheckpointID: "cp-1",
 		ExecutionState: &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStateInProgress, ActiveAttemptID: "attempt-1", CurrentRunID: "run-1", CurrentSessionID: "child-1", ParentSessionID: "parent-1"},
-		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: PlanCheckpointStatusInProgress, AttemptID: "attempt-1", RunID: "run-1", SessionID: "child-1", Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "attempt-1", CheckpointID: "cp-1", Status: PlanCheckpointStatusInProgress, RunID: "run-1", SessionID: "child-1", ParentSessionID: "parent-1"}}}},
+		Checkpoints:    []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: PlanCheckpointStatusInProgress, AttemptID: "attempt-1", RunID: "run-1", SessionID: "child-1", Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "attempt-1", CheckpointID: "cp-1", Status: PlanCheckpointStatusInProgress, RunID: "run-1", SessionID: "child-1", ParentSessionID: "parent-1"}}}},
 	}
 	matching := PlanCheckpointStartOptions{PlanID: "plan-owned", CheckpointID: "cp-1", AttemptID: "attempt-1", RunID: "run-1", SessionID: "child-1", ParentSessionID: "parent-1"}
 	if decision, err := ApplyPlanCheckpointStart(doc, matching); err != nil || decision.AttemptID != "attempt-1" || len(doc.Checkpoints[0].Attempts) != 1 {

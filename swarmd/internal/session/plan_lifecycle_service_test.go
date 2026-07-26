@@ -865,7 +865,7 @@ func TestPlanLifecycleFollowupCheckpointDeduplicatesConcurrentSourceMessage(t *t
 	sessionID := createPlanTestSession(t, svc)
 	_, _, err := svc.SavePlanWithMetadata(sessionID, "plan-followup-race", "Followup", "# Followup", "approved", "approved", true, PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed, FollowupCheckpointPolicy: PlanFollowupCheckpointPolicyAutoStart},
-		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: PlanCheckpointStatusCompleted}},
+		Checkpoints:     []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: PlanCheckpointStatusCompleted}},
 	}})
 	if err != nil {
 		t.Fatalf("save plan: %v", err)

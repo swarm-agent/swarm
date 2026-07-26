@@ -20,6 +20,9 @@ func setV3PlanSaveInBatch(batch *pebble.Batch, sessionID string, save V3PlanSave
 	if plan.Version <= 0 {
 		plan.Version = 1
 	}
+	// The active pointer is authoritative; storing Active on plan snapshots would
+	// leave multiple plans marked active after later pointer changes.
+	plan.Active = false
 	planPayload, err := json.Marshal(plan)
 	if err != nil {
 		return fmt.Errorf("marshal plan %q/%q: %w", plan.SessionID, plan.ID, err)

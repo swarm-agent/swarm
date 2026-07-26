@@ -18,8 +18,8 @@ import (
 )
 
 type Service struct {
-	store   *pebblestore.SessionStore
-	events  *pebblestore.EventLog
+	store                 *pebblestore.SessionStore
+	events                *pebblestore.EventLog
 	mu                    sync.Mutex
 	planLifecycleMu       sync.Mutex
 	planLifecycleSessions map[string]*sync.Mutex

@@ -50,13 +50,40 @@ func TestValidateV3SessionMutationInputRejectsEmbeddedOwnershipMismatch(t *testi
 		edit func(*V3SessionMutationInput)
 		want string
 	}{
-		{name: "session user", edit: func(input *V3SessionMutationInput) { input.Session = &SessionSnapshot{ID: input.SessionID, UserID: "other-user", AccountScopeID: input.AccountScopeID} }, want: "session user id does not match mutation ownership"},
-		{name: "message account", edit: func(input *V3SessionMutationInput) { input.Message = &MessageSnapshot{SessionID: input.SessionID, UserID: input.UserID, AccountScopeID: "other-account"} }, want: "message account scope id does not match mutation ownership"},
-		{name: "lifecycle user", edit: func(input *V3SessionMutationInput) { input.Lifecycle = &SessionLifecycleSnapshot{SessionID: input.SessionID, UserID: "other-user", AccountScopeID: input.AccountScopeID} }, want: "lifecycle user id does not match mutation ownership"},
-		{name: "run intent account", edit: func(input *V3SessionMutationInput) { input.RunIntent = &V3SessionRunIntent{SessionID: input.SessionID, UserID: input.UserID, AccountScopeID: "other-account"} }, want: "run intent account scope id does not match mutation ownership"},
-		{name: "plan user", edit: func(input *V3SessionMutationInput) { input.Kind = V3SessionMutationAcceptPlan; input.PlanAcceptance = validOwnershipTestPlanAcceptance(input.SessionID, "other-user", input.AccountScopeID) }, want: "plan user id does not match mutation ownership"},
-		{name: "accepted session account", edit: func(input *V3SessionMutationInput) { input.Kind = V3SessionMutationAcceptPlan; input.PlanAcceptance = validOwnershipTestPlanAcceptance(input.SessionID, input.UserID, input.AccountScopeID); input.PlanAcceptance.Session.AccountScopeID = "other-account" }, want: "plan acceptance session account scope id does not match mutation ownership"},
-		{name: "mode message user", edit: func(input *V3SessionMutationInput) { input.Kind = V3SessionMutationAcceptPlan; input.PlanAcceptance = validOwnershipTestPlanAcceptance(input.SessionID, input.UserID, input.AccountScopeID); input.PlanAcceptance.ModeMessage = &MessageSnapshot{SessionID: input.SessionID, UserID: "other-user", AccountScopeID: input.AccountScopeID} }, want: "plan acceptance mode message user id does not match mutation ownership"},
+		{name: "session user", edit: func(input *V3SessionMutationInput) {
+			input.Session = &SessionSnapshot{ID: input.SessionID, UserID: "other-user", AccountScopeID: input.AccountScopeID}
+		}, want: "session user id does not match mutation ownership"},
+		{name: "message account", edit: func(input *V3SessionMutationInput) {
+			input.Message = &MessageSnapshot{SessionID: input.SessionID, UserID: input.UserID, AccountScopeID: "other-account"}
+		}, want: "message account scope id does not match mutation ownership"},
+		{name: "lifecycle user", edit: func(input *V3SessionMutationInput) {
+			input.Lifecycle = &SessionLifecycleSnapshot{SessionID: input.SessionID, UserID: "other-user", AccountScopeID: input.AccountScopeID}
+		}, want: "lifecycle user id does not match mutation ownership"},
+		{name: "run intent account", edit: func(input *V3SessionMutationInput) {
+			input.RunIntent = &V3SessionRunIntent{SessionID: input.SessionID, UserID: input.UserID, AccountScopeID: "other-account"}
+		}, want: "run intent account scope id does not match mutation ownership"},
+		{name: "plan save user", edit: func(input *V3SessionMutationInput) {
+			input.Kind = V3SessionMutationSavePlan
+			input.PlanSave = &V3PlanSaveMutation{Plan: SessionPlanSnapshot{ID: "plan-1", SessionID: input.SessionID, UserID: "other-user", AccountScopeID: input.AccountScopeID}}
+		}, want: "plan save user id does not match mutation ownership"},
+		{name: "plan save archived account", edit: func(input *V3SessionMutationInput) {
+			input.Kind = V3SessionMutationSavePlan
+			input.PlanSave = &V3PlanSaveMutation{Plan: SessionPlanSnapshot{ID: "plan-1", SessionID: input.SessionID, UserID: input.UserID, AccountScopeID: input.AccountScopeID}, ArchivedRevision: &SessionPlanSnapshot{ID: "plan-1", SessionID: input.SessionID, UserID: input.UserID, AccountScopeID: "other-account"}}
+		}, want: "plan save archived revision account scope id does not match mutation ownership"},
+		{name: "plan user", edit: func(input *V3SessionMutationInput) {
+			input.Kind = V3SessionMutationAcceptPlan
+			input.PlanAcceptance = validOwnershipTestPlanAcceptance(input.SessionID, "other-user", input.AccountScopeID)
+		}, want: "plan user id does not match mutation ownership"},
+		{name: "accepted session account", edit: func(input *V3SessionMutationInput) {
+			input.Kind = V3SessionMutationAcceptPlan
+			input.PlanAcceptance = validOwnershipTestPlanAcceptance(input.SessionID, input.UserID, input.AccountScopeID)
+			input.PlanAcceptance.Session.AccountScopeID = "other-account"
+		}, want: "plan acceptance session account scope id does not match mutation ownership"},
+		{name: "mode message user", edit: func(input *V3SessionMutationInput) {
+			input.Kind = V3SessionMutationAcceptPlan
+			input.PlanAcceptance = validOwnershipTestPlanAcceptance(input.SessionID, input.UserID, input.AccountScopeID)
+			input.PlanAcceptance.ModeMessage = &MessageSnapshot{SessionID: input.SessionID, UserID: "other-user", AccountScopeID: input.AccountScopeID}
+		}, want: "plan acceptance mode message user id does not match mutation ownership"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			input := base

@@ -105,7 +105,7 @@ func TestSessionsV3PrimaryHydrateOmitsActivePlanAndHistory(t *testing.T) {
 	if err := json.Unmarshal(activeRec.Body.Bytes(), &active); err != nil {
 		t.Fatalf("decode active plan response: %v", err)
 	}
-	if !active.HasActivePlan || active.ActivePlan.ID == "" || active.ActivePlan.Plan != "# Plan v2" {
+	if !active.HasActivePlan || !active.ActivePlan.Active || active.ActivePlan.ID == "" || active.ActivePlan.Plan != "# Plan v2" {
 		t.Fatalf("active plan dedicated response = %+v has=%v", active.ActivePlan, active.HasActivePlan)
 	}
 
@@ -138,14 +138,14 @@ func TestSessionsV3PrimaryPlanSaveReturnsPlanDeltaOnly(t *testing.T) {
 		t.Fatalf("plan save status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	var payload struct {
-		Plan                pebblestore.SessionPlanSnapshot   `json:"plan"`
+		Plan                pebblestore.SessionPlanSnapshot     `json:"plan"`
 		Mutation            pebblestore.V3SessionMutationResult `json:"mutation"`
 		RealtimeOutbox      *pebblestore.V3RealtimeOutboxRecord `json:"realtime_outbox"`
-		Session             *pebblestore.SessionSnapshot      `json:"session"`
-		Messages            []pebblestore.MessageSnapshot     `json:"messages"`
-		PlanRevisions       []pebblestore.SessionPlanSnapshot `json:"plan_revisions"`
-		PlanRevisionsBySess map[string]any                    `json:"plan_revisions_by_session"`
-		PlansBySess         map[string]any                    `json:"plans_by_session"`
+		Session             *pebblestore.SessionSnapshot        `json:"session"`
+		Messages            []pebblestore.MessageSnapshot       `json:"messages"`
+		PlanRevisions       []pebblestore.SessionPlanSnapshot   `json:"plan_revisions"`
+		PlanRevisionsBySess map[string]any                      `json:"plan_revisions_by_session"`
+		PlansBySess         map[string]any                      `json:"plans_by_session"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode plan save response: %v", err)

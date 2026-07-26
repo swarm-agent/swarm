@@ -53,10 +53,10 @@ var ErrV3IdempotencyConflict = errors.New("v3 session idempotency conflict")
 // canonical V3 mutation batch. Plan, revision, active-pointer, event,
 // projection, idempotency, and realtime outbox records commit atomically.
 type V3PlanSaveMutation struct {
-	Plan             SessionPlanSnapshot  `json:"plan"`
-	ArchivedRevision *SessionPlanSnapshot `json:"archived_revision,omitempty"`
-	Activate         bool                 `json:"activate,omitempty"`
-	ExpectedParentVersion int             `json:"expected_parent_version,omitempty"`
+	Plan                  SessionPlanSnapshot  `json:"plan"`
+	ArchivedRevision      *SessionPlanSnapshot `json:"archived_revision,omitempty"`
+	Activate              bool                 `json:"activate,omitempty"`
+	ExpectedParentVersion int                  `json:"expected_parent_version,omitempty"`
 }
 
 type V3SessionMutationInput struct {
@@ -2566,6 +2566,16 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 	if input.RunIntent != nil {
 		if err := validateV3MutationEmbeddedOwnership(input, "run intent", input.RunIntent.SessionID, input.RunIntent.UserID, input.RunIntent.AccountScopeID); err != nil {
 			return err
+		}
+	}
+	if planSave := input.PlanSave; planSave != nil {
+		if err := validateV3MutationEmbeddedOwnership(input, "plan save", planSave.Plan.SessionID, planSave.Plan.UserID, planSave.Plan.AccountScopeID); err != nil {
+			return err
+		}
+		if planSave.ArchivedRevision != nil {
+			if err := validateV3MutationEmbeddedOwnership(input, "plan save archived revision", planSave.ArchivedRevision.SessionID, planSave.ArchivedRevision.UserID, planSave.ArchivedRevision.AccountScopeID); err != nil {
+				return err
+			}
 		}
 	}
 	if acceptance := input.PlanAcceptance; acceptance != nil {
