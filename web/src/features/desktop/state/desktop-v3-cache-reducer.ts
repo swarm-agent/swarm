@@ -33,6 +33,7 @@ import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, Deskt
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktopPendingPermissions, normalizeDesktopPermissionSummary, normalizeDesktopPermissionSummaries, safeString } from '../permissions/services/desktop-permission-normalization'
 import { normalizeDesktopSessionPlan } from '../chat/services/session-plan-record'
+import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
 import { isDesktopV3NavigationHiddenRecord } from './desktop-v3-session-visibility'
 import { mergeWorkspaceAITaskMonotonic } from '../../workspaces/todos/ai-task-reconciliation'
@@ -2104,12 +2105,21 @@ function minPositiveSeq(messages: MessageSnapshot[]): number {
   }, 0)
 }
 
+export function normalizeCommittedMessage(message: MessageSnapshot): MessageSnapshot {
+  if (Object.prototype.hasOwnProperty.call(message, 'toolMessage')) return message
+  return {
+    ...message,
+    toolMessage: parseStructuredToolMessage(message.content),
+  }
+}
+
 export function buildMessageListCache(messages: MessageSnapshot[], options: BuildMessageListCacheOptions = {}): MessageListCache {
   const deduped: MessageSnapshot[] = []
   const indexById: Record<string, number> = {}
   const indexBySeq: Record<string, number> = {}
 
-  for (const message of messages) {
+  for (const rawMessage of messages) {
+    const message = normalizeCommittedMessage(rawMessage)
     const existingById = indexById[message.id]
     const seqKey = messageGlobalSeqKey(message)
     const existingBySeq = indexBySeq[seqKey]

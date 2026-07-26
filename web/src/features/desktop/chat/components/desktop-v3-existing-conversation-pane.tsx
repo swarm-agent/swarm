@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMatchRoute, useNavigate } from "@tanstack/react-router";
 import {
   ArrowDown,
@@ -27,7 +28,6 @@ import { cn } from "../../../../lib/cn";
 import { ChatMarkdown } from "./chat-markdown";
 import {
   buildStructuredToolMessage,
-  parseStructuredToolMessage,
 } from "../services/tool-message";
 import {
   selectDesktopPlanExecutionView,
@@ -874,11 +874,6 @@ function committedToolRenderKey(message: MessageSnapshot): string {
   return identity ? `live-tool:${identity}` : "";
 }
 
-function isTaskToolMessageContent(content: string): boolean {
-  const envelopePrefix = content.slice(0, 4_096);
-  return /"(?:tool|tool_name)"\s*:\s*"task"/.test(envelopePrefix);
-}
-
 export function desktopV3RenderItemKey(item: DesktopV3RenderItem): string {
   switch (item.type) {
     case "plan-break":
@@ -895,8 +890,8 @@ export function desktopV3RenderItemKey(item: DesktopV3RenderItem): string {
   }
 }
 
-const DEFAULT_TRANSCRIPT_RENDER_WINDOW = 200;
-const TRANSCRIPT_RENDER_WINDOW_STEP = 200;
+const TRANSCRIPT_ROW_ESTIMATE_PX = 120;
+const TRANSCRIPT_ROW_GAP_PX = 20;
 
 export function orderDesktopV3LiveRenderItems(
   items: DesktopV3RenderItem[],
@@ -1589,7 +1584,6 @@ export function DesktopV3ExistingConversationPane({
     null,
   );
   const [olderHistoryAutoActive, setOlderHistoryAutoActive] = useState(false);
-  const [renderWindowSize, setRenderWindowSize] = useState(DEFAULT_TRANSCRIPT_RENDER_WINDOW);
   const [transcriptAction, setTranscriptAction] = useState<'copy' | 'download' | null>(null);
   const loadingOlderHistoryRef = useRef(false);
   const previousHistoryScrollTopRef = useRef<number | null>(null);
@@ -1784,10 +1778,7 @@ export function DesktopV3ExistingConversationPane({
     () => buildDesktopV3ConversationRenderItems(renderedMessages),
     [renderedMessages],
   );
-  const hiddenRenderItemCount = Math.max(0, renderItems.length - renderWindowSize);
-  const visibleRenderItems = hiddenRenderItemCount > 0
-    ? renderItems.slice(hiddenRenderItemCount)
-    : renderItems;
+
   const canonicalFinalHandoffRecommendation = useMemo<DesktopSessionPlanCheckpointRecommendation | null>(() => {
     const checkpointId = planExecutionView?.activeCheckpointId || planExecutionView?.activeCheckpoint?.id || "";
     for (let index = renderItems.length - 1; index >= 0; index -= 1) {
@@ -1802,9 +1793,7 @@ export function DesktopV3ExistingConversationPane({
     const rows: TaskToolRow[] = [];
     for (const item of renderItems) {
       if (item.type === "message") {
-        if (!isTaskToolMessageContent(item.message.content)) continue;
-        const parsed = parseStructuredToolMessage(item.message.content);
-        if (parsed?.tool === "task") rows.push(...parsed.taskRows);
+        if (item.message.toolMessage?.tool === "task") rows.push(...item.message.toolMessage.taskRows);
       } else if (item.type === "live-tool" && item.tool.toolName === "task") {
         const tool = item.tool;
         const state: ToolMessageState = tool.status === "failed" || tool.status === "error"
@@ -1903,9 +1892,18 @@ export function DesktopV3ExistingConversationPane({
     preserveScrollPositionForPrepend,
   } = useDesktopV3StickyBottomScroll({
     resetKey: normalizedSessionId,
-    itemCount: visibleRenderItems.length,
+    itemCount: renderItems.length,
     followKey: scrollFollowKey,
   });
+  const transcriptVirtualizer = useVirtualizer({
+    count: renderItems.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => TRANSCRIPT_ROW_ESTIMATE_PX,
+    getItemKey: (index) => desktopV3RenderItemKey(renderItems[index]),
+    measureElement: (element) => element.getBoundingClientRect().height,
+    overscan: 8,
+  });
+  const virtualTranscriptRows = transcriptVirtualizer.getVirtualItems();
   const runStatusModel: DesktopV3RunStatusModel | null =
     compactStartedAt !== null
       ? {
@@ -2244,7 +2242,6 @@ export function DesktopV3ExistingConversationPane({
 
   useEffect(() => {
     setOlderHistoryAutoActive(false);
-    setRenderWindowSize(DEFAULT_TRANSCRIPT_RENDER_WINDOW);
     setOlderHistoryError(null);
     loadingOlderHistoryRef.current = false;
     previousHistoryScrollTopRef.current = null;
@@ -2687,38 +2684,38 @@ export function DesktopV3ExistingConversationPane({
                     description="Send a message to continue this session."
                   />
                 ) : null}
-                {hiddenRenderItemCount > 0 ? (
-                  <button
-                    type="button"
-                    className="mx-auto rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-xs font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]"
-                    onClick={() => {
-                      preserveScrollPositionForPrepend();
-                      setRenderWindowSize((current) => current + TRANSCRIPT_RENDER_WINDOW_STEP);
-                    }}
+                {renderItems.length > 0 ? (
+                  <div
+                    className="relative min-w-0 shrink-0"
+                    style={{ height: `${transcriptVirtualizer.getTotalSize()}px` }}
+                    data-testid="desktop-chat-virtual-transcript"
                   >
-                    Show {Math.min(TRANSCRIPT_RENDER_WINDOW_STEP, hiddenRenderItemCount)} earlier messages
-                  </button>
+                    {virtualTranscriptRows.map((virtualRow) => {
+                      const item = renderItems[virtualRow.index];
+                      const itemKey = desktopV3RenderItemKey(item);
+                      return (
+                        <div
+                          key={virtualRow.key}
+                          ref={transcriptVirtualizer.measureElement}
+                          data-index={virtualRow.index}
+                          className="absolute left-0 top-0 w-full min-w-0"
+                          style={{ transform: `translateY(${virtualRow.start}px)`, paddingBottom: `${TRANSCRIPT_ROW_GAP_PX}px` }}
+                          data-testid="desktop-chat-row"
+                          data-render-item-type={item.type}
+                          data-render-item-key={itemKey}
+                        >
+                          <DesktopV3RenderItemView
+                            item={item}
+                            thinkingTagsEnabled={thinkingTagsEnabled}
+                            index={virtualRow.index}
+                            taskChildActions={taskChildActions}
+                            onSuggestedPrompt={stableSuggestedPrompt}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
                 ) : null}
-                {visibleRenderItems.map((item, index) => {
-                  const itemKey = desktopV3RenderItemKey(item);
-                  return (
-                    <div
-                      key={itemKey}
-                      className="min-w-0"
-                      data-testid="desktop-chat-row"
-                      data-render-item-type={item.type}
-                      data-render-item-key={itemKey}
-                    >
-                      <DesktopV3RenderItemView
-                        item={item}
-                        thinkingTagsEnabled={thinkingTagsEnabled}
-                        index={index}
-                        taskChildActions={taskChildActions}
-                        onSuggestedPrompt={stableSuggestedPrompt}
-                      />
-                    </div>
-                  );
-                })}
                 {pendingBashPermissions.map((permission) => (
                   <DesktopInlineBashPermissionCard
                     key={`bash-permission:${permission.id}`}
@@ -3282,7 +3279,7 @@ function DesktopV3CommittedMessage({
   taskChildActions?: TaskChildCardActions;
 }) {
   const role = message.role || "message";
-  const toolMessage = parseStructuredToolMessage(message.content);
+  const toolMessage = message.toolMessage ?? null;
   if (toolMessage || role === "tool") {
     return (
       <DesktopV3ToolMessage
@@ -3535,6 +3532,7 @@ export function chatMessageToMessageSnapshot(
     content: message.content,
     metadata: message.metadata,
     created_at: message.createdAt,
+    toolMessage: message.toolMessage ?? null,
   };
 }
 

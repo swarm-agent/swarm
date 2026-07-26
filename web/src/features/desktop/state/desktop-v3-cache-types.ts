@@ -1,5 +1,5 @@
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
-import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../chat/types/chat'
+import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord, StructuredToolMessage } from '../chat/types/chat'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 import type { WorkspaceTodoItem } from '../../workspaces/todos/types'
 
@@ -88,6 +88,8 @@ export interface MessageSnapshot {
   metadata?: Record<string, unknown>
   created_at: number
   execution_epoch?: V3ExecutionEpochRef
+  /** Canonical cache-boundary normalization; renderers must not reparse content. */
+  toolMessage?: StructuredToolMessage | null
 }
 
 export interface V3SessionProjection {

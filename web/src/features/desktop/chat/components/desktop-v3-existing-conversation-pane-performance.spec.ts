@@ -34,7 +34,7 @@ test('existing conversation draft state stays inside the composer-local controll
   assert.match(pane, /controllerRef=\{composerControllerRef\}/)
 })
 
-test('existing conversation windows historical transcript rows', async () => {
+test('existing conversation virtualizes every loaded transcript row', async () => {
   const source = await readFile(paneSourceUrl, 'utf8')
   const pane = componentBody(
     source,
@@ -42,11 +42,14 @@ test('existing conversation windows historical transcript rows', async () => {
     'DesktopV3RenderItemView',
   )
 
-  assert.match(pane, /useState\(DEFAULT_TRANSCRIPT_RENDER_WINDOW\)/)
-  assert.match(pane, /renderItems\.slice\(hiddenRenderItemCount\)/)
-  assert.match(pane, /visibleRenderItems\.map/)
-  assert.match(pane, /Show \{Math\.min\(TRANSCRIPT_RENDER_WINDOW_STEP, hiddenRenderItemCount\)\} earlier messages/)
-  assert.doesNotMatch(pane, /\{renderItems\.map/)
+  assert.match(source, /import \{ useVirtualizer \} from "@tanstack\/react-virtual"/)
+  assert.match(pane, /const transcriptVirtualizer = useVirtualizer\(/)
+  assert.match(pane, /count: renderItems\.length/)
+  assert.match(pane, /measureElement: \(element\) => element\.getBoundingClientRect\(\)\.height/)
+  assert.match(pane, /virtualTranscriptRows\.map/)
+  assert.match(pane, /height: `\$\{transcriptVirtualizer\.getTotalSize\(\)\}px`/)
+  assert.doesNotMatch(pane, /renderItems\.slice/)
+  assert.doesNotMatch(pane, /visibleRenderItems\.map/)
 })
 
 test('existing conversation rows receive a stable suggested-prompt callback', async () => {
