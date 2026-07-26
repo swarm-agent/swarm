@@ -1382,7 +1382,7 @@ func (a *App) applySharedChatRuntimeEvent(event client.StreamEventEnvelope) bool
 }
 
 func decodeSharedChatRuntimeEvent(event client.StreamEventEnvelope) (ui.ChatRunStreamEvent, bool) {
-	var raw client.SessionRunStreamEvent
+	var raw sharedChatRuntimeEventPayload
 	if err := json.Unmarshal(event.Payload, &raw); err != nil {
 		return ui.ChatRunStreamEvent{}, false
 	}

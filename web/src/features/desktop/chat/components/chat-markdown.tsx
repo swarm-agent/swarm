@@ -120,7 +120,14 @@ export function indexBashOutput(output: string): BashOutputIndex {
   const lineLimitedStart = lineStarts[Math.max(0, lineStarts.length - BASH_COLLAPSED_PREVIEW_LINES)] ?? 0;
   const charLimitedStart = Math.max(0, output.length - BASH_COLLAPSED_PREVIEW_CHARS);
   const previewStart = Math.max(lineLimitedStart, charLimitedStart);
-  const previewLineIndex = Math.max(0, lineStarts.findLastIndex((start) => start <= previewStart));
+  let previewLineIndex = 0;
+  for (let index = lineStarts.length - 1; index >= 0; index -= 1) {
+    const lineStart = lineStarts[index];
+    if (lineStart !== undefined && lineStart <= previewStart) {
+      previewLineIndex = index;
+      break;
+    }
+  }
   const previewStartsMidLine = previewStart > (lineStarts[previewLineIndex] ?? 0);
   const previewedLineCount = Math.max(0, lineStarts.length - previewLineIndex);
   const preview = output.slice(previewStart);

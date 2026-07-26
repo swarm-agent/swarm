@@ -387,7 +387,33 @@ func cloneBoolPointer(value *bool) *bool {
 	return &out
 }
 
-func convertClientRunStreamEvent(event client.SessionRunStreamEvent) ui.ChatRunStreamEvent {
+type sharedChatRuntimeEventPayload struct {
+	Type         string                           `json:"type"`
+	SessionID    string                           `json:"session_id,omitempty"`
+	RunID        string                           `json:"run_id,omitempty"`
+	Agent        string                           `json:"agent,omitempty"`
+	Status       string                           `json:"status,omitempty"`
+	Step         int                              `json:"step,omitempty"`
+	Delta        string                           `json:"delta,omitempty"`
+	Summary      string                           `json:"summary,omitempty"`
+	ToolName     string                           `json:"tool_name,omitempty"`
+	CallID       string                           `json:"call_id,omitempty"`
+	Arguments    string                           `json:"arguments,omitempty"`
+	Output       string                           `json:"output,omitempty"`
+	RawOutput    string                           `json:"raw_output,omitempty"`
+	Error        string                           `json:"error,omitempty"`
+	DurationMS   int64                            `json:"duration_ms,omitempty"`
+	Message      *client.SessionMessage           `json:"message,omitempty"`
+	Permission   *client.PermissionRecord         `json:"permission,omitempty"`
+	TurnUsage    *client.SessionTurnUsage         `json:"turn_usage,omitempty"`
+	UsageSummary *client.SessionUsageSummary      `json:"usage_summary,omitempty"`
+	Title        string                           `json:"title,omitempty"`
+	TitleStage   string                           `json:"title_stage,omitempty"`
+	Warning      string                           `json:"warning,omitempty"`
+	Lifecycle    *client.SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+}
+
+func convertClientRunStreamEvent(event sharedChatRuntimeEventPayload) ui.ChatRunStreamEvent {
 	out := ui.ChatRunStreamEvent{
 		Type:         event.Type,
 		SessionID:    event.SessionID,
@@ -432,9 +458,6 @@ func convertClientRunStreamEvent(event client.SessionRunStreamEvent) ui.ChatRunS
 	if event.Permission != nil {
 		perm := convertClientPermission(*event.Permission)
 		out.Permission = &perm
-	}
-	if event.Result.SessionID != "" {
-		out.UsageSummary = convertClientUsageSummary(event.Result.UsageSummary)
 	}
 	return out
 }
