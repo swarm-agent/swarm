@@ -149,11 +149,38 @@ func (s *commandSupervisor) run(ctx context.Context, scope WorkspaceScope, comma
 	ticker := time.NewTicker(s.config.PollInterval)
 	defer ticker.Stop()
 	killed := false
+	var killErr error
+	var terminationTimer *time.Timer
+	var terminationDeadline <-chan time.Time
+	terminate := func(reason string, timedOut bool) {
+		if killed {
+			return
+		}
+		killed = true
+		result.TimedOut = timedOut
+		result.TerminationReason = reason
+		killErr = handle.kill()
+		terminationTimer = time.NewTimer(s.config.WaitDelay)
+		terminationDeadline = terminationTimer.C
+	}
+	defer func() {
+		if terminationTimer != nil {
+			terminationTimer.Stop()
+		}
+	}()
 	for {
 		select {
 		case err := <-waitCh:
 			result.Err = err
 			result.ExitCode = commandExitCode(err)
+			if killErr != nil {
+				result.Err = fmt.Errorf("command containment termination failed: %w", killErr)
+				result.ExitCode = -1
+				result.TerminationReason = "containment_failure"
+				result.Containment.State = "failed"
+				result.Containment.DegradedReason = killErr.Error()
+				return result
+			}
 			if result.TerminationReason == "" {
 				if err != nil {
 					result.TerminationReason = handle.classifyTermination()
@@ -168,16 +195,21 @@ func (s *commandSupervisor) run(ctx context.Context, scope WorkspaceScope, comma
 			}
 			return result
 		case <-ctx.Done():
-			if !killed {
-				killed = true
-				result.TimedOut = errors.Is(ctx.Err(), context.DeadlineExceeded)
-				if result.TimedOut {
-					result.TerminationReason = "timeout"
-				} else {
-					result.TerminationReason = "cancelled"
-				}
-				_ = handle.kill()
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				terminate("timeout", true)
+			} else {
+				terminate("cancelled", false)
 			}
+		case <-terminationDeadline:
+			result.Err = errors.New("command containment termination did not complete within the bounded wait")
+			if killErr != nil {
+				result.Err = fmt.Errorf("command containment termination failed: %w", killErr)
+			}
+			result.ExitCode = -1
+			result.TerminationReason = "containment_failure"
+			result.Containment.State = "failed"
+			result.Containment.DegradedReason = result.Err.Error()
+			return result
 		case <-ticker.C:
 			if !killed {
 				reason, checkErr := s.reserveViolation(scope.PrimaryPath, tempDir)
@@ -186,9 +218,7 @@ func (s *commandSupervisor) run(ctx context.Context, scope WorkspaceScope, comma
 					continue
 				}
 				if reason != "" {
-					killed = true
-					result.TerminationReason = reason
-					_ = handle.kill()
+					terminate(reason, false)
 				}
 			}
 		}
@@ -298,12 +328,25 @@ func commandEnvironment(env []string, tempDir string) []string {
 	out := make([]string, 0, len(env)+3)
 	for _, item := range env {
 		name, _, _ := strings.Cut(item, "=")
-		if name == "TMPDIR" || name == "TMP" || name == "TEMP" {
+		if name == "TMPDIR" || name == "TMP" || name == "TEMP" || sensitiveCommandEnvironment(name) {
 			continue
 		}
 		out = append(out, item)
 	}
 	return append(out, "TMPDIR="+tempDir, "TMP="+tempDir, "TEMP="+tempDir)
+}
+
+func sensitiveCommandEnvironment(name string) bool {
+	name = strings.ToUpper(strings.TrimSpace(name))
+	for _, marker := range []string{
+		"TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "API_KEY",
+		"PRIVATE_KEY", "ACCESS_KEY", "AUTH_SOCK", "BEARER", "COOKIE",
+	} {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 type fallbackPlatformCommand struct {
@@ -320,7 +363,7 @@ func (h *fallbackPlatformCommand) containment() commandContainment {
 	if h.reason != nil {
 		reason = h.reason.Error()
 	}
-	return commandContainment{Mode: "process_group", State: "degraded", Guarantee: "best_effort_process_tree", DegradedReason: reason}
+	return fallbackCommandContainment(reason)
 }
 
 func (h *fallbackPlatformCommand) kill() error                 { return platformKillCommand(h.cmd) }

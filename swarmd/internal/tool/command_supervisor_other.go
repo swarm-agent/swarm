@@ -18,6 +18,10 @@ func platformKillCommand(cmd *exec.Cmd) error {
 	return cmd.Process.Kill()
 }
 
+func fallbackCommandContainment(reason string) commandContainment {
+	return commandContainment{Mode: "parent_process", State: "degraded", Guarantee: "parent_only_no_descendant_containment", DegradedReason: reason}
+}
+
 func filesystemFreeBytes(path string) (uint64, error) {
 	return 0, errors.New("filesystem reserve monitoring is unavailable on this platform")
 }

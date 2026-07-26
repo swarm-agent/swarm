@@ -35,6 +35,21 @@ func developmentSupervisor(t *testing.T) *commandSupervisor {
 	}
 }
 
+type failingKillCommandHandle struct {
+	cmd *exec.Cmd
+}
+
+func (h *failingKillCommandHandle) containment() commandContainment {
+	return commandContainment{Mode: "test", State: "degraded", Guarantee: "none"}
+}
+func (h *failingKillCommandHandle) kill() error { return errors.New("injected kill failure") }
+func (h *failingKillCommandHandle) classifyTermination() string { return "" }
+func (h *failingKillCommandHandle) cleanup() {
+	if h.cmd != nil && h.cmd.Process != nil {
+		_ = h.cmd.Process.Kill()
+	}
+}
+
 func TestCommandSupervisorRequiredContainmentFailsClosed(t *testing.T) {
 	workspace := t.TempDir()
 	supervisor := developmentSupervisor(t)
@@ -45,6 +60,48 @@ func TestCommandSupervisorRequiredContainmentFailsClosed(t *testing.T) {
 	result := supervisor.run(context.Background(), WorkspaceScope{PrimaryPath: workspace}, "printf should-not-run", &strings.Builder{}, &strings.Builder{})
 	if result.TerminationReason != "containment_unavailable" || result.Containment.State != "failed_closed" || result.Err == nil {
 		t.Fatalf("fail-closed result = %#v", result)
+	}
+}
+
+func TestCommandEnvironmentRemovesSecretsAndPreservesRuntimeContext(t *testing.T) {
+	tempDir := t.TempDir()
+	env := commandEnvironment([]string{
+		"PATH=/usr/bin", "HOME=/home/example", "LANG=C.UTF-8", "SHELL=/bin/bash",
+		"SWARMD_TOKEN=secret", "CODEX_API_KEY=secret", "DATABASE_PASSWORD=secret",
+		"AWS_SECRET_ACCESS_KEY=secret", "SESSION_COOKIE=secret", "TMPDIR=/shared",
+	}, tempDir)
+	joined := "\n" + strings.Join(env, "\n") + "\n"
+	for _, preserved := range []string{"PATH=/usr/bin", "HOME=/home/example", "LANG=C.UTF-8", "SHELL=/bin/bash"} {
+		if !strings.Contains(joined, "\n"+preserved+"\n") {
+			t.Fatalf("environment missing %q: %q", preserved, env)
+		}
+	}
+	for _, secret := range []string{"SWARMD_TOKEN", "CODEX_API_KEY", "DATABASE_PASSWORD", "AWS_SECRET_ACCESS_KEY", "SESSION_COOKIE"} {
+		if strings.Contains(joined, "\n"+secret+"=") {
+			t.Fatalf("environment leaked %s: %q", secret, env)
+		}
+	}
+	for _, tempName := range []string{"TMPDIR", "TMP", "TEMP"} {
+		if !strings.Contains(joined, "\n"+tempName+"="+tempDir+"\n") {
+			t.Fatalf("environment missing private %s: %q", tempName, env)
+		}
+	}
+}
+
+func TestCommandSupervisorKillFailureIsBoundedContainmentFailure(t *testing.T) {
+	supervisor := developmentSupervisor(t)
+	supervisor.preparePlatform = func(cmd *exec.Cmd, _ commandSupervisorConfig) (platformCommandHandle, error) {
+		return &failingKillCommandHandle{cmd: cmd}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	result := supervisor.run(ctx, WorkspaceScope{PrimaryPath: t.TempDir()}, "sleep 30", &strings.Builder{}, &strings.Builder{})
+	if result.TerminationReason != "containment_failure" || result.Containment.State != "failed" || result.Err == nil {
+		t.Fatalf("containment failure result = %#v", result)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("kill failure wait was not bounded: %s", elapsed)
 	}
 }
 
