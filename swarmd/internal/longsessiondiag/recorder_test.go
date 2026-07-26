@@ -170,6 +170,75 @@ func TestRecorderDesktopSamplesAreBoundedPrivateAndIncludedInFindings(t *testing
 	}
 }
 
+func TestRecorderSanitizesProviderSnapshots(t *testing.T) {
+	recorder, err := Start(Options{Enabled: true, LogsRoot: t.TempDir(), SampleInterval: time.Hour, ProfileInterval: time.Hour, CPUProfileInterval: time.Hour, DiskBudgetBytes: 64 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateSentinel := "private-provider-sentinel"
+	recorder.RegisterSnapshotProvider("unsafe", func() map[string]any {
+		values := make([]any, maxSnapshotFields+10)
+		for i := range values {
+			values[i] = int64(i)
+		}
+		return map[string]any{"count": int64(3), "private": privateSentinel, "hash": "0123456789abcdef", "values": values}
+	})
+	if err := recorder.captureSample(); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(recorder.Directory(), "samples.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), privateSentinel) || !strings.Contains(string(data), `"count":3`) || !strings.Contains(string(data), `"hash":"0123456789abcdef"`) {
+		t.Fatalf("provider snapshot was not metadata-only: %s", data)
+	}
+	if strings.Count(string(data), `"values"`) == 0 {
+		t.Fatalf("bounded provider values missing: %s", data)
+	}
+}
+
+func TestRecorderPrunesOldRunsAndProfileFiles(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "long-session-diagnostics")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxRetainedRuns+2; i++ {
+		dir := filepath.Join(base, "run-2024010"+string(rune('0'+i)))
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "artifact"), []byte("data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pruneDiagnosticRuns(base, maxRetainedRuns-1, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil || len(entries) != maxRetainedRuns-1 {
+		t.Fatalf("retained runs=%d err=%v", len(entries), err)
+	}
+
+	now := time.Unix(1_700_000_000, 0)
+	r := &Recorder{opts: Options{Now: func() time.Time {
+		now = now.Add(time.Nanosecond)
+		return now
+	}, DiskBudgetBytes: 1 << 20}, dir: t.TempDir()}
+	for i := 0; i < maxRetainedProfiles+1; i++ {
+		if err := r.storeProfile("heap", []byte{byte(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := filepath.Glob(filepath.Join(r.dir, "profile-*.pprof"))
+	if err != nil || len(files) != maxRetainedProfiles || len(r.profiles) != maxRetainedProfiles {
+		t.Fatalf("profile retention files=%d metadata=%d err=%v", len(files), len(r.profiles), err)
+	}
+}
+
 func TestRecorderEnforcesDiskBudget(t *testing.T) {
 	recorder, err := Start(Options{
 		Enabled: true, LogsRoot: t.TempDir(), SampleInterval: time.Hour,

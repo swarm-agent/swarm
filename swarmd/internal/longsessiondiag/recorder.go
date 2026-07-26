@@ -34,6 +34,12 @@ const (
 	DefaultCPUProfileDuration = 10 * time.Second
 	DefaultDiskBudgetBytes    = int64(512 << 20)
 	DefaultMaxProfileBytes    = int64(32 << 20)
+	maxRetainedProfiles = 8
+	// The active run has its own DiskBudgetBytes cap. Startup retains at most
+	// three prior runs whose combined size is at most one configured run budget.
+	maxRetainedRuns   = 4
+	maxSnapshotFields = 64
+	maxSnapshotDepth  = 6
 )
 
 type Options struct {
@@ -99,8 +105,9 @@ type Sample struct {
 	Latency               map[string]LatencySnapshot `json:"latency,omitempty"`
 }
 
-// SnapshotProvider returns a bounded metadata-only snapshot. Providers must not
-// return prompts, messages, headers, credentials, URLs, or paths.
+// SnapshotProvider returns subsystem state. Recorder centrally allowlists only
+// bounded numeric/boolean metadata and 16-character lowercase hex pseudonyms;
+// arbitrary strings, paths, URLs, request content, and credentials are dropped.
 type SnapshotProvider func() map[string]any
 
 type LatencySnapshot struct {
@@ -234,6 +241,9 @@ func Start(opts Options) (*Recorder, error) {
 	}
 	if err := os.Chmod(base, 0o700); err != nil {
 		return nil, fmt.Errorf("secure long-session diagnostics directory: %w", err)
+	}
+	if err := pruneDiagnosticRuns(base, maxRetainedRuns-1, opts.DiskBudgetBytes); err != nil {
+		return nil, fmt.Errorf("prune long-session diagnostics runs: %w", err)
 	}
 	dir, err := createRunDir(base, opts.Now())
 	if err != nil {
@@ -640,6 +650,112 @@ func createRunDir(base string, now time.Time) (string, error) {
 	return dir, nil
 }
 
+func pruneDiagnosticRuns(base string, keep int, budget int64) error {
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return err
+	}
+	var runs []string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "run-") {
+			runs = append(runs, entry.Name())
+		}
+	}
+	sort.Strings(runs)
+	for len(runs) > keep || diagnosticRunsBytes(base, runs) > budget {
+		if len(runs) == 0 {
+			break
+		}
+		if err := os.RemoveAll(filepath.Join(base, runs[0])); err != nil {
+			return err
+		}
+		runs = runs[1:]
+	}
+	return nil
+}
+
+func diagnosticRunsBytes(base string, runs []string) int64 {
+	var total int64
+	for _, name := range runs {
+		bytes, _ := directoryStats(filepath.Join(base, name))
+		total += bytes
+	}
+	return total
+}
+
+func sanitizeSnapshot(input map[string]any) map[string]any {
+	value, ok := sanitizeSnapshotValue(input, 0)
+	if !ok {
+		return nil
+	}
+	out, _ := value.(map[string]any)
+	return out
+}
+
+func sanitizeSnapshotValue(value any, depth int) (any, bool) {
+	if depth > maxSnapshotDepth {
+		return nil, false
+	}
+	switch typed := value.(type) {
+	case nil:
+		return nil, false
+	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number:
+		return typed, true
+	case string:
+		if len(typed) == 16 {
+			for _, ch := range typed {
+				if !((ch >= 'a' && ch <= 'f') || (ch >= '0' && ch <= '9')) {
+					return nil, false
+				}
+			}
+			return typed, true
+		}
+		return nil, false
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			if validMetricName(key) {
+				keys = append(keys, key)
+			}
+		}
+		sort.Strings(keys)
+		if len(keys) > maxSnapshotFields {
+			keys = keys[:maxSnapshotFields]
+		}
+		out := make(map[string]any, len(keys))
+		for _, key := range keys {
+			if sanitized, ok := sanitizeSnapshotValue(typed[key], depth+1); ok {
+				out[key] = sanitized
+			}
+		}
+		return out, len(out) > 0
+	case []map[string]any:
+		out := make([]any, 0, min(len(typed), maxSnapshotFields))
+		for _, item := range typed {
+			if len(out) >= maxSnapshotFields {
+				break
+			}
+			if sanitized, ok := sanitizeSnapshotValue(item, depth+1); ok {
+				out = append(out, sanitized)
+			}
+		}
+		return out, len(out) > 0
+	case []any:
+		out := make([]any, 0, min(len(typed), maxSnapshotFields))
+		for _, item := range typed {
+			if len(out) >= maxSnapshotFields {
+				break
+			}
+			if sanitized, ok := sanitizeSnapshotValue(item, depth+1); ok {
+				out = append(out, sanitized)
+			}
+		}
+		return out, len(out) > 0
+	default:
+		return nil, false
+	}
+}
+
 func (r *Recorder) manifest(ended *time.Time) Manifest {
 	return Manifest{SchemaVersion: 1, StartedAt: r.started, EndedAt: ended,
 		SampleIntervalMS: r.opts.SampleInterval.Milliseconds(), ProfileIntervalMS: r.opts.ProfileInterval.Milliseconds(),
@@ -655,7 +771,7 @@ func (r *Recorder) captureSample() error {
 		for name, provider := range providers {
 			func() {
 				defer func() { _ = recover() }()
-				if snapshot := provider(); len(snapshot) > 0 {
+				if snapshot := sanitizeSnapshot(provider()); len(snapshot) > 0 {
 					sample.Subsystems[name] = snapshot
 				}
 			}()
@@ -842,10 +958,17 @@ func (r *Recorder) storeProfile(kind string, payload []byte) error {
 	}
 	r.mu.Lock()
 	r.profiles = append(r.profiles, ProfileArtifact{Timestamp: stamp, Kind: kind, Artifact: name, Bytes: int64(len(payload))})
-	if len(r.profiles) > 64 {
-		r.profiles = append([]ProfileArtifact(nil), r.profiles[len(r.profiles)-64:]...)
+	var stale []ProfileArtifact
+	if len(r.profiles) > maxRetainedProfiles {
+		stale = append(stale, r.profiles[:len(r.profiles)-maxRetainedProfiles]...)
+		r.profiles = append([]ProfileArtifact(nil), r.profiles[len(r.profiles)-maxRetainedProfiles:]...)
 	}
 	r.mu.Unlock()
+	for _, profile := range stale {
+		if err := os.Remove(filepath.Join(r.dir, filepath.Base(profile.Artifact))); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("prune stale profile %q: %w", profile.Artifact, err)
+		}
+	}
 	return nil
 }
 

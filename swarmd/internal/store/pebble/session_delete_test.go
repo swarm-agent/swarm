@@ -1,11 +1,16 @@
 package pebblestore
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestDeleteSessionsPurgesContentAndRetainsDurableRemoval(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
-	session := SessionSnapshot{ID: "delete-purge", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: t.TempDir(), Title: "Delete me", CreatedAt: 1000, UpdatedAt: 1000}
+	privateSentinel := "private-delete-sentinel"
+	session := SessionSnapshot{ID: "delete-purge", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: t.TempDir(), Title: privateSentinel, Metadata: map[string]any{"private": privateSentinel}, CreatedAt: 1000, UpdatedAt: 1000}
 	createSearchTestSession(t, sessions, session)
 	appendSearchTestMessage(t, sessions, session.ID, session.UserID, session.AccountScopeID, "private content", 2000)
 
@@ -32,6 +37,9 @@ func TestDeleteSessionsPurgesContentAndRetainsDurableRemoval(t *testing.T) {
 	if err != nil || !ok || !tombstone.Deleted {
 		t.Fatalf("durable deletion tombstone missing: ok=%t tombstone=%+v err=%v", ok, tombstone, err)
 	}
+	if tombstone.Session.ID != "" || tombstone.WorkspacePath != session.WorkspacePath || tombstone.UserID != session.UserID || tombstone.AccountScopeID != session.AccountScopeID {
+		t.Fatalf("deletion tombstone retained private session data or lost routing scope: %+v", tombstone)
+	}
 	projection, ok, err := sessions.GetV3SessionProjection(session.ID)
 	if err != nil || !ok || projection.LastEventSeq == 0 {
 		t.Fatalf("durable deletion projection missing: ok=%t projection=%+v err=%v", ok, projection, err)
@@ -39,5 +47,15 @@ func TestDeleteSessionsPurgesContentAndRetainsDurableRemoval(t *testing.T) {
 	outbox, ok, err := sessions.LastV3RealtimeOutboxForSessionAtOrBeforeEndpoint(session.ID, ^uint64(0))
 	if err != nil || !ok || outbox.Event.EventType != "session.deleted" {
 		t.Fatalf("durable deletion outbox missing: ok=%t outbox=%+v err=%v", ok, outbox, err)
+	}
+	persisted, err := json.Marshal(struct {
+		Tombstone V3SessionTombstone
+		Outbox    V3RealtimeOutboxRecord
+	}{tombstone, outbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(persisted), privateSentinel) || outbox.Membership == nil || outbox.Membership.WorkspacePath != session.WorkspacePath || !outbox.Membership.Deleted {
+		t.Fatalf("deletion replay retained private data or lost scoped membership: %s", persisted)
 	}
 }

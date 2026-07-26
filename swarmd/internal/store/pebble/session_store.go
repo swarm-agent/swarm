@@ -693,7 +693,11 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 				EndpointSeq:    endpointSeq,
 				EventSeq:       seq,
 				UpdatedAt:      now,
-				Session:        existing,
+			}
+			// Archived sessions remain restorable. Deleted sessions retain only
+			// routing and ordering fields needed for scoped replay and membership.
+			if kind == "archived" {
+				tombstone.Session = existing
 			}
 			mutationKind := V3SessionMutationDeleteSession
 			eventType := "session.deleted"
@@ -701,7 +705,11 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 				mutationKind = V3SessionMutationArchiveSession
 				eventType = "session.archived"
 			}
-			payload, err := json.Marshal(v3SessionEventReplayPayload{SessionID: sessionID, Seq: seq, Kind: mutationKind, Session: &existing, Tombstone: &tombstone})
+			var replaySession *SessionSnapshot
+			if kind == "archived" {
+				replaySession = &existing
+			}
+			payload, err := json.Marshal(v3SessionEventReplayPayload{SessionID: sessionID, Seq: seq, Kind: mutationKind, Session: replaySession, Tombstone: &tombstone})
 			if err != nil {
 				return fmt.Errorf("marshal v3 session %s payload %q: %w", kind, sessionID, err)
 			}
