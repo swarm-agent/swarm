@@ -207,7 +207,7 @@ func (s *AuthStore) importCredentialBundleLocked(accountScopeID string, bundle C
 			return fmt.Errorf("credential bundle contains duplicate %s/%s", record.Provider, record.ID)
 		}
 		seenKeys[key] = struct{}{}
-		current, exists, err := s.GetCredentialForAccount(accountScopeID, record.Provider, record.ID)
+		current, exists, err := s.getCredentialForAccountLocked(accountScopeID, record.Provider, record.ID)
 		if err != nil {
 			return err
 		}

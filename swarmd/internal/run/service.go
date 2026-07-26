@@ -3259,10 +3259,10 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 		}
 		if isMemoryCompactionEmptySummaryError(reqErr) {
 			runCompactionDebugEvent("memory_compaction_one_shot_empty_retry", map[string]any{
-				"session_id": strings.TrimSpace(sessionID),
-				"provider":   providerID,
-				"model":      modelName,
-				"attempt":    attempt,
+				"session_id":     strings.TrimSpace(sessionID),
+				"provider":       providerID,
+				"model":          modelName,
+				"attempt":        attempt,
 				"error_category": memoryCompactionDebugErrorCategory(reqErr, oneShotResult),
 			})
 			err := fmt.Errorf("Compact one-shot returned no usable summary: %w", reqErr)
@@ -3270,10 +3270,10 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 			return "", err
 		} else if !oneShotResult.indicatesOverflow() && !isContextOverflowDiagnostic(reqErr.Error()) {
 			runCompactionDebugEvent("memory_compaction_one_shot_failed", map[string]any{
-				"session_id": strings.TrimSpace(sessionID),
-				"provider":   providerID,
-				"model":      modelName,
-				"attempt":    attempt,
+				"session_id":     strings.TrimSpace(sessionID),
+				"provider":       providerID,
+				"model":          modelName,
+				"attempt":        attempt,
 				"error_category": memoryCompactionDebugErrorCategory(reqErr, oneShotResult),
 			})
 			err := fmt.Errorf("memory compaction one-shot failed: %w", reqErr)
@@ -3281,10 +3281,10 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 			return "", err
 		} else {
 			runCompactionDebugEvent("memory_compaction_one_shot_overflow", map[string]any{
-				"session_id": strings.TrimSpace(sessionID),
-				"provider":   providerID,
-				"model":      modelName,
-				"attempt":    attempt,
+				"session_id":     strings.TrimSpace(sessionID),
+				"provider":       providerID,
+				"model":          modelName,
+				"attempt":        attempt,
 				"error_category": memoryCompactionDebugErrorCategory(reqErr, oneShotResult),
 			})
 			err := fmt.Errorf("Compact one-shot overflowed after bounded input selection: %w", reqErr)

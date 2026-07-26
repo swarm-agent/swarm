@@ -121,8 +121,8 @@ func (s *Server) handleSessionV3PrimaryRunStreamControl(w http.ResponseWriter, r
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"ok": true, "session_id": sessionID, "run_id": state.runID,
 			"status": "accepted", "background": inbound.RunRequest.Background,
-			"target_kind": strings.TrimSpace(inbound.RunRequest.TargetKind),
-			"target_name": strings.TrimSpace(inbound.RunRequest.TargetName),
+			"target_kind":     strings.TrimSpace(inbound.RunRequest.TargetKind),
+			"target_name":     strings.TrimSpace(inbound.RunRequest.TargetName),
 			"owner_transport": runStreamOwnerTransport(inbound.RunRequest),
 		})
 	case "run.stop", "stop":

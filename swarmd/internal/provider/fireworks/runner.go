@@ -84,8 +84,8 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 	result := parseChatCompletionResponse(decoded)
 	annotateUsage(&result.Usage, serving)
 	fireworksDebugEvent("response", map[string]any{
-		"transport":  "sync",
-		"session_id": req.SessionID,
+		"transport":           "sync",
+		"session_id":          req.SessionID,
 		"model":               modelID,
 		"choice_count":        len(decoded.Choices),
 		"function_call_count": len(result.FunctionCalls),
@@ -155,8 +155,8 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	result := parseChatCompletionResponse(decoded)
 	annotateUsage(&result.Usage, serving)
 	fireworksDebugEvent("response", map[string]any{
-		"transport":  "stream",
-		"session_id": req.SessionID,
+		"transport":           "stream",
+		"session_id":          req.SessionID,
 		"model":               modelID,
 		"choice_count":        len(decoded.Choices),
 		"function_call_count": len(result.FunctionCalls),

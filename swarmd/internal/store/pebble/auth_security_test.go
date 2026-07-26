@@ -101,6 +101,35 @@ func TestCredentialBundlePreparationFailureWritesNothing(t *testing.T) {
 	}
 }
 
+func TestCredentialUpdatePathsDoNotReenterCredentialLock(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(filepath.Join(dir, "metadata.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	secrets, err := Open(filepath.Join(dir, "secrets.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secrets.Close()
+
+	auth := NewAuthStoreWithSecretStore(store, secrets)
+	record, err := auth.UpsertCredential(AuthCredentialInput{AccountScopeID: "account-1", Provider: "openai", ID: "primary", Type: AuthTypeAPI, APIKey: "first", SetActive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.UpdateCredentialConnectionForAccount(record.AccountScopeID, record.Provider, record.ID, &AuthCredentialConnectionRecord{Status: "connected"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.SetActiveCredentialForAccount(record.AccountScopeID, record.Provider, record.ID); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := auth.DeleteCredentialForAccount(record.AccountScopeID, record.Provider, record.ID); err != nil || !removed {
+		t.Fatalf("delete credential: removed=%v err=%v", removed, err)
+	}
+}
+
 func TestCredentialSaveCommitsSecretIndexesAndActivePointerTogether(t *testing.T) {
 	dir := t.TempDir()
 	store, err := Open(filepath.Join(dir, "metadata.pebble"))

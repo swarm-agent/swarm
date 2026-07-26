@@ -34,7 +34,7 @@ const (
 	DefaultCPUProfileDuration = 10 * time.Second
 	DefaultDiskBudgetBytes    = int64(512 << 20)
 	DefaultMaxProfileBytes    = int64(32 << 20)
-	maxRetainedProfiles = 8
+	maxRetainedProfiles       = 8
 	// The active run has its own DiskBudgetBytes cap. Startup retains at most
 	// three prior runs whose combined size is at most one configured run budget.
 	maxRetainedRuns   = 4
