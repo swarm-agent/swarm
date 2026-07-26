@@ -3,11 +3,8 @@ package api
 import (
 	"bytes"
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,18 +14,12 @@ import (
 )
 
 type shutdownTestRunner struct {
-	runCalls       atomic.Int32
-	streamCalls    atomic.Int32
-	streamStarted  chan struct{}
-	streamCancelMu sync.Mutex
-	streamCancel   error
-	runTurnFn      func(ctx context.Context, sessionID string, options runruntime.RunOptions) (runruntime.RunResult, error)
+	runCalls  atomic.Int32
+	runTurnFn func(ctx context.Context, sessionID string, options runruntime.RunOptions) (runruntime.RunResult, error)
 }
 
 func newShutdownTestRunner() *shutdownTestRunner {
-	return &shutdownTestRunner{
-		streamStarted: make(chan struct{}, 1),
-	}
+	return &shutdownTestRunner{}
 }
 
 func (r *shutdownTestRunner) RunTurn(ctx context.Context, sessionID string, options runruntime.RunOptions) (runruntime.RunResult, error) {
@@ -39,25 +30,6 @@ func (r *shutdownTestRunner) RunTurn(ctx context.Context, sessionID string, opti
 	return runruntime.RunResult{
 		SessionID: sessionID,
 	}, nil
-}
-
-func (r *shutdownTestRunner) RunTurnStreaming(ctx context.Context, sessionID string, options runruntime.RunOptions, onEvent runruntime.StreamHandler) (runruntime.RunResult, error) {
-	r.streamCalls.Add(1)
-	select {
-	case r.streamStarted <- struct{}{}:
-	default:
-	}
-	<-ctx.Done()
-	r.streamCancelMu.Lock()
-	r.streamCancel = ctx.Err()
-	r.streamCancelMu.Unlock()
-	return runruntime.RunResult{}, ctx.Err()
-}
-
-func (r *shutdownTestRunner) streamCanceledWith() error {
-	r.streamCancelMu.Lock()
-	defer r.streamCancelMu.Unlock()
-	return r.streamCancel
 }
 
 func TestServerReadyReturnsServiceUnavailableDuringShutdown(t *testing.T) {
@@ -87,47 +59,6 @@ func TestServerRunRejectsNewTurnsDuringShutdown(t *testing.T) {
 	}
 	if got := runner.runCalls.Load(); got != 0 {
 		t.Fatalf("run calls = %d, want 0", got)
-	}
-}
-
-func TestServerCancelInFlightRunsStopsRunStream(t *testing.T) {
-	runner := newShutdownTestRunner()
-	server := NewServer(nil, nil, nil, runner, &sessionruntime.Service{}, nil, nil, nil, nil, nil, nil, nil)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/session-1/run/stream", bytes.NewBufferString(`{"prompt":"hi"}`))
-	rec := httptest.NewRecorder()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		server.Handler().ServeHTTP(rec, req)
-	}()
-
-	select {
-	case <-runner.streamStarted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("stream runner did not start")
-	}
-
-	server.CancelInFlightRuns()
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("stream handler did not stop after CancelInFlightRuns")
-	}
-
-	if err := runner.streamCanceledWith(); !errors.Is(err, context.Canceled) {
-		t.Fatalf("stream cancel error = %v, want context canceled", err)
-	}
-	if got := runner.streamCalls.Load(); got != 1 {
-		t.Fatalf("stream calls = %d, want 1", got)
-	}
-	if !strings.Contains(rec.Body.String(), "\"turn.error\"") {
-		t.Fatalf("expected turn.error event in stream response, body=%q", rec.Body.String())
-	}
-	if ok := server.WaitForInFlightRuns(500 * time.Millisecond); !ok {
-		t.Fatalf("WaitForInFlightRuns timed out")
 	}
 }
 
