@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -14,7 +15,7 @@ func TestSessionsV3PrimaryMetadataUpdateUsesV3Mutation(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "metadata-create", "metadata", pebblestore.ModelPreference{})
 
-	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/metadata", bytes.NewBufferString(`{"metadata":{"subagent":"clone","swarm_v3_desktop_sidebar_pinned":true,"agent_name":"forbidden"}}`))
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/metadata", bytes.NewBufferString(`{"client_request_id":"metadata-update-1","metadata":{"subagent":"clone","swarm_v3_desktop_sidebar_pinned":true,"agent_name":"forbidden"}}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
@@ -54,6 +55,117 @@ func TestSessionsV3PrimaryMetadataUpdateUsesV3Mutation(t *testing.T) {
 	if payload.Session != nil || payload.Messages != nil || payload.Events != nil || payload.WorksetID != "" || payload.Worksets != nil || payload.Subscriptions != nil {
 		t.Fatalf("metadata mutation should return metadata delta only, got body=%s", rec.Body.String())
 	}
+}
+
+func TestSessionsV3PrimaryMutationSubresourcesRequireClientRequestID(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "subresource-key-create", "subresource key", pebblestore.ModelPreference{})
+
+	for _, tc := range []struct {
+		path string
+		body string
+	}{
+		{path: "mode", body: `{"mode":"auto"}`},
+		{path: "agent", body: `{"agent_name":"swarm"}`},
+		{path: "metadata", body: `{"metadata":{"subagent":"clone"}}`},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/"+tc.path, bytes.NewBufferString(tc.body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "client_request_id is required") {
+			t.Fatalf("%s missing key status = %d body=%s", tc.path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestSessionsV3PrimaryMetadataUpdateIdempotency(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "metadata-idempotency-create", "metadata idempotency", pebblestore.ModelPreference{})
+	post := func(body string) (int, sessionMutationEnvelope) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/metadata", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+		var payload sessionMutationEnvelope
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode metadata response: %v body=%s", err, rec.Body.String())
+		}
+		return rec.Code, payload
+	}
+
+	status, first := post(`{"client_request_id":"metadata-idempotency-1","metadata":{"subagent":"clone"}}`)
+	if status != http.StatusOK || first.Mutation.Event.Seq == 0 || first.Mutation.Replayed {
+		t.Fatalf("first metadata mutation status=%d payload=%+v", status, first)
+	}
+	status, replay := post(`{"client_request_id":"metadata-idempotency-1","metadata":{"subagent":"clone"}}`)
+	if status != http.StatusOK || !replay.Mutation.Replayed || replay.Mutation.Event.Seq != first.Mutation.Event.Seq {
+		t.Fatalf("metadata replay status=%d payload=%+v", status, replay)
+	}
+	status, conflict := post(`{"client_request_id":"metadata-idempotency-1","metadata":{"subagent":"different"}}`)
+	if status != http.StatusConflict || conflict.Conflict == nil {
+		t.Fatalf("metadata conflict status=%d payload=%+v", status, conflict)
+	}
+	status, distinct := post(`{"client_request_id":"metadata-idempotency-2","metadata":{"subagent":"clone"}}`)
+	if status != http.StatusOK || distinct.Mutation.Replayed || distinct.Mutation.Event.Seq <= first.Mutation.Event.Seq {
+		t.Fatalf("distinct metadata key status=%d payload=%+v", status, distinct)
+	}
+}
+
+func TestSessionsV3PrimaryModeAndAgentUpdateIdempotency(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		path         string
+		firstBody    string
+		conflictBody string
+		distinctBody string
+	}{
+		{name: "mode", path: "mode", firstBody: `{"client_request_id":"mode-key-1","mode":"auto"}`, conflictBody: `{"client_request_id":"mode-key-1","mode":"plan"}`, distinctBody: `{"client_request_id":"mode-key-2","mode":"auto"}`},
+		{name: "agent", path: "agent", firstBody: `{"client_request_id":"agent-key-1","agent_name":"swarm"}`, conflictBody: `{"client_request_id":"agent-key-1","agent_name":"system-coder"}`, distinctBody: `{"client_request_id":"agent-key-2","agent_name":"swarm"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+			created := createSessionsV3PrimaryTestSessionWithPreference(t, server, tc.name+"-idempotency-create", tc.name+" idempotency", pebblestore.ModelPreference{})
+			post := func(body string) (int, sessionMutationEnvelope) {
+				t.Helper()
+				req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/"+tc.path, bytes.NewBufferString(body))
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+				var payload sessionMutationEnvelope
+				if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+					t.Fatalf("decode %s response: %v body=%s", tc.name, err, rec.Body.String())
+				}
+				return rec.Code, payload
+			}
+
+			status, first := post(tc.firstBody)
+			if status != http.StatusOK || first.Mutation.Event.Seq == 0 || first.Mutation.Replayed {
+				t.Fatalf("first %s mutation status=%d payload=%+v", tc.name, status, first)
+			}
+			status, replay := post(tc.firstBody)
+			if status != http.StatusOK || !replay.Mutation.Replayed || replay.Mutation.Event.Seq != first.Mutation.Event.Seq {
+				t.Fatalf("%s replay status=%d payload=%+v", tc.name, status, replay)
+			}
+			status, conflict := post(tc.conflictBody)
+			if status != http.StatusConflict || conflict.Conflict == nil {
+				t.Fatalf("%s conflict status=%d payload=%+v", tc.name, status, conflict)
+			}
+			status, distinct := post(tc.distinctBody)
+			if status != http.StatusOK || distinct.Mutation.Replayed || distinct.Mutation.Event.Seq <= first.Mutation.Event.Seq {
+				t.Fatalf("distinct %s key status=%d payload=%+v", tc.name, status, distinct)
+			}
+		})
+	}
+}
+
+type sessionMutationEnvelope struct {
+	Mutation struct {
+		Event    pebblestore.V3SessionEvent `json:"event"`
+		Replayed bool                       `json:"replayed"`
+	} `json:"mutation"`
+	Conflict any `json:"conflict"`
 }
 
 func TestSessionsV3PrimaryHydrateOmitsActivePlanAndHistory(t *testing.T) {

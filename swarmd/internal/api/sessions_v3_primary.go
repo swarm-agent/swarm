@@ -112,11 +112,15 @@ type sessionsV3CompactRequest struct {
 }
 
 type sessionsV3ModeRequest struct {
-	Mode string `json:"mode"`
+	Mode            string `json:"mode"`
+	ClientRequestID string `json:"client_request_id,omitempty"`
+	IdempotencyKey  string `json:"idempotency_key,omitempty"`
 }
 
 type sessionsV3AgentRequest struct {
-	AgentName string `json:"agent_name"`
+	AgentName       string `json:"agent_name"`
+	ClientRequestID string `json:"client_request_id,omitempty"`
+	IdempotencyKey  string `json:"idempotency_key,omitempty"`
 }
 
 type sessionsV3PreferenceRequest struct {
@@ -136,7 +140,9 @@ type sessionsV3SettingsPatchRequest struct {
 }
 
 type sessionsV3MetadataRequest struct {
-	Metadata map[string]any `json:"metadata"`
+	Metadata        map[string]any `json:"metadata"`
+	ClientRequestID string         `json:"client_request_id,omitempty"`
+	IdempotencyKey  string         `json:"idempotency_key,omitempty"`
 }
 
 type sessionsV3TitleRequest struct {
@@ -1443,6 +1449,10 @@ func (s *Server) handleSessionV3PrimaryMode(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	clientRequestID, ok := sessionsV3MutationClientRequestID(w, r, req.ClientRequestID, req.IdempotencyKey)
+	if !ok {
+		return
+	}
 	mode := strings.ToLower(strings.TrimSpace(req.Mode))
 	if !sessionruntime.IsValidMode(mode) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid mode %q", req.Mode))
@@ -1461,10 +1471,6 @@ func (s *Server) handleSessionV3PrimaryMode(w http.ResponseWriter, r *http.Reque
 	if s.rejectSystemSidechatMutation(w, session) {
 		return
 	}
-	if sessionruntime.NormalizeMode(session.Mode) == mode {
-		writeJSON(w, http.StatusOK, s.sessionV3ModeMutationResponseWithPolicy(session, mode, nil))
-		return
-	}
 	next := session
 	transition, err := s.resolveSessionsV3ModeTransition(session, mode)
 	if err != nil {
@@ -1478,7 +1484,7 @@ func (s *Server) handleSessionV3PrimaryMode(w http.ResponseWriter, r *http.Reque
 	next.Metadata["agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
 	next.Metadata["resolved_agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
 	next.UpdatedAt = time.Now().UnixMilli()
-	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMode, map[string]any{"mode": mode, "preference": transition.Preference, "agent_model_policy": transition.AgentModelPolicy})
+	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMode, map[string]any{"mode": mode})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1496,8 +1502,8 @@ func (s *Server) handleSessionV3PrimaryMode(w http.ResponseWriter, r *http.Reque
 		SessionID:       sessionID,
 		UserID:          principal.UserID,
 		AccountScopeID:  principal.AccountScopeID,
-		ClientRequestID: "mode:" + sessionID + ":" + mode + ":" + fmt.Sprint(next.UpdatedAt),
-		IdempotencyKey:  "mode:" + sessionID + ":" + mode + ":" + fmt.Sprint(next.UpdatedAt),
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
 		PayloadHash:     payloadHash,
 		RequestHash:     payloadHash,
 		Kind:            sessionruntime.SessionMutationUpdateMode,
@@ -1506,6 +1512,10 @@ func (s *Server) handleSessionV3PrimaryMode(w http.ResponseWriter, r *http.Reque
 		NowUnixMs:       next.UpdatedAt,
 	})
 	if err != nil {
+		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "conflict": result.Conflict})
+			return
+		}
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -1520,6 +1530,10 @@ func (s *Server) handleSessionV3PrimaryAgent(w http.ResponseWriter, r *http.Requ
 	var req sessionsV3AgentRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	clientRequestID, ok := sessionsV3MutationClientRequestID(w, r, req.ClientRequestID, req.IdempotencyKey)
+	if !ok {
 		return
 	}
 	resolvedAgent, err := s.resolveSessionsV3PrimaryCreateAgent(principal, req.AgentName)
@@ -1542,7 +1556,7 @@ func (s *Server) handleSessionV3PrimaryAgent(w http.ResponseWriter, r *http.Requ
 	next := current
 	next.Metadata = sessionsV3AgentSwitchMetadata(current.Metadata, resolvedAgent)
 	next.UpdatedAt = time.Now().UnixMilli()
-	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMetadata, map[string]any{"agent_name": resolvedAgent.Name, "metadata": next.Metadata})
+	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMetadata, map[string]any{"agent_name": resolvedAgent.Name})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1556,8 +1570,8 @@ func (s *Server) handleSessionV3PrimaryAgent(w http.ResponseWriter, r *http.Requ
 		SessionID:       sessionID,
 		UserID:          principal.UserID,
 		AccountScopeID:  principal.AccountScopeID,
-		ClientRequestID: "agent:" + sessionID + ":" + resolvedAgent.Name + ":" + fmt.Sprint(next.UpdatedAt),
-		IdempotencyKey:  "agent:" + sessionID + ":" + resolvedAgent.Name + ":" + fmt.Sprint(next.UpdatedAt),
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
 		PayloadHash:     payloadHash,
 		RequestHash:     payloadHash,
 		Kind:            sessionruntime.SessionMutationUpdateMetadata,
@@ -1567,6 +1581,10 @@ func (s *Server) handleSessionV3PrimaryAgent(w http.ResponseWriter, r *http.Requ
 		NowUnixMs:       next.UpdatedAt,
 	})
 	if err != nil {
+		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "conflict": result.Conflict})
+			return
+		}
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -1912,10 +1930,14 @@ func (s *Server) handleSessionV3PrimaryMetadata(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	clientRequestID, ok := sessionsV3MutationClientRequestID(w, r, req.ClientRequestID, req.IdempotencyKey)
+	if !ok {
+		return
+	}
 	next := session
 	next.Metadata = mergeSessionsV3MetadataUpdate(session.Metadata, req.Metadata)
 	next.UpdatedAt = time.Now().UnixMilli()
-	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMetadata, map[string]any{"metadata": next.Metadata})
+	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMetadata, map[string]any{"metadata": req.Metadata})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1929,8 +1951,8 @@ func (s *Server) handleSessionV3PrimaryMetadata(w http.ResponseWriter, r *http.R
 		SessionID:       sessionID,
 		UserID:          principal.UserID,
 		AccountScopeID:  principal.AccountScopeID,
-		ClientRequestID: "metadata:" + sessionID + ":" + fmt.Sprint(next.UpdatedAt),
-		IdempotencyKey:  "metadata:" + sessionID + ":" + fmt.Sprint(next.UpdatedAt),
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
 		PayloadHash:     payloadHash,
 		RequestHash:     payloadHash,
 		Kind:            sessionruntime.SessionMutationUpdateMetadata,
@@ -1939,6 +1961,10 @@ func (s *Server) handleSessionV3PrimaryMetadata(w http.ResponseWriter, r *http.R
 		NowUnixMs:       next.UpdatedAt,
 	})
 	if err != nil {
+		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "conflict": result.Conflict})
+			return
+		}
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -2752,6 +2778,19 @@ func sessionsV3MetadataString(metadata map[string]any, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func sessionsV3MutationClientRequestID(w http.ResponseWriter, r *http.Request, requestID, idempotencyKey string) (string, bool) {
+	clientRequestID := strings.TrimSpace(firstNonEmpty(requestID, idempotencyKey, r.Header.Get("Idempotency-Key")))
+	if clientRequestID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("client_request_id is required"))
+		return "", false
+	}
+	if len(clientRequestID) > 256 {
+		writeError(w, http.StatusBadRequest, errors.New("client_request_id must be 256 characters or fewer"))
+		return "", false
+	}
+	return clientRequestID, true
 }
 
 func sessionV3MutationResultResponse(result sessionruntime.SessionMutationResult) sessionruntime.SessionMutationResult {
