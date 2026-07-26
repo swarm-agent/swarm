@@ -888,6 +888,86 @@ func TestPermissionCardRendersOnlyOutlineWithoutPanelBackgroundBleed(t *testing.
 	}
 }
 
+func TestAskUserPermissionRendersInteractiveChoicesAndSubmitsCanonicalAnswer(t *testing.T) {
+	permission := client.PermissionRecord{
+		ID: "permission-ask", SessionID: "session-ask", ToolName: "ask-user", Requirement: "user_input", Status: "pending",
+		ToolArguments: `{"title":"Choose deployment","context":"Pick the safe target.","question":"Where should this run?","options":[{"label":"Staging","value":"staging","description":"Use test infrastructure."},{"label":"Production","value":"production"}]}`,
+	}
+	resolved := permission
+	resolved.Status = "approved"
+	resolved.Decision = "allow_once"
+	transport := &fakeTransport{resolvedPermission: resolved}
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-ask"}, PendingPermissions: []client.PermissionRecord{permission}}})
+	page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
+
+	page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	rows := page.renderRows(store.Snapshot(), 88, testPageStyles())
+	drawn := renderRowsText(rows)
+	for _, want := range []string{"Choose deployment", "Pick the safe target.", "Where should this run?", "1 Staging", "2 Production", "Enter Select", "S Submit"} {
+		if !strings.Contains(drawn, want) {
+			t.Fatalf("ask-user card missing %q:\n%s", want, drawn)
+		}
+	}
+	if strings.Contains(drawn, `{"title"`) {
+		t.Fatalf("ask-user card leaked raw JSON:\n%s", drawn)
+	}
+
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	deadline := time.Now().Add(time.Second)
+	for page.PendingPermissionVisible() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	transport.mu.Lock()
+	request := transport.permissionRequest
+	transport.mu.Unlock()
+	if request.permissionID != permission.ID || request.action != "allow_once" || request.reason != "production" {
+		t.Fatalf("ask-user resolution request = %#v", request)
+	}
+}
+
+func TestWorkspaceScopePermissionRendersChoicesAndForwardsAddDirDecision(t *testing.T) {
+	permission := client.PermissionRecord{
+		ID: "permission-scope", SessionID: "session-scope", ToolName: "read", Requirement: "workspace_scope", Status: "pending",
+		ToolArguments: `{"title":"Allow read access outside the current workspace?","summary":"Choose temporary or saved access.","tool":{"name":"read"},"request":{"requested_path":"/external/project/file.go","resolved_target_path":"/external/project/file.go","directory_path":"/external/project","access_label":"read access"},"workspace":{"exists":true,"path":"/workspace","name":"Saved workspace"},"actions":{"session_allow":{"decision":"session_allow","label":"Allow This Session","available":true},"workspace_add_dir":{"decision":"workspace_add_dir","label":"Add To Workspace","available":true}}}`,
+	}
+	resolved := permission
+	resolved.Status = "approved"
+	resolved.Decision = "allow_once"
+	transport := &fakeTransport{resolvedPermission: resolved}
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-scope"}, PendingPermissions: []client.PermissionRecord{permission}}})
+	page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
+
+	page.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
+	rows := page.renderRows(store.Snapshot(), 100, testPageStyles())
+	drawn := renderRowsText(rows)
+	for _, want := range []string{"Allow read access outside the current workspace?", "REQUESTED PATH", "/external/project/file.go", "SESSION SCOPE ROOT", "Allow This Session", "Add To Workspace", "Deny"} {
+		if !strings.Contains(drawn, want) {
+			t.Fatalf("workspace-scope card missing %q:\n%s", want, drawn)
+		}
+	}
+	if strings.Contains(drawn, `{"title"`) {
+		t.Fatalf("workspace-scope card leaked raw JSON:\n%s", drawn)
+	}
+
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	deadline := time.Now().Add(time.Second)
+	for page.PendingPermissionVisible() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	transport.mu.Lock()
+	request := transport.permissionRequest
+	transport.mu.Unlock()
+	var reason map[string]string
+	if err := json.Unmarshal([]byte(request.reason), &reason); err != nil {
+		t.Fatalf("decode workspace decision: %v (%q)", err, request.reason)
+	}
+	if request.permissionID != permission.ID || request.action != "allow_once" || reason["path_id"] != workspaceScopeDecisionPathID || reason["decision"] != "workspace_add_dir" {
+		t.Fatalf("workspace-scope resolution request = %#v reason=%#v", request, reason)
+	}
+}
+
 func TestBashPermissionCardUsesBackendRulePreviewLikeDesktop(t *testing.T) {
 	permission := client.PermissionRecord{
 		ID: "permission-bash", SessionID: "session-bash", ToolName: "bash", Mode: "auto", Status: "pending",

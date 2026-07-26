@@ -78,60 +78,71 @@ type Page struct {
 	runtime *Runtime
 	styles  PageStyles
 
-	mu                         sync.Mutex
-	input                      []rune
-	cursor                     int
-	pasteActive                bool
-	pasteBuffer                []rune
-	scroll                     int
-	follow                     bool
-	status                     string
-	errText                    string
-	busy                       bool
-	rowCache                   map[string]cachedRows
-	lastWidth                  int
-	lastHeight                 int
-	modelTarget                footerbar.Rect
-	routeLabel                 string
-	profileLabel               string
-	showHeader                 bool
-	showThinkingTags           bool
-	commandEmission            string
-	modelPicker                bool
-	modelLoading               bool
-	planModal                  bool
-	planModalScroll            int
-	planModalPlan              *client.SessionPlan
-	modelOptions               []client.ModelCatalogRecord
-	modelIndex                 int
-	commandSuggestions         []CommandSuggestion
-	commandPaletteIndex        int
-	commandPaletteOptionIndex  int
-	commandPaletteOptionOwner  string
-	pendingCommand             string
-	matchKey                   func(*tcell.EventKey, string) bool
-	runTimer                   *time.Timer
-	permissionIndex            int
-	permissionInput            []rune
-	permissionBusy             bool
-	permissionError            string
-	permissionPrefix           string
-	permissionPrefixID         string
-	permissionPrefixLoading    bool
-	permissionPlanReview       bool
-	permissionPlanReviewID     string
-	permissionApproveTarget    footerbar.Rect
-	permissionDenyTarget       footerbar.Rect
-	permissionAlwaysTarget     footerbar.Rect
-	permissionAlwaysDenyTarget footerbar.Rect
-	handoffFocus               bool
-	handoffMessageID           string
-	handoffControl             int
-	handoffTargets             map[string]footerbar.Rect
-	handoffDetailsModal        bool
-	handoffDetailsScroll       int
-	handoffDetailsMessageID    string
-	handoffDetails             *client.PlanFinalHandoff
+	mu                           sync.Mutex
+	input                        []rune
+	cursor                       int
+	pasteActive                  bool
+	pasteBuffer                  []rune
+	scroll                       int
+	follow                       bool
+	status                       string
+	errText                      string
+	busy                         bool
+	rowCache                     map[string]cachedRows
+	lastWidth                    int
+	lastHeight                   int
+	modelTarget                  footerbar.Rect
+	routeLabel                   string
+	profileLabel                 string
+	showHeader                   bool
+	showThinkingTags             bool
+	commandEmission              string
+	modelPicker                  bool
+	modelLoading                 bool
+	planModal                    bool
+	planModalScroll              int
+	planModalPlan                *client.SessionPlan
+	modelOptions                 []client.ModelCatalogRecord
+	modelIndex                   int
+	commandSuggestions           []CommandSuggestion
+	commandPaletteIndex          int
+	commandPaletteOptionIndex    int
+	commandPaletteOptionOwner    string
+	pendingCommand               string
+	matchKey                     func(*tcell.EventKey, string) bool
+	runTimer                     *time.Timer
+	permissionIndex              int
+	permissionInput              []rune
+	permissionBusy               bool
+	permissionError              string
+	permissionPrefix             string
+	permissionPrefixID           string
+	permissionPrefixLoading      bool
+	permissionPlanReview         bool
+	permissionPlanReviewID       string
+	permissionInteractionID      string
+	permissionAskQuestion        int
+	permissionAskSelections      map[string]int
+	permissionAskAnswers         map[string]string
+	permissionAskCustomInput     []rune
+	permissionAskCustomMode      bool
+	permissionWorkspaceSelection int
+	permissionApproveTarget      footerbar.Rect
+	permissionDenyTarget         footerbar.Rect
+	permissionAlwaysTarget       footerbar.Rect
+	permissionAlwaysDenyTarget   footerbar.Rect
+	permissionAskSelectTarget    footerbar.Rect
+	permissionAskSubmitTarget    footerbar.Rect
+	permissionWorkspaceTarget    footerbar.Rect
+	permissionWorkspaceAddTarget footerbar.Rect
+	handoffFocus                 bool
+	handoffMessageID             string
+	handoffControl               int
+	handoffTargets               map[string]footerbar.Rect
+	handoffDetailsModal          bool
+	handoffDetailsScroll         int
+	handoffDetailsMessageID      string
+	handoffDetails               *client.PlanFinalHandoff
 }
 
 const (
@@ -962,6 +973,7 @@ func (p *Page) ensurePermissionPrefixLocked() {
 	}
 	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
 	permission := permissions[p.permissionIndex]
+	p.syncPermissionInteractionLocked(permission)
 	if intent, ok := parsePlanPermissionIntent(permission); ok && p.permissionPlanReviewID != permission.ID {
 		p.permissionPlanReviewID = permission.ID
 		p.permissionPlanReview = !intent.ContinueAutomatically || strings.EqualFold(intent.ContinuationPolicy, "review_each_checkpoint")
@@ -999,7 +1011,15 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 		return PageActionNone
 	}
 	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
-	planIntent, planPermission := parsePlanPermissionIntent(permissions[p.permissionIndex])
+	permission := permissions[p.permissionIndex]
+	p.syncPermissionInteractionLocked(permission)
+	if isAskUserPermission(permission) {
+		return p.handleAskUserPermissionKeyLocked(permission, ev)
+	}
+	if isWorkspaceScopePermission(permission) {
+		return p.handleWorkspaceScopePermissionKeyLocked(permission, ev)
+	}
+	planIntent, planPermission := parsePlanPermissionIntent(permission)
 	if planPermission && p.permissionPlanReviewID != permissions[p.permissionIndex].ID {
 		p.permissionPlanReviewID = permissions[p.permissionIndex].ID
 		p.permissionPlanReview = !planIntent.ContinueAutomatically || strings.EqualFold(planIntent.ContinuationPolicy, "review_each_checkpoint")
@@ -1095,9 +1115,12 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 }
 
 func (p *Page) resolvePermissionLocked(permission client.PermissionRecord, action string) {
+	p.resolvePermissionWithReasonLocked(permission, action, strings.TrimSpace(string(p.permissionInput)))
+}
+
+func (p *Page) resolvePermissionWithReasonLocked(permission client.PermissionRecord, action, reason string) {
 	p.permissionBusy = true
 	p.permissionError = ""
-	reason := strings.TrimSpace(string(p.permissionInput))
 	manualReview := p.permissionPlanReview
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1126,6 +1149,7 @@ func (p *Page) resolvePermissionLocked(permission client.PermissionRecord, actio
 			p.permissionError = err.Error()
 		} else {
 			p.permissionInput = nil
+			p.resetPermissionInteractionLocked()
 			permissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
 			if p.permissionIndex >= len(permissions) {
 				p.permissionIndex = maxInt(0, len(permissions)-1)
@@ -1160,7 +1184,20 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 		}
 		p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
 		if buttons&tcell.Button1 != 0 {
+			permission := permissions[p.permissionIndex]
 			switch {
+			case containsFooterPoint(p.permissionAskSelectTarget, x, y) && isAskUserPermission(permission):
+				p.handleAskUserPermissionKeyLocked(permission, tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+			case containsFooterPoint(p.permissionAskSubmitTarget, x, y) && isAskUserPermission(permission):
+				p.handleAskUserPermissionKeyLocked(permission, tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone))
+			case containsFooterPoint(p.permissionWorkspaceTarget, x, y) && isWorkspaceScopePermission(permission):
+				intent, _ := parseWorkspaceScopeIntent(permission)
+				p.resolvePermissionWithReasonLocked(permission, "allow_once", workspaceScopeResolutionReason(intent.SessionAllow.Decision))
+			case containsFooterPoint(p.permissionWorkspaceAddTarget, x, y) && isWorkspaceScopePermission(permission):
+				intent, _ := parseWorkspaceScopeIntent(permission)
+				if intent.AddToWorkspace.Available {
+					p.resolvePermissionWithReasonLocked(permission, "allow_once", workspaceScopeResolutionReason(intent.AddToWorkspace.Decision))
+				}
 			case containsFooterPoint(p.permissionApproveTarget, x, y):
 				p.resolvePermissionLocked(permissions[p.permissionIndex], "allow_once")
 			case containsFooterPoint(p.permissionDenyTarget, x, y):
@@ -1353,6 +1390,10 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	p.permissionDenyTarget = actionTargets["deny_once"]
 	p.permissionAlwaysTarget = actionTargets["allow_always"]
 	p.permissionAlwaysDenyTarget = actionTargets["deny_always"]
+	p.permissionAskSelectTarget = actionTargets["ask_select"]
+	p.permissionAskSubmitTarget = actionTargets["ask_submit"]
+	p.permissionWorkspaceTarget = actionTargets["workspace_session"]
+	p.permissionWorkspaceAddTarget = actionTargets["workspace_add"]
 	p.handoffTargets = make(map[string]footerbar.Rect)
 	for action, target := range actionTargets {
 		if strings.HasPrefix(action, "handoff:") {
@@ -2082,14 +2123,19 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 		return left.order < right.order
 	})
 
+	pendingPermissions := SelectPendingPermissions(state)
 	p.mu.Lock()
 	permissionIndex := p.permissionIndex
 	permissionNote := append([]rune(nil), p.permissionInput...)
 	permissionBusy, permissionError, permissionPrefix := p.permissionBusy, p.permissionError, p.permissionPrefix
 	permissionPlanReview, permissionPlanReviewID := p.permissionPlanReview, p.permissionPlanReviewID
+	var permissionInteraction *permissionInteractionView
+	if len(pendingPermissions) > 0 {
+		interactionIndex := maxInt(0, minInt(permissionIndex, len(pendingPermissions)-1))
+		permissionInteraction = p.permissionInteractionViewLocked(pendingPermissions[interactionIndex])
+	}
 	showThinkingTags := p.showThinkingTags
 	p.mu.Unlock()
-	pendingPermissions := SelectPendingPermissions(state)
 	selectedPermissionID := ""
 	if len(pendingPermissions) > 0 {
 		permissionIndex = maxInt(0, minInt(permissionIndex, len(pendingPermissions)-1))
@@ -2110,7 +2156,15 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 			if record.ID == permissionPlanReviewID {
 				manualReview = &permissionPlanReview
 			}
-			rows = append(rows, inlinePermissionCardRowsWithPlanReview(record, len(pendingPermissions), width, styles, prefix, selected, permissionNote, permissionBusy, permissionError, manualReview)...)
+			if isAskUserPermission(record) || isWorkspaceScopePermission(record) {
+				interaction := permissionInteraction
+				if interaction == nil || interaction.PermissionID != record.ID {
+					interaction = &permissionInteractionView{PermissionID: record.ID}
+				}
+				rows = append(rows, specializedPermissionCardRows(record, len(pendingPermissions), width, styles, selected, permissionBusy, permissionError, interaction)...)
+			} else {
+				rows = append(rows, inlinePermissionCardRowsWithPlanReview(record, len(pendingPermissions), width, styles, prefix, selected, permissionNote, permissionBusy, permissionError, manualReview)...)
+			}
 		case "tool":
 			rows = append(rows, p.renderToolRows(item.tool, width, styles)...)
 		case "live":
