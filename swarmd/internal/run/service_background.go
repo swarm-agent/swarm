@@ -574,7 +574,7 @@ func (s *Service) resolveExecutionRoots(session pebblestore.SessionSnapshot, wor
 	if worktreeEnabled {
 		return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots([]string{workspacePath}, validatedRoots)), nil
 	}
-	principal, err := principalForRunWorkspaceScope(session, principal)
+	principal, err = principalForRunWorkspaceScope(session, principal)
 	if err != nil {
 		return nil, err
 	}

@@ -672,7 +672,10 @@ func sessionsV3ReviewArchiveDeadline(session pebblestore.SessionSnapshot, doneAt
 	if doneAt <= 0 || delay <= 0 {
 		return 0
 	}
-	lastActivityAt := session.UpdatedAt
+	// LastMessageAt is the durable activity timestamp for this specific session.
+	// UpdatedAt also covers lifecycle and metadata mutations, so it is not a
+	// reliable measure of when that session last had user/assistant activity.
+	lastActivityAt := session.LastMessageAt
 	if doneAt > lastActivityAt {
 		lastActivityAt = doneAt
 	}

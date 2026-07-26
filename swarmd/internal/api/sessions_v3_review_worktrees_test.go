@@ -11,30 +11,33 @@ import (
 	"swarm/packages/swarmd/internal/uisettings"
 )
 
-func TestSessionsV3ReviewArchiveDeadlineUsesLaterActivity(t *testing.T) {
+func TestSessionsV3ReviewArchiveDeadlineUsesPerSessionMessageActivity(t *testing.T) {
 	const doneAt int64 = 1_000_000
 	delay := 15 * time.Minute
 
 	tests := []struct {
-		name      string
-		updatedAt int64
-		want      int64
+		name          string
+		lastMessageAt int64
+		updatedAt     int64
+		want          int64
 	}{
 		{
-			name:      "unchanged inactive session retains review completion timing",
-			updatedAt: doneAt - time.Minute.Milliseconds(),
-			want:      doneAt + delay.Milliseconds(),
+			name:          "unchanged inactive session retains review completion timing",
+			lastMessageAt: doneAt - time.Minute.Milliseconds(),
+			updatedAt:     doneAt + 30*time.Minute.Milliseconds(),
+			want:          doneAt + delay.Milliseconds(),
 		},
 		{
-			name:      "post-completion activity postpones archival",
-			updatedAt: doneAt + 5*time.Minute.Milliseconds(),
-			want:      doneAt + 20*time.Minute.Milliseconds(),
+			name:          "post-completion message postpones only that session",
+			lastMessageAt: doneAt + 5*time.Minute.Milliseconds(),
+			updatedAt:     doneAt + 30*time.Minute.Milliseconds(),
+			want:          doneAt + 20*time.Minute.Milliseconds(),
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			session := pebblestore.SessionSnapshot{UpdatedAt: test.updatedAt}
+			session := pebblestore.SessionSnapshot{LastMessageAt: test.lastMessageAt, UpdatedAt: test.updatedAt}
 			if got := sessionsV3ReviewArchiveDeadline(session, doneAt, delay); got != test.want {
 				t.Fatalf("deadline = %d, want %d", got, test.want)
 			}
@@ -42,8 +45,27 @@ func TestSessionsV3ReviewArchiveDeadlineUsesLaterActivity(t *testing.T) {
 	}
 }
 
+func TestSessionsV3ReviewArchiveDeadlineIsIndependentPerSession(t *testing.T) {
+	const doneAt int64 = 1_000_000
+	delay := 15 * time.Minute
+	inactive := pebblestore.SessionSnapshot{ID: "inactive", LastMessageAt: doneAt - time.Minute.Milliseconds(), UpdatedAt: doneAt + 30*time.Minute.Milliseconds()}
+	active := pebblestore.SessionSnapshot{ID: "active", LastMessageAt: doneAt + 5*time.Minute.Milliseconds(), UpdatedAt: doneAt + 30*time.Minute.Milliseconds()}
+
+	inactiveDeadline := sessionsV3ReviewArchiveDeadline(inactive, doneAt, delay)
+	activeDeadline := sessionsV3ReviewArchiveDeadline(active, doneAt, delay)
+	if want := doneAt + delay.Milliseconds(); inactiveDeadline != want {
+		t.Fatalf("inactive session deadline = %d, want %d", inactiveDeadline, want)
+	}
+	if want := active.LastMessageAt + delay.Milliseconds(); activeDeadline != want {
+		t.Fatalf("active session deadline = %d, want %d", activeDeadline, want)
+	}
+	if inactiveDeadline == activeDeadline {
+		t.Fatalf("sessions with distinct activity unexpectedly share deadline %d", inactiveDeadline)
+	}
+}
+
 func TestSessionsV3ReviewArchiveDeadlineDisabledOrIncomplete(t *testing.T) {
-	session := pebblestore.SessionSnapshot{UpdatedAt: 2_000_000}
+	session := pebblestore.SessionSnapshot{LastMessageAt: 2_000_000, UpdatedAt: 3_000_000}
 	if got := sessionsV3ReviewArchiveDeadline(session, 0, 15*time.Minute); got != 0 {
 		t.Fatalf("deadline without review completion = %d, want 0", got)
 	}
@@ -77,8 +99,9 @@ func TestArchiveDueSessionsV3ReviewReindexesAfterNewActivity(t *testing.T) {
 
 	const doneAt int64 = 1_000_000
 	oldDueAt := doneAt + (15 * time.Minute).Milliseconds()
-	updatedAt := doneAt + (5 * time.Minute).Milliseconds()
-	newDueAt := updatedAt + (15 * time.Minute).Milliseconds()
+	lastMessageAt := doneAt + (5 * time.Minute).Milliseconds()
+	updatedAt := lastMessageAt + time.Minute.Milliseconds()
+	newDueAt := lastMessageAt + (15 * time.Minute).Milliseconds()
 	session := pebblestore.SessionSnapshot{
 		ID:             "session-1",
 		AccountScopeID: "account-1",
@@ -90,8 +113,9 @@ func TestArchiveDueSessionsV3ReviewReindexesAfterNewActivity(t *testing.T) {
 			"review_done_at":            doneAt,
 			"review_auto_archive_after": oldDueAt,
 		},
-		CreatedAt: doneAt,
-		UpdatedAt: updatedAt,
+		CreatedAt:     doneAt,
+		UpdatedAt:     updatedAt,
+		LastMessageAt: lastMessageAt,
 	}
 	if err := sessionStore.CreateSession(session); err != nil {
 		t.Fatalf("create session: %v", err)
