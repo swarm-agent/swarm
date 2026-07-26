@@ -178,7 +178,7 @@ Line numbers below refer to `.tmp/prelaunch-deadcode-swarmd.txt`.
 | 241–243 | `store/pebble`: vault DEK/list/cache helpers | uncertain-retain | Retained after focused review: global vault APIs and metadata remain in active auth-service and encryption compatibility paths. Executable RTA is insufficient to remove this persisted-data support chain. |
 | 244 | `store/pebble`: execution telemetry snapshot | test-helper-retain | Tests/benchmarks use the telemetry API. |
 | 245–260 | `store/pebble/keys.go`: model/identity/session/target/workspace/auth key helpers | public-api-retain | Exported key-construction and migration contracts; V3-named key at line 250 is additionally V3-excluded. |
-| 261–309 | `store/pebble/keys.go`: Flow and Integration key families | public-api-retain | Flow is current product direction; integration store uses account-scoped variants. No migration/API retirement decision. |
+| 261–309 | `store/pebble/keys.go`: exported Integration and retired-product key families | public-api-retain | Integration storage remains account-scoped; retired-product keys require coordinated storage migration/removal rather than isolated dead-code deletion. |
 | 310–318 | `store/pebble`: plan/search telemetry and V3 counters | V3-excluded | V3 acceptance/search/write instrumentation and tests. |
 | 319–333 | `store/pebble`: session library/archive/search/migration | V3-excluded | V3 search, tombstone, lifecycle and migration implementation. |
 | 334–335 | `store/pebble`: sync snapshot test hooks | test-helper-retain | Explicit V3 test hooks; also V3-excluded. |
@@ -212,7 +212,7 @@ Scopes are non-overlapping. S3 and S4 share the auth domain but own different fi
 
 - **No V3 batch:** root lines 6, 13–22, 34–55, 66–94, 226–230 and swarmd lines 22–69, 201–202, 250, 310–342 are excluded.
 - **No Copilot deletion batch:** swarmd lines 119–189 are intentionally dormant provider code, not formally retired.
-- **No exported-key cleanup batch:** swarmd lines 245–309 include storage, Flow, Integration and migration contracts.
+- **No exported-key cleanup batch:** swarmd lines 245–309 include storage, Integration, retired-product persistence, and migration contracts.
 - **No FFF cleanup batch:** both modules expose intentional cgo/public wrapper surfaces used by probe/search binaries.
 - **No UI-accessor cleanup batch:** many root UI findings are test-facing/callback APIs; an executable-only RTA scan does not establish API retirement.
 - **No broad old-route batch:** run-stream, pairing, onboarding, TUI transitional and session route findings remain uncertain until route registration and compatibility are proven end-to-end.

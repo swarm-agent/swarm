@@ -2,7 +2,7 @@
 
 This is a public repository. Every change must be safe to review, publish, and ship.
 
-Swarm is being refocused on the essentials: an AI operating command center with reliable local app/daemon behavior, durable sessions, agents, tools, permissions, plans, and Flows. Non-local execution options are future runner targets, likely Flow-driven; retired runner architecture is not a product contract.
+Swarm is being refocused on the essentials: an AI operating command center with reliable local app/daemon behavior, durable sessions, agents, tools, permissions, and plans. Non-local execution options are future runner targets; retired runner architecture is not a product contract.
 
 If this file conflicts with convenience, this file wins. If this file conflicts with checked-in code or tests about current behavior, verify against code/tests and fix this file rather than guessing.
 
@@ -22,9 +22,9 @@ If this file conflicts with convenience, this file wins. If this file conflicts 
 ## Product Direction
 
 - Current priority: make the core Swarm command center work properly before expanding runtime planes.
-- Essentials: local daemon/app, Desktop/TUI, V3 durable sessions/sync/realtime, agents, tools, permissions, plans, model preferences, workspace selection, and Flows.
+- Essentials: local daemon/app, Desktop/TUI, V3 durable sessions/sync/realtime, agents, tools, permissions, plans, model preferences, and workspace selection.
 - Dedicated local-container execution and its APIs are retired; do not restore their profiles, stores, routes, image builds, or harnesses.
-- Runner direction: containers and other non-local execution remain possible future Flow-driven runner targets unless the user explicitly asks to work on them.
+- Runner direction: containers and other non-local execution remain possible future runner targets unless the user explicitly asks to work on them.
 - Do not add new feature behavior to retired runner or route-mirroring paths as a shortcut.
 - When retired runner code appears, remove it in the scoped migration rather than restoring public contracts or compatibility paths.
 - Do not rename current product language to `master` in new docs or UI. Use `primary`, `self`, `host`, `runner`, or the exact existing code term required for compatibility.
@@ -78,12 +78,11 @@ If this file conflicts with convenience, this file wins. If this file conflicts 
 - Desktop/TUI bootstrap is in transition. Checked-in code currently keeps legacy workset routes (`/v3/sessions:workset`, `/v3/tui/sessions:workset`) until the durable sync replacements (`/v3/sync/bootstrap`, `/v3/sync/hydrate`, `/v3/sync/stream`) reach parity and removal gates pass. Do not call legacy workset “future canonical.”
 - Desktop V3 frontend state should flow through `web/src/features/desktop/v3-runtime/` (`v3-store`, envelope normalization, reducer/selectors). UI-specific stores mirror accepted runtime state; components should not parse websocket frames or mutate session state directly.
 
-### Flows and Runners
+### Targets and Runners
 
 - Swarm targets and V3 sessions/sync/realtime are current critical contracts; local-container retirement must not narrow target routing or bypass V3 durability.
-- Flows are the intended scheduling/orchestration surface. Keep Flow behavior explicit, durable, and target-aware.
 - For now, avoid expanding non-local execution behavior. Treat it as a future runner concern, not the core product path.
-- Do not route Flow or session work through retired runner paths.
+- Do not route session work through retired runner paths.
 - If a change must touch transitional runner code, preserve clear ownership boundaries and fail when required route/workspace/identity metadata is absent.
 
 ### Paths and Storage
