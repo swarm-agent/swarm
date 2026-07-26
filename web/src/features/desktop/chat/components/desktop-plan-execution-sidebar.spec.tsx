@@ -306,7 +306,8 @@ test("plan sidebar renders session content without a passive run-state section",
     html,
     /data-plan-scroll-region=""/,
   );
-  assert.match(html, /shrink basis-auto overflow-y-auto/);
+  assert.match(html, /shrink basis-auto gap-5 overflow-hidden/);
+  assert.doesNotMatch(html, /data-plan-scroll-region=""[^>]*overflow-y-auto/);
   assert.doesNotMatch(html, /max-h-\[40%\]/);
   assert.doesNotMatch(html, /shadow-\[0_12px_34px/);
   assert.doesNotMatch(html, /Run state/);
@@ -367,8 +368,7 @@ test("checkpoint sidebar bounds overflow while prioritizing active work and pres
   assert.match(markup, /data-plan-task-chevron=""/);
   assert.match(markup, /aria-expanded="false"/);
   assert.match(markup, /aria-controls="desktop-plan-overflow-tasks"/);
-  assert.match(markup, /Show 1 completed task/);
-  assert.doesNotMatch(markup, /Show \d+ more tasks?/);
+  assert.match(markup, /Show 3 more tasks and 1 completed/);
   assert.ok(
     markup.indexOf("Render sidebar state") < markup.indexOf("Keep the layout compact"),
     "expected active work before pending work",
@@ -380,7 +380,7 @@ test("checkpoint sidebar bounds overflow while prioritizing active work and pres
   assert.match(markup, /Open full plan/);
 });
 
-test("pending tasks are initially visible and become height-bounded rather than count-capped", () => {
+test("pending-only overflow always exposes a keyboard-accessible chevron disclosure", () => {
   const base = view();
   base.activeCheckpoint = {
     ...base.activeCheckpoint!,
@@ -407,13 +407,14 @@ test("pending tasks are initially visible and become height-bounded rather than 
   );
 
   assert.match(markup, /Active task must stay visible/);
-  assert.match(markup, /Pending task 6/);
   assert.match(markup, /data-plan-task-active="true"/);
-  assert.doesNotMatch(markup, /data-plan-task-expansion=""/);
+  assert.match(markup, /data-plan-task-expansion=""/);
   assert.doesNotMatch(markup, /data-plan-completed-tasks/);
-  assert.doesNotMatch(markup, /Show \d+ more tasks?/);
-  assert.match(source, /Math\.floor\(sidebarHeight \* 0\.5\)/);
-  assert.doesNotMatch(source, /pendingTasks\.length - 1/);
+  assert.match(markup, /<button[^>]*type="button"[^>]*aria-expanded="false"/);
+  assert.match(markup, /data-plan-task-chevron=""/);
+  assert.match(markup, /Show 4 more tasks/);
+  assert.match(source, /Math\.floor\(sidebarHeight \* 0\.28\)/);
+  assert.match(source, /pendingTasks\.length - 1/);
 });
 
 test("Git integration reserves a visible bounded region below the plan", () => {

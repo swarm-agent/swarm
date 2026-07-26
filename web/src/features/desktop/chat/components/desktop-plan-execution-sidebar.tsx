@@ -40,6 +40,7 @@ export interface DesktopPlanExecutionSidebarProps {
   belowActions?: ReactNode;
   onNewAutoChat?: () => void;
   onOpenPlanAgent?: () => void;
+  displayMode?: "full" | "compact" | "thin";
   taskChildren?: Array<{ row: TaskToolRow; view: DesktopV3TaskChildViewModel | null }>;
   taskChildActions?: TaskChildCardActions;
   canonicalRecommendation?: DesktopSessionPlanCheckpointRecommendation | null;
@@ -154,13 +155,17 @@ function checkpointTaskView(value: string): CheckpointTaskView {
   };
 }
 
+const DEFAULT_VISIBLE_PENDING_TASKS = 1;
 const MIN_TASK_VIEWPORT_HEIGHT = 88;
-const ALL_PENDING_TASKS = Number.MAX_SAFE_INTEGER;
+const MAX_TASK_VIEWPORT_HEIGHT = 240;
 
 type SidebarTask = CheckpointTaskView & { active: boolean };
 
 function taskViewportHeight(sidebarHeight: number): number {
-  return Math.max(MIN_TASK_VIEWPORT_HEIGHT, Math.floor(sidebarHeight * 0.5));
+  return Math.max(
+    MIN_TASK_VIEWPORT_HEIGHT,
+    Math.min(MAX_TASK_VIEWPORT_HEIGHT, Math.floor(sidebarHeight * 0.28)),
+  );
 }
 
 function CheckpointDetails({
@@ -175,7 +180,7 @@ function CheckpointDetails({
   const [expanded, setExpanded] = useState(false);
   const [viewportHeight, setViewportHeight] = useState(MIN_TASK_VIEWPORT_HEIGHT);
   const [visiblePendingCount, setVisiblePendingCount] = useState(
-    ALL_PENDING_TASKS,
+    DEFAULT_VISIBLE_PENDING_TASKS,
   );
 
   const tasks: SidebarTask[] = checkpoint
@@ -201,7 +206,7 @@ function CheckpointDetails({
   const completedTasks = tasks.filter((task) => task.checked === true);
   const reservedPendingCount = Math.min(
     visiblePendingCount,
-    pendingTasks.length,
+    Math.max(0, pendingTasks.length - 1),
   );
   const visiblePendingTasks = pendingTasks.slice(0, reservedPendingCount);
   const overflowPendingTasks = pendingTasks.slice(reservedPendingCount);
@@ -243,29 +248,19 @@ function CheckpointDetails({
     const activeHeight = rows
       .slice(0, activeTasks.length)
       .reduce((height, row) => height + row.getBoundingClientRect().height + 6, 0);
-    const pendingRows = rows.slice(activeTasks.length);
-    const countPendingRowsThatFit = (reservedDisclosureHeight: number) => {
-      const availablePendingHeight = Math.max(
-        0,
-        nextViewportHeight - activeHeight - reservedDisclosureHeight,
-      );
-      let usedHeight = 0;
-      let count = 0;
-      for (const row of pendingRows) {
-        const rowHeight = row.getBoundingClientRect().height + 6;
-        if (usedHeight + rowHeight > availablePendingHeight) break;
-        usedHeight += rowHeight;
-        count += 1;
-      }
-      return count;
-    };
-    const completedDisclosureHeight = completedTasks.length > 0 ? 30 : 0;
-    let nextVisiblePendingCount = countPendingRowsThatFit(completedDisclosureHeight);
-    if (
-      nextVisiblePendingCount < pendingTasks.length &&
-      completedDisclosureHeight === 0
-    ) {
-      nextVisiblePendingCount = countPendingRowsThatFit(30);
+    const disclosureHeight =
+      pendingTasks.length > 0 || completedTasks.length > 0 ? 30 : 0;
+    const availablePendingHeight = Math.max(
+      0,
+      nextViewportHeight - activeHeight - disclosureHeight,
+    );
+    let usedHeight = 0;
+    let nextVisiblePendingCount = 0;
+    for (const row of rows.slice(activeTasks.length)) {
+      const rowHeight = row.getBoundingClientRect().height + 6;
+      if (usedHeight + rowHeight > availablePendingHeight) break;
+      usedHeight += rowHeight;
+      nextVisiblePendingCount += 1;
     }
     if (activeTasks.length === 0 && pendingTasks.length > 0) {
       nextVisiblePendingCount = Math.max(1, nextVisiblePendingCount);
@@ -877,6 +872,7 @@ export const DesktopPlanExecutionSidebar = memo(
     onStop: _onStop,
     onEditPlan,
     belowActions,
+    displayMode = "full",
     taskChildren = [],
     taskChildActions,
     canonicalRecommendation,
@@ -884,6 +880,8 @@ export const DesktopPlanExecutionSidebar = memo(
     const document = view?.plan.document ?? null;
     if (!view || !document) return null;
 
+    const thin = displayMode === "thin";
+    const compact = displayMode !== "full";
     const checkpoints = document.checkpoints;
     const completedCount = checkpoints.filter(
       (checkpoint) => checkpoint.status.toLowerCase() === "completed",
@@ -899,9 +897,17 @@ export const DesktopPlanExecutionSidebar = memo(
       <aside
         className={embedded
           ? "min-h-0 min-w-0 w-full overflow-visible bg-[var(--app-surface)]"
-          : "hidden h-full min-h-0 min-w-0 w-[360px] max-w-[360px] flex-1 flex-col gap-6 overflow-hidden border-l border-[var(--app-border)]/70 bg-[var(--app-surface-subtle)] px-6 py-6 font-sans shadow-sm min-[1300px]:flex"}
+          : cn(
+              "hidden h-full min-h-0 min-w-0 flex-1 flex-col gap-6 overflow-hidden border-l border-[var(--app-border)]/70 bg-[var(--app-surface-subtle)] font-sans shadow-sm min-[1300px]:flex",
+              thin
+                ? "w-[56px] max-w-[56px] px-2 py-3"
+                : compact
+                  ? "w-[280px] max-w-[280px] px-3 py-4"
+                  : "w-[360px] max-w-[360px] px-6 py-6",
+            )}
         aria-label="Plan execution sidebar"
         data-testid="desktop-plan-execution-sidebar"
+        data-display-mode={displayMode}
       >
         <div
           className={cn(
@@ -913,20 +919,50 @@ export const DesktopPlanExecutionSidebar = memo(
         >
           {!embedded ? (
             <header className="shrink-0 border-b border-[var(--app-border)]/40 pb-4">
-              <div className="text-base font-semibold tracking-tight text-[var(--app-text)]" title="Plan execution">
-                Plan
+              <div
+                className={cn(
+                  "font-semibold tracking-tight text-[var(--app-text)]",
+                  thin ? "text-center text-xs" : "text-base",
+                )}
+                title="Plan execution"
+              >
+                {thin ? "P" : "Plan"}
               </div>
             </header>
           ) : null}
-          <div
-            className={cn(
-              "grid content-start",
-              embedded
-                ? "gap-4"
-                : "min-h-0 shrink basis-auto gap-5 overflow-y-auto pr-1 [scrollbar-gutter:stable]",
-            )}
-            data-plan-scroll-region
-          >
+          {thin ? (
+            <div
+              className="grid min-h-0 flex-1 content-start gap-3 overflow-hidden py-1"
+              data-plan-thin-rail
+            >
+              <button
+                type="button"
+                onClick={onEditPlan}
+                disabled={!onEditPlan}
+                className="grid min-h-11 place-items-center rounded-lg border border-[var(--app-border)] text-xs font-semibold text-[var(--app-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+                title={`${statusLabel(view, view.activeCheckpoint)} · ${completedCount}/${totalCount} checkpoints`}
+                aria-label={`Open full plan. ${statusLabel(view, view.activeCheckpoint)}. ${completedCount} of ${totalCount} checkpoints complete.`}
+              >
+                {completedCount}/{totalCount}
+              </button>
+              {taskChildren.length > 0 ? (
+                <DesktopPlanSubagentList
+                  children={taskChildren}
+                  actions={taskChildActions}
+                  mode="thin"
+                />
+              ) : null}
+            </div>
+          ) : (
+            <div
+              className={cn(
+                "grid content-start",
+                embedded
+                  ? "gap-4"
+                  : "min-h-0 shrink basis-auto gap-5 overflow-hidden pr-1",
+              )}
+              data-plan-scroll-region
+            >
             <ActiveCheckpointSection
               view={view}
               checkpoints={checkpoints}
@@ -935,7 +971,7 @@ export const DesktopPlanExecutionSidebar = memo(
               activeIndex={activeIndex}
               onOpenPlan={onEditPlan}
             />
-            {taskChildren.length > 0 ? <DesktopPlanSubagentList children={taskChildren} actions={taskChildActions} mode="full" /> : null}
+            {taskChildren.length > 0 ? <DesktopPlanSubagentList children={taskChildren} actions={taskChildActions} mode={compact ? "compact" : "full"} /> : null}
             <ActionsSection
               view={view}
               busyAction={busyAction}
@@ -944,8 +980,9 @@ export const DesktopPlanExecutionSidebar = memo(
               onEditPlan={onEditPlan}
               canonicalRecommendation={canonicalRecommendation}
             />
-          </div>
-          {belowActions ? (
+            </div>
+          )}
+          {!thin && belowActions ? (
             <div
               className={cn(
                 "border-t border-[var(--app-border)] pt-4",

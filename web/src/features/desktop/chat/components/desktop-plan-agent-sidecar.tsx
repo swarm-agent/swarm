@@ -29,6 +29,7 @@ interface DesktopPlanAgentSidecarProps {
   embedded?: boolean;
   modelLabel?: string;
   mobileOpen?: boolean;
+  displayMode?: "full" | "compact" | "thin";
 }
 
 interface SidechatState {
@@ -91,6 +92,7 @@ export function DesktopPlanAgentSidecar({
   embedded = false,
   modelLabel = "",
   mobileOpen = true,
+  displayMode = "full",
 }: DesktopPlanAgentSidecarProps) {
   const [sidechat, setSidechat] = useState<SidechatState>(EMPTY_SIDECHAT);
   const [draft, setDraft] = useState("");
@@ -286,8 +288,8 @@ export function DesktopPlanAgentSidecar({
     <div
       className={embedded
         ? mobileOpen
-          ? "fixed inset-0 z-50 flex bg-black/30 min-[1300px]:static min-[1300px]:z-auto min-[1300px]:min-h-0 min-[1300px]:w-[360px] min-[1300px]:max-w-[360px] min-[1300px]:border-l min-[1300px]:border-[var(--app-border)] min-[1300px]:bg-[var(--app-surface)]"
-          : "hidden min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:w-[360px] min-[1300px]:max-w-[360px] min-[1300px]:border-l min-[1300px]:border-[var(--app-border)] min-[1300px]:bg-[var(--app-surface)]"
+          ? `fixed inset-0 z-50 flex bg-black/30 min-[1300px]:static min-[1300px]:z-auto min-[1300px]:min-h-0 min-[1300px]:border-l min-[1300px]:border-[var(--app-border)] min-[1300px]:bg-[var(--app-surface)] ${displayMode === "thin" ? "min-[1300px]:w-[56px] min-[1300px]:max-w-[56px]" : displayMode === "compact" ? "min-[1300px]:w-[280px] min-[1300px]:max-w-[280px]" : "min-[1300px]:w-[360px] min-[1300px]:max-w-[360px]"}`
+          : `hidden min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:border-l min-[1300px]:border-[var(--app-border)] min-[1300px]:bg-[var(--app-surface)] ${displayMode === "thin" ? "min-[1300px]:w-[56px] min-[1300px]:max-w-[56px]" : displayMode === "compact" ? "min-[1300px]:w-[280px] min-[1300px]:max-w-[280px]" : "min-[1300px]:w-[360px] min-[1300px]:max-w-[360px]"}`
         : "fixed inset-0 z-50 bg-black/30 md:left-auto md:w-[28rem]"}
       data-testid="desktop-plan-agent-sidecar"
       data-embedded={embedded ? "true" : "false"}

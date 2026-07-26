@@ -43,10 +43,12 @@ test('task cards switch to a titleless vertical subagent list from their own wid
   assert.match(theme, /@container task-card \(max-width: 12rem\)[\s\S]*\.task-card-narrow-detail/)
 })
 
-test('the full plan sidebar keeps explicit subagent navigation and stop actions', async () => {
+test('plan and subagent sidebars expose compact and ultra-thin critical actions', async () => {
   const [plan, subagents] = await Promise.all([readFile(planURL, 'utf8'), readFile(sidecarURL, 'utf8')])
-  assert.doesNotMatch(plan, /data-display-mode|data-plan-thin-rail/)
-  assert.match(plan, /mode="full"/)
+  assert.match(plan, /data-display-mode=\{displayMode\}/)
+  assert.match(plan, /data-plan-thin-rail/)
+  assert.match(plan, /min-h-11/)
+  assert.match(subagents, /mode === "thin"/)
   assert.match(subagents, /min-h-11/)
   assert.match(subagents, /aria-label=\{`Stop \$\{title\}`\}/)
   assert.match(subagents, /aria-label=\{`Open \$\{details\}`\}/)
