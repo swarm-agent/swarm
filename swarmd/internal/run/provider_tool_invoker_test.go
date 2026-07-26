@@ -458,6 +458,25 @@ func TestProviderManagedAskUserReasonBecomesProviderResponse(t *testing.T) {
 	}
 }
 
+func TestProviderManagedToolCallRejectsMissingPermissionService(t *testing.T) {
+	workspace := t.TempDir()
+	svc := &Service{tools: tool.NewRuntime(1)}
+	invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{
+		sessionID: "session", permissionSessionID: "session", runID: "run", step: 1,
+		sessionMode: sessionruntime.ModeAuto, workspacePath: workspace, workspaceRoots: []string{workspace},
+	})
+	if invoker == nil {
+		t.Fatal("provider tool invoker is nil")
+	}
+	result, err := invoker.ExecuteTool(context.Background(), toolInvocation("call-read", "read", mustProviderToolInvokerJSON(t, map[string]any{"path": "README.md"})))
+	if err != nil {
+		t.Fatalf("execute provider tool: %v", err)
+	}
+	if result.Error != "permission service is not configured" || !strings.Contains(result.Output, `"approved":false`) {
+		t.Fatalf("missing permission service result = %+v, want fail-closed rejection", result)
+	}
+}
+
 func TestProviderManagedV3BypassPermissionsAllowsControlPlaneTool(t *testing.T) {
 	workspace := t.TempDir()
 	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestService(t, workspace)

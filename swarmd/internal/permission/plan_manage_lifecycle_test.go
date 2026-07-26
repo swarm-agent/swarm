@@ -127,6 +127,35 @@ func TestPlanAcceptanceAlwaysAllowPreservesCanonicalPendingArguments(t *testing.
 	}
 }
 
+func TestAuthorizeToolCallBypassPreservesHardDeniesAndPlanAcceptance(t *testing.T) {
+	svc, sessionID, _, cleanup := newPermissionLifecycleTestService(t, "")
+	defer cleanup()
+	svc.SetBypassPermissions(true)
+
+	dangerous, err := svc.AuthorizeToolCall(AuthorizationInput{
+		SessionID: sessionID, AccountScopeID: "account-lifecycle", RunID: "run-bash", CallID: "call-bash",
+		ToolName: "bash", ToolArguments: bashEffectArguments(t, "rm -rf /", "delete", true), Mode: sessionruntime.ModeAuto,
+	})
+	if err != nil {
+		t.Fatalf("authorize dangerous bash: %v", err)
+	}
+	if dangerous.Decision != AuthorizationDeny || dangerous.Source != "builtin" {
+		t.Fatalf("dangerous bash authorization = %+v, want builtin deny", dangerous)
+	}
+
+	planArgs := `{"action":"request_new_plan","title":"Plan","document":{"title":"Plan","info":{"goal":"ship"},"checkpoints":[{"id":"cp-1","title":"One","status":"pending","tasks":["ship"],"acceptance_criteria":["done"]}]}}`
+	plan, err := svc.AuthorizeToolCall(AuthorizationInput{
+		SessionID: sessionID, AccountScopeID: "account-lifecycle", RunID: "run-plan", CallID: "call-plan",
+		ToolName: "plan_manage", ToolArguments: planArgs, Mode: sessionruntime.ModeAuto,
+	})
+	if err != nil {
+		t.Fatalf("authorize plan acceptance: %v", err)
+	}
+	if plan.Decision != AuthorizationPending || plan.Record == nil || plan.Source != "plan_acceptance_policy" {
+		t.Fatalf("plan acceptance authorization = %+v, want pending dedicated approval", plan)
+	}
+}
+
 func TestAuthorizeToolCallKeepsRevisionAndNewPlanApprovalGated(t *testing.T) {
 	svc, sessionID, planID, cleanup := newPermissionLifecycleTestService(t, sessionruntime.PlanFollowupCheckpointPolicyAutoStart)
 	defer cleanup()

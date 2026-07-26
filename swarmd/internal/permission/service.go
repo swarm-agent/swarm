@@ -410,20 +410,26 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 			return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: reservation.Reason, Source: "subagent_orchestration", Reservation: &reservation.Reservation}, nil
 		}
 	}
-	if state.BypassPermissions {
-		result := AuthorizationResult{
-			Decision:    AuthorizationApprove,
-			Requirement: requirement,
-			Reason:      "permissions are bypassed",
-			Source:      "bypass_permissions",
-		}
-		return result, nil
-	}
 	input.Mode = effectiveMode
-
 	explain, err := s.ExplainToolForAccount(input.AccountScopeID, effectiveMode, input.ToolName, input.ToolArguments, input.Overlay)
 	if err != nil {
 		return AuthorizationResult{}, err
+	}
+	if state.BypassPermissions {
+		// Bypass suppresses ordinary approval prompts only. Hard denials and the
+		// dedicated plan-acceptance boundary remain authoritative.
+		if explain.Decision == PolicyDecisionDeny {
+			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: strings.TrimSpace(explain.Reason), Source: strings.TrimSpace(explain.Source), RulePreview: strings.TrimSpace(explain.RulePreview)}, nil
+		}
+		if explain.Source == "plan_acceptance_policy" && explain.Decision != PolicyDecisionAllow {
+			return s.createPendingAuthorization(input, sessionID, requirement, strings.TrimSpace(explain.Reason), strings.TrimSpace(explain.Source), strings.TrimSpace(explain.RulePreview))
+		}
+		return AuthorizationResult{
+			Decision:    AuthorizationApprove,
+			Requirement: requirement,
+			Reason:      "ordinary permission approval is bypassed",
+			Source:      "bypass_permissions",
+		}, nil
 	}
 
 	result := AuthorizationResult{
