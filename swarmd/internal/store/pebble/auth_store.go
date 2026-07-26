@@ -3,11 +3,14 @@ package pebblestore
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cockroachdb/pebble"
 )
 
 const (
@@ -75,7 +78,11 @@ type AuthStore struct {
 	store         *Store
 	secretStore   *Store
 	localKeyPath  string
+	// Credential records, their indexes, and active pointers share secretStore so
+	// each mutation can commit as one Pebble batch. credentialMu serializes the
+	// read/prepare/commit boundary; metadata in store remains intentionally separate.
 	mu            sync.RWMutex
+	credentialMu  sync.Mutex
 	vaultMeta     *VaultMetadata
 	vaultDEK      []byte
 	vaultAccounts map[string]vaultAccountState
@@ -344,14 +351,24 @@ func (s *AuthStore) GetCredentialForAccount(accountScopeID, provider, credential
 	if !ok {
 		return AuthCredentialRecord{}, false, nil
 	}
-	record, err := s.decodeStoredCredentialForAccount(accountScopeID, payload)
+	record, legacyUnsealed, err := s.decodeStoredCredentialForAccount(accountScopeID, payload)
 	if err != nil {
 		return AuthCredentialRecord{}, false, err
 	}
 	record.Provider = provider
 	record.ID = credentialID
 	record.AccountScopeID = accountScopeID
-	return normalizeCredentialRecord(record), true, nil
+	record = normalizeCredentialRecord(record)
+	if legacyUnsealed {
+		sealed, err := s.encodeStoredCredential(record)
+		if err != nil {
+			return AuthCredentialRecord{}, false, fmt.Errorf("prepare legacy credential reseal: %w", err)
+		}
+		if err := s.secretStore.PutBytes(authCredentialKey(accountScopeID, provider, credentialID), sealed); err != nil {
+			return AuthCredentialRecord{}, false, fmt.Errorf("reseal legacy credential: %w", err)
+		}
+	}
+	return record, true, nil
 }
 
 func (s *AuthStore) GetActiveCredential(provider string) (AuthCredentialRecord, bool, error) {
@@ -390,7 +407,7 @@ func (s *AuthStore) GetActiveCredentialForAccount(accountScopeID, provider strin
 		return AuthCredentialRecord{}, false, err
 	}
 	if !found {
-		_ = s.store.Delete(authCredentialActiveKey(accountScopeID, provider))
+		_ = s.secretStore.Delete(authCredentialActiveKey(accountScopeID, provider))
 		return AuthCredentialRecord{}, false, nil
 	}
 	return record, true, nil
@@ -504,37 +521,58 @@ func (s *AuthStore) DeleteCredentialsByOwnerSwarmIDForAccount(accountScopeID, ow
 }
 
 func (s *AuthStore) deleteCredentialRecord(record AuthCredentialRecord) (bool, error) {
+	s.credentialMu.Lock()
+	defer s.credentialMu.Unlock()
+
 	accountScopeID, err := requireAccountScopeID(record.AccountScopeID)
 	if err != nil {
 		return false, err
 	}
-	if err := s.deleteTagIndexes(record); err != nil {
-		return false, err
-	}
-	if err := s.secretStore.Delete(authCredentialKey(accountScopeID, record.Provider, record.ID)); err != nil {
-		return false, err
-	}
-
 	activeID, activeSet, err := s.getActiveCredentialIDForAccount(accountScopeID, record.Provider)
 	if err != nil {
 		return false, err
 	}
+	var replacementID string
 	if activeSet && activeID == record.ID {
 		records, err := s.ListCredentialsForAccount(accountScopeID, record.Provider, 200)
 		if err != nil {
 			return false, err
 		}
-		if len(records) == 0 {
-			if err := s.store.Delete(authCredentialActiveKey(accountScopeID, record.Provider)); err != nil {
-				return false, err
-			}
-		} else {
-			if err := s.setActiveCredentialIDForAccount(accountScopeID, record.Provider, records[0].ID, time.Now().UnixMilli()); err != nil {
-				return false, err
+		for _, candidate := range records {
+			if candidate.ID != record.ID {
+				replacementID = candidate.ID
+				break
 			}
 		}
 	}
 
+	batch := s.secretStore.NewBatch()
+	defer batch.Close()
+	if err := deleteTagIndexesInBatch(batch, record); err != nil {
+		return false, err
+	}
+	if err := batch.Delete([]byte(authCredentialKey(accountScopeID, record.Provider, record.ID)), nil); err != nil {
+		return false, fmt.Errorf("stage credential deletion: %w", err)
+	}
+	if activeSet && activeID == record.ID {
+		activeKey := []byte(authCredentialActiveKey(accountScopeID, record.Provider))
+		if replacementID == "" {
+			if err := batch.Delete(activeKey, nil); err != nil {
+				return false, fmt.Errorf("stage active credential deletion: %w", err)
+			}
+		} else {
+			payload, err := marshalActiveCredential(replacementID, time.Now().UnixMilli())
+			if err != nil {
+				return false, err
+			}
+			if err := batch.Set(activeKey, payload, nil); err != nil {
+				return false, fmt.Errorf("stage replacement active credential: %w", err)
+			}
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return false, fmt.Errorf("commit credential deletion: %w", err)
+	}
 	return true, nil
 }
 
@@ -566,12 +604,21 @@ func (s *AuthStore) ListCredentialsForAccount(accountScopeID, provider string, l
 
 	records := make([]AuthCredentialRecord, 0, minInt(scanLimit, 256))
 	err = s.secretStore.IteratePrefix(prefix, scanLimit, func(_ string, value []byte) error {
-		record, err := s.decodeStoredCredentialForAccount(accountScopeID, value)
+		record, legacyUnsealed, err := s.decodeStoredCredentialForAccount(accountScopeID, value)
 		if err != nil {
 			return err
 		}
 		record.AccountScopeID = accountScopeID
 		record = normalizeCredentialRecord(record)
+		if legacyUnsealed {
+			sealed, err := s.encodeStoredCredential(record)
+			if err != nil {
+				return fmt.Errorf("prepare legacy credential reseal: %w", err)
+			}
+			if err := s.secretStore.PutBytes(authCredentialKey(accountScopeID, record.Provider, record.ID), sealed); err != nil {
+				return fmt.Errorf("reseal legacy credential: %w", err)
+			}
+		}
 		if provider != "" && record.Provider != provider {
 			return nil
 		}
@@ -621,6 +668,12 @@ func (s *AuthStore) ListCredentialProvidersForAccount(accountScopeID string, lim
 }
 
 func (s *AuthStore) saveCredential(next AuthCredentialRecord, setActive bool) (AuthCredentialRecord, error) {
+	s.credentialMu.Lock()
+	defer s.credentialMu.Unlock()
+	return s.saveCredentialLocked(next, setActive)
+}
+
+func (s *AuthStore) saveCredentialLocked(next AuthCredentialRecord, setActive bool) (AuthCredentialRecord, error) {
 	next = normalizeCredentialRecord(next)
 	accountScopeID, err := requireAccountScopeID(next.AccountScopeID)
 	if err != nil {
@@ -633,9 +686,6 @@ func (s *AuthStore) saveCredential(next AuthCredentialRecord, setActive bool) (A
 	}
 	if exists {
 		next.CreatedAt = current.CreatedAt
-		if err := s.deleteTagIndexes(current); err != nil {
-			return AuthCredentialRecord{}, err
-		}
 	}
 	if next.CreatedAt <= 0 {
 		next.CreatedAt = next.UpdatedAt
@@ -644,26 +694,35 @@ func (s *AuthStore) saveCredential(next AuthCredentialRecord, setActive bool) (A
 	if err != nil {
 		return AuthCredentialRecord{}, err
 	}
-	if err := s.secretStore.PutBytes(authCredentialKey(accountScopeID, next.Provider, next.ID), payload); err != nil {
+	_, activeSet, err := s.getActiveCredentialIDForAccount(accountScopeID, next.Provider)
+	if err != nil {
 		return AuthCredentialRecord{}, err
 	}
-	if err := s.writeTagIndexes(next); err != nil {
-		return AuthCredentialRecord{}, err
-	}
-	if setActive {
-		if err := s.setActiveCredentialIDForAccount(accountScopeID, next.Provider, next.ID, next.UpdatedAt); err != nil {
+
+	batch := s.secretStore.NewBatch()
+	defer batch.Close()
+	if exists {
+		if err := deleteTagIndexesInBatch(batch, current); err != nil {
 			return AuthCredentialRecord{}, err
 		}
-	} else {
-		_, ok, err := s.getActiveCredentialIDForAccount(accountScopeID, next.Provider)
+	}
+	if err := batch.Set([]byte(authCredentialKey(accountScopeID, next.Provider, next.ID)), payload, nil); err != nil {
+		return AuthCredentialRecord{}, fmt.Errorf("stage credential: %w", err)
+	}
+	if err := writeTagIndexesInBatch(batch, next); err != nil {
+		return AuthCredentialRecord{}, err
+	}
+	if setActive || !activeSet {
+		activePayload, err := marshalActiveCredential(next.ID, next.UpdatedAt)
 		if err != nil {
 			return AuthCredentialRecord{}, err
 		}
-		if !ok {
-			if err := s.setActiveCredentialIDForAccount(accountScopeID, next.Provider, next.ID, next.UpdatedAt); err != nil {
-				return AuthCredentialRecord{}, err
-			}
+		if err := batch.Set([]byte(authCredentialActiveKey(accountScopeID, next.Provider)), activePayload, nil); err != nil {
+			return AuthCredentialRecord{}, fmt.Errorf("stage active credential: %w", err)
 		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return AuthCredentialRecord{}, fmt.Errorf("commit credential: %w", err)
 	}
 	return next, nil
 }
@@ -674,12 +733,32 @@ func (s *AuthStore) getActiveCredentialIDForAccount(accountScopeID, provider str
 		return "", false, err
 	}
 	var record authCredentialActiveRecord
-	ok, err := s.store.GetJSON(authCredentialActiveKey(accountScopeID, provider), &record)
+	ok, err := s.secretStore.GetJSON(authCredentialActiveKey(accountScopeID, provider), &record)
 	if err != nil {
 		return "", false, err
 	}
 	if !ok || strings.TrimSpace(record.ID) == "" {
-		return "", false, nil
+		// Active pointers historically lived in the metadata DB. Copy first and
+		// delete second so interruption leaves a repairable duplicate, never loss.
+		var legacy authCredentialActiveRecord
+		legacyOK, legacyErr := s.store.GetJSON(authCredentialActiveKey(accountScopeID, provider), &legacy)
+		if legacyErr != nil {
+			return "", false, legacyErr
+		}
+		if !legacyOK || strings.TrimSpace(legacy.ID) == "" {
+			return "", false, nil
+		}
+		payload, err := marshalActiveCredential(legacy.ID, legacy.UpdatedAt)
+		if err != nil {
+			return "", false, err
+		}
+		if err := s.secretStore.PutBytes(authCredentialActiveKey(accountScopeID, provider), payload); err != nil {
+			return "", false, fmt.Errorf("migrate active credential pointer: %w", err)
+		}
+		if err := s.store.Delete(authCredentialActiveKey(accountScopeID, provider)); err != nil {
+			return "", false, fmt.Errorf("delete migrated active credential pointer: %w", err)
+		}
+		return normalizeCredentialID(legacy.ID), true, nil
 	}
 	return normalizeCredentialID(record.ID), true, nil
 }
@@ -692,33 +771,44 @@ func (s *AuthStore) setActiveCredentialIDForAccount(accountScopeID, provider, cr
 	if updatedAt <= 0 {
 		updatedAt = time.Now().UnixMilli()
 	}
-	return s.store.PutJSON(authCredentialActiveKey(accountScopeID, provider), authCredentialActiveRecord{
+	return s.secretStore.PutJSON(authCredentialActiveKey(accountScopeID, provider), authCredentialActiveRecord{
 		ID:        normalizeCredentialID(credentialID),
 		UpdatedAt: updatedAt,
 	})
 }
 
-func (s *AuthStore) writeTagIndexes(record AuthCredentialRecord) error {
+func marshalActiveCredential(credentialID string, updatedAt int64) ([]byte, error) {
+	if updatedAt <= 0 {
+		updatedAt = time.Now().UnixMilli()
+	}
+	payload, err := json.Marshal(authCredentialActiveRecord{ID: normalizeCredentialID(credentialID), UpdatedAt: updatedAt})
+	if err != nil {
+		return nil, fmt.Errorf("marshal active credential: %w", err)
+	}
+	return payload, nil
+}
+
+func writeTagIndexesInBatch(batch *pebble.Batch, record AuthCredentialRecord) error {
 	accountScopeID, err := requireAccountScopeID(record.AccountScopeID)
 	if err != nil {
 		return err
 	}
 	for _, tag := range normalizeTags(record.Tags) {
-		if err := s.store.PutBytes(authCredentialTagKey(accountScopeID, tag, record.Provider, record.ID), []byte(record.ID)); err != nil {
-			return err
+		if err := batch.Set([]byte(authCredentialTagKey(accountScopeID, tag, record.Provider, record.ID)), []byte(record.ID), nil); err != nil {
+			return fmt.Errorf("stage credential tag index: %w", err)
 		}
 	}
 	return nil
 }
 
-func (s *AuthStore) deleteTagIndexes(record AuthCredentialRecord) error {
+func deleteTagIndexesInBatch(batch *pebble.Batch, record AuthCredentialRecord) error {
 	accountScopeID, err := requireAccountScopeID(record.AccountScopeID)
 	if err != nil {
 		return err
 	}
 	for _, tag := range normalizeTags(record.Tags) {
-		if err := s.store.Delete(authCredentialTagKey(accountScopeID, tag, record.Provider, record.ID)); err != nil {
-			return err
+		if err := batch.Delete([]byte(authCredentialTagKey(accountScopeID, tag, record.Provider, record.ID)), nil); err != nil {
+			return fmt.Errorf("stage credential tag index deletion: %w", err)
 		}
 	}
 	return nil

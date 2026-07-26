@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/cockroachdb/pebble"
 )
 
 const (
@@ -175,20 +177,112 @@ func (s *AuthStore) ImportCredentialsForAccount(accountScopeID, bundlePassword, 
 		}
 	}
 
-	imported := 0
-	for _, record := range bundle.Credentials {
-		record = normalizeCredentialRecord(record)
-		record.AccountScopeID = accountScopeID
-		if _, err := s.saveCredential(record, false); err != nil {
-			return CredentialImportResult{}, fmt.Errorf("import credential %s/%s: %w", record.Provider, record.ID, err)
-		}
-		imported++
+	s.credentialMu.Lock()
+	defer s.credentialMu.Unlock()
+
+	if err := s.importCredentialBundleLocked(accountScopeID, bundle); err != nil {
+		return CredentialImportResult{}, err
 	}
+	imported := len(bundle.Credentials)
 	status, err = s.VaultStatusForAccount(accountScopeID)
 	if err != nil {
 		return CredentialImportResult{}, err
 	}
 	return CredentialImportResult{Imported: imported, Vault: status, SnapshotHash: bundle.SnapshotHash}, nil
+}
+
+func (s *AuthStore) importCredentialBundleLocked(accountScopeID string, bundle CredentialBundle) error {
+	prepared := make([]AuthCredentialRecord, 0, len(bundle.Credentials))
+	currentByKey := make(map[string]AuthCredentialRecord, len(bundle.Credentials))
+	seenKeys := make(map[string]struct{}, len(bundle.Credentials))
+	activeByProvider := make(map[string]authCredentialActiveRecord)
+	for _, input := range bundle.Credentials {
+		record := normalizeCredentialRecord(input)
+		record.AccountScopeID = accountScopeID
+		if record.Provider == "" || record.ID == "" {
+			return errors.New("import credential requires provider and id")
+		}
+		key := authCredentialKey(accountScopeID, record.Provider, record.ID)
+		if _, duplicate := seenKeys[key]; duplicate {
+			return fmt.Errorf("credential bundle contains duplicate %s/%s", record.Provider, record.ID)
+		}
+		seenKeys[key] = struct{}{}
+		current, exists, err := s.GetCredentialForAccount(accountScopeID, record.Provider, record.ID)
+		if err != nil {
+			return err
+		}
+		if exists {
+			record.CreatedAt = current.CreatedAt
+			currentByKey[key] = current
+		} else {
+			currentByKey[key] = AuthCredentialRecord{}
+		}
+		if record.CreatedAt <= 0 {
+			record.CreatedAt = record.UpdatedAt
+		}
+		prepared = append(prepared, record)
+		if _, seen := activeByProvider[record.Provider]; !seen {
+			activeID, ok, err := s.getActiveCredentialIDForAccount(accountScopeID, record.Provider)
+			if err != nil {
+				return err
+			}
+			if ok {
+				activeByProvider[record.Provider] = authCredentialActiveRecord{ID: activeID}
+			} else {
+				activeByProvider[record.Provider] = authCredentialActiveRecord{}
+			}
+		}
+	}
+
+	batch := s.secretStore.NewBatch()
+	defer batch.Close()
+	for provider, requestedID := range bundle.ActiveCredentialIDs {
+		provider = normalizeProvider(provider)
+		requestedID = normalizeCredentialID(requestedID)
+		if provider == "" || requestedID == "" {
+			continue
+		}
+		if _, ok := seenKeys[authCredentialKey(accountScopeID, provider, requestedID)]; !ok {
+			return fmt.Errorf("credential bundle active id %s/%s is not present", provider, requestedID)
+		}
+	}
+
+	for _, record := range prepared {
+		key := authCredentialKey(accountScopeID, record.Provider, record.ID)
+		if current := currentByKey[key]; current.ID != "" {
+			if err := deleteTagIndexesInBatch(batch, current); err != nil {
+				return err
+			}
+		}
+		payload, err := s.encodeStoredCredential(record)
+		if err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(key), payload, nil); err != nil {
+			return fmt.Errorf("stage imported credential %s/%s: %w", record.Provider, record.ID, err)
+		}
+		if err := writeTagIndexesInBatch(batch, record); err != nil {
+			return err
+		}
+		requestedActive := normalizeCredentialID(bundle.ActiveCredentialIDs[record.Provider])
+		active := activeByProvider[record.Provider]
+		if requestedActive == record.ID || (requestedActive == "" && active.ID == "") {
+			activeByProvider[record.Provider] = authCredentialActiveRecord{ID: record.ID, UpdatedAt: record.UpdatedAt}
+		}
+	}
+	for provider, active := range activeByProvider {
+		payload, err := marshalActiveCredential(active.ID, active.UpdatedAt)
+		if err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(authCredentialActiveKey(accountScopeID, provider)), payload, nil); err != nil {
+			return fmt.Errorf("stage imported active credential: %w", err)
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return fmt.Errorf("commit credential bundle: %w", err)
+	}
+	return nil
 }
 
 func (s *AuthStore) buildCredentialBundleForAccount(accountScopeID string) (CredentialBundle, error) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -380,25 +381,32 @@ func (s *AuthStore) encodeStoredCredential(record AuthCredentialRecord) ([]byte,
 	return encodeSealedCredential(dek, record, mode)
 }
 
-func (s *AuthStore) decodeStoredCredentialForAccount(accountScopeID string, payload []byte) (AuthCredentialRecord, error) {
+// decodeStoredCredentialForAccount reports legacy plaintext without writing it.
+// Callers reseal only after binding provider/id from the authoritative Pebble key.
+func (s *AuthStore) decodeStoredCredentialForAccount(accountScopeID string, payload []byte) (AuthCredentialRecord, bool, error) {
 	accountScopeID, err := requireAccountScopeID(accountScopeID)
 	if err != nil {
-		return AuthCredentialRecord{}, err
+		return AuthCredentialRecord{}, false, err
 	}
 	if !isSealedCredentialPayload(payload) {
 		var record AuthCredentialRecord
 		if err := json.Unmarshal(payload, &record); err != nil {
-			return AuthCredentialRecord{}, err
+			return AuthCredentialRecord{}, false, fmt.Errorf("decode legacy unsealed credential: %w", err)
 		}
+		record = normalizeCredentialRecord(record)
 		record.AccountScopeID = accountScopeID
-		return record, nil
+		if record.Provider == "" || record.ID == "" {
+			return AuthCredentialRecord{}, false, errors.New("legacy unsealed credential is missing provider or id")
+		}
+		return record, true, nil
 	}
 
 	dek, err := s.readableDEKForAccount(accountScopeID)
 	if err != nil {
-		return AuthCredentialRecord{}, err
+		return AuthCredentialRecord{}, false, err
 	}
-	return decodeSealedCredential(dek, payload)
+	record, err := decodeSealedCredential(dek, payload)
+	return record, false, err
 }
 
 func (s *AuthStore) snapshotVaultState() (*VaultMetadata, bool, error) {
@@ -995,9 +1003,16 @@ func (s *AuthStore) loadOrCreateLocalRootKey() ([]byte, error) {
 	}
 	if _, err := file.Write(payload); err != nil {
 		_ = file.Close()
+		_ = os.Remove(path)
 		return nil, fmt.Errorf("write local secret key: %w", err)
 	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return nil, fmt.Errorf("sync local secret key: %w", err)
+	}
 	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
 		return nil, fmt.Errorf("close local secret key: %w", err)
 	}
 	s.mu.Lock()
@@ -1007,7 +1022,34 @@ func (s *AuthStore) loadOrCreateLocalRootKey() ([]byte, error) {
 }
 
 func (s *AuthStore) readLocalRootKey(path string) ([]byte, error) {
-	payload, err := os.ReadFile(path)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, errors.New("local secret key must be a regular file, not a symlink")
+	}
+	if info.Mode().Perm() != 0o600 {
+		return nil, fmt.Errorf("local secret key mode = %04o, want 0600", info.Mode().Perm())
+	}
+	if !localRootKeyOwnedByCurrentUser(info) {
+		return nil, errors.New("local secret key is not owned by the service user")
+	}
+	// Lstat plus SameFile closes substitution races after open. Platforms with
+	// O_NOFOLLOW additionally reject the symlink at the open boundary.
+	file, err := openLocalRootKey(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, errors.New("local secret key changed while opening")
+	}
+	payload, err := io.ReadAll(file)
 	if err != nil {
 		return nil, err
 	}
