@@ -1063,6 +1063,30 @@ function planTransitionTone(message: MessageSnapshot): DesktopV3PlanTransitionTo
   return "primary";
 }
 
+function desktopV3PlanHandoffMatchKey(message: MessageSnapshot): string {
+  const planId = metadataString(message.metadata, "plan_id");
+  const checkpointId = metadataString(message.metadata, "checkpoint_id");
+  if (!planId || !checkpointId) return "";
+  return `${planId}\u0000${checkpointId}`;
+}
+
+function isDesktopV3RedundantFinalReviewMessage(
+  message: MessageSnapshot,
+  finalHandoffKeys: Set<string>,
+): boolean {
+  if (!isDesktopV3PlanExecutionBreakMessage(message)) return false;
+  const action = metadataString(message.metadata, "action").toLowerCase();
+  const nextAction = metadataString(message.metadata, "next_action").toLowerCase();
+  if (
+    nextAction !== "await_review" ||
+    (action !== "complete_checkpoint" && action !== "checkpoint_outcome")
+  ) {
+    return false;
+  }
+  const matchKey = desktopV3PlanHandoffMatchKey(message);
+  return matchKey !== "" && finalHandoffKeys.has(matchKey);
+}
+
 function buildDesktopV3PlanExecutionBreakItem(
   message: MessageSnapshot,
 ): Extract<DesktopV3RenderItem, { type: "plan-break" }> {
@@ -1278,10 +1302,19 @@ export function buildDesktopV3ConversationRenderItems(
       !isDesktopV3ManualCompactionAckMessage(message) &&
       !pendingMessageIds.has(message.id),
   );
-  const assistantMessages = canonicalContentSet(committedMessages, "assistant");
-  const reasoningMessages = canonicalContentSet(committedMessages, "reasoning");
+  const finalHandoffKeys = new Set(
+    committedMessages
+      .filter(isDesktopV3PlanFinalHandoffMessage)
+      .map(desktopV3PlanHandoffMatchKey)
+      .filter(Boolean),
+  );
+  const visibleCommittedMessages = committedMessages.filter(
+    (message) => !isDesktopV3RedundantFinalReviewMessage(message, finalHandoffKeys),
+  );
+  const assistantMessages = canonicalContentSet(visibleCommittedMessages, "assistant");
+  const reasoningMessages = canonicalContentSet(visibleCommittedMessages, "reasoning");
   const items: DesktopV3RenderItem[] = [
-    ...committedMessages.map((message) =>
+    ...visibleCommittedMessages.map((message) =>
       isDesktopV3PlanExecutionBreakMessage(message)
         ? buildDesktopV3PlanExecutionBreakItem(message)
         : isDesktopV3PlanCheckpointHandoffMessage(message)

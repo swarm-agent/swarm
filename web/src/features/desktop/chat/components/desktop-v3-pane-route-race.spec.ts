@@ -339,14 +339,21 @@ test('Desktop V3 handoff summary parser keeps absent malformed duplicated and fe
 })
 
 
-test('Desktop V3 final checkpoint handoff renders separately after lifecycle break', () => {
+test('Desktop V3 final checkpoint handoff suppresses its redundant lifecycle review card', () => {
   const lifecycle = {
     id: 'plan-break-final',
     session_id: 'session-a',
     global_seq: 7,
     role: 'system',
     content: 'All checkpoints complete; review required — Automatic mode\nPlan: Demo plan (plan-1)\nCompleted: Checkpoint 2 — UI\nNext: all checkpoints are complete; waiting for user review.',
-    metadata: { source: 'plan_execution_lifecycle', kind: 'plan_execution_break' },
+    metadata: {
+      source: 'plan_execution_lifecycle',
+      kind: 'plan_execution_break',
+      action: 'complete_checkpoint',
+      next_action: 'await_review',
+      plan_id: 'plan-1',
+      checkpoint_id: 'cp-2',
+    },
     created_at: 7,
   }
   const handoff = {
@@ -358,7 +365,8 @@ test('Desktop V3 final checkpoint handoff renders separately after lifecycle bre
     metadata: {
       source: 'plan_execution_final_handoff',
       kind: 'plan_final_checkpoint_handoff',
-      checkpoint_id: 'followup-3',
+      plan_id: 'plan-1',
+      checkpoint_id: 'cp-2',
       recommendation: { decision: 'ship', action: 'review', reason: 'complete', action_state: 'ready' },
     },
     created_at: 8,
@@ -367,35 +375,72 @@ test('Desktop V3 final checkpoint handoff renders separately after lifecycle bre
   assert.equal(isDesktopV3PlanExecutionBreakMessage(handoff), false)
   assert.equal(isDesktopV3PlanFinalHandoffMessage(handoff), true)
   const items = buildDesktopV3ConversationRenderItems({ committed: [lifecycle, handoff], pendingUser: [], liveRuns: [], runIntents: [] })
-  assert.deepEqual(items.map((item) => item.type), ['plan-break', 'plan-final-handoff'])
-  if (items[0]?.type === 'plan-break') {
-    assert.equal(items[0].details.some((detail) => detail.includes('Report: rendered separately')), false)
-    assert.equal(items[0].details.includes('Next: all checkpoints are complete; waiting for user review.'), true)
-  }
-  if (items[1]?.type === 'plan-final-handoff') {
-    assert.equal(items[1].headline, 'Final checkpoint handoff')
-    assert.equal(items[1].summary, '**Done** — ready to review.')
-    assert.match(items[1].body, /Report:\n## Outcome/)
-    assert.match(items[1].body, /This durable report contains exactly one non-empty `<swarm-handoff-summary>` block/)
-    assert.match(items[1].body, /Result: \*\*done\*\*/)
-    assert.match(items[1].body, /Validation:\n- Confirmed the report contains exactly one non-empty <swarm-handoff-summary> block\./)
+  assert.deepEqual(items.map((item) => item.type), ['plan-final-handoff'])
+  if (items[0]?.type === 'plan-final-handoff') {
+    assert.equal(items[0].headline, 'Final checkpoint handoff')
+    assert.equal(items[0].summary, '**Done** — ready to review.')
+    assert.match(items[0].body, /Report:\n## Outcome/)
+    assert.match(items[0].body, /This durable report contains exactly one non-empty `<swarm-handoff-summary>` block/)
+    assert.match(items[0].body, /Result: \*\*done\*\*/)
+    assert.match(items[0].body, /Validation:\n- Confirmed the report contains exactly one non-empty <swarm-handoff-summary> block\./)
     assert.equal(
-      items[1].body
+      items[0].body
         .split(/\r?\n/)
         .some((line) => line.trim() === '<swarm-handoff-summary>' || line.trim() === '</swarm-handoff-summary>'),
       false,
     )
-    assert.doesNotMatch(items[1].body, /Markdown is supported in this handoff/)
-    assert.equal(items[1].message.content, handoff.content)
-    assert.deepEqual(items[1].message.metadata?.recommendation, handoff.metadata.recommendation)
+    assert.doesNotMatch(items[0].body, /Markdown is supported in this handoff/)
+    assert.equal(items[0].message.content, handoff.content)
+    assert.deepEqual(items[0].message.metadata?.recommendation, handoff.metadata.recommendation)
     const markup = renderToStaticMarkup(createElement(DesktopV3RenderItemView, {
-      item: items[1], thinkingTagsEnabled: true, timerNow: 0, index: 1,
+      item: items[0], thinkingTagsEnabled: true, timerNow: 0, index: 0,
     }))
     assert.match(markup, /aria-label="At a glance"/)
     assert.equal((markup.match(/>At a glance</g) ?? []).length, 1)
     assert.match(markup, /<strong><span>Done<\/span><\/strong>/)
     assert.match(markup, /ready to review/)
     assert.equal((markup.match(/data-testid="desktop-v3-plan-final-handoff-summary"/g) ?? []).length, 1)
+  }
+})
+
+
+test('Desktop V3 keeps intermediate and explicit checkpoint review cards', () => {
+  const cases = [
+    {
+      id: 'plan-break-intermediate-review',
+      action: 'complete_checkpoint',
+      content: 'Checkpoint complete — Review each checkpoint\nPlan: Demo plan\nCompleted: Checkpoint 1 — API\nNext: waiting for checkpoint review.',
+    },
+    {
+      id: 'plan-break-explicit-review',
+      action: 'mark_needs_review',
+      content: 'Checkpoint paused for review — Automatic mode\nPlan: Demo plan\nCheckpoint: Checkpoint 1 — API\nNext: waiting for checkpoint review.',
+    },
+  ]
+
+  for (const [index, fixture] of cases.entries()) {
+    const message = {
+      id: fixture.id,
+      session_id: 'session-a',
+      global_seq: index + 1,
+      role: 'system',
+      content: fixture.content,
+      metadata: {
+        source: 'plan_execution_lifecycle',
+        kind: 'plan_execution_break',
+        action: fixture.action,
+        next_action: 'await_review',
+        plan_id: 'plan-1',
+        checkpoint_id: 'cp-1',
+      },
+      created_at: index + 1,
+    }
+    const items = buildDesktopV3ConversationRenderItems({ committed: [message], pendingUser: [], liveRuns: [], runIntents: [] })
+    assert.deepEqual(items.map((item) => item.type), ['plan-break'])
+    const markup = renderToStaticMarkup(createElement(DesktopV3RenderItemView, {
+      item: items[0], thinkingTagsEnabled: true, timerNow: 0, index,
+    }))
+    assert.match(markup, /data-testid="desktop-v3-checkpoint-review-card"/)
   }
 })
 
