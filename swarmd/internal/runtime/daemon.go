@@ -109,12 +109,26 @@ func localTransportSocketPerm() os.FileMode {
 	return localTransportSocketFileMode
 }
 
-func New(cfg config.Config) (*Daemon, error) {
-	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create data directory: %w", err)
+func ensurePrivateDirectory(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(cfg.LockPath), 0o755); err != nil {
-		return nil, fmt.Errorf("create lock parent directory: %w", err)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("path %q is not a directory", path)
+	}
+	return os.Chmod(path, 0o700)
+}
+
+func New(cfg config.Config) (*Daemon, error) {
+	if err := ensurePrivateDirectory(cfg.DataDir); err != nil {
+		return nil, fmt.Errorf("secure data directory: %w", err)
+	}
+	if err := ensurePrivateDirectory(filepath.Dir(cfg.LockPath)); err != nil {
+		return nil, fmt.Errorf("secure lock parent directory: %w", err)
 	}
 
 	lk, err := lock.Acquire(cfg.LockPath, lock.Metadata{
@@ -234,7 +248,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	topologySvc := topologyruntime.NewService(topologyStore, swarmStore)
 	worktreeSvc := worktreeruntime.NewService(pebblestore.NewWorktreeStore(store), workspaceSvc, events)
 	mcpSvc := mcpruntime.NewService(pebblestore.NewMCPStore(store), events)
-	securitySvc := security.NewService(pebblestore.NewClientAuthStore(store), events)
+	securitySvc := security.NewService(pebblestore.NewClientAuthStoreWithSecretStore(store, secretStore), events)
 	voiceSvc := voice.NewService(
 		pebblestore.NewVoiceStore(store),
 		voice.NewWhisperLocalAdapter(),

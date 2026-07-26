@@ -30,14 +30,42 @@ func OpenReadOnly(path string) (*Store, error) {
 }
 
 func openWithOptions(path string, opts *pebble.Options) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("create db parent directory: %w", err)
+	if err := secureDirectory(filepath.Dir(path)); err != nil {
+		return nil, fmt.Errorf("secure db parent directory: %w", err)
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("pebble db path %q is not a directory", path)
+		}
+		if err := os.Chmod(path, 0o700); err != nil {
+			return nil, fmt.Errorf("secure pebble db directory: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect pebble db directory: %w", err)
 	}
 	db, err := pebble.Open(path, opts)
 	if err != nil {
 		return nil, fmt.Errorf("open pebble db: %w", err)
 	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("secure pebble db directory: %w", err)
+	}
 	return &Store{db: db, path: path, sessionMutations: newSessionMutationCoordinator()}, nil
+}
+
+func secureDirectory(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("path %q is not a directory", path)
+	}
+	return os.Chmod(path, 0o700)
 }
 
 func (s *Store) Close() error {
