@@ -687,7 +687,7 @@ func (s *Server) handleSessionsV3PrimaryList(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	sessions, err := s.sessions.ListSessionsForAccount(principal.AccountScopeID, limit)
+	sessions, err := s.sessions.ListSessionsForAccountUser(principal.AccountScopeID, principal.UserID, limit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -2647,6 +2647,9 @@ func (s *Server) hydrateSessionsV3PrimaryWithLimitsForSurface(principal identity
 		return sessionsV3HydratedSession{}, ok, err
 	}
 	if strings.TrimSpace(hydrated.Session.AccountScopeID) == "" || strings.TrimSpace(hydrated.Session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return sessionsV3HydratedSession{}, false, nil
+	}
+	if strings.TrimSpace(hydrated.Session.UserID) == "" || strings.TrimSpace(hydrated.Session.UserID) != strings.TrimSpace(principal.UserID) {
 		return sessionsV3HydratedSession{}, false, nil
 	}
 	projection := pebblestore.V3SessionProjection{

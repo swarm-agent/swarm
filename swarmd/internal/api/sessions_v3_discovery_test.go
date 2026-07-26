@@ -10,6 +10,17 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestSessionsV3DiscoveryOptionsScopeToPrincipalUser(t *testing.T) {
+	principal := testPrincipal()
+	options, err := sessionsV3DiscoveryOptionsFromRequest(principal, sessionsV3DiscoveryRequest{Global: true})
+	if err != nil {
+		t.Fatalf("discovery options: %v", err)
+	}
+	if options.AccountScopeID != principal.AccountScopeID || options.UserID != principal.UserID {
+		t.Fatalf("discovery ownership scope = account %q user %q", options.AccountScopeID, options.UserID)
+	}
+}
+
 func TestSessionsV3DiscoveryEndpointIsMetadataOnly(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "discover-a", "Discover A")

@@ -79,6 +79,7 @@ func sessionsV3DiscoveryOptionsFromRequest(principal identity.Principal, req ses
 	}
 	return pebblestore.V3SessionWorksetOptions{
 		AccountScopeID:        principal.AccountScopeID,
+		UserID:                principal.UserID,
 		SessionIDs:            req.SessionIDs,
 		WorkspacePaths:        workspacePaths,
 		RecentLimit:           req.Recent.Limit,

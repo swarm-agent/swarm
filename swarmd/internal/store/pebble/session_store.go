@@ -1020,6 +1020,20 @@ func (s *SessionStore) ListSessionsForAccount(accountScopeID string, limit int) 
 	return s.listSessionsForAccount(accountScopeID, limit, nil)
 }
 
+func (s *SessionStore) ListSessionsForAccountUser(accountScopeID, userID string, limit int) ([]SessionSnapshot, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope id is required")
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, errors.New("user id is required")
+	}
+	return s.listSessionsForAccount(accountScopeID, limit, func(session SessionSnapshot) bool {
+		return strings.TrimSpace(session.UserID) == userID
+	})
+}
+
 func (s *SessionStore) ListSessionsForPath(path string, limit int) ([]SessionSnapshot, error) {
 	normalizedPath, err := normalizeSessionPath(path)
 	if err != nil {

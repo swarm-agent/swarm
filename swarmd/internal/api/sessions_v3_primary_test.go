@@ -660,6 +660,45 @@ func TestSessionsV3PrimaryCreateListHydrateUsesPrimaryStoreOnly(t *testing.T) {
 	}
 }
 
+func TestSessionsV3PrimaryListAndHydrateRejectCrossUserSessions(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	owner := testPrincipal()
+	foreign := owner
+	foreign.UserID = "user-2"
+	owned := pebblestore.SessionSnapshot{ID: "owned-session", UserID: owner.UserID, AccountScopeID: owner.AccountScopeID, WorkspacePath: "/workspace/owned", WorkspaceName: "owned", Title: "Owned", CreatedAt: 1, UpdatedAt: 1}
+	crossUser := pebblestore.SessionSnapshot{ID: "cross-user-session", UserID: foreign.UserID, AccountScopeID: owner.AccountScopeID, WorkspacePath: "/workspace/foreign", WorkspaceName: "foreign", Title: "Foreign", CreatedAt: 2, UpdatedAt: 2}
+	for _, session := range []pebblestore.SessionSnapshot{owned, crossUser} {
+		if err := sessionSvc.CreateSession(session); err != nil {
+			t.Fatalf("create session %q: %v", session.ID, err)
+		}
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v3/sessions?limit=10", nil)
+	listRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(listRec, withTestPrincipal(listReq))
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listed struct {
+		Sessions []struct {
+			Session pebblestore.SessionSnapshot `json:"session"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(listed.Sessions) != 1 || listed.Sessions[0].Session.ID != owned.ID {
+		t.Fatalf("cross-user list result = %+v", listed.Sessions)
+	}
+
+	hydrateReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+crossUser.ID, nil)
+	hydrateRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(hydrateRec, withTestPrincipal(hydrateReq))
+	if hydrateRec.Code != http.StatusNotFound {
+		t.Fatalf("cross-user hydrate status = %d, want %d, body=%s", hydrateRec.Code, http.StatusNotFound, hydrateRec.Body.String())
+	}
+}
+
 func TestSessionsV3PrimaryHydratesAfterStoreRestart(t *testing.T) {
 	t.Setenv("SWARM_API_NO_AUTH", "1")
 	storePath := filepath.Join(t.TempDir(), "sessions-v3-primary.pebble")
