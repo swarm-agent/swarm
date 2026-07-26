@@ -274,6 +274,7 @@ export function DesktopV3AgenticComposer({
   const [dictationEnabled, setDictationEnabled] = useState(false)
   const [dictationListening, setDictationListening] = useState(false)
   const [dictationError, setDictationError] = useState<string | null>(null)
+  const [dismissedComposerError, setDismissedComposerError] = useState<string | null>(null)
   const [slashSelectionIndex, setSlashSelectionIndex] = useState(0)
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
   const [agentSetupOpenSignal, setAgentSetupOpenSignal] = useState(0)
@@ -496,6 +497,10 @@ export function DesktopV3AgenticComposer({
   }, [dictationComposer, resizeComposerTextarea])
 
   useEffect(() => {
+    if (!error) setDismissedComposerError(null)
+  }, [error])
+
+  useEffect(() => {
     if (typeof window === 'undefined') return
     window.addEventListener('resize', resizeComposerTextarea)
     return () => window.removeEventListener('resize', resizeComposerTextarea)
@@ -688,6 +693,12 @@ export function DesktopV3AgenticComposer({
     onPickerOpen={openPicker}
   />
 
+  const visibleComposerError = error && error !== dismissedComposerError ? error : null
+  const dismissDictationWarning = () => {
+    setDictationError(null)
+    if (dictationEnabledRef.current) stopDictation(false)
+  }
+
   const taskModeIndicator = () => primedTaskMode ? (
     <div
       className="inline-flex min-w-0 items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] py-1 pl-2.5 pr-1 text-[11px] text-[var(--app-text)] shadow-sm"
@@ -724,8 +735,34 @@ export function DesktopV3AgenticComposer({
   return (
     <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-v3-agentic-composer">
       <div className={DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME}>
-        {error ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]" role="alert">{error}</div> : null}
-        {dictationError ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning)]">{dictationError}</div> : null}
+        {visibleComposerError ? (
+          <div className="flex min-w-0 items-center gap-2 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] py-1 pl-3 pr-1 text-sm text-[var(--app-danger)]" role="alert">
+            <span className="min-w-0 flex-1">{visibleComposerError}</span>
+            <button
+              type="button"
+              onClick={() => setDismissedComposerError(visibleComposerError)}
+              aria-label="Dismiss composer error"
+              title="Dismiss error"
+              className="grid min-h-11 min-w-11 shrink-0 touch-manipulation place-items-center rounded-lg transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-danger)]"
+            >
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+        ) : null}
+        {dictationError ? (
+          <div className="flex min-w-0 items-center gap-2 rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] py-1 pl-3 pr-1 text-sm text-[var(--app-warning)]" role="alert">
+            <span className="min-w-0 flex-1">{dictationError}</span>
+            <button
+              type="button"
+              onClick={dismissDictationWarning}
+              aria-label="Dismiss dictation warning"
+              title="Dismiss warning"
+              className="grid min-h-11 min-w-11 shrink-0 touch-manipulation place-items-center rounded-lg transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-warning)]"
+            >
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+        ) : null}
         {mentionPaletteIsActive ? (
           <DesktopMentionPanel matches={mentionPaletteMatches} selectedIndex={mentionSelectionIndex} onHover={setMentionSelectionIndex} onSelect={handleMentionInsert} />
         ) : slashPalette.active ? (

@@ -63,6 +63,17 @@ test('Desktop V3 composer opens task actions from a borderless plus trigger and 
   assert.doesNotMatch(actions, /createPortal/)
 })
 
+test('Desktop V3 composer warnings and errors can be dismissed without a refresh', async () => {
+  const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /aria-label="Dismiss composer error"/)
+  assert.match(source, /onClick=\{\(\) => setDismissedComposerError\(visibleComposerError\)\}/)
+  assert.match(source, /aria-label="Dismiss dictation warning"/)
+  assert.match(source, /onClick=\{dismissDictationWarning\}/)
+  assert.match(source, /const dismissDictationWarning = \(\) => \{[\s\S]*?setDictationError\(null\)[\s\S]*?stopDictation\(false\)/)
+  assert.equal((source.match(/min-h-11 min-w-11 shrink-0 touch-manipulation/g) ?? []).length, 2)
+})
+
 test('Desktop V3 composer keeps the canonical joined plan and model control beside the plus menu', async () => {
   const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
   const control = await readFile(new URL('./composer-plan-model-control.tsx', import.meta.url), 'utf8')
