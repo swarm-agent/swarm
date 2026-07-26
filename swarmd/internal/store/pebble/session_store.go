@@ -329,6 +329,9 @@ func NewSessionStore(store *Store) *SessionStore {
 
 func (s *SessionStore) CreateSession(session SessionSnapshot) error {
 	session = normalizeSessionOwnership(session)
+	if err := validateCanonicalSessionID(session.ID); err != nil {
+		return err
+	}
 	payload, err := json.Marshal(session)
 	if err != nil {
 		return fmt.Errorf("marshal session %q: %w", session.ID, err)
@@ -375,6 +378,9 @@ func (s *SessionStore) UpdateSessionForAccount(session SessionSnapshot, userID, 
 
 func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
 	session = normalizeSessionOwnership(session)
+	if err := validateCanonicalSessionID(session.ID); err != nil {
+		return err
+	}
 	payload, err := json.Marshal(session)
 	if err != nil {
 		return fmt.Errorf("marshal session %q: %w", session.ID, err)

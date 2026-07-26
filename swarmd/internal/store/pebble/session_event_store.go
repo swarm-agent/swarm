@@ -2524,8 +2524,8 @@ func normalizeV3SessionMutationInput(input V3SessionMutationInput) V3SessionMuta
 }
 
 func validateV3SessionMutationInput(input V3SessionMutationInput) error {
-	if input.SessionID == "" {
-		return errors.New("session id is required")
+	if err := validateCanonicalSessionID(input.SessionID); err != nil {
+		return err
 	}
 	if input.UserID == "" {
 		return errors.New("user id is required")
@@ -2598,6 +2598,17 @@ func validateV3MutationEmbeddedOwnership(input V3SessionMutationInput, label, se
 	}
 	if accountScopeID = strings.TrimSpace(accountScopeID); accountScopeID != "" && accountScopeID != input.AccountScopeID {
 		return fmt.Errorf("%s account scope id does not match mutation ownership", label)
+	}
+	return nil
+}
+
+func validateCanonicalSessionID(sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return errors.New("session id is required")
+	}
+	if sessionID != strings.ToLower(sessionID) {
+		return errors.New("session id must be lowercase")
 	}
 	return nil
 }
