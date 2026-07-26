@@ -318,6 +318,26 @@ func TestBeginExecutionEpochReplayReturnsCompoundTrigger(t *testing.T) {
 	}
 }
 
+func TestBeginExecutionEpochReturnsCommittedRunIntentWithoutFallibleRead(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "intent-result-session")
+	input := BeginExecutionEpochInput{SessionID: "intent-result-session", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "intent-result", PayloadHash: "intent-result-hash", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1", RunID: "run-1", RunSessionID: "intent-result-session", ParentSessionID: "intent-result-session", NowUnixMs: 200}
+
+	result, err := sessions.BeginExecutionEpoch(input)
+	if err != nil {
+		t.Fatalf("begin execution epoch: %v", err)
+	}
+	if result.RunIntent == nil || result.RunIntent.RunID != input.RunID || result.RunIntent.EpochID != result.Epoch.EpochID || result.RunIntent.Status != V3RunIntentPendingExecutor {
+		t.Fatalf("committed run intent = %#v, epoch = %#v", result.RunIntent, result.Epoch)
+	}
+
+	replayed, err := sessions.BeginExecutionEpoch(input)
+	if err != nil || !replayed.Replayed || replayed.RunIntent == nil || replayed.RunIntent.RunID != input.RunID || replayed.RunIntent.EpochID != result.Epoch.EpochID {
+		t.Fatalf("replayed run intent: err=%v result=%+v", err, replayed)
+	}
+}
+
 func TestBeginExecutionEpochReplayRepublishesDurableOutboxHead(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

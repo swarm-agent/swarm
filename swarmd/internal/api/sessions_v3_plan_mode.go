@@ -868,12 +868,12 @@ func (s *Server) startSessionsV3PlanModeRun(principal identity.Principal, sessio
 	}
 	if result.PlanEvent != nil {
 		if err := s.publishCommittedPlanSaved(result.Plan, result.PlanEvent); err != nil {
-			return nil, http.StatusBadRequest, err
+			return nil, http.StatusBadRequest, s.reconcileSessionsV3PlanModeStartFailure(result, sessionID, checkpointID, attemptID, runID, err)
 		}
 	}
 	if !suppressLifecycleMessage {
 		if err := s.publishPlanLifecycleSystemMessage(principal, sessionID, transition, result); err != nil {
-			return nil, http.StatusBadRequest, err
+			return nil, http.StatusBadRequest, s.reconcileSessionsV3PlanModeStartFailure(result, sessionID, checkpointID, attemptID, runID, err)
 		}
 	}
 	payloadHash := sessionsV3PlanModeRunIntentPayloadHash(sessionID, runID, checkpointID, attemptID)
@@ -881,21 +881,54 @@ func (s *Server) startSessionsV3PlanModeRun(principal identity.Principal, sessio
 	resumeContext := strings.EqualFold(strings.TrimSpace(transition), "resume_checkpoint")
 	epochResult, err := s.sessions.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, PayloadHash: payloadHash, Reason: strings.TrimSpace(transition), PlanID: strings.TrimSpace(result.Plan.ID), CheckpointID: checkpointID, AttemptID: attemptID, RunID: runID, RunSessionID: sessionID, ParentSessionID: sessionID, ResumeContext: resumeContext, NowUnixMs: time.Now().UnixMilli()})
 	if err != nil {
-		return nil, http.StatusConflict, err
-	}
-	intent, ok, err := s.sessions.GetV3SessionRunIntent(sessionID, runID)
-	if err != nil || !ok {
-		if err == nil {
-			err = errors.New("execution epoch did not persist its pending run intent")
+		// A failure after Pebble committed the epoch (for example while publishing
+		// its outbox head) still leaves an exact durable executor intent. Recover
+		// that intent rather than pausing a run which can safely execute.
+		if committed, ok, readErr := s.sessions.GetV3SessionRunIntent(sessionID, runID); readErr == nil && ok {
+			epochResult.Epoch.EpochID = committed.EpochID
+			epochResult.RunIntent = &committed
+			err = nil
+		} else {
+			return nil, http.StatusConflict, s.reconcileSessionsV3PlanModeStartFailure(result, sessionID, checkpointID, attemptID, runID, err)
 		}
-		return nil, http.StatusConflict, err
 	}
+	if epochResult.RunIntent == nil {
+		return nil, http.StatusConflict, s.reconcileSessionsV3PlanModeStartFailure(result, sessionID, checkpointID, attemptID, runID, errors.New("execution epoch did not return its committed pending run intent"))
+	}
+	intent := *epochResult.RunIntent
 	_ = s.publishCommittedV3RealtimeOutbox(epochResult.Outbox)
 	runStart := &sessionsV3PlanModeRunStart{RunIntent: &intent, CheckpointID: checkpointID, AttemptID: attemptID}
 	if !epochResult.Replayed && intent.Status == sessionruntime.RunIntentPendingExecutor && s.v3SessionExecutor != nil {
 		runStart.Queued = s.v3SessionExecutor.EnqueueRun(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID, EpochID: epochResult.Epoch.EpochID, PlanID: result.Plan.ID, CheckpointID: checkpointID, AttemptID: attemptID, ParentSessionID: sessionID, ResumeContext: resumeContext})
 	}
 	return runStart, http.StatusAccepted, nil
+}
+
+func (s *Server) reconcileSessionsV3PlanModeStartFailure(result sessionruntime.PlanLifecycleResult, sessionID, checkpointID, attemptID, runID string, startErr error) error {
+	if s == nil || s.planLifecycle == nil {
+		return startErr
+	}
+	reconciled, changed, err := s.planLifecycle.ReconcileCancelledRun(sessionruntime.PlanLifecycleExecutionInput{
+		SessionID:       strings.TrimSpace(sessionID),
+		PlanID:          strings.TrimSpace(result.Plan.ID),
+		CheckpointID:    strings.TrimSpace(checkpointID),
+		AttemptID:       strings.TrimSpace(attemptID),
+		RunID:           strings.TrimSpace(runID),
+		RunSessionID:    strings.TrimSpace(sessionID),
+		ParentSessionID: strings.TrimSpace(sessionID),
+		Notes:           "checkpoint start failed before a durable executor intent was available: " + startErr.Error(),
+		ReviewedAt:      time.Now().UnixMilli(),
+	})
+	if err != nil {
+		return fmt.Errorf("%w; reconcile failed checkpoint start: %v", startErr, err)
+	}
+	if !changed {
+		return fmt.Errorf("%w; checkpoint start ownership could not be reconciled", startErr)
+	}
+	if err := s.publishPlanLifecycleResult(reconciled); err != nil {
+		return fmt.Errorf("%w; reconciled checkpoint start but could not publish reconciliation: %v", startErr, err)
+	}
+	return startErr
 }
 
 func (s *Server) preflightSessionsV3PlanModeFreshRun(sessionID string) (int, error) {

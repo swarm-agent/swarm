@@ -125,6 +125,7 @@ type BeginExecutionEpochResult struct {
 	TriggerMessage *MessageSnapshot        `json:"trigger_message,omitempty"`
 	TriggerEvent   *V3SessionEvent         `json:"trigger_event,omitempty"`
 	TriggerOutbox  *V3RealtimeOutboxRecord `json:"trigger_realtime_outbox,omitempty"`
+	RunIntent      *V3SessionRunIntent     `json:"run_intent,omitempty"`
 	Replayed       bool                    `json:"replayed,omitempty"`
 }
 
@@ -500,7 +501,15 @@ func (s *SessionStore) BeginExecutionEpoch(input BeginExecutionEpochInput) (Begi
 		if err := s.store.sessionMutations.commitOutbox(s.store, committedOutbox); err != nil {
 			return BeginExecutionEpochResult{}, err
 		}
-		return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox, TriggerMessage: triggerMessage, TriggerEvent: triggerEvent, TriggerOutbox: triggerOutbox, Replayed: true}, nil
+		var runIntent *V3SessionRunIntent
+		if input.RunID != "" && !input.SkipRunIntent {
+			intent, ok, intentErr := s.GetV3SessionRunIntent(input.SessionID, input.RunID)
+			if intentErr != nil || !ok {
+				return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch run intent is unavailable: %w", intentErr)
+			}
+			runIntent = &intent
+		}
+		return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox, TriggerMessage: triggerMessage, TriggerEvent: triggerEvent, TriggerOutbox: triggerOutbox, RunIntent: runIntent, Replayed: true}, nil
 	}
 	return s.beginFreshExecutionEpoch(input, idemKey)
 }
@@ -732,6 +741,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 	if err := batch.Set([]byte(KeyV3SessionSequence(input.SessionID)), uint64ToBytes(epochLastSeq), nil); err != nil {
 		return BeginExecutionEpochResult{}, err
 	}
+	var committedRunIntent *V3SessionRunIntent
 	if input.RunID != "" && !input.SkipRunIntent {
 		run, ok, getErr := s.GetV3SessionRunIntent(input.SessionID, input.RunID)
 		if getErr != nil {
@@ -772,6 +782,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		if err := s.setV3SessionRunStateInBatch(batch, run, previousState, previousStateOK); err != nil {
 			return BeginExecutionEpochResult{}, err
 		}
+		committedRunIntent = &run
 	}
 	if hook := s.store.sessionMutations.beforeExecutionEpochCommit; hook != nil {
 		if err := hook(input.SessionID); err != nil {
@@ -792,7 +803,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 	if triggerProvided {
 		committedTriggerMessage = &triggerMessage
 	}
-	return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox, TriggerMessage: committedTriggerMessage, TriggerEvent: triggerEvent, TriggerOutbox: triggerOutbox}, nil
+	return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox, TriggerMessage: committedTriggerMessage, TriggerEvent: triggerEvent, TriggerOutbox: triggerOutbox, RunIntent: committedRunIntent}, nil
 }
 
 func (s *SessionStore) readLegacyEpochPrefix(sessionID string, seq uint64) (*ExecutionEpochLegacyPrefix, error) {

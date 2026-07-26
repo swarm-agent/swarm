@@ -15,6 +15,29 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestSessionsV3PlanModeStartFailureReconcilesPersistedOwnership(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "plan-mode-start-failure-create", "plan mode start failure")
+	attempt := pebblestore.SessionPlanCheckpointAttempt{ID: "cp-1:attempt-1", CheckpointID: "cp-1", Status: sessionruntime.PlanCheckpointStatusInProgress, RunID: "run-1", SessionID: created.ID, ParentSessionID: created.ID, StartedAt: 100}
+	doc := sessionsV3PlanModeTestDocument("plan-start-failure", sessionruntime.PlanExecutionPolicyModeAutomatic, sessionruntime.PlanExecutionShapeCheckpointed, "cp-1", []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: sessionruntime.PlanCheckpointStatusInProgress, AttemptID: attempt.ID, RunID: attempt.RunID, SessionID: attempt.SessionID, StartedAt: attempt.StartedAt, Attempts: []pebblestore.SessionPlanCheckpointAttempt{attempt}}})
+	doc.ExecutionState = &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateInProgress, ActiveAttemptID: attempt.ID, CurrentRunID: attempt.RunID, CurrentSessionID: created.ID, ParentSessionID: created.ID}
+	sessionsV3PlanModeSeedPlan(t, sessionSvc, created.ID, doc.ID, doc, "approved")
+	plan := sessionsV3PlanModeGetPlan(t, sessionSvc, created.ID, doc.ID)
+
+	injected := fmt.Errorf("injected pre-intent failure")
+	if err := server.reconcileSessionsV3PlanModeStartFailure(sessionruntime.PlanLifecycleResult{Plan: plan}, created.ID, "cp-1", attempt.ID, attempt.RunID, injected); err != injected {
+		t.Fatalf("start error = %v, want original %v", err, injected)
+	}
+	reconciled := sessionsV3PlanModeGetPlan(t, sessionSvc, created.ID, doc.ID)
+	checkpoint := reconciled.Document.Checkpoints[0]
+	if checkpoint.Status != sessionruntime.PlanCheckpointStatusPaused || checkpoint.Result != "run_paused" || checkpoint.Attempts[0].Status != sessionruntime.PlanCheckpointStatusPaused {
+		t.Fatalf("checkpoint was not fail-closed: %#v", checkpoint)
+	}
+	if reconciled.Document.ExecutionState == nil || reconciled.Document.ExecutionState.Status != sessionruntime.PlanExecutionStatePaused || reconciled.Document.ExecutionState.CurrentRunID != "" {
+		t.Fatalf("execution state was not reconciled: %#v", reconciled.Document.ExecutionState)
+	}
+}
+
 func TestSessionsV3PlanModeDedicatedLifecycleEndpointsSuccess(t *testing.T) {
 	t.Run("enter plan mode", func(t *testing.T) {
 		server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
