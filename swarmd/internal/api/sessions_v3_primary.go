@@ -1982,15 +1982,23 @@ func (s *Server) handleSessionV3PrimaryActivePlan(w http.ResponseWriter, r *http
 	if planID == "" {
 		planID = strings.TrimSpace(req.ID)
 	}
-	plan, event, err := s.sessions.SetActivePlan(sessionID, planID)
+	prepared, err := s.sessions.PreparePlanActivation(sessionID, planID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if event != nil && s.hub != nil {
-		s.hub.Publish(*event)
+	clientRequestID := fmt.Sprintf("plan-activate:%s:%s:%d", sessionID, planID, prepared.Plan.UpdatedAt)
+	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationSavePlan, map[string]any{"event_payload": string(prepared.EventPayload), "plan_id": planID, "updated_at": prepared.Plan.UpdatedAt})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "active_plan": plan})
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, IdempotencyKey: clientRequestID, PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationSavePlan, EventType: "session.plan.active", EventPayload: prepared.EventPayload, PlanSave: &pebblestore.V3PlanSaveMutation{Plan: prepared.Plan, Activate: true, ExpectedParentVersion: prepared.Plan.Version}, NowUnixMs: prepared.Plan.UpdatedAt})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "active_plan": prepared.Plan, "mutation": sessionV3MutationResultResponse(result), "realtime_outbox": result.RealtimeOutbox})
 }
 
 func (s *Server) handleSessionV3PrimaryPlans(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
@@ -2036,24 +2044,35 @@ func (s *Server) handleSessionV3PrimaryPlans(w http.ResponseWriter, r *http.Requ
 		updateScope = strings.TrimSpace(req.Scope)
 	}
 	metadata := sessionruntime.PlanSaveMetadata{UpdateSummary: req.UpdateSummary, UpdateScope: updateScope, UpdateKind: req.UpdateKind, RevisionKind: req.RevisionKind, Checkpoint: req.Checkpoint, Document: req.Document}
-	var plan pebblestore.SessionPlanSnapshot
-	var event *pebblestore.EventEnvelope
+	var prepared sessionruntime.PreparedPlanSave
 	var err error
 	if req.DocumentPatch != nil {
 		activatePtr := &activate
-		plan, event, err = s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{PlanID: planID, Title: req.Title, Status: req.Status, ApprovalState: req.ApprovalState, Activate: activatePtr, Document: req.Document, DocumentPatch: req.DocumentPatch, Metadata: metadata})
+		prepared, err = s.sessions.PreparePlanPatch(sessionID, sessionruntime.PlanPatchOptions{PlanID: planID, Title: req.Title, Status: req.Status, ApprovalState: req.ApprovalState, Activate: activatePtr, Document: req.Document, DocumentPatch: req.DocumentPatch, Metadata: metadata})
 	} else {
-		plan, event, err = s.sessions.SavePlanWithMetadata(sessionID, planID, req.Title, req.Plan, req.Status, req.ApprovalState, activate, metadata)
+		prepared, err = s.sessions.PreparePlanSaveWithMetadata(sessionID, planID, req.Title, req.Plan, req.Status, req.ApprovalState, activate, metadata)
 	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if publishErr := s.publishCommittedPlanSaved(plan, event); publishErr != nil {
-		writeError(w, http.StatusBadRequest, publishErr)
+	clientRequestID := fmt.Sprintf("plan-save:%s:%s:v%d", sessionID, prepared.Plan.ID, prepared.Plan.Version)
+	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationSavePlan, map[string]any{"event_payload": string(prepared.EventPayload), "plan_id": prepared.Plan.ID, "version": prepared.Plan.Version})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": plan})
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
+		ClientRequestID: clientRequestID, IdempotencyKey: clientRequestID, PayloadHash: payloadHash, RequestHash: payloadHash,
+		Kind: sessionruntime.SessionMutationSavePlan, EventType: "session.plan.saved", EventPayload: prepared.EventPayload,
+		PlanSave: &pebblestore.V3PlanSaveMutation{Plan: prepared.Plan, ArchivedRevision: prepared.ArchivedRevision, Activate: prepared.Activate, ExpectedParentVersion: prepared.Plan.ParentRevision}, NowUnixMs: prepared.Plan.UpdatedAt,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": prepared.Plan, "mutation": sessionV3MutationResultResponse(result), "realtime_outbox": result.RealtimeOutbox})
 }
 
 func (s *Server) preflightSessionsV3PlanFreshRun(_ *http.Request, _ identity.Principal, _ string) (int, error) {

@@ -139,6 +139,8 @@ func TestSessionsV3PrimaryPlanSaveReturnsPlanDeltaOnly(t *testing.T) {
 	}
 	var payload struct {
 		Plan                pebblestore.SessionPlanSnapshot   `json:"plan"`
+		Mutation            pebblestore.V3SessionMutationResult `json:"mutation"`
+		RealtimeOutbox      *pebblestore.V3RealtimeOutboxRecord `json:"realtime_outbox"`
 		Session             *pebblestore.SessionSnapshot      `json:"session"`
 		Messages            []pebblestore.MessageSnapshot     `json:"messages"`
 		PlanRevisions       []pebblestore.SessionPlanSnapshot `json:"plan_revisions"`
@@ -150,6 +152,9 @@ func TestSessionsV3PrimaryPlanSaveReturnsPlanDeltaOnly(t *testing.T) {
 	}
 	if payload.Plan.ID == "" || payload.Plan.Plan != "# Plan" {
 		t.Fatalf("plan save response plan = %+v", payload.Plan)
+	}
+	if payload.Mutation.Event.EventType != "session.plan.saved" || payload.RealtimeOutbox == nil {
+		t.Fatalf("plan save must return its canonical V3 event and realtime outbox: %s", rec.Body.String())
 	}
 	if payload.Session != nil || payload.Messages != nil || payload.PlanRevisions != nil || payload.PlanRevisionsBySess != nil || payload.PlansBySess != nil {
 		t.Fatalf("plan save should return changed plan delta only, got body=%s", rec.Body.String())

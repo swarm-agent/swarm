@@ -1,0 +1,140 @@
+package session
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+)
+
+type PreparedPlanSave struct {
+	Plan             pebblestore.SessionPlanSnapshot
+	ArchivedRevision *pebblestore.SessionPlanSnapshot
+	Activate         bool
+	EventPayload     json.RawMessage
+}
+
+func (s *Service) PreparePlanSaveWithMetadata(sessionID, planID, title, plan, status, approvalState string, activate bool, metadata PlanSaveMetadata) (PreparedPlanSave, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	planID = strings.TrimSpace(planID)
+	title = strings.TrimSpace(title)
+	plan = strings.TrimSpace(plan)
+	status = strings.ToLower(strings.TrimSpace(status))
+	approvalState = strings.ToLower(strings.TrimSpace(approvalState))
+	metadata.UpdateSummary = strings.TrimSpace(metadata.UpdateSummary)
+	metadata.UpdateScope = strings.TrimSpace(metadata.UpdateScope)
+	metadata.UpdateKind = strings.TrimSpace(metadata.UpdateKind)
+	metadata.RevisionKind = classifyPlanRevisionKind(metadata)
+	if sessionID == "" {
+		return PreparedPlanSave{}, errors.New("session id is required")
+	}
+	if title == "" {
+		if metadata.Document != nil && strings.TrimSpace(metadata.Document.Title) != "" {
+			title = strings.TrimSpace(metadata.Document.Title)
+		} else {
+			title = "Plan"
+		}
+	}
+	if status == "" {
+		status = "draft"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok, err := s.store.GetSession(sessionID)
+	if err != nil {
+		return PreparedPlanSave{}, err
+	}
+	if !ok {
+		return PreparedPlanSave{}, fmt.Errorf("session %q not found", sessionID)
+	}
+	now := time.Now().UnixMilli()
+	if planID == "" {
+		if metadata.Document != nil && strings.TrimSpace(metadata.Document.ID) != "" {
+			planID = strings.TrimSpace(metadata.Document.ID)
+		} else {
+			planID = s.newPlanID(now)
+		}
+	}
+	existing, found, err := s.store.GetPlan(sessionID, planID)
+	if err != nil {
+		return PreparedPlanSave{}, err
+	}
+	record := pebblestore.SessionPlanSnapshot{ID: planID, SessionID: sessionID, UserID: session.UserID, AccountScopeID: session.AccountScopeID, Title: title, Plan: plan, Status: status, ApprovalState: approvalState, CreatedAt: now, UpdatedAt: now, UpdateSummary: metadata.UpdateSummary, UpdateScope: metadata.UpdateScope, UpdateKind: metadata.UpdateKind, RevisionKind: metadata.RevisionKind, RestoredFromVersion: metadata.RestoredFromVersion, Checkpoint: metadata.Checkpoint, Version: 1}
+	var archived *pebblestore.SessionPlanSnapshot
+	if found {
+		if plan == "" && metadata.Document != nil {
+			record.Plan = existing.Plan
+		}
+		record.CreatedAt = existing.CreatedAt
+		record.Document, err = NormalizePlanDocumentForSave(planID, title, metadata.Document, existing.Document)
+		if err != nil {
+			return PreparedPlanSave{}, err
+		}
+		if record.UserID == "" { record.UserID = existing.UserID }
+		if record.AccountScopeID == "" { record.AccountScopeID = existing.AccountScopeID }
+		record.PriorTitle = existing.Title
+		record.PriorPlan = existing.Plan
+		record.DiffLines = BuildPlanDiffLines(existing.Plan, plan)
+		if existing.Version <= 0 { existing.Version = 1 }
+		record.Version = existing.Version + 1
+		record.ParentRevision = existing.Version
+		existing.Active = false
+		archived = &existing
+	} else {
+		record.Document, err = NormalizePlanDocumentForSave(planID, title, metadata.Document, nil)
+		if err != nil { return PreparedPlanSave{}, err }
+	}
+	if record.Document != nil { record.Document.RevisionID = fmt.Sprintf("%s:v%d", planID, record.Version) }
+	record.Active = activate
+	payload, err := json.Marshal(map[string]any{"session_id": sessionID, "plan_id": planID, "plan_title": record.Title, "plan_status": record.Status, "plan_approval_state": record.ApprovalState, "activate": activate, "has_active_plan": activate, "active_plan": record, "updated_at": now, "updated": found, "version": record.Version, "parent_revision": record.ParentRevision, "update_summary": record.UpdateSummary, "update_scope": record.UpdateScope, "update_kind": record.UpdateKind, "revision_kind": record.RevisionKind, "restored_from_version": record.RestoredFromVersion, "checkpoint": record.Checkpoint})
+	if err != nil { return PreparedPlanSave{}, err }
+	return PreparedPlanSave{Plan: record, ArchivedRevision: archived, Activate: activate, EventPayload: payload}, nil
+}
+
+func (s *Service) PreparePlanActivation(sessionID, planID string) (PreparedPlanSave, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	planID = strings.TrimSpace(planID)
+	if sessionID == "" { return PreparedPlanSave{}, errors.New("session id is required") }
+	if planID == "" { return PreparedPlanSave{}, errors.New("plan id is required") }
+	plan, ok, err := s.GetPlan(sessionID, planID)
+	if err != nil { return PreparedPlanSave{}, err }
+	if !ok { return PreparedPlanSave{}, fmt.Errorf("plan %q not found", planID) }
+	plan.Active = true
+	plan.UpdatedAt = time.Now().UnixMilli()
+	payload, err := json.Marshal(map[string]any{"session_id": sessionID, "plan_id": planID, "updated_at": plan.UpdatedAt})
+	if err != nil { return PreparedPlanSave{}, err }
+	return PreparedPlanSave{Plan: plan, Activate: true, EventPayload: payload}, nil
+}
+
+func (s *Service) PreparePlanPatch(sessionID string, options PlanPatchOptions) (PreparedPlanSave, error) {
+	planID := strings.TrimSpace(options.PlanID)
+	if options.Patch.IsZero() && options.Document == nil && options.DocumentPatch == nil { return PreparedPlanSave{}, errors.New("plan patch requires at least one edit field or document/document_patch") }
+	var existing pebblestore.SessionPlanSnapshot
+	var ok bool
+	var err error
+	if planID == "" || strings.EqualFold(planID, "active") { existing, ok, err = s.GetActivePlan(sessionID) } else { existing, ok, err = s.GetPlan(sessionID, planID) }
+	if err != nil { return PreparedPlanSave{}, err }
+	if !ok { return PreparedPlanSave{}, fmt.Errorf("plan %q not found", planID) }
+	planID = existing.ID
+	patchedPlan := existing.Plan
+	if !options.Patch.IsZero() { patchedPlan, err = ApplyPlanPatch(existing.Plan, options.Patch); if err != nil { return PreparedPlanSave{}, err } }
+	if patchedPlan == existing.Plan && options.Document == nil && options.DocumentPatch == nil { return PreparedPlanSave{}, errors.New("plan patch produced no changes") }
+	title := strings.TrimSpace(options.Title)
+	if title == "" { title = existing.Title }
+	status := strings.TrimSpace(options.Status)
+	if status == "" { status = existing.Status }
+	approval := strings.TrimSpace(options.ApprovalState)
+	if approval == "" { approval = existing.ApprovalState }
+	activate := true
+	if options.Activate != nil { activate = *options.Activate }
+	metadata := options.Metadata
+	if options.DocumentPatch != nil {
+		if metadata.RevisionKind == "" { metadata.RevisionKind = classifyPlanDocumentPatchRevisionKind(*options.DocumentPatch) }
+		metadata.Document, err = ApplyPlanDocumentPatch(planID, title, existing.Document, *options.DocumentPatch)
+		if err != nil { return PreparedPlanSave{}, err }
+	} else if options.Document != nil { metadata.Document = options.Document }
+	return s.PreparePlanSaveWithMetadata(sessionID, planID, title, patchedPlan, status, approval, activate, metadata)
+}

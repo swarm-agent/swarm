@@ -49,6 +49,16 @@ const (
 
 var ErrV3IdempotencyConflict = errors.New("v3 session idempotency conflict")
 
+// V3PlanSaveMutation carries legacy-compatible plan snapshot state into the
+// canonical V3 mutation batch. Plan, revision, active-pointer, event,
+// projection, idempotency, and realtime outbox records commit atomically.
+type V3PlanSaveMutation struct {
+	Plan             SessionPlanSnapshot  `json:"plan"`
+	ArchivedRevision *SessionPlanSnapshot `json:"archived_revision,omitempty"`
+	Activate         bool                 `json:"activate,omitempty"`
+	ExpectedParentVersion int             `json:"expected_parent_version,omitempty"`
+}
+
 type V3SessionMutationInput struct {
 	SessionID            string                    `json:"session_id"`
 	UserID               string                    `json:"user_id,omitempty"`
@@ -68,6 +78,7 @@ type V3SessionMutationInput struct {
 	Lifecycle            *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
 	RunIntent            *V3SessionRunIntent       `json:"run_intent,omitempty"`
 	PlanAcceptance       *V3PlanAcceptanceMutation `json:"plan_acceptance,omitempty"`
+	PlanSave             *V3PlanSaveMutation       `json:"plan_save,omitempty"`
 	EpochID              string                    `json:"epoch_id,omitempty"`
 	TurnUsage            *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
 	ExpectedLastEventSeq *uint64                   `json:"expected_last_event_seq,omitempty"`
@@ -573,6 +584,19 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 }
 
 func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput, idempotencyStoreKey string) (V3SessionMutationResult, error) {
+	if input.PlanSave != nil {
+		current, found, err := s.GetPlan(input.SessionID, input.PlanSave.Plan.ID)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		expected := input.PlanSave.ExpectedParentVersion
+		if expected == 0 && found {
+			return V3SessionMutationResult{}, fmt.Errorf("plan %q was created concurrently", input.PlanSave.Plan.ID)
+		}
+		if expected > 0 && (!found || current.Version != expected) {
+			return V3SessionMutationResult{}, fmt.Errorf("plan %q revision conflict: expected parent %d", input.PlanSave.Plan.ID, expected)
+		}
+	}
 	currentSeq, err := s.readV3SessionSequence(input.SessionID)
 	if err != nil {
 		return V3SessionMutationResult{}, err
@@ -784,6 +808,11 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	if input.PlanSave != nil {
+		if err := setV3PlanSaveInBatch(batch, input.SessionID, *input.PlanSave); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	if initialEpoch != nil {
 		initialEpoch.CreatedAt = now
 		initialEpoch.UpdatedAt = now
