@@ -1850,7 +1850,11 @@ func buildPermissionWorkspaceScope(session pebblestore.SessionSnapshot) tool.Wor
 		add(rootPath)
 	}
 	for _, root := range session.TemporaryWorkspaceRoots {
-		add(root)
+		validated, err := validateTemporaryWorkspaceRoot(root)
+		if err != nil {
+			continue
+		}
+		add(validated)
 	}
 	scope := tool.WorkspaceScope{PrimaryPath: primaryPath, Roots: roots, SessionID: strings.TrimSpace(session.ID)}
 	if userID, accountScopeID := strings.TrimSpace(session.UserID), strings.TrimSpace(session.AccountScopeID); userID != "" && accountScopeID != "" {

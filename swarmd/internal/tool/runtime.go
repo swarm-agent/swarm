@@ -50,6 +50,8 @@ const (
 	maxBashOutputViewerBytes            = 4 * 1024 * 1024
 	bashStreamEmitChunkBytes            = 1024
 	maxSearchCommandOut                 = 256 * 1024
+	maxSearchHelperStdout               = 8 * 1024 * 1024
+	maxSearchHelperStderr               = 64 * 1024
 	defaultBashTimeout                  = 2 * time.Minute
 	maxBashTimeout                      = 30 * time.Minute
 	defaultGitTimeout                   = 20 * time.Second
@@ -2134,22 +2136,58 @@ func executeSearchHelper(ctx context.Context, req searchipc.Request) (searchipc.
 	}
 	cmd := exec.CommandContext(ctx, helperPath)
 	cmd.Stdin = bytes.NewReader(payload)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return searchipc.Response{}, fmt.Errorf("search FFF helper timed out or was cancelled: %w", ctxErr)
-		}
-		return searchipc.Response{}, fmt.Errorf("search FFF helper exited: %w%s", err, formatSearchHelperDiagnostic(stderr.String(), stdout.String()))
+	stdout := newBoundedSearchHelperBuffer(maxSearchHelperStdout)
+	stderr := newBoundedSearchHelperBuffer(maxSearchHelperStderr)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	runErr := cmd.Run()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return searchipc.Response{}, fmt.Errorf("search FFF helper timed out or was cancelled: %w", ctxErr)
+	}
+	if stdout.Overflowed() {
+		return searchipc.Response{}, fmt.Errorf("search FFF helper stdout exceeded %d bytes", maxSearchHelperStdout)
+	}
+	if stderr.Overflowed() {
+		return searchipc.Response{}, fmt.Errorf("search FFF helper stderr exceeded %d bytes", maxSearchHelperStderr)
+	}
+	if runErr != nil {
+		return searchipc.Response{}, fmt.Errorf("search FFF helper exited: %w%s", runErr, formatSearchHelperDiagnostic(stderr.String(), stdout.String()))
 	}
 	var resp searchipc.Response
 	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
-		return searchipc.Response{}, fmt.Errorf("decode FFF search helper response: %w%s", err, formatSearchHelperDiagnostic(stderr.String(), stdout.String()))
+		return searchipc.Response{}, fmt.Errorf("decode FFF search helper response: malformed output: %w%s", err, formatSearchHelperDiagnostic(stderr.String(), stdout.String()))
 	}
 	return resp, nil
 }
+
+type boundedSearchHelperBuffer struct {
+	limit      int
+	buf        bytes.Buffer
+	overflowed bool
+}
+
+func newBoundedSearchHelperBuffer(limit int) *boundedSearchHelperBuffer {
+	return &boundedSearchHelperBuffer{limit: limit}
+}
+
+func (b *boundedSearchHelperBuffer) Write(p []byte) (int, error) {
+	originalLen := len(p)
+	remaining := b.limit - b.buf.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		_, _ = b.buf.Write(p)
+	}
+	if originalLen > remaining {
+		b.overflowed = true
+	}
+	return originalLen, nil
+}
+
+func (b *boundedSearchHelperBuffer) Bytes() []byte      { return b.buf.Bytes() }
+func (b *boundedSearchHelperBuffer) String() string     { return b.buf.String() }
+func (b *boundedSearchHelperBuffer) Overflowed() bool   { return b.overflowed }
 
 func resolveSearchHelperPath() (string, error) {
 	if configured := strings.TrimSpace(os.Getenv("SWARM_FFF_SEARCH_HELPER")); configured != "" {

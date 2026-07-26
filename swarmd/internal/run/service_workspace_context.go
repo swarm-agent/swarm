@@ -47,7 +47,10 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 			}
 			roots = append(roots, resolvedRootPath)
 		}
-		roots = mergeSessionWorkspaceRoots(roots, session.TemporaryWorkspaceRoots)
+		roots, err = mergeValidatedTemporaryWorkspaceRoots(roots, session.TemporaryWorkspaceRoots)
+		if err != nil {
+			return tool.WorkspaceScope{}, err
+		}
 		return tool.WorkspaceScope{
 			PrimaryPath: resolvedPath,
 			Roots:       roots,
@@ -61,7 +64,10 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 			return tool.WorkspaceScope{}, fmt.Errorf("resolve account-scoped workspace scope: %w", err)
 		}
 		if strings.TrimSpace(resolved.WorkspacePath) != "" {
-			roots := mergeSessionWorkspaceRoots(resolved.Directories, session.TemporaryWorkspaceRoots)
+			roots, err := mergeValidatedTemporaryWorkspaceRoots(resolved.Directories, session.TemporaryWorkspaceRoots)
+			if err != nil {
+				return tool.WorkspaceScope{}, err
+			}
 			return tool.WorkspaceScope{
 				PrimaryPath: strings.TrimSpace(resolved.WorkspacePath),
 				Roots:       roots,
@@ -74,7 +80,10 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 	if err != nil {
 		return tool.WorkspaceScope{}, err
 	}
-	roots := mergeSessionWorkspaceRoots([]string{resolvedPath}, session.TemporaryWorkspaceRoots)
+	roots, err := mergeValidatedTemporaryWorkspaceRoots([]string{resolvedPath}, session.TemporaryWorkspaceRoots)
+	if err != nil {
+		return tool.WorkspaceScope{}, err
+	}
 	return tool.WorkspaceScope{
 		PrimaryPath: resolvedPath,
 		Roots:       roots,
@@ -141,6 +150,43 @@ func appendHostRuntimeContext(base string, workspacePath string, workspaceRoots 
 		return block.String()
 	}
 	return base + "\n\n" + block.String()
+}
+
+func mergeValidatedTemporaryWorkspaceRoots(baseRoots, temporaryRoots []string) ([]string, error) {
+	validated := make([]string, 0, len(temporaryRoots))
+	for _, raw := range temporaryRoots {
+		root, err := validateTemporaryWorkspaceRoot(raw)
+		if err != nil {
+			return nil, err
+		}
+		validated = append(validated, root)
+	}
+	return mergeSessionWorkspaceRoots(baseRoots, validated), nil
+}
+
+func validateTemporaryWorkspaceRoot(root string) (string, error) {
+	root = strings.TrimSpace(root)
+	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return "", fmt.Errorf("temporary workspace root must be an absolute canonical path: %q", root)
+	}
+	info, err := os.Lstat(root)
+	if err != nil {
+		return "", fmt.Errorf("stat temporary workspace root %q: %w", root, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("temporary workspace root must not be a symlink: %s", root)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("temporary workspace root must be a directory: %s", root)
+	}
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve temporary workspace root %q: %w", root, err)
+	}
+	if resolved != root {
+		return "", fmt.Errorf("temporary workspace root is no longer canonical: %s", root)
+	}
+	return root, nil
 }
 
 func mergeSessionWorkspaceRoots(baseRoots, temporaryRoots []string) []string {

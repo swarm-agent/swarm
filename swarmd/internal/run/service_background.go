@@ -567,8 +567,12 @@ func (s *Service) resolveExecutionRoots(session pebblestore.SessionSnapshot, wor
 	if workspacePath == "" {
 		return nil, errors.New("workspace path is required")
 	}
+	validatedRoots, err := mergeValidatedTemporaryWorkspaceRoots(nil, temporaryRoots)
+	if err != nil {
+		return nil, err
+	}
 	if worktreeEnabled {
-		return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots([]string{workspacePath}, temporaryRoots)), nil
+		return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots([]string{workspacePath}, validatedRoots)), nil
 	}
 	principal, err := principalForRunWorkspaceScope(session, principal)
 	if err != nil {
@@ -579,9 +583,9 @@ func (s *Service) resolveExecutionRoots(session pebblestore.SessionSnapshot, wor
 		if err != nil {
 			return nil, fmt.Errorf("resolve account-scoped execution roots: %w", err)
 		}
-		return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots(resolved.Directories, temporaryRoots)), nil
+		return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots(resolved.Directories, validatedRoots)), nil
 	}
-	return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots([]string{workspacePath}, temporaryRoots)), nil
+	return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots([]string{workspacePath}, validatedRoots)), nil
 }
 
 func normalizeExecutionRoots(primary string, roots []string) []string {

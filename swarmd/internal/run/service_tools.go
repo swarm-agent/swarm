@@ -4162,6 +4162,11 @@ func sanitizeTaskDelegationRoots(values []string) []string {
 		if value == "" {
 			continue
 		}
+		validated, err := validateTemporaryWorkspaceRoot(value)
+		if err != nil {
+			continue
+		}
+		value = validated
 		if _, ok := seen[value]; ok {
 			continue
 		}

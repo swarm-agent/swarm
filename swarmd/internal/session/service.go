@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -2283,13 +2284,29 @@ func normalizeSessionWorkspaceRoot(root string) (string, error) {
 	if root == "" {
 		return "", errors.New("workspace root is required")
 	}
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		return "", fmt.Errorf("resolve workspace root %q: %w", root, err)
+	if !filepath.IsAbs(root) {
+		return "", fmt.Errorf("workspace root must be absolute: %s", root)
 	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return abs, nil
+	clean := filepath.Clean(root)
+	if clean != root {
+		return "", fmt.Errorf("workspace root must be canonical: %s", root)
 	}
-	return resolved, nil
+	info, err := os.Lstat(clean)
+	if err != nil {
+		return "", fmt.Errorf("stat workspace root %q: %w", clean, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("workspace root must not be a symlink: %s", clean)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("workspace root must be a directory: %s", clean)
+	}
+	resolved, err := filepath.EvalSymlinks(clean)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace root %q: %w", clean, err)
+	}
+	if resolved != clean {
+		return "", fmt.Errorf("workspace root must be canonical: %s", clean)
+	}
+	return clean, nil
 }

@@ -235,8 +235,16 @@ func (s *Service) providerManagedWorkspaceContext(config providerToolInvokerConf
 		return normalizeProviderManagedWorkspaceContext(workspaceCtx), nil
 	}
 	if len(session.TemporaryWorkspaceRoots) > 0 {
-		workspaceCtx.OriginWorkspaceRoots = mergeSessionWorkspaceRoots(workspaceCtx.OriginWorkspaceRoots, session.TemporaryWorkspaceRoots)
-		workspaceCtx.WorkspaceRoots = mergeSessionWorkspaceRoots(workspaceCtx.WorkspaceRoots, session.TemporaryWorkspaceRoots)
+		roots, err := mergeValidatedTemporaryWorkspaceRoots(workspaceCtx.OriginWorkspaceRoots, session.TemporaryWorkspaceRoots)
+		if err != nil {
+			return runWorkspaceContext{}, err
+		}
+		workspaceCtx.OriginWorkspaceRoots = roots
+		roots, err = mergeValidatedTemporaryWorkspaceRoots(workspaceCtx.WorkspaceRoots, session.TemporaryWorkspaceRoots)
+		if err != nil {
+			return runWorkspaceContext{}, err
+		}
+		workspaceCtx.WorkspaceRoots = roots
 	}
 	return normalizeProviderManagedWorkspaceContext(workspaceCtx), nil
 }

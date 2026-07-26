@@ -195,6 +195,33 @@ func TestPersistentWorkspaceScopeApprovalAddsAccountScopedDirectory(t *testing.T
 	assertStringSliceContains(t, workspaceCtx.WorkspaceRoots, linked)
 }
 
+func TestResolveRunWorkspaceScopeRejectsTemporaryRootChangedToSymlink(t *testing.T) {
+	primary := t.TempDir()
+	temporaryParent := t.TempDir()
+	temporaryRoot := filepath.Join(temporaryParent, "approved")
+	if err := os.Mkdir(temporaryRoot, 0o755); err != nil {
+		t.Fatalf("create temporary root: %v", err)
+	}
+	if err := os.Remove(temporaryRoot); err != nil {
+		t.Fatalf("remove temporary root: %v", err)
+	}
+	if err := os.Symlink(t.TempDir(), temporaryRoot); err != nil {
+		t.Fatalf("replace temporary root with symlink: %v", err)
+	}
+
+	runSvc := NewService(nil, nil, nil, nil, nil, nil, discovery.NewService(), nil)
+	_, err := runSvc.resolveRunWorkspaceScope(pebblestore.SessionSnapshot{
+		ID:                      "session-stale-temporary-root",
+		UserID:                  "user-1",
+		AccountScopeID:          "account-1",
+		WorkspacePath:           primary,
+		TemporaryWorkspaceRoots: []string{temporaryRoot},
+	}, testRunPrincipal())
+	if err == nil || !strings.Contains(err.Error(), "temporary workspace root must not be a symlink") {
+		t.Fatalf("resolve stale temporary root error = %v, want symlink rejection", err)
+	}
+}
+
 func newTestRunWorkspaceService(t *testing.T) (*workspaceruntime.Service, func()) {
 	t.Helper()
 	workspaceSvc, _, _, cleanup := newTestRunWorkspaceServiceWithRawStore(t)
