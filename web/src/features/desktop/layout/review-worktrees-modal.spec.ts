@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest'
-import { buildReviewWorktreeFixPrompt, currentCheckoutCommitCandidate, resolveReviewWorktreeRepairAgent, reviewCommitCandidates, reviewWorktreeIntegrationFailureDisplay, reviewWorktreeReasonLabel, selectableReviewIDs, selectedArchiveCandidates, shouldShowReviewCommitAction } from './review-worktrees-modal'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { describe, expect, it, vi } from 'vitest'
+import { buildReviewWorktreeFixPrompt, CollapsibleReviewSection, currentCheckoutCommitCandidate, resolveReviewWorktreeRepairAgent, reviewCommitCandidates, reviewWorktreeIntegrationFailureDisplay, reviewWorktreeReasonLabel, selectableReviewIDs, selectedArchiveCandidates, shouldShowReviewCommitAction } from './review-worktrees-modal'
 import type { ReviewWorktreeCandidate, ReviewWorktreesResponse } from '../session-v3/review-worktrees-api'
 import type { AgentProfileRecord, AgentStateRecord } from '../chat/types/chat'
 
@@ -30,6 +32,30 @@ function agentState(profiles: AgentProfileRecord[], activePrimary: string): Agen
 }
 
 describe('review worktrees modal helpers', () => {
+  it('keeps completed sections collapsed until their headers are expanded', () => {
+    const collapsed = renderToStaticMarkup(createElement(CollapsibleReviewSection, {
+      title: 'Done',
+      icon: createElement('span'),
+      count: 1,
+      expanded: false,
+      onExpandedChange: vi.fn(),
+      children: createElement('span', null, 'Completed session'),
+    }))
+    expect(collapsed).toContain('aria-expanded="false"')
+    expect(collapsed).not.toContain('Completed session')
+
+    const expanded = renderToStaticMarkup(createElement(CollapsibleReviewSection, {
+      title: 'Archived',
+      icon: createElement('span'),
+      count: 1,
+      expanded: true,
+      onExpandedChange: vi.fn(),
+      children: createElement('span', null, 'Archived session'),
+    }))
+    expect(expanded).toContain('aria-expanded="true"')
+    expect(expanded).toContain('Archived session')
+  })
+
   it('explains why dirty and unintegrated sessions are retained', () => {
     expect(reviewWorktreeReasonLabel(candidate({ dirty_count: 2 }))).toBe('2 uncommitted changes')
     expect(reviewWorktreeReasonLabel(candidate({ reason: 'current_checkout_uncommitted_work', dirty_count: 2, current_checkout: true, commit_eligible: true }))).toBe('2 uncommitted changes in the current checkout')
