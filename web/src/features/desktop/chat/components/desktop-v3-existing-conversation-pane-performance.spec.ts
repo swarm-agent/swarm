@@ -34,6 +34,21 @@ test('existing conversation draft state stays inside the composer-local controll
   assert.match(pane, /controllerRef=\{composerControllerRef\}/)
 })
 
+test('existing conversation windows historical transcript rows', async () => {
+  const source = await readFile(paneSourceUrl, 'utf8')
+  const pane = componentBody(
+    source,
+    'DesktopV3ExistingConversationPane',
+    'DesktopV3RenderItemView',
+  )
+
+  assert.match(pane, /useState\(DEFAULT_TRANSCRIPT_RENDER_WINDOW\)/)
+  assert.match(pane, /renderItems\.slice\(hiddenRenderItemCount\)/)
+  assert.match(pane, /visibleRenderItems\.map/)
+  assert.match(pane, /Show \{Math\.min\(TRANSCRIPT_RENDER_WINDOW_STEP, hiddenRenderItemCount\)\} earlier messages/)
+  assert.doesNotMatch(pane, /\{renderItems\.map/)
+})
+
 test('existing conversation rows receive a stable suggested-prompt callback', async () => {
   const source = await readFile(paneSourceUrl, 'utf8')
   const pane = componentBody(

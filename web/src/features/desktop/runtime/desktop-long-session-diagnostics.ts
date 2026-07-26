@@ -8,8 +8,8 @@ import {
 import type { DesktopV3CacheState } from '../state/desktop-v3-cache-types'
 
 const CONFIG_PATH = '/v3/diagnostics/long-session/config'
+const SAMPLE_PATH = '/v3/diagnostics/long-session/samples'
 const CAPTURE_PATH = '/v3/diagnostics/long-session/captures'
-const HEAP_PEAK_INTERVAL_MS = 1_000
 const MAX_LARGEST_SESSIONS = 10
 const textEncoder = new TextEncoder()
 
@@ -29,6 +29,7 @@ export interface DesktopDiagnosticsAvailability {
 
 export interface DesktopDiagnosticsCaptureResult {
   artifactLocation: string
+  artifacts: string[]
 }
 
 let diagnosticsAvailability: DesktopDiagnosticsAvailability = {
@@ -63,11 +64,8 @@ function publishDiagnosticsAvailability(next: DesktopDiagnosticsAvailability): v
 
 export interface DesktopDiagnosticsSample {
   timestamp_ms: number
-  js_heap_available: boolean
-  js_heap_used_bytes?: number
-  js_heap_peak_used_bytes?: number
-  js_heap_total_bytes?: number
-  js_heap_limit_bytes?: number
+  browser_memory_available: boolean
+  browser_memory_bytes?: number
   event_loop_drift_ms: number
   long_task_count: number
   long_task_duration_ms: number
@@ -99,7 +97,7 @@ export interface DesktopDiagnosticsSamplerDeps {
   observeLongTasks: (callback: (durationMS: number) => void) => () => void
   observeLongAnimationFrames: (callback: (durationMS: number, blockingDurationMS: number) => void) => () => void
   getDOMNodeCount: () => number
-  getHeap: () => { used: number; total: number; limit?: number } | null
+  measureBrowserMemory: () => Promise<number | null>
   monotonicNow: () => number
   getQueryCache: () => unknown[]
 }
@@ -134,9 +132,9 @@ export async function retainDesktopLongSessionDiagnostics(
   publishDiagnosticsAvailability({ checked: true, enabled: true, artifactLocation: configuredArtifactLocation, error: null })
 
   let released = false
-  let eventLoopProbeExpectedAt = deps.now() + HEAP_PEAK_INTERVAL_MS
+  const intervalMS = Math.max(5_000, config.sample_interval_ms || 30_000)
+  let eventLoopProbeExpectedAt = deps.now() + intervalMS
   let eventLoopDriftMS = 0
-  let jsHeapPeakUsedBytes = deps.getHeap()?.used ?? 0
   let longTaskCount = 0
   let longTaskDurationMS = 0
   let longAnimationFrameCount = 0
@@ -167,21 +165,21 @@ export async function retainDesktopLongSessionDiagnostics(
     longAnimationFrameDurationMS += durationMS
     longAnimationFrameBlockingDurationMS += blockingDurationMS
   })
-  const observationWindowMS = Math.max(5_000, config.sample_interval_ms || 30_000)
-  const heapPeakTimer = deps.setInterval(() => {
-    const probeNow = deps.now()
-    eventLoopDriftMS = Math.max(eventLoopDriftMS, probeNow - eventLoopProbeExpectedAt)
-    eventLoopProbeExpectedAt = probeNow + HEAP_PEAK_INTERVAL_MS
-    jsHeapPeakUsedBytes = Math.max(jsHeapPeakUsedBytes, deps.getHeap()?.used ?? 0)
-  }, HEAP_PEAK_INTERVAL_MS)
   let deliveryInFlight = false
-  const sampleAndDeliver = async (): Promise<DesktopDiagnosticsCaptureResult> => {
+  const sampleAndDeliver = async (captureDaemon = true): Promise<DesktopDiagnosticsCaptureResult> => {
     if (released) throw new Error('Long-session diagnostics are no longer active.')
     if (deliveryInFlight) throw new Error('A long-session diagnostics capture is already in progress.')
     deliveryInFlight = true
     const sampleStartedAt = deps.monotonicNow()
+    let browserMemoryBytes: number | null = null
+    try {
+      browserMemoryBytes = await deps.measureBrowserMemory()
+    } catch (error) {
+      console.error('[desktop-v3] browser memory measurement unavailable', error)
+    }
     const sample = buildDesktopDiagnosticsSample(deps, {
-      js_heap_peak_used_bytes: jsHeapPeakUsedBytes,
+      browser_memory_available: browserMemoryBytes !== null,
+      ...(browserMemoryBytes !== null ? { browser_memory_bytes: browserMemoryBytes } : {}),
       event_loop_drift_ms: eventLoopDriftMS,
       long_task_count: longTaskCount,
       long_task_duration_ms: longTaskDurationMS,
@@ -198,7 +196,6 @@ export async function retainDesktopLongSessionDiagnostics(
     })
     sample.diagnostics_sample_duration_ms = Math.max(0, deps.monotonicNow() - sampleStartedAt)
     eventLoopDriftMS = 0
-    jsHeapPeakUsedBytes = sample.js_heap_used_bytes ?? 0
     longTaskCount = 0
     longTaskDurationMS = 0
     longAnimationFrameCount = 0
@@ -212,7 +209,7 @@ export async function retainDesktopLongSessionDiagnostics(
     cacheActionMaxDurationMS = {}
 
     try {
-      const sampleResponse = await deps.fetch(CAPTURE_PATH, {
+      const sampleResponse = await deps.fetch(captureDaemon ? CAPTURE_PATH : SAMPLE_PATH, {
         method: 'POST',
         cache: 'no-store',
         credentials: 'same-origin',
@@ -222,11 +219,12 @@ export async function retainDesktopLongSessionDiagnostics(
       if (!sampleResponse.ok) {
         throw new Error(`sample delivery failed: ${sampleResponse.status} ${await readErrorMessage(sampleResponse)}`)
       }
-      const result = (await sampleResponse.json()) as { ok?: boolean; artifact_location?: string }
+      const result = (await sampleResponse.json()) as { ok?: boolean; artifact_location?: string; artifacts?: string[] }
       if (!result.ok) throw new Error('Diagnostics capture did not return a success result.')
       const artifactLocation = result.artifact_location?.trim() || configuredArtifactLocation
+      const artifacts = Array.isArray(result.artifacts) ? result.artifacts.filter((artifact): artifact is string => typeof artifact === 'string' && artifact.length > 0) : []
       publishDiagnosticsAvailability({ checked: true, enabled: true, artifactLocation, error: null })
-      return { artifactLocation }
+      return { artifactLocation, artifacts }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       publishDiagnosticsAvailability({ checked: true, enabled: true, artifactLocation: configuredArtifactLocation, error: message })
@@ -235,18 +233,29 @@ export async function retainDesktopLongSessionDiagnostics(
       deliveryInFlight = false
     }
   }
-  activeManualCapture = sampleAndDeliver
+  const timer = deps.setInterval(() => {
+    const probeNow = deps.now()
+    eventLoopDriftMS = Math.max(eventLoopDriftMS, probeNow - eventLoopProbeExpectedAt)
+    eventLoopProbeExpectedAt = probeNow + intervalMS
+    void sampleAndDeliver(false).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error('[desktop-v3] long-session diagnostics sample delivery failed', error)
+      publishDiagnosticsAvailability({ checked: true, enabled: true, artifactLocation: configuredArtifactLocation, error: message })
+    })
+  }, intervalMS)
+  const manualCapture = () => sampleAndDeliver(true)
+  activeManualCapture = manualCapture
   publishDiagnosticsAvailability({ checked: true, enabled: true, artifactLocation: configuredArtifactLocation, error: null })
 
-  console.info(`[desktop-v3] long-session diagnostics enabled; manual captures report the accumulated observation window (target ${observationWindowMS}ms)`)
+  console.info(`[desktop-v3] long-session diagnostics enabled; authenticated browser samples run every ${intervalMS}ms`)
 
   return {
     enabled: true,
     release: () => {
       if (released) return
       released = true
-      if (activeManualCapture === sampleAndDeliver) activeManualCapture = null
-      deps.clearInterval(heapPeakTimer)
+      if (activeManualCapture === manualCapture) activeManualCapture = null
+      deps.clearInterval(timer)
       unsubscribeCache()
       stopLongTasks()
       stopLongAnimationFrames()
@@ -255,10 +264,11 @@ export async function retainDesktopLongSessionDiagnostics(
 }
 
 export function buildDesktopDiagnosticsSample(
-  deps: Pick<DesktopDiagnosticsSamplerDeps, 'now' | 'getCacheSnapshot' | 'getDOMNodeCount' | 'getHeap' | 'getQueryCache'>,
+  deps: Pick<DesktopDiagnosticsSamplerDeps, 'now' | 'getCacheSnapshot' | 'getDOMNodeCount' | 'getQueryCache'>,
   timing: Pick<
     DesktopDiagnosticsSample,
-    | 'js_heap_peak_used_bytes'
+    | 'browser_memory_available'
+    | 'browser_memory_bytes'
     | 'event_loop_drift_ms'
     | 'long_task_count'
     | 'long_task_duration_ms'
@@ -276,15 +286,8 @@ export function buildDesktopDiagnosticsSample(
 ): DesktopDiagnosticsSample {
   const cache = aggregateDesktopV3Cache(deps.getCacheSnapshot())
   const queryCache = deps.getQueryCache()
-  const heap = deps.getHeap()
   return {
     timestamp_ms: Math.round(deps.now()),
-    js_heap_available: heap !== null,
-    ...(heap ? {
-      js_heap_used_bytes: heap.used,
-      js_heap_total_bytes: heap.total,
-      ...(heap.limit ? { js_heap_limit_bytes: heap.limit } : {}),
-    } : {}),
     ...timing,
     dom_nodes: deps.getDOMNodeCount(),
     query_cache_entries: queryCache.length,
@@ -380,7 +383,7 @@ function observePerformanceEntries(
   type: string,
   callback: (entry: PerformanceEntry) => void,
 ): () => void {
-  if (typeof PerformanceObserver === 'undefined') return () => {}
+  if (typeof PerformanceObserver === 'undefined' || !PerformanceObserver.supportedEntryTypes.includes(type)) return () => {}
   try {
     const observer = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) callback(entry)
@@ -407,15 +410,13 @@ function browserDiagnosticsDeps(): DesktopDiagnosticsSamplerDeps {
       callback(entry.duration, blockingDuration)
     }),
     getDOMNodeCount: () => document.getElementsByTagName('*').length,
-    getHeap: () => {
-      const memory = (performance as Performance & {
-        memory?: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit?: number }
-      }).memory
-      return memory ? {
-        used: memory.usedJSHeapSize,
-        total: memory.totalJSHeapSize,
-        limit: memory.jsHeapSizeLimit,
-      } : null
+    measureBrowserMemory: async () => {
+      const measure = (performance as Performance & {
+        measureUserAgentSpecificMemory?: () => Promise<{ bytes?: number }>
+      }).measureUserAgentSpecificMemory
+      if (!globalThis.crossOriginIsolated || typeof measure !== 'function') return null
+      const result = await measure.call(performance)
+      return typeof result.bytes === 'number' && Number.isFinite(result.bytes) && result.bytes >= 0 ? result.bytes : null
     },
     getQueryCache: () => queryClient.getQueryCache().getAll(),
   }

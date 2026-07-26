@@ -33,7 +33,7 @@ test('diagnostics sampler remains disabled on a flag-gated 404', async () => {
     observeLongTasks: () => () => {},
     observeLongAnimationFrames: () => () => {},
     getDOMNodeCount: () => 0,
-    getHeap: () => null,
+    measureBrowserMemory: async () => null,
     monotonicNow: () => 0,
     getQueryCache: () => [],
   })
@@ -56,7 +56,7 @@ test('enabled sampler exposes manual renderer-and-daemon capture and tears down 
       requests.push(input)
       return requests.length === 1
         ? new Response('{"ok":true,"enabled":true,"sample_interval_ms":30000,"artifact_location":"/logs/run-1"}', { status: 200 })
-        : new Response('{"ok":true,"artifact_location":"/logs/run-1"}', { status: 202 })
+        : new Response('{"ok":true,"artifact_location":"/logs/run-1","artifacts":["desktop-samples.jsonl","samples.jsonl","latest-findings.json","profile-test-heap.pprof"]}', { status: 202 })
     },
     now: () => 30_000,
     setInterval: (callback) => {
@@ -75,14 +75,15 @@ test('enabled sampler exposes manual renderer-and-daemon capture and tears down 
     observeLongTasks: () => () => observerReleased++,
     observeLongAnimationFrames: () => () => animationObserverReleased++,
     getDOMNodeCount: () => 10,
-    getHeap: () => ({ used: 100, total: 200, limit: 300 }),
+    measureBrowserMemory: async () => 300,
     monotonicNow: () => 1,
     getQueryCache: () => [],
   })
   listener?.({ action: { type: 'session.select', sessionId: undefined }, previousState: state, nextState: state, durationMS: 4 })
-  intervalCallback?.()
+  assert.ok(intervalCallback)
   const capture = await captureDesktopLongSessionDiagnostics()
   assert.equal(capture.artifactLocation, '/logs/run-1')
+  assert.deepEqual(capture.artifacts, ['desktop-samples.jsonl', 'samples.jsonl', 'latest-findings.json', 'profile-test-heap.pprof'])
   lease.release()
   lease.release()
   assert.equal(requests.length, 2)

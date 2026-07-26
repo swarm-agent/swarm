@@ -93,7 +93,7 @@ function bashOutputText(toolMessage: StructuredToolMessage): string {
   if (!data.output || !data.output.includes(data.stdout)) addPart(data.stdout);
   if (!data.output || !data.output.includes(data.stderr)) addPart(data.stderr);
 
-  return joinBashOutputParts(parts) || data.outputText || data.completedOutput || toolMessage.output || toolMessage.completedOutput || "";
+  return joinBashOutputParts(parts) || toolMessage.output || toolMessage.completedOutput || "";
 }
 
 export function bashCopyText(output: string): string {
@@ -1299,7 +1299,7 @@ function ReviewWorktreeRow({ item }: { item: ManageSessionCardItem }) {
 }
 
 function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessage }) {
-  const output = parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+  const output = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
   if (!output) return null;
   const args = toolMessage.argumentsJson ?? null;
   const action = toolJsonString(output, "action") || toolJsonString(args, "action") || "sessions";
@@ -1473,7 +1473,7 @@ function planTransitionStatus(payload: Record<string, unknown> | null): string {
 }
 
 function ExitPlanModeToolView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
-  const payload = parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+  const payload = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
   const args = toolMessage.argumentsJson ?? parseToolJSON(toolMessage.argumentsText);
   const title = toolJsonString(payload, "title") || toolJsonString(args, "title") || "Approved plan";
   const targetMode = toolJsonString(payload, "target_mode") || "auto";
@@ -1515,7 +1515,7 @@ function ExitPlanModeToolView({ toolMessage }: { toolMessage: StructuredToolMess
 }
 
 function PlanManageToolView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
-  const payload = parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+  const payload = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
   const args = toolMessage.argumentsJson ?? parseToolJSON(toolMessage.argumentsText);
   const action = toolJsonString(payload, "action") || toolJsonString(args, "action");
   const summary = payload?.execution_summary && typeof payload.execution_summary === "object" && !Array.isArray(payload.execution_summary)

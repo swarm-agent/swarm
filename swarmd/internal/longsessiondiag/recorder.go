@@ -126,11 +126,8 @@ const desktopSampleMinimumInterval = 5 * time.Second
 // created in the browser for ranking only and cannot be joined to daemon IDs.
 type DesktopSample struct {
 	TimestampMS                          int64                  `json:"timestamp_ms"`
-	JSHeapAvailable                      bool                   `json:"js_heap_available"`
-	JSHeapUsedBytes                      uint64                 `json:"js_heap_used_bytes,omitempty"`
-	JSHeapPeakUsedBytes                  uint64                 `json:"js_heap_peak_used_bytes,omitempty"`
-	JSHeapTotalBytes                     uint64                 `json:"js_heap_total_bytes,omitempty"`
-	JSHeapLimitBytes                     uint64                 `json:"js_heap_limit_bytes,omitempty"`
+	BrowserMemoryAvailable               bool                   `json:"browser_memory_available"`
+	BrowserMemoryBytes                   uint64                 `json:"browser_memory_bytes,omitempty"`
 	EventLoopDriftMS                     float64                `json:"event_loop_drift_ms,omitempty"`
 	LongTaskCount                        uint64                 `json:"long_task_count,omitempty"`
 	LongTaskDurationMS                   float64                `json:"long_task_duration_ms,omitempty"`
@@ -288,9 +285,9 @@ func (r *Recorder) Directory() string {
 // goroutine, block, and mutex profiles into this recorder's canonical run
 // directory. It is serialized with periodic captures so manual Desktop dumps do
 // not race background profile writes.
-func (r *Recorder) CaptureNow() error {
+func (r *Recorder) CaptureNow() (artifacts []string, err error) {
 	if r == nil {
-		return errors.New("long-session diagnostics disabled")
+		return nil, errors.New("long-session diagnostics disabled")
 	}
 	r.captureMu.Lock()
 	defer r.captureMu.Unlock()
@@ -298,15 +295,30 @@ func (r *Recorder) CaptureNow() error {
 	closed := r.closed
 	r.mu.Unlock()
 	if closed {
-		return errors.New("long-session diagnostics recorder closed")
+		return nil, errors.New("long-session diagnostics recorder closed")
 	}
+	r.mu.Lock()
+	profileArtifactsBefore := make(map[string]struct{}, len(r.profiles))
+	for _, profile := range r.profiles {
+		profileArtifactsBefore[profile.Artifact] = struct{}{}
+	}
+	r.mu.Unlock()
 	if err := r.captureSample(); err != nil {
-		return fmt.Errorf("capture daemon sample: %w", err)
+		return nil, fmt.Errorf("capture daemon sample: %w", err)
 	}
 	if err := r.captureProfiles(); err != nil {
-		return fmt.Errorf("capture daemon profiles: %w", err)
+		return nil, fmt.Errorf("capture daemon profiles: %w", err)
 	}
-	return nil
+	r.mu.Lock()
+	profiles := append([]ProfileArtifact(nil), r.profiles...)
+	r.mu.Unlock()
+	artifacts = []string{"desktop-samples.jsonl", "samples.jsonl", "latest-findings.json"}
+	for _, profile := range profiles {
+		if _, existed := profileArtifactsBefore[profile.Artifact]; !existed {
+			artifacts = append(artifacts, profile.Artifact)
+		}
+	}
+	return artifacts, nil
 }
 
 // HashIdentifier returns a run-local stable pseudonym suitable for correlating
@@ -864,7 +876,7 @@ func (r *Recorder) writeFindings() error {
 	findings = append(findings, subsystemFindings(baseline, current, artifacts)...)
 	if desktopBaseline != nil && desktopCurrent != nil {
 		findings = append(findings,
-			growthFinding("desktop.js_heap_growth", float64(desktopBaseline.JSHeapUsedBytes), float64(desktopCurrent.JSHeapUsedBytes), []string{"desktop-samples.jsonl"}),
+			growthFinding("desktop.browser_memory_growth", float64(desktopBaseline.BrowserMemoryBytes), float64(desktopCurrent.BrowserMemoryBytes), []string{"desktop-samples.jsonl"}),
 			growthFinding("desktop.v3_cache_growth", float64(desktopBaseline.V3CacheEstimatedBytes), float64(desktopCurrent.V3CacheEstimatedBytes), []string{"desktop-samples.jsonl"}),
 			growthFinding("desktop.query_cache_growth", float64(desktopBaseline.QueryCacheEstimatedBytes), float64(desktopCurrent.QueryCacheEstimatedBytes), []string{"desktop-samples.jsonl"}),
 			growthFinding("desktop.dom_growth", float64(desktopBaseline.DOMNodes), float64(desktopCurrent.DOMNodes), []string{"desktop-samples.jsonl"}),

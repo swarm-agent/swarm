@@ -70,8 +70,11 @@ func (s *Server) handleLongSessionDiagnosticsDesktopSample(w http.ResponseWriter
 		writeError(w, http.StatusInternalServerError, errors.New("record long-session diagnostic sample"))
 		return
 	}
+	var artifacts []string
 	if captureDaemon {
-		if err := s.longSessionDiagnostics.CaptureNow(); err != nil {
+		var err error
+		artifacts, err = s.longSessionDiagnostics.CaptureNow()
+		if err != nil {
 			writeError(w, http.StatusInternalServerError, errors.New("capture long-session daemon diagnostics"))
 			return
 		}
@@ -79,8 +82,12 @@ func (s *Server) handleLongSessionDiagnosticsDesktopSample(w http.ResponseWriter
 	s.longSessionDesktopSampleLogOnce.Do(func() {
 		log.Printf("long-session diagnostics accepted first desktop sample artifact=%q", "desktop-samples.jsonl")
 	})
-	writeJSON(w, http.StatusAccepted, map[string]any{
+	response := map[string]any{
 		"ok":                true,
 		"artifact_location": s.longSessionDiagnostics.Directory(),
-	})
+	}
+	if captureDaemon {
+		response["artifacts"] = artifacts
+	}
+	writeJSON(w, http.StatusAccepted, response)
 }

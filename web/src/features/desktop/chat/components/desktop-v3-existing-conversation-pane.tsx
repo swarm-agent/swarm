@@ -869,9 +869,14 @@ function renderItemTimelineSeq(item: DesktopV3RenderItem): number {
 }
 
 function committedToolRenderKey(message: MessageSnapshot): string {
-  const toolMessage = parseStructuredToolMessage(message.content);
-  const identity = toolMessage?.toolInstanceId || toolMessage?.callId || "";
+  const identity = metadataString(message.metadata, "tool_instance_id")
+    || metadataString(message.metadata, "call_id");
   return identity ? `live-tool:${identity}` : "";
+}
+
+function isTaskToolMessageContent(content: string): boolean {
+  const envelopePrefix = content.slice(0, 4_096);
+  return /"(?:tool|tool_name)"\s*:\s*"task"/.test(envelopePrefix);
 }
 
 export function desktopV3RenderItemKey(item: DesktopV3RenderItem): string {
@@ -889,6 +894,9 @@ export function desktopV3RenderItemKey(item: DesktopV3RenderItem): string {
       return item.id;
   }
 }
+
+const DEFAULT_TRANSCRIPT_RENDER_WINDOW = 200;
+const TRANSCRIPT_RENDER_WINDOW_STEP = 200;
 
 export function orderDesktopV3LiveRenderItems(
   items: DesktopV3RenderItem[],
@@ -1581,6 +1589,7 @@ export function DesktopV3ExistingConversationPane({
     null,
   );
   const [olderHistoryAutoActive, setOlderHistoryAutoActive] = useState(false);
+  const [renderWindowSize, setRenderWindowSize] = useState(DEFAULT_TRANSCRIPT_RENDER_WINDOW);
   const [transcriptAction, setTranscriptAction] = useState<'copy' | 'download' | null>(null);
   const loadingOlderHistoryRef = useRef(false);
   const previousHistoryScrollTopRef = useRef<number | null>(null);
@@ -1775,6 +1784,10 @@ export function DesktopV3ExistingConversationPane({
     () => buildDesktopV3ConversationRenderItems(renderedMessages),
     [renderedMessages],
   );
+  const hiddenRenderItemCount = Math.max(0, renderItems.length - renderWindowSize);
+  const visibleRenderItems = hiddenRenderItemCount > 0
+    ? renderItems.slice(hiddenRenderItemCount)
+    : renderItems;
   const canonicalFinalHandoffRecommendation = useMemo<DesktopSessionPlanCheckpointRecommendation | null>(() => {
     const checkpointId = planExecutionView?.activeCheckpointId || planExecutionView?.activeCheckpoint?.id || "";
     for (let index = renderItems.length - 1; index >= 0; index -= 1) {
@@ -1789,6 +1802,7 @@ export function DesktopV3ExistingConversationPane({
     const rows: TaskToolRow[] = [];
     for (const item of renderItems) {
       if (item.type === "message") {
+        if (!isTaskToolMessageContent(item.message.content)) continue;
         const parsed = parseStructuredToolMessage(item.message.content);
         if (parsed?.tool === "task") rows.push(...parsed.taskRows);
       } else if (item.type === "live-tool" && item.tool.toolName === "task") {
@@ -1889,7 +1903,7 @@ export function DesktopV3ExistingConversationPane({
     preserveScrollPositionForPrepend,
   } = useDesktopV3StickyBottomScroll({
     resetKey: normalizedSessionId,
-    itemCount: renderItems.length,
+    itemCount: visibleRenderItems.length,
     followKey: scrollFollowKey,
   });
   const runStatusModel: DesktopV3RunStatusModel | null =
@@ -2230,6 +2244,7 @@ export function DesktopV3ExistingConversationPane({
 
   useEffect(() => {
     setOlderHistoryAutoActive(false);
+    setRenderWindowSize(DEFAULT_TRANSCRIPT_RENDER_WINDOW);
     setOlderHistoryError(null);
     loadingOlderHistoryRef.current = false;
     previousHistoryScrollTopRef.current = null;
@@ -2672,7 +2687,19 @@ export function DesktopV3ExistingConversationPane({
                     description="Send a message to continue this session."
                   />
                 ) : null}
-                {renderItems.map((item, index) => {
+                {hiddenRenderItemCount > 0 ? (
+                  <button
+                    type="button"
+                    className="mx-auto rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-xs font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]"
+                    onClick={() => {
+                      preserveScrollPositionForPrepend();
+                      setRenderWindowSize((current) => current + TRANSCRIPT_RENDER_WINDOW_STEP);
+                    }}
+                  >
+                    Show {Math.min(TRANSCRIPT_RENDER_WINDOW_STEP, hiddenRenderItemCount)} earlier messages
+                  </button>
+                ) : null}
+                {visibleRenderItems.map((item, index) => {
                   const itemKey = desktopV3RenderItemKey(item);
                   return (
                     <div

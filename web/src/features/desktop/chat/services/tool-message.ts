@@ -43,7 +43,13 @@ interface StructuredToolMessageInput {
   state?: StructuredToolMessage["state"];
 }
 
-function parseJsonRecord(value: string): Record<string, unknown> | null {
+const MAX_STRUCTURED_OUTPUT_PARSE_BYTES = 1_000_000;
+const MAX_PREVIEW_LINES = 12;
+const MAX_PREVIEW_SCAN_BYTES = 32_000;
+const MAX_PREVIEW_LINE_BYTES = 2_000;
+
+function parseJsonRecord(value: string, maxBytes = Number.POSITIVE_INFINITY): Record<string, unknown> | null {
+  if (value.length > maxBytes) return null;
   const trimmed = value.trim();
   if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
     return null;
@@ -596,12 +602,7 @@ function planManageActionDisplay(action: string): string {
 }
 
 function firstPlanPreviewLine(planBody: string): string {
-  return planBody
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .split("\n")
-    .map((line) => line.trim())
-    .find(Boolean) ?? "";
+  return previewTextLines(planBody, 1)[0] ?? "";
 }
 
 function summarizePlanManageToolOutput(payload: Record<string, unknown>): string {
@@ -833,14 +834,20 @@ function extractEditDiff(
   };
 }
 
-function previewTextLines(value: string): string[] {
-  if (!value) return [];
-  return value
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim() !== "");
+function previewTextLines(value: string, maxLines = MAX_PREVIEW_LINES): string[] {
+  if (!value || maxLines <= 0) return [];
+  const scan = value.slice(0, MAX_PREVIEW_SCAN_BYTES);
+  const lines: string[] = [];
+  let start = 0;
+  while (start < scan.length && lines.length < maxLines) {
+    const newline = scan.indexOf("\n", start);
+    const end = newline === -1 ? scan.length : newline;
+    const line = scan.slice(start, end).replace(/\r$/, "").trimEnd();
+    if (line.trim()) lines.push(line.slice(0, MAX_PREVIEW_LINE_BYTES));
+    if (newline === -1) break;
+    start = newline + 1;
+  }
+  return lines;
 }
 
 function taskPreviewText(payload: Record<string, unknown> | null): string {
@@ -978,12 +985,11 @@ function buildTaskToolRows(
 function pushPreviewLine(
   lines: string[],
   value: string,
-  _maxLines: number,
+  maxLines: number,
 ): void {
-  const next = value.trim();
-  if (!next || lines.includes(next)) {
-    return;
-  }
+  if (lines.length >= maxLines) return;
+  const next = value.trim().slice(0, MAX_PREVIEW_LINE_BYTES);
+  if (!next || lines.includes(next)) return;
   lines.push(next);
 }
 
@@ -1161,7 +1167,6 @@ function buildSearchContentFileGroups(
 function extractBashToolData(
   outputJson: Record<string, unknown> | null,
   outputText: string,
-  completedOutputText: string,
   argumentsJson: Record<string, unknown> | null,
 ): NonNullable<StructuredToolMessage["bashData"]> {
   const output = firstNonEmptyRaw(
@@ -1177,10 +1182,8 @@ function extractBashToolData(
   return {
     command: jsonStr(outputJson, "command") || jsonStr(argumentsJson, "command"),
     output: output || (outputJson ? "" : outputText),
-    stdout,
-    stderr,
-    outputText,
-    completedOutput: completedOutputText || outputText,
+    stdout: stdout === output ? "" : stdout,
+    stderr: stderr === output ? "" : stderr,
     exitCode,
   };
 }
@@ -1208,7 +1211,7 @@ function extractPreviewLines(
     }
     case "bash": {
       const lines: string[] = [];
-      const bashData = extractBashToolData(outputJson, outputText, "", argumentsJson);
+      const bashData = extractBashToolData(outputJson, outputText, argumentsJson);
       for (const line of previewTextLines(bashData.output || bashData.stdout || bashData.stderr)) {
         pushPreviewLine(lines, line, 6);
       }
@@ -1819,12 +1822,14 @@ export function buildStructuredToolMessage(
 
   const argumentsText = String(input.argumentsText ?? "").trim();
   const argumentsJson = argumentsText ? parseJsonRecord(argumentsText) : null;
-  const rawOutputText = String(input.outputText ?? "");
-  const rawCompletedOutputText = String(input.completedOutputText ?? "");
-  const outputText = rawOutputText.trim();
-  const completedOutputText = rawCompletedOutputText.trim();
-  const parsedOutputJson = parseJsonRecord(outputText);
-  const parsedCompletedOutputJson = parseJsonRecord(completedOutputText);
+  const outputText = String(input.outputText ?? "").trim();
+  const completedOutputText = String(input.completedOutputText ?? "").trim();
+  const normalizedToolName = toolName.toLowerCase();
+  const outputParseLimit = normalizedToolName === "bash"
+    ? Number.POSITIVE_INFINITY
+    : MAX_STRUCTURED_OUTPUT_PARSE_BYTES;
+  const parsedOutputJson = parseJsonRecord(outputText, outputParseLimit);
+  const parsedCompletedOutputJson = parseJsonRecord(completedOutputText, outputParseLimit);
   const outputJson =
     parsedOutputJson && jsonBool(parsedOutputJson, "result_details_omitted") && parsedCompletedOutputJson
       ? parsedCompletedOutputJson
@@ -1832,8 +1837,7 @@ export function buildStructuredToolMessage(
 
   const summary = summarizeToolOutput(toolName, outputJson, argumentsJson);
   const editDiff =
-    toolName.toLowerCase() === "edit" ? extractEditDiff(outputJson) : null;
-  const normalizedToolName = toolName.toLowerCase();
+    normalizedToolName === "edit" ? extractEditDiff(outputJson) : null;
   const searchData =
     normalizedToolName === "search"
       ? extractSearchToolData(outputJson, argumentsJson)
@@ -1850,7 +1854,7 @@ export function buildStructuredToolMessage(
       : null;
   const bashData =
     normalizedToolName === "bash"
-      ? extractBashToolData(outputJson, rawOutputText || rawCompletedOutputText, rawCompletedOutputText, argumentsJson)
+      ? extractBashToolData(outputJson, outputText || completedOutputText, argumentsJson)
       : null;
   const previewLines = searchData || webSearchData || webFetchData
     ? []
@@ -1866,6 +1870,16 @@ export function buildStructuredToolMessage(
       : [];
   const error = String(input.error ?? "").trim();
 
+  const retainOutputJson = [
+    "manage-sessions",
+    "manage_sessions",
+    "plan-manage",
+    "plan_manage",
+    "exit-plan-mode",
+    "exit_plan_mode",
+  ].includes(normalizedToolName);
+  const outputWasStructured = outputJson !== null;
+
   return {
     pathId: input.pathId ?? "run.tool-history.v2",
     tool: toolName,
@@ -1875,8 +1889,13 @@ export function buildStructuredToolMessage(
     commandText: bashData?.command ?? "",
     argumentsText,
     argumentsJson,
-    output: outputText,
-    completedOutput: completedOutputText || outputText,
+    outputJson: retainOutputJson ? outputJson : null,
+    output: normalizedToolName === "bash" || (outputWasStructured && !retainOutputJson) ? "" : outputText,
+    completedOutput: normalizedToolName === "bash"
+      || completedOutputText === outputText
+      || (parsedCompletedOutputJson !== null && !retainOutputJson)
+      ? ""
+      : completedOutputText,
     error,
     durationMs: typeof input.durationMs === "number" ? input.durationMs : 0,
     summary,

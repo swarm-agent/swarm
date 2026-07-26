@@ -76,11 +76,11 @@ func TestLongSessionDiagnosticsEndpointsGateAndValidateSamples(t *testing.T) {
 		t.Fatalf("oversized sample status=%d body=%s", oversized.Code, oversized.Body.String())
 	}
 
-	valid := httptest.NewRecorder()
-	body := `{"timestamp_ms":1,"js_heap_available":true,"js_heap_used_bytes":1024,"v3_sections":{"messages":2},"largest_sessions":[{"session_hash":"0123456789abcdef","estimated_bytes":256,"messages":2}]}`
-	serve(valid, httptest.NewRequest(http.MethodPost, LongSessionDiagnosticsSamplePath, strings.NewReader(body)))
-	if valid.Code != http.StatusAccepted {
-		t.Fatalf("valid sample status=%d body=%s", valid.Code, valid.Body.String())
+	capture := httptest.NewRecorder()
+	body := `{"timestamp_ms":1,"browser_memory_available":true,"browser_memory_bytes":1024,"v3_sections":{"messages":2},"largest_sessions":[{"session_hash":"0123456789abcdef","estimated_bytes":256,"messages":2}]}`
+	serve(capture, httptest.NewRequest(http.MethodPost, LongSessionDiagnosticsCapturePath, strings.NewReader(body)))
+	if capture.Code != http.StatusAccepted || !strings.Contains(capture.Body.String(), `"artifacts":[`) || !strings.Contains(capture.Body.String(), `"desktop-samples.jsonl"`) {
+		t.Fatalf("manual capture status=%d body=%s", capture.Code, capture.Body.String())
 	}
 
 }

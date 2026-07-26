@@ -132,7 +132,7 @@ func TestRecorderDesktopSamplesAreBoundedPrivateAndIncludedInFindings(t *testing
 		t.Fatal(err)
 	}
 	defer func() { _ = recorder.Close() }()
-	first := DesktopSample{JSHeapAvailable: true, JSHeapUsedBytes: 100, V3CacheEstimatedBytes: 200, DOMNodes: 10,
+	first := DesktopSample{BrowserMemoryAvailable: true, BrowserMemoryBytes: 100, V3CacheEstimatedBytes: 200, DOMNodes: 10,
 		V3Sections: map[string]uint64{"messages": 2}, LargestSessions: []DesktopSessionSample{{SessionHash: "0123456789abcdef", EstimatedBytes: 100}}}
 	if err := recorder.RecordDesktopSample(first); err != nil {
 		t.Fatal(err)
@@ -142,7 +142,7 @@ func TestRecorderDesktopSamplesAreBoundedPrivateAndIncludedInFindings(t *testing
 	}
 	now = now.Add(30 * time.Second)
 	second := first
-	second.JSHeapUsedBytes = 300
+	second.BrowserMemoryBytes = 300
 	second.V3CacheEstimatedBytes = 700
 	second.DOMNodes = 30
 	if err := recorder.RecordDesktopSample(second); err != nil {
@@ -159,7 +159,7 @@ func TestRecorderDesktopSamplesAreBoundedPrivateAndIncludedInFindings(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, signal := range []string{"desktop.js_heap_growth", "desktop.v3_cache_growth", "desktop.dom_growth"} {
+	for _, signal := range []string{"desktop.browser_memory_growth", "desktop.v3_cache_growth", "desktop.dom_growth"} {
 		if !strings.Contains(string(findings), signal) {
 			t.Fatalf("findings missing %s: %s", signal, findings)
 		}

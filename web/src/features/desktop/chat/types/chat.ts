@@ -149,8 +149,6 @@ export interface BashToolData {
   output: string;
   stdout: string;
   stderr: string;
-  outputText: string;
-  completedOutput: string;
   exitCode: number | null;
 }
 
@@ -169,6 +167,7 @@ export interface StructuredToolMessage {
   commandText: string;
   argumentsText: string;
   argumentsJson?: Record<string, unknown> | null;
+  outputJson?: Record<string, unknown> | null;
   output: string;
   completedOutput: string;
   error: string;

@@ -478,11 +478,39 @@ function testBashToolMessagePreservesFullOutput(): void {
   }))
 
   assert(Boolean(message), 'expected structured bash tool message')
-  assert(message?.bashData?.output === fullOutput, 'bash data should preserve full output text')
-  assert(message?.bashData?.stdout === fullOutput, 'bash data should preserve full stdout text')
-  assert(message?.bashData?.stderr === stderr, 'bash data should preserve full stderr text')
+  assert(message?.bashData?.output === fullOutput, 'bash data should preserve one canonical full output text')
+  assert(message?.bashData?.stdout === '', 'bash data should not duplicate output as stdout')
+  assert(message?.bashData?.stderr === stderr, 'bash data should preserve distinct stderr text')
+  assert(message?.output === '', 'structured bash message should not duplicate the parsed output envelope')
+  assert(message?.completedOutput === '', 'structured bash message should not duplicate completed output')
   assert(message?.bashData?.output.includes('line 20') === true, 'bash data should include the final output line')
   assert(message?.commandText === command, `missing bash command metadata: ${message?.commandText}`)
+}
+
+function testLargePlainPreviewIsBoundedBeforeSplitting(): void {
+  const largeOutput = Array.from({ length: 5_000 }, (_, index) => `line ${index + 1}`).join("\n");
+  const message = buildStructuredToolMessage({
+    tool: "thinking",
+    outputText: largeOutput,
+  });
+
+  assert(Boolean(message), "expected structured thinking tool message");
+  assert(message?.previewLines.length === 12, `unexpected preview line count: ${message?.previewLines.length}`);
+  assert(message?.previewLines[0] === "line 1", `unexpected first preview line: ${message?.previewLines[0]}`);
+  assert(message?.previewLines.at(-1) === "line 12", `unexpected last preview line: ${message?.previewLines.at(-1)}`);
+}
+
+function testHugeJsonSkipsSummaryParsing(): void {
+  const hugeOutput = `{"summary":"${"x".repeat(1_100_000)}"}`;
+  const message = buildStructuredToolMessage({
+    tool: "custom-tool",
+    outputText: hugeOutput,
+  });
+
+  assert(Boolean(message), "expected structured custom tool message");
+  assert(message?.summary === "custom-tool", `unexpected huge-output summary: ${message?.summary}`);
+  assert(message?.outputJson == null, "huge output should not retain a parsed JSON graph");
+  assert(message?.previewLines.length === 0, "huge JSON should not be converted into preview rows");
 }
 
 function testSearchToolPreservesContentMatchText(): void {
@@ -1038,6 +1066,8 @@ function main(): void {
   testTaskRowsHideAssistantPreviewText();
   testBashToolMessageShowsCommandAsMetadata();
   testBashToolMessagePreservesFullOutput();
+  testLargePlainPreviewIsBoundedBeforeSplitting();
+  testHugeJsonSkipsSummaryParsing();
   testSearchToolPreservesContentMatchText();
   testSearchToolParsesCompactGroupedResults();
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
