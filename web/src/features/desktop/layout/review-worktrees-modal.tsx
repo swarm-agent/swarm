@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Archive, Bot, CheckCircle2, ChevronDown, Eye, EyeOff, GitBranch, GitCommitHorizontal, GitMerge, LoaderCircle, RefreshCcw, ShieldAlert, X } from 'lucide-react'
+import { Archive, Bot, CheckCircle2, ChevronDown, CircleHelp, Eye, EyeOff, GitBranch, GitCommitHorizontal, GitMerge, LoaderCircle, RefreshCcw, ShieldAlert, X } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
 import { cn } from '../../../lib/cn'
 import { commitWorkspaceChanges, fetchGitStatus } from '../git/api'
@@ -117,6 +117,8 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
   const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
   const [autoArchiveMinutes, setAutoArchiveMinutes] = useState(0)
   const [savingAutoArchive, setSavingAutoArchive] = useState(false)
+  const [runningAutoArchive, setRunningAutoArchive] = useState(false)
+  const [autoArchiveStatus, setAutoArchiveStatus] = useState('')
   const [doneExpanded, setDoneExpanded] = useState(false)
   const [archivedExpanded, setArchivedExpanded] = useState(false)
   const refresh = useCallback(async (automatic = false): Promise<ReviewWorktreesResponse | null> => {
@@ -165,6 +167,7 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
   const setAutoArchive = async (minutes: number) => {
     if (!uiSettings || savingAutoArchive) return
     setSavingAutoArchive(true)
+    setAutoArchiveStatus('')
     setError('')
     try {
       const saved = await saveReviewAutoArchiveMinutes({ current: uiSettings, minutes })
@@ -176,6 +179,20 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
     } finally {
       setSavingAutoArchive(false)
     }
+  }
+  const runAutoArchiveNow = async () => {
+    if (autoArchiveMinutes <= 0 || runningAutoArchive) return
+    setRunningAutoArchive(true)
+    setAutoArchiveStatus('')
+    const next = await refresh(true)
+    if (next) {
+      const archivedCount = next.archived_session_ids.length
+      if (archivedCount > 0) await refresh(false)
+      setAutoArchiveStatus(archivedCount > 0
+        ? `Archived ${archivedCount} eligible session${archivedCount === 1 ? '' : 's'}.`
+        : 'Auto-archive check complete. No sessions are ready yet.')
+    }
+    setRunningAutoArchive(false)
   }
   const reviewIDs = useMemo(() => selectableReviewIDs(result), [result])
   const archiveCandidates = useMemo(() => selectedArchiveCandidates(result, selected), [result, selected])
@@ -364,9 +381,13 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
             <button type="button" className="inline-flex min-h-11 touch-manipulation items-center justify-center gap-1.5 rounded-md border border-[var(--app-border)] px-2.5 py-1.5" disabled={loading} onClick={() => void refresh(false)}>{loading ? <LoaderCircle size={13} className="animate-spin" /> : <RefreshCcw size={13} />} Recheck worktrees</button>
             <button type="button" className="min-h-11 touch-manipulation rounded-md border border-[var(--app-border)] px-2.5 py-1.5 disabled:opacity-50" disabled={reviewIDs.length === 0} onClick={() => { setReviewingSelection((current) => !current); setSelected(new Set()) }}>{reviewingSelection ? 'Cancel selection' : 'Select to archive'}</button>
             <button type="button" className="min-h-11 touch-manipulation rounded-md border border-[var(--app-border)] px-2.5 py-1.5 disabled:opacity-50" disabled={reviewIDs.length === 0} onClick={() => { setReviewingSelection(true); setSelected(new Set(reviewIDs)) }}>Archive all</button>
-            <label className="ml-auto inline-flex min-h-11 items-center gap-2 max-sm:ml-0 max-sm:justify-between">Auto-archive<select className="min-h-11 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1" value={autoArchiveMinutes} disabled={!uiSettings || savingAutoArchive} onChange={(event) => void setAutoArchive(Number(event.target.value))}><option value={0}>Off</option>{REVIEW_AUTO_ARCHIVE_MINUTES.map((minutes) => <option key={minutes} value={minutes}>After {minutes === 60 ? '1 hour' : `${minutes} minutes`}</option>)}</select></label>
+            <div className="ml-auto flex min-h-11 items-center gap-2 max-sm:col-span-2 max-sm:ml-0 max-sm:flex-wrap">
+              <span className="inline-flex items-center gap-1">Auto-archive<span className="group relative inline-flex"><button type="button" className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--app-text-muted)] hover:bg-[var(--app-surface-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" aria-label="How auto-archive works" title="How auto-archive works"><CircleHelp size={14} /></button><span className="pointer-events-none absolute top-full right-0 z-30 mt-2 hidden w-72 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-left text-xs font-normal leading-5 text-[var(--app-text)] shadow-xl group-hover:block group-focus-within:block">Auto-archive checks whether a session’s commit has been integrated into its configured main/target branch. Once integrated, it waits the selected time after that session’s latest activity, then archives it. Run now performs the same safe check immediately.</span></span></span>
+              <select className="min-h-11 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1" aria-label="Auto-archive delay" value={autoArchiveMinutes} disabled={!uiSettings || savingAutoArchive || runningAutoArchive} onChange={(event) => void setAutoArchive(Number(event.target.value))}><option value={0}>Off</option>{REVIEW_AUTO_ARCHIVE_MINUTES.map((minutes) => <option key={minutes} value={minutes}>After {minutes === 60 ? '1 hour' : `${minutes} minutes`}</option>)}</select>
+              <button type="button" className="inline-flex min-h-11 touch-manipulation items-center justify-center gap-1.5 rounded-md border border-[var(--app-border)] px-2.5 py-1.5 disabled:opacity-50" disabled={!uiSettings || autoArchiveMinutes <= 0 || savingAutoArchive || runningAutoArchive} onClick={() => void runAutoArchiveNow()}>{runningAutoArchive ? <LoaderCircle size={13} className="animate-spin" /> : <Archive size={13} />}Run now</button>
+            </div>
           </div>
-          <p className="mt-2 text-xs leading-5 text-[var(--app-text-subtle)]">Select to archive checks sessions from <strong>Keep in review</strong>. Review the exact session and worktree set before confirming; <strong>Archive all</strong> selects every session in that section.</p>
+          {autoArchiveStatus ? <p className="mt-2 text-xs leading-5 text-[var(--app-success)]" role="status">{autoArchiveStatus}</p> : null}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5 max-sm:px-[calc(var(--app-safe-area-right)+1rem)] max-sm:pb-[calc(var(--app-safe-area-bottom)+1rem)] max-sm:pl-[calc(var(--app-safe-area-left)+1rem)] [-webkit-overflow-scrolling:touch]">
           {error ? <p className="mt-3 rounded-md bg-[var(--app-danger-bg)] p-2.5 text-xs text-[var(--app-danger)]">{error}</p> : null}

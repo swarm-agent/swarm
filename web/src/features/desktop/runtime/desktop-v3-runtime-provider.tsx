@@ -4,7 +4,6 @@ import { retainDesktopV3RealtimeController, type DesktopV3RealtimeLease } from '
 import { bootstrapDesktopV3SidebarMetadataOnly, type DesktopV3BootstrapMetadataResult } from '../state/desktop-v3-bootstrap-controller'
 import { dispatchDesktopV3Cache } from '../state/desktop-v3-cache-store'
 import { installDesktopV3StreamCacheTestHooksForTestbench } from '../state/desktop-v3-stream-cache-test-hooks'
-import { retainDesktopLongSessionDiagnostics, type DesktopDiagnosticsLease } from './desktop-long-session-diagnostics'
 
 const DESKTOP_V3_RUNTIME_PROVIDER_OWNER_KEY = 'desktop-v3-runtime-provider'
 
@@ -16,7 +15,6 @@ interface DesktopV3RuntimeProviderProps {
 interface RetainedDesktopV3Runtime {
   bootstrapReady: Promise<DesktopV3BootstrapMetadataResult>
   realtimeLease: DesktopV3RealtimeLease
-  diagnosticsReady: Promise<DesktopDiagnosticsLease>
   release: () => void
 }
 
@@ -72,26 +70,13 @@ function retainDesktopV3Runtime(initialPreferredSessionId?: string | null): Reta
   })
 
   let released = false
-  let diagnosticsLease: DesktopDiagnosticsLease | null = null
-  const diagnosticsReady = retainDesktopLongSessionDiagnostics()
-    .then((lease) => {
-      diagnosticsLease = lease
-      if (released) lease.release()
-      return lease
-    })
-    .catch((error: unknown) => {
-      console.error('[desktop-v3] long-session diagnostics startup failed', error)
-      return { enabled: false, release: () => {} }
-    })
   return {
     bootstrapReady,
     realtimeLease,
-    diagnosticsReady,
     release: () => {
       if (released) return
       released = true
       realtimeLease.release()
-      diagnosticsLease?.release()
     },
   }
 }

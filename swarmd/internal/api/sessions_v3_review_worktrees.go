@@ -97,6 +97,13 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 		recentlyArchived = append(recentlyArchived, map[string]any{"session_id": item.ID, "title": item.Title, "updated_at": item.UpdatedAt, "worktree_branch": item.WorktreeBranch, "worktree_path": item.WorktreeRootPath, "target_branch": item.WorktreeBaseBranch})
 	}
 	grace := sessionreview.ParseGraceHours(req.GraceHours)
+	autoArchiveDelay := time.Duration(0)
+	if req.Automatic {
+		autoArchiveDelay = s.reviewAutoArchiveDelay(principal.AccountScopeID)
+		if autoArchiveDelay > 0 {
+			grace = autoArchiveDelay
+		}
+	}
 	now := time.Now()
 	commitBatchID := ""
 	if len(compactStrings(req.CommitIDs)) > 0 {
@@ -223,7 +230,7 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 			requested = append(requested, candidate.SessionID)
 		}
 	}
-	if req.Automatic && len(requested) == 0 {
+	if req.Automatic && autoArchiveDelay > 0 && len(requested) == 0 {
 		for _, candidate := range done {
 			if candidate.ArchiveReady {
 				requested = append(requested, candidate.SessionID)

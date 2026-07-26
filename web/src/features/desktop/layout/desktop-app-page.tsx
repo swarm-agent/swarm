@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, ListChecks, LoaderCircle, MemoryStick, Menu, MessageSquare, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, ListChecks, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -76,7 +76,6 @@ import type { DesktopSessionSearchItem } from '../session-search/session-search-
 import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortcuts/components/desktop-quick-actions-modal'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { buildReviewWorktreeFixPrompt, resolveReviewWorktreeRepairAgent, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
-import { DesktopLongSessionDiagnosticsControl, useDesktopLongSessionDiagnosticsAvailability } from '../runtime/desktop-long-session-diagnostics-control'
 import {
   loadDesktopMainSidebarMode,
   saveDesktopMainSidebarMode,
@@ -2588,7 +2587,6 @@ export function DesktopAppPage() {
   const [backgroundTaskError, setBackgroundTaskError] = useState<string | null>(null)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
   const [notificationsOpen, setNotificationsOpen] = useState(false)
-  const [memoryDiagnosticsOpen, setMemoryDiagnosticsOpen] = useState(false)
   const [codexUsageOpen, setCodexUsageOpen] = useState(false)
   const [notificationActionError, setNotificationActionError] = useState<string | null>(null)
   const [searchModalOpen, setSearchModalOpen] = useState(false)
@@ -2801,25 +2799,19 @@ export function DesktopAppPage() {
   const masterWorkspaceName = selectedWorkspace?.workspaceName ?? routeWorkspace?.workspaceName ?? fallbackWorkspaceNameFromPath(selectedWorkspacePath ?? '')
   const notificationItems = useDesktopV3CacheSelector(selectOrderedNotifications)
   const notificationSummary = useDesktopV3CacheSelector(selectNotificationSummary)
-  const memoryDiagnosticsAvailability = useDesktopLongSessionDiagnosticsAvailability()
   const notificationUnreadCount = Math.max(0, notificationSummary.unreadCount)
   const notificationAttentionVisible = true
-  const memoryDiagnosticsVisible = memoryDiagnosticsAvailability.enabled
-  const headerActionCount = 1 + (memoryDiagnosticsVisible ? 1 : 0) + (notificationAttentionVisible ? 1 : 0) + (updateAttentionVisible ? 1 : 0)
-  const headerActionRowClass = headerActionCount === 4
-    ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_108px] items-center gap-2.5 min-h-7 pr-4'
-    : headerActionCount === 3
-      ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_80px] items-center gap-2.5 min-h-7 pr-4'
-      : headerActionCount === 1
-        ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_24px] items-center gap-2.5 min-h-7 pr-4'
-        : cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4')
-  const headerActionRailClass = headerActionCount === 4
-    ? '!w-[108px] !grid-cols-[24px_24px_24px_24px]'
-    : headerActionCount === 3
-      ? '!w-[80px] !grid-cols-[24px_24px_24px]'
-      : headerActionCount === 1
-        ? '!w-6 !grid-cols-[24px]'
-        : undefined
+  const headerActionCount = 1 + (notificationAttentionVisible ? 1 : 0) + (updateAttentionVisible ? 1 : 0)
+  const headerActionRowClass = headerActionCount === 3
+    ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_80px] items-center gap-2.5 min-h-7 pr-4'
+    : headerActionCount === 1
+      ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_24px] items-center gap-2.5 min-h-7 pr-4'
+      : cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4')
+  const headerActionRailClass = headerActionCount === 3
+    ? '!w-[80px] !grid-cols-[24px_24px_24px]'
+    : headerActionCount === 1
+      ? '!w-6 !grid-cols-[24px]'
+      : undefined
   const swarmTopologySignature = useMemo(
     () => swarmTargets
       .map((target) => [
@@ -4521,11 +4513,6 @@ export function DesktopAppPage() {
       <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => void navigate({ to: '/' })} aria-label="Back to launcher">
         <Folder size={24} className="shrink-0" />
       </Button>
-      {memoryDiagnosticsVisible ? (
-        <Button variant="ghost" className="h-12 w-12 min-w-12 p-0 text-[var(--app-primary)]" onClick={() => setMemoryDiagnosticsOpen(true)} aria-label="Open memory diagnostics" title="Capture memory diagnostics">
-          <MemoryStick size={24} className="shrink-0" />
-        </Button>
-      ) : null}
       {notificationAttentionVisible ? (
         <Button variant="ghost" className={cn('relative h-12 w-12 min-w-12 p-0', notificationUnreadCount > 0 && 'text-[var(--app-primary)]')} onClick={handleOpenNotifications} aria-label="Open notifications" title={notificationUnreadCount > 0 ? `${notificationUnreadCount} unread notification${notificationUnreadCount === 1 ? '' : 's'}` : 'Notifications'}>
           <Bell size={24} className="shrink-0" />
@@ -4611,17 +4598,6 @@ export function DesktopAppPage() {
                     </div>
                   </div>
                   <SidebarActionRail className={headerActionRailClass}>
-                    {memoryDiagnosticsVisible ? (
-                      <button
-                        type="button"
-                        className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)]')}
-                        onClick={() => setMemoryDiagnosticsOpen(true)}
-                        aria-label="Open memory diagnostics"
-                        title="Capture memory diagnostics"
-                      >
-                        <MemoryStick size={14} strokeWidth={1.8} className="shrink-0" />
-                      </button>
-                    ) : null}
                     {notificationAttentionVisible ? (
                       <button
                         type="button"
@@ -5106,12 +5082,6 @@ export function DesktopAppPage() {
           setCodexUsageOpen(false)
           handleOpenSettingsTab('auth')
         }}
-      />
-
-      <DesktopLongSessionDiagnosticsControl
-        open={memoryDiagnosticsOpen}
-        onOpenChange={setMemoryDiagnosticsOpen}
-        onFeedback={(message, tone) => setDesktopToast({ message, tone })}
       />
 
       <DesktopNotificationsModal
