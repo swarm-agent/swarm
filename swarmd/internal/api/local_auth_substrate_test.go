@@ -98,31 +98,18 @@ func TestMainHandlerDesktopSessionBootstrapAllowsProtectedAPIWithoutAttachToken(
 	}
 }
 
-func TestMainHandlerDesktopSessionBootstrapAllowsSSHForwardedLoopbackOriginWithoutAttachToken(t *testing.T) {
+func TestMainHandlerDesktopSessionBootstrapRejectsNonLocalSameOriginBrowserWithoutAttachToken(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 
-	bootstrapReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:4444/v1/auth/desktop/session", nil)
-	bootstrapReq.RemoteAddr = "127.0.0.1:43210"
-	bootstrapReq.Header.Set("Origin", "http://127.0.0.1:4444")
-	bootstrapReq.Header.Set("Referer", "http://127.0.0.1:4444/roy")
+	bootstrapReq := httptest.NewRequest(http.MethodGet, "https://swarm.example.test/v1/auth/desktop/session", nil)
+	bootstrapReq.RemoteAddr = "192.0.2.10:43210"
+	bootstrapReq.Header.Set("Origin", "https://swarm.example.test")
+	bootstrapReq.Header.Set("Referer", "https://swarm.example.test/roy")
 	bootstrapReq.Header.Set("Sec-Fetch-Site", "same-origin")
 	bootstrapRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(bootstrapRec, bootstrapReq)
-	if bootstrapRec.Code != http.StatusOK {
-		t.Fatalf("SSH-forwarded desktop session bootstrap status = %d, want %d, body=%s", bootstrapRec.Code, http.StatusOK, bootstrapRec.Body.String())
-	}
-	sessionCookie := sessionCookieFromRecorder(t, bootstrapRec)
-
-	vaultReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:4444/v1/vault", nil)
-	vaultReq.RemoteAddr = "127.0.0.1:43210"
-	vaultReq.Header.Set("Origin", "http://127.0.0.1:4444")
-	vaultReq.Header.Set("Referer", "http://127.0.0.1:4444/roy")
-	vaultReq.Header.Set("Sec-Fetch-Site", "same-origin")
-	vaultReq.AddCookie(sessionCookie)
-	vaultRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(vaultRec, vaultReq)
-	if vaultRec.Code != http.StatusOK {
-		t.Fatalf("SSH-forwarded protected API status = %d, want %d, body=%s", vaultRec.Code, http.StatusOK, vaultRec.Body.String())
+	if bootstrapRec.Code != http.StatusUnauthorized {
+		t.Fatalf("non-local desktop session bootstrap status = %d, want %d, body=%s", bootstrapRec.Code, http.StatusUnauthorized, bootstrapRec.Body.String())
 	}
 }
 

@@ -3813,7 +3813,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		if isAuthExemptRequest(r) {
+		if s.isAuthExemptRequest(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -3863,14 +3863,14 @@ func extractAttachToken(r *http.Request) string {
 	return strings.TrimSpace(r.URL.Query().Get("token"))
 }
 
-func isAuthExemptRequest(r *http.Request) bool {
+func (s *Server) isAuthExemptRequest(r *http.Request) bool {
 	switch r.URL.Path {
 	case "/healthz", "/readyz":
 		return true
 	case "/v1/auth/desktop/session":
 		return r.Method == http.MethodGet && shouldAllowDesktopLocalSessionBootstrapRequest(r)
 	case "/v1/onboarding":
-		return r.Method == http.MethodGet || (r.Method == http.MethodPost && shouldUseDesktopLocalSessionAuth(r))
+		return r.Method == http.MethodGet || (r.Method == http.MethodPost && s.allowsUnauthenticatedOnboardingPost(r))
 	default:
 		return false
 	}

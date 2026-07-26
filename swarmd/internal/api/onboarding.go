@@ -240,6 +240,29 @@ func (s *Server) handleOnboardingProviderCredential(w http.ResponseWriter, r *ht
 	writeJSON(w, http.StatusOK, status)
 }
 
+func (s *Server) allowsUnauthenticatedOnboardingPost(r *http.Request) bool {
+	if s == nil || r == nil || r.Method != http.MethodPost {
+		return false
+	}
+	if !shouldAllowDesktopLocalSessionBootstrapRequest(r) {
+		return false
+	}
+	if _, err := s.loadStartupConfig(); err != nil {
+		return false
+	}
+	if s.identityService == nil {
+		return false
+	}
+	summary, err := s.identityService.StateSummary()
+	if err != nil {
+		return false
+	}
+	return summary.Counts == (pebblestore.IdentityCounts{}) &&
+		summary.CurrentUser == nil &&
+		summary.AccountScope == nil &&
+		summary.CurrentSelection == nil
+}
+
 func (s *Server) allowSensitiveOnboardingMetadata(r *http.Request) bool {
 	if r == nil {
 		return false

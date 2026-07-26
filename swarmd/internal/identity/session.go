@@ -296,7 +296,7 @@ func (s *SessionService) actorForUserWithSelection(user pebblestore.UserRecord, 
 	if err != nil {
 		return ActorContext{}, err
 	}
-	if !ok || strings.TrimSpace(accountUser.Status) == "" {
+	if !ok || !strings.EqualFold(strings.TrimSpace(accountUser.Status), pebblestore.AccountUserStatusActive) {
 		return ActorContext{}, ErrProductIdentityRequired
 	}
 	principal := Principal{Type: PrincipalTypeUser, UserID: user.ID, AccountScopeID: accountScopeID, AuthProvider: user.AuthProvider, AuthSubject: user.AuthSubject, AccountScopeSource: source, User: user, AccountScope: accountScope, AccountUser: accountUser}

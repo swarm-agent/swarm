@@ -86,7 +86,7 @@ func shouldUseDesktopLocalSessionAuth(r *http.Request) bool {
 }
 
 func shouldAllowDesktopLocalSessionBootstrapRequest(r *http.Request) bool {
-	return isSameOriginBrowserRequest(r) || isLocalTransportRequest(r)
+	return (isSameOriginBrowserRequest(r) && isLocalDesktopBrowserRequest(r)) || isLocalTransportRequest(r)
 }
 
 func isLocalDesktopBrowserRequest(r *http.Request) bool {
