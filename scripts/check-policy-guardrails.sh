@@ -23,6 +23,29 @@ if [[ -n "${silent_fallback_hits}" ]]; then
   echo "${silent_fallback_hits}"
 fi
 
+echo "[policy-check] scanning GitHub Actions dependencies for immutable commit pins"
+mutable_action_hits=""
+while IFS= read -r action_line; do
+  [[ -n "${action_line}" ]] || continue
+  action_ref="${action_line#*uses:}"
+  action_ref="${action_ref%%#*}"
+  action_ref="$(printf '%s' "${action_ref}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  case "${action_ref}" in
+    ./*)
+      continue
+      ;;
+  esac
+  if [[ ! "${action_ref}" =~ ^[^@[:space:]]+@([0-9a-f]{40}|sha256:[0-9a-f]{64})$ ]]; then
+    mutable_action_hits+="${action_line}"$'\n'
+  fi
+done < <(git grep -n -E '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+' -- .github/workflows 2>/dev/null || true)
+mutable_action_hits="$(printf '%s' "${mutable_action_hits}" | sed '/^$/d')"
+if [[ -n "${mutable_action_hits}" ]]; then
+  has_failures=1
+  echo "[policy-check] FAIL: GitHub Actions dependencies must use full commit SHAs:"
+  echo "${mutable_action_hits}"
+fi
+
 echo "[policy-check] scanning runtime app command list for /quit and /rebuild"
 missing_commands=()
 if ! rg -q 'Command: "/quit"' internal/app/app.go; then
