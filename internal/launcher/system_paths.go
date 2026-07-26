@@ -64,8 +64,10 @@ func ensureDirsLocal(dirs []systemDirSpec) error {
 		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 			return statErr
 		}
-		if existed && (info.Mode()&os.ModeSymlink != 0 || !info.IsDir()) {
-			return fmt.Errorf("refusing unsafe existing directory target %q", dir.Path)
+		if existed {
+			if err := validateExistingDirectoryTarget(dir.Path, info); err != nil {
+				return err
+			}
 		}
 		if err := os.MkdirAll(dir.Path, dir.Mode); err != nil {
 			return err
@@ -85,6 +87,81 @@ func ensureDirsLocal(dirs []systemDirSpec) error {
 		}
 	}
 	return nil
+}
+
+func validateExistingDirectoryTarget(path string, info os.FileInfo) error {
+	if info.Mode()&os.ModeSymlink == 0 {
+		if info.IsDir() {
+			return nil
+		}
+		return fmt.Errorf("refusing unsafe existing directory target %q", path)
+	}
+	if err := validateCanonicalRuntimeDirectorySymlink(path); err != nil {
+		return fmt.Errorf("refusing unsafe existing directory target %q: %w", path, err)
+	}
+	return nil
+}
+
+func validateCanonicalRuntimeDirectorySymlink(path string) error {
+	installRoot := filepath.Clean(systemInstallRoot())
+	path = filepath.Clean(path)
+	leaf := filepath.Base(path)
+	if path != filepath.Join(installRoot, leaf) {
+		return errors.New("symlink is outside the installation root")
+	}
+	switch leaf {
+	case "bin", "libexec", "lib", "share":
+	default:
+		return errors.New("symlink is not a supported runtime directory")
+	}
+	for _, dir := range []string{installRoot, filepath.Join(installRoot, "versions")} {
+		info, err := os.Lstat(dir)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("canonical runtime directory %q is missing or unsafe", dir)
+		}
+	}
+	currentLink := filepath.Join(installRoot, "current")
+	currentInfo, err := os.Lstat(currentLink)
+	if err != nil || currentInfo.Mode()&os.ModeSymlink == 0 {
+		return errors.New("canonical current runtime link is missing or unsafe")
+	}
+	leafTarget, err := resolveAbsoluteSymlinkTarget(path)
+	if err != nil || leafTarget != filepath.Join(currentLink, leaf) {
+		return errors.New("runtime directory link does not target its canonical current-runtime path")
+	}
+	currentTarget, err := resolveAbsoluteSymlinkTarget(currentLink)
+	if err != nil {
+		return errors.New("current runtime link cannot be resolved")
+	}
+	versionsDir := filepath.Join(installRoot, "versions")
+	rel, err := filepath.Rel(versionsDir, currentTarget)
+	if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.Contains(rel, string(filepath.Separator)) {
+		return errors.New("current runtime link escapes the version directory")
+	}
+	targetInfo, err := os.Lstat(currentTarget)
+	if err != nil || targetInfo.Mode()&os.ModeSymlink != 0 || !targetInfo.IsDir() {
+		return errors.New("current runtime target is missing or unsafe")
+	}
+	leafInfo, err := os.Lstat(filepath.Join(currentTarget, leaf))
+	if err != nil || leafInfo.Mode()&os.ModeSymlink != 0 || !leafInfo.IsDir() {
+		return errors.New("current runtime directory is missing or unsafe")
+	}
+	resolvedInfo, err := os.Stat(path)
+	if err != nil || !resolvedInfo.IsDir() {
+		return errors.New("runtime directory link does not resolve to a directory")
+	}
+	return nil
+}
+
+func resolveAbsoluteSymlinkTarget(path string) (string, error) {
+	target, err := os.Readlink(path)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(path), target)
+	}
+	return filepath.Clean(target), nil
 }
 
 func dirWritable(path string) bool {
@@ -107,8 +184,8 @@ func ensureDirsPrivileged(dirs []systemDirSpec) error {
 	uid, gid := installOwnerIDs()
 	for _, dir := range dirs {
 		if info, err := os.Lstat(dir.Path); err == nil {
-			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-				return fmt.Errorf("refusing unsafe existing directory target %q", dir.Path)
+			if err := validateExistingDirectoryTarget(dir.Path, info); err != nil {
+				return err
 			}
 			continue
 		} else if !errors.Is(err, os.ErrNotExist) {

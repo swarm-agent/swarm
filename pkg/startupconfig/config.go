@@ -170,7 +170,7 @@ func Load(path string) (FileConfig, error) {
 		}
 		return parsed, nil
 	}
-	info, err := os.Stat(path)
+	_, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return cfg, nil

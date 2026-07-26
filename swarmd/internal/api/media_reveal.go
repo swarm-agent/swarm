@@ -85,11 +85,12 @@ func (s *Server) handleVideoStorageReveal(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusNotFound, errors.New("video clip not found"))
 			return
 		}
-		revealPath, file, openErr := openManagedVideoClip(thread, clip.Path)
+		clipPath, file, openErr := openManagedVideoClip(thread, clip.Path)
 		if openErr != nil {
 			writeError(w, http.StatusBadRequest, openErr)
 			return
 		}
+		revealPath = clipPath
 		file.Close()
 	} else {
 		revealPath, err = managedVideoStoragePath(thread)

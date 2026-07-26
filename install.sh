@@ -155,8 +155,11 @@ require_safe_target() {
   kind="$1"
   path="$2"
   if [ -L "$path" ]; then
-    echo "refusing symlink $kind target: $path" >&2
-    return 1
+    if [ "$kind" != "directory" ] || ! is_canonical_runtime_directory_symlink "$path"; then
+      echo "refusing symlink $kind target: $path" >&2
+      return 1
+    fi
+    return 0
   fi
   if [ -e "$path" ]; then
     case "$kind" in
@@ -165,6 +168,29 @@ require_safe_target() {
       *) return 1 ;;
     esac || { echo "refusing non-$kind target: $path" >&2; return 1; }
   fi
+}
+
+is_canonical_runtime_directory_symlink() {
+  path="$1"
+  install_root="/usr/local/share/swarm"
+  current_link="$install_root/current"
+  versions_dir="$install_root/versions"
+  leaf="${path##*/}"
+  case "$leaf" in
+    bin|libexec|lib|share) ;;
+    *) return 1 ;;
+  esac
+  [ "$path" = "$install_root/$leaf" ] || return 1
+  [ -d "$install_root" ] && [ ! -L "$install_root" ] || return 1
+  [ -d "$versions_dir" ] && [ ! -L "$versions_dir" ] || return 1
+  [ -L "$current_link" ] || return 1
+  leaf_target="$(readlink "$path")" || return 1
+  [ "$leaf_target" = "$current_link/$leaf" ] || return 1
+  current_target="$(readlink "$current_link")" || return 1
+  version="${current_target##*/}"
+  [ -n "$version" ] && [ "$current_target" = "$versions_dir/$version" ] || return 1
+  [ -d "$current_target" ] && [ ! -L "$current_target" ] || return 1
+  [ -d "$current_target/$leaf" ] && [ ! -L "$current_target/$leaf" ] && [ -d "$path" ]
 }
 
 run_privileged() {

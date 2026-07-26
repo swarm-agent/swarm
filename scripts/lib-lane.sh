@@ -128,8 +128,11 @@ swarm_require_safe_target() {
   local kind="${1:-file}"
   local path="${2:-}"
   if [[ -L "${path}" ]]; then
-    echo "refusing symlink ${kind} target: ${path}" >&2
-    return 1
+    if [[ "${kind}" != "directory" ]] || ! swarm_is_canonical_runtime_directory_symlink "${path}"; then
+      echo "refusing symlink ${kind} target: ${path}" >&2
+      return 1
+    fi
+    return 0
   fi
   if [[ -e "${path}" ]]; then
     case "${kind}" in
@@ -138,6 +141,30 @@ swarm_require_safe_target() {
       *) return 1 ;;
     esac || { echo "refusing non-${kind} target: ${path}" >&2; return 1; }
   fi
+}
+
+swarm_is_canonical_runtime_directory_symlink() {
+  local path="${1:-}"
+  local install_root current_link versions_dir leaf leaf_target current_target version
+  install_root="$(swarm_lane_install_root)"
+  current_link="${install_root}/current"
+  versions_dir="${install_root}/versions"
+  leaf="${path##*/}"
+  case "${leaf}" in
+    bin|libexec|lib|share) ;;
+    *) return 1 ;;
+  esac
+  [[ "${path}" == "${install_root}/${leaf}" ]] || return 1
+  [[ -d "${install_root}" && ! -L "${install_root}" ]] || return 1
+  [[ -d "${versions_dir}" && ! -L "${versions_dir}" ]] || return 1
+  [[ -L "${current_link}" ]] || return 1
+  leaf_target="$(readlink -- "${path}")" || return 1
+  [[ "${leaf_target}" == "${current_link}/${leaf}" ]] || return 1
+  current_target="$(readlink -- "${current_link}")" || return 1
+  version="${current_target##*/}"
+  [[ -n "${version}" && "${current_target}" == "${versions_dir}/${version}" ]] || return 1
+  [[ -d "${current_target}" && ! -L "${current_target}" ]] || return 1
+  [[ -d "${current_target}/${leaf}" && ! -L "${current_target}/${leaf}" && -d "${path}" ]]
 }
 
 swarm_run_privileged() {
@@ -187,7 +214,7 @@ swarm_provision_tmpfiles_config() {
   owner="$(swarm_current_owner_spec)"
   target_path="/etc"/tmpfiles.d/swarmd.conf
   swarm_require_safe_target file "${target_path}" || return 1
-  tmp_path="$(mktemp "${TMPDIR:?TMPDIR must be set}/swarmd-tmpfiles.XXXXXX")"
+  tmp_path="$(mktemp -t swarmd-tmpfiles.XXXXXX)"
   cat >"${tmp_path}" <<EOF
 d /run/swarmd 0700 ${owner%:*} ${owner#*:} -
 d /run/swarmd/dev 0700 ${owner%:*} ${owner#*:} -
@@ -214,7 +241,7 @@ swarm_provision_systemd_service_unit() {
   local target_path tmp_path swarm_bin data_root cache_root runtime_root config_root log_root owner
   target_path="/etc"/systemd/system/swarm.service
   swarm_require_safe_target file "${target_path}" || return 1
-  tmp_path="$(mktemp "${TMPDIR:?TMPDIR must be set}/swarmd-service.XXXXXX")"
+  tmp_path="$(mktemp -t swarmd-service.XXXXXX)"
   swarm_bin="/usr/local/bin/swarm"
   owner="$(swarm_current_owner_spec)"
   data_root="$(swarm_daemon_data_root main)"
@@ -308,7 +335,7 @@ swarm_startup_config_ensure() {
 
   owner="$(swarm_current_owner_spec)" || return 1
   swarm_provision_system_paths "$(swarm_lane_default)"
-  tmp_path="$(mktemp "${TMPDIR:?TMPDIR must be set}/swarm-conf.XXXXXX")"
+  tmp_path="$(mktemp -t swarm-conf.XXXXXX)"
   cat >"${tmp_path}" <<'EOF'
 dev_mode = false
 dev_root =
@@ -340,7 +367,7 @@ swarm_startup_config_remove_obsolete_keys() {
   local config_path tmp_path
   config_path="$(swarm_startup_config_path)"
   swarm_require_safe_target file "${config_path}" || return 1
-  tmp_path="$(mktemp "${TMPDIR:?TMPDIR must be set}/swarm-conf.XXXXXX")"
+  tmp_path="$(mktemp -t swarm-conf.XXXXXX)"
   awk '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s)

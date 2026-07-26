@@ -44,6 +44,49 @@ func TestEnsureDirsLocalRejectsUnsafeExistingTarget(t *testing.T) {
 	}
 }
 
+func TestEnsureDirsLocalAcceptsCanonicalRuntimeDirectorySymlink(t *testing.T) {
+	root := t.TempDir()
+	versionRoot := filepath.Join(root, "versions", "v1.2.3")
+	if err := os.MkdirAll(filepath.Join(versionRoot, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(versionRoot, filepath.Join(root, "current")); err != nil {
+		t.Fatal(err)
+	}
+	binLink := filepath.Join(root, "bin")
+	if err := os.Symlink(filepath.Join(root, "current", "bin"), binLink); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SWARM_SYSTEM_INSTALL_ROOT", root)
+
+	if err := ensureDirsLocal([]systemDirSpec{{Path: binLink, Mode: 0o755, Owner: true}}); err != nil {
+		t.Fatalf("ensureDirsLocal() rejected canonical runtime link: %v", err)
+	}
+}
+
+func TestEnsureDirsLocalRejectsEscapingRuntimeDirectorySymlink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "versions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	escapeRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(escapeRoot, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(escapeRoot, filepath.Join(root, "current")); err != nil {
+		t.Fatal(err)
+	}
+	binLink := filepath.Join(root, "bin")
+	if err := os.Symlink(filepath.Join(root, "current", "bin"), binLink); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SWARM_SYSTEM_INSTALL_ROOT", root)
+
+	if err := ensureDirsLocal([]systemDirSpec{{Path: binLink, Mode: 0o755, Owner: true}}); err == nil || !strings.Contains(err.Error(), "unsafe existing directory") {
+		t.Fatalf("ensureDirsLocal() error = %v, want escaping current-runtime rejection", err)
+	}
+}
+
 func TestInstallTextFileRejectsSymlinkTarget(t *testing.T) {
 	root := t.TempDir()
 	realFile := filepath.Join(root, "real")
