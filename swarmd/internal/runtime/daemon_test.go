@@ -5,14 +5,14 @@ import (
 )
 
 func TestLocalTransportSocketPerm(t *testing.T) {
-	if got := localTransportSocketPerm(); got != 0o666 {
-		t.Fatalf("localTransportSocketPerm() = %04o, want %04o", got, 0o666)
+	if got := localTransportSocketPerm(); got != 0o600 {
+		t.Fatalf("localTransportSocketPerm() = %04o, want %04o", got, 0o600)
 	}
 }
 
 func TestLocalTransportSocketDirPerm(t *testing.T) {
-	if got := localTransportSocketDirPerm(); got != 0o711 {
-		t.Fatalf("localTransportSocketDirPerm() = %04o, want %04o", got, 0o711)
+	if got := localTransportSocketDirPerm(); got != 0o700 {
+		t.Fatalf("localTransportSocketDirPerm() = %04o, want %04o", got, 0o700)
 	}
 }
 

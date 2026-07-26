@@ -97,8 +97,8 @@ type Daemon struct {
 
 const (
 	lingerPollInterval           = 250 * time.Millisecond
-	localTransportSocketDirMode  = 0o711
-	localTransportSocketFileMode = 0o666
+	localTransportSocketDirMode  = 0o700
+	localTransportSocketFileMode = 0o600
 )
 
 func localTransportSocketDirPerm() os.FileMode {
@@ -694,9 +694,8 @@ func (d *Daemon) Run() error {
 		if err != nil {
 			return fmt.Errorf("listen on local transport socket %q: %w", socketPath, err)
 		}
-		// The bind-mounted parent transport must be traversable by the non-root
-		// container child, but only the socket node needs read/write access.
-		// Keep the directory execute-only for others and the socket world rw.
+		// Local transport is trusted daemon-owner IPC. Keep both the directory
+		// and socket inaccessible to other users on the host.
 		if err := os.Chmod(filepath.Dir(socketPath), localTransportSocketDirPerm()); err != nil {
 			_ = localTransportLn.Close()
 			_ = os.Remove(socketPath)
