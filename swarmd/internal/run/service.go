@@ -1395,6 +1395,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	})
 
 	assistantFragments := make([]string, 0, 8)
+	suppressAssistantFragments := false
+	terminalPlanState := &terminalPlanToolState{}
 	toolMessages := make([]pebblestore.MessageSnapshot, 0, 8)
 	commentaryMessages := make([]pebblestore.MessageSnapshot, 0, 8)
 	events := make([]pebblestore.EventEnvelope, 0, 16)
@@ -1534,6 +1536,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	}
 
 	flushAssistantFragments := func(step int) (pebblestore.MessageSnapshot, bool, error) {
+		if suppressAssistantFragments || terminalPlanState.IsTerminal() {
+			suppressAssistantFragments = true
+			assistantFragments = assistantFragments[:0]
+			return pebblestore.MessageSnapshot{}, false, nil
+		}
 		assistantText := strings.TrimSpace(strings.Join(assistantFragments, "\n\n"))
 		if assistantText == "" {
 			return pebblestore.MessageSnapshot{}, false, nil
@@ -1867,6 +1874,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				policy:               compiledPolicy,
 				applySessionMutation: options.ApplySessionMutation,
 				providerManagedV3:    options.ApplySessionMutation != nil,
+				terminalPlanState:    terminalPlanState,
 			}),
 		}
 		runRequestDebugEvent("provider_request", map[string]any{
@@ -2083,6 +2091,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			break
 		}
 		emptyStepRetries = 0
+
+		if checkpointRunContext && responseContainsTerminalPlanManageCall(response.FunctionCalls) {
+			suppressAssistantFragments = true
+			assistantFragments = assistantFragments[:0]
+		}
 
 		flushedAssistantInput := map[string]any(nil)
 		if flushedAssistantMessage, flushed, flushErr := flushAssistantFragments(step); flushErr != nil {
@@ -2395,7 +2408,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if err != nil {
 		return RunResult{}, err
 	}
-	if !flushedFinalAssistant {
+	if !flushedFinalAssistant && !suppressAssistantFragments && !terminalPlanState.IsTerminal() {
 		assistantText := "No assistant text output."
 		var assistantEvent *pebblestore.EventEnvelope
 		assistantMessage, _, assistantEvent, err = s.appendRunMessage(runAppendMessageInput{SessionID: sessionID, Role: "assistant", Content: assistantText, Metadata: runMessageMetadata, RunID: runID, Step: stepsCompleted, LogicalKey: fmt.Sprintf("assistant:%d:fallback", stepsCompleted), Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})

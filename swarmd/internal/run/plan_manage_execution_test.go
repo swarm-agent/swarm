@@ -1642,7 +1642,15 @@ func TestProviderManagedPlanManageLifecycleMessageFollowsToolCompletion(t *testi
 		t.Fatal("provider managed invoker is nil")
 	}
 
-	result, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-plan", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"cp-1","report":"done"}`})
+	missingHandoff, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-plan-missing-handoff", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"cp-1","report":"done"}`})
+	if err != nil || !strings.Contains(missingHandoff.Error, "final checkpoint completion requires handoff_overview") {
+		t.Fatalf("provider managed final completion without structured handoff = %#v, err=%v", missingHandoff, err)
+	}
+	if len(appliedMutations) != 0 {
+		t.Fatalf("rejected final completion mutated durable state: %#v", appliedMutations)
+	}
+
+	result, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-plan", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"cp-1","report":"done","handoff_overview":"The checkpoint is complete and ready for review."}`})
 	if err != nil {
 		t.Fatalf("execute provider managed plan_manage: %v", err)
 	}

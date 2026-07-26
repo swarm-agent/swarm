@@ -145,10 +145,18 @@ func TestProviderRequestRuntimeContextReportsVerifiedModelChange(t *testing.T) {
 func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *testing.T) {
 	prompt := masterHarnessPrompt("/workspace")
 
+	for _, forbidden := range []string{
+		"Include or link the actual requested artifact in the assistant response before the terminal lifecycle call",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("master harness retained duplicate-completion instruction %q:\n%s", forbidden, prompt)
+		}
+	}
+
 	for _, want := range []string{
 		"For multi-step implementation work, keep durable task state current",
-		"Terminal report metadata is internal execution evidence",
-		"Include or link the actual requested artifact in the assistant response before the terminal lifecycle call",
+		"terminal plan_manage call is the single canonical user-visible completion",
+		"Do not emit a text completion report before or after that terminal call",
 		"batch all tasks completed since the last update with subtask_ids",
 		"combine the final task transitions and checkpoint completion via complete_subtask complete_checkpoint=true",
 		"do not waste a second tool call",
@@ -161,7 +169,9 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 		"Use mark_needs_review only when user or audit judgment is inherently required",
 		"mark_blocked only for a named external dependency/input/unavailable permission",
 		"mark_failed only for a nonrecoverable execution error",
-		"plan_manage terminal checkpoint example",
+		"plan_manage final checkpoint example",
+		"handoff_overview",
+		"Do not emit a separate assistant completion report before or after this call",
 		"On a blocked plan, call request_followup_checkpoint directly",
 		"Session mode=auto is not evidence that a plan exists", "when active_plan_present=false, never call request_followup_checkpoint",
 		"start_session_checkpoint is the one atomic create-and-start operation", "do not call start_checkpoint afterward",

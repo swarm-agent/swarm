@@ -721,6 +721,15 @@ func (s *Service) ListSessionsForAccount(accountScopeID string, limit int) ([]pe
 	return sessions, nil
 }
 
+func (s *Service) ListSessionsForAccountUser(accountScopeID, userID string, limit int) ([]pebblestore.SessionSnapshot, error) {
+	sessions, err := s.store.ListSessionsForAccountUser(accountScopeID, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	sessions = normalizeVisibleSessionList(sessions)
+	return sessions, nil
+}
+
 func (s *Service) ListSessionsForPath(path string, limit int) ([]pebblestore.SessionSnapshot, error) {
 	sessions, err := s.store.ListSessionsForPath(path, limit)
 	if err != nil {

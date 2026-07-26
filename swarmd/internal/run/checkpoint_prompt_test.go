@@ -72,7 +72,7 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	if !strings.Contains(text, `"objective": "Use plan context only"`) {
 		t.Fatalf("prompt missing selected checkpoint objective: %s", text)
 	}
-	for _, want := range []string{"docs/plan-brief.md", "out/shared-result.json", "consume the cited prior checkpoint result", "out/user-summary.md", "workspace-relative metadata, not embedded file contents", "Read only artifacts with role=input", "role=deliverable", "assistant response itself", "terminal report is internal execution evidence"} {
+	for _, want := range []string{"docs/plan-brief.md", "out/shared-result.json", "consume the cited prior checkpoint result", "out/user-summary.md", "workspace-relative metadata, not embedded file contents", "Read only artifacts with role=input", "role=deliverable", "Create every role=deliverable artifact in the workspace", "reference its path from the terminal structured handoff", "Do not emit a separate assistant completion report"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("prompt missing artifact contract %q: %s", want, text)
 		}
@@ -117,8 +117,9 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		"last remaining checkpoint",
 		"final waiting_review/final-review state",
 		"keep report substantive and lossless",
-		"ensure the assistant response actually contains or links every requested user-visible artifact",
-		"terminal report metadata is internal evidence and is not the user-facing deliverable",
+		"terminal plan_manage outcome is the single canonical user-visible completion",
+		"Do not emit an assistant text completion report before or after it",
+		"create every requested durable deliverable artifact in the workspace",
 		"handoff_overview is required and concise",
 		"handoff_title is optional",
 		"impact_bullets contains at most three",

@@ -2245,6 +2245,9 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 			documentPatch.Operation = action
 		}
 		if lifecycleRun.Inline && documentPatch != nil && isPlanCheckpointOutcomeAction(action, documentPatch) {
+			if err := s.requireProviderManagedFinalCheckpointHandoff(sessionID, planID, action, documentPatch); err != nil {
+				return "", err
+			}
 			if err := s.applyTrustedCheckpointOutcomeOwnership(sessionID, planID, documentPatch, lifecycleRun); err != nil {
 				return "", err
 			}
@@ -2748,6 +2751,50 @@ func isPlanCheckpointOutcomeAction(action string, patch *sessionruntime.PlanDocu
 	default:
 		return false
 	}
+}
+
+func (s *Service) requireProviderManagedFinalCheckpointHandoff(sessionID, planID, action string, patch *sessionruntime.PlanDocumentPatch) error {
+	if patch == nil || !isPlanCheckpointOutcomeAction(action, patch) {
+		return nil
+	}
+	outcome := strings.TrimSpace(patch.Status)
+	if outcome == "" {
+		if patch.CompleteCheckpoint {
+			outcome = sessionruntime.PlanCheckpointStatusCompleted
+		} else {
+			switch action {
+			case "complete_checkpoint", "checkpoint_outcome":
+				outcome = sessionruntime.PlanCheckpointStatusCompleted
+			}
+		}
+	}
+	if outcome != sessionruntime.PlanCheckpointStatusCompleted {
+		return nil
+	}
+	var (
+		plan pebblestore.SessionPlanSnapshot
+		ok   bool
+		err  error
+	)
+	if strings.TrimSpace(planID) == "" {
+		plan, ok, err = s.sessions.GetActivePlan(sessionID)
+	} else {
+		plan, ok, err = s.sessions.GetPlan(sessionID, planID)
+	}
+	if err != nil {
+		return err
+	}
+	if !ok || plan.Document == nil {
+		return errors.New("final checkpoint completion requires an active structured plan")
+	}
+	checkpointID := strings.TrimSpace(firstNonEmptyString(patch.CheckpointID, plan.Document.ActiveCheckpointID))
+	if !isFinalPlanCheckpointRun(plan.Document, checkpointID) {
+		return nil
+	}
+	if patch.Handoff == nil {
+		return errors.New("final checkpoint completion requires handoff_overview; use the terminal structured handoff as the single user-visible completion and do not emit a separate assistant report")
+	}
+	return nil
 }
 
 func (s *Service) applyTrustedCheckpointOutcomeOwnership(sessionID, planID string, patch *sessionruntime.PlanDocumentPatch, lifecycleRun planLifecycleRunContext) error {

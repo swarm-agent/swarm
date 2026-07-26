@@ -84,6 +84,29 @@ type ProviderManagedToolInvokerConfig struct {
 	ToolProgression      *ToolProgressionState
 }
 
+type terminalPlanToolState struct {
+	mu       sync.Mutex
+	terminal bool
+}
+
+func (s *terminalPlanToolState) MarkTerminal() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.terminal = true
+	s.mu.Unlock()
+}
+
+func (s *terminalPlanToolState) IsTerminal() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.terminal
+}
+
 type providerToolInvokerConfig struct {
 	sessionID            string
 	permissionSessionID  string
@@ -102,6 +125,7 @@ type providerToolInvokerConfig struct {
 	policy               *permission.Policy
 	agentProfile         pebblestore.AgentProfile
 	toolProgression      *ToolProgressionState
+	terminalPlanState    *terminalPlanToolState
 }
 
 func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerConfig {
@@ -122,6 +146,7 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		providerManagedV3:    config.ProviderManagedV3,
 		agentProfile:         config.AgentProfile,
 		toolProgression:      config.ToolProgression,
+		terminalPlanState:    &terminalPlanToolState{},
 	}
 }
 
@@ -169,6 +194,10 @@ func (i *providerToolInvoker) ExecuteTool(ctx context.Context, invocation provid
 		return provideriface.ToolExecutionResult{}, err
 	}
 
+	restartTurn := providerManagedToolRequiresTurnRestart(call, result)
+	if restartTurn && providerManagedToolResultIsTerminalPlan(call, result) {
+		i.config.terminalPlanState.MarkTerminal()
+	}
 	return provideriface.ToolExecutionResult{
 		CallID:           strings.TrimSpace(result.CallID),
 		Name:             strings.TrimSpace(result.Name),
@@ -177,7 +206,7 @@ func (i *providerToolInvoker) ExecuteTool(ctx context.Context, invocation provid
 		DurationMS:       result.DurationMS,
 		PermissionWaitMS: permissionWaitMS,
 		TextForModel:     prepareToolOutputForModel(call, result),
-		RestartTurn:      providerManagedToolRequiresTurnRestart(call, result),
+		RestartTurn:      restartTurn,
 	}, nil
 }
 
@@ -260,6 +289,14 @@ func providerManagedTerminalPlanNextAction(nextAction string) bool {
 	default:
 		return false
 	}
+}
+
+func providerManagedToolResultIsTerminalPlan(call tool.Call, result tool.Result) bool {
+	if canonicalToolName(call.Name) != "plan_manage" || strings.TrimSpace(result.Error) != "" {
+		return false
+	}
+	payload := decodeToolPayload(strings.TrimSpace(result.Output))
+	return payload != nil && providerManagedTerminalPlanNextAction(mapString(payload, "next_action"))
 }
 
 func providerManagedControlPlaneResponse(call tool.Call, feedback PermissionFeedback) string {
