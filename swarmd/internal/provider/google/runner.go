@@ -25,7 +25,10 @@ const (
 	generateContentURL       = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
 	streamGenerateContentURL = "https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent"
 	googleAPIKeyHeader       = "x-goog-api-key"
-	maxResponseBytes         = 8 << 20
+	maxResponseBytes           = 8 << 20
+	maxStreamEvents            = 16_384
+	maxStreamOutputBytes       = 4 << 20
+	maxStreamToolArgumentBytes = 1 << 20
 )
 
 var googleAPIKeyQueryPattern = regexp.MustCompile(`(?i)([?&]key=)[^&#\s]+`)
@@ -257,6 +260,9 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	}); err != nil {
 		providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", err)
 		return provideriface.Response{}, sanitizeGoogleError("decode google stream response", err)
+	}
+	if !accumulator.finished {
+		return provideriface.Response{}, errors.New("google stream ended without a finish reason")
 	}
 	return accumulator.response(), nil
 }
@@ -657,6 +663,10 @@ type googleStreamAccumulator struct {
 	functionCalls           []provideriface.FunctionCall
 	pendingThoughtSignature string
 	toolState               *googleToolCallConstructionState
+	finished                bool
+	eventCount              int
+	outputBytes             int
+	toolArgumentBytes       int
 }
 
 func newGoogleStreamAccumulator(modelID string) *googleStreamAccumulator {
@@ -671,6 +681,10 @@ func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(prov
 	if payload == "" {
 		return nil
 	}
+	a.eventCount++
+	if a.eventCount > maxStreamEvents {
+		return errors.New("google stream event limit exceeded")
+	}
 	var decoded googleResponse
 	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
 		return fmt.Errorf("decode google stream payload: %w", err)
@@ -684,6 +698,10 @@ func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(prov
 	for _, part := range candidate.Content.Parts {
 		partThoughtSignature := partThoughtSignatureValue(part)
 		if part.Text != "" {
+			a.outputBytes += len(part.Text)
+			if a.outputBytes > maxStreamOutputBytes {
+				return errors.New("google stream output limit exceeded")
+			}
 			a.text += part.Text
 			if onEvent != nil {
 				onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: part.Text})
@@ -701,10 +719,15 @@ func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(prov
 		}
 		a.pendingThoughtSignature = ""
 		call := buildGoogleFunctionCall(part, functionCallSequence, partThoughtSignature)
+		a.toolArgumentBytes += len(call.Arguments)
+		if a.toolArgumentBytes > maxStreamToolArgumentBytes {
+			return errors.New("google stream tool argument limit exceeded")
+		}
 		a.upsertFunctionCall(call)
 		a.emitToolCallConstructionEvents(functionCallSequence-1, call, onEvent)
 	}
 	if strings.TrimSpace(candidate.FinishReason) != "" {
+		a.finished = true
 		a.completeToolCallConstructionEvents(candidate.FinishReason, onEvent)
 	}
 	return nil
@@ -756,9 +779,11 @@ func sanitizeGoogleText(raw string) string {
 }
 
 func parseGoogleEventStream(reader io.Reader, onPayload func(string) error) error {
-	scanner := bufio.NewScanner(reader)
+	scanner := bufio.NewScanner(io.LimitReader(reader, maxResponseBytes+1))
 	scanner.Buffer(make([]byte, 0, 64*1024), maxResponseBytes)
 	dataLines := make([]string, 0, 8)
+	totalBytes := 0
+	eventCount := 0
 	flush := func() error {
 		if len(dataLines) == 0 {
 			return nil
@@ -768,10 +793,18 @@ func parseGoogleEventStream(reader io.Reader, onPayload func(string) error) erro
 		if strings.TrimSpace(payload) == "[DONE]" {
 			return nil
 		}
+		eventCount++
+		if eventCount > maxStreamEvents {
+			return errors.New("google stream event limit exceeded")
+		}
 		return onPayload(payload)
 	}
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
+		totalBytes += len(line) + 1
+		if totalBytes > maxResponseBytes {
+			return errors.New("google stream byte limit exceeded")
+		}
 		if strings.TrimSpace(line) == "" {
 			if err := flush(); err != nil {
 				return err

@@ -46,6 +46,9 @@ const (
 	tokenURL                                   = "https://auth.openai.com/oauth/token"
 	clientID                                   = "app_EMoamEEZ73f0CkXaXp7hrann"
 	maxCodexResponseBodyBytes            int64 = 32 << 20
+	maxCodexStreamBytes                        = 8 << 20
+	maxCodexStreamEvents                       = 16_384
+	maxCodexRawEvents                          = 4_096
 	transportRetryAttempts                     = 2
 	transportRetryBaseDelay                    = 300 * time.Millisecond
 	startedWebsocketStreamRetryLimit           = 3
@@ -1640,13 +1643,16 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 		payloadText := string(message)
 		providerdiagnostics.LogWebsocketResponseContext(ctx, "codex", "responses.websocket", message)
 		var decoded map[string]any
+		if len(message) > maxCodexStreamBytes {
+			return nil, 0, errors.New("codex websocket event byte limit exceeded")
+		}
 		if err := json.Unmarshal(message, &decoded); err != nil {
 			codexThinkingDebugEvent("event.decode_error", map[string]any{
 				"tag":           "websocket",
 				"payload_chars": len(payloadText),
 				"error":         err.Error(),
 			})
-			continue
+			return nil, 0, fmt.Errorf("decode codex websocket event: %w", err)
 		}
 
 		if strings.EqualFold(strings.TrimSpace(asString(decoded["type"])), "error") {
@@ -1665,6 +1671,9 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 		}
 
 		processResponseStreamEvent(asString(decoded["type"]), payloadText, state, onEvent)
+		if state.decodeErr != nil {
+			return nil, 0, state.decodeErr
+		}
 		if strings.EqualFold(strings.TrimSpace(asString(decoded["type"])), "response.completed") {
 			break
 		}
@@ -2036,6 +2045,9 @@ type streamDecodeState struct {
 	toolCallsByIndex        map[int]StreamEvent
 	rawEvents               []map[string]any
 	sawPayload              bool
+	streamBytes             int
+	streamEvents            int
+	decodeErr               error
 }
 
 func processResponseStreamEvent(eventName string, payload string, state *streamDecodeState, onEvent func(StreamEvent)) {
@@ -2043,7 +2055,20 @@ func processResponseStreamEvent(eventName string, payload string, state *streamD
 	if trimmedPayload == "" || trimmedPayload == "[DONE]" {
 		return
 	}
+	if state == nil || state.decodeErr != nil {
+		return
+	}
 	state.sawPayload = true
+	state.streamEvents++
+	state.streamBytes += len(payload)
+	if state.streamEvents > maxCodexStreamEvents {
+		state.decodeErr = errors.New("codex stream event limit exceeded")
+		return
+	}
+	if state.streamBytes > maxCodexStreamBytes {
+		state.decodeErr = errors.New("codex stream byte limit exceeded")
+		return
+	}
 
 	var decoded map[string]any
 	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
@@ -2052,14 +2077,17 @@ func processResponseStreamEvent(eventName string, payload string, state *streamD
 			"payload_chars": len(payload),
 			"error":         err.Error(),
 		})
+		state.decodeErr = fmt.Errorf("decode codex stream event: %w", err)
 		return
 	}
 	state.lastObject = decoded
-	state.rawEvents = append(state.rawEvents, map[string]any{
-		"event":         eventName,
-		"payload_chars": len(payload),
-		"data":          cloneMapAny(decoded),
-	})
+	if len(state.rawEvents) < maxCodexRawEvents {
+		state.rawEvents = append(state.rawEvents, map[string]any{
+			"event":         eventName,
+			"payload_chars": len(payload),
+			"data":          cloneMapAny(decoded),
+		})
+	}
 
 	if strings.TrimSpace(eventName) == "" {
 		eventName = asString(decoded["type"])
@@ -3244,6 +3272,15 @@ func mergeImageGenerationOutputItem(existing map[string]any, final map[string]an
 }
 
 func finalizeStreamDecodeState(state *streamDecodeState) (map[string]any, error) {
+	if state == nil {
+		return nil, errors.New("codex stream state is not configured")
+	}
+	if state.decodeErr != nil {
+		return nil, state.decodeErr
+	}
+	if state.completedResponse == nil {
+		return nil, errors.New("codex response stream ended before response.completed")
+	}
 	reasoningSummary := aggregateReasoningStateText(state)
 	if state.completedResponse != nil {
 		mergeOutputItemsIntoResponse(state.completedResponse, state.outputItems)
@@ -3315,13 +3352,15 @@ func finalizeStreamDecodeState(state *streamDecodeState) (map[string]any, error)
 }
 
 func parseEventStreamReader(reader io.Reader, onEvent func(StreamEvent)) (map[string]any, error) {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8<<20)
+	scanner := bufio.NewScanner(io.LimitReader(reader, maxCodexStreamBytes+1))
+	scanner.Buffer(make([]byte, 0, 64*1024), maxCodexStreamBytes)
 
 	state := &streamDecodeState{}
 	eventName := ""
 	dataLines := make([]string, 0, 8)
 
+	totalBytes := 0
+	eventCount := 0
 	flushEvent := func() {
 		if len(dataLines) == 0 {
 			eventName = ""
@@ -3329,12 +3368,22 @@ func parseEventStreamReader(reader io.Reader, onEvent func(StreamEvent)) (map[st
 		}
 		payload := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
+		eventCount++
+		if eventCount > maxCodexStreamEvents {
+			state.decodeErr = errors.New("codex stream event limit exceeded")
+			eventName = ""
+			return
+		}
 		processResponseStreamEvent(eventName, payload, state, onEvent)
 		eventName = ""
 	}
 
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
+		totalBytes += len(line) + 1
+		if totalBytes > maxCodexStreamBytes {
+			return nil, errors.New("codex stream byte limit exceeded")
+		}
 		if strings.TrimSpace(line) == "" {
 			flushEvent()
 			continue

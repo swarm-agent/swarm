@@ -12,13 +12,18 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/privacy"
 	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 )
 
 const (
 	chatURL          = "https://openrouter.ai/api/v1/chat/completions"
 	keyURL           = "https://openrouter.ai/api/v1/key"
-	maxResponseBytes = 8 << 20
+	maxResponseBytes           = 8 << 20
+	maxStreamEvents            = 16_384
+	maxStreamOutputBytes       = 4 << 20
+	maxStreamToolArgumentBytes = 1 << 20
+	maxProviderErrorBytes      = 4 << 10
 )
 
 type Client struct {
@@ -240,9 +245,11 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			return fmt.Errorf("decode openrouter stream chunk: %w", err)
 		}
-		state.apply(chunk)
+		if err := state.apply(chunk); err != nil {
+			return err
+		}
 		if chunk.Error != nil && strings.TrimSpace(chunk.Error.Message) != "" {
-			return errors.New(strings.TrimSpace(chunk.Error.Message))
+			return errors.New(boundedProviderError(privacy.SanitizeText(chunk.Error.Message)))
 		}
 		if onChunk != nil {
 			return onChunk(chunk)
@@ -254,7 +261,10 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 	}
 	response := state.response()
 	if response.Error != nil && strings.TrimSpace(response.Error.Message) != "" {
-		return chatCompletionResponse{}, errors.New(strings.TrimSpace(response.Error.Message))
+		return chatCompletionResponse{}, errors.New(boundedProviderError(privacy.SanitizeText(response.Error.Message)))
+	}
+	if len(response.Choices) == 0 || strings.TrimSpace(response.Choices[0].FinishReason) == "" {
+		return chatCompletionResponse{}, errors.New("openrouter stream ended without a finish reason")
 	}
 	return response, nil
 }
@@ -299,17 +309,41 @@ func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte
 }
 
 type openRouterStreamState struct {
-	merged    chatCompletionResponse
-	toolCalls map[int]*chatCompletionToolCall
+	merged            chatCompletionResponse
+	toolCalls         map[int]*chatCompletionToolCall
+	eventCount        int
+	outputBytes       int
+	toolArgumentBytes int
 }
 
 func newOpenRouterStreamState() *openRouterStreamState {
 	return &openRouterStreamState{toolCalls: make(map[int]*chatCompletionToolCall)}
 }
 
-func (s *openRouterStreamState) apply(chunk chatCompletionChunk) {
+func (s *openRouterStreamState) apply(chunk chatCompletionChunk) error {
 	if s == nil {
-		return
+		return errors.New("openrouter stream state is not configured")
+	}
+	s.eventCount++
+	if s.eventCount > maxStreamEvents {
+		return errors.New("openrouter stream event limit exceeded")
+	}
+	for _, choice := range chunk.Choices {
+		if choice.Delta == nil {
+			continue
+		}
+		s.outputBytes += len(choice.Delta.Content) + len(choice.Delta.Reasoning)
+		for _, call := range choice.Delta.ToolCalls {
+			if call.Function != nil {
+				s.toolArgumentBytes += len(call.Function.Arguments)
+			}
+		}
+	}
+	if s.outputBytes > maxStreamOutputBytes {
+		return errors.New("openrouter stream output limit exceeded")
+	}
+	if s.toolArgumentBytes > maxStreamToolArgumentBytes {
+		return errors.New("openrouter stream tool argument limit exceeded")
 	}
 	if strings.TrimSpace(chunk.ID) != "" {
 		s.merged.ID = chunk.ID
@@ -324,7 +358,7 @@ func (s *openRouterStreamState) apply(chunk chatCompletionChunk) {
 		s.merged.Error = chunk.Error
 	}
 	if len(chunk.Choices) == 0 {
-		return
+		return nil
 	}
 	if len(s.merged.Choices) == 0 {
 		s.merged.Choices = []chatCompletionChoice{{}}
@@ -388,6 +422,7 @@ func (s *openRouterStreamState) apply(chunk chatCompletionChunk) {
 		}
 		choice.Message.ToolCalls = calls
 	}
+	return nil
 }
 
 func (s *openRouterStreamState) response() chatCompletionResponse {
@@ -398,9 +433,12 @@ func (s *openRouterStreamState) response() chatCompletionResponse {
 }
 
 func parseOpenRouterEventStream(reader io.Reader, onPayload func(string) error) error {
-	scanner := bufio.NewScanner(reader)
+	scanner := bufio.NewScanner(io.LimitReader(reader, maxResponseBytes+1))
 	scanner.Buffer(make([]byte, 0, 64*1024), maxResponseBytes)
 	dataLines := make([]string, 0, 8)
+	totalBytes := 0
+	eventCount := 0
+	done := false
 	flush := func() error {
 		if len(dataLines) == 0 {
 			return nil
@@ -408,12 +446,21 @@ func parseOpenRouterEventStream(reader io.Reader, onPayload func(string) error) 
 		payload := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
 		if strings.TrimSpace(payload) == "[DONE]" {
+			done = true
 			return nil
+		}
+		eventCount++
+		if eventCount > maxStreamEvents {
+			return errors.New("openrouter stream event limit exceeded")
 		}
 		return onPayload(payload)
 	}
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
+		totalBytes += len(line) + 1
+		if totalBytes > maxResponseBytes {
+			return errors.New("openrouter stream byte limit exceeded")
+		}
 		if strings.TrimSpace(line) == "" {
 			if err := flush(); err != nil {
 				return err
@@ -430,11 +477,17 @@ func parseOpenRouterEventStream(reader io.Reader, onPayload func(string) error) 
 	if err := scanner.Err(); err != nil {
 		return err
 	}
-	return flush()
+	if err := flush(); err != nil {
+		return err
+	}
+	if !done {
+		return errors.New("openrouter stream ended before [DONE]")
+	}
+	return nil
 }
 
 func apiErrorMessage(raw []byte) string {
-	message := strings.TrimSpace(string(raw))
+	message := boundedProviderError(privacy.SanitizeText(strings.TrimSpace(string(raw))))
 	if message == "" {
 		return "unknown error"
 	}
@@ -446,16 +499,24 @@ func apiErrorMessage(raw []byte) string {
 	}
 	if err := json.Unmarshal(raw, &payload); err == nil {
 		if msg := strings.TrimSpace(payload.Error.Message); msg != "" {
-			return msg
+			return boundedProviderError(privacy.SanitizeText(msg))
 		}
 		if payload.Error.Code != nil {
 			code := strings.TrimSpace(fmt.Sprintf("%v", payload.Error.Code))
 			if code != "" {
-				return code
+				return boundedProviderError(privacy.SanitizeText(code))
 			}
 		}
 	}
 	return message
+}
+
+func boundedProviderError(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= maxProviderErrorBytes {
+		return value
+	}
+	return value[:maxProviderErrorBytes] + "…"
 }
 
 func parseCurrentKey(raw []byte) (label string, limitRemaining string, err error) {
