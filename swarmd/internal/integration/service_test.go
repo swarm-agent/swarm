@@ -17,11 +17,13 @@ func TestServiceRejectsSecretBearingAdapterCreateAndUpdate(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	svc := NewService(pebblestore.NewIntegrationStore(store))
 
+	privateKeyFixture := strings.Join([]string{"-----BEGIN", "PRIVATE KEY-----\nsynthetic-test-data\n-----END PRIVATE KEY-----"}, " ")
+	tokenFixture := strings.Join([]string{"sk", "synthetic-test-token"}, "-")
 	for _, req := range []Request{
 		{Action: "create", Resource: ResourceAdapter, PackID: "Demo", VersionID: "Draft", ID: "Key", Content: map[string]any{"type": "hosted_api", "settings": map[string]any{"api_key": "not-even-a-real-key"}}},
 		{Action: "create", Resource: ResourceAdapter, PackID: "Demo", VersionID: "Draft", ID: "Token", Content: map[string]any{"type": "hosted_api", "settings": map[string]any{"header": "Bearer raw-token-value"}}},
-		{Action: "update", Resource: ResourceAdapter, PackID: "Demo", VersionID: "Draft", ID: "PrivateKey", Content: map[string]any{"type": "hosted_api", "settings": map[string]any{"tls_material": "-----BEGIN PRIVATE KEY-----\nraw\n-----END PRIVATE KEY-----"}}},
-		{Action: "update", Resource: ResourceAdapter, PackID: "Demo", VersionID: "Draft", ID: "Credential", Content: map[string]any{"type": "hosted_api", "credential_refs": map[string]any{"token": "sk-12345678901234567890"}}},
+		{Action: "update", Resource: ResourceAdapter, PackID: "Demo", VersionID: "Draft", ID: "PrivateKey", Content: map[string]any{"type": "hosted_api", "settings": map[string]any{"tls_material": privateKeyFixture}}},
+		{Action: "update", Resource: ResourceAdapter, PackID: "Demo", VersionID: "Draft", ID: "Credential", Content: map[string]any{"type": "hosted_api", "credential_refs": map[string]any{"token": tokenFixture}}},
 	} {
 		if _, err := svc.Handle(req); err == nil || !strings.Contains(err.Error(), "raw secret") && !strings.Contains(err.Error(), "credential reference") {
 			t.Fatalf("%s %s error = %v", req.Action, req.ID, err)
