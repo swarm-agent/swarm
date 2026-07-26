@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -1563,10 +1564,12 @@ func (r *Runtime) executeCustomTool(ctx context.Context, scope WorkspaceScope, n
 }
 
 func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
-	targetPath, err := resolveWorkspacePath(scope, asString(args["path"]))
+	target, err := openRootedWorkspacePath(scope, asString(args["path"]))
 	if err != nil {
 		return "", err
 	}
+	defer target.Close()
+	targetPath := target.absolutePath
 	if _, ok := args["max_bytes"]; ok {
 		return "", errors.New("read no longer supports max_bytes; use line_start and max_lines")
 	}
@@ -1588,7 +1591,7 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 		maxLines = maxReadMaxLines
 	}
 
-	file, err := os.Open(targetPath)
+	file, err := target.open()
 	if err != nil {
 		return "", fmt.Errorf("read failed: %w", err)
 	}
@@ -1695,22 +1698,24 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 }
 
 func executeWrite(scope WorkspaceScope, args map[string]any) (string, error) {
-	targetPath, err := resolveWorkspacePath(scope, asString(args["path"]))
+	target, err := openRootedWorkspacePath(scope, asString(args["path"]))
 	if err != nil {
 		return "", err
 	}
+	defer target.Close()
+	targetPath := target.absolutePath
 	if _, ok := args["content"]; !ok {
 		return "", errors.New("write requires content")
 	}
 	content := asString(args["content"])
 	appendMode := asBool(args["append"])
 
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+	if err := target.mkdirParent(); err != nil {
 		return "", fmt.Errorf("create parent directory: %w", err)
 	}
 
 	if appendMode {
-		f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		f, err := target.openMutable(os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
 			return "", fmt.Errorf("open file for append: %w", err)
 		}
@@ -1719,8 +1724,20 @@ func executeWrite(scope WorkspaceScope, args map[string]any) (string, error) {
 			return "", fmt.Errorf("append failed: %w", err)
 		}
 	} else {
-		if err := os.WriteFile(targetPath, []byte(content), 0o644); err != nil {
+		f, err := target.openMutable(os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return "", fmt.Errorf("open file for write: %w", err)
+		}
+		if err := f.Truncate(0); err != nil {
+			f.Close()
+			return "", fmt.Errorf("write failed: truncate: %w", err)
+		}
+		if _, err := io.WriteString(f, content); err != nil {
+			f.Close()
 			return "", fmt.Errorf("write failed: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return "", fmt.Errorf("write failed: close: %w", err)
 		}
 	}
 
@@ -1927,6 +1944,7 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 	if err != nil {
 		return "", err
 	}
+	defer closeSearchTargets(searchTargets)
 	searchRoots := searchTargetRoots(searchTargets)
 
 	include := strings.TrimSpace(asString(args["include"]))
@@ -2023,6 +2041,7 @@ func (r *Runtime) executeFind(parent context.Context, scope WorkspaceScope, args
 	if err != nil {
 		return "", err
 	}
+	defer closeSearchTargets(searchTargets)
 	searchRoots := searchTargetRoots(searchTargets)
 	include := strings.TrimSpace(asString(args["include"]))
 	mode := normalizeFindMode(args["mode"])
@@ -2662,6 +2681,7 @@ type searchTarget struct {
 	Root        string
 	FileName    string
 	DisplayPath string
+	Authority   *rootedWorkspacePath
 }
 
 func resolveSearchTargets(scope WorkspaceScope, args map[string]any) ([]searchTarget, error) {
@@ -2685,6 +2705,7 @@ func resolveSearchTargets(scope WorkspaceScope, args map[string]any) ([]searchTa
 	for _, path := range requested {
 		target, err := resolveSearchTarget(scope, path)
 		if err != nil {
+			closeSearchTargets(targets)
 			return nil, err
 		}
 		targets = append(targets, target)
@@ -2697,19 +2718,28 @@ func resolveSearchTargets(scope WorkspaceScope, args map[string]any) ([]searchTa
 }
 
 func resolveSearchTarget(scope WorkspaceScope, requested string) (searchTarget, error) {
-	root, err := resolveWorkspacePath(scope, requested)
+	authority, err := openRootedWorkspacePath(scope, requested)
 	if err != nil {
 		return searchTarget{}, err
 	}
-	info, err := os.Stat(root)
+	info, err := authority.stat()
 	if err != nil {
+		authority.Close()
 		return searchTarget{}, fmt.Errorf("stat search path %q: %w", requested, err)
 	}
-	root = filepath.Clean(root)
+	root := filepath.Clean(authority.absolutePath)
 	if info.IsDir() {
-		return searchTarget{Root: root, DisplayPath: root}, nil
+		return searchTarget{Root: root, DisplayPath: root, Authority: authority}, nil
 	}
-	return searchTarget{Root: filepath.Dir(root), FileName: filepath.Base(root), DisplayPath: root}, nil
+	return searchTarget{Root: filepath.Dir(root), FileName: filepath.Base(root), DisplayPath: root, Authority: authority}, nil
+}
+
+func closeSearchTargets(targets []searchTarget) {
+	for i := range targets {
+		if targets[i].Authority != nil {
+			_ = targets[i].Authority.Close()
+		}
+	}
 }
 
 func dedupeSearchTargets(targets []searchTarget) []searchTarget {
@@ -2720,6 +2750,9 @@ func dedupeSearchTargets(targets []searchTarget) []searchTarget {
 		target.FileName = strings.TrimSpace(target.FileName)
 		target.DisplayPath = filepath.Clean(strings.TrimSpace(target.DisplayPath))
 		if target.Root == "" {
+			if target.Authority != nil {
+				_ = target.Authority.Close()
+			}
 			continue
 		}
 		if target.DisplayPath == "" || target.DisplayPath == "." {
@@ -2727,6 +2760,9 @@ func dedupeSearchTargets(targets []searchTarget) []searchTarget {
 		}
 		key := strings.ToLower(target.Root + "\x00" + target.FileName)
 		if _, ok := seen[key]; ok {
+			if target.Authority != nil {
+				_ = target.Authority.Close()
+			}
 			continue
 		}
 		seen[key] = struct{}{}
@@ -2792,11 +2828,13 @@ func splitSearchPathArgument(scope WorkspaceScope, raw string) ([]searchTarget, 
 		}
 		target, err := resolveSearchTarget(scope, field)
 		if err != nil {
+			closeSearchTargets(targets)
 			return nil, err
 		}
 		targets = append(targets, target)
 	}
 	if len(targets) <= 1 {
+		closeSearchTargets(targets)
 		return nil, fmt.Errorf("search path %q is not a multi-path value", raw)
 	}
 	return targets, nil
@@ -5376,10 +5414,16 @@ type listEntry struct {
 }
 
 func executeList(scope WorkspaceScope, args map[string]any) (string, error) {
-	searchRoot, err := resolveSearchRoot(scope, args["path"])
+	requestedPath := strings.TrimSpace(asString(args["path"]))
+	if requestedPath == "" {
+		requestedPath = "."
+	}
+	rootedPath, err := openRootedWorkspacePath(scope, requestedPath)
 	if err != nil {
 		return "", err
 	}
+	defer rootedPath.Close()
+	searchRoot := rootedPath.absolutePath
 
 	mode := strings.ToLower(strings.TrimSpace(asString(args["mode"])))
 	if mode == "" {
@@ -5396,7 +5440,7 @@ func executeList(scope WorkspaceScope, args map[string]any) (string, error) {
 		cursor = 0
 	}
 
-	entries, scanLimited, err := collectListEntries(searchRoot, mode, maxDepth)
+	entries, scanLimited, err := collectListEntries(rootedPath, mode, maxDepth)
 	if err != nil {
 		return "", err
 	}
@@ -5445,16 +5489,23 @@ type editOperation struct {
 }
 
 func executeEdit(scope WorkspaceScope, args map[string]any) (string, error) {
-	targetPath, err := resolveWorkspacePath(scope, asString(args["path"]))
+	target, err := openRootedWorkspacePath(scope, asString(args["path"]))
 	if err != nil {
 		return "", err
 	}
+	defer target.Close()
+	targetPath := target.absolutePath
 	operations, err := parseEditOperations(args)
 	if err != nil {
 		return "", err
 	}
 
-	data, err := os.ReadFile(targetPath)
+	file, err := target.openMutable(os.O_RDWR, 0)
+	if err != nil {
+		return "", fmt.Errorf("edit open failed: %w", err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxEditBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("edit read failed: %w", err)
 	}
@@ -5512,7 +5563,13 @@ func executeEdit(scope WorkspaceScope, args map[string]any) (string, error) {
 		detailsTruncated = detailsTruncated || oldTruncated || newTruncated
 	}
 
-	if err := os.WriteFile(targetPath, []byte(after), 0o644); err != nil {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("edit write failed: rewind: %w", err)
+	}
+	if err := file.Truncate(0); err != nil {
+		return "", fmt.Errorf("edit write failed: truncate: %w", err)
+	}
+	if _, err := io.WriteString(file, after); err != nil {
 		return "", fmt.Errorf("edit write failed: %w", err)
 	}
 
@@ -8738,19 +8795,20 @@ func normalizeSkillLookup(value string) string {
 	return strings.Trim(b.String(), "-")
 }
 
-func collectListEntries(rootPath, mode string, maxDepth int) ([]listEntry, bool, error) {
+func collectListEntries(rootPath *rootedWorkspacePath, mode string, maxDepth int) ([]listEntry, bool, error) {
 	entries := make([]listEntry, 0, 256)
 	scanLimited := false
 
-	walkErr := filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
+	fsys := rootPath.root.FS()
+	walkErr := fs.WalkDir(fsys, rootPath.relative, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if path == rootPath {
+		if path == rootPath.relative {
 			return nil
 		}
 
-		relative, relErr := filepath.Rel(rootPath, path)
+		relative, relErr := filepath.Rel(rootPath.relative, path)
 		if relErr != nil {
 			return nil
 		}
@@ -8762,7 +8820,7 @@ func collectListEntries(rootPath, mode string, maxDepth int) ([]listEntry, bool,
 		depth := listPathDepth(relative)
 		if mode == "tree" && depth > maxDepth {
 			if d.IsDir() {
-				return filepath.SkipDir
+				return fs.SkipDir
 			}
 			return nil
 		}
