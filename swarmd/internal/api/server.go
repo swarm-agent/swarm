@@ -69,7 +69,12 @@ type codexOAuthSession struct {
 	UpdatedAt      time.Time
 }
 
-const v3LivePatchDefaultEnabled = true
+const (
+	v3LivePatchDefaultEnabled = true
+
+	maxSTTDecodedAudioBytes = 25 << 20
+	maxSTTRequestBodyBytes   = (maxSTTDecodedAudioBytes*4)/3 + (64 << 10)
+)
 
 type Server struct {
 	auth                        *auth.Service
@@ -3189,11 +3194,11 @@ func (s *Server) handleSTTTranscribe(w http.ResponseWriter, r *http.Request) {
 		Language  string `json:"language"`
 		AudioBase string `json:"audio_base64"`
 	}
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if err := decodeJSONLimited(w, r, &req, maxSTTRequestBodyBytes); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid STT request: %w", err))
 		return
 	}
-	audio, err := decodeBase64Audio(req.AudioBase)
+	audio, err := decodeBase64Audio(req.AudioBase, maxSTTDecodedAudioBytes)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -3939,6 +3944,21 @@ func decodeJSON(r *http.Request, out any) error {
 	return decodeJSONBytes(body, out)
 }
 
+func decodeJSONLimited(w http.ResponseWriter, r *http.Request, out any, maxBytes int64) error {
+	if maxBytes <= 0 {
+		return errors.New("request body limit must be positive")
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	if err := decodeJSON(r, out); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return fmt.Errorf("request body exceeds %d bytes", maxBytes)
+		}
+		return err
+	}
+	return nil
+}
+
 func decodeJSONBytes(body []byte, out any) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	return decodeJSONObject(decoder, out)
@@ -3956,20 +3976,39 @@ func decodeJSONObject(decoder *json.Decoder, out any) error {
 	return nil
 }
 
-func decodeBase64Audio(raw string) ([]byte, error) {
+func decodeBase64Audio(raw string, maxDecodedBytes int) ([]byte, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil, errors.New("audio_base64 is required")
 	}
-	audio, err := base64.StdEncoding.DecodeString(raw)
-	if err == nil {
-		return audio, nil
+	if maxDecodedBytes <= 0 {
+		return nil, errors.New("decoded audio limit must be positive")
 	}
-	audio, rawErr := base64.RawStdEncoding.DecodeString(raw)
-	if rawErr == nil {
-		return audio, nil
+
+	encoding := base64.RawStdEncoding
+	decodedLen := encoding.DecodedLen(len(raw))
+	if strings.HasSuffix(raw, "=") {
+		encoding = base64.StdEncoding
+		decodedLen = encoding.DecodedLen(len(raw))
+		if strings.HasSuffix(raw, "==") {
+			decodedLen -= 2
+		} else {
+			decodedLen--
+		}
 	}
-	return nil, fmt.Errorf("decode audio_base64: %w", err)
+	if decodedLen < 0 {
+		return nil, errors.New("decode audio_base64: invalid padding")
+	}
+	if decodedLen > maxDecodedBytes {
+		return nil, fmt.Errorf("audio_base64 exceeds %d decoded bytes", maxDecodedBytes)
+	}
+
+	audio := make([]byte, decodedLen)
+	n, err := encoding.Decode(audio, []byte(raw))
+	if err != nil {
+		return nil, fmt.Errorf("decode audio_base64: %w", err)
+	}
+	return audio[:n], nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
