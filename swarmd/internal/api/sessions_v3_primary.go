@@ -124,11 +124,13 @@ type sessionsV3AgentRequest struct {
 }
 
 type sessionsV3PreferenceRequest struct {
-	Provider    *string `json:"provider,omitempty"`
-	Model       *string `json:"model,omitempty"`
-	Thinking    *string `json:"thinking,omitempty"`
-	ServiceTier *string `json:"service_tier,omitempty"`
-	ContextMode *string `json:"context_mode,omitempty"`
+	ClientRequestID string  `json:"client_request_id,omitempty"`
+	IdempotencyKey  string  `json:"idempotency_key,omitempty"`
+	Provider        *string `json:"provider,omitempty"`
+	Model           *string `json:"model,omitempty"`
+	Thinking        *string `json:"thinking,omitempty"`
+	ServiceTier     *string `json:"service_tier,omitempty"`
+	ContextMode     *string `json:"context_mode,omitempty"`
 }
 
 type sessionsV3SettingsPatchRequest struct {
@@ -1785,6 +1787,24 @@ func (s *Server) handleSessionV3PrimaryPreference(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	clientRequestID := strings.TrimSpace(firstNonEmpty(req.ClientRequestID, req.IdempotencyKey, r.Header.Get("Idempotency-Key")))
+	if clientRequestID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("client_request_id is required"))
+		return
+	}
+	if len(clientRequestID) > 256 {
+		writeError(w, http.StatusBadRequest, errors.New("client_request_id must be 256 bytes or fewer"))
+		return
+	}
+	requestPreference := sessionsV3PreferenceRequest{
+		Provider: req.Provider, Thinking: req.Thinking, Model: req.Model,
+		ServiceTier: req.ServiceTier, ContextMode: req.ContextMode,
+	}
+	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdatePreference, map[string]any{"preference_update": requestPreference})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	session, found, err := s.requireSessionV3Access(principal, sessionID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -1813,11 +1833,6 @@ func (s *Server) handleSessionV3PrimaryPreference(w http.ResponseWriter, r *http
 	next := session
 	next.Preference = normalizeSessionsV3ModelPreference(resolved.Preference)
 	next.UpdatedAt = time.Now().UnixMilli()
-	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdatePreference, map[string]any{"preference": next.Preference})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
 	eventPayload, err := json.Marshal(map[string]any{"session_id": sessionID, "preference": next.Preference, "updated_at": next.UpdatedAt})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -1827,8 +1842,8 @@ func (s *Server) handleSessionV3PrimaryPreference(w http.ResponseWriter, r *http
 		SessionID:       sessionID,
 		UserID:          principal.UserID,
 		AccountScopeID:  principal.AccountScopeID,
-		ClientRequestID: "preference:" + sessionID + ":" + fmt.Sprint(next.UpdatedAt),
-		IdempotencyKey:  "preference:" + sessionID + ":" + fmt.Sprint(next.UpdatedAt),
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
 		PayloadHash:     payloadHash,
 		RequestHash:     payloadHash,
 		Kind:            sessionruntime.SessionMutationUpdatePreference,
@@ -1837,10 +1852,18 @@ func (s *Server) handleSessionV3PrimaryPreference(w http.ResponseWriter, r *http
 		NowUnixMs:       next.UpdatedAt,
 	})
 	if err != nil {
+		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "conflict": result.Conflict})
+			return
+		}
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.sessionV3PreferenceMutationResponse(sessionID, next.Preference, resolved.ContextWindow, resolved.MaxOutputTokens, result))
+	responsePreference := next.Preference
+	if result.Replayed && result.Session != nil {
+		responsePreference = result.Session.Preference
+	}
+	writeJSON(w, http.StatusOK, s.sessionV3PreferenceMutationResponse(sessionID, responsePreference, resolved.ContextWindow, resolved.MaxOutputTokens, result))
 }
 
 func (s *Server) handleSessionV3PrimaryTitle(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
