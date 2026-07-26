@@ -175,6 +175,21 @@ func TestXSwarmTokenPrincipalTakesPrecedenceOverInvalidDesktopCookie(t *testing.
 	}
 }
 
+func TestExtractAttachTokenIgnoresURLQuery(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/v1/me?token=query-secret", nil)
+	if token := extractAttachToken(req); token != "" {
+		t.Fatalf("query attach token = %q, want empty", token)
+	}
+	req.Header.Set("Authorization", "Bearer bearer-secret")
+	if token := extractAttachToken(req); token != "bearer-secret" {
+		t.Fatalf("bearer attach token = %q, want bearer-secret", token)
+	}
+	req.Header.Set("X-Swarm-Token", "header-secret")
+	if token := extractAttachToken(req); token != "header-secret" {
+		t.Fatalf("X-Swarm-Token attach token = %q, want header-secret", token)
+	}
+}
+
 func TestDesktopSessionRejectsOldRandomSingletonCookie(t *testing.T) {
 	server, _, _, cleanup := newDesktopJWTTestServer(t, true)
 	defer cleanup()

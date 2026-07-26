@@ -3842,7 +3842,7 @@ func extractAttachToken(r *http.Request) string {
 	if strings.HasPrefix(strings.ToLower(authz), "bearer ") {
 		return strings.TrimSpace(authz[7:])
 	}
-	return strings.TrimSpace(r.URL.Query().Get("token"))
+	return ""
 }
 
 func (s *Server) isAuthExemptRequest(r *http.Request) bool {

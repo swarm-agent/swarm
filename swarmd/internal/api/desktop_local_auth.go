@@ -82,11 +82,47 @@ func (s *Server) withDesktopLocalSession(next http.Handler) http.Handler {
 }
 
 func shouldUseDesktopLocalSessionAuth(r *http.Request) bool {
-	return isSameOriginBrowserRequest(r) && isLocalDesktopBrowserRequest(r)
+	return isAllowedDesktopRequestHost(r) && isSameOriginBrowserRequest(r) && isLocalDesktopBrowserRequest(r)
 }
 
 func shouldAllowDesktopLocalSessionBootstrapRequest(r *http.Request) bool {
-	return (isSameOriginBrowserRequest(r) && isLocalDesktopBrowserRequest(r)) || isLocalTransportRequest(r)
+	return (isAllowedDesktopRequestHost(r) && isSameOriginBrowserRequest(r) && isLocalDesktopBrowserRequest(r)) || isLocalTransportRequest(r)
+}
+
+func isAllowedDesktopRequestHost(r *http.Request) bool {
+	host := strings.TrimSpace(requestHost(r))
+	if host == "" {
+		return false
+	}
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	}
+	host = strings.TrimSuffix(strings.TrimSpace(host), ".")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	for _, candidate := range detectLANAddresses() {
+		candidateIP := net.ParseIP(strings.TrimSpace(candidate))
+		if candidateIP != nil && candidateIP.Equal(ip) {
+			return true
+		}
+	}
+	for _, candidate := range detectTailscale().IPs {
+		candidateIP := net.ParseIP(strings.TrimSpace(candidate))
+		if candidateIP != nil && candidateIP.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func isLocalDesktopBrowserRequest(r *http.Request) bool {
