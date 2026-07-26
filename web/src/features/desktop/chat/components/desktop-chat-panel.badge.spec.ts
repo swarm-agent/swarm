@@ -313,9 +313,9 @@ function makeMessage(overrides: Partial<ChatMessageRecord> = {}): ChatMessageRec
 }
 
 test('resolveMessageAssistantLabel uses per-turn message metadata before current agent fallback', () => {
-  assert.equal(resolveMessageAssistantLabel(makeMessage({ metadata: { agent_name: 'swarm', model: 'gpt-5.4' } }), 'explorer'), 'swarm')
+  assert.equal(resolveMessageAssistantLabel(makeMessage({ metadata: { agent_name: 'swarm', model: 'gpt-5.4' } }), 'finder'), 'swarm')
   assert.equal(resolveMessageAssistantLabel(makeMessage({ metadata: { agent_name: 'reviewer', model: 'claude-sonnet' } }), 'swarm'), 'reviewer')
-  assert.equal(resolveMessageAssistantLabel(makeMessage(), 'explorer'), 'explorer')
+  assert.equal(resolveMessageAssistantLabel(makeMessage(), 'finder'), 'finder')
 })
 
 test('desktop chat suppresses retained assistant replay segments once canonical messages load', () => {

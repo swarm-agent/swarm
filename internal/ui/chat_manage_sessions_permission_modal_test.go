@@ -196,7 +196,7 @@ func manageSessionsPermissionTestRecord(id, requirement string) ChatPermissionRe
 	case "session_deploy":
 		payload["proposals"] = []any{
 			map[string]any{"id": "proposal-1", "title": "Primary work", "prompt": "Ship the primary task", "mode": "auto", "agent_name": "swarm", "agent_mode": "primary", "workspace_path": "/workspace", "workspace_name": "Workspace", "managed_worktree": true, "worktree_base_branch": "dev", "worktree_branch": "agent/work"},
-			map[string]any{"id": "proposal-2", "title": "Extra work", "prompt": "Investigate an extra task", "mode": "plan", "agent_name": "explorer", "agent_mode": "subagent", "workspace_path": "/workspace", "workspace_name": "Workspace"},
+			map[string]any{"id": "proposal-2", "title": "Extra work", "prompt": "Investigate an extra task", "mode": "plan", "agent_name": "finder", "agent_mode": "subagent", "workspace_path": "/workspace", "workspace_name": "Workspace"},
 		}
 	case "session_commit":
 		payload["manifest"] = map[string]any{"commits": []any{map[string]any{"message": "Ship exact files", "repository": "/workspace", "files": []any{map[string]any{"path": "web/src/app.tsx", "fingerprint": "secret"}}}}}

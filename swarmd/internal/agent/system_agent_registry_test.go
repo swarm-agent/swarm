@@ -16,11 +16,11 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, ExplorerAgentID, PlanSidechatAgentID, ReviewCommitAgentID}
+	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, PlanSidechatAgentID, ReviewCommitAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
-	for kind, id := range map[string]string{SystemSidechatKindPlan: PlanSidechatAgentID, SystemSidechatKindAI: AISidechatAgentID, SystemSidechatKindCompact: CompactAgentID, SystemSidechatKindExplorer: ExplorerAgentID, SystemSidechatKindCoder: CoderAgentID, SystemSidechatKindDesigner: DesignerAgentID} {
+	for kind, id := range map[string]string{SystemSidechatKindPlan: PlanSidechatAgentID, SystemSidechatKindAI: AISidechatAgentID, SystemSidechatKindCompact: CompactAgentID, SystemSidechatKindFinder: FinderAgentID, SystemSidechatKindCoder: CoderAgentID, SystemSidechatKindDesigner: DesignerAgentID} {
 		definition, ok := registry.DefinitionBySidechatKind(kind)
 		if !ok || definition.ID != id {
 			t.Fatalf("kind %q resolved to %+v, ok=%v", kind, definition, ok)
@@ -32,14 +32,14 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 			t.Fatalf("sidechat-only system agent %q is not protected: %+v", id, definition)
 		}
 	}
-	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, ExplorerAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID} {
+	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID} {
 		definition, _ := registry.DefinitionByID(id)
 		if definition.RequiresSidechatMetadata || IsReservedSidechatAgentName(id) {
 			t.Fatalf("ordinary/task system agent %q was classified as sidechat-only: %+v", id, definition)
 		}
 	}
 	visible := registry.UserVisibleIDs()
-	for _, id := range []string{SwarmAgentID, CompactAgentID, ExplorerAgentID, CoderAgentID, DesignerAgentID} {
+	for _, id := range []string{SwarmAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID} {
 		if !containsString(visible, id) {
 			t.Fatalf("user-visible system agents %v omit %q", visible, id)
 		}
@@ -73,7 +73,7 @@ func TestBuiltinSystemAgentRegistryUserVisibleIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuiltinSystemAgentRegistry() error = %v", err)
 	}
-	want := []string{SwarmAgentID, CoderAgentID, DesignerAgentID, ExplorerAgentID}
+	want := []string{SwarmAgentID, CoderAgentID, DesignerAgentID, FinderAgentID}
 	if got := registry.UserVisibleIDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("UserVisibleIDs() = %v, want %v", got, want)
 	}
@@ -214,19 +214,19 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if compact.ToolContract == nil || compact.ToolContract.Preset != "custom" || len(compact.ToolContract.Tools) != 0 {
 		t.Fatalf("Compact must have an immutable empty custom tool contract: %+v", compact.ToolContract)
 	}
-	explorer, err := registry.ReconcileSnapshot(ExplorerAgentID, pebblestore.AgentProfile{Name: ExplorerAgentID, Provider: "codex", Model: "utility-model", Thinking: "high", AutoServiceTier: "priority", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
+	finder, err := registry.ReconcileSnapshot(FinderAgentID, pebblestore.AgentProfile{Name: FinderAgentID, Provider: "codex", Model: "utility-model", Thinking: "high", AutoServiceTier: "priority", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if explorer.AutoServiceTier != "priority" {
-		t.Fatalf("Explorer service tier was not preserved: %+v", explorer)
+	if finder.AutoServiceTier != "priority" {
+		t.Fatalf("Finder service tier was not preserved: %+v", finder)
 	}
-	if explorer.Prompt != ExplorerAgentPrompt() || explorer.RuntimeMode != pebblestore.AgentRuntimeModeRead || explorer.ToolContract == nil || explorer.ToolContract.Preset != "custom" {
-		t.Fatalf("Explorer immutable contract was not restored: %+v", explorer)
+	if finder.Prompt != FinderAgentPrompt() || finder.RuntimeMode != pebblestore.AgentRuntimeModeRead || finder.ToolContract == nil || finder.ToolContract.Preset != "custom" {
+		t.Fatalf("Finder immutable contract was not restored: %+v", finder)
 	}
 	for _, allowed := range []string{"read", "search", "list", "websearch", "webfetch"} {
-		if cfg := explorer.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
-			t.Fatalf("Explorer locked tool %q unavailable: %+v", allowed, explorer.ToolContract)
+		if cfg := finder.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Finder locked tool %q unavailable: %+v", allowed, finder.ToolContract)
 		}
 	}
 	designer, err := registry.ReconcileSnapshot(DesignerAgentID, pebblestore.AgentProfile{Name: DesignerAgentID, Provider: "openai", Model: "utility-model", Thinking: "medium", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeRead, DefaultSessionMode: pebblestore.AgentDefaultSessionModePlan, ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
@@ -300,7 +300,7 @@ func TestEnsureSystemAgentRegistryExposesImmutableProfilesWithoutPersistingThem(
 	if err := svc.EnsureSystemAgentRegistry(); err != nil {
 		t.Fatalf("ensure registry: %v", err)
 	}
-	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, ExplorerAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID, SwarmAgentID} {
+	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID, SwarmAgentID} {
 		if id != SwarmAgentID {
 			if _, ok, err := agents.GetProfile(id); err != nil || ok {
 				t.Fatalf("system profile %q persisted ok=%v err=%v", id, ok, err)

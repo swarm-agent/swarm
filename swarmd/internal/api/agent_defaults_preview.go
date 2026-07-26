@@ -247,7 +247,7 @@ func agentProfilesByName(profiles []pebblestore.AgentProfile) map[string]pebbles
 }
 
 func builtinUtilityAgentNames() []string {
-	// Compact and Explorer are compiled system agents resolved from account-scoped
+	// Compact and Finder are compiled system agents resolved from account-scoped
 	// utility settings; neither is a persisted/default agent row.
 	return nil
 }

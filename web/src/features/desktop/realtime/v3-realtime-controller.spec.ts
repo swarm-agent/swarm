@@ -603,9 +603,9 @@ test('Desktop V3 workset updated subscribes active child session for direct stre
     metadata: {
       parent_session_id: sessionA.id,
       lineage_kind: 'delegated_subagent',
-      lineage_label: '@explorer',
+      lineage_label: '@finder',
       requested_subagent: 'purpose-review',
-      subagent: 'explorer',
+      subagent: 'finder',
       assignment_label: 'Map backend files',
     },
   }
@@ -711,7 +711,7 @@ test('Desktop V3 keeps task child hidden until an explicit view lease is acquire
       launch_index: 1,
       status: 'running',
       child_session_id: childSessionId,
-      subagent: 'explorer',
+      subagent: 'finder',
       current_tool: 'search',
     },
   })

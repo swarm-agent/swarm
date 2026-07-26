@@ -3789,9 +3789,9 @@ func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose st
 	if s == nil || s.agents == nil {
 		return pebblestore.AgentProfile{}, errors.New("saved agent service is not configured")
 	}
-	if agentruntime.IsExplorerAgentName(nameOrPurpose) || agentruntime.IsDesignerAgentName(nameOrPurpose) {
-		agentLabel := agentruntime.ExplorerAgentName
-		agentID := agentruntime.ExplorerAgentID
+	if agentruntime.IsFinderAgentName(nameOrPurpose) || agentruntime.IsDesignerAgentName(nameOrPurpose) {
+		agentLabel := agentruntime.FinderAgentName
+		agentID := agentruntime.FinderAgentID
 		if agentruntime.IsDesignerAgentName(nameOrPurpose) {
 			agentLabel = agentruntime.DesignerAgentName
 			agentID = agentruntime.DesignerAgentID
@@ -3810,7 +3810,7 @@ func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose st
 				if agentID == agentruntime.DesignerAgentID {
 					override = settings.Agents.Designer
 				} else {
-					override = settings.Agents.Explorer
+					override = settings.Agents.Finder
 				}
 			}
 		}

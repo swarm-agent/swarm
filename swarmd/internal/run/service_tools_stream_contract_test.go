@@ -8,8 +8,8 @@ import (
 func TestBuildTaskStreamPatchPayloadDesktopSubagentSchema(t *testing.T) {
 	payload := buildTaskStreamPatchPayload("parent-session", "call-task", "spawn", "map repo", 3, taskLaunchOutcome{
 		LaunchIndex:         2,
-		RequestedSubagent:   "explorer",
-		ResolvedSubagent:    "explorer-v2",
+		RequestedSubagent:   "finder",
+		ResolvedSubagent:    "finder-v2",
 		MetaPrompt:          "map backend files",
 		AssignmentLabel:     "Backend map",
 		SubagentProvider:    "test-provider",
@@ -58,7 +58,7 @@ func TestBuildTaskStreamPatchPayloadDesktopSubagentSchema(t *testing.T) {
 			t.Fatalf("payload[%q] = %#v, want %#v", key, got, want)
 		}
 	}
-	if got := payload["summary"]; got != "subagent explorer-v2 running" {
+	if got := payload["summary"]; got != "subagent finder-v2 running" {
 		t.Fatalf("summary = %#v, want default running summary", got)
 	}
 	if _, ok := payload["launches"]; ok {
@@ -74,9 +74,9 @@ func TestBuildTaskStreamPatchPayloadDesktopSubagentSchema(t *testing.T) {
 		"launch_key":                 "child-session-2",
 		"status":                     "running",
 		"phase":                      "tool.delta",
-		"requested_subagent":         "explorer",
-		"subagent":                   "explorer-v2",
-		"agent_type":                 "explorer-v2",
+		"requested_subagent":         "finder",
+		"subagent":                   "finder-v2",
+		"agent_type":                 "finder-v2",
 		"assignment_label":           "Backend map",
 		"subagent_provider":          "test-provider",
 		"subagent_model":             "test-model",
@@ -153,10 +153,10 @@ func TestTaskLaunchProgressionPersistsAcrossCompletionUntilNextStart(t *testing.
 func TestBuildTaskStreamPatchPayloadAcknowledgesCancelledChild(t *testing.T) {
 	payload := buildTaskStreamPatchPayload("parent", "call-task", "spawn", "inspect", 2, taskLaunchOutcome{
 		LaunchIndex:      2,
-		ResolvedSubagent: "explorer",
+		ResolvedSubagent: "finder",
 		ChildSessionID:   "child-cancelled",
 		Phase:            "cancelled",
-		Summary:          "launch 2 subagent explorer cancelled (session child-cancelled): user stopped subagent",
+		Summary:          "launch 2 subagent finder cancelled (session child-cancelled): user stopped subagent",
 		Reason:           "user stopped subagent",
 	}, "cancelled", "")
 
@@ -227,7 +227,7 @@ func TestBuildTaskStreamPatchPayloadDoesNotExposeAssistantOrReasoningPreviewText
 		t.Run(tc.name, func(t *testing.T) {
 			payload := buildTaskStreamPatchPayload("parent", "call-task", "spawn", "inspect", 1, taskLaunchOutcome{
 				LaunchIndex:        1,
-				ResolvedSubagent:   "explorer",
+				ResolvedSubagent:   "finder",
 				ChildSessionID:     "child-session-1",
 				CurrentPreviewKind: tc.kind,
 				CurrentPreviewText: "private model text",
@@ -257,7 +257,7 @@ func TestEmitTaskStreamDeltaEmitsSingleLaunchPatchNotAggregate(t *testing.T) {
 	}
 	first := taskLaunchOutcome{
 		LaunchIndex:      1,
-		ResolvedSubagent: "explorer",
+		ResolvedSubagent: "finder",
 		ChildSessionID:   "child-1",
 		Phase:            "completed",
 		ToolStarted:      2,

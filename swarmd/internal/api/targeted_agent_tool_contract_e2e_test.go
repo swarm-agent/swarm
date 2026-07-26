@@ -166,17 +166,17 @@ func TestAgentV2ToolInventoryAndDefaultResolvedTools(t *testing.T) {
 	assertToolInventoryContains(t, agentState.ToolInventory, "read", "search", "list", "bash", "exit_plan_mode")
 	assertPresetInventoryContains(t, agentState.ToolInventory, "read_only", "read", "search", "list")
 
-	resolved := getResolvedToolContractV2(t, handler, "explorer")
+	resolved := getResolvedToolContractV2(t, handler, "finder")
 	assertToolInventoryContains(t, resolved.ToolInventory, "read", "search", "list", "bash", "exit_plan_mode")
 	assertPresetInventoryContains(t, resolved.ToolInventory, "read_only", "read", "search", "list")
 	for _, name := range []string{"read", "search", "list", "websearch", "webfetch"} {
 		state, ok := resolved.Resolved.Tools[name]
 		if !ok || !state.Enabled {
-			t.Fatalf("explorer resolved tool %s = %+v, ok=%t", name, state, ok)
+			t.Fatalf("finder resolved tool %s = %+v, ok=%t", name, state, ok)
 		}
 	}
 	if len(resolved.Resolved.AvailableTools) == 0 {
-		t.Fatalf("explorer resolved available_tools is empty: %+v", resolved.Resolved)
+		t.Fatalf("finder resolved available_tools is empty: %+v", resolved.Resolved)
 	}
 }
 

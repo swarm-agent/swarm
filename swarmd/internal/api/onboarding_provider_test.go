@@ -133,7 +133,7 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 	}
 	for _, profile := range agents.Profiles {
 		name := strings.ToLower(strings.TrimSpace(profile.Name))
-		if name != "explorer" && name != "memory" && name != "parallel" {
+		if name != "finder" && name != "memory" && name != "parallel" {
 			continue
 		}
 		if profile.Provider != "openai" || profile.Model != "snapshot-utility-model" || profile.Thinking != "medium" {
@@ -162,11 +162,11 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 	if err != nil {
 		t.Fatalf("get onboarding system-agent settings: %v", err)
 	}
-	if uiSettings.Agents.Compact != uiSettings.Agents.Explorer || uiSettings.Agents.Designer != uiSettings.Agents.Explorer {
-		t.Fatalf("utility system-agent onboarding settings differ: Compact=%+v Explorer=%+v Designer=%+v", uiSettings.Agents.Compact, uiSettings.Agents.Explorer, uiSettings.Agents.Designer)
+	if uiSettings.Agents.Compact != uiSettings.Agents.Finder || uiSettings.Agents.Designer != uiSettings.Agents.Finder {
+		t.Fatalf("utility system-agent onboarding settings differ: Compact=%+v Finder=%+v Designer=%+v", uiSettings.Agents.Compact, uiSettings.Agents.Finder, uiSettings.Agents.Designer)
 	}
 	if configured := uiSettings.Agents.Compact; configured.Provider != "openai" || configured.Model != "snapshot-utility-model" || configured.Thinking != "medium" {
-		t.Fatalf("Compact/Explorer system-agent settings not hydrated from snapshot: %+v", configured)
+		t.Fatalf("Compact/Finder system-agent settings not hydrated from snapshot: %+v", configured)
 	}
 }
 

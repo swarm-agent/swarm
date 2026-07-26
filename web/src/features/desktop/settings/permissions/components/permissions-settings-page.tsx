@@ -523,7 +523,7 @@ export function PermissionsSettingsPage() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
               <div className="text-sm font-semibold text-[var(--app-text)]">Subagents</div>
-              <div className="mt-1 text-xs text-[var(--app-text-muted)]">Control when Explorer and Coder can help. Limits are maximums, not targets.</div>
+              <div className="mt-1 text-xs text-[var(--app-text-muted)]">Control when Finder and Coder can help. Limits are maximums, not targets.</div>
             </div>
             <Button className="w-full shrink-0 sm:w-auto" variant="outline" onClick={() => void handleSaveSubagents()} disabled={loading || subagentBusy}>
               {subagentBusy ? 'Saving…' : 'Save'}

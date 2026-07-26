@@ -16,8 +16,8 @@ const (
 	AISidechatAgentName     = "AI"
 	CompactAgentID          = "system-compact"
 	CompactAgentName        = "Compact"
-	ExplorerAgentID         = "system-explorer"
-	ExplorerAgentName       = "Explorer"
+	FinderAgentID           = "system-finder"
+	FinderAgentName         = "Finder"
 	CoderAgentID            = "system-coder"
 	CoderAgentName          = "Coder"
 	DesignerAgentID         = "system-designer"
@@ -32,7 +32,7 @@ const (
 	SystemSidechatKindPlan     = "plan"
 	SystemSidechatKindAI       = "ai"
 	SystemSidechatKindCompact  = "compact"
-	SystemSidechatKindExplorer = "explorer"
+	SystemSidechatKindFinder   = "finder"
 	SystemSidechatKindCoder    = "coder"
 	SystemSidechatKindDesigner = "designer"
 )
@@ -231,12 +231,12 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Reconcile:   reconcileReviewCommitAgentProfile,
 	},
 	{
-		ID:           ExplorerAgentID,
-		DisplayName:  ExplorerAgentName,
+		ID:           FinderAgentID,
+		DisplayName:  FinderAgentName,
 		UserVisible:  true,
-		SidechatKind: SystemSidechatKindExplorer,
-		Materialize:  ExplorerAgentProfileForParent,
-		Reconcile:    reconcileExplorerAgentProfile,
+		SidechatKind: SystemSidechatKindFinder,
+		Materialize:  FinderAgentProfileForParent,
+		Reconcile:    reconcileFinderAgentProfile,
 	},
 	{
 		ID:           CoderAgentID,
@@ -308,7 +308,7 @@ Your job is to review the plan proposal supplied in the "Authoritative pending p
 
 Available workflow:
 - Use read, search, list, websearch, and webfetch when evidence is needed.
-- When a distinct repository or web research question would materially improve the plan, you may delegate it with task only to Explorer. Explorer uses its compiled read-only contract and cannot delegate further. Normal backend launch budgets, concurrency limits, depth checks, and approvals remain authoritative.
+- When a distinct repository or web research question would materially improve the plan, you may delegate it with task only to Finder. Finder uses its compiled read-only contract and cannot delegate further. Normal backend launch budgets, concurrency limits, depth checks, and approvals remain authoritative.
 - Use edit_pending_plan to persist a complete revised structured plan. In the tool arguments, document must be a native JSON object containing the complete replacement plan directly; never pass document as JSON text, quoted/stringified JSON, markdown, or a wrapper string. Pass the attached proposal_revision as the integer expected_revision.
 - Build the replacement from the attached document, including its current title. Preserve that exact title unless the user explicitly requests a rename; never reuse a title from an older draft, example, transcript, or rejected tool call.
 - Valid argument shape: {"expected_revision":4,"document":{"title":"Plan: example","info":{"goal":"Example goal"},"checkpoints":[{"id":"cp-1","title":"Example step","status":"pending","order":1,"tasks":["Do the work"],"acceptance_criteria":["The work is complete"]}]}}
@@ -362,13 +362,13 @@ func ReviewCommitAgentToolContract() *pebblestore.AgentToolContract {
 	}}
 }
 
-func ExplorerAgentPrompt() string {
-	return strings.TrimSpace(`You are Explorer, Swarm's compiled research subagent.
+func FinderAgentPrompt() string {
+	return strings.TrimSpace(`You are Finder, Swarm's compiled research subagent.
 Map files, summarize architecture and execution flow, and surface likely attack points.
 Use only the locked read and research tools. Provide precise findings with path/line evidence, then end with a Relevant filepaths list and why each file matters.`)
 }
 
-func ExplorerAgentToolContract() *pebblestore.AgentToolContract {
+func FinderAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
 		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)},
@@ -431,9 +431,9 @@ func IsCoderAgentName(name string) bool {
 	}
 }
 
-func IsExplorerAgentName(name string) bool {
+func IsFinderAgentName(name string) bool {
 	switch normalizeName(name) {
-	case "explorer", ExplorerAgentID:
+	case "finder", FinderAgentID:
 		return true
 	default:
 		return false
@@ -459,8 +459,8 @@ func CanonicalSystemAgentID(name string) (string, bool) {
 	switch {
 	case IsPlanSidechatAgentName(name):
 		return PlanSidechatAgentID, true
-	case IsExplorerAgentName(name):
-		return ExplorerAgentID, true
+	case IsFinderAgentName(name):
+		return FinderAgentID, true
 	case IsCoderAgentName(name):
 		return CoderAgentID, true
 	case IsDesignerAgentName(name):
@@ -567,12 +567,12 @@ func reconcileReviewCommitAgentProfile(snapshot pebblestore.AgentProfile) pebble
 	return ReviewCommitAgentProfileForParent(snapshot)
 }
 
-func ExplorerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+func FinderAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
 	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
-		Name: ExplorerAgentID, Mode: ModeSubagent, Description: "Compiled repository and web research subagent",
+		Name: FinderAgentID, Mode: ModeSubagent, Description: "Compiled repository and web research subagent",
 		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
-		Prompt: ExplorerAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead,
-		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: ExplorerAgentToolContract(), Enabled: true,
+		Prompt: FinderAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: FinderAgentToolContract(), Enabled: true,
 	})
 }
 
@@ -646,8 +646,8 @@ func reconcileCompactAgentProfile(snapshot pebblestore.AgentProfile) pebblestore
 	return profile
 }
 
-func reconcileExplorerAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
-	profile := ExplorerAgentProfileForParent(snapshot)
+func reconcileFinderAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := FinderAgentProfileForParent(snapshot)
 	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
 	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
 	return profile

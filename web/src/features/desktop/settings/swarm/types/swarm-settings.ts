@@ -37,7 +37,7 @@ export interface UICompactAgentSettingsWire {
 
 export interface UIAgentSettingsWire {
   compact?: UICompactAgentSettingsWire
-  explorer?: UICompactAgentSettingsWire
+  finder?: UICompactAgentSettingsWire
   coder?: UICompactAgentSettingsWire
   designer?: UICompactAgentSettingsWire
 }
@@ -227,12 +227,12 @@ export function normalizeCompactAgentSettings(payload?: UISettingsWire | null): 
   }
 }
 
-export function normalizeExplorerAgentSettings(payload?: UISettingsWire | null): Required<UICompactAgentSettingsWire> {
+export function normalizeFinderAgentSettings(payload?: UISettingsWire | null): Required<UICompactAgentSettingsWire> {
   return {
-    provider: typeof payload?.agents?.explorer?.provider === 'string' ? payload.agents.explorer.provider.trim().toLowerCase() : '',
-    model: typeof payload?.agents?.explorer?.model === 'string' ? payload.agents.explorer.model.trim() : '',
-    thinking: typeof payload?.agents?.explorer?.thinking === 'string' ? payload.agents.explorer.thinking.trim() : '',
-    service_tier: typeof payload?.agents?.explorer?.service_tier === 'string' ? payload.agents.explorer.service_tier.trim().toLowerCase() : '',
+    provider: typeof payload?.agents?.finder?.provider === 'string' ? payload.agents.finder.provider.trim().toLowerCase() : '',
+    model: typeof payload?.agents?.finder?.model === 'string' ? payload.agents.finder.model.trim() : '',
+    thinking: typeof payload?.agents?.finder?.thinking === 'string' ? payload.agents.finder.thinking.trim() : '',
+    service_tier: typeof payload?.agents?.finder?.service_tier === 'string' ? payload.agents.finder.service_tier.trim().toLowerCase() : '',
   }
 }
 
@@ -269,16 +269,16 @@ export function withCompactAgentSettings(current: UISettingsWire, compact: UICom
   }
 }
 
-export function withExplorerAgentSettings(current: UISettingsWire, explorer: UICompactAgentSettingsWire): UISettingsWire {
+export function withFinderAgentSettings(current: UISettingsWire, finder: UICompactAgentSettingsWire): UISettingsWire {
   return {
     ...current,
     agents: {
       ...(current.agents ?? {}),
-      explorer: {
-        provider: explorer.provider?.trim().toLowerCase() ?? '',
-        model: explorer.model?.trim() ?? '',
-        thinking: explorer.thinking?.trim() ?? '',
-        service_tier: explorer.service_tier?.trim().toLowerCase() ?? '',
+      finder: {
+        provider: finder.provider?.trim().toLowerCase() ?? '',
+        model: finder.model?.trim() ?? '',
+        thinking: finder.thinking?.trim() ?? '',
+        service_tier: finder.service_tier?.trim().toLowerCase() ?? '',
       },
     },
   }

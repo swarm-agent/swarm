@@ -104,7 +104,7 @@ type UICompactAgentSettingsRecord struct {
 
 type UIAgentSettingsRecord struct {
 	Compact  UICompactAgentSettingsRecord `json:"compact,omitempty"`
-	Explorer UICompactAgentSettingsRecord `json:"explorer,omitempty"`
+	Finder   UICompactAgentSettingsRecord `json:"finder,omitempty"`
 	Coder    UICompactAgentSettingsRecord `json:"coder,omitempty"`
 	Designer UICompactAgentSettingsRecord `json:"designer,omitempty"`
 }
@@ -294,10 +294,10 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	record.Agents.Compact.Model = strings.TrimSpace(record.Agents.Compact.Model)
 	record.Agents.Compact.Thinking = strings.TrimSpace(record.Agents.Compact.Thinking)
 	record.Agents.Compact.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Compact.ServiceTier))
-	record.Agents.Explorer.Provider = strings.ToLower(strings.TrimSpace(record.Agents.Explorer.Provider))
-	record.Agents.Explorer.Model = strings.TrimSpace(record.Agents.Explorer.Model)
-	record.Agents.Explorer.Thinking = strings.TrimSpace(record.Agents.Explorer.Thinking)
-	record.Agents.Explorer.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Explorer.ServiceTier))
+	record.Agents.Finder.Provider = strings.ToLower(strings.TrimSpace(record.Agents.Finder.Provider))
+	record.Agents.Finder.Model = strings.TrimSpace(record.Agents.Finder.Model)
+	record.Agents.Finder.Thinking = strings.TrimSpace(record.Agents.Finder.Thinking)
+	record.Agents.Finder.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Finder.ServiceTier))
 	record.Agents.Coder.Provider = strings.ToLower(strings.TrimSpace(record.Agents.Coder.Provider))
 	record.Agents.Coder.Model = strings.TrimSpace(record.Agents.Coder.Model)
 	record.Agents.Coder.Thinking = strings.TrimSpace(record.Agents.Coder.Thinking)

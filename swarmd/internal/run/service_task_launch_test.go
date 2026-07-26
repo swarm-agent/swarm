@@ -24,7 +24,7 @@ import (
 func TestParseTaskCallArgumentsRequiresExplicitLaunchAssignment(t *testing.T) {
 	_, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"prompt":        "inspect the repo",
-		"subagent_type": "explorer",
+		"subagent_type": "finder",
 	}))
 	if err == nil || !strings.Contains(err.Error(), "requires meta_prompt or role assignment") {
 		t.Fatalf("expected missing assignment error, got %v", err)
@@ -52,7 +52,7 @@ func TestParseTaskCallArgumentsRequiresPerLaunchAgentAndAssignment(t *testing.T)
 			args: map[string]any{
 				"prompt": "inspect the repo",
 				"launches": []any{
-					map[string]any{"subagent_type": "explorer"},
+					map[string]any{"subagent_type": "finder"},
 				},
 			},
 			want: "task launches[0] requires meta_prompt or role assignment",
@@ -87,7 +87,7 @@ func TestParseTaskCallArgumentsRejectsLaunchTimeTrustFields(t *testing.T) {
 			name: "top level allow_bash",
 			args: map[string]any{
 				"prompt":        "inspect the repo",
-				"subagent_type": "explorer",
+				"subagent_type": "finder",
 				"meta_prompt":   "map the relevant files",
 				"allow_bash":    true,
 			},
@@ -98,7 +98,7 @@ func TestParseTaskCallArgumentsRejectsLaunchTimeTrustFields(t *testing.T) {
 				"prompt": "inspect the repo",
 				"launches": []any{
 					map[string]any{
-						"subagent_type":     "explorer",
+						"subagent_type":     "finder",
 						"meta_prompt":       "map the relevant files",
 						"execution_setting": "readwrite",
 					},
@@ -111,7 +111,7 @@ func TestParseTaskCallArgumentsRejectsLaunchTimeTrustFields(t *testing.T) {
 				"prompt": "inspect the repo",
 				"launches": []any{
 					map[string]any{
-						"subagent_type": "explorer",
+						"subagent_type": "finder",
 						"meta_prompt":   "map the relevant files",
 						"tool_contract": map[string]any{"preset": "all"},
 					},
@@ -124,7 +124,7 @@ func TestParseTaskCallArgumentsRejectsLaunchTimeTrustFields(t *testing.T) {
 				"prompt": "inspect the repo",
 				"launches": []any{
 					map[string]any{
-						"subagent_type": "explorer",
+						"subagent_type": "finder",
 						"meta_prompt":   "map the relevant files",
 						"tool_scope":    map[string]any{"allow_tools": []any{"bash"}},
 					},
@@ -147,7 +147,7 @@ func TestParseTaskCallArgumentsValidLaunches(t *testing.T) {
 		"description": "repo map",
 		"prompt":      "inspect the repo",
 		"launches": []any{
-			map[string]any{"subagent_type": "explorer", "meta_prompt": "map backend files"},
+			map[string]any{"subagent_type": "finder", "meta_prompt": "map backend files"},
 			map[string]any{"agent": "coder", "role": "map frontend files", "deliverable": "frontend map", "concurrency_reason": "independent tree", "owned_scope": []any{"web/src/**"}, "dependency_evidence": "read-only mapping"},
 		},
 	}))
@@ -157,7 +157,7 @@ func TestParseTaskCallArgumentsValidLaunches(t *testing.T) {
 	if len(parsed.Launches) != 2 {
 		t.Fatalf("launch count = %d, want 2", len(parsed.Launches))
 	}
-	if parsed.Launches[0].RequestedSubagentType != "explorer" || parsed.Launches[0].MetaPrompt != "map backend files" {
+	if parsed.Launches[0].RequestedSubagentType != "finder" || parsed.Launches[0].MetaPrompt != "map backend files" {
 		t.Fatalf("unexpected first launch: %#v", parsed.Launches[0])
 	}
 	if parsed.Launches[1].RequestedSubagentType != "coder" || parsed.Launches[1].MetaPrompt != "map frontend files" || parsed.Launches[1].Deliverable != "frontend map" || len(parsed.Launches[1].OwnedScope) != 1 {
@@ -206,7 +206,7 @@ func TestParseTaskCallArgumentsSupportsCompiledTaskAgentsAndAppliesCanonicalCode
 	}
 	for _, rejected := range []string{"clone", "system-clone", "reviewer"} {
 		_, err := parseTaskCallArguments(mustJSON(t, map[string]any{"prompt": "reject", "agent": rejected, "role": "reject"}))
-		if err == nil || !strings.Contains(err.Error(), "subagent_type must be coder, explorer, or designer") {
+		if err == nil || !strings.Contains(err.Error(), "subagent_type must be coder, finder, or designer") {
 			t.Fatalf("target %q error = %v, want compiled task-agent rejection", rejected, err)
 		}
 	}
@@ -278,7 +278,7 @@ func TestTaskAssignmentLabelKeepsCosmeticTitleToThreeWords(t *testing.T) {
 func TestParseTaskCallArgumentsSeparatesTitleFromInstructiveAssignment(t *testing.T) {
 	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"prompt":        "Return evidence and relevant filepaths.",
-		"subagent_type": "explorer",
+		"subagent_type": "finder",
 		"title":         "Backend Security Audit",
 		"meta_prompt":   "Audit the backend authentication and authorization surfaces in depth without dropping scope or constraints.",
 	}))
@@ -308,7 +308,7 @@ func TestParseTaskCallArgumentsRejectsMalformedParameterMarkupBeforeLaunchValida
 		"description": "Test 2 — Valid multi-subagent launch",
 		"prompt":      "Execute your assigned meta_prompt/role. </怡parameter>",
 		"launches": []any{
-			map[string]any{"subagent_type": "explorer", "meta_prompt": "Map top-level directories."},
+			map[string]any{"subagent_type": "finder", "meta_prompt": "Map top-level directories."},
 		},
 	}))
 	if err == nil || !strings.Contains(err.Error(), "malformed XML markup in tool call") {
@@ -599,7 +599,7 @@ func TestDelegatedSubagentRunStartMetaKeepsPreparedProfileSnapshot(t *testing.T)
 	}
 }
 
-func TestApprovedExplorerInheritsParentWorktreeScopeWithoutAllocation(t *testing.T) {
+func TestApprovedFinderInheritsParentWorktreeScopeWithoutAllocation(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 	parent, ok, err := svc.sessions.GetSession(parentSessionID)
@@ -614,28 +614,28 @@ func TestApprovedExplorerInheritsParentWorktreeScopeWithoutAllocation(t *testing
 	parent.TemporaryWorkspaceRoots = []string{temporaryRoot}
 	stub := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{WorkspacePath: t.TempDir()}}
 	svc.SetWorktreeService(stub)
-	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "explorer")
+	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "finder")
 	if err != nil || virtual {
-		t.Fatalf("resolve Explorer profile: virtual=%t source=%q err=%v", virtual, source, err)
+		t.Fatalf("resolve Finder profile: virtual=%t source=%q err=%v", virtual, source, err)
 	}
 	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
-		LaunchIndex: 1, RequestedSubagent: "explorer", MetaPrompt: "inspect parent", VirtualTarget: virtual,
+		LaunchIndex: 1, RequestedSubagent: "finder", MetaPrompt: "inspect parent", VirtualTarget: virtual,
 	}, "inspect", "", &profile, source, nil)
 	if err != nil {
-		t.Fatalf("prepare approved Explorer: %v", err)
+		t.Fatalf("prepare approved Finder: %v", err)
 	}
 	child := launch.ChildSession
 	if stub.allocations != 0 {
-		t.Fatalf("Explorer allocated %d worktrees, want 0", stub.allocations)
+		t.Fatalf("Finder allocated %d worktrees, want 0", stub.allocations)
 	}
 	if child.WorkspacePath != parent.WorkspacePath || child.WorktreeRootPath != parent.WorktreeRootPath || !child.WorktreeEnabled {
-		t.Fatalf("Explorer worktree facts = %#v, want inherited from %#v", child, parent)
+		t.Fatalf("Finder worktree facts = %#v, want inherited from %#v", child, parent)
 	}
 	assertStringSliceContains(t, child.TemporaryWorkspaceRoots, temporaryRoot)
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
 	scope, err := svc.resolveRunWorkspaceScope(child, principal)
 	if err != nil {
-		t.Fatalf("resolve Explorer scope: %v", err)
+		t.Fatalf("resolve Finder scope: %v", err)
 	}
 	if _, needsExpansion, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": filepath.Join(parent.WorkspacePath, "README.md")})}); err != nil || needsExpansion {
 		t.Fatalf("parent worktree read expansion: needed=%t err=%v scope=%#v", needsExpansion, err, scope)
@@ -1589,14 +1589,14 @@ func TestCoderLaunchDoesNotRequirePersistedProfile(t *testing.T) {
 	}
 }
 
-func TestApprovedExplorerWaveManifestDigestSurvivesPermissionRoundTrip(t *testing.T) {
+func TestApprovedFinderWaveManifestDigestSurvivesPermissionRoundTrip(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 
 	launches := make([]any, 5)
 	for i := range launches {
 		launches[i] = map[string]any{
-			"subagent_type": "explorer",
+			"subagent_type": "finder",
 			"meta_prompt":   fmt.Sprintf("Inspect scope %d", i+1),
 		}
 	}
@@ -1605,17 +1605,17 @@ func TestApprovedExplorerWaveManifestDigestSurvivesPermissionRoundTrip(t *testin
 		"launches": launches,
 	})})
 	if err != nil {
-		t.Fatalf("build Explorer manifest: %v", err)
+		t.Fatalf("build Finder manifest: %v", err)
 	}
 	for i, row := range manifest.Launches {
 		if row.ParentCopy {
-			t.Fatalf("Explorer manifest launch %d incorrectly classified as a parent copy: %#v", i, row)
+			t.Fatalf("Finder manifest launch %d incorrectly classified as a parent copy: %#v", i, row)
 		}
 		if row.ProfileSnapshot == nil {
-			t.Fatalf("Explorer manifest launch %d missing trusted profile snapshot", i)
+			t.Fatalf("Finder manifest launch %d missing trusted profile snapshot", i)
 		}
 		if row.ResolvedTools == nil || !slices.Contains(row.ResolvedTools.AllowedTools, "read") || slices.Contains(row.ResolvedTools.AllowedTools, "write") {
-			t.Fatalf("Explorer manifest launch %d resolved tools = %#v, want compiled read-only system contract", i, row.ResolvedTools)
+			t.Fatalf("Finder manifest launch %d resolved tools = %#v, want compiled read-only system contract", i, row.ResolvedTools)
 		}
 	}
 	raw, err := json.Marshal(manifest.ApprovedArguments)
@@ -1638,19 +1638,19 @@ func TestApprovedExplorerWaveManifestDigestSurvivesPermissionRoundTrip(t *testin
 	}
 }
 
-func TestPlanSidechatTaskTargetsExplorerOnly(t *testing.T) {
+func TestPlanSidechatTaskTargetsFinderOnly(t *testing.T) {
 	parent := pebblestore.SessionSnapshot{Metadata: map[string]any{
 		"system_sidechat_kind": agentruntime.SystemSidechatKindPlan,
 		"lineage_kind":         "system_sidechat",
 		"agent_name":           agentruntime.PlanSidechatAgentID,
 	}}
-	if err := validatePlanSidechatTaskTargets(parent, []taskLaunchSpec{{RequestedSubagentType: "explorer"}, {RequestedSubagentType: agentruntime.ExplorerAgentID}}); err != nil {
-		t.Fatalf("Explorer targets rejected: %v", err)
+	if err := validatePlanSidechatTaskTargets(parent, []taskLaunchSpec{{RequestedSubagentType: "finder"}, {RequestedSubagentType: agentruntime.FinderAgentID}}); err != nil {
+		t.Fatalf("Finder targets rejected: %v", err)
 	}
 	for _, target := range []string{"clone", "reviewer"} {
 		err := validatePlanSidechatTaskTargets(parent, []taskLaunchSpec{{RequestedSubagentType: target}})
-		if err == nil || !strings.Contains(err.Error(), "only Explorer") {
-			t.Fatalf("target %q error = %v, want Explorer-only rejection", target, err)
+		if err == nil || !strings.Contains(err.Error(), "only Finder") {
+			t.Fatalf("target %q error = %v, want Finder-only rejection", target, err)
 		}
 	}
 }

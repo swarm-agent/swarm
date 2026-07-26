@@ -12,7 +12,7 @@ import (
 
 func TestModeCapabilityInstructionsUseExecutionModeWhenPlanModeDisabled(t *testing.T) {
 	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
-		Name:                "explorer",
+		Name:                "finder",
 		Mode:                "subagent",
 		ExecutionSetting:    pebblestore.AgentExecutionSettingRead,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(false),

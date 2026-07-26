@@ -109,7 +109,7 @@ func TestAuthCredentialUpsertAppliesUtilityDefaultsOnce(t *testing.T) {
 		t.Fatalf("expected global model default to be set")
 	}
 	wantSubagents := map[string]struct{}{
-		"explorer": {},
+		"finder":   {},
 		"memory":   {},
 		"parallel": {},
 	}
@@ -171,7 +171,7 @@ func TestAuthCredentialUpsertAppliesUtilityDefaultsOnce(t *testing.T) {
 			if profile.AutoProvider != "google" || profile.AutoModel != "gemini-3.1-pro-preview" {
 				t.Fatalf("profile %q auto = %s/%s, want google/gemini-3.1-pro-preview", profile.Name, profile.AutoProvider, profile.AutoModel)
 			}
-		case "explorer", "memory", "parallel":
+		case "finder", "memory", "parallel":
 			if profile.Provider != "google" {
 				t.Fatalf("profile %q provider = %q, want google", profile.Name, profile.Provider)
 			}
@@ -183,7 +183,7 @@ func TestAuthCredentialUpsertAppliesUtilityDefaultsOnce(t *testing.T) {
 		}
 	}
 
-	for _, name := range []string{"explorer", "memory", "parallel"} {
+	for _, name := range []string{"finder", "memory", "parallel"} {
 		profile, ok, err := agentSvc.GetProfile(name)
 		if err != nil {
 			t.Fatalf("GetProfile(%q) error = %v", name, err)
@@ -270,7 +270,7 @@ func TestAuthCredentialUpsertAppliesUtilityDefaultsOnce(t *testing.T) {
 			if profile.AutoProvider != "google" || profile.AutoModel != "gemini-3.1-pro-preview" {
 				t.Fatalf("profile %q auto after second provider = %s/%s, want google/gemini-3.1-pro-preview", profile.Name, profile.AutoProvider, profile.AutoModel)
 			}
-		case "explorer", "memory", "parallel":
+		case "finder", "memory", "parallel":
 			if profile.Provider != "openai" {
 				t.Fatalf("profile %q provider after second provider = %q, want openai", profile.Name, profile.Provider)
 			}
@@ -322,7 +322,7 @@ func TestAuthCredentialUpsertCodexFirstProviderEnforcesSparkUtilityDefaults(t *t
 	handler := server.Handler()
 
 	// Simulate profiles that already have provider/model set before first auth onboarding.
-	for _, name := range []string{"explorer", "memory", "parallel"} {
+	for _, name := range []string{"finder", "memory", "parallel"} {
 		profile, ok, err := agentSvc.GetProfile(name)
 		if err != nil {
 			t.Fatalf("GetProfile(%q) error = %v", name, err)
@@ -416,7 +416,7 @@ func TestAuthCredentialUpsertCodexFirstProviderEnforcesSparkUtilityDefaults(t *t
 			if profile.AutoProvider != "codex" || profile.AutoModel != "gpt-5.5" || profile.AutoThinking != "high" {
 				t.Fatalf("profile %q auto = %s/%s/%s, want codex/gpt-5.5/high", profile.Name, profile.AutoProvider, profile.AutoModel, profile.AutoThinking)
 			}
-		case "explorer", "memory", "parallel":
+		case "finder", "memory", "parallel":
 			if profile.Provider != "codex" {
 				t.Fatalf("profile %q provider = %q, want codex", profile.Name, profile.Provider)
 			}

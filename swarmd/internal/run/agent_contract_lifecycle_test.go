@@ -13,7 +13,7 @@ import (
 
 func TestResolveAgentToolContractUsesSavedBuiltInContracts(t *testing.T) {
 	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
-	for _, name := range []string{"swarm", "explorer", "memory", "parallel"} {
+	for _, name := range []string{"swarm", "finder", "memory", "parallel"} {
 		profile, ok := agentruntime.DefaultProfileByName(name)
 		if !ok {
 			t.Fatalf("DefaultProfileByName(%s) missing", name)

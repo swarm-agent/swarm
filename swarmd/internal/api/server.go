@@ -3309,7 +3309,7 @@ type uiCompactAgentSettingsPatchPresence struct {
 
 type uiAgentSettingsPatchPresence struct {
 	Compact  *uiCompactAgentSettingsPatchPresence `json:"compact"`
-	Explorer *uiCompactAgentSettingsPatchPresence `json:"explorer"`
+	Finder   *uiCompactAgentSettingsPatchPresence `json:"finder"`
 	Coder    *uiCompactAgentSettingsPatchPresence `json:"coder"`
 	Designer *uiCompactAgentSettingsPatchPresence `json:"designer"`
 }
@@ -3410,18 +3410,18 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 			settings.Agents.Compact.ServiceTier = patch.Agents.Compact.ServiceTier
 		}
 	}
-	if raw.Agents != nil && raw.Agents.Explorer != nil {
-		if raw.Agents.Explorer.Provider != nil {
-			settings.Agents.Explorer.Provider = patch.Agents.Explorer.Provider
+	if raw.Agents != nil && raw.Agents.Finder != nil {
+		if raw.Agents.Finder.Provider != nil {
+			settings.Agents.Finder.Provider = patch.Agents.Finder.Provider
 		}
-		if raw.Agents.Explorer.Model != nil {
-			settings.Agents.Explorer.Model = patch.Agents.Explorer.Model
+		if raw.Agents.Finder.Model != nil {
+			settings.Agents.Finder.Model = patch.Agents.Finder.Model
 		}
-		if raw.Agents.Explorer.Thinking != nil {
-			settings.Agents.Explorer.Thinking = patch.Agents.Explorer.Thinking
+		if raw.Agents.Finder.Thinking != nil {
+			settings.Agents.Finder.Thinking = patch.Agents.Finder.Thinking
 		}
-		if raw.Agents.Explorer.ServiceTier != nil {
-			settings.Agents.Explorer.ServiceTier = patch.Agents.Explorer.ServiceTier
+		if raw.Agents.Finder.ServiceTier != nil {
+			settings.Agents.Finder.ServiceTier = patch.Agents.Finder.ServiceTier
 		}
 	}
 	if raw.Agents != nil && raw.Agents.Coder != nil {

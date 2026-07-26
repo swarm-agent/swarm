@@ -6,17 +6,17 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestExplorerServiceTierRoundTripsThroughUISettings(t *testing.T) {
-	settings := UISettings{Agents: AgentSettings{Explorer: CompactAgentSettings{
+func TestFinderServiceTierRoundTripsThroughUISettings(t *testing.T) {
+	settings := UISettings{Agents: AgentSettings{Finder: CompactAgentSettings{
 		Provider: "CODEX", Model: "gpt-5.4", Thinking: "high", ServiceTier: "PRIORITY",
 	}}}
 	record := agentRecordFromSettings(settings.Agents)
-	if record.Explorer.ServiceTier != "priority" {
-		t.Fatalf("stored Explorer service tier = %q, want priority", record.Explorer.ServiceTier)
+	if record.Finder.ServiceTier != "priority" {
+		t.Fatalf("stored Finder service tier = %q, want priority", record.Finder.ServiceTier)
 	}
 	got := uiSettingsFromRecord(pebblestore.UISettingsRecord{Agents: *record})
-	if got.Agents.Explorer.ServiceTier != "priority" {
-		t.Fatalf("resolved Explorer service tier = %q, want priority", got.Agents.Explorer.ServiceTier)
+	if got.Agents.Finder.ServiceTier != "priority" {
+		t.Fatalf("resolved Finder service tier = %q, want priority", got.Agents.Finder.ServiceTier)
 	}
 	if got.Agents.Coder.Provider != "" || got.Agents.Coder.Model != "" {
 		t.Fatalf("default Coder settings = %#v, want empty override", got.Agents.Coder)

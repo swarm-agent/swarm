@@ -25,7 +25,7 @@ function testSessionDeployPermissionPayload(): void {
       manifest_digest: 'digest-1',
       proposals: [
         { id: 'proposal-1', title: 'Primary', prompt: 'Do primary work', mode: 'auto', agent_name: 'swarm', agent_mode: 'primary', workspace_path: '/workspace', selected: true },
-        { id: 'proposal-2', title: 'Explore', prompt: 'Investigate', mode: 'plan', agent_name: 'explorer', agent_mode: 'subagent', workspace_path: '/workspace', selected: true },
+        { id: 'proposal-2', title: 'Explore', prompt: 'Investigate', mode: 'plan', agent_name: 'finder', agent_mode: 'subagent', workspace_path: '/workspace', selected: true },
       ],
       allowed_workspaces: [{ id: 'workspace-1', generation: 3, path: '/workspace', name: 'Workspace' }],
       approved_arguments: { action: 'deploy', manifest_digest: 'digest-1' },
@@ -35,7 +35,7 @@ function testSessionDeployPermissionPayload(): void {
   assert(permissionKind(permission) === 'session-deploy', 'expected deploy permission kind')
   assert(payload.proposals.length === 2, 'expected two deploy proposals')
   assert(payload.proposals[0]?.selected === true, 'expected server default selection')
-  assert(payload.allowedAgents.map((agent) => `${agent.name}:${agent.mode}`).join(',') === 'swarm:primary,explorer:subagent', 'expected server-resolved agents')
+  assert(payload.allowedAgents.map((agent) => `${agent.name}:${agent.mode}`).join(',') === 'swarm:primary,finder:subagent', 'expected server-resolved agents')
   assert(payload.allowedWorkspaces.length === 1 && payload.allowedWorkspaces[0]?.path === '/workspace' && payload.allowedWorkspaces[0]?.generation === 3, 'expected server-resolved workspace choices')
 }
 
@@ -63,8 +63,8 @@ function makePermission(overrides: Partial<DesktopPermissionRecord> = {}): Deskt
       launches: [
         {
           launch_index: 1,
-          requested_subagent_type: 'explorer',
-          resolved_agent_name: 'explorer',
+          requested_subagent_type: 'finder',
+          resolved_agent_name: 'finder',
           meta_prompt: 'map repository structure',
           assignment_label: 'Repo map',
           subagent_provider: 'anthropic',
@@ -246,7 +246,7 @@ function testTaskLaunchPayloadParsing(): void {
   assert(payload.resolvedTools.allowedTools.join(',') === 'read,search', 'expected top-level resolved tools')
   assert(payload.disabledTools.length === 2, 'expected disabled tools at root')
   assert(payload.launches.length === 2, 'expected launch rows to be parsed')
-  assert(payload.launches[0]?.requestedSubagentType === 'explorer', 'expected first launch requested subagent type')
+  assert(payload.launches[0]?.requestedSubagentType === 'finder', 'expected first launch requested subagent type')
   assert(payload.launches[0]?.assignmentLabel === 'Repo map', 'expected first launch assignment label')
   assert(payload.launches[0]?.assignment === 'map repository structure', 'expected meta_prompt to win over short assignment label')
   assert(payload.launches[0]?.subagentProvider === 'anthropic', 'expected resolved provider')

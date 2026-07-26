@@ -51,12 +51,12 @@ test('profile picker keeps readable outlined profile cards before separated agen
 })
 
 test('profile-first quick menu hides Swarm when profiles exist and retains it only as the no-profile fallback', () => {
-  const agents = [agent('swarm'), agent('writer'), agent('system-explorer', 'subagent')]
+  const agents = [agent('swarm'), agent('writer'), agent('system-finder', 'subagent')]
   const withProfiles = profilePickerAgentSections(agents, true)
   const withoutProfiles = profilePickerAgentSections(agents, false)
 
   assert.deepEqual(withProfiles.map((section) => section.label), ['Agents', 'Subagents'])
-  assert.deepEqual(withProfiles.flatMap((section) => section.agents.map((entry) => entry.name)), ['writer', 'system-explorer'])
+  assert.deepEqual(withProfiles.flatMap((section) => section.agents.map((entry) => entry.name)), ['writer', 'system-finder'])
   assert.deepEqual(withoutProfiles.find((section) => section.label === 'Default agent')?.agents.map((entry) => entry.name), ['swarm'])
   assert.equal(withProfiles.some((section) => section.agents.some((entry) => entry.name === 'swarm')), false)
 })
@@ -76,14 +76,14 @@ test('profile policy groups default to the active policy, isolate choices, and o
   const singleProfile = savedProfile('single')
   const splitProfile = { ...savedProfile('split'), profileId: 'profile-2', name: 'Plan and action' }
   const swarm = { ...agent('swarm'), modelMode: 'single' as const }
-  const explorer = { ...agent('system-explorer', 'subagent'), modelMode: 'single' as const }
+  const finder = { ...agent('system-finder', 'subagent'), modelMode: 'single' as const }
 
   assert.equal(initialModelProfilePolicyGroup(swarm, activeSaved('split')), 'split')
-  assert.equal(initialModelProfilePolicyGroup(explorer, activeSaved('split')), 'single')
+  assert.equal(initialModelProfilePolicyGroup(finder, activeSaved('split')), 'single')
   assert.deepEqual(modelProfilesInPolicyGroup([singleProfile, splitProfile], 'split').map((profile) => profile.profileId), ['profile-2'])
   assert.deepEqual(modelProfilesInPolicyGroup([singleProfile, splitProfile], 'single').map((profile) => profile.profileId), ['profile-1'])
   assert.equal(canSwitchModelProfilePolicyGroup(swarm), true)
-  assert.equal(canSwitchModelProfilePolicyGroup(explorer), false)
+  assert.equal(canSwitchModelProfilePolicyGroup(finder), false)
   assert.match(source, /profileGroupSwitchable \? <PolicyGroupSwitch/)
   assert.match(source, /visibleProfiles\.map/)
   assert.match(setupSource, /profileGroupSwitchable \? <SetupProfileGroupSwitch/)

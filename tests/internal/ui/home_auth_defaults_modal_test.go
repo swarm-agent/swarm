@@ -17,7 +17,7 @@ func TestShowAuthDefaultsInfoOpensModal(t *testing.T) {
 		UtilityProvider: "google",
 		UtilityModel:    "gemini-3-flash-preview",
 		UtilityThinking: "high",
-		Subagents:       []string{"explorer", "memory", "parallel"},
+		Subagents:       []string{"finder", "memory", "parallel"},
 	})
 
 	if !p.AuthDefaultsInfoVisible() {
@@ -37,7 +37,7 @@ func TestAuthDefaultsInfoModalDismissesOnEnterAndEscape(t *testing.T) {
 		UtilityProvider: "codex",
 		UtilityModel:    "gpt-5.4-mini",
 		UtilityThinking: "medium",
-		Subagents:       []string{"explorer", "memory", "parallel"},
+		Subagents:       []string{"finder", "memory", "parallel"},
 	})
 	if !p.AuthDefaultsInfoVisible() {
 		t.Fatalf("expected modal to open")
@@ -52,7 +52,7 @@ func TestAuthDefaultsInfoModalDismissesOnEnterAndEscape(t *testing.T) {
 		Provider:     "codex",
 		PrimaryModel: "gpt-5.4",
 		UtilityModel: "gpt-5.4-mini",
-		Subagents:    []string{"explorer", "memory", "parallel"},
+		Subagents:    []string{"finder", "memory", "parallel"},
 	})
 	if !p.AuthDefaultsInfoVisible() {
 		t.Fatalf("expected modal to reopen")
@@ -66,7 +66,7 @@ func TestAuthDefaultsInfoModalDismissesOnEnterAndEscape(t *testing.T) {
 
 func TestAuthDefaultsInfoModalDrawsOnNarrowScreen(t *testing.T) {
 	p := NewHomePage(model.EmptyHome())
-	p.ShowAuthDefaultsInfo(&AuthDefaultsInfo{Provider: "codex", PrimaryModel: "gpt-5.4", UtilityModel: "gpt-5.4-mini", Subagents: []string{"explorer"}})
+	p.ShowAuthDefaultsInfo(&AuthDefaultsInfo{Provider: "codex", PrimaryModel: "gpt-5.4", UtilityModel: "gpt-5.4-mini", Subagents: []string{"finder"}})
 
 	screen := tcell.NewSimulationScreen("")
 	if err := screen.Init(); err != nil {

@@ -272,7 +272,7 @@ func (p *HomePage) SetAgentsModalData(data AgentsModalData) {
 	p.agentsModal.UtilityThinking = normalizeThinkingValue(data.UtilityThinking)
 	p.agentsModal.UtilityAgents = dedupeAgentsModalOptions(data.UtilityAgents)
 	if len(p.agentsModal.UtilityAgents) == 0 {
-		p.agentsModal.UtilityAgents = []string{"explorer", "memory"}
+		p.agentsModal.UtilityAgents = []string{"finder", "memory"}
 	}
 	p.agentsModal.CustomUtilityAgents = dedupeAgentsModalOptions(data.CustomUtilityAgents)
 	p.agentsModal.UtilityBaselineAgents = dedupeAgentsModalOptions(data.UtilityBaselineAgents)
@@ -873,7 +873,7 @@ func (p *HomePage) openAgentsModalUtilityAIEditor() {
 
 func (p *HomePage) openAgentsModalEditEditor(profile AgentModalProfile) {
 	profileName := strings.ToLower(strings.TrimSpace(profile.Name))
-	agentSettingsLocked := profileName == "system-clone" || profileName == "clone" || profileName == "coder" || profileName == "system-explorer" || profileName == "explorer" || profileName == "system-designer" || profileName == "designer"
+	agentSettingsLocked := profileName == "system-clone" || profileName == "clone" || profileName == "coder" || profileName == "system-finder" || profileName == "finder" || profileName == "system-designer" || profileName == "designer"
 	modelReadOnly := false
 	modelMode := strings.ToLower(strings.TrimSpace(profile.ModelMode))
 	if modelMode != "split" {
@@ -959,7 +959,7 @@ func agentsModalStringOptionExists(options []string, target string) bool {
 
 func isCompiledSingleModelSubagent(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
-	return name == "system-clone" || name == "clone" || name == "coder" || name == "system-explorer" || name == "explorer" || name == "system-designer" || name == "designer"
+	return name == "system-clone" || name == "clone" || name == "coder" || name == "system-finder" || name == "finder" || name == "system-designer" || name == "designer"
 }
 
 func (p *HomePage) agentsModalModelProfileOptions(agent AgentModalProfile) []string {
@@ -1632,7 +1632,7 @@ func (p *HomePage) agentsModalUtilityAgentsLabel() string {
 		agents = dedupeAgentsModalOptions(p.agentsModal.UtilityAgents)
 	}
 	if len(agents) == 0 {
-		agents = []string{"explorer", "memory"}
+		agents = []string{"finder", "memory"}
 	}
 	return strings.Join(agents, ", ")
 }
@@ -2004,8 +2004,8 @@ func agentsModalDisplayName(name string) string {
 	if isCompiledSingleModelSubagent(name) && (strings.EqualFold(name, "clone") || strings.EqualFold(name, "system-clone") || strings.EqualFold(name, "coder")) {
 		return "Coder"
 	}
-	if strings.EqualFold(name, "system-explorer") {
-		return "Explorer"
+	if strings.EqualFold(name, "system-finder") {
+		return "Finder"
 	}
 	if strings.EqualFold(name, "system-designer") || strings.EqualFold(name, "designer") {
 		return "Designer"

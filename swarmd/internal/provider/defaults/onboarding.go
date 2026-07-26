@@ -26,7 +26,7 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 		PrimaryThinking:  "xhigh",
 		UtilityModel:     "claude-sonnet-4-6",
 		UtilityThinking:  "xhigh",
-		UtilitySubagents: []string{"explorer", "memory"},
+		UtilitySubagents: []string{"finder", "memory"},
 	},
 	"codex": {
 		ProviderID:       "codex",
@@ -34,7 +34,7 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 		PrimaryThinking:  "high",
 		UtilityModel:     "gpt-5.4-mini",
 		UtilityThinking:  "medium",
-		UtilitySubagents: []string{"explorer", "memory"},
+		UtilitySubagents: []string{"finder", "memory"},
 	},
 	"openai": {
 		ProviderID:       "openai",
@@ -42,7 +42,7 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 		PrimaryThinking:  "high",
 		UtilityModel:     "gpt-5.4-mini",
 		UtilityThinking:  "medium",
-		UtilitySubagents: []string{"explorer", "memory"},
+		UtilitySubagents: []string{"finder", "memory"},
 	},
 	// Copilot defaults are retained for the dormant provider implementation, but
 	// Copilot is filtered out of option surfaces until we can fairly test it with
@@ -53,7 +53,7 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 		PrimaryThinking:  "high",
 		UtilityModel:     "gemini-3-flash-preview",
 		UtilityThinking:  "high",
-		UtilitySubagents: []string{"explorer", "memory"},
+		UtilitySubagents: []string{"finder", "memory"},
 	},
 	"fireworks": {
 		ProviderID:       "fireworks",
@@ -61,7 +61,7 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 		PrimaryThinking:  "high",
 		UtilityModel:     "accounts/fireworks/models/minimax-m2p7",
 		UtilityThinking:  "high",
-		UtilitySubagents: []string{"explorer", "memory"},
+		UtilitySubagents: []string{"finder", "memory"},
 	},
 	"google": {
 		ProviderID:       "google",
@@ -69,7 +69,7 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 		PrimaryThinking:  "high",
 		UtilityModel:     "gemini-3-flash-preview",
 		UtilityThinking:  "high",
-		UtilitySubagents: []string{"explorer", "memory"},
+		UtilitySubagents: []string{"finder", "memory"},
 	},
 	"openrouter": {
 		ProviderID:       "openrouter",
@@ -77,7 +77,7 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 		PrimaryThinking:  "high",
 		UtilityModel:     "google/gemini-3-flash-preview",
 		UtilityThinking:  "high",
-		UtilitySubagents: []string{"explorer", "memory"},
+		UtilitySubagents: []string{"finder", "memory"},
 	},
 }
 

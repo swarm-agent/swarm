@@ -47,8 +47,8 @@ func TestEnsureDefaultsSeedsPrimaryAndSubagents(t *testing.T) {
 	if got := state.ActiveSubagent["clone"]; got != "" {
 		t.Fatalf("active subagent clone = %q, want empty", got)
 	}
-	if _, ok := state.ActiveSubagent["explorer"]; !ok {
-		t.Fatalf("missing default explorer subagent mapping")
+	if _, ok := state.ActiveSubagent["finder"]; !ok {
+		t.Fatalf("missing default finder subagent mapping")
 	}
 }
 
@@ -366,9 +366,9 @@ func TestResolveSubagentByPurposeAndName(t *testing.T) {
 	}
 
 	// Purpose lookup should resolve through active subagent assignments.
-	byPurpose, err := svc.ResolveSubagent("explorer")
+	byPurpose, err := svc.ResolveSubagent("finder")
 	if err != nil {
-		t.Fatalf("ResolveSubagent(explorer purpose) error = %v", err)
+		t.Fatalf("ResolveSubagent(finder purpose) error = %v", err)
 	}
 	if byPurpose.Mode != ModeSubagent {
 		t.Fatalf("resolved mode = %q, want %q", byPurpose.Mode, ModeSubagent)
@@ -468,16 +468,16 @@ func TestEnsureDefaultsDoesNotRecreateDeletedUtilityAgents(t *testing.T) {
 	if err := svc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
 	}
-	if _, _, _, err := svc.Delete("explorer"); err != nil {
-		t.Fatalf("Delete(explorer) error = %v", err)
+	if _, _, _, err := svc.Delete("finder"); err != nil {
+		t.Fatalf("Delete(finder) error = %v", err)
 	}
 	if err := svc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() second error = %v", err)
 	}
-	if _, ok, err := svc.GetProfile("explorer"); err != nil {
-		t.Fatalf("GetProfile(explorer) error = %v", err)
+	if _, ok, err := svc.GetProfile("finder"); err != nil {
+		t.Fatalf("GetProfile(finder) error = %v", err)
 	} else if ok {
-		t.Fatalf("expected explorer to remain deleted after EnsureDefaults")
+		t.Fatalf("expected finder to remain deleted after EnsureDefaults")
 	}
 }
 
@@ -498,20 +498,20 @@ func TestRestoreDefaultsRecreatesUtilityAgents(t *testing.T) {
 	if err := svc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
 	}
-	if _, _, _, err := svc.Delete("explorer"); err != nil {
-		t.Fatalf("Delete(explorer) error = %v", err)
+	if _, _, _, err := svc.Delete("finder"); err != nil {
+		t.Fatalf("Delete(finder) error = %v", err)
 	}
 	state, _, _, err := svc.RestoreDefaults()
 	if err != nil {
 		t.Fatalf("RestoreDefaults() error = %v", err)
 	}
-	if _, ok, err := svc.GetProfile("explorer"); err != nil {
-		t.Fatalf("GetProfile(explorer) error = %v", err)
+	if _, ok, err := svc.GetProfile("finder"); err != nil {
+		t.Fatalf("GetProfile(finder) error = %v", err)
 	} else if !ok {
-		t.Fatalf("expected explorer to be restored")
+		t.Fatalf("expected finder to be restored")
 	}
-	if got := state.ActiveSubagent["explorer"]; got != "explorer" {
-		t.Fatalf("active subagent explorer = %q, want explorer", got)
+	if got := state.ActiveSubagent["finder"]; got != "finder" {
+		t.Fatalf("active subagent finder = %q, want finder", got)
 	}
 }
 
@@ -567,10 +567,10 @@ func TestResetDefaultsDeletesCustomAgentsAndTools(t *testing.T) {
 	if got := state.ActiveSubagent["helper"]; got != "" {
 		t.Fatalf("helper active subagent = %q, want empty", got)
 	}
-	if got := state.ActiveSubagent["explorer"]; got != "explorer" {
-		t.Fatalf("active subagent explorer = %q, want explorer", got)
+	if got := state.ActiveSubagent["finder"]; got != "finder" {
+		t.Fatalf("active subagent finder = %q, want finder", got)
 	}
-	defaultNames := map[string]bool{"swarm": true, "explorer": true, "memory": true, "parallel": true}
+	defaultNames := map[string]bool{"swarm": true, "finder": true, "memory": true, "parallel": true}
 	for _, profile := range state.Profiles {
 		if !defaultNames[profile.Name] {
 			t.Fatalf("unexpected profile after reset: %s", profile.Name)

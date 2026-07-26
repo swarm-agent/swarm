@@ -7,13 +7,13 @@ import {
   normalizeFollowupCheckpointPolicyDefault,
   normalizeGlobalThemeSettings,
   normalizeDesignerAgentSettings,
-  normalizeExplorerAgentSettings,
+  normalizeFinderAgentSettings,
   normalizeSessionMode,
   normalizeSidebarHideInactiveHours,
   normalizeSwarmSettings,
   withDefaultNewSessionMode,
   withDesignerAgentSettings,
-  withExplorerAgentSettings,
+  withFinderAgentSettings,
   withSidebarHideInactiveHours,
   type UISettingsWire,
 } from './swarm-settings'
@@ -61,14 +61,14 @@ test('follow-up checkpoint policy default normalizes missing and unknown values 
   assert.equal(normalizeSwarmSettings({}).followupCheckpointPolicyDefault, 'auto_start')
 })
 
-test('Explorer priority normalizes and persists through its canonical settings path', () => {
-  const current: UISettingsWire = { agents: { explorer: { provider: 'codex', model: 'gpt-5.4', thinking: 'high' } } }
-  const saved = withExplorerAgentSettings(current, { provider: 'CODEX', model: 'gpt-5.4', thinking: 'high', service_tier: 'PRIORITY' })
-  assert.equal(normalizeExplorerAgentSettings(saved).service_tier, 'priority')
+test('Finder priority normalizes and persists through its canonical settings path', () => {
+  const current: UISettingsWire = { agents: { finder: { provider: 'codex', model: 'gpt-5.4', thinking: 'high' } } }
+  const saved = withFinderAgentSettings(current, { provider: 'CODEX', model: 'gpt-5.4', thinking: 'high', service_tier: 'PRIORITY' })
+  assert.equal(normalizeFinderAgentSettings(saved).service_tier, 'priority')
 })
 
 test('Designer settings normalize and persist through the immutable system-agent path', () => {
-  const current: UISettingsWire = { agents: { explorer: { provider: 'anthropic', model: 'claude' } } }
+  const current: UISettingsWire = { agents: { finder: { provider: 'anthropic', model: 'claude' } } }
   const saved = withDesignerAgentSettings(current, { provider: 'CODEX', model: 'gpt-5.4-mini', thinking: 'medium', service_tier: 'PRIORITY' })
   assert.deepEqual(normalizeDesignerAgentSettings(saved), {
     provider: 'codex',
@@ -76,7 +76,7 @@ test('Designer settings normalize and persist through the immutable system-agent
     thinking: 'medium',
     service_tier: 'priority',
   })
-  assert.equal(saved.agents?.explorer?.model, 'claude')
+  assert.equal(saved.agents?.finder?.model, 'claude')
 })
 
 test('follow-up checkpoint policy default preserves ask-first aliases', () => {

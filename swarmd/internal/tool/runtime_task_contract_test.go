@@ -89,8 +89,8 @@ func assertTaskSubagentEnum(t *testing.T, property any, label string) {
 		t.Fatalf("task %s schema = %#v, want object", label, property)
 	}
 	values, ok := schema["enum"].([]string)
-	if !ok || len(values) != 3 || values[0] != "coder" || values[1] != "explorer" || values[2] != "designer" {
-		t.Fatalf("task %s enum = %#v, want coder, explorer, and designer", label, schema["enum"])
+	if !ok || len(values) != 3 || values[0] != "coder" || values[1] != "finder" || values[2] != "designer" {
+		t.Fatalf("task %s enum = %#v, want coder, finder, and designer", label, schema["enum"])
 	}
 }
 

@@ -5913,9 +5913,9 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		if isCloneSystemAgentName(action.Upsert.Name) || isExplorerSystemAgentName(action.Upsert.Name) || isDesignerSystemAgentName(action.Upsert.Name) {
-			label := "Explorer"
-			settingsField := "explorer"
+		if isCloneSystemAgentName(action.Upsert.Name) || isFinderSystemAgentName(action.Upsert.Name) || isDesignerSystemAgentName(action.Upsert.Name) {
+			label := "Finder"
+			settingsField := "finder"
 			if isCloneSystemAgentName(action.Upsert.Name) {
 				label = "Coder"
 				settingsField = "coder"
@@ -5940,7 +5940,7 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 			} else if settingsField == "designer" {
 				settings.Agents.Designer = selection
 			} else {
-				settings.Agents.Explorer = selection
+				settings.Agents.Finder = selection
 			}
 			if _, err := a.api.UpdateUISettings(ctx, settings); err != nil {
 				a.home.SetAgentsModalLoading(false)
@@ -6021,9 +6021,9 @@ func isCloneSystemAgentName(name string) bool {
 	return name == "clone" || name == "coder" || name == "system-clone"
 }
 
-func isExplorerSystemAgentName(name string) bool {
+func isFinderSystemAgentName(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
-	return name == "explorer" || name == "system-explorer"
+	return name == "finder" || name == "system-finder"
 }
 
 func isDesignerSystemAgentName(name string) bool {
@@ -6957,8 +6957,8 @@ func enrichSystemAgentModels(state client.AgentState, settings client.UISettings
 	for i := range state.Profiles {
 		profile := &state.Profiles[i]
 		switch {
-		case isExplorerSystemAgentName(profile.Name):
-			override := settings.Agents.Explorer
+		case isFinderSystemAgentName(profile.Name):
+			override := settings.Agents.Finder
 			if strings.TrimSpace(override.Provider) != "" {
 				profile.Provider = strings.TrimSpace(override.Provider)
 			}

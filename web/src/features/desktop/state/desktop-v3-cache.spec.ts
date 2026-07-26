@@ -2708,7 +2708,7 @@ test('realtime task tool delta replaces full task stream snapshots instead of ap
     tool: 'task',
     status: 'running',
     launches: [
-      { child_session_id: 'child-1', status: 'running', subagent: 'explorer' },
+      { child_session_id: 'child-1', status: 'running', subagent: 'finder' },
     ],
   })
   const secondSnapshot = JSON.stringify({
@@ -2716,7 +2716,7 @@ test('realtime task tool delta replaces full task stream snapshots instead of ap
     tool: 'task',
     status: 'running',
     launches: [
-      { child_session_id: 'child-1', status: 'running', subagent: 'explorer', current_tool: 'search' },
+      { child_session_id: 'child-1', status: 'running', subagent: 'finder', current_tool: 'search' },
       { child_session_id: 'child-2', status: 'running', subagent: 'parallel' },
     ],
   })
@@ -2766,7 +2766,7 @@ test('realtime task stream v2 deltas merge launch patches into keyed state witho
       launch_index: 1,
       child_session_id: 'child-1',
       status: 'running',
-      subagent: 'explorer',
+      subagent: 'finder',
     },
   })
   const secondPatch = JSON.stringify({
@@ -2783,7 +2783,7 @@ test('realtime task stream v2 deltas merge launch patches into keyed state witho
       launch_index: 1,
       child_session_id: 'child-1',
       status: 'running',
-      subagent: 'explorer',
+      subagent: 'finder',
       current_tool: 'search',
       current_tool_identity: 'search',
       current_tool_run_count: 2,
@@ -3515,9 +3515,9 @@ test('realtime workset discovered applies child session shell and running state 
     metadata: {
       parent_session_id: sessionA.id,
       lineage_kind: 'delegated_subagent',
-      lineage_label: '@explorer',
+      lineage_label: '@finder',
       requested_subagent: 'purpose-review',
-      subagent: 'explorer',
+      subagent: 'finder',
       assignment_label: 'Map backend files',
     },
   }
@@ -4083,8 +4083,8 @@ test('session settings mutation updates mode metadata preference policy and proj
     session_id: sessionA.id,
     mode: 'manual',
     metadata: {
-      agent_name: 'explorer',
-      resolved_agent_name: 'explorer',
+      agent_name: 'finder',
+      resolved_agent_name: 'finder',
       runtime_mode: 'read',
     },
     preference: {
@@ -4095,7 +4095,7 @@ test('session settings mutation updates mode metadata preference policy and proj
       contextMode: '',
       updatedAt: 30,
     },
-    agent_model_policy: { agent_name: 'explorer', locked: false },
+    agent_model_policy: { agent_name: 'finder', locked: false },
     mutation: {
       event: {
         id: 'evt-settings-updated',
@@ -4130,7 +4130,7 @@ test('session settings mutation updates mode metadata preference policy and proj
   if (record.kind !== 'full') return
   assert.equal(record.session.mode, 'manual')
   assert.equal(record.session.updated_at, 30)
-  assert.equal(record.session.metadata?.agent_name, 'explorer')
+  assert.equal(record.session.metadata?.agent_name, 'finder')
   assert.equal(record.session.metadata?.runtime_mode, 'read')
   assert.deepEqual(state.preferencesBySession[sessionA.id], {
     provider: 'fireworks',
@@ -4140,7 +4140,7 @@ test('session settings mutation updates mode metadata preference policy and proj
     contextMode: '',
     updatedAt: 30,
   })
-  assert.deepEqual(state.agentModelPolicyBySession[sessionA.id], { agent_name: 'explorer', locked: false })
+  assert.deepEqual(state.agentModelPolicyBySession[sessionA.id], { agent_name: 'finder', locked: false })
   assert.equal(state.projectionsBySession[sessionA.id].last_event_seq, 30)
 })
 
@@ -4400,7 +4400,7 @@ test('repeated workset checkpoint updates merge compact shells without erasing h
     lifecycle: undefined,
     preference: {},
     metadata: {
-      agent_name: 'explorer',
+      agent_name: 'finder',
     },
   }
 
@@ -4470,7 +4470,7 @@ test('repeated workset checkpoint updates merge compact shells without erasing h
   assert.equal(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.title : '', 'Hydrated durable title')
   assert.deepEqual(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.lifecycle : undefined, hydratedLifecycle)
   assert.deepEqual(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.preference : undefined, hydratedPreference)
-  assert.deepEqual(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.metadata : undefined, { durable_key: 'keep', agent_name: 'explorer' })
+  assert.deepEqual(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.metadata : undefined, { durable_key: 'keep', agent_name: 'finder' })
   assert.deepEqual(state.sessionOrderByScope['scope-1'], [sessionB.id])
   assert.equal(state.currentRunIntentBySession[sessionB.id]?.run_id, 'run-b-active')
   assert.equal(state.hasActivePlanBySession[sessionB.id], true)

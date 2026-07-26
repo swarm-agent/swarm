@@ -249,12 +249,12 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		switch {
 		case agentruntime.IsCoderAgentName(launch.RequestedSubagentType):
 			launch.RequestedSubagentType = "coder"
-		case agentruntime.IsExplorerAgentName(launch.RequestedSubagentType):
-			launch.RequestedSubagentType = "explorer"
+		case agentruntime.IsFinderAgentName(launch.RequestedSubagentType):
+			launch.RequestedSubagentType = "finder"
 		case agentruntime.IsDesignerAgentName(launch.RequestedSubagentType):
 			launch.RequestedSubagentType = "designer"
 		default:
-			return taskLaunchSpec{}, fmt.Errorf("%s subagent_type must be coder, explorer, or designer", label)
+			return taskLaunchSpec{}, fmt.Errorf("%s subagent_type must be coder, finder, or designer", label)
 		}
 		if launch.MetaPrompt == "" {
 			return taskLaunchSpec{}, fmt.Errorf("%s requires meta_prompt or role assignment", label)
@@ -1590,8 +1590,8 @@ func validatePlanSidechatTaskTargets(parentSession pebblestore.SessionSnapshot, 
 		return nil
 	}
 	for i, launch := range launches {
-		if !agentruntime.IsExplorerAgentName(launch.RequestedSubagentType) {
-			return fmt.Errorf("Plan sidechat task launches[%d] may target only Explorer", i)
+		if !agentruntime.IsFinderAgentName(launch.RequestedSubagentType) {
+			return fmt.Errorf("Plan sidechat task launches[%d] may target only Finder", i)
 		}
 	}
 	return nil
@@ -1728,8 +1728,8 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		var toolContract ResolvedAgentToolContract
 		var profileDisabledTools map[string]bool
 		var toolErr error
-		if virtualTarget || agentruntime.IsExplorerAgentName(resolvedName) || agentruntime.IsDesignerAgentName(resolvedName) {
-			// Compiled Coder, Explorer, and Designer profiles are trusted launch snapshots, not
+		if virtualTarget || agentruntime.IsFinderAgentName(resolvedName) || agentruntime.IsDesignerAgentName(resolvedName) {
+			// Compiled Coder, Finder, and Designer profiles are trusted launch snapshots, not
 			// persisted agent rows. Compile their immutable
 			// contracts directly instead of looking them up in the agent store.
 			toolContract, _, profileDisabledTools, toolErr = s.compileResolvedAgentToolContract(parentSession.AccountScopeID, subagentProfile)

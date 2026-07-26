@@ -648,7 +648,7 @@ func TestChatApplyRunSuccessAppendsTargetedSubagentAssistant(t *testing.T) {
 			Role:      "assistant",
 			CreatedAt: now,
 			Content:   "workspace scan complete",
-			Metadata:  map[string]any{"source": "targeted_subagent", "subagent": "explorer"},
+			Metadata:  map[string]any{"source": "targeted_subagent", "subagent": "finder"},
 		},
 	})
 
@@ -669,8 +669,8 @@ func TestChatApplyRunSuccessAppendsTargetedSubagentAssistant(t *testing.T) {
 	for _, line := range lines {
 		rendered = append(rendered, strings.TrimSpace(line.Text))
 	}
-	if got := strings.Join(rendered, "\n"); !strings.Contains(got, "@explorer") {
-		t.Fatalf("rendered delegated assistant = %q, want @explorer label", got)
+	if got := strings.Join(rendered, "\n"); !strings.Contains(got, "@finder") {
+		t.Fatalf("rendered delegated assistant = %q, want @finder label", got)
 	}
 }
 
@@ -680,7 +680,7 @@ func TestRenderAssistantMessageLinesLabelsTargetedSubagent(t *testing.T) {
 
 	page.appendStoredMessageWithMetadata("assistant-1", "assistant", "workspace scan complete", map[string]any{
 		"source":   "targeted_subagent",
-		"subagent": "explorer",
+		"subagent": "finder",
 	}, now)
 	lines := page.renderTimelineMessageLines(page.timeline[0], 80)
 	if len(lines) == 0 {
@@ -690,8 +690,8 @@ func TestRenderAssistantMessageLinesLabelsTargetedSubagent(t *testing.T) {
 	for _, line := range lines {
 		joined = append(joined, strings.TrimSpace(line.Text))
 	}
-	if got := strings.Join(joined, "\n"); !strings.Contains(got, "@explorer") {
-		t.Fatalf("rendered lines = %q, want @explorer label", got)
+	if got := strings.Join(joined, "\n"); !strings.Contains(got, "@finder") {
+		t.Fatalf("rendered lines = %q, want @finder label", got)
 	}
 }
 

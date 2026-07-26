@@ -104,7 +104,7 @@ type CompactAgentSettings struct {
 
 type AgentSettings struct {
 	Compact  CompactAgentSettings `json:"compact,omitempty"`
-	Explorer CompactAgentSettings `json:"explorer,omitempty"`
+	Finder   CompactAgentSettings `json:"finder,omitempty"`
 	Coder    CompactAgentSettings `json:"coder,omitempty"`
 	Designer CompactAgentSettings `json:"designer,omitempty"`
 }
@@ -251,11 +251,11 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 				Thinking:    strings.TrimSpace(record.Agents.Compact.Thinking),
 				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Compact.ServiceTier)),
 			},
-			Explorer: CompactAgentSettings{
-				Provider:    strings.ToLower(strings.TrimSpace(record.Agents.Explorer.Provider)),
-				Model:       strings.TrimSpace(record.Agents.Explorer.Model),
-				Thinking:    strings.TrimSpace(record.Agents.Explorer.Thinking),
-				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Explorer.ServiceTier)),
+			Finder: CompactAgentSettings{
+				Provider:    strings.ToLower(strings.TrimSpace(record.Agents.Finder.Provider)),
+				Model:       strings.TrimSpace(record.Agents.Finder.Model),
+				Thinking:    strings.TrimSpace(record.Agents.Finder.Thinking),
+				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Finder.ServiceTier)),
 			},
 			Coder: CompactAgentSettings{
 				Provider:    strings.ToLower(strings.TrimSpace(record.Agents.Coder.Provider)),
@@ -368,11 +368,11 @@ func agentRecordFromSettings(settings AgentSettings) *pebblestore.UIAgentSetting
 			Thinking:    strings.TrimSpace(settings.Compact.Thinking),
 			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Compact.ServiceTier)),
 		},
-		Explorer: pebblestore.UICompactAgentSettingsRecord{
-			Provider:    strings.ToLower(strings.TrimSpace(settings.Explorer.Provider)),
-			Model:       strings.TrimSpace(settings.Explorer.Model),
-			Thinking:    strings.TrimSpace(settings.Explorer.Thinking),
-			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Explorer.ServiceTier)),
+		Finder: pebblestore.UICompactAgentSettingsRecord{
+			Provider:    strings.ToLower(strings.TrimSpace(settings.Finder.Provider)),
+			Model:       strings.TrimSpace(settings.Finder.Model),
+			Thinking:    strings.TrimSpace(settings.Finder.Thinking),
+			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Finder.ServiceTier)),
 		},
 		Coder: pebblestore.UICompactAgentSettingsRecord{
 			Provider:    strings.ToLower(strings.TrimSpace(settings.Coder.Provider)),

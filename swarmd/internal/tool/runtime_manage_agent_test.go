@@ -730,9 +730,9 @@ func TestManageAgentTranscriptReadsSessionMessages(t *testing.T) {
 		Metadata: map[string]any{
 			"parent_session_id":  "parent-session-1",
 			"lineage_kind":       "delegated_subagent",
-			"lineage_label":      "@explorer",
-			"requested_subagent": "explorer",
-			"subagent":           "explorer",
+			"lineage_label":      "@finder",
+			"requested_subagent": "finder",
+			"subagent":           "finder",
 		},
 	})
 	if err != nil {

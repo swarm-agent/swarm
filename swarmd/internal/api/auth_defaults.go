@@ -61,14 +61,14 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 		if settingsErr != nil {
 			return nil, fmt.Errorf("read onboarding system-agent model settings: %w", settingsErr)
 		}
-		explorerDefaults := settings.Agents.Explorer
-		explorerDefaults.Provider = providerID
-		explorerDefaults.Model = providerDefaults.UtilityModel
-		explorerDefaults.Thinking = providerDefaults.UtilityThinking
-		explorerDefaults.ServiceTier = ""
-		settings.Agents.Explorer = explorerDefaults
-		settings.Agents.Compact = explorerDefaults
-		settings.Agents.Designer = explorerDefaults
+		finderDefaults := settings.Agents.Finder
+		finderDefaults.Provider = providerID
+		finderDefaults.Model = providerDefaults.UtilityModel
+		finderDefaults.Thinking = providerDefaults.UtilityThinking
+		finderDefaults.ServiceTier = ""
+		settings.Agents.Finder = finderDefaults
+		settings.Agents.Compact = finderDefaults
+		settings.Agents.Designer = finderDefaults
 		if _, settingsErr = s.uiSettings.SetForAccount(accountScopeID, settings); settingsErr != nil {
 			return nil, fmt.Errorf("set onboarding system-agent model settings: %w", settingsErr)
 		}

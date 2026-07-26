@@ -160,7 +160,7 @@ func TestValidateManageSessionsDeployAgentDefaultsAndGating(t *testing.T) {
 	if err := validateManageSessionsDeployAgent(active, active, false); err != nil {
 		t.Fatalf("active primary rejected without delegation: %v", err)
 	}
-	alternate := pebblestore.AgentProfile{Name: "explorer", Mode: agentruntime.ModeSubagent, Enabled: true}
+	alternate := pebblestore.AgentProfile{Name: "finder", Mode: agentruntime.ModeSubagent, Enabled: true}
 	if err := validateManageSessionsDeployAgent(active, alternate, false); err == nil || !strings.Contains(err.Error(), "requires calling primary") {
 		t.Fatalf("alternate agent gating err = %v", err)
 	}

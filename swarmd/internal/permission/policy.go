@@ -91,7 +91,7 @@ type PlanAcceptancePolicy struct {
 }
 
 // SubagentPolicy is the single account-scoped delegation policy. Launches share one
-// budget regardless of child purpose (for example Explorer or Clone).
+// budget regardless of child purpose (for example Finder or Clone).
 type SubagentPolicy struct {
 	Mode                          SubagentOrchestrationMode `json:"mode"`
 	AutomaticLaunchesPerParentRun int                       `json:"automatic_launches_per_parent_run"`

@@ -900,7 +900,7 @@ func TestExecuteControlPlaneToolTaskDelegatesToSubagent(t *testing.T) {
 	if _, _, _, err := sessionSvc.AppendMessage(parentSession.ID, "user", "check the repo layout", map[string]any{"source": "run_turn"}); err != nil {
 		t.Fatalf("append parent user message: %v", err)
 	}
-	if _, _, _, err := sessionSvc.AppendMessage(parentSession.ID, "assistant", "I think explorer should inspect the main runtime files.", nil); err != nil {
+	if _, _, _, err := sessionSvc.AppendMessage(parentSession.ID, "assistant", "I think finder should inspect the main runtime files.", nil); err != nil {
 		t.Fatalf("append parent assistant message: %v", err)
 	}
 
@@ -916,7 +916,7 @@ func TestExecuteControlPlaneToolTaskDelegatesToSubagent(t *testing.T) {
 	handled, result, err := svc.executeControlPlaneTool(context.Background(), parentSession.ID, sessionruntime.ModePlan, pebblestore.AgentProfile{}, 1, tool.Call{
 		CallID:    "task_1",
 		Name:      "task",
-		Arguments: `{"description":"Inspect repo","prompt":"Find the key files and summarize.","subagent_type":"explorer"}`,
+		Arguments: `{"description":"Inspect repo","prompt":"Find the key files and summarize.","subagent_type":"finder"}`,
 	}, "", nil)
 	if err != nil {
 		t.Fatalf("execute task control-plane tool: %v", err)
@@ -935,8 +935,8 @@ func TestExecuteControlPlaneToolTaskDelegatesToSubagent(t *testing.T) {
 	if got := strings.TrimSpace(mapString(payload, "status")); got != "ok" {
 		t.Fatalf("status = %q, want ok", got)
 	}
-	if got := strings.TrimSpace(mapString(payload, "subagent")); got != "explorer" {
-		t.Fatalf("subagent = %q, want explorer", got)
+	if got := strings.TrimSpace(mapString(payload, "subagent")); got != "finder" {
+		t.Fatalf("subagent = %q, want finder", got)
 	}
 	if got := strings.TrimSpace(mapString(payload, "session_id")); got == "" {
 		t.Fatalf("expected delegated session_id in task payload")
@@ -954,8 +954,8 @@ func TestExecuteControlPlaneToolTaskDelegatesToSubagent(t *testing.T) {
 		if gotKind := strings.TrimSpace(mapString(childSession.Metadata, "lineage_kind")); gotKind != "delegated_subagent" {
 			t.Fatalf("child lineage_kind = %q, want delegated_subagent", gotKind)
 		}
-		if gotLabel := strings.TrimSpace(mapString(childSession.Metadata, "lineage_label")); gotLabel != "@explorer" {
-			t.Fatalf("child lineage_label = %q, want @explorer", gotLabel)
+		if gotLabel := strings.TrimSpace(mapString(childSession.Metadata, "lineage_label")); gotLabel != "@finder" {
+			t.Fatalf("child lineage_label = %q, want @finder", gotLabel)
 		}
 		if gotSource := strings.TrimSpace(mapString(childSession.Metadata, "launch_source")); gotSource != "task" {
 			t.Fatalf("child launch_source = %q, want task", gotSource)
@@ -970,7 +970,7 @@ func TestExecuteControlPlaneToolTaskDelegatesToSubagent(t *testing.T) {
 		t.Fatalf("marshal provider input: %v", err)
 	}
 	inputText := string(inputJSON)
-	for _, expected := range []string{"Recent visible parent transcript:", "- user: check the repo layout", "- assistant: I think explorer should inspect the main runtime files."} {
+	for _, expected := range []string{"Recent visible parent transcript:", "- user: check the repo layout", "- assistant: I think finder should inspect the main runtime files."} {
 		if !strings.Contains(inputText, expected) {
 			t.Fatalf("expected %q in delegated provider input: %s", expected, inputText)
 		}
@@ -1046,7 +1046,7 @@ func TestExecuteControlPlaneToolTaskEmitsStreamingDeltas(t *testing.T) {
 		handled, _, err := svc.executeControlPlaneTool(runCtx, parentSession.ID, sessionruntime.ModePlan, pebblestore.AgentProfile{}, 1, tool.Call{
 			CallID:    "task_stream_1",
 			Name:      "task",
-			Arguments: `{"description":"Read file","prompt":"Read README and summarize.","subagent_type":"explorer"}`,
+			Arguments: `{"description":"Read file","prompt":"Read README and summarize.","subagent_type":"finder"}`,
 		}, "", emit)
 		outcomeCh <- taskRunOutcome{handled: handled, err: err}
 	}()
@@ -1169,7 +1169,7 @@ func TestExecuteControlPlaneToolTaskPermissionsRemainParentScopedForChildSession
 		handled, _, err := svc.executeControlPlaneTool(runCtx, parentSession.ID, sessionruntime.ModePlan, pebblestore.AgentProfile{}, 1, tool.Call{
 			CallID:    "task_scope_1",
 			Name:      "task",
-			Arguments: `{"description":"Scope check","prompt":"Run one bash and summarize.","subagent_type":"explorer"}`,
+			Arguments: `{"description":"Scope check","prompt":"Run one bash and summarize.","subagent_type":"finder"}`,
 		}, "", nil)
 		outcomeCh <- taskRunOutcome{handled: handled, err: err}
 	}()
@@ -2218,7 +2218,7 @@ func TestExecuteControlPlaneToolTaskIgnoresDelegatedMaxSteps(t *testing.T) {
 	handled, result, err := svc.executeControlPlaneTool(context.Background(), parentSession.ID, sessionruntime.ModePlan, pebblestore.AgentProfile{}, 1, tool.Call{
 		CallID:    "task_max_steps",
 		Name:      "task",
-		Arguments: `{"description":"Enforce step cap","prompt":"Loop with reasoning only.","subagent_type":"explorer","max_steps":2}`,
+		Arguments: `{"description":"Enforce step cap","prompt":"Loop with reasoning only.","subagent_type":"finder","max_steps":2}`,
 	}, "", nil)
 	if err != nil {
 		t.Fatalf("execute task control-plane tool: %v", err)
@@ -2937,7 +2937,7 @@ func TestRunTurnWithOptions_TargetedSubagentPersistsParentAssistant(t *testing.T
 	result, err := svc.RunTurnWithOptions(context.Background(), parentSession.ID, RunOptions{
 		Prompt:     "inspect src",
 		TargetKind: RunTargetKindSubagent,
-		TargetName: "explorer",
+		TargetName: "finder",
 		RunID:      "run-targeted-subagent",
 	})
 	if err != nil {
@@ -2946,8 +2946,8 @@ func TestRunTurnWithOptions_TargetedSubagentPersistsParentAssistant(t *testing.T
 	if got := strings.TrimSpace(result.TargetKind); got != RunTargetKindSubagent {
 		t.Fatalf("TargetKind = %q, want %q", got, RunTargetKindSubagent)
 	}
-	if got := strings.TrimSpace(result.TargetName); got != "explorer" {
-		t.Fatalf("TargetName = %q, want explorer", got)
+	if got := strings.TrimSpace(result.TargetName); got != "finder" {
+		t.Fatalf("TargetName = %q, want finder", got)
 	}
 	if got := strings.TrimSpace(result.UserMessage.Content); got != "inspect src" {
 		t.Fatalf("UserMessage.Content = %q, want inspect src", got)
@@ -2961,8 +2961,8 @@ func TestRunTurnWithOptions_TargetedSubagentPersistsParentAssistant(t *testing.T
 	if got := strings.TrimSpace(mapString(result.AssistantMessage.Metadata, "source")); got != "targeted_subagent" {
 		t.Fatalf("assistant metadata source = %q, want targeted_subagent", got)
 	}
-	if got := strings.TrimSpace(mapString(result.AssistantMessage.Metadata, "subagent")); got != "explorer" {
-		t.Fatalf("assistant metadata subagent = %q, want explorer", got)
+	if got := strings.TrimSpace(mapString(result.AssistantMessage.Metadata, "subagent")); got != "finder" {
+		t.Fatalf("assistant metadata subagent = %q, want finder", got)
 	}
 	childID := strings.TrimSpace(mapString(result.AssistantMessage.Metadata, "child_session_id"))
 	if childID == "" {
@@ -2981,8 +2981,8 @@ func TestRunTurnWithOptions_TargetedSubagentPersistsParentAssistant(t *testing.T
 	if got := strings.TrimSpace(mapString(childSession.Metadata, "launch_source")); got != "targeted_subagent" {
 		t.Fatalf("launch_source = %q, want targeted_subagent", got)
 	}
-	if got := strings.TrimSpace(mapString(childSession.Metadata, "targeted_subagent")); got != "explorer" {
-		t.Fatalf("targeted_subagent = %q, want explorer", got)
+	if got := strings.TrimSpace(mapString(childSession.Metadata, "targeted_subagent")); got != "finder" {
+		t.Fatalf("targeted_subagent = %q, want finder", got)
 	}
 
 	requests := runner.requestsSnapshot()
@@ -3021,7 +3021,7 @@ func TestRunTurnWithOptions_TargetedSubagentPersistsParentAssistant(t *testing.T
 		t.Fatalf("marshal provider input: %v", err)
 	}
 	inputText := string(inputJSON)
-	for _, expected := range []string{"Parent session context:", "\"custom\":\"value\"", "- requested subagent: @explorer", "Recent visible parent transcript:", "- user: check the subagent flow", "- assistant: I found the delegation prompt builder."} {
+	for _, expected := range []string{"Parent session context:", "\"custom\":\"value\"", "- requested subagent: @finder", "Recent visible parent transcript:", "- user: check the subagent flow", "- assistant: I found the delegation prompt builder."} {
 		if !strings.Contains(inputText, expected) {
 			t.Fatalf("expected %q in delegated provider input: %s", expected, inputText)
 		}
@@ -3078,7 +3078,7 @@ func TestRunTurnStreamingWithOptions_TargetedSubagentEmitsTaskProgress(t *testin
 	result, err := svc.RunTurnStreamingWithOptions(context.Background(), parentSession.ID, RunOptions{
 		Prompt:     "inspect src",
 		TargetKind: RunTargetKindSubagent,
-		TargetName: "explorer",
+		TargetName: "finder",
 		RunID:      "run-targeted-subagent-stream",
 	}, func(event StreamEvent) {
 		seen = append(seen, event)

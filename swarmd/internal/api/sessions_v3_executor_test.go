@@ -172,7 +172,7 @@ func TestSessionV3SystemSidechatResolutionUsesRegistryAndRejectsSpoofing(t *test
 		{name: "unknown reserved name without authority", metadata: nil, snapshot: pebblestore.AgentProfile{Name: "system-future", Enabled: true}, want: "unknown reserved system agent"},
 		{name: "kind and name mismatch", metadata: sessionsV3SystemSidechatMetadata("parent-1", "plan", ai), snapshot: ai, want: "metadata mismatch"},
 		{name: "unknown future kind", metadata: sessionsV3SystemSidechatMetadata("parent-1", "future", pebblestore.AgentProfile{Name: "system-future", Enabled: true}), snapshot: pebblestore.AgentProfile{Name: "system-future", Enabled: true}, want: "unknown system sidechat kind"},
-		{name: "visible system agent cannot spoof sidechat", metadata: sessionsV3SystemSidechatMetadata("parent-1", "explorer", pebblestore.AgentProfile{Name: agentruntime.ExplorerAgentID, Enabled: true}), snapshot: pebblestore.AgentProfile{Name: agentruntime.ExplorerAgentID, Enabled: true}, want: "not authorized for system sidechat metadata"},
+		{name: "visible system agent cannot spoof sidechat", metadata: sessionsV3SystemSidechatMetadata("parent-1", "finder", pebblestore.AgentProfile{Name: agentruntime.FinderAgentID, Enabled: true}), snapshot: pebblestore.AgentProfile{Name: agentruntime.FinderAgentID, Enabled: true}, want: "not authorized for system sidechat metadata"},
 		{name: "partial metadata", metadata: map[string]any{"system_sidechat": true, "system_sidechat_kind": "plan"}, snapshot: plan, want: "invalid system sidechat metadata"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -202,7 +202,7 @@ func TestSessionV3VisibleSystemAgentResolutionDoesNotRequireSidechatMetadata(t *
 		id   string
 	}{
 		{name: "Swarm", id: agentruntime.SwarmAgentID},
-		{name: "Explorer", id: agentruntime.ExplorerAgentID},
+		{name: "Finder", id: agentruntime.FinderAgentID},
 		{name: "Coder", id: agentruntime.CoderAgentID},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -238,9 +238,9 @@ func TestSessionV3OrdinaryAgentResolutionKeepsCurrentAccountToolContract(t *test
 	if err := agents.EnsureDefaultsForAccount(accountScopeID); err != nil {
 		t.Fatalf("ensure defaults: %v", err)
 	}
-	current, ok, err := agents.GetProfileForAccount(accountScopeID, "explorer")
+	current, ok, err := agents.GetProfileForAccount(accountScopeID, "finder")
 	if err != nil || !ok {
-		t.Fatalf("get explorer: ok=%t err=%v", ok, err)
+		t.Fatalf("get finder: ok=%t err=%v", ok, err)
 	}
 	snapshot := current
 	snapshot.Prompt = "persisted session prompt"

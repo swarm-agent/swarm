@@ -94,7 +94,7 @@ func TestAgentsModalMouseClickSelectedProfileOpensDetails(t *testing.T) {
 	p.SetAgentsModalData(AgentsModalData{
 		Profiles: []AgentModalProfile{
 			{Name: "swarm", Mode: "primary", Enabled: true},
-			{Name: "explorer", Mode: "subagent", Enabled: true},
+			{Name: "finder", Mode: "subagent", Enabled: true},
 		},
 		ActivePrimary: "swarm",
 	})

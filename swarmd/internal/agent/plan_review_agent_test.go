@@ -42,9 +42,9 @@ func TestPlanSidechatPromptAttachesAuthoritativePlanContext(t *testing.T) {
 			t.Fatalf("prompt missing %q: %s", expected, prompt)
 		}
 	}
-	for _, expected := range []string{"only to Explorer", "read-only contract", "cannot delegate further", "budgets", "depth checks"} {
+	for _, expected := range []string{"only to Finder", "read-only contract", "cannot delegate further", "budgets", "depth checks"} {
 		if !strings.Contains(prompt, expected) {
-			t.Fatalf("prompt missing Explorer delegation boundary %q: %s", expected, prompt)
+			t.Fatalf("prompt missing Finder delegation boundary %q: %s", expected, prompt)
 		}
 	}
 	if strings.Contains(prompt, `"expected_revision":"4"`) || strings.Contains(prompt, `"document":"{`) {
@@ -88,11 +88,11 @@ func TestPlanSidechatIsRestrictedAndHidden(t *testing.T) {
 	}
 }
 
-func TestExplorerContractExplicitlyDisablesRecursiveTask(t *testing.T) {
-	profile := ExplorerAgentProfileForParent(pebblestore.AgentProfile{})
+func TestFinderContractExplicitlyDisablesRecursiveTask(t *testing.T) {
+	profile := FinderAgentProfileForParent(pebblestore.AgentProfile{})
 	config, ok := profile.ToolContract.Tools["task"]
 	if !ok || config.Enabled == nil || *config.Enabled {
-		t.Fatal("Explorer task capability must be explicitly disabled")
+		t.Fatal("Finder task capability must be explicitly disabled")
 	}
 }
 

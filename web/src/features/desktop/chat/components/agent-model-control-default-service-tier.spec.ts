@@ -66,18 +66,18 @@ assert.doesNotMatch(
 
 assert.match(
   source,
-  /autoServiceTier: explorerSettings\.service_tier/,
-  'Explorer setup must initialize its editable priority from canonical UI settings',
+  /autoServiceTier: finderSettings\.service_tier/,
+  'Finder setup must initialize its editable priority from canonical UI settings',
 )
 
 assert.match(
   source,
   /service_tier: String\(action\.agentPatch\.autoServiceTier \?\? ''\)\.trim\(\)/,
-  'Explorer setup must persist priority through the canonical UI settings mutation',
+  'Finder setup must persist priority through the canonical UI settings mutation',
 )
 
 assert.match(
   source,
-  /Explorer model[\s\S]*showServiceTier/,
-  'Explorer setup must expose the service-tier selector',
+  /Finder model[\s\S]*showServiceTier/,
+  'Finder setup must expose the service-tier selector',
 )

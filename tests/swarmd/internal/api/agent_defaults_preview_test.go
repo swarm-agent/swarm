@@ -47,7 +47,7 @@ func TestProviderDefaultsPreviewWarnsOnlyForStaleInheritedUtilityAgents(t *testi
 		t.Fatalf("GET /v2/agents status = %d, want 200", rec.Code)
 	}
 	preview := decodeAgentDefaultsPreview(t, rec)
-	wantStale := map[string]struct{}{"explorer": {}, "memory": {}, "parallel": {}}
+	wantStale := map[string]struct{}{"finder": {}, "memory": {}, "parallel": {}}
 	if len(preview.StaleInheritedAgents) != len(wantStale) {
 		t.Fatalf("stale inherited agents = %v, want %v", preview.StaleInheritedAgents, wantStale)
 	}
@@ -57,7 +57,7 @@ func TestProviderDefaultsPreviewWarnsOnlyForStaleInheritedUtilityAgents(t *testi
 		}
 	}
 
-	for _, name := range []string{"explorer", "memory", "parallel"} {
+	for _, name := range []string{"finder", "memory", "parallel"} {
 		profile, ok, err := agentSvc.GetProfile(name)
 		if err != nil {
 			t.Fatalf("GetProfile(%q) error = %v", name, err)
@@ -135,7 +135,7 @@ func TestRestoreDefaultsSetsUtilityAIBaselineAndPreservesCustomProfiles(t *testi
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /v2/agents/defaults/restore status = %d, want 200", rec.Code)
 	}
-	for _, name := range []string{"explorer", "memory", "parallel"} {
+	for _, name := range []string{"finder", "memory", "parallel"} {
 		profile, ok, err := agentSvc.GetProfile(name)
 		if err != nil {
 			t.Fatalf("GetProfile(%q) error = %v", name, err)
@@ -185,7 +185,7 @@ func TestRestoreDefaultsSetsUtilityAIBaselineAndPreservesCustomProfiles(t *testi
 	if customProfile.Description != "custom helper" || customProfile.Prompt != "custom prompt" {
 		t.Fatalf("custom Utility AI reset custom helper profile = %+v, want custom fields preserved", customProfile)
 	}
-	for _, name := range []string{"explorer", "memory", "parallel"} {
+	for _, name := range []string{"finder", "memory", "parallel"} {
 		profile, ok, err := agentSvc.GetProfile(name)
 		if err != nil {
 			t.Fatalf("GetProfile(%q) after custom Utility AI error = %v", name, err)
@@ -255,7 +255,7 @@ func TestSetUtilityAIFillsBlankAgentsAndPreservesPerAgentOverrides(t *testing.T)
 	}
 
 	want := map[string]string{
-		"explorer": "gpt-5.4",
+		"finder":   "gpt-5.4",
 		"memory":   "gpt-5.5",
 		"parallel": "gpt-5.4",
 	}
@@ -275,8 +275,8 @@ func TestSetUtilityAIFillsBlankAgentsAndPreservesPerAgentOverrides(t *testing.T)
 	if strings.Join(preview.CustomUtilityAgents, ",") != "memory" {
 		t.Fatalf("custom utility agents = %v, want [memory]", preview.CustomUtilityAgents)
 	}
-	if strings.Join(preview.UtilityBaselineAgents, ",") != "explorer,parallel" {
-		t.Fatalf("utility baseline agents = %v, want [explorer parallel]", preview.UtilityBaselineAgents)
+	if strings.Join(preview.UtilityBaselineAgents, ",") != "finder,parallel" {
+		t.Fatalf("utility baseline agents = %v, want [finder parallel]", preview.UtilityBaselineAgents)
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/v2/agents/defaults/restore", strings.NewReader(`{"utility_provider":"codex","utility_model":"gpt-5.4","utility_thinking":"low","overwrite_explicit":true}`))
@@ -285,7 +285,7 @@ func TestSetUtilityAIFillsBlankAgentsAndPreservesPerAgentOverrides(t *testing.T)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /v2/agents/defaults/restore overwrite Utility AI status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	for _, name := range []string{"explorer", "memory", "parallel"} {
+	for _, name := range []string{"finder", "memory", "parallel"} {
 		profile, ok, err := agentSvc.GetProfile(name)
 		if err != nil {
 			t.Fatalf("GetProfile(%q) after overwrite error = %v", name, err)

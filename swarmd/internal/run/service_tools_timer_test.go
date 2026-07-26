@@ -21,7 +21,7 @@ func TestTaskLaunchProgressDurationsRunningUsesStoredValuesOnly(t *testing.T) {
 func TestBuildTaskStreamPatchPayloadRunningKeepsTimerAnchorsWithoutRecomputedDurations(t *testing.T) {
 	payload := buildTaskStreamPatchPayload("parent", "call-task", "spawn", "inspect timers", 1, taskLaunchOutcome{
 		LaunchIndex:        1,
-		ResolvedSubagent:   "explorer",
+		ResolvedSubagent:   "finder",
 		LaunchStartedAtMS:  123000,
 		CurrentTool:        "search",
 		CurrentToolStarted: 124000,
@@ -48,7 +48,7 @@ func TestBuildTaskStreamPatchPayloadRunningKeepsTimerAnchorsWithoutRecomputedDur
 func TestBuildTaskStreamPatchPayloadTerminalIncludesFinalElapsed(t *testing.T) {
 	payload := buildTaskStreamPatchPayload("parent", "call-task", "spawn", "inspect timers", 1, taskLaunchOutcome{
 		LaunchIndex:      1,
-		ResolvedSubagent: "explorer",
+		ResolvedSubagent: "finder",
 		ElapsedMS:        3400,
 	}, "completed", "done")
 

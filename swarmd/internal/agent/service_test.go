@@ -156,7 +156,7 @@ func TestEnsureDefaultsExposesCompiledSwarmAndPersistsOnlyModelContext(t *testin
 	if resolved.Mode != ModePrimary || resolved.Prompt != SwarmAgentPrompt() || !resolved.Protected || !reflect.DeepEqual(resolved.ToolContract, SwarmAgentToolContract()) {
 		t.Fatalf("compiled swarm = %+v", resolved)
 	}
-	for _, name := range []string{"clone", "system-clone", CoderAgentID, "memory", "explorer"} {
+	for _, name := range []string{"clone", "system-clone", CoderAgentID, "memory", "finder"} {
 		if _, ok, err := agents.GetProfile(name); err != nil || ok {
 			t.Fatalf("persisted compiled/retired profile %q ok=%v err=%v, want absent", name, ok, err)
 		}

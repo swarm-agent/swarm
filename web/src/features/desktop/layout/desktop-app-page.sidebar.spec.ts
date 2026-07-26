@@ -470,7 +470,7 @@ test('sidebar inactivity filter hides stale ordinary trees but protects selected
     makeSession('pinned', { updatedAt: staleAt, metadata: { [DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY]: true } }),
     makeSession('recent', { updatedAt: recentAt }),
     makeSession('parent', { updatedAt: staleAt }),
-    makeSession('child', { updatedAt: recentAt, metadata: { parent_session_id: 'parent', requested_subagent: 'explorer' } }),
+    makeSession('child', { updatedAt: recentAt, metadata: { parent_session_id: 'parent', requested_subagent: 'finder' } }),
   ]
   const result = filterInactiveSidebarSessionTrees(buildSidebarSessionTree(sessions, now), now, 12, 'selected')
   assert.deepEqual(result.nodes.map((node) => node.session.id).sort(), ['parent', 'pinned', 'recent', 'selected'])

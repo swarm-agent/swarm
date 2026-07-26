@@ -85,7 +85,7 @@ function testTaskSwarmUsesCompactPreview(): void {
         launch_index: index + 1,
         child_session_id: `child-session-${index + 1}`,
         status: index % 3 === 0 ? "running" : "done",
-        resolved_agent_name: index % 2 === 0 ? "explorer" : "parallel",
+        resolved_agent_name: index % 2 === 0 ? "finder" : "parallel",
         assignment_label: `${longAssignment} ${index + 1}`,
         current_tool: index % 3 === 0 ? "search" : "read",
         current_tool_ms: 1200 + index,
@@ -96,7 +96,7 @@ function testTaskSwarmUsesCompactPreview(): void {
 
   const markup = renderToolMarkup(message!);
   assert(markup.includes("Swarm mode"), "expected desktop swarm mode header");
-  assert(markup.includes("@explorer"), "expected compact row agent label");
+  assert(markup.includes("@finder"), "expected compact row agent label");
   assert(markup.includes("search"), "expected compact row current tool");
   assert(markup.includes("RUN"), "expected compact row status");
   assert(!markup.includes("Subagent stream"), "swarm mode should not render normal task table header");
@@ -118,7 +118,7 @@ function testTaskRunningTimerUsesStartTimestamp(): void {
       launches: [{
         launch_index: 1,
         status: "running",
-        resolved_agent_name: "explorer",
+        resolved_agent_name: "finder",
         assignment_label: "Backend timer mapper",
         current_tool: "search",
         launch_started_at_ms: startedAt,
@@ -151,7 +151,7 @@ function testTaskTerminalTimerUsesFinalElapsed(): void {
         launch_index: 1,
         child_session_id: "child-visible-regression",
         status: "ok",
-        resolved_agent_name: "explorer",
+        resolved_agent_name: "finder",
         assignment_label: "Backend timer mapper",
         elapsed_ms: 3400,
       }],
@@ -499,12 +499,12 @@ function testTaskHeaderDoesNotShiftBetweenLaunchAssignments(): void {
       description,
       launch_count: 3,
       status: "running",
-      assignment_label: "Backend explorer title",
+      assignment_label: "Backend finder title",
       launches: [{
         launch_index: 1,
         status: "running",
-        resolved_agent_name: "explorer",
-        assignment_label: "Backend explorer title",
+        resolved_agent_name: "finder",
+        assignment_label: "Backend finder title",
         current_tool: "search",
       }],
     }),
@@ -518,12 +518,12 @@ function testTaskHeaderDoesNotShiftBetweenLaunchAssignments(): void {
       description,
       launch_count: 3,
       status: "running",
-      assignment_label: "Frontend explorer title",
+      assignment_label: "Frontend finder title",
       launches: [{
         launch_index: 2,
         status: "running",
         resolved_agent_name: "parallel",
-        assignment_label: "Frontend explorer title",
+        assignment_label: "Frontend finder title",
         current_tool: "read",
       }],
     }),
@@ -542,8 +542,8 @@ function testTaskHeaderDoesNotShiftBetweenLaunchAssignments(): void {
   assert(firstMarkup.includes('data-task-tool-card="true"') && firstMarkup.includes('data-task-rows="true"'), "task heading and subagent rows should share one card");
   assert(firstMarkup.includes("lucide-bot"), "task card should use the Lucide bot icon");
   assert(!firstMarkup.includes("starting…") && !firstMarkup.includes("animate-spin"), "running task cards should not show the starting spinner treatment");
-  assert(!firstMarkup.includes("Backend explorer title</span><svg"), "first header should not end with launch assignment title");
-  assert(!secondMarkup.includes("Frontend explorer title</span><svg"), "second header should not end with launch assignment title");
+  assert(!firstMarkup.includes("Backend finder title</span><svg"), "first header should not end with launch assignment title");
+  assert(!secondMarkup.includes("Frontend finder title</span><svg"), "second header should not end with launch assignment title");
 }
 
 function testTaskActivityPrefersSummaryOnlyForActiveRows(): void {

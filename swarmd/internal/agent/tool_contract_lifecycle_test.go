@@ -11,7 +11,7 @@ func TestEnsureDefaultsBackfillsMissingBuiltInToolContractsOnly(t *testing.T) {
 	svc, agents := newTestService(t)
 	legacyBuiltIns := []pebblestore.AgentProfile{
 		{Name: "swarm", Mode: ModePrimary, RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), Prompt: "custom swarm", Enabled: true},
-		{Name: "explorer", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead, Prompt: "custom explorer", Enabled: false},
+		{Name: "finder", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead, Prompt: "custom finder", Enabled: false},
 		{Name: "memory", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite, Prompt: defaultMemoryPrompt(), Enabled: true},
 		{Name: "parallel", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite, Prompt: "custom parallel", Enabled: true},
 		{Name: "custom", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead, Prompt: "custom agent", Enabled: true},
@@ -28,7 +28,7 @@ func TestEnsureDefaultsBackfillsMissingBuiltInToolContractsOnly(t *testing.T) {
 
 	wantPresets := map[string]string{
 		"swarm":    "custom",
-		"explorer": "read_only",
+		"finder":   "read_only",
 		"memory":   "background_commit",
 		"parallel": "read_write",
 	}
@@ -91,7 +91,7 @@ func TestBuiltInManageSessionsDefaultIsSwarmOnly(t *testing.T) {
 		t.Fatalf("swarm manage_sessions = %+v, want enabled", cfg)
 	}
 	for name, contract := range map[string]*pebblestore.AgentToolContract{
-		"explorer":   ExplorerAgentToolContract(),
+		"finder":     FinderAgentToolContract(),
 		"memory":     defaultMemoryToolContract(),
 		"read_write": defaultReadWriteSubagentToolContract(),
 	} {

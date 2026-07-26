@@ -249,8 +249,8 @@ function v3HydratedSessionPayload(sessionId: string) {
       ? { session_id: sessionId, run_id: 'run-active', status: 'running', created_at: 1000, updated_at: 4000, event_seq: 9 }
       : null,
     agent_model_policy: {
-      agent_name: 'explorer',
-      resolved_agent_name: 'explorer',
+      agent_name: 'finder',
+      resolved_agent_name: 'finder',
       source: 'agent_preset',
       locked: true,
       reason: 'Agent model is set in agent settings; set the agent model to Default to choose a different model.',

@@ -94,16 +94,16 @@ test('agent trigger shows only active model, thinking, and priority metadata', (
 test('agent trigger falls back to the default model label without exposing the agent identity', () => {
   const markup = renderToStaticMarkup(
     <AgentPicker
-      currentAgent="system-explorer"
+      currentAgent="system-finder"
       selectedPrimaryAgent="swarm"
-      agents={[profile('system-explorer', { mode: 'subagent', protected: true })]}
+      agents={[profile('system-finder', { mode: 'subagent', protected: true })]}
       onSelect={() => {}}
     />,
   )
 
   assert.match(markup, /Model: Default model/)
   assert.match(markup, />Default model</)
-  assert.doesNotMatch(markup, />Explorer<|>system-explorer</)
+  assert.doesNotMatch(markup, />Finder<|>system-finder</)
 })
 
 test('agent trigger uses the active mode details for a split profile', () => {

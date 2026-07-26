@@ -10,7 +10,7 @@ const row: TaskToolRow = {
   childSessionId: 'child-1',
   status: 'pending',
   phase: 'spawned',
-  agent: 'explorer',
+  agent: 'finder',
   assignmentLabel: 'Inspect state',
   modelLabel: '',
   tool: '-',
@@ -34,7 +34,7 @@ test('task child view joins canonical child run, usage, target, and bounded tool
       metadata: { swarm_v3_runtime_swarm_id: 'swarm-local' }, created_at: 1, updated_at: 2, message_count: 0, last_message_at: 0,
     },
   }
-  state.sessionViewsById['child-1'] = { agentic_settings: { mode: 'auto', agent_name: 'explorer', resolved_agent_name: 'explorer', context_window: 1000 } }
+  state.sessionViewsById['child-1'] = { agentic_settings: { mode: 'auto', agent_name: 'finder', resolved_agent_name: 'finder', context_window: 1000 } }
   state.currentRunIntentBySession['child-1'] = {
     session_id: 'child-1', run_id: 'run-1', status: 'running', created_at: 10, started_at: 20, updated_at: 30, event_seq: 2,
   }
@@ -97,7 +97,7 @@ test('task child view prefers fresh canonical usage, clamps remaining context, a
     needsHydrate: false,
     session: { id: 'child-1', workspace_path: '/workspace', workspace_name: 'Workspace', title: 'Child', mode: 'auto', metadata: {}, created_at: 1, updated_at: 2, message_count: 0, last_message_at: 0 },
   }
-  state.sessionViewsById['child-1'] = { agentic_settings: { mode: 'auto', agent_name: 'explorer', resolved_agent_name: 'explorer', context_window: 1000 } }
+  state.sessionViewsById['child-1'] = { agentic_settings: { mode: 'auto', agent_name: 'finder', resolved_agent_name: 'finder', context_window: 1000 } }
   state.currentRunIntentBySession['child-1'] = { session_id: 'child-1', run_id: 'run-done', status: 'completed', created_at: 10, updated_at: 50, event_seq: 3 }
   state.usageBySession['child-1'] = { context_window: 1000, remaining_tokens: -250, model: 'fresh-model', updated_at: 60 }
 

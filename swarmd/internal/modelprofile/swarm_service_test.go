@@ -19,7 +19,7 @@ func TestSwarmServiceCRUDIsolationAndValidation(t *testing.T) {
 	selection := Selection{Provider: "codex", Model: "gpt", Thinking: "high", ServiceTier: "default", ContextMode: "full"}
 	accountOne := identity.ContextWithPrincipal(t.Context(), identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-one", AccountScopeID: "account-one"})
 	accountTwo := identity.ContextWithPrincipal(t.Context(), identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-two", AccountScopeID: "account-two"})
-	input := SwarmInput{Name: "Crew", Members: []SwarmMemberInput{{AgentID: "swarm", ModelMode: "single", Single: &selection}, {AgentID: "system-explorer", ModelMode: "split", Plan: &selection, Auto: &selection}}}
+	input := SwarmInput{Name: "Crew", Members: []SwarmMemberInput{{AgentID: "swarm", ModelMode: "single", Single: &selection}, {AgentID: "system-finder", ModelMode: "split", Plan: &selection, Auto: &selection}}}
 	created, err := svc.Create(accountOne, input)
 	if err != nil {
 		t.Fatal(err)

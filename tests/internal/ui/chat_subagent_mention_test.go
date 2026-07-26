@@ -99,12 +99,12 @@ func (s *chatMentionBackendStub) RunTurnStream(_ context.Context, _ string, req 
 }
 
 func TestParseTargetedSubagentPrompt(t *testing.T) {
-	subagent, task, ok := parseTargetedSubagentPrompt("@explorer inspect src", []string{"memory", "explorer"})
+	subagent, task, ok := parseTargetedSubagentPrompt("@finder inspect src", []string{"memory", "finder"})
 	if !ok {
 		t.Fatalf("expected targeted subagent prompt to parse")
 	}
-	if subagent != "explorer" {
-		t.Fatalf("subagent = %q, want explorer", subagent)
+	if subagent != "finder" {
+		t.Fatalf("subagent = %q, want finder", subagent)
 	}
 	if task != "inspect src" {
 		t.Fatalf("task = %q, want inspect src", task)
@@ -112,20 +112,20 @@ func TestParseTargetedSubagentPrompt(t *testing.T) {
 }
 
 func TestChatMentionPaletteCompletesSubagent(t *testing.T) {
-	page := NewChatPage(ChatPageOptions{SessionID: "session-1", AuthConfigured: true, Meta: ChatSessionMeta{Subagents: []string{"memory", "explorer"}}})
+	page := NewChatPage(ChatPageOptions{SessionID: "session-1", AuthConfigured: true, Meta: ChatSessionMeta{Subagents: []string{"memory", "finder"}}})
 	page.input = "@ex"
 	if !page.mentionPaletteActive() {
 		t.Fatalf("mentionPaletteActive() = false, want true")
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
-	if got := page.input; got != "@explorer " {
-		t.Fatalf("input = %q, want @explorer ", got)
+	if got := page.input; got != "@finder " {
+		t.Fatalf("input = %q, want @finder ", got)
 	}
 }
 
 func TestChatMentionCandidatesSorted(t *testing.T) {
-	got := chatMentionCandidates("", []string{"memory", "explorer", "clone"})
-	want := []string{"clone", "explorer", "memory"}
+	got := chatMentionCandidates("", []string{"memory", "finder", "clone"})
+	want := []string{"clone", "finder", "memory"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("chatMentionCandidates() = %v, want %v", got, want)
 	}
@@ -137,15 +137,15 @@ func TestChatSubmitRoutesTargetedSubagentRun(t *testing.T) {
 		Backend:        backend,
 		SessionID:      "session-1",
 		AuthConfigured: true,
-		Meta:           ChatSessionMeta{Agent: "swarm", Subagents: []string{"memory", "explorer"}},
+		Meta:           ChatSessionMeta{Agent: "swarm", Subagents: []string{"memory", "finder"}},
 	})
-	page.input = "@explorer inspect src"
+	page.input = "@finder inspect src"
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	if backend.lastReq.TargetKind != "subagent" {
 		t.Fatalf("TargetKind = %q, want subagent", backend.lastReq.TargetKind)
 	}
-	if backend.lastReq.TargetName != "explorer" {
-		t.Fatalf("TargetName = %q, want explorer", backend.lastReq.TargetName)
+	if backend.lastReq.TargetName != "finder" {
+		t.Fatalf("TargetName = %q, want finder", backend.lastReq.TargetName)
 	}
 	if backend.lastReq.Prompt != "inspect src" {
 		t.Fatalf("Prompt = %q, want inspect src", backend.lastReq.Prompt)

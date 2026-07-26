@@ -234,7 +234,7 @@ func MockHome() HomeModel {
 		ActiveAgentExecutionSetting: "",
 		ActiveAgentExitPlanMode:     true,
 		ActiveAgentRuntimeKnown:     true,
-		Subagents:                   []string{"clone", "explorer", "memory"},
+		Subagents:                   []string{"clone", "finder", "memory"},
 		ContextWindow:               200000,
 		CurrentSwarmTarget:          &SwarmTarget{SwarmID: "mock-swarm", Name: "Mock Swarm", Role: "master", Relationship: "self", Kind: "local", Online: true, Selectable: true, Current: true},
 		Workspaces: []Workspace{

@@ -999,7 +999,7 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 	server, sessionSvc, closeStore := newSessionsV3PrimaryAPITestServer(t, filepath.Join(t.TempDir(), "agent-switch.pebble"))
 	defer func() { _ = closeStore() }()
 	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{
-		Name:                "explorer",
+		Name:                "finder",
 		Mode:                agentruntime.ModeSubagent,
 		Provider:            "test-provider",
 		Model:               "test-model",
@@ -1010,13 +1010,13 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 			"search": {Enabled: pebblestore.BoolPtr(true)},
 		}},
 		Enabled: pebblestore.BoolPtr(true),
-		Prompt:  "Explorer switched prompt",
+		Prompt:  "Finder switched prompt",
 	}); err != nil {
-		t.Fatalf("create explorer agent: %v", err)
+		t.Fatalf("create finder agent: %v", err)
 	}
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "agent-switch-create", "agent switch", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
 
-	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/agent", bytes.NewBufferString(`{"agent_name":"explorer"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/agent", bytes.NewBufferString(`{"agent_name":"finder"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
@@ -1041,7 +1041,7 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !payload.OK || payload.SessionID != created.ID || payload.Agent["agent_name"] != "explorer" || payload.Agent["resolved_agent_name"] != "explorer" || payload.Agent["agent_mode"] != agentruntime.ModeSubagent || payload.Agent["runtime_mode"] != pebblestore.AgentRuntimeModeRead {
+	if !payload.OK || payload.SessionID != created.ID || payload.Agent["agent_name"] != "finder" || payload.Agent["resolved_agent_name"] != "finder" || payload.Agent["agent_mode"] != agentruntime.ModeSubagent || payload.Agent["runtime_mode"] != pebblestore.AgentRuntimeModeRead {
 		t.Fatalf("agent mutation payload = %+v", payload)
 	}
 	if payload.Session != nil || payload.Projection != nil || payload.Messages != nil || payload.Events != nil {
@@ -1074,10 +1074,10 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 	if err != nil {
 		t.Fatalf("switched profile missing: %v", err)
 	}
-	if profile.Name != "explorer" || profile.Mode != agentruntime.ModeSubagent || profile.ToolContract == nil || profile.ToolContract.Tools["search"].Enabled == nil || !*profile.ToolContract.Tools["search"].Enabled {
+	if profile.Name != "finder" || profile.Mode != agentruntime.ModeSubagent || profile.ToolContract == nil || profile.ToolContract.Tools["search"].Enabled == nil || !*profile.ToolContract.Tools["search"].Enabled {
 		t.Fatalf("switched profile = %+v", profile)
 	}
-	if stored.Metadata["agent_name"] != "explorer" {
+	if stored.Metadata["agent_name"] != "finder" {
 		t.Fatalf("stored switched metadata = %+v", stored.Metadata)
 	}
 	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
@@ -1099,7 +1099,7 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 	if err != nil {
 		t.Fatalf("resolve switched runtime: %v", err)
 	}
-	if resolved.AgentProfile.Name != "explorer" || !strings.Contains(resolved.Instructions, "- name: explorer") || !strings.Contains(resolved.Instructions, "Explorer switched prompt") {
+	if resolved.AgentProfile.Name != "finder" || !strings.Contains(resolved.Instructions, "- name: finder") || !strings.Contains(resolved.Instructions, "Finder switched prompt") {
 		t.Fatalf("resolved switched instructions/profile = %+v instructions=%s", resolved.AgentProfile, resolved.Instructions)
 	}
 	toolNames := sessionsV3ProviderRequestToolNames(resolved.Tools)

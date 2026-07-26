@@ -400,7 +400,7 @@ function testTaskRowsMapReasoningToThinkingWithoutPreviewLeak(): void {
       launches: [
         {
           launch_index: 1,
-          subagent: 'explorer',
+          subagent: 'finder',
           status: 'running',
           current_preview_kind: 'reasoning',
           current_preview_text: '<reasoning>Inspecting files</reasoning>',
@@ -587,7 +587,7 @@ function testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads(): voi
       {
         launch_index: 1,
         child_session_id: 'child-1',
-        subagent: 'explorer',
+        subagent: 'finder',
         status: 'ok',
         current_tool: '',
         elapsed_ms: 1200,
@@ -610,7 +610,7 @@ function testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads(): voi
       {
         launch_index: 1,
         child_session_id: 'child-1',
-        subagent: 'explorer',
+        subagent: 'finder',
         status: 'ok',
         elapsed_ms: 1400,
       },
@@ -661,9 +661,9 @@ function testTaskRowsParseCanonicalStreamContractFields(): void {
         launch_index: 2,
         child_session_id: 'child-session-2',
         child_mode: 'auto',
-        requested_subagent: 'explorer',
-        subagent: 'explorer-v2',
-        agent_type: 'explorer-v2',
+        requested_subagent: 'finder',
+        subagent: 'finder-v2',
+        agent_type: 'finder-v2',
         meta_prompt: 'map backend files',
         assignment_label: 'Backend map',
         subagent_provider: 'test-provider',
@@ -691,7 +691,7 @@ function testTaskRowsParseCanonicalStreamContractFields(): void {
   assert(row?.launchIndex === 2, `unexpected launch index: ${row?.launchIndex}`)
   assert(row?.childSessionId === 'child-session-2', `unexpected child session id: ${row?.childSessionId}`)
   assert(row?.status === 'running', `unexpected status: ${row?.status}`)
-  assert(row?.agent === 'explorer-v2', `unexpected agent: ${row?.agent}`)
+  assert(row?.agent === 'finder-v2', `unexpected agent: ${row?.agent}`)
   assert(row?.assignmentLabel === 'Backend map', `unexpected assignment label: ${row?.assignmentLabel}`)
   assert(row?.modelLabel === 'test-provider / test-model', `unexpected model label: ${row?.modelLabel}`)
   assert(row?.tool === 'search', `unexpected current tool: ${row?.tool}`)
@@ -727,7 +727,7 @@ function testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload(): void 
           child_session_id: 'child-native-1',
           status: 'running',
           phase: 'tool.started',
-          subagent: 'explorer',
+          subagent: 'finder',
           assignment_label: 'Explore frontend',
           subagent_provider: 'provider-a',
           subagent_model: 'model-a',
@@ -774,7 +774,7 @@ function testTaskRowsParseSingleV2PatchAsHistoricalCompatibility(): void {
         child_session_id: 'child-v2',
         status: 'running',
         phase: 'tool.completed',
-        subagent: 'explorer',
+        subagent: 'finder',
         current_tool: 'read',
       },
     }),
@@ -797,7 +797,7 @@ function testTaskRowsAcceptFinalPayloadSessionIdAlias(): void {
       launches: [{
         launch_index: 1,
         session_id: 'child-session-final',
-        subagent: 'explorer',
+        subagent: 'finder',
         status: 'ok',
         elapsed_ms: 1200,
       }],
@@ -821,7 +821,7 @@ function testRunningTaskRowDoesNotUseStreamDurationAsDisplayTime(): void {
       launches: [{
         launch_index: 1,
         child_session_id: 'child-1',
-        subagent: 'explorer',
+        subagent: 'finder',
         status: 'running',
         current_tool: 'search',
         launch_started_at_ms: 123000,
@@ -850,7 +850,7 @@ function testTerminalTaskRowUsesFinalElapsedAsDisplayTime(): void {
       launches: [{
         launch_index: 1,
         child_session_id: 'child-1',
-        subagent: 'explorer',
+        subagent: 'finder',
         status: 'ok',
         elapsed_ms: 3400,
       }],

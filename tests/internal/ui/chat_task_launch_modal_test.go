@@ -20,7 +20,7 @@ func TestTaskLaunchPermissionModalDrawsOnNarrowScreen(t *testing.T) {
 		SessionID:     "session-1",
 		ToolName:      "task",
 		Requirement:   "task_launch",
-		ToolArguments: `{"goal":"Inspect repo","description":"Inspect repo","prompt":"Map files and summarize findings.","launch_count":1,"resolved_agent_name":"explorer","launches":[{"launch_index":1,"requested_subagent_type":"explorer","resolved_agent_name":"explorer","meta_prompt":"map repository structure"}]}`,
+		ToolArguments: `{"goal":"Inspect repo","description":"Inspect repo","prompt":"Map files and summarize findings.","launch_count":1,"resolved_agent_name":"finder","launches":[{"launch_index":1,"requested_subagent_type":"finder","resolved_agent_name":"finder","meta_prompt":"map repository structure"}]}`,
 		Status:        "pending",
 	})
 

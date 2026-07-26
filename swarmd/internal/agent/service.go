@@ -182,7 +182,7 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input 
 	if input.Provider == "" || input.PrimaryModel == "" || input.PlanModel == "" || input.AutoModel == "" || input.UtilityModel == "" {
 		return DefaultModelHydrationResult{}, errors.New("hydrated default agents require provider and main, plan, auto, utility models")
 	}
-	// Compact and Explorer are compiled system agents whose snapshot-selected
+	// Compact and Finder are compiled system agents whose snapshot-selected
 	// utility model is persisted through UI settings by the onboarding caller.
 	// Hydration therefore remains valid when there are no mutable utility rows.
 	utilityNames := normalizeDefaultUtilityAgentNames(input.UtilityAgentNames)
@@ -329,7 +329,7 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 	if err := s.cleanupBuiltInMemoryForAccountLocked(accountScopeID); err != nil {
 		return err
 	}
-	if err := s.cleanupBuiltInExplorerForAccountLocked(accountScopeID); err != nil {
+	if err := s.cleanupBuiltInFinderForAccountLocked(accountScopeID); err != nil {
 		return err
 	}
 	if err := s.cleanupBuiltInCoderForAccountLocked(accountScopeID); err != nil {
@@ -401,7 +401,7 @@ func normalizeDefaultUtilityAgentNames(values []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		name := normalizeName(value)
-		if name != "" && name != "memory" && name != "compact" && name != CompactAgentID && !IsExplorerAgentName(name) && !IsCoderAgentName(name) && !IsDesignerAgentName(name) && !isRetiredCloneAgentName(name) {
+		if name != "" && name != "memory" && name != "compact" && name != CompactAgentID && !IsFinderAgentName(name) && !IsCoderAgentName(name) && !IsDesignerAgentName(name) && !isRetiredCloneAgentName(name) {
 			out[name] = struct{}{}
 		}
 	}
@@ -536,21 +536,21 @@ func (s *Service) cleanupBuiltInMemoryForAccountLocked(accountScopeID string) er
 	return s.deleteProfileForAccountLocked(accountScopeID, "memory")
 }
 
-func shouldRemoveBuiltInExplorer(profile pebblestore.AgentProfile) bool {
-	if normalizeName(profile.Name) != "explorer" || profile.Mode != ModeSubagent {
+func shouldRemoveBuiltInFinder(profile pebblestore.AgentProfile) bool {
+	if normalizeName(profile.Name) != "finder" || profile.Mode != ModeSubagent {
 		return false
 	}
 	prompt := strings.TrimSpace(profile.Prompt)
-	managedPrompt := prompt == "" || prompt == defaultExplorerPrompt()
+	managedPrompt := prompt == "" || prompt == defaultFinderPrompt()
 	description := strings.TrimSpace(profile.Description)
-	managedDescription := description == "" || description == "Repository explorer"
+	managedDescription := description == "" || description == "Repository finder"
 	managedContract := profile.ToolContract == nil || strings.TrimSpace(profile.ToolContract.Preset) == "read_only"
 	return managedPrompt && managedDescription && managedContract
 }
 
-func (s *Service) cleanupBuiltInExplorerForAccountLocked(accountScopeID string) error {
-	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, "explorer")
-	if err != nil || !ok || !shouldRemoveBuiltInExplorer(profile) {
+func (s *Service) cleanupBuiltInFinderForAccountLocked(accountScopeID string) error {
+	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, "finder")
+	if err != nil || !ok || !shouldRemoveBuiltInFinder(profile) {
 		return err
 	}
 	activeSubagents, err := s.getActiveSubagentsForAccountLocked(accountScopeID, 200)
@@ -558,13 +558,13 @@ func (s *Service) cleanupBuiltInExplorerForAccountLocked(accountScopeID string) 
 		return err
 	}
 	for purpose, assigned := range activeSubagents {
-		if IsExplorerAgentName(purpose) || IsExplorerAgentName(assigned) {
+		if IsFinderAgentName(purpose) || IsFinderAgentName(assigned) {
 			if err := s.deleteActiveSubagentForAccountLocked(accountScopeID, purpose); err != nil {
 				return err
 			}
 		}
 	}
-	return s.deleteProfileForAccountLocked(accountScopeID, "explorer")
+	return s.deleteProfileForAccountLocked(accountScopeID, "finder")
 }
 
 func (s *Service) cleanupBuiltInCoderForAccountLocked(accountScopeID string) error {
@@ -605,9 +605,9 @@ func (s *Service) cleanupCompiledSwarmContextForAccountLocked(accountScopeID str
 	return s.putProfileForAccountLocked(accountScopeID, context)
 }
 
-func defaultExplorerPrompt() string {
+func defaultFinderPrompt() string {
 	return strings.TrimSpace("" +
-		"You are Explorer, a subagent focused on repository inspection and evidence collection.\n" +
+		"You are Finder, a subagent focused on repository inspection and evidence collection.\n" +
 		"Map files, summarize architecture and execution flow, and surface likely attack points.\n" +
 		"Provide precise findings with path/line evidence, then end with a `Relevant filepaths:` list and why each file matters.")
 }
@@ -1771,7 +1771,7 @@ func (s *Service) restoreDefaultsForAccount(accountScopeID string) (State, int64
 	if err := s.cleanupBuiltInMemoryForAccountLocked(accountScopeID); err != nil {
 		return State{}, 0, nil, err
 	}
-	if err := s.cleanupBuiltInExplorerForAccountLocked(accountScopeID); err != nil {
+	if err := s.cleanupBuiltInFinderForAccountLocked(accountScopeID); err != nil {
 		return State{}, 0, nil, err
 	}
 	if err := s.cleanupBuiltInCoderForAccountLocked(accountScopeID); err != nil {
@@ -1896,7 +1896,7 @@ func (s *Service) resetDefaultsForAccount(accountScopeID string) (State, int64, 
 	if err := s.cleanupBuiltInMemoryForAccountLocked(accountScopeID); err != nil {
 		return State{}, 0, nil, err
 	}
-	if err := s.cleanupBuiltInExplorerForAccountLocked(accountScopeID); err != nil {
+	if err := s.cleanupBuiltInFinderForAccountLocked(accountScopeID); err != nil {
 		return State{}, 0, nil, err
 	}
 	if err := s.cleanupBuiltInCoderForAccountLocked(accountScopeID); err != nil {
@@ -2261,10 +2261,10 @@ func (s *Service) ResolveSubagentForAccount(accountScopeID, nameOrPurpose string
 func (s *Service) resolveSubagentForAccount(accountScopeID, nameOrPurpose string) (pebblestore.AgentProfile, error) {
 	key := normalizeName(nameOrPurpose)
 	if key == "" {
-		key = "explorer"
+		key = "finder"
 	}
-	if IsExplorerAgentName(key) {
-		return s.ResolveSystemAgent(ExplorerAgentID, pebblestore.AgentProfile{})
+	if IsFinderAgentName(key) {
+		return s.ResolveSystemAgent(FinderAgentID, pebblestore.AgentProfile{})
 	}
 	if IsCoderAgentName(key) {
 		return s.ResolveSystemAgent(CoderAgentID, pebblestore.AgentProfile{})

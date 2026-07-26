@@ -31,9 +31,9 @@ func TestResolveSessionEffectiveAgentPolicyOverridesStaleMetadata(t *testing.T) 
 
 func TestResolveSessionEffectiveAgentIgnoresRequestMetadataForPrimarySession(t *testing.T) {
 	summary := model.SessionSummary{Metadata: map[string]any{
-		"requested_subagent": "explorer",
+		"requested_subagent": "finder",
 		"target_kind":        "subagent",
-		"target_name":        "explorer",
+		"target_name":        "finder",
 		"agent_name":         "old-agent",
 	}}
 
@@ -46,13 +46,13 @@ func TestResolveSessionEffectiveAgentIgnoresRequestMetadataForPrimarySession(t *
 func TestResolveSessionEffectiveAgentUsesGenuineChildLineage(t *testing.T) {
 	summary := model.SessionSummary{Metadata: map[string]any{
 		"parent_session_id":  "parent-1",
-		"lineage_label":      "@explorer",
+		"lineage_label":      "@finder",
 		"requested_subagent": "stale-request",
 	}}
 
 	agent, _, _, _ := resolveSessionEffectiveAgent(summary, client.SessionV3AgentModelPolicy{}, client.AgentState{}, "swarm", "", true, true)
-	if agent != "explorer" {
-		t.Fatalf("agent = %q, want explorer", agent)
+	if agent != "finder" {
+		t.Fatalf("agent = %q, want finder", agent)
 	}
 }
 

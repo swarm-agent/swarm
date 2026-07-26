@@ -145,7 +145,7 @@ func TestTaskStreamV2UsesKeyedRowsWithoutRawJSONOrReports(t *testing.T) {
 	state.Session.ID = "s"
 	started, _ := json.Marshal(map[string]any{"call_id": "task-1", "tool_name": "task", "arguments": `{"prompt":"inspect"}`})
 	state = applyToolEvent(state, clientSessionV3Event{Seq: 1, EventType: "session.tool.started"}, rawToolPayload(t, started))
-	firstPatch := `{"tool":"task","path_id":"tool.task.stream.v2","launch_count":2,"launch_key":"child-1","launch":{"launch_index":1,"child_session_id":"child-1","subagent":"explorer","assignment_label":"Map backend","status":"running","current_tool":"search","current_tool_display":"search x3","current_preview_kind":"assistant","current_preview_text":"SECRET CHILD RESPONSE"}}`
+	firstPatch := `{"tool":"task","path_id":"tool.task.stream.v2","launch_count":2,"launch_key":"child-1","launch":{"launch_index":1,"child_session_id":"child-1","subagent":"finder","assignment_label":"Map backend","status":"running","current_tool":"search","current_tool_display":"search x3","current_preview_kind":"assistant","current_preview_text":"SECRET CHILD RESPONSE"}}`
 	secondPatch := `{"tool":"task","path_id":"tool.task.stream.v2","launch_count":2,"launch_key":"child-2","launch":{"launch_index":2,"child_session_id":"child-2","subagent":"coder","assignment_label":"Implement TUI","status":"running","current_tool":"edit"}}`
 	for seq, patch := range []string{firstPatch, secondPatch} {
 		delta, _ := json.Marshal(map[string]any{"call_id": "task-1", "tool_name": "task", "output": patch})
@@ -166,7 +166,7 @@ func TestTaskStreamV2UsesKeyedRowsWithoutRawJSONOrReports(t *testing.T) {
 		rendered.WriteByte('\n')
 	}
 	text := rendered.String()
-	for _, want := range []string{"SUBAGENT STREAM", "Map backend", "@explorer", "current: search x3", "Implement TUI", "@coder", "current: edit"} {
+	for _, want := range []string{"SUBAGENT STREAM", "Map backend", "@finder", "current: search x3", "Implement TUI", "@coder", "current: edit"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("task rows missing %q:\n%s", want, text)
 		}
@@ -200,7 +200,7 @@ func TestTaskStreamV2RetainsProgressionWhenLaterPatchHasEmptyCurrentTool(t *test
 }
 
 func TestTaskTerminalPresentationSuppressesResolvedReportBodies(t *testing.T) {
-	tool := ToolTimelineItem{Name: "task", Status: "completed", Output: `{"tool":"task","path_id":"tool.task.v1","launch_count":1,"launches":[{"launch_index":1,"subagent":"explorer","assignment_label":"Map backend","status":"ok","elapsed_ms":3400,"report":"SECRET FULL REPORT","report_excerpt":"SECRET EXCERPT"}]}`}
+	tool := ToolTimelineItem{Name: "task", Status: "completed", Output: `{"tool":"task","path_id":"tool.task.v1","launch_count":1,"launches":[{"launch_index":1,"subagent":"finder","assignment_label":"Map backend","status":"ok","elapsed_ms":3400,"report":"SECRET FULL REPORT","report_excerpt":"SECRET EXCERPT"}]}`}
 	presentation := buildToolPresentation(tool)
 	if presentation.Kind != "task" || len(presentation.TaskRows) != 1 || presentation.TaskRows[0].Status != "done" {
 		t.Fatalf("terminal task presentation = %#v", presentation)

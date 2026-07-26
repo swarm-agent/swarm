@@ -191,7 +191,7 @@ func TestRenderTaskToolTableLines_StackedShowsCriticalSubagentFields(t *testing.
 		ToolState: "running",
 		Metadata: map[string]any{
 			chatToolTimelineObjectMetadataKey:    true,
-			chatToolTimelinePayloadMetadataKey:   `{"tool":"task","status":"running","launches":[{"launch_index":1,"subagent":"explorer","assignment_label":"Backend architecture mapper","subagent_provider":"anthropic","subagent_model":"claude-sonnet","status":"running","current_tool":"search","current_tool_ms":1500}]}`,
+			chatToolTimelinePayloadMetadataKey:   `{"tool":"task","status":"running","launches":[{"launch_index":1,"subagent":"finder","assignment_label":"Backend architecture mapper","subagent_provider":"anthropic","subagent_model":"claude-sonnet","status":"running","current_tool":"search","current_tool_ms":1500}]}`,
 			chatToolTimelineStartedAtMetadataKey: int64(100),
 		},
 	}
@@ -205,7 +205,7 @@ func TestRenderTaskToolTableLines_StackedShowsCriticalSubagentFields(t *testing.
 		joinedParts = append(joinedParts, line.Text)
 	}
 	joined := strings.Join(joinedParts, "\n")
-	for _, want := range []string{"Subagents · 1 running", "Backend architecture mapper", "@explorer", "anthropic/claude-sonnet", "search", "1.5s"} {
+	for _, want := range []string{"Subagents · 1 running", "Backend architecture mapper", "@finder", "anthropic/claude-sonnet", "search", "1.5s"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("stacked task view missing %q:\n%s", want, joined)
 		}

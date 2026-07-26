@@ -22,7 +22,7 @@ func TestSwarmProfilesHTTPCRUD(t *testing.T) {
 	server := &Server{}
 	server.SetSwarmProfileService(modelprofile.NewSwarmService(pebblestore.NewSwarmProfileStore(store)))
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-one", AccountScopeID: "account-one"}
-	body := `{"name":"Crew","members":[{"agent_id":"swarm","model_mode":"single","single":{"provider":"codex","model":"gpt","thinking":"high","service_tier":"default","context_mode":"full"}},{"agent_id":"system-explorer","model_mode":"split","plan":{"provider":"codex","model":"gpt","thinking":"high","service_tier":"default","context_mode":"full"},"auto":{"provider":"codex","model":"gpt","thinking":"medium","service_tier":"default","context_mode":"full"}}]}`
+	body := `{"name":"Crew","members":[{"agent_id":"swarm","model_mode":"single","single":{"provider":"codex","model":"gpt","thinking":"high","service_tier":"default","context_mode":"full"}},{"agent_id":"system-finder","model_mode":"split","plan":{"provider":"codex","model":"gpt","thinking":"high","service_tier":"default","context_mode":"full"},"auto":{"provider":"codex","model":"gpt","thinking":"medium","service_tier":"default","context_mode":"full"}}]}`
 	created := swarmProfileHTTP(t, server, principal, http.MethodPost, swarmProfilesPath, body, http.StatusCreated)
 	profile := created["swarm_profile"].(map[string]any)
 	profileID := profile["profile_id"].(string)

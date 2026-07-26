@@ -162,7 +162,7 @@ func TestListTopSessionsByWorkspaceExcludesChildrenOfUnselectedParents(t *testin
 		CreatedAt:     200,
 		Metadata: map[string]any{
 			"parent_session_id":  "parent-00",
-			"requested_subagent": "explorer",
+			"requested_subagent": "finder",
 		},
 	}); err != nil {
 		t.Fatalf("create selected parent child: %v", err)
@@ -176,7 +176,7 @@ func TestListTopSessionsByWorkspaceExcludesChildrenOfUnselectedParents(t *testin
 		CreatedAt:     300,
 		Metadata: map[string]any{
 			"parent_session_id":  "parent-02",
-			"requested_subagent": "explorer",
+			"requested_subagent": "finder",
 		},
 	}); err != nil {
 		t.Fatalf("create unselected parent child: %v", err)

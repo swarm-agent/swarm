@@ -7,7 +7,7 @@ import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settin
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
 import { uiSettingsQueryOptions } from '../../../queries/query-options'
 import { saveSystemAgentSettings } from '../../settings/swarm/mutations/save-system-agent-settings'
-import { normalizeCoderAgentSettings, normalizeCompactAgentSettings, normalizeDesignerAgentSettings, normalizeExplorerAgentSettings } from '../../settings/swarm/types/swarm-settings'
+import { normalizeCoderAgentSettings, normalizeCompactAgentSettings, normalizeDesignerAgentSettings, normalizeFinderAgentSettings } from '../../settings/swarm/types/swarm-settings'
 import { displayAgentName } from '../services/agent-display'
 import { canSwitchModelProfilePolicyGroup, modelProfilePolicyGroupLabel, modelProfilesInPolicyGroup, type ModelProfilePolicyGroup } from '../services/model-profile-groups'
 
@@ -74,13 +74,13 @@ interface AgentModelControlProps {
 
 type DraftMode = 'single' | 'split'
 const COMPACT_AGENT_NAME = 'system-compact'
-const EXPLORER_AGENT_NAME = 'system-explorer'
+const FINDER_AGENT_NAME = 'system-finder'
 const CODER_AGENT_NAME = 'system-coder'
 const DESIGNER_AGENT_NAME = 'system-designer'
 const SWARM_AGENT_NAME = 'swarm'
 
 function isSystemUtility(name: string): boolean {
-  return name === COMPACT_AGENT_NAME || name === EXPLORER_AGENT_NAME || name === CODER_AGENT_NAME || name === DESIGNER_AGENT_NAME
+  return name === COMPACT_AGENT_NAME || name === FINDER_AGENT_NAME || name === CODER_AGENT_NAME || name === DESIGNER_AGENT_NAME
 }
 
 function isCompiledSystemAgent(name: string): boolean {
@@ -331,7 +331,7 @@ export function AgentModelControl({
   const queryClient = useQueryClient()
   const { data: uiSettings = {} } = useQuery(uiSettingsQueryOptions())
   const compactSettings = normalizeCompactAgentSettings(uiSettings)
-  const explorerSettings = normalizeExplorerAgentSettings(uiSettings)
+  const finderSettings = normalizeFinderAgentSettings(uiSettings)
   const coderSettings = normalizeCoderAgentSettings(uiSettings)
   const designerSettings = normalizeDesignerAgentSettings(uiSettings)
   const coderSettingsEnabled = Boolean(coderSettings.provider && coderSettings.model)
@@ -350,21 +350,21 @@ export function AgentModelControl({
     toolContract: { preset: 'custom', inheritPolicy: false, tools: {} },
     enabled: true, protected: true, updatedAt: 0,
   }), [compactSettings.model, compactSettings.provider, compactSettings.service_tier, compactSettings.thinking])
-  const explorerProfile = useMemo<AgentProfileRecord>(() => ({
-    name: EXPLORER_AGENT_NAME,
+  const finderProfile = useMemo<AgentProfileRecord>(() => ({
+    name: FINDER_AGENT_NAME,
     mode: 'subagent',
     description: 'Compiled repository and web research subagent',
-    provider: explorerSettings.provider,
-    model: explorerSettings.model,
-    thinking: explorerSettings.thinking,
+    provider: finderSettings.provider,
+    model: finderSettings.model,
+    thinking: finderSettings.thinking,
     modelMode: 'single',
     planProvider: '', planModel: '', planThinking: '', planServiceTier: '',
-    autoProvider: '', autoModel: '', autoThinking: '', autoServiceTier: explorerSettings.service_tier,
+    autoProvider: '', autoModel: '', autoThinking: '', autoServiceTier: finderSettings.service_tier,
     prompt: '', runtimeMode: 'read', defaultSessionMode: 'auto', executionSetting: 'read',
     exitPlanModeEnabled: false, toolScope: null,
     toolContract: { preset: 'custom', inheritPolicy: false, tools: { read: { enabled: true, bashPrefixes: [] }, search: { enabled: true, bashPrefixes: [] }, list: { enabled: true, bashPrefixes: [] }, websearch: { enabled: true, bashPrefixes: [] }, webfetch: { enabled: true, bashPrefixes: [] } } },
     enabled: true, protected: true, updatedAt: 0,
-  }), [explorerSettings.model, explorerSettings.provider, explorerSettings.service_tier, explorerSettings.thinking])
+  }), [finderSettings.model, finderSettings.provider, finderSettings.service_tier, finderSettings.thinking])
   const coderProfile = useMemo<AgentProfileRecord>(() => ({
     name: CODER_AGENT_NAME,
     mode: 'subagent',
@@ -397,7 +397,7 @@ export function AgentModelControl({
   const [editingProfileId, setEditingProfileId] = useState('')
   const [baseline, setBaseline] = useState('')
   const initializedOpenRef = useRef(false)
-  const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'explorer' && (!isCompiledSystemAgent(agent.name) || agent.name === SWARM_AGENT_NAME)), compactProfile, explorerProfile, coderProfile, designerProfile], [agents, coderProfile, compactProfile, designerProfile, explorerProfile])
+  const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'finder' && (!isCompiledSystemAgent(agent.name) || agent.name === SWARM_AGENT_NAME)), compactProfile, finderProfile, coderProfile, designerProfile], [agents, coderProfile, compactProfile, designerProfile, finderProfile])
   const activeProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? selectableAgents.find((agent) => agent.name === currentAgent) ?? null
   const [draftAgentName, setDraftAgentName] = useState(activeProfile?.name ?? selectedPrimaryAgent)
   const draftProfile = selectableAgents.find((agent) => agent.name === draftAgentName) ?? activeProfile
@@ -580,7 +580,7 @@ export function AgentModelControl({
       if (isSystemUtility(profile.name)) {
         const saved = await saveSystemAgentSettings({
           current: uiSettings,
-          agent: profile.name === COMPACT_AGENT_NAME ? 'compact' : profile.name === CODER_AGENT_NAME ? 'coder' : profile.name === DESIGNER_AGENT_NAME ? 'designer' : 'explorer',
+          agent: profile.name === COMPACT_AGENT_NAME ? 'compact' : profile.name === CODER_AGENT_NAME ? 'coder' : profile.name === DESIGNER_AGENT_NAME ? 'designer' : 'finder',
           settings: {
             provider: String(action.agentPatch.provider ?? '').trim(),
             model: String(action.agentPatch.model ?? '').trim(),
@@ -712,7 +712,7 @@ export function AgentModelControl({
             {draftProfile && isSystemUtility(draftProfile.name) ? (
               <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
                 <div className="font-semibold text-[var(--app-text)]">Compiled system agent</div>
-                <div className="mt-1">{draftProfile.name === COMPACT_AGENT_NAME ? 'Compact' : draftProfile.name === CODER_AGENT_NAME ? 'Coder' : draftProfile.name === DESIGNER_AGENT_NAME ? 'Designer' : 'Explorer'} uses its independently configured single-model selection when set, otherwise it inherits the active account model. Its identity, prompt, runtime, and tool contract remain code-owned.</div>
+                <div className="mt-1">{draftProfile.name === COMPACT_AGENT_NAME ? 'Compact' : draftProfile.name === CODER_AGENT_NAME ? 'Coder' : draftProfile.name === DESIGNER_AGENT_NAME ? 'Designer' : 'Finder'} uses its independently configured single-model selection when set, otherwise it inherits the active account model. Its identity, prompt, runtime, and tool contract remain code-owned.</div>
               </div>
             ) : draftProfile && agentMode(draftProfile) === 'primary' ? (
               <PrimaryAgentControlRow
