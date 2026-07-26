@@ -106,6 +106,24 @@ swarm_current_owner_spec() {
   printf "%s:%s\n" "${uid}" "${gid}"
 }
 
+swarm_file_owner_spec() {
+  local path="${1:-}"
+  local owner=""
+  if owner="$(stat -c '%u:%g' -- "${path}" 2>/dev/null)"; then
+    :
+  elif owner="$(stat -f '%u:%g' -- "${path}" 2>/dev/null)"; then
+    :
+  else
+    echo "unable to inspect owner/group for ${path}" >&2
+    return 1
+  fi
+  if [[ ! "${owner}" =~ ^[0-9]+:[0-9]+$ ]]; then
+    echo "invalid owner/group metadata for ${path}: ${owner}" >&2
+    return 1
+  fi
+  printf '%s\n' "${owner}"
+}
+
 swarm_require_safe_target() {
   local kind="${1:-file}"
   local path="${2:-}"
@@ -282,13 +300,13 @@ swarm_startup_config_ensure() {
   local config_path owner tmp_path
   config_path="$(swarm_startup_config_path)"
   swarm_require_safe_target file "${config_path}" || return 1
-  owner="$(swarm_current_owner_spec)" || return 1
   if [[ -f "${config_path}" ]]; then
-    swarm_run_privileged chown "${owner}" "${config_path}"
+    # Preserve the configured service owner/group; only converge the private mode.
     swarm_run_privileged chmod 0600 "${config_path}"
     return 0
   fi
 
+  owner="$(swarm_current_owner_spec)" || return 1
   swarm_provision_system_paths "$(swarm_lane_default)"
   tmp_path="$(mktemp "${TMPDIR:?TMPDIR must be set}/swarm-conf.XXXXXX")"
   cat >"${tmp_path}" <<'EOF'
@@ -351,7 +369,7 @@ swarm_startup_config_remove_obsolete_keys() {
   ' "${config_path}" >"${tmp_path}"
   if ! cmp -s "${config_path}" "${tmp_path}"; then
     local owner
-    owner="$(swarm_current_owner_spec)" || return 1
+    owner="$(swarm_file_owner_spec "${config_path}")" || return 1
     swarm_run_privileged install -o "${owner%:*}" -g "${owner#*:}" -m 0600 "${tmp_path}" "${config_path}"
   fi
   rm -f "${tmp_path}"
