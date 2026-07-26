@@ -555,7 +555,11 @@ func (r *Runtime) manageSessionsGit(ctx context.Context, scope WorkspaceScope, a
 		if s.WorktreeEnabled && s.WorktreeRootPath != "" {
 			path = s.WorktreeRootPath
 		}
-		if !pathWithinScope(path, scope.Roots, scope.PrimaryPath) {
+		path, canonicalErr := canonicalExistingPath(path)
+		if canonicalErr != nil {
+			return "", fmt.Errorf("canonicalize session %s repository: %w", id, canonicalErr)
+		}
+		if !canonicalPathWithinScope(path, scope.Roots, scope.PrimaryPath) {
 			allowed, allowErr := r.accountOwnsSessionGitPath(ctx, scope, s, path)
 			if allowErr != nil {
 				return "", fmt.Errorf("validate session %s account-owned repository: %w", id, allowErr)
@@ -607,8 +611,12 @@ func managedSessionWorktreeSharesRepositories(ctx context.Context, session pebbl
 	if !session.WorktreeEnabled || strings.TrimSpace(session.WorktreeRootPath) == "" || strings.TrimSpace(session.WorktreeBranch) == "" {
 		return false
 	}
-	worktreePath, err := filepath.Abs(strings.TrimSpace(session.WorktreeRootPath))
-	if err != nil || filepath.Clean(worktreePath) != filepath.Clean(strings.TrimSpace(path)) {
+	worktreePath, err := canonicalExistingPath(session.WorktreeRootPath)
+	if err != nil {
+		return false
+	}
+	canonicalPath, err := canonicalExistingPath(path)
+	if err != nil || worktreePath != canonicalPath {
 		return false
 	}
 	worktreeGit, err := gitstatus.ResolveWatchPaths(ctx, worktreePath)
@@ -1009,21 +1017,26 @@ func boundedInt(v any, def, max int) int {
 	return n
 }
 func pathWithinScope(path string, roots []string, primary string) bool {
-	all := append([]string{}, roots...)
-	if primary != "" {
-		all = append(all, primary)
-	}
-	p, err := filepath.Abs(path)
+	return canonicalPathWithinScope(path, roots, primary)
+}
+
+func canonicalPathWithinScope(path string, roots []string, primary string) bool {
+	canonicalPath, err := canonicalExistingPath(path)
 	if err != nil {
 		return false
 	}
+	all := append(append([]string(nil), roots...), primary)
 	for _, root := range all {
-		r, e := filepath.Abs(root)
-		if e != nil {
+		root = strings.TrimSpace(root)
+		if root == "" {
 			continue
 		}
-		rel, e := filepath.Rel(r, p)
-		if e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		canonicalRoot, err := canonicalExistingPath(root)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(canonicalRoot, canonicalPath)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
 			return true
 		}
 	}

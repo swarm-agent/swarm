@@ -1839,7 +1839,10 @@ func executeGitAdd(parent context.Context, scope WorkspaceScope, args map[string
 	if len(pathspec) == 0 && !all {
 		return "", errors.New("git_add requires pathspec or all=true")
 	}
-	argv = append(argv, pathspec...)
+	if len(pathspec) > 0 {
+		argv = append(argv, "--")
+		argv = append(argv, pathspec...)
+	}
 	return executeGitCommand(parent, scope, "git_add", argv)
 }
 

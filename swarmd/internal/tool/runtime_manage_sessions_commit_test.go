@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/gitstatus"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -82,6 +83,68 @@ func TestManageSessionsCommitCreatesApprovedSameRepositoryChainAndLeavesUnrelate
 		if session.Lifecycle == nil || session.Lifecycle.Phase != "needs_review" {
 			t.Fatalf("session lifecycle changed: %#v", session)
 		}
+	}
+}
+
+func TestManageSessionsCommitStagesApprovedBytesInsteadOfReopeningWorktree(t *testing.T) {
+	repo := t.TempDir()
+	runManageSessionsGitCommand(t, repo, "init")
+	runManageSessionsGitCommand(t, repo, "config", "user.name", "Test User")
+	runManageSessionsGitCommand(t, repo, "config", "user.email", "test@example.invalid")
+	path := filepath.Join(repo, "review.txt")
+	if err := os.WriteFile(path, []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runManageSessionsGitCommand(t, repo, "add", "review.txt")
+	runManageSessionsGitCommand(t, repo, "commit", "-m", "base")
+	approved := []byte("approved bytes\n")
+	if err := os.WriteFile(path, approved, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	status, err := gitstatus.SnapshotForPath(context.Background(), repo, gitstatus.Options{})
+	if err != nil || len(status.Files) != 1 {
+		t.Fatalf("status: %#v err=%v", status.Files, err)
+	}
+	file, err := materializeManageSessionsCommitFile(context.Background(), repo, "review.txt", status.Files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("attacker bytes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := stageManageSessionsApprovedFiles(context.Background(), repo, []manageSessionsCommitFile{file}); err != nil {
+		t.Fatal(err)
+	}
+	got := runManageSessionsGitOutput(t, repo, "show", ":review.txt")
+	if got != string(approved) {
+		t.Fatalf("staged content = %q, want approved content", got)
+	}
+}
+
+func TestManageSessionsCommitCanonicalizesSymlinkedWorkspaceBeforeOwnership(t *testing.T) {
+	ownedParent := t.TempDir()
+	outside := t.TempDir()
+	repo := filepath.Join(outside, "repo")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runManageSessionsGitCommand(t, repo, "init")
+	if err := os.WriteFile(filepath.Join(repo, "review.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(ownedParent, "linked-repo")
+	if err := os.Symlink(repo, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{
+		sessions: map[string]pebblestore.SessionSnapshot{"s1": {ID: "s1", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspacePath: link, UpdatedAt: 1, Lifecycle: &pebblestore.SessionLifecycleSnapshot{Phase: "needs_review"}}},
+		plans:    map[string]pebblestore.SessionPlanSnapshot{"s1": {Document: &pebblestore.SessionPlanDocument{Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp", Status: "needs_review", ChangedFiles: []string{"review.txt"}}}}}},
+	}
+	runtime := &Runtime{sessions: service, workspace: &gitManageWorkspaceService{owned: map[string]bool{filepath.Clean(link): true}}}
+	_, err := runtime.PrepareManageSessionsCommitManifest(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{"action": "commit", "commits": []any{map[string]any{"session_id": "s1", "message": "review"}}})
+	if err == nil || !strings.Contains(err.Error(), "not account-owned") {
+		t.Fatalf("ownership error = %v", err)
 	}
 }
 

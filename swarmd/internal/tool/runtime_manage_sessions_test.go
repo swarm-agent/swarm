@@ -424,6 +424,18 @@ func (s *gitManageWorkspaceService) ListKnownForPrincipal(identity.Principal, in
 	return entries, nil
 }
 
+func TestPathWithinScopeCanonicalizesSymlinkTargets(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "escape")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if pathWithinScope(link, []string{root}, root) {
+		t.Fatal("symlink escape was treated as inside workspace scope")
+	}
+}
+
 func TestManageSessionsGitStatusAllowsAccountOwnedRepositoryOutsideActiveWorkspace(t *testing.T) {
 	activeRepo := t.TempDir()
 	accountRepo := t.TempDir()
@@ -437,6 +449,25 @@ func TestManageSessionsGitStatusAllowsAccountOwnedRepositoryOutsideActiveWorkspa
 	runtime := &Runtime{sessions: service, workspace: &gitManageWorkspaceService{owned: map[string]bool{filepath.Clean(accountRepo): true}}}
 	if _, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{PrimaryPath: activeRepo, Roots: []string{activeRepo}, Principal: principal}, map[string]any{"action": "git_status", "session_id": "session-1"}); err != nil {
 		t.Fatalf("git_status account-owned repository: %v", err)
+	}
+}
+
+func TestManageSessionsGitStatusRejectsSymlinkEscapeFromActiveWorkspace(t *testing.T) {
+	activeRoot := t.TempDir()
+	outsideRepo := t.TempDir()
+	runManageSessionsGitCommand(t, outsideRepo, "init")
+	link := filepath.Join(activeRoot, "linked-repo")
+	if err := os.Symlink(outsideRepo, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{sessions: map[string]pebblestore.SessionSnapshot{"session-1": {
+		ID: "session-1", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspacePath: link,
+	}}}
+	runtime := &Runtime{sessions: service, workspace: &gitManageWorkspaceService{owned: map[string]bool{}}}
+	_, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{PrimaryPath: activeRoot, Roots: []string{activeRoot}, Principal: principal}, map[string]any{"action": "git_status", "session_id": "session-1"})
+	if err == nil || !strings.Contains(err.Error(), "repository is not account-owned") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

@@ -20,7 +20,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-const manageSessionsCommitManifestVersion = 1
+const manageSessionsCommitManifestVersion = 2
 
 type manageSessionsCommitRequest struct {
 	SessionID string `json:"session_id"`
@@ -30,6 +30,9 @@ type manageSessionsCommitRequest struct {
 type manageSessionsCommitFile struct {
 	Path        string `json:"path"`
 	Fingerprint string `json:"fingerprint"`
+	GitMode     string `json:"git_mode,omitempty"`
+	BlobOID     string `json:"blob_oid,omitempty"`
+	Deleted     bool   `json:"deleted,omitempty"`
 }
 
 type manageSessionsCommitCandidate struct {
@@ -98,25 +101,36 @@ func (r *Runtime) manageSessionsCommit(ctx context.Context, scope WorkspaceScope
 			return marshalManageSessionsCommitFailure(results, i, candidate, err)
 		}
 		paths := commitCandidatePaths(candidate.Files)
-		if _, err := runManageSessionsGit(ctx, candidate.Repository, "add", append([]string{"--"}, paths...)...); err != nil {
+		if err := stageManageSessionsApprovedFiles(ctx, candidate.Repository, candidate.Files); err != nil {
 			_ = unstageManageSessionsCommitPaths(ctx, candidate.Repository, paths)
-			return marshalManageSessionsCommitFailure(results, i, candidate, fmt.Errorf("stage files: %w", err))
+			return marshalManageSessionsCommitFailure(results, i, candidate, fmt.Errorf("stage approved files: %w", err))
 		}
-		// The index was required clean and now contains only this candidate's exact
-		// approved paths. Commit the index so attributed untracked files are supported.
-		if _, err := runManageSessionsGit(ctx, candidate.Repository, "commit", "-m", candidate.Message); err != nil {
-			_ = unstageManageSessionsCommitPaths(ctx, candidate.Repository, paths)
-			return marshalManageSessionsCommitFailure(results, i, candidate, fmt.Errorf("create commit: %w", err))
-		}
-		head, err := manageSessionsGitOutput(ctx, candidate.Repository, "rev-parse", "HEAD")
+		// The index was required clean and is populated from the approved blob IDs,
+		// never by reopening mutable worktree content after final validation. Build
+		// and advance the commit directly so repository hooks cannot rewrite the index.
+		tree, err := manageSessionsGitOutput(ctx, candidate.Repository, "write-tree")
 		if err != nil {
-			return marshalManageSessionsCommitFailure(results, i, candidate, fmt.Errorf("read created commit: %w", err))
+			_ = unstageManageSessionsCommitPaths(ctx, candidate.Repository, paths)
+			return marshalManageSessionsCommitFailure(results, i, candidate, fmt.Errorf("write approved tree: %w", err))
 		}
-		committedRaw, err := manageSessionsGitOutput(ctx, candidate.Repository, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", head)
+		created, err := runManageSessionsGitInput(ctx, candidate.Repository, []byte(candidate.Message+"\n"), "commit-tree", tree, "-p", expectedHead)
+		if err != nil {
+			_ = unstageManageSessionsCommitPaths(ctx, candidate.Repository, paths)
+			return marshalManageSessionsCommitFailure(results, i, candidate, fmt.Errorf("create commit object: %w", err))
+		}
+		head := strings.TrimSpace(string(created))
+		if _, err := runManageSessionsGit(ctx, candidate.Repository, "update-ref", "HEAD", head, expectedHead); err != nil {
+			_ = unstageManageSessionsCommitPaths(ctx, candidate.Repository, paths)
+			return marshalManageSessionsCommitFailure(results, i, candidate, fmt.Errorf("advance repository HEAD: %w", err))
+		}
+		if _, err := runManageSessionsGit(ctx, candidate.Repository, "reset", "--quiet", head); err != nil {
+			return marshalManageSessionsCommitFailure(results, i, candidate, fmt.Errorf("refresh index after commit: %w", err))
+		}
+		committedRaw, err := manageSessionsGitOutput(ctx, candidate.Repository, "diff-tree", "--no-commit-id", "--name-only", "-z", "-r", "--root", head)
 		if err != nil {
 			return marshalManageSessionsCommitFailure(results, i, candidate, fmt.Errorf("verify created commit: %w", err))
 		}
-		committed := nonEmptyLines(committedRaw)
+		committed := nonEmptyNULPaths(committedRaw)
 		sort.Strings(committed)
 		want := append([]string(nil), paths...)
 		sort.Strings(want)
@@ -205,13 +219,16 @@ func (r *Runtime) resolveManageSessionsCommitCandidate(ctx context.Context, scop
 	if session.WorktreeEnabled && strings.TrimSpace(session.WorktreeRootPath) != "" {
 		path = strings.TrimSpace(session.WorktreeRootPath)
 	}
-	allowed := pathWithinScope(path, scope.Roots, scope.PrimaryPath)
-	if !allowed {
-		var err error
-		allowed, err = r.accountOwnsSessionGitPath(ctx, scope, session, path)
-		if err != nil {
-			return manageSessionsCommitCandidate{}, err
-		}
+	path, err := canonicalExistingPath(path)
+	if err != nil {
+		return manageSessionsCommitCandidate{}, fmt.Errorf("session %s workspace path: %w", session.ID, err)
+	}
+	// Commit authorization never treats a caller-supplied lexical scope as authority.
+	// Resolve the selected repository canonically, then require an account-owned
+	// workspace binding or a managed linked-worktree relationship.
+	allowed, err := r.accountOwnsSessionGitPath(ctx, scope, session, path)
+	if err != nil {
+		return manageSessionsCommitCandidate{}, err
 	}
 	if !allowed {
 		return manageSessionsCommitCandidate{}, fmt.Errorf("session %s repository is not account-owned", session.ID)
@@ -220,11 +237,7 @@ func (r *Runtime) resolveManageSessionsCommitCandidate(ctx context.Context, scop
 	if err != nil || !snapshot.HasGit || strings.TrimSpace(snapshot.RepoRoot) == "" {
 		return manageSessionsCommitCandidate{}, fmt.Errorf("session %s workspace is not an available Git repository", session.ID)
 	}
-	repo, err := filepath.Abs(snapshot.RepoRoot)
-	if err != nil {
-		return manageSessionsCommitCandidate{}, err
-	}
-	repo, err = filepath.EvalSymlinks(repo)
+	repo, err := canonicalExistingPath(snapshot.RepoRoot)
 	if err != nil {
 		return manageSessionsCommitCandidate{}, err
 	}
@@ -240,7 +253,7 @@ func (r *Runtime) resolveManageSessionsCommitCandidate(ctx context.Context, scop
 	}
 	dirty := map[string]gitstatus.FileStatus{}
 	for _, file := range snapshot.Files {
-		dirty[filepath.Clean(file.Path)] = file
+		dirty[filepath.ToSlash(filepath.Clean(file.Path))] = file
 	}
 	files := make([]manageSessionsCommitFile, 0, len(changedFiles))
 	seen := map[string]struct{}{}
@@ -259,12 +272,24 @@ func (r *Runtime) resolveManageSessionsCommitCandidate(ctx context.Context, scop
 		if status.Staged || status.Conflict {
 			return manageSessionsCommitCandidate{}, fmt.Errorf("session %s file %s is staged or conflicted", session.ID, rel)
 		}
-		fingerprint, err := fingerprintManageSessionsCommitFile(repo, rel, status)
+		if strings.TrimSpace(status.XY) == "" {
+			return manageSessionsCommitCandidate{}, fmt.Errorf("session %s file %s has an unsupported ambiguous Git status", session.ID, rel)
+		}
+		if strings.ContainsAny(status.Path, "\x00\r\n") || strings.ContainsAny(status.OrigPath, "\x00\r\n") {
+			return manageSessionsCommitCandidate{}, fmt.Errorf("session %s file %s has an unsupported control character in its Git status path", session.ID, rel)
+		}
+		if status.Kind == "rename" || strings.TrimSpace(status.OrigPath) != "" {
+			return manageSessionsCommitCandidate{}, fmt.Errorf("session %s file %s has unsupported rename/copy status; declare the resulting paths separately after Git reports unambiguous ordinary statuses", session.ID, rel)
+		}
+		if strings.TrimSpace(status.Submodule) != "" && status.Submodule != "N..." {
+			return manageSessionsCommitCandidate{}, fmt.Errorf("session %s file %s is a submodule and cannot be committed through manage-sessions", session.ID, rel)
+		}
+		file, err := materializeManageSessionsCommitFile(ctx, repo, rel, status)
 		if err != nil {
 			return manageSessionsCommitCandidate{}, err
 		}
 		seen[rel] = struct{}{}
-		files = append(files, manageSessionsCommitFile{Path: rel, Fingerprint: fingerprint})
+		files = append(files, file)
 	}
 	if len(files) == 0 {
 		return manageSessionsCommitCandidate{}, fmt.Errorf("session %s has no attributable dirty files", session.ID)
@@ -401,28 +426,43 @@ func (r *Runtime) validateManageSessionsCommitCandidate(ctx context.Context, sco
 	}
 	dirty := map[string]gitstatus.FileStatus{}
 	for _, file := range snapshot.Files {
-		dirty[filepath.Clean(file.Path)] = file
+		dirty[filepath.ToSlash(filepath.Clean(file.Path))] = file
 	}
 	for _, file := range candidate.Files {
 		status, ok := dirty[file.Path]
-		if !ok || status.Staged || status.Conflict {
-			return fmt.Errorf("approved file %s is no longer an eligible dirty file", file.Path)
+		if !ok || status.Staged || status.Conflict || status.Kind == "rename" || strings.TrimSpace(status.OrigPath) != "" || (strings.TrimSpace(status.Submodule) != "" && status.Submodule != "N...") {
+			return fmt.Errorf("approved file %s is no longer an eligible unambiguous dirty file", file.Path)
 		}
-		fingerprint, err := fingerprintManageSessionsCommitFile(candidate.Repository, file.Path, status)
+		current, err := materializeManageSessionsCommitFile(ctx, candidate.Repository, file.Path, status)
 		if err != nil {
 			return err
 		}
-		if fingerprint != file.Fingerprint {
+		if current != file {
 			return fmt.Errorf("approved file %s changed after approval", file.Path)
 		}
 	}
 	return nil
 }
 
+func canonicalExistingPath(path string) (string, error) {
+	absolute, err := filepath.Abs(strings.TrimSpace(path))
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolved), nil
+}
+
 func normalizeCommitCandidatePath(repo, workspace, declared string) (string, error) {
 	declared = strings.TrimSpace(declared)
 	if declared == "" {
 		return "", errors.New("path is empty")
+	}
+	if strings.ContainsAny(declared, "\x00\r\n") {
+		return "", errors.New("path contains an unsupported control character")
 	}
 	absolute := declared
 	if !filepath.IsAbs(absolute) {
@@ -439,32 +479,59 @@ func normalizeCommitCandidatePath(repo, workspace, declared string) (string, err
 	return filepath.ToSlash(filepath.Clean(rel)), nil
 }
 
-func fingerprintManageSessionsCommitFile(repo, rel string, status gitstatus.FileStatus) (string, error) {
-	h := sha256.New()
-	_, _ = h.Write([]byte(status.XY + "\x00" + status.Kind + "\x00" + rel + "\x00"))
+func materializeManageSessionsCommitFile(ctx context.Context, repo, rel string, status gitstatus.FileStatus) (manageSessionsCommitFile, error) {
+	file := manageSessionsCommitFile{Path: rel}
 	path := filepath.Join(repo, filepath.FromSlash(rel))
 	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
-		_, _ = h.Write([]byte("deleted"))
-	} else if err != nil {
-		return "", err
-	} else if info.Mode()&os.ModeSymlink != 0 {
-		target, err := os.Readlink(path)
-		if err != nil {
-			return "", err
+	var contents []byte
+	switch {
+	case os.IsNotExist(err):
+		if status.Untracked || status.Kind == "untracked" {
+			return file, fmt.Errorf("approved untracked path %s disappeared while it was read", rel)
 		}
-		_, _ = h.Write([]byte("symlink\x00" + target))
-	} else if info.Mode().IsRegular() {
-		contents, err := os.ReadFile(path)
-		if err != nil {
-			return "", err
+		file.Deleted = true
+	case err != nil:
+		return file, err
+	case info.Mode()&os.ModeSymlink != 0:
+		target, readErr := os.Readlink(path)
+		if readErr != nil {
+			return file, readErr
 		}
-		_, _ = h.Write([]byte(fmt.Sprintf("mode:%o\x00", info.Mode().Perm())))
-		_, _ = h.Write(contents)
-	} else {
-		return "", fmt.Errorf("approved path %s is not a regular file or symlink", rel)
+		file.GitMode = "120000"
+		contents = []byte(target)
+	case info.Mode().IsRegular():
+		contents, err = os.ReadFile(path)
+		if err != nil {
+			return file, err
+		}
+		file.GitMode = "100644"
+		if info.Mode()&0o111 != 0 {
+			file.GitMode = "100755"
+		}
+	default:
+		return file, fmt.Errorf("approved path %s is not a regular file or symlink", rel)
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	if !file.Deleted {
+		before, beforeErr := os.Lstat(path)
+		if beforeErr != nil || !os.SameFile(info, before) || before.Mode() != info.Mode() || before.Size() != info.Size() || !before.ModTime().Equal(info.ModTime()) {
+			return file, fmt.Errorf("approved path %s changed while it was read", rel)
+		}
+		output, hashErr := runManageSessionsGitInput(ctx, repo, contents, "hash-object", "-w", "--stdin")
+		if hashErr != nil {
+			return file, fmt.Errorf("identify approved blob for %s: %w", rel, hashErr)
+		}
+		file.BlobOID = strings.TrimSpace(string(output))
+		if len(file.BlobOID) != 40 && len(file.BlobOID) != 64 {
+			return file, fmt.Errorf("identify approved blob for %s returned an invalid object id", rel)
+		}
+	}
+	h := sha256.New()
+	_, _ = h.Write([]byte(status.XY + "\x00" + status.Kind + "\x00" + rel + "\x00" + file.GitMode + "\x00" + file.BlobOID))
+	if file.Deleted {
+		_, _ = h.Write([]byte("\x00deleted"))
+	}
+	file.Fingerprint = hex.EncodeToString(h.Sum(nil))
+	return file, nil
 }
 
 func acquireManageSessionsCommitLocks(repositories []string) []*sync.Mutex {
@@ -519,10 +586,24 @@ func commitCandidatePaths(files []manageSessionsCommitFile) []string {
 }
 
 func runManageSessionsGit(ctx context.Context, repository string, first string, rest ...string) ([]byte, error) {
+	return runManageSessionsGitInput(ctx, repository, nil, first, rest...)
+}
+
+func runManageSessionsGitInput(ctx context.Context, repository string, input []byte, first string, rest ...string) ([]byte, error) {
+	canonicalRepository, err := canonicalExistingPath(repository)
+	if err != nil || canonicalRepository != filepath.Clean(repository) {
+		if err == nil {
+			err = errors.New("repository path identity changed")
+		}
+		return nil, fmt.Errorf("canonicalize repository before git %s: %w", first, err)
+	}
 	args := append([]string{first}, rest...)
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = repository
+	cmd.Dir = canonicalRepository
 	cmd.Env = gitenv.FilterIdentityOverrides(os.Environ())
+	if input != nil {
+		cmd.Stdin = strings.NewReader(string(input))
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return output, fmt.Errorf("git %s: %w: %s", first, err, strings.TrimSpace(string(output)))
@@ -538,16 +619,40 @@ func manageSessionsGitOutput(ctx context.Context, repository string, args ...str
 	return strings.TrimSpace(string(output)), err
 }
 
+func stageManageSessionsApprovedFiles(ctx context.Context, repository string, files []manageSessionsCommitFile) error {
+	for _, file := range files {
+		if file.Deleted {
+			if _, err := runManageSessionsGit(ctx, repository, "update-index", "--force-remove", "--", file.Path); err != nil {
+				return err
+			}
+			continue
+		}
+		if file.GitMode != "100644" && file.GitMode != "100755" && file.GitMode != "120000" {
+			return fmt.Errorf("approved path %s has unsupported Git mode %q", file.Path, file.GitMode)
+		}
+		if file.BlobOID == "" {
+			return fmt.Errorf("approved path %s has no blob identity", file.Path)
+		}
+		if _, err := runManageSessionsGit(ctx, repository, "cat-file", "-e", file.BlobOID+"^{blob}"); err != nil {
+			return fmt.Errorf("approved path %s blob is unavailable: %w", file.Path, err)
+		}
+		if _, err := runManageSessionsGit(ctx, repository, "update-index", "--add", "--cacheinfo", file.GitMode, file.BlobOID, file.Path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func unstageManageSessionsCommitPaths(ctx context.Context, repository string, paths []string) error {
 	_, err := runManageSessionsGit(ctx, repository, "reset", append([]string{"--quiet", "--"}, paths...)...)
 	return err
 }
 
-func nonEmptyLines(value string) []string {
+func nonEmptyNULPaths(value string) []string {
 	out := []string{}
-	for _, line := range strings.Split(value, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			out = append(out, filepath.ToSlash(filepath.Clean(line)))
+	for _, path := range strings.Split(value, "\x00") {
+		if path != "" {
+			out = append(out, filepath.ToSlash(filepath.Clean(path)))
 		}
 	}
 	return out

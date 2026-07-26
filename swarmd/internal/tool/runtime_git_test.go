@@ -34,6 +34,21 @@ func TestExecuteGitCommitUsesConfiguredIdentityAndIgnoresEnvironmentOverrides(t 
 	}
 }
 
+func TestExecuteGitAddTreatsLeadingDashPathspecAsAPath(t *testing.T) {
+	repo := t.TempDir()
+	runGitTestCommand(t, repo, "init")
+	name := "--dry-run"
+	if err := os.WriteFile(filepath.Join(repo, name), []byte("approved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executeGitAdd(context.Background(), WorkspaceScope{PrimaryPath: repo}, map[string]any{"pathspec": []any{name}}); err != nil {
+		t.Fatalf("executeGitAdd() error = %v", err)
+	}
+	if got := strings.TrimSpace(runGitTestCommandOutput(t, repo, "diff", "--cached", "--name-only")); got != name {
+		t.Fatalf("staged path = %q, want %q", got, name)
+	}
+}
+
 func TestExecuteGitCommitDoesNotRunRepositoryWidePrecommitGate(t *testing.T) {
 	repo := t.TempDir()
 	runGitTestCommand(t, repo, "init")
