@@ -37,24 +37,6 @@ interface PermissionPolicy {
   updated_at?: number
 }
 
-interface PermissionExplain {
-  decision: string
-  source: string
-  reason: string
-  tool_name?: string
-  command?: string
-  rule_preview?: string
-  bash_profile?: BashApprovalProfile
-  profile_decision?: string
-  profile_reason?: string
-  bash_effect?: {
-    category?: string
-    critical?: boolean
-    promoted?: boolean
-    reason?: string
-  }
-}
-
 interface PermissionPolicyResponse {
   ok?: boolean
   policy?: PermissionPolicy
@@ -76,13 +58,8 @@ interface PermissionResetResponse {
   policy?: PermissionPolicy
 }
 
-interface PermissionExplainResponse {
-  ok?: boolean
-  explain?: PermissionExplain
-}
-
 export const BASH_APPROVAL_PROFILES: ReadonlyArray<{ value: BashApprovalProfile; label: string; description: string; recommended?: boolean }> = [
-  { value: 'current_rules', label: 'Current rules', description: 'Use granular rules and the existing default Bash behavior.' },
+  { value: 'current_rules', label: 'Current rules', description: 'Use saved permission rules and the existing default Bash behavior.' },
   { value: 'allow_every_read', label: 'Allow every read', description: 'Auto-approve every read, including reads marked critical.' },
   { value: 'allow_safe_reads', label: 'Allow safe reads', description: 'Auto-approve routine reads; prompt for critical reads and protected changes.', recommended: true },
   { value: 'only_critical_prompts', label: 'Only critical prompts', description: 'Auto-approve noncritical reads, writes, and updates; prompt for critical operations and every delete.' },
@@ -91,12 +68,6 @@ export const BASH_APPROVAL_PROFILES: ReadonlyArray<{ value: BashApprovalProfile;
 export function normalizeBashApprovalProfile(value: unknown): BashApprovalProfile {
   return BASH_APPROVAL_PROFILES.some((profile) => profile.value === value) ? value as BashApprovalProfile : 'current_rules'
 }
-
-const DECISION_OPTIONS = [
-  { value: 'allow', label: 'Allow' },
-  { value: 'ask', label: 'Ask' },
-  { value: 'deny', label: 'Deny' },
-] as const
 
 const SESSION_MUTATION_POLICIES = [
   { tool: 'session_commit', title: 'Session commits', description: 'Create Git commits only for approved session-attributed files.' },
@@ -113,12 +84,6 @@ export function sessionMutationDecision(rules: PermissionRule[], tool: string): 
 
 const MAX_SUBAGENT_WAVE_SIZE = 256
 const MAX_SUBAGENT_DEPTH = 16
-
-const KIND_OPTIONS = [
-  { value: 'tool', label: 'Tool' },
-  { value: 'bash-prefix', label: 'Bash prefix' },
-  { value: 'phrase', label: 'Phrase' },
-] as const
 
 function normalizeRuleKind(kind: string): 'tool' | 'bash-prefix' | 'phrase' {
   switch (kind.trim().toLowerCase()) {
@@ -189,14 +154,11 @@ async function setBypassPermissions(enabled: boolean): Promise<boolean> {
   return Boolean(response.bypass_permissions)
 }
 
-async function createPermissionRule(input: { decision: string; kind: string; value: string }): Promise<PermissionRule> {
-  const kind = normalizeRuleKind(input.kind)
-  const body =
-    kind === 'tool'
-      ? { decision: input.decision, kind: 'tool', tool: input.value.trim() }
-      : kind === 'bash-prefix'
-        ? { decision: input.decision, kind: 'bash_prefix', tool: 'bash', pattern: input.value.trim() }
-        : { decision: input.decision, kind: 'phrase', pattern: input.value.trim() }
+export function buildPrefixDenyRulePayload(value: string) {
+  return { decision: 'deny' as const, kind: 'bash_prefix' as const, tool: 'bash' as const, pattern: value.trim() }
+}
+
+async function createPermissionRule(body: { decision: string; kind: string; tool?: string; pattern?: string }): Promise<PermissionRule> {
   const response = await requestJson<PermissionRuleResponse>('/v1/permissions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -224,16 +186,6 @@ async function resetPermissionPolicy(): Promise<PermissionPolicy> {
   return { ...policy, bash_profile: normalizeBashApprovalProfile(policy.bash_profile) }
 }
 
-async function explainPermission(toolName: string, argumentsText: string): Promise<PermissionExplain> {
-  const params = new URLSearchParams({
-    mode: 'auto',
-    tool: toolName.trim(),
-    arguments: argumentsText.trim(),
-  })
-  const response = await requestJson<PermissionExplainResponse>(`/v1/permissions/explain?${params.toString()}`)
-  return response.explain ?? { decision: '', source: '', reason: '', rule_preview: '' }
-}
-
 export function PermissionsSettingsPage() {
   const [policy, setPolicy] = useState<PermissionPolicy>({ version: 0, bash_profile: 'current_rules', rules: [] })
   const [loading, setLoading] = useState(true)
@@ -252,13 +204,7 @@ export function PermissionsSettingsPage() {
   const [busyMutationTool, setBusyMutationTool] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
-  const [decision, setDecision] = useState<'allow' | 'ask' | 'deny'>('allow')
-  const [kind, setKind] = useState<'tool' | 'bash-prefix' | 'phrase'>('tool')
   const [value, setValue] = useState('')
-  const [explainTool, setExplainTool] = useState('bash')
-  const [explainArguments, setExplainArguments] = useState('{"command":"git status"}')
-  const [explainResult, setExplainResult] = useState<PermissionExplain | null>(null)
-  const [explaining, setExplaining] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -286,13 +232,6 @@ export function PermissionsSettingsPage() {
     [policy.rules],
   )
 
-  const valueLabel = kind === 'tool' ? 'Tool name' : kind === 'bash-prefix' ? 'Bash prefix' : 'Phrase'
-  const valuePlaceholder =
-    kind === 'tool'
-      ? 'bash'
-      : kind === 'bash-prefix'
-        ? 'git status'
-        : 'rm -rf /'
 
   const handleSaveSubagents = async () => {
     setSubagentBusy(true)
@@ -344,14 +283,18 @@ export function PermissionsSettingsPage() {
   const handleCreateRule = async () => {
     const trimmed = value.trim()
     if (!trimmed) {
-      setError(`${valueLabel} is required.`)
+      setError('Bash command prefix is required.')
+      return
+    }
+    if (/\s/.test(trimmed)) {
+      setError('Enter one executable or script name without arguments.')
       return
     }
     setSaving(true)
     setError(null)
     setStatus(null)
     try {
-      const rule = await createPermissionRule({ decision, kind, value: trimmed })
+      const rule = await createPermissionRule(buildPrefixDenyRulePayload(trimmed))
       setPolicy((current) => ({
         ...current,
         version: Math.max(current.version, policy.version),
@@ -374,7 +317,7 @@ export function PermissionsSettingsPage() {
     try {
       const matching = policy.rules.filter((rule) => normalizeRuleKind(rule.kind) === 'tool' && rule.tool?.trim().toLowerCase() === tool)
       for (const rule of matching) await deletePermissionRule(rule.id)
-      if (next !== 'ask') await createPermissionRule({ decision: next, kind: 'tool', value: tool })
+      if (next !== 'ask') await createPermissionRule({ decision: next, kind: 'tool', tool })
       const result = await fetchPermissionPolicy()
       setPolicy(result.policy)
       setStatus(`${SESSION_MUTATION_POLICIES.find((entry) => entry.tool === tool)?.title || tool}: ${next === 'ask' ? 'Ask every time' : next === 'allow' ? 'Always allow' : 'Always deny'}`)
@@ -442,28 +385,12 @@ export function PermissionsSettingsPage() {
     }
   }
 
-  const handleExplain = async () => {
-    if (!explainTool.trim()) {
-      setError('Tool name is required for explain.')
-      return
-    }
-    setExplaining(true)
-    setError(null)
-    try {
-      setExplainResult(await explainPermission(explainTool, explainArguments))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to explain permission')
-    } finally {
-      setExplaining(false)
-    }
-  }
-
   return (
     <div className="flex h-full flex-col">
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-[var(--app-text)]">Permissions</h1>
         <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-          Mirror the TUI permission controls here: view the policy, toggle global permissions, add always-allow or always-deny rules, remove rules, reset defaults, and preview how a tool request will resolve.
+          Control account-wide permission behavior, add Bash command-prefix deny rules, and configure separate policies for session mutations.
         </p>
       </div>
 
@@ -515,7 +442,7 @@ export function PermissionsSettingsPage() {
               )
             })}
           </div>
-          <div className="mt-3 rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs leading-5 text-[var(--app-warning)]">Granular rules stay active in every profile. Deny rules override profile auto-approvals; Allow and Ask rules apply when the profile leaves an operation undecided. Profile safety prompts still win over ordinary Allow rules. Allow every read intentionally does not stop critical reads.</div>
+          <div className="mt-3 rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs leading-5 text-[var(--app-warning)]">Saved rules stay active in every profile. Deny rules override profile auto-approvals. Profile safety prompts still win over existing Allow rules. Allow every read intentionally does not stop critical reads.</div>
           {bypassPermissions ? <div className="mt-2 text-xs text-[var(--app-text-muted)]">Permissions are OFF. This profile is preserved and will apply when permissions are turned back ON.</div> : null}
         </section>
 
@@ -611,7 +538,7 @@ export function PermissionsSettingsPage() {
         <section className="rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-5 shadow-sm">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="text-sm font-semibold text-[var(--app-text)]">Granular permission rules</div>
+              <div className="text-sm font-semibold text-[var(--app-text)]">Saved permission rules</div>
               <div className="text-xs text-[var(--app-text-muted)]">
                 Version {policy.version || 0}{policy.updated_at ? ` · updated ${formatTimestamp(policy.updated_at)}` : ''}
               </div>
@@ -656,113 +583,30 @@ export function PermissionsSettingsPage() {
         </section>
 
         <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-5">
-          <div className="text-sm font-semibold text-[var(--app-text)]">Add policy rule</div>
-          <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-            This is the desktop equivalent of commands like /permissions allow tool bash or /permissions deny bash-prefix rm.
+          <div className="text-sm font-semibold text-[var(--app-text)]">Add prefix deny rule</div>
+          <div className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">
+            Deny Bash requests when the first executable or script name exactly matches the saved prefix, after wrappers such as <span className="font-mono">sudo</span> or <span className="font-mono">env</span>. Enter one name, such as <span className="font-mono">gcloud</span>. Following arguments are not inspected; regex and glob syntax are not supported.
           </div>
 
-          <div className="mt-4 grid gap-4 md:grid-cols-3">
-            <label className="grid gap-2">
-              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Decision</span>
-              <select
-                value={decision}
-                onChange={(event) => setDecision(event.target.value as 'allow' | 'ask' | 'deny')}
-                className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm text-[var(--app-text)] outline-none transition-colors hover:border-[var(--app-border-strong)] focus:border-[var(--app-primary)]"
-              >
-                {DECISION_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="grid gap-2">
-              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Match type</span>
-              <select
-                value={kind}
-                onChange={(event) => setKind(event.target.value as 'tool' | 'bash-prefix' | 'phrase')}
-                className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm text-[var(--app-text)] outline-none transition-colors hover:border-[var(--app-border-strong)] focus:border-[var(--app-primary)]"
-              >
-                {KIND_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="grid gap-2 md:col-span-1">
-              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{valueLabel}</span>
-              <Input
-                value={value}
-                onChange={(event) => setValue(event.target.value)}
-                placeholder={valuePlaceholder}
-                className="bg-[var(--app-bg)] border-[var(--app-border)] text-[var(--app-text)]"
-              />
-            </label>
-          </div>
+          <label className="mt-4 grid max-w-xl gap-2">
+            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Bash command prefix</span>
+            <Input
+              aria-label="Bash command prefix to deny"
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              placeholder="gcloud"
+              className="bg-[var(--app-bg)] border-[var(--app-border)] text-[var(--app-text)]"
+            />
+          </label>
 
           <div className="mt-4 flex justify-end">
             <Button variant="primary" onClick={() => void handleCreateRule()} disabled={saving || loading}>
-              {saving ? 'Saving…' : 'Save rule'}
+              {saving ? 'Saving…' : 'Add deny rule'}
             </Button>
           </div>
         </section>
         </div>
 
-        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-5">
-          <div className="text-sm font-semibold text-[var(--app-text)]">Explain a request</div>
-          <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-            Equivalent to /permissions explain &lt;tool&gt; [arguments]. Use it to preview what the backend will do for a tool call.
-          </div>
-
-          <div className="mt-4 grid gap-4 lg:grid-cols-[180px_minmax(0,1fr)]">
-            <label className="grid gap-2">
-              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Tool</span>
-              <Input
-                value={explainTool}
-                onChange={(event) => setExplainTool(event.target.value)}
-                placeholder="bash"
-                className="bg-[var(--app-bg)] border-[var(--app-border)] text-[var(--app-text)]"
-              />
-            </label>
-
-            <label className="grid gap-2">
-              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Arguments JSON/text</span>
-              <textarea
-                value={explainArguments}
-                onChange={(event) => setExplainArguments(event.target.value)}
-                rows={4}
-                className={cn(
-                  'min-h-[120px] rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-text)] outline-none transition-colors hover:border-[var(--app-border-strong)] focus:border-[var(--app-primary)]',
-                )}
-                placeholder='{"command":"git status"}'
-              />
-            </label>
-          </div>
-
-          <div className="mt-4 flex justify-between gap-3">
-            <div className="text-xs text-[var(--app-text-muted)]">
-              Try bash, write, task, or any tool name used by the agent runtime.
-            </div>
-            <Button variant="outline" onClick={() => void handleExplain()} disabled={explaining}>
-              {explaining ? 'Checking…' : 'Explain'}
-            </Button>
-          </div>
-
-          {explainResult ? (
-            <div className="mt-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
-              <div className="grid gap-2 text-sm text-[var(--app-text)] sm:grid-cols-3">
-                <div><span className="text-[var(--app-text-muted)]">Decision:</span> {explainResult.decision || '—'}</div>
-                <div><span className="text-[var(--app-text-muted)]">Source:</span> {explainResult.source || '—'}</div>
-                <div><span className="text-[var(--app-text-muted)]">Rule:</span> {explainResult.rule_preview || '—'}</div>
-                {explainResult.bash_profile ? <div><span className="text-[var(--app-text-muted)]">Bash profile:</span> {BASH_APPROVAL_PROFILES.find((profile) => profile.value === explainResult.bash_profile)?.label || explainResult.bash_profile}</div> : null}
-                {explainResult.bash_effect?.category ? <div><span className="text-[var(--app-text-muted)]">Effect:</span> {explainResult.bash_effect.category}{explainResult.bash_effect.critical ? ' · critical' : ''}</div> : null}
-                {explainResult.profile_decision ? <div><span className="text-[var(--app-text-muted)]">Profile decision:</span> {explainResult.profile_decision}</div> : null}
-              </div>
-              <div className="mt-3 text-sm text-[var(--app-text-muted)]">{explainResult.reason || 'No explanation available.'}</div>
-              {explainResult.bash_effect?.promoted ? <div className="mt-2 text-sm text-[var(--app-warning)]">Backend promotion: {explainResult.bash_effect.reason || 'metadata was conservatively promoted'}</div> : null}
-              {explainResult.profile_reason ? <div className="mt-2 text-sm text-[var(--app-text-muted)]">Profile: {explainResult.profile_reason}</div> : null}
-            </div>
-          ) : null}
-        </section>
       </div>
 
       {confirmBypassOpen ? (
