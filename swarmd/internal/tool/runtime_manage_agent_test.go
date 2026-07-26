@@ -74,10 +74,10 @@ func TestManageAgentCreateAcceptsBackgroundMode(t *testing.T) {
 	results := rt.ExecuteBatch(context.Background(), workspace, []Call{{
 		CallID: "manage-agent-create-background",
 		Name:   "manage-agent",
-		Arguments: mustManageAgentArgsJSON(t, map[string]any{"action": "create", "confirm": true, "agent": "flow-worker", "content": map[string]any{
-			"name":              "flow-worker",
+		Arguments: mustManageAgentArgsJSON(t, map[string]any{"action": "create", "confirm": true, "agent": "background-worker", "content": map[string]any{
+			"name":              "background-worker",
 			"mode":              "background",
-			"prompt":            "Run scheduled flow work.",
+			"prompt":            "Run scheduled background work.",
 			"execution_setting": "read",
 			"tool_contract":     map[string]any{"preset": "read_only"},
 		}}),
@@ -96,12 +96,12 @@ func TestManageAgentCreateAcceptsBackgroundMode(t *testing.T) {
 	if got := agent["mode"]; got != "background" {
 		t.Fatalf("agent.mode = %v, want background", got)
 	}
-	profile, ok, err := agents.GetProfile("flow-worker")
+	profile, ok, err := agents.GetProfile("background-worker")
 	if err != nil {
 		t.Fatalf("get profile: %v", err)
 	}
 	if !ok {
-		t.Fatal("flow-worker profile missing")
+		t.Fatal("background-worker profile missing")
 	}
 	if profile.Mode != agentruntime.ModeBackground {
 		t.Fatalf("persisted mode = %q, want background", profile.Mode)
@@ -190,7 +190,7 @@ func TestManageAgentInspectExplainsAgentModeAndExecutionModeRelationship(t *test
 		"primary agents are user-selectable in Desktop/TUI",
 		"subagent agents are usable by primary agents for task delegation",
 		"also user-selectable in Desktop/TUI",
-		"background agents are for Flows",
+		"background agents are reserved for non-interactive system work",
 		"do not appear in the Desktop/TUI selector",
 		"Execution modes are explicit",
 		"runtime_mode=plan_auto means plan approval mode and forces exit_plan_mode_enabled=true",

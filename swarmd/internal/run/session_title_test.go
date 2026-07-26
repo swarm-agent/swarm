@@ -6,17 +6,16 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestShouldGenerateMemorySessionTitleSkipsFlowLockedSessions(t *testing.T) {
+func TestShouldGenerateMemorySessionTitleSkipsLockedSessions(t *testing.T) {
 	cases := []struct {
 		name     string
 		metadata map[string]any
 	}{
 		{name: "explicit lock", metadata: map[string]any{"title_locked": true}},
 		{name: "string explicit lock", metadata: map[string]any{"title_locked": "true"}},
-		{name: "flow title source", metadata: map[string]any{"title_source": "flow_task"}},
-		{name: "flow source", metadata: map[string]any{"source": "flow"}},
-		{name: "flow owner transport", metadata: map[string]any{"owner_transport": "flow_scheduler"}},
-		{name: "flow lineage", metadata: map[string]any{"lineage_kind": "flow"}},
+		{name: "background marker", metadata: map[string]any{"background": true}},
+		{name: "background launch mode", metadata: map[string]any{"launch_mode": "background"}},
+		{name: "delegated subagent lineage", metadata: map[string]any{"lineage_kind": "delegated_subagent"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

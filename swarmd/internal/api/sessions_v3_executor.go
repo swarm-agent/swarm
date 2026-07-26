@@ -4032,14 +4032,10 @@ func sessionV3TitleGenerationLocked(metadata map[string]any) bool {
 		return true
 	}
 	for _, pair := range []struct{ key, value string }{
-		{"title_source", "flow_task"},
 		{"lineage_kind", "delegated_subagent"},
-		{"lineage_kind", "flow"},
 		{"launch_source", "task"},
 		{"launch_source", "targeted_subagent"},
 		{"launch_mode", "background"},
-		{"source", "flow"},
-		{"owner_transport", "flow_scheduler"},
 		{"subagent", "commit"},
 		{"requested_subagent", "commit"},
 	} {
@@ -4047,7 +4043,7 @@ func sessionV3TitleGenerationLocked(metadata map[string]any) bool {
 			return true
 		}
 	}
-	return sessionV3MetadataString(metadata, "flow_id") != ""
+	return false
 }
 
 func sessionV3MetadataBool(metadata map[string]any, key string) bool {

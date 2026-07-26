@@ -4172,15 +4172,10 @@ func sessionTitleGenerationLocked(metadata map[string]any) bool {
 	if metadataBoolValue(metadata, "title_locked") || metadataBoolValue(metadata, "background") {
 		return true
 	}
-	if metadataStringValueEquals(metadata, "title_source", "flow_task") ||
-		metadataStringValueEquals(metadata, "lineage_kind", "delegated_subagent") ||
-		metadataStringValueEquals(metadata, "lineage_kind", "flow") ||
+	if metadataStringValueEquals(metadata, "lineage_kind", "delegated_subagent") ||
 		metadataStringValueEquals(metadata, "launch_source", "task") ||
 		metadataStringValueEquals(metadata, "launch_source", "targeted_subagent") ||
-		metadataStringValueEquals(metadata, "launch_mode", "background") ||
-		metadataStringValueEquals(metadata, "source", "flow") ||
-		metadataStringValueEquals(metadata, "owner_transport", "flow_scheduler") ||
-		metadataStringValue(metadata, "flow_id") != "" {
+		metadataStringValueEquals(metadata, "launch_mode", "background") {
 		return true
 	}
 	if metadataStringValueEquals(metadata, "subagent", "commit") ||

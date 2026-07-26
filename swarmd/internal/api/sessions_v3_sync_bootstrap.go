@@ -1098,7 +1098,6 @@ func sessionsV3SyncShellMetadataKeyAllowed(key string) bool {
 		"swarm_target_name",
 		"target_display_name",
 		"source",
-		"flow_id",
 		"owner_transport":
 		return true
 	default:

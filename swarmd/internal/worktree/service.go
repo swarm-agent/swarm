@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/appstorage"
-	"swarm/packages/swarmd/internal/flowdiaglog"
 	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -317,7 +316,7 @@ func (s *Service) allocateSessionWorkspaceWithBranchMode(workspacePath string, u
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return Allocation{}, fmt.Errorf("check target worktree path: %w", statErr)
 	}
-	if _, err := runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch, workspacePath, useCurrentBranch, baseBranch, sessionID, workspaceID); err != nil {
+	if _, err := runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch); err != nil {
 		_ = os.RemoveAll(worktreePath)
 		return Allocation{}, fmt.Errorf("create session worktree: %w", err)
 	}
@@ -1101,11 +1100,8 @@ func runGitWithEnv(path string, env []string, args ...string) (string, error) {
 	return output, nil
 }
 
-func runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch, workspacePath string, useCurrentBranch bool, requestedBaseBranch, sessionID, workspaceID string) (string, error) {
+func runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch string) (string, error) {
 	args := []string{"worktree", "add", "-b", branchName, worktreePath, effectiveBranch}
-	command := strings.Join(append([]string{"git", "-C", repoRoot}, args...), " ")
-	flowdiaglog.Printf("worktree_git_worktree_add_start", "repo_root=%q workspace_path=%q worktree_path=%q branch_name=%q effective_base_branch=%q requested_base_branch=%q use_current_branch=%t session_id=%q workspace_id=%q command=%q", repoRoot, workspacePath, worktreePath, branchName, effectiveBranch, strings.TrimSpace(requestedBaseBranch), useCurrentBranch, sessionID, workspaceID, command)
-
 	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repoRoot}, args...)...)
@@ -1117,20 +1113,12 @@ func runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch, work
 	stdoutText := strings.TrimSpace(stdout.String())
 	stderrText := strings.TrimSpace(stderr.String())
 	combinedOutput := strings.TrimSpace(strings.Join(nonEmptyStrings(stdoutText, stderrText), "\n"))
-	exitCode := 0
 	if err != nil {
-		exitCode = -1
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		}
 		if combinedOutput == "" {
 			combinedOutput = strings.TrimSpace(err.Error())
 		}
-		flowdiaglog.Printf("worktree_git_worktree_add_error", "repo_root=%q workspace_path=%q worktree_path=%q branch_name=%q effective_base_branch=%q requested_base_branch=%q use_current_branch=%t session_id=%q workspace_id=%q command=%q exit_code=%d stdout=%q stderr=%q output=%q error=%q timeout=%t", repoRoot, workspacePath, worktreePath, branchName, effectiveBranch, strings.TrimSpace(requestedBaseBranch), useCurrentBranch, sessionID, workspaceID, command, exitCode, stdoutText, stderrText, combinedOutput, err.Error(), errors.Is(ctx.Err(), context.DeadlineExceeded))
 		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), combinedOutput)
 	}
-	flowdiaglog.Printf("worktree_git_worktree_add_success", "repo_root=%q workspace_path=%q worktree_path=%q branch_name=%q effective_base_branch=%q requested_base_branch=%q use_current_branch=%t session_id=%q workspace_id=%q command=%q exit_code=%d stdout=%q stderr=%q output=%q", repoRoot, workspacePath, worktreePath, branchName, effectiveBranch, strings.TrimSpace(requestedBaseBranch), useCurrentBranch, sessionID, workspaceID, command, exitCode, stdoutText, stderrText, combinedOutput)
 	return combinedOutput, nil
 }
 
