@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"swarm-refactor/swarmtui/internal/safefile"
 	"swarm-refactor/swarmtui/pkg/storagecontract"
 )
 
@@ -234,7 +235,7 @@ func Write(cfg FileConfig) error {
 		return fmt.Errorf("create startup config directory: %w", err)
 	}
 	content := Format(cfg)
-	if err := atomicWriteConfig(cfg.Path, []byte(content), configFileMode); err != nil {
+	if err := writeConfigFile(cfg.Path, []byte(content), configFileMode); err != nil {
 		return fmt.Errorf("write startup config %q: %w", cfg.Path, err)
 	}
 	return nil
@@ -646,65 +647,15 @@ func appendMissingKeys(path, text string, perm os.FileMode, cfg FileConfig, seen
 		text += "\n"
 	}
 	text += "\n" + strings.Join(lines, "\n") + "\n"
-	if err := atomicWriteConfig(path, []byte(text), perm); err != nil {
-		return fmt.Errorf("migrate startup config %q: %w", path, err)
+	if err := writeConfigFile(path, []byte(text), perm); err != nil {
+		return fmt.Errorf("update startup config %q: %w", path, err)
 	}
 	return nil
 }
 
-func atomicWriteConfig(path string, payload []byte, createMode os.FileMode) error {
-	dir := filepath.Dir(path)
-	mode := createMode.Perm()
-	uid, gid := -1, -1
-	if info, err := os.Lstat(path); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return fmt.Errorf("refuse to replace non-regular startup config %q", path)
-		}
-		uid, gid = fileOwnership(info)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect startup config %q: %w", path, err)
-	}
-
-	tmp, err := os.CreateTemp(dir, ".swarm.conf-*")
-	if err != nil {
-		return fmt.Errorf("create temporary startup config: %w", err)
-	}
-	tmpPath := tmp.Name()
-	committed := false
-	defer func() {
-		_ = tmp.Close()
-		if !committed {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if err := tmp.Chmod(mode); err != nil {
-		return fmt.Errorf("set temporary startup config mode: %w", err)
-	}
-	if uid >= 0 && gid >= 0 {
-		if err := tmp.Chown(uid, gid); err != nil {
-			return fmt.Errorf("preserve startup config ownership: %w", err)
-		}
-	}
-	if _, err := tmp.Write(payload); err != nil {
-		return fmt.Errorf("write temporary startup config: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		return fmt.Errorf("sync temporary startup config: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temporary startup config: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("replace startup config: %w", err)
-	}
-	committed = true
-	dirFile, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("open startup config directory for sync: %w", err)
-	}
-	defer dirFile.Close()
-	if err := dirFile.Sync(); err != nil {
-		return fmt.Errorf("sync startup config directory: %w", err)
+func writeConfigFile(path string, payload []byte, createMode os.FileMode) error {
+	if err := safefile.WriteFile(path, payload, createMode); err != nil {
+		return fmt.Errorf("write startup config safely: %w", err)
 	}
 	return nil
 }

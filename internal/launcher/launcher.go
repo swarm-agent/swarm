@@ -946,7 +946,7 @@ func writePIDFile(profile Profile, pid int) error {
 	if pid <= 0 {
 		return errors.New("daemon pid must be positive")
 	}
-	return writePrivateAtomicFile(profile.PIDFile, []byte(strconv.Itoa(pid)+"\n"))
+	return writePrivateFile(profile.PIDFile, []byte(strconv.Itoa(pid)+"\n"))
 }
 
 func ReadPIDFile(profile Profile) string {

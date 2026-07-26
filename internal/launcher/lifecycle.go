@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"swarm-refactor/swarmtui/internal/safefile"
 )
 
 const (
@@ -50,7 +52,7 @@ func normalizeLifecycleManager(manager lifecycleManager) (lifecycleManager, bool
 	}
 }
 
-func writePrivateAtomicFile(path string, data []byte) error {
+func writePrivateFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -58,28 +60,7 @@ func writePrivateAtomicFile(path string, data []byte) error {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
+	return safefile.WriteFile(path, data, 0o600)
 }
 
 func writeLifecycleManager(profile Profile, manager lifecycleManager) error {
@@ -93,7 +74,7 @@ func writeLifecycleManager(profile Profile, manager lifecycleManager) error {
 		return fmt.Errorf("marshal lifecycle metadata: %w", err)
 	}
 	data = append(data, '\n')
-	if err := writePrivateAtomicFile(profile.ManagerFile, data); err != nil {
+	if err := writePrivateFile(profile.ManagerFile, data); err != nil {
 		return fmt.Errorf("write lifecycle metadata: %w", err)
 	}
 	return nil
