@@ -85,4 +85,3 @@ func (a *App) setRouteStatus(status string) {
 	}
 	a.showToast(ui.ToastInfo, status)
 }
-
