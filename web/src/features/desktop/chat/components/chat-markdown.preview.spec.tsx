@@ -95,11 +95,12 @@ function testTaskSwarmUsesCompactPreview(): void {
   assert(Boolean(message), "expected structured task swarm message");
 
   const markup = renderToolMarkup(message!);
-  assert(markup.includes("Swarm mode"), "expected desktop swarm mode header");
+  assert(markup.includes("Subagent stream"), "expected one consistent subagent stream header");
+  assert((markup.match(/Subagent stream/g) ?? []).length === 1, "subagent stream heading should render once");
   assert(markup.includes("@finder"), "expected compact row agent label");
   assert(markup.includes("search"), "expected compact row current tool");
   assert(markup.includes("RUN"), "expected compact row status");
-  assert(!markup.includes("Subagent stream"), "swarm mode should not render normal task table header");
+  assert(!markup.includes("Swarm mode"), "swarm mode should not introduce a second heading");
   assert(!markup.includes("Current"), "swarm mode should not render detailed current column header");
   assert(!markup.includes("child child-session"), "swarm mode should not render child session ids");
   assert(!markup.includes(`task ${longAssignment}`), "swarm mode should suppress long task header summary");
@@ -489,7 +490,7 @@ function testFileActionsUseThemeAwareCards(): void {
   assert(editMarkup.includes("Changes") && editMarkup.includes("−1") && editMarkup.includes("+1"), "edit should render a restrained diff card");
 }
 
-function testTaskHeaderDoesNotShiftBetweenLaunchAssignments(): void {
+function testTaskCardUsesOneStableStreamHeader(): void {
   const description = "Map backend and UI task stream behavior";
   const firstMessage = buildStructuredToolMessage({
     tool: "task",
@@ -537,10 +538,12 @@ function testTaskHeaderDoesNotShiftBetweenLaunchAssignments(): void {
 
   const firstMarkup = renderToolMarkup(firstMessage!);
   const secondMarkup = renderToolMarkup(secondMessage!);
-  assert(firstMarkup.includes(description), "expected stable description in first header");
-  assert(secondMarkup.includes(description), "expected stable description in second header");
-  assert(firstMarkup.includes('data-task-tool-card="true"') && firstMarkup.includes('data-task-rows="true"'), "task heading and subagent rows should share one card");
-  assert(firstMarkup.includes("lucide-bot"), "task card should use the Lucide bot icon");
+  assert(!firstMarkup.includes(description), "task description should not create a repetitive heading above the stream");
+  assert(!secondMarkup.includes(description), "updated assignments should not create a repetitive heading above the stream");
+  assert((firstMarkup.match(/Subagent stream/g) ?? []).length === 1, "task card should render one subagent stream heading");
+  assert(firstMarkup.includes('data-task-tool-card="true"') && firstMarkup.includes('data-task-rows="true"'), "subagent stream rows should remain in the task card");
+  assert(firstMarkup.includes("lucide-bot"), "stream header should use the Lucide bot icon");
+  assert(firstMarkup.includes("rounded-full"), "stream header bot icon should have a circular treatment");
   assert(!firstMarkup.includes("starting…") && !firstMarkup.includes("animate-spin"), "running task cards should not show the starting spinner treatment");
   assert(!firstMarkup.includes("Backend finder title</span><svg"), "first header should not end with launch assignment title");
   assert(!secondMarkup.includes("Frontend finder title</span><svg"), "second header should not end with launch assignment title");
@@ -586,7 +589,7 @@ function main(): void {
   testWebFetchUsesDedicatedFailureAwareCard();
   testRunningWebCardsShowProgressWithoutRawJson();
   testFileActionsUseThemeAwareCards();
-  testTaskHeaderDoesNotShiftBetweenLaunchAssignments();
+  testTaskCardUsesOneStableStreamHeader();
   console.log("chat-markdown preview tests passed");
 }
 
