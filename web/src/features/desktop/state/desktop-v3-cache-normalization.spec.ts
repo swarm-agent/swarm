@@ -25,7 +25,7 @@ function message(content = toolEnvelope): MessageSnapshot {
 test('committed tool envelopes are normalized at the message-list cache boundary', () => {
   const cache = buildMessageListCache([message()])
   assert.equal(cache.items[0]?.toolMessage?.tool, 'task')
-  assert.deepEqual(cache.items[0]?.toolMessage?.taskRows, [])
+  assert.equal(cache.items[0]?.toolMessage?.taskRows.length, 1)
 })
 
 test('already-normalized committed messages retain canonical tool object identity', () => {

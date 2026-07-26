@@ -6,7 +6,7 @@ const paneSourceUrl = new URL('./desktop-v3-existing-conversation-pane.tsx', imp
 
 function componentBody(source: string, name: string, nextName: string): string {
   const start = source.indexOf(`export function ${name}`)
-  const end = source.indexOf(`export function ${nextName}`, start + 1)
+  const end = source.search(new RegExp(`export (?:const|function) ${nextName}`))
   assert.notEqual(start, -1, `expected ${name}`)
   assert.notEqual(end, -1, `expected ${nextName}`)
   return source.slice(start, end)
