@@ -99,6 +99,7 @@ const (
 	lingerPollInterval           = 250 * time.Millisecond
 	localTransportSocketDirMode  = 0o700
 	localTransportSocketFileMode = 0o600
+	shutdownTimeout              = 5 * time.Second
 )
 
 func localTransportSocketDirPerm() os.FileMode {
@@ -107,6 +108,20 @@ func localTransportSocketDirPerm() os.FileMode {
 
 func localTransportSocketPerm() os.FileMode {
 	return localTransportSocketFileMode
+}
+
+func removeStaleUnixSocket(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || info.Mode().IsRegular() || info.IsDir() || info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("refusing to replace unexpected local transport path %q with mode %s", path, info.Mode())
+	}
+	return os.Remove(path)
 }
 
 func ensurePrivateDirectory(path string) error {
@@ -702,8 +717,8 @@ func (d *Daemon) Run() error {
 		if err := os.MkdirAll(filepath.Dir(socketPath), localTransportSocketDirPerm()); err != nil {
 			return fmt.Errorf("create local transport directory: %w", err)
 		}
-		if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove stale local transport socket %q: %w", socketPath, err)
+		if err := removeStaleUnixSocket(socketPath); err != nil {
+			return fmt.Errorf("prepare local transport socket %q: %w", socketPath, err)
 		}
 		localTransportLn, err := net.Listen("unix", socketPath)
 		if err != nil {
@@ -767,43 +782,46 @@ func (d *Daemon) waitForShutdown() error {
 	if strings.TrimSpace(reason) == "" {
 		reason = "requested"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	var errs []error
+	if d.apiServer != nil {
+		d.apiServer.BeginShutdown()
+		d.apiServer.CancelInFlightRuns()
+		if !d.apiServer.WaitForInFlightRuns(shutdownTimeout) {
+			errs = append(errs, fmt.Errorf("timed out draining %d active run(s)", d.apiServer.ActiveRunCount()))
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	if err := d.httpServer.Shutdown(ctx); err != nil {
-		return err
+	servers := []struct {
+		name   string
+		server *http.Server
+	}{
+		{name: "api", server: d.httpServer},
+		{name: "desktop", server: d.desktopServer},
+		{name: "peer transport", server: d.peerTransportServer},
+		{name: "local transport", server: d.localTransportServer},
 	}
-	if d.desktopServer != nil {
-		if err := d.desktopServer.Shutdown(ctx); err != nil {
-			return err
+	for _, item := range servers {
+		if item.server == nil {
+			continue
 		}
-	}
-	if d.peerTransportServer != nil {
-		if err := d.peerTransportServer.Shutdown(ctx); err != nil {
-			return err
+		if err := item.server.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("shutdown %s server: %w", item.name, err))
+			if closeErr := item.server.Close(); closeErr != nil {
+				errs = append(errs, fmt.Errorf("close %s server: %w", item.name, closeErr))
+			}
 		}
-	}
-	if d.localTransportServer != nil {
-		if err := d.localTransportServer.Shutdown(ctx); err != nil {
-			return err
-		}
-	}
-	if d.serveDone != nil {
-		<-d.serveDone
-	}
-	if d.desktopServeDone != nil {
-		<-d.desktopServeDone
-	}
-	if d.localTransportServeDone != nil {
-		<-d.localTransportServeDone
 	}
 	if strings.TrimSpace(d.localTransportSocketPath) != "" {
-		_ = os.Remove(d.localTransportSocketPath)
+		if err := removeStaleUnixSocket(d.localTransportSocketPath); err != nil {
+			errs = append(errs, fmt.Errorf("remove local transport socket: %w", err))
+		}
 	}
-	if d.peerTransportServeDone != nil {
-		<-d.peerTransportServeDone
+	if err := d.cleanup(); err != nil {
+		errs = append(errs, err)
 	}
 	_ = reason
-	return d.cleanup()
+	return errors.Join(errs...)
 }
 
 func shouldEnableLocalTransport(listenAddr string) bool {

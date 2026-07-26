@@ -5,63 +5,34 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 )
 
-func TestBackendStopCandidatePIDsPrefersDaemonLockBeforeLauncherPID(t *testing.T) {
+func TestBackendStopCandidatePIDsRejectsUnverifiedLockProcess(t *testing.T) {
 	dir := t.TempDir()
-	profile := Profile{
-		LockPath: filepath.Join(dir, "swarmd.lock"),
-		PIDFile:  filepath.Join(dir, "swarmd.pid"),
-	}
+	profile := Profile{LockPath: filepath.Join(dir, "swarmd.lock"), PIDFile: filepath.Join(dir, "swarmd.pid")}
 	self := os.Getpid()
 	if err := os.WriteFile(profile.LockPath, []byte("{\"pid\":"+strconv.Itoa(self)+"}"), 0o600); err != nil {
-		t.Fatalf("write lock: %v", err)
+		t.Fatal(err)
 	}
-	if err := os.WriteFile(profile.PIDFile, []byte(strconv.Itoa(self)+"\n"), 0o644); err != nil {
-		t.Fatalf("write pid: %v", err)
-	}
-
-	pids, err := backendStopCandidatePIDs(profile)
-	if err != nil {
-		t.Fatalf("backendStopCandidatePIDs: %v", err)
-	}
-	if len(pids) != 1 || pids[0] != self {
-		t.Fatalf("pids = %v, want [%d]", pids, self)
+	if _, err := backendStopCandidatePIDs(profile); err == nil || !strings.Contains(err.Error(), "unverified process") {
+		t.Fatalf("backendStopCandidatePIDs error = %v, want unverified process refusal", err)
 	}
 }
 
-func TestBackendStopCandidatePIDsIncludesLauncherAndDaemonWhenDistinct(t *testing.T) {
-	dir := t.TempDir()
-	profile := Profile{
-		LockPath: filepath.Join(dir, "swarmd.lock"),
-		PIDFile:  filepath.Join(dir, "swarmd.pid"),
+func TestWritePIDFileIsPrivate(t *testing.T) {
+	profile := Profile{PIDFile: filepath.Join(t.TempDir(), "state", "swarmd.pid")}
+	if err := writePIDFile(profile, 42); err != nil {
+		t.Fatal(err)
 	}
-	self := os.Getpid()
-	parent := os.Getppid()
-	if parent <= 0 || parent == self {
-		t.Skip("distinct parent pid is unavailable")
-	}
-	if err := os.WriteFile(profile.LockPath, []byte("{\"pid\":"+strconv.Itoa(self)+"}"), 0o600); err != nil {
-		t.Fatalf("write lock: %v", err)
-	}
-	if err := os.WriteFile(profile.PIDFile, []byte(strconv.Itoa(parent)+"\n"), 0o644); err != nil {
-		t.Fatalf("write pid: %v", err)
-	}
-
-	pids, err := backendStopCandidatePIDs(profile)
+	info, err := os.Stat(profile.PIDFile)
 	if err != nil {
-		t.Fatalf("backendStopCandidatePIDs: %v", err)
+		t.Fatal(err)
 	}
-	want := map[int]bool{self: true, parent: true}
-	if len(pids) != len(want) {
-		t.Fatalf("pids = %v, want self and parent", pids)
-	}
-	for _, pid := range pids {
-		if !want[pid] {
-			t.Fatalf("unexpected pid %d in %v", pid, pids)
-		}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("pid file mode = %04o, want 0600", got)
 	}
 }
 

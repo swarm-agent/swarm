@@ -942,6 +942,13 @@ func ClearPortFile(profile Profile) {
 	_ = os.Remove(profile.PortRecord)
 }
 
+func writePIDFile(profile Profile, pid int) error {
+	if pid <= 0 {
+		return errors.New("daemon pid must be positive")
+	}
+	return writePrivateAtomicFile(profile.PIDFile, []byte(strconv.Itoa(pid)+"\n"))
+}
+
 func ReadPIDFile(profile Profile) string {
 	data, err := os.ReadFile(profile.PIDFile)
 	if err != nil {
@@ -1043,7 +1050,7 @@ func StartBackend(profile Profile, opts StartBackendOptions) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	if err := os.WriteFile(profile.PIDFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644); err != nil {
+	if err := writePIDFile(profile, cmd.Process.Pid); err != nil {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 		return err
@@ -1102,7 +1109,7 @@ func RunBackend(profile Profile, opts StartBackendOptions) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	if err := os.WriteFile(profile.PIDFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644); err != nil {
+	if err := writePIDFile(profile, cmd.Process.Pid); err != nil {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 		_ = os.Remove(profile.PIDFile)
@@ -1276,35 +1283,61 @@ func waitForHealthDown(profile Profile, timeout time.Duration) bool {
 }
 
 func backendStopCandidatePIDs(profile Profile) ([]int, error) {
-	seen := map[int]struct{}{}
-	pids := []int{}
-	addPID := func(pid int) {
-		if pid <= 0 {
-			return
-		}
-		if _, ok := seen[pid]; ok {
-			return
-		}
-		if !processRunning(strconv.Itoa(pid)) {
-			return
-		}
-		seen[pid] = struct{}{}
-		pids = append(pids, pid)
-	}
 	if pid, ok, err := readLockPID(profile.LockPath); err != nil {
 		return nil, err
-	} else if ok {
-		addPID(pid)
-	}
-	pidText := strings.TrimSpace(ReadPIDFile(profile))
-	if pidText != "" {
-		pid, err := strconv.Atoi(pidText)
+	} else if ok && processRunning(strconv.Itoa(pid)) {
+		verified, err := verifiedSwarmDaemonPID(pid)
 		if err != nil {
 			return nil, err
 		}
-		addPID(pid)
+		if !verified {
+			return nil, fmt.Errorf("refusing to signal unverified process %d from daemon lock", pid)
+		}
+		return []int{pid}, nil
 	}
-	return pids, nil
+	pidText := strings.TrimSpace(ReadPIDFile(profile))
+	if pidText == "" || !processRunning(pidText) {
+		return nil, nil
+	}
+	pid, err := strconv.Atoi(pidText)
+	if err != nil || pid <= 0 {
+		return nil, fmt.Errorf("invalid daemon pid metadata %q", pidText)
+	}
+	verified, err := verifiedSwarmDaemonPID(pid)
+	if err != nil {
+		return nil, err
+	}
+	if !verified {
+		return nil, fmt.Errorf("refusing to signal unverified process %d from pid metadata", pid)
+	}
+	return []int{pid}, nil
+}
+
+func verifiedSwarmDaemonPID(pid int) (bool, error) {
+	if pid <= 0 {
+		return false, nil
+	}
+	if runtime.GOOS == "linux" {
+		executable, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe"))
+		if err == nil {
+			return filepath.Base(strings.TrimSuffix(executable, " (deleted)")) == "swarmd", nil
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if !errors.Is(err, os.ErrPermission) {
+			return false, fmt.Errorf("verify daemon process %d: %w", pid, err)
+		}
+	}
+	psPath, err := exec.LookPath("ps")
+	if err != nil {
+		return false, fmt.Errorf("verify daemon process %d: ps is unavailable", pid)
+	}
+	output, err := exec.Command(psPath, "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if err != nil {
+		return false, nil
+	}
+	return filepath.Base(strings.TrimSpace(string(output))) == "swarmd", nil
 }
 
 func signalPID(pid int, signal syscall.Signal) error {

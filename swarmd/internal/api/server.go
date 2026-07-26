@@ -127,6 +127,7 @@ type Server struct {
 	codexOAuthSessions map[string]*codexOAuthSession
 
 	shuttingDown          atomic.Bool
+	activeRunMu           sync.Mutex
 	runCtx                context.Context
 	runCancel             context.CancelFunc
 	runWG                 sync.WaitGroup
@@ -513,7 +514,9 @@ func (s *Server) BeginShutdown() {
 	if s == nil {
 		return
 	}
+	s.activeRunMu.Lock()
 	s.shuttingDown.Store(true)
+	s.activeRunMu.Unlock()
 }
 
 func (s *Server) CancelInFlightRuns() {
@@ -533,6 +536,9 @@ func (s *Server) WaitForInFlightRuns(timeout time.Duration) bool {
 	if s == nil {
 		return true
 	}
+	s.activeRunMu.Lock()
+	s.shuttingDown.Store(true)
+	s.activeRunMu.Unlock()
 	if timeout <= 0 {
 		s.runWG.Wait()
 		return true
@@ -561,12 +567,18 @@ func (s *Server) ActiveRunCount() int {
 	return int(count)
 }
 
-func (s *Server) beginActiveRun() {
+func (s *Server) beginActiveRun() bool {
 	if s == nil {
-		return
+		return false
+	}
+	s.activeRunMu.Lock()
+	defer s.activeRunMu.Unlock()
+	if s.shuttingDown.Load() {
+		return false
 	}
 	s.runWG.Add(1)
 	s.activeRuns.Add(1)
+	return true
 }
 
 func (s *Server) endActiveRun() {
@@ -3082,7 +3094,10 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, err)
 			return
 		}
-		s.beginActiveRun()
+		if !s.beginActiveRun() {
+			writeError(w, http.StatusServiceUnavailable, errors.New("daemon is shutting down"))
+			return
+		}
 		defer s.endActiveRun()
 		result, err := s.runner.RunTurn(identity.ContextWithPrincipal(r.Context(), principal), sessionID, req, runruntime.RunStartMeta{Principal: principal})
 		if err != nil {

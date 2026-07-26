@@ -292,8 +292,15 @@ func (s *Server) handleSessionV3PrimaryCompact(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	s.beginActiveRun()
-	result, compactErr := compactRunner.RunManualCompaction(r.Context(), sessionID, runruntime.ManualCompactionInput{
+	if !s.beginActiveRun() {
+		writeError(w, http.StatusServiceUnavailable, errors.New("daemon is shutting down"))
+		return
+	}
+	runCtx := r.Context()
+	if s.runCtx != nil {
+		runCtx = identity.ContextWithPrincipal(s.runCtx, principal)
+	}
+	result, compactErr := compactRunner.RunManualCompaction(runCtx, sessionID, runruntime.ManualCompactionInput{
 		RunID:                runID,
 		Note:                 req.Note,
 		Origin:               "manual",

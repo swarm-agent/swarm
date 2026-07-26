@@ -146,7 +146,10 @@ func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runCon
 		started <- errors.New("run service is not configured")
 		return started
 	}
-	s.beginActiveRun()
+	if !s.beginActiveRun() {
+		started <- errors.New("daemon is shutting down")
+		return started
+	}
 	go func() {
 		defer s.endActiveRun()
 		defer close(started)

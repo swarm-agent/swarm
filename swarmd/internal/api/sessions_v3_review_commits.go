@@ -93,7 +93,10 @@ func (s *Server) startSessionsV3ReviewCommits(ctx context.Context, principal ide
 	if runCtx == nil {
 		runCtx = context.Background()
 	}
-	s.beginActiveRun()
+	if !s.beginActiveRun() {
+		s.releaseReviewCommitBatch(workspacePath, batchID)
+		return "", errors.New("daemon is shutting down")
+	}
 	go func() {
 		defer s.endActiveRun()
 		defer s.releaseReviewCommitBatch(workspacePath, batchID)

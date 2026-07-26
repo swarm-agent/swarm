@@ -465,7 +465,9 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 	e.attachCancel(job, runCancel)
-	e.server.beginActiveRun()
+	if !e.server.beginActiveRun() {
+		return
+	}
 	defer e.server.endActiveRun()
 	if e.startDelay > 0 {
 		select {
@@ -1198,7 +1200,9 @@ func (e *sessionV3Executor) generateAndApplySessionV3Title(job sessionV3Executor
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return
 	}
-	e.server.beginActiveRun()
+	if !e.server.beginActiveRun() {
+		return
+	}
 	defer e.server.endActiveRun()
 	session, ok, err := e.server.sessions.GetSession(job.SessionID)
 	if err != nil || !ok || !shouldGenerateSessionV3Title(session) {
