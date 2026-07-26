@@ -2839,15 +2839,14 @@ function cleanupTerminalLiveRunIfCanonicalized(
 
 function reconcileCommittedToolMessage(run: LiveRunOverlay, message: MessageSnapshot): void {
   const metadata = message.metadata ?? {}
-  const content = parseJsonRecord(message.content)
   const callId = stringFromMetadata(metadata, 'call_id')
     || stringFromMetadata(metadata, 'callId')
-    || stringField(content?.call_id)
-    || stringField(content?.callId)
+    || message.toolMessage?.callId
+    || ''
   const toolInstanceId = stringFromMetadata(metadata, 'tool_instance_id')
     || stringFromMetadata(metadata, 'toolInstanceId')
-    || stringField(content?.tool_instance_id)
-    || stringField(content?.toolInstanceId)
+    || message.toolMessage?.toolInstanceId
+    || ''
 
   for (const [existingCallId, tool] of Object.entries(run.toolCallsByCallId)) {
     const callMatches = Boolean(callId) && tool.callId === callId
@@ -2916,12 +2915,10 @@ function reconcileCommittedReasoningMessage(run: LiveRunOverlay, message: Messag
 }
 
 function resolveCommittedMessageRunId(message: MessageSnapshot, explicitRunId?: string): string {
-  const content = parseJsonRecord(message.content)
   return explicitRunId?.trim()
     || stringFromMetadata(message.metadata, 'run_id')
     || stringFromMetadata(message.metadata, 'runId')
-    || stringField(content?.run_id)
-    || stringField(content?.runId)
+    || message.toolMessage?.runId
     || ''
 }
 
