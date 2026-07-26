@@ -1985,6 +1985,48 @@ test('realtimeFrameToActions event advances the realtime endpoint cursor', () =>
   assert.equal(state.realtime.endpointCursor, 'v3c1.after-event')
 })
 
+test('realtime ingress rejects unsupported protocol and conflicting session identities before cursor mutation', () => {
+  const state = bootstrappedState()
+  const priorCursor = state.realtime.endpointCursor
+
+  assert.throws(() => applyRealtimeFrame(state, {
+    frame: realtimeFrameFixture({ protocol_version: 2 }),
+  }), /v3\.realtime version 1/)
+  assert.throws(() => applyRealtimeFrame(state, {
+    frame: realtimeFrameFixture({
+      session_id: sessionA.id,
+      event: { ...realtimeFrameFixture().event!, session_id: sessionB.id },
+    }),
+  }), /conflicts with frame\.session_id/)
+
+  assert.equal(state.realtime.endpointCursor, priorCursor)
+})
+
+test('snapshot ingress rejects map keys that conflict with nested resource identities', () => {
+  const mismatchedSession = snapshotFixture({
+    sessions_by_id: { [sessionA.id]: { ...sessionA, id: sessionB.id } },
+  })
+  assert.throws(() => bootstrapResponseToAction(mismatchedSession), /sessions_by_id key session-a/)
+
+  const mismatchedMessage = hydrateSnapshotFixture({
+    messages_by_session: { [sessionB.id]: [{ ...messageB1, session_id: sessionA.id }] },
+  })
+  assert.throws(() => hydrateResponseToAction(mismatchedMessage, [sessionB.id]), /messages_by_session key session-b/)
+})
+
+test('sync stream ingress accepts valid frames and rejects envelope/event/projection identity conflicts', () => {
+  const valid = syncStreamFixture()
+  assert.equal(syncStreamResponseToAction(valid, 'scope').events.length, 1)
+
+  const conflicting = syncStreamFixture({
+    events: [{
+      ...valid.events[0],
+      session_id: sessionA.id,
+    }],
+  })
+  assert.throws(() => syncStreamResponseToAction(conflicting, 'scope'), /sync stream event event\.session_id/)
+})
+
 test('realtime assistant and message deltas append assistant draft without committing messages', () => {
   const state = bootstrappedState()
   const beforeCommittedCount = state.messagesBySession[sessionA.id].items.length

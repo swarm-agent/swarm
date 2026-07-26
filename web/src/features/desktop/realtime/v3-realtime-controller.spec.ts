@@ -8,6 +8,7 @@ import {
   DesktopV3RealtimeControllerRuntime,
   DesktopV3StreamCommitController,
   buildDesktopV3ReconnectInput,
+  commitDesktopV3StreamFrame,
   mapTransportStatus,
   taskChildRealtimeSessionIds,
   requireDesktopV3RealtimeControllerReady,
@@ -62,6 +63,36 @@ class FakeWebSocket extends EventTarget {
     this.dispatchEvent(event)
   }
 }
+
+test('Desktop V3 realtime transport rejects invalid protocol before delivery and reopens from durable cursor', async () => {
+  const delivered: string[] = []
+  const sockets: FakeWebSocket[] = []
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'C0',
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+    onFrame: ({ frame }) => {
+      commitDesktopV3StreamFrame(new DesktopV3StreamCommitController({
+        getSnapshot: createEmptyDesktopV3CacheState,
+        dispatch: () => {},
+      }), frame as RealtimeMessage)
+      delivered.push(String(frame.kind))
+    },
+    livenessTimeoutMs: 60_000,
+  })
+
+  await transport.start()
+  sockets[0].open()
+  sockets[0].emit({ protocol: 'v2.realtime', protocol_version: 2, kind: 'keepalive', endpoint_cursor: 'C1' })
+  await flushAsyncWork()
+
+  assert.deepEqual(delivered, [])
+  assert.equal(sockets[0].closed, true)
+  transport.stop()
+})
 
 test('Desktop V3 realtime transport persists endpoint.watermark cursor without application mutation', async () => {
   const delivered: string[] = []

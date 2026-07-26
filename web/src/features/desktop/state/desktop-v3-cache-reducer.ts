@@ -34,7 +34,7 @@ import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktopPendingPermissions, normalizeDesktopPermissionSummary, normalizeDesktopPermissionSummaries, safeString } from '../permissions/services/desktop-permission-normalization'
 import { normalizeDesktopSessionPlan } from '../chat/services/session-plan-record'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
-import { decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
+import { assertDesktopV3RealtimeFrame, assertDesktopV3SnapshotIdentities, decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
 import { isDesktopV3NavigationHiddenRecord } from './desktop-v3-session-visibility'
 import { mergeWorkspaceAITaskMonotonic } from '../../workspaces/todos/ai-task-reconciliation'
 import type { WorkspaceTodoAIState, WorkspaceTodoItem } from '../../workspaces/todos/types'
@@ -384,6 +384,7 @@ export function applySnapshot(
   action: { source: 'bootstrap'; scopeId: string; snapshot: SyncSnapshotResponse },
 ): DesktopV3CacheState {
   const snapshot = action.snapshot
+  assertDesktopV3SnapshotIdentities(snapshot)
   requireProtocol(snapshot.scope_id, 'snapshot.scope_id')
   requireProtocol(snapshot.sync_scope, 'snapshot.sync_scope')
   requireProtocol(snapshot.snapshot_endpoint_cursor, 'snapshot.snapshot_endpoint_cursor')
@@ -442,6 +443,7 @@ export function applyHydrate(
   },
 ): DesktopV3CacheState {
   const snapshot = action.snapshot
+  assertDesktopV3SnapshotIdentities(snapshot)
   if (snapshot.selector?.kind !== 'session_ids') {
     throw new Error(`protocol invalid: hydrate selector kind must be session_ids, got ${String(snapshot.selector?.kind ?? '')}`)
   }
@@ -654,6 +656,7 @@ export function applyReconnectSnapshot(
   state: DesktopV3CacheState,
   raw: SessionsReconnectResponse,
 ): DesktopV3CacheState {
+  assertDesktopV3SnapshotIdentities(raw)
   if (!state.realtime.endpointCursor) {
     state.realtime.endpointCursor = raw.snapshot_endpoint_cursor
   }
@@ -755,6 +758,7 @@ export function applyRealtimeFrame(
   action: { frame: RealtimeMessage },
 ): DesktopV3CacheState {
   const frame = action.frame
+  assertDesktopV3RealtimeFrame(frame)
   switch (frame.kind) {
     case 'hello':
       state.realtime.status = 'open'
