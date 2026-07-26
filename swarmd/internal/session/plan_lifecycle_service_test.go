@@ -908,6 +908,57 @@ func TestPlanLifecycleFollowupCheckpointDeduplicatesConcurrentSourceMessage(t *t
 	}
 }
 
+func TestPlanLifecycleTransitionsSerializeAcrossFollowupAndAmendment(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+	sessionID := createPlanTestSession(t, svc)
+	initial, _, err := svc.SavePlanWithMetadata(sessionID, "plan-lifecycle-serialization", "Serialized", "# Serialized", "approved", "approved", true, PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+		Checkpoints:     []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "One", Status: PlanCheckpointStatusCompleted}},
+	}})
+	if err != nil {
+		t.Fatalf("save plan: %v", err)
+	}
+
+	lifecycle := NewPlanLifecycleService(svc)
+	resolverEntered := make(chan struct{})
+	releaseResolver := make(chan struct{})
+	lifecycle.SetGlobalFollowupCheckpointPolicyResolver(func(string) (string, error) {
+		close(resolverEntered)
+		<-releaseResolver
+		return PlanFollowupCheckpointPolicyAutoStart, nil
+	})
+	followupErr := make(chan error, 1)
+	go func() {
+		_, callErr := lifecycle.RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: initial.ID, ChangeRequest: "add follow-up", ApprovalConfirmed: true})
+		followupErr <- callErr
+	}()
+	<-resolverEntered
+
+	proposed := clonePlanLifecycleDocument(initial.Document)
+	proposed.Checkpoints = append(proposed.Checkpoints, pebblestore.SessionPlanCheckpoint{ID: "cp-amended", Title: "Amended", Status: PlanCheckpointStatusPending})
+	amendErr := make(chan error, 1)
+	go func() {
+		_, callErr := lifecycle.AmendPlan(PlanLifecycleAmendmentInput{SessionID: sessionID, PlanID: initial.ID, Document: proposed, BaseRevision: initial.Version, UpdateSummary: "append amended checkpoint", AmendFutureCheckpoints: true})
+		amendErr <- callErr
+	}()
+
+	close(releaseResolver)
+	if err := <-followupErr; err != nil {
+		t.Fatalf("follow-up: %v", err)
+	}
+	if err := <-amendErr; err == nil || !strings.Contains(err.Error(), "base_revision") || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("amendment error = %v, want stale base revision after serialized follow-up", err)
+	}
+	plan, ok, err := svc.GetPlan(sessionID, initial.ID)
+	if err != nil || !ok {
+		t.Fatalf("get plan: ok=%v err=%v", ok, err)
+	}
+	if len(plan.Document.Checkpoints) != 2 || plan.Document.Checkpoints[1].ID == "cp-amended" {
+		t.Fatalf("stale amendment overwrote serialized follow-up: %#v", plan.Document.Checkpoints)
+	}
+}
+
 func TestPlanLifecycleStartSessionCheckpointRejectsActivePlan(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()

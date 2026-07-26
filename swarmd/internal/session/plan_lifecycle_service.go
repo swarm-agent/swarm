@@ -196,10 +196,12 @@ func (s *PlanLifecycleService) EnterPlanMode(sessionID string) (PlanLifecycleRes
 }
 
 func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInput) (PlanLifecycleResult, error) {
-	pebblestore.ObserveV3PlanLifecycleMutation()
 	if err := s.requireConfigured(); err != nil {
 		return PlanLifecycleResult{}, err
 	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
+	pebblestore.ObserveV3PlanLifecycleMutation()
 	if !input.AgentCanSubmit {
 		return PlanLifecycleResult{}, errors.New("submit plan for approval is disabled for this agent")
 	}
@@ -560,6 +562,11 @@ func buildCheckpointHandoffNotes(changeRequest, notes string) string {
 }
 
 func (s *PlanLifecycleService) AmendPlan(input PlanLifecycleAmendmentInput) (PlanLifecycleResult, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
 	state, err := s.loadPlanForLifecycle(input.SessionID, input.PlanID, "amend_plan")
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -625,6 +632,8 @@ func (s *PlanLifecycleService) RestorePlanRevision(input PlanLifecycleRevisionRe
 	if err := s.requireConfigured(); err != nil {
 		return PlanLifecycleResult{}, err
 	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
 	session, err := s.requireSession(input.SessionID)
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -736,6 +745,8 @@ func (s *PlanLifecycleService) RequestNewPlan(input PlanLifecycleProposalInput) 
 	if err := s.requireConfigured(); err != nil {
 		return PlanLifecycleResult{}, err
 	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
 	session, err := s.requireSession(input.SessionID)
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -846,6 +857,11 @@ func (s *PlanLifecycleService) RequestNewPlan(input PlanLifecycleProposalInput) 
 }
 
 func (s *PlanLifecycleService) SetFollowupCheckpointPolicy(input PlanLifecycleFollowupPolicyInput) (PlanLifecycleResult, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
 	state, err := s.loadPlanForLifecycle(input.SessionID, input.PlanID, "set_followup_checkpoint_policy")
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -916,6 +932,8 @@ func (s *PlanLifecycleService) ReconcileCancelledRun(input PlanLifecycleExecutio
 	if err := s.requireConfigured(); err != nil {
 		return PlanLifecycleResult{}, false, err
 	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
 	session, err := s.requireSession(input.SessionID)
 	if err != nil {
 		return PlanLifecycleResult{}, false, err
@@ -980,6 +998,11 @@ func (s *PlanLifecycleService) ContinueCheckpoint(input PlanLifecycleExecutionIn
 }
 
 func (s *PlanLifecycleService) AcceptCheckpoint(input PlanLifecycleExecutionInput) (PlanLifecycleResult, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
 	state, err := s.loadApprovedPlan(input.SessionID, input.PlanID, "accept checkpoint")
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -1002,6 +1025,11 @@ func (s *PlanLifecycleService) AcceptCheckpoint(input PlanLifecycleExecutionInpu
 }
 
 func (s *PlanLifecycleService) RestartCheckpointFromZero(input PlanLifecycleExecutionInput) (PlanLifecycleResult, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
 	state, err := s.loadApprovedPlan(input.SessionID, input.PlanID, "restart checkpoint")
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -1059,6 +1087,11 @@ func replaceRestartedCheckpointRequirements(doc *pebblestore.SessionPlanDocument
 }
 
 func (s *PlanLifecycleService) RewindToCheckpoint(input PlanLifecycleExecutionInput) (PlanLifecycleResult, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
 	state, err := s.loadApprovedPlan(input.SessionID, input.PlanID, "rewind to checkpoint")
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -1074,6 +1107,11 @@ func (s *PlanLifecycleService) RewindToCheckpoint(input PlanLifecycleExecutionIn
 }
 
 func (s *PlanLifecycleService) ResolveBlockedCheckpoint(input PlanLifecycleExecutionInput) (PlanLifecycleResult, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
 	state, err := s.loadApprovedPlan(input.SessionID, input.PlanID, "resolve blocked checkpoint")
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -1120,6 +1158,11 @@ type planLifecycleState struct {
 }
 
 func (s *PlanLifecycleService) approvePlanWithPolicy(input PlanLifecycleExecutionInput, action string, options PlanAcceptanceExecutionOptions) (PlanLifecycleResult, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
 	state, err := s.loadPlanForLifecycle(input.SessionID, input.PlanID, "approve plan")
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -1148,6 +1191,11 @@ func (s *PlanLifecycleService) approvePlanWithPolicy(input PlanLifecycleExecutio
 }
 
 func (s *PlanLifecycleService) approveAndStartCheckpoint(input PlanLifecycleExecutionInput, action string, options PlanAcceptanceExecutionOptions) (PlanLifecycleResult, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
 	state, err := s.loadPlanForLifecycle(input.SessionID, input.PlanID, action)
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -1184,6 +1232,11 @@ func (s *PlanLifecycleService) approveAndStartCheckpoint(input PlanLifecycleExec
 }
 
 func (s *PlanLifecycleService) resetAndStartCheckpoint(input PlanLifecycleExecutionInput, rewind bool, action string) (PlanLifecycleResult, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
 	state, err := s.loadApprovedPlan(input.SessionID, input.PlanID, action)
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -1206,6 +1259,11 @@ func (s *PlanLifecycleService) resetAndStartCheckpoint(input PlanLifecycleExecut
 }
 
 func (s *PlanLifecycleService) startCheckpoint(input PlanLifecycleExecutionInput, action string) (PlanLifecycleResult, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
 	state, err := s.loadApprovedPlan(input.SessionID, input.PlanID, action)
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -1246,6 +1304,11 @@ func (s *PlanLifecycleService) applyCheckpointStartAndSave(state planLifecycleSt
 }
 
 func (s *PlanLifecycleService) resumeWithMode(input PlanLifecycleExecutionInput, mode, action, summary string) (PlanLifecycleResult, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
 	state, err := s.loadApprovedPlan(input.SessionID, input.PlanID, action)
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -1264,6 +1327,11 @@ func (s *PlanLifecycleService) resumeWithMode(input PlanLifecycleExecutionInput,
 }
 
 func (s *PlanLifecycleService) updateExecutionState(input PlanLifecycleExecutionInput, action, status, summary string) (PlanLifecycleResult, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
+	defer unlock()
 	state, err := s.loadApprovedPlan(input.SessionID, input.PlanID, action)
 	if err != nil {
 		return PlanLifecycleResult{}, err
