@@ -260,7 +260,7 @@ func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profil
 
 	compiled := permission.NormalizePolicy(permission.Policy{Version: 1, Rules: policyRules})
 	if inheritPolicy && s != nil && s.permissions != nil {
-		current, err := s.permissions.CurrentPolicy()
+		current, err := s.permissions.CurrentPolicyForAccount(strings.TrimSpace(accountScopeID))
 		if err != nil {
 			return ResolvedAgentToolContract{}, nil, nil, err
 		}

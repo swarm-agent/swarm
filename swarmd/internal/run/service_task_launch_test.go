@@ -586,6 +586,19 @@ func (s *taskLaunchWorktreeStub) AllocateDetachedWorkspaceRequestedForPrincipal(
 	return s.allocation, nil
 }
 
+func TestDelegatedSubagentRunStartMetaKeepsPreparedProfileSnapshot(t *testing.T) {
+	prepared := pebblestore.AgentProfile{Name: "reviewer", Prompt: "prepared prompt", RuntimeMode: pebblestore.AgentRuntimeModeRead}
+	launch := taskLaunchPrepared{SubagentProfile: prepared}
+	meta := delegatedSubagentRunStartMeta(launch, "parent-session", identity.Principal{AccountScopeID: "account-a"}, nil)
+	launch.SubagentProfile.Prompt = "changed after preparation"
+	if meta.TrustedAgentProfile == nil || meta.TrustedAgentProfile.Prompt != "prepared prompt" {
+		t.Fatalf("trusted profile = %#v, want immutable prepared snapshot", meta.TrustedAgentProfile)
+	}
+	if !meta.AllowSubagent || meta.PermissionSessionID != "parent-session" || meta.Principal.AccountScopeID != "account-a" {
+		t.Fatalf("delegated run meta lost trusted context: %#v", meta)
+	}
+}
+
 func TestApprovedExplorerInheritsParentWorktreeScopeWithoutAllocation(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()

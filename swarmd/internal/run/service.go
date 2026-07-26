@@ -40,6 +40,8 @@ const (
 	maxToolInputBytes            = 96 * 1024
 	maxToolInputPreview          = 1200
 	maxRulePromptFiles           = 3
+	maxRulePromptSourceBytes     = 32 * 1024
+	maxRulePromptAggregateBytes  = 64 * 1024
 	runFailurePathID             = "run.turn.error.v3"
 	messageMetadataSourceRunTurn = "run_turn"
 	emptyStepRetryBase           = 250 * time.Millisecond
@@ -855,14 +857,7 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 		TargetKind: RunTargetKindSubagent,
 		TargetName: launch.SubagentProfile.Name,
 		AgentName:  launch.SubagentProfile.Name,
-	}, RunStartMeta{
-		AllowSubagent: true,
-		// Targeted subagent runs should honor the saved subagent profile's
-		// resolved tool contract instead of inheriting the generic task baseline.
-		PermissionSessionID:  parentSession.ID,
-		Principal:            options.Principal,
-		ApplySessionMutation: options.ApplySessionMutation,
-	}, func(event StreamEvent) {
+	}, delegatedSubagentRunStartMeta(launch, parentSession.ID, options.Principal, options.ApplySessionMutation), func(event StreamEvent) {
 		switch strings.TrimSpace(event.Type) {
 		case StreamEventStepStarted:
 			taskStep = maxInt(taskStep, maxInt(1, event.Step))

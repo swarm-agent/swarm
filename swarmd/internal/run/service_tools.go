@@ -47,6 +47,17 @@ type taskLaunchPrepared struct {
 	LaunchStartedAtMS    int64
 }
 
+func delegatedSubagentRunStartMeta(launch taskLaunchPrepared, permissionSessionID string, principal identity.Principal, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) RunStartMeta {
+	profile := launch.SubagentProfile
+	return RunStartMeta{
+		AllowSubagent:        true,
+		TrustedAgentProfile:  &profile,
+		PermissionSessionID:  strings.TrimSpace(permissionSessionID),
+		Principal:            principal,
+		ApplySessionMutation: applySessionMutation,
+	}
+}
+
 type taskLaunchOutcome struct {
 	LaunchIndex         int
 	VirtualTarget       bool
@@ -3375,14 +3386,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			TargetKind: RunTargetKindSubagent,
 			TargetName: launch.SubagentProfile.Name,
 			AgentName:  launch.SubagentProfile.Name,
-		}, RunStartMeta{
-			AllowSubagent:        true,
-			DisabledTools:        taskDisabledTools(agentruntime.IsCoderAgentName(launch.RequestedSubagent)),
-			TrustedAgentProfile:  &launch.SubagentProfile,
-			PermissionSessionID:  sessionID,
-			Principal:            req.Principal,
-			ApplySessionMutation: req.ApplySessionMutation,
-		}, func(event StreamEvent) {
+		}, func() RunStartMeta {
+			meta := delegatedSubagentRunStartMeta(launch, sessionID, req.Principal, req.ApplySessionMutation)
+			meta.DisabledTools = taskDisabledTools(agentruntime.IsCoderAgentName(launch.RequestedSubagent))
+			return meta
+		}(), func(event StreamEvent) {
 			eventType := strings.ToLower(strings.TrimSpace(event.Type))
 			switch eventType {
 			case StreamEventStepStarted:
