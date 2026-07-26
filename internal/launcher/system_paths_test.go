@@ -29,6 +29,43 @@ func TestEnsureDirsLocalPreservesExistingMode(t *testing.T) {
 	}
 }
 
+func TestEnsureDirsLocalRejectsUnsafeExistingTarget(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureDirsLocal([]systemDirSpec{{Path: link, Mode: 0o700, Owner: true}}); err == nil || !strings.Contains(err.Error(), "unsafe existing directory") {
+		t.Fatalf("ensureDirsLocal() error = %v, want unsafe target rejection", err)
+	}
+}
+
+func TestInstallTextFileRejectsSymlinkTarget(t *testing.T) {
+	root := t.TempDir()
+	realFile := filepath.Join(root, "real")
+	if err := os.WriteFile(realFile, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(realFile, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := installTextFileIfChanged(link, "replacement", 0o600, "test file"); err == nil || !strings.Contains(err.Error(), "unsafe existing") {
+		t.Fatalf("installTextFileIfChanged() error = %v, want unsafe target rejection", err)
+	}
+	content, err := os.ReadFile(realFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("symlink target changed to %q", content)
+	}
+}
+
 func TestRenderSystemdServiceUnitIncludesStorageDirectives(t *testing.T) {
 	root := t.TempDir()
 	systemRoot := filepath.Join(root, "system")

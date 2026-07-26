@@ -81,7 +81,7 @@ func TestLegacySwarmRoleIsIgnoredBeforeEmptyValueValidation(t *testing.T) {
 	}
 }
 
-func TestWriteAtomicallyPreservesModeAndRejectsSymlink(t *testing.T) {
+func TestWriteAtomicallyEnforcesPrivateModeAndRejectsSymlink(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := Default(path)
 	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
@@ -94,8 +94,8 @@ func TestWriteAtomicallyPreservesModeAndRejectsSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o640 {
-		t.Fatalf("mode = %o, want 640", got)
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode = %o, want 600", got)
 	}
 
 	target := filepath.Join(t.TempDir(), "target")

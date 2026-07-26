@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,6 +20,9 @@ type systemDirSpec struct {
 }
 
 func EnsureSystemInstallReady() error {
+	if err := validateInstallOwner(); err != nil {
+		return err
+	}
 	roots, err := storagecontract.ResolveRoots(storagecontract.Options{})
 	if err != nil {
 		return err
@@ -55,10 +59,13 @@ func EnsureSystemInstallReady() error {
 
 func ensureDirsLocal(dirs []systemDirSpec) error {
 	for _, dir := range dirs {
-		_, statErr := os.Stat(dir.Path)
+		info, statErr := os.Lstat(dir.Path)
 		existed := statErr == nil
 		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 			return statErr
+		}
+		if existed && (info.Mode()&os.ModeSymlink != 0 || !info.IsDir()) {
+			return fmt.Errorf("refusing unsafe existing directory target %q", dir.Path)
 		}
 		if err := os.MkdirAll(dir.Path, dir.Mode); err != nil {
 			return err
@@ -99,7 +106,10 @@ func dirExists(path string) bool {
 func ensureDirsPrivileged(dirs []systemDirSpec) error {
 	uid, gid := installOwnerIDs()
 	for _, dir := range dirs {
-		if _, err := os.Stat(dir.Path); err == nil {
+		if info, err := os.Lstat(dir.Path); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return fmt.Errorf("refusing unsafe existing directory target %q", dir.Path)
+			}
 			continue
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -139,6 +149,9 @@ func ensureTmpfilesConfig(roots storagecontract.Roots) error {
 func EnsureSystemdServiceUnit() error {
 	if os.Getenv("SWARM_SKIP_SYSTEMD_UNIT") == "1" {
 		return nil
+	}
+	if err := validateInstallOwner(); err != nil {
+		return err
 	}
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return nil
@@ -205,8 +218,15 @@ WantedBy=multi-user.target
 }
 
 func installTextFileIfChanged(path, content string, mode os.FileMode, label string) error {
-	if existing, err := os.ReadFile(path); err == nil && string(existing) == content {
-		return nil
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing unsafe existing %s target %q", label, path)
+		}
+		if existing, readErr := os.ReadFile(path); readErr == nil && string(existing) == content && info.Mode().Perm() == mode.Perm() {
+			return nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect %s target %q: %w", label, path, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		if err := runPrivilegedCommand("install", "-d", "-m", "0755", filepath.Dir(path)); err != nil {
@@ -214,6 +234,9 @@ func installTextFileIfChanged(path, content string, mode os.FileMode, label stri
 		}
 	}
 	if err := os.WriteFile(path, []byte(content), mode); err == nil {
+		if err := os.Chmod(path, mode); err != nil {
+			return fmt.Errorf("set %s mode on %q: %w", label, path, err)
+		}
 		return nil
 	}
 	tmp, err := os.CreateTemp("", "swarmd-config-*")
@@ -233,6 +256,25 @@ func installTextFileIfChanged(path, content string, mode os.FileMode, label stri
 	defer os.Remove(tmpPath)
 	if err := runPrivilegedCommand("install", "-m", fmt.Sprintf("%04o", mode.Perm()), tmpPath, path); err != nil {
 		return fmt.Errorf("provision %s %q: %w", label, path, err)
+	}
+	return nil
+}
+
+func validateInstallOwner() error {
+	uid, gid := installOwnerIDs()
+	uidNumber, err := strconv.Atoi(uid)
+	if err != nil || uidNumber <= 0 {
+		return fmt.Errorf("trusted non-root install owner is required (uid %q)", uid)
+	}
+	gidNumber, err := strconv.Atoi(gid)
+	if err != nil || gidNumber <= 0 {
+		return fmt.Errorf("trusted non-root install group is required (gid %q)", gid)
+	}
+	if _, err := user.LookupId(uid); err != nil {
+		return fmt.Errorf("resolve install owner uid %q: %w", uid, err)
+	}
+	if _, err := user.LookupGroupId(gid); err != nil {
+		return fmt.Errorf("resolve install group gid %q: %w", gid, err)
 	}
 	return nil
 }

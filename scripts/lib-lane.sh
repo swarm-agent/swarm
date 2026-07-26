@@ -93,7 +93,33 @@ swarm_daemon_ports_root() {
 }
 
 swarm_current_owner_spec() {
-  printf "%s:%s\n" "$(id -u)" "$(id -g)"
+  local uid="${SUDO_UID:-$(id -u)}"
+  local gid="${SUDO_GID:-$(id -g)}"
+  if [[ ! "${uid}" =~ ^[0-9]+$ || ! "${gid}" =~ ^[0-9]+$ || "${uid}" == "0" || "${gid}" == "0" ]]; then
+    echo "Swarm requires a trusted non-root service owner; refusing uid=${uid} gid=${gid}." >&2
+    return 1
+  fi
+  if command -v getent >/dev/null 2>&1; then
+    getent passwd "${uid}" >/dev/null || { echo "unknown service uid: ${uid}" >&2; return 1; }
+    getent group "${gid}" >/dev/null || { echo "unknown service gid: ${gid}" >&2; return 1; }
+  fi
+  printf "%s:%s\n" "${uid}" "${gid}"
+}
+
+swarm_require_safe_target() {
+  local kind="${1:-file}"
+  local path="${2:-}"
+  if [[ -L "${path}" ]]; then
+    echo "refusing symlink ${kind} target: ${path}" >&2
+    return 1
+  fi
+  if [[ -e "${path}" ]]; then
+    case "${kind}" in
+      directory) [[ -d "${path}" ]] ;;
+      file) [[ -f "${path}" ]] ;;
+      *) return 1 ;;
+    esac || { echo "refusing non-${kind} target: ${path}" >&2; return 1; }
+  fi
 }
 
 swarm_run_privileged() {
@@ -120,6 +146,7 @@ swarm_provision_owned_dir() {
   local mode="${1:-0755}"
   local path="${2:-}"
   local owner
+  swarm_require_safe_target directory "${path}" || return 1
   if mkdir -p "${path}" 2>/dev/null && chmod "${mode}" "${path}" 2>/dev/null && swarm_dir_writable "${path}"; then
     return 0
   fi
@@ -130,6 +157,7 @@ swarm_provision_owned_dir() {
 swarm_provision_system_dir() {
   local mode="${1:-0755}"
   local path="${2:-}"
+  swarm_require_safe_target directory "${path}" || return 1
   if mkdir -p "${path}" 2>/dev/null && [[ -d "${path}" ]]; then
     return 0
   fi
@@ -140,7 +168,8 @@ swarm_provision_tmpfiles_config() {
   local owner tmp_path target_path
   owner="$(swarm_current_owner_spec)"
   target_path="/etc"/tmpfiles.d/swarmd.conf
-  tmp_path="$(mktemp "${TMPDIR:-/tmp}/swarmd-tmpfiles.XXXXXX")"
+  swarm_require_safe_target file "${target_path}" || return 1
+  tmp_path="$(mktemp "${TMPDIR:?TMPDIR must be set}/swarmd-tmpfiles.XXXXXX")"
   cat >"${tmp_path}" <<EOF
 d /run/swarmd 0700 ${owner%:*} ${owner#*:} -
 d /run/swarmd/dev 0700 ${owner%:*} ${owner#*:} -
@@ -166,7 +195,8 @@ swarm_provision_systemd_service_unit() {
   fi
   local target_path tmp_path swarm_bin data_root cache_root runtime_root config_root log_root owner
   target_path="/etc"/systemd/system/swarm.service
-  tmp_path="$(mktemp "${TMPDIR:-/tmp}/swarmd-service.XXXXXX")"
+  swarm_require_safe_target file "${target_path}" || return 1
+  tmp_path="$(mktemp "${TMPDIR:?TMPDIR must be set}/swarmd-service.XXXXXX")"
   swarm_bin="/usr/local/bin/swarm"
   owner="$(swarm_current_owner_spec)"
   data_root="$(swarm_daemon_data_root main)"
@@ -249,15 +279,19 @@ swarm_startup_config_path() {
 }
 
 swarm_startup_config_ensure() {
-  local config_path
+  local config_path owner tmp_path
   config_path="$(swarm_startup_config_path)"
+  swarm_require_safe_target file "${config_path}" || return 1
+  owner="$(swarm_current_owner_spec)" || return 1
   if [[ -f "${config_path}" ]]; then
+    swarm_run_privileged chown "${owner}" "${config_path}"
+    swarm_run_privileged chmod 0600 "${config_path}"
     return 0
   fi
 
   swarm_provision_system_paths "$(swarm_lane_default)"
-  mkdir -p "$(dirname -- "${config_path}")"
-  cat >"${config_path}" <<'EOF'
+  tmp_path="$(mktemp "${TMPDIR:?TMPDIR must be set}/swarm-conf.XXXXXX")"
+  cat >"${tmp_path}" <<'EOF'
 dev_mode = false
 dev_root =
 host = 127.0.0.1
@@ -280,12 +314,15 @@ mode = lan
 tailscale_url =
 peer_transport_port = 7791
 EOF
+  swarm_run_privileged install -o "${owner%:*}" -g "${owner#*:}" -m 0600 "${tmp_path}" "${config_path}"
+  rm -f "${tmp_path}"
 }
 
 swarm_startup_config_remove_obsolete_keys() {
   local config_path tmp_path
   config_path="$(swarm_startup_config_path)"
-  tmp_path="$(mktemp "${TMPDIR:-/tmp}/swarm-conf.XXXXXX")"
+  swarm_require_safe_target file "${config_path}" || return 1
+  tmp_path="$(mktemp "${TMPDIR:?TMPDIR must be set}/swarm-conf.XXXXXX")"
   awk '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s)
@@ -313,7 +350,9 @@ swarm_startup_config_remove_obsolete_keys() {
     }
   ' "${config_path}" >"${tmp_path}"
   if ! cmp -s "${config_path}" "${tmp_path}"; then
-    cat "${tmp_path}" >"${config_path}"
+    local owner
+    owner="$(swarm_current_owner_spec)" || return 1
+    swarm_run_privileged install -o "${owner%:*}" -g "${owner#*:}" -m 0600 "${tmp_path}" "${config_path}"
   fi
   rm -f "${tmp_path}"
 }

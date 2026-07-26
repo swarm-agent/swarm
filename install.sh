@@ -132,18 +132,38 @@ print_ok() {
 }
 
 current_owner_uid() {
-  if [ -n "${SUDO_UID:-}" ]; then
-    printf '%s\n' "$SUDO_UID"
-  else
-    id -u
+  uid="${SUDO_UID:-$(id -u)}"
+  case "$uid" in ''|*[!0-9]*|0) echo "Swarm requires a trusted non-root service owner; refusing uid=$uid" >&2; return 1 ;; esac
+  if command -v getent >/dev/null 2>&1 && ! getent passwd "$uid" >/dev/null; then
+    echo "unknown service uid: $uid" >&2
+    return 1
   fi
+  printf '%s\n' "$uid"
 }
 
 current_owner_gid() {
-  if [ -n "${SUDO_GID:-}" ]; then
-    printf '%s\n' "$SUDO_GID"
-  else
-    id -g
+  gid="${SUDO_GID:-$(id -g)}"
+  case "$gid" in ''|*[!0-9]*|0) echo "Swarm requires a trusted non-root service group; refusing gid=$gid" >&2; return 1 ;; esac
+  if command -v getent >/dev/null 2>&1 && ! getent group "$gid" >/dev/null; then
+    echo "unknown service gid: $gid" >&2
+    return 1
+  fi
+  printf '%s\n' "$gid"
+}
+
+require_safe_target() {
+  kind="$1"
+  path="$2"
+  if [ -L "$path" ]; then
+    echo "refusing symlink $kind target: $path" >&2
+    return 1
+  fi
+  if [ -e "$path" ]; then
+    case "$kind" in
+      directory) [ -d "$path" ] ;;
+      file) [ -f "$path" ] ;;
+      *) return 1 ;;
+    esac || { echo "refusing non-$kind target: $path" >&2; return 1; }
   fi
 }
 
@@ -169,6 +189,7 @@ dir_writable() {
 provision_owned_dir() {
   mode="$1"
   path="$2"
+  require_safe_target directory "$path" || return 1
   if [ -d "$path" ]; then
     if dir_writable "$path"; then
       return 0
@@ -185,6 +206,7 @@ provision_owned_dir() {
 provision_system_dir() {
   mode="$1"
   path="$2"
+  require_safe_target directory "$path" || return 1
   if mkdir -p "$path" 2>/dev/null && [ -d "$path" ]; then
     return 0
   fi
@@ -192,9 +214,10 @@ provision_system_dir() {
 }
 
 provision_tmpfiles_config() {
+  require_safe_target file "/etc/tmpfiles.d/swarmd.conf" || return 1
   uid="$(current_owner_uid)"
   gid="$(current_owner_gid)"
-  tmp_path="$(mktemp "${TMPDIR:-/tmp}/swarmd-tmpfiles.XXXXXX")"
+  tmp_path="$(mktemp "${TMPDIR:?TMPDIR must be set}/swarmd-tmpfiles.XXXXXX")"
   cat >"$tmp_path" <<EOF
 d /run/swarmd 0700 ${uid} ${gid} -
 d /run/swarmd/dev 0700 ${uid} ${gid} -

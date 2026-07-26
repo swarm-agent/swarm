@@ -194,7 +194,7 @@ func Load(path string) (FileConfig, error) {
 	if err := validate(parsed); err != nil {
 		return FileConfig{}, fmt.Errorf("parse startup config %q: %w", path, err)
 	}
-	if err := appendMissingKeys(path, textWithoutLegacyIgnoredEntries(text), info.Mode().Perm(), parsed, seen); err != nil {
+	if err := appendMissingKeys(path, textWithoutLegacyIgnoredEntries(text), configFileMode, parsed, seen); err != nil {
 		return FileConfig{}, err
 	}
 	return parsed, nil
@@ -660,7 +660,6 @@ func atomicWriteConfig(path string, payload []byte, createMode os.FileMode) erro
 		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return fmt.Errorf("refuse to replace non-regular startup config %q", path)
 		}
-		mode = info.Mode().Perm()
 		uid, gid = fileOwnership(info)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect startup config %q: %w", path, err)
