@@ -185,6 +185,8 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 		"same deliverable",
 		"complete replacement checkpoint_title, tasks, acceptance_criteria, and notes",
 		"call resolve_blocked_checkpoint with start_next=true",
+		"the same checkpoint resumes in a fresh provider run",
+		"never completes the blocked checkpoint and never selects a later checkpoint",
 		"leave the checkpoint blocked and explain the exact resolution still needed",
 		"Never restart an unchanged checkpoint merely to clear a block",
 		"independent deliverable or separate task",

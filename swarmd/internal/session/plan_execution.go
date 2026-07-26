@@ -1488,76 +1488,44 @@ func ApplyPlanCheckpointBlockResolution(doc *pebblestore.SessionPlanDocument, op
 		return PlanExecutionSummary{}, errors.New("resolve blocked checkpoint requires no active in-progress run")
 	}
 	resolvedAt := options.ResolvedAt
-	checkpoint.Status = PlanCheckpointStatusCompleted
-	if result := strings.TrimSpace(options.Result); result != "" {
-		checkpoint.Result = result
-	} else if strings.TrimSpace(checkpoint.Result) == "" {
-		checkpoint.Result = "blocked_resolved"
+	resolutionResult := strings.TrimSpace(options.Result)
+	resolutionNotes := strings.TrimSpace(options.Notes)
+	resolutionContext := "Blocker confirmed resolved. Resume this checkpoint and decide its normal outcome after finishing any remaining work."
+	if resolutionResult != "" {
+		resolutionContext += "\nResolution: " + resolutionResult
 	}
-	if notes := strings.TrimSpace(options.Notes); notes != "" {
-		checkpoint.Report = notes
-	} else if strings.TrimSpace(checkpoint.Report) == "" {
-		checkpoint.Report = "Blocked checkpoint resolved without restart."
+	if resolutionNotes != "" {
+		resolutionContext += "\nContext: " + resolutionNotes
 	}
-	if resolvedAt > 0 {
-		checkpoint.CompletedAt = resolvedAt
+	if existingReport := strings.TrimSpace(checkpoint.Report); existingReport != "" {
+		checkpoint.Report = existingReport + "\n\n" + resolutionContext
+	} else {
+		checkpoint.Report = resolutionContext
 	}
-	if checkpoint.Review == nil {
-		checkpoint.Review = &pebblestore.SessionPlanCheckpointReview{}
-	}
-	checkpoint.Review.Status = PlanCheckpointReviewStatusApproved
-	checkpoint.Review.Result = firstNonBlank(strings.TrimSpace(options.Result), "blocked_resolved")
-	checkpoint.Review.Notes = strings.TrimSpace(options.Notes)
-	if resolvedAt > 0 {
-		checkpoint.Review.ReviewedAt = resolvedAt
-	}
-	attemptID := strings.TrimSpace(checkpoint.AttemptID)
-	parentSessionID := ""
-	if doc.ExecutionState != nil {
-		parentSessionID = strings.TrimSpace(doc.ExecutionState.ParentSessionID)
-		if attemptID == "" {
-			attemptID = strings.TrimSpace(firstNonBlank(doc.ExecutionState.ActiveAttemptID, doc.ExecutionState.LastAttemptID))
+	checkpoint.Result = "blocker_resolved_resume_required"
+	checkpoint.Status = PlanCheckpointStatusPending
+	checkpoint.CompletedAt = 0
+	checkpoint.Review = nil
+	checkpoint.AttemptID = ""
+	checkpoint.RunID = ""
+	checkpoint.SessionID = ""
+	for i := range checkpoint.Subtasks {
+		if checkpoint.Subtasks[i].Status == PlanSubtaskStatusInProgress {
+			checkpoint.Subtasks[i].Status = PlanSubtaskStatusPending
+			checkpoint.Subtasks[i].CompletedAt = 0
 		}
 	}
-	if attemptID != "" {
-		upsertPlanCheckpointAttempt(checkpoint, pebblestore.SessionPlanCheckpointAttempt{
-			ID:              attemptID,
-			CheckpointID:    checkpointID,
-			Status:          PlanCheckpointStatusCompleted,
-			Outcome:         PlanCheckpointStatusCompleted,
-			RunID:           strings.TrimSpace(checkpoint.RunID),
-			SessionID:       strings.TrimSpace(checkpoint.SessionID),
-			ParentSessionID: parentSessionID,
-			StartedAt:       checkpoint.StartedAt,
-			CompletedAt:     resolvedAt,
-			Report:          checkpoint.Report,
-			Result:          checkpoint.Result,
-			ChangedFiles:    cloneStringSlice(checkpoint.ChangedFiles),
-			Validation:      cloneStringSlice(checkpoint.Validation),
-		})
-		checkpoint.AttemptID = attemptID
-	}
+	checkpoint.ActiveSubtaskID = ""
 	if doc.ExecutionState == nil {
 		doc.ExecutionState = &pebblestore.SessionPlanExecutionState{}
 	}
-	doc.ExecutionState.LastCheckpointID = checkpointID
-	doc.ExecutionState.LastAttemptID = attemptID
-	doc.ExecutionState.LastOutcome = PlanCheckpointStatusCompleted
+	doc.ActiveCheckpointID = checkpointID
+	doc.ExecutionState.Status = PlanExecutionStateIdle
 	doc.ExecutionState.ActiveAttemptID = ""
 	doc.ExecutionState.CurrentRunID = ""
 	doc.ExecutionState.CurrentSessionID = ""
 	if resolvedAt > 0 {
 		doc.ExecutionState.UpdatedAt = resolvedAt
-	}
-	summary := SummarizePlanExecution(doc)
-	if summary.NextCheckpointID != "" && summary.NextCheckpointID != checkpointID {
-		doc.ActiveCheckpointID = summary.NextCheckpointID
-		doc.ExecutionState.Status = PlanExecutionStateIdle
-	} else if summary.PlanComplete || allPlanCheckpointsCompleted(doc.Checkpoints) {
-		doc.ActiveCheckpointID = checkpointID
-		doc.ExecutionState.Status = PlanExecutionStateWaitingReview
-	} else {
-		doc.ExecutionState.Status = PlanExecutionStateIdle
 	}
 	return SummarizePlanExecution(doc), nil
 }

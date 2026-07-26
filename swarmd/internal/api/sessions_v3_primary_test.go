@@ -6291,7 +6291,7 @@ func TestSessionsV3ProviderManagedPlanManageTerminalOutcomesUsePlanSavedOutbox(t
 	}
 }
 
-func TestSessionsV3ExecutorUserContinuationClearsBlockAndAutomaticallyStartsNextCheckpoint(t *testing.T) {
+func TestSessionsV3ExecutorUserContinuationResumesBlockedCheckpointBeforeAdvancing(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{}
 	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
@@ -6309,7 +6309,16 @@ func TestSessionsV3ExecutorUserContinuationClearsBlockAndAutomaticallyStartsNext
 			}
 			return provideriface.Response{RestartTurn: true}, nil
 		case 2:
-			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-cp-2", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"continued after resolved blocker","result":"done","handoff_overview":"The final checkpoint completed after the user resolved the blocker.","recommendation":{"decision":"ship","action":"review the completed flow","reason":"Both checkpoints reached their expected terminal states.","action_state":"ready"}}`})
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-resumed-cp-1", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"cp-1","report":"dependency confirmed and remaining checkpoint work finished","result":"done"}`})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if result.Error != "" || !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("complete resumed checkpoint failed: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: true}, nil
+		case 3:
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-cp-2", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"later checkpoint completed only after resumed cp-1 finished","result":"done","handoff_overview":"The blocked checkpoint resumed and explicitly completed before the later checkpoint ran.","recommendation":{"decision":"ship","action":"review the completed flow","reason":"Checkpoint ordering and explicit completion were preserved.","action_state":"ready"}}`})
 			if err != nil {
 				return provideriface.Response{}, err
 			}
@@ -6330,7 +6339,7 @@ func TestSessionsV3ExecutorUserContinuationClearsBlockAndAutomaticallyStartsNext
 		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateBlocked, LastCheckpointID: "cp-1", LastAttemptID: "cp-1:attempt-1", LastOutcome: sessionruntime.PlanCheckpointStatusBlocked, ParentSessionID: created.ID},
 		ActiveCheckpointID: "cp-1",
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Wait for dependency", Objective: "Wait for and confirm the dependency", Status: sessionruntime.PlanCheckpointStatusBlocked, Order: 1, AcceptanceCriteria: []string{"Dependency is confirmed resolved"}, AttemptID: "cp-1:attempt-1", RunID: "blocked-run", SessionID: created.ID, Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "cp-1:attempt-1", CheckpointID: "cp-1", Status: sessionruntime.PlanCheckpointStatusBlocked, Outcome: sessionruntime.PlanCheckpointStatusBlocked, RunID: "blocked-run", SessionID: created.ID, ParentSessionID: created.ID}}},
+			{ID: "cp-1", Title: "Wait for dependency", Objective: "Confirm the dependency and finish the remaining integration work", Tasks: []string{"Confirm dependency", "Finish integration"}, Status: sessionruntime.PlanCheckpointStatusBlocked, Order: 1, AcceptanceCriteria: []string{"Dependency is confirmed resolved", "Remaining integration work is finished"}, Report: "Progress before block: preparation complete; integration still pending.", AttemptID: "cp-1:attempt-1", RunID: "blocked-run", SessionID: created.ID, Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "cp-1:attempt-1", CheckpointID: "cp-1", Status: sessionruntime.PlanCheckpointStatusBlocked, Outcome: sessionruntime.PlanCheckpointStatusBlocked, RunID: "blocked-run", SessionID: created.ID, ParentSessionID: created.ID}}},
 			{ID: "cp-2", Title: "Finish automatically", Objective: "Complete after continuation", Status: sessionruntime.PlanCheckpointStatusPending, Order: 2, AcceptanceCriteria: []string{"Final checkpoint completes"}},
 		},
 	}})
@@ -6358,15 +6367,18 @@ func TestSessionsV3ExecutorUserContinuationClearsBlockAndAutomaticallyStartsNext
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if runner.callCount != 2 {
-		t.Fatalf("provider calls = %d, want continuation turn plus automatic cp-2 run", runner.callCount)
+	if runner.callCount != 3 {
+		t.Fatalf("provider calls = %d, want resolver turn, resumed cp-1 run, then automatic cp-2 run", runner.callCount)
 	}
 	intents, err := sessionSvc.ListSessionRunIntents(created.ID, 0, 10)
 	if err != nil {
 		t.Fatalf("list blocked continuation run intents: %v", err)
 	}
-	if len(intents) != 2 || intents[0].CheckpointID != "" || intents[1].CheckpointID != "cp-2" {
+	if len(intents) != 3 || intents[0].CheckpointID != "" || intents[1].CheckpointID != "cp-1" || intents[2].CheckpointID != "cp-2" {
 		t.Fatalf("blocked continuation run intents = %+v", intents)
+	}
+	if len(runner.requests) != 3 || !strings.Contains(fmt.Sprint(runner.requests[1].Input), "integration still pending") || !strings.Contains(fmt.Sprint(runner.requests[1].Input), "user confirmed continuation") {
+		t.Fatalf("resumed checkpoint did not receive preserved progress and resolution context: %+v", runner.requests)
 	}
 }
 

@@ -210,7 +210,7 @@ func TestSessionsV3PlanModeDedicatedLifecycleEndpointsSuccess(t *testing.T) {
 		sessionsV3PlanModeSeedPlan(t, sessionSvc, created.ID, "plan-resolve-block", doc, "approved")
 
 		payload := postSessionsV3PlanModeTestJSON(t, server, created.ID, "/plan-mode/checkpoints/cp-1/resolve-block", `{"start_next":true,"reviewed_at":1234}`)
-		if payload["transition"] != "resolve_blocked_checkpoint" || payload["checkpoint_id"] != "cp-2" || payload["run_queued"] != true {
+		if payload["transition"] != "resolve_blocked_checkpoint" || payload["checkpoint_id"] != "cp-1" || payload["run_queued"] != true {
 			t.Fatalf("payload = %#v", payload)
 		}
 		messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
@@ -224,8 +224,8 @@ func TestSessionsV3PlanModeDedicatedLifecycleEndpointsSuccess(t *testing.T) {
 		if message.Role != "system" || message.Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || message.Metadata["kind"] != "plan_execution_break" || message.Metadata["action"] != "resolve_blocked_checkpoint" || message.Metadata["next_action"] != "run_checkpoint_with_fresh_context" {
 			t.Fatalf("message role/metadata = role %q metadata %#v", message.Role, message.Metadata)
 		}
-		if !strings.Contains(message.Content, "Blocked checkpoint resolved; starting next checkpoint — Automatic mode") || !strings.Contains(message.Content, "Resolved: Checkpoint 1 — Blocked") || !strings.Contains(message.Content, "Checkpoint: Checkpoint 2 — Next") || !strings.Contains(message.Content, "Context: Starting the next checkpoint with fresh context.") {
-			t.Fatalf("message content missing resolve/start details: %q", message.Content)
+		if !strings.Contains(message.Content, "Blocker resolved; resuming current checkpoint — Automatic mode") || !strings.Contains(message.Content, "Checkpoint: Checkpoint 1 — Blocked") || strings.Contains(message.Content, "Checkpoint 2 — Next") || !strings.Contains(message.Content, "Context: Resuming this checkpoint with fresh context; it remains incomplete until the resumed agent records a normal outcome.") {
+			t.Fatalf("message content missing resolve/resume details: %q", message.Content)
 		}
 	})
 

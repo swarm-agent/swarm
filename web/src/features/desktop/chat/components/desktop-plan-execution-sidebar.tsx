@@ -745,8 +745,9 @@ function ActionsSection({
           </div>
           <p className="mt-0.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
             When the dependency is resolved, tell Swarm what changed and ask it
-            to continue. Swarm will confirm the resolution, clear the blocked
-            state, and continue without restarting this checkpoint.
+            to continue. Swarm will clear the blocker and resume this same
+            checkpoint in fresh context. It will finish any remaining work and
+            explicitly complete the checkpoint before anything later starts.
           </p>
         </div>
       </section>

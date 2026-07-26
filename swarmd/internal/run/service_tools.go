@@ -2565,7 +2565,6 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		})
 	}
 	var result sessionruntime.PlanLifecycleResult
-	deferBlockedCheckpointStart := false
 	switch action {
 	case "approve_and_start":
 		if session, ok, getErr := s.sessions.GetSession(sessionID); getErr != nil {
@@ -2602,13 +2601,8 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		input.Notes = strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "resolution_notes"), mapString(args, "report")))
 		input.ReviewedAt = int64(mapInt(args, "reviewed_at"))
 		input.StartNext = mapBool(args, "start_next") || mapBool(args, "continue_next")
-		deferBlockedCheckpointStart = lifecycleRun.Inline && input.StartNext
-		if deferBlockedCheckpointStart {
-			// Provider-managed turns only resolve the blocker. Keep the next
-			// checkpoint pending so the executor can assign and start its fresh run
-			// exactly once after this tool result ends the current turn.
-			input.StartNext = false
-		}
+		// Resolving a blocker resumes this same checkpoint in a fresh run. It
+		// never completes the checkpoint or selects a later checkpoint.
 		if input.StartNext {
 			if strings.TrimSpace(input.RunID) == "" {
 				input.RunID = strings.TrimSpace(mapString(args, "run_id"))
@@ -2720,21 +2714,16 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 	}
 	if !strings.EqualFold(strings.TrimSpace(result.Plan.ApprovalState), "approved") {
 		payload["next_action"] = "await_approval"
-	} else if action == "resolve_blocked_checkpoint" && deferBlockedCheckpointStart && result.Summary.NextCheckpointID != "" && result.Summary.AutoAdvanceAllowed && !result.Summary.ReviewRequired && !result.Summary.Blocked && !result.Summary.Failed && !result.Summary.PlanComplete {
-		payload["checkpoint_id"] = result.Summary.NextCheckpointID
-		payload["next_checkpoint_id"] = result.Summary.NextCheckpointID
+	} else if action == "resolve_blocked_checkpoint" && input.StartNext && result.CheckpointID != "" && result.Summary.NextCheckpointID == result.CheckpointID && result.Summary.NextCheckpointStatus == sessionruntime.PlanCheckpointStatusInProgress {
+		payload["checkpoint_id"] = result.CheckpointID
+		payload["next_checkpoint_id"] = result.CheckpointID
 		payload["next_action"] = "run_checkpoint_with_fresh_context"
-		payload["checkpoint_start_deferred"] = true
-		payload["run_request"] = planCheckpointRunRequestPayload(result.Plan.ID, result.Summary.NextCheckpointID, "")
-	} else if action == "resolve_blocked_checkpoint" && !input.StartNext {
+		payload["resumed_checkpoint_id"] = result.CheckpointID
+		payload["run_request"] = planCheckpointRunRequestPayload(result.Plan.ID, result.CheckpointID, result.AttemptID)
+	} else if action == "resolve_blocked_checkpoint" {
+		payload["checkpoint_id"] = result.CheckpointID
 		payload["next_checkpoint_id"] = result.Summary.NextCheckpointID
-		if result.Summary.PlanComplete {
-			payload["next_action"] = "plan_complete"
-		} else if result.Summary.ReviewRequired {
-			payload["next_action"] = "await_review"
-		} else {
-			payload["next_action"] = "blocked_resolved"
-		}
+		payload["next_action"] = "blocker_resolved_resume_pending"
 	} else if result.Summary.PlanComplete {
 		payload["next_action"] = "plan_complete"
 	} else if result.Summary.ReviewRequired {

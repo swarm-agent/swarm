@@ -1087,10 +1087,9 @@ func (s *PlanLifecycleService) ResolveBlockedCheckpoint(input PlanLifecycleExecu
 	if err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	if input.StartNext && summary.NextCheckpointID != "" && !summary.ReviewRequired && !summary.Blocked && !summary.Failed && !summary.PlanComplete {
-		nextCheckpointID := summary.NextCheckpointID
+	if input.StartNext && summary.NextCheckpointID == checkpointID && !summary.ReviewRequired && !summary.Blocked && !summary.Failed && !summary.PlanComplete {
 		if strings.TrimSpace(input.RunID) == "" {
-			input.RunID = fmt.Sprintf("plan-resolve-run:%s:%d", nextCheckpointID, resolvedAt)
+			input.RunID = fmt.Sprintf("plan-resume-run:%s:%d", checkpointID, resolvedAt)
 		}
 		if strings.TrimSpace(input.RunSessionID) == "" {
 			input.RunSessionID = state.session.ID
@@ -1099,11 +1098,11 @@ func (s *PlanLifecycleService) ResolveBlockedCheckpoint(input PlanLifecycleExecu
 			input.ParentSessionID = state.session.ID
 		}
 		input.StartedAt = resolvedAt
-		decision, err := ApplyPlanCheckpointStart(state.doc, PlanCheckpointStartOptions{CheckpointID: nextCheckpointID, PlanID: state.plan.ID, AttemptID: input.AttemptID, RunID: input.RunID, SessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, StartedAt: input.StartedAt})
+		decision, err := ApplyPlanCheckpointStart(state.doc, PlanCheckpointStartOptions{CheckpointID: checkpointID, PlanID: state.plan.ID, AttemptID: input.AttemptID, RunID: input.RunID, SessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, StartedAt: input.StartedAt})
 		if err != nil {
 			return PlanLifecycleResult{}, err
 		}
-		result, err := s.saveLifecyclePlan(state, nextCheckpointID, "resolve_blocked_checkpoint", "Resolved blocked checkpoint and prepared fresh-context checkpoint start")
+		result, err := s.saveLifecyclePlan(state, checkpointID, "resolve_blocked_checkpoint", "Resolved blocker and prepared fresh-context resume of the same checkpoint")
 		if err != nil {
 			return PlanLifecycleResult{}, err
 		}
@@ -1111,7 +1110,7 @@ func (s *PlanLifecycleService) ResolveBlockedCheckpoint(input PlanLifecycleExecu
 		result.AttemptID = decision.AttemptID
 		return result, nil
 	}
-	return s.saveLifecyclePlan(state, checkpointID, "resolve_blocked_checkpoint", "Resolved blocked checkpoint without restart")
+	return s.saveLifecyclePlan(state, checkpointID, "resolve_blocked_checkpoint", "Resolved blocker; current checkpoint remains selected for resume")
 }
 
 type planLifecycleState struct {
@@ -1375,14 +1374,40 @@ func resolveFollowupInsertionPoint(doc *pebblestore.SessionPlanDocument, point f
 		return checkpointID, nil
 	}
 	if status == PlanCheckpointStatusBlocked {
-		if _, err := ApplyPlanCheckpointBlockResolution(doc, PlanCheckpointBlockResolutionOptions{
-			CheckpointID: checkpointID,
-			Result:       "superseded_by_followup",
-			Notes:        fmt.Sprintf("Blocked checkpoint superseded by session checkpoint %q.", followupID),
-			ResolvedAt:   resolvedAt,
-		}); err != nil {
-			return "", fmt.Errorf("resolve blocked checkpoint for follow-up: %w", err)
+		checkpoint.Status = PlanCheckpointStatusCompleted
+		checkpoint.Result = "superseded_by_followup"
+		checkpoint.Report = firstNonBlank(strings.TrimSpace(checkpoint.Report), fmt.Sprintf("Blocked checkpoint superseded by session checkpoint %q.", followupID))
+		if resolvedAt > 0 {
+			checkpoint.CompletedAt = resolvedAt
 		}
+		if checkpoint.Review == nil {
+			checkpoint.Review = &pebblestore.SessionPlanCheckpointReview{}
+		}
+		checkpoint.Review.Status = PlanCheckpointReviewStatusApproved
+		checkpoint.Review.Result = "superseded_by_followup"
+		checkpoint.Review.Notes = fmt.Sprintf("Blocked checkpoint was explicitly superseded by session checkpoint %q.", followupID)
+		if resolvedAt > 0 {
+			checkpoint.Review.ReviewedAt = resolvedAt
+		}
+		for i := range checkpoint.Attempts {
+			if strings.TrimSpace(checkpoint.Attempts[i].ID) != strings.TrimSpace(checkpoint.AttemptID) {
+				continue
+			}
+			checkpoint.Attempts[i].Status = PlanCheckpointStatusCompleted
+			checkpoint.Attempts[i].Outcome = PlanCheckpointStatusCompleted
+			checkpoint.Attempts[i].Result = "superseded_by_followup"
+			checkpoint.Attempts[i].CompletedAt = resolvedAt
+		}
+		if doc.ExecutionState == nil {
+			doc.ExecutionState = &pebblestore.SessionPlanExecutionState{}
+		}
+		doc.ExecutionState.LastCheckpointID = checkpointID
+		doc.ExecutionState.LastAttemptID = strings.TrimSpace(checkpoint.AttemptID)
+		doc.ExecutionState.LastOutcome = PlanCheckpointStatusCompleted
+		doc.ExecutionState.ActiveAttemptID = ""
+		doc.ExecutionState.CurrentRunID = ""
+		doc.ExecutionState.CurrentSessionID = ""
+		doc.ExecutionState.UpdatedAt = resolvedAt
 		return checkpointID, nil
 	}
 	if status != PlanCheckpointStatusCompleted && status != PlanCheckpointStatusNeedsReview {

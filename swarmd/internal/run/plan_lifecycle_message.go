@@ -42,9 +42,6 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 	if action == "resume_checkpoint" {
 		freshContext = false
 	}
-	if action == "resolve_blocked_checkpoint" && (nextAction == "await_review" || nextAction == "plan_complete") {
-		freshContext = false
-	}
 
 	checkpointLabel := planLifecycleCheckpointLabel(checkpointID, checkpointTitle)
 	modeLabel := planLifecycleModeLabel(doc.ExecutionPolicy)
@@ -57,11 +54,6 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 		checkpointLineLabel := "Checkpoint"
 		if planLifecycleActionCompleted(action) {
 			checkpointLineLabel = "Completed"
-		}
-		if action == "resolve_blocked_checkpoint" {
-			if resolvedID := stringFromPlanPayload(input.Payload, "resolved_checkpoint_id"); resolvedID != "" && resolvedID != checkpointID {
-				bodyLines = append(bodyLines, "Resolved: "+planLifecycleCheckpointLabel(resolvedID, planLifecycleCheckpointTitle(doc, resolvedID)))
-			}
 		}
 		bodyLines = append(bodyLines, checkpointLineLabel+": "+checkpointLabel)
 	}
@@ -92,7 +84,11 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 		lines = append(lines, bodyLines...)
 	}
 	if freshContext {
-		lines = append(lines, "", "Context: Starting the next checkpoint with fresh context.")
+		contextLine := "Context: Starting the next checkpoint with fresh context."
+		if action == "resolve_blocked_checkpoint" {
+			contextLine = "Context: Resuming this checkpoint with fresh context; it remains incomplete until the resumed agent records a normal outcome."
+		}
+		lines = append(lines, "", contextLine)
 	}
 
 	metadata := map[string]any{
@@ -173,14 +169,10 @@ func planLifecycleHeadline(action, checkpointID string, doc *pebblestore.Session
 			base = "Checkpoint review accepted"
 		}
 	case "resolve_blocked_checkpoint":
-		if summary.PlanComplete || nextAction == "plan_complete" {
-			base = "Blocked checkpoint resolved; plan complete"
-		} else if nextAction == "await_review" {
-			base = "Blocked checkpoint resolved; review required"
-		} else if nextAction == "run_checkpoint_with_fresh_context" {
-			base = "Blocked checkpoint resolved; starting next checkpoint"
+		if nextAction == "run_checkpoint_with_fresh_context" {
+			base = "Blocker resolved; resuming current checkpoint"
 		} else {
-			base = "Blocked checkpoint resolved"
+			base = "Blocker resolved; current checkpoint ready to resume"
 		}
 	case "start_checkpoint", "continue_checkpoint":
 		base = "Checkpoint started"
@@ -480,7 +472,7 @@ func BuildBlockedPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleM
 	if checkpointID != "" {
 		lines = append(lines, "Checkpoint: "+planLifecycleCheckpointLabel(checkpointID, checkpointTitle))
 	}
-	lines = append(lines, "Resolution required: resolve the named external dependency, input, or permission in the report before continuing checkpoint execution.")
+	lines = append(lines, "Resolution required: resolve the named external dependency, input, or permission in the report. Once confirmed, Swarm resumes this same checkpoint in fresh context; the checkpoint remains incomplete until the resumed agent records a normal outcome.")
 	if detailLines := planLifecycleOutcomeDetailLines(input.Payload, true); len(detailLines) > 0 {
 		lines = append(lines, "")
 		lines = append(lines, detailLines...)

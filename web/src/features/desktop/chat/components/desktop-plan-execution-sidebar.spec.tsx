@@ -658,7 +658,8 @@ test("blocked checkpoint sidebar directs the user back to Swarm without unblock 
 
   assert.match(markup, /Blocked checkpoint/);
   assert.match(markup, /tell Swarm what changed and ask it/);
-  assert.match(markup, /continue without restarting this checkpoint/);
+  assert.match(markup, /resume this same checkpoint in fresh context/);
+  assert.match(markup, /explicitly complete the checkpoint before anything later starts/);
   assert.doesNotMatch(markup, /Resolve blocker/);
   assert.doesNotMatch(markup, /start next checkpoint/);
   assert.doesNotMatch(markup, /Restart checkpoint/);

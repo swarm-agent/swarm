@@ -166,10 +166,8 @@ func (s *Server) publishPlanLifecycleSystemMessage(principal identity.Principal,
 
 func sessionsV3PlanLifecycleMessagePayload(result sessionruntime.PlanLifecycleResult) map[string]any {
 	payload := map[string]any{"action": strings.TrimSpace(result.Action)}
-	if strings.TrimSpace(result.Action) == "resolve_blocked_checkpoint" && result.Plan.Document != nil && result.CheckpointID != "" {
-		if resolvedID := resolvedPlanLifecycleCheckpointID(result.Plan.Document, result.CheckpointID); resolvedID != "" {
-			payload["resolved_checkpoint_id"] = resolvedID
-		}
+	if strings.TrimSpace(result.Action) == "resolve_blocked_checkpoint" && result.CheckpointID != "" {
+		payload["resumed_checkpoint_id"] = strings.TrimSpace(result.CheckpointID)
 	}
 	if result.CheckpointID != "" {
 		payload["checkpoint_id"] = strings.TrimSpace(result.CheckpointID)
@@ -194,10 +192,10 @@ func sessionsV3PlanLifecycleMessagePayload(result sessionruntime.PlanLifecycleRe
 		case "start_checkpoint", "continue_checkpoint", "restart_checkpoint", "rewind_to_checkpoint":
 			payload["next_action"] = "run_checkpoint_with_fresh_context"
 		case "resolve_blocked_checkpoint":
-			if result.Summary.NextCheckpointStatus == sessionruntime.PlanCheckpointStatusInProgress {
+			if result.Summary.NextCheckpointStatus == sessionruntime.PlanCheckpointStatusInProgress && result.Summary.NextCheckpointID == result.CheckpointID {
 				payload["next_action"] = "run_checkpoint_with_fresh_context"
 			} else {
-				payload["next_action"] = "blocked_resolved"
+				payload["next_action"] = "blocker_resolved_resume_pending"
 			}
 		case "accept_checkpoint":
 			payload["next_action"] = "continue_checkpoint"
@@ -210,26 +208,6 @@ func sessionsV3PlanLifecycleMessagePayload(result sessionruntime.PlanLifecycleRe
 		}
 	}
 	return payload
-}
-
-func resolvedPlanLifecycleCheckpointID(doc *pebblestore.SessionPlanDocument, selectedCheckpointID string) string {
-	if doc == nil {
-		return ""
-	}
-	selectedCheckpointID = strings.TrimSpace(selectedCheckpointID)
-	for _, checkpoint := range doc.Checkpoints {
-		checkpointID := strings.TrimSpace(checkpoint.ID)
-		if checkpointID == "" || checkpointID == selectedCheckpointID {
-			continue
-		}
-		if strings.TrimSpace(checkpoint.Result) == "blocked_resolved" {
-			return checkpointID
-		}
-		if checkpoint.Review != nil && strings.TrimSpace(checkpoint.Review.Result) == "blocked_resolved" {
-			return checkpointID
-		}
-	}
-	return ""
 }
 
 func sessionsV3PlanLifecycleMessageClientRequestID(sessionID, transition string, plan pebblestore.SessionPlanSnapshot, metadata map[string]any) string {
