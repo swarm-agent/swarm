@@ -51,6 +51,7 @@ type Options struct {
 
 type Recorder struct {
 	mu                      sync.Mutex
+	captureMu               sync.Mutex
 	opts                    Options
 	dir                     string
 	started                 time.Time
@@ -283,6 +284,31 @@ func (r *Recorder) Directory() string {
 	return r.dir
 }
 
+// CaptureNow writes a fresh daemon runtime sample and a complete set of memory,
+// goroutine, block, and mutex profiles into this recorder's canonical run
+// directory. It is serialized with periodic captures so manual Desktop dumps do
+// not race background profile writes.
+func (r *Recorder) CaptureNow() error {
+	if r == nil {
+		return errors.New("long-session diagnostics disabled")
+	}
+	r.captureMu.Lock()
+	defer r.captureMu.Unlock()
+	r.mu.Lock()
+	closed := r.closed
+	r.mu.Unlock()
+	if closed {
+		return errors.New("long-session diagnostics recorder closed")
+	}
+	if err := r.captureSample(); err != nil {
+		return fmt.Errorf("capture daemon sample: %w", err)
+	}
+	if err := r.captureProfiles(); err != nil {
+		return fmt.Errorf("capture daemon profiles: %w", err)
+	}
+	return nil
+}
+
 // HashIdentifier returns a run-local stable pseudonym suitable for correlating
 // records without retaining the underlying identifier.
 func (r *Recorder) HashIdentifier(value string) string {
@@ -513,9 +539,11 @@ func (r *Recorder) Close() error {
 	r.wg.Wait()
 	runtime.SetMutexProfileFraction(r.oldMutexProfileFraction)
 	runtime.SetBlockProfileRate(0)
+	r.captureMu.Lock()
 	if err := r.captureSample(); err != nil {
 		r.recordError(err)
 	}
+	r.captureMu.Unlock()
 	ended := r.opts.Now()
 	if err := r.writeJSON("manifest.json", r.manifest(&ended)); err != nil {
 		r.recordError(err)
@@ -536,17 +564,26 @@ func (r *Recorder) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-sampleTicker.C:
-			if err := r.captureSample(); err != nil {
+			r.captureMu.Lock()
+			err := r.captureSample()
+			r.captureMu.Unlock()
+			if err != nil {
 				r.recordError(err)
 				return
 			}
 		case <-profileTicker.C:
-			if err := r.captureProfiles(); err != nil {
+			r.captureMu.Lock()
+			err := r.captureProfiles()
+			r.captureMu.Unlock()
+			if err != nil {
 				r.recordError(err)
 				return
 			}
 		case <-cpuTicker.C:
-			if err := r.captureCPUProfile(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			r.captureMu.Lock()
+			err := r.captureCPUProfile(ctx)
+			r.captureMu.Unlock()
+			if err != nil && !errors.Is(err, context.Canceled) {
 				r.recordError(err)
 				return
 			}

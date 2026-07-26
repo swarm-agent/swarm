@@ -3,15 +3,17 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	"swarm/packages/swarmd/internal/longsessiondiag"
 )
 
 const (
-	LongSessionDiagnosticsConfigPath = "/v3/diagnostics/long-session/config"
-	LongSessionDiagnosticsSamplePath = "/v3/diagnostics/long-session/samples"
-	longSessionDiagnosticsMaxBody    = 32 << 10
+	LongSessionDiagnosticsConfigPath  = "/v3/diagnostics/long-session/config"
+	LongSessionDiagnosticsSamplePath  = "/v3/diagnostics/long-session/samples"
+	LongSessionDiagnosticsCapturePath = "/v3/diagnostics/long-session/captures"
+	longSessionDiagnosticsMaxBody     = 32 << 10
 )
 
 func (s *Server) handleLongSessionDiagnosticsConfig(w http.ResponseWriter, r *http.Request) {
@@ -28,10 +30,19 @@ func (s *Server) handleLongSessionDiagnosticsConfig(w http.ResponseWriter, r *ht
 		"enabled":            true,
 		"sample_interval_ms": longsessiondiag.DefaultSampleInterval.Milliseconds(),
 		"max_sample_bytes":   longSessionDiagnosticsMaxBody,
+		"artifact_location":  s.longSessionDiagnostics.Directory(),
 	})
 }
 
 func (s *Server) handleLongSessionDiagnosticsSample(w http.ResponseWriter, r *http.Request) {
+	s.handleLongSessionDiagnosticsDesktopSample(w, r, false)
+}
+
+func (s *Server) handleLongSessionDiagnosticsCapture(w http.ResponseWriter, r *http.Request) {
+	s.handleLongSessionDiagnosticsDesktopSample(w, r, true)
+}
+
+func (s *Server) handleLongSessionDiagnosticsDesktopSample(w http.ResponseWriter, r *http.Request, captureDaemon bool) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
@@ -59,5 +70,17 @@ func (s *Server) handleLongSessionDiagnosticsSample(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusInternalServerError, errors.New("record long-session diagnostic sample"))
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
+	if captureDaemon {
+		if err := s.longSessionDiagnostics.CaptureNow(); err != nil {
+			writeError(w, http.StatusInternalServerError, errors.New("capture long-session daemon diagnostics"))
+			return
+		}
+	}
+	s.longSessionDesktopSampleLogOnce.Do(func() {
+		log.Printf("long-session diagnostics accepted first desktop sample artifact=%q", "desktop-samples.jsonl")
+	})
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"ok":                true,
+		"artifact_location": s.longSessionDiagnostics.Directory(),
+	})
 }

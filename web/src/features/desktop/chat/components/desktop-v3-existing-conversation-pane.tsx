@@ -6,6 +6,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
+  type MutableRefObject,
   type ReactNode,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -1369,6 +1371,52 @@ export function completeDesktopV3ExistingMessage(input: {
   input.setDraft("");
 }
 
+type DesktopV3ExistingComposerController = {
+  setDraft: (draft: string) => void;
+};
+
+type DesktopV3ExistingConversationComposerProps = Omit<
+  ComponentProps<typeof DesktopV3AgenticComposer>,
+  "draft" | "onDraftChange" | "canSubmit" | "onSubmit"
+> & {
+  initialDraft: string;
+  hasStoredOperation: boolean;
+  canSubmitWithoutDraft: boolean;
+  controllerRef: MutableRefObject<DesktopV3ExistingComposerController | null>;
+  onSubmit: (draft: string) => void | Promise<void>;
+};
+
+export function DesktopV3ExistingConversationComposer({
+  initialDraft,
+  hasStoredOperation,
+  canSubmitWithoutDraft,
+  controllerRef,
+  onSubmit,
+  ...composerProps
+}: DesktopV3ExistingConversationComposerProps) {
+  const [draft, setDraft] = useState(initialDraft);
+
+  useLayoutEffect(() => {
+    const controller: DesktopV3ExistingComposerController = { setDraft };
+    controllerRef.current = controller;
+    return () => {
+      if (controllerRef.current === controller) controllerRef.current = null;
+    };
+  }, [controllerRef]);
+
+  return (
+    <DesktopV3AgenticComposer
+      {...composerProps}
+      draft={draft}
+      onDraftChange={setDraft}
+      canSubmit={
+        canSubmitWithoutDraft && (hasStoredOperation || Boolean(draft.trim()))
+      }
+      onSubmit={onSubmit}
+    />
+  );
+}
+
 export function DesktopV3ExistingConversationPane({
   modeCommand = null,
   onModeCommandHandled,
@@ -1518,7 +1566,7 @@ export function DesktopV3ExistingConversationPane({
       sessionMetadata,
     ],
   );
-  const [draft, setDraft] = useState(storedOperation?.request.content ?? "");
+  const composerControllerRef = useRef<DesktopV3ExistingComposerController | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null);
@@ -1716,13 +1764,12 @@ export function DesktopV3ExistingConversationPane({
     [routeOptions, session],
   );
   const compacting = compactStartedAt !== null;
-  const canSend = Boolean(
+  const canSubmitWithoutDraft = Boolean(
     normalizedSessionId &&
     !sending &&
     !compacting &&
     selectedAgent.trim() &&
-    selectedModelAvailable &&
-    (hasStoredOperation || draft.trim()),
+    selectedModelAvailable,
   );
   const renderItems = useMemo(
     () => buildDesktopV3ConversationRenderItems(renderedMessages),
@@ -1865,7 +1912,7 @@ export function DesktopV3ExistingConversationPane({
     const operation =
       loadDesktopV3ExistingMessageOperation(normalizedSessionId);
     operationRef.current = operation;
-    setDraft(operation?.request.content ?? "");
+    composerControllerRef.current?.setDraft(operation?.request.content ?? "");
     setSendError(null);
   }, [normalizedSessionId]);
 
@@ -2236,7 +2283,7 @@ export function DesktopV3ExistingConversationPane({
     oldestLoadedSeq,
   ]);
 
-  async function handleSubmit(submittedDraft = draft) {
+  async function handleSubmit(submittedDraft: string) {
     if (!normalizedSessionId || sending || compacting) return;
 
     setSending(true);
@@ -2255,7 +2302,7 @@ export function DesktopV3ExistingConversationPane({
           metadata,
         });
       operationRef.current = operation;
-      setDraft("");
+      composerControllerRef.current?.setDraft("");
       persistDesktopV3ExistingMessageOperation(operation);
 
       await continueDesktopV3Conversation(operation);
@@ -2266,7 +2313,7 @@ export function DesktopV3ExistingConversationPane({
         setOperation: (nextOperation) => {
           operationRef.current = nextOperation;
         },
-        setDraft,
+        setDraft: (nextDraft) => composerControllerRef.current?.setDraft(nextDraft),
       });
     } catch (error) {
       if (mountedRef.current) {
@@ -2476,6 +2523,13 @@ export function DesktopV3ExistingConversationPane({
     );
   }
 
+  const submitRef = useRef(handleSubmit);
+  submitRef.current = handleSubmit;
+  const stableSubmit = useCallback(
+    (submittedDraft: string) => submitRef.current(submittedDraft),
+    [],
+  );
+
   const planExecutionActionRef = useRef(handlePlanExecutionAction);
   planExecutionActionRef.current = handlePlanExecutionAction;
   const stablePlanExecutionAction = useCallback(
@@ -2535,6 +2589,8 @@ export function DesktopV3ExistingConversationPane({
     onCopyConversation: () => { void handleTranscriptExport('copy'); },
     onDownloadConversation: () => { void handleTranscriptExport('download'); },
   } : null, [handleTranscriptExport, sessionActions, transcriptAction]);
+
+  const stableSuggestedPrompt = stableSubmit;
 
   const hasOpenPlan = Boolean(onOpenPlan);
   const stableOpenPlan = useMemo(
@@ -2631,7 +2687,7 @@ export function DesktopV3ExistingConversationPane({
                         thinkingTagsEnabled={thinkingTagsEnabled}
                         index={index}
                         taskChildActions={taskChildActions}
-                        onSuggestedPrompt={(prompt) => handleSubmit(prompt)}
+                        onSuggestedPrompt={stableSuggestedPrompt}
                       />
                     </div>
                   );
@@ -2720,17 +2776,19 @@ export function DesktopV3ExistingConversationPane({
             </div>
           ) : null}
 
-          <DesktopV3AgenticComposer
-            draft={draft}
-            onDraftChange={setDraft}
+          <DesktopV3ExistingConversationComposer
+            key={normalizedSessionId}
+            initialDraft={storedOperation?.request.content ?? ""}
+            hasStoredOperation={hasStoredOperation}
+            canSubmitWithoutDraft={canSubmitWithoutDraft}
+            controllerRef={composerControllerRef}
             placeholder="Message Swarm…"
             inputLabel="Continue Desktop V3 conversation"
             disabled={sending || compacting}
             busy={sending || compacting}
-            canSubmit={canSend}
             canStop={Boolean(currentRun)}
             error={sendError}
-            onSubmit={handleSubmit}
+            onSubmit={stableSubmit}
             onStop={handleStop}
             onCompact={handleCompact}
             mode={mode}

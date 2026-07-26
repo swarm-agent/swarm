@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { aggregateDesktopV3Cache, retainDesktopLongSessionDiagnostics } from './desktop-long-session-diagnostics'
+import { aggregateDesktopV3Cache, captureDesktopLongSessionDiagnostics, retainDesktopLongSessionDiagnostics } from './desktop-long-session-diagnostics'
 import { createEmptyDesktopV3CacheState } from '../state/desktop-v3-cache-reducer'
 import type { DesktopV3CacheMutation } from '../state/desktop-v3-cache-store'
 
@@ -42,7 +42,7 @@ test('diagnostics sampler remains disabled on a flag-gated 404', async () => {
   lease.release()
 })
 
-test('enabled sampler tears down timer, cache listener, and long-task observer', async () => {
+test('enabled sampler exposes manual renderer-and-daemon capture and tears down resources', async () => {
   const state = createEmptyDesktopV3CacheState()
   let intervalCallback: (() => void) | undefined
   let cleared = 0
@@ -55,8 +55,8 @@ test('enabled sampler tears down timer, cache listener, and long-task observer',
     fetch: async (input) => {
       requests.push(input)
       return requests.length === 1
-        ? new Response('{"ok":true,"enabled":true,"sample_interval_ms":30000}', { status: 200 })
-        : new Response('{"ok":true}', { status: 202 })
+        ? new Response('{"ok":true,"enabled":true,"sample_interval_ms":30000,"artifact_location":"/logs/run-1"}', { status: 200 })
+        : new Response('{"ok":true,"artifact_location":"/logs/run-1"}', { status: 202 })
     },
     now: () => 30_000,
     setInterval: (callback) => {
@@ -81,10 +81,12 @@ test('enabled sampler tears down timer, cache listener, and long-task observer',
   })
   listener?.({ action: { type: 'session.select', sessionId: undefined }, previousState: state, nextState: state, durationMS: 4 })
   intervalCallback?.()
+  const capture = await captureDesktopLongSessionDiagnostics()
+  assert.equal(capture.artifactLocation, '/logs/run-1')
   lease.release()
   lease.release()
   assert.equal(requests.length, 2)
-  assert.equal(cleared, 2)
+  assert.equal(cleared, 1)
   assert.equal(cacheReleased, 1)
   assert.equal(observerReleased, 1)
   assert.equal(animationObserverReleased, 1)

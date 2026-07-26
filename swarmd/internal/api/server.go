@@ -116,6 +116,8 @@ type Server struct {
 	bypassPermissions           bool
 	longSessionDiagnostics      *longsessiondiag.Recorder
 
+	longSessionDesktopSampleLogOnce sync.Once
+
 	codexOAuthMu       sync.Mutex
 	codexOAuthSessions map[string]*codexOAuthSession
 

@@ -60,7 +60,7 @@ func TestLongSessionDiagnosticsEndpointsGateAndValidateSamples(t *testing.T) {
 
 	config := httptest.NewRecorder()
 	serve(config, httptest.NewRequest(http.MethodGet, LongSessionDiagnosticsConfigPath, nil))
-	if config.Code != http.StatusOK || !strings.Contains(config.Body.String(), `"enabled":true`) {
+	if config.Code != http.StatusOK || !strings.Contains(config.Body.String(), `"enabled":true`) || !strings.Contains(config.Body.String(), `"artifact_location":`) {
 		t.Fatalf("enabled config status=%d body=%s", config.Code, config.Body.String())
 	}
 
@@ -82,4 +82,5 @@ func TestLongSessionDiagnosticsEndpointsGateAndValidateSamples(t *testing.T) {
 	if valid.Code != http.StatusAccepted {
 		t.Fatalf("valid sample status=%d body=%s", valid.Code, valid.Body.String())
 	}
+
 }

@@ -144,8 +144,8 @@ All non-health endpoints require attach auth via `X-Swarm-Token` (or `Authorizat
 
 1. Edit the canonical daemon startup config (`swarm.conf`) and set `long_session_diagnostics = true`.
 2. Restart the daemon. Startup fails clearly if the private diagnostics directory cannot be created. Confirm the daemon log reports the selected run directory.
-3. Open the Desktop and reproduce the same workflow for approximately five hours. The Desktop V3 runtime samples every 30 seconds and stops its timers/observers when released.
-4. Copy the run directory for analysis. Set `long_session_diagnostics = false` and restart the daemon to stop recording.
+3. Open the Desktop. When the flag is detected, a memory-chip button appears immediately left of the notification bell. Use **Dump now** for one renderer-and-daemon capture, or select a duration and start monitoring to write a combined capture every 30 seconds. The dialog and toast report the canonical artifact location or an explicit failure, and monitoring can be stopped at any time.
+4. Copy the reported run directory for analysis. Set `long_session_diagnostics = false` and restart the daemon to disable the control and recorder.
 
 The run directory is `long-session-diagnostics/run-<UTC timestamp>-<suffix>` below the platform's canonical Swarm logs root (`storagecontract.RootLogs`; `/var/log/swarmd` for the default Linux installation). Directories are mode `0700`, files are mode `0600`, and each run has a hard 512 MiB budget.
 

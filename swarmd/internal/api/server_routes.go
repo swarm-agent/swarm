@@ -138,6 +138,7 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(SessionStorageMaintenancePath, s.handleSessionStorageMaintenance)
 	mux.HandleFunc(LongSessionDiagnosticsConfigPath, s.handleLongSessionDiagnosticsConfig)
 	mux.HandleFunc(LongSessionDiagnosticsSamplePath, s.handleLongSessionDiagnosticsSample)
+	mux.HandleFunc(LongSessionDiagnosticsCapturePath, s.handleLongSessionDiagnosticsCapture)
 	mux.HandleFunc("/v1/integrations", s.handleIntegrations)
 	mux.HandleFunc("/v1/integrations/workspaces", s.handleIntegrationWorkspaces)
 	mux.HandleFunc("/v1/integrations/workspaces/", s.handleIntegrationWorkspaceByID)

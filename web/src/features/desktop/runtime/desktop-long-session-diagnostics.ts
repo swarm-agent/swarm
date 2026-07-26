@@ -1,3 +1,4 @@
+import { apiFetch, readErrorMessage } from '../../../app/api'
 import { queryClient } from '../../../app/query-client'
 import {
   getDesktopV3CacheSnapshot,
@@ -7,8 +8,7 @@ import {
 import type { DesktopV3CacheState } from '../state/desktop-v3-cache-types'
 
 const CONFIG_PATH = '/v3/diagnostics/long-session/config'
-const SAMPLE_PATH = '/v3/diagnostics/long-session/samples'
-const DEFAULT_INTERVAL_MS = 30_000
+const CAPTURE_PATH = '/v3/diagnostics/long-session/captures'
 const HEAP_PEAK_INTERVAL_MS = 1_000
 const MAX_LARGEST_SESSIONS = 10
 const textEncoder = new TextEncoder()
@@ -17,6 +17,48 @@ interface DiagnosticsConfig {
   ok: boolean
   enabled: boolean
   sample_interval_ms?: number
+  artifact_location?: string
+}
+
+export interface DesktopDiagnosticsAvailability {
+  checked: boolean
+  enabled: boolean
+  artifactLocation: string
+  error: string | null
+}
+
+export interface DesktopDiagnosticsCaptureResult {
+  artifactLocation: string
+}
+
+let diagnosticsAvailability: DesktopDiagnosticsAvailability = {
+  checked: false,
+  enabled: false,
+  artifactLocation: '',
+  error: null,
+}
+let activeManualCapture: (() => Promise<DesktopDiagnosticsCaptureResult>) | null = null
+const availabilityListeners = new Set<() => void>()
+
+export function getDesktopLongSessionDiagnosticsAvailability(): DesktopDiagnosticsAvailability {
+  return diagnosticsAvailability
+}
+
+export function subscribeDesktopLongSessionDiagnosticsAvailability(listener: () => void): () => void {
+  availabilityListeners.add(listener)
+  return () => availabilityListeners.delete(listener)
+}
+
+export async function captureDesktopLongSessionDiagnostics(): Promise<DesktopDiagnosticsCaptureResult> {
+  if (!activeManualCapture) {
+    throw new Error(diagnosticsAvailability.error || 'Long-session diagnostics are not ready. Confirm the flag is enabled and the daemon is connected.')
+  }
+  return activeManualCapture()
+}
+
+function publishDiagnosticsAvailability(next: DesktopDiagnosticsAvailability): void {
+  diagnosticsAvailability = next
+  for (const listener of availabilityListeners) listener()
 }
 
 export interface DesktopDiagnosticsSample {
@@ -70,14 +112,29 @@ export interface DesktopDiagnosticsLease {
 export async function retainDesktopLongSessionDiagnostics(
   deps: DesktopDiagnosticsSamplerDeps = browserDiagnosticsDeps(),
 ): Promise<DesktopDiagnosticsLease> {
-  const response = await deps.fetch(CONFIG_PATH, { headers: { Accept: 'application/json' } })
-  if (response.status === 404) return { enabled: false, release: () => {} }
-  if (!response.ok) throw new Error(`long-session diagnostics config failed: ${response.status}`)
+  let response: Response
+  try {
+    response = await deps.fetch(CONFIG_PATH, { cache: 'no-store', credentials: 'same-origin' })
+    if (response.status === 404) {
+      publishDiagnosticsAvailability({ checked: true, enabled: false, artifactLocation: '', error: null })
+      return { enabled: false, release: () => {} }
+    }
+    if (!response.ok) throw new Error(`long-session diagnostics config failed: ${response.status} ${await readErrorMessage(response)}`)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    publishDiagnosticsAvailability({ checked: true, enabled: false, artifactLocation: '', error: message })
+    throw error
+  }
   const config = (await response.json()) as DiagnosticsConfig
-  if (!config.enabled) return { enabled: false, release: () => {} }
+  if (!config.ok || !config.enabled) {
+    publishDiagnosticsAvailability({ checked: true, enabled: false, artifactLocation: '', error: null })
+    return { enabled: false, release: () => {} }
+  }
+  const configuredArtifactLocation = config.artifact_location?.trim() || ''
+  publishDiagnosticsAvailability({ checked: true, enabled: true, artifactLocation: configuredArtifactLocation, error: null })
 
   let released = false
-  let expectedAt = deps.now() + (config.sample_interval_ms || DEFAULT_INTERVAL_MS)
+  let eventLoopProbeExpectedAt = deps.now() + HEAP_PEAK_INTERVAL_MS
   let eventLoopDriftMS = 0
   let jsHeapPeakUsedBytes = deps.getHeap()?.used ?? 0
   let longTaskCount = 0
@@ -110,14 +167,18 @@ export async function retainDesktopLongSessionDiagnostics(
     longAnimationFrameDurationMS += durationMS
     longAnimationFrameBlockingDurationMS += blockingDurationMS
   })
-  const intervalMS = Math.max(5_000, config.sample_interval_ms || DEFAULT_INTERVAL_MS)
+  const observationWindowMS = Math.max(5_000, config.sample_interval_ms || 30_000)
   const heapPeakTimer = deps.setInterval(() => {
+    const probeNow = deps.now()
+    eventLoopDriftMS = Math.max(eventLoopDriftMS, probeNow - eventLoopProbeExpectedAt)
+    eventLoopProbeExpectedAt = probeNow + HEAP_PEAK_INTERVAL_MS
     jsHeapPeakUsedBytes = Math.max(jsHeapPeakUsedBytes, deps.getHeap()?.used ?? 0)
   }, HEAP_PEAK_INTERVAL_MS)
-  const timer = deps.setInterval(() => {
-    const now = deps.now()
-    eventLoopDriftMS = Math.max(eventLoopDriftMS, now - expectedAt)
-    expectedAt = now + intervalMS
+  let deliveryInFlight = false
+  const sampleAndDeliver = async (): Promise<DesktopDiagnosticsCaptureResult> => {
+    if (released) throw new Error('Long-session diagnostics are no longer active.')
+    if (deliveryInFlight) throw new Error('A long-session diagnostics capture is already in progress.')
+    deliveryInFlight = true
     const sampleStartedAt = deps.monotonicNow()
     const sample = buildDesktopDiagnosticsSample(deps, {
       js_heap_peak_used_bytes: jsHeapPeakUsedBytes,
@@ -149,19 +210,42 @@ export async function retainDesktopLongSessionDiagnostics(
     cacheActionCounts = {}
     cacheActionDurationMS = {}
     cacheActionMaxDurationMS = {}
-    void deps.fetch(SAMPLE_PATH, {
-      method: 'POST',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-      body: JSON.stringify(sample),
-    }).catch(() => {})
-  }, intervalMS)
+
+    try {
+      const sampleResponse = await deps.fetch(CAPTURE_PATH, {
+        method: 'POST',
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sample),
+      })
+      if (!sampleResponse.ok) {
+        throw new Error(`sample delivery failed: ${sampleResponse.status} ${await readErrorMessage(sampleResponse)}`)
+      }
+      const result = (await sampleResponse.json()) as { ok?: boolean; artifact_location?: string }
+      if (!result.ok) throw new Error('Diagnostics capture did not return a success result.')
+      const artifactLocation = result.artifact_location?.trim() || configuredArtifactLocation
+      publishDiagnosticsAvailability({ checked: true, enabled: true, artifactLocation, error: null })
+      return { artifactLocation }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      publishDiagnosticsAvailability({ checked: true, enabled: true, artifactLocation: configuredArtifactLocation, error: message })
+      throw error
+    } finally {
+      deliveryInFlight = false
+    }
+  }
+  activeManualCapture = sampleAndDeliver
+  publishDiagnosticsAvailability({ checked: true, enabled: true, artifactLocation: configuredArtifactLocation, error: null })
+
+  console.info(`[desktop-v3] long-session diagnostics enabled; manual captures report the accumulated observation window (target ${observationWindowMS}ms)`)
 
   return {
     enabled: true,
     release: () => {
       if (released) return
       released = true
-      deps.clearInterval(timer)
+      if (activeManualCapture === sampleAndDeliver) activeManualCapture = null
       deps.clearInterval(heapPeakTimer)
       unsubscribeCache()
       stopLongTasks()
@@ -310,7 +394,7 @@ function observePerformanceEntries(
 
 function browserDiagnosticsDeps(): DesktopDiagnosticsSamplerDeps {
   return {
-    fetch: window.fetch.bind(window),
+    fetch: apiFetch,
     now: Date.now,
     monotonicNow: performance.now.bind(performance),
     setInterval: window.setInterval.bind(window),
