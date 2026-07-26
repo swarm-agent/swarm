@@ -1204,6 +1204,11 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	if documentPatch != nil && documentPatch.Operation == "" {
 		documentPatch.Operation = action
 	}
+	if documentPatch != nil && isPlanCheckpointOutcomeAction(action, documentPatch) {
+		if err := applyPersistedCheckpointOutcomeOwnershipForPreview(existing.Document, documentPatch); err != nil {
+			return planManagePermissionPayload{}, false, err
+		}
+	}
 	changeRequest := strings.TrimSpace(firstNonEmptyString(mapString(args, "change_request"), mapString(args, "user_request"), mapString(args, "request"), mapString(args, "prompt"), mapString(args, "text")))
 	checkpointTitle := strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title")))
 	previewDocument := document

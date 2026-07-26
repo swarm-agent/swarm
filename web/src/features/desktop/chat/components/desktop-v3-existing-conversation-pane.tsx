@@ -133,7 +133,6 @@ import { selectAndHydrateDesktopV3Session } from "../../state/desktop-v3-session
 import {
   acceptAndContinueDesktopPlanCheckpoint,
   archiveDesktopV3Sessions,
-  resolveDesktopPlanBlockedCheckpoint,
   restartDesktopPlanCheckpoint,
   resumeDesktopPlanCheckpoint,
 } from "../../session-v3/plan-execution-api";
@@ -2443,27 +2442,6 @@ export function DesktopV3ExistingConversationPane({
             input.checkpointId,
           );
           break;
-        case "resolve_blocked_checkpoint":
-          if (!input.checkpointId)
-            throw new Error(
-              "Resolve blocked checkpoint requires checkpoint_id",
-            );
-          await resolveDesktopPlanBlockedCheckpoint(
-            normalizedSessionId,
-            input.checkpointId,
-            { startNext: true },
-          );
-          break;
-        case "resolve_blocked_only":
-          if (!input.checkpointId)
-            throw new Error(
-              "Resolve blocked checkpoint requires checkpoint_id",
-            );
-          await resolveDesktopPlanBlockedCheckpoint(
-            normalizedSessionId,
-            input.checkpointId,
-          );
-          break;
       }
     } catch (error) {
       if (mountedRef.current) {
@@ -3060,12 +3038,30 @@ function DesktopV3PlanCheckpointHandoff({
 }: {
   item: Extract<DesktopV3RenderItem, { type: "plan-checkpoint-handoff" }>;
 }) {
+  const title = handoffTitleDetail(item.headline, ["Checkpoint handoff"]);
   return (
-    <DesktopV3PlanHandoff
-      item={item}
-      icon={<ArrowRight size={12} className="text-[var(--app-primary)]" />}
-      testId="desktop-v3-plan-checkpoint-handoff"
-    />
+    <div
+      className="flex w-full min-w-0 justify-start py-1"
+      data-testid="desktop-v3-plan-checkpoint-handoff"
+    >
+      <section
+        aria-label="Checkpoint handoff"
+        className="w-full min-w-0 rounded-xl border border-[color-mix(in_srgb,var(--app-primary)_35%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_6%,var(--app-surface-subtle))] px-4 py-3 text-sm leading-6 text-[var(--app-text)]"
+      >
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] text-[var(--app-primary)]">
+            <ArrowRight size={14} aria-hidden="true" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-primary)]">
+              Checkpoint handoff
+            </div>
+            {title ? <h3 className="mt-1 break-words font-semibold text-[var(--app-text)]">{title}</h3> : null}
+            <DesktopV3PlanHandoffContent item={item} />
+          </div>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -3218,12 +3214,68 @@ function DesktopV3PlanBlockedHandoff({
 }: {
   item: Extract<DesktopV3RenderItem, { type: "plan-blocked-handoff" }>;
 }) {
+  const title = handoffTitleDetail(item.headline, ["Checkpoint blocked", "Blocked checkpoint"]);
   return (
-    <DesktopV3PlanHandoff
-      item={item}
-      icon={<CircleAlert size={12} className="text-[var(--app-warning)]" />}
-      testId="desktop-v3-plan-blocked-handoff"
-    />
+    <div
+      className="flex w-full min-w-0 justify-start py-1"
+      data-testid="desktop-v3-plan-blocked-handoff"
+    >
+      <section
+        aria-label="Blocked checkpoint handoff"
+        className="w-full min-w-0 rounded-xl border border-[color-mix(in_srgb,var(--app-warning)_45%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-warning-bg)_55%,var(--app-surface-subtle))] px-4 py-3 text-sm leading-6 text-[var(--app-text)]"
+        data-checkpoint-status="blocked"
+      >
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-[var(--app-warning-bg)] text-[var(--app-warning)]">
+            <CircleAlert size={14} aria-hidden="true" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-warning)]">
+              Blocked checkpoint
+            </div>
+            {title ? <h3 className="mt-1 break-words font-semibold text-[var(--app-text)]">{title}</h3> : null}
+            <DesktopV3PlanHandoffContent item={item} />
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function handoffTitleDetail(headline: string, labels: string[]): string {
+  const normalizedHeadline = headline.trim().toLowerCase();
+  return labels.some((label) => label.toLowerCase() === normalizedHeadline)
+    ? ""
+    : headline.trim();
+}
+
+function DesktopV3PlanHandoffContent({
+  item,
+}: {
+  item: Extract<
+    DesktopV3RenderItem,
+    { type: "plan-checkpoint-handoff" | "plan-blocked-handoff" }
+  >;
+}) {
+  return (
+    <>
+      {item.summary ? (
+        <section
+          aria-label="At a glance"
+          className="mt-3 w-full min-w-0 rounded-lg border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_70%,transparent)] px-3 py-2.5"
+        >
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">
+            At a glance
+          </div>
+          <ChatMarkdown content={item.summary} />
+        </section>
+      ) : null}
+      {item.body ? (
+        <div className={item.summary || item.headline ? "mt-2 text-[var(--app-text-muted)]" : "text-[var(--app-text-muted)]"}>
+          <ChatMarkdown content={item.body} />
+        </div>
+      ) : null}
+    </>
   );
 }
 

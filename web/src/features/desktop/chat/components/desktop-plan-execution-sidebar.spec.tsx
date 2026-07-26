@@ -631,7 +631,7 @@ test("paused checkpoint sidebar exposes the canonical same-session resume action
   ]);
 });
 
-test("blocked checkpoint sidebar shows unblock controls without automatic pause controls", () => {
+test("blocked checkpoint sidebar directs the user back to Swarm without unblock controls", () => {
   const base = view({ blocked: true, status: "blocked" });
   base.activeCheckpoint = { ...base.activeCheckpoint!, status: "blocked" };
   base.plan.document.checkpoints = [
@@ -657,63 +657,12 @@ test("blocked checkpoint sidebar shows unblock controls without automatic pause 
   );
 
   assert.match(markup, /Blocked checkpoint/);
-  assert.match(markup, /Resolve blocker &amp; start next checkpoint/);
-  assert.match(markup, /Resolve blocker only/);
-  assert.match(markup, /does not restart or rewind/);
-  assert.doesNotMatch(markup, /Pause automatic/);
-  assert.doesNotMatch(markup, /after this checkpoint/);
-  assert.doesNotMatch(markup, /Switch to checkpoint-by-checkpoint/);
+  assert.match(markup, /tell Swarm what changed and ask it/);
+  assert.match(markup, /continue without restarting this checkpoint/);
+  assert.doesNotMatch(markup, /Resolve blocker/);
+  assert.doesNotMatch(markup, /start next checkpoint/);
   assert.doesNotMatch(markup, /Restart checkpoint/);
   assert.doesNotMatch(markup, /Rewind to checkpoint/);
-});
-
-test("blocked checkpoint resolve actions dispatch unblock requests", () => {
-  const base = view({ blocked: true, status: "blocked" });
-  base.activeCheckpoint = { ...base.activeCheckpoint!, status: "blocked" };
-  base.plan.document.checkpoints = [
-    base.activeCheckpoint,
-    {
-      ...base.activeCheckpoint,
-      id: "cp-2",
-      title: "Next checkpoint",
-      status: "pending",
-      attemptId: "",
-      runId: "",
-      sessionId: "",
-      startedAt: 0,
-    },
-  ];
-  const actions: DesktopPlanExecutionSidebarActionInput[] = [];
-  const startButton = findSidebarButton(
-    <DesktopPlanExecutionSidebar
-      view={base}
-      onAction={(input) => {
-        actions.push(input);
-      }}
-      onEditPlan={() => undefined}
-    />,
-    "Resolve blocker & start next checkpoint",
-  );
-  const onlyButton = findSidebarButton(
-    <DesktopPlanExecutionSidebar
-      view={base}
-      onAction={(input) => {
-        actions.push(input);
-      }}
-      onEditPlan={() => undefined}
-    />,
-    "Resolve blocker only",
-  );
-
-  assert.equal(startButton.props.disabled, false);
-  assert.equal(onlyButton.props.disabled, false);
-  startButton.props.onClick?.();
-  onlyButton.props.onClick?.();
-
-  assert.deepEqual(actions, [
-    { action: "resolve_blocked_checkpoint", checkpointId: "cp-1" },
-    { action: "resolve_blocked_only", checkpointId: "cp-1" },
-  ]);
 });
 
 test("legacy review-required plans keep review actions without exposing a manual mode", () => {

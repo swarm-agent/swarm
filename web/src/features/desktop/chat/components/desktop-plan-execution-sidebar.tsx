@@ -18,8 +18,6 @@ type DesktopPlanExecutionSidebarAction =
   | "accept_checkpoint"
   | "resume_checkpoint"
   | "restart_checkpoint"
-  | "resolve_blocked_checkpoint"
-  | "resolve_blocked_only"
   | "archive_plan";
 
 export interface DesktopPlanExecutionSidebarActionInput {
@@ -676,10 +674,6 @@ function ActionsSection({
   const resumeBusy =
     busyAction === actionBusyKey("resume_checkpoint", checkpointId);
   const archiveBusy = busyAction === actionBusyKey("archive_plan");
-  const resolveStartBusy =
-    busyAction === actionBusyKey("resolve_blocked_checkpoint", checkpointId);
-  const resolveOnlyBusy =
-    busyAction === actionBusyKey("resolve_blocked_only", checkpointId);
   const checkpoints = view.plan.document?.checkpoints ?? [];
   const activeIndex = view.activeCheckpoint
     ? checkpoints.findIndex(
@@ -743,56 +737,16 @@ function ActionsSection({
     return (
       <section className="mt-4 min-w-0 border-t border-[var(--app-border)]/30 pt-1" data-plan-section="actions">
         <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
-          Actions
+          Blocked
         </div>
         <div className="mt-2 border-y border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-2.5 py-2" data-plan-system-message>
           <div className="text-xs font-semibold text-[var(--app-text)]">
             Blocked checkpoint
           </div>
           <p className="mt-0.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
-            Resolve the blocker without restarting this checkpoint. If another
-            checkpoint remains, you can continue directly to it.
-          </p>
-        </div>
-        <div className="mt-3 grid gap-1.5">
-          <Button
-            type="button"
-            size="sm"
-            variant="primary"
-            className={cn(
-              "rounded-lg",
-              resolveStartBusy ? "animate-pulse" : "",
-            )}
-            onClick={() =>
-              void onAction?.({
-                action: "resolve_blocked_checkpoint",
-                checkpointId,
-              })
-            }
-            disabled={
-              !onAction ||
-              !checkpointId ||
-              !hasNextCheckpoint ||
-              resolveStartBusy
-            }
-          >
-            Resolve blocker &amp; start next checkpoint
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className={cn("rounded-lg", resolveOnlyBusy ? "animate-pulse" : "")}
-            onClick={() =>
-              void onAction?.({ action: "resolve_blocked_only", checkpointId })
-            }
-            disabled={!onAction || !checkpointId || resolveOnlyBusy}
-          >
-            Resolve blocker only
-          </Button>
-          <p className="px-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
-            This clears the blocked state. It does not restart or rewind the
-            checkpoint.
+            When the dependency is resolved, tell Swarm what changed and ask it
+            to continue. Swarm will confirm the resolution, clear the blocked
+            state, and continue without restarting this checkpoint.
           </p>
         </div>
       </section>

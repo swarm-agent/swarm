@@ -6291,6 +6291,85 @@ func TestSessionsV3ProviderManagedPlanManageTerminalOutcomesUsePlanSavedOutbox(t
 	}
 }
 
+func TestSessionsV3ExecutorUserContinuationClearsBlockAndAutomaticallyStartsNextCheckpoint(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, errors.New("missing provider-managed tool invoker")
+		}
+		switch runner.callCount {
+		case 1:
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-resolve-block", Name: "plan_manage", Arguments: `{"action":"resolve_blocked_checkpoint","checkpoint_id":"cp-1","start_next":true,"result":"dependency resolved","notes":"user confirmed continuation"}`})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if result.Error != "" || !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("resolve blocked checkpoint did not hand off to the next run: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: true}, nil
+		case 2:
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-cp-2", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"continued after resolved blocker","result":"done","handoff_overview":"The final checkpoint completed after the user resolved the blocker.","recommendation":{"decision":"ship","action":"review the completed flow","reason":"Both checkpoints reached their expected terminal states.","action_state":"ready"}}`})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if result.Error != "" {
+				return provideriface.Response{}, fmt.Errorf("complete next checkpoint failed: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		}
+	}
+	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-blocked-continue-create", "provider blocked continue", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	_, _, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-blocked-continue", "Plan: blocked continue", "## Plan: blocked continue", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Title:              "Plan: blocked continue",
+		Info:               pebblestore.SessionPlanInfo{Goal: "Continue after a resolved blocker"},
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateBlocked, LastCheckpointID: "cp-1", LastAttemptID: "cp-1:attempt-1", LastOutcome: sessionruntime.PlanCheckpointStatusBlocked, ParentSessionID: created.ID},
+		ActiveCheckpointID: "cp-1",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Wait for dependency", Objective: "Wait for and confirm the dependency", Status: sessionruntime.PlanCheckpointStatusBlocked, Order: 1, AcceptanceCriteria: []string{"Dependency is confirmed resolved"}, AttemptID: "cp-1:attempt-1", RunID: "blocked-run", SessionID: created.ID, Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "cp-1:attempt-1", CheckpointID: "cp-1", Status: sessionruntime.PlanCheckpointStatusBlocked, Outcome: sessionruntime.PlanCheckpointStatusBlocked, RunID: "blocked-run", SessionID: created.ID, ParentSessionID: created.ID}}},
+			{ID: "cp-2", Title: "Finish automatically", Objective: "Complete after continuation", Status: sessionruntime.PlanCheckpointStatusPending, Order: 2, AcceptanceCriteria: []string{"Final checkpoint completes"}},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("save blocked continuation plan: %v", err)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-blocked-continue-message", "The dependency is resolved; continue")
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		active, ok, getErr := sessionSvc.GetActivePlan(created.ID)
+		if getErr != nil {
+			t.Fatalf("get blocked continuation plan: %v", getErr)
+		}
+		if ok && active.Document != nil && active.Document.ExecutionState != nil && active.Document.ExecutionState.Status == sessionruntime.PlanExecutionStateWaitingReview {
+			if active.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || active.Document.Checkpoints[1].Status != sessionruntime.PlanCheckpointStatusCompleted {
+				t.Fatalf("resolved continuation checkpoint states = %+v", active.Document.Checkpoints)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("blocked continuation did not reach final review: %+v", active.Document)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if runner.callCount != 2 {
+		t.Fatalf("provider calls = %d, want continuation turn plus automatic cp-2 run", runner.callCount)
+	}
+	intents, err := sessionSvc.ListSessionRunIntents(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list blocked continuation run intents: %v", err)
+	}
+	if len(intents) != 2 || intents[0].CheckpointID != "" || intents[1].CheckpointID != "cp-2" {
+		t.Fatalf("blocked continuation run intents = %+v", intents)
+	}
+}
+
 func TestSessionsV3ExecutorAutomaticCheckpointsUseDistinctEpochsAndRuns(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{}

@@ -584,13 +584,37 @@ func (e *sessionV3Executor) startNextCheckpointRun(job sessionV3ExecutorJob) err
 	if checkpointID == "" || !summary.AutoAdvanceAllowed || summary.ReviewRequired || summary.Blocked || summary.Failed || summary.PlanComplete {
 		return nil
 	}
-	input, err := e.server.sessionsV3PlanModeRunInput(job.SessionID, active.ID, checkpointID)
-	if err != nil {
-		return err
+	checkpointStatus := ""
+	for _, checkpoint := range active.Document.Checkpoints {
+		if strings.TrimSpace(checkpoint.ID) == checkpointID {
+			checkpointStatus = strings.TrimSpace(checkpoint.Status)
+			break
+		}
 	}
-	result, err := e.server.planLifecycle.StartCheckpoint(input)
-	if err != nil {
-		return err
+	var result sessionruntime.PlanLifecycleResult
+	if checkpointStatus == sessionruntime.PlanCheckpointStatusInProgress {
+		// Some lifecycle tools can atomically assign the next run. Reuse that
+		// persisted ownership instead of validating or starting it a second time.
+		result = sessionruntime.PlanLifecycleResult{
+			Plan:         active,
+			Summary:      summary,
+			CheckpointID: checkpointID,
+		}
+		for _, checkpoint := range active.Document.Checkpoints {
+			if strings.TrimSpace(checkpoint.ID) == checkpointID {
+				result.AttemptID = strings.TrimSpace(checkpoint.AttemptID)
+				break
+			}
+		}
+	} else {
+		input, inputErr := e.server.sessionsV3PlanModeRunInput(job.SessionID, active.ID, checkpointID)
+		if inputErr != nil {
+			return inputErr
+		}
+		result, err = e.server.planLifecycle.StartCheckpoint(input)
+		if err != nil {
+			return err
+		}
 	}
 	runStart, _, err := e.server.startSessionsV3PlanModeRun(job.Principal, job.SessionID, "automatic_checkpoint_advance", result, false)
 	if err != nil {

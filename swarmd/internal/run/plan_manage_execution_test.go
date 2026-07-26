@@ -117,6 +117,50 @@ func TestProviderManagedAutoStartSessionCheckpointContinuesCurrentRun(t *testing
 	}
 }
 
+func TestProviderManagedAutoCheckpointCanMarkBlocked(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	if _, _, err := sessionSvc.SetMode(sessionID, sessionruntime.ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-test", AccountScopeID: "account-test"}
+	invoker := runSvc.NewProviderManagedToolInvoker(ProviderManagedToolInvokerConfig{
+		SessionID: sessionID, PermissionSessionID: sessionID, RunID: "run-blocked-inline", Step: 1,
+		SessionMode: sessionruntime.ModeAuto, Principal: principal, ProviderManagedV3: true,
+		ApplySessionMutation: func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+			if input.UserID == "" {
+				input.UserID = principal.UserID
+			}
+			if input.AccountScopeID == "" {
+				input.AccountScopeID = principal.AccountScopeID
+			}
+			return sessionSvc.ApplySessionMutation(input)
+		},
+	})
+	if result, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-start", Name: "plan_manage", Arguments: `{"action":"start_session_checkpoint","change_request":"demonstrate blocked","checkpoint_title":"Blocked demo"}`}); err != nil || strings.TrimSpace(result.Error) != "" {
+		t.Fatalf("start inline checkpoint: result=%#v err=%v", result, err)
+	}
+	result, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-block", Name: "plan_manage", Arguments: `{"action":"mark_blocked","checkpoint_id":"cp-1","report":"dependency missing","result":"blocked"}`})
+	if err != nil || strings.TrimSpace(result.Error) != "" {
+		t.Fatalf("mark inline checkpoint blocked: result=%#v err=%v", result, err)
+	}
+	var payload struct {
+		Action     string `json:"action"`
+		NextAction string `json:"next_action"`
+		Plan       struct {
+			Document *pebblestore.SessionPlanDocument `json:"document"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &payload); err != nil {
+		t.Fatalf("decode blocked output: %v", err)
+	}
+	if payload.Action != "mark_blocked" || payload.NextAction != "stopped" || payload.Plan.Document == nil || payload.Plan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusBlocked {
+		t.Fatalf("blocked payload = %#v output=%s", payload, result.Output)
+	}
+}
+
 func TestProviderManagedAutoFollowupWithoutPlanNormalizesToAtomicStart(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()
@@ -500,6 +544,44 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 		t.Fatalf("append resolve blocked lifecycle: %v", err)
 	}
 	assertLifecycleMessage(3, "resolve_blocked_checkpoint", "run_checkpoint_with_fresh_context", 9, "Blocked checkpoint resolved; starting next checkpoint — Automatic mode", "Resolved: Checkpoint a — Blocked", "Checkpoint: Checkpoint b — Next", "Context: Starting the next checkpoint with fresh context.")
+
+	_, _, err = sessionSvc.SavePlanWithMetadata(sessionID, "plan-provider-blocked-lifecycle", "Plan: Provider Blocked Lifecycle", "# Provider Blocked", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-provider-a", Title: "Blocked", Status: sessionruntime.PlanCheckpointStatusBlocked, AttemptID: "attempt-provider-blocked", RunID: "run-provider-blocked", Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "attempt-provider-blocked", CheckpointID: "cp-provider-a", Status: sessionruntime.PlanCheckpointStatusBlocked, Outcome: sessionruntime.PlanCheckpointStatusBlocked, RunID: "run-provider-blocked"}}},
+			{ID: "cp-provider-b", Title: "Next", Status: sessionruntime.PlanCheckpointStatusPending},
+		},
+		ActiveCheckpointID: "cp-provider-a",
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateBlocked, LastCheckpointID: "cp-provider-a", LastAttemptID: "attempt-provider-blocked", LastOutcome: sessionruntime.PlanCheckpointStatusBlocked},
+	}})
+	if err != nil {
+		t.Fatalf("save provider blocked lifecycle plan: %v", err)
+	}
+	providerRaw, err := runSvc.executePlanLifecycleControlAction(sessionID, "resolve_blocked_checkpoint", map[string]any{
+		"checkpoint_id": "cp-provider-a",
+		"start_next":    true,
+		"reviewed_at":   4567,
+	}, applyMutation, planLifecycleRunContext{Inline: true, RunID: "user-continuation-run", RunSessionID: sessionID, ParentSessionID: sessionID})
+	if err != nil {
+		t.Fatalf("provider-managed resolve blocked checkpoint: %v output=%s", err, providerRaw)
+	}
+	var providerPayload struct {
+		NextAction              string `json:"next_action"`
+		CheckpointID            string `json:"checkpoint_id"`
+		CheckpointStartDeferred bool   `json:"checkpoint_start_deferred"`
+		Plan                    struct {
+			Document *pebblestore.SessionPlanDocument `json:"document"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(providerRaw), &providerPayload); err != nil {
+		t.Fatalf("decode provider resolve payload: %v", err)
+	}
+	if providerPayload.NextAction != "run_checkpoint_with_fresh_context" || providerPayload.CheckpointID != "cp-provider-b" || !providerPayload.CheckpointStartDeferred || providerPayload.Plan.Document == nil {
+		t.Fatalf("provider resolve payload = %#v raw=%s", providerPayload, providerRaw)
+	}
+	if providerPayload.Plan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || providerPayload.Plan.Document.Checkpoints[1].Status != sessionruntime.PlanCheckpointStatusPending || providerPayload.Plan.Document.ActiveCheckpointID != "cp-provider-b" {
+		t.Fatalf("provider resolve must clear block while leaving next checkpoint pending: %#v", providerPayload.Plan.Document)
+	}
 
 	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: firstCompletionRaw}, applyMutation); err != nil {
 		t.Fatalf("reappend automatic completion handoff: %v", err)

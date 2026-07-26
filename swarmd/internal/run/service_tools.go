@@ -2565,6 +2565,7 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		})
 	}
 	var result sessionruntime.PlanLifecycleResult
+	deferBlockedCheckpointStart := false
 	switch action {
 	case "approve_and_start":
 		if session, ok, getErr := s.sessions.GetSession(sessionID); getErr != nil {
@@ -2601,6 +2602,13 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		input.Notes = strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "resolution_notes"), mapString(args, "report")))
 		input.ReviewedAt = int64(mapInt(args, "reviewed_at"))
 		input.StartNext = mapBool(args, "start_next") || mapBool(args, "continue_next")
+		deferBlockedCheckpointStart = lifecycleRun.Inline && input.StartNext
+		if deferBlockedCheckpointStart {
+			// Provider-managed turns only resolve the blocker. Keep the next
+			// checkpoint pending so the executor can assign and start its fresh run
+			// exactly once after this tool result ends the current turn.
+			input.StartNext = false
+		}
 		if input.StartNext {
 			if strings.TrimSpace(input.RunID) == "" {
 				input.RunID = strings.TrimSpace(mapString(args, "run_id"))
@@ -2712,6 +2720,12 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 	}
 	if !strings.EqualFold(strings.TrimSpace(result.Plan.ApprovalState), "approved") {
 		payload["next_action"] = "await_approval"
+	} else if action == "resolve_blocked_checkpoint" && deferBlockedCheckpointStart && result.Summary.NextCheckpointID != "" && result.Summary.AutoAdvanceAllowed && !result.Summary.ReviewRequired && !result.Summary.Blocked && !result.Summary.Failed && !result.Summary.PlanComplete {
+		payload["checkpoint_id"] = result.Summary.NextCheckpointID
+		payload["next_checkpoint_id"] = result.Summary.NextCheckpointID
+		payload["next_action"] = "run_checkpoint_with_fresh_context"
+		payload["checkpoint_start_deferred"] = true
+		payload["run_request"] = planCheckpointRunRequestPayload(result.Plan.ID, result.Summary.NextCheckpointID, "")
 	} else if action == "resolve_blocked_checkpoint" && !input.StartNext {
 		payload["next_checkpoint_id"] = result.Summary.NextCheckpointID
 		if result.Summary.PlanComplete {
@@ -2793,6 +2807,34 @@ func (s *Service) requireProviderManagedFinalCheckpointHandoff(sessionID, planID
 	}
 	if patch.Handoff == nil {
 		return errors.New("final checkpoint completion requires handoff_overview; use the terminal structured handoff as the single user-visible completion and do not emit a separate assistant report")
+	}
+	return nil
+}
+
+func applyPersistedCheckpointOutcomeOwnershipForPreview(doc *pebblestore.SessionPlanDocument, patch *sessionruntime.PlanDocumentPatch) error {
+	if doc == nil || doc.ExecutionState == nil || patch == nil {
+		return errors.New("checkpoint outcome requires an active structured plan run")
+	}
+	checkpointID := strings.TrimSpace(firstNonEmptyString(patch.CheckpointID, doc.ActiveCheckpointID))
+	idx := -1
+	for i := range doc.Checkpoints {
+		if strings.TrimSpace(doc.Checkpoints[i].ID) == checkpointID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("checkpoint outcome checkpoint %q was not found", checkpointID)
+	}
+	checkpoint := doc.Checkpoints[idx]
+	state := doc.ExecutionState
+	patch.CheckpointID = checkpointID
+	patch.AttemptID = strings.TrimSpace(state.ActiveAttemptID)
+	patch.RunID = strings.TrimSpace(state.CurrentRunID)
+	patch.RunSessionID = strings.TrimSpace(state.CurrentSessionID)
+	patch.ParentSessionID = strings.TrimSpace(state.ParentSessionID)
+	if patch.AttemptID == "" || strings.TrimSpace(checkpoint.AttemptID) != patch.AttemptID || patch.RunID == "" || strings.TrimSpace(checkpoint.RunID) != patch.RunID || patch.RunSessionID == "" || strings.TrimSpace(checkpoint.SessionID) != patch.RunSessionID || patch.ParentSessionID == "" {
+		return errors.New("checkpoint outcome active run ownership is missing or inconsistent")
 	}
 	return nil
 }
