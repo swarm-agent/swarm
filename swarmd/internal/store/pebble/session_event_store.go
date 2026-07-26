@@ -573,6 +573,7 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 			return V3SessionMutationResult{}, resultErr
 		}
 		result.Replayed = true
+		result.Plan = committedV3PlanSaveResult(input.PlanSave)
 		return result, nil
 	}
 
@@ -995,7 +996,20 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		result.TurnUsage = &turnUsage
 		result.UsageSummary = &usageSummary
 	}
+	result.Plan = committedV3PlanSaveResult(input.PlanSave)
 	return result, nil
+}
+
+func committedV3PlanSaveResult(save *V3PlanSaveMutation) *SessionPlanSnapshot {
+	if save == nil {
+		return nil
+	}
+	plan := save.Plan
+	if plan.Version <= 0 {
+		plan.Version = 1
+	}
+	plan.Active = save.Activate
+	return &plan
 }
 
 func (s *SessionStore) GetV3SessionEvent(sessionID string, seq uint64) (V3SessionEvent, bool, error) {

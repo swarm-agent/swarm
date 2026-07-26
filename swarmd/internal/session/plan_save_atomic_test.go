@@ -43,6 +43,13 @@ func TestCommitPreparedPlanSaveCommitsPlanRevisionEventAndOutboxTogether(t *test
 	if err != nil {
 		t.Fatalf("commit initial plan save: %v", err)
 	}
+	replayedFirstResult, err := svc.CommitPreparedPlanSave(first, svc.ApplySessionMutation)
+	if err != nil {
+		t.Fatalf("replay initial plan save: %v", err)
+	}
+	if !replayedFirstResult.Replayed || replayedFirstResult.Plan == nil || replayedFirstResult.Plan.ID != first.Plan.ID || replayedFirstResult.Plan.Version != first.Plan.Version {
+		t.Fatalf("replayed committed plan = %#v, replayed=%v", replayedFirstResult.Plan, replayedFirstResult.Replayed)
+	}
 	second, err := svc.PreparePlanSaveWithMetadata(sessionID, first.Plan.ID, "Atomic", "# Atomic\n\nUpdated", "approved", "approved", true, PlanSaveMetadata{UpdateSummary: "updated", Document: &pebblestore.SessionPlanDocument{Title: "Atomic"}})
 	if err != nil {
 		t.Fatalf("prepare revised plan save: %v", err)
