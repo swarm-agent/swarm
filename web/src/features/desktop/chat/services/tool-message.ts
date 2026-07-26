@@ -170,7 +170,7 @@ function extractWebResource(value: Record<string, unknown>): WebResourceData {
     author: jsonStr(value, "author"),
     publishedDate: firstNonEmpty(jsonStr(value, "published_date"), jsonStr(value, "publishedDate")),
     summary: jsonStr(value, "summary"),
-    text: firstNonEmpty(jsonRawStr(value, "text"), jsonRawStr(value, "content")),
+    text: firstNonEmptyRaw(jsonRawStr(value, "text"), jsonRawStr(value, "content")),
     highlights,
     error: webError(value.error),
     status: jsonStr(value, "status"),
@@ -951,11 +951,17 @@ function buildTaskToolRow(
   };
 }
 
+function isTerminalTaskPayload(payload: Record<string, unknown> | null): boolean {
+  if (!payload || jsonStr(payload, "path_id") !== "tool.task.v1") return false;
+  const status = jsonStr(payload, "status").toLowerCase();
+  return ["done", "ok", "success", "completed", "complete", "error", "failed", "cancelled", "canceled"].includes(status);
+}
+
 function buildTaskToolRows(
   payload: Record<string, unknown> | null,
   taskStream?: StructuredToolMessageInput["taskStream"],
 ): StructuredToolMessage["taskRows"] {
-  if (taskStream) {
+  if (taskStream && !isTerminalTaskPayload(payload)) {
     return taskStream.launchOrder
       .map((launchKey, index) => {
         const launch = taskStream.launchesByKey[launchKey] ?? null;

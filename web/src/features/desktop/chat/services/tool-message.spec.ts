@@ -761,6 +761,45 @@ function testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload(): void 
   assert(message?.taskRows[1]?.previewText === 'subagent failed', `expected failure text, got ${message?.taskRows[1]?.previewText}`)
 }
 
+function testTerminalTaskPayloadOverridesStaleNativeTaskStream(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_terminal_overrides_stream',
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.v1',
+      status: 'ok',
+      launches: [{
+        launch_index: 1,
+        child_session_id: 'child-final',
+        subagent: 'explorer',
+        assignment_label: 'Canonical final launch',
+        status: 'ok',
+        elapsed_ms: 4200,
+      }],
+    }),
+    taskStream: {
+      launchOrder: ['child-final'],
+      launchesByKey: {
+        'child-final': {
+          launch_index: 1,
+          child_session_id: 'child-final',
+          subagent: 'explorer',
+          assignment_label: 'Stale streaming launch',
+          status: 'running',
+          current_tool: 'search',
+        },
+      },
+    },
+  })
+
+  assert(Boolean(message), 'expected terminal task message')
+  assert(message?.taskRows.length === 1, `expected one final row, got ${message?.taskRows.length}`)
+  assert(message?.taskRows[0]?.status === 'ok', `terminal payload must override stale stream status: ${message?.taskRows[0]?.status}`)
+  assert(message?.taskRows[0]?.assignmentLabel === 'Canonical final launch', 'terminal payload must supply canonical final metadata')
+  assert(message?.taskRows[0]?.terminal === true, 'terminal payload row must be terminal')
+}
+
 function testTaskRowsParseSingleV2PatchAsHistoricalCompatibility(): void {
   const message = buildStructuredToolMessage({
     tool: 'task',
@@ -1073,6 +1112,7 @@ function main(): void {
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
   testTaskRowsParseCanonicalStreamContractFields();
   testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload();
+  testTerminalTaskPayloadOverridesStaleNativeTaskStream();
   testTaskRowsParseSingleV2PatchAsHistoricalCompatibility();
   testTaskRowsAcceptFinalPayloadSessionIdAlias();
   testRunningTaskRowDoesNotUseStreamDurationAsDisplayTime();

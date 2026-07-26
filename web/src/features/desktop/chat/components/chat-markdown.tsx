@@ -1476,11 +1476,78 @@ function planTransitionLabel(action: string): string {
   }
 }
 
-function planTransitionStatus(payload: Record<string, unknown> | null): string {
-  if (!payload) return "";
-  const summary = payload.execution_summary && typeof payload.execution_summary === "object" && !Array.isArray(payload.execution_summary)
-    ? payload.execution_summary as Record<string, unknown>
+function toolJsonRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
     : null;
+}
+
+function toolJsonRecords(record: Record<string, unknown> | null | undefined, key: string): Record<string, unknown>[] {
+  const value = record?.[key];
+  return Array.isArray(value) ? value.map(toolJsonRecord).filter((item): item is Record<string, unknown> => Boolean(item)) : [];
+}
+
+function planTransitionCheckpointId(
+  action: string,
+  payload: Record<string, unknown> | null,
+  args: Record<string, unknown> | null,
+  summary: Record<string, unknown> | null,
+  document: Record<string, unknown> | null,
+): string {
+  const normalizedAction = action.trim().toLowerCase().replace(/-/g, "_");
+  const mutationCheckpointId = toolJsonString(payload, "checkpoint_id")
+    || toolJsonString(args, "checkpoint_id")
+    || toolJsonString(args, "active_checkpoint_id");
+  const subtaskAction = ["complete_subtask", "focus_subtask", "update_subtask", "remove_subtask"].includes(normalizedAction);
+  if (mutationCheckpointId) return mutationCheckpointId;
+  if (normalizedAction === "request_followup_checkpoint") {
+    return toolJsonString(payload, "next_checkpoint_id")
+      || toolJsonString(summary, "next_checkpoint_id")
+      || toolJsonString(summary, "active_checkpoint_id");
+  }
+  if (subtaskAction) {
+    return toolJsonString(document, "active_checkpoint_id")
+      || toolJsonString(summary, "active_checkpoint_id")
+      || toolJsonString(summary, "next_checkpoint_id");
+  }
+  return toolJsonString(summary, "active_checkpoint_id")
+    || toolJsonString(summary, "next_checkpoint_id")
+    || toolJsonString(document, "active_checkpoint_id");
+}
+
+function findPlanCheckpoint(document: Record<string, unknown> | null, checkpointId: string): Record<string, unknown> | null {
+  if (!checkpointId) return null;
+  return toolJsonRecords(document, "checkpoints").find((checkpoint) => toolJsonString(checkpoint, "id") === checkpointId) ?? null;
+}
+
+function planTransitionSubtasks(
+  action: string,
+  payload: Record<string, unknown> | null,
+  args: Record<string, unknown> | null,
+  checkpoint: Record<string, unknown> | null,
+): Record<string, unknown>[] {
+  if (!action.trim().toLowerCase().replace(/-/g, "_").includes("subtask")) return [];
+  const ids = new Set<string>();
+  const payloadSubtaskId = toolJsonString(payload, "subtask_id");
+  const argumentSubtaskId = toolJsonString(args, "subtask_id");
+  if (payloadSubtaskId) ids.add(payloadSubtaskId);
+  if (argumentSubtaskId) ids.add(argumentSubtaskId);
+  for (const record of [payload, args]) {
+    const values = record?.subtask_ids;
+    if (!Array.isArray(values)) continue;
+    values.forEach((value) => {
+      if (typeof value === "string" && value.trim()) ids.add(value.trim());
+    });
+  }
+  const subtasks = toolJsonRecords(checkpoint, "subtasks");
+  return ids.size > 0 ? subtasks.filter((subtask) => ids.has(toolJsonString(subtask, "id"))) : [];
+}
+
+function planTransitionStatus(payload: Record<string, unknown> | null, checkpoint: Record<string, unknown> | null): string {
+  if (!payload) return "";
+  const checkpointStatus = toolJsonString(checkpoint, "status");
+  if (checkpointStatus) return checkpointStatus;
+  const summary = toolJsonRecord(payload.execution_summary);
   if (!summary) return toolJsonString(payload, "status");
   if (summary.review_required === true) return "Waiting review";
   if (summary.blocked === true) return "Blocked";
@@ -1535,21 +1602,16 @@ function PlanManageToolView({ toolMessage }: { toolMessage: StructuredToolMessag
   const payload = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
   const args = toolMessage.argumentsJson ?? parseToolJSON(toolMessage.argumentsText);
   const action = toolJsonString(payload, "action") || toolJsonString(args, "action");
-  const summary = payload?.execution_summary && typeof payload.execution_summary === "object" && !Array.isArray(payload.execution_summary)
-    ? payload.execution_summary as Record<string, unknown>
-    : null;
-  const plan = payload?.plan && typeof payload.plan === "object" && !Array.isArray(payload.plan)
-    ? payload.plan as Record<string, unknown>
-    : null;
-  const document = plan?.document && typeof plan.document === "object" && !Array.isArray(plan.document)
-    ? plan.document as Record<string, unknown>
-    : null;
-  const checkpointId = toolJsonString(summary, "active_checkpoint_id")
-    || toolJsonString(summary, "next_checkpoint_id")
-    || toolJsonString(args, "checkpoint_id")
-    || toolJsonString(document, "active_checkpoint_id");
-  const title = toolJsonString(plan, "title") || toolJsonString(payload, "title");
-  const status = planTransitionStatus(payload);
+  const summary = toolJsonRecord(payload?.execution_summary);
+  const plan = toolJsonRecord(payload?.plan);
+  const document = toolJsonRecord(plan?.document);
+  const checkpointId = planTransitionCheckpointId(action, payload, args, summary, document);
+  const checkpoint = findPlanCheckpoint(document, checkpointId);
+  const affectedSubtasks = planTransitionSubtasks(action, payload, args, checkpoint);
+  const title = toolJsonString(checkpoint, "title") || toolJsonString(plan, "title") || toolJsonString(payload, "title");
+  const status = affectedSubtasks.length === 1
+    ? toolJsonString(affectedSubtasks[0], "status") || planTransitionStatus(payload, checkpoint)
+    : planTransitionStatus(payload, checkpoint);
   const normalizedStatus = status.trim().toLowerCase().replace(/[-_]+/g, " ");
   const tone = toolMessage.state === "error" || normalizedStatus === "failed"
     ? "danger"
@@ -1589,6 +1651,16 @@ function PlanManageToolView({ toolMessage }: { toolMessage: StructuredToolMessag
                 {title ? <span className="min-w-0 truncate">{title}</span> : null}
               </div>
             ) : null}
+            {affectedSubtasks.map((subtask) => {
+              const subtaskId = toolJsonString(subtask, "id");
+              const subtaskTitle = toolJsonString(subtask, "title") || subtaskId;
+              const subtaskStatus = toolJsonString(subtask, "status").replace(/[-_]+/g, " ");
+              return (
+                <div key={subtaskId || subtaskTitle} className="truncate text-[10px] leading-4 text-[var(--app-text-subtle)]">
+                  {subtaskTitle}{subtaskStatus ? ` · ${subtaskStatus}` : ""}
+                </div>
+              );
+            })}
           </div>
           {status ? <span className={cn("shrink-0 text-[10px] font-medium capitalize", toneTextClass)}>{normalizedStatus}</span> : null}
         </div>
@@ -1617,7 +1689,7 @@ function WebResourceRow({ resource, fetchResult = false }: { resource: WebResour
     resource.summary,
     ...resource.highlights,
     resource.text,
-  ].map((value) => value.trim()).filter(Boolean)));
+  ].filter((value) => value.trim() !== "")));
   const preview = previewParts.join("\n\n");
   const expandable = preview.length > 280 || previewParts.length > 1;
   const failed = Boolean(resource.error) || resource.status.toLowerCase() === "error" || resource.status.toLowerCase() === "failed";
@@ -1779,7 +1851,7 @@ function WebSearchToolCard({ toolMessage, data, isGroupItem }: { toolMessage: St
         ) : null}
         {toolMessage.error ? <div className="border-b border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">{toolMessage.error}</div> : null}
         <div className={cn(TOOL_RESULT_BODY_CLASS, "min-w-0 p-2.5")}>
-          {data.queryResults.length > 0 ? <div className="grid min-w-0 gap-3">{data.queryResults.map((group, groupIndex) => (
+          {data.queryResults.some((group) => group.results.length > 0 || Boolean(group.error) || group.timedOut) ? <div className="grid min-w-0 gap-3">{data.queryResults.map((group, groupIndex) => (
             <section key={`${group.query}:${groupIndex}`} className="min-w-0">
               {(data.queryResults.length > 1 || group.error || group.timedOut) ? (
                 <div className="mb-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 px-0.5">

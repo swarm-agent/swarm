@@ -72,6 +72,90 @@ function testPlanManageUsesMinimalTransitionView(): void {
   assert(!markup.includes("border-l-2"), "plan transition should not return to the left-rail treatment");
 }
 
+function testPlanManageFollowupUsesCanonicalCheckpointMetadata(): void {
+  const message = buildStructuredToolMessage({
+    tool: "plan_manage",
+    callId: "call_plan_manage_followup",
+    argumentsText: JSON.stringify({ action: "request_followup_checkpoint" }),
+    outputText: JSON.stringify({
+      tool: "plan_manage",
+      action: "request_followup_checkpoint",
+      status: "ok",
+      checkpoint_id: "followup-2",
+      next_checkpoint_id: "followup-2",
+      execution_summary: {
+        active_checkpoint_id: "cp-stale",
+        next_checkpoint_id: "followup-2",
+        next_checkpoint_status: "in_progress",
+      },
+      plan: {
+        id: "plan-1",
+        title: "Stale plan title",
+        document: {
+          active_checkpoint_id: "cp-stale",
+          checkpoints: [
+            { id: "cp-stale", title: "Prior checkpoint", status: "completed" },
+            { id: "followup-2", title: "Fresh follow-up checkpoint", status: "pending" },
+          ],
+        },
+      },
+    }),
+  });
+  assert(Boolean(message), "expected follow-up plan_manage message");
+
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("Checkpoint added"), "expected follow-up transition label");
+  assert(markup.includes("followup-2"), "expected returned follow-up id");
+  assert(markup.includes("Fresh follow-up checkpoint"), "expected canonical checkpoint title");
+  assert(markup.includes("pending"), "expected canonical pending status");
+  assert(!markup.includes("Prior checkpoint") && !markup.includes("Stale plan title"), "stale active checkpoint and plan metadata must not render");
+  assert(!markup.includes("in progress"), "summary-wide status must not override the returned checkpoint status");
+}
+
+function testPlanManageSubtaskUsesCanonicalUpdatedMetadata(): void {
+  const message = buildStructuredToolMessage({
+    tool: "plan_manage",
+    callId: "call_plan_manage_subtask",
+    argumentsText: JSON.stringify({ action: "complete_subtask", checkpoint_id: "cp-2", subtask_id: "task-2" }),
+    outputText: JSON.stringify({
+      tool: "plan_manage",
+      action: "complete_subtask",
+      status: "ok",
+      checkpoint_id: "cp-2",
+      execution_summary: {
+        active_checkpoint_id: "cp-1",
+        next_checkpoint_status: "in_progress",
+      },
+      plan: {
+        id: "plan-1",
+        title: "Plan title",
+        document: {
+          active_checkpoint_id: "cp-1",
+          checkpoints: [
+            { id: "cp-1", title: "Stale active checkpoint", status: "in_progress" },
+            {
+              id: "cp-2",
+              title: "Canonical checkpoint",
+              status: "in_progress",
+              subtasks: [
+                { id: "task-1", title: "Unrelated task", status: "pending" },
+                { id: "task-2", title: "Canonical updated task", status: "completed" },
+              ],
+            },
+          ],
+        },
+      },
+    }),
+  });
+  assert(Boolean(message), "expected subtask plan_manage message");
+
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("Task completed"), "expected subtask lifecycle label");
+  assert(markup.includes("cp-2") && markup.includes("Canonical checkpoint"), "expected affected checkpoint metadata");
+  assert(markup.includes("Canonical updated task") && markup.includes("completed"), "expected canonical updated subtask title and status");
+  assert(!markup.includes("Unrelated task") && !markup.includes("Stale active checkpoint"), "unaffected stale metadata must not render");
+}
+
 function testTaskSwarmUsesCompactPreview(): void {
   const longAssignment = "Coordinate an extremely detailed research and implementation assignment that would normally push the desktop task header sideways";
   const message = buildStructuredToolMessage({
@@ -571,6 +655,8 @@ function testTaskElapsedClockUsesDisplayCadence(): void {
 function main(): void {
   testDeniedExitPlanPermissionUsesFlatPreview();
   testPlanManageUsesMinimalTransitionView();
+  testPlanManageFollowupUsesCanonicalCheckpointMetadata();
+  testPlanManageSubtaskUsesCanonicalUpdatedMetadata();
   testTaskSwarmUsesCompactPreview();
   testTaskRunningTimerUsesStartTimestamp();
   testTaskTerminalTimerUsesFinalElapsed();
