@@ -8,11 +8,11 @@
 - I will treat request body/query/header/path IDs, peer data, attach tokens, env vars, and CLI flags as untrusted for `UserID` and `AccountScopeID`.
 - My output is the exact implementation prompt/checklist for the next agent: route-by-route steps, storage key/index steps, tests, VM proof, blockers, and line evidence.
 - Assigned zone: Z3 agents, sessions, runs, permissions, notifications/context.
-- Assigned report path: this document (the filename is retained temporarily to preserve existing links).
+- Assigned report path: `docs/migrations/user-account-scope/zone-reports/z3-agents-sessions-runs.md`.
 - Assigned surviving matrix anchors: `api-route-zone-matrix.md:170-173`, `api-route-zone-matrix.md:221`, `api-route-zone-matrix.md:223-230`, `api-route-zone-matrix.md:241-242`, `api-route-zone-matrix.md:245-251`, `api-route-zone-matrix.md:261-265`, `api-route-zone-matrix.md:287-293`, `api-route-zone-matrix.md:298-302`.
 
 ## Refinement status
-- Report path: this document; parent should rename it after integrating cleanup to remove the retired-product term from the filename.
+- Report path: `docs/migrations/user-account-scope/zone-reports/z3-agents-sessions-runs.md`.
 - Source prompt: `docs/migrations/user-account-scope/api-zone-clone-prompts.md`.
 - Prior draft reviewed: yes.
 - Matrix anchors reviewed: 39 surviving assigned rows.

@@ -67,7 +67,6 @@ coverage.out
 !/docs/migrations/
 !/docs/migrations/**
 !/docs/swarm-harness-vm.md
-!/docs/flows-smoke-harness.md
 !/docs/managed-host-launch-gate.md
 /REPO_SHIP_READINESS_CHECKLIST.md
 /tests/swarmd/*_plan.md
