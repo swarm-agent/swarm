@@ -233,37 +233,23 @@ func extractTranscriptionText(payload map[string]any) (string, error) {
 			return strings.Join(parts, " "), nil
 		}
 	}
-	return "", fmt.Errorf("transcription response missing text field: %s", compactBody(payload))
+	return "", errors.New("transcription response missing text field")
 }
 
 func transcriptionFailureDetail(payload map[string]any) string {
 	if len(payload) == 0 {
 		return "empty response body"
 	}
-	if errObj, ok := payload["error"].(map[string]any); ok {
-		if message := strings.TrimSpace(asString(errObj["message"])); message != "" {
-			return truncateTranscriptionDetail(sanitizeDiagnosticText(message), 220)
-		}
-		if typ := strings.TrimSpace(asString(errObj["type"])); typ != "" {
-			return "upstream error type: " + truncateTranscriptionDetail(sanitizeDiagnosticText(typ), 80)
-		}
+	if _, ok := payload["error"]; ok {
+		return "upstream rejected the transcription request"
 	}
-	if message := strings.TrimSpace(asString(payload["message"])); message != "" {
-		return truncateTranscriptionDetail(sanitizeDiagnosticText(message), 220)
+	if strings.TrimSpace(asString(payload["message"])) != "" {
+		return "upstream rejected the transcription request"
 	}
-	rawBody := strings.TrimSpace(asString(payload["raw_body"]))
-	if rawBody != "" {
-		lower := strings.ToLower(rawBody)
-		if strings.Contains(lower, "<html") || strings.Contains(lower, "<!doctype") {
-			return "upstream returned HTML (likely auth/session rejection)"
-		}
-		return "upstream returned non-JSON response"
+	if strings.TrimSpace(asString(payload["raw_body"])) != "" {
+		return "upstream returned a non-JSON error"
 	}
-	keys := sortedMapKeys(payload)
-	if len(keys) > 0 {
-		return "unexpected payload keys=" + strings.Join(keys, ",")
-	}
-	return "unexpected transcription response"
+	return "upstream returned an unexpected transcription error"
 }
 
 func truncateTranscriptionDetail(value string, max int) string {
@@ -271,10 +257,11 @@ func truncateTranscriptionDetail(value string, max int) string {
 		max = 220
 	}
 	value = strings.TrimSpace(value)
-	if len(value) <= max {
+	runes := []rune(value)
+	if len(runes) <= max {
 		return value
 	}
-	return strings.TrimSpace(value[:max]) + "...[truncated]"
+	return strings.TrimSpace(string(runes[:max])) + "...[truncated]"
 }
 
 func codexVoiceDebugEnabled() bool {

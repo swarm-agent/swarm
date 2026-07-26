@@ -1,9 +1,8 @@
 package diagnostics
 
 import (
-	"bytes"
 	"context"
-	"io"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -53,6 +52,10 @@ func recorderFromContext(ctx context.Context) Recorder {
 }
 
 func RecordContext(ctx context.Context, event Event) {
+	if !Enabled() {
+		return
+	}
+	event = metadataOnly(event)
 	if event.RecordedAt == 0 {
 		event.RecordedAt = time.Now().UnixMilli()
 	}
@@ -82,8 +85,8 @@ func LogRequest(provider, operation string, req *http.Request, body []byte) {
 	if !Enabled() || req == nil {
 		return
 	}
-	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "request", Method: req.Method, URL: sanitizeURL(req), Headers: sanitizeHeaders(req.Header), Body: sanitizeBytes(body), RecordedAt: time.Now().UnixMilli()}
-	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=request method=%q url=%q headers=%q body=%q", event.Provider, event.Operation, event.Method, event.URL, event.Headers, event.Body)
+	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "request", Method: clean(req.Method), URL: sanitizeURL(req), Headers: headerNames(req.Header), RecordedAt: time.Now().UnixMilli(), Extra: map[string]any{"request_bytes": len(body)}}
+	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=request method=%q url=%q headers=%q request_bytes=%d", event.Provider, event.Operation, event.Method, event.URL, event.Headers, len(body))
 	record(req.Context(), event)
 }
 
@@ -91,8 +94,8 @@ func LogResponse(provider, operation string, resp *http.Response, body []byte) {
 	if !Enabled() || resp == nil {
 		return
 	}
-	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "response", StatusCode: resp.StatusCode, Headers: sanitizeHeaders(resp.Header), Body: sanitizeBytes(body), RecordedAt: time.Now().UnixMilli()}
-	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=response status=%d headers=%q body=%q", event.Provider, event.Operation, event.StatusCode, event.Headers, event.Body)
+	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "response", StatusCode: resp.StatusCode, Headers: headerNames(resp.Header), RecordedAt: time.Now().UnixMilli(), Extra: map[string]any{"response_bytes": len(body)}}
+	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=response status=%d headers=%q response_bytes=%d", event.Provider, event.Operation, event.StatusCode, event.Headers, len(body))
 	ctx := context.Background()
 	if resp.Request != nil {
 		ctx = resp.Request.Context()
@@ -108,8 +111,8 @@ func LogErrorContext(ctx context.Context, provider, operation string, err error)
 	if !Enabled() || err == nil {
 		return
 	}
-	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "error", Error: privacy.SanitizeText(err.Error()), RecordedAt: time.Now().UnixMilli()}
-	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=error error=%q", event.Provider, event.Operation, event.Error)
+	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "error", Error: "provider operation failed", RecordedAt: time.Now().UnixMilli(), Extra: map[string]any{"error_type": fmt.Sprintf("%T", err)}}
+	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=error error_type=%q", event.Provider, event.Operation, event.Extra["error_type"])
 	record(ctx, event)
 }
 
@@ -121,8 +124,8 @@ func LogStreamChunkContext(ctx context.Context, provider, operation string, chun
 	if !Enabled() || len(chunk) == 0 {
 		return
 	}
-	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "stream_chunk", Body: sanitizeBytes(chunk), RecordedAt: time.Now().UnixMilli()}
-	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=stream_chunk body=%q", event.Provider, event.Operation, event.Body)
+	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "stream_chunk", RecordedAt: time.Now().UnixMilli(), Extra: map[string]any{"chunk_bytes": len(chunk)}}
+	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=stream_chunk chunk_bytes=%d", event.Provider, event.Operation, len(chunk))
 	record(ctx, event)
 }
 
@@ -134,8 +137,8 @@ func LogWebsocketRequestContext(ctx context.Context, provider, operation string,
 	if !Enabled() {
 		return
 	}
-	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "websocket_request", URL: privacy.SanitizeText(strings.TrimSpace(url)), Headers: sanitizeHeaders(headers), Body: sanitizeBytes(body), RecordedAt: time.Now().UnixMilli()}
-	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=websocket_request url=%q headers=%q body=%q", event.Provider, event.Operation, event.URL, event.Headers, event.Body)
+	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "websocket_request", URL: sanitizeEndpoint(url), Headers: headerNames(headers), RecordedAt: time.Now().UnixMilli(), Extra: map[string]any{"request_bytes": len(body)}}
+	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=websocket_request url=%q headers=%q request_bytes=%d", event.Provider, event.Operation, event.URL, event.Headers, len(body))
 	record(ctx, event)
 }
 
@@ -147,8 +150,8 @@ func LogWebsocketResponseContext(ctx context.Context, provider, operation string
 	if !Enabled() || len(body) == 0 {
 		return
 	}
-	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "websocket_response", Body: sanitizeBytes(body), RecordedAt: time.Now().UnixMilli()}
-	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=websocket_response body=%q", event.Provider, event.Operation, event.Body)
+	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "websocket_response", RecordedAt: time.Now().UnixMilli(), Extra: map[string]any{"response_bytes": len(body)}}
+	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=websocket_response response_bytes=%d", event.Provider, event.Operation, len(body))
 	record(ctx, event)
 }
 
@@ -167,12 +170,7 @@ func RoundTrip(provider, operation string, next func(*http.Request) (*http.Respo
 	if !Enabled() || req == nil {
 		return next(req)
 	}
-	body, restoreErr := readAndRestoreRequestBody(req)
-	if restoreErr != nil {
-		LogErrorContext(req.Context(), provider, operation, restoreErr)
-		return nil, restoreErr
-	}
-	LogRequest(provider, operation, req, body)
+	LogRequest(provider, operation, req, nil)
 	resp, err := next(req)
 	if err != nil {
 		LogErrorContext(req.Context(), provider, operation, err)
@@ -183,65 +181,30 @@ func RoundTrip(provider, operation string, next func(*http.Request) (*http.Respo
 		return resp, nil
 	}
 	LogResponse(provider, operation, resp, nil)
-	resp.Body = &loggingReadCloser{ctx: req.Context(), provider: provider, operation: operation, rc: resp.Body}
 	return resp, nil
-}
-
-type loggingReadCloser struct {
-	ctx       context.Context
-	provider  string
-	operation string
-	rc        io.ReadCloser
-}
-
-func (r *loggingReadCloser) Read(p []byte) (int, error) {
-	if r == nil || r.rc == nil {
-		return 0, io.EOF
-	}
-	n, err := r.rc.Read(p)
-	if n > 0 {
-		LogStreamChunkContext(r.ctx, r.provider, r.operation, p[:n])
-	}
-	if err != nil && err != io.EOF {
-		LogErrorContext(r.ctx, r.provider, r.operation, err)
-	}
-	return n, err
-}
-
-func (r *loggingReadCloser) Close() error {
-	if r == nil || r.rc == nil {
-		return nil
-	}
-	err := r.rc.Close()
-	if err != nil {
-		LogErrorContext(r.ctx, r.provider, r.operation, err)
-	}
-	return err
-}
-
-func readAndRestoreRequestBody(req *http.Request) ([]byte, error) {
-	if req == nil || req.Body == nil {
-		return nil, nil
-	}
-	body, err := io.ReadAll(req.Body)
-	if err != nil {
-		return nil, err
-	}
-	if err := req.Body.Close(); err != nil {
-		return nil, err
-	}
-	req.Body = io.NopCloser(bytes.NewReader(body))
-	return body, nil
 }
 
 func sanitizeURL(req *http.Request) string {
 	if req == nil || req.URL == nil {
 		return ""
 	}
-	return privacy.SanitizeText(req.URL.String())
+	endpoint := *req.URL
+	endpoint.RawQuery = ""
+	endpoint.ForceQuery = false
+	endpoint.Fragment = ""
+	endpoint.User = nil
+	return privacy.SanitizeText(endpoint.String())
 }
 
-func sanitizeHeaders(headers http.Header) string {
+func sanitizeEndpoint(raw string) string {
+	req, err := http.NewRequest(http.MethodGet, strings.TrimSpace(raw), nil)
+	if err != nil {
+		return ""
+	}
+	return sanitizeURL(req)
+}
+
+func headerNames(headers http.Header) string {
 	if len(headers) == 0 {
 		return "{}"
 	}
@@ -250,45 +213,66 @@ func sanitizeHeaders(headers http.Header) string {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		values := headers.Values(key)
-		if sensitiveHeader(key) {
-			values = []string{"[REDACTED]"}
-		} else {
-			cleanValues := make([]string, 0, len(values))
-			for _, value := range values {
-				cleanValues = append(cleanValues, privacy.SanitizeText(value))
-			}
-			values = cleanValues
-		}
-		parts = append(parts, key+"="+strings.Join(values, ","))
+	for index, key := range keys {
+		keys[index] = clean(key)
 	}
-	return strings.Join(parts, "; ")
-}
-
-func sensitiveHeader(key string) bool {
-	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "authorization", "proxy-authorization", "x-goog-api-key", "x-api-key", "api-key", "cookie", "set-cookie":
-		return true
-	default:
-		return false
-	}
-}
-
-func sanitizeBytes(body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-	return privacy.SanitizeText(string(body))
+	return strings.Join(keys, ",")
 }
 
 func clean(value string) string {
 	return privacy.SanitizeText(strings.TrimSpace(value))
 }
 
+func metadataOnly(event Event) Event {
+	event.Provider = boundedClean(event.Provider, 80)
+	event.Operation = boundedClean(event.Operation, 120)
+	event.Stage = boundedClean(event.Stage, 80)
+	event.Method = boundedClean(event.Method, 24)
+	event.URL = boundedClean(event.URL, 512)
+	event.Headers = boundedClean(event.Headers, 512)
+	event.Error = boundedClean(event.Error, 160)
+	event.Body = ""
+	event.Extra = metadataExtra(event.Extra)
+	return event
+}
+
+func boundedClean(value string, max int) string {
+	value = clean(value)
+	runes := []rune(value)
+	if max > 0 && len(runes) > max {
+		return string(runes[:max]) + "...[truncated]"
+	}
+	return value
+}
+
+func metadataExtra(extra map[string]any) map[string]any {
+	if len(extra) == 0 {
+		return nil
+	}
+	cleaned := make(map[string]any, len(extra))
+	for key, value := range extra {
+		key = boundedClean(key, 80)
+		switch typed := value.(type) {
+		case bool:
+			cleaned[key] = typed
+		case int:
+			cleaned[key] = typed
+		case int64:
+			cleaned[key] = typed
+		case float64:
+			cleaned[key] = typed
+		case string:
+			cleaned[key] = boundedClean(typed, 160)
+		}
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return cleaned
+}
+
 func record(ctx context.Context, event Event) {
 	if recorder := recorderFromContext(ctx); recorder != nil {
-		recorder(ctx, event)
+		recorder(ctx, metadataOnly(event))
 	}
 }

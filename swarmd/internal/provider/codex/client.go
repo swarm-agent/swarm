@@ -755,7 +755,7 @@ func (c *Client) refreshOAuth(ctx context.Context, refreshToken string) (oauthTo
 		return oauthTokens{}, err
 	}
 	if resp.StatusCode >= 400 {
-		return oauthTokens{}, fmt.Errorf("oauth refresh failed status=%d body=%s", resp.StatusCode, sanitizeDiagnosticText(string(body)))
+		return oauthTokens{}, fmt.Errorf("oauth refresh failed status=%d", resp.StatusCode)
 	}
 
 	var decoded tokenRefresh

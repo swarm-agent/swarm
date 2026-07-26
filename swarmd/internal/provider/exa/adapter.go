@@ -169,25 +169,20 @@ func (a *Adapter) VerifyCredential(ctx context.Context, credential provideriface
 }
 
 func exaVerifyErrorMessage(raw []byte) string {
-	body := strings.TrimSpace(string(raw))
-	if body == "" {
+	if len(bytes.TrimSpace(raw)) == 0 {
 		return ""
 	}
 	var payload struct {
 		Message string `json:"message"`
 		Error   string `json:"error"`
 	}
-	if err := json.Unmarshal(raw, &payload); err == nil {
-		msg := strings.TrimSpace(payload.Message)
-		if msg != "" {
-			return msg
-		}
-		msg = strings.TrimSpace(payload.Error)
-		if msg != "" {
-			return msg
-		}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return "upstream returned a non-JSON error"
 	}
-	return body
+	if strings.TrimSpace(payload.Message) != "" || strings.TrimSpace(payload.Error) != "" {
+		return "upstream rejected the verification request"
+	}
+	return "upstream returned an unexpected error"
 }
 
 func exaAuthMethods() []provideriface.AuthMethod {

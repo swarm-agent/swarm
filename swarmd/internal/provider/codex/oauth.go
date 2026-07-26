@@ -186,7 +186,7 @@ func ExchangeOAuthCode(ctx context.Context, code, codeVerifier string) (OAuthTok
 		return OAuthTokens{}, err
 	}
 	if resp.StatusCode >= 400 {
-		return OAuthTokens{}, fmt.Errorf("oauth token exchange failed status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return OAuthTokens{}, fmt.Errorf("oauth token exchange failed status=%d", resp.StatusCode)
 	}
 
 	var decoded struct {
