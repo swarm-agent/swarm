@@ -66,22 +66,12 @@ function sessionLineageLabel(metadata: Record<string, unknown> | null): string {
   ))
 }
 
-function sessionHasFlowIdentity(metadata: Record<string, unknown> | null): boolean {
-  return metadataString(metadata, 'source').toLowerCase() === 'flow'
-    || metadataString(metadata, 'lineage_kind').toLowerCase() === 'flow'
-    || metadataString(metadata, 'flow_id') !== ''
-}
-
 function sessionHasBackgroundLineage(metadata: Record<string, unknown> | null): boolean {
   const background = metadata?.background === true
   const launchMode = metadataString(metadata, 'launch_mode').toLowerCase()
   const lineageKind = metadataString(metadata, 'lineage_kind').toLowerCase()
   const targetKind = metadataString(metadata, 'target_kind').toLowerCase()
-  return background || launchMode === 'background' || lineageKind === 'background_agent' || sessionHasFlowIdentity(metadata) || targetKind === 'background'
-}
-
-function sessionBackgroundBadge(metadata: Record<string, unknown> | null): string {
-  return sessionHasFlowIdentity(metadata) ? 'flow' : 'background'
+  return background || launchMode === 'background' || lineageKind === 'background_agent' || targetKind === 'background'
 }
 
 function sessionActiveRunIntent(runIntent: DesktopRunIntentRecord | null | undefined): DesktopRunIntentRecord | null {
@@ -96,7 +86,7 @@ export function sessionBackgroundInfo(session: DesktopSessionRecord, fallbackTar
   }
   return {
     active: Boolean(sessionActiveRunIntent(session.runIntent)),
-    badge: sessionBackgroundBadge(metadata),
+    badge: 'background',
     targetLabel: firstNonEmpty(
       fallbackTargetLabel,
       metadataString(metadata, 'swarm_target_name'),
@@ -121,9 +111,6 @@ export function sessionChildDescriptor(session: DesktopSessionRecord): SidebarSe
   const resolvedSubagent = metadataString(metadata, 'subagent')
   const lineageLabel = sessionLineageLabel(metadata)
   const subagent = resolvedSubagent || requestedSubagent
-  if (sessionHasFlowIdentity(metadata)) {
-    return { kind: 'background', label: 'flow', assignmentLabel: assignmentLabel || null }
-  }
   if (subagent || lineageKind === 'delegated_subagent') {
     return { kind: 'subagent', label: lineageLabel || '@subagent', assignmentLabel: assignmentLabel || null }
   }

@@ -55,7 +55,6 @@ function formatBytes(value: number): string {
 function lineageTag(item: DesktopSessionSearchItem): string {
   if (item.library_metric?.unlinked_child) return 'Unlinked child'
   const kind = (item.library_metric?.lineage_kind || '').toLowerCase()
-  if (kind.includes('flow')) return 'Flow'
   if (kind.includes('background')) return 'Background'
   return item.library_metric?.parent_session_id ? 'Subagent' : ''
 }

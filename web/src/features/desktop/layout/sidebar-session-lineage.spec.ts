@@ -113,49 +113,6 @@ test('session lineage keeps real background children background-targeted from di
   assert.deepEqual(sessionChildDescriptor(session), { kind: 'background', label: 'background', assignmentLabel: null })
 })
 
-test('flow background sessions expose target label and flow badge for sidebar rows', () => {
-  const session = makeSession({
-    id: 'flow-session',
-    title: 'Refresh AGENTS memory',
-    metadata: {
-      source: 'flow',
-      lineage_kind: 'flow',
-      background: true,
-      swarm_target_name: 'pc container',
-    },
-    lifecycle: {
-      sessionId: 'flow-session',
-      runId: 'run-flow',
-      active: true,
-      phase: 'running',
-      startedAt: 1,
-      endedAt: 0,
-      updatedAt: 2,
-      generation: 1,
-      stopReason: null,
-      error: null,
-      ownerTransport: 'flow_scheduler',
-    },
-    runIntent: {
-      sessionId: 'flow-session',
-      runId: 'run-flow',
-      status: 'running',
-      blockedReason: '',
-      createdAt: 1,
-      updatedAt: 2,
-      eventSeq: 2,
-    },
-    live: {
-      ...makeSession().live,
-      status: 'running',
-      startedAt: 1,
-    },
-  })
-
-  assert.deepEqual(sessionChildDescriptor(session), { kind: 'root', label: null, assignmentLabel: null })
-  assert.deepEqual(sessionBackgroundInfo(session, 'host'), { active: true, badge: 'flow', targetLabel: 'host' })
-})
-
 test('background sessions prefer resolved route label over target metadata', () => {
   const session = makeSession({
     id: 'background-session',
@@ -254,36 +211,6 @@ test('managed deploy keeps parent provenance but is a standalone sidebar session
   assert.equal(sessionParentSessionID(session), 'launching-session')
   assert.deepEqual(sessionChildDescriptor(session), { kind: 'root', label: null, assignmentLabel: null })
 })
-
-test('flow child sessions never collapse into fake subagent lineage even when requested_subagent metadata exists', () => {
-  const session = makeSession({
-    id: 'flow-child-session',
-    metadata: {
-      parent_session_id: 'parent-session',
-      source: 'flow',
-      lineage_kind: 'flow',
-      flow_id: 'flow-123',
-      requested_subagent: 'memory',
-    },
-    lifecycle: {
-      sessionId: 'flow-child-session',
-      runId: 'run-flow-child',
-      active: false,
-      phase: 'completed',
-      startedAt: 1,
-      endedAt: 2,
-      updatedAt: 2,
-      generation: 1,
-      stopReason: null,
-      error: null,
-      ownerTransport: 'flow_scheduler',
-    },
-  })
-
-  assert.equal(sessionParentSessionID(session), 'parent-session')
-  assert.deepEqual(sessionChildDescriptor(session), { kind: 'background', label: 'flow', assignmentLabel: null })
-})
-
 
 test('sessionBackgroundInfo derives active badge only from canonical active run intent', () => {
   const background = makeSession({ id: 'background-active' })

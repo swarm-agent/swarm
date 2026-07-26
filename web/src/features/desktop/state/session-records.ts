@@ -1,34 +1,7 @@
 import type { DesktopLiveReasoningRecord, DesktopSessionRecord } from '../types/realtime'
 
-function metadataString(metadata: Record<string, unknown> | undefined, key: string): string {
-  const value = metadata?.[key]
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function isFlowSessionMetadata(metadata: Record<string, unknown> | undefined): boolean {
-  return metadataString(metadata, 'source').toLowerCase() === 'flow'
-    || metadataString(metadata, 'lineage_kind').toLowerCase() === 'flow'
-    || metadataString(metadata, 'flow_id') !== ''
-}
-
-function isPlaceholderSessionTitle(title: string): boolean {
-  const normalized = title.trim().toLowerCase()
-  return normalized === 'new session' || normalized === 'new conversation'
-}
-
 function mergeSessionTitle(existing: DesktopSessionRecord, incoming: DesktopSessionRecord): string {
-  const incomingTitle = incoming.title.trim()
-  const existingTitle = existing.title.trim()
-  if (!incomingTitle) {
-    return existing.title
-  }
-  if ((isFlowSessionMetadata(existing.metadata) || isFlowSessionMetadata(incoming.metadata))
-    && isPlaceholderSessionTitle(incomingTitle)
-    && existingTitle
-    && !isPlaceholderSessionTitle(existingTitle)) {
-    return existing.title
-  }
-  return incoming.title
+  return incoming.title.trim() ? incoming.title : existing.title
 }
 
 function mergeSessionLiveState(

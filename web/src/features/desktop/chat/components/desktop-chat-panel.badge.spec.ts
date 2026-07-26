@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import type { DesktopLiveAssistantSegment, DesktopRunIntentRecord, DesktopSessionRecord } from '../../types/realtime'
 import type { ChatMessageRecord } from '../types/chat'
-import { buildLiveToolMessages, dedupeMessages, deriveDesktopChatRunControls, desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, liveAssistantDraftHasCanonicalReplay, metadataTodoSummary, orderDesktopTimelineItems, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
+import { buildLiveToolMessages, dedupeMessages, deriveDesktopChatRunControls, desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, liveAssistantDraftHasCanonicalReplay, metadataTodoSummary, orderDesktopTimelineItems, resolveMessageAssistantLabel, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
@@ -298,33 +298,6 @@ test('desktop timeline keeps testbench interleaved read/list/search stream in se
     'SENTENCE THREE',
     'search',
   ])
-})
-
-test('flow sessions are treated as read-only flow identity and resolve their real flow agent name', () => {
-  const session = makeSession({
-    metadata: {
-      source: 'flow',
-      lineage_kind: 'flow',
-      flow_id: 'flow-123',
-      flow_agent_name: 'memory',
-      agent_name: 'swarm',
-      requested_subagent: 'explorer',
-    },
-  })
-
-  assert.equal(sessionUsesReadOnlyFlowIdentity(session), true)
-  assert.equal(resolveSessionEffectiveAgentName(session, 'swarm'), 'memory')
-})
-
-test('non-flow sessions still resolve requested subagent before falling back to primary', () => {
-  const session = makeSession({
-    metadata: {
-      requested_subagent: 'explorer',
-    },
-  })
-
-  assert.equal(sessionUsesReadOnlyFlowIdentity(session), false)
-  assert.equal(resolveSessionEffectiveAgentName(session, 'swarm'), 'explorer')
 })
 
 function makeMessage(overrides: Partial<ChatMessageRecord> = {}): ChatMessageRecord {
