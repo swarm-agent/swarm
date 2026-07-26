@@ -283,6 +283,7 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	if sessionSvc != nil {
 		server.v3SessionExecutor = newSessionV3Executor(server)
 		server.planLifecycle = sessionruntime.NewPlanLifecycleService(sessionSvc)
+		server.planLifecycle.SetApplySessionMutation(server.applySessionV3PrimaryMutation)
 	}
 	server.gitRealtime = newGitRealtimeManager(server)
 	return server

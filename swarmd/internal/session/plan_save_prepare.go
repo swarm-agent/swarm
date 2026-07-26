@@ -1,6 +1,8 @@
 package session
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +17,47 @@ type PreparedPlanSave struct {
 	ArchivedRevision *pebblestore.SessionPlanSnapshot
 	Activate         bool
 	EventPayload     json.RawMessage
+}
+
+// CommitPreparedPlanSave commits every durable component of a V3 plan save in
+// the caller-supplied canonical session mutation batch.
+func (s *Service) CommitPreparedPlanSave(prepared PreparedPlanSave, applySessionMutation func(SessionMutationInput) (SessionMutationResult, error)) (SessionMutationResult, error) {
+	if applySessionMutation == nil {
+		return SessionMutationResult{}, errors.New("canonical V3 plan save mutation callback is required")
+	}
+	plan := prepared.Plan
+	if strings.TrimSpace(plan.SessionID) == "" || strings.TrimSpace(plan.ID) == "" {
+		return SessionMutationResult{}, errors.New("prepared plan save is missing session or plan id")
+	}
+	clientRequestID := fmt.Sprintf("plan-save:%s:%s:v%d", strings.TrimSpace(plan.SessionID), strings.TrimSpace(plan.ID), plan.Version)
+	sum := sha256.Sum256([]byte(strings.TrimSpace(plan.SessionID) + "\x00" + strings.TrimSpace(plan.ID) + "\x00" + fmt.Sprintf("%d", plan.Version) + "\x00" + string(prepared.EventPayload)))
+	payloadHash := hex.EncodeToString(sum[:])
+	result, err := applySessionMutation(SessionMutationInput{
+		SessionID:       plan.SessionID,
+		UserID:          plan.UserID,
+		AccountScopeID:  plan.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            SessionMutationSavePlan,
+		EventType:       "session.plan.saved",
+		EventPayload:    append(json.RawMessage(nil), prepared.EventPayload...),
+		PlanSave: &pebblestore.V3PlanSaveMutation{
+			Plan:                  plan,
+			ArchivedRevision:      prepared.ArchivedRevision,
+			Activate:              prepared.Activate,
+			ExpectedParentVersion: plan.ParentRevision,
+		},
+		NowUnixMs: plan.UpdatedAt,
+	})
+	if err != nil {
+		return SessionMutationResult{}, err
+	}
+	if result.Plan == nil {
+		return SessionMutationResult{}, errors.New("V3 plan save mutation did not return committed plan")
+	}
+	return result, nil
 }
 
 func (s *Service) PreparePlanSaveWithMetadata(sessionID, planID, title, plan, status, approvalState string, activate bool, metadata PlanSaveMetadata) (PreparedPlanSave, error) {

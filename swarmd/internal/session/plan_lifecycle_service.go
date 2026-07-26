@@ -19,10 +19,21 @@ import (
 type PlanLifecycleService struct {
 	sessions             *Service
 	globalFollowupPolicy func(accountScopeID string) (string, error)
+	applySessionMutation func(SessionMutationInput) (SessionMutationResult, error)
 }
 
 func NewPlanLifecycleService(sessions *Service) *PlanLifecycleService {
-	return &PlanLifecycleService{sessions: sessions}
+	service := &PlanLifecycleService{sessions: sessions}
+	if sessions != nil {
+		service.applySessionMutation = sessions.ApplySessionMutation
+	}
+	return service
+}
+
+func (s *PlanLifecycleService) SetApplySessionMutation(apply func(SessionMutationInput) (SessionMutationResult, error)) {
+	if s != nil {
+		s.applySessionMutation = apply
+	}
 }
 
 func (s *PlanLifecycleService) SetGlobalFollowupCheckpointPolicyResolver(resolver func(accountScopeID string) (string, error)) {
@@ -275,8 +286,12 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 	if err := ValidateExecutablePlanDocument(document); err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	if input.ApplySessionMutation != nil {
-		committed, err := s.sessions.CommitV3PlanAcceptance(PlanAcceptanceCommitInput{Session: session, PlanID: planID, Title: title, Plan: planText, Document: document, ApplySessionMutation: input.ApplySessionMutation, ModeEventFields: input.ModeEventFields, ModePreference: input.ModePreference, ModeAgentProfile: input.ModeAgentProfile, BuildLifecycleMessage: input.BuildLifecycleMessage})
+	applySessionMutation := input.ApplySessionMutation
+	if applySessionMutation == nil {
+		applySessionMutation = s.applySessionMutation
+	}
+	if applySessionMutation != nil {
+		committed, err := s.sessions.CommitV3PlanAcceptance(PlanAcceptanceCommitInput{Session: session, PlanID: planID, Title: title, Plan: planText, Document: document, ApplySessionMutation: applySessionMutation, ModeEventFields: input.ModeEventFields, ModePreference: input.ModePreference, ModeAgentProfile: input.ModeAgentProfile, BuildLifecycleMessage: input.BuildLifecycleMessage})
 		if err != nil {
 			return PlanLifecycleResult{}, err
 		}
@@ -287,22 +302,7 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 		}
 		return PlanLifecycleResult{Session: committed.Session, Plan: committed.Plan, Summary: summary, CheckpointID: checkpointID, Action: "submit_plan_for_approval", Message: "structured plan saved, approved; mode switched to auto", ModeChanged: true, V3Mutation: &committed.Mutation}, nil
 	}
-	// Transitional non-V3 adapters retain the legacy persistence path until they
-	// can supply the canonical V3 mutation boundary.
-	saved, planEvent, err := s.sessions.SavePlanWithMetadata(session.ID, planID, title, planText, "approved", "approved", true, PlanSaveMetadata{UpdateSummary: "exit plan mode submission", UpdateScope: "plan", UpdateKind: "exit_plan_mode", Document: document})
-	if err != nil {
-		return PlanLifecycleResult{}, err
-	}
-	updated, modeEvent, err := s.sessions.SetMode(session.ID, ModeAuto)
-	if err != nil {
-		return PlanLifecycleResult{}, err
-	}
-	summary := SummarizePlanExecution(saved.Document)
-	checkpointID := ""
-	if summary.AutoAdvanceAllowed && !summary.PlanComplete && !summary.ReviewRequired && !summary.Blocked && !summary.Failed {
-		checkpointID = strings.TrimSpace(summary.NextCheckpointID)
-	}
-	return PlanLifecycleResult{Session: updated, Plan: saved, PlanEvent: planEvent, ModeEvent: modeEvent, Summary: summary, CheckpointID: checkpointID, Action: "submit_plan_for_approval", Message: "structured plan saved, approved; mode switched to auto", ModeChanged: modeEvent != nil}, nil
+	return PlanLifecycleResult{}, errors.New("submit plan for approval requires the canonical V3 mutation boundary")
 }
 
 func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFollowupCheckpointInput) (PlanLifecycleResult, error) {
@@ -497,11 +497,11 @@ func (s *PlanLifecycleService) startSessionCheckpoint(input PlanLifecycleSession
 	}
 	planText := renderSessionCheckpointPlanText(title, request, tasks, doc.Checkpoints[0].AcceptanceCriteria)
 	if strings.TrimSpace(input.RunID) == "" {
-		saved, event, err := s.sessions.SavePlanWithMetadata(session.ID, "", title, planText, "approved", "approved", true, PlanSaveMetadata{UpdateSummary: "Created auto-mode session checkpoint", UpdateScope: checkpointID, UpdateKind: "start_session_checkpoint", RevisionKind: PlanRevisionKindExecution, Checkpoint: true, Document: doc})
+		saved, err := s.savePlan(session.ID, "", title, planText, "approved", "approved", true, PlanSaveMetadata{UpdateSummary: "Created auto-mode session checkpoint", UpdateScope: checkpointID, UpdateKind: "start_session_checkpoint", RevisionKind: PlanRevisionKindExecution, Checkpoint: true, Document: doc})
 		if err != nil {
 			return PlanLifecycleResult{}, err
 		}
-		return PlanLifecycleResult{Session: session, Plan: saved, PlanEvent: event, Summary: SummarizePlanExecution(saved.Document), CheckpointID: checkpointID, Action: "start_session_checkpoint", Message: "Created session checkpoint and queued fresh-context checkpoint start"}, nil
+		return PlanLifecycleResult{Session: session, Plan: saved, Summary: SummarizePlanExecution(saved.Document), CheckpointID: checkpointID, Action: "start_session_checkpoint", Message: "Created session checkpoint and queued fresh-context checkpoint start"}, nil
 	}
 	startedAt := input.StartedAt
 	if startedAt <= 0 {
@@ -511,11 +511,11 @@ func (s *PlanLifecycleService) startSessionCheckpoint(input PlanLifecycleSession
 	if err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	saved, event, err := s.sessions.SavePlanWithMetadata(session.ID, "", title, planText, "approved", "approved", true, PlanSaveMetadata{UpdateSummary: "Started auto-mode session checkpoint", UpdateScope: checkpointID, UpdateKind: "start_session_checkpoint", RevisionKind: PlanRevisionKindExecution, Checkpoint: true, Document: doc})
+	saved, err := s.savePlan(session.ID, "", title, planText, "approved", "approved", true, PlanSaveMetadata{UpdateSummary: "Started auto-mode session checkpoint", UpdateScope: checkpointID, UpdateKind: "start_session_checkpoint", RevisionKind: PlanRevisionKindExecution, Checkpoint: true, Document: doc})
 	if err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	return PlanLifecycleResult{Session: session, Plan: saved, PlanEvent: event, Summary: SummarizePlanExecution(saved.Document), CheckpointID: decision.CheckpointID, AttemptID: decision.AttemptID, Action: "start_session_checkpoint", Message: "Created session checkpoint and started it with the current run"}, nil
+	return PlanLifecycleResult{Session: session, Plan: saved, Summary: SummarizePlanExecution(saved.Document), CheckpointID: decision.CheckpointID, AttemptID: decision.AttemptID, Action: "start_session_checkpoint", Message: "Created session checkpoint and started it with the current run"}, nil
 }
 
 func renderSessionCheckpointPlanText(title, request string, tasks, criteria []string) string {
@@ -621,11 +621,11 @@ func (s *PlanLifecycleService) AmendPlan(input PlanLifecycleAmendmentInput) (Pla
 	if planText == "" {
 		planText = "# " + title
 	}
-	saved, event, err := s.sessions.SavePlanWithMetadata(state.session.ID, state.plan.ID, title, planText, state.plan.Status, state.plan.ApprovalState, true, PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: "plan_amendment", RevisionKind: PlanRevisionKindDefinition, Checkpoint: false, Document: doc})
+	saved, err := s.savePlan(state.session.ID, state.plan.ID, title, planText, state.plan.Status, state.plan.ApprovalState, true, PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: "plan_amendment", RevisionKind: PlanRevisionKindDefinition, Checkpoint: false, Document: doc})
 	if err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	return PlanLifecycleResult{Session: state.session, Plan: saved, PlanEvent: event, Summary: SummarizePlanExecution(saved.Document), Action: "amend_plan", Message: updateSummary}, nil
+	return PlanLifecycleResult{Session: state.session, Plan: saved, Summary: SummarizePlanExecution(saved.Document), Action: "amend_plan", Message: updateSummary}, nil
 }
 
 func (s *PlanLifecycleService) RestorePlanRevision(input PlanLifecycleRevisionRestoreInput) (PlanLifecycleResult, error) {
@@ -734,11 +734,11 @@ func (s *PlanLifecycleService) RestorePlanRevision(input PlanLifecycleRevisionRe
 	if checkpointID != "" {
 		updateScope = checkpointID
 	}
-	saved, event, err := s.sessions.SavePlanWithMetadata(session.ID, planID, title, planText, status, approvalState, true, PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, RevisionKind: PlanRevisionKindDefinition, RestoredFromVersion: revision.Version, Checkpoint: false, Document: doc})
+	saved, err := s.savePlan(session.ID, planID, title, planText, status, approvalState, true, PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, RevisionKind: PlanRevisionKindDefinition, RestoredFromVersion: revision.Version, Checkpoint: false, Document: doc})
 	if err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	return PlanLifecycleResult{Session: session, Plan: saved, PlanEvent: event, Summary: SummarizePlanExecution(saved.Document), CheckpointID: checkpointID, AttemptID: attemptID, Action: updateKind, Message: updateSummary}, nil
+	return PlanLifecycleResult{Session: session, Plan: saved, Summary: SummarizePlanExecution(saved.Document), CheckpointID: checkpointID, AttemptID: attemptID, Action: updateKind, Message: updateSummary}, nil
 }
 
 func (s *PlanLifecycleService) RequestNewPlan(input PlanLifecycleProposalInput) (PlanLifecycleResult, error) {
@@ -842,18 +842,18 @@ func (s *PlanLifecycleService) RequestNewPlan(input PlanLifecycleProposalInput) 
 			message = "replacement plan approved and activated"
 			updateSummary = "Replacement plan approved and activated"
 		}
-		saved, event, err := s.sessions.SavePlanWithMetadata(session.ID, approvedPlanID, title, planText, "approved", "approved", true, PlanSaveMetadata{UpdateSummary: firstNonBlank(strings.TrimSpace(input.Reason), updateSummary), UpdateScope: "plan", UpdateKind: "request_new_plan", RevisionKind: PlanRevisionKindDefinition, Document: doc})
+		saved, err := s.savePlan(session.ID, approvedPlanID, title, planText, "approved", "approved", true, PlanSaveMetadata{UpdateSummary: firstNonBlank(strings.TrimSpace(input.Reason), updateSummary), UpdateScope: "plan", UpdateKind: "request_new_plan", RevisionKind: PlanRevisionKindDefinition, Document: doc})
 		if err != nil {
 			return PlanLifecycleResult{}, err
 		}
-		return PlanLifecycleResult{Session: session, Plan: saved, PlanEvent: event, Summary: SummarizePlanExecution(saved.Document), Action: "request_new_plan", Message: message}, nil
+		return PlanLifecycleResult{Session: session, Plan: saved, Summary: SummarizePlanExecution(saved.Document), Action: "request_new_plan", Message: message}, nil
 	}
 
-	saved, event, err := s.sessions.SavePlanWithMetadata(session.ID, "", title, planText, "pending_approval", "pending", false, PlanSaveMetadata{UpdateSummary: firstNonBlank(strings.TrimSpace(input.Reason), "New plan proposal pending approval"), UpdateScope: "plan", UpdateKind: "request_new_plan", Document: doc})
+	saved, err := s.savePlan(session.ID, "", title, planText, "pending_approval", "pending", false, PlanSaveMetadata{UpdateSummary: firstNonBlank(strings.TrimSpace(input.Reason), "New plan proposal pending approval"), UpdateScope: "plan", UpdateKind: "request_new_plan", Document: doc})
 	if err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	return PlanLifecycleResult{Session: session, Plan: saved, PlanEvent: event, Summary: SummarizePlanExecution(saved.Document), Action: "request_new_plan", Message: "new plan proposal saved for approval"}, nil
+	return PlanLifecycleResult{Session: session, Plan: saved, Summary: SummarizePlanExecution(saved.Document), Action: "request_new_plan", Message: "new plan proposal saved for approval"}, nil
 }
 
 func (s *PlanLifecycleService) SetFollowupCheckpointPolicy(input PlanLifecycleFollowupPolicyInput) (PlanLifecycleResult, error) {
@@ -2044,11 +2044,26 @@ func (s *PlanLifecycleService) saveLifecyclePlanWithStatus(state planLifecycleSt
 	if err := ValidatePlanDocument(state.doc); err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	saved, event, err := s.sessions.SavePlanWithMetadata(state.session.ID, state.plan.ID, state.plan.Title, state.plan.Plan, status, approvalState, true, PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: checkpointID, UpdateKind: updateKind, RevisionKind: PlanRevisionKindExecution, Checkpoint: true, Document: state.doc})
+	saved, err := s.savePlan(state.session.ID, state.plan.ID, state.plan.Title, state.plan.Plan, status, approvalState, true, PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: checkpointID, UpdateKind: updateKind, RevisionKind: PlanRevisionKindExecution, Checkpoint: true, Document: state.doc})
 	if err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	return PlanLifecycleResult{Session: state.session, Plan: saved, PlanEvent: event, Summary: SummarizePlanExecution(saved.Document), CheckpointID: checkpointID, Action: updateKind, Message: updateSummary}, nil
+	return PlanLifecycleResult{Session: state.session, Plan: saved, Summary: SummarizePlanExecution(saved.Document), CheckpointID: checkpointID, Action: updateKind, Message: updateSummary}, nil
+}
+
+func (s *PlanLifecycleService) savePlan(sessionID, planID, title, plan, status, approvalState string, activate bool, metadata PlanSaveMetadata) (pebblestore.SessionPlanSnapshot, error) {
+	if s.applySessionMutation == nil {
+		return pebblestore.SessionPlanSnapshot{}, errors.New("canonical V3 plan save mutation callback is required")
+	}
+	prepared, err := s.sessions.PreparePlanSaveWithMetadata(sessionID, planID, title, plan, status, approvalState, activate, metadata)
+	if err != nil {
+		return pebblestore.SessionPlanSnapshot{}, err
+	}
+	result, err := s.sessions.CommitPreparedPlanSave(prepared, s.applySessionMutation)
+	if err != nil {
+		return pebblestore.SessionPlanSnapshot{}, err
+	}
+	return *result.Plan, nil
 }
 
 func (s *PlanLifecycleService) requireConfigured() error {

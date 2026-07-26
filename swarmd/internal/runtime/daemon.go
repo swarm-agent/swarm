@@ -242,6 +242,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	uiSettingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	uiSettingsSvc.SetEventPublisher(events, hub.Publish)
 	planLifecycleSvc := sessionruntime.NewPlanLifecycleService(sessionSvc)
+	planLifecycleSvc.SetApplySessionMutation(sessionSvc.ApplySessionMutation)
 	planLifecycleSvc.SetGlobalFollowupCheckpointPolicyResolver(func(accountScopeID string) (string, error) {
 		settings, err := uiSettingsSvc.GetForAccount(accountScopeID)
 		if err != nil {

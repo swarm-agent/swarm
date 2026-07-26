@@ -1608,7 +1608,9 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 			"agent_model_policy": transition.AgentModelPolicy, "swarm_conf_v3_diagnostics_enabled": os.Getenv("SWARM_V3_DIAGNOSTICS") == "1",
 		}
 	}
-	lifecycleResult, lifecycleErr := sessionruntime.NewPlanLifecycleService(s.sessions).SubmitPlanForApproval(input)
+	lifecycle := sessionruntime.NewPlanLifecycleService(s.sessions)
+	lifecycle.SetApplySessionMutation(applySessionMutation)
+	lifecycleResult, lifecycleErr := lifecycle.SubmitPlanForApproval(input)
 	if lifecycleErr != nil {
 		return "", fmt.Errorf("exit_plan_mode failed to submit plan: %w", lifecycleErr)
 	}
@@ -2203,13 +2205,15 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 		if _, hasActivate := args["activate"]; hasActivate {
 			activate = mapBool(args, "activate")
 		}
-		plan, event, err := s.sessions.SavePlanWithMetadata(sessionID, planID, title, planBody, status, approvalState, activate, sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, RevisionKind: revisionKind, Checkpoint: checkpoint, Document: document})
+		prepared, err := s.sessions.PreparePlanSaveWithMetadata(sessionID, planID, title, planBody, status, approvalState, activate, sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, RevisionKind: revisionKind, Checkpoint: checkpoint, Document: document})
 		if err != nil {
 			return "", err
 		}
-		if err := s.persistPlanSavedV3Mutation(plan, event, applySessionMutation); err != nil {
+		mutation, err := s.sessions.CommitPreparedPlanSave(prepared, applySessionMutation)
+		if err != nil {
 			return "", err
 		}
+		plan := *mutation.Plan
 		payload := map[string]any{
 			"tool":              "plan_manage",
 			"action":            "save",
@@ -2283,13 +2287,15 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 			value := mapBool(args, "activate")
 			activate = &value
 		}
-		plan, event, err := s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{PlanID: planID, Title: title, Status: status, ApprovalState: approvalState, Activate: activate, Patch: patch, Document: document, DocumentPatch: documentPatch, Metadata: sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, RevisionKind: revisionKind, Checkpoint: checkpoint}})
+		prepared, err := s.sessions.PreparePlanPatch(sessionID, sessionruntime.PlanPatchOptions{PlanID: planID, Title: title, Status: status, ApprovalState: approvalState, Activate: activate, Patch: patch, Document: document, DocumentPatch: documentPatch, Metadata: sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, RevisionKind: revisionKind, Checkpoint: checkpoint}})
 		if err != nil {
 			return "", err
 		}
-		if err := s.persistPlanSavedV3Mutation(plan, event, applySessionMutation); err != nil {
+		mutation, err := s.sessions.CommitPreparedPlanSave(prepared, applySessionMutation)
+		if err != nil {
 			return "", err
 		}
+		plan := *mutation.Plan
 		payload := map[string]any{
 			"tool":              "plan_manage",
 			"action":            action,
@@ -2563,6 +2569,7 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		ContinueAutomatically: continueAutomatically,
 	}
 	lifecycle := sessionruntime.NewPlanLifecycleService(s.sessions)
+	lifecycle.SetApplySessionMutation(applySessionMutation)
 	if s != nil && s.uiSettings != nil {
 		lifecycle.SetGlobalFollowupCheckpointPolicyResolver(func(accountScopeID string) (string, error) {
 			settings, err := s.uiSettings.GetForAccount(accountScopeID)
@@ -2705,9 +2712,6 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		return "", fmt.Errorf("plan execution action %q is not supported", action)
 	}
 	if err != nil {
-		return "", err
-	}
-	if err := s.persistPlanSavedV3Mutation(result.Plan, result.PlanEvent, applySessionMutation); err != nil {
 		return "", err
 	}
 	payload := map[string]any{
