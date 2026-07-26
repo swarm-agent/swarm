@@ -201,6 +201,7 @@ type manageWorktreeConfigService interface {
 	GetConfigForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error)
 	InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error)
 	TaskCommitDescendsFrom(workspacePath, baseCommit, headCommit string) (bool, error)
+	VerifyTaskIntegrationWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit string) (worktreeruntime.TaskWorkspaceState, error)
 	PrepareTaskIntegration(parentPath, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error)
 	ApplyTaskIntegration(parentPath string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error)
 }
@@ -6102,6 +6103,10 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 	if !ok {
 		return "", fmt.Errorf("parent session %q not found", parentSessionID)
 	}
+	parentPath, err := r.manageWorktreeResolveWorkspacePath(scope, "")
+	if err != nil {
+		return "", err
+	}
 	selected := asStringSlice(args["session_ids"])
 	if len(selected) == 0 {
 		return "", errors.New("integrate requires selected committed child session_ids; call recall once to obtain them")
@@ -6135,18 +6140,30 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 			if !selectedSet[id] || !agentruntime.IsCoderAgentName(asString(row["subagent"])) {
 				continue
 			}
-			path := strings.TrimSpace(firstNonEmptyString(asString(row["worktree_root_path"]), asString(row["workspace_path"])))
-			state, inspectErr := r.worktrees.InspectTaskWorkspace(path)
+			childSession, found, sessionErr := r.sessions.GetSession(id)
+			if sessionErr != nil {
+				return "", fmt.Errorf("verify selected child session %q: %w", id, sessionErr)
+			}
+			if !found {
+				return "", fmt.Errorf("verify selected child session %q: not found", id)
+			}
+			if childSession.AccountScopeID != parent.AccountScopeID || childSession.UserID != parent.UserID ||
+				strings.TrimSpace(asString(childSession.Metadata["parent_session_id"])) != parentSessionID ||
+				strings.TrimSpace(asString(childSession.Metadata["lineage_kind"])) != "delegated_subagent" ||
+				!agentruntime.IsCoderAgentName(asString(childSession.Metadata["subagent"])) {
+				return "", fmt.Errorf("selected child %q is not an owned Coder child of this parent", id)
+			}
+			path := strings.TrimSpace(firstNonEmptyString(childSession.WorktreeRootPath, childSession.WorkspacePath))
+			baseCommit := strings.TrimSpace(asString(row["base_commit"]))
+			headCommit := strings.TrimSpace(asString(row["head_commit"]))
+			state, inspectErr := r.worktrees.VerifyTaskIntegrationWorkspace(parentPath, path, id, childSession.WorktreeBranch, baseCommit, headCommit)
 			if inspectErr != nil {
-				return "", fmt.Errorf("inspect selected child %q: %w", id, inspectErr)
+				return "", fmt.Errorf("verify selected child %q lineage: %w", id, inspectErr)
 			}
 			if !state.Clean {
 				return "", fmt.Errorf("selected child %q is dirty:\n%s", id, state.Status)
 			}
-			if state.BranchName != strings.TrimSpace(asString(row["worktree_branch"])) || state.HeadCommit != strings.TrimSpace(asString(row["head_commit"])) {
-				return "", fmt.Errorf("selected child %q no longer matches durable lineage", id)
-			}
-			candidates = append(candidates, candidate{callID: callID, index: asInt(row["launch_index"], 0), child: worktreeruntime.TaskIntegrationChild{SessionID: id, BaseCommit: strings.TrimSpace(asString(row["base_commit"])), HeadCommit: state.HeadCommit}})
+			candidates = append(candidates, candidate{callID: callID, index: asInt(row["launch_index"], 0), child: worktreeruntime.TaskIntegrationChild{SessionID: id, BaseCommit: baseCommit, HeadCommit: state.HeadCommit}})
 		}
 	}
 	if len(candidates) != len(selectedSet) {
@@ -6161,10 +6178,6 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 	children := make([]worktreeruntime.TaskIntegrationChild, 0, len(candidates))
 	for _, item := range candidates {
 		children = append(children, item.child)
-	}
-	parentPath, err := r.manageWorktreeResolveWorkspacePath(scope, "")
-	if err != nil {
-		return "", err
 	}
 	parentState, inspectErr := r.worktrees.InspectTaskWorkspace(parentPath)
 	if inspectErr != nil {

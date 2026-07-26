@@ -17,6 +17,7 @@ import (
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/lock"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
@@ -369,8 +370,8 @@ func (s *Service) TaskCommitDescendsFrom(workspacePath, baseCommit, headCommit s
 	workspacePath = strings.TrimSpace(workspacePath)
 	baseCommit = strings.TrimSpace(baseCommit)
 	headCommit = strings.TrimSpace(headCommit)
-	if workspacePath == "" || baseCommit == "" || headCommit == "" {
-		return false, errors.New("workspace path, base commit, and head commit are required")
+	if workspacePath == "" || !validCommitID(baseCommit) || !validCommitID(headCommit) {
+		return false, errors.New("workspace path and full hexadecimal base/head commit ids are required")
 	}
 	cmd := exec.Command("git", "merge-base", "--is-ancestor", baseCommit, headCommit)
 	cmd.Dir = workspacePath
@@ -396,6 +397,9 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentHead string, 
 	}
 	if !state.Clean {
 		return TaskIntegrationPlan{}, fmt.Errorf("parent worktree is dirty:\n%s", state.Status)
+	}
+	if !validCommitID(expectedParentHead) {
+		return TaskIntegrationPlan{}, errors.New("expected parent HEAD must be a full hexadecimal commit id")
 	}
 	if state.HeadCommit != expectedParentHead {
 		return TaskIntegrationPlan{}, fmt.Errorf("stale parent HEAD: expected %s, found %s", expectedParentHead, state.HeadCommit)
@@ -449,6 +453,12 @@ func (s *Service) ApplyTaskIntegration(parentPath string, plan TaskIntegrationPl
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	integrationLock, err := acquireIntegrationLock(parentPath)
+	if err != nil {
+		return TaskIntegrationResult{}, err
+	}
+	defer integrationLock.Release()
+
 	current, err := s.PrepareTaskIntegration(parentPath, plan.ParentHead, integrationChildrenFromPlan(plan))
 	if err != nil {
 		return TaskIntegrationResult{}, err
@@ -456,33 +466,55 @@ func (s *Service) ApplyTaskIntegration(parentPath string, plan TaskIntegrationPl
 	if strings.Join(current.Commits, "\x00") != strings.Join(plan.Commits, "\x00") {
 		return TaskIntegrationResult{}, errors.New("integration manifest became stale")
 	}
-	for _, commit := range current.Commits {
-		if _, err := runGitWithEnv(parentPath, gitenv.FilterIdentityOverrides(os.Environ()), "cherry-pick", commit); err != nil {
-			rollbackErr := rollbackTaskIntegration(parentPath, current.ParentHead)
-			if rollbackErr != nil {
-				return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("cherry-pick %s failed after preflight: %w; rollback failed: %v", commit, err, rollbackErr)
-			}
-			return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("cherry-pick %s failed after preflight; full batch rolled back: %w", commit, err)
+	cherryPickArgs := append([]string{"cherry-pick"}, current.Commits...)
+	if _, err := runGitWithEnv(parentPath, gitenv.FilterIdentityOverrides(os.Environ()), cherryPickArgs...); err != nil {
+		rollbackErr := rollbackTaskIntegration(parentPath, current.ParentHead)
+		if rollbackErr != nil {
+			return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("selected batch failed after preflight: %w; rollback failed: %v", err, rollbackErr)
 		}
+		return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("selected batch failed after preflight; full batch rolled back: %w", err)
 	}
 	head, err := runGit(parentPath, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
-		if rollbackErr := rollbackTaskIntegration(parentPath, current.ParentHead); rollbackErr != nil {
-			return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("resolve integrated HEAD: %w; rollback failed: %v", err, rollbackErr)
-		}
-		return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("resolve integrated HEAD: %w; full batch rolled back", err)
+		return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("resolve integrated HEAD: %w", err)
 	}
 	return TaskIntegrationResult{TaskIntegrationPlan: current, ResultingParentHead: head}, nil
 }
 
 func rollbackTaskIntegration(parentPath, parentHead string) error {
-	// Abort clears sequencer/conflict state when cherry-pick reached it. It is
-	// harmless when Git failed before creating that state.
-	_, _ = runGit(parentPath, "cherry-pick", "--abort")
-	if _, err := runGit(parentPath, "reset", "--hard", parentHead); err != nil {
-		return fmt.Errorf("restore parent HEAD %s: %w", parentHead, err)
+	// One multi-commit cherry-pick gives Git a single sequencer transaction;
+	// abort restores its original HEAD and index without an unconditional hard
+	// reset that could overwrite independently created parent work.
+	if _, err := runGit(parentPath, "cherry-pick", "--abort"); err != nil {
+		return fmt.Errorf("abort selected batch: %w", err)
+	}
+	state, err := (&Service{}).InspectTaskWorkspace(parentPath)
+	if err != nil {
+		return fmt.Errorf("inspect parent after rollback: %w", err)
+	}
+	if state.HeadCommit != parentHead || !state.Clean {
+		return fmt.Errorf("selected batch abort did not restore clean parent HEAD %s", parentHead)
 	}
 	return nil
+}
+
+func acquireIntegrationLock(parentPath string) (*lock.FileLock, error) {
+	gitDir, err := runGit(parentPath, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository lock directory: %w", err)
+	}
+	gitDir, err = resolveGitPath(parentPath, gitDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository lock path: %w", err)
+	}
+	fileLock, err := lock.Acquire(filepath.Join(gitDir, "swarm-integration.lock"), lock.Metadata{PID: os.Getpid(), StartedAt: time.Now().UnixMilli()})
+	if err != nil {
+		if errors.Is(err, lock.ErrAlreadyRunning) {
+			return nil, errors.New("another Swarm integration owns this repository; retry after it completes")
+		}
+		return nil, fmt.Errorf("acquire repository integration lock: %w", err)
+	}
+	return fileLock, nil
 }
 
 func integrationChildrenFromPlan(plan TaskIntegrationPlan) []TaskIntegrationChild {
@@ -852,6 +884,77 @@ func resolveRepositoryRoot(workspacePath string) (string, error) {
 		return "", errors.New("git repository root is empty")
 	}
 	return root, nil
+}
+
+func (s *Service) VerifyTaskIntegrationWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit string) (TaskWorkspaceState, error) {
+	parentRoot, err := resolveRepositoryRoot(parentPath)
+	if err != nil {
+		return TaskWorkspaceState{}, fmt.Errorf("resolve parent repository: %w", err)
+	}
+	expectedPath, err := deterministicSessionWorktreePath(parentRoot, sessionWorkspaceID(sessionID))
+	if err != nil {
+		return TaskWorkspaceState{}, err
+	}
+	actualPath, err := filepath.EvalSymlinks(strings.TrimSpace(childPath))
+	if err != nil {
+		return TaskWorkspaceState{}, fmt.Errorf("canonicalize child worktree: %w", err)
+	}
+	expectedPath, err = filepath.EvalSymlinks(expectedPath)
+	if err != nil {
+		return TaskWorkspaceState{}, fmt.Errorf("canonicalize managed child worktree: %w", err)
+	}
+	managedRoot, err := worktreeCacheRoot(parentRoot)
+	if err != nil {
+		return TaskWorkspaceState{}, err
+	}
+	managedRoot, err = filepath.EvalSymlinks(managedRoot)
+	if err != nil {
+		return TaskWorkspaceState{}, fmt.Errorf("canonicalize managed worktree root: %w", err)
+	}
+	if !sameCleanPath(actualPath, expectedPath) || !pathWithinRoot(managedRoot, actualPath) {
+		return TaskWorkspaceState{}, errors.New("child worktree is outside its expected private managed path")
+	}
+	childRoot, err := resolveRepositoryRoot(actualPath)
+	if err != nil || !sameCleanPath(childRoot, parentRoot) {
+		return TaskWorkspaceState{}, errors.New("child worktree does not belong to the parent repository")
+	}
+	branchName = strings.TrimSpace(branchName)
+	if _, err := runGit(parentRoot, "check-ref-format", "--branch", branchName); err != nil {
+		return TaskWorkspaceState{}, fmt.Errorf("invalid child branch: %w", err)
+	}
+	if !validCommitID(baseCommit) || !validCommitID(headCommit) {
+		return TaskWorkspaceState{}, errors.New("child lineage requires full hexadecimal commit ids")
+	}
+	for label, commit := range map[string]string{"base": baseCommit, "head": headCommit} {
+		if _, err := runGit(parentRoot, "cat-file", "-e", commit+"^{commit}"); err != nil {
+			return TaskWorkspaceState{}, fmt.Errorf("invalid child %s commit: %w", label, err)
+		}
+	}
+	branchHead, err := runGit(parentRoot, "rev-parse", "--verify", "refs/heads/"+branchName+"^{commit}")
+	if err != nil || branchHead != headCommit {
+		return TaskWorkspaceState{}, errors.New("child branch does not resolve to its immutable recorded HEAD")
+	}
+	state, err := s.InspectTaskWorkspace(actualPath)
+	if err != nil {
+		return TaskWorkspaceState{}, err
+	}
+	if state.BranchName != branchName || state.HeadCommit != headCommit {
+		return TaskWorkspaceState{}, errors.New("child worktree no longer matches its branch and HEAD lineage")
+	}
+	return state, nil
+}
+
+func validCommitID(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func resolveGitPath(basePath, reportedPath string) (string, error) {

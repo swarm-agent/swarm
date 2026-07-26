@@ -37,14 +37,16 @@ func TestManageWorktreeDefinitionKeepsIntegrateInputMinimal(t *testing.T) {
 
 type coderLineageSessionService struct {
 	manageSessionService
-	parent pebblestore.SessionSnapshot
+	parent   pebblestore.SessionSnapshot
+	children map[string]pebblestore.SessionSnapshot
 }
 
 func (s *coderLineageSessionService) GetSession(id string) (pebblestore.SessionSnapshot, bool, error) {
-	if id != s.parent.ID {
-		return pebblestore.SessionSnapshot{}, false, nil
+	if id == s.parent.ID {
+		return s.parent, true, nil
 	}
-	return s.parent, true, nil
+	child, ok := s.children[id]
+	return child, ok, nil
 }
 
 type coderLineageWorktreeService struct {
@@ -66,6 +68,14 @@ func (s *coderLineageWorktreeService) InspectTaskWorkspace(path string) (worktre
 
 func (s *coderLineageWorktreeService) TaskCommitDescendsFrom(_, _, _ string) (bool, error) {
 	return false, nil
+}
+
+func (s *coderLineageWorktreeService) VerifyTaskIntegrationWorkspace(_, childPath, _, branchName, _, headCommit string) (worktreeruntime.TaskWorkspaceState, error) {
+	state, ok := s.states[childPath]
+	if !ok || state.BranchName != branchName || state.HeadCommit != headCommit {
+		return worktreeruntime.TaskWorkspaceState{}, errors.New("invalid test lineage")
+	}
+	return state, nil
 }
 
 func (s *coderLineageWorktreeService) PrepareTaskIntegration(_ string, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error) {
@@ -148,6 +158,22 @@ func TestManageWorktreeIntegrateAppliesSelectedCoderBatchInDurableOrder(t *testi
 	}
 }
 
+func TestManageWorktreeIntegrateRejectsChildWithoutIndependentParentLineage(t *testing.T) {
+	runtime, scope, worktrees, childIDs := newCoderLineageRuntime(t)
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	child := sessions.children[childIDs[0]]
+	child.Metadata["parent_session_id"] = "other-parent"
+	sessions.children[childIDs[0]] = child
+
+	_, err := runtime.manageWorktreeIntegrate(scope, map[string]any{"session_ids": []any{childIDs[0]}})
+	if err == nil || !strings.Contains(err.Error(), "not an owned Coder child") {
+		t.Fatalf("lineage rejection = %v", err)
+	}
+	if worktrees.applyCalls != 0 {
+		t.Fatalf("integration apply unexpectedly ran %d times", worktrees.applyCalls)
+	}
+}
+
 func TestManageWorktreeIntegrateReturnsActionableConflictWithoutApply(t *testing.T) {
 	runtime, scope, worktrees, childIDs := newCoderLineageRuntime(t)
 	worktrees.prepareErr = &worktreeruntime.TaskIntegrationConflictError{Commit: "child-one-head", Detail: "content conflict in AGENTS.md"}
@@ -178,6 +204,7 @@ func newCoderLineageRuntime(t *testing.T) (*Runtime, WorkspaceScope, *coderLinea
 	const parentPath = "/repo"
 	childIDs := []string{"child-one", "child-two"}
 	launches := map[string]any{}
+	children := map[string]pebblestore.SessionSnapshot{}
 	states := map[string]worktreeruntime.TaskWorkspaceState{
 		parentPath: {WorkspacePath: parentPath, BranchName: "dev", HeadCommit: "parent-head", Clean: true},
 	}
@@ -195,10 +222,19 @@ func newCoderLineageRuntime(t *testing.T) (*Runtime, WorkspaceScope, *coderLinea
 			"base_commit": "parent-head", "head_commit": head,
 		}}}
 		states[path] = worktreeruntime.TaskWorkspaceState{WorkspacePath: path, BranchName: branch, HeadCommit: head, Clean: true}
+		children[id] = pebblestore.SessionSnapshot{
+			ID: id, AccountScopeID: "account", UserID: "user", WorkspacePath: path,
+			WorktreeRootPath: path, WorktreeBranch: branch,
+			Metadata: map[string]any{
+				"parent_session_id": parentID,
+				"lineage_kind":      "delegated_subagent",
+				"subagent":          "system-coder",
+			},
+		}
 	}
 	parent := pebblestore.SessionSnapshot{ID: parentID, AccountScopeID: "account", UserID: "user", WorkspacePath: parentPath, Metadata: map[string]any{"task_launches": launches}}
 	worktrees := &coderLineageWorktreeService{states: states}
-	runtime := &Runtime{sessions: &coderLineageSessionService{parent: parent}, worktrees: worktrees}
+	runtime := &Runtime{sessions: &coderLineageSessionService{parent: parent, children: children}, worktrees: worktrees}
 	scope := WorkspaceScope{PrimaryPath: parentPath, Roots: []string{parentPath}, SessionID: parentID, Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: parentID}}
 	return runtime, scope, worktrees, childIDs
 }

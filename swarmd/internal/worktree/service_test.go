@@ -125,6 +125,71 @@ func TestTaskCommitDescendsFromRecordedBase(t *testing.T) {
 	}
 }
 
+func TestVerifyTaskIntegrationWorkspaceRejectsPathOutsideManagedRepository(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "config", "user.email", "test@example.invalid")
+	_, _ = runGit(repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "add", "base.txt")
+	_, _ = runGit(repo, "commit", "-m", "base")
+	base, _ := runGit(repo, "rev-parse", "HEAD")
+
+	const sessionID = "child-security"
+	svc := &Service{}
+	allocation, err := svc.allocateSessionWorkspace(repo, true, "", "agent", sessionID)
+	if err != nil {
+		t.Fatalf("allocate managed child: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(allocation.WorkspacePath, "child.txt"), []byte("child\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(allocation.WorkspacePath, "add", "child.txt")
+	_, _ = runGit(allocation.WorkspacePath, "commit", "-m", "child")
+	head, _ := runGit(allocation.WorkspacePath, "rev-parse", "HEAD")
+
+	if _, err := svc.VerifyTaskIntegrationWorkspace(repo, allocation.WorkspacePath, sessionID, allocation.BranchName, base, head); err != nil {
+		t.Fatalf("verify managed child: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if _, err := runGit(repo, "worktree", "add", "-b", "agent/outside", outside, base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.VerifyTaskIntegrationWorkspace(repo, outside, sessionID, "agent/outside", base, base); err == nil || !strings.Contains(err.Error(), "expected private managed path") {
+		t.Fatalf("outside path rejection = %v", err)
+	}
+}
+
+func TestApplyTaskIntegrationRejectsConcurrentRepositoryOwner(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "config", "user.email", "test@example.invalid")
+	_, _ = runGit(repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "add", "base.txt")
+	_, _ = runGit(repo, "commit", "-m", "base")
+	base, _ := runGit(repo, "rev-parse", "HEAD")
+	owner, err := acquireIntegrationLock(repo)
+	if err != nil {
+		t.Fatalf("acquire fixture integration lock: %v", err)
+	}
+	defer owner.Release()
+
+	_, err = (&Service{}).ApplyTaskIntegration(repo, TaskIntegrationPlan{ParentHead: base, Entries: []TaskIntegrationEntry{{SessionID: "child", BaseCommit: base, HeadCommit: strings.Repeat("a", 40)}}})
+	if err == nil || !strings.Contains(err.Error(), "another Swarm integration owns this repository") {
+		t.Fatalf("concurrent owner rejection = %v", err)
+	}
+}
+
 func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	repo := t.TempDir()
 	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
