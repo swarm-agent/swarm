@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+
 	"swarm/packages/swarmd/internal/identity"
 )
 
@@ -62,9 +62,14 @@ func (s *Server) handleVideoStorageReveal(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, errors.New("video thread store is not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
 	threadID := strings.TrimSpace(r.URL.Query().Get("thread_id"))
 	clipID := strings.TrimSpace(r.URL.Query().Get("clip_id"))
-	thread, ok, err := s.videoThreads.Get(threadID)
+	thread, ok, err := s.videoThreads.GetForAccount(principal.AccountScopeID, threadID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -80,21 +85,24 @@ func (s *Server) handleVideoStorageReveal(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusNotFound, errors.New("video clip not found"))
 			return
 		}
-		revealPath, err = resolveVideoClipFilePath(clip.Path)
+		revealPath, file, openErr := openManagedVideoClip(thread, clip.Path)
+		if openErr != nil {
+			writeError(w, http.StatusBadRequest, openErr)
+			return
+		}
+		file.Close()
+	} else {
+		revealPath, err = managedVideoStoragePath(thread)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-	} else {
-		if storagePath, ok := thread.Metadata["tool_storage_path"].(string); ok && strings.TrimSpace(storagePath) != "" {
-			revealPath = filepath.Clean(strings.TrimSpace(storagePath))
-		} else if len(thread.VideoFolders) > 0 {
-			revealPath = filepath.Clean(strings.TrimSpace(thread.VideoFolders[0]))
-		}
-		if revealPath == "" || revealPath == "." {
-			writeError(w, http.StatusBadRequest, errors.New("video session storage path is not available"))
+		root, openErr := os.OpenRoot(revealPath)
+		if openErr != nil {
+			writeError(w, http.StatusBadRequest, openErr)
 			return
 		}
+		root.Close()
 	}
 	method, err := revealLocalPath(revealPath)
 	if err != nil {

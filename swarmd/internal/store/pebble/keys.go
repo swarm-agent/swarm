@@ -59,7 +59,8 @@ const (
 	KeyAITaskIdempotencyAccountPrefix              = "ai_task/idempotency_by_account/"
 	KeyAITaskAuditAccountPrefix                    = "ai_task/audit_by_account/"
 	KeyAITaskV2QueuePrefix                         = "ai_task/v2_queue/"
-	KeyVideoThreadPrefix                           = "video/thread/"
+	KeyVideoThreadPrefix                           = "video/thread/" // legacy global video thread prefix; retained for explicit migration only.
+	KeyVideoThreadAccountPrefix                    = "video/thread_by_account/"
 	KeyImageThreadPrefix                           = "image/thread/" // legacy global image thread prefix; retained for explicit migration only.
 	KeyImageThreadAccountPrefix                    = "image/thread_by_account/"
 	KeyModelCatalogMeta                            = "model_catalog/meta"
@@ -614,8 +615,20 @@ func KeyVideoThread(threadID string) string {
 	return KeyVideoThreadPrefix + keyPart(threadID)
 }
 
+func KeyVideoThreadForAccount(accountScopeID, threadID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyVideoThreadAccountPrefix, keyPart(accountScopeID), keyPart(threadID))
+}
+
 func VideoThreadPrefix() string {
 	return KeyVideoThreadPrefix
+}
+
+func VideoThreadPrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyVideoThreadAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyVideoThreadAccountPrefix, accountPart)
 }
 
 func KeyImageThread(threadID string) string {

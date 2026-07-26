@@ -20,6 +20,8 @@ type VideoClipSnapshot struct {
 
 type VideoThreadSnapshot struct {
 	ID             string              `json:"id"`
+	UserID         string              `json:"user_id,omitempty"`
+	AccountScopeID string              `json:"account_scope_id,omitempty"`
 	WorkspacePath  string              `json:"workspace_path"`
 	WorkspaceName  string              `json:"workspace_name"`
 	Title          string              `json:"title"`
@@ -40,9 +42,18 @@ func NewVideoThreadStore(store *Store) *VideoThreadStore {
 }
 
 func (s *VideoThreadStore) Create(thread VideoThreadSnapshot) (VideoThreadSnapshot, error) {
+	return s.CreateForAccount(thread.AccountScopeID, thread.UserID, thread)
+}
+
+func (s *VideoThreadStore) CreateForAccount(accountScopeID, userID string, thread VideoThreadSnapshot) (VideoThreadSnapshot, error) {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return VideoThreadSnapshot{}, errors.New("account scope id is required")
+	}
 	if s == nil || s.store == nil {
 		return VideoThreadSnapshot{}, errors.New("video thread store is not configured")
 	}
+	thread.AccountScopeID = strings.TrimSpace(firstNonEmptyString(accountScopeID, thread.AccountScopeID))
+	thread.UserID = strings.TrimSpace(firstNonEmptyString(userID, thread.UserID))
 	thread = normalizeVideoThread(thread)
 	if thread.ID == "" {
 		return VideoThreadSnapshot{}, errors.New("video thread id is required")
@@ -60,13 +71,20 @@ func (s *VideoThreadStore) Create(thread VideoThreadSnapshot) (VideoThreadSnapsh
 	if thread.UpdatedAt == 0 {
 		thread.UpdatedAt = thread.CreatedAt
 	}
-	if err := s.store.PutJSON(KeyVideoThread(thread.ID), thread); err != nil {
+	if err := s.store.PutJSON(videoThreadKey(thread.AccountScopeID, thread.ID), thread); err != nil {
 		return VideoThreadSnapshot{}, err
 	}
 	return thread, nil
 }
 
 func (s *VideoThreadStore) Get(threadID string) (VideoThreadSnapshot, bool, error) {
+	return s.GetForAccount("", threadID)
+}
+
+func (s *VideoThreadStore) GetForAccount(accountScopeID, threadID string) (VideoThreadSnapshot, bool, error) {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return VideoThreadSnapshot{}, false, errors.New("account scope id is required")
+	}
 	if s == nil || s.store == nil {
 		return VideoThreadSnapshot{}, false, errors.New("video thread store is not configured")
 	}
@@ -75,29 +93,48 @@ func (s *VideoThreadStore) Get(threadID string) (VideoThreadSnapshot, bool, erro
 		return VideoThreadSnapshot{}, false, errors.New("video thread id is required")
 	}
 	var thread VideoThreadSnapshot
-	ok, err := s.store.GetJSON(KeyVideoThread(threadID), &thread)
+	ok, err := s.store.GetJSON(videoThreadKey(accountScopeID, threadID), &thread)
 	if err != nil || !ok {
 		return VideoThreadSnapshot{}, ok, err
 	}
-	return normalizeVideoThread(thread), true, nil
+	thread = normalizeVideoThread(thread)
+	if thread.AccountScopeID == "" {
+		thread.AccountScopeID = strings.TrimSpace(accountScopeID)
+	}
+	return thread, true, nil
 }
 
 func (s *VideoThreadStore) Update(thread VideoThreadSnapshot) (VideoThreadSnapshot, error) {
+	return s.UpdateForAccount(thread.AccountScopeID, thread)
+}
+
+func (s *VideoThreadStore) UpdateForAccount(accountScopeID string, thread VideoThreadSnapshot) (VideoThreadSnapshot, error) {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return VideoThreadSnapshot{}, errors.New("account scope id is required")
+	}
 	if s == nil || s.store == nil {
 		return VideoThreadSnapshot{}, errors.New("video thread store is not configured")
 	}
+	thread.AccountScopeID = strings.TrimSpace(firstNonEmptyString(accountScopeID, thread.AccountScopeID))
 	thread = normalizeVideoThread(thread)
 	if thread.ID == "" {
 		return VideoThreadSnapshot{}, errors.New("video thread id is required")
 	}
 	thread.UpdatedAt = time.Now().UnixMilli()
-	if err := s.store.PutJSON(KeyVideoThread(thread.ID), thread); err != nil {
+	if err := s.store.PutJSON(videoThreadKey(thread.AccountScopeID, thread.ID), thread); err != nil {
 		return VideoThreadSnapshot{}, err
 	}
 	return thread, nil
 }
 
 func (s *VideoThreadStore) ListForWorkspace(workspacePath string, limit int) ([]VideoThreadSnapshot, error) {
+	return s.ListForWorkspaceForAccount("", workspacePath, limit)
+}
+
+func (s *VideoThreadStore) ListForWorkspaceForAccount(accountScopeID, workspacePath string, limit int) ([]VideoThreadSnapshot, error) {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return nil, errors.New("account scope id is required")
+	}
 	if s == nil || s.store == nil {
 		return nil, errors.New("video thread store is not configured")
 	}
@@ -110,12 +147,16 @@ func (s *VideoThreadStore) ListForWorkspace(workspacePath string, limit int) ([]
 	}
 	const iterateAll = int(^uint(0) >> 1)
 	threads := make([]VideoThreadSnapshot, 0)
-	err := s.store.IteratePrefix(VideoThreadPrefix(), iterateAll, func(_ string, value []byte) error {
+	prefix := videoThreadPrefix(accountScopeID)
+	err := s.store.IteratePrefix(prefix, iterateAll, func(_ string, value []byte) error {
 		var thread VideoThreadSnapshot
 		if err := json.Unmarshal(value, &thread); err != nil {
 			return fmt.Errorf("unmarshal video thread: %w", err)
 		}
 		thread = normalizeVideoThread(thread)
+		if thread.AccountScopeID == "" {
+			thread.AccountScopeID = strings.TrimSpace(accountScopeID)
+		}
 		if thread.WorkspacePath == workspacePath {
 			threads = append(threads, thread)
 		}
@@ -138,6 +179,8 @@ func (s *VideoThreadStore) ListForWorkspace(workspacePath string, limit int) ([]
 
 func normalizeVideoThread(thread VideoThreadSnapshot) VideoThreadSnapshot {
 	thread.ID = strings.TrimSpace(thread.ID)
+	thread.UserID = strings.TrimSpace(thread.UserID)
+	thread.AccountScopeID = strings.TrimSpace(thread.AccountScopeID)
 	thread.WorkspacePath = strings.TrimSpace(thread.WorkspacePath)
 	thread.WorkspaceName = strings.TrimSpace(thread.WorkspaceName)
 	thread.Title = strings.TrimSpace(thread.Title)
@@ -159,6 +202,20 @@ func normalizeVideoThread(thread VideoThreadSnapshot) VideoThreadSnapshot {
 	}
 	thread.VideoClips = clips
 	return thread
+}
+
+func videoThreadKey(accountScopeID, threadID string) string {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return KeyVideoThread(threadID)
+	}
+	return KeyVideoThreadForAccount(accountScopeID, threadID)
+}
+
+func videoThreadPrefix(accountScopeID string) string {
+	if strings.TrimSpace(accountScopeID) == "" {
+		return VideoThreadPrefix()
+	}
+	return VideoThreadPrefixForAccount(accountScopeID)
 }
 
 func normalizeStringSlice(values []string) []string {

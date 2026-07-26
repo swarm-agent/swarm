@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"swarm/packages/swarmd/internal/identity"
 )
 
 var acceptedVideoExtensions = map[string]struct{}{
@@ -60,7 +62,7 @@ func scanAcceptedVideoClips(folderPath string) (string, []videoScanClip, error) 
 	}
 	clips := make([]videoScanClip, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() {
 			continue
 		}
 		name := strings.TrimSpace(entry.Name())
@@ -101,6 +103,11 @@ func (s *Server) handleWorkspaceVideoScan(w http.ResponseWriter, r *http.Request
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
 	var req struct {
 		WorkspacePath string `json:"workspace_path"`
 		FolderPath    string `json:"folder_path"`
@@ -109,14 +116,24 @@ func (s *Server) handleWorkspaceVideoScan(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resolvedFolderPath, clips, err := scanAcceptedVideoClips(req.FolderPath)
+	ownedWorkspace, err := s.resolveAccountOwnedPath(principal, req.WorkspacePath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	ownedFolder, err := s.resolveAccountOwnedPath(principal, req.FolderPath)
+	if err != nil || ownedFolder.WorkspacePath != ownedWorkspace.WorkspacePath {
+		writeError(w, http.StatusBadRequest, errors.New("folder path must belong to the requested account workspace"))
+		return
+	}
+	resolvedFolderPath, clips, err := scanAcceptedVideoClips(ownedFolder.ResolvedPath)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":             true,
-		"workspace_path": strings.TrimSpace(req.WorkspacePath),
+		"workspace_path": ownedWorkspace.WorkspacePath,
 		"folder_path":    resolvedFolderPath,
 		"clips":          clips,
 	})
