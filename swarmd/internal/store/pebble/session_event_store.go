@@ -2498,6 +2498,12 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 	if input.SessionID == "" {
 		return errors.New("session id is required")
 	}
+	if input.UserID == "" {
+		return errors.New("user id is required")
+	}
+	if input.AccountScopeID == "" {
+		return errors.New("account scope id is required")
+	}
 	if input.ClientRequestID == "" {
 		return errors.New("client request id is required")
 	}
@@ -2512,6 +2518,57 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 	}
 	if len(input.EventPayload) > 0 && !json.Valid(input.EventPayload) {
 		return errors.New("event payload must be valid json")
+	}
+	if input.Session != nil {
+		if err := validateV3MutationEmbeddedOwnership(input, "session", input.Session.ID, input.Session.UserID, input.Session.AccountScopeID); err != nil {
+			return err
+		}
+	}
+	if input.Message != nil {
+		if err := validateV3MutationEmbeddedOwnership(input, "message", input.Message.SessionID, input.Message.UserID, input.Message.AccountScopeID); err != nil {
+			return err
+		}
+	}
+	if input.Lifecycle != nil {
+		if err := validateV3MutationEmbeddedOwnership(input, "lifecycle", input.Lifecycle.SessionID, input.Lifecycle.UserID, input.Lifecycle.AccountScopeID); err != nil {
+			return err
+		}
+	}
+	if input.RunIntent != nil {
+		if err := validateV3MutationEmbeddedOwnership(input, "run intent", input.RunIntent.SessionID, input.RunIntent.UserID, input.RunIntent.AccountScopeID); err != nil {
+			return err
+		}
+	}
+	if acceptance := input.PlanAcceptance; acceptance != nil {
+		if err := validateV3MutationEmbeddedOwnership(input, "plan", acceptance.Plan.SessionID, acceptance.Plan.UserID, acceptance.Plan.AccountScopeID); err != nil {
+			return err
+		}
+		if err := validateV3MutationEmbeddedOwnership(input, "plan acceptance session", acceptance.Session.ID, acceptance.Session.UserID, acceptance.Session.AccountScopeID); err != nil {
+			return err
+		}
+		if acceptance.ArchivedRevision != nil {
+			if err := validateV3MutationEmbeddedOwnership(input, "plan archived revision", acceptance.ArchivedRevision.SessionID, acceptance.ArchivedRevision.UserID, acceptance.ArchivedRevision.AccountScopeID); err != nil {
+				return err
+			}
+		}
+		if acceptance.ModeMessage != nil {
+			if err := validateV3MutationEmbeddedOwnership(input, "plan acceptance mode message", acceptance.ModeMessage.SessionID, acceptance.ModeMessage.UserID, acceptance.ModeMessage.AccountScopeID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateV3MutationEmbeddedOwnership(input V3SessionMutationInput, label, sessionID, userID, accountScopeID string) error {
+	if sessionID = strings.TrimSpace(sessionID); sessionID != "" && sessionID != input.SessionID {
+		return fmt.Errorf("%s session id does not match mutation session", label)
+	}
+	if userID = strings.TrimSpace(userID); userID != "" && userID != input.UserID {
+		return fmt.Errorf("%s user id does not match mutation ownership", label)
+	}
+	if accountScopeID = strings.TrimSpace(accountScopeID); accountScopeID != "" && accountScopeID != input.AccountScopeID {
+		return fmt.Errorf("%s account scope id does not match mutation ownership", label)
 	}
 	return nil
 }
