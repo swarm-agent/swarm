@@ -121,6 +121,9 @@ type Page struct {
 	permissionPrefix             string
 	permissionPrefixID           string
 	permissionPrefixLoading      bool
+	permissionContentScroll      int
+	permissionContentMaxScroll   int
+	permissionContentID          string
 	permissionPlanReview         bool
 	permissionPlanReviewID       string
 	permissionInteractionID      string
@@ -1063,12 +1066,14 @@ func (p *Page) ensurePermissionPrefixLocked() {
 	permissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
 	if len(permissions) == 0 {
 		p.permissionPrefix, p.permissionPrefixID, p.permissionPrefixLoading = "", "", false
+		p.permissionContentScroll, p.permissionContentMaxScroll, p.permissionContentID = 0, 0, ""
 		p.permissionPlanReview, p.permissionPlanReviewID = false, ""
 		return
 	}
 	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
 	permission := permissions[p.permissionIndex]
 	p.syncPermissionInteractionLocked(permission)
+	p.syncPermissionContentLocked(permission)
 	if intent, ok := parsePlanPermissionIntent(permission); ok && p.permissionPlanReviewID != permission.ID {
 		p.permissionPlanReviewID = permission.ID
 		p.permissionPlanReview = !intent.ContinueAutomatically || strings.EqualFold(intent.ContinuationPolicy, "review_each_checkpoint")
@@ -1100,6 +1105,16 @@ func (p *Page) ensurePermissionPrefixLocked() {
 	}(permission)
 }
 
+func (p *Page) syncPermissionContentLocked(permission client.PermissionRecord) {
+	if p.permissionContentID == permission.ID {
+		p.permissionContentScroll = minInt(maxInt(0, p.permissionContentScroll), p.permissionContentMaxScroll)
+		return
+	}
+	p.permissionContentID = permission.ID
+	p.permissionContentScroll = 0
+	p.permissionContentMaxScroll = 0
+}
+
 func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 	permissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
 	if len(permissions) == 0 {
@@ -1108,6 +1123,7 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
 	permission := permissions[p.permissionIndex]
 	p.syncPermissionInteractionLocked(permission)
+	p.syncPermissionContentLocked(permission)
 	if isAskUserPermission(permission) {
 		return p.handleAskUserPermissionKeyLocked(permission, ev)
 	}
@@ -1138,14 +1154,26 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 			p.ensurePermissionPrefixLocked()
 		}
 	case tcell.KeyPgUp:
-		p.scroll += 8
-		p.follow = false
+		if isBashPermissionRequest(permission) && p.permissionContentMaxScroll > 0 {
+			p.permissionContentScroll = maxInt(0, p.permissionContentScroll-6)
+		} else {
+			p.scroll += 8
+			p.follow = false
+		}
 	case tcell.KeyPgDn:
-		p.scroll = maxInt(0, p.scroll-8)
-		p.follow = p.scroll == 0
+		if isBashPermissionRequest(permission) && p.permissionContentMaxScroll > 0 {
+			p.permissionContentScroll = minInt(p.permissionContentMaxScroll, p.permissionContentScroll+6)
+		} else {
+			p.scroll = maxInt(0, p.scroll-8)
+			p.follow = p.scroll == 0
+		}
 	case tcell.KeyHome:
-		p.scroll = 1 << 30
-		p.follow = false
+		if isBashPermissionRequest(permission) && p.permissionContentMaxScroll > 0 {
+			p.permissionContentScroll = 0
+		} else {
+			p.scroll = 1 << 30
+			p.follow = false
+		}
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if hidePermissionNote {
 			if planPermission && p.cursor > 0 {
@@ -1303,13 +1331,23 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 				p.resolvePermissionLocked(permissions[p.permissionIndex], "deny_always")
 			}
 		}
+		permission := permissions[p.permissionIndex]
+		p.syncPermissionContentLocked(permission)
 		if buttons&tcell.WheelUp != 0 {
-			p.scroll += 3
-			p.follow = false
+			if isBashPermissionRequest(permission) && p.permissionContentMaxScroll > 0 {
+				p.permissionContentScroll = maxInt(0, p.permissionContentScroll-3)
+			} else {
+				p.scroll += 3
+				p.follow = false
+			}
 		}
 		if buttons&tcell.WheelDown != 0 {
-			p.scroll = maxInt(0, p.scroll-3)
-			p.follow = p.scroll == 0
+			if isBashPermissionRequest(permission) && p.permissionContentMaxScroll > 0 {
+				p.permissionContentScroll = minInt(p.permissionContentMaxScroll, p.permissionContentScroll+3)
+			} else {
+				p.scroll = maxInt(0, p.scroll-3)
+				p.follow = p.scroll == 0
+			}
 		}
 		return
 	}
@@ -1455,7 +1493,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if transcriptHeight < 1 {
 		transcriptHeight = 1
 	}
-	rows := p.renderRows(state, maxInt(1, width-4), styles)
+	rows := p.renderRowsForHeight(state, maxInt(1, width-4), transcriptHeight, styles)
 	start := len(rows) - transcriptHeight - scroll
 	if start < 0 {
 		start = 0
@@ -2211,6 +2249,10 @@ type timelineRenderItem struct {
 }
 
 func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow {
+	return p.renderRowsForHeight(state, width, 0, styles)
+}
+
+func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styles PageStyles) []renderRow {
 	permissions := SelectPermissions(state)
 	items := make([]timelineRenderItem, 0, len(state.Messages)+len(state.Tools)+len(state.Live)+len(state.Reasoning)+len(permissions))
 	for _, message := range SelectMessages(state) {
@@ -2261,6 +2303,7 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 	permissionIndex := p.permissionIndex
 	permissionNote := append([]rune(nil), p.permissionInput...)
 	permissionBusy, permissionError, permissionPrefix := p.permissionBusy, p.permissionError, p.permissionPrefix
+	permissionContentScroll, permissionContentID := p.permissionContentScroll, p.permissionContentID
 	permissionPlanReview, permissionPlanReviewID := p.permissionPlanReview, p.permissionPlanReviewID
 	var permissionInteraction *permissionInteractionView
 	if len(pendingPermissions) > 0 {
@@ -2276,6 +2319,7 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 	}
 
 	rows := make([]renderRow, 0, len(items)*3+len(state.Pending)*2)
+	boundedPermissionID, boundedPermissionMaxScroll := "", 0
 	for _, item := range items {
 		switch item.kind {
 		case "permission":
@@ -2295,6 +2339,14 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 					interaction = &permissionInteractionView{PermissionID: record.ID}
 				}
 				rows = append(rows, specializedPermissionCardRows(record, len(pendingPermissions), width, styles, selected, permissionBusy, permissionError, interaction)...)
+			} else if selected && isBashPermissionRequest(record) && availableHeight > 0 {
+				contentScroll := 0
+				if permissionContentID == record.ID {
+					contentScroll = permissionContentScroll
+				}
+				cardRows, maxScroll := inlinePermissionCardRowsBounded(record, len(pendingPermissions), width, styles, prefix, selected, permissionNote, permissionBusy, permissionError, availableHeight, contentScroll)
+				rows = append(rows, cardRows...)
+				boundedPermissionID, boundedPermissionMaxScroll = record.ID, maxScroll
 			} else {
 				rows = append(rows, inlinePermissionCardRowsWithPlanReview(record, len(pendingPermissions), width, styles, prefix, selected, permissionNote, permissionBusy, permissionError, manualReview)...)
 			}
@@ -2327,6 +2379,16 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 	for _, message := range pending {
 		rows = append(rows, p.renderUserRows("pending:"+message.ID, message.Content, width, styles)...)
 	}
+	p.mu.Lock()
+	if boundedPermissionID != "" && (p.permissionContentID == "" || p.permissionContentID == boundedPermissionID) {
+		p.permissionContentID = boundedPermissionID
+		p.permissionContentMaxScroll = boundedPermissionMaxScroll
+		p.permissionContentScroll = minInt(maxInt(0, p.permissionContentScroll), boundedPermissionMaxScroll)
+	} else if boundedPermissionID == "" {
+		p.permissionContentMaxScroll = 0
+		p.permissionContentScroll = 0
+	}
+	p.mu.Unlock()
 	return rows
 }
 

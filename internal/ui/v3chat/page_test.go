@@ -1000,6 +1000,70 @@ func TestBashPermissionCardUsesBackendRulePreviewLikeDesktop(t *testing.T) {
 	}
 }
 
+func TestBashPermissionCardFromToolMetadataUsesBoundedScrollableContent(t *testing.T) {
+	explanations := make([]string, 0, 18)
+	for index := 0; index < 18; index++ {
+		explanations = append(explanations, fmt.Sprintf("Permission detail %02d with enough text to remain visible after wrapping.", index+1))
+	}
+	arguments, err := json.Marshal(map[string]any{
+		"command":     "printf 'bounded bash permission card'",
+		"explanation": explanations,
+		"category":    "read",
+		"critical":    false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	permission := client.PermissionRecord{
+		ID: "permission-bash-bounded", SessionID: "session-bash", ToolName: "functions.bash", Mode: "auto", Status: "pending",
+		ToolArguments: string(arguments),
+	}
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session: client.SessionSummary{ID: "session-bash"}, PendingPermissions: []client.PermissionRecord{permission},
+	}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+
+	const availableHeight = 18
+	rows := page.renderRowsForHeight(store.Snapshot(), 88, availableHeight, testPageStyles())
+	if len(rows) != availableHeight {
+		t.Fatalf("bounded Bash permission card rows = %d, want %d", len(rows), availableHeight)
+	}
+	drawn := renderRowsText(rows)
+	for _, want := range []string{"Bash permission", "DETAILS 1-", "Enter Approve", "Esc Deny"} {
+		if !strings.Contains(drawn, want) {
+			t.Fatalf("bounded Bash permission card missing %q:\n%s", want, drawn)
+		}
+	}
+	page.mu.Lock()
+	maxScroll := page.permissionContentMaxScroll
+	page.mu.Unlock()
+	if maxScroll <= 0 {
+		t.Fatal("overflowing Bash permission details did not enable internal scrolling")
+	}
+
+	page.HandleKey(tcell.NewEventKey(tcell.KeyPgDn, 0, tcell.ModNone))
+	page.mu.Lock()
+	scroll := page.permissionContentScroll
+	page.mu.Unlock()
+	if scroll <= 0 {
+		t.Fatal("PageDown did not scroll inside the Bash permission card")
+	}
+	rows = page.renderRowsForHeight(store.Snapshot(), 88, availableHeight, testPageStyles())
+	if len(rows) != availableHeight || !strings.Contains(renderRowsText(rows), fmt.Sprintf("DETAILS %d-", scroll+1)) {
+		t.Fatalf("scrolled Bash permission card changed height or omitted scroll position:\n%s", renderRowsText(rows))
+	}
+
+	page.mu.Lock()
+	page.permissionContentScroll = page.permissionContentMaxScroll
+	page.mu.Unlock()
+	rows = page.renderRowsForHeight(store.Snapshot(), 88, availableHeight, testPageStyles())
+	drawn = renderRowsText(rows)
+	if len(rows) != availableHeight || !strings.Contains(drawn, "COMMAND") || !strings.Contains(drawn, "printf 'bounded bash permission card'") {
+		t.Fatalf("Bash command was not reachable inside the fixed-height card:\n%s", drawn)
+	}
+}
+
 func TestBashPermissionCardApproveUsesCanonicalV3PermissionAPI(t *testing.T) {
 	permission := client.PermissionRecord{
 		ID: "permission-bash", SessionID: "session-bash", ToolName: "bash", Status: "pending",

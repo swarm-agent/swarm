@@ -38,8 +38,12 @@ func normalizePermissionToolName(value string) string {
 	return strings.ReplaceAll(value, "-", "_")
 }
 
+func isBashPermissionRequest(record client.PermissionRecord) bool {
+	return normalizePermissionToolName(record.ToolName) == "bash"
+}
+
 func parseBashPermissionIntent(record client.PermissionRecord) (bashPermissionIntent, bool) {
-	if normalizePermissionToolName(record.ToolName) != "bash" {
+	if !isBashPermissionRequest(record) {
 		return bashPermissionIntent{}, false
 	}
 	var payload map[string]any
@@ -552,6 +556,25 @@ func inlinePermissionCardRows(record client.PermissionRecord, pendingCount, widt
 	return inlinePermissionCardRowsWithPlanReview(record, pendingCount, width, styles, prefixPreview, selected, note, busy, errorText, nil)
 }
 
+func inlinePermissionCardRowsBounded(record client.PermissionRecord, pendingCount, width int, styles PageStyles, prefixPreview string, selected bool, note []rune, busy bool, errorText string, maxRows, contentScroll int) ([]renderRow, int) {
+	actions := []permissionCardAction{
+		{Label: "Enter Approve", Action: "allow_once", Tone: styles.Success},
+		{Label: "Esc Deny", Action: "deny_once", Tone: styles.Error},
+		{Label: "Ctrl+A Always Allow", Action: "allow_always", Tone: styles.Accent},
+		{Label: "Ctrl+D Always Deny", Action: "deny_always", Tone: styles.Warning},
+	}
+	view := permissionCardView{
+		Model:     permissionCardModelForRecord(record, pendingCount, maxInt(1, width-4), styles, prefixPreview),
+		Selected:  selected,
+		Pending:   permissionPending(record),
+		Note:      string(note),
+		Busy:      busy,
+		ErrorText: errorText,
+		Actions:   actions,
+	}
+	return permissionCardRowsBounded(view, width, styles, minInt(22, maxRows), contentScroll)
+}
+
 func inlinePermissionCardRowsWithPlanReview(record client.PermissionRecord, pendingCount, width int, styles PageStyles, prefixPreview string, selected bool, note []rune, busy bool, errorText string, manualReview *bool) []renderRow {
 	intent, planPermission := parsePlanPermissionIntent(record)
 	if planPermission && manualReview != nil {
@@ -590,6 +613,30 @@ func inlinePermissionCardRowsWithPlanReview(record client.PermissionRecord, pend
 		Actions:   actions,
 	}
 	return permissionCardRows(view, width, styles)
+}
+
+func permissionCardRowsBounded(view permissionCardView, width int, styles PageStyles, maxRows, contentScroll int) ([]renderRow, int) {
+	fullContent := append([]permissionCardLine(nil), view.Model.Content...)
+	view.Model.Content = nil
+	fixedRows := len(permissionCardRows(view, width, styles))
+	contentRows := maxInt(0, maxRows-fixedRows)
+	if contentRows == 0 || len(fullContent) <= contentRows {
+		view.Model.Content = fullContent
+		return permissionCardRows(view, width, styles), 0
+	}
+
+	// Keep one content row fixed as the internal-scroll affordance. The card's
+	// header and decision controls stay in place while only command/details move.
+	visibleRows := maxInt(1, contentRows-1)
+	maxScroll := maxInt(0, len(fullContent)-visibleRows)
+	contentScroll = minInt(maxInt(0, contentScroll), maxScroll)
+	end := minInt(len(fullContent), contentScroll+visibleRows)
+	view.Model.Content = append(view.Model.Content, permissionCardLine{
+		Text:  fmt.Sprintf("DETAILS %d-%d/%d  ·  PgUp/PgDn or wheel scroll", contentScroll+1, end, len(fullContent)),
+		Style: styles.Muted,
+	})
+	view.Model.Content = append(view.Model.Content, fullContent[contentScroll:end]...)
+	return permissionCardRows(view, width, styles), maxScroll
 }
 
 // permissionCardRows is the shared themed permission-card renderer. Tool
