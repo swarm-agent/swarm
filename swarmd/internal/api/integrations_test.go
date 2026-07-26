@@ -46,6 +46,37 @@ func TestIntegrationsAPIDraftCRUDRedactsCredentialRefs(t *testing.T) {
 	}
 }
 
+func TestIntegrationsAPIRejectsRawAdapterSecretsWithoutEchoingThem(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "integrations-api-secrets.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("event log: %v", err)
+	}
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, stream.NewHub(events))
+	server.SetIntegrationService(integrationruntime.NewService(pebblestore.NewIntegrationStore(store)))
+
+	const rawSecret = "Bearer should-not-be-returned"
+	payload := map[string]any{"action": "create", "resource": "adapter", "pack_id": "Demo", "version_id": "Draft", "id": "Hosted", "content": map[string]any{"type": "hosted_api", "settings": map[string]any{"authorization": rawSecret}}}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/integrations", bytes.NewReader(raw))
+	req.Header.Set("content-type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), rawSecret) {
+		t.Fatalf("error echoed raw secret: %s", rec.Body.String())
+	}
+}
+
 func postIntegration(t *testing.T, server *Server, payload map[string]any) {
 	t.Helper()
 	raw, err := json.Marshal(payload)

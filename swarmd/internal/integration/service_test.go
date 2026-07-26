@@ -9,6 +9,64 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestServiceRejectsSecretBearingAdapterCreateAndUpdate(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "integrations-secrets.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	svc := NewService(pebblestore.NewIntegrationStore(store))
+
+	for _, req := range []Request{
+		{Action: "create", Resource: ResourceAdapter, PackID: "Demo", VersionID: "Draft", ID: "Key", Content: map[string]any{"type": "hosted_api", "settings": map[string]any{"api_key": "not-even-a-real-key"}}},
+		{Action: "create", Resource: ResourceAdapter, PackID: "Demo", VersionID: "Draft", ID: "Token", Content: map[string]any{"type": "hosted_api", "settings": map[string]any{"header": "Bearer raw-token-value"}}},
+		{Action: "update", Resource: ResourceAdapter, PackID: "Demo", VersionID: "Draft", ID: "PrivateKey", Content: map[string]any{"type": "hosted_api", "settings": map[string]any{"tls_material": "-----BEGIN PRIVATE KEY-----\nraw\n-----END PRIVATE KEY-----"}}},
+		{Action: "update", Resource: ResourceAdapter, PackID: "Demo", VersionID: "Draft", ID: "Credential", Content: map[string]any{"type": "hosted_api", "credential_refs": map[string]any{"token": "sk-12345678901234567890"}}},
+	} {
+		if _, err := svc.Handle(req); err == nil || !strings.Contains(err.Error(), "raw secret") && !strings.Contains(err.Error(), "credential reference") {
+			t.Fatalf("%s %s error = %v", req.Action, req.ID, err)
+		}
+	}
+}
+
+func TestServiceAllowsAdapterConfigurationAndNamedCredentialRefs(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "integrations-config.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	svc := NewService(pebblestore.NewIntegrationStore(store))
+
+	response, err := svc.Handle(Request{Action: "create", Resource: ResourceAdapter, PackID: "Demo", VersionID: "Draft", ID: "Hosted", Content: map[string]any{
+		"type": "hosted_api", "settings": map[string]any{"base_url": "https://api.example.test", "timeout": "30s"}, "credential_refs": map[string]any{"oauth": "provider_oauth"},
+	}})
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+	item := response["item"].(map[string]any)
+	if item["settings"].(map[string]string)["timeout"] != "30s" {
+		t.Fatalf("settings = %#v", item["settings"])
+	}
+	if _, ok := item["credential_refs"]; ok {
+		t.Fatalf("adapter leaked credential refs: %#v", item)
+	}
+	if keys := item["credential_ref_keys"].([]string); len(keys) != 1 || keys[0] != "oauth" {
+		t.Fatalf("credential ref keys = %#v", keys)
+	}
+}
+
+func TestAdapterMapRedactsLegacySecretSettings(t *testing.T) {
+	item := adapterMap(pebblestore.IntegrationAdapterRecord{Settings: map[string]string{
+		"base_url": "https://api.example.test",
+		"token":    "legacy-raw-value",
+		"header":   "Bearer legacy-raw-value",
+	}})
+	settings := item["settings"].(map[string]string)
+	if len(settings) != 1 || settings["base_url"] == "" {
+		t.Fatalf("safe settings = %#v", settings)
+	}
+}
+
 func TestServiceInspectAndDraftCRUDRedactsCredentialRefs(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "integrations.pebble"))
 	if err != nil {

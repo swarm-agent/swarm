@@ -289,6 +289,9 @@ func (s *Service) Upsert(action string, req Request) (map[string]any, error) {
 		return itemResponse(action, resource, toolMap(record)), nil
 	case ResourceAdapter:
 		record := adapterFromContent(content)
+		if err := validateAdapterSecrets(record); err != nil {
+			return nil, err
+		}
 		record.AccountScopeID = strings.TrimSpace(req.AccountScopeID)
 		record, err := s.store.PutAdapter(record)
 		if err != nil {
@@ -510,7 +513,7 @@ func toolMap(record pebblestore.IntegrationToolRecord) map[string]any {
 }
 func adapterMap(record pebblestore.IntegrationAdapterRecord) map[string]any {
 	keys := sortedKeys(record.CredentialRefs)
-	return map[string]any{"account_scope_id": record.AccountScopeID, "pack_id": record.PackID, "version_id": record.VersionID, "adapter_id": record.AdapterID, "type": record.Type, "display_name": record.DisplayName, "settings": record.Settings, "credential_ref_keys": keys, "credential_ref_count": len(keys), "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
+	return map[string]any{"account_scope_id": record.AccountScopeID, "pack_id": record.PackID, "version_id": record.VersionID, "adapter_id": record.AdapterID, "type": record.Type, "display_name": record.DisplayName, "settings": safeAdapterSettings(record.Settings), "credential_ref_keys": keys, "credential_ref_count": len(keys), "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
 }
 func promptMap(record pebblestore.IntegrationPromptFragmentRecord) map[string]any {
 	return map[string]any{"account_scope_id": record.AccountScopeID, "pack_id": record.PackID, "version_id": record.VersionID, "prompt_id": record.PromptID, "title": record.Title, "content": record.Content, "metadata": record.Metadata, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
@@ -563,6 +566,68 @@ func toolFromContent(content map[string]any) pebblestore.IntegrationToolRecord {
 }
 func adapterFromContent(content map[string]any) pebblestore.IntegrationAdapterRecord {
 	return pebblestore.IntegrationAdapterRecord{PackID: stringField(content, "pack_id"), VersionID: stringField(content, "version_id"), AdapterID: stringField(content, "adapter_id"), Type: stringField(content, "type"), DisplayName: stringField(content, "display_name"), Settings: stringMapField(content, "settings"), CredentialRefs: stringMapField(content, "credential_refs"), Metadata: stringMapField(content, "metadata")}
+}
+
+func validateAdapterSecrets(record pebblestore.IntegrationAdapterRecord) error {
+	for key, value := range record.Settings {
+		if isSecretSettingKey(key) {
+			return fmt.Errorf("adapter setting %q must use a named credential reference", key)
+		}
+		if isUnmistakableSecretValue(value) {
+			return fmt.Errorf("adapter setting %q contains a raw secret; use a named credential reference", key)
+		}
+	}
+	for key, value := range record.CredentialRefs {
+		if isUnmistakableSecretValue(value) {
+			return fmt.Errorf("adapter credential reference %q contains a raw secret", key)
+		}
+	}
+	return nil
+}
+
+func isSecretSettingKey(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	replacer := strings.NewReplacer("-", "_", ".", "_", " ", "_")
+	normalized = replacer.Replace(normalized)
+	for strings.Contains(normalized, "__") {
+		normalized = strings.ReplaceAll(normalized, "__", "_")
+	}
+	secretKeys := map[string]struct{}{
+		"api_key": {}, "apikey": {}, "secret": {}, "client_secret": {},
+		"password": {}, "passwd": {}, "private_key": {}, "privatekey": {},
+		"access_token": {}, "auth_token": {}, "bearer_token": {}, "refresh_token": {},
+		"authorization": {}, "token": {}, "oauth_token": {}, "signing_key": {},
+	}
+	_, secret := secretKeys[normalized]
+	return secret
+}
+
+func safeAdapterSettings(settings map[string]string) map[string]string {
+	safe := make(map[string]string, len(settings))
+	for key, value := range settings {
+		if !isSecretSettingKey(key) && !isUnmistakableSecretValue(value) {
+			safe[key] = value
+		}
+	}
+	return safe
+}
+
+func isUnmistakableSecretValue(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(trimmed, "-----BEGIN ") && strings.Contains(trimmed, "PRIVATE KEY-----") {
+		return true
+	}
+	if strings.HasPrefix(lower, "bearer ") || strings.HasPrefix(lower, "basic ") {
+		return true
+	}
+	for _, prefix := range []string{"sk-", "ghp_", "gho_", "ghu_", "ghs_", "github_pat_", "xoxb-", "xoxp-", "xoxa-", "xoxr-"} {
+		if strings.HasPrefix(lower, prefix) && len(trimmed) > len(prefix)+8 {
+			return true
+		}
+	}
+	parts := strings.Split(trimmed, ".")
+	return len(parts) == 3 && strings.HasPrefix(parts[0], "eyJ") && len(parts[1]) >= 8 && len(parts[2]) >= 8
 }
 func promptFromContent(content map[string]any) pebblestore.IntegrationPromptFragmentRecord {
 	return pebblestore.IntegrationPromptFragmentRecord{PackID: stringField(content, "pack_id"), VersionID: stringField(content, "version_id"), PromptID: stringField(content, "prompt_id"), Title: stringField(content, "title"), Content: stringField(content, "content"), Metadata: stringMapField(content, "metadata")}
