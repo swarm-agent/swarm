@@ -38,13 +38,9 @@ func TestComposeRulesPromptBlockFramesAndBoundsWorkspaceInstructions(t *testing.
 	}
 }
 
-func TestReadPromptSnippetPreservesSmallWorkspaceInstruction(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "AGENTS.md")
+func TestPromptSnippetFromContentPreservesSmallWorkspaceInstruction(t *testing.T) {
 	const content = "Keep the canonical workflow."
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write instruction: %v", err)
-	}
-	if got := readPromptSnippet(path); got != content {
-		t.Fatalf("readPromptSnippet() = %q, want %q", got, content)
+	if got := promptSnippetFromContent([]byte(content)); got != content {
+		t.Fatalf("promptSnippetFromContent() = %q, want %q", got, content)
 	}
 }

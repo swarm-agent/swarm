@@ -2,8 +2,6 @@ package run
 
 import (
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -481,7 +479,7 @@ func composeRulesPromptBlock(rules []discovery.RuleSource) string {
 			name = filepath.Base(path)
 		}
 		entry := "\n- " + name + ": " + path
-		if snippet := readPromptSnippet(path); snippet != "" {
+		if snippet := promptSnippetFromContent(rule.Content); snippet != "" {
 			entry += "\n" + snippet
 		}
 		remaining := maxRulePromptAggregateBytes - block.Len()
@@ -497,18 +495,12 @@ func composeRulesPromptBlock(rules []discovery.RuleSource) string {
 	return strings.TrimSpace(block.String())
 }
 
-func readPromptSnippet(path string) string {
-	if strings.TrimSpace(path) == "" {
+func promptSnippetFromContent(raw []byte) string {
+	if len(raw) == 0 {
 		return ""
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer file.Close()
-	raw, err := io.ReadAll(io.LimitReader(file, maxRulePromptSourceBytes+1))
-	if err != nil {
-		return ""
+	if len(raw) > maxRulePromptSourceBytes+1 {
+		raw = raw[:maxRulePromptSourceBytes+1]
 	}
 	return strings.TrimSpace(truncatePromptBytes(string(raw), maxRulePromptSourceBytes, "\n[workspace instruction source truncated]"))
 }

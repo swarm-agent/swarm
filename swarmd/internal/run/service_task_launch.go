@@ -2045,6 +2045,9 @@ func manageSkillApprovalArguments(payload map[string]any) map[string]any {
 		if after, ok := change["after"].(string); ok {
 			args["content"] = after
 		}
+		if revision := strings.TrimSpace(mapString(change, "expected_revision")); revision != "" {
+			args["expected_revision"] = revision
+		}
 	}
 	if content := strings.TrimSpace(mapString(payload, "content")); content != "" {
 		args["content"] = content

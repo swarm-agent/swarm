@@ -918,9 +918,9 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":  map[string]any{"type": "string", "description": "Action: inspect|list|get|create|update|delete"},
-					"skill":   map[string]any{"type": "string", "description": "Skill name or canonical id"},
-					"name":    map[string]any{"type": "string", "description": "Skill display name; used for create/update when skill is omitted"},
+					"action":            map[string]any{"type": "string", "description": "Action: inspect|list|get|create|update|delete"},
+					"skill":             map[string]any{"type": "string", "description": "Skill name or canonical id"},
+					"name":              map[string]any{"type": "string", "description": "Skill display name; used for create/update when skill is omitted"},
 					"content":           map[string]any{"type": "string", "description": "Proposed SKILL.md content for create/update"},
 					"confirm":           map[string]any{"type": "boolean", "description": "Set true after approval to apply the proposed change to disk"},
 					"expected_revision": map[string]any{"type": "string", "description": "Revision token returned by the approved proposal; required when confirm=true"},
@@ -5731,9 +5731,9 @@ func executeSkillUse(scope WorkspaceScope, args map[string]any) (string, error) 
 		return string(encoded), nil
 	}
 
-	raw, err := os.ReadFile(matched.Path)
-	if err != nil {
-		return "", fmt.Errorf("skill-use read failed: %w", err)
+	raw := append([]byte(nil), matched.Content...)
+	if len(raw) == 0 {
+		return "", errors.New("skill-use discovered skill has no rooted content snapshot")
 	}
 	truncated := false
 	if len(raw) > maxSkillContentBytes {
@@ -8548,11 +8548,11 @@ func manageSkillProposeChange(scope WorkspaceScope, args map[string]any, mustExi
 			"metadata":       frontmatter.Metadata,
 		},
 		"change": map[string]any{
-			"kind":      "skill_change",
-			"operation": action,
-			"path":      path,
-			"before":    before,
-			"after":     formatted,
+			"kind":              "skill_change",
+			"operation":         action,
+			"path":              path,
+			"before":            before,
+			"after":             formatted,
 			"expected_revision": revision,
 		},
 		"path_id":              toolPathID("manage-skill"),
@@ -8594,11 +8594,11 @@ func manageSkillProposeDelete(scope WorkspaceScope, args map[string]any) (string
 			"metadata":       matched.Metadata,
 		},
 		"change": map[string]any{
-			"kind":      "skill_change",
-			"operation": "delete",
-			"path":      matched.Path,
-			"before":    before,
-			"after":     "",
+			"kind":              "skill_change",
+			"operation":         "delete",
+			"path":              matched.Path,
+			"before":            before,
+			"after":             "",
 			"expected_revision": revision,
 		},
 		"path_id":              toolPathID("manage-skill"),

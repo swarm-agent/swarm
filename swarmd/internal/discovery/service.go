@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -33,6 +34,7 @@ type RuleSource struct {
 	Origin     string `json:"origin"`
 	Hash       string `json:"hash"`
 	Precedence int    `json:"precedence"`
+	Content    []byte `json:"-"`
 }
 
 type SkillSource struct {
@@ -46,6 +48,7 @@ type SkillSource struct {
 	Precedence    int               `json:"precedence"`
 	Active        bool              `json:"active"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
+	Content       []byte            `json:"-"`
 }
 
 type InvalidSkillSource struct {
@@ -121,15 +124,12 @@ func (s *Service) ScanScope(primaryPath string, roots []string) (Report, error) 
 		Overrides:     make([]Override, 0, 16),
 	}
 	ruleSeen := make(map[string]struct{}, 64)
-	appendRule := func(path, scope, origin string, precedence int) {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			return
-		}
+	appendRule := func(rootPath, relativePath, scope, origin string, precedence int) {
+		path := filepath.Join(rootPath, relativePath)
 		if _, ok := ruleSeen[path]; ok {
 			return
 		}
-		next := appendRuleIfPresent(nil, path, scope, origin, precedence)
+		next := appendRootedRuleIfPresent(nil, rootPath, relativePath, scope, origin, precedence)
 		if len(next) == 0 {
 			return
 		}
@@ -153,29 +153,29 @@ func (s *Service) ScanScope(primaryPath string, roots []string) (Report, error) 
 	// Workspace instruction files are explicit per-root only. Do not walk parent
 	// directories into broader scopes such as a user's home directory.
 	for _, root := range scopeRoots {
-		appendRule(filepath.Join(root, "AGENTS.md"), "workspace-local", "workspace-root", precedenceWorkspaceLocal)
+		appendRule(root, "AGENTS.md", "workspace-local", "workspace-root", precedenceWorkspaceLocal)
 	}
 
 	// Swarm-managed daemon defaults.
-	appendRule(filepath.Join(swarmConfig, "AGENTS.md"), "managed", "swarm-managed-default", precedenceGlobalCompatible)
+	appendRule(swarmConfig, "AGENTS.md", "managed", "swarm-managed-default", precedenceGlobalCompatible)
 
 	// Cursor rule files become explicit rule sources.
 	for _, root := range scopeRoots {
-		appendRules(scanCursorRules(filepath.Join(root, ".cursor", "rules")))
+		appendRules(scanCursorRules(root, filepath.Join(".cursor", "rules")))
 	}
 
 	// Skill sources across ecosystems.
 	candidates := make([]SkillSource, 0, 128)
 	invalidSkills := make([]InvalidSkillSource, 0, 16)
-	appendSkillScan := func(root, scope, origin string, precedence int) {
-		valid, invalid := scanSkillDir(root, scope, origin, precedence)
+	appendSkillScan := func(rootPath, relativePath, scope, origin string, precedence int) {
+		valid, invalid := scanSkillDir(rootPath, relativePath, scope, origin, precedence)
 		candidates = append(candidates, valid...)
 		invalidSkills = append(invalidSkills, invalid...)
 	}
-	appendSkillScan(filepath.Join(swarmConfig, "skills"), "managed", "swarm-managed-config-skills", precedenceGlobalCompatible)
+	appendSkillScan(swarmConfig, "skills", "managed", "swarm-managed-config-skills", precedenceGlobalCompatible)
 	for _, root := range scopeRoots {
-		appendSkillScan(filepath.Join(root, ".agents", "skills"), "workspace-local", "agents-project-skills", precedenceWorkspaceLocal)
-		appendSkillScan(filepath.Join(root, ".swarm", "skills"), "workspace-local", "swarm-project-skills", precedenceWorkspaceLocal)
+		appendSkillScan(root, filepath.Join(".agents", "skills"), "workspace-local", "agents-project-skills", precedenceWorkspaceLocal)
+		appendSkillScan(root, filepath.Join(".swarm", "skills"), "workspace-local", "swarm-project-skills", precedenceWorkspaceLocal)
 	}
 
 	active, overrides := resolveSkillCandidates(candidates)
@@ -240,43 +240,53 @@ func normalizeScopeRoots(primary string, roots []string) ([]string, error) {
 	return out, nil
 }
 
-func appendRuleIfPresent(existing []RuleSource, path, scope, origin string, precedence int) []RuleSource {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return existing
-	}
-	hash, err := fileSHA256(path)
+func appendRootedRuleIfPresent(existing []RuleSource, rootPath, relativePath, scope, origin string, precedence int) []RuleSource {
+	root, err := openDiscoveryRoot(rootPath)
 	if err != nil {
 		return existing
 	}
+	defer root.Close()
+	info, raw, err := readRootedRegularFile(root, relativePath)
+	if err != nil || info.IsDir() {
+		return existing
+	}
+	hash := sha256.Sum256(raw)
 	entry := RuleSource{
-		Name:       filepath.Base(path),
-		Path:       path,
+		Name:       filepath.Base(relativePath),
+		Path:       filepath.Join(rootPath, relativePath),
 		Scope:      scope,
 		Origin:     origin,
-		Hash:       hash,
+		Hash:       hex.EncodeToString(hash[:]),
 		Precedence: precedence,
+		Content:    raw,
 	}
 	return append(existing, entry)
 }
 
-func scanCursorRules(root string) []RuleSource {
+func scanCursorRules(rootPath, relativeRoot string) []RuleSource {
 	out := make([]RuleSource, 0, 32)
-	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+	root, err := openDiscoveryRoot(rootPath)
+	if err != nil {
+		return out
+	}
+	defer root.Close()
+	_ = fs.WalkDir(root.FS(), relativeRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
-		hash, hashErr := fileSHA256(path)
-		if hashErr != nil {
+		_, raw, readErr := readRootedRegularFile(root, path)
+		if readErr != nil {
 			return nil
 		}
+		hash := sha256.Sum256(raw)
 		out = append(out, RuleSource{
 			Name:       filepath.Base(path),
-			Path:       path,
+			Path:       filepath.Join(rootPath, path),
 			Scope:      "workspace-local",
 			Origin:     "cursor-rules",
-			Hash:       hash,
+			Hash:       hex.EncodeToString(hash[:]),
 			Precedence: precedenceWorkspaceLocal,
+			Content:    raw,
 		})
 		return nil
 	})
@@ -284,27 +294,34 @@ func scanCursorRules(root string) []RuleSource {
 	return out
 }
 
-func scanSkillDir(root, scope, origin string, precedence int) ([]SkillSource, []InvalidSkillSource) {
+func scanSkillDir(rootPath, relativeRoot, scope, origin string, precedence int) ([]SkillSource, []InvalidSkillSource) {
 	out := make([]SkillSource, 0, 32)
 	invalid := make([]InvalidSkillSource, 0, 8)
-	entries, err := os.ReadDir(root)
+	root, err := openDiscoveryRoot(rootPath)
+	if err != nil {
+		return out, invalid
+	}
+	defer root.Close()
+	dir, err := root.Open(relativeRoot)
+	if err != nil {
+		return out, invalid
+	}
+	entries, err := dir.ReadDir(-1)
+	_ = dir.Close()
 	if err != nil {
 		return out, invalid
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 			continue
 		}
 		dirName := strings.TrimSpace(entry.Name())
 		if dirName == "" {
 			continue
 		}
-		skillPath := filepath.Join(root, dirName, "SKILL.md")
-		info, err := os.Stat(skillPath)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		raw, err := os.ReadFile(skillPath)
+		relativeSkillPath := filepath.Join(relativeRoot, dirName, "SKILL.md")
+		skillPath := filepath.Join(rootPath, relativeSkillPath)
+		_, raw, err := readRootedRegularFile(root, relativeSkillPath)
 		if err != nil {
 			invalid = append(invalid, InvalidSkillSource{
 				DirectoryName: dirName,
@@ -338,18 +355,7 @@ func scanSkillDir(root, scope, origin string, precedence int) ([]SkillSource, []
 			})
 			continue
 		}
-		hash, err := fileSHA256(skillPath)
-		if err != nil {
-			invalid = append(invalid, InvalidSkillSource{
-				DirectoryName: dirName,
-				DeclaredName:  declaredName,
-				Path:          skillPath,
-				Scope:         scope,
-				Origin:        origin,
-				Error:         fmt.Sprintf("hash skill: %v", err),
-			})
-			continue
-		}
+		hash := sha256.Sum256(raw)
 		out = append(out, SkillSource{
 			Name:          declaredName,
 			CanonicalName: normalizeName(frontmatter.Name),
@@ -357,9 +363,10 @@ func scanSkillDir(root, scope, origin string, precedence int) ([]SkillSource, []
 			Path:          skillPath,
 			Scope:         scope,
 			Origin:        origin,
-			Hash:          hash,
+			Hash:          hex.EncodeToString(hash[:]),
 			Precedence:    precedence,
 			Metadata:      copyStringMap(frontmatter.Metadata),
+			Content:       raw,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -369,6 +376,48 @@ func scanSkillDir(root, scope, origin string, precedence int) ([]SkillSource, []
 		return invalid[i].Path < invalid[j].Path
 	})
 	return out, invalid
+}
+
+func openDiscoveryRoot(path string) (*os.Root, error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" || path == "." || !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("discovery root must be an absolute path")
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, err
+	}
+	if filepath.Clean(resolved) != path {
+		return nil, fmt.Errorf("discovery root %q must be canonical", path)
+	}
+	return os.OpenRoot(path)
+}
+
+func readRootedRegularFile(root *os.Root, name string) (fs.FileInfo, []byte, error) {
+	info, err := root.Lstat(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("%q must be a regular file, not a symlink", name)
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		return nil, nil, fmt.Errorf("%q changed during discovery", name)
+	}
+	raw, err := io.ReadAll(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	return opened, raw, nil
 }
 
 func ParseSkillFrontmatter(raw []byte) (SkillFrontmatter, error) {
