@@ -42,7 +42,7 @@ type failingKillCommandHandle struct {
 func (h *failingKillCommandHandle) containment() commandContainment {
 	return commandContainment{Mode: "test", State: "degraded", Guarantee: "none"}
 }
-func (h *failingKillCommandHandle) kill() error { return errors.New("injected kill failure") }
+func (h *failingKillCommandHandle) kill() error                 { return errors.New("injected kill failure") }
 func (h *failingKillCommandHandle) classifyTermination() string { return "" }
 func (h *failingKillCommandHandle) cleanup() {
 	if h.cmd != nil && h.cmd.Process != nil {

@@ -31,4 +31,3 @@ func TestBoundedSearchHelperBufferCapsCapturedOutput(t *testing.T) {
 		t.Fatalf("captured bytes after overflow = %d, want 8", len(buffer.Bytes()))
 	}
 }
-

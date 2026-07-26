@@ -2185,9 +2185,9 @@ func (b *boundedSearchHelperBuffer) Write(p []byte) (int, error) {
 	return originalLen, nil
 }
 
-func (b *boundedSearchHelperBuffer) Bytes() []byte      { return b.buf.Bytes() }
-func (b *boundedSearchHelperBuffer) String() string     { return b.buf.String() }
-func (b *boundedSearchHelperBuffer) Overflowed() bool   { return b.overflowed }
+func (b *boundedSearchHelperBuffer) Bytes() []byte    { return b.buf.Bytes() }
+func (b *boundedSearchHelperBuffer) String() string   { return b.buf.String() }
+func (b *boundedSearchHelperBuffer) Overflowed() bool { return b.overflowed }
 
 func resolveSearchHelperPath() (string, error) {
 	if configured := strings.TrimSpace(os.Getenv("SWARM_FFF_SEARCH_HELPER")); configured != "" {
