@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
-import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clock3, Copy, ExternalLink, GitBranch, Layers3, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
+import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clock3, Copy, Download, ExternalLink, GitBranch, Layers3, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
 import type {
@@ -59,10 +60,12 @@ function formatDuration(ms: number): string {
   return `${(ms / 60_000).toFixed(1)}m`;
 }
 
-const BASH_COLLAPSED_MIN_HEIGHT = 180;
-const BASH_COLLAPSED_MAX_HEIGHT = 420;
-const BASH_COLLAPSED_FALLBACK_HEIGHT = 320;
-const BASH_EXPANDED_MAX_HEIGHT = "50vh";
+const BASH_COLLAPSED_MAX_HEIGHT = 320;
+const BASH_COLLAPSED_PREVIEW_LINES = 120;
+const BASH_COLLAPSED_PREVIEW_CHARS = 32 * 1024;
+const BASH_COLLAPSED_VISIBLE_LINE_ESTIMATE = 16;
+const BASH_OUTPUT_LINE_HEIGHT = 20;
+const BASH_EXPANDED_HEIGHT = "50vh";
 export const TOOL_RESULT_BODY_CLASS = "max-h-[50vh] min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain";
 
 function joinBashOutputParts(parts: string[]): string {
@@ -100,6 +103,52 @@ export function bashCopyText(output: string): string {
   return output;
 }
 
+interface BashOutputIndex {
+  lineStarts: number[];
+  preview: string;
+  previewedLineCount: number;
+  previewStartsMidLine: boolean;
+  canExpand: boolean;
+}
+
+export function indexBashOutput(output: string): BashOutputIndex {
+  const lineStarts = output ? [0] : [];
+  for (let index = 0; index < output.length; index += 1) {
+    if (output.charCodeAt(index) === 10) lineStarts.push(index + 1);
+  }
+
+  const lineLimitedStart = lineStarts[Math.max(0, lineStarts.length - BASH_COLLAPSED_PREVIEW_LINES)] ?? 0;
+  const charLimitedStart = Math.max(0, output.length - BASH_COLLAPSED_PREVIEW_CHARS);
+  const previewStart = Math.max(lineLimitedStart, charLimitedStart);
+  const previewLineIndex = Math.max(0, lineStarts.findLastIndex((start) => start <= previewStart));
+  const previewStartsMidLine = previewStart > (lineStarts[previewLineIndex] ?? 0);
+  const previewedLineCount = Math.max(0, lineStarts.length - previewLineIndex);
+  const preview = output.slice(previewStart);
+  const canExpand = previewStart > 0 || lineStarts.length > BASH_COLLAPSED_VISIBLE_LINE_ESTIMATE;
+
+  return { lineStarts, preview, previewedLineCount, previewStartsMidLine, canExpand };
+}
+
+function bashOutputLine(output: string, lineStarts: number[], index: number): string {
+  const start = lineStarts[index] ?? 0;
+  const nextStart = lineStarts[index + 1];
+  const end = nextStart === undefined ? output.length : nextStart - 1;
+  return output.slice(start, end);
+}
+
+function downloadBashOutput(output: string): void {
+  if (typeof document === "undefined" || typeof URL === "undefined") return;
+  const url = URL.createObjectURL(new Blob([output], { type: "text/plain;charset=utf-8" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "bash-output.txt";
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 function bashStatusLabel(state: ToolState): string {
   switch (state) {
     case "running":
@@ -135,52 +184,29 @@ function BashToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToo
   const StateIcon = state === "error" ? XCircle : state === "running" ? LoaderCircle : CheckCircle2;
   const command = toolMessage.bashData?.command || toolMessage.commandText;
   const output = useMemo(() => bashOutputText(toolMessage), [toolMessage]);
-  const copyPayload = useMemo(() => bashCopyText(output), [output]);
+  const outputIndex = useMemo(() => indexBashOutput(output), [output]);
   const outputRef = useRef<HTMLDivElement | null>(null);
   const userScrolledAwayRef = useRef(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [expanded, setExpanded] = useState(false);
-  const [canExpand, setCanExpand] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [collapsedMaxHeight, setCollapsedMaxHeight] = useState(BASH_COLLAPSED_FALLBACK_HEIGHT);
-
-  const measureOutput = useCallback(() => {
-    const viewportHeight = typeof window === "undefined" ? BASH_COLLAPSED_FALLBACK_HEIGHT * 2 : window.innerHeight;
-    const nextCollapsedHeight = Math.max(
-      BASH_COLLAPSED_MIN_HEIGHT,
-      Math.min(BASH_COLLAPSED_MAX_HEIGHT, Math.floor(viewportHeight * 0.5)),
-    );
-    setCollapsedMaxHeight(nextCollapsedHeight);
-    const node = outputRef.current;
-    if (node) setCanExpand(node.scrollHeight > nextCollapsedHeight + 8);
-  }, []);
+  const virtualizer = useVirtualizer({
+    count: expanded ? outputIndex.lineStarts.length : 0,
+    getScrollElement: () => outputRef.current,
+    estimateSize: () => BASH_OUTPUT_LINE_HEIGHT,
+    overscan: 12,
+  });
 
   useEffect(() => {
-    measureOutput();
-    if (typeof window === "undefined") return;
-    const node = outputRef.current;
-    const resizeObserver = typeof ResizeObserver !== "undefined" && node ? new ResizeObserver(measureOutput) : null;
-    if (node && resizeObserver) resizeObserver.observe(node);
-    window.addEventListener("resize", measureOutput);
-    return () => {
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", measureOutput);
-    };
-  }, [measureOutput, output]);
-
-  useEffect(() => {
-    const node = outputRef.current;
-    if (!node || userScrolledAwayRef.current) return;
+    if (!expanded || userScrolledAwayRef.current || outputIndex.lineStarts.length === 0) return;
     const frame = window.requestAnimationFrame(() => {
-      node.scrollTop = node.scrollHeight;
+      virtualizer.scrollToIndex(outputIndex.lineStarts.length - 1, { align: "end" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [collapsedMaxHeight, expanded, output, state]);
+  }, [expanded, output, outputIndex.lineStarts.length, state, virtualizer]);
 
-  useEffect(() => {
-    return () => {
-      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
-    };
+  useEffect(() => () => {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
   }, []);
 
   const handleOutputScroll = useCallback(() => {
@@ -191,64 +217,54 @@ function BashToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToo
   }, []);
 
   const handleCopy = useCallback(async () => {
-    if (!copyPayload) return;
-    await copyTextToClipboard(copyPayload);
+    if (!output) return;
+    await copyTextToClipboard(bashCopyText(output));
     setCopied(true);
     if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
     copyTimerRef.current = setTimeout(() => setCopied(false), 1400);
-  }, [copyPayload]);
+  }, [output]);
+
+  const handleDownload = useCallback(() => {
+    if (output) downloadBashOutput(output);
+  }, [output]);
+
+  const toggleExpanded = useCallback(() => {
+    userScrolledAwayRef.current = false;
+    setExpanded((value) => !value);
+  }, []);
 
   const accentWash = toolAccentWash(toolTheme.color, 14);
   const statusText = bashStatusLabel(state);
   const exitCode = toolMessage.bashData?.exitCode;
-  const outputMaxHeight = expanded ? BASH_EXPANDED_MAX_HEIGHT : `${collapsedMaxHeight}px`;
+  const previewPrefix = outputIndex.previewStartsMidLine ? "…" : "";
 
   return (
     <div className={cn(isGroupItem ? "py-2" : "mb-2 py-2", "w-full min-w-0")}>
       <div className="w-full min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] shadow-sm">
         <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-[var(--app-border)] px-3 py-2 text-xs">
-          <span
-            className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 font-semibold"
-            style={{ color: toolTheme.color, backgroundColor: accentWash }}
-          >
+          <span className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 font-semibold" style={{ color: toolTheme.color, backgroundColor: accentWash }}>
             <ToolIcon size={12} className="shrink-0" />
             bash
           </span>
           <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)]">
-            <StateIcon
-              size={12}
-              className={cn(
-                state === "running" ? "animate-spin text-[var(--app-primary)]" : state === "error" ? "text-[var(--app-danger)]" : "text-[var(--app-text-subtle)]",
-              )}
-            />
+            <StateIcon size={12} className={cn(state === "running" ? "animate-spin text-[var(--app-primary)]" : state === "error" ? "text-[var(--app-danger)]" : "text-[var(--app-text-subtle)]")} />
             {statusText}
           </span>
-          {typeof exitCode === "number" ? (
-            <span className="shrink-0 text-[11px] text-[var(--app-text-subtle)]">exit {exitCode}</span>
-          ) : null}
-          {toolMessage.durationMs > 0 ? (
-            <span className="shrink-0 text-[11px] text-[var(--app-text-subtle)]">{formatDuration(toolMessage.durationMs)}</span>
-          ) : null}
+          {typeof exitCode === "number" ? <span className="shrink-0 text-[11px] text-[var(--app-text-subtle)]">exit {exitCode}</span> : null}
+          {toolMessage.durationMs > 0 ? <span className="shrink-0 text-[11px] text-[var(--app-text-subtle)]">{formatDuration(toolMessage.durationMs)}</span> : null}
           <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1">
-            <button
-              type="button"
-              className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--app-border)] px-2 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface)] disabled:cursor-not-allowed disabled:opacity-50"
-              onClick={handleCopy}
-              disabled={!copyPayload}
-              aria-label="Copy Bash output"
-            >
+            <button type="button" className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--app-border)] px-2 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface)] disabled:cursor-not-allowed disabled:opacity-50" onClick={handleCopy} disabled={!output} aria-label="Copy Bash output">
               <Copy size={12} className="shrink-0" />
               <span className="hidden sm:inline">{copied ? "Copied" : "Copy"}</span>
             </button>
-            {canExpand ? (
-              <button
-                type="button"
-                className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--app-border)] px-2 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface)]"
-                onClick={() => setExpanded((value) => !value)}
-                aria-expanded={expanded}
-              >
+            <button type="button" className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--app-border)] px-2 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface)] disabled:cursor-not-allowed disabled:opacity-50" onClick={handleDownload} disabled={!output} aria-label="Download exact Bash output">
+              <Download size={12} className="shrink-0" />
+              <span className="hidden sm:inline">Download</span>
+            </button>
+            {outputIndex.canExpand ? (
+              <button type="button" className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--app-border)] px-2 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface)]" onClick={toggleExpanded} aria-expanded={expanded}>
                 {expanded ? <ChevronUp size={12} className="shrink-0" /> : <ChevronDown size={12} className="shrink-0" />}
-                <span className="hidden sm:inline">{expanded ? "Collapse" : "Expand"}</span>
+                <span className="hidden sm:inline">{expanded ? "Collapse" : "View all"}</span>
               </button>
             ) : null}
           </div>
@@ -259,26 +275,24 @@ function BashToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToo
             <ToolSyntaxLine text={command} language="bash" className="whitespace-pre-wrap break-words font-mono [overflow-wrap:anywhere]" />
           </div>
         ) : null}
-        {toolMessage.error ? (
-          <div className="border-b border-[var(--app-border)] px-3 py-2 text-[12px] text-[var(--app-danger)]">
-            {toolMessage.error}
-          </div>
-        ) : null}
-        {output ? (
-          <div
-            ref={outputRef}
-            className="min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain bg-[var(--app-code-bg)] text-[12px] leading-5 text-[var(--app-code-text)]"
-            style={{ maxHeight: outputMaxHeight }}
-            onScroll={handleOutputScroll}
-          >
-            <pre className="m-0 min-w-0 whitespace-pre-wrap break-words p-3 font-mono [overflow-wrap:anywhere]">
-              <code>{output}</code>
-            </pre>
+        {toolMessage.error ? <div className="border-b border-[var(--app-border)] px-3 py-2 text-[12px] text-[var(--app-danger)]">{toolMessage.error}</div> : null}
+        {output ? expanded ? (
+          <div ref={outputRef} className="min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain bg-[var(--app-code-bg)] font-mono text-[12px] leading-5 text-[var(--app-code-text)]" style={{ height: BASH_EXPANDED_HEIGHT }} onScroll={handleOutputScroll} data-bash-output="virtualized">
+            <div className="relative min-w-0" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+              {virtualizer.getVirtualItems().map((virtualLine) => (
+                <div key={virtualLine.key} ref={virtualizer.measureElement} data-index={virtualLine.index} className="absolute left-0 top-0 w-full min-w-0 whitespace-pre-wrap break-words px-3 [overflow-wrap:anywhere]" style={{ transform: `translateY(${virtualLine.start}px)` }}>
+                  {bashOutputLine(output, outputIndex.lineStarts, virtualLine.index) || "\u00a0"}
+                </div>
+              ))}
+            </div>
           </div>
         ) : (
-          <div className="px-3 py-2 text-[12px] text-[var(--app-text-subtle)]">
-            {state === "running" ? "Waiting for output…" : "No output"}
+          <div className="min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain bg-[var(--app-code-bg)] text-[12px] leading-5 text-[var(--app-code-text)]" style={{ maxHeight: `${BASH_COLLAPSED_MAX_HEIGHT}px` }} data-bash-output="bounded-preview">
+            {outputIndex.canExpand ? <div className="sticky top-0 z-[1] border-b border-[var(--app-border)] bg-[var(--app-code-bg)] px-3 py-1 font-sans text-[10px] text-[var(--app-text-subtle)]">Showing the last {outputIndex.previewedLineCount.toLocaleString()} lines · View all for exact output</div> : null}
+            <pre className="m-0 min-w-0 whitespace-pre-wrap break-words p-3 font-mono [overflow-wrap:anywhere]"><code>{previewPrefix}{outputIndex.preview}</code></pre>
           </div>
+        ) : (
+          <div className="px-3 py-2 text-[12px] text-[var(--app-text-subtle)]">{state === "running" ? "Waiting for output…" : "No output"}</div>
         )}
       </div>
     </div>

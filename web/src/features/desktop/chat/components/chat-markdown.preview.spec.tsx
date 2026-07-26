@@ -1,6 +1,6 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TASK_ELAPSED_TICK_MS, ToolMessageView, bashCopyText, taskActivityLabel } from "./chat-markdown";
+import { TASK_ELAPSED_TICK_MS, ToolMessageView, bashCopyText, indexBashOutput, taskActivityLabel } from "./chat-markdown";
 import { buildStructuredToolMessage } from "../services/tool-message";
 
 function assert(condition: boolean, message: string): void {
@@ -172,6 +172,18 @@ function testBashCopyUsesOutputOnly(): void {
   assert(copyPayload === output, "bash copy should preserve only the exact command output");
 }
 
+function testBashOutputIndexBoundsPreviewWithoutChangingCanonicalOutput(): void {
+  const output = Array.from({ length: 500 }, (_, index) => `line-${index + 1}-${"x".repeat(300)}`).join("\n");
+  const index = indexBashOutput(output);
+
+  assert(index.lineStarts.length === 500, "expected every exact output line to remain addressable");
+  assert(index.preview.length <= 32 * 1024, "collapsed preview must remain bounded independently of output size");
+  assert(index.preview !== output, "large collapsed output must not mount the complete canonical output");
+  assert(output.endsWith(index.preview), "collapsed preview must be an exact suffix of canonical output");
+  assert(index.canExpand, "large output must expose the exact full-output viewer");
+  assert(bashCopyText(output) === output, "copy-all must preserve canonical output byte-for-byte");
+}
+
 function testBashToolUsesDedicatedFullWidthCard(): void {
   const command = "for i in {1..80}; do echo line-$i; done";
   const output = Array.from({ length: 80 }, (_, index) => `line-${index + 1}`).join("\n");
@@ -187,6 +199,9 @@ function testBashToolUsesDedicatedFullWidthCard(): void {
   const markup = renderToolMarkup(message!);
   assert(markup.includes("Copy"), "bash card should include copy control");
   assert(markup.includes('aria-label="Copy Bash output"'), "bash copy control should identify output as its only payload");
+  assert(markup.includes('aria-label="Download exact Bash output"'), "bash card should expose exact output download");
+  assert(markup.includes('data-bash-output="bounded-preview"'), "collapsed bash output should use the bounded preview path");
+  assert(markup.includes("View all"), "large bash output should expose the exact full-output viewer");
   assert(markup.includes("max-height"), "bash output should render in a bounded scroll container");
   assert(markup.includes("50vh") || markup.includes("max-height:"), "bash output should expose a bounded viewport height");
   assert(markup.includes("overflow-y-auto"), "bash output should be vertically scrollable");
@@ -559,6 +574,7 @@ function main(): void {
   testTaskElapsedClockUsesDisplayCadence();
   testTaskActivityPrefersSummaryOnlyForActiveRows();
   testBashCopyUsesOutputOnly();
+  testBashOutputIndexBoundsPreviewWithoutChangingCanonicalOutput();
   testBashToolUsesDedicatedFullWidthCard();
   testManageSessionsUsesRelativeDesktopNavigation();
   testManageSessionsDeployRendersNavigableResultsAndHonestFailures();
