@@ -1797,8 +1797,10 @@ func (s *Service) persistPlanLifecycleResult(result sessionruntime.PlanLifecycle
 	if result.V3Mutation != nil {
 		return nil
 	}
-	if err := s.persistPlanSavedV3Mutation(result.Plan, result.PlanEvent, applySessionMutation); err != nil {
-		return fmt.Errorf("publish plan saved: %w", err)
+	if result.PlanEvent != nil {
+		if err := s.persistPlanSavedV3Mutation(result.Plan, result.PlanEvent, applySessionMutation); err != nil {
+			return fmt.Errorf("publish plan saved: %w", err)
+		}
 	}
 	if applySessionMutation != nil {
 		preference, contextWindow, maxOutputTokens, agentModelPolicy, err := s.resolvePlanLifecycleModePreference(result)
@@ -2134,10 +2136,15 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 		if planID == "" {
 			return "", errors.New("plan_manage set-active requires plan_id")
 		}
-		plan, _, err := s.sessions.SetActivePlan(sessionID, planID)
+		prepared, err := s.sessions.PreparePlanActivation(sessionID, planID)
 		if err != nil {
 			return "", err
 		}
+		mutation, err := s.sessions.CommitPreparedPlanSave(prepared, applySessionMutation)
+		if err != nil {
+			return "", err
+		}
+		plan := *mutation.Plan
 		payload := map[string]any{
 			"tool":              "plan_manage",
 			"action":            "set-active",
