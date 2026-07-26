@@ -9,6 +9,32 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestFireworksDebugChunkMetadataExcludesPrivateContent(t *testing.T) {
+	const sentinel = "SEC08_PRIVATE_FIREWORKS_SENTINEL"
+	metadata := fireworksDebugChunkMetadata("session-correlation", "model-category", chatCompletionChunk{
+		Choices: []chatCompletionChoice{{
+			Delta: &chatCompletionMessageDelta{
+				Content:          sentinel,
+				ReasoningContent: sentinel,
+				ToolCalls: []chatCompletionToolCallDelta{{
+					Function: &chatCompletionToolFunctionDelta{Arguments: sentinel},
+				}},
+			},
+			FinishReason: "stop",
+		}},
+	})
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal debug metadata: %v", err)
+	}
+	if strings.Contains(string(encoded), sentinel) {
+		t.Fatalf("Fireworks debug metadata exposed private sentinel: %s", encoded)
+	}
+	if metadata["choice_count"] != 1 || metadata["tool_call_count"] != 1 || metadata["finished_choices"] != 1 {
+		t.Fatalf("Fireworks debug metadata = %#v, want bounded counts", metadata)
+	}
+}
+
 func TestSanitizeFireworksToolParametersDropsNilRequired(t *testing.T) {
 	input := map[string]any{
 		"type":       "object",

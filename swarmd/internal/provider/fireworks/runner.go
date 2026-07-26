@@ -74,7 +74,8 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 		"effective_tier":   serving.EffectiveTier,
 		"service_tier":     serving.ServiceTier,
 		"session_affinity": serving.SessionAffinity != "",
-		"payload":          fireworksDebugJSONValue(payload),
+		"message_count":    len(payload.Messages),
+		"tool_count":       len(payload.Tools),
 	})
 	decoded, err := r.client.CreateChatCompletion(ctx, record.APIKey, payload, requestOptions{SessionAffinity: serving.SessionAffinity, PromptCacheIsolationKey: serving.PromptCacheIsolationKey})
 	if err != nil {
@@ -85,9 +86,10 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 	fireworksDebugEvent("response", map[string]any{
 		"transport":  "sync",
 		"session_id": req.SessionID,
-		"model":      modelID,
-		"decoded":    fireworksDebugJSONValue(decoded),
-		"parsed":     fireworksDebugJSONValue(result),
+		"model":               modelID,
+		"choice_count":        len(decoded.Choices),
+		"function_call_count": len(result.FunctionCalls),
+		"response_text_runes": len([]rune(result.Text)),
 	})
 	if strings.TrimSpace(result.Model) == "" {
 		result.Model = modelID
@@ -122,17 +124,14 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 		"effective_tier":   serving.EffectiveTier,
 		"service_tier":     serving.ServiceTier,
 		"session_affinity": serving.SessionAffinity != "",
-		"payload":          fireworksDebugJSONValue(payload),
+		"message_count":    len(payload.Messages),
+		"tool_count":       len(payload.Tools),
 	})
 	reasoningByKey := make(map[string]string, 4)
 	toolConstruction := newFireworksToolCallConstructionState()
 	decoded, err := r.client.CreateChatCompletionStream(ctx, record.APIKey, payload, func(chunk chatCompletionChunk) error {
 		if fireworksDebugChunkInteresting(chunk) {
-			fireworksDebugEvent("stream_chunk", map[string]any{
-				"session_id": req.SessionID,
-				"model":      modelID,
-				"chunk":      fireworksDebugJSONValue(chunk),
-			})
+			fireworksDebugEvent("stream_chunk", fireworksDebugChunkMetadata(req.SessionID, modelID, chunk))
 		}
 		for _, choice := range chunk.Choices {
 			if choice.Delta == nil || onEvent == nil {
@@ -158,9 +157,10 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	fireworksDebugEvent("response", map[string]any{
 		"transport":  "stream",
 		"session_id": req.SessionID,
-		"model":      modelID,
-		"decoded":    fireworksDebugJSONValue(decoded),
-		"parsed":     fireworksDebugJSONValue(result),
+		"model":               modelID,
+		"choice_count":        len(decoded.Choices),
+		"function_call_count": len(result.FunctionCalls),
+		"response_text_runes": len([]rune(result.Text)),
 	})
 	if strings.TrimSpace(result.Model) == "" {
 		result.Model = modelID
@@ -780,16 +780,31 @@ func fireworksDebugEvent(event string, data map[string]any) {
 	fireworksDebugf("%s", string(encoded))
 }
 
-func fireworksDebugJSONValue(value any) any {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return map[string]any{"encode_error": err.Error()}
+func fireworksDebugChunkMetadata(sessionID, modelID string, chunk chatCompletionChunk) map[string]any {
+	contentRunes := 0
+	reasoningRunes := 0
+	toolCallCount := 0
+	finishedChoices := 0
+	for _, choice := range chunk.Choices {
+		if choice.Delta != nil {
+			contentRunes += len([]rune(choice.Delta.Content))
+			reasoningRunes += len([]rune(choice.Delta.ReasoningContent))
+			toolCallCount += len(choice.Delta.ToolCalls)
+		}
+		toolCallCount += len(choice.Message.ToolCalls)
+		if strings.TrimSpace(choice.FinishReason) != "" {
+			finishedChoices++
+		}
 	}
-	var decoded any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return map[string]any{"decode_error": err.Error()}
+	return map[string]any{
+		"session_id":       sessionID,
+		"model":            modelID,
+		"choice_count":     len(chunk.Choices),
+		"content_runes":    contentRunes,
+		"reasoning_runes":  reasoningRunes,
+		"tool_call_count":  toolCallCount,
+		"finished_choices": finishedChoices,
 	}
-	return privacy.SanitizeValue(decoded)
 }
 
 func fireworksDebugChunkInteresting(chunk chatCompletionChunk) bool {

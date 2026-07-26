@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
-	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -202,9 +201,9 @@ func (d *AITaskV2Dispatcher) executeSafely(ctx context.Context, job AITaskV2Job)
 	releaseNow = true
 	item := job.Task
 	defer func() {
-		if recovered := recover(); recovered != nil {
-			message := fmt.Errorf("AI task V2 panic: %v", recovered)
-			log.Printf("AI task V2 %s panic contained: %v stack=%s", item.ID, recovered, strings.TrimSpace(string(debug.Stack())))
+		if recover() != nil {
+			message := errors.New("AI task V2 panic")
+			log.Printf("AI task V2 %s panic contained category=unexpected_panic", item.ID)
 			_ = terminalizeAITaskV2(d.store, item, message)
 		}
 	}()

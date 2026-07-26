@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"runtime/debug"
 	"strings"
 	"sync/atomic"
 
@@ -152,10 +151,10 @@ func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runCon
 		defer s.endActiveRun()
 		defer close(started)
 		defer func() {
-			if recovered := recover(); recovered != nil {
-				log.Printf("run control panic run_id=%s session_id=%s panic=%v stack=%s", runID, sessionID, recovered, strings.TrimSpace(string(debug.Stack())))
+			if recover() != nil {
+				log.Printf("run control panic contained run_id=%s session_id=%s category=unexpected_panic", runID, sessionID)
 				select {
-				case started <- fmt.Errorf("run panicked: %v", recovered):
+				case started <- errors.New("run panicked"):
 				default:
 				}
 			}

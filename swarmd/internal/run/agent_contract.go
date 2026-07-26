@@ -53,8 +53,8 @@ func (s *Service) customAgentToolDefinitionsForAccount(accountScopeID string) []
 	customTools, err := s.listCustomAgentToolsForRun(accountScopeID)
 	if err != nil {
 		runRequestDebugEvent("custom_tool_inventory_error", map[string]any{
-			"stage": "definitions",
-			"error": err.Error(),
+			"stage":          "definitions",
+			"error_category": "inventory_unavailable",
 		})
 		return nil
 	}
@@ -93,8 +93,8 @@ func (s *Service) customAgentToolNameSetForAccount(accountScopeID string) map[st
 	customTools, err := s.listCustomAgentToolsForRun(accountScopeID)
 	if err != nil {
 		runRequestDebugEvent("custom_tool_inventory_error", map[string]any{
-			"stage": "name_set",
-			"error": err.Error(),
+			"stage":          "name_set",
+			"error_category": "inventory_unavailable",
 		})
 		return nil
 	}

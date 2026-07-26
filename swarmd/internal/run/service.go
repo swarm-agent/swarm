@@ -1378,15 +1378,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		"session_id":            sessionID,
 		"run_id":                runID,
 		"target_kind":           targetKind,
-		"target_name":           targetName,
 		"resolved_agent":        activeAgent,
 		"raw_tool_count":        len(rawToolDefinitions),
-		"raw_tools":             runRequestDebugToolDefinitions(rawToolDefinitions),
 		"raw_custom_tool_count": len(rawCustomToolDefinitions),
-		"raw_custom_tools":      runRequestDebugToolDefinitions(rawCustomToolDefinitions),
 		"filtered_tool_count":   len(toolDefinitions),
-		"filtered_tools":        runRequestDebugToolDefinitions(toolDefinitions),
-		"disabled_tools":        runRequestDebugDisabledTools(effectiveDisabledTools),
+		"disabled_tool_count":   len(runRequestDebugDisabledTools(effectiveDisabledTools)),
 	})
 
 	assistantFragments := make([]string, 0, 8)
@@ -1877,21 +1873,14 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			"run_id":              runID,
 			"step":                step,
 			"provider":            providerID,
-			"model":               resolvedPreference.Preference.Model,
-			"thinking":            resolvedPreference.Preference.Thinking,
 			"target_kind":         targetKind,
-			"target_name":         targetName,
 			"resolved_agent":      activeAgent,
-			"agent_profile_name":  strings.TrimSpace(agentProfile.Name),
 			"background":          options.Background,
-			"workspace_path":      workspaceCtx.WorkspacePath,
 			"execution_mode":      executionMode,
-			"tool_choice":         stepRequest.ToolChoice,
 			"parallel_tool_calls": stepRequest.ParallelToolCalls,
 			"tool_count":          len(toolDefinitions),
-			"tools":               runRequestDebugToolDefinitions(toolDefinitions),
-			"instructions":        stepInstructions,
-			"input":               input,
+			"input_item_count":    len(input),
+			"instruction_runes":   len([]rune(stepInstructions)),
 		})
 
 		// Keep request properties stable across one provider tool loop so native
@@ -1938,22 +1927,19 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			return RunResult{}, err
 		}
 		runRequestDebugEvent("provider_response", map[string]any{
-			"session_id":          sessionID,
-			"run_id":              runID,
-			"step":                step,
-			"provider":            providerID,
-			"model":               resolvedPreference.Preference.Model,
-			"target_kind":         targetKind,
-			"target_name":         targetName,
-			"resolved_agent":      activeAgent,
-			"background":          options.Background,
-			"stop_reason":         response.StopReason,
-			"text":                response.Text,
-			"function_call_count": len(response.FunctionCalls),
-			"function_calls":      response.FunctionCalls,
-			"assistant_messages":  response.AssistantMessages,
-			"usage":               response.Usage,
-			"restart_turn":        response.RestartTurn,
+			"session_id":              sessionID,
+			"run_id":                  runID,
+			"step":                    step,
+			"provider":                providerID,
+			"target_kind":             targetKind,
+			"resolved_agent":          activeAgent,
+			"background":              options.Background,
+			"stop_reason":             response.StopReason,
+			"response_text_runes":     len([]rune(response.Text)),
+			"function_call_count":     len(response.FunctionCalls),
+			"assistant_message_count": len(response.AssistantMessages),
+			"usage":                   response.Usage,
+			"restart_turn":            response.RestartTurn,
 		})
 		if stepReasoningErr != nil {
 			return RunResult{}, stepReasoningErr
@@ -3277,8 +3263,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				"provider":   providerID,
 				"model":      modelName,
 				"attempt":    attempt,
-				"error":      strings.TrimSpace(reqErr.Error()),
-				"detail":     oneShotResult.diagnosticDetail(),
+				"error_category": memoryCompactionDebugErrorCategory(reqErr, oneShotResult),
 			})
 			err := fmt.Errorf("Compact one-shot returned no usable summary: %w", reqErr)
 			finishFailure(err)
@@ -3289,8 +3274,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				"provider":   providerID,
 				"model":      modelName,
 				"attempt":    attempt,
-				"error":      strings.TrimSpace(reqErr.Error()),
-				"detail":     oneShotResult.diagnosticDetail(),
+				"error_category": memoryCompactionDebugErrorCategory(reqErr, oneShotResult),
 			})
 			err := fmt.Errorf("memory compaction one-shot failed: %w", reqErr)
 			finishFailure(err)
@@ -3301,8 +3285,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				"provider":   providerID,
 				"model":      modelName,
 				"attempt":    attempt,
-				"error":      strings.TrimSpace(reqErr.Error()),
-				"detail":     oneShotResult.diagnosticDetail(),
+				"error_category": memoryCompactionDebugErrorCategory(reqErr, oneShotResult),
 			})
 			err := fmt.Errorf("Compact one-shot overflowed after bounded input selection: %w", reqErr)
 			finishFailure(err)
@@ -4260,8 +4243,8 @@ func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, bas
 	go s.generateAndApplySessionTitle(sessionID, firstPrompt, "provisional", sessionTitleProvisionalWords, sessionTitleProvisionalWords, basePreference, compactProfile, principal, emit)
 	go func() {
 		defer func() {
-			if recovered := recover(); recovered != nil {
-				s.emitSessionTitleWarning(sessionID, "final", fmt.Errorf("session title background panic: %v", recovered), emit)
+			if recover() != nil {
+				s.emitSessionTitleWarning(sessionID, "final", errors.New("session title background panic"), emit)
 			}
 		}()
 		timer := time.NewTimer(sessionTitleFinalDelay)
@@ -4304,8 +4287,8 @@ func (s *Service) buildSessionTitleConversation(sessionID, fallbackPrompt string
 
 func (s *Service) generateAndApplySessionTitle(sessionID, promptContext, stage string, minWords, maxWords int, basePreference pebblestore.ModelPreference, memoryProfile pebblestore.AgentProfile, principal identity.Principal, emit StreamHandler) {
 	defer func() {
-		if recovered := recover(); recovered != nil {
-			s.emitSessionTitleWarning(sessionID, stage, fmt.Errorf("session title apply panic: %v", recovered), emit)
+		if recover() != nil {
+			s.emitSessionTitleWarning(sessionID, stage, errors.New("session title apply panic"), emit)
 		}
 	}()
 	title, err := s.generateMemorySessionTitle(promptContext, stage, minWords, maxWords, basePreference, memoryProfile, principal)
@@ -4689,6 +4672,16 @@ func runCompactionDebugf(format string, args ...any) {
 	_, _ = fmt.Fprintf(os.Stderr, "[swarmd.run.compaction] "+format+"\n", args...)
 }
 
+func memoryCompactionDebugErrorCategory(err error, result memoryCompactionResult) string {
+	if isMemoryCompactionEmptySummaryError(err) {
+		return "empty_summary"
+	}
+	if result.indicatesOverflow() || (err != nil && isContextOverflowDiagnostic(err.Error())) {
+		return "context_overflow"
+	}
+	return "provider_error"
+}
+
 func runCompactionDebugEvent(event string, data map[string]any) {
 	if !runCompactionDebugEnabled() {
 		return
@@ -4696,7 +4689,7 @@ func runCompactionDebugEvent(event string, data map[string]any) {
 	clean := map[string]any{
 		"ts":    time.Now().UTC().Format(time.RFC3339Nano),
 		"event": strings.TrimSpace(event),
-		"data":  data,
+		"data":  privacy.SanitizeMap(data),
 	}
 	encoded, err := json.Marshal(clean)
 	if err != nil {
@@ -4704,17 +4697,6 @@ func runCompactionDebugEvent(event string, data map[string]any) {
 		return
 	}
 	runCompactionDebugf("%s", string(encoded))
-	logPath := strings.TrimSpace(os.Getenv("SWARMD_COMPACTION_LOG_PATH"))
-	if logPath == "" {
-		return
-	}
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		runCompactionDebugf("event=%s open_log_failed=%v", strings.TrimSpace(event), err)
-		return
-	}
-	defer f.Close()
-	_, _ = f.Write(append(encoded, '\n'))
 }
 
 func runRequestDebugEnabled() bool {
@@ -4749,23 +4731,6 @@ func runRequestDebugEvent(event string, data map[string]any) {
 		return
 	}
 	runRequestDebugf("%s", string(encoded))
-}
-
-func runRequestDebugToolDefinitions(definitions []provideriface.ToolDefinition) []map[string]any {
-	if len(definitions) == 0 {
-		return nil
-	}
-	out := make([]map[string]any, 0, len(definitions))
-	for _, definition := range definitions {
-		item := map[string]any{
-			"name":        strings.TrimSpace(definition.Name),
-			"type":        strings.TrimSpace(definition.Type),
-			"description": strings.TrimSpace(definition.Description),
-			"parameters":  privacy.SanitizeValue(definition.Parameters),
-		}
-		out = append(out, item)
-	}
-	return out
 }
 
 func runRequestDebugDisabledTools(disabled map[string]bool) []string {

@@ -1191,8 +1191,8 @@ func (e *sessionV3Executor) maybeStartSessionV3TitleFlow(job sessionV3ExecutorJo
 
 func (e *sessionV3Executor) generateAndApplySessionV3Title(job sessionV3ExecutorJob) {
 	defer func() {
-		if recovered := recover(); recovered != nil {
-			log.Printf("warning: v3 session title background panic for session %q: %v", job.SessionID, recovered)
+		if recover() != nil {
+			log.Printf("warning: v3 session title background panic contained session=%q category=unexpected_panic", job.SessionID)
 		}
 	}()
 	if e == nil || e.server == nil || e.server.sessions == nil {
