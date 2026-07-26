@@ -660,6 +660,10 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSystemShutdown(w http.ResponseWriter, r *http.Request) {
+	if !isLocalAdministrativeRequest(r) {
+		writeError(w, http.StatusForbidden, errors.New("host shutdown requires the local administrative transport"))
+		return
+	}
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return

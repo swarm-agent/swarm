@@ -253,7 +253,10 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	if err != nil {
 		return err
 	}
-	if restartPlan.managerKind == lifecycleKindSystemd && restartPlan.blockedErr == nil && restartPlan.systemdActive {
+	if restartPlan.blockedErr != nil {
+		return restartPlan.blockedErr
+	}
+	if restartPlan.managerKind == lifecycleKindSystemd && restartPlan.systemdActive {
 		_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, fmt.Sprintf("Stopping Swarm backend via systemd (%s).", restartPlan.systemdUnit), "")
 		if err := stopSystemdServiceForUpdate(restartPlan.systemdScope, restartPlan.systemdUnit); err != nil {
 			return err
@@ -274,7 +277,10 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 		return fmt.Errorf("apply release update (last working runtime restarted): %w", err)
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Restarting Swarm backend.", "")
-	if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
+	if err := restartLastWorkingRuntime(profile, restartPlan); err != nil {
+		if restartPlan.managerKind == lifecycleKindSystemd {
+			return rollbackPendingUpdateAndRestartWithPlan(profile, relaunchArgs, nil, err, restartPlan)
+		}
 		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, nil, err)
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusCompleted, releaseUpdateCompletedMessage(result.Version), "")
@@ -336,7 +342,8 @@ func writeLauncherUpdateJobStatus(profile Profile, kind, status, message, errorM
 	if status == updateJobStatusCompleted || status == updateJobStatusFailed {
 		next.CompletedAtUnix = now
 	}
-	return localupdate.WriteUpdateJobStatus(profile.DataDir, next)
+	_, err := localupdate.WriteUpdateJobStatusIfCurrent(profile.DataDir, jobID, next)
+	return err
 }
 
 func firstNonEmptyString(values ...string) string {
@@ -1063,15 +1070,32 @@ func rollbackPendingRuntimeUpdate(installRoot string, cause error) (string, erro
 }
 
 func rollbackPendingUpdateAndRestart(profile Profile, relaunchArgs []string, proc *os.Process, cause error) error {
+	plan, err := resolveUpdateRestartPlan(profile)
+	if err != nil {
+		return err
+	}
+	return rollbackPendingUpdateAndRestartWithPlan(profile, relaunchArgs, proc, cause, plan)
+}
+
+func rollbackPendingUpdateAndRestartWithPlan(profile Profile, relaunchArgs []string, proc *os.Process, cause error, plan updateRestartPlan) error {
 	terminateProcess(proc, 5*time.Second)
-	_ = StopBackend(profile)
+	if plan.blockedErr != nil {
+		return plan.blockedErr
+	}
+	if plan.managerKind == lifecycleKindSystemd && plan.systemdActive {
+		if err := stopSystemdServiceForUpdate(plan.systemdScope, plan.systemdUnit); err != nil {
+			return err
+		}
+	} else if err := stopBackendForUpdate(profile); err != nil {
+		return err
+	}
 	if _, err := rollbackPendingRuntimeUpdate(profile.InstallRoot, cause); err != nil {
 		return err
 	}
-	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
+	if err := restartLastWorkingRuntime(profile, plan); err != nil {
 		return err
 	}
-	return RunTUIWithExtraEnv(profile, relaunchArgs, runtimeBootEnvironment())
+	return runTUIWithExtraEnvForUpdate(profile, relaunchArgs, runtimeBootEnvironment())
 }
 
 func writeRuntimeBootStatus(installRoot string, status runtimeBootStatus) error {

@@ -3,6 +3,7 @@ package localupdate
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,13 +57,51 @@ func UpdateJobStatusPath(dataDir string) string {
 }
 
 func WriteUpdateJobStatus(dataDir string, status UpdateJobStatus) error {
+	_, err := writeUpdateJobStatus(dataDir, status, "")
+	return err
+}
+
+// WriteUpdateJobStatusIfCurrent updates status only while jobID still owns the
+// durable status slot. This prevents a detached helper from overwriting a newer
+// job after the daemon has restarted.
+func WriteUpdateJobStatusIfCurrent(dataDir, jobID string, status UpdateJobStatus) (bool, error) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return false, errors.New("local update job id is required")
+	}
+	return writeUpdateJobStatus(dataDir, status, jobID)
+}
+
+func writeUpdateJobStatus(dataDir string, status UpdateJobStatus, expectedJobID string) (bool, error) {
 	dataDir = strings.TrimSpace(dataDir)
 	if dataDir == "" {
-		return errors.New("local update job status data dir is required")
+		return false, errors.New("local update job status data dir is required")
 	}
 	statusPath := UpdateJobStatusPath(dataDir)
-	if err := os.MkdirAll(filepath.Dir(statusPath), 0o755); err != nil {
-		return err
+	statusDir := filepath.Dir(statusPath)
+	if err := os.MkdirAll(statusDir, 0o700); err != nil {
+		return false, err
+	}
+	if err := os.Chmod(statusDir, 0o700); err != nil {
+		return false, err
+	}
+	lock, err := os.OpenFile(filepath.Join(statusDir, ".update-job.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return false, err
+	}
+	defer lock.Close()
+	if err := lockUpdateStatusFile(lock); err != nil {
+		return false, err
+	}
+	defer unlockUpdateStatusFile(lock)
+	if expectedJobID != "" {
+		current, ok, err := ReadUpdateJobStatusPath(statusPath)
+		if err != nil {
+			return false, err
+		}
+		if !ok || current.ID != expectedJobID {
+			return false, nil
+		}
 	}
 	status.ID = strings.TrimSpace(status.ID)
 	status.Kind = strings.TrimSpace(status.Kind)
@@ -77,9 +116,33 @@ func WriteUpdateJobStatus(dataDir string, status UpdateJobStatus) error {
 	}
 	raw, err := json.MarshalIndent(status, "", "  ")
 	if err != nil {
-		return err
+		return false, err
 	}
-	return os.WriteFile(statusPath, append(raw, '\n'), 0o644)
+	tmp, err := os.CreateTemp(statusDir, ".update-job-*.tmp")
+	if err != nil {
+		return false, err
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return false, err
+	}
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(append(raw, '\n')); err != nil {
+		tmp.Close()
+		return false, err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		return false, err
+	}
+	if err := os.Rename(tmpPath, statusPath); err != nil {
+		return false, fmt.Errorf("replace local update job status: %w", err)
+	}
+	return true, nil
 }
 
 func ReadUpdateJobStatusPath(path string) (UpdateJobStatus, bool, error) {

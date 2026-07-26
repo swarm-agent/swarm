@@ -357,3 +357,10 @@ func isLocalTransportRequest(r *http.Request) bool {
 	enabled, _ := r.Context().Value(localTransportAuthEnabledKey).(bool)
 	return enabled
 }
+
+func isLocalAdministrativeRequest(r *http.Request) bool {
+	if isLocalTransportRequest(r) {
+		return true
+	}
+	return isAllowedDesktopRequestHost(r) && isSameOriginBrowserRequest(r) && isLocalDesktopBrowserRequest(r)
+}

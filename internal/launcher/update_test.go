@@ -577,17 +577,21 @@ func TestRunUpdateHelperSystemdStopsServiceBeforeApplyThenRunsTUIForeground(t *t
 	originalStopSystemd := stopSystemdServiceForUpdate
 	originalApplyRelease := applyReleaseUpdateForUpdate
 	originalStartBackend := startBackendForUpdate
+	originalRestartSystemd := restartSystemdServiceForUpdate
 	originalRunTUI := runTUIWithExtraEnvForUpdate
 	originalResolveLifecycle := resolveLifecycleManagerForUpdate
 	originalServiceActive := serviceActiveForUpdate
+	originalRollbackRestart := rollbackPendingUpdateAndRestartForUpdate
 	defer func() {
 		stopBackendForUpdate = originalStopBackend
 		stopSystemdServiceForUpdate = originalStopSystemd
 		applyReleaseUpdateForUpdate = originalApplyRelease
 		startBackendForUpdate = originalStartBackend
+		restartSystemdServiceForUpdate = originalRestartSystemd
 		runTUIWithExtraEnvForUpdate = originalRunTUI
 		resolveLifecycleManagerForUpdate = originalResolveLifecycle
 		serviceActiveForUpdate = originalServiceActive
+		rollbackPendingUpdateAndRestartForUpdate = originalRollbackRestart
 	}()
 
 	calls := []string{}
@@ -607,7 +611,14 @@ func TestRunUpdateHelperSystemdStopsServiceBeforeApplyThenRunsTUIForeground(t *t
 		return result, nil
 	}
 	startBackendForUpdate = func(Profile, StartBackendOptions) error {
-		calls = append(calls, "start-backend")
+		t.Fatalf("direct backend start should not be used for active systemd service")
+		return nil
+	}
+	restartSystemdServiceForUpdate = func(scope systemdServiceScope, unit string, enable bool) error {
+		calls = append(calls, "restart-systemd")
+		if scope != systemdServiceSystem || unit != "swarm.service" || enable {
+			t.Fatalf("systemd restart = %s %s enable=%v", scope, unit, enable)
+		}
 		return nil
 	}
 	runTUIWithExtraEnvForUpdate = func(Profile, []string, map[string]string) error {
@@ -620,11 +631,15 @@ func TestRunUpdateHelperSystemdStopsServiceBeforeApplyThenRunsTUIForeground(t *t
 	serviceActiveForUpdate = func(scope systemdServiceScope, unit string) (bool, bool, error) {
 		return true, true, nil
 	}
+	rollbackPendingUpdateAndRestartForUpdate = func(Profile, []string, *os.Process, error) error {
+		t.Fatalf("legacy direct rollback should not be used for systemd lifecycle")
+		return nil
+	}
 
 	if err := RunUpdateHelper(profile, plan, 0, []string{"main"}); err != nil {
 		t.Fatalf("RunUpdateHelper: %v", err)
 	}
-	want := "stop-systemd,apply,start-backend,run-tui"
+	want := "stop-systemd,apply,restart-systemd,run-tui"
 	if got := strings.Join(calls, ","); got != want {
 		t.Fatalf("calls = %s, want %s", got, want)
 	}

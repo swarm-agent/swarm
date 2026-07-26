@@ -93,6 +93,10 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
+	if !isLocalAdministrativeRequest(r) {
+		writeError(w, http.StatusForbidden, errors.New("host update requires the local administrative transport"))
+		return
+	}
 	principal, ok := PrincipalFromRequest(r)
 	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
@@ -115,6 +119,10 @@ func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateRun(w http.ResponseWriter, r *http.Request) {
+	if !isLocalAdministrativeRequest(r) {
+		writeError(w, http.StatusForbidden, errors.New("host update requires the local administrative transport"))
+		return
+	}
 	principal, ok := PrincipalFromRequest(r)
 	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
@@ -127,17 +135,25 @@ func (s *Server) handleUpdateRun(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job": defaultUpdateJobRunner.StatusForAccount(principal.AccountScopeID, s)})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job": publicDesktopUpdateJob(defaultUpdateJobRunner.StatusForAccount(principal.AccountScopeID, s))})
 	case http.MethodPost:
 		job, err := defaultUpdateJobRunner.Start(ctx, s)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "job": job})
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "job": publicDesktopUpdateJob(job)})
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func publicDesktopUpdateJob(job desktopUpdateJob) desktopUpdateJob {
+	job.Command = ""
+	job.HelperPID = 0
+	job.LogPath = ""
+	job.Hosts = nil
+	return job
 }
 
 func (r *updateJobRunner) Status(s *Server) desktopUpdateJob {
@@ -324,7 +340,7 @@ func (s *Server) startDetachedUpdateCommand(ctx context.Context, kind, jobID str
 	}
 	logPath := s.updateHelperLogPath(jobID)
 	if logPath != "" {
-		if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 			return updateLaunchDetails{}, fmt.Errorf("prepare update helper log: %w", err)
 		}
 	}
@@ -345,7 +361,7 @@ func (s *Server) startDetachedUpdateCommand(ctx context.Context, kind, jobID str
 	cmd.Dir = launch.Dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if logPath != "" {
-		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			return updateLaunchDetails{}, fmt.Errorf("open update helper log: %w", err)
 		}
