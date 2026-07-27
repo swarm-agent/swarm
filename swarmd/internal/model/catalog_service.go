@@ -788,6 +788,7 @@ type swarmSnapshotModalityDetail struct {
 	Input                    *bool    `json:"input"`
 	Output                   *bool    `json:"output"`
 	SupportedInputMediaTypes []string `json:"supported_input_media_types"`
+	AcceptedMediaTypes       []string `json:"accepted_media_types"`
 	SupportedInputTypes      []string `json:"supported_input_types"`
 	SupportedInputCategories []string `json:"supported_input_categories"`
 	MediaType                string   `json:"media_type"`
@@ -848,7 +849,13 @@ func snapshotModelMediaCapabilities(snapshot swarmSnapshot, providerID string, m
 	if providerID == "codex" {
 		fileSemantics = pebblestore.ModelCatalogMediaSemanticsClientProcessed
 	}
-	imageMIMETypes := firstNonEmptyStringList(modelFacts.Image.SupportedInputMediaTypes, providerFacts.ImageInputMediaTypes)
+	imageMIMETypes := firstNonEmptyStringList(
+		modelFacts.Image.SupportedInputMediaTypes,
+		modelFacts.Image.AcceptedMediaTypes,
+		providerFacts.Image.SupportedInputMediaTypes,
+		providerFacts.Image.AcceptedMediaTypes,
+		providerFacts.ImageInputMediaTypes,
+	)
 
 	inputFacts := []struct {
 		modality   string

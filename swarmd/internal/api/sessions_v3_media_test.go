@@ -27,6 +27,19 @@ func TestProjectSessionsV3MediaCapabilityReportsSanitizedAuthorityAndDenials(t *
 	}
 }
 
+func TestSessionMediaAllowedCapabilityAcceptsImageExtensionWhenContractUsesMIMEOnly(t *testing.T) {
+	contract := provideriface.SessionMediaContract{
+		Hash: "contract",
+		Capabilities: []provideriface.MediaContractCapability{{
+			Modality: "image", State: provideriface.MediaCapabilityStateAllowed,
+			MIMETypes: []string{"image/png"}, MaxBytes: 1024, MaxCount: 1,
+		}},
+	}
+	if _, ok := sessionMediaAllowedCapability(contract, "image", "image/png", "png"); !ok {
+		t.Fatal("MIME-authoritative image capability rejected the uploaded filename extension")
+	}
+}
+
 func TestProjectSessionsV3MediaCapabilityFailsClosedForNonPilotProviders(t *testing.T) {
 	for _, providerID := range []string{"anthropic", "gemini", "openrouter", "ollama", "bedrock"} {
 		projection := projectSessionsV3MediaCapability(provideriface.SessionMediaContract{

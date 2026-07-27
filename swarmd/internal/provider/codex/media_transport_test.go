@@ -89,6 +89,15 @@ func TestBuildRequestPayloadMaterializesOpenAIImageAndPDF(t *testing.T) {
 	}
 }
 
+func TestBuildRequestPayloadAcceptsImageExtensionWhenMIMEIsAuthoritative(t *testing.T) {
+	payload := testMediaPayload("image", "image/png", "png", []byte("image-bytes"))
+	capability := provideriface.MediaContractCapability{Modality: "image", State: provideriface.MediaCapabilityStateAllowed, Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}, ContentTypes: []string{"input_image"}, MaxBytes: 1024, MaxCount: 1}
+	contract := allowedMediaContract("codex", "chatgpt_codex", "codex_oauth", "codex-chatgpt-v1", capability)
+	if _, err := buildRequestPayload(testMediaRequest(contract, payload)); err != nil {
+		t.Fatalf("MIME-authoritative image contract rejected filename extension: %v", err)
+	}
+}
+
 func TestBuildRequestPayloadMaterializesCodexOAuthImageOnly(t *testing.T) {
 	payload := testMediaPayload("image", "image/jpeg", "", []byte("jpeg-bytes"))
 	capability := provideriface.MediaContractCapability{Modality: "image", State: provideriface.MediaCapabilityStateAllowed, Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/jpeg"}, ContentTypes: []string{"input_image"}, MaxBytes: 1024, MaxCount: 1}

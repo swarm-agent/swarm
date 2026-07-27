@@ -976,7 +976,7 @@ func validateProviderMediaPayload(req Request, payload provideriface.SessionMedi
 		if capability.State != provideriface.MediaCapabilityStateAllowed || !strings.EqualFold(capability.Modality, payload.Modality) {
 			continue
 		}
-		if !mediaStringAllowed(capability.MIMETypes, payload.MIMEType) || !mediaStringAllowed(capability.FileTypes, payload.FileType) || capability.MaxBytes <= 0 || payload.Size > capability.MaxBytes {
+		if !mediaStringAllowed(capability.MIMETypes, payload.MIMEType) || len(capability.FileTypes) > 0 && !mediaStringAllowed(capability.FileTypes, payload.FileType) || capability.MaxBytes <= 0 || payload.Size > capability.MaxBytes {
 			break
 		}
 		counts[capability.Modality]++

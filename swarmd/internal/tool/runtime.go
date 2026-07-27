@@ -356,12 +356,23 @@ type Call struct {
 	Arguments string `json:"arguments"`
 }
 
+type MediaPayload struct {
+	AssetID      string
+	Modality     string
+	MIMEType     string
+	FileType     string
+	DigestSHA256 string
+	Size         int64
+	Bytes        []byte
+}
+
 type Result struct {
-	CallID     string `json:"call_id"`
-	Name       string `json:"name"`
-	Output     string `json:"output"`
-	Error      string `json:"error,omitempty"`
-	DurationMS int64  `json:"duration_ms"`
+	CallID     string        `json:"call_id"`
+	Name       string        `json:"name"`
+	Output     string        `json:"output"`
+	Error      string        `json:"error,omitempty"`
+	DurationMS int64         `json:"duration_ms"`
+	Media      *MediaPayload `json:"-"`
 }
 
 type Progress struct {

@@ -203,7 +203,7 @@ func SessionMediaContractAllows(contract provideriface.SessionMediaContract, mod
 		if value := strings.ToLower(strings.TrimSpace(mimeType)); value != "" && !containsMediaString(capability.MIMETypes, value) {
 			return false
 		}
-		if value := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(fileType), ".")); value != "" && !containsMediaString(capability.FileTypes, value) {
+		if value := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(fileType), ".")); value != "" && len(capability.FileTypes) > 0 && !containsMediaString(capability.FileTypes, value) {
 			return false
 		}
 		return true

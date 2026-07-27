@@ -121,6 +121,7 @@ export async function getDesktopV3MediaCapability(sessionId: string): Promise<De
 export async function uploadDesktopV3MediaAsset(input: {
   sessionId: string
   file: File
+  mimeType: string
   modality: string
   fileType?: string
   contractToken: string
@@ -131,7 +132,7 @@ export async function uploadDesktopV3MediaAsset(input: {
   const response = await apiFetch(`/v3/sessions/${encodeURIComponent(sessionId)}/media`, {
     method: 'POST',
     headers: {
-      'Content-Type': input.file.type,
+      'Content-Type': input.mimeType.trim().toLowerCase(),
       'X-Swarm-Media-Modality': input.modality,
       'X-Swarm-Media-File-Type': input.fileType?.trim() ?? '',
       'X-Swarm-Media-Contract': input.contractToken,

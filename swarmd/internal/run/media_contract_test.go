@@ -54,6 +54,21 @@ func TestCompileSessionMediaContractPilotIntersectionAndDenials(t *testing.T) {
 	}
 }
 
+func TestSessionMediaContractAllowsImageExtensionWhenMIMEIsAuthoritative(t *testing.T) {
+	contract := provideriface.SessionMediaContract{
+		Capabilities: []provideriface.MediaContractCapability{{
+			Modality: "image", State: provideriface.MediaCapabilityStateAllowed,
+			MIMETypes: []string{"image/png"}, MaxBytes: 1024, MaxCount: 1,
+		}},
+	}
+	if !SessionMediaContractAllows(contract, "image", "image/png", "png") {
+		t.Fatal("MIME-authoritative image contract rejected a harmless filename extension")
+	}
+	if SessionMediaContractAllows(contract, "image", "image/jpeg", "png") {
+		t.Fatal("MIME-authoritative image contract accepted an unsupported detected MIME type")
+	}
+}
+
 func TestCompileSessionMediaContractEveryNonPilotProviderIsTextOnly(t *testing.T) {
 	for _, providerID := range []string{"anthropic", "gemini", "openrouter", "ollama", "bedrock"} {
 		contract := CompileSessionMediaContract(SessionMediaContractInput{

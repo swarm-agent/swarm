@@ -233,6 +233,7 @@ type ToolExecutionResult struct {
 	DurationMS       int64
 	PermissionWaitMS int64
 	TextForModel     string
+	Media            *SessionMediaPayload
 	RestartTurn      bool
 }
 

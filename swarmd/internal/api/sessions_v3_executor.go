@@ -2488,6 +2488,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			toolResults = append(toolResults, result)
 		}
 		input = append(input, sessionsV3ProviderToolResultInputItems(response.FunctionCalls, toolResults)...)
+		input = append(input, sessionsV3ProviderToolMediaInputItems(toolResults)...)
 		if len(input) == 0 {
 			return sessionV3ProviderLoopResult{}, errors.New("v3 provider continuation input is empty after tool execution")
 		}
@@ -4026,6 +4027,29 @@ func sessionsV3LatestFunctionCallOutput(input []map[string]any) string {
 		return strings.TrimSpace(sessionsV3MapString(item, "output"))
 	}
 	return ""
+}
+
+func sessionsV3ProviderToolMediaInputItems(results []provideriface.ToolExecutionResult) []map[string]any {
+	out := make([]map[string]any, 0)
+	counts := map[string]int{}
+	for _, result := range results {
+		if result.Media == nil {
+			continue
+		}
+		modality := strings.ToLower(strings.TrimSpace(result.Media.Modality))
+		counts[modality]++
+		if counts[modality] > pebblestore.SessionMediaDefaultMaxCount {
+			continue
+		}
+		out = append(out, map[string]any{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "input_text", "text": "Inspect this authorized media asset and report its visual contents."},
+				{"type": "session_media", "media": *result.Media},
+			},
+		})
+	}
+	return out
 }
 
 func sessionsV3ProviderToolResultInputItems(calls []provideriface.FunctionCall, results []provideriface.ToolExecutionResult) []map[string]any {

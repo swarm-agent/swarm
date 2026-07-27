@@ -51,12 +51,12 @@ func TestSessionMediaToolSchemaAndInstructionsShareContract(t *testing.T) {
 		t.Fatalf("materialized tools = %#v", tools)
 	}
 	raw := mustProviderToolInvokerJSON(t, tools[1].Parameters)
-	for _, expected := range []string{"contract-a", "image/png", "image/jpeg", `"image"`} {
+	for _, expected := range []string{`"asset_id"`, `"path"`, `"anyOf"`} {
 		if !strings.Contains(raw, expected) {
 			t.Fatalf("media schema missing %q: %s", expected, raw)
 		}
 	}
-	for _, denied := range []string{"audio/wav", `"audio"`} {
+	for _, denied := range []string{"contract-a", "audio/wav", `"audio"`, "digest_sha256", "contract_hash"} {
 		if strings.Contains(raw, denied) {
 			t.Fatalf("media schema leaked denied value %q: %s", denied, raw)
 		}
@@ -90,22 +90,20 @@ func TestSessionMediaToolOmittedForEmptyAndNonPilotContracts(t *testing.T) {
 
 func TestMediaInspectInvocationRejectsForgedStaleAndDeniedCalls(t *testing.T) {
 	contract := provideriface.SessionMediaContract{Hash: "current", Capabilities: []provideriface.MediaContractCapability{{Modality: "image", State: provideriface.MediaCapabilityStateAllowed, MIMETypes: []string{"image/png"}, FileTypes: []string{"png"}, MaxBytes: 1024, MaxCount: 1}}}
-	valid := mediaInspectArguments{AssetID: "media-a", ContractHash: "current", DigestSHA256: strings.Repeat("a", 64), Modality: "image", MIMEType: "image/png", FileType: "png"}
-	if _, err := validateMediaInspectInvocation(contract, valid); err != nil {
+	if _, err := validateMediaInspectInvocation(contract, "image", "image/png", "png"); err != nil {
 		t.Fatalf("valid media invocation rejected: %v", err)
 	}
-	stale := valid
-	stale.ContractHash = "old"
-	if _, err := validateMediaInspectInvocation(contract, stale); err == nil || !strings.Contains(err.Error(), "stale or forged") {
-		t.Fatalf("stale media invocation error = %v", err)
+	if _, err := validateMediaInspectInvocation(provideriface.SessionMediaContract{}, "image", "image/png", "png"); err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("empty media contract error = %v", err)
 	}
-	forged := valid
-	forged.MIMEType = "audio/wav"
-	if _, err := validateMediaInspectInvocation(contract, forged); err == nil || !strings.Contains(err.Error(), "denied") {
+	if _, err := validateMediaInspectInvocation(contract, "image", "audio/wav", "wav"); err == nil || !strings.Contains(err.Error(), "denied") {
 		t.Fatalf("forged media type error = %v", err)
 	}
-	if _, err := decodeMediaInspectArguments(`{"asset_id":"a","contract_hash":"current","digest_sha256":"d","modality":"image","mime_type":"image/png","path":"secret"}`); err == nil {
-		t.Fatal("media invocation accepted an undeclared path field")
+	if _, err := decodeMediaInspectArguments(`{"asset_id":"a","path":"secret"}`); err == nil {
+		t.Fatal("media invocation accepted both asset_id and path")
+	}
+	if args, err := decodeMediaInspectArguments(`{"path":"web/public/pwa-icon-512.png"}`); err != nil || args.Path == "" {
+		t.Fatalf("workspace media path rejected: args=%+v err=%v", args, err)
 	}
 }
 

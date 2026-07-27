@@ -21,13 +21,17 @@ func staticMediaInspectToolDefinition() tool.Definition {
 	return tool.Definition{
 		Type:        "function",
 		Name:        mediaInspectToolName,
-		Description: "Inspect an immutable session media asset admitted by the current run contract",
+		Description: "Inspect a supported image from this session or workspace",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"asset_id": map[string]any{"type": "string"},
+				"path":     map[string]any{"type": "string"},
 			},
-			"required":             []string{"asset_id"},
+			"oneOf": []map[string]any{
+				{"required": []string{"asset_id"}},
+				{"required": []string{"path"}},
+			},
 			"additionalProperties": false,
 		},
 	}
@@ -52,35 +56,20 @@ func sessionMediaToolDefinition(contract provideriface.SessionMediaContract) (pr
 	if len(allowed) == 0 || strings.TrimSpace(contract.Hash) == "" {
 		return provideriface.ToolDefinition{}, false
 	}
-	modalities := make([]string, 0, len(allowed))
-	mimeTypes := make([]string, 0)
-	fileTypes := make([]string, 0)
-	for _, capability := range allowed {
-		modalities = append(modalities, capability.Modality)
-		mimeTypes = append(mimeTypes, capability.MIMETypes...)
-		fileTypes = append(fileTypes, capability.FileTypes...)
-	}
-	modalities = normalizeMediaStrings(modalities)
-	mimeTypes = normalizeMediaStrings(mimeTypes)
-	fileTypes = normalizeMediaStrings(fileTypes)
-	properties := map[string]any{
-		"asset_id":      map[string]any{"type": "string", "description": "Immutable session media asset ID"},
-		"contract_hash": map[string]any{"type": "string", "enum": []string{contract.Hash}, "description": "Exact current run media-contract hash"},
-		"digest_sha256": map[string]any{"type": "string", "description": "Expected immutable asset SHA-256 digest"},
-		"modality":      map[string]any{"type": "string", "enum": modalities},
-		"mime_type":     map[string]any{"type": "string", "enum": mimeTypes},
-	}
-	if len(fileTypes) > 0 {
-		properties["file_type"] = map[string]any{"type": "string", "enum": fileTypes}
-	}
 	return provideriface.ToolDefinition{
 		Type:        "function",
 		Name:        mediaInspectToolName,
-		Description: "Inspect one immutable session-scoped media asset after revalidating ownership, contract, type, limits, and digest",
+		Description: "Inspect a supported image by workspace path or immutable session asset ID; the backend resolves and verifies all media metadata",
 		Parameters: map[string]any{
-			"type":                 "object",
-			"properties":           properties,
-			"required":             []string{"asset_id", "contract_hash", "digest_sha256", "modality", "mime_type"},
+			"type": "object",
+			"properties": map[string]any{
+				"asset_id": map[string]any{"type": "string", "description": "Immutable asset ID already attached to this session"},
+				"path":     map[string]any{"type": "string", "description": "Workspace-relative or workspace-contained absolute image path"},
+			},
+			"oneOf": []map[string]any{
+				{"required": []string{"asset_id"}},
+				{"required": []string{"path"}},
+			},
 			"additionalProperties": false,
 		},
 	}, true
@@ -93,8 +82,9 @@ func sessionMediaContractInstructions(contract provideriface.SessionMediaContrac
 	}
 	lines := []string{
 		"Current run media contract (backend-authoritative):",
-		"- Use media_inspect only with immutable asset references already attached to this session; never pass local paths, URLs, or inline bytes.",
-		"- Every call must repeat the current contract hash and the asset digest. The backend revalidates ownership, current capability, limits, and digest.",
+		"- Use media_inspect with either a workspace-contained image path or an immutable asset ID already attached to this session.",
+		"- Do not ask the user to provide hashes, MIME types, or internal asset metadata; the backend derives and revalidates ownership, contract, type, size, count, and digest.",
+		"- Attached images are also delivered to the model natively; use media_inspect when an explicit workspace path or asset re-read is needed.",
 	}
 	for _, capability := range allowed {
 		parts := []string{"- " + capability.Modality, "semantics=" + strings.TrimSpace(capability.Semantics)}
@@ -141,12 +131,8 @@ func allowedSessionMediaCapabilities(contract provideriface.SessionMediaContract
 }
 
 type mediaInspectArguments struct {
-	AssetID      string `json:"asset_id"`
-	ContractHash string `json:"contract_hash"`
-	DigestSHA256 string `json:"digest_sha256"`
-	Modality     string `json:"modality"`
-	MIMEType     string `json:"mime_type"`
-	FileType     string `json:"file_type,omitempty"`
+	AssetID string `json:"asset_id,omitempty"`
+	Path    string `json:"path,omitempty"`
 }
 
 func decodeMediaInspectArguments(raw string) (mediaInspectArguments, error) {
@@ -157,22 +143,18 @@ func decodeMediaInspectArguments(raw string) (mediaInspectArguments, error) {
 		return mediaInspectArguments{}, fmt.Errorf("decode media_inspect arguments: %w", err)
 	}
 	args.AssetID = strings.TrimSpace(args.AssetID)
-	args.ContractHash = strings.TrimSpace(args.ContractHash)
-	args.DigestSHA256 = strings.ToLower(strings.TrimSpace(args.DigestSHA256))
-	args.Modality = strings.ToLower(strings.TrimSpace(args.Modality))
-	args.MIMEType = strings.ToLower(strings.TrimSpace(args.MIMEType))
-	args.FileType = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(args.FileType), "."))
-	if args.AssetID == "" || args.ContractHash == "" || args.DigestSHA256 == "" || args.Modality == "" || args.MIMEType == "" {
-		return mediaInspectArguments{}, errors.New("media_inspect requires asset_id, contract_hash, digest_sha256, modality, and mime_type")
+	args.Path = strings.TrimSpace(args.Path)
+	if (args.AssetID == "") == (args.Path == "") {
+		return mediaInspectArguments{}, errors.New("media_inspect requires exactly one of asset_id or path")
 	}
 	return args, nil
 }
 
-func validateMediaInspectInvocation(contract provideriface.SessionMediaContract, args mediaInspectArguments) (provideriface.MediaContractCapability, error) {
-	if strings.TrimSpace(contract.Hash) == "" || args.ContractHash != contract.Hash {
-		return provideriface.MediaContractCapability{}, errors.New("media_inspect call is stale or forged for the current run contract")
+func validateMediaInspectInvocation(contract provideriface.SessionMediaContract, modality, mimeType, fileType string) (provideriface.MediaContractCapability, error) {
+	if strings.TrimSpace(contract.Hash) == "" {
+		return provideriface.MediaContractCapability{}, errors.New("media_inspect current run contract is unavailable")
 	}
-	capability, allowed := sessionMediaCapability(contract, args.Modality, args.MIMEType, args.FileType)
+	capability, allowed := sessionMediaCapability(contract, modality, mimeType, fileType)
 	if !allowed {
 		return provideriface.MediaContractCapability{}, errors.New("media_inspect type is denied by the current run contract")
 	}

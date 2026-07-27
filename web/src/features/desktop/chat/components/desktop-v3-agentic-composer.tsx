@@ -668,7 +668,14 @@ export function DesktopV3AgenticComposer({
   }, [canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, onDraftChange, slashCommands, slashPalette.active, slashPalette.hasArguments, slashSelectionIndex])
 
   const handleAttachmentFiles = useCallback(async (files: File[]) => {
-    if (!effectiveMediaCapability || !onUploadAttachment || files.length === 0) return
+    if (files.length === 0) return
+    if (!effectiveMediaCapability || !onUploadAttachment) {
+      const reasons = mediaCapability?.denial_reasons?.filter(Boolean) ?? []
+      setAttachmentError(reasons.length > 0
+        ? `Attachments are unavailable: ${reasons.join('; ')}.`
+        : 'Attachments are unavailable for the current model, credential, agent, or session mode.')
+      return
+    }
     const maxCount = Math.min(...effectiveMediaCapability.capabilities.map((capability) => capability.max_count || 1))
     if (attachments.length + files.length > maxCount) {
       setAttachmentError(`This model allows at most ${maxCount} attachments per message.`)

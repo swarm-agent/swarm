@@ -176,14 +176,16 @@ func TestDecodeSwarmSnapshotRecordsPreservesPilotMediaAndDeniesOthers(t *testing
 	}
 	assertMediaDirection(t, openai.Media.Inputs, "image", pebblestore.ModelCatalogMediaStateSupported, pebblestore.ModelCatalogMediaSemanticsNative, []string{"image/gif", "image/jpeg", "image/png", "image/webp"}, nil)
 	assertMediaDirection(t, openai.Media.Inputs, "file", pebblestore.ModelCatalogMediaStateSupported, pebblestore.ModelCatalogMediaSemanticsProviderProcessed, nil, []string{"pdf", "presentation", "rich_document", "spreadsheet", "text_and_code"})
+	assertMediaDirection(t, openai.Media.Inputs, "pdf", pebblestore.ModelCatalogMediaStateSupported, pebblestore.ModelCatalogMediaSemanticsProviderProcessed, []string{"application/pdf"}, []string{"pdf"})
 	assertMediaDirection(t, openai.Media.Outputs, "image", pebblestore.ModelCatalogMediaStateUnsupported, pebblestore.ModelCatalogMediaSemanticsNative, nil, nil)
 
 	codex := byProviderModel["codex/gpt-5.4"]
 	if codex.Media == nil || codex.Media.ProviderSurface != "chatgpt_codex" || codex.Media.CredentialSurface != "codex_oauth" {
 		t.Fatalf("Codex media surface not preserved: %+v", codex.Media)
 	}
-	assertMediaDirection(t, codex.Media.Inputs, "image", pebblestore.ModelCatalogMediaStateSupported, pebblestore.ModelCatalogMediaSemanticsNative, nil, nil)
+	assertMediaDirection(t, codex.Media.Inputs, "image", pebblestore.ModelCatalogMediaStateSupported, pebblestore.ModelCatalogMediaSemanticsNative, []string{"image/gif", "image/jpeg", "image/png", "image/webp"}, nil)
 	assertMediaDirection(t, codex.Media.Inputs, "file", pebblestore.ModelCatalogMediaStateSupported, pebblestore.ModelCatalogMediaSemanticsClientProcessed, nil, []string{"document", "pdf", "presentation", "spreadsheet"})
+	assertMediaDirection(t, codex.Media.Inputs, "pdf", pebblestore.ModelCatalogMediaStateUnknown, pebblestore.ModelCatalogMediaSemanticsClientProcessed, []string{"application/pdf"}, []string{"pdf"})
 
 	for _, record := range records {
 		if record.Provider != "openai" && record.Provider != "codex" && record.Media != nil {
