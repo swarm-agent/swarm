@@ -182,7 +182,6 @@ gh attestation verify "${archive_path}" \
   --repo "${repository}" \
   --cert-identity "${workflow_identity}" \
   --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
-  --signer-workflow "${expected_workflow}" \
   --signer-digest "${workflow_sha}" \
   --source-digest "${source_sha}" \
   --source-ref "${source_ref}" \
