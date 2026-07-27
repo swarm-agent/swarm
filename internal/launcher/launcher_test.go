@@ -11,6 +11,32 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 )
 
+func TestDevToolchainEnvDefaultsToAutomaticToolchainSelection(t *testing.T) {
+	root := t.TempDir()
+	goBin := filepath.Join(root, ".tools", "go", "bin", "go")
+	goRoot := filepath.Join(root, "resolved-goroot")
+	if err := os.MkdirAll(filepath.Dir(goBin), 0o755); err != nil {
+		t.Fatalf("mkdir go bin: %v", err)
+	}
+	goShim := "#!/bin/sh\nif [ \"$1\" = env ] && [ \"$2\" = GOROOT ]; then echo \"" + goRoot + "\"; exit 0; fi\nexit 1\n"
+	if err := os.WriteFile(goBin, []byte(goShim), 0o755); err != nil {
+		t.Fatalf("write go shim: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(goBin), "gofmt"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write gofmt shim: %v", err)
+	}
+	t.Setenv("GO_BIN", "")
+	t.Setenv("GOTOOLCHAIN", "")
+
+	env, err := DevToolchainEnv(root)
+	if err != nil {
+		t.Fatalf("DevToolchainEnv: %v", err)
+	}
+	if got := env["GOTOOLCHAIN"]; got != "auto" {
+		t.Fatalf("GOTOOLCHAIN = %q, want auto", got)
+	}
+}
+
 func TestWriteCompressedDesktopAssetsCreatesGzipFiles(t *testing.T) {
 	dir := t.TempDir()
 	assetsDir := filepath.Join(dir, "assets")
@@ -165,8 +191,37 @@ func TestEnvListStripsArtifactInstallPathOverrides(t *testing.T) {
 	if got := envValueFromList(env, "CUSTOM_VALUE"); got != "kept" {
 		t.Fatalf("CUSTOM_VALUE = %q, want kept", got)
 	}
+	if got := envValueFromList(env, "SWARM_V3_DIAGNOSTICS"); got != "0" {
+		t.Fatalf("SWARM_V3_DIAGNOSTICS = %q, want 0", got)
+	}
+	if got := envValueFromList(env, "SWARM_PROVIDER_API_DIAGNOSTICS"); got != "0" {
+		t.Fatalf("SWARM_PROVIDER_API_DIAGNOSTICS = %q, want 0", got)
+	}
 	if got := envValueFromList(env, "LD_LIBRARY_PATH"); !strings.HasPrefix(got, filepath.Join(installRoot, "lib")) {
 		t.Fatalf("LD_LIBRARY_PATH = %q, want installed lib prefix", got)
+	}
+}
+
+func TestEnvListMapsV3DiagnosticsConfigToEnv(t *testing.T) {
+	profile := Profile{
+		Startup: startupconfig.FileConfig{V3Diagnostics: true},
+	}
+	env := profile.EnvList(nil)
+	if got := envValueFromList(env, "SWARM_V3_DIAGNOSTICS"); got != "1" {
+		t.Fatalf("SWARM_V3_DIAGNOSTICS = %q, want 1", got)
+	}
+}
+
+func TestEnvListMapsProviderAPIDiagnosticsConfigToEnv(t *testing.T) {
+	profile := Profile{
+		Startup: startupconfig.FileConfig{ProviderAPIDiagnostics: true},
+	}
+	env := profile.EnvList(nil)
+	if got := envValueFromList(env, "SWARM_PROVIDER_API_DIAGNOSTICS"); got != "1" {
+		t.Fatalf("SWARM_PROVIDER_API_DIAGNOSTICS = %q, want 1", got)
+	}
+	if got := envValueFromList(env, "SWARM_V3_DIAGNOSTICS"); got != "0" {
+		t.Fatalf("SWARM_V3_DIAGNOSTICS = %q, want 0", got)
 	}
 }
 
@@ -276,40 +331,6 @@ func TestRejectLegacyStartupConfigStopsWithoutMovingData(t *testing.T) {
 	}
 	if string(target) != "startup_mode = box\n" {
 		t.Fatalf("target config changed: %q", target)
-	}
-}
-
-func TestRejectLegacyStartupSecretStopsWithoutMovingData(t *testing.T) {
-	configRoot := t.TempDir()
-	legacyRoot := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", legacyRoot)
-
-	targetPath := filepath.Join(configRoot, "swarm.conf")
-	legacySecret := filepath.Join(legacyRoot, "swarm", "remote-deploy-bootstrap.secret")
-	if err := os.MkdirAll(filepath.Dir(legacySecret), 0o755); err != nil {
-		t.Fatalf("mkdir legacy secret dir: %v", err)
-	}
-	legacyContent := []byte("not-a-real-secret\n")
-	if err := os.WriteFile(legacySecret, legacyContent, 0o600); err != nil {
-		t.Fatalf("write legacy secret: %v", err)
-	}
-
-	err := rejectLegacyStartupConfig(targetPath)
-	if err == nil {
-		t.Fatal("rejectLegacyStartupConfig succeeded with legacy secret present")
-	}
-	if !strings.Contains(err.Error(), "legacy startup secret detected") {
-		t.Fatalf("error = %q, want legacy startup secret diagnostic", err)
-	}
-	got, err := os.ReadFile(legacySecret)
-	if err != nil {
-		t.Fatalf("legacy secret was moved/deleted: %v", err)
-	}
-	if string(got) != string(legacyContent) {
-		t.Fatalf("legacy secret content changed: %q", got)
-	}
-	if _, err := os.Stat(startupconfig.RemoteDeployBootstrapSecretPath(targetPath)); !os.IsNotExist(err) {
-		t.Fatalf("target secret exists or stat failed after rejection: %v", err)
 	}
 }
 

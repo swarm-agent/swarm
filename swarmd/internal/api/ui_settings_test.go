@@ -8,11 +8,94 @@ import (
 	"path/filepath"
 	"testing"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	"swarm/packages/swarmd/internal/uisettings"
 )
+
+func TestUISettingsPostPersistsDesignerModelSettings(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-designer-api.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, hub.Publish)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server.SetUISettingsService(settingsSvc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader([]byte(`{"agents":{"designer":{"provider":"OPENAI","model":"utility-model","thinking":"medium","service_tier":"PRIORITY"}}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response uisettings.UISettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Agents.Designer.Provider != "openai" || response.Agents.Designer.Model != "utility-model" || response.Agents.Designer.Thinking != "medium" || response.Agents.Designer.ServiceTier != "priority" {
+		t.Fatalf("response Designer settings = %#v", response.Agents.Designer)
+	}
+	stored, err := settingsSvc.Get()
+	if err != nil {
+		t.Fatalf("reload settings: %v", err)
+	}
+	if stored.Agents.Designer != response.Agents.Designer {
+		t.Fatalf("stored Designer settings = %#v, want %#v", stored.Agents.Designer, response.Agents.Designer)
+	}
+}
+
+func TestUISettingsPostPersistsCoderModelSettings(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-coder-api.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, hub.Publish)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server.SetUISettingsService(settingsSvc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader([]byte(`{"agents":{"coder":{"provider":"CODEX","model":"gpt-5.6","thinking":"high","service_tier":"PRIORITY"}}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response uisettings.UISettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Agents.Coder.Provider != "codex" || response.Agents.Coder.Model != "gpt-5.6" || response.Agents.Coder.Thinking != "high" || response.Agents.Coder.ServiceTier != "priority" {
+		t.Fatalf("response Coder settings = %#v", response.Agents.Coder)
+	}
+	stored, err := settingsSvc.Get()
+	if err != nil {
+		t.Fatalf("reload settings: %v", err)
+	}
+	if stored.Agents.Coder != response.Agents.Coder {
+		t.Fatalf("stored Coder settings = %#v, want %#v", stored.Agents.Coder, response.Agents.Coder)
+	}
+}
 
 func TestUISettingsPostPreservesExistingThinkingTagsWhenChatOmitted(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api.pebble"))
@@ -90,64 +173,6 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenChatOmitted(t *testing.T
 	}
 	if renamedState.Node.SwarmID != localState.Node.SwarmID {
 		t.Fatalf("swarm id changed on rename: got %q want %q", renamedState.Node.SwarmID, localState.Node.SwarmID)
-	}
-}
-
-func TestUISettingsPostPreservesThemeWhenUpdatesOnlyPayloadSent(t *testing.T) {
-	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-updates-only.pebble"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() { _ = store.Close() }()
-
-	events, err := pebblestore.NewEventLog(store)
-	if err != nil {
-		t.Fatalf("new event log: %v", err)
-	}
-	hub := stream.NewHub(nil)
-	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
-	settingsSvc.SetEventPublisher(events, hub.Publish)
-	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
-	server.SetUISettingsService(settingsSvc)
-
-	_, err = settingsSvc.Set(uisettings.UISettings{
-		Theme: uisettings.ThemeSettings{ActiveID: "midnight"},
-		Chat: uisettings.ChatSettings{
-			ShowHeader:            true,
-			ThinkingTags:          false,
-			DefaultNewSessionMode: "plan",
-			ToolStream:            uisettings.ChatToolStreamSettings{ShowAnchor: true, RunningSymbol: "•"},
-		},
-		Swarm: uisettings.SwarmSettings{Name: "Local"},
-	})
-	if err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
-
-	reqBody := []byte(`{"updates":{"local_container_warning_dismissed":true}}`)
-	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader(reqBody))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	var response uisettings.UISettings
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if response.Theme.ActiveID != "midnight" {
-		t.Fatalf("theme active id = %q, want midnight", response.Theme.ActiveID)
-	}
-	if !response.Updates.LocalContainerWarningDismissed {
-		t.Fatal("local container warning dismissed = false, want true")
-	}
-	if response.Swarm.Name != "Local" {
-		t.Fatalf("swarm name = %q, want Local", response.Swarm.Name)
-	}
-	if response.Chat.DefaultNewSessionMode != "plan" || response.Chat.ThinkingTags {
-		t.Fatalf("chat settings were not preserved: %+v", response.Chat)
 	}
 }
 
@@ -240,6 +265,53 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenThemeOnlyPayloadSent(t *
 	}
 	if response.Chat.ThinkingTags {
 		t.Fatal("response thinking tags = true after theme-only update, want preserved false")
+	}
+}
+
+func TestUISettingsPostPersistsSidebarHideInactiveHours(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-sidebar-hours.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, hub.Publish)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server.SetUISettingsService(settingsSvc)
+
+	reqBody := []byte(`{"chat":{"sidebar_hide_inactive_hours":24}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader(reqBody))
+	req = req.WithContext(identity.ContextWithPrincipal(req.Context(), identity.Principal{
+		Type:           identity.PrincipalTypeUser,
+		UserID:         "test-user",
+		AccountScopeID: "test-account",
+	}))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response uisettings.UISettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Chat.SidebarHideInactiveHours != 24 {
+		t.Fatalf("sidebar hide inactive hours = %d, want 24", response.Chat.SidebarHideInactiveHours)
+	}
+	loaded, err := settingsSvc.GetForAccount("test-account")
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if loaded.Chat.SidebarHideInactiveHours != 24 {
+		t.Fatalf("persisted sidebar hide inactive hours = %d, want 24", loaded.Chat.SidebarHideInactiveHours)
 	}
 }
 

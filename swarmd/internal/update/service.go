@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path"
 	"regexp"
 	"sort"
@@ -26,6 +27,8 @@ const (
 	defaultUserAgent     = "swarmd-update-status"
 	linuxAMD64ArchiveFmt = "swarm-%s-linux-amd64.tar.gz"
 	comparisonSource     = "github_releases"
+	maxReleaseJSONBytes  = 2 << 20
+	maxChecksumBytes     = 64 << 10
 )
 
 var (
@@ -97,7 +100,12 @@ type githubReleaseAsset struct {
 
 func NewService(lane string, devMode bool) *Service {
 	return &Service{
-		client:      &http.Client{Timeout: defaultLookupTimeout},
+		client: &http.Client{
+			Timeout: defaultLookupTimeout,
+			CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+				return validateTrustedGitHubURL(req.URL.String())
+			},
+		},
 		repoOwner:   defaultRepoOwner,
 		repoName:    defaultRepoName,
 		cacheTTL:    defaultCacheTTL,
@@ -215,7 +223,13 @@ func (s *Service) Apply(ctx context.Context) (ApplyPlan, error) {
 		return ApplyPlan{}, errors.New("latest release is marked draft")
 	}
 	plan.TargetVersion = strings.TrimSpace(release.TagName)
+	if !stableTagPattern.MatchString(plan.TargetVersion) {
+		return ApplyPlan{}, fmt.Errorf("release target %q is not a canonical stable version", plan.TargetVersion)
+	}
 	plan.ReleaseURL = strings.TrimSpace(release.HTMLURL)
+	if err := validateTrustedGitHubURL(plan.ReleaseURL); err != nil {
+		return ApplyPlan{}, fmt.Errorf("invalid release url: %w", err)
+	}
 	if !isVersionNewer(plan.TargetVersion, plan.CurrentVersion) {
 		return ApplyPlan{}, errors.New("no update available")
 	}
@@ -226,8 +240,8 @@ func (s *Service) Apply(ctx context.Context) (ApplyPlan, error) {
 		return ApplyPlan{}, fmt.Errorf("release %s is missing asset %s", plan.TargetVersion, plan.AssetName)
 	}
 	plan.AssetURL = strings.TrimSpace(asset.BrowserDownloadURL)
-	if plan.AssetURL == "" {
-		return ApplyPlan{}, fmt.Errorf("release asset %s is missing browser_download_url", plan.AssetName)
+	if err := validateTrustedGitHubURL(plan.AssetURL); err != nil {
+		return ApplyPlan{}, fmt.Errorf("invalid release asset url for %s: %w", plan.AssetName, err)
 	}
 	sha256, err := s.resolveAssetSHA256(ctx, asset, release.Assets, plan.AssetName)
 	if err != nil {
@@ -262,7 +276,7 @@ func (s *Service) fetchLatestStableRelease(ctx context.Context) (githubRelease, 
 		return githubRelease{}, fmt.Errorf("lookup releases: github returned %s", resp.Status)
 	}
 	var releases []githubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+	if err := decodeBoundedJSON(resp.Body, maxReleaseJSONBytes, &releases); err != nil {
 		return githubRelease{}, fmt.Errorf("decode releases: %w", err)
 	}
 	eligible := make([]githubRelease, 0, len(releases))
@@ -313,8 +327,8 @@ func (s *Service) resolveAssetSHA256(ctx context.Context, archiveAsset githubRel
 
 func (s *Service) fetchAssetText(ctx context.Context, rawURL string) (string, error) {
 	rawURL = strings.TrimSpace(rawURL)
-	if rawURL == "" {
-		return "", errors.New("asset url must not be empty")
+	if err := validateTrustedGitHubURL(rawURL); err != nil {
+		return "", fmt.Errorf("invalid asset url: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -329,14 +343,58 @@ func (s *Service) fetchAssetText(ctx context.Context, rawURL string) (string, er
 		return "", fmt.Errorf("download asset metadata: %w", err)
 	}
 	defer resp.Body.Close()
+	if err := validateTrustedGitHubResponse(resp); err != nil {
+		return "", fmt.Errorf("download asset metadata: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download asset metadata: github returned %s", resp.Status)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxChecksumBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("read asset metadata: %w", err)
 	}
+	if len(body) > maxChecksumBytes {
+		return "", fmt.Errorf("asset metadata exceeds %d bytes", maxChecksumBytes)
+	}
 	return string(body), nil
+}
+
+func validateTrustedGitHubURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "https" || u.User != nil || u.Port() != "" {
+		return errors.New("url must use HTTPS without userinfo or an explicit port")
+	}
+	host := strings.ToLower(u.Hostname())
+	switch host {
+	case "api.github.com", "github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com":
+		return nil
+	default:
+		return fmt.Errorf("untrusted GitHub host %q", host)
+	}
+}
+
+func validateTrustedGitHubResponse(resp *http.Response) error {
+	if resp == nil || resp.Request == nil || resp.Request.URL == nil {
+		return errors.New("response is missing its final request URL")
+	}
+	return validateTrustedGitHubURL(resp.Request.URL.String())
+}
+
+func decodeBoundedJSON(r io.Reader, limit int64, dst any) error {
+	body, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(body)) > limit {
+		return fmt.Errorf("response exceeds %d bytes", limit)
+	}
+	if err := json.Unmarshal(body, dst); err != nil {
+		return err
+	}
+	return nil
 }
 
 func findReleaseAsset(assets []githubReleaseAsset, name string) (githubReleaseAsset, bool) {

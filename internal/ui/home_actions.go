@@ -12,13 +12,19 @@ type HomeActionKind string
 const (
 	HomeActionOpenSession           HomeActionKind = "open-session"
 	HomeActionOpenAgentsModal       HomeActionKind = "open-agents-modal"
-	HomeActionOpenModelsModal       HomeActionKind = "open-models-modal"
+	HomeActionOpenProfilesModal     HomeActionKind = "open-profiles-modal"
+	HomeActionSelectModelProfile    HomeActionKind = "select-model-profile"
+	HomeActionRefreshCodexUsage     HomeActionKind = "refresh-codex-usage"
+	HomeActionConsumeCodexReset     HomeActionKind = "consume-codex-reset"
 	HomeActionCycleThinking         HomeActionKind = "cycle-thinking"
 	HomeActionCycleRoute            HomeActionKind = "cycle-route"
+	HomeActionOpenWorkspaceSelector HomeActionKind = "open-workspace-selector"
 	HomeActionSelectWorkspace       HomeActionKind = "select-workspace"
 	HomeActionSetDefaultSessionMode HomeActionKind = "set-default-session-mode"
 	HomeActionOpenAlertSession      HomeActionKind = "open-alert-session"
 	HomeActionClearAlerts           HomeActionKind = "clear-alerts"
+	HomeActionOpenAuthModal         HomeActionKind = "open-auth-modal"
+	HomeActionSaveOnboarding        HomeActionKind = "save-onboarding"
 )
 
 type HomeAction struct {
@@ -32,6 +38,12 @@ type HomeAction struct {
 	WorktreeEnabled  bool
 	WorktreeRootPath string
 	NotificationID   string
+	Username         string
+	SwarmName        string
+	ModelProfileID   string
+	WorkspaceIndex   int
+	ResetCreditID    string
+	IdempotencyKey   string
 }
 
 func (p *HomePage) PopHomeAction() (HomeAction, bool) {
@@ -67,20 +79,31 @@ func (p *HomePage) queueOpenSessionAction(session model.SessionSummary) {
 	p.statusLine = fmt.Sprintf("open session: %s", title)
 }
 
-func (p *HomePage) queueSelectWorkspaceAction(workspace model.Workspace) {
-	path := strings.TrimSpace(workspace.Path)
-	name := strings.TrimSpace(workspace.Name)
-	if path == "" {
-		p.statusLine = "cannot switch workspace: missing path"
+func (p *HomePage) QueueSelectModelProfile(profileID string) bool {
+	profileID = strings.TrimSpace(profileID)
+	if p == nil || profileID == "" {
+		return false
+	}
+	p.pendingHomeAction = &HomeAction{Kind: HomeActionSelectModelProfile, ModelProfileID: profileID}
+	p.statusLine = "selecting profile..."
+	return true
+}
+
+func (p *HomePage) QueueCodexUsageRefresh() {
+	if p == nil {
 		return
 	}
-	if name == "" {
-		name = path
+	p.pendingHomeAction = &HomeAction{Kind: HomeActionRefreshCodexUsage}
+	p.statusLine = "refreshing Codex account usage..."
+}
+
+func (p *HomePage) QueueCodexResetCredit(creditID, idempotencyKey string) bool {
+	creditID = strings.TrimSpace(creditID)
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if p == nil || creditID == "" || idempotencyKey == "" {
+		return false
 	}
-	p.pendingHomeAction = &HomeAction{
-		Kind:          HomeActionSelectWorkspace,
-		WorkspacePath: path,
-		WorkspaceName: name,
-	}
-	p.statusLine = fmt.Sprintf("switch workspace: %s", name)
+	p.pendingHomeAction = &HomeAction{Kind: HomeActionConsumeCodexReset, ResetCreditID: creditID, IdempotencyKey: idempotencyKey}
+	p.statusLine = "using Codex reset credit..."
+	return true
 }

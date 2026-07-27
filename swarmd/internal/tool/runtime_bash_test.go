@@ -19,8 +19,11 @@ func TestBashKeepsLargeTextForOutputViewer(t *testing.T) {
 			CallID: "bash-large-text",
 			Name:   "bash",
 			Arguments: mustJSON(t, map[string]any{
-				"command":    "yes " + strings.TrimSpace(line) + " | head -n " + strconv.Itoa(repeat),
-				"timeout_ms": 5000,
+				"command":     "yes " + strings.TrimSpace(line) + " | head -n " + strconv.Itoa(repeat),
+				"explanation": []string{"Print a fixed number of large text lines to standard output to exercise the Bash output viewer."},
+				"category":    "read",
+				"critical":    false,
+				"timeout_ms":  5000,
 			}),
 		},
 	})
@@ -48,7 +51,7 @@ func mustJSON(t *testing.T, value any) string {
 	t.Helper()
 	encoded, err := json.Marshal(value)
 	if err != nil {
-		t.Fatalf("marshal json: %v", err)
+		t.Fatalf("marshal JSON: %v", err)
 	}
 	return string(encoded)
 }

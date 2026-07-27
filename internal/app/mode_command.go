@@ -16,23 +16,27 @@ func (a *App) handleModeCommand(args []string) {
 	}
 	if len(args) == 0 {
 		a.home.SetCommandOverlay(a.modeStatusLines())
-		a.home.SetStatus("use /mode auto or /mode plan to set the default for new chats")
+		a.home.SetStatus("use /mode plan or /mode action to toggle Plan for new chats")
 		return
 	}
 
 	if strings.EqualFold(strings.TrimSpace(args[0]), "status") {
 		a.home.SetCommandOverlay(a.modeStatusLines())
-		a.home.SetStatus("default new chat mode: " + a.config.Chat.DefaultNewSessionMode)
+		a.home.SetStatus("Plan: " + modePlanLabel(a.config.Chat.DefaultNewSessionMode))
 		return
 	}
 
-	sub := normalizeAppSessionMode(args[0])
+	rawMode := strings.ToLower(strings.TrimSpace(args[0]))
+	if rawMode == "action" {
+		rawMode = "auto"
+	}
+	sub := normalizeAppSessionMode(rawMode)
 	switch sub {
 	case "auto", "plan":
 		a.applyDefaultNewSessionModeSetting(sub)
 	default:
 		a.home.SetCommandOverlay(a.modeStatusLines())
-		a.home.SetStatus("usage: /mode [auto|plan|status]")
+		a.home.SetStatus("usage: /mode [action|plan|status]")
 	}
 }
 
@@ -52,14 +56,15 @@ func (a *App) applyDefaultNewSessionModeSetting(mode string) {
 		a.home.SetStatus(fmt.Sprintf("default new chat mode %s (settings save failed: %v)", mode, err))
 		return
 	}
+	a.syncPrimedV3ChatFromHomeDraft()
 	a.showToast(ui.ToastSuccess, "default new chat mode set to "+mode)
 }
 
 func (a *App) modeStatusLines() []string {
 	lines := []string{
-		"default new chat mode: " + emptyFallback(strings.TrimSpace(a.config.Chat.DefaultNewSessionMode), "auto"),
-		"/mode auto   start new chats in auto by default",
-		"/mode plan   start new chats in plan by default",
+		"Plan: " + modePlanLabel(a.config.Chat.DefaultNewSessionMode),
+		"/mode action   turn Plan off for new chats",
+		"/mode plan   turn Plan on for new chats",
 		"/mode status   show the current default",
 		"note: this only affects new chats; existing chats can still enter/exit plan mode per session",
 	}
@@ -67,6 +72,13 @@ func (a *App) modeStatusLines() []string {
 		lines = append(lines, "settings: "+a.settingsLabel)
 	}
 	return lines
+}
+
+func modePlanLabel(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "plan") {
+		return "on"
+	}
+	return "off"
 }
 
 func (a *App) syncDefaultNewSessionModeFromServer() {

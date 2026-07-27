@@ -13,6 +13,9 @@ const (
 	AgentRuntimeModeRead      = "read"
 	AgentRuntimeModeReadWrite = "readwrite"
 
+	AgentDefaultSessionModePlan = "plan"
+	AgentDefaultSessionModeAuto = "auto"
+
 	AgentExecutionSettingRead      = AgentRuntimeModeRead
 	AgentExecutionSettingReadWrite = AgentRuntimeModeReadWrite
 
@@ -45,8 +48,18 @@ type AgentProfile struct {
 	Provider            string             `json:"provider"`
 	Model               string             `json:"model"`
 	Thinking            string             `json:"thinking"`
+	ModelMode           string             `json:"model_mode,omitempty"`
+	PlanProvider        string             `json:"plan_provider,omitempty"`
+	PlanModel           string             `json:"plan_model,omitempty"`
+	PlanThinking        string             `json:"plan_thinking,omitempty"`
+	PlanServiceTier     string             `json:"plan_service_tier,omitempty"`
+	AutoProvider        string             `json:"auto_provider,omitempty"`
+	AutoModel           string             `json:"auto_model,omitempty"`
+	AutoThinking        string             `json:"auto_thinking,omitempty"`
+	AutoServiceTier     string             `json:"auto_service_tier,omitempty"`
 	Prompt              string             `json:"prompt"`
 	RuntimeMode         string             `json:"runtime_mode,omitempty"`
+	DefaultSessionMode  string             `json:"default_session_mode,omitempty"`
 	ExecutionSetting    string             `json:"execution_setting,omitempty"`
 	ExitPlanModeEnabled *bool              `json:"exit_plan_mode_enabled,omitempty"`
 	ToolScope           *AgentToolScope    `json:"tool_scope,omitempty"`
@@ -89,6 +102,27 @@ func NormalizeAgentRuntimeMode(value string) string {
 	}
 }
 
+func NormalizeAgentDefaultSessionMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case AgentDefaultSessionModePlan:
+		return AgentDefaultSessionModePlan
+	case AgentDefaultSessionModeAuto:
+		return AgentDefaultSessionModeAuto
+	default:
+		return ""
+	}
+}
+
+func AgentProfileDefaultSessionMode(profile AgentProfile) string {
+	if mode := NormalizeAgentDefaultSessionMode(profile.DefaultSessionMode); mode != "" {
+		return mode
+	}
+	if AgentProfileRuntimeMode(profile) == AgentRuntimeModePlanAuto {
+		return AgentDefaultSessionModePlan
+	}
+	return AgentDefaultSessionModeAuto
+}
+
 func NormalizeAgentExecutionSetting(value string) string {
 	switch NormalizeAgentRuntimeMode(value) {
 	case AgentRuntimeModeRead:
@@ -98,6 +132,62 @@ func NormalizeAgentExecutionSetting(value string) string {
 	default:
 		return ""
 	}
+}
+
+func NormalizeAgentModelMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "single", "single_model", "single-model", "default":
+		return ""
+	case "split", "plan_auto", "plan-auto", "plan_auto_split", "plan-auto-split":
+		return "split"
+	default:
+		return ""
+	}
+}
+
+func NormalizeModelServiceTier(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "fast", "priority", "flex":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
+}
+
+func AgentModelMode(profile AgentProfile) string {
+	mode := NormalizeAgentModelMode(profile.ModelMode)
+	if mode == "" {
+		return "single"
+	}
+	return mode
+}
+
+func AgentSupportsSplitModel(profile AgentProfile) bool {
+	runtimeMode := NormalizeAgentRuntimeMode(profile.RuntimeMode)
+	if runtimeMode == AgentRuntimeModePlanAuto || AgentExitPlanModeEnabled(profile) {
+		return true
+	}
+	if runtimeMode == AgentRuntimeModeRead || runtimeMode == AgentRuntimeModeReadWrite {
+		return false
+	}
+	return agentToolContractEnablesPlanCapability(profile.ToolContract)
+}
+
+func agentToolContractEnablesPlanCapability(contract *AgentToolContract) bool {
+	contract = NormalizeAgentToolContract(contract)
+	if contract == nil {
+		return false
+	}
+	for rawName, cfg := range contract.Tools {
+		name := normalizeAgentToolScopeKey(rawName)
+		if name != "plan_manage" && name != "exit_plan_mode" {
+			continue
+		}
+		if cfg.Enabled != nil && *cfg.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 func CloneAgentToolScope(scope *AgentToolScope) *AgentToolScope {
@@ -161,6 +251,9 @@ func NormalizeAgentToolContract(contract *AgentToolContract) *AgentToolContract 
 	if len(contract.Tools) > 0 {
 		out.Tools = make(map[string]AgentToolConfig, len(contract.Tools))
 		for rawName, rawCfg := range contract.Tools {
+			if IsRemovedAgentToolName(rawName) {
+				continue
+			}
 			name := normalizeAgentToolScopeKey(rawName)
 			if name == "" {
 				continue
@@ -181,7 +274,19 @@ func NormalizeAgentToolContract(contract *AgentToolContract) *AgentToolContract 
 	return out
 }
 
+func IsRemovedAgentToolName(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "manage-integrations", "manage_integrations", "manage-image", "manage_image":
+		return true
+	default:
+		return false
+	}
+}
+
 func NormalizeAgentCustomToolName(value string) string {
+	if IsRemovedAgentToolName(value) {
+		return ""
+	}
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
@@ -268,22 +373,20 @@ func agentToolContractEnablesMutatingTools(contract *AgentToolContract) bool {
 		return true
 	}
 	readOnlyTools := map[string]struct{}{
-		"ask_user":            {},
-		"exit_plan_mode":      {},
-		"list":                {},
-		"manage_agent":        {},
-		"manage_flow":         {},
-		"manage_integrations": {},
-		"manage_skill":        {},
-		"manage_theme":        {},
-		"manage_todos":        {},
-		"manage_worktree":     {},
-		"plan_manage":         {},
-		"read":                {},
-		"search":              {},
-		"skill_use":           {},
-		"webfetch":            {},
-		"websearch":           {},
+		"ask_user":        {},
+		"exit_plan_mode":  {},
+		"list":            {},
+		"manage_agent":    {},
+		"manage_skill":    {},
+		"manage_theme":    {},
+		"manage_todos":    {},
+		"manage_worktree": {},
+		"plan_manage":     {},
+		"read":            {},
+		"search":          {},
+		"skill_use":       {},
+		"webfetch":        {},
+		"websearch":       {},
 	}
 	mutatingTools := map[string]struct{}{
 		"bash":       {},
@@ -322,8 +425,18 @@ func NormalizeAgentProfile(profile AgentProfile) AgentProfile {
 	profile.Provider = strings.ToLower(strings.TrimSpace(profile.Provider))
 	profile.Model = strings.TrimSpace(profile.Model)
 	profile.Thinking = strings.ToLower(strings.TrimSpace(profile.Thinking))
+	profile.ModelMode = NormalizeAgentModelMode(profile.ModelMode)
+	profile.PlanProvider = strings.ToLower(strings.TrimSpace(profile.PlanProvider))
+	profile.PlanModel = strings.TrimSpace(profile.PlanModel)
+	profile.PlanThinking = strings.ToLower(strings.TrimSpace(profile.PlanThinking))
+	profile.PlanServiceTier = NormalizeModelServiceTier(profile.PlanServiceTier)
+	profile.AutoProvider = strings.ToLower(strings.TrimSpace(profile.AutoProvider))
+	profile.AutoModel = strings.TrimSpace(profile.AutoModel)
+	profile.AutoThinking = strings.ToLower(strings.TrimSpace(profile.AutoThinking))
+	profile.AutoServiceTier = NormalizeModelServiceTier(profile.AutoServiceTier)
 	profile.Prompt = strings.TrimSpace(profile.Prompt)
 	profile.RuntimeMode = NormalizeAgentRuntimeMode(profile.RuntimeMode)
+	profile.DefaultSessionMode = NormalizeAgentDefaultSessionMode(profile.DefaultSessionMode)
 	profile.ExecutionSetting = NormalizeAgentExecutionSetting(profile.ExecutionSetting)
 	profile.ToolScope = NormalizeAgentToolScope(profile.ToolScope)
 	profile.ToolContract = NormalizeAgentToolContract(profile.ToolContract)
@@ -356,6 +469,30 @@ func NormalizeAgentProfile(profile AgentProfile) AgentProfile {
 			profile.ExecutionSetting = ""
 		}
 	}
+	profile.DefaultSessionMode = AgentProfileDefaultSessionMode(profile)
+	if AgentModelMode(profile) == "split" && AgentSupportsSplitModel(profile) {
+		profile.Provider = ""
+		profile.Model = ""
+		profile.Thinking = ""
+		if strings.TrimSpace(profile.PlanProvider) == "" || strings.TrimSpace(profile.PlanModel) == "" {
+			profile.PlanServiceTier = ""
+		}
+		if strings.TrimSpace(profile.AutoProvider) == "" || strings.TrimSpace(profile.AutoModel) == "" {
+			profile.AutoServiceTier = ""
+		}
+	} else {
+		profile.ModelMode = ""
+		profile.PlanProvider = ""
+		profile.PlanModel = ""
+		profile.PlanThinking = ""
+		profile.PlanServiceTier = ""
+		profile.AutoProvider = ""
+		profile.AutoModel = ""
+		profile.AutoThinking = ""
+		if strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
+			profile.AutoServiceTier = ""
+		}
+	}
 	profile.Protected = strings.EqualFold(profile.Name, "memory")
 	return profile
 }
@@ -377,10 +514,6 @@ func normalizeAgentToolScopeKey(value string) string {
 		return "manage_skill"
 	case "manage-agent", "manage_agent":
 		return "manage_agent"
-	case "manage-integrations", "manage_integrations":
-		return "manage_integrations"
-	case "manage-flow", "manage_flow":
-		return "manage_flow"
 	case "manage-theme", "manage_theme":
 		return "manage_theme"
 	case "manage-worktree", "manage_worktree":

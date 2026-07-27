@@ -1,8 +1,6 @@
 package auth
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -115,72 +113,6 @@ type CredentialImportResult = pebblestore.CredentialImportResult
 
 type CredentialBundleMetadata = pebblestore.CredentialBundleMetadata
 
-func (s *Service) ImportManagedCredentials(ownerSwarmID, bundlePassword, vaultPassword string, payload []byte) (CredentialImportResult, error) {
-	return CredentialImportResult{}, errAccountScopeRequired
-}
-
-func (s *Service) ImportManagedCredentialsForAccount(accountScopeID, ownerSwarmID, bundlePassword, vaultPassword string, payload []byte) (CredentialImportResult, error) {
-	if s == nil || s.authStore == nil {
-		return CredentialImportResult{}, errors.New("auth store is not configured")
-	}
-	return s.authStore.ImportManagedCredentialsForAccount(accountScopeID, ownerSwarmID, bundlePassword, vaultPassword, payload)
-}
-
-func (s *Service) ImportManagedCredentialsWithVaultAccess(ownerSwarmID, bundlePassword, vaultPassword, managedVaultKey string, payload []byte) (CredentialImportResult, error) {
-	return CredentialImportResult{}, errAccountScopeRequired
-}
-
-func (s *Service) ImportManagedCredentialsWithVaultAccessForAccount(accountScopeID, ownerSwarmID, bundlePassword, vaultPassword, managedVaultKey string, payload []byte) (CredentialImportResult, error) {
-	if s == nil || s.authStore == nil {
-		return CredentialImportResult{}, errors.New("auth store is not configured")
-	}
-	return s.authStore.ImportManagedCredentialsWithVaultAccessForAccount(accountScopeID, ownerSwarmID, bundlePassword, vaultPassword, managedVaultKey, payload)
-}
-
-func (s *Service) DeleteManagedCredentialsByOwnerSwarmID(ownerSwarmID string) (int, error) {
-	if s == nil || s.authStore == nil {
-		return 0, errors.New("auth store is not configured")
-	}
-	return s.authStore.DeleteCredentialsByOwnerSwarmID(ownerSwarmID)
-}
-
-func (s *Service) DeleteManagedCredentialsByOwnerSwarmIDForAccount(accountScopeID, ownerSwarmID string) (int, error) {
-	if s == nil || s.authStore == nil {
-		return 0, errors.New("auth store is not configured")
-	}
-	return s.authStore.DeleteCredentialsByOwnerSwarmIDForAccount(accountScopeID, ownerSwarmID)
-}
-
-func (s *Service) NewManagedCredentialBundle(ownerSwarmID string) ([]byte, string, int, error) {
-	return nil, "", 0, errAccountScopeRequired
-}
-
-func (s *Service) NewManagedCredentialBundleForAccount(accountScopeID, ownerSwarmID string) ([]byte, string, int, error) {
-	if s == nil || s.authStore == nil {
-		return nil, "", 0, errors.New("auth store is not configured")
-	}
-	ownerSwarmID = strings.TrimSpace(ownerSwarmID)
-	if ownerSwarmID == "" {
-		return nil, "", 0, errors.New("owner swarm id is required")
-	}
-	status, err := s.authStore.VaultStatus()
-	if err != nil {
-		return nil, "", 0, err
-	}
-	if status.Enabled && !status.Unlocked {
-		return nil, "", 0, pebblestore.ErrVaultLocked
-	}
-	password, err := randomSecretString(32)
-	if err != nil {
-		return nil, "", 0, err
-	}
-	payload, exported, err := s.authStore.ExportCredentialsForAccount(accountScopeID, password, "")
-	if err != nil {
-		return nil, "", 0, err
-	}
-	return payload, password, exported, nil
-}
-
 func NewService(authStore *pebblestore.AuthStore, events *pebblestore.EventLog) *Service {
 	return &Service{authStore: authStore, events: events}
 }
@@ -237,45 +169,6 @@ func (s *Service) UnlockVaultForAccount(accountScopeID, password string) (VaultS
 		return VaultStatus{}, errors.New("auth store is not configured")
 	}
 	return s.authStore.UnlockVaultForAccount(accountScopeID, password)
-}
-
-func (s *Service) ConfigureManagedVaultAccess(password, managedVaultKey string) (VaultStatus, error) {
-	if s == nil || s.authStore == nil {
-		return VaultStatus{}, errors.New("auth store is not configured")
-	}
-	return s.authStore.ConfigureManagedVaultAccess(password, managedVaultKey)
-}
-
-func (s *Service) ConfigureManagedVaultAccessForAccount(accountScopeID, password, managedVaultKey string) (VaultStatus, error) {
-	accountScopeID, err := requireAccountScopeID(accountScopeID)
-	if err != nil {
-		return VaultStatus{}, err
-	}
-	if s == nil || s.authStore == nil {
-		return VaultStatus{}, errors.New("auth store is not configured")
-	}
-	return s.authStore.ConfigureManagedVaultAccessForAccount(accountScopeID, password, managedVaultKey)
-}
-
-func (s *Service) PutManagedVaultKey(scopeID, managedVaultKey string) error {
-	if s == nil || s.authStore == nil {
-		return errors.New("auth store is not configured")
-	}
-	return s.authStore.PutManagedVaultKey(scopeID, managedVaultKey)
-}
-
-func (s *Service) ManagedVaultKey(scopeID string) (string, bool, error) {
-	if s == nil || s.authStore == nil {
-		return "", false, errors.New("auth store is not configured")
-	}
-	return s.authStore.ManagedVaultKey(scopeID)
-}
-
-func (s *Service) DeleteManagedVaultKey(scopeID string) error {
-	if s == nil || s.authStore == nil {
-		return errors.New("auth store is not configured")
-	}
-	return s.authStore.DeleteManagedVaultKey(scopeID)
 }
 
 func (s *Service) LockVault() (VaultStatus, error) {
@@ -348,26 +241,7 @@ func (s *Service) SetCodexKey(rawKey string) (CodexStatus, *pebblestore.EventEnv
 }
 
 func (s *Service) SetCodexKeyForAccount(accountScopeID, rawKey string) (CodexStatus, *pebblestore.EventEnvelope, error) {
-	accountScopeID, err := requireAccountScopeID(accountScopeID)
-	if err != nil {
-		return CodexStatus{}, nil, err
-	}
-	apiKey := strings.TrimSpace(rawKey)
-	if apiKey == "" {
-		return CodexStatus{}, nil, errors.New("codex api key must not be empty")
-	}
-
-	record, err := s.authStore.SetCodexAPIKeyForAccount(accountScopeID, apiKey)
-	if err != nil {
-		return CodexStatus{}, nil, fmt.Errorf("persist codex auth: %w", err)
-	}
-
-	status := s.statusFromRecord(record)
-	env, err := s.appendCodexUpdatedEvent(status)
-	if err != nil {
-		return CodexStatus{}, nil, err
-	}
-	return status, env, nil
+	return CodexStatus{}, nil, errors.New("codex api-key auth moved to the openai provider")
 }
 
 func (s *Service) SetCodexOAuth(accessToken, refreshToken string, expiresAt int64, accountID string) (CodexStatus, *pebblestore.EventEnvelope, error) {
@@ -663,17 +537,6 @@ func (s *Service) credentialStatusFromRecord(record pebblestore.AuthCredentialRe
 		status.Last4 = last4(record.APIKey)
 	}
 	return status
-}
-
-func randomSecretString(byteLen int) (string, error) {
-	if byteLen <= 0 {
-		return "", errors.New("secret length must be positive")
-	}
-	buf := make([]byte, byteLen)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generate random secret: %w", err)
-	}
-	return hex.EncodeToString(buf), nil
 }
 
 func connectionStatusFromRecord(record *pebblestore.AuthCredentialConnectionRecord) *ConnectionStatus {

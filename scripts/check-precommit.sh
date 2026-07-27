@@ -52,11 +52,6 @@ if ! rg -q '^## 2\. Task Execution Policy$' "${ROOT_DIR}/AGENTS.md"; then
   echo "[precommit] FAIL: AGENTS.md missing '## 2. Task Execution Policy'" >&2
   exit 1
 fi
-if ! rg -q '^## 4\. Safe Throwaway / Scratch Locations$' "${ROOT_DIR}/AGENTS.md"; then
-  echo "[precommit] FAIL: AGENTS.md missing '## 4. Safe Throwaway / Scratch Locations'" >&2
-  exit 1
-fi
-
 "${SCRIPT_DIR}/check-hardcoded-paths.sh"
 "${SCRIPT_DIR}/check-daemon-storage-paths.sh" --self-test
 "${SCRIPT_DIR}/check-secrets.sh"

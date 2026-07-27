@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 
 	anthropicapi "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"swarm/packages/swarmd/internal/identity"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -31,15 +34,21 @@ func (r *Runner) ID() string {
 	return "anthropic"
 }
 
+func (r *Runner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
+	return provideriface.ExecutionEpochLifecycleCapabilities{
+		ContextMode: provideriface.ExecutionEpochContextStatelessFullInput,
+	}
+}
+
 func (r *Runner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	if r == nil || r.authStore == nil {
 		return provideriface.Response{}, errors.New("anthropic runner auth store is not configured")
 	}
-	client, modelName, params, err := r.buildRequest(ctx, req)
+	client, modelName, params, requestOptions, err := r.buildRequest(ctx, req)
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	message, err := client.Messages.New(ctx, params)
+	message, err := client.Messages.New(ctx, params, requestOptions...)
 	if err != nil {
 		return provideriface.Response{}, err
 	}
@@ -54,36 +63,19 @@ func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.
 	if r == nil || r.authStore == nil {
 		return provideriface.Response{}, errors.New("anthropic runner auth store is not configured")
 	}
-	client, modelName, params, err := r.buildRequest(ctx, req)
+	client, modelName, params, requestOptions, err := r.buildRequest(ctx, req)
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	stream := client.Messages.NewStreaming(ctx, params)
+	stream := client.Messages.NewStreaming(ctx, params, requestOptions...)
 	message := anthropicapi.Message{}
-	var textBuilder strings.Builder
-	var thinkingBuilder strings.Builder
+	streamState := newAnthropicStreamState()
 	for stream.Next() {
 		event := stream.Current()
 		if err := message.Accumulate(event); err != nil {
 			return provideriface.Response{}, fmt.Errorf("accumulate anthropic stream: %w", err)
 		}
-		if onEvent != nil {
-			switch variant := event.AsAny().(type) {
-			case anthropicapi.ContentBlockDeltaEvent:
-				switch delta := variant.Delta.AsAny().(type) {
-				case anthropicapi.TextDelta:
-					if strings.TrimSpace(delta.Text) != "" {
-						textBuilder.WriteString(delta.Text)
-						onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: delta.Text})
-					}
-				case anthropicapi.ThinkingDelta:
-					if strings.TrimSpace(delta.Thinking) != "" {
-						thinkingBuilder.WriteString(delta.Thinking)
-						onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: delta.Thinking})
-					}
-				}
-			}
-		}
+		streamState.HandleEvent(event, onEvent)
 	}
 	if err := stream.Err(); err != nil {
 		return provideriface.Response{}, err
@@ -93,37 +85,137 @@ func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.
 		response.Model = modelName
 	}
 	if strings.TrimSpace(response.Text) == "" {
-		response.Text = strings.TrimSpace(textBuilder.String())
+		response.Text = strings.TrimSpace(streamState.Text())
 	}
 	if strings.TrimSpace(response.ReasoningSummary) == "" {
-		response.ReasoningSummary = strings.TrimSpace(thinkingBuilder.String())
+		response.ReasoningSummary = strings.TrimSpace(streamState.Thinking())
 	}
 	return response, nil
 }
 
-func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (anthropicapi.Client, string, anthropicapi.MessageNewParams, error) {
+type anthropicStreamState struct {
+	textBuilder   strings.Builder
+	thinkingByKey map[int64]string
+	thinkingOrder []int64
+	activeIndex   int64
+}
+
+func newAnthropicStreamState() *anthropicStreamState {
+	return &anthropicStreamState{activeIndex: -1, thinkingByKey: make(map[int64]string, 4)}
+}
+
+func (s *anthropicStreamState) HandleEvent(event anthropicapi.MessageStreamEventUnion, onEvent func(provideriface.StreamEvent)) {
+	if s == nil {
+		return
+	}
+	switch variant := event.AsAny().(type) {
+	case anthropicapi.ContentBlockStartEvent:
+		s.activeIndex = variant.Index
+		switch block := variant.ContentBlock.AsAny().(type) {
+		case anthropicapi.ThinkingBlock:
+			if thinking := block.Thinking; strings.TrimSpace(thinking) != "" {
+				next := s.appendThinking(variant.Index, thinking)
+				if onEvent != nil {
+					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: next, DeltaMode: provideriface.StreamEventDeltaModeReplace, ReasoningKey: anthropicReasoningKey(variant.Index)})
+				}
+			}
+		}
+	case anthropicapi.ContentBlockDeltaEvent:
+		if s.activeIndex < 0 {
+			s.activeIndex = variant.Index
+		}
+		reasoningKey := anthropicReasoningKey(variant.Index)
+		switch delta := variant.Delta.AsAny().(type) {
+		case anthropicapi.TextDelta:
+			if strings.TrimSpace(delta.Text) != "" {
+				s.textBuilder.WriteString(delta.Text)
+				if onEvent != nil {
+					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: delta.Text})
+				}
+			}
+		case anthropicapi.ThinkingDelta:
+			if strings.TrimSpace(delta.Thinking) != "" {
+				next := s.appendThinking(variant.Index, delta.Thinking)
+				if onEvent != nil {
+					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: next, DeltaMode: provideriface.StreamEventDeltaModeReplace, ReasoningKey: reasoningKey})
+				}
+			}
+		case anthropicapi.SignatureDelta:
+			// Anthropic emits a signature_delta after a thinking block. The signature is
+			// transport verification metadata, not user-visible reasoning text.
+		}
+	case anthropicapi.ContentBlockStopEvent:
+		if variant.Index == s.activeIndex {
+			s.activeIndex = -1
+		}
+	}
+}
+
+func (s *anthropicStreamState) Text() string {
+	if s == nil {
+		return ""
+	}
+	return s.textBuilder.String()
+}
+
+func (s *anthropicStreamState) Thinking() string {
+	if s == nil || len(s.thinkingOrder) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(s.thinkingOrder))
+	for _, index := range s.thinkingOrder {
+		if thinking := strings.TrimSpace(s.thinkingByKey[index]); thinking != "" {
+			parts = append(parts, thinking)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func (s *anthropicStreamState) appendThinking(index int64, delta string) string {
+	if s == nil {
+		return ""
+	}
+	if s.thinkingByKey == nil {
+		s.thinkingByKey = make(map[int64]string, 4)
+	}
+	if _, ok := s.thinkingByKey[index]; !ok {
+		s.thinkingOrder = append(s.thinkingOrder, index)
+	}
+	next := s.thinkingByKey[index] + delta
+	s.thinkingByKey[index] = next
+	return next
+}
+
+func anthropicReasoningKey(index int64) string {
+	if index < 0 {
+		return "anthropic-thinking"
+	}
+	return fmt.Sprintf("anthropic-thinking-%d", index)
+}
+
+func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (anthropicapi.Client, string, anthropicapi.MessageNewParams, []option.RequestOption, error) {
 	principal, principalOK := identity.PrincipalFromContext(ctx)
 	if !principalOK {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, identity.ErrPrincipalRequired
+		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, identity.ErrPrincipalRequired
 	}
 	record, ok, err := r.authStore.GetActiveCredentialForAccount(principal.AccountScopeID, "anthropic")
 	if err != nil {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, fmt.Errorf("read anthropic auth: %w", err)
+		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, fmt.Errorf("read anthropic auth: %w", err)
 	}
 	if !ok || strings.TrimSpace(record.APIKey) == "" {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, errors.New("anthropic auth is not configured")
+		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, errors.New("anthropic auth is not configured")
 	}
 	modelName := strings.TrimSpace(req.Model)
 	if modelName == "" {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, errors.New("model is required")
+		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, errors.New("model is required")
 	}
 	messages, err := buildAnthropicMessages(req.Input)
 	if err != nil {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, err
+		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, err
 	}
 	tools, enablePromptCaching, err := buildAnthropicTools(req.Tools)
 	if err != nil {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, err
+		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, err
 	}
 	system := buildAnthropicSystem(req.Instructions)
 	if len(system) > 0 {
@@ -136,27 +228,75 @@ func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (a
 		System:    system,
 		Tools:     tools,
 	}
-	if thinking := anthropicThinkingConfig(req.Thinking); thinking != nil {
+	if thinking, effort := anthropicThinkingConfig(req.ModelCatalog, req.Thinking); thinking != nil {
 		params.Thinking = *thinking
+		if effort != "" {
+			params.OutputConfig = anthropicapi.OutputConfigParam{Effort: effort}
+		}
 	}
 	if toolChoice := anthropicToolChoice(req.ToolChoice, req.ParallelToolCalls); toolChoice != nil {
 		params.ToolChoice = *toolChoice
 	}
-	if serviceTier := anthropicServiceTier(req.ServiceTier); serviceTier != "" {
+	requestOptions := anthropicRequestOptions(req.ModelCatalog, req.ServiceTier)
+	if serviceTier := anthropicProviderServiceTier(req.ModelCatalog, req.ServiceTier); serviceTier != "" {
 		params.ServiceTier = serviceTier
 	}
 	if enablePromptCaching {
 		applyAnthropicPromptCaching(&params, tools)
 	}
 	client := anthropicapi.NewClient(anthropicClientOptions(strings.TrimSpace(record.APIKey))...)
-	return client, modelName, params, nil
+	return client, modelName, params, requestOptions, nil
 }
 
 func anthropicClientOptions(apiKey string) []option.RequestOption {
 	return []option.RequestOption{
 		option.WithAPIKey(apiKey),
 		option.WithHeaderAdd("anthropic-beta", string(promptCachingBeta)),
+		option.WithMiddleware(func(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+			return providerdiagnostics.RoundTrip("anthropic", "messages", next, req)
+		}),
 	}
+}
+
+func anthropicRequestOptions(catalog any, serviceTier string) []option.RequestOption {
+	mapping, ok := anthropicServiceTierMapping(catalog, serviceTier)
+	if !ok || !strings.EqualFold(strings.TrimSpace(mapping.ProviderParameter), "speed") || !strings.EqualFold(strings.TrimSpace(mapping.ProviderValue), "fast") {
+		return nil
+	}
+	options := []option.RequestOption{option.WithJSONSet("speed", "fast")}
+	if betaHeader := strings.TrimSpace(mapping.BetaHeader); betaHeader != "" {
+		options = append(options, option.WithHeaderAdd("anthropic-beta", betaHeader))
+	}
+	return options
+}
+
+func anthropicServiceTierMapping(catalog any, serviceTier string) (pebblestore.ModelCatalogServiceTierMapping, bool) {
+	record, ok := catalog.(pebblestore.ModelCatalogRecord)
+	if !ok {
+		return pebblestore.ModelCatalogServiceTierMapping{}, false
+	}
+	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
+	if serviceTier == "" || serviceTier == "standard" || serviceTier == "off" {
+		return pebblestore.ModelCatalogServiceTierMapping{}, false
+	}
+	for _, mapping := range record.ServiceTierMappings {
+		if strings.EqualFold(strings.TrimSpace(mapping.Tier), serviceTier) {
+			return mapping, true
+		}
+	}
+	for _, mapping := range record.ServiceTierMappings {
+		if strings.EqualFold(strings.TrimSpace(mapping.SwarmSetting), serviceTier) {
+			return mapping, true
+		}
+	}
+	return pebblestore.ModelCatalogServiceTierMapping{}, false
+}
+
+func anthropicProviderServiceTier(catalog any, serviceTier string) anthropicapi.MessageNewParamsServiceTier {
+	if mapping, ok := anthropicServiceTierMapping(catalog, serviceTier); ok && strings.EqualFold(strings.TrimSpace(mapping.ProviderParameter), "service_tier") {
+		return anthropicServiceTier(mapping.ProviderValue)
+	}
+	return anthropicServiceTier(serviceTier)
 }
 
 func applyAnthropicPromptCaching(params *anthropicapi.MessageNewParams, tools []anthropicapi.ToolUnionParam) {
@@ -344,25 +484,102 @@ func buildAnthropicContentBlocksFromMaps(items []map[string]any) ([]anthropicapi
 	return blocks, nil
 }
 
-func anthropicThinkingConfig(level string) *anthropicapi.ThinkingConfigParamUnion {
-	switch strings.ToLower(strings.TrimSpace(level)) {
+func anthropicThinkingConfig(catalog any, level string) (*anthropicapi.ThinkingConfigParamUnion, anthropicapi.OutputConfigEffort) {
+	level = strings.ToLower(strings.TrimSpace(level))
+	mapping, hasMapping := anthropicThinkingMapping(catalog, level)
+	if hasMapping {
+		return anthropicThinkingConfigFromMapping(mapping, level)
+	}
+	switch level {
 	case "off":
 		cfg := anthropicapi.ThinkingConfigParamUnion{OfDisabled: &anthropicapi.ThinkingConfigDisabledParam{}}
-		return &cfg
-	case "low":
-		cfg := anthropicapi.ThinkingConfigParamOfEnabled(1024)
-		return &cfg
-	case "medium":
-		cfg := anthropicapi.ThinkingConfigParamOfEnabled(4096)
-		return &cfg
-	case "high":
-		cfg := anthropicapi.ThinkingConfigParamOfEnabled(8192)
-		return &cfg
-	case "xhigh":
-		cfg := anthropicapi.ThinkingConfigParamOfEnabled(16384)
-		return &cfg
+		return &cfg, ""
+	case "low", "medium", "high", "xhigh":
+		cfg := anthropicapi.ThinkingConfigParamOfEnabled(anthropicThinkingBudgetTokens(level))
+		return &cfg, ""
 	default:
-		return nil
+		return nil, ""
+	}
+}
+
+func anthropicThinkingMapping(catalog any, level string) (pebblestore.ModelCatalogThinkingMapping, bool) {
+	record, ok := catalog.(pebblestore.ModelCatalogRecord)
+	if !ok {
+		return pebblestore.ModelCatalogThinkingMapping{}, false
+	}
+	level = strings.ToLower(strings.TrimSpace(level))
+	for _, mapping := range record.ThinkingMappings {
+		if strings.EqualFold(strings.TrimSpace(mapping.SwarmSetting), level) {
+			return mapping, true
+		}
+	}
+	return pebblestore.ModelCatalogThinkingMapping{}, false
+}
+
+func anthropicThinkingConfigFromMapping(mapping pebblestore.ModelCatalogThinkingMapping, level string) (*anthropicapi.ThinkingConfigParamUnion, anthropicapi.OutputConfigEffort) {
+	behavior := strings.ToLower(strings.TrimSpace(mapping.Behavior))
+	providerParameter := strings.ToLower(strings.TrimSpace(mapping.ProviderParameter))
+	providerValue := firstNonEmpty(strings.TrimSpace(mapping.EffectiveProviderValue), strings.TrimSpace(mapping.ProviderValue))
+	if behavior == "disabled" || strings.EqualFold(level, "off") {
+		cfg := anthropicapi.ThinkingConfigParamUnion{OfDisabled: &anthropicapi.ThinkingConfigDisabledParam{}}
+		return &cfg, ""
+	}
+	if behavior == "effort" || strings.Contains(providerParameter, "output_config.effort") || strings.Contains(providerParameter, "output_config") {
+		effort := anthropicOutputEffort(providerValue)
+		if effort == "" {
+			effort = anthropicOutputEffort(level)
+		}
+		if effort == "" {
+			return nil, ""
+		}
+		cfg := anthropicapi.ThinkingConfigParamUnion{OfAdaptive: &anthropicapi.ThinkingConfigAdaptiveParam{Display: anthropicapi.ThinkingConfigAdaptiveDisplaySummarized}}
+		return &cfg, effort
+	}
+	if strings.Contains(providerParameter, "budget_tokens") {
+		budgetTokens := anthropicThinkingBudgetTokensFromMapping(providerValue, level)
+		if budgetTokens <= 0 {
+			return nil, ""
+		}
+		cfg := anthropicapi.ThinkingConfigParamOfEnabled(budgetTokens)
+		return &cfg, ""
+	}
+	return nil, ""
+}
+
+func anthropicThinkingBudgetTokensFromMapping(providerValue, level string) int64 {
+	if parsed, err := strconv.ParseInt(strings.TrimSpace(providerValue), 10, 64); err == nil && parsed > 0 {
+		return parsed
+	}
+	return anthropicThinkingBudgetTokens(level)
+}
+
+func anthropicThinkingBudgetTokens(level string) int64 {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "low":
+		return 1024
+	case "medium":
+		return 4096
+	case "high":
+		return 8192
+	case "xhigh":
+		return 16384
+	default:
+		return 4096
+	}
+}
+
+func anthropicOutputEffort(level string) anthropicapi.OutputConfigEffort {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "low":
+		return anthropicapi.OutputConfigEffortLow
+	case "medium":
+		return anthropicapi.OutputConfigEffortMedium
+	case "high":
+		return anthropicapi.OutputConfigEffortHigh
+	case "xhigh":
+		return anthropicapi.OutputConfigEffortXhigh
+	default:
+		return ""
 	}
 }
 
@@ -386,7 +603,7 @@ func anthropicToolChoice(choice string, parallel bool) *anthropicapi.ToolChoiceU
 
 func anthropicServiceTier(serviceTier string) anthropicapi.MessageNewParamsServiceTier {
 	switch strings.ToLower(strings.TrimSpace(serviceTier)) {
-	case "auto":
+	case "auto", "priority":
 		return anthropicapi.MessageNewParamsServiceTierAuto
 	case "standard_only":
 		return anthropicapi.MessageNewParamsServiceTierStandardOnly
@@ -451,6 +668,7 @@ func anthropicUsageToTokenUsage(usage anthropicapi.Usage) provideriface.TokenUsa
 		CacheReadTokens:  maxInt64(usage.CacheReadInputTokens, 0),
 		CacheWriteTokens: maxInt64(usage.CacheCreationInputTokens, 0),
 		TotalTokens:      maxInt64(usage.InputTokens+usage.OutputTokens+usage.CacheCreationInputTokens+usage.CacheReadInputTokens, 0),
+		ServiceTier:      strings.TrimSpace(string(usage.ServiceTier)),
 		Source:           usageSource,
 		APIUsageRaw:      usageRaw,
 		APIUsageRawPath:  "usage",

@@ -21,27 +21,27 @@ import (
 	"swarm/packages/swarmd/internal/api"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/config"
-	containerprofiles "swarm/packages/swarmd/internal/containerprofiles"
-	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/discovery"
 	identityruntime "swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	"swarm/packages/swarmd/internal/lock"
+	"swarm/packages/swarmd/internal/longsessiondiag"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/provider/anthropic"
 	"swarm/packages/swarmd/internal/provider/codex"
 	"swarm/packages/swarmd/internal/provider/copilot"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	exaprovider "swarm/packages/swarmd/internal/provider/exa"
 	"swarm/packages/swarmd/internal/provider/fireworks"
 	"swarm/packages/swarmd/internal/provider/google"
+	"swarm/packages/swarmd/internal/provider/openai"
 	"swarm/packages/swarmd/internal/provider/openrouter"
 	"swarm/packages/swarmd/internal/provider/registry"
-	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	"swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -54,6 +54,7 @@ import (
 	"swarm/packages/swarmd/internal/uisettings"
 	update "swarm/packages/swarmd/internal/update"
 	"swarm/packages/swarmd/internal/voice"
+	"swarm/packages/swarmd/internal/webpush"
 	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -66,6 +67,7 @@ type Daemon struct {
 	events                    *pebblestore.EventLog
 	hub                       *stream.Hub
 	apiServer                 *api.Server
+	notificationService       *notification.Service
 	httpServer                *http.Server
 	desktopServer             *http.Server
 	localTransportServer      *http.Server
@@ -82,12 +84,12 @@ type Daemon struct {
 	stopOnce                  sync.Once
 	cleanupOnce               sync.Once
 	cleanupErr                error
+	longSessionDiagnostics    *longsessiondiag.Recorder
 	bgCtx                     context.Context
 	bgCancel                  context.CancelFunc
 	copilot                   *copilot.Manager
-	deployContainers          *deployruntime.Service
-	remoteDeploys             *remotedeploy.Service
-	localContainers           *localcontainers.Service
+	toolRuntime               *tool.Runtime
+	aiTaskDispatcher          *run.AITaskV2Dispatcher
 	localTransportRuntimeName string
 	localTransportBaseURL     string
 	localTransportSocketPath  string
@@ -95,8 +97,9 @@ type Daemon struct {
 
 const (
 	lingerPollInterval           = 250 * time.Millisecond
-	localTransportSocketDirMode  = 0o711
-	localTransportSocketFileMode = 0o666
+	localTransportSocketDirMode  = 0o700
+	localTransportSocketFileMode = 0o600
+	shutdownTimeout              = 5 * time.Second
 )
 
 func localTransportSocketDirPerm() os.FileMode {
@@ -107,12 +110,40 @@ func localTransportSocketPerm() os.FileMode {
 	return localTransportSocketFileMode
 }
 
-func New(cfg config.Config) (*Daemon, error) {
-	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create data directory: %w", err)
+func removeStaleUnixSocket(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(cfg.LockPath), 0o755); err != nil {
-		return nil, fmt.Errorf("create lock parent directory: %w", err)
+	if info.Mode()&os.ModeSymlink != 0 || info.Mode().IsRegular() || info.IsDir() || info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("refusing to replace unexpected local transport path %q with mode %s", path, info.Mode())
+	}
+	return os.Remove(path)
+}
+
+func ensurePrivateDirectory(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("path %q is not a directory", path)
+	}
+	return os.Chmod(path, 0o700)
+}
+
+func New(cfg config.Config) (*Daemon, error) {
+	if err := ensurePrivateDirectory(cfg.DataDir); err != nil {
+		return nil, fmt.Errorf("secure data directory: %w", err)
+	}
+	if err := ensurePrivateDirectory(filepath.Dir(cfg.LockPath)); err != nil {
+		return nil, fmt.Errorf("secure lock parent directory: %w", err)
 	}
 
 	lk, err := lock.Acquire(cfg.LockPath, lock.Metadata{
@@ -153,6 +184,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	codexClient := codex.NewClient(authStore)
 	toolRuntime := tool.NewRuntime(8)
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	if err := agentSvc.EnsureSystemAgentRegistry(); err != nil {
+		log.Printf("warning: system agent registry validation failed; Plan/AI sidechats will be unavailable until the daemon binary is corrected: %v", err)
+	}
 	modelCatalog := model.NewCatalogService(pebblestore.NewModelCatalogStore(store))
 	modelSvc := model.NewServiceWithFavorites(
 		pebblestore.NewModelStore(store),
@@ -163,18 +197,35 @@ func New(cfg config.Config) (*Daemon, error) {
 	topologyStore := pebblestore.NewTopologyStore(store)
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
-	sessionSvc.SetHostedSync(sessionruntime.NewHostedSyncClient(cfg.ConfigPath, swarmStore))
-	sessionSvc.SetLocalSwarmIDResolver(func() string {
-		localNode, ok, err := swarmStore.GetLocalNode()
-		if err != nil || !ok {
-			return ""
-		}
-		return strings.TrimSpace(localNode.SwarmID)
-	})
+	if err := sessionSvc.EnsureSessionRunStateIndex(); err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("migrate v3 run-state index: %w", err)
+	}
 	permissionSvc := permission.NewService(pebblestore.NewPermissionStore(store), events, hub.Publish)
 	notificationSvc := notification.NewService(pebblestore.NewNotificationStore(store), events, hub.Publish)
+	webPushRepository, err := webpush.NewPebbleRepository(secretStore)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("configure web push repository: %w", err)
+	}
+	webPushSvc, err := webpush.NewService(webPushRepository, "https://github.com/swarm-agent/swarm", nil)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("configure web push service: %w", err)
+	}
+	if _, err := webPushSvc.PublicKey(context.Background()); err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("initialize web push VAPID key: %w", err)
+	}
 	permissionSvc.SetSessionResolver(sessionSvc)
-	permissionSvc.SetHostedSync(permission.NewHostedSyncClient(cfg.ConfigPath, swarmStore))
 	permissionSvc.SetLocalSwarmIDResolver(func() string {
 		localNode, ok, err := swarmStore.GetLocalNode()
 		if err != nil || !ok {
@@ -193,56 +244,41 @@ func New(cfg config.Config) (*Daemon, error) {
 	permissionSvc.SetNotificationService(notificationSvc)
 	discoverySvc := discovery.NewService()
 	swarmSvc := swarmruntime.NewService(swarmStore, events, hub.Publish)
-	containerProfileSvc := containerprofiles.NewService(pebblestore.NewSwarmContainerProfileStore(store))
+	// The local swarm ID is daemon identity, not onboarding state. Mint and
+	// durably store it before topology or any V3 session path can resolve self.
+	if _, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{}); err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("ensure canonical local swarm identity: %w", err)
+	}
 	workspaceSvc := workspace.NewService(pebblestore.NewWorkspaceStore(store))
-	workspaceSvc.SetStartupConfigPath(cfg.ConfigPath)
 	workspaceSvc.SetEventPublisher(events, hub.Publish)
-	localContainerSvc := localcontainers.NewServiceWithDataDir(
-		pebblestore.NewSwarmLocalContainerStore(store),
-		pebblestore.NewDeployContainerStore(store),
-		swarmStore,
-		authStore,
-		workspaceSvc,
-		cfg.ConfigPath,
-		cfg.DataDir,
-		topologyStore,
-	)
-	swarmNodeStore := pebblestore.NewSwarmNodeStore(store, topologyStore)
 	identityStore := pebblestore.NewIdentityStore(store)
 	identitySvc := identityruntime.NewService(identityStore)
 	identitySessionSvc := identityruntime.NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(secretStore))
-	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), localContainerSvc, swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath, discoverySvc, permissionSvc, modelSvc, swarmNodeStore, topologyStore, identitySvc)
-	publishAndSync := func(env pebblestore.EventEnvelope) {
-		hub.Publish(env)
-		if deployContainerSvc == nil {
-			return
-		}
-		go func(eventType string) {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := deployContainerSvc.PushManagedSyncToLocalChildren(ctx, eventType); err != nil {
-				log.Printf("warning: managed local container sync failed after %s: %v", eventType, err)
-			}
-			if err := deployContainerSvc.PushManagedSyncToManagedHosts(ctx, eventType); err != nil {
-				log.Printf("warning: managed host sync failed after %s: %v", eventType, err)
-			}
-		}(strings.TrimSpace(env.EventType))
-	}
-	agentSvc.SetEventPublisher(publishAndSync)
-	authSvc.SetEventPublisher(publishAndSync)
-	modelSvc.SetEventPublisher(publishAndSync)
-	remoteDeployStore := pebblestore.NewRemoteDeploySessionStore(store)
-	remoteDeploySvc := remotedeploy.NewService(remoteDeployStore, swarmNodeStore, swarmSvc, swarmStore, localContainerSvc, authSvc, workspaceSvc, cfg.ConfigPath, cfg.StartupCWD, topologyStore)
-	topologySvc := topologyruntime.NewService(topologyStore, swarmStore, swarmNodeStore, pebblestore.NewSwarmLocalContainerStore(store), pebblestore.NewDeployContainerStore(store), remoteDeployStore, pebblestore.NewSessionRouteStore(store), pebblestore.NewWorkspaceStore(store))
+	agentSvc.SetEventPublisher(hub.Publish)
+	authSvc.SetEventPublisher(hub.Publish)
+	modelSvc.SetEventPublisher(hub.Publish)
+	topologySvc := topologyruntime.NewService(topologyStore, swarmStore)
 	worktreeSvc := worktreeruntime.NewService(pebblestore.NewWorktreeStore(store), workspaceSvc, events)
 	mcpSvc := mcpruntime.NewService(pebblestore.NewMCPStore(store), events)
-	securitySvc := security.NewService(pebblestore.NewClientAuthStore(store), events)
+	securitySvc := security.NewService(pebblestore.NewClientAuthStoreWithSecretStore(store, secretStore), events)
 	voiceSvc := voice.NewService(
 		pebblestore.NewVoiceStore(store),
 		voice.NewWhisperLocalAdapter(),
 	)
 	uiSettingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	uiSettingsSvc.SetEventPublisher(events, hub.Publish)
+	planLifecycleSvc := sessionruntime.NewPlanLifecycleService(sessionSvc)
+	planLifecycleSvc.SetApplySessionMutation(sessionSvc.ApplySessionMutation)
+	planLifecycleSvc.SetGlobalFollowupCheckpointPolicyResolver(func(accountScopeID string) (string, error) {
+		settings, err := uiSettingsSvc.GetForAccount(accountScopeID)
+		if err != nil {
+			return "", err
+		}
+		return settings.Chat.FollowupCheckpointPolicyDefault, nil
+	})
 	swarmDesktopTargetSelectionStore := pebblestore.NewSwarmDesktopTargetSelectionStore(store)
 	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(store), events, hub.Publish, sessionSvc)
 	integrationSvc := integrationruntime.NewService(pebblestore.NewIntegrationStore(store))
@@ -253,6 +289,18 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("load startup config: %w", startupCfgErr)
 	}
+	if startupCfg.V3Diagnostics {
+		if err := os.Setenv("SWARM_V3_DIAGNOSTICS", "1"); err != nil {
+			return nil, fmt.Errorf("enable v3 diagnostics: %w", err)
+		}
+	} else {
+		if err := os.Setenv("SWARM_V3_DIAGNOSTICS", "0"); err != nil {
+			return nil, fmt.Errorf("disable v3 diagnostics: %w", err)
+		}
+	}
+	if err := os.Setenv(providerdiagnostics.EnvName, providerdiagnostics.BoolEnvValue(startupCfg.ProviderAPIDiagnostics)); err != nil {
+		return nil, fmt.Errorf("configure provider api diagnostics: %w", err)
+	}
 	updateSvc := update.NewService(strings.TrimSpace(os.Getenv("SWARM_LANE")), startupCfg.DevMode)
 	if err := seedUISwarmName(cfg.ConfigPath, uiSettingsSvc); err != nil {
 		_ = secretStore.Close()
@@ -261,19 +309,16 @@ func New(cfg config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("seed ui swarm name: %w", err)
 	}
 	toolRuntime.SetManageWorktreeServices(sessionSvc, workspaceSvc, worktreeSvc)
+	// Agent persistence remains wired for session selection and orchestration, but
+	// the AI-facing manage-agent tool is disabled for the MVP compiled crew.
 	toolRuntime.SetManageAgentService(agentSvc)
+	toolRuntime.SetManageOrchestrationPolicyService(permissionSvc)
 	toolRuntime.SetManageTodoService(todoSvc)
-	toolRuntime.SetManageIntegrationService(integrationSvc)
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
 	toolRuntime.SetExaConfigResolver(func(ctx context.Context) (tool.ExaRuntimeConfig, error) {
-		mcpConfig, err := mcpSvc.ResolveExaRuntimeConfig()
-		if err != nil {
-			return tool.ExaRuntimeConfig{}, err
-		}
 		cfg := tool.ExaRuntimeConfig{
 			SearchURL:   "https://api.exa.ai/search",
 			ContentsURL: "https://api.exa.ai/contents",
-			MCPURL:      strings.TrimSpace(mcpConfig.URL),
 		}
 		principal, principalOK := identityruntime.PrincipalFromContext(ctx)
 		if !principalOK {
@@ -289,12 +334,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		if cfg.APIKey != "" {
 			cfg.Enabled = true
 			cfg.Source = "api_key"
-			return cfg, nil
-		}
-		if mcpConfig.Enabled {
-			cfg.Enabled = true
-			cfg.Source = "mcp"
-			return cfg, nil
 		}
 		return cfg, nil
 	})
@@ -308,14 +347,9 @@ func New(cfg config.Config) (*Daemon, error) {
 		codex.NewAdapter(authStore),
 		fireworks.NewAdapter(authStore),
 		google.NewAdapter(authStore),
+		openai.NewAdapter(authStore),
 		openrouter.NewAdapter(authStore),
-		exaprovider.NewAdapter(authStore, func(context.Context) (bool, error) {
-			mcpConfig, err := mcpSvc.ResolveExaRuntimeConfig()
-			if err != nil {
-				return false, err
-			}
-			return mcpConfig.Enabled, nil
-		}),
+		exaprovider.NewAdapter(authStore),
 	)
 	providers.RegisterRunner(anthropic.NewRunner(authStore))
 	// Copilot runner registration is disabled with the adapter above; leave the
@@ -323,9 +357,11 @@ func New(cfg config.Config) (*Daemon, error) {
 	providers.RegisterRunner(codex.NewRunner(codexClient))
 	providers.RegisterRunner(fireworks.NewRunner(authStore))
 	providers.RegisterRunner(google.NewRunner(authStore))
+	providers.RegisterRunner(openai.NewRunner(authStore, codexClient))
 	providers.RegisterRunner(openrouter.NewRunner(authStore))
 	runSvc := run.NewService(sessionSvc, modelSvc, providers, toolRuntime, permissionSvc, agentSvc, discoverySvc, events)
 	runSvc.SetWorkspaceService(workspaceSvc)
+	runSvc.SetUISettingsService(uiSettingsSvc)
 	runSvc.SetWorktreeService(worktreeSvc)
 	runSvc.SetEventPublisher(hub.Publish)
 
@@ -341,9 +377,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("load default model stack: %w", err)
 	}
-	if _, err := modelCatalog.Refresh(context.Background()); err != nil {
-		log.Printf("warning: refresh model catalog: %v", err)
-	}
 	if _, err := securitySvc.EnsureAttachAuth(); err != nil {
 		_ = secretStore.Close()
 		_ = store.Close()
@@ -355,14 +388,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("seed mcp defaults: %w", err)
-	}
-	if removed, err := workspaceSvc.PurgeAllReplicationLinks(); err != nil {
-		_ = secretStore.Close()
-		_ = store.Close()
-		_ = lk.Release()
-		return nil, fmt.Errorf("purge legacy workspace replication links: %w", err)
-	} else if removed > 0 {
-		log.Printf("purged %d legacy workspace replication links; canonical topology workspace bindings are authoritative", removed)
 	}
 	if _, err := topologySvc.EnsureSnapshot(); err != nil {
 		_ = secretStore.Close()
@@ -376,15 +401,35 @@ func New(cfg config.Config) (*Daemon, error) {
 	if err := permissionSvc.ReconcilePendingRuns("daemon restarted"); err != nil {
 		log.Printf("warning: reconcile pending permissions: %v", err)
 	}
-	flowStore := pebblestore.NewFlowStore(store)
-	toolRuntime.SetManageFlowServices(flowStore, workspaceSvc)
-	if err := reconcileFlowRunsFromLifecycles(flowStore, sessionSvc); err != nil {
-		log.Printf("warning: reconcile flow runs: %v", err)
+	if err := permissionSvc.RepairSummaryPendingIndex("", ""); err != nil {
+		log.Printf("warning: repair permission summary pending index: %v", err)
 	}
 	bgCtx, bgCancel := context.WithCancel(context.Background())
+	notificationSvc.SetWebPushDispatcher(func(_ context.Context, accountScopeID string, record pebblestore.NotificationRecord) error {
+		_, err := webPushSvc.Send(bgCtx, accountScopeID, webpush.Payload{Title: record.Title, Body: record.Body, URL: record.ActionURL, Tag: record.ID}, webpush.SendOptions{})
+		return err
+	})
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
+	startV3SessionRetention(bgCtx, sessionSvc)
 
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
+	runSvc.SetSessionDeployCanonicalizer(apiServer.CanonicalizeSessionDeploy)
+	runSvc.SetSessionDeployEnqueuer(apiServer.EnqueueSessionDeployRun)
+	runSvc.SetAITaskBinder(todoSvc)
+	aiTaskDispatcher, err := runSvc.StartAITaskV2Dispatcher(bgCtx, aiTaskQueueAdapter{service: todoSvc}, sessionSvc.ApplySessionMutation)
+	if err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("start AI task V2 dispatcher: %w", err)
+	}
+	apiServer.SetAITaskEnqueuer(aiTaskDispatcher)
+	toolRuntime.SetManageSessionRealtimePublisher(apiServer.PublishCommittedV3RealtimeOutbox)
+	apiServer.SetCodexAccountClient(codexClient)
+	apiServer.SetWebPushService(webPushSvc)
+	apiServer.SetModelProfileService(modelprofile.NewService(pebblestore.NewModelProfileStore(store)))
+	apiServer.SetSwarmProfileService(modelprofile.NewSwarmService(pebblestore.NewSwarmProfileStore(store)))
 	apiServer.SetIdentityService(identitySvc)
 	apiServer.SetIdentitySessionService(identitySessionSvc)
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
@@ -394,37 +439,21 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetMCPService(mcpSvc)
 	apiServer.SetVoiceService(voiceSvc)
 	apiServer.SetUISettingsService(uiSettingsSvc)
+	apiServer.SetPlanLifecycleService(planLifecycleSvc)
 	apiServer.SetSwarmDesktopTargetSelectionStore(swarmDesktopTargetSelectionStore)
-	apiServer.SetSwarmNodeStore(swarmNodeStore)
-	apiServer.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
-	apiServer.SetSessionRouteStore(pebblestore.NewSessionRouteStore(store))
-	apiServer.SetFlowStore(flowStore)
 	apiServer.SetVideoThreadStore(pebblestore.NewVideoThreadStore(store))
 	imageThreadStore := pebblestore.NewImageThreadStore(store)
 	imageGenSvc := imagegen.NewService(codexClient, authStore, imageThreadStore)
-	toolRuntime.SetManageImageServices(imageGenSvc, imageThreadStore)
 	apiServer.SetImageGenerationService(imageGenSvc)
 	apiServer.SetImageThreadStore(imageThreadStore)
 	apiServer.SetTodoService(todoSvc)
 	apiServer.SetIntegrationService(integrationSvc)
 	apiServer.SetSwarmService(swarmSvc)
 	apiServer.SetSwarmStore(swarmStore)
-	apiServer.SetContainerProfileService(containerProfileSvc)
-	apiServer.SetLocalContainerService(localContainerSvc)
-	deployContainerSvc.SetHostCallbackURLResolver(localContainerSvc.HostCallbackURL)
-	apiServer.SetDeployContainerService(deployContainerSvc)
-	apiServer.SetRemoteDeployService(remoteDeploySvc)
 	apiServer.SetUpdateService(updateSvc)
 	apiServer.SetTopologyService(topologySvc)
-	apiServer.StartManagedMirrorSync(bgCtx)
 
-	runtimeStatus, runtimeStatusErr := localContainerSvc.RuntimeStatus(context.Background())
 	localTransportRuntimeName := ""
-	if runtimeStatusErr != nil {
-		log.Printf("warning: resolve local child transport runtime: %v", runtimeStatusErr)
-	} else {
-		localTransportRuntimeName = strings.TrimSpace(runtimeStatus.Recommended)
-	}
 
 	d := &Daemon{
 		cfg:                       cfg,
@@ -434,13 +463,13 @@ func New(cfg config.Config) (*Daemon, error) {
 		events:                    events,
 		hub:                       hub,
 		apiServer:                 apiServer,
+		notificationService:       notificationSvc,
 		bgCtx:                     bgCtx,
 		bgCancel:                  bgCancel,
 		stopCh:                    make(chan string, 1),
 		copilot:                   copilotManager,
-		deployContainers:          deployContainerSvc,
-		remoteDeploys:             remoteDeploySvc,
-		localContainers:           localContainerSvc,
+		toolRuntime:               toolRuntime,
+		aiTaskDispatcher:          aiTaskDispatcher,
 		localTransportRuntimeName: localTransportRuntimeName,
 	}
 	apiServer.SetShutdownHandler(func(reason string) {
@@ -472,7 +501,6 @@ func New(cfg config.Config) (*Daemon, error) {
 			WriteTimeout:      0,
 			IdleTimeout:       60 * time.Second,
 		}
-		deployContainerSvc.SetLocalTransportSocketPath(localTransportSocketPath)
 	}
 	transportMux := http.NewServeMux()
 	transportMux.Handle("/", apiServer.Handler())
@@ -499,6 +527,25 @@ func New(cfg config.Config) (*Daemon, error) {
 			WriteTimeout:      0,
 			IdleTimeout:       60 * time.Second,
 		}
+	}
+
+	diagnostics, err := longsessiondiag.Start(longsessiondiag.Options{
+		Enabled:      cfg.LongSessionDiagnostics,
+		DatabasePath: cfg.DBPath,
+	})
+	if err != nil {
+		_ = d.cleanup()
+		return nil, fmt.Errorf("start long-session diagnostics: %w", err)
+	}
+	d.longSessionDiagnostics = diagnostics
+	if diagnostics != nil {
+		codexClient.SetLongSessionDiagnostics(diagnostics)
+		apiServer.SetLongSessionDiagnostics(diagnostics)
+		diagnostics.RegisterSnapshotProvider("codex", codexClient.LongSessionSnapshot)
+		diagnostics.RegisterSnapshotProvider("run_service", runSvc.LongSessionSnapshot)
+		diagnostics.RegisterSnapshotProvider("api", apiServer.LongSessionSnapshot)
+		diagnostics.RegisterSnapshotProvider("tools", toolRuntime.LongSessionSnapshot)
+		log.Printf("long-session diagnostics enabled directory=%q", diagnostics.Directory())
 	}
 	return d, nil
 }
@@ -550,6 +597,26 @@ func (d *Daemon) cleanup() error {
 		if d.bgCancel != nil {
 			d.bgCancel()
 			d.bgCancel = nil
+		}
+		if d.longSessionDiagnostics != nil {
+			if err := d.longSessionDiagnostics.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close long-session diagnostics: %w", err))
+			}
+			d.longSessionDiagnostics = nil
+		}
+		if d.aiTaskDispatcher != nil {
+			d.aiTaskDispatcher.Close()
+			d.aiTaskDispatcher = nil
+		}
+		if d.toolRuntime != nil {
+			if err := d.toolRuntime.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close tool runtime: %w", err))
+			}
+			d.toolRuntime = nil
+		}
+		if d.notificationService != nil {
+			d.notificationService.CloseWebPushDispatcher()
+			d.notificationService = nil
 		}
 		if d.copilot != nil {
 			if err := d.copilot.Close(); err != nil {
@@ -650,16 +717,15 @@ func (d *Daemon) Run() error {
 		if err := os.MkdirAll(filepath.Dir(socketPath), localTransportSocketDirPerm()); err != nil {
 			return fmt.Errorf("create local transport directory: %w", err)
 		}
-		if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove stale local transport socket %q: %w", socketPath, err)
+		if err := removeStaleUnixSocket(socketPath); err != nil {
+			return fmt.Errorf("prepare local transport socket %q: %w", socketPath, err)
 		}
 		localTransportLn, err := net.Listen("unix", socketPath)
 		if err != nil {
 			return fmt.Errorf("listen on local transport socket %q: %w", socketPath, err)
 		}
-		// The bind-mounted parent transport must be traversable by the non-root
-		// container child, but only the socket node needs read/write access.
-		// Keep the directory execute-only for others and the socket world rw.
+		// Local transport is trusted daemon-owner IPC. Keep both the directory
+		// and socket inaccessible to other users on the host.
 		if err := os.Chmod(filepath.Dir(socketPath), localTransportSocketDirPerm()); err != nil {
 			_ = localTransportLn.Close()
 			_ = os.Remove(socketPath)
@@ -699,23 +765,6 @@ func (d *Daemon) Run() error {
 			}
 		}()
 	}
-	if d.apiServer != nil {
-		go d.apiServer.StartFlowScheduler(d.bgCtx)
-		go d.apiServer.StartFlowOutboxDeliveryLoop(d.bgCtx)
-		go d.apiServer.StartFlowReportDeliveryLoop(d.bgCtx)
-	}
-	if d.deployContainers != nil {
-		go func() {
-			if err := d.deployContainers.AutoAttachChild(context.Background()); err != nil {
-				log.Printf("warning: deploy child auto-attach failed: %v", err)
-			}
-		}()
-		go d.deployContainers.RunLocalDeploymentReconciliationLoop(d.bgCtx)
-		go d.deployContainers.RunManagedCredentialSyncLoop(d.bgCtx)
-	}
-	if d.remoteDeploys != nil {
-		go d.remoteDeploys.RunAlwaysOnReconciliationLoop(d.bgCtx)
-	}
 	return d.waitForShutdown()
 }
 
@@ -733,43 +782,46 @@ func (d *Daemon) waitForShutdown() error {
 	if strings.TrimSpace(reason) == "" {
 		reason = "requested"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	var errs []error
+	if d.apiServer != nil {
+		d.apiServer.BeginShutdown()
+		d.apiServer.CancelInFlightRuns()
+		if !d.apiServer.WaitForInFlightRuns(shutdownTimeout) {
+			errs = append(errs, fmt.Errorf("timed out draining %d active run(s)", d.apiServer.ActiveRunCount()))
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	if err := d.httpServer.Shutdown(ctx); err != nil {
-		return err
+	servers := []struct {
+		name   string
+		server *http.Server
+	}{
+		{name: "api", server: d.httpServer},
+		{name: "desktop", server: d.desktopServer},
+		{name: "peer transport", server: d.peerTransportServer},
+		{name: "local transport", server: d.localTransportServer},
 	}
-	if d.desktopServer != nil {
-		if err := d.desktopServer.Shutdown(ctx); err != nil {
-			return err
+	for _, item := range servers {
+		if item.server == nil {
+			continue
 		}
-	}
-	if d.peerTransportServer != nil {
-		if err := d.peerTransportServer.Shutdown(ctx); err != nil {
-			return err
+		if err := item.server.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("shutdown %s server: %w", item.name, err))
+			if closeErr := item.server.Close(); closeErr != nil {
+				errs = append(errs, fmt.Errorf("close %s server: %w", item.name, closeErr))
+			}
 		}
-	}
-	if d.localTransportServer != nil {
-		if err := d.localTransportServer.Shutdown(ctx); err != nil {
-			return err
-		}
-	}
-	if d.serveDone != nil {
-		<-d.serveDone
-	}
-	if d.desktopServeDone != nil {
-		<-d.desktopServeDone
-	}
-	if d.localTransportServeDone != nil {
-		<-d.localTransportServeDone
 	}
 	if strings.TrimSpace(d.localTransportSocketPath) != "" {
-		_ = os.Remove(d.localTransportSocketPath)
+		if err := removeStaleUnixSocket(d.localTransportSocketPath); err != nil {
+			errs = append(errs, fmt.Errorf("remove local transport socket: %w", err))
+		}
 	}
-	if d.peerTransportServeDone != nil {
-		<-d.peerTransportServeDone
+	if err := d.cleanup(); err != nil {
+		errs = append(errs, err)
 	}
 	_ = reason
-	return d.cleanup()
+	return errors.Join(errs...)
 }
 
 func shouldEnableLocalTransport(listenAddr string) bool {

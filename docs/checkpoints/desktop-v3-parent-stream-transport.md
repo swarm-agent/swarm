@@ -4,7 +4,7 @@ This note completes CP-8 for Desktop V3 delegated subagent streaming. It chooses
 
 ## Decision
 
-Multiplex delegated child session progress at the V3 per-session stream hub seam in `swarmd/internal/api/sessions_v3_stream_ws.go`.
+Multiplex delegated child session progress through the canonical durable V3 realtime transport.
 
 A Desktop route that is already watching the parent session should keep one parent session stream. The backend will route canonical child V3 events to subscribers of that parent stream. Do not use legacy `/v1` or `/v2` run streaming, and do not make Desktop open one websocket or snapshot request per child.
 
@@ -12,7 +12,7 @@ Rationale:
 
 - CP-7 made delegated children real V3 sessions created through `ApplySessionMutation(SessionMutationCreateSession)`.
 - The committed V3 event/outbox path is already canonical; child events must remain persisted on the child session.
-- `sessions_v3_stream_ws.go` is the planned hub-level seam for parent route stream delivery. It can route committed child events to existing parent stream subscribers without changing child event identity.
+- `/v3/realtime/stream` is the canonical delivery seam for committed parent and child events without changing event identity.
 - `/v3/realtime/stream` remains the broader native realtime outbox API, but current Desktop route-stream constraints and existing guards keep the focused parent stream separate from that API.
 
 ## Frame semantics
@@ -101,7 +101,7 @@ Unrelated child sessions, flow sessions, and cross-account events must never be 
 
 Likely files:
 
-- `swarmd/internal/api/sessions_v3_stream_ws.go`
+- `swarmd/internal/api/sessions_v3_realtime_ws.go`
   - extend the hub/subscriber payload from bare `SessionEvent` to a routed event with parent context;
   - add the in-memory lineage index;
   - route child events to parent subscribers while preserving canonical child event IDs and child seqs;

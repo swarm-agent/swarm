@@ -36,11 +36,19 @@ func TestEnsureDefaultsSeedsPrimaryAndSubagents(t *testing.T) {
 	if state.Version <= 0 {
 		t.Fatalf("version = %d, want > 0", state.Version)
 	}
-	if len(state.Profiles) < 5 {
-		t.Fatalf("profiles = %d, want >= 5", len(state.Profiles))
+	if len(state.Profiles) != 4 {
+		t.Fatalf("profiles = %d, want 4 built-ins", len(state.Profiles))
 	}
-	if _, ok := state.ActiveSubagent["explorer"]; !ok {
-		t.Fatalf("missing default explorer subagent mapping")
+	for _, profile := range state.Profiles {
+		if profile.Name == "clone" {
+			t.Fatalf("clone should not be seeded as a built-in profile")
+		}
+	}
+	if got := state.ActiveSubagent["clone"]; got != "" {
+		t.Fatalf("active subagent clone = %q, want empty", got)
+	}
+	if _, ok := state.ActiveSubagent["finder"]; !ok {
+		t.Fatalf("missing default finder subagent mapping")
 	}
 }
 
@@ -91,6 +99,56 @@ func TestUpsertAndActivatePrimary(t *testing.T) {
 	}
 	if _, _, _, err := svc.ActivatePrimary("worker"); err == nil {
 		t.Fatalf("ActivatePrimary(worker) expected error, got nil")
+	}
+}
+
+func TestAgentModelModeNormalizationAllowsOnlySingleOrPlanCapableSplit(t *testing.T) {
+	if got := pebblestore.NormalizeAgentModelMode("single"); got != "" {
+		t.Fatalf("NormalizeAgentModelMode(single) = %q, want empty single storage", got)
+	}
+	if got := pebblestore.AgentModelMode(pebblestore.AgentProfile{ModelMode: "single"}); got != "single" {
+		t.Fatalf("AgentModelMode(single) = %q, want single", got)
+	}
+	if got := pebblestore.NormalizeAgentModelMode("default"); got != "" {
+		t.Fatalf("NormalizeAgentModelMode(default) = %q, want empty single storage", got)
+	}
+	if got := pebblestore.NormalizeAgentModelMode("split"); got != "split" {
+		t.Fatalf("NormalizeAgentModelMode(split) = %q, want split", got)
+	}
+
+	planCapable := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name:                "planner",
+		Mode:                ModeSubagent,
+		ModelMode:           "split",
+		PlanProvider:        "codex",
+		PlanModel:           "gpt-5.5",
+		PlanThinking:        "high",
+		AutoProvider:        "codex",
+		AutoModel:           "gpt-5.4-mini",
+		AutoThinking:        "medium",
+		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+	})
+	if !pebblestore.AgentSupportsSplitModel(planCapable) || planCapable.ModelMode != "split" {
+		t.Fatalf("plan-capable split profile normalized incorrectly: %+v", planCapable)
+	}
+
+	readOnly := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name:             "reader",
+		Mode:             ModeSubagent,
+		ModelMode:        "split",
+		PlanProvider:     "codex",
+		PlanModel:        "gpt-5.5",
+		AutoProvider:     "codex",
+		AutoModel:        "gpt-5.4-mini",
+		RuntimeMode:      pebblestore.AgentRuntimeModeRead,
+		ExecutionSetting: pebblestore.AgentExecutionSettingRead,
+	})
+	if pebblestore.AgentSupportsSplitModel(readOnly) {
+		t.Fatalf("read-only profile should not support split: %+v", readOnly)
+	}
+	if readOnly.ModelMode != "" || readOnly.PlanProvider != "" || readOnly.AutoProvider != "" {
+		t.Fatalf("read-only split fields were not cleared: %+v", readOnly)
 	}
 }
 
@@ -308,9 +366,9 @@ func TestResolveSubagentByPurposeAndName(t *testing.T) {
 	}
 
 	// Purpose lookup should resolve through active subagent assignments.
-	byPurpose, err := svc.ResolveSubagent("explorer")
+	byPurpose, err := svc.ResolveSubagent("finder")
 	if err != nil {
-		t.Fatalf("ResolveSubagent(explorer purpose) error = %v", err)
+		t.Fatalf("ResolveSubagent(finder purpose) error = %v", err)
 	}
 	if byPurpose.Mode != ModeSubagent {
 		t.Fatalf("resolved mode = %q, want %q", byPurpose.Mode, ModeSubagent)
@@ -410,16 +468,16 @@ func TestEnsureDefaultsDoesNotRecreateDeletedUtilityAgents(t *testing.T) {
 	if err := svc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
 	}
-	if _, _, _, err := svc.Delete("explorer"); err != nil {
-		t.Fatalf("Delete(explorer) error = %v", err)
+	if _, _, _, err := svc.Delete("finder"); err != nil {
+		t.Fatalf("Delete(finder) error = %v", err)
 	}
 	if err := svc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() second error = %v", err)
 	}
-	if _, ok, err := svc.GetProfile("explorer"); err != nil {
-		t.Fatalf("GetProfile(explorer) error = %v", err)
+	if _, ok, err := svc.GetProfile("finder"); err != nil {
+		t.Fatalf("GetProfile(finder) error = %v", err)
 	} else if ok {
-		t.Fatalf("expected explorer to remain deleted after EnsureDefaults")
+		t.Fatalf("expected finder to remain deleted after EnsureDefaults")
 	}
 }
 
@@ -440,20 +498,20 @@ func TestRestoreDefaultsRecreatesUtilityAgents(t *testing.T) {
 	if err := svc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
 	}
-	if _, _, _, err := svc.Delete("explorer"); err != nil {
-		t.Fatalf("Delete(explorer) error = %v", err)
+	if _, _, _, err := svc.Delete("finder"); err != nil {
+		t.Fatalf("Delete(finder) error = %v", err)
 	}
 	state, _, _, err := svc.RestoreDefaults()
 	if err != nil {
 		t.Fatalf("RestoreDefaults() error = %v", err)
 	}
-	if _, ok, err := svc.GetProfile("explorer"); err != nil {
-		t.Fatalf("GetProfile(explorer) error = %v", err)
+	if _, ok, err := svc.GetProfile("finder"); err != nil {
+		t.Fatalf("GetProfile(finder) error = %v", err)
 	} else if !ok {
-		t.Fatalf("expected explorer to be restored")
+		t.Fatalf("expected finder to be restored")
 	}
-	if got := state.ActiveSubagent["explorer"]; got != "explorer" {
-		t.Fatalf("active subagent explorer = %q, want explorer", got)
+	if got := state.ActiveSubagent["finder"]; got != "finder" {
+		t.Fatalf("active subagent finder = %q, want finder", got)
 	}
 }
 
@@ -509,10 +567,10 @@ func TestResetDefaultsDeletesCustomAgentsAndTools(t *testing.T) {
 	if got := state.ActiveSubagent["helper"]; got != "" {
 		t.Fatalf("helper active subagent = %q, want empty", got)
 	}
-	if got := state.ActiveSubagent["explorer"]; got != "explorer" {
-		t.Fatalf("active subagent explorer = %q, want explorer", got)
+	if got := state.ActiveSubagent["finder"]; got != "finder" {
+		t.Fatalf("active subagent finder = %q, want finder", got)
 	}
-	defaultNames := map[string]bool{"swarm": true, "explorer": true, "memory": true, "commit": true, "parallel": true, "clone": true}
+	defaultNames := map[string]bool{"swarm": true, "finder": true, "memory": true, "parallel": true}
 	for _, profile := range state.Profiles {
 		if !defaultNames[profile.Name] {
 			t.Fatalf("unexpected profile after reset: %s", profile.Name)

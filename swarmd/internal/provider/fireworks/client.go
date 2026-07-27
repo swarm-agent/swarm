@@ -11,13 +11,20 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"swarm/packages/swarmd/internal/privacy"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 )
 
 const (
-	accountsURL      = "https://api.fireworks.ai/v1/accounts"
-	modelsURL        = "https://api.fireworks.ai/inference/v1/models"
-	chatURL          = "https://api.fireworks.ai/inference/v1/chat/completions"
-	maxResponseBytes = 8 << 20
+	accountsURL                = "https://api.fireworks.ai/v1/accounts"
+	modelsURL                  = "https://api.fireworks.ai/inference/v1/models"
+	chatURL                    = "https://api.fireworks.ai/inference/v1/chat/completions"
+	maxResponseBytes           = 8 << 20
+	maxStreamEvents            = 16_384
+	maxStreamOutputBytes       = 4 << 20
+	maxStreamToolArgumentBytes = 1 << 20
+	maxProviderErrorBytes      = 4 << 10
 )
 
 type Client struct {
@@ -25,12 +32,19 @@ type Client struct {
 }
 
 type chatCompletionRequest struct {
-	Model             string               `json:"model"`
-	Messages          []map[string]any     `json:"messages"`
-	Tools             []chatCompletionTool `json:"tools,omitempty"`
-	ToolChoice        any                  `json:"tool_choice,omitempty"`
-	ParallelToolCalls *bool                `json:"parallel_tool_calls,omitempty"`
-	Stream            bool                 `json:"stream,omitempty"`
+	Model             string                       `json:"model"`
+	Messages          []map[string]any             `json:"messages"`
+	Tools             []chatCompletionTool         `json:"tools,omitempty"`
+	ToolChoice        any                          `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool                        `json:"parallel_tool_calls,omitempty"`
+	ReasoningEffort   string                       `json:"reasoning_effort,omitempty"`
+	ServiceTier       string                       `json:"service_tier,omitempty"`
+	Stream            bool                         `json:"stream,omitempty"`
+	StreamOptions     *chatCompletionStreamOptions `json:"stream_options,omitempty"`
+}
+
+type chatCompletionStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type chatCompletionTool struct {
@@ -59,15 +73,17 @@ type chatCompletionChoice struct {
 }
 
 type chatCompletionMessage struct {
-	Role      string                   `json:"role,omitempty"`
-	Content   any                      `json:"content,omitempty"`
-	ToolCalls []chatCompletionToolCall `json:"tool_calls,omitempty"`
+	Role             string                   `json:"role,omitempty"`
+	Content          any                      `json:"content,omitempty"`
+	ReasoningContent string                   `json:"reasoning_content,omitempty"`
+	ToolCalls        []chatCompletionToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatCompletionMessageDelta struct {
-	Role      string                        `json:"role,omitempty"`
-	Content   string                        `json:"content,omitempty"`
-	ToolCalls []chatCompletionToolCallDelta `json:"tool_calls,omitempty"`
+	Role             string                        `json:"role,omitempty"`
+	Content          string                        `json:"content,omitempty"`
+	ReasoningContent string                        `json:"reasoning_content,omitempty"`
+	ToolCalls        []chatCompletionToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 type chatCompletionToolCall struct {
@@ -101,13 +117,49 @@ type chatCompletionChunk struct {
 }
 
 type chatCompletionUsage struct {
-	PromptTokens     int64 `json:"prompt_tokens,omitempty"`
-	CompletionTokens int64 `json:"completion_tokens,omitempty"`
-	TotalTokens      int64 `json:"total_tokens,omitempty"`
+	PromptTokens        int64                    `json:"prompt_tokens,omitempty"`
+	CompletionTokens    int64                    `json:"completion_tokens,omitempty"`
+	TotalTokens         int64                    `json:"total_tokens,omitempty"`
+	PromptTokensDetails *chatPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	InputTokens         int64                    `json:"input_tokens,omitempty"`
+	OutputTokens        int64                    `json:"output_tokens,omitempty"`
+	InputTokenDetails   *chatPromptTokensDetails `json:"input_tokens_details,omitempty"`
+}
+
+type chatPromptTokensDetails struct {
+	CachedTokens int64 `json:"cached_tokens,omitempty"`
+}
+
+type requestOptions struct {
+	SessionAffinity         string
+	PromptCacheIsolationKey string
+}
+
+func requestHeaders(options ...requestOptions) map[string]string {
+	headers := make(map[string]string, 2)
+	for _, option := range options {
+		if affinity := strings.TrimSpace(option.SessionAffinity); affinity != "" {
+			headers["x-session-affinity"] = affinity
+		}
+		if isolationKey := strings.TrimSpace(option.PromptCacheIsolationKey); isolationKey != "" {
+			headers["x-prompt-cache-isolation-key"] = isolationKey
+		}
+	}
+	return headers
 }
 
 func NewClient() *Client {
 	return &Client{httpClient: &http.Client{Timeout: 10 * time.Minute}}
+}
+
+func ensureChatCompletionStreamOptions(payload *chatCompletionRequest) {
+	if payload == nil {
+		return
+	}
+	payload.Stream = true
+	if payload.StreamOptions == nil {
+		payload.StreamOptions = &chatCompletionStreamOptions{IncludeUsage: true}
+	}
 }
 
 func (c *Client) VerifyAPIKey(ctx context.Context, apiKey string) (string, error) {
@@ -132,7 +184,7 @@ func (c *Client) VerifyAPIKey(ctx context.Context, apiKey string) (string, error
 	return "Fireworks API key verified via /v1/accounts", nil
 }
 
-func (c *Client) CreateChatCompletion(ctx context.Context, apiKey string, payload chatCompletionRequest) (chatCompletionResponse, error) {
+func (c *Client) CreateChatCompletion(ctx context.Context, apiKey string, payload chatCompletionRequest, options ...requestOptions) (chatCompletionResponse, error) {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
 		return chatCompletionResponse{}, errors.New("fireworks auth is not configured")
@@ -141,7 +193,7 @@ func (c *Client) CreateChatCompletion(ctx context.Context, apiKey string, payloa
 	if err != nil {
 		return chatCompletionResponse{}, fmt.Errorf("marshal fireworks request: %w", err)
 	}
-	body, status, err := c.do(ctx, http.MethodPost, chatURL, apiKey, raw)
+	body, status, err := c.do(ctx, http.MethodPost, chatURL, apiKey, raw, requestHeaders(options...))
 	if err != nil {
 		return chatCompletionResponse{}, err
 	}
@@ -155,12 +207,12 @@ func (c *Client) CreateChatCompletion(ctx context.Context, apiKey string, payloa
 	return decoded, nil
 }
 
-func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, payload chatCompletionRequest, onChunk func(chatCompletionChunk) error) (chatCompletionResponse, error) {
+func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, payload chatCompletionRequest, onChunk func(chatCompletionChunk) error, options ...requestOptions) (chatCompletionResponse, error) {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
 		return chatCompletionResponse{}, errors.New("fireworks auth is not configured")
 	}
-	payload.Stream = true
+	ensureChatCompletionStreamOptions(&payload)
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return chatCompletionResponse{}, fmt.Errorf("marshal fireworks stream request: %w", err)
@@ -176,36 +228,52 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
+	for key, value := range requestHeaders(options...) {
+		req.Header.Set(key, value)
+	}
+	providerdiagnostics.LogRequest("fireworks", "chat.completions.stream", req, raw)
 	resp, err := client.Do(req)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "fireworks", "chat.completions.stream", err)
 		return chatCompletionResponse{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		providerdiagnostics.LogResponse("fireworks", "chat.completions.stream", resp, body)
 		if readErr != nil {
+			providerdiagnostics.LogErrorContext(ctx, "fireworks", "chat.completions.stream", readErr)
 			return chatCompletionResponse{}, readErr
 		}
 		return chatCompletionResponse{}, fmt.Errorf("fireworks chat completions stream failed status=%d: %s", resp.StatusCode, apiErrorMessage(body))
 	}
 	state := newFireworksStreamState()
+	providerdiagnostics.LogResponse("fireworks", "chat.completions.stream", resp, nil)
 	if err := parseFireworksEventStream(resp.Body, func(payload string) error {
+		providerdiagnostics.LogStreamChunkContext(ctx, "fireworks", "chat.completions.stream", []byte(payload))
 		var chunk chatCompletionChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			return fmt.Errorf("decode fireworks stream chunk: %w", err)
 		}
-		state.apply(chunk)
+		if err := state.apply(chunk); err != nil {
+			return err
+		}
 		if onChunk != nil {
 			return onChunk(chunk)
 		}
 		return nil
 	}); err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "fireworks", "chat.completions.stream", err)
 		return chatCompletionResponse{}, err
 	}
-	return state.response(), nil
+	response := state.response()
+	if len(response.Choices) == 0 || strings.TrimSpace(response.Choices[0].FinishReason) == "" {
+		return chatCompletionResponse{}, errors.New("fireworks stream ended without a finish reason")
+	}
+	return response, nil
 }
 
-func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte) ([]byte, int, error) {
+func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte, extraHeaders ...map[string]string) ([]byte, int, error) {
 	client := c.httpClient
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Minute}
@@ -222,30 +290,69 @@ func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	for _, headers := range extraHeaders {
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
+	}
+	operation := "api"
+	if strings.EqualFold(method, http.MethodPost) && strings.Contains(url, "/chat/completions") {
+		operation = "chat.completions"
+	} else if strings.EqualFold(method, http.MethodGet) && strings.Contains(url, "/accounts") {
+		operation = "verify.accounts"
+	}
+	providerdiagnostics.LogRequest("fireworks", operation, req, body)
 	resp, err := client.Do(req)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "fireworks", operation, err)
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	providerdiagnostics.LogResponse("fireworks", operation, resp, raw)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "fireworks", operation, err)
 		return nil, resp.StatusCode, err
 	}
 	return raw, resp.StatusCode, nil
 }
 
 type fireworksStreamState struct {
-	merged    chatCompletionResponse
-	toolCalls map[int]*chatCompletionToolCall
+	merged            chatCompletionResponse
+	toolCalls         map[int]*chatCompletionToolCall
+	eventCount        int
+	outputBytes       int
+	toolArgumentBytes int
 }
 
 func newFireworksStreamState() *fireworksStreamState {
 	return &fireworksStreamState{toolCalls: make(map[int]*chatCompletionToolCall)}
 }
 
-func (s *fireworksStreamState) apply(chunk chatCompletionChunk) {
+func (s *fireworksStreamState) apply(chunk chatCompletionChunk) error {
 	if s == nil {
-		return
+		return errors.New("fireworks stream state is not configured")
+	}
+	s.eventCount++
+	if s.eventCount > maxStreamEvents {
+		return errors.New("fireworks stream event limit exceeded")
+	}
+	for _, choice := range chunk.Choices {
+		if choice.Delta == nil {
+			continue
+		}
+		s.outputBytes += len(choice.Delta.Content) + len(choice.Delta.ReasoningContent)
+		for _, call := range choice.Delta.ToolCalls {
+			if call.Function != nil {
+				s.toolArgumentBytes += len(call.Function.Arguments)
+			}
+		}
+	}
+	if s.outputBytes > maxStreamOutputBytes {
+		return errors.New("fireworks stream output limit exceeded")
+	}
+	if s.toolArgumentBytes > maxStreamToolArgumentBytes {
+		return errors.New("fireworks stream tool argument limit exceeded")
 	}
 	if strings.TrimSpace(chunk.ID) != "" {
 		s.merged.ID = chunk.ID
@@ -257,7 +364,7 @@ func (s *fireworksStreamState) apply(chunk chatCompletionChunk) {
 		s.merged.Usage = chunk.Usage
 	}
 	if len(chunk.Choices) == 0 {
-		return
+		return nil
 	}
 	if len(s.merged.Choices) == 0 {
 		s.merged.Choices = []chatCompletionChoice{{}}
@@ -271,6 +378,9 @@ func (s *fireworksStreamState) apply(chunk chatCompletionChunk) {
 			if next.Delta.Content != "" {
 				current, _ := choice.Message.Content.(string)
 				choice.Message.Content = current + next.Delta.Content
+			}
+			if next.Delta.ReasoningContent != "" {
+				choice.Message.ReasoningContent += next.Delta.ReasoningContent
 			}
 			for _, delta := range next.Delta.ToolCalls {
 				call := s.toolCalls[delta.Index]
@@ -315,6 +425,7 @@ func (s *fireworksStreamState) apply(chunk chatCompletionChunk) {
 		}
 		choice.Message.ToolCalls = calls
 	}
+	return nil
 }
 
 func (s *fireworksStreamState) response() chatCompletionResponse {
@@ -325,9 +436,12 @@ func (s *fireworksStreamState) response() chatCompletionResponse {
 }
 
 func parseFireworksEventStream(reader io.Reader, onPayload func(string) error) error {
-	scanner := bufio.NewScanner(reader)
+	scanner := bufio.NewScanner(io.LimitReader(reader, maxResponseBytes+1))
 	scanner.Buffer(make([]byte, 0, 64*1024), maxResponseBytes)
 	dataLines := make([]string, 0, 8)
+	totalBytes := 0
+	eventCount := 0
+	done := false
 	flush := func() error {
 		if len(dataLines) == 0 {
 			return nil
@@ -335,12 +449,21 @@ func parseFireworksEventStream(reader io.Reader, onPayload func(string) error) e
 		payload := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
 		if strings.TrimSpace(payload) == "[DONE]" {
+			done = true
 			return nil
+		}
+		eventCount++
+		if eventCount > maxStreamEvents {
+			return errors.New("fireworks stream event limit exceeded")
 		}
 		return onPayload(payload)
 	}
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
+		totalBytes += len(line) + 1
+		if totalBytes > maxResponseBytes {
+			return errors.New("fireworks stream byte limit exceeded")
+		}
 		if strings.TrimSpace(line) == "" {
 			if err := flush(); err != nil {
 				return err
@@ -357,11 +480,17 @@ func parseFireworksEventStream(reader io.Reader, onPayload func(string) error) e
 	if err := scanner.Err(); err != nil {
 		return err
 	}
-	return flush()
+	if err := flush(); err != nil {
+		return err
+	}
+	if !done {
+		return errors.New("fireworks stream ended before [DONE]")
+	}
+	return nil
 }
 
 func apiErrorMessage(raw []byte) string {
-	message := strings.TrimSpace(string(raw))
+	message := boundedProviderError(privacy.SanitizeText(strings.TrimSpace(string(raw))))
 	if message == "" {
 		return "unknown error"
 	}
@@ -373,13 +502,21 @@ func apiErrorMessage(raw []byte) string {
 	}
 	if err := json.Unmarshal(raw, &payload); err == nil {
 		if msg := strings.TrimSpace(payload.Error.Message); msg != "" {
-			return msg
+			return boundedProviderError(privacy.SanitizeText(msg))
 		}
 		if code := strings.TrimSpace(payload.Error.Code); code != "" {
-			return code
+			return boundedProviderError(privacy.SanitizeText(code))
 		}
 	}
 	return message
+}
+
+func boundedProviderError(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= maxProviderErrorBytes {
+		return value
+	}
+	return value[:maxProviderErrorBytes] + "…"
 }
 
 func parsePrimaryAccount(raw []byte) (string, string) {

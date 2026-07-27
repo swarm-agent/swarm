@@ -9,12 +9,13 @@ DISALLOWED_ABS_PATH_PATTERN='(/home/|/Users/|/tmp/|/var/tmp/|/etc/|/opt/|/root/)
 has_failures=0
 
 filter_allowed_runtime_paths() {
+  # Security classifier allowlist entries below detect critical shell access; they are not runtime path defaults.
   grep -Ev \
-    -e '^(\./)?(deploy/container-mvp/entrypoint\.sh|scripts/(rebuild-container-(local|remote)|diagnose-remote-deploy-live|check-container-publish)\.sh|swarmd/internal/remotedeploy/service\.go):.*(/etc/swarmd|/var/lib/swarmd|/var/cache/swarmd|/var/log/swarmd|/run/swarmd)' \
-    -e '^(\./)?(install\.sh|cmd/swarm/main\.go|internal/launcher/service_lifecycle\.go|scripts/ssh-fast-test\.sh|tests/swarmd/container_startup_e2e\.sh):.*(/etc/swarmd|/etc/systemd/system/swarm\.service|/etc/tmpfiles\.d/swarmd\.conf)' \
-    -e '^(\./)?deploy/container-mvp/entrypoint\.sh:.*(/root|/home|/workspaces|/tmp)' \
+    -e '^(\./)?scripts/diagnose-live-workset-full-history\.sh:.*(/etc/swarmd|/var/lib/swarmd|/var/cache/swarmd|/var/log/swarmd|/run/swarmd)' \
+    -e '^(\./)?(install\.sh|cmd/swarm/main\.go|internal/launcher/service_lifecycle\.go|scripts/ssh-fast-test\.sh):.*(/etc/swarmd|/etc/systemd/system/swarm\.service|/etc/tmpfiles\.d/swarmd\.conf)' \
     -e '^(\./)?scripts/check-daemon-storage-paths\.sh:.*(/home/|/root|/tmp/swarm-storage-gate-self-test\.out|forbidden_home_hits|negative fixture|run_scan)' \
-    -e '^(\./)?scripts/check-container-publish\.sh:.*(/etc/swarmd|/var/lib/swarmd|/var/cache/swarmd|/var/log/swarmd|/run/swarmd)' \
+    -e '^(\./)?swarmd/internal/permission/policy\.go:[0-9]+:[[:space:]]*criticalBashSystemConfigMarker[[:space:]]*=[[:space:]]*"/etc/"[[:space:]]*$' \
+    -e '^(\./)?swarmd/internal/permission/policy\.go:[0-9]+:[[:space:]]*criticalBashSystemDataMarker[[:space:]]*=[[:space:]]*"/var/lib/"[[:space:]]*$' \
     || true
 }
 

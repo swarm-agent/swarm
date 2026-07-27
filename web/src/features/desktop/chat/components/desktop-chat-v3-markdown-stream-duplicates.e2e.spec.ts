@@ -13,19 +13,15 @@ const WORKSPACE_PATH = '/tmp/swarm-playwright-v3-markdown-stream'
 const WORKSPACE_NAME = 'V3 Markdown Stream'
 const WORKSPACE_SLUG = 'markdown-stream-vthree'
 const SENTINEL = 'SENTINEL-LOREM-STREAM'
+const OPAQUE_SNAPSHOT_CURSOR = 'v3c1.playwright_snapshot_payload.playwright_snapshot_signature'
+const OPAQUE_RECONNECT_CURSOR = 'v3c1.playwright_reconnect_payload.playwright_reconnect_signature'
 
 const MARKDOWN_CHUNKS = [
-  '# Lorem ipsum streamed markdown\n\n',
-  'Lorem ipsum dolor sit amet, **consectetur adipiscing elit**.\n\n',
-  '## Details\n\n',
-  '- Curabitur non nulla sit amet nisl tempus convallis quis ac lectus.\n',
-  '- Vestibulum ac diam sit amet quam vehicula elementum sed sit amet dui.\n',
-  `- ${SENTINEL} appears exactly once while streaming.\n\n`,
-  '```ts\n',
-  'export const lorem = "ipsum"\n',
-  '```\n\n',
-  '> Donec sollicitudin molestie malesuada.\n\n',
-  'Final lorem ipsum sentence after markdown blocks.',
+  '**bo',
+  'ld** and `co',
+  'de`\n\n- it',
+  'em ',
+  `${SENTINEL}`,
 ]
 const MARKDOWN_CONTENT = MARKDOWN_CHUNKS.join('')
 
@@ -90,14 +86,39 @@ function v3Snapshot(messages: Record<string, unknown>[], active = true): Record<
   }
 }
 
-async function startMockBackend(): Promise<{ server: Server; port: number; setMessages: (messages: Record<string, unknown>[], active?: boolean) => void }> {
+function v3SyncSnapshot(messages: Record<string, unknown>[], active = true, cursor = OPAQUE_SNAPSHOT_CURSOR): Record<string, unknown> {
+  return {
+    rev: 1,
+    snapshot_endpoint_cursor: cursor,
+    sessions_by_id: { [SESSION_ID]: sessionWire(active) },
+    session_order: [SESSION_ID],
+    messages_by_session: { [SESSION_ID]: messages },
+    current_run_intent_by_session: active ? { [SESSION_ID]: { session_id: SESSION_ID, run_id: RUN_ID, status: 'running', created_at: 1, updated_at: Date.now(), event_seq: 1 } } : {},
+    subscriptions: [{
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'subscribe.session',
+      session_id: SESSION_ID,
+      subscription_id: `desktop:${SESSION_ID}`,
+      endpoint_cursor: cursor,
+    }],
+  }
+}
+
+async function startMockBackend(): Promise<{ server: Server; port: number; requests: string[]; setMessages: (messages: Record<string, unknown>[], active?: boolean) => void }> {
   let sessionMessages: Record<string, unknown>[] = [userMessage()]
   let sessionActive = true
+  const requests: string[] = []
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const path = url.pathname
+    requests.push(path)
 
-    if (path === '/v1/auth/desktop/session') return writeJson(res, 200, { ok: true })
+    if (path === '/v3/sessions:workset' || path === '/v3/sessions:discover') {
+      return writeJson(res, 500, { error: `legacy desktop sync route forbidden in browser runtime test: ${path}` })
+    }
+
+    if (path === '/v1/auth/desktop/session') return writeJson(res, 200, { ok: true, user_id: 'user-playwright', account_scope_id: 'acct-playwright' })
     if (path === '/v1/vault') return writeJson(res, 200, { enabled: false, unlocked: true, unlock_required: false, storage_mode: 'memory' })
     if (path === '/v1/onboarding') {
       return writeJson(res, 200, {
@@ -130,6 +151,9 @@ async function startMockBackend(): Promise<{ server: Server; port: number; setMe
         directories: [],
       })
     }
+    if (path === '/v3/sync/bootstrap' || path === '/v3/sync/hydrate') return writeJson(res, 200, v3SyncSnapshot(sessionMessages, sessionActive))
+    if (path === '/v3/sessions:reconnect') return writeJson(res, 200, v3SyncSnapshot(sessionMessages, sessionActive, OPAQUE_RECONNECT_CURSOR))
+    if (path === `/v3/sessions/${SESSION_ID}/preference`) return writeJson(res, 200, { preference: { provider: 'mock', model: 'v3-markdown-stream', thinking: '', updated_at: 0 }, context_window: 128000, max_output_tokens: 4096 })
     if (path === `/v3/sessions/${SESSION_ID}`) return writeJson(res, 200, v3Snapshot(sessionMessages, sessionActive))
     if (path === '/v1/notifications') {
       return writeJson(res, 200, { notifications: [], summary: { swarm_id: 'swarm-playwright', total_count: 0, unread_count: 0, active_count: 0, updated_at: 0 } })
@@ -144,6 +168,7 @@ async function startMockBackend(): Promise<{ server: Server; port: number; setMe
   return {
     server,
     port: address.port,
+    requests,
     setMessages: (messages: Record<string, unknown>[], active = false) => {
       sessionMessages = messages
       sessionActive = active
@@ -242,6 +267,20 @@ async function installBrowserStreamControls(page: Page): Promise<void> {
     }
     window.WebSocket = MockWebSocket;
     window.__socketUrls = () => (window.__mockSockets || []).map((socket) => socket.url);
+    window.__emitV3LivePatchEverywhere = (seq, patch) => {
+      for (const socket of window.__mockSockets || []) {
+        if (socket.readyState !== MockWebSocket.OPEN) continue;
+        if (socket.url.includes('/v3/realtime/stream')) {
+          socket.__emit({
+            protocol: 'v3.realtime',
+            protocol_version: 1,
+            kind: 'live.patch',
+            session_id: patch.session_id,
+            live: patch,
+          });
+        }
+      }
+    };
     window.__emitV3EventEverywhere = (seq, eventType, payload) => {
       const body = { session_id: sessionId, ...payload };
       for (const socket of window.__mockSockets || []) {
@@ -258,11 +297,13 @@ async function installBrowserStreamControls(page: Page): Promise<void> {
               payload: body,
             },
           });
-        } else if (socket.url.includes('/v3/sessions/' + sessionId + '/stream')) {
+        } else if (socket.url.includes('/v3/realtime/stream') || socket.url.includes('/v3/sessions/' + sessionId + '/stream')) {
           socket.__emit({
-            type: 'event',
+            protocol: 'v3.realtime',
+            kind: 'event',
             ok: true,
             session_id: sessionId,
+            endpoint_cursor: 'v3c1.playwright_event_' + seq + '.playwright_event_signature_' + seq,
             last_seq: seq,
             high_watermark_seq: seq,
             event: {
@@ -307,12 +348,37 @@ test('desktop V3 markdown stream renders each delta once and finalizes to the sa
       throw new Error(`desktop chat scroller did not appear: ${error instanceof Error ? error.message : String(error)}\nconsole=${consoleLines.join('\n')}\nbody=${bodyText.slice(0, 4000)}`)
     }
     await page.waitForFunction(() => (window as any).__socketUrls?.().some((url: string) => url.endsWith('/ws')))
+    await page.waitForFunction(() => (window as any).__socketUrls?.().some((url: string) => url.includes('/v3/realtime/stream')))
     await page.waitForTimeout(250)
 
+    assert.ok(backend.requests.includes('/v3/sync/bootstrap'), `Desktop browser did not bootstrap through canonical sync API: ${backend.requests.join(',')}`)
+    assert.ok(backend.requests.includes('/v3/sessions:reconnect'), `Desktop browser did not request realtime durable reconnect subscriptions: ${backend.requests.join(',')}`)
+    assert.equal(backend.requests.some((path) => path === '/v3/sessions:workset' || path === '/v3/sessions:discover'), false, `Desktop browser hit legacy sync route: ${backend.requests.join(',')}`)
+    const websocketUrls = await page.evaluate(() => (window as any).__socketUrls?.() || []) as string[]
+    assert.ok(websocketUrls.some((url) => url.includes(`/v3/realtime/stream?endpoint_cursor=${encodeURIComponent(OPAQUE_RECONNECT_CURSOR)}`)), `Desktop V3 realtime stream did not use opaque reconnect cursor: ${websocketUrls.join(',')}`)
+
+    let offset = 0
     for (let index = 0; index < MARKDOWN_CHUNKS.length; index += 1) {
-      await page.evaluate(({ seq, runId, delta }) => {
-        ;(window as any).__emitV3EventEverywhere(seq, 'session.assistant.delta', { run_id: runId, delta })
-      }, { seq: 2 + index, runId: RUN_ID, delta: MARKDOWN_CHUNKS[index] })
+      const delta = MARKDOWN_CHUNKS[index]
+      const byteLength = new TextEncoder().encode(delta).byteLength
+      await page.evaluate(({ seq, runId, delta, offsetStart, offsetEnd }) => {
+        ;(window as any).__emitV3LivePatchEverywhere(seq, {
+          session_id: SESSION_ID,
+          run_id: runId,
+          stream_id: `assistant:${runId}:step:1`,
+          stream_kind: 'assistant_text',
+          operation: 'append',
+          step: 1,
+          step_id: 'step-1',
+          live_seq_start: seq - 1,
+          live_seq_end: seq - 1,
+          offset_start: offsetStart,
+          offset_end: offsetEnd,
+          text: delta,
+          recorded_at: Date.now(),
+        })
+      }, { seq: 2 + index, runId: RUN_ID, delta, offsetStart: offset, offsetEnd: offset + byteLength })
+      offset += byteLength
     }
 
     const liveText = await page.waitForFunction((sentinel) => {
@@ -321,6 +387,8 @@ test('desktop V3 markdown stream renders each delta once and finalizes to the sa
     }, SENTINEL).then((handle) => handle.jsonValue() as Promise<string>)
 
     assert.equal(countOccurrences(liveText, SENTINEL), 1, `streaming markdown duplicated a delta before finalization\n${liveText}`)
+    assert.ok(liveText.includes('bold'), `live markdown did not render awkward bold split: ${liveText}`)
+    assert.ok(liveText.includes('code'), `live markdown did not render awkward code split: ${liveText}`)
     assert.equal((await page.evaluate(() => (window as any).__socketUrls?.() || []) as string[]).some((url) => url.includes(`/v3/sessions/${SESSION_ID}/stream`)), false, 'V3 desktop opened a second per-session stream in addition to global /ws')
 
     backend.setMessages([
@@ -346,6 +414,8 @@ test('desktop V3 markdown stream renders each delta once and finalizes to the sa
     }, SENTINEL).then((handle) => handle.jsonValue() as Promise<string>)
 
     assert.equal(countOccurrences(finalText, SENTINEL), 1, `final markdown message should contain one canonical copy\n${finalText}`)
+    assert.ok(finalText.includes('bold'), `final markdown did not match live bold content: ${finalText}`)
+    assert.ok(finalText.includes('code'), `final markdown did not match live code content: ${finalText}`)
   } finally {
     await browser.close().catch(() => undefined)
     await stopVite(app.vite)

@@ -7,8 +7,32 @@ import (
 
 	anthropicapi "github.com/anthropics/anthropic-sdk-go"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
+
+func TestAnthropicExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
+	lifecycle := (&Runner{}).ExecutionEpochLifecycle()
+	if lifecycle.ContextMode != provideriface.ExecutionEpochContextStatelessFullInput || !lifecycle.Valid() {
+		t.Fatalf("lifecycle = %+v, want valid stateless full-input mode", lifecycle)
+	}
+	input := []map[string]any{
+		{"role": "user", "content": "epoch user"},
+		{"role": "assistant", "content": "epoch assistant"},
+		{"role": "user", "content": "epoch follow-up"},
+	}
+	messages, err := buildAnthropicMessages(input)
+	if err != nil {
+		t.Fatalf("build messages: %v", err)
+	}
+	encoded := mustMarshalJSON(t, messages)
+	for _, text := range []string{"epoch user", "epoch assistant", "epoch follow-up"} {
+		assertContains(t, encoded, text)
+	}
+	for _, forbidden := range []string{"previous_response_id", "conversation", "predecessor"} {
+		assertNotContains(t, encoded, forbidden)
+	}
+}
 
 func TestSanitizeAnthropicToolSchemaTransformsComplexUnions(t *testing.T) {
 	schema, err := sanitizeAnthropicToolSchema(map[string]any{
@@ -99,6 +123,91 @@ func TestSanitizeAnthropicToolSchemaMovesUnsupportedConstraintsToDescription(t *
 	assertContains(t, encoded, `minItems: 2`)
 }
 
+func TestAnthropicThinkingConfigUsesCatalogAdaptiveEffortMapping(t *testing.T) {
+	catalog := pebblestore.ModelCatalogRecord{ThinkingMappings: []pebblestore.ModelCatalogThinkingMapping{
+		{SwarmSetting: "off", ProviderParameter: "thinking.type + output_config.effort", Behavior: "disabled"},
+		{SwarmSetting: "medium", ProviderParameter: "thinking.type + output_config.effort", ProviderValue: "medium", EffectiveProviderValue: "medium", Behavior: "effort"},
+	}}
+	cfg, effort := anthropicThinkingConfig(catalog, "medium")
+	if cfg == nil || cfg.OfAdaptive == nil {
+		t.Fatalf("expected adaptive thinking config from catalog mapping, got %#v", cfg)
+	}
+	if cfg.OfEnabled != nil {
+		t.Fatalf("adaptive catalog mapping must not use enabled thinking: %#v", cfg.OfEnabled)
+	}
+	if effort != anthropicapi.OutputConfigEffortMedium {
+		t.Fatalf("effort = %q, want medium", effort)
+	}
+}
+
+func TestAnthropicThinkingConfigKeepsBudgetForBudgetTokenMappings(t *testing.T) {
+	catalog := pebblestore.ModelCatalogRecord{ThinkingMappings: []pebblestore.ModelCatalogThinkingMapping{
+		{SwarmSetting: "medium", ProviderParameter: "thinking.budget_tokens", ProviderValue: "4096"},
+	}}
+	cfg, effort := anthropicThinkingConfig(catalog, "medium")
+	if cfg == nil || cfg.OfEnabled == nil {
+		t.Fatalf("expected enabled thinking config for budget-token mapping, got %#v", cfg)
+	}
+	if got := cfg.OfEnabled.BudgetTokens; got != 4096 {
+		t.Fatalf("budget tokens = %d, want 4096", got)
+	}
+	if effort != "" {
+		t.Fatalf("effort = %q, want empty", effort)
+	}
+}
+
+func TestAnthropicThinkingConfigFallsBackToLegacyBudgetWithoutCatalog(t *testing.T) {
+	cfg, effort := anthropicThinkingConfig(nil, "medium")
+	if cfg == nil || cfg.OfEnabled == nil {
+		t.Fatalf("expected enabled thinking config without catalog, got %#v", cfg)
+	}
+	if got := cfg.OfEnabled.BudgetTokens; got != 4096 {
+		t.Fatalf("budget tokens = %d, want 4096", got)
+	}
+	if effort != "" {
+		t.Fatalf("effort = %q, want empty", effort)
+	}
+}
+
+func TestAnthropicRequestOptionsApplyProviderFastModeSeparatelyFromPriority(t *testing.T) {
+	catalog := pebblestore.ModelCatalogRecord{ServiceTierMappings: []pebblestore.ModelCatalogServiceTierMapping{
+		{Tier: "priority", SwarmSetting: "fast", ProviderParameter: "service_tier", ProviderValue: "auto"},
+		{Tier: "fast", ProviderParameter: "speed", ProviderValue: "fast", BetaHeader: "fast-mode-2026-02-01"},
+	}}
+	if opts := anthropicRequestOptions(catalog, "priority"); len(opts) != 0 {
+		t.Fatalf("priority tier must not enable provider Fast Mode options: %d", len(opts))
+	}
+	if got := anthropicProviderServiceTier(catalog, "priority"); got != anthropicapi.MessageNewParamsServiceTierAuto {
+		t.Fatalf("priority service tier = %q, want auto", got)
+	}
+	opts := anthropicRequestOptions(catalog, "fast")
+	if len(opts) != 2 {
+		t.Fatalf("fast mode options = %d, want speed JSON set and beta header", len(opts))
+	}
+}
+
+func TestAnthropicUsageMapsCacheTokenTypesForFrontend(t *testing.T) {
+	usage := anthropicUsageToTokenUsage(anthropicapi.Usage{
+		InputTokens:              100,
+		OutputTokens:             20,
+		CacheReadInputTokens:     30,
+		CacheCreationInputTokens: 40,
+		ServiceTier:              anthropicapi.UsageServiceTierPriority,
+	})
+	if usage.Source != usageSource || usage.APIUsageRawPath != "usage" {
+		t.Fatalf("usage identity = %+v", usage)
+	}
+	if usage.InputTokens != 100 || usage.OutputTokens != 20 || usage.CacheReadTokens != 30 || usage.CacheWriteTokens != 40 || usage.TotalTokens != 190 {
+		t.Fatalf("usage tokens = %+v", usage)
+	}
+	if usage.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q, want priority", usage.ServiceTier)
+	}
+	if usage.APIUsageRaw["cache_read_input_tokens"] != int64(30) || usage.APIUsageRaw["cache_creation_input_tokens"] != int64(40) {
+		t.Fatalf("raw cache token fields = %#v", usage.APIUsageRaw)
+	}
+}
+
 func TestBuildRequestPlacesPromptCacheControlsAtOfficialBreakpoints(t *testing.T) {
 	tools, _, err := buildAnthropicTools([]provideriface.ToolDefinition{
 		{Name: "read", Description: "Read", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
@@ -147,6 +256,88 @@ func anthropicapiMessageParamsForCacheTest(tools []anthropicapi.ToolUnionParam, 
 		applyAnthropicPromptCaching(&params, tools)
 	}
 	return params
+}
+
+func TestAnthropicStreamStateEmitsThinkingDeltasWithStableReasoningKey(t *testing.T) {
+	state := newAnthropicStreamState()
+	var events []provideriface.StreamEvent
+	emit := func(event provideriface.StreamEvent) {
+		events = append(events, event)
+	}
+
+	for _, raw := range []string{
+		`{"type":"content_block_start","index":1,"content_block":{"type":"thinking","thinking":"Plan: "}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"inspect "}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"adapter"}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"signature_delta","signature":"transport-signature"}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"content_block_start","index":2,"content_block":{"type":"redacted_thinking","data":"encrypted"}}`,
+		`{"type":"content_block_stop","index":2}`,
+		`{"type":"content_block_start","index":3,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":"final answer"}}`,
+	} {
+		event := mustAnthropicStreamEvent(t, raw)
+		state.HandleEvent(event, emit)
+	}
+
+	if got, want := state.Thinking(), "Plan: inspect adapter"; got != want {
+		t.Fatalf("thinking snapshot = %q, want %q", got, want)
+	}
+	if got, want := state.Text(), "final answer"; got != want {
+		t.Fatalf("text snapshot = %q, want %q", got, want)
+	}
+	if len(events) != 4 {
+		t.Fatalf("event count = %d, want 4: %+v", len(events), events)
+	}
+	for i, event := range events[:3] {
+		if event.Type != provideriface.StreamEventReasoningSummaryDelta || event.ReasoningKey != "anthropic-thinking-1" {
+			t.Fatalf("thinking event %d = %+v", i, event)
+		}
+	}
+	if events[0].Delta != "Plan: " || events[1].Delta != "Plan: inspect " || events[2].Delta != "Plan: inspect adapter" {
+		t.Fatalf("unexpected thinking snapshots: %+v", events[:3])
+	}
+	if events[3].Type != provideriface.StreamEventOutputTextDelta || events[3].Delta != "final answer" {
+		t.Fatalf("text event = %+v", events[3])
+	}
+}
+
+func TestAnthropicMessageToResponseCollectsThinkingAndIgnoresRedactedThinking(t *testing.T) {
+	message := anthropicapi.Message{}
+	for _, raw := range []string{
+		`{"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"visible"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" thinking"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"signature"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"encrypted"}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"content_block_start","index":2,"content_block":{"type":"text","text":"answer"}}`,
+		`{"type":"content_block_stop","index":2}`,
+		`{"type":"message_stop"}`,
+	} {
+		event := mustAnthropicStreamEvent(t, raw)
+		if err := message.Accumulate(event); err != nil {
+			t.Fatalf("accumulate %s: %v", raw, err)
+		}
+	}
+
+	response := anthropicMessageToResponse(message)
+	if response.Text != "answer" {
+		t.Fatalf("response text = %q", response.Text)
+	}
+	if response.ReasoningSummary != "visible thinking" {
+		t.Fatalf("response reasoning = %q", response.ReasoningSummary)
+	}
+}
+
+func mustAnthropicStreamEvent(t *testing.T, raw string) anthropicapi.MessageStreamEventUnion {
+	t.Helper()
+	var event anthropicapi.MessageStreamEventUnion
+	if err := event.UnmarshalJSON([]byte(raw)); err != nil {
+		t.Fatalf("unmarshal stream event %s: %v", raw, err)
+	}
+	return event
 }
 
 func TestBuildAnthropicContentBlocksDoNotEmitPerMessageCacheControls(t *testing.T) {

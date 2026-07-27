@@ -456,20 +456,6 @@ func (s *Service) resolveGroupMembershipRecord(input UpsertGroupMemberInput) (pe
 			swarmRole = firstNonEmpty(swarmRole, localNode.Role)
 		}
 	}
-	if name == "" || swarmRole == "" {
-		peers, err := s.store.ListTrustedPeers(500)
-		if err != nil {
-			return pebblestore.SwarmGroupMembershipRecord{}, err
-		}
-		for _, peer := range peers {
-			if !strings.EqualFold(peer.SwarmID, swarmID) {
-				continue
-			}
-			name = firstNonEmpty(name, peer.Name)
-			swarmRole = firstNonEmpty(swarmRole, peer.Role)
-			break
-		}
-	}
 	name = firstNonEmpty(name, existing.Name)
 	swarmRole = firstNonEmpty(swarmRole, existing.SwarmRole)
 	if name == "" {

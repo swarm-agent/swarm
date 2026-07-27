@@ -1,0 +1,12 @@
+{
+  "schema_version": "2026-06-09.1",
+  "api_version": "v1",
+  "snapshot_schema_version": "2026-07-01.1",
+  "snapshot_id": "swarm-models-v1-ff7921f74d2b674a",
+  "snapshot_version": "ff7921f74d2b674a",
+  "generated_at": "2026-07-09T07:26:57.245Z",
+  "model_count": 473,
+  "provider_count": 7,
+  "hydrated_provider_count": 6,
+  "snapshot_url": "/v1/snapshot.json"
+}

@@ -2,15 +2,42 @@ import type { DesktopPermissionRecord } from '../../types/realtime'
 import {
   parseAgentChangePermission,
   parseManageTodosPermission,
-  parseManageFlowPermission,
+  parseSessionArchivePermission,
+  parseSessionCommitPermission,
+  parseSessionDeployPermission,
   parseExitPlanPermission,
   parsePlanUpdatePermission,
   buildPlanUpdateDiffPreview,
   parseTaskLaunchPermission,
   permissionKind,
+  isPlanProposalPermission,
   permissionRequiresApproval,
   buildGenericPermissionMarkdown,
 } from './permission-payload'
+
+function testSessionDeployPermissionPayload(): void {
+  const permission = makePermission({
+    toolName: 'manage-sessions',
+    requirement: 'session_deploy',
+    toolArguments: JSON.stringify({
+      action: 'deploy',
+      manifest_version: 1,
+      manifest_digest: 'digest-1',
+      proposals: [
+        { id: 'proposal-1', title: 'Primary', prompt: 'Do primary work', mode: 'auto', agent_name: 'swarm', agent_mode: 'primary', workspace_path: '/workspace', selected: true },
+        { id: 'proposal-2', title: 'Explore', prompt: 'Investigate', mode: 'plan', agent_name: 'finder', agent_mode: 'subagent', workspace_path: '/workspace', selected: true },
+      ],
+      allowed_workspaces: [{ id: 'workspace-1', generation: 3, path: '/workspace', name: 'Workspace' }],
+      approved_arguments: { action: 'deploy', manifest_digest: 'digest-1' },
+    }),
+  })
+  const payload = parseSessionDeployPermission(permission)
+  assert(permissionKind(permission) === 'session-deploy', 'expected deploy permission kind')
+  assert(payload.proposals.length === 2, 'expected two deploy proposals')
+  assert(payload.proposals[0]?.selected === true, 'expected server default selection')
+  assert(payload.allowedAgents.map((agent) => `${agent.name}:${agent.mode}`).join(',') === 'swarm:primary,finder:subagent', 'expected server-resolved agents')
+  assert(payload.allowedWorkspaces.length === 1 && payload.allowedWorkspaces[0]?.path === '/workspace' && payload.allowedWorkspaces[0]?.generation === 3, 'expected server-resolved workspace choices')
+}
 
 function makePermission(overrides: Partial<DesktopPermissionRecord> = {}): DesktopPermissionRecord {
   return {
@@ -36,8 +63,8 @@ function makePermission(overrides: Partial<DesktopPermissionRecord> = {}): Deskt
       launches: [
         {
           launch_index: 1,
-          requested_subagent_type: 'explorer',
-          resolved_agent_name: 'explorer',
+          requested_subagent_type: 'finder',
+          resolved_agent_name: 'finder',
           meta_prompt: 'map repository structure',
           assignment_label: 'Repo map',
           subagent_provider: 'anthropic',
@@ -219,7 +246,7 @@ function testTaskLaunchPayloadParsing(): void {
   assert(payload.resolvedTools.allowedTools.join(',') === 'read,search', 'expected top-level resolved tools')
   assert(payload.disabledTools.length === 2, 'expected disabled tools at root')
   assert(payload.launches.length === 2, 'expected launch rows to be parsed')
-  assert(payload.launches[0]?.requestedSubagentType === 'explorer', 'expected first launch requested subagent type')
+  assert(payload.launches[0]?.requestedSubagentType === 'finder', 'expected first launch requested subagent type')
   assert(payload.launches[0]?.assignmentLabel === 'Repo map', 'expected first launch assignment label')
   assert(payload.launches[0]?.assignment === 'map repository structure', 'expected meta_prompt to win over short assignment label')
   assert(payload.launches[0]?.subagentProvider === 'anthropic', 'expected resolved provider')
@@ -258,49 +285,81 @@ function testManageTodosKindAndPayloadParsing(): void {
   assert(payload.body.includes('`#tasks`'), 'expected tags in body')
 }
 
-function testManageFlowKindAndPayloadParsing(): void {
-  const permission = makePermission({
-    toolName: 'manage-flow',
-    requirement: 'flow_change',
+function testTypedPlanLifecycleKindAndPayloadParsing(): void {
+  const followup = makePermission({
+    toolName: 'plan_manage',
+    requirement: 'plan_followup_request',
     toolArguments: JSON.stringify({
-      action: 'create',
-      flow_id: 'daily-report',
-      change: {
-        operation: 'create',
-        approval_summary: 'create flow "Daily report" using agent "memory" on daily 09:00 UTC',
-        after: {
-          flow_id: 'daily-report',
-          name: 'Daily report',
-          agent: { profile_name: 'memory', profile_mode: 'background' },
-          workspace: { workspace_path: '/workspace/demo' },
-          schedule: { cadence: 'daily', time: '09:00', timezone: 'UTC' },
-          catch_up_policy: { mode: 'once' },
-          intent: { prompt: 'Summarize the repo daily.' },
-        },
-      },
+      title: 'Session checkpoint: add audit note',
+      plan_id: 'plan_123',
+      action: 'request_followup_checkpoint',
+      change_request: 'Add an audit note before final review.',
+      notes: 'Self-contained handoff context with relevant files and validation expectations.',
+      approved_arguments: { action: 'request_followup_checkpoint', plan_id: 'plan_123', change_request: 'Add an audit note before final review.', notes: 'Self-contained handoff context with relevant files and validation expectations.' },
+    }),
+  })
+  assert(permissionKind(followup) === 'plan-followup-request', 'expected plan-followup-request permission kind')
+  assert(permissionRequiresApproval(followup, 'auto') === true, 'expected plan_followup_request approval requirement')
+  const followupPayload = parsePlanUpdatePermission(followup)
+  assert(followupPayload.action === 'request_followup_checkpoint', 'expected session checkpoint action')
+  assert(followupPayload.changeRequest.includes('audit note'), 'expected exact change request')
+  assert(followupPayload.notes.includes('Self-contained handoff context'), 'expected handoff notes')
+  assert(followupPayload.approvedArguments.notes === 'Self-contained handoff context with relevant files and validation expectations.', 'expected approved notes')
+
+  const revision = makePermission({
+    toolName: 'plan_manage',
+    requirement: 'plan_revision_request',
+    toolArguments: JSON.stringify({ action: 'request_plan_revision', plan_id: 'plan_123' }),
+  })
+  assert(permissionKind(revision) === 'plan-revision-request', 'expected plan-revision-request permission kind')
+
+  const newPlanDocument = {
+    title: 'New plan',
+    info: { goal: 'Render top-level document content' },
+    checkpoints: [{ id: 'cp-new', title: 'New checkpoint', status: 'pending' }],
+  }
+  const newPlan = makePermission({
+    toolName: 'plan_manage',
+    requirement: 'plan_new_request',
+    toolArguments: JSON.stringify({
+      action: 'request_new_plan',
+      title: 'New plan',
+      document: newPlanDocument,
       approved_arguments: {
-        action: 'create',
-        flow_id: 'daily-report',
-        confirm: true,
-        content: {
-          name: 'Daily report',
-          agent: { profile_name: 'memory', profile_mode: 'background' },
-          workspace: { workspace_path: '/workspace/demo' },
-          schedule: { cadence: 'daily', time: '09:00', timezone: 'UTC' },
-          catch_up_policy: { mode: 'once' },
-          intent: { prompt: 'Summarize the repo daily.' },
-        },
+        action: 'request_new_plan',
+        title: 'New plan',
+        document: newPlanDocument,
+        approval_confirmed: true,
+        execution_granularity: 'checkpointed',
+        continuation_policy: 'automatic',
+        continue_automatically: true,
       },
     }),
   })
-  assert(permissionKind(permission) === 'manage-flow', 'expected manage-flow permission kind')
-  assert(permissionRequiresApproval(permission, 'auto') === true, 'expected manage-flow approval requirement')
-  const payload = parseManageFlowPermission(permission)
-  assert(payload.title === 'Create Flow', 'expected manage-flow title')
-  assert(payload.flowId === 'daily-report', 'expected parsed flow id')
-  assert(payload.flowName === 'Daily report', 'expected parsed flow name')
-  assert(payload.content.name === 'Daily report', 'expected approved content to drive editable form')
-  assert(payload.summary.includes('Daily report'), 'expected readable flow summary')
+  assert(permissionKind(newPlan) === 'plan-new-request', 'expected plan-new-request permission kind')
+  const newPlanPayload = parsePlanUpdatePermission(newPlan)
+  assert(newPlanPayload.planId === '', 'expected separate new plan permission not to inject active plan id')
+  assert(Boolean(newPlanPayload.document), 'expected top-level structured new-plan document')
+  assert((newPlanPayload.document as { info?: { goal?: string } }).info?.goal === 'Render top-level document content', 'expected top-level document content')
+  assert(!('plan_id' in newPlanPayload.approvedArguments), 'expected approved arguments not to inject active plan_id')
+  assert(newPlanPayload.approvedArguments.approval_confirmed === true, 'expected approval confirmation argument')
+  assert(((newPlanPayload.approvedArguments.document as { checkpoints?: Array<{ id?: string }> })?.checkpoints?.[0]?.id ?? '') === 'cp-new', 'expected approved arguments to preserve document')
+}
+
+function testPlanProposalClassifierCoversOnlyApprovalCards(): void {
+  const proposalCases: Array<[string, string]> = [
+    ['exit_plan_mode', 'permission'],
+    ['plan_manage', 'plan_update'],
+    ['plan_manage', 'plan_followup_request'],
+    ['plan_manage', 'plan_revision_request'],
+    ['plan_manage', 'plan_amendment_request'],
+    ['plan_manage', 'plan_new_request'],
+  ]
+  for (const [toolName, requirement] of proposalCases) {
+    assert(isPlanProposalPermission(makePermission({ toolName, requirement })), `expected ${requirement} inline plan proposal`)
+  }
+  assert(!isPlanProposalPermission(makePermission({ toolName: 'bash', requirement: 'permission' })), 'expected bash permission to remain modal')
+  assert(!isPlanProposalPermission(makePermission({ toolName: 'ask_user', requirement: 'permission' })), 'expected ask-user permission to remain modal')
 }
 
 function testPlanUpdateKindAndPayloadParsing(): void {
@@ -326,6 +385,61 @@ function testPlanUpdateKindAndPayloadParsing(): void {
   assert(payload.plan.includes('After'), 'expected updated plan body')
   assert(payload.diffLines.length === 3, 'expected diff lines to be parsed')
   assert(Object.keys(payload.approvedArguments).length === 0, 'expected no approved arguments by default')
+}
+
+function testPlanAmendmentParsesDeltaAndApprovalArguments(): void {
+  const document = {
+    id: 'plan_123',
+    title: 'Structured Plan',
+    checkpoints: [
+      { id: 'cp-1', title: 'First', status: 'completed', order: 1 },
+      { id: 'cp-2', title: 'Deploy authority', status: 'pending', order: 2 },
+    ],
+  }
+  const permission = makePermission({
+    toolName: 'plan_manage',
+    requirement: 'plan_amendment_request',
+    toolArguments: JSON.stringify({
+      title: 'Structured Plan',
+      plan_id: 'plan_123',
+      document,
+      prior_document: { ...document, checkpoints: [{ id: 'cp-1', title: 'First', status: 'completed', order: 1 }, { id: 'cp-2', title: 'Old future', status: 'pending', order: 2 }] },
+      current_revision: 4,
+      base_revision: 4,
+      plan_amendment_delta: {
+        reason: 'Replace future work',
+        base_revision: 4,
+        current_revision: 4,
+        replace_from_checkpoint_id: 'cp-2',
+        preserved_checkpoints: [{ id: 'cp-1', title: 'First', status: 'completed' }],
+        replaced_checkpoints: [{ id: 'cp-2', title: 'Old future', status: 'pending' }],
+        replacement_checkpoints: [{ id: 'cp-2', title: 'Deploy authority', status: 'pending' }],
+        next_checkpoint: { id: 'cp-2', title: 'Deploy authority', status: 'pending' },
+        bullets: ['cp-1 remains completed and preserved.', 'Replacing pending future work from cp-2 (Old future).', 'Next checkpoint becomes cp-2 (Deploy authority).', 'Reason: Replace future work'],
+      },
+      approved_arguments: {
+        action: 'amend_plan',
+        plan_id: 'plan_123',
+        base_revision: 4,
+        override_stale: true,
+        replace_from_checkpoint_id: 'cp-2',
+        update_summary: 'Replace future work',
+        document,
+      },
+    }),
+  })
+  assert(permissionKind(permission) === 'plan-amendment-request', 'expected plan amendment permission kind')
+  assert(permissionRequiresApproval(permission, 'auto') === true, 'expected plan amendment approval requirement')
+  const payload = parsePlanUpdatePermission(permission)
+  assert(Boolean(payload.priorDocument), 'expected prior structured document')
+  assert(payload.currentRevision === 4, 'expected current revision')
+  assert(payload.planAmendmentDelta?.preservedCheckpoints[0]?.id === 'cp-1', 'expected preserved cp-1')
+  assert(payload.planAmendmentDelta?.replacedCheckpoints[0]?.id === 'cp-2', 'expected replaced cp-2')
+  assert(payload.planAmendmentDelta?.nextCheckpoint?.title === 'Deploy authority', 'expected replacement checkpoint title')
+  assert(payload.planAmendmentDelta?.bullets.some((bullet) => bullet.includes('Reason')), 'expected reason bullet')
+  assert(payload.approvedArguments.base_revision === 4, 'expected approved args to preserve base revision')
+  assert(payload.approvedArguments.override_stale === true, 'expected approved args to preserve override stale')
+  assert(payload.approvedArguments.replace_from_checkpoint_id === 'cp-2', 'expected approved args to preserve replace-from checkpoint')
 }
 
 function testPlanUpdateParsesStructuredDocument(): void {
@@ -372,6 +486,19 @@ function testExitPlanParsesStructuredDocument(): void {
       plan_id: 'plan_exit',
       plan: '# fallback',
       document,
+      execution_granularity: 'checkpointed',
+      continuation_policy: 'automatic',
+      continue_automatically: true,
+      execution_recommendation: {
+        execution_granularity: 'checkpointed',
+        continuation_policy: 'automatic',
+        continue_automatically: true,
+      },
+      approved_arguments: {
+        plan_id: 'plan_exit',
+        document,
+        continue_automatically: false,
+      },
     }),
   })
   const payload = parseExitPlanPermission(permission)
@@ -379,6 +506,9 @@ function testExitPlanParsesStructuredDocument(): void {
   assert(payload.body === '# fallback', 'expected fallback body')
   assert(Boolean(payload.document), 'expected exit document passthrough')
   assert((payload.document as { id?: string }).id === 'plan_exit', 'expected exit document id')
+  assert(payload.approvedArguments.plan_id === 'plan_exit', 'expected approved arguments to preserve plan id')
+  assert(payload.approvedArguments.continue_automatically === false, 'expected approved arguments to preserve execution controls')
+  assert(!('executionRecommendation' in payload), 'expected exit plan parsing to ignore execution recommendations')
 }
 
 function testPlanUpdateDiffPreviewPreservesAllDiffRows(): void {
@@ -444,6 +574,58 @@ function testGenericBashPermissionFormatsCommandAsCodeBlock(): void {
   assert(!body.includes(`\`${command}\``), 'expected wrapping backticks to be removed')
 }
 
+function testManageSessionsMutationPayloads(): void {
+  const commit = makePermission({
+    toolName: 'manage_sessions', requirement: 'session_commit',
+    toolArguments: JSON.stringify({ action: 'commit', manifest: { commits: [{ message: 'Ship session work', repository: '/workspace', files: [{ path: 'web/src/app.tsx', fingerprint: 'hidden' }] }] }, approved_arguments: { action: 'commit', manifest: { version: 1 } } }),
+  })
+  assert(permissionKind(commit) === 'session-commit', 'expected dedicated commit kind')
+  const commitPayload = parseSessionCommitPermission(commit)
+  assert(commitPayload.commits[0]?.message === 'Ship session work', 'expected commit message')
+  assert(commitPayload.commits[0]?.files[0] === 'web/src/app.tsx', 'expected exact changed file')
+
+  const unarchive = makePermission({
+    toolName: 'manage_sessions', requirement: 'session_unarchive',
+    toolArguments: JSON.stringify({ action: 'unarchive', sessions: [{ title: 'Restore me', workspace_name: 'Swarm', state: 'archived', updated_at: 12 }], approved_arguments: { action: 'unarchive', session_ids: ['opaque'] } }),
+  })
+  assert(permissionKind(unarchive) === 'session-unarchive', 'expected dedicated unarchive kind')
+  const unarchivePayload = parseSessionArchivePermission(unarchive)
+  assert(unarchivePayload.action === 'unarchive', 'expected unarchive action')
+  assert(unarchivePayload.sessions[0]?.title === 'Restore me', 'expected restored session facts')
+}
+
+function testManageSessionsArchiveShowsHydratedFactsOnly() {
+  const firstId = '3797e357-ef14-4983-aa70-625efb8be323'
+  const permission = makePermission({
+    toolName: 'manage_sessions',
+    requirement: 'session_archive',
+    toolArguments: JSON.stringify({
+      action: 'archive',
+      sessions: [{ title: 'Review search results', workspace_name: 'Swarm', state: 'needs_review', updated_at: 1783764535576 }],
+      approved_arguments: {
+        action: 'archive',
+        session_ids: [firstId],
+        expected_updated_at_by_id: { [firstId]: 1783764535576 },
+      },
+    }),
+  })
+
+  assert(permissionKind(permission) === 'session-archive', 'expected dedicated session archive permission kind')
+  const payload = parseSessionArchivePermission(permission)
+  assert(payload.sessions.length === 1, 'expected one parsed session')
+  assert(payload.sessions[0]?.title === 'Review search results', 'expected parsed title')
+  assert(payload.sessions[0]?.workspaceName === 'Swarm', 'expected parsed workspace')
+  assert(payload.sessions[0]?.state === 'needs_review', 'expected parsed state')
+  assert(payload.sessions[0]?.updatedAt === 1783764535576, 'expected parsed timestamp')
+  assert(payload.approvedArguments.session_ids instanceof Array, 'expected approved arguments to be preserved')
+
+  const body = buildGenericPermissionMarkdown(permission)
+  assert(body.includes('Review search results'), 'expected hydrated title')
+  assert(body.includes('needs_review'), 'expected hydrated state')
+  assert(!body.includes(firstId), 'expected authoritative opaque id to stay hidden from the prompt')
+  assert(!body.includes('Expected Updated At By Id'), 'expected concurrency map to stay hidden from the prompt')
+}
+
 function testManageTodosBatchParsing(): void {
   const permission = makePermission({
     toolName: 'manage_todos',
@@ -480,13 +662,18 @@ function main(): void {
   testTaskLaunchKindAndApproval()
   testTaskLaunchPayloadParsing()
   testManageTodosKindAndPayloadParsing()
-  testManageFlowKindAndPayloadParsing()
+  testTypedPlanLifecycleKindAndPayloadParsing()
+  testPlanProposalClassifierCoversOnlyApprovalCards()
   testPlanUpdateKindAndPayloadParsing()
+  testPlanAmendmentParsesDeltaAndApprovalArguments()
   testPlanUpdateParsesStructuredDocument()
   testExitPlanParsesStructuredDocument()
   testPlanUpdateDiffPreviewPreservesAllDiffRows()
   testPlanUpdateDiffPreviewFallsBackToCompleteBeforeAfterRows()
   testGenericBashPermissionFormatsCommandAsCodeBlock()
+  testManageSessionsMutationPayloads()
+  testManageSessionsArchiveShowsHydratedFactsOnly()
+  testSessionDeployPermissionPayload()
   testManageTodosBatchParsing()
   console.log('permission-payload tests passed')
 }

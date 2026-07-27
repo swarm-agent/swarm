@@ -1,7 +1,25 @@
-import { debugLog, createDebugTimer } from '../lib/debug-log'
+
+export interface DesktopSessionIdentity {
+  userId: string
+  accountScopeId: string
+  username?: string
+  expiresAt?: string
+}
+
+interface DesktopSessionBootstrapResponse {
+  ok?: boolean
+  user_id?: string
+  userID?: string
+  account_scope_id?: string
+  accountScopeID?: string
+  username?: string
+  expires_at?: string
+  expiresAt?: string
+}
 
 let desktopSessionReady = false
-let desktopSessionPromise: Promise<void> | null = null
+let desktopSessionIdentity: DesktopSessionIdentity | null = null
+let desktopSessionPromise: Promise<DesktopSessionIdentity> | null = null
 
 async function readErrorMessage(response: Response): Promise<string> {
   const text = (await response.text()).trim()
@@ -21,9 +39,7 @@ async function readErrorMessage(response: Response): Promise<string> {
   return text
 }
 
-async function bootstrapDesktopSession(): Promise<void> {
-  const finish = createDebugTimer('app-api', 'bootstrap-desktop-session')
-  debugLog('app-api', 'bootstrap-desktop-session:request')
+async function bootstrapDesktopSession(): Promise<DesktopSessionIdentity> {
   const response = await fetch('/v1/auth/desktop/session', {
     cache: 'no-store',
     credentials: 'same-origin',
@@ -33,49 +49,58 @@ async function bootstrapDesktopSession(): Promise<void> {
   })
 
   if (!response.ok) {
-    finish({ ok: false, status: response.status })
     throw new Error(await readErrorMessage(response))
   }
+  const payload = await response.json() as DesktopSessionBootstrapResponse
+  const userId = stringField(payload.user_id) || stringField(payload.userID)
+  const accountScopeId = stringField(payload.account_scope_id) || stringField(payload.accountScopeID)
+  if (!userId || !accountScopeId) {
+    throw new Error('desktop session bootstrap did not return user/account identity')
+  }
+  const identity: DesktopSessionIdentity = {
+    userId,
+    accountScopeId,
+    username: stringField(payload.username),
+    expiresAt: stringField(payload.expires_at) || stringField(payload.expiresAt),
+  }
+  desktopSessionIdentity = identity
   desktopSessionReady = true
-  finish({ ok: true })
+  return identity
 }
 
 function clearDesktopSession() {
-  debugLog('app-api', 'clear-desktop-session')
   desktopSessionReady = false
+  desktopSessionIdentity = null
 }
 
-export async function ensureDesktopSession(forceRefresh = false): Promise<void> {
+export function getDesktopSessionIdentitySnapshot(): DesktopSessionIdentity | null {
+  return desktopSessionIdentity
+}
+
+export async function ensureDesktopSession(forceRefresh = false): Promise<DesktopSessionIdentity> {
   if (forceRefresh) {
     clearDesktopSession()
   }
-  if (desktopSessionReady) {
-    debugLog('app-api', 'ensure-desktop-session:cache-hit')
-    return
+  if (desktopSessionReady && desktopSessionIdentity) {
+    return desktopSessionIdentity
   }
   if (!desktopSessionPromise) {
-    debugLog('app-api', 'ensure-desktop-session:start-bootstrap')
     desktopSessionPromise = bootstrapDesktopSession().finally(() => {
-      debugLog('app-api', 'ensure-desktop-session:promise-cleared')
       desktopSessionPromise = null
     })
-  } else {
-    debugLog('app-api', 'ensure-desktop-session:await-inflight')
   }
   return desktopSessionPromise
 }
 
+function stringField(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
 export async function apiFetch(input: RequestInfo | URL, init?: RequestInit, attachAuth = true): Promise<Response> {
-  const requestLabel = typeof input === 'string' ? input : input instanceof URL ? input.toString() : '[request]'
   const send = async (): Promise<Response> => {
     const headers = new Headers(init?.headers ?? {})
     headers.set('Accept', 'application/json')
 
-    debugLog('app-api', 'apiFetch:send', {
-      input: requestLabel,
-      method: init?.method ?? 'GET',
-      attachAuth,
-    })
     return fetch(input, {
       ...init,
       cache: init?.cache ?? 'no-store',
@@ -86,30 +111,15 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit, att
 
   let response = await send()
   if (attachAuth && response.status === 401) {
-    debugLog('app-api', 'apiFetch:retry-on-401', {
-      input: requestLabel,
-      method: init?.method ?? 'GET',
-    })
     clearDesktopSession()
     try {
       await ensureDesktopSession()
     } catch (error) {
-      debugLog('app-api', 'apiFetch:desktop-session-bootstrap-failed', {
-        input: requestLabel,
-        method: init?.method ?? 'GET',
-        message: error instanceof Error ? error.message : String(error),
-      })
       return response
     }
     response = await send()
   }
 
-  debugLog('app-api', 'apiFetch:response', {
-    input: requestLabel,
-    method: init?.method ?? 'GET',
-    status: response.status,
-    ok: response.ok,
-  })
   return response
 }
 

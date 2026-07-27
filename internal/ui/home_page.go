@@ -6,11 +6,11 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
+	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 )
 
 const (
-	recentVisibleRows = 5
 	bottomBarHeight   = 3
 	sectionGap        = 1
 	inputCursorRune   = '█'
@@ -22,6 +22,7 @@ type layoutVariant struct {
 	Name              string
 	ShowWorkspaceList bool
 	ShowDirectory     bool
+	ShowHero          bool
 	ShowPresets       bool
 	ShowTips          bool
 	InputFirst        bool
@@ -64,6 +65,7 @@ var homeLayout = layoutVariant{
 	Name:              "Tabs",
 	ShowWorkspaceList: false,
 	ShowDirectory:     false,
+	ShowHero:          true,
 	ShowPresets:       false,
 	ShowTips:          true,
 	InputFirst:        true,
@@ -77,13 +79,8 @@ type HomePage struct {
 	keybinds                  *KeyBindings
 	model                     model.HomeModel
 	prompt                    string
+	sessionIntent             HomeSessionIntent
 	promptCursor              int
-	selectedIndex             int
-	sessionsFocused           bool
-	recentPage                int
-	recentPageSize            int
-	sessionRows               []Rect
-	sessionIndex              []int
 	topBarTargets             []clickTarget
 	bottomBarTargets          []clickTarget
 	commandPaletteTargets     []clickTarget
@@ -96,7 +93,7 @@ type HomePage struct {
 	pressedTopAction          string
 	pressedTopFrames          int
 	commandOverlay            []string
-	swarmModal                swarmModalState
+	onboarding                onboardingState
 	swarmName                 string
 	swarmNotificationCount    int
 	alertsModal               alertsModalState
@@ -112,12 +109,13 @@ type HomePage struct {
 	pendingWorkspaceAction    *WorkspaceModalAction
 	worktreesModal            worktreesModalState
 	pendingWorktreesAction    *WorktreesModalAction
-	mcpModal                  mcpModalState
-	pendingMCPAction          *MCPModalAction
-	pendingSwarmAction        *SwarmModalAction
+	codexModal                codexUsageModalState
+	codexModalTargets         []clickTarget
 	modelsModal               modelsModalState
 	modelsModalTargets        []clickTarget
 	pendingModelsAction       *ModelsModalAction
+	profilesModal             profilesModalState
+	profilesModalTargets      []clickTarget
 	agentsModal               agentsModalState
 	agentsModalTargets        []clickTarget
 	pendingAgentsAction       *AgentsModalAction
@@ -132,24 +130,33 @@ type HomePage struct {
 	keybindsModal             keybindsModalState
 	pendingKeybindsAction     *KeybindsModalAction
 	pendingHomeAction         *HomeAction
+	codexUsage                client.CodexAccountUsage
+	codexResetCredits         client.CodexResetCredits
 	toast                     toastState
 }
 
 func NewHomePage(m model.HomeModel) *HomePage {
 	return &HomePage{
-		theme:          NordTheme(),
-		keybinds:       NewDefaultKeyBindings(),
-		model:          m,
-		recentPageSize: recentVisibleRows,
-		statusLine:     "",
-		sessionMode:    "auto",
-		swarmName:      "Local",
-		promptCursor:   0,
+		theme:        NordTheme(),
+		keybinds:     NewDefaultKeyBindings(),
+		model:        m,
+		statusLine:   "",
+		sessionMode:  "auto",
+		swarmName:    "Local",
+		promptCursor: 0,
 	}
 }
 
 func (p *HomePage) HandleMouse(ev *tcell.EventMouse) {
 	if p == nil || ev == nil {
+		return
+	}
+	if p.codexModal.Visible {
+		p.handleCodexUsageModalMouse(ev)
+		return
+	}
+	if p.profilesModal.Visible {
+		p.handleProfilesModalMouse(ev)
 		return
 	}
 	if p.modelsModal.Visible {
@@ -160,7 +167,7 @@ func (p *HomePage) HandleMouse(ev *tcell.EventMouse) {
 		p.handleAgentsModalMouse(ev)
 		return
 	}
-	if p.alertsModal.Visible || p.sessionsModal.Visible || p.authModal.Visible || p.vaultModal.Visible || p.authDefaultsInfoModal.Visible || p.workspaceModal.Visible || p.worktreesModal.Visible || p.mcpModal.Visible || p.voiceModal.Visible || p.themeModal.Visible || p.keybindsModal.Visible {
+	if p.onboarding.Visible || p.alertsModal.Visible || p.sessionsModal.Visible || p.authModal.Visible || p.vaultModal.Visible || p.authDefaultsInfoModal.Visible || p.workspaceModal.Visible || p.worktreesModal.Visible || p.voiceModal.Visible || p.themeModal.Visible || p.keybindsModal.Visible {
 		return
 	}
 
@@ -219,23 +226,6 @@ func (p *HomePage) HandleMouse(ev *tcell.EventMouse) {
 		p.pressedTopAction = ""
 	}
 
-	if buttons&tcell.Button1 == 0 {
-		return
-	}
-
-	for i, r := range p.sessionRows {
-		if !r.Contains(x, y) || i >= len(p.sessionIndex) {
-			continue
-		}
-		idx := p.sessionIndex[i]
-		if idx >= 0 && idx < len(p.model.RecentSessions) {
-			p.sessionsFocused = true
-			p.selectedIndex = idx
-			p.syncPageFromSelection(p.recentPageSize)
-			p.queueOpenSessionAction(p.model.RecentSessions[idx])
-		}
-		return
-	}
 }
 
 func (p *HomePage) HandleTick() bool {
@@ -254,16 +244,16 @@ func (p *HomePage) HandleTick() bool {
 }
 
 func (p *HomePage) HandleKey(ev *tcell.EventKey) {
+	if p.onboarding.Visible && !p.authModal.Visible {
+		p.handleOnboardingKey(ev)
+		return
+	}
 	if p.alertsModal.Visible {
 		p.handleAlertsModalKey(ev)
 		return
 	}
 	if p.sessionsModal.Visible {
 		p.handleSessionsModalKey(ev)
-		return
-	}
-	if p.swarmModal.Visible {
-		p.handleSwarmModalKey(ev)
 		return
 	}
 	if p.vaultModal.Visible {
@@ -290,8 +280,12 @@ func (p *HomePage) HandleKey(ev *tcell.EventKey) {
 		p.handleWorktreesModalKey(ev)
 		return
 	}
-	if p.mcpModal.Visible {
-		p.handleMCPModalKey(ev)
+	if p.codexModal.Visible {
+		p.handleCodexUsageModalKey(ev)
+		return
+	}
+	if p.profilesModal.Visible {
+		p.handleProfilesModalKey(ev)
 		return
 	}
 	if p.modelsModal.Visible {
@@ -317,40 +311,18 @@ func (p *HomePage) HandleKey(ev *tcell.EventKey) {
 		return
 	}
 
-	if p.keybinds.Match(ev, KeybindHomeSessionsEnterMode) {
-		p.enterSessionsMode()
-		return
-	}
-	if p.keybinds.Match(ev, KeybindHomeSessionsExitMode) {
-		p.exitSessionsMode()
-		return
-	}
 	if p.keybinds.Match(ev, KeybindChatCycleMode) {
-		next := nextHomeSessionMode(p.sessionMode)
-		p.sessionMode = next
-		p.statusLine = "mode: " + currentDisplayedHomeSessionMode(p)
+		if p.CanCycleSessionMode() {
+			next := nextHomeSessionMode(p.sessionMode)
+			p.SetSessionMode(next)
+			p.statusLine = "Plan: " + currentDisplayedHomeSessionMode(p)
+		} else {
+			p.statusLine = "Plan toggle unavailable: " + currentHomeAgentModeCapability(p)
+		}
 		return
 	}
 	if p.keybinds.Match(ev, KeybindGlobalCycleRoute) {
 		p.pendingHomeAction = &HomeAction{Kind: HomeActionCycleRoute}
-		return
-	}
-
-	if p.sessionsFocused {
-		switch {
-		case p.keybinds.Match(ev, KeybindHomeSessionsMoveUp), p.keybinds.Match(ev, KeybindHomeSessionsMoveUpAlt):
-			p.moveSelection(-1)
-			return
-		case p.keybinds.Match(ev, KeybindHomeSessionsMoveDown), p.keybinds.Match(ev, KeybindHomeSessionsMoveDownAlt):
-			p.moveSelection(1)
-			return
-		case p.keybinds.Match(ev, KeybindHomeSessionsOpen):
-			if len(p.model.RecentSessions) > 0 {
-				s := p.model.RecentSessions[p.selectedIndex]
-				p.queueOpenSessionAction(s)
-			}
-			return
-		}
 		return
 	}
 
@@ -436,13 +408,16 @@ func (p *HomePage) ChatOverlayVisible() bool {
 	if p == nil {
 		return false
 	}
-	return p.alertsModal.Visible ||
+	return p.onboarding.Visible ||
+		p.alertsModal.Visible ||
+		p.sessionsModal.Visible ||
 		p.keybindsModal.Visible ||
 		p.authDefaultsInfoModal.Visible ||
 		p.authModal.Visible ||
 		p.workspaceModal.Visible ||
 		p.worktreesModal.Visible ||
-		p.mcpModal.Visible ||
+		p.codexModal.Visible ||
+		p.profilesModal.Visible ||
 		p.modelsModal.Visible ||
 		p.agentsModal.Visible ||
 		p.voiceModal.Visible ||
@@ -454,6 +429,12 @@ func (p *HomePage) HandleChatOverlayMouse(ev *tcell.EventMouse) bool {
 		return false
 	}
 	switch {
+	case p.codexModal.Visible:
+		p.handleCodexUsageModalMouse(ev)
+		return true
+	case p.profilesModal.Visible:
+		p.handleProfilesModalMouse(ev)
+		return true
 	case p.modelsModal.Visible:
 		p.handleModelsModalMouse(ev)
 		return true
@@ -471,9 +452,16 @@ func (p *HomePage) HandleChatOverlayKey(ev *tcell.EventKey) bool {
 	if p == nil {
 		return false
 	}
+	if p.onboarding.Visible && !p.authModal.Visible {
+		p.handleOnboardingKey(ev)
+		return true
+	}
 	switch {
 	case p.alertsModal.Visible:
 		p.handleAlertsModalKey(ev)
+		return true
+	case p.sessionsModal.Visible:
+		p.handleSessionsModalKey(ev)
 		return true
 	case p.keybindsModal.Visible:
 		p.handleKeybindsModalKey(ev)
@@ -490,8 +478,11 @@ func (p *HomePage) HandleChatOverlayKey(ev *tcell.EventKey) bool {
 	case p.worktreesModal.Visible:
 		p.handleWorktreesModalKey(ev)
 		return true
-	case p.mcpModal.Visible:
-		p.handleMCPModalKey(ev)
+	case p.codexModal.Visible:
+		p.handleCodexUsageModalKey(ev)
+		return true
+	case p.profilesModal.Visible:
+		p.handleProfilesModalKey(ev)
 		return true
 	case p.modelsModal.Visible:
 		p.handleModelsModalKey(ev)
@@ -514,17 +505,22 @@ func (p *HomePage) DrawChatOverlay(s tcell.Screen) {
 	if p == nil {
 		return
 	}
+	p.drawOnboarding(s)
 	p.drawAuthModal(s)
 	p.drawAuthDefaultsInfoModal(s)
 	p.drawWorkspaceModal(s)
 	p.drawWorktreesModal(s)
-	p.drawMCPModal(s)
+	p.drawCodexUsageModal(s)
+	p.drawProfilesModal(s)
 	p.drawModelsModal(s)
 	p.drawAgentsModal(s)
 	p.drawVoiceModal(s)
 	p.drawThemeModal(s)
 	p.drawKeybindsModal(s)
+	p.drawSessionsModal(s)
 	p.drawAlertsModal(s)
+	w, h := s.Size()
+	drawToastOverlay(s, p.theme, &p.toast, Rect{X: 0, Y: 0, W: w, H: h}, 1)
 }
 
 func (p *HomePage) Draw(s tcell.Screen) {
@@ -610,15 +606,6 @@ func (p *HomePage) Draw(s tcell.Screen) {
 	}
 	sectionsH := sectionStackHeight(sections)
 
-	recentRows := p.recentRowsVisible()
-	if recentRows > profile.MaxRecentRows {
-		recentRows = profile.MaxRecentRows
-	}
-	if recentRows < 1 {
-		recentRows = 1
-	}
-	desiredRecentH := recentRows + 3
-
 	mainTop := topAnchor
 	mainBottom := h - bottomBarH
 	if mainBottom < mainTop {
@@ -647,19 +634,7 @@ func (p *HomePage) Draw(s tcell.Screen) {
 		availableMainH = 1
 	}
 
-	recentPanelH := 0
-	if availableMainH > sectionsH+sectionGap {
-		maxRecentH := availableMainH - sectionsH - sectionGap
-		recentPanelH = minInt(desiredRecentH, maxRecentH)
-	}
-	if recentPanelH == 1 {
-		recentPanelH = 0
-	}
-
 	stackH := sectionsH
-	if recentPanelH > 0 {
-		stackH += sectionGap + recentPanelH
-	}
 	if stackH > availableMainH {
 		stackH = availableMainH
 	}
@@ -719,6 +694,8 @@ func (p *HomePage) Draw(s tcell.Screen) {
 		rect, ok := clipMainRect(rawRect)
 		if ok {
 			switch sec.kind {
+			case "hero":
+				p.drawHeroPanel(s, rect, variant.CenterRows)
 			case "meta":
 				p.drawMeta(s, rect, variant)
 			case "input":
@@ -737,13 +714,6 @@ func (p *HomePage) Draw(s tcell.Screen) {
 		}
 	}
 
-	if recentPanelH > 0 {
-		recentRect := Rect{X: contentX, Y: y + sectionGap, W: contentW, H: recentPanelH}
-		if clipped, ok := clipMainRect(recentRect); ok {
-			p.drawRecentSessions(s, clipped)
-		}
-	}
-
 	if bottomBarH > 0 {
 		bottomRect := Rect{X: 0, Y: h - bottomBarH, W: w, H: bottomBarH}
 		p.drawBottomBar(s, bottomRect, variant)
@@ -752,12 +722,12 @@ func (p *HomePage) Draw(s tcell.Screen) {
 		p.drawCommandPalette(s, inputRect, variant, bottomBarH)
 	}
 	p.drawAuthModal(s)
-	p.drawSwarmModal(s)
 	p.drawVaultModal(s)
 	p.drawAuthDefaultsInfoModal(s)
 	p.drawWorkspaceModal(s)
 	p.drawWorktreesModal(s)
-	p.drawMCPModal(s)
+	p.drawCodexUsageModal(s)
+	p.drawProfilesModal(s)
 	p.drawModelsModal(s)
 	p.drawAgentsModal(s)
 	p.drawVoiceModal(s)
@@ -767,20 +737,4 @@ func (p *HomePage) Draw(s tcell.Screen) {
 	p.drawAlertsModal(s)
 	toastInset := 1
 	drawToastOverlay(s, p.theme, &p.toast, Rect{X: 0, Y: 0, W: w, H: h}, toastInset)
-}
-
-func (p *HomePage) recentRowsVisible() int {
-	rows := len(p.model.RecentSessions)
-	if rows < 1 {
-		return 1
-	}
-	if rows > recentVisibleRows {
-		return recentVisibleRows
-	}
-	return rows
-}
-
-func (p *HomePage) recentPanelHeight() int {
-	// top border + header + rows + bottom border
-	return p.recentRowsVisible() + 3
 }

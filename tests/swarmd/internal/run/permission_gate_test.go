@@ -462,7 +462,7 @@ func TestPermissionArgumentsForTaskUseStructuredLaunchManifest(t *testing.T) {
 	raw := svc.permissionArgumentsForCall(parentSession.ID, sessionruntime.ModePlan, tool.Call{
 		CallID:    "task_manifest_1",
 		Name:      "task",
-		Arguments: `{"description":"Inspect repo","prompt":"Find the key files and summarize.","allow_bash":true,"launches":[{"subagent_type":"explorer","meta_prompt":"map repository structure"},{"subagent_type":"memory","meta_prompt":"extract concise findings"}]}`,
+		Arguments: `{"description":"Inspect repo","prompt":"Find the key files and summarize.","allow_bash":true,"launches":[{"subagent_type":"finder","meta_prompt":"map repository structure"},{"subagent_type":"memory","meta_prompt":"extract concise findings"}]}`,
 	})
 
 	var payload map[string]any
@@ -478,11 +478,11 @@ func TestPermissionArgumentsForTaskUseStructuredLaunchManifest(t *testing.T) {
 	if got := strings.TrimSpace(mapString(payload, "description")); got != "Inspect repo" {
 		t.Fatalf("description = %q, want Inspect repo", got)
 	}
-	if got := strings.TrimSpace(mapString(payload, "subagent_type")); got != "explorer" {
-		t.Fatalf("subagent_type = %q, want explorer", got)
+	if got := strings.TrimSpace(mapString(payload, "subagent_type")); got != "finder" {
+		t.Fatalf("subagent_type = %q, want finder", got)
 	}
-	if got := strings.TrimSpace(mapString(payload, "resolved_agent_name")); got != "explorer" {
-		t.Fatalf("resolved_agent_name = %q, want explorer", got)
+	if got := strings.TrimSpace(mapString(payload, "resolved_agent_name")); got != "finder" {
+		t.Fatalf("resolved_agent_name = %q, want finder", got)
 	}
 	if got := strings.TrimSpace(mapString(payload, "parent_mode")); got != sessionruntime.ModePlan {
 		t.Fatalf("parent_mode = %q, want %q", got, sessionruntime.ModePlan)
@@ -510,7 +510,7 @@ func TestPermissionArgumentsForTaskUseStructuredLaunchManifest(t *testing.T) {
 	if !ok {
 		t.Fatalf("launch[0] entry type = %T", launches[0])
 	}
-	if got := strings.TrimSpace(mapString(launch0, "requested_subagent_type")); got != "explorer" {
+	if got := strings.TrimSpace(mapString(launch0, "requested_subagent_type")); got != "finder" {
 		t.Fatalf("launch[0] requested_subagent_type = %q", got)
 	}
 	if got := strings.TrimSpace(mapString(launch0, "meta_prompt")); got != "map repository structure" {
@@ -588,7 +588,7 @@ func TestTaskAlwaysRequiresApprovalUnderBypassPermissions(t *testing.T) {
 		RunID:         "run_task_bypass",
 		CallID:        "task_bypass_call",
 		ToolName:      "task",
-		ToolArguments: `{"description":"Inspect repo","prompt":"Map the codebase.","launches":[{"subagent_type":"explorer","meta_prompt":"map repository structure"}]}`,
+		ToolArguments: `{"description":"Inspect repo","prompt":"Map the codebase.","launches":[{"subagent_type":"finder","meta_prompt":"map repository structure"}]}`,
 		Mode:          sessionruntime.ModeAuto,
 	})
 	if err != nil {

@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"swarm-refactor/swarmtui/internal/safefile"
 )
 
 const (
@@ -41,7 +43,7 @@ func normalizeLifecycleManager(manager lifecycleManager) (lifecycleManager, bool
 		manager.Unit = ""
 		return manager, true
 	case lifecycleKindSystemd:
-		if manager.Scope == "" || manager.Unit == "" {
+		if manager.Scope == "" || manager.Unit != InstalledServiceUnit {
 			return lifecycleManager{}, false
 		}
 		return manager, true
@@ -50,21 +52,29 @@ func normalizeLifecycleManager(manager lifecycleManager) (lifecycleManager, bool
 	}
 }
 
+func writePrivateFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return err
+	}
+	return safefile.WriteFile(path, data, 0o600)
+}
+
 func writeLifecycleManager(profile Profile, manager lifecycleManager) error {
 	normalized, ok := normalizeLifecycleManager(manager)
 	if !ok {
 		return fmt.Errorf("invalid lifecycle manager metadata")
 	}
 	normalized.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := os.MkdirAll(filepath.Dir(profile.ManagerFile), 0o755); err != nil {
-		return fmt.Errorf("create lifecycle metadata directory: %w", err)
-	}
 	data, err := json.MarshalIndent(normalized, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal lifecycle metadata: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(profile.ManagerFile, data, 0o644); err != nil {
+	if err := writePrivateFile(profile.ManagerFile, data); err != nil {
 		return fmt.Errorf("write lifecycle metadata: %w", err)
 	}
 	return nil

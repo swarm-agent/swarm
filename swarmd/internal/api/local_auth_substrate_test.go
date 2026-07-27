@@ -1,8 +1,6 @@
 package api
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -16,7 +14,6 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/identity"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/security"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -101,6 +98,50 @@ func TestMainHandlerDesktopSessionBootstrapAllowsProtectedAPIWithoutAttachToken(
 	}
 }
 
+func TestMainHandlerDesktopSessionBootstrapRejectsNonLocalSameOriginBrowserWithoutAttachToken(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+
+	bootstrapReq := httptest.NewRequest(http.MethodGet, "https://swarm.example.test/v1/auth/desktop/session", nil)
+	bootstrapReq.RemoteAddr = "192.0.2.10:43210"
+	bootstrapReq.Header.Set("Origin", "https://swarm.example.test")
+	bootstrapReq.Header.Set("Referer", "https://swarm.example.test/roy")
+	bootstrapReq.Header.Set("Sec-Fetch-Site", "same-origin")
+	bootstrapRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(bootstrapRec, bootstrapReq)
+	if bootstrapRec.Code != http.StatusUnauthorized {
+		t.Fatalf("non-local desktop session bootstrap status = %d, want %d, body=%s", bootstrapRec.Code, http.StatusUnauthorized, bootstrapRec.Body.String())
+	}
+}
+
+func TestMainHandlerDesktopSessionBootstrapRejectsDNSReboundHost(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+
+	bootstrapReq := httptest.NewRequest(http.MethodGet, "http://attacker.example:5555/v1/auth/desktop/session", nil)
+	bootstrapReq.RemoteAddr = "127.0.0.1:43210"
+	bootstrapReq.Header.Set("Origin", "http://attacker.example:5555")
+	bootstrapReq.Header.Set("Referer", "http://attacker.example:5555/app")
+	bootstrapReq.Header.Set("Sec-Fetch-Site", "same-origin")
+	bootstrapReq.Header.Set("X-Forwarded-Host", "127.0.0.1:5555")
+	bootstrapRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(bootstrapRec, bootstrapReq)
+	if bootstrapRec.Code != http.StatusUnauthorized {
+		t.Fatalf("DNS-rebound desktop session bootstrap status = %d, want %d, body=%s", bootstrapRec.Code, http.StatusUnauthorized, bootstrapRec.Body.String())
+	}
+}
+
+func TestAllowedDesktopRequestHostAcceptsLoopbackForms(t *testing.T) {
+	for _, rawURL := range []string{
+		"http://localhost:5555/v1/auth/desktop/session",
+		"http://127.0.0.1:5555/v1/auth/desktop/session",
+		"http://[::1]:5555/v1/auth/desktop/session",
+	} {
+		req := httptest.NewRequest(http.MethodGet, rawURL, nil)
+		if !isAllowedDesktopRequestHost(req) {
+			t.Errorf("desktop request host %q was not allowed", req.Host)
+		}
+	}
+}
+
 func TestMainHandlerDesktopSessionBootstrapAllowsSameMachineLANOriginWithoutAttachToken(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	lanAddrs := detectLANAddresses()
@@ -161,38 +202,6 @@ func TestMainHandlerUpdateStatusAllowsLoopbackWithoutAttachToken(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("loopback update status without attach token = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-}
-
-func TestMainHandlerUpdateLocalContainersRequiresProductSessionAndAcceptsPostRebuildCheck(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-	server.localContainers = fakeLocalContainerUpdatePlanner{plan: localcontainers.UpdatePlan{
-		PathID:  localcontainers.PathContainerUpdatePlan,
-		Mode:    "dev",
-		DevMode: true,
-		Target: localcontainers.UpdatePlanTarget{
-			ImageRef:               "localhost/swarm-container-mvp:latest",
-			Fingerprint:            "before",
-			PostRebuildImageRef:    "localhost/swarm-container-mvp:latest",
-			PostRebuildFingerprint: "after",
-		},
-	}}
-
-	issued, err := server.identitySessions.IssueForCurrentSelection()
-	if err != nil {
-		t.Fatalf("issue identity session: %v", err)
-	}
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:5555/v1/update/local-containers?dev_mode=true&post_rebuild_check=true", nil)
-	req.RemoteAddr = "127.0.0.1:43210"
-	req.Header.Set("X-Swarm-Token", issued.Token)
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("local container update plan = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "post_rebuild_fingerprint") {
-		t.Fatalf("expected post rebuild fingerprint in response: %s", rec.Body.String())
 	}
 }
 
@@ -306,70 +315,6 @@ func TestDesktopProtectedAPIRejectsMissingDesktopSessionAndAttachToken(t *testin
 	}
 }
 
-func TestSwarmEnrollAllowsInviteTokenWithoutAttachToken(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-
-	body := bytes.NewBufferString(`{"invite_token":"invite-123","child_swarm_id":"child-1","child_name":"Child","child_public_key":"pub-key"}`)
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/swarm/enroll", body)
-	req.RemoteAddr = "198.51.100.20:7777"
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("swarm enroll without attach token status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-}
-
-func TestSwarmEnrollRejectsMissingInviteTokenAndAttachToken(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-
-	body := bytes.NewBufferString(`{"child_swarm_id":"child-1","child_name":"Child","child_public_key":"pub-key"}`)
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/swarm/enroll", body)
-	req.RemoteAddr = "198.51.100.20:7777"
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("swarm enroll missing invite token status = %d, want %d, body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
-	}
-}
-
-func TestSwarmRemotePairingRequestRequiresAuthOffTailnet(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.Child = false
-		cfg.SwarmName = "Manager A"
-		cfg.TailscaleURL = "https://manager-a.example.ts.net"
-	})
-
-	managerPublicKey, _, managerFingerprint, err := swarmruntime.GenerateNodeKeypair()
-	if err != nil {
-		t.Fatalf("generate manager keypair: %v", err)
-	}
-	managedPublicKey, _, managedFingerprint, err := swarmruntime.GenerateNodeKeypair()
-	if err != nil {
-		t.Fatalf("generate managed keypair: %v", err)
-	}
-	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", PublicKey: managerPublicKey, Fingerprint: managerFingerprint}}}
-	offer := mustManagedPairingOfferForTest(t, managedPublicKey, managedFingerprint)
-	raw, err := json.Marshal(swarmRemotePairingRequest{InviteToken: offer.Token, ManagerSwarmID: "manager-swarm-1", ManagerEndpoint: "https://manager-a.example.ts.net", Offer: offer, CeremonyCode: offer.Ceremony.Code})
-	if err != nil {
-		t.Fatalf("marshal remote pairing request: %v", err)
-	}
-	body := bytes.NewBuffer(raw)
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/swarm/remote-pairing/request", body)
-	req.RemoteAddr = "198.51.100.20:7777"
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("swarm remote pairing request off-tailnet status = %d, want %d, body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
-	}
-}
-
 func newLocalAuthTestServer(t *testing.T) *Server {
 	t.Helper()
 
@@ -434,54 +379,6 @@ func setLocalAuthTestStartupConfig(t *testing.T, server *Server, mutate func(*st
 	}
 }
 
-type fakeLocalContainerUpdatePlanner struct {
-	plan localcontainers.UpdatePlan
-}
-
-func (f fakeLocalContainerUpdatePlanner) RuntimeStatus(context.Context) (localcontainers.RuntimeStatus, error) {
-	return localcontainers.RuntimeStatus{}, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) List(context.Context) ([]localcontainers.Container, error) {
-	return nil, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) ListForAccount(context.Context, string) ([]localcontainers.Container, error) {
-	return nil, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) Create(context.Context, localcontainers.CreateInput) (localcontainers.Container, error) {
-	return localcontainers.Container{}, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) Act(context.Context, localcontainers.ActionInput) (localcontainers.Container, error) {
-	return localcontainers.Container{}, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) BulkDelete(context.Context, []string) (localcontainers.DeleteResult, error) {
-	return localcontainers.DeleteResult{}, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) PruneMissing(context.Context) (localcontainers.DeleteResult, error) {
-	return localcontainers.DeleteResult{}, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) UpdatePlan(ctx context.Context, input localcontainers.UpdatePlanInput) (localcontainers.UpdatePlan, error) {
-	plan := f.plan
-	if input.PostRebuildCheck && plan.Target.PostRebuildFingerprint == "" {
-		plan.Target.PostRebuildFingerprint = "checked"
-	}
-	return plan, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) RunUpdateJob(context.Context, localcontainers.UpdateJobInput) (localcontainers.UpdateJobResult, error) {
-	return localcontainers.UpdateJobResult{}, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) SetHostCallbackURL(string, string) {}
-
-func (f fakeLocalContainerUpdatePlanner) HostCallbackURL(string) (string, bool) { return "", false }
-
 func newStaticUpdateService(t *testing.T, updateAvailable bool) *update.Service {
 	t.Helper()
 	_ = updateAvailable
@@ -496,7 +393,6 @@ type fakeLocalAuthSwarmCalls struct {
 type fakeLocalAuthSwarmService struct {
 	state                  swarmruntime.LocalState
 	outgoingPeerAuthTokens map[string]string
-	detachCalls            *int
 	calls                  *fakeLocalAuthSwarmCalls
 }
 
@@ -549,56 +445,5 @@ func (f fakeLocalAuthSwarmService) UpsertGroupMember(swarmruntime.UpsertGroupMem
 }
 
 func (f fakeLocalAuthSwarmService) RemoveGroupMember(swarmruntime.RemoveGroupMemberInput) error {
-	return nil
-}
-
-func (f fakeLocalAuthSwarmService) CreateInvite(input swarmruntime.CreateInviteInput) (swarmruntime.Invite, error) {
-	token := strings.TrimSpace(input.Token)
-	if token == "" {
-		token = "invite-token-1"
-	}
-	return swarmruntime.Invite{ID: "invite-1", Token: token, PrimarySwarmID: input.PrimarySwarmID, PrimaryName: input.PrimaryName, GroupID: input.GroupID, TransportMode: input.TransportMode, ExpiresAt: time.Now().Add(input.TTL).Unix(), CreatedAt: time.Now().Unix(), UpdatedAt: time.Now().Unix()}, nil
-}
-
-func (f fakeLocalAuthSwarmService) SubmitEnrollment(input swarmruntime.SubmitEnrollmentInput) (swarmruntime.Enrollment, error) {
-	return swarmruntime.Enrollment{ID: "enroll-1", InviteToken: input.InviteToken, PrimarySwarmID: input.PrimarySwarmID, GroupID: input.GroupID, ChildSwarmID: input.ChildSwarmID, ChildName: input.ChildName, Status: swarmruntime.EnrollmentStatusPending}, nil
-}
-
-func (f fakeLocalAuthSwarmService) ListPendingEnrollments(int) ([]swarmruntime.Enrollment, error) {
-	return nil, nil
-}
-
-func (f fakeLocalAuthSwarmService) DecideEnrollment(input swarmruntime.DecideEnrollmentInput) (swarmruntime.Enrollment, []swarmruntime.TrustedPeer, error) {
-	status := swarmruntime.EnrollmentStatusRejected
-	if input.Approve {
-		status = swarmruntime.EnrollmentStatusApproved
-	}
-	return swarmruntime.Enrollment{ID: input.EnrollmentID, Status: status}, nil, nil
-}
-
-func (f fakeLocalAuthSwarmService) PrepareRemoteBootstrapParentPeer(swarmruntime.PrepareRemoteBootstrapParentPeerInput) error {
-	return nil
-}
-
-func (f fakeLocalAuthSwarmService) ApproveManagedPairing(input swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error) {
-	return swarmruntime.PairingState{PairingState: startupconfig.PairingStatePaired, ParentSwarmID: input.ManagerSwarmID}, nil
-}
-
-func (f fakeLocalAuthSwarmService) TrustManagedPeer(swarmruntime.TrustManagedPeerInput) (swarmruntime.TrustedPeer, error) {
-	return swarmruntime.TrustedPeer{}, nil
-}
-
-func (f fakeLocalAuthSwarmService) RemoveManagedPeer(input swarmruntime.RemoveManagedPeerInput) (swarmruntime.RemoveManagedPeerResult, error) {
-	return swarmruntime.RemoveManagedPeerResult{ManagedSwarmID: input.ManagedSwarmID, RemovedTrustedPeer: true}, nil
-}
-
-func (f fakeLocalAuthSwarmService) UpdateLocalPairingFromConfig(startupconfig.FileConfig, []swarmruntime.TransportSummary) (swarmruntime.PairingState, error) {
-	return swarmruntime.PairingState{}, nil
-}
-
-func (f fakeLocalAuthSwarmService) DetachToStandalone(string) error {
-	if f.detachCalls != nil {
-		(*f.detachCalls)++
-	}
 	return nil
 }

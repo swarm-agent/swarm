@@ -1,27 +1,26 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMatchRoute, useNavigate, useSearch } from '@tanstack/react-router'
-import { Bot, GitBranch, Home, Key, Palette, Shield, UserRound, type LucideIcon } from 'lucide-react'
+import { Bell, GitBranch, Home, Keyboard, Key, Palette, Shield, UserRound, type LucideIcon } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Select } from '../../../../components/ui/select'
 import { AccountSettingsPage } from '../account/components/account-settings-page'
-import { AgentsSettingsPage } from '../agents/components/agents-settings-page'
 import { AuthSettingsPage } from '../auth/components/auth-settings-page'
 import { PermissionsSettingsPage } from '../permissions/components/permissions-settings-page'
+import { NotificationsSettingsPage } from '../notifications/components/notifications-settings-page'
 import { ThemesSettingsPage } from '../themes/components/themes-settings-page'
+import { ShortcutsSettingsPage } from '../shortcuts/components/shortcuts-settings-page'
 import { VaultSettingsPage } from '../vault/components/vault-settings-page'
 import { WorktreeSettingsPage } from '../worktrees/components/worktree-settings-page'
-import { DesktopSwarmDashboard } from '../../swarm/desktop-swarm-dashboard'
 import { cn } from '../../../../lib/cn'
 import { normalizeSettingsTabID, type SettingsTabID } from '../types/settings-tabs'
-import { useDesktopStore } from '../../state/use-desktop-store'
 
 const settingsTabs: Array<{ id: SettingsTabID; label: string; icon: LucideIcon }> = [
   { id: 'account', label: 'Account', icon: UserRound },
-  { id: 'agents', label: 'Agents', icon: Bot },
   { id: 'auth', label: 'Auth', icon: Key },
   { id: 'permissions', label: 'Permissions', icon: Shield },
-  { id: 'swarm', label: 'Swarm', icon: Shield },
+  { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'themes', label: 'Themes', icon: Palette },
+  { id: 'shortcuts', label: 'Shortcuts', icon: Keyboard },
   { id: 'vault', label: 'Vault', icon: Shield },
   { id: 'worktrees', label: 'Worktrees', icon: GitBranch },
 ]
@@ -30,6 +29,9 @@ const tabs = settingsTabs
 
 interface SettingsSearchParams {
   tab?: unknown
+  returnSessionId?: unknown
+  agentSetup?: unknown
+  agent?: unknown
 }
 
 export function DesktopSettingsPage() {
@@ -38,23 +40,36 @@ export function DesktopSettingsPage() {
   const settingsRouteMatch = matchRoute({ to: '/settings', fuzzy: false })
   const workspaceSettingsMatch = matchRoute({ to: '/$workspaceSlug/settings', fuzzy: false })
   const routeWorkspaceSlug = workspaceSettingsMatch ? workspaceSettingsMatch.workspaceSlug.trim() : ''
-  const activeSessionId = useDesktopStore((state) => state.activeSessionId)
   const search = useSearch({ strict: false }) as SettingsSearchParams
+  const returnSessionId = typeof search.returnSessionId === 'string' ? search.returnSessionId.trim() : ''
+  const openAgentSetup = search.tab === 'agents' || search.agentSetup === '1'
+  const requestedAgent = typeof search.agent === 'string' ? search.agent.trim() : 'swarm'
   const [activeTab, setActiveTab] = useState<SettingsTabID>(() => normalizeSettingsTabID(search.tab))
 
   useEffect(() => {
     setActiveTab(normalizeSettingsTabID(search.tab))
   }, [search.tab])
 
-  const agentsPageKey = useMemo(() => (activeTab === 'agents' ? `agents-${Date.now()}` : 'agents-closed'), [activeTab])
+  useEffect(() => {
+    if (!openAgentSetup) return
+    if (routeWorkspaceSlug && returnSessionId) {
+      void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: returnSessionId }, search: { agentSetup: '1', agent: requestedAgent } })
+      return
+    }
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug }, search: { agentSetup: '1', agent: requestedAgent } })
+      return
+    }
+    void navigate({ to: '/' })
+  }, [navigate, openAgentSetup, requestedAgent, returnSessionId, routeWorkspaceSlug])
 
   const handleBack = useMemo(() => {
-    if (routeWorkspaceSlug) {
-      if (activeSessionId) {
-        return () => {
-          void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: activeSessionId } })
-        }
+    if (routeWorkspaceSlug && returnSessionId) {
+      return () => {
+        void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: returnSessionId } })
       }
+    }
+    if (routeWorkspaceSlug) {
       return () => {
         void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
       }
@@ -67,15 +82,16 @@ export function DesktopSettingsPage() {
     return () => {
       void navigate({ to: '/' })
     }
-  }, [activeSessionId, navigate, routeWorkspaceSlug, settingsRouteMatch])
+  }, [navigate, returnSessionId, routeWorkspaceSlug, settingsRouteMatch])
 
   const handleTabChange = (tab: SettingsTabID) => {
     setActiveTab(tab)
+    const nextSearch = { tab, ...(returnSessionId ? { returnSessionId } : {}) }
     if (routeWorkspaceSlug) {
-      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: { tab } })
+      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: nextSearch })
       return
     }
-    void navigate({ to: '/settings', search: { tab } })
+    void navigate({ to: '/settings', search: nextSearch })
   }
 
   return (
@@ -83,7 +99,7 @@ export function DesktopSettingsPage() {
       <aside className="hidden w-[240px] shrink-0 flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-5 md:flex">
         <Button variant="outline" className="h-11 justify-start rounded-xl" onClick={handleBack}>
           <Home size={16} />
-          {routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Back to workspace') : 'Back to launcher'}
+          {returnSessionId ? 'Back to chat' : routeWorkspaceSlug ? 'Back to workspace' : 'Back to launcher'}
         </Button>
 
         <div className="mt-6 px-2">
@@ -117,10 +133,10 @@ export function DesktopSettingsPage() {
       </aside>
 
       <main className="min-w-0 flex-1 overflow-y-auto">
-        <div className="sticky top-0 z-10 grid min-h-16 grid-cols-[minmax(0,1fr)_minmax(7.5rem,42vw)] items-center gap-3 border-b border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-3 md:hidden">
+        <div className="sticky top-0 z-10 grid min-h-16 grid-cols-[minmax(0,1fr)_minmax(7.5rem,42vw)] items-center gap-3 border-b border-[var(--app-border)] bg-[var(--app-bg)] px-3 pb-3 pt-[calc(0.75rem+var(--app-safe-area-top))] md:hidden">
           <Button variant="outline" className="h-10 min-w-0 justify-start rounded-xl px-3" onClick={handleBack}>
             <Home size={16} className="shrink-0" />
-            <span className="min-w-0 truncate">Workspace</span>
+            <span className="min-w-0 truncate">{returnSessionId ? 'Chat' : 'Workspace'}</span>
           </Button>
           <div className="min-w-0">
             <label className="sr-only" htmlFor="settings-mobile-section">Settings section</label>
@@ -140,11 +156,11 @@ export function DesktopSettingsPage() {
         <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-4 py-5 md:px-6 md:py-8">
           <div className="w-full max-w-4xl">
             {activeTab === 'account' ? <AccountSettingsPage /> : null}
-            {activeTab === 'agents' ? <AgentsSettingsPage key={agentsPageKey} /> : null}
             {activeTab === 'auth' ? <AuthSettingsPage /> : null}
             {activeTab === 'permissions' ? <PermissionsSettingsPage /> : null}
-            {activeTab === 'swarm' ? <DesktopSwarmDashboard /> : null}
+            {activeTab === 'notifications' ? <NotificationsSettingsPage /> : null}
             {activeTab === 'themes' ? <ThemesSettingsPage /> : null}
+            {activeTab === 'shortcuts' ? <ShortcutsSettingsPage /> : null}
             {activeTab === 'vault' ? <VaultSettingsPage /> : null}
             {activeTab === 'worktrees' ? <WorktreeSettingsPage /> : null}
           </div>

@@ -16,11 +16,10 @@ var (
 
 // SanitizeText redacts common credential/token material from arbitrary text.
 func SanitizeText(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
+	if strings.TrimSpace(raw) == "" {
 		return ""
 	}
-	redacted := redactJSONSecretPattern.ReplaceAllString(trimmed, `$1[redacted]$3`)
+	redacted := redactJSONSecretPattern.ReplaceAllString(raw, `$1[redacted]$3`)
 	redacted = redactQuerySecretPattern.ReplaceAllString(redacted, `$1=[redacted]`)
 	redacted = redactBearerPattern.ReplaceAllString(redacted, `$1[redacted]`)
 	redacted = redactJWTPattern.ReplaceAllString(redacted, `[redacted.jwt]`)
@@ -93,7 +92,22 @@ func SanitizeValue(value any) any {
 }
 
 func isSensitiveKey(key string) bool {
-	switch strings.ToLower(strings.TrimSpace(key)) {
+	normalized := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(key)))
+	switch normalized {
+	case "accesstoken":
+		normalized = "access_token"
+	case "refreshtoken":
+		normalized = "refresh_token"
+	case "idtoken":
+		normalized = "id_token"
+	case "apikey":
+		normalized = "api_key"
+	case "privatekey":
+		normalized = "private_key"
+	case "clientsecret":
+		normalized = "client_secret"
+	}
+	switch normalized {
 	case "access_token", "refresh_token", "id_token", "api_key", "authorization", "token", "secret", "password", "passwd", "private_key", "client_secret":
 		return true
 	default:

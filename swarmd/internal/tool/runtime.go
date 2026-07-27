@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,9 +29,8 @@ import (
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/fff"
+	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/imagegen"
-	integrationruntime "swarm/packages/swarmd/internal/integration"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	todoruntime "swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool/searchipc"
@@ -51,9 +51,12 @@ const (
 	maxBashOutputViewerBytes            = 4 * 1024 * 1024
 	bashStreamEmitChunkBytes            = 1024
 	maxSearchCommandOut                 = 256 * 1024
+	maxSearchHelperStdout               = 8 * 1024 * 1024
+	maxSearchHelperStderr               = 64 * 1024
 	defaultBashTimeout                  = 2 * time.Minute
 	maxBashTimeout                      = 30 * time.Minute
 	defaultGitTimeout                   = 20 * time.Second
+	defaultGitCommitTimeout             = 5 * time.Minute
 	defaultSearchTimeout                = 8 * time.Second
 	maxSearchTimeout                    = 45 * time.Second
 	defaultSearchResults                = 100
@@ -142,21 +145,19 @@ var (
 )
 
 type Runtime struct {
-	maxParallel       int
-	httpClient        *http.Client
-	exaConfigResolver func(context.Context) (ExaRuntimeConfig, error)
-	sessions          manageSessionService
-	workspace         manageWorktreeWorkspaceService
-	worktrees         manageWorktreeConfigService
-	agents            manageAgentService
-	todos             manageTodoService
-	uiSettings        manageThemeUISettingsService
-	themeWorkspace    manageThemeWorkspaceService
-	imageGen          manageImageService
-	imageThreads      manageImageThreadService
-	integrations      manageIntegrationService
-	flows             manageFlowService
-	flowWorkspace     manageFlowWorkspaceService
+	maxParallel          int
+	httpClient           *http.Client
+	exaConfigResolver    func(context.Context) (ExaRuntimeConfig, error)
+	sessions             manageSessionService
+	publishSessionOutbox func(pebblestore.V3RealtimeOutboxRecord) error
+	workspace            manageWorktreeWorkspaceService
+	worktrees            manageWorktreeConfigService
+	agents               manageAgentService
+	orchestration        manageOrchestrationPolicyService
+	todos                manageTodoService
+	uiSettings           manageThemeUISettingsService
+	themeWorkspace       manageThemeWorkspaceService
+	searchCoordinator    *SearchCoordinator
 }
 
 type ExaRuntimeConfig struct {
@@ -165,7 +166,6 @@ type ExaRuntimeConfig struct {
 	APIKey      string
 	SearchURL   string
 	ContentsURL string
-	MCPURL      string
 }
 
 type WorkspaceScope struct {
@@ -177,18 +177,38 @@ type WorkspaceScope struct {
 
 type manageSessionService interface {
 	GetSession(sessionID string) (pebblestore.SessionSnapshot, bool, error)
+	GetActivePlan(sessionID string) (pebblestore.SessionPlanSnapshot, bool, error)
 	ListMessages(sessionID string, afterGlobalSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
 	ListTopSessionsByWorkspace(workspacePaths []string, perWorkspaceLimit int) ([]pebblestore.WorkspaceSessionList, error)
+	SearchSessions(pebblestore.V3SessionSearchOptions) (pebblestore.V3SessionSearchResult, error)
+	ListSessionEventsBefore(sessionID string, beforeSeq uint64, limit int) ([]pebblestore.V3SessionEvent, error)
+	GetSessionTombstone(sessionID string) (pebblestore.V3SessionTombstone, bool, error)
+	ListSessionMessageTail(sessionID string, limit int) ([]pebblestore.MessageSnapshot, error)
+	ListSessionMessagesBefore(sessionID string, beforeSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
+	ArchiveSessionsWithEventsIfUnchanged(sessionIDs []string, expectedUpdatedAt map[string]int64) ([]*pebblestore.EventEnvelope, error)
+	ReactivateArchivedSessionsIfUnchanged(sessionIDs []string, expectedUpdatedAt map[string]int64) error
+	CurrentRealtimeOutboxRevision() (uint64, error)
+	LastRealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID string, endpointSeq uint64) (pebblestore.V3RealtimeOutboxRecord, bool, error)
 }
 
 type manageWorktreeWorkspaceService interface {
-	CurrentBinding() (workspaceruntime.Resolution, bool, error)
-	ScopeForPath(path string) (workspaceruntime.Scope, error)
-	ListKnown(limit int) ([]workspaceruntime.Entry, error)
+	CurrentBindingForPrincipal(principal identity.Principal) (workspaceruntime.Resolution, bool, error)
+	ScopeForPathForPrincipal(principal identity.Principal, path string) (workspaceruntime.Scope, error)
+	ListKnownForPrincipal(principal identity.Principal, limit int) ([]workspaceruntime.Entry, error)
 }
 
 type manageWorktreeConfigService interface {
-	GetConfig(workspacePath string) (worktreeruntime.Config, error)
+	GetConfigForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error)
+	InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error)
+	TaskCommitDescendsFrom(workspacePath, baseCommit, headCommit string) (bool, error)
+	VerifyTaskIntegrationWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit string) (worktreeruntime.TaskWorkspaceState, error)
+	PrepareTaskIntegration(parentPath, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error)
+	ApplyTaskIntegration(parentPath string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error)
+}
+
+type manageOrchestrationPolicyService interface {
+	CurrentSubagentPolicyForAccount(accountScopeID string) (map[string]any, error)
+	UpdateSubagentPolicyMapForAccount(accountScopeID string, input map[string]any) (map[string]any, error)
 }
 
 type manageAgentService interface {
@@ -221,26 +241,6 @@ type manageAgentService interface {
 	SetActiveSubagentForAccount(accountScopeID, purpose, name string) (map[string]string, int64, *pebblestore.EventEnvelope, error)
 	DeleteActiveSubagent(purpose string) (map[string]string, int64, *pebblestore.EventEnvelope, error)
 	DeleteActiveSubagentForAccount(accountScopeID, purpose string) (map[string]string, int64, *pebblestore.EventEnvelope, error)
-}
-
-type manageImageService interface {
-	Capabilities(context.Context) (imagegen.Capabilities, error)
-	Generate(context.Context, imagegen.GenerateRequest) (imagegen.GenerateResult, error)
-}
-
-type manageImageThreadService interface {
-	Create(pebblestore.ImageThreadSnapshot) (pebblestore.ImageThreadSnapshot, error)
-	CreateForAccount(accountScopeID, userID string, thread pebblestore.ImageThreadSnapshot) (pebblestore.ImageThreadSnapshot, error)
-	Get(threadID string) (pebblestore.ImageThreadSnapshot, bool, error)
-	GetForAccount(accountScopeID, threadID string) (pebblestore.ImageThreadSnapshot, bool, error)
-}
-
-type manageIntegrationService interface {
-	Handle(integrationruntime.Request) (map[string]any, error)
-}
-
-type manageIntegrationPrincipalAwareService interface {
-	HandleForPrincipal(identity.Principal, integrationruntime.Request) (map[string]any, error)
 }
 
 type manageTodoService interface {
@@ -330,6 +330,11 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 		return scope
 	}
 	if strings.TrimSpace(override.PrimaryPath) == "" && len(override.Roots) == 0 {
+		// Some control-plane tools deliberately omit path roots and authorize from
+		// the durable principal/session identity instead. Preserve that identity
+		// while retaining the caller's normalized path scope.
+		scope.SessionID = strings.TrimSpace(override.SessionID)
+		scope.Principal = override.Principal
 		return scope
 	}
 	normalized := normalizeWorkspaceScope(override.PrimaryPath, override.Roots)
@@ -373,10 +378,27 @@ func NewRuntime(maxParallel int) *Runtime {
 		maxParallel = 4
 	}
 	return &Runtime{
-		maxParallel: maxParallel,
+		maxParallel:       maxParallel,
+		searchCoordinator: NewSearchCoordinator(defaultSearchResidentRoots),
 		httpClient: &http.Client{
 			Timeout: maxWebFetchTimeout + 5*time.Second,
 		},
+	}
+}
+
+func (r *Runtime) LongSessionSnapshot() map[string]any {
+	if r == nil {
+		return nil
+	}
+	snapshot := r.searchCoordinator.Snapshot()
+	return map[string]any{
+		"max_parallel":             r.maxParallel,
+		"search_resident_roots":    snapshot.ResidentRoots,
+		"search_inflight":          snapshot.Inflight,
+		"search_pending_calls":     snapshot.PendingCalls,
+		"search_native_executions": snapshot.NativeExecutions,
+		"search_worker_restarts":   snapshot.WorkerRestarts,
+		"search_queue_wait_ms":     snapshot.QueueWait.Milliseconds(),
 	}
 }
 
@@ -385,6 +407,20 @@ func (r *Runtime) SetExaConfigResolver(resolver func(context.Context) (ExaRuntim
 		return
 	}
 	r.exaConfigResolver = resolver
+}
+
+func (r *Runtime) SetManageSessionService(sessions manageSessionService) {
+	if r != nil {
+		r.sessions = sessions
+	}
+}
+
+// SetManageSessionRealtimePublisher wires durable manage-sessions mutations into
+// the same V3 realtime wake path used by HTTP session mutations.
+func (r *Runtime) SetManageSessionRealtimePublisher(publish func(pebblestore.V3RealtimeOutboxRecord) error) {
+	if r != nil {
+		r.publishSessionOutbox = publish
+	}
 }
 
 func (r *Runtime) SetManageWorktreeServices(sessions manageSessionService, workspace manageWorktreeWorkspaceService, worktrees manageWorktreeConfigService) {
@@ -401,6 +437,15 @@ func (r *Runtime) SetManageAgentService(agents manageAgentService) {
 		return
 	}
 	r.agents = agents
+	if service, ok := agents.(manageOrchestrationPolicyService); ok {
+		r.orchestration = service
+	}
+}
+
+func (r *Runtime) SetManageOrchestrationPolicyService(service manageOrchestrationPolicyService) {
+	if r != nil {
+		r.orchestration = service
+	}
 }
 
 func (r *Runtime) SetManageTodoService(todos manageTodoService) {
@@ -416,21 +461,6 @@ func (r *Runtime) SetManageThemeServices(uiSettings manageThemeUISettingsService
 	}
 	r.uiSettings = uiSettings
 	r.themeWorkspace = workspace
-}
-
-func (r *Runtime) SetManageImageServices(imageGen manageImageService, imageThreads manageImageThreadService) {
-	if r == nil {
-		return
-	}
-	r.imageGen = imageGen
-	r.imageThreads = imageThreads
-}
-
-func (r *Runtime) SetManageIntegrationService(integrations manageIntegrationService) {
-	if r == nil {
-		return
-	}
-	r.integrations = integrations
 }
 
 func (r *Runtime) Definitions() []Definition {
@@ -452,6 +482,20 @@ func (r *Runtime) Definitions() []Definition {
 		},
 		{
 			Type:        "function",
+			Name:        "edit_pending_plan",
+			Description: "Edit the pending plan proposal bound to the reserved Plan sidechat using optimistic concurrency. Pass document as a native structured JSON object, never as serialized/quoted JSON text. Start from the authoritative attached document and preserve its current title unless the user explicitly requests a rename.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"expected_revision": map[string]any{"type": "integer", "description": "Current pending proposal revision as an integer, not a quoted string"},
+					"document":          map[string]any{"type": "object", "description": "Complete replacement structured plan supplied directly as a native JSON object; do not pass JSON text, quoted/stringified JSON, markdown, or a wrapper string. Copy the current title from the authoritative attached document unless the user explicitly requests a rename"},
+				},
+				"required":             []string{"expected_revision", "document"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
 			Name:        "write",
 			Description: "Write content to a file in the current workspace",
 			Parameters: map[string]any{
@@ -468,14 +512,22 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "bash",
-			Description: "Execute a shell command in the current workspace directory",
+			Description: "Execute a shell command in the current workspace directory. Summarize routine intent in one direct line; use more explanation items only for distinct material effects. Always name consequential environmental changes and whether the user should pay special attention.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"command":    map[string]any{"type": "string", "description": "Shell command to execute"},
+					"command": map[string]any{"type": "string", "description": "Shell command to execute"},
+					"explanation": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"minItems":    1,
+						"description": "Ordered plain-English effects. Prefer one concise, human-scannable sentence for routine commands; do not narrate obvious shell mechanics, output capture, exit status, working directory, lack of source edits, or generic artifacts. Use multiple concise items only for distinct material effects. Name concrete filesystem mutations, processes, listeners, ports, network exposure, privileges, destructive actions, and other consequential changes when present.",
+					},
+					"category":   map[string]any{"type": "string", "enum": []string{"read", "write", "update", "delete"}, "description": "Overall effect category: read only observes state; write creates new state, resources, or processes; update is a non-removal in-place mutation; delete removes state and always requires critical=true. Use the highest-impact applicable category."},
+					"critical":   map[string]any{"type": "boolean", "description": "Set true when the user should pay special attention before execution, including public listeners or network exposure, destructive or privileged operations, security-sensitive changes, or other unusually consequential effects."},
 					"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds (default 120000, max 1800000)"},
 				},
-				"required":             []string{"command"},
+				"required":             []string{"command", "explanation", "category", "critical"},
 				"additionalProperties": false,
 			},
 		},
@@ -535,18 +587,43 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "search",
-			Description: "Canonical workspace search powered directly by FFF. Supports single-query and multi-query search in one call. Prefer narrow path/include scopes first, and use `queries` for multi-symbol search instead of packing OR syntax into one string. Returns line-level content matches when available, with stable summaries, truncation signals, and file metadata to guide follow-up reads.",
+			Description: "Canonical FFF content/symbol search. Use for text inside files: exact symbols, error strings, config keys, or short natural fragments. Supports literal, regex, and fuzzy content modes, context lines, file-offset pagination, per-file match caps, include globs, tight path scoping, and multi-query batching. For path/directory discovery, use find instead.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"pattern":     map[string]any{"type": "string", "description": "Legacy single-query alias. Use an exact symbol, error string, config key, or short natural fragment."},
-					"query":       map[string]any{"type": "string", "description": "Single search query. Preferred over `pattern` for new callers."},
-					"queries":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional multi-query batch for one search call. Use this for parallel/multi-symbol search within the same path/include scope."},
-					"path":        map[string]any{"type": "string", "description": "Search root directory (absolute or workspace-relative). Keep this as narrow as possible for model-readable results. For multiple roots, prefer `paths`."},
-					"paths":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional explicit batch of search root directories. Use instead of stuffing multiple directories into `path`."},
-					"include":     map[string]any{"type": "string", "description": "Optional file include glob such as `*.go`. This is the canonical way to scope search to file types."},
-					"max_results": map[string]any{"type": "integer", "description": "Maximum merged results to return (default 100, max 4000). If results truncate, narrow path/include/query scope and rerun instead of broadening search scope."},
-					"timeout_ms":  map[string]any{"type": "integer", "description": "Search timeout in milliseconds (default 8000, max 45000). Used for FFF scan wait and grep time budget."},
+					"pattern":              map[string]any{"type": "string", "description": "Legacy single-query alias. Use an exact symbol, error string, config key, or short natural fragment."},
+					"query":                map[string]any{"type": "string", "description": "Single content search query. Preferred over `pattern` for new callers."},
+					"queries":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional multi-query batch for one search call. Use this for parallel/multi-symbol content search within the same path/include scope."},
+					"path":                 map[string]any{"type": "string", "description": "Search root directory or file (absolute or workspace-relative). Keep this as narrow as possible for model-readable results. For multiple roots, prefer `paths`."},
+					"paths":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional explicit batch of search root directories/files. Use instead of stuffing multiple roots into `path`."},
+					"include":              map[string]any{"type": "string", "description": "Optional file include glob such as `*.go`. This is the canonical way to scope content search to file types."},
+					"content_mode":         map[string]any{"type": "string", "description": "Content matching mode: literal (default), regex, or fuzzy. Prefer literal for exact code/symbol strings; use regex only when pattern syntax is needed."},
+					"before_context":       map[string]any{"type": "integer", "description": "Context lines before each content match (default 0)."},
+					"after_context":        map[string]any{"type": "integer", "description": "Context lines after each content match (default 5 for definition-aware search)."},
+					"file_offset":          map[string]any{"type": "integer", "description": "File-based pagination offset returned as next_file_offset; use to continue a truncated content search."},
+					"max_matches_per_file": map[string]any{"type": "integer", "description": "Maximum content matches per file (0 = unlimited). Use to keep broad searches readable."},
+					"max_results":          map[string]any{"type": "integer", "description": "Maximum merged results to return (default 100, max 4000). If results truncate, narrow path/include/query scope or continue with file_offset."},
+					"timeout_ms":           map[string]any{"type": "integer", "description": "Search timeout in milliseconds (default 8000, max 45000). Used for FFF scan wait and grep time budget."},
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
+			Name:        "find",
+			Description: "FFF-backed path discovery for files, directories, mixed file+directory results, or glob-only file-pattern lookup. Use find when you need candidate paths before read/edit, not content matches. Supports multi-query batching, path/include scoping, pagination, and compact typed output.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query":       map[string]any{"type": "string", "description": "Single fuzzy path/directory query or glob pattern when mode=glob."},
+					"queries":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional multi-query batch for one find call within the same path/include scope."},
+					"mode":        map[string]any{"type": "string", "description": "Discovery mode: files (default), directories, mixed, or glob. Use mixed when either files or directories may be relevant."},
+					"path":        map[string]any{"type": "string", "description": "Discovery root directory (absolute or workspace-relative). Keep narrow when possible. For multiple roots, prefer `paths`."},
+					"paths":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional explicit batch of discovery roots."},
+					"include":     map[string]any{"type": "string", "description": "Optional file include glob for files/mixed results, such as `*.go`. Directory matches are not filtered by include."},
+					"page_index":  map[string]any{"type": "integer", "description": "Result page index for FFF file/directory/mixed discovery (default 0)."},
+					"max_results": map[string]any{"type": "integer", "description": "Maximum merged path results to return (default 100, max 4000). If truncated, narrow scope/query or increment page_index."},
+					"timeout_ms":  map[string]any{"type": "integer", "description": "Discovery timeout in milliseconds (default 8000, max 45000)."},
 				},
 				"additionalProperties": false,
 			},
@@ -554,7 +631,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "websearch",
-			Description: "Run Exa /search with optional parallel multi-query fan-out and optional nested contents retrieval",
+			Description: "Run Exa /search using an active account-scoped Exa API key; sends queries and optional selected URLs to Exa and returns results to the agent/model context without using a browser profile",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -612,7 +689,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "webfetch",
-			Description: "Fetch content for selected URLs through Exa /contents using the current Exa contents request contract",
+			Description: "Fetch selected URLs through Exa /contents using an active account-scoped Exa API key; sends those URLs to Exa and returns results to the agent/model context without using a browser profile",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -671,7 +748,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "webdownload",
-			Description: "Download full URL contents via Exa /contents to files when context would be too large; omitted output_dir uses the managed private workspace cache",
+			Description: "Download full URL contents via Exa /contents using an active account-scoped Exa API key; sends selected URLs to Exa without using a browser profile, and omitted output_dir uses the managed private workspace cache",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -841,11 +918,12 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":  map[string]any{"type": "string", "description": "Action: inspect|list|get|create|update|delete"},
-					"skill":   map[string]any{"type": "string", "description": "Skill name or canonical id"},
-					"name":    map[string]any{"type": "string", "description": "Skill display name; used for create/update when skill is omitted"},
-					"content": map[string]any{"type": "string", "description": "Proposed SKILL.md content for create/update"},
-					"confirm": map[string]any{"type": "boolean", "description": "Set true after approval to apply the proposed change to disk"},
+					"action":            map[string]any{"type": "string", "description": "Action: inspect|list|get|create|update|delete"},
+					"skill":             map[string]any{"type": "string", "description": "Skill name or canonical id"},
+					"name":              map[string]any{"type": "string", "description": "Skill display name; used for create/update when skill is omitted"},
+					"content":           map[string]any{"type": "string", "description": "Proposed SKILL.md content for create/update"},
+					"confirm":           map[string]any{"type": "boolean", "description": "Set true after approval to apply the proposed change to disk"},
+					"expected_revision": map[string]any{"type": "string", "description": "Revision token returned by the approved proposal; required when confirm=true"},
 				},
 				"required":             []string{"action"},
 				"additionalProperties": false,
@@ -858,12 +936,12 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":    map[string]any{"type": "string", "description": "Action: inspect|list|get|create|update|delete|activate_primary|set_active_subagent|remove_active_subagent|create_custom_tool|update_custom_tool|delete_custom_tool|assign_custom_tool|unassign_custom_tool"},
+					"action":    map[string]any{"type": "string", "description": "Action: inspect|list|get_orchestration_policy|update_orchestration_policy|get|create|update|delete|activate_primary|set_active_subagent|remove_active_subagent|create_custom_tool|update_custom_tool|delete_custom_tool|assign_custom_tool|unassign_custom_tool"},
 					"agent":     map[string]any{"type": "string", "description": "Agent name or canonical id"},
 					"name":      map[string]any{"type": "string", "description": "Agent display name; used for create/update when agent is omitted"},
 					"tool_name": map[string]any{"type": "string", "description": "Custom tool name for delete/assign/unassign actions"},
 					"content": map[string]any{
-						"description": "Structured agent profile, custom tool, or assignment payload. Prefer an object; legacy JSON-object strings are still accepted.",
+						"description": "Structured agent profile, orchestration policy, custom tool, or assignment payload. Prefer an object; legacy JSON-object strings are still accepted.",
 						"oneOf": []any{
 							map[string]any{
 								"type": "object",
@@ -874,13 +952,14 @@ func (r *Runtime) Definitions() []Definition {
 									"tool_name":              map[string]any{"type": "string"},
 									"kind":                   map[string]any{"type": "string", "description": "fixed_bash"},
 									"command":                map[string]any{"type": "string"},
-									"mode":                   map[string]any{"type": "string", "description": "primary|subagent|background. Clarify if unspecified: primary is user-selectable in Desktop/TUI; subagent is usable by primary agents for delegation and also user-selectable in Desktop/TUI; background is for Flows and does not appear in the Desktop/TUI selector."},
+									"mode":                   map[string]any{"type": "string", "description": "primary|subagent|background. Clarify if unspecified: primary is user-selectable in Desktop/TUI; subagent is usable by primary agents for delegation and also user-selectable in Desktop/TUI; background is reserved for non-interactive system work and does not appear in the Desktop/TUI selector."},
 									"description":            map[string]any{"type": "string"},
 									"provider":               map[string]any{"type": "string"},
 									"model":                  map[string]any{"type": "string"},
 									"thinking":               map[string]any{"type": "string"},
 									"prompt":                 map[string]any{"type": "string"},
 									"runtime_mode":           map[string]any{"type": "string", "description": "Authoritative execution mode: plan_auto|read|readwrite"},
+									"default_session_mode":   map[string]any{"type": "string", "description": "Default mode for new sessions: plan|auto"},
 									"execution_setting":      map[string]any{"type": "string", "description": "legacy alias for read|readwrite direct runtime only; prefer runtime_mode"},
 									"exit_plan_mode_enabled": map[string]any{"type": "boolean", "description": "Derived from runtime_mode: true for plan_auto, false for read/readwrite"},
 									"enabled":                map[string]any{"type": "boolean"},
@@ -896,76 +975,6 @@ func (r *Runtime) Definitions() []Definition {
 				},
 				"required":             []string{"action"},
 				"additionalProperties": false,
-			},
-		},
-		{
-			Type:        "function",
-			Name:        "manage-flow",
-			Description: "Inspect and manage Flows: user-configured background tasks run by saved agents on schedules; call inspect first once the user states a flow request; inspect/list include compact available_agents for choosing a saved agent without also calling manage-agent; supports inspect/list/get/history/status/create/update/delete, and mutating actions return approval-ready previews unless confirm=true",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"action":  map[string]any{"type": "string", "description": "Action: inspect|list|get|history|status|create|update|delete"},
-					"flow_id": map[string]any{"type": "string", "description": "Flow id for get/update/delete/history/status"},
-					"id":      map[string]any{"type": "string", "description": "Alias for flow_id"},
-					"name":    map[string]any{"type": "string", "description": "Flow display name; used for create/update and id generation"},
-					"limit":   map[string]any{"type": "integer", "description": "Maximum records to return for list/history/status"},
-					"confirm": map[string]any{"type": "boolean", "description": "Set true after approval to apply create/update/delete"},
-					"content": map[string]any{
-						"type":                 "object",
-						"description":          "Flow payload for create/update. Include name, enabled, target, agent, workspace, schedule, catch_up_policy, and intent.",
-						"additionalProperties": true,
-					},
-				},
-				"required":             []string{"action"},
-				"additionalProperties": false,
-			},
-		},
-		{
-			Type:        "function",
-			Name:        "manage-integrations",
-			Description: "Inspect and manage Integration Pack drafts through the sanctioned integration management path; supports inspect/list/get/create/update/delete for packs, versions, tools, adapters, prompt fragments, and workspaces. Execution, validation, publish, assignment runtime, and host routing are not active yet. Adapter output never includes raw credential reference values.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"action":     map[string]any{"type": "string", "description": "Action: inspect|list|get|create|update|delete"},
-					"resource":   map[string]any{"type": "string", "description": "Resource: pack|version|tool|adapter|prompt_fragment|workspace"},
-					"pack_id":    map[string]any{"type": "string", "description": "Pack id for scoped resources"},
-					"version_id": map[string]any{"type": "string", "description": "Version/draft id for scoped resources"},
-					"id":         map[string]any{"type": "string", "description": "Resource id for get/update/delete"},
-					"limit":      map[string]any{"type": "integer", "description": "Maximum records to return"},
-					"content": map[string]any{
-						"type":                 "object",
-						"description":          "Draft resource payload. Use credential_refs for references only; never place raw secrets in settings or credential_refs.",
-						"additionalProperties": true,
-					},
-				},
-				"required":             []string{"action"},
-				"additionalProperties": false,
-			},
-		},
-		{
-			Type:        "function",
-			Name:        "manage-image",
-			Description: "Inspect available image generation providers/models and run background workspace image generation jobs into durable host-managed image sessions; supports inspect/generate and returns compact session/asset refs only, never raw image bytes",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"action":       map[string]any{"type": "string", "description": "Action: inspect|generate"},
-					"prompt":       map[string]any{"type": "string", "description": "Image generation prompt for generate"},
-					"count":        map[string]any{"type": "integer", "description": "Number of images to generate; defaults to 1 and is provider-limited"},
-					"provider":     map[string]any{"type": "string", "description": "Optional provider id or alias; defaults to first ready/default provider"},
-					"model":        map[string]any{"type": "string", "description": "Optional provider model; defaults to provider default"},
-					"size":         map[string]any{"type": "string", "description": "Optional size/aspect ratio hint, provider-specific"},
-					"thread_id":    map[string]any{"type": "string", "description": "Optional existing image session/thread id; omitted creates a durable workspace image session"},
-					"title":        map[string]any{"type": "string", "description": "Optional new session title when creating a thread"},
-					"purpose":      map[string]any{"type": "string", "description": "Optional purpose metadata for the image session"},
-					"settings":     map[string]any{"type": "object", "description": "Optional provider-specific settings such as aspect_ratio or image_size"},
-					"aspect_ratio": map[string]any{"type": "string", "description": "Optional top-level provider-specific aspect ratio setting"},
-					"image_size":   map[string]any{"type": "string", "description": "Optional top-level provider-specific image size setting"},
-				},
-				"required":             []string{"action"},
-				"additionalProperties": true,
 			},
 		},
 		{
@@ -1029,14 +1038,16 @@ func (r *Runtime) Definitions() []Definition {
 				"additionalProperties": false,
 			},
 		},
+		manageSessionsDefinition(),
 		{
 			Type:        "function",
 			Name:        "manage-worktree",
-			Description: "Inspect combined commits for the workspace worktree branch family; defaults to the configured branch prefix for the workspace (for example agent/ or foo/) and supports an optional branch_name override",
+			Description: "Recall durable Coder child lineage or atomically integrate a selected committed child batch. For integrate, pass only action and session_ids. The tool derives and validates all lineage and parent state, preflights the complete ordered stack, applies automatically without confirmation, and leaves the parent unchanged on any conflict.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":         map[string]any{"type": "string", "description": "Action: inspect|list"},
+					"action":         map[string]any{"type": "string", "description": "Action: inspect|list|recall|integrate"},
+					"session_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Selected Coder child session ids from durable current-parent lineage"},
 					"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path; defaults to current/active workspace scope"},
 					"branch_name":    map[string]any{"type": "string", "description": "Optional worktree branch family/prefix override such as agent or foo"},
 					"limit":          map[string]any{"type": "integer", "description": "Page size for returned commits (default 25)"},
@@ -1049,13 +1060,13 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage_todos",
-			Description: "Manage workspace todo items and summaries. Supports list/create/update/delete/reorder/in_progress actions and atomic batch mutations for a regular todo list with priorities, tags, groups, in-progress state, and ordering.",
+			Description: "Manage user-owned workspace todo items and summaries. Supports list/create/update/delete/reorder/in_progress actions and atomic batch mutations for regular user todo lists with priorities, tags, groups, in-progress state, and ordering. Do not use this for agent self-tracking, execution checklists, or checkpoint lifecycle state; use plan_manage for agent progress.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"action":         map[string]any{"type": "string", "description": "Action: list|summary|create|update|delete|delete_done|delete_all|reorder|in_progress|batch"},
 					"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path; defaults to current/active workspace scope"},
-					"owner_kind":     map[string]any{"type": "string", "description": "Optional owner kind filter/scope: user|agent"},
+					"owner_kind":     map[string]any{"type": "string", "description": "Optional owner kind filter/scope: user|agent. Agents should use user for user todo requests; agent self-tracking belongs in plan_manage, not manage_todos."},
 					"id":             map[string]any{"type": "string", "description": "Todo id for update/delete/in_progress"},
 					"text":           map[string]any{"type": "string", "description": "Todo text"},
 					"done":           map[string]any{"type": "boolean", "description": "Completed state"},
@@ -1063,8 +1074,8 @@ func (r *Runtime) Definitions() []Definition {
 					"group":          map[string]any{"type": "string", "description": "Optional grouping label"},
 					"tags":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional tags"},
 					"in_progress":    map[string]any{"type": "boolean", "description": "In-progress state"},
-					"session_id":     map[string]any{"type": "string", "description": "Optional conversation/session id for agent checklist grouping"},
-					"parent_id":      map[string]any{"type": "string", "description": "Optional parent task id for nested agent checklist steps"},
+					"session_id":     map[string]any{"type": "string", "description": "Optional conversation/session id for existing todo records; do not use for new agent self-tracking, which belongs in plan_manage."},
+					"parent_id":      map[string]any{"type": "string", "description": "Optional parent todo id for existing todo records; do not use for new agent self-tracking, which belongs in plan_manage."},
 					"ordered_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Ordered todo ids for reorder"},
 					"operations": map[string]any{
 						"type":        "array",
@@ -1097,63 +1108,91 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "exit_plan_mode",
-			Description: "Submit the final structured plan for approval so the session can leave plan mode and continue execution. Pass the canonical SessionPlanDocument in document; markdown plan text is only a display/export fallback. When plan_id is omitted the active plan is reused when one exists.",
+			Description: "Submit the final structured executable plan for approval so the session can leave plan mode and continue execution. document is required and must contain at least one complete checkpoint; markdown plan text is display/export only and can never substitute for document. The backend revalidates the exact approved document before persistence, mode changes, or execution.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"title":    map[string]any{"type": "string", "description": "Final plan title. Optional when document.title is provided."},
-					"plan":     map[string]any{"type": "string", "description": "Optional markdown/display text for export only; document is canonical. Include any last display-text updates here instead of first calling plan_manage save."},
-					"document": map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}, "description": "Canonical structured SessionPlanDocument with info and checkpoints. This is the authoritative plan source saved on exit. A structured object is preferred; a JSON-encoded object string is also accepted for compatibility."},
-					"plan_id":  map[string]any{"type": "string", "description": "Existing active plan id to update and submit. Optional; when omitted, the current active plan is reused if one exists."},
-					"id":       map[string]any{"type": "string", "description": "Alias for plan_id."},
+					"title":                  map[string]any{"type": "string", "description": "Final plan title. Optional when document.title is provided."},
+					"plan":                   map[string]any{"type": "string", "description": "Optional markdown/display text for export only; document is canonical. Include any last display-text updates here instead of first calling plan_manage save."},
+					"document":               sessionExecutablePlanDocumentToolSchema(),
+					"plan_id":                map[string]any{"type": "string", "description": "Existing active plan id to update and submit. Optional; when omitted, the current active plan is reused if one exists."},
+					"id":                     map[string]any{"type": "string", "description": "Alias for plan_id."},
+					"continuation_policy":    map[string]any{"type": "string", "description": "Recommended checkpoint continuation after approval: review_each_checkpoint/pause or automatic/continue_automatically. The user approval remains authoritative."},
+					"continue_automatically": map[string]any{"type": "boolean", "description": "Recommended checkpoint continuation after approval: true auto-continues completed checkpoints; false pauses for review. The user approval remains authoritative."},
 				},
+				"required":             []string{"document"},
 				"additionalProperties": false,
 			},
 		},
 		{
 			Type:        "function",
 			Name:        "plan_manage",
-			Description: "Manage the canonical structured session plan and its revisions (list/get/get-active/save/patch/update_section/update_info/checkpoint operations/set-active/new/history). document is the authoritative SessionPlanDocument; markdown plan text is display/export only. save is a full-document replacement and updates the active plan when plan_id is omitted. patch/update_section/document_patch perform targeted partial edits and create normal same-plan revisions. update_info merges only provided modular info sections (goal, scope, decisions, relevant_files/files, validation_strategy) and preserves untouched sections/checkpoints. update_checkpoint merges only provided checkpoint fields and preserves omitted checkpoint fields. upsert_checkpoint/replace_checkpoint/set_checkpoint intentionally replace the target checkpoint object. new is refused when an active plan already exists unless override=true is explicitly provided.",
+			Description: "Manage the canonical structured session plan, agent execution progress, and typed plan lifecycle changes (list/get/get-active/save/patch/update_section/update_info/checkpoint execution operations/start_session_checkpoint/request_followup_checkpoint/amend_plan/request_new_plan/set-active/new/history). document is the authoritative SessionPlanDocument; markdown plan text is display/export only. In auto mode with no active plan, use start_session_checkpoint for a clear bounded task: it atomically creates an approved one-checkpoint active plan and starts that checkpoint in the current run. Never call request_followup_checkpoint when no active plan exists, and never call start_checkpoint after start_session_checkpoint. For broad/uncertain/multi-phase auto-mode work with no active plan, use request_new_plan with a structured document as the single approval-request path; approval applies an approved runnable plan and returns the fresh-context start path. Do not create a draft/pending shell with new/save first. save is a legacy full-document replacement; active approved/running plan changes should use amend_plan with base_revision and explicit future-checkpoint scope, request_followup_checkpoint for one ordered checkpoint, or request_new_plan with the current plan_id for whole-plan replacement. patch/update_section/document_patch perform targeted partial edits for draft/legacy cases. amend_plan creates a meaningful whole-plan definition revision, rejects stale base_revision unless override_stale=true, and protects completed/current runtime state while replacing pending future checkpoints. request_followup_checkpoint appends exactly one ordered session checkpoint from the exact change_request text (legacy action name; it does not imply related follow-up semantics); on a blocked plan call it directly, because the same action atomically marks the blocked checkpoint completed/review-approved as superseded, inserts the new checkpoint after it, and continues according to policy—do not call resolve_blocked_checkpoint first; failed checkpoints remain stopped; when creating one, copy the full original user request into change_request and include a self-contained handoff via title, tasks, acceptance_criteria, and notes so the fresh checkpoint run does not lose material context; request_new_plan creates or replaces an approval-gated plan. Every approval-bearing action requires an explicit complete document with at least one runnable checkpoint; markdown-only, empty, and partially specified plans are rejected, and the backend remains authoritative. Do not use manage_todos for agent self-tracking; plan_manage is the canonical agent checklist/progress surface. For checkpointed execution, put final report/changed_files/validation/result on the terminal checkpoint action; use update_checkpoint only for meaningful intermediate state, not routine task completion notes. In multi-task checkpoints, keep durable task state current while work continues: complete one subtask immediately at a genuine boundary, or batch all subtasks completed since the last update with subtask_ids. If the checkpoint is now fully done, complete_subtask may also set complete_checkpoint=true and include the terminal report/evidence so no extra terminal call is needed. approve_and_start applies user-owned execution choices and returns the fresh-context run request; restart_checkpoint retries the same deliverable and, when user feedback changes its requirements, must include change_request plus complete replacement title/tasks/acceptance_criteria/notes so reset and definition replacement happen atomically; if the feedback is an independent deliverable instead, use request_followup_checkpoint rather than restart_checkpoint; rewind_to_checkpoint resets execution state; resolve_blocked_checkpoint clears the blocker and resumes the same checkpoint in fresh context without completing it or selecting a later checkpoint; start_checkpoint/continue_checkpoint mark the next checkpoint in_progress; complete_checkpoint/checkpoint_outcome/mark_needs_review/mark_blocked/mark_failed update deterministic execution state. update_info merges only provided modular info sections and update_checkpoint merges only provided checkpoint fields. upsert_checkpoint intentionally replaces the target checkpoint object. new is only for an empty draft shell and never replaces an active plan; use request_new_plan with the current plan_id for approved replacement.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":               map[string]any{"type": "string", "description": "Action: list|get|get-active|save|patch|update_section|update_info|upsert_checkpoint|update_checkpoint|complete_checkpoint|remove_checkpoint|reorder_checkpoints|set_active_checkpoint|set-active|new|history. save is a full structured-document replacement; patch/update_section/document_patch are targeted partial edits. Aliases such as active/current/use/create/update/edit/write_active are also accepted; update/edit without plan/document perform patch."},
-					"plan_id":              map[string]any{"type": "string", "description": "Plan id for get/set-active/save/patch. Omit on save/patch to update the active plan when one exists."},
-					"id":                   map[string]any{"type": "string", "description": "Alias for plan_id."},
-					"title":                map[string]any{"type": "string", "description": "Plan title for save/new. Existing title is kept when omitted on save for an existing plan."},
-					"plan":                 map[string]any{"type": "string", "description": "Full markdown plan body for save. Required for full-body save; omit for patch/update_section."},
-					"patch":                map[string]any{"type": "object", "description": "Optional object form for action=patch. Fields mirror operation, section, old_text, new_text, text, checklist_item, checked, and replace_all."},
-					"operation":            map[string]any{"type": "string", "description": "Patch operation: replace_text, replace_section, append_to_section, append_text, append_checklist_item, or set_checkbox."},
-					"section":              map[string]any{"type": "string", "description": "Markdown heading text targeted by replace_section, update_section, append_to_section, or append_checklist_item."},
-					"old_text":             map[string]any{"type": "string", "description": "Exact text to find for replace_text."},
-					"new_text":             map[string]any{"type": "string", "description": "Replacement text for replace_text, replace_section, or update_section."},
-					"text":                 map[string]any{"type": "string", "description": "Text to append for append_text/append_to_section, or alternate section replacement body for update_section."},
-					"checklist_item":       map[string]any{"type": "string", "description": "Checklist item text for append_checklist_item or set_checkbox."},
-					"checked":              map[string]any{"type": "boolean", "description": "Desired checkbox state for set_checkbox or appended checklist items."},
-					"replace_all":          map[string]any{"type": "boolean", "description": "For replace_text, replace every occurrence instead of requiring a single exact match."},
-					"status":               map[string]any{"type": "string", "description": "Optional plan status to persist on save."},
-					"approval_state":       map[string]any{"type": "string", "description": "Optional approval state to persist on save."},
-					"update_summary":       map[string]any{"type": "string", "description": "Short human-readable summary of what this plan update changes and why."},
-					"update_scope":         map[string]any{"type": "string", "description": "Specific plan section, phase, or checkpoint affected by this update."},
-					"scope":                map[string]any{"type": "string", "description": "Alias for update_scope."},
-					"update_kind":          map[string]any{"type": "string", "description": "Optional update category such as checkpoint, scope_update, or full_rewrite."},
-					"checkpoint":           map[string]any{"anyOf": []any{map[string]any{"type": "boolean"}, map[string]any{"type": "object"}}, "description": "Structured checkpoint object for checkpoint document operations, or boolean marker for checkpoint-style plan update metadata. With action=update_checkpoint/patch_checkpoint, only provided checkpoint object fields are merged and omitted fields are preserved. With upsert_checkpoint/replace_checkpoint/set_checkpoint, the checkpoint object intentionally replaces the target checkpoint."},
-					"document":             map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}, "description": "Canonical structured SessionPlanDocument with info and checkpoints. Prefer a structured object over markdown plan text; a JSON-encoded object string is also accepted for compatibility."},
-					"document_patch":       map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}, "description": "Atomic structured document patch for modular info/checkpoint edits. update_info and update_checkpoint merge only provided fields and preserve omitted fields; replace/set operations intentionally replace. A JSON-encoded object string is also accepted for compatibility."},
-					"document_operation":   map[string]any{"type": "string", "description": "Structured document operation alias, such as update_info, update_checkpoint, upsert_checkpoint, complete_checkpoint, reorder_checkpoints, or set_active_checkpoint."},
-					"operations":           map[string]any{"anyOf": []any{map[string]any{"type": "array", "items": map[string]any{"type": "object"}}, map[string]any{"type": "string"}}, "description": "Batch of structured document patch operations applied atomically. A JSON-encoded array string is also accepted for compatibility."},
-					"info":                 map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}, "description": "Structured plan info for update_info document patches. Modular fields: goal, scope, decisions, relevant_files/files, and validation_strategy/validation. update_info merges only provided fields; use replace_info/set_info only for intentional full info replacement. Legacy fields context, constraints, assumptions, open_questions, and success_criteria are still accepted for compatibility. A JSON-encoded object string is also accepted."},
-					"checkpoint_id":        map[string]any{"type": "string", "description": "Target checkpoint id for checkpoint document operations."},
-					"checkpoint_order":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Full checkpoint id order for reorder_checkpoints."},
-					"active_checkpoint_id": map[string]any{"type": "string", "description": "Checkpoint id to mark active for set_active_checkpoint."},
-					"active_checkpoint":    map[string]any{"type": "string", "description": "Alias for active_checkpoint_id."},
-					"notes":                map[string]any{"type": "string", "description": "Checkpoint notes for update/complete checkpoint operations."},
-					"report":               map[string]any{"type": "string", "description": "Checkpoint report for update/complete checkpoint operations."},
-					"result":               map[string]any{"type": "string", "description": "Checkpoint result for update/complete checkpoint operations."},
-					"changed_files":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Files changed while completing/updating a checkpoint."},
-					"validation":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Validation evidence for checkpoint updates."},
-					"activate":             map[string]any{"type": "boolean", "description": "Whether the saved/new plan becomes the active plan (default true)."},
-					"override":             map[string]any{"type": "boolean", "description": "Required for action=new when the session already has an active plan. Set true only to intentionally create a replacement active plan instead of updating the current canonical plan."},
+					"action":                     map[string]any{"type": "string", "description": "Action: list|get|get-active|save|patch/update_section/update_info/upsert_checkpoint/update_checkpoint/approve_and_start/restart_checkpoint/rewind_to_checkpoint/resolve_blocked_checkpoint/start_session_checkpoint/request_followup_checkpoint/amend_plan/request_new_plan/start_checkpoint/continue_checkpoint/complete_checkpoint/checkpoint_outcome/mark_needs_review/mark_blocked/mark_failed/remove_checkpoint/reorder_checkpoints/set_active_checkpoint/add_subtask/update_subtask/remove_subtask/reorder_subtasks/focus_subtask/complete_subtask/set-active/new/history. Use start_session_checkpoint only in auto mode with no active plan for a straightforward bounded task; it is the single atomic create-and-start action for one durable session checkpoint. Never call request_followup_checkpoint when no active plan exists, and never call start_checkpoint after start_session_checkpoint. For broad auto-mode work with no active plan, use request_new_plan (or alias propose_plan/create_plan) with a structured document as the approval-gated plan proposal path; do not create a draft first with new/save. Use amend_plan for intentional active-plan future-checkpoint replacement or append with base_revision and replace_from_checkpoint_id/amend_future_checkpoints; use request_new_plan with the current plan_id for whole-plan replacement. Before restarting after user feedback, classify the request: use restart_checkpoint only for the same deliverable, and include change_request plus complete replacement requirements whenever the feedback changed that checkpoint; use request_followup_checkpoint when the feedback redirects to an independent deliverable that should become the next ordered session checkpoint on an active approved/running/blocked/review plan; request_changes is only an alias for request_followup_checkpoint. On a blocked plan, call request_followup_checkpoint directly: it atomically supersedes and resolves the blocked checkpoint before inserting and continuing the new checkpoint, while failed checkpoints remain stopped; do not call resolve_blocked_checkpoint first. The new checkpoint must be a self-contained handoff: put the verbatim original user request in change_request, set a concrete checkpoint_title, and provide tasks, acceptance_criteria, and notes/context when available. Prefer terminal checkpoint actions for checkpoint outcomes. In multi-task checkpoints, keep progress durable: at a genuine boundary use complete_subtask for one task or pass subtask_ids to batch every task completed since the last update; skip it for discovery-only work and single-step checkpoints. When all checkpoint work and acceptance criteria are done, set complete_checkpoint=true on that same call with terminal report/evidence instead of making a second call. complete_checkpoint remains available as the direct terminal action. Use update_checkpoint only for meaningful intermediate state, not routine agent progress/checklist transitions. save is a legacy full structured-document replacement; patch/update_section/document_patch are targeted partial edits for draft/legacy cases. Aliases such as active/current/use/create/update/edit/write_active are also accepted; update/edit without plan/document perform patch."},
+					"continuation_policy":        map[string]any{"type": "string", "description": "For approve_and_start: review_each_checkpoint/pause or automatic/continue_automatically."},
+					"continue_automatically":     map[string]any{"type": "boolean", "description": "For approve_and_start checkpointed execution: true auto-continues completed checkpoints; false pauses for review."},
+					"plan_id":                    map[string]any{"type": "string", "description": "Plan id for get/set-active/save/patch or typed lifecycle actions. Omit on lifecycle actions to use the active plan."},
+					"id":                         map[string]any{"type": "string", "description": "Alias for plan_id."},
+					"title":                      map[string]any{"type": "string", "description": "Plan title for save/new. Existing title is kept when omitted on save for an existing plan."},
+					"plan":                       map[string]any{"type": "string", "description": "Full markdown plan body for save. Required for full-body save; omit for patch/update_section."},
+					"patch":                      map[string]any{"type": "object", "description": "Optional object form for action=patch. Fields mirror operation, section, old_text, new_text, text, checklist_item, checked, and replace_all."},
+					"operation":                  map[string]any{"type": "string", "description": "Patch operation: replace_text, replace_section, append_to_section, append_text, append_checklist_item, or set_checkbox."},
+					"section":                    map[string]any{"type": "string", "description": "Markdown heading text targeted by replace_section, update_section, append_to_section, or append_checklist_item."},
+					"old_text":                   map[string]any{"type": "string", "description": "Exact text to find for replace_text."},
+					"new_text":                   map[string]any{"type": "string", "description": "Replacement text for replace_text, replace_section, or update_section."},
+					"text":                       map[string]any{"type": "string", "description": "Text to append for append_text/append_to_section, or alternate section replacement body for update_section."},
+					"checklist_item":             map[string]any{"type": "string", "description": "Checklist item text for append_checklist_item or set_checkbox."},
+					"checked":                    map[string]any{"type": "boolean", "description": "Desired checkbox state for set_checkbox or appended checklist items."},
+					"replace_all":                map[string]any{"type": "boolean", "description": "For replace_text, replace every occurrence instead of requiring a single exact match."},
+					"status":                     map[string]any{"type": "string", "description": "Optional plan status to persist on save."},
+					"approval_state":             map[string]any{"type": "string", "description": "Optional approval state to persist on save."},
+					"update_summary":             map[string]any{"type": "string", "description": "Short human-readable summary of what this plan update changes and why."},
+					"update_scope":               map[string]any{"type": "string", "description": "Specific plan section, phase, or checkpoint affected by this update."},
+					"scope":                      map[string]any{"type": "string", "description": "Alias for update_scope."},
+					"update_kind":                map[string]any{"type": "string", "description": "Optional update category such as checkpoint, scope_update, or full_rewrite."},
+					"base_revision":              map[string]any{"type": "integer", "description": "Required for amend_plan unless override_stale=true: current plan revision/version the amendment is based on."},
+					"replace_from_checkpoint_id": map[string]any{"type": "string", "description": "For amend_plan: first future checkpoint id to replace from the proposed document; completed/current runtime state before this checkpoint is preserved."},
+					"amend_future_checkpoints":   map[string]any{"type": "boolean", "description": "For amend_plan: allow replacing pending future checkpoints; when replace_from_checkpoint_id is omitted, the first pending future checkpoint is used."},
+					"override_stale":             map[string]any{"type": "boolean", "description": "For amend_plan only: explicitly allow amendment when base_revision is missing or stale."},
+					"checkpoint":                 map[string]any{"anyOf": []any{map[string]any{"type": "boolean"}, map[string]any{"type": "object"}}, "description": "Structured checkpoint object for checkpoint document operations, or boolean marker for checkpoint-style plan update metadata. With action=update_checkpoint/patch_checkpoint, only provided checkpoint object fields are merged and omitted fields are preserved; use fields such as status, tasks, notes, report, changed_files, and validation for agent progress/checklist tracking. With upsert_checkpoint/replace_checkpoint/set_checkpoint, the checkpoint object intentionally replaces the target checkpoint."},
+					"document":                   map[string]any{"anyOf": []any{sessionPlanDocumentToolSchema(), map[string]any{"type": "string"}}, "description": "Canonical structured SessionPlanDocument. For approval-bearing actions (request_new_plan and amend_plan), an explicit object with title, info.goal, and at least one complete ordered pending checkpoint is required; markdown-only and partial documents are rejected. Draft mutation actions retain the looser document shape."},
+					"document_patch":             map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}, "description": "Atomic structured document patch for modular info/checkpoint edits. update_info and update_checkpoint merge only provided fields and preserve omitted fields; replace/set operations intentionally replace. A JSON-encoded object string is also accepted for compatibility."},
+					"document_operation":         map[string]any{"type": "string", "description": "Structured document operation alias, such as update_info, update_checkpoint, upsert_checkpoint, start_checkpoint, continue_checkpoint, complete_checkpoint, checkpoint_outcome, accept_checkpoint_review, restart_checkpoint, rewind_to_checkpoint, reorder_checkpoints, or set_active_checkpoint."},
+					"operations":                 map[string]any{"anyOf": []any{map[string]any{"type": "array", "items": map[string]any{"type": "object"}}, map[string]any{"type": "string"}}, "description": "Batch of structured document patch operations applied atomically. A JSON-encoded array string is also accepted for compatibility."},
+					"info":                       map[string]any{"anyOf": []any{sessionPlanInfoToolSchema(), map[string]any{"type": "string"}}, "description": "Structured plan info for update_info document patches. goal, scope, context, and validation_strategy/validation are strings; decisions, relevant_files/files, constraints, assumptions, open_questions, and success_criteria are arrays of strings. update_info merges only provided fields; use replace_info/set_info only for intentional full info replacement. A JSON-encoded object string is also accepted."},
+					"change_request":             map[string]any{"type": "string", "description": "Required for start_session_checkpoint and request_followup_checkpoint, and for restart_checkpoint whenever user feedback changed the same checkpoint's requirements: verbatim full original user request text. A requirement-changing restart atomically replaces the checkpoint definition before fresh-context execution; do not restart an unchanged stale definition."},
+					"checkpoint_title":           map[string]any{"type": "string", "description": "Proposed title for start_session_checkpoint or request_followup_checkpoint. Required for a requirement-changing restart_checkpoint so the replacement definition is complete."},
+					"source_message_id":          map[string]any{"type": "string", "description": "Optional source message id for start_session_checkpoint, request_followup_checkpoint, or requirement-changing restart_checkpoint."},
+					"checkpoint_id":              map[string]any{"type": "string", "description": "Target checkpoint id for checkpoint document operations; omitted start/continue/outcome actions use the active or next checkpoint when possible. For start_session_checkpoint, optional id for the created checkpoint; defaults to cp-1."},
+					"checkpoint_order":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Full checkpoint id order for reorder_checkpoints."},
+					"subtask":                    map[string]any{"type": []string{"object", "string"}, "description": "Typed subtask object for add/update operations; JSON strings are accepted."},
+					"subtask_id":                 map[string]any{"type": "string", "description": "Stable subtask id for update/remove/focus/complete operations. For complete_subtask, omit when using subtask_ids."},
+					"subtask_ids":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "For complete_subtask, stable ids of multiple genuinely completed subtasks to transition atomically in one call."},
+					"subtask_order":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Full subtask id order for reorder_subtasks."},
+					"complete_checkpoint":        map[string]any{"type": "boolean", "description": "For complete_subtask only: also complete the current checkpoint atomically when all work and acceptance criteria are done. Include the usual terminal report, changed_files, validation, result, and run ownership fields. If this is the final checkpoint, include handoff_overview and use the structured handoff as the only user-visible completion."},
+					"active_checkpoint_id":       map[string]any{"type": "string", "description": "Checkpoint id to mark active for set_active_checkpoint."},
+					"active_checkpoint":          map[string]any{"type": "string", "description": "Alias for active_checkpoint_id."},
+					"notes":                      map[string]any{"type": "string", "description": "Checkpoint notes for update/complete operations. For start_session_checkpoint, request_followup_checkpoint, or a requirement-changing restart_checkpoint, use this for self-contained replacement/handoff context, constraints, relevant files, and validation expectations."},
+					"tasks":                      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Proposed checkpoint tasks. Required and complete for a requirement-changing restart_checkpoint; for new/follow-up checkpoints include enough concrete steps to preserve material request parts."},
+					"acceptance_criteria":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Proposed checkpoint acceptance criteria. Required and complete for a requirement-changing restart_checkpoint; include clear completion checks and validation expectations."},
+					"artifacts":                  map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifact references for start_session_checkpoint, request_followup_checkpoint, or requirement-changing restart_checkpoint."},
+					"report":                     map[string]any{"type": "string", "description": "Checkpoint report for update/complete checkpoint operations."},
+					"result":                     map[string]any{"type": "string", "description": "Checkpoint result for update/complete checkpoint operations."},
+					"reviewed_at":                map[string]any{"type": "integer", "description": "Optional review/resolution timestamp for accept_checkpoint or resolve_blocked_checkpoint."},
+					"start_next":                 map[string]any{"type": "boolean", "description": "For resolve_blocked_checkpoint: after confirming resolution, immediately resume the same checkpoint in a fresh provider run. This never completes it or selects a later checkpoint."},
+					"continue_next":              map[string]any{"type": "boolean", "description": "Compatibility alias for start_next; resumes the same resolved checkpoint."},
+					"changed_files":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Files changed while completing/updating a checkpoint."},
+					"validation":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Validation evidence for checkpoint updates."},
+					"recommendation":             map[string]any{"type": "object", "description": "Single final-review recommendation for terminal checkpoint outcomes: decision ship/change/revert/defer, action, short reason, and action_state taken/ready/needs_approval."},
+					"handoff_title":              map[string]any{"type": "string", "description": "Optional concise title for a terminal final-handoff card (maximum 120 characters)."},
+					"handoff_overview":           map[string]any{"type": "string", "description": "Required concise final-handoff overview for final checkpoint completion and whenever any handoff field is supplied (maximum 600 characters). This structured handoff is the single user-visible completion; do not emit a separate assistant report."},
+					"impact_bullets":             map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "string"}, "description": "Up to three concise behavioral-impact bullets for the final handoff."},
+					"suggested_prompts":          map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "object", "properties": map[string]any{"label": map[string]any{"type": "string"}, "prompt": map[string]any{"type": "string"}}, "required": []string{"label", "prompt"}, "additionalProperties": false}, "description": "Up to three inert label/prompt objects that clients may send only as ordinary V3 user chat messages."},
+					"activate":                   map[string]any{"type": "boolean", "description": "Whether the saved/new plan becomes the active plan (default true)."},
+					"override":                   map[string]any{"type": "boolean", "description": "Legacy action=new field. Replacement is rejected; use request_new_plan with the current plan_id and a complete structured document."},
 				},
 				"required":             []string{"action"},
 				"additionalProperties": false,
@@ -1162,7 +1201,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate a focused task to existing saved subagents. Put child launches in the structured launches array, not inside prompt text. Each launch needs a saved agent/purpose and a meta_prompt/role assignment, or the call fails before approval.",
+			Description: "Delegate a distinct research question to Finder, an independent dependency-ready implementation scope to Coder, or explicitly requested multiple UI/design iterations or variants to Designer. Designer is prohibited for ordinary UI work and single-design requests, which the parent handles directly. Eligible Designer children share the parent checkout, may inspect with read/search/find/list and implement with write/edit, have no Bash or Git, and produce ordinary reusable artifacts that remain until the user requests or chooses cleanup. A generic request to create, make, start, or open a new session means a durable session via manage-sessions deploy, not this task tool. Keep cohesive work direct. Put child launches in the structured launches array; give every launch a concise title of about three words for cosmetic UI display, while keeping the full instructive assignment in meta_prompt. Each launch also states its deliverable, concurrency reason, owned scope, and dependency evidence for review; Designer launches require complete briefs and distinct non-overlapping workspace-relative output targets, and dependency-ready variants should be batched.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1172,7 +1211,7 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"description": map[string]any{
 						"type":        "string",
-						"description": "Short task label shown in UI.",
+						"description": "Short overall task label shown in UI.",
 					},
 					"prompt": map[string]any{
 						"type":        "string",
@@ -1180,35 +1219,51 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"subagent_type": map[string]any{
 						"type":        "string",
-						"description": "Existing saved subagent name or purpose for the single-launch shorthand. Requires a top-level meta_prompt or role.",
+						"enum":        []string{"coder", "finder", "designer"},
+						"description": "Subagent type for the single-launch shorthand. Supported values: coder, finder, or designer. Designer requires a concrete workspace-relative owned_scope. Requires a top-level meta_prompt or role.",
 					},
 					"agent": map[string]any{
 						"type":        "string",
+						"enum":        []string{"coder", "finder", "designer"},
 						"description": "Alias for subagent_type in the single-launch shorthand.",
 					},
 					"purpose": map[string]any{
 						"type":        "string",
+						"enum":        []string{"coder", "finder", "designer"},
 						"description": "Alias for subagent_type in the single-launch shorthand.",
 					},
 					"meta_prompt": map[string]any{
 						"type":        "string",
-						"description": "Explicit assignment for the single-launch shorthand; required when launches is omitted. Do not put this inside prompt.",
+						"description": "Full instructive assignment for the single-launch shorthand; required when launches is omitted. Do not shorten this for display or put it inside prompt.",
+					},
+					"title": map[string]any{
+						"type":        "string",
+						"description": "Concise cosmetic title for this child, ideally three words (for example, Backend Security Audit). The UI displays this instead of meta_prompt.",
 					},
 					"role": map[string]any{
 						"type":        "string",
 						"description": "Alias for meta_prompt in the single-launch shorthand.",
 					},
+					"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
+					"concurrency_reason":  map[string]any{"type": "string", "description": "Why this scope is useful and safe to delegate now."},
+					"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Required for Designer as a concrete clean workspace-relative path; an omitted Coder scope safely defaults to its entire isolated worktree."},
+					"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that the launch does not depend on unfinished child work."},
 					"launches": map[string]any{
 						"type":        "array",
-						"description": "Structured batched child launches for one task approval. For multi-subagent delegation, use this array; do not paste JSON into prompt. Each entry must name an existing saved subagent by subagent_type/agent/purpose and include an explicit meta_prompt/role assignment.",
+						"description": "The exact dependency-ready wave for one task approval. Do not paste JSON into prompt. Use Finder for distinct research deliverables, Coder for implementation scopes created from the same parent HEAD on unique sibling worktrees, and Designer only for explicit requests for multiple UI/design iterations or variants in the parent checkout. Designer may read/search/find/list/write/edit but has no Bash or Git; its ordinary reusable artifacts are retained unless the user requests or chooses cleanup. Concurrent Designer launches require complete briefs and distinct non-overlapping output scopes. The current backend orchestration policy defines launch limits; available budget is never a target.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"subagent_type": map[string]any{"type": "string", "description": "Existing saved subagent name or purpose for this child."},
-								"agent":         map[string]any{"type": "string", "description": "Alias for subagent_type."},
-								"purpose":       map[string]any{"type": "string", "description": "Alias for subagent_type."},
-								"meta_prompt":   map[string]any{"type": "string", "description": "Required per-child assignment shown in the approval modal. This must be a field on the launch object, not text embedded in prompt."},
-								"role":          map[string]any{"type": "string", "description": "Alias for meta_prompt."},
+								"subagent_type":       map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Subagent type for this child. Supported values: coder, finder, or designer."},
+								"agent":               map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Alias for subagent_type."},
+								"purpose":             map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Alias for subagent_type."},
+								"meta_prompt":         map[string]any{"type": "string", "description": "Required full instructive per-child assignment. Keep all scope and constraints here; this must be a field on the launch object, not text embedded in prompt."},
+								"title":               map[string]any{"type": "string", "description": "Concise cosmetic title for this child, ideally three words (for example, Frontend Security Audit). The UI displays this instead of meta_prompt."},
+								"role":                map[string]any{"type": "string", "description": "Alias for meta_prompt."},
+								"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
+								"concurrency_reason":  map[string]any{"type": "string", "description": "Why this scope is useful and safe to run in the current wave."},
+								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target. Required for Designer as a concrete clean workspace-relative path and must not overlap another concurrent Designer launch; an omitted Coder scope defaults to its isolated worktree."},
+								"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that this launch does not depend on another child's unfinished work."},
 							},
 							"additionalProperties": false,
 						},
@@ -1218,6 +1273,103 @@ func (r *Runtime) Definitions() []Definition {
 				"additionalProperties": false,
 			},
 		},
+	}
+}
+
+func sessionPlanDocumentToolSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":          map[string]any{"type": "string"},
+			"title":       map[string]any{"type": "string"},
+			"status":      map[string]any{"type": "string"},
+			"info":        sessionPlanInfoToolSchema(),
+			"artifacts":   map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifact references only; file contents are not embedded."},
+			"checkpoints": map[string]any{"type": "array", "items": sessionPlanCheckpointToolSchema()},
+		},
+		"additionalProperties": true,
+	}
+}
+
+func sessionExecutablePlanDocumentToolSchema() map[string]any {
+	schema := sessionPlanDocumentToolSchema()
+	schema["required"] = []string{"title", "info", "checkpoints"}
+	properties := schema["properties"].(map[string]any)
+	properties["info"] = sessionExecutablePlanInfoToolSchema()
+	properties["checkpoints"] = map[string]any{
+		"type":        "array",
+		"minItems":    1,
+		"items":       sessionPlanCheckpointToolSchema(),
+		"description": "At least one complete ordered checkpoint is required. Each checkpoint requires id, title, status, order, acceptance_criteria, and either objective or concrete tasks.",
+	}
+	return schema
+}
+
+func sessionExecutablePlanInfoToolSchema() map[string]any {
+	schema := sessionPlanInfoToolSchema()
+	schema["required"] = []string{"goal"}
+	return schema
+}
+
+func sessionPlanCheckpointToolSchema() map[string]any {
+	stringArray := func() map[string]any {
+		return map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+	}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":                  map[string]any{"type": "string"},
+			"title":               map[string]any{"type": "string"},
+			"status":              map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "completed", "needs_review", "blocked", "failed"}},
+			"order":               map[string]any{"type": "integer", "minimum": 1},
+			"objective":           map[string]any{"type": "string"},
+			"tasks":               stringArray(),
+			"acceptance_criteria": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}},
+			"artifacts":           map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifacts relevant to or delivered by this checkpoint."},
+			"notes":               map[string]any{"type": "string"},
+		},
+		"required": []string{"id", "title", "status", "order", "acceptance_criteria"},
+		"anyOf": []any{
+			map[string]any{"required": []string{"objective"}},
+			map[string]any{"required": []string{"tasks"}},
+		},
+		"additionalProperties": true,
+	}
+}
+
+func sessionPlanArtifactToolSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path":        map[string]any{"type": "string", "description": "Clean workspace-relative path; absolute and workspace-escaping paths are rejected."},
+			"role":        map[string]any{"type": "string", "enum": []string{"input", "deliverable"}, "description": "input may be selectively read; deliverable must be included or linked in the user-visible assistant response."},
+			"description": map[string]any{"type": "string"},
+			"media_type":  map[string]any{"type": "string"},
+		},
+		"required":             []string{"path"},
+		"additionalProperties": false,
+	}
+}
+
+func sessionPlanInfoToolSchema() map[string]any {
+	stringArray := func() map[string]any {
+		return map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+	}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"goal":                map[string]any{"type": "string"},
+			"scope":               map[string]any{"type": "string"},
+			"context":             map[string]any{"type": "string"},
+			"decisions":           stringArray(),
+			"constraints":         stringArray(),
+			"assumptions":         stringArray(),
+			"open_questions":      stringArray(),
+			"relevant_files":      stringArray(),
+			"success_criteria":    stringArray(),
+			"validation_strategy": map[string]any{"type": "string"},
+		},
+		"additionalProperties": true,
 	}
 }
 
@@ -1345,6 +1497,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return "", errors.New("glob is disabled; use list for path discovery and search for canonical FFF-backed retrieval")
 	case "search":
 		return r.executeSearch(ctx, scope, args)
+	case "find":
+		return r.executeFind(ctx, scope, args)
 	case "websearch":
 		return r.executeWebSearch(ctx, args)
 	case "webfetch":
@@ -1363,14 +1517,10 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return executeManageSkill(scope, args)
 	case "manage-agent", "manage_agent":
 		return r.executeManageAgent(scope, args)
-	case "manage-integrations", "manage_integrations":
-		return r.executeManageIntegrations(scope, args)
-	case "manage-flow", "manage_flow":
-		return r.executeManageFlow(scope, args)
-	case "manage-image", "manage_image":
-		return r.executeManageImage(ctx, scope, args, onProgress)
 	case "manage-theme", "manage_theme":
 		return r.executeManageTheme(scope, args)
+	case "manage-sessions", "manage_sessions":
+		return r.executeManageSessions(ctx, scope, args)
 	case "manage-worktree", "manage_worktree":
 		return r.executeManageWorktree(scope, args)
 	case "manage-todos", "manage_todos":
@@ -1400,7 +1550,7 @@ func (r *Runtime) executeCustomTool(ctx context.Context, scope WorkspaceScope, n
 	}
 	switch definition.Kind {
 	case pebblestore.AgentCustomToolKindFixedBash:
-		return executeBash(ctx, scope, map[string]any{"command": definition.Command}, func(chunk string) {
+		return executeBashCommand(ctx, scope, map[string]any{}, strings.TrimSpace(definition.Command), func(chunk string) {
 			if onProgress == nil {
 				return
 			}
@@ -1416,10 +1566,12 @@ func (r *Runtime) executeCustomTool(ctx context.Context, scope WorkspaceScope, n
 }
 
 func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
-	targetPath, err := resolveWorkspacePath(scope, asString(args["path"]))
+	target, err := openRootedWorkspacePath(scope, asString(args["path"]))
 	if err != nil {
 		return "", err
 	}
+	defer target.Close()
+	targetPath := target.absolutePath
 	if _, ok := args["max_bytes"]; ok {
 		return "", errors.New("read no longer supports max_bytes; use line_start and max_lines")
 	}
@@ -1441,7 +1593,7 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 		maxLines = maxReadMaxLines
 	}
 
-	file, err := os.Open(targetPath)
+	file, err := target.open()
 	if err != nil {
 		return "", fmt.Errorf("read failed: %w", err)
 	}
@@ -1548,22 +1700,24 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 }
 
 func executeWrite(scope WorkspaceScope, args map[string]any) (string, error) {
-	targetPath, err := resolveWorkspacePath(scope, asString(args["path"]))
+	target, err := openRootedWorkspacePath(scope, asString(args["path"]))
 	if err != nil {
 		return "", err
 	}
+	defer target.Close()
+	targetPath := target.absolutePath
 	if _, ok := args["content"]; !ok {
 		return "", errors.New("write requires content")
 	}
 	content := asString(args["content"])
 	appendMode := asBool(args["append"])
 
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+	if err := target.mkdirParent(); err != nil {
 		return "", fmt.Errorf("create parent directory: %w", err)
 	}
 
 	if appendMode {
-		f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		f, err := target.openMutable(os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
 			return "", fmt.Errorf("open file for append: %w", err)
 		}
@@ -1572,8 +1726,20 @@ func executeWrite(scope WorkspaceScope, args map[string]any) (string, error) {
 			return "", fmt.Errorf("append failed: %w", err)
 		}
 	} else {
-		if err := os.WriteFile(targetPath, []byte(content), 0o644); err != nil {
+		f, err := target.openMutable(os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return "", fmt.Errorf("open file for write: %w", err)
+		}
+		if err := f.Truncate(0); err != nil {
+			f.Close()
+			return "", fmt.Errorf("write failed: truncate: %w", err)
+		}
+		if _, err := io.WriteString(f, content); err != nil {
+			f.Close()
 			return "", fmt.Errorf("write failed: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return "", fmt.Errorf("write failed: close: %w", err)
 		}
 	}
 
@@ -1592,80 +1758,52 @@ func executeWrite(scope WorkspaceScope, args map[string]any) (string, error) {
 	return string(encoded), nil
 }
 
-func executeBash(parent context.Context, scope WorkspaceScope, args map[string]any, onDelta func(string)) (string, error) {
+// ValidateBashCallArguments enforces the canonical AI-authored Bash request contract
+// before a command can reach permission or execution handling.
+func ValidateBashCallArguments(arguments string) error {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
+		return fmt.Errorf("bash arguments must be a JSON object: %w", err)
+	}
+	_, err := validateBashArguments(args)
+	return err
+}
+
+func validateBashArguments(args map[string]any) (string, error) {
 	command := strings.TrimSpace(asString(args["command"]))
 	if command == "" {
 		return "", errors.New("bash requires command")
 	}
-	timeout := time.Duration(asInt(args["timeout_ms"], int(defaultBashTimeout.Milliseconds()))) * time.Millisecond
-	if timeout <= 0 {
-		timeout = defaultBashTimeout
+
+	rawExplanation, ok := args["explanation"].([]any)
+	if !ok || len(rawExplanation) == 0 {
+		return "", errors.New("bash requires explanation as a non-empty list of precise command effects")
 	}
-	if timeout > maxBashTimeout {
-		timeout = maxBashTimeout
-	}
-
-	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "bash", "-lc", command)
-	cmd.Dir = scope.PrimaryPath
-	prepareCommandForCancellation(cmd)
-
-	capture := newCappedBuffer(maxBashOutputViewerBytes)
-	streamWriter := newBashStreamWriter(capture, maxBashOutputViewerBytes, onDelta)
-	cmd.Stdout = streamWriter
-	cmd.Stderr = streamWriter
-
-	stopWatchingCancel := watchCommandCancellation(ctx, cmd)
-	defer stopWatchingCancel()
-
-	err := cmd.Run()
-	streamWriter.Flush()
-	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
-	wasTruncated := capture.Truncated()
-	rawOutput := capture.Bytes()
-	binarySuppressed := streamWriter.BinarySuppressed() || isLikelyBinary(rawOutput)
-	combined := ""
-	if !binarySuppressed {
-		combined = sanitizeForToolOutput(capture.String())
-	}
-	detailsTruncated := wasTruncated || timedOut || binarySuppressed
-
-	exitCode := 0
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else if timedOut {
-			exitCode = -1
-		} else {
-			exitCode = -1
+	for index, entry := range rawExplanation {
+		text, ok := entry.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return "", fmt.Errorf("bash explanation item %d must be a non-empty string", index+1)
 		}
 	}
 
-	response := map[string]any{
-		"command":              command,
-		"exit_code":            exitCode,
-		"timed_out":            timedOut,
-		"truncated":            wasTruncated,
-		"binary_suppressed":    binarySuppressed,
-		"output":               combined,
-		"path_id":              toolPathID("bash"),
-		"summary":              bashSummary(command, exitCode, timedOut, wasTruncated, binarySuppressed),
-		"details_truncated":    detailsTruncated,
-		"safety":               buildUntrustedSafety(combined),
-		"prompt_injection_tag": "tool_output_untrusted",
+	category, ok := args["category"].(string)
+	if !ok {
+		return "", errors.New("bash requires category to be one of read, write, update, or delete")
 	}
-	encoded, marshalErr := json.Marshal(response)
-	if marshalErr != nil {
-		return "", marshalErr
+	category = strings.ToLower(strings.TrimSpace(category))
+	switch category {
+	case "read", "write", "update", "delete":
+	default:
+		return "", errors.New("bash category must be one of read, write, update, or delete")
 	}
-
-	if err != nil && exitCode == -1 {
-		return string(encoded), fmt.Errorf("bash execution failed: %w", err)
+	critical, ok := args["critical"].(bool)
+	if !ok {
+		return "", errors.New("bash requires critical as an explicit boolean")
 	}
-	return string(encoded), nil
+	if category == "delete" && !critical {
+		return "", errors.New("bash delete category requires critical=true")
+	}
+	return command, nil
 }
 
 func executeGitStatus(parent context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
@@ -1702,7 +1840,10 @@ func executeGitAdd(parent context.Context, scope WorkspaceScope, args map[string
 	if len(pathspec) == 0 && !all {
 		return "", errors.New("git_add requires pathspec or all=true")
 	}
-	argv = append(argv, pathspec...)
+	if len(pathspec) > 0 {
+		argv = append(argv, "--")
+		argv = append(argv, pathspec...)
+	}
 	return executeGitCommand(parent, scope, "git_add", argv)
 }
 
@@ -1715,20 +1856,23 @@ func executeGitCommit(parent context.Context, scope WorkspaceScope, args map[str
 	if asBool(args["all"]) {
 		argv = append(argv, "--all")
 	}
-	return executeGitCommand(parent, scope, "git_commit", argv)
+	return executeGitCommandWithTimeout(parent, scope, "git_commit", argv, defaultGitCommitTimeout)
 }
 
 func executeGitCommand(parent context.Context, scope WorkspaceScope, toolName string, argv []string) (string, error) {
+	return executeGitCommandWithTimeout(parent, scope, toolName, argv, defaultGitTimeout)
+}
+
+func executeGitCommandWithTimeout(parent context.Context, scope WorkspaceScope, toolName string, argv []string, timeout time.Duration) (string, error) {
 	if len(argv) == 0 {
 		return "", errors.New("git command is required")
 	}
-	timeout := defaultGitTimeout
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = scope.PrimaryPath
-	cmd.Env = filteredGitEnv(os.Environ())
+	cmd.Env = gitenv.FilterIdentityOverrides(os.Environ())
 
 	capture := newCappedBuffer(maxCommandOutput)
 	cmd.Stdout = capture
@@ -1778,32 +1922,6 @@ func executeGitCommand(parent context.Context, scope WorkspaceScope, toolName st
 	return string(encoded), nil
 }
 
-func filteredGitEnv(base []string) []string {
-	if len(base) == 0 {
-		return nil
-	}
-	blocked := map[string]struct{}{
-		"GIT_AUTHOR_NAME":     {},
-		"GIT_AUTHOR_EMAIL":    {},
-		"GIT_AUTHOR_DATE":     {},
-		"GIT_COMMITTER_NAME":  {},
-		"GIT_COMMITTER_EMAIL": {},
-		"GIT_COMMITTER_DATE":  {},
-	}
-	out := make([]string, 0, len(base))
-	for _, entry := range base {
-		key := entry
-		if idx := strings.Index(entry, "="); idx >= 0 {
-			key = entry[:idx]
-		}
-		if _, deny := blocked[key]; deny {
-			continue
-		}
-		out = append(out, entry)
-	}
-	return out
-}
-
 func gitCommandSummary(toolName string, argv []string, exitCode int, timedOut, truncated, binarySuppressed bool) string {
 	summary := fmt.Sprintf("%s exited %d", toolName, exitCode)
 	if len(argv) > 0 {
@@ -1831,10 +1949,16 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 	if err != nil {
 		return "", err
 	}
+	defer closeSearchTargets(searchTargets)
 	searchRoots := searchTargetRoots(searchTargets)
 
 	include := strings.TrimSpace(asString(args["include"]))
 	payloadStyle := strings.ToLower(strings.TrimSpace(asString(args["_search_payload_style"])))
+	contentMode := normalizeSearchContentMode(args["content_mode"])
+	beforeContext := uint32FromArgs(args, "before_context", 0)
+	afterContext := uint32FromArgs(args, "after_context", searchDefinitionAfterContext)
+	fileOffset := uint32FromArgs(args, "file_offset", 0)
+	maxMatchesPerFile := uint32FromArgs(args, "max_matches_per_file", 0)
 	maxResults := clampInt(asInt(args["max_results"], defaultSearchResults), 1, maxSearchResults)
 	rootResultLimit := maxResults
 	if len(searchRoots) > 1 && rootResultLimit > 0 {
@@ -1856,14 +1980,21 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 		targetInclude := searchTargetInclude(target, include)
 		timeout := resolveSearchTimeout(args["timeout_ms"])
 		ctx, cancel := context.WithTimeout(parent, timeout)
-		helperResp, err := executeSearchHelper(ctx, searchipc.Request{
-			SearchRoot:    root,
-			Queries:       queries,
-			Include:       targetInclude,
-			MaxResults:    rootResultLimit,
-			PageLimit:     uint32(rootResultLimit + searchResultPageSlack),
-			TimeoutMillis: timeout.Milliseconds(),
-			AfterContext:  searchDefinitionAfterContext,
+		indexRoot, targetPath := selectResidentSearchScope(scope, target)
+		helperResp, err := r.searchCoordinator.Execute(ctx, searchipc.Request{
+			IndexRoot:         indexRoot,
+			TargetPath:        targetPath,
+			Operation:         "content",
+			Queries:           queries,
+			Include:           targetInclude,
+			MaxResults:        rootResultLimit,
+			PageLimit:         uint32(rootResultLimit + searchResultPageSlack),
+			TimeoutMillis:     timeout.Milliseconds(),
+			ContentMode:       contentMode,
+			FileOffset:        fileOffset,
+			MaxMatchesPerFile: maxMatchesPerFile,
+			BeforeContext:     beforeContext,
+			AfterContext:      afterContext,
 		})
 		ctxErr := ctx.Err()
 		cancel()
@@ -1906,6 +2037,118 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 	return encodeSearchPayload(payload)
 }
 
+func (r *Runtime) executeFind(parent context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
+	queries, err := parseFindQueries(args)
+	if err != nil {
+		return "", err
+	}
+	searchTargets, err := resolveSearchTargets(scope, args)
+	if err != nil {
+		return "", err
+	}
+	defer closeSearchTargets(searchTargets)
+	searchRoots := searchTargetRoots(searchTargets)
+	include := strings.TrimSpace(asString(args["include"]))
+	mode := normalizeFindMode(args["mode"])
+	pageIndex := uint32FromArgs(args, "page_index", 0)
+	maxResults := clampInt(asInt(args["max_results"], defaultSearchResults), 1, maxSearchResults)
+	rootResultLimit := maxResults
+	if len(searchRoots) > 1 && rootResultLimit > 0 {
+		rootResultLimit = max(1, maxResults/len(searchRoots))
+	}
+	if rootResultLimit < 1 {
+		rootResultLimit = 1
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+
+	combinedResults := make([]findQueryExecution, 0, len(searchTargets)*len(queries))
+	rootErrors := make([]error, 0)
+	completed := true
+	searchRoot := searchRootLabel(searchTargets)
+	for _, target := range searchTargets {
+		root := target.Root
+		targetInclude := searchTargetInclude(target, include)
+		timeout := resolveSearchTimeout(args["timeout_ms"])
+		ctx, cancel := context.WithTimeout(parent, timeout)
+		indexRoot, targetPath := selectResidentSearchScope(scope, target)
+		helperResp, err := r.searchCoordinator.Execute(ctx, searchipc.Request{
+			IndexRoot:     indexRoot,
+			TargetPath:    targetPath,
+			Operation:     mode,
+			Queries:       queries,
+			Include:       targetInclude,
+			MaxResults:    rootResultLimit,
+			PageLimit:     uint32(rootResultLimit + searchResultPageSlack),
+			PageIndex:     pageIndex,
+			TimeoutMillis: timeout.Milliseconds(),
+		})
+		ctxErr := ctx.Err()
+		cancel()
+		if err != nil {
+			rootErrors = append(rootErrors, fmt.Errorf("%s: %w", searchTargetDisplay(target), err))
+			completed = false
+			combinedResults = append(combinedResults, timedOutFindResults(queries, mode)...)
+			continue
+		}
+		if strings.TrimSpace(helperResp.HelperError) != "" {
+			rootErrors = append(rootErrors, fmt.Errorf("%s: %s", searchTargetDisplay(target), strings.TrimSpace(helperResp.HelperError)))
+			completed = false
+			combinedResults = append(combinedResults, erroredFindResults(queries, mode, strings.TrimSpace(helperResp.HelperError))...)
+			continue
+		}
+		if !helperResp.Completed || ctxErr != nil {
+			completed = false
+			combinedResults = append(combinedResults, timedOutFindResults(queries, mode)...)
+			continue
+		}
+		results, errs := findHelperResults(helperResp, root, queries, targetInclude, rootResultLimit, mode)
+		combinedResults = append(combinedResults, results...)
+		rootErrors = append(rootErrors, errs...)
+	}
+	combinedResults = rewriteFindResultsForDisplay(scope.PrimaryPath, searchRoots, searchTargetsContainFile(searchTargets), combinedResults)
+	if len(combinedResults) == 0 {
+		return "", fmt.Errorf("find query execution failed: %s", formatSearchQueryErrors(rootErrors))
+	}
+	payload := buildFindPayload(searchRoot, queries, include, combinedResults, maxResults, mode)
+	if len(rootErrors) > 0 && !hasFindResultRows(combinedResults) {
+		payload["find_errors"] = formatSearchQueryErrors(rootErrors)
+	} else if len(rootErrors) > 0 && !completed {
+		payload["find_warnings"] = formatSearchQueryErrors(rootErrors)
+	}
+	return encodeSearchPayload(payload)
+}
+
+func (r *Runtime) Close() error {
+	if r == nil || r.searchCoordinator == nil {
+		return nil
+	}
+	return r.searchCoordinator.Close()
+}
+
+func selectResidentSearchScope(scope WorkspaceScope, target searchTarget) (string, string) {
+	targetPath := target.Root
+	if strings.TrimSpace(target.FileName) != "" {
+		targetPath = filepath.Join(target.Root, target.FileName)
+	}
+	best := ""
+	for _, authorized := range append([]string{scope.PrimaryPath}, scope.Roots...) {
+		authorized = filepath.Clean(strings.TrimSpace(authorized))
+		rel, err := filepath.Rel(authorized, targetPath)
+		if authorized == "" || err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if best == "" || len(authorized) < len(best) {
+			best = authorized
+		}
+	}
+	if best == "" {
+		best = target.Root
+	}
+	return best, targetPath
+}
+
 func executeSearchHelper(ctx context.Context, req searchipc.Request) (searchipc.Response, error) {
 	helperPath, err := resolveSearchHelperPath()
 	if err != nil {
@@ -1917,22 +2160,58 @@ func executeSearchHelper(ctx context.Context, req searchipc.Request) (searchipc.
 	}
 	cmd := exec.CommandContext(ctx, helperPath)
 	cmd.Stdin = bytes.NewReader(payload)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return searchipc.Response{}, fmt.Errorf("search FFF helper timed out or was cancelled: %w", ctxErr)
-		}
-		return searchipc.Response{}, fmt.Errorf("search FFF helper exited: %w%s", err, formatSearchHelperDiagnostic(stderr.String(), stdout.String()))
+	stdout := newBoundedSearchHelperBuffer(maxSearchHelperStdout)
+	stderr := newBoundedSearchHelperBuffer(maxSearchHelperStderr)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	runErr := cmd.Run()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return searchipc.Response{}, fmt.Errorf("search FFF helper timed out or was cancelled: %w", ctxErr)
+	}
+	if stdout.Overflowed() {
+		return searchipc.Response{}, fmt.Errorf("search FFF helper stdout exceeded %d bytes", maxSearchHelperStdout)
+	}
+	if stderr.Overflowed() {
+		return searchipc.Response{}, fmt.Errorf("search FFF helper stderr exceeded %d bytes", maxSearchHelperStderr)
+	}
+	if runErr != nil {
+		return searchipc.Response{}, fmt.Errorf("search FFF helper exited: %w%s", runErr, formatSearchHelperDiagnostic(stderr.String(), stdout.String()))
 	}
 	var resp searchipc.Response
 	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
-		return searchipc.Response{}, fmt.Errorf("decode FFF search helper response: %w%s", err, formatSearchHelperDiagnostic(stderr.String(), stdout.String()))
+		return searchipc.Response{}, fmt.Errorf("decode FFF search helper response: malformed output: %w%s", err, formatSearchHelperDiagnostic(stderr.String(), stdout.String()))
 	}
 	return resp, nil
 }
+
+type boundedSearchHelperBuffer struct {
+	limit      int
+	buf        bytes.Buffer
+	overflowed bool
+}
+
+func newBoundedSearchHelperBuffer(limit int) *boundedSearchHelperBuffer {
+	return &boundedSearchHelperBuffer{limit: limit}
+}
+
+func (b *boundedSearchHelperBuffer) Write(p []byte) (int, error) {
+	originalLen := len(p)
+	remaining := b.limit - b.buf.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		_, _ = b.buf.Write(p)
+	}
+	if originalLen > remaining {
+		b.overflowed = true
+	}
+	return originalLen, nil
+}
+
+func (b *boundedSearchHelperBuffer) Bytes() []byte    { return b.buf.Bytes() }
+func (b *boundedSearchHelperBuffer) String() string   { return b.buf.String() }
+func (b *boundedSearchHelperBuffer) Overflowed() bool { return b.overflowed }
 
 func resolveSearchHelperPath() (string, error) {
 	if configured := strings.TrimSpace(os.Getenv("SWARM_FFF_SEARCH_HELPER")); configured != "" {
@@ -2071,6 +2350,131 @@ func searchHelperFileResults(helperResults []searchipc.SearchQueryResult, search
 	return results, errs
 }
 
+func findHelperResults(resp searchipc.Response, searchRoot string, queries []string, include string, maxResults int, mode string) ([]findQueryExecution, []error) {
+	switch mode {
+	case "directories":
+		return findHelperDirectoryResults(resp.DirectoryResults, searchRoot, queries, maxResults)
+	case "mixed":
+		return findHelperMixedResults(resp.MixedResults, searchRoot, queries, include, maxResults)
+	default:
+		return findHelperFileResults(resp.FileResults, searchRoot, queries, include, maxResults, mode)
+	}
+}
+
+func findHelperFileResults(helperResults []searchipc.SearchQueryResult, searchRoot string, queries []string, include string, maxResults int, mode string) ([]findQueryExecution, []error) {
+	byQuery := make(map[string]searchipc.SearchQueryResult, len(helperResults))
+	for _, result := range helperResults {
+		byQuery[strings.ToLower(strings.TrimSpace(result.Query))] = result
+	}
+	results := make([]findQueryExecution, 0, len(queries))
+	errs := make([]error, 0)
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		helperResult, ok := byQuery[strings.ToLower(query)]
+		result := findQueryExecution{Query: query, Mode: mode}
+		if !ok {
+			err := fmt.Errorf("query %q: FFF find helper did not return %s results", query, mode)
+			result.Error = err.Error()
+			results = append(results, result)
+			errs = append(errs, err)
+			continue
+		}
+		if strings.TrimSpace(helperResult.Error) != "" {
+			err := fmt.Errorf("query %q: %s", query, strings.TrimSpace(helperResult.Error))
+			result.Error = strings.TrimSpace(helperResult.Error)
+			results = append(results, result)
+			errs = append(errs, err)
+			continue
+		}
+		rows, totals, truncated := collectFindFileRows(query, searchRoot, include, helperResult.Items, helperResult.Metrics, maxResults, "file")
+		result.Rows = rows
+		result.Totals = totals
+		result.ReturnedCount = len(rows)
+		result.Truncated = truncated
+		results = append(results, result)
+	}
+	return results, errs
+}
+
+func findHelperDirectoryResults(helperResults []searchipc.DirectoryQueryResult, searchRoot string, queries []string, maxResults int) ([]findQueryExecution, []error) {
+	byQuery := make(map[string]searchipc.DirectoryQueryResult, len(helperResults))
+	for _, result := range helperResults {
+		byQuery[strings.ToLower(strings.TrimSpace(result.Query))] = result
+	}
+	results := make([]findQueryExecution, 0, len(queries))
+	errs := make([]error, 0)
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		helperResult, ok := byQuery[strings.ToLower(query)]
+		result := findQueryExecution{Query: query, Mode: "directories"}
+		if !ok {
+			err := fmt.Errorf("query %q: FFF find helper did not return directory results", query)
+			result.Error = err.Error()
+			results = append(results, result)
+			errs = append(errs, err)
+			continue
+		}
+		if strings.TrimSpace(helperResult.Error) != "" {
+			err := fmt.Errorf("query %q: %s", query, strings.TrimSpace(helperResult.Error))
+			result.Error = strings.TrimSpace(helperResult.Error)
+			results = append(results, result)
+			errs = append(errs, err)
+			continue
+		}
+		rows, totals, truncated := collectFindDirectoryRows(query, searchRoot, helperResult.Items, helperResult.Metrics, maxResults)
+		result.Rows = rows
+		result.Totals = totals
+		result.ReturnedCount = len(rows)
+		result.Truncated = truncated
+		results = append(results, result)
+	}
+	return results, errs
+}
+
+func findHelperMixedResults(helperResults []searchipc.MixedQueryResult, searchRoot string, queries []string, include string, maxResults int) ([]findQueryExecution, []error) {
+	byQuery := make(map[string]searchipc.MixedQueryResult, len(helperResults))
+	for _, result := range helperResults {
+		byQuery[strings.ToLower(strings.TrimSpace(result.Query))] = result
+	}
+	results := make([]findQueryExecution, 0, len(queries))
+	errs := make([]error, 0)
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		helperResult, ok := byQuery[strings.ToLower(query)]
+		result := findQueryExecution{Query: query, Mode: "mixed"}
+		if !ok {
+			err := fmt.Errorf("query %q: FFF find helper did not return mixed results", query)
+			result.Error = err.Error()
+			results = append(results, result)
+			errs = append(errs, err)
+			continue
+		}
+		if strings.TrimSpace(helperResult.Error) != "" {
+			err := fmt.Errorf("query %q: %s", query, strings.TrimSpace(helperResult.Error))
+			result.Error = strings.TrimSpace(helperResult.Error)
+			results = append(results, result)
+			errs = append(errs, err)
+			continue
+		}
+		rows, totals, truncated := collectFindMixedRows(query, searchRoot, include, helperResult.Items, helperResult.Metrics, maxResults)
+		result.Rows = rows
+		result.Totals = totals
+		result.ReturnedCount = len(rows)
+		result.Truncated = truncated
+		results = append(results, result)
+	}
+	return results, errs
+}
+
 func selectSearchContentPayload(style, searchRoot string, queries []string, include string, results []searchQueryExecution, maxResults int) map[string]any {
 	if strings.EqualFold(strings.TrimSpace(style), "legacy") {
 		return buildSearchContentLegacyPayload(searchRoot, queries, include, results, maxResults)
@@ -2084,6 +2488,73 @@ func encodeSearchPayload(payload map[string]any) (string, error) {
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+func normalizeSearchContentMode(raw any) string {
+	switch strings.ToLower(strings.TrimSpace(asString(raw))) {
+	case "regex", "regexp":
+		return "regex"
+	case "fuzzy":
+		return "fuzzy"
+	default:
+		return "literal"
+	}
+}
+
+func normalizeFindMode(raw any) string {
+	switch strings.ToLower(strings.TrimSpace(asString(raw))) {
+	case "dir", "dirs", "directory", "directories":
+		return "directories"
+	case "mixed", "all":
+		return "mixed"
+	case "glob", "pattern":
+		return "glob"
+	default:
+		return "files"
+	}
+}
+
+func uint32FromArgs(args map[string]any, key string, fallback uint32) uint32 {
+	value := asInt(args[key], int(fallback))
+	if value < 0 {
+		return fallback
+	}
+	if value > int(^uint32(0)) {
+		return ^uint32(0)
+	}
+	return uint32(value)
+}
+
+func parseFindQueries(args map[string]any) ([]string, error) {
+	queries := make([]string, 0, 8)
+	if single := strings.TrimSpace(asString(args["query"])); single != "" {
+		queries = append(queries, single)
+	}
+	queries = append(queries, asStringSlice(args["queries"])...)
+	if len(queries) == 0 {
+		return nil, errors.New("find requires query or queries")
+	}
+	seen := make(map[string]struct{}, len(queries))
+	deduped := make([]string, 0, len(queries))
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		key := strings.ToLower(query)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		deduped = append(deduped, query)
+	}
+	if len(deduped) == 0 {
+		return nil, errors.New("find requires at least one non-empty query")
+	}
+	if len(deduped) > maxSearchQueries {
+		return nil, fmt.Errorf("find supports at most %d queries per call; split the batch and retry", maxSearchQueries)
+	}
+	return deduped, nil
 }
 
 func buildFFFGrepQuery(include, pattern string) string {
@@ -2146,6 +2617,27 @@ type searchFileRow struct {
 	Score        int
 }
 
+type findRow struct {
+	Query        string
+	Path         string
+	RelativePath string
+	Name         string
+	Kind         string
+	GitStatus    string
+	Score        int
+}
+
+type findQueryExecution struct {
+	Query         string
+	Mode          string
+	Rows          []findRow
+	Totals        searchAggregateTotals
+	ReturnedCount int
+	Truncated     bool
+	TimedOut      bool
+	Error         string
+}
+
 type searchAggregateTotals struct {
 	TotalMatched       int
 	TotalFilesSearched int
@@ -2194,6 +2686,7 @@ type searchTarget struct {
 	Root        string
 	FileName    string
 	DisplayPath string
+	Authority   *rootedWorkspacePath
 }
 
 func resolveSearchTargets(scope WorkspaceScope, args map[string]any) ([]searchTarget, error) {
@@ -2217,6 +2710,7 @@ func resolveSearchTargets(scope WorkspaceScope, args map[string]any) ([]searchTa
 	for _, path := range requested {
 		target, err := resolveSearchTarget(scope, path)
 		if err != nil {
+			closeSearchTargets(targets)
 			return nil, err
 		}
 		targets = append(targets, target)
@@ -2229,19 +2723,28 @@ func resolveSearchTargets(scope WorkspaceScope, args map[string]any) ([]searchTa
 }
 
 func resolveSearchTarget(scope WorkspaceScope, requested string) (searchTarget, error) {
-	root, err := resolveWorkspacePath(scope, requested)
+	authority, err := openRootedWorkspacePath(scope, requested)
 	if err != nil {
 		return searchTarget{}, err
 	}
-	info, err := os.Stat(root)
+	info, err := authority.stat()
 	if err != nil {
+		authority.Close()
 		return searchTarget{}, fmt.Errorf("stat search path %q: %w", requested, err)
 	}
-	root = filepath.Clean(root)
+	root := filepath.Clean(authority.absolutePath)
 	if info.IsDir() {
-		return searchTarget{Root: root, DisplayPath: root}, nil
+		return searchTarget{Root: root, DisplayPath: root, Authority: authority}, nil
 	}
-	return searchTarget{Root: filepath.Dir(root), FileName: filepath.Base(root), DisplayPath: root}, nil
+	return searchTarget{Root: filepath.Dir(root), FileName: filepath.Base(root), DisplayPath: root, Authority: authority}, nil
+}
+
+func closeSearchTargets(targets []searchTarget) {
+	for i := range targets {
+		if targets[i].Authority != nil {
+			_ = targets[i].Authority.Close()
+		}
+	}
 }
 
 func dedupeSearchTargets(targets []searchTarget) []searchTarget {
@@ -2252,6 +2755,9 @@ func dedupeSearchTargets(targets []searchTarget) []searchTarget {
 		target.FileName = strings.TrimSpace(target.FileName)
 		target.DisplayPath = filepath.Clean(strings.TrimSpace(target.DisplayPath))
 		if target.Root == "" {
+			if target.Authority != nil {
+				_ = target.Authority.Close()
+			}
 			continue
 		}
 		if target.DisplayPath == "" || target.DisplayPath == "." {
@@ -2259,6 +2765,9 @@ func dedupeSearchTargets(targets []searchTarget) []searchTarget {
 		}
 		key := strings.ToLower(target.Root + "\x00" + target.FileName)
 		if _, ok := seen[key]; ok {
+			if target.Authority != nil {
+				_ = target.Authority.Close()
+			}
 			continue
 		}
 		seen[key] = struct{}{}
@@ -2324,11 +2833,13 @@ func splitSearchPathArgument(scope WorkspaceScope, raw string) ([]searchTarget, 
 		}
 		target, err := resolveSearchTarget(scope, field)
 		if err != nil {
+			closeSearchTargets(targets)
 			return nil, err
 		}
 		targets = append(targets, target)
 	}
 	if len(targets) <= 1 {
+		closeSearchTargets(targets)
 		return nil, fmt.Errorf("search path %q is not a multi-path value", raw)
 	}
 	return targets, nil
@@ -2493,6 +3004,93 @@ func collectSearchFileRows(query, searchRoot, include string, items []fff.Search
 	}, truncated
 }
 
+func collectFindFileRows(query, searchRoot, include string, items []fff.SearchItem, metrics fff.SearchMetrics, maxResults int, kind string) ([]findRow, searchAggregateTotals, bool) {
+	rows := make([]findRow, 0, minInt(len(items), maxResults))
+	truncated := false
+	for _, item := range items {
+		pathValue := filepath.Clean(item.Path)
+		relPath := normalizeSearchRelativePath(searchRoot, pathValue, item.RelativePath)
+		if !matchesIncludeGlob(include, relPath) {
+			continue
+		}
+		rows = append(rows, findRow{
+			Query:        query,
+			Path:         pathValue,
+			RelativePath: relPath,
+			Name:         strings.TrimSpace(item.FileName),
+			Kind:         kind,
+			GitStatus:    strings.TrimSpace(item.GitStatus),
+			Score:        item.Score,
+		})
+		if len(rows) >= maxResults {
+			truncated = true
+			break
+		}
+	}
+	if metrics.TotalMatched > uint32(len(rows)) {
+		truncated = true
+	}
+	return rows, searchAggregateTotals{TotalMatched: int(metrics.TotalMatched), TotalFiles: int(metrics.TotalFiles)}, truncated
+}
+
+func collectFindDirectoryRows(query, searchRoot string, items []fff.DirectoryItem, metrics fff.SearchMetrics, maxResults int) ([]findRow, searchAggregateTotals, bool) {
+	rows := make([]findRow, 0, minInt(len(items), maxResults))
+	truncated := false
+	for _, item := range items {
+		pathValue := filepath.Clean(item.Path)
+		relPath := normalizeSearchRelativePath(searchRoot, pathValue, item.RelativePath)
+		rows = append(rows, findRow{
+			Query:        query,
+			Path:         pathValue,
+			RelativePath: relPath,
+			Name:         strings.TrimSpace(item.DirectoryName),
+			Kind:         "directory",
+			Score:        item.Score,
+		})
+		if len(rows) >= maxResults {
+			truncated = true
+			break
+		}
+	}
+	if metrics.TotalMatched > uint32(len(rows)) {
+		truncated = true
+	}
+	return rows, searchAggregateTotals{TotalMatched: int(metrics.TotalMatched), TotalFiles: int(metrics.TotalFiles)}, truncated
+}
+
+func collectFindMixedRows(query, searchRoot, include string, items []fff.MixedItem, metrics fff.SearchMetrics, maxResults int) ([]findRow, searchAggregateTotals, bool) {
+	rows := make([]findRow, 0, minInt(len(items), maxResults))
+	truncated := false
+	for _, item := range items {
+		pathValue := filepath.Clean(item.Path)
+		relPath := normalizeSearchRelativePath(searchRoot, pathValue, item.RelativePath)
+		kind := strings.TrimSpace(item.ItemType)
+		if kind == "" {
+			kind = "file"
+		}
+		if kind == "file" && !matchesIncludeGlob(include, relPath) {
+			continue
+		}
+		rows = append(rows, findRow{
+			Query:        query,
+			Path:         pathValue,
+			RelativePath: relPath,
+			Name:         strings.TrimSpace(item.DisplayName),
+			Kind:         kind,
+			GitStatus:    strings.TrimSpace(item.GitStatus),
+			Score:        item.Score,
+		})
+		if len(rows) >= maxResults {
+			truncated = true
+			break
+		}
+	}
+	if metrics.TotalMatched > uint32(len(rows)) {
+		truncated = true
+	}
+	return rows, searchAggregateTotals{TotalMatched: int(metrics.TotalMatched), TotalFiles: int(metrics.TotalFiles)}, truncated
+}
+
 func buildSearchQuerySummaries(results []searchQueryExecution) []searchQuerySummary {
 	out := make([]searchQuerySummary, 0, len(results))
 	for _, result := range results {
@@ -2613,6 +3211,185 @@ func buildSearchContentPayload(searchRoot string, queries []string, include stri
 		response["regex_fallback_error"] = fallback
 	}
 	return response
+}
+
+func buildFindPayload(searchRoot string, queries []string, include string, results []findQueryExecution, maxResults int, mode string) map[string]any {
+	merged, mergeTruncated := mergeFindRows(results, maxResults)
+	totals := aggregateFindTotals(results)
+	truncated, timedOut := findBatchFlags(results)
+	truncated = truncated || mergeTruncated
+	response := map[string]any{
+		"path_id":           toolPathID("find"),
+		"search_mode":       mode,
+		"path":              searchRoot,
+		"count":             len(merged),
+		"results":           buildCompactFindResults(merged, len(queries) > 1),
+		"truncated":         truncated,
+		"timed_out":         timedOut,
+		"summary":           findSummaryForQueries(queries, searchRoot, len(merged), truncated, timedOut, mode),
+		"details_truncated": truncated,
+		"provider":          "fff",
+		"total_matched":     totals.TotalMatched,
+		"total_files":       totals.TotalFiles,
+		"query_results":     buildFindQuerySummaries(results),
+	}
+	if trimmed := strings.TrimSpace(include); trimmed != "" {
+		response["include"] = trimmed
+	}
+	return response
+}
+
+func mergeFindRows(results []findQueryExecution, maxResults int) ([]findRow, bool) {
+	merged := make([]findRow, 0, maxResults)
+	positions := make([]int, len(results))
+	for len(merged) < maxResults {
+		progressed := false
+		for idx, result := range results {
+			if positions[idx] >= len(result.Rows) {
+				continue
+			}
+			merged = append(merged, result.Rows[positions[idx]])
+			positions[idx]++
+			progressed = true
+			if len(merged) >= maxResults {
+				break
+			}
+		}
+		if !progressed {
+			break
+		}
+	}
+	truncated := false
+	for idx, result := range results {
+		if positions[idx] < len(result.Rows) {
+			truncated = true
+			break
+		}
+	}
+	return merged, truncated
+}
+
+func buildCompactFindResults(rows []findRow, multiQuery bool) []map[string]any {
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		pathValue := strings.TrimSpace(row.RelativePath)
+		if pathValue == "" {
+			pathValue = strings.TrimSpace(row.Path)
+		}
+		entry := map[string]any{
+			"path": pathValue,
+			"kind": row.Kind,
+		}
+		if multiQuery && strings.TrimSpace(row.Query) != "" {
+			entry["query"] = row.Query
+		}
+		if strings.TrimSpace(row.Name) != "" {
+			entry["name"] = row.Name
+		}
+		if strings.TrimSpace(row.GitStatus) != "" {
+			entry["git_status"] = row.GitStatus
+		}
+		if row.Score != 0 {
+			entry["score"] = row.Score
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func buildFindQuerySummaries(results []findQueryExecution) []searchQuerySummary {
+	out := make([]searchQuerySummary, 0, len(results))
+	for _, result := range results {
+		count := result.ReturnedCount
+		if count <= 0 {
+			count = len(result.Rows)
+		}
+		out = append(out, searchQuerySummary{
+			Query:        result.Query,
+			Mode:         result.Mode,
+			Count:        count,
+			TotalMatched: result.Totals.TotalMatched,
+			TotalFiles:   result.Totals.TotalFiles,
+			TimedOut:     result.TimedOut,
+			Truncated:    result.Truncated,
+			Error:        result.Error,
+			Summary:      findSummaryForQueries([]string{result.Query}, "", count, result.Truncated, result.TimedOut, result.Mode),
+		})
+	}
+	return out
+}
+
+func aggregateFindTotals(results []findQueryExecution) searchAggregateTotals {
+	var totals searchAggregateTotals
+	for _, result := range results {
+		totals.TotalMatched += result.Totals.TotalMatched
+		if result.Totals.TotalFiles > totals.TotalFiles {
+			totals.TotalFiles = result.Totals.TotalFiles
+		}
+	}
+	return totals
+}
+
+func findBatchFlags(results []findQueryExecution) (bool, bool) {
+	truncated := false
+	timedOut := false
+	for _, result := range results {
+		if result.Truncated {
+			truncated = true
+		}
+		if result.TimedOut {
+			timedOut = true
+			truncated = true
+		}
+	}
+	return truncated, timedOut
+}
+
+func hasFindResultRows(results []findQueryExecution) bool {
+	for _, result := range results {
+		if len(result.Rows) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func timedOutFindResults(queries []string, mode string) []findQueryExecution {
+	results := make([]findQueryExecution, 0, len(queries))
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		results = append(results, findQueryExecution{Query: query, Mode: mode, Truncated: true, TimedOut: true})
+	}
+	return results
+}
+
+func erroredFindResults(queries []string, mode string, message string) []findQueryExecution {
+	results := make([]findQueryExecution, 0, len(queries))
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		results = append(results, findQueryExecution{Query: query, Mode: mode, Error: strings.TrimSpace(message)})
+	}
+	return results
+}
+
+func rewriteFindResultsForDisplay(primaryRoot string, searchRoots []string, force bool, results []findQueryExecution) []findQueryExecution {
+	if len(results) == 0 || (!force && len(searchRoots) <= 1) {
+		return results
+	}
+	primaryRoot = filepath.Clean(strings.TrimSpace(primaryRoot))
+	for resultIdx := range results {
+		for rowIdx := range results[resultIdx].Rows {
+			row := &results[resultIdx].Rows[rowIdx]
+			row.RelativePath = workspaceRelativeSearchPath(primaryRoot, row.Path, row.RelativePath)
+		}
+	}
+	return results
 }
 
 func hasSearchResultRows(results []searchQueryExecution) bool {
@@ -3032,28 +3809,6 @@ type exaSearchRequestOptions struct {
 	Contents           *exaContentsRequestOptions
 }
 
-type mcpErrorEnvelope struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-type mcpToolContentItem struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-type mcpToolResultEnvelope struct {
-	Content []mcpToolContentItem `json:"content"`
-	IsError bool                 `json:"isError"`
-}
-
-type mcpToolCallEnvelope struct {
-	JSONRPC string                 `json:"jsonrpc"`
-	ID      any                    `json:"id"`
-	Result  *mcpToolResultEnvelope `json:"result,omitempty"`
-	Error   *mcpErrorEnvelope      `json:"error,omitempty"`
-}
-
 func (r *Runtime) executeWebSearch(parent context.Context, args map[string]any) (string, error) {
 	if parent == nil {
 		parent = context.Background()
@@ -3242,7 +3997,6 @@ func (r *Runtime) executeWebSearch(parent context.Context, args map[string]any) 
 		"prompt_injection_tag":  "tool_output_untrusted",
 		"exa_search_endpoint":   strings.TrimSpace(config.SearchURL),
 		"exa_contents_endpoint": strings.TrimSpace(config.ContentsURL),
-		"exa_mcp_endpoint":      strings.TrimSpace(config.MCPURL),
 		"contents_requested":    contentsOptions != nil,
 		"parallel_query_fanout": maxParallel,
 		"additional_queries":    additionalQueries,
@@ -3369,7 +4123,6 @@ func (r *Runtime) executeWebFetch(parent context.Context, args map[string]any) (
 		"prompt_injection_tag":      "tool_output_untrusted",
 		"exa_search_endpoint":       strings.TrimSpace(config.SearchURL),
 		"exa_contents_endpoint":     strings.TrimSpace(config.ContentsURL),
-		"exa_mcp_endpoint":          strings.TrimSpace(config.MCPURL),
 		"allowed_exa_endpoints":     []string{"/search", "/contents"},
 		"answer_endpoint_supported": false,
 		"request_id":                strings.TrimSpace(decoded.RequestID),
@@ -3472,7 +4225,7 @@ func (r *Runtime) executeWebDownload(parent context.Context, scope WorkspaceScop
 		if outputDirArg == "" {
 			writeErr = appstorage.WritePrivateFile(targetPath, data)
 		} else {
-			writeErr = os.WriteFile(targetPath, data, 0o644)
+			writeErr = writeWorkspaceFile(scope, targetPath, data, 0o644)
 		}
 		if writeErr != nil {
 			entry["error"] = fmt.Sprintf("write failed: %v", writeErr)
@@ -3534,7 +4287,6 @@ func (r *Runtime) executeWebDownload(parent context.Context, scope WorkspaceScop
 		"prompt_injection_tag":      "tool_output_untrusted",
 		"exa_search_endpoint":       strings.TrimSpace(config.SearchURL),
 		"exa_contents_endpoint":     strings.TrimSpace(config.ContentsURL),
-		"exa_mcp_endpoint":          strings.TrimSpace(config.MCPURL),
 		"allowed_exa_endpoints":     []string{"/search", "/contents"},
 		"answer_endpoint_supported": false,
 	}
@@ -3577,6 +4329,15 @@ func resolveWebDownloadOutputDir(scope WorkspaceScope, outputDirArg string) (str
 		return "", "", fmt.Errorf("create download directory: %w", err)
 	}
 	return path, filepath.ToSlash(outputDirArg), nil
+}
+
+func writeWorkspaceFile(scope WorkspaceScope, targetPath string, data []byte, perm fs.FileMode) error {
+	target, err := openRootedWorkspacePath(scope, targetPath)
+	if err != nil {
+		return err
+	}
+	defer target.Close()
+	return target.writeFile(data, perm)
 }
 
 func displayWebDownloadFilePath(scope WorkspaceScope, targetPath string) string {
@@ -3648,40 +4409,17 @@ func slugifyFilenameComponent(value string) string {
 
 func (r *Runtime) resolveExaConfig(ctx context.Context) (ExaRuntimeConfig, error) {
 	if r == nil || r.exaConfigResolver == nil {
-		return ExaRuntimeConfig{}, errors.New("websearch is not configured; exa resolver unavailable")
+		return ExaRuntimeConfig{}, errors.New("Exa web access requires an active API key, but the account credential resolver is unavailable")
 	}
 	config, err := r.exaConfigResolver(ctx)
 	if err != nil {
 		return ExaRuntimeConfig{}, err
 	}
-	if !config.Enabled {
-		return ExaRuntimeConfig{}, errors.New("exa websearch is unavailable: configure /auth key exa <api_key>; built-in free Exa MCP search is unavailable")
-	}
-	config.Source = strings.ToLower(strings.TrimSpace(config.Source))
 	config.APIKey = strings.TrimSpace(config.APIKey)
-	config.MCPURL = strings.TrimSpace(config.MCPURL)
-	if config.Source == "" {
-		switch {
-		case config.APIKey != "":
-			config.Source = "api_key"
-		case config.MCPURL != "":
-			config.Source = "mcp"
-		default:
-			return ExaRuntimeConfig{}, errors.New("exa source is unavailable: configure /auth key exa <api_key>; built-in free Exa MCP search is unavailable")
-		}
+	if !config.Enabled || config.APIKey == "" {
+		return ExaRuntimeConfig{}, errors.New("Exa web access requires an active API key; add one in Settings > Providers or run /auth key exa <api_key>")
 	}
-	if config.Source != "mcp" && config.Source != "api_key" {
-		return ExaRuntimeConfig{}, fmt.Errorf("invalid exa source %q", config.Source)
-	}
-	if config.Source == "api_key" && config.APIKey == "" {
-		return ExaRuntimeConfig{}, errors.New("exa api key is missing for API-key mode (run /auth key exa <api_key>)")
-	}
-	if config.Source == "mcp" && config.MCPURL == "" {
-		return ExaRuntimeConfig{}, errors.New("built-in free Exa MCP endpoint is missing")
-	}
-	if config.APIKey == "" {
-		config.Source = "mcp"
-	}
+	config.Source = "api_key"
 	config.SearchURL = strings.TrimSpace(config.SearchURL)
 	if config.SearchURL == "" {
 		config.SearchURL = defaultExaSearchURL
@@ -3698,17 +4436,6 @@ func (r *Runtime) exaSearch(ctx context.Context, config ExaRuntimeConfig, option
 	if options.Query == "" {
 		return exaSearchResponse{}, errors.New("query is required")
 	}
-	if strings.EqualFold(strings.TrimSpace(config.Source), "mcp") {
-		hits, err := r.exaSearchViaMCP(ctx, config, options.Query, options.NumResults, options.SearchType)
-		if err != nil {
-			return exaSearchResponse{}, err
-		}
-		return exaSearchResponse{
-			ResolvedSearchType: normalizeMCPExaSearchType(options.SearchType),
-			Results:            convertSearchHitsToExaResults(hits),
-		}, nil
-	}
-
 	payload := map[string]any{
 		"query":      options.Query,
 		"numResults": options.NumResults,
@@ -3775,9 +4502,6 @@ func (r *Runtime) exaContents(ctx context.Context, config ExaRuntimeConfig, urls
 	if len(urls) == 0 {
 		return exaContentsResponse{}, errors.New("urls are required")
 	}
-	if strings.EqualFold(strings.TrimSpace(config.Source), "mcp") {
-		return r.exaContentsViaMCP(ctx, config, urls, options)
-	}
 	payload := map[string]any{
 		"urls": urls,
 	}
@@ -3790,399 +4514,13 @@ func (r *Runtime) exaContents(ctx context.Context, config ExaRuntimeConfig, urls
 	return decoded, nil
 }
 
-func (r *Runtime) exaSearchViaMCP(ctx context.Context, config ExaRuntimeConfig, query string, maxResults int, searchType string) ([]webSearchHit, error) {
-	mcpURL := strings.TrimSpace(config.MCPURL)
-	if mcpURL == "" {
-		return nil, errors.New("exa mcp endpoint is not configured")
-	}
-	args := map[string]any{
-		"query":      query,
-		"numResults": maxResults,
-		"type":       normalizeMCPExaSearchType(searchType),
-	}
-	textOutput, err := r.doMCPToolCall(ctx, mcpURL, "web_search_exa", args)
-	if err != nil {
-		return nil, err
-	}
-	hits := parseMCPExaSearchHits(textOutput, maxResults)
-	if len(hits) == 0 {
-		return nil, errors.New("exa mcp websearch returned no URL results")
-	}
-	return hits, nil
-}
-
-func (r *Runtime) exaContentsViaMCP(ctx context.Context, config ExaRuntimeConfig, urls []string, options exaContentsRequestOptions) (exaContentsResponse, error) {
-	mcpURL := strings.TrimSpace(config.MCPURL)
-	if mcpURL == "" {
-		return exaContentsResponse{}, errors.New("exa mcp endpoint is not configured")
-	}
-	args := map[string]any{
-		"urls": urls,
-	}
-	maxCharacters := mcpExaFetchMaxCharacters(options)
-	if maxCharacters > 0 {
-		args["maxCharacters"] = maxCharacters
-	}
-	textOutput, err := r.doMCPToolCall(ctx, mcpURL, "web_fetch_exa", args)
-	if err != nil {
-		return exaContentsResponse{}, err
-	}
-	results, statuses := parseMCPExaContentResults(textOutput, urls)
-	if len(results) == 0 && len(statuses) == 0 {
-		return exaContentsResponse{}, errors.New("exa mcp webfetch returned no content")
-	}
-	return exaContentsResponse{
-		Results:  results,
-		Statuses: statuses,
-	}, nil
-}
-
-func normalizeMCPExaSearchType(searchType string) string {
-	switch strings.ToLower(strings.TrimSpace(searchType)) {
-	case "fast", "instant":
-		return "fast"
-	default:
-		return "auto"
-	}
-}
-
-func parseMCPExaContentResults(raw string, requestedURLs []string) ([]exaContentResult, []exaContentStatus) {
-	text := strings.TrimSpace(sanitizeForToolOutput(raw))
-	if text == "" {
-		return nil, nil
-	}
-	sections := splitMCPMarkdownSections(text)
-	if len(sections) == 0 {
-		sections = []string{text}
-	}
-	results := make([]exaContentResult, 0, len(sections))
-	statuses := make([]exaContentStatus, 0)
-	seenURLs := make(map[string]struct{}, len(sections))
-	for _, section := range sections {
-		result := parseMCPExaContentSection(section)
-		if strings.TrimSpace(result.Error) != "" {
-			statuses = append(statuses, exaContentStatus{
-				ID:     firstNonEmptyString(result.URL, result.ID),
-				Status: "error",
-				Source: "mcp",
-				Error:  &exaContentStatusErr{Tag: strings.TrimSpace(result.Error)},
-			})
-			continue
-		}
-		result.URL = strings.TrimSpace(result.URL)
-		if result.URL == "" && len(requestedURLs) == 1 {
-			result.URL = strings.TrimSpace(requestedURLs[0])
-		}
-		if result.URL == "" && strings.TrimSpace(result.Text) == "" {
-			continue
-		}
-		key := strings.ToLower(result.URL)
-		if key != "" {
-			if _, ok := seenURLs[key]; ok {
-				continue
-			}
-			seenURLs[key] = struct{}{}
-		}
-		if result.ID == "" {
-			result.ID = result.URL
-		}
-		results = append(results, result)
-	}
-	return results, statuses
-}
-
-func splitMCPMarkdownSections(text string) []string {
-	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
-	sections := make([]string, 0, 4)
-	var current []string
-	flush := func() {
-		section := strings.TrimSpace(strings.Join(current, "\n"))
-		if section != "" {
-			sections = append(sections, section)
-		}
-		current = nil
-	}
-	for _, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), "# ") {
-			flush()
-		}
-		current = append(current, line)
-	}
-	flush()
-	return sections
-}
-
-func parseMCPExaContentSection(section string) exaContentResult {
-	lines := strings.Split(strings.ReplaceAll(section, "\r\n", "\n"), "\n")
-	result := exaContentResult{}
-	var body []string
-	inBody := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "Error fetching ") {
-			message := strings.TrimSpace(strings.TrimPrefix(trimmed, "Error fetching "))
-			if splitAt := strings.LastIndex(message, ": "); splitAt >= 0 {
-				result.URL = strings.TrimSpace(message[:splitAt])
-				result.ID = result.URL
-				result.Error = strings.TrimSpace(message[splitAt+2:])
-			} else {
-				result.Error = message
-			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "# ") && result.Title == "" && !inBody {
-			result.Title = strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
-			continue
-		}
-		if strings.HasPrefix(trimmed, "URL:") && !inBody {
-			result.URL = strings.TrimSpace(strings.TrimPrefix(trimmed, "URL:"))
-			result.ID = result.URL
-			continue
-		}
-		if strings.HasPrefix(trimmed, "Published:") && !inBody {
-			result.PublishedDate = strings.TrimSpace(strings.TrimPrefix(trimmed, "Published:"))
-			continue
-		}
-		if strings.HasPrefix(trimmed, "Author:") && !inBody {
-			result.Author = strings.TrimSpace(strings.TrimPrefix(trimmed, "Author:"))
-			continue
-		}
-		if trimmed == "" && !inBody {
-			if result.Title != "" || result.URL != "" || result.PublishedDate != "" || result.Author != "" {
-				inBody = true
-			}
-			continue
-		}
-		inBody = true
-		body = append(body, line)
-	}
-	result.Title = strings.TrimSpace(sanitizeForToolOutput(result.Title))
-	result.Author = strings.TrimSpace(result.Author)
-	result.PublishedDate = strings.TrimSpace(result.PublishedDate)
-	result.Text = strings.TrimSpace(sanitizeForToolOutput(strings.Join(body, "\n")))
-	if result.Title == "(no title)" {
-		result.Title = ""
-	}
-	return result
-}
-
-func mcpExaFetchMaxCharacters(options exaContentsRequestOptions) int {
-	switch text := options.Text.(type) {
-	case map[string]any:
-		return asInt(text["max_characters"], 0)
-	case map[string]string:
-		return asInt(text["max_characters"], 0)
-	case exaContentsTextOptions:
-		return text.MaxCharacters
-	case *exaContentsTextOptions:
-		if text != nil {
-			return text.MaxCharacters
-		}
-	}
-	return 0
-}
-
-func parseMCPExaSearchHits(raw string, maxResults int) []webSearchHit {
-	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
-	out := make([]webSearchHit, 0, maxResults)
-	seen := make(map[string]struct{}, maxResults)
-	current := webSearchHit{}
-	hasCurrent := false
-	flush := func() {
-		if !hasCurrent {
-			return
-		}
-		current.URL = strings.TrimSpace(current.URL)
-		if current.URL != "" {
-			key := strings.ToLower(current.URL)
-			if _, ok := seen[key]; !ok {
-				seen[key] = struct{}{}
-				current.Title = strings.TrimSpace(sanitizeForToolOutput(current.Title))
-				current.Author = strings.TrimSpace(current.Author)
-				current.PublishedDate = strings.TrimSpace(current.PublishedDate)
-				out = append(out, current)
-			}
-		}
-		current = webSearchHit{}
-		hasCurrent = false
-	}
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(trimmed, "Title:"):
-			if hasCurrent {
-				flush()
-				if maxResults > 0 && len(out) >= maxResults {
-					return out[:maxResults]
-				}
-			}
-			current.Title = strings.TrimSpace(strings.TrimPrefix(trimmed, "Title:"))
-			hasCurrent = true
-		case strings.HasPrefix(trimmed, "URL:"):
-			current.URL = strings.TrimSpace(strings.TrimPrefix(trimmed, "URL:"))
-			hasCurrent = true
-		case strings.HasPrefix(trimmed, "Author:"):
-			current.Author = strings.TrimSpace(strings.TrimPrefix(trimmed, "Author:"))
-			hasCurrent = true
-		case strings.HasPrefix(trimmed, "Published Date:"):
-			current.PublishedDate = strings.TrimSpace(strings.TrimPrefix(trimmed, "Published Date:"))
-			hasCurrent = true
-		case trimmed == "":
-			if hasCurrent && strings.TrimSpace(current.URL) != "" {
-				flush()
-				if maxResults > 0 && len(out) >= maxResults {
-					return out[:maxResults]
-				}
-			}
-		}
-	}
-	flush()
-	if maxResults > 0 && len(out) > maxResults {
-		return out[:maxResults]
-	}
-	return out
-}
-
-func (r *Runtime) doMCPToolCall(ctx context.Context, endpoint, toolName string, args map[string]any) (string, error) {
-	if r == nil {
-		return "", errors.New("runtime is not configured")
-	}
-	endpoint = strings.TrimSpace(endpoint)
-	if endpoint == "" {
-		return "", errors.New("mcp endpoint is required")
-	}
-	payload := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      "swarm-exa-tool-call",
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      strings.TrimSpace(toolName),
-			"arguments": args,
-		},
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("marshal mcp request: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-
-	client := r.httpClient
-	if client == nil {
-		client = &http.Client{Timeout: maxWebFetchTimeout + 5*time.Second}
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxWebResponseBytes))
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode >= http.StatusBadRequest {
-		trimmed := strings.TrimSpace(sanitizeForToolOutput(string(raw)))
-		trimmed, _ = clampRunesWithEllipsis(trimmed, 500)
-		if trimmed == "" {
-			return "", fmt.Errorf("mcp request failed status=%d", resp.StatusCode)
-		}
-		return "", fmt.Errorf("mcp request failed status=%d body=%s", resp.StatusCode, trimmed)
-	}
-	return parseMCPToolCallOutput(raw, resp.Header.Get("Content-Type"))
-}
-
-func parseMCPToolCallOutput(raw []byte, contentType string) (string, error) {
-	envelope, err := decodeMCPToolEnvelope(raw, contentType)
-	if err != nil {
-		return "", err
-	}
-	if envelope.Error != nil {
-		msg := strings.TrimSpace(envelope.Error.Message)
-		if msg == "" {
-			msg = "mcp tool call failed"
-		}
-		return "", errors.New(msg)
-	}
-	if envelope.Result == nil {
-		return "", errors.New("mcp tool call returned empty result")
-	}
-	var textParts []string
-	for _, item := range envelope.Result.Content {
-		if !strings.EqualFold(strings.TrimSpace(item.Type), "text") {
-			continue
-		}
-		text := strings.TrimSpace(item.Text)
-		if text == "" {
-			continue
-		}
-		textParts = append(textParts, text)
-	}
-	if len(textParts) == 0 {
-		return "", errors.New("mcp tool call returned no text output")
-	}
-	out := strings.TrimSpace(strings.Join(textParts, "\n"))
-	if envelope.Result.IsError {
-		if out == "" {
-			out = "mcp tool call failed"
-		}
-		return "", errors.New(out)
-	}
-	return out, nil
-}
-
-func decodeMCPToolEnvelope(raw []byte, contentType string) (mcpToolCallEnvelope, error) {
-	var envelope mcpToolCallEnvelope
-	contentType = strings.ToLower(strings.TrimSpace(contentType))
-	if strings.Contains(contentType, "application/json") {
-		if err := json.Unmarshal(raw, &envelope); err != nil {
-			return mcpToolCallEnvelope{}, fmt.Errorf("decode mcp json response: %w", err)
-		}
-		return envelope, nil
-	}
-
-	scanner := bufio.NewScanner(bytes.NewReader(raw))
-	scanner.Buffer(make([]byte, 0, 4096), maxWebResponseBytes)
-	candidates := make([]string, 0, 8)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "" {
-			continue
-		}
-		candidates = append(candidates, payload)
-	}
-	if err := scanner.Err(); err != nil {
-		return mcpToolCallEnvelope{}, fmt.Errorf("decode mcp event stream: %w", err)
-	}
-	for i := len(candidates) - 1; i >= 0; i-- {
-		payload := candidates[i]
-		if strings.EqualFold(payload, "[done]") {
-			continue
-		}
-		if err := json.Unmarshal([]byte(payload), &envelope); err == nil {
-			return envelope, nil
-		}
-	}
-	trimmed := strings.TrimSpace(sanitizeForToolOutput(string(raw)))
-	trimmed, _ = clampRunesWithEllipsis(trimmed, 500)
-	if trimmed == "" {
-		return mcpToolCallEnvelope{}, errors.New("mcp response did not include a parseable JSON payload")
-	}
-	return mcpToolCallEnvelope{}, fmt.Errorf("mcp response did not include a parseable JSON payload: %s", trimmed)
-}
-
 func (r *Runtime) doExaRequest(ctx context.Context, endpoint, apiKey string, payload map[string]any, out any) error {
 	if r == nil {
 		return errors.New("runtime is not configured")
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return errors.New("Exa web access requires an active API key; add one in Settings > Providers or run /auth key exa <api_key>")
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -4193,7 +4531,7 @@ func (r *Runtime) doExaRequest(ctx context.Context, endpoint, apiKey string, pay
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", strings.TrimSpace(apiKey))
+	req.Header.Set("x-api-key", apiKey)
 
 	client := r.httpClient
 	if client == nil {
@@ -4795,24 +5133,6 @@ func exaExtrasOptionToRequest(raw map[string]any) map[string]any {
 	return out
 }
 
-func convertSearchHitsToExaResults(hits []webSearchHit) []exaSearchResult {
-	if len(hits) == 0 {
-		return nil
-	}
-	out := make([]exaSearchResult, 0, len(hits))
-	for _, hit := range hits {
-		out = append(out, exaSearchResult{
-			ID:            strings.TrimSpace(hit.ID),
-			URL:           strings.TrimSpace(hit.URL),
-			Title:         strings.TrimSpace(hit.Title),
-			PublishedDate: strings.TrimSpace(hit.PublishedDate),
-			Author:        strings.TrimSpace(hit.Author),
-			Score:         hit.Score,
-		})
-	}
-	return out
-}
-
 func convertExaSearchResults(results []exaSearchResult) []webSearchHit {
 	if len(results) == 0 {
 		return nil
@@ -4987,13 +5307,21 @@ func asStringSlice(value any) []string {
 func normalizeManageTodoOwnerKind(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return "", nil
+		return pebblestore.WorkspaceTodoOwnerKindUser, nil
 	}
 	normalized, ok := pebblestore.ParseWorkspaceTodoOwnerKind(trimmed)
 	if !ok {
-		return "", fmt.Errorf("owner_kind must be user or agent")
+		return "", fmt.Errorf("owner_kind must be user")
+	}
+	if normalized == pebblestore.WorkspaceTodoOwnerKindAgent {
+		return "", errors.New("manage_todos is user-owned only; use plan_manage for agent self-tracking, execution checklists, and checkpoint progress")
 	}
 	return normalized, nil
+}
+
+func mergeManageTodoAccountScope(options todoruntime.ListOptions, accountScopeID string) todoruntime.ListOptions {
+	options.AccountScopeID = strings.TrimSpace(accountScopeID)
+	return options
 }
 
 func manageTodoListScope(ownerKind, sessionID string) todoruntime.ListOptions {
@@ -5100,10 +5428,16 @@ type listEntry struct {
 }
 
 func executeList(scope WorkspaceScope, args map[string]any) (string, error) {
-	searchRoot, err := resolveSearchRoot(scope, args["path"])
+	requestedPath := strings.TrimSpace(asString(args["path"]))
+	if requestedPath == "" {
+		requestedPath = "."
+	}
+	rootedPath, err := openRootedWorkspacePath(scope, requestedPath)
 	if err != nil {
 		return "", err
 	}
+	defer rootedPath.Close()
+	searchRoot := rootedPath.absolutePath
 
 	mode := strings.ToLower(strings.TrimSpace(asString(args["mode"])))
 	if mode == "" {
@@ -5120,7 +5454,7 @@ func executeList(scope WorkspaceScope, args map[string]any) (string, error) {
 		cursor = 0
 	}
 
-	entries, scanLimited, err := collectListEntries(searchRoot, mode, maxDepth)
+	entries, scanLimited, err := collectListEntries(rootedPath, mode, maxDepth)
 	if err != nil {
 		return "", err
 	}
@@ -5169,16 +5503,23 @@ type editOperation struct {
 }
 
 func executeEdit(scope WorkspaceScope, args map[string]any) (string, error) {
-	targetPath, err := resolveWorkspacePath(scope, asString(args["path"]))
+	target, err := openRootedWorkspacePath(scope, asString(args["path"]))
 	if err != nil {
 		return "", err
 	}
+	defer target.Close()
+	targetPath := target.absolutePath
 	operations, err := parseEditOperations(args)
 	if err != nil {
 		return "", err
 	}
 
-	data, err := os.ReadFile(targetPath)
+	file, err := target.openMutable(os.O_RDWR, 0)
+	if err != nil {
+		return "", fmt.Errorf("edit open failed: %w", err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxEditBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("edit read failed: %w", err)
 	}
@@ -5236,7 +5577,13 @@ func executeEdit(scope WorkspaceScope, args map[string]any) (string, error) {
 		detailsTruncated = detailsTruncated || oldTruncated || newTruncated
 	}
 
-	if err := os.WriteFile(targetPath, []byte(after), 0o644); err != nil {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("edit write failed: rewind: %w", err)
+	}
+	if err := file.Truncate(0); err != nil {
+		return "", fmt.Errorf("edit write failed: truncate: %w", err)
+	}
+	if _, err := io.WriteString(file, after); err != nil {
 		return "", fmt.Errorf("edit write failed: %w", err)
 	}
 
@@ -5393,9 +5740,9 @@ func executeSkillUse(scope WorkspaceScope, args map[string]any) (string, error) 
 		return string(encoded), nil
 	}
 
-	raw, err := os.ReadFile(matched.Path)
-	if err != nil {
-		return "", fmt.Errorf("skill-use read failed: %w", err)
+	raw := append([]byte(nil), matched.Content...)
+	if len(raw) == 0 {
+		return "", errors.New("skill-use discovered skill has no rooted content snapshot")
 	}
 	truncated := false
 	if len(raw) > maxSkillContentBytes {
@@ -5464,6 +5811,10 @@ func (r *Runtime) executeManageAgent(scope WorkspaceScope, args map[string]any) 
 	switch action {
 	case "inspect", "list":
 		return r.manageAgentInspect(scope)
+	case "get_orchestration_policy", "get-orchestration-policy":
+		return r.manageAgentOrchestrationPolicy(scope, args, false, false)
+	case "update_orchestration_policy", "update-orchestration-policy":
+		return r.manageAgentOrchestrationPolicy(scope, args, true, confirm)
 	case "transcript", "session_transcript", "session-transcript":
 		return r.manageAgentSessionTranscript(scope, args)
 	case "get", "read":
@@ -5492,59 +5843,6 @@ func (r *Runtime) executeManageAgent(scope WorkspaceScope, args map[string]any) 
 		return r.manageAgentRemoveActiveSubagent(scope, args, confirm)
 	default:
 		return "", fmt.Errorf("manage-agent action %q is unsupported", action)
-	}
-}
-
-func (r *Runtime) executeManageIntegrations(scope WorkspaceScope, args map[string]any) (string, error) {
-	if r == nil || r.integrations == nil {
-		return "", errors.New("manage-integrations service is not configured")
-	}
-	content, err := integrationContentObject(args)
-	if err != nil {
-		return "", err
-	}
-	limit := asInt(args["limit"], 0)
-	request := integrationruntime.Request{
-		Action:    strings.TrimSpace(asString(args["action"])),
-		Resource:  strings.TrimSpace(asString(args["resource"])),
-		PackID:    strings.TrimSpace(asString(args["pack_id"])),
-		VersionID: strings.TrimSpace(asString(args["version_id"])),
-		ID:        strings.TrimSpace(asString(args["id"])),
-		Content:   content,
-		Limit:     limit,
-	}
-	var response map[string]any
-	if principalAware, ok := r.integrations.(manageIntegrationPrincipalAwareService); ok {
-		response, err = principalAware.HandleForPrincipal(scope.Principal, request)
-	} else {
-		response, err = r.integrations.Handle(request)
-	}
-	if err != nil {
-		return "", err
-	}
-	response["path_id"] = toolPathID("manage-integrations")
-	response["details_truncated"] = false
-	response["prompt_injection_tag"] = "tool_output_untrusted"
-	response["safety"] = buildUntrustedSafety("")
-	encoded, err := json.Marshal(response)
-	if err != nil {
-		return "", err
-	}
-	return string(encoded), nil
-}
-
-func (r *Runtime) executeManageImage(ctx context.Context, scope WorkspaceScope, args map[string]any, onProgress func(Progress)) (string, error) {
-	action := strings.ToLower(strings.TrimSpace(asString(args["action"])))
-	if action == "" {
-		action = "inspect"
-	}
-	switch action {
-	case "inspect", "providers", "capabilities":
-		return r.manageImageInspect(ctx, scope)
-	case "generate":
-		return r.manageImageGenerate(ctx, scope, args, onProgress)
-	default:
-		return "", fmt.Errorf("manage-image action %q is unsupported", action)
 	}
 }
 
@@ -5580,29 +5878,32 @@ func (r *Runtime) executeManageWorktree(scope WorkspaceScope, args map[string]an
 	switch action {
 	case "inspect", "list":
 		return r.manageWorktreeInspect(scope, args)
+	case "recall":
+		return r.manageWorktreeRecall(scope, args)
+	case "integrate":
+		return r.manageWorktreeIntegrate(scope, args)
 	default:
 		return "", fmt.Errorf("manage-worktree action %q is unsupported", action)
 	}
 }
 
 func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) (string, error) {
-	if r == nil || r.todos == nil {
-		return executeStubTool("manage_todos", args)
-	}
 	action := strings.ToLower(strings.TrimSpace(asString(args["action"])))
 	if action == "" {
 		action = "list"
+	}
+	ownerKind, err := normalizeManageTodoOwnerKind(asString(args["owner_kind"]))
+	if err != nil {
+		return "", err
+	}
+	if r == nil || r.todos == nil {
+		return executeStubTool("manage_todos", args)
 	}
 	requestedWorkspacePath := strings.TrimSpace(asString(args["workspace_path"]))
 	if requestedWorkspacePath == "" {
 		requestedWorkspacePath = "."
 	}
 	workspacePath, err := resolveWorkspacePath(scope, requestedWorkspacePath)
-	if err != nil {
-		return "", err
-	}
-
-	ownerKind, err := normalizeManageTodoOwnerKind(asString(args["owner_kind"]))
 	if err != nil {
 		return "", err
 	}
@@ -5622,7 +5923,7 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 
 	switch action {
 	case "list":
-		listOptions := manageTodoListScope(ownerKind, scope.SessionID)
+		listOptions := mergeManageTodoAccountScope(manageTodoListScope(ownerKind, scope.SessionID), scope.Principal.AccountScopeID)
 		items, summary, err := r.todos.List(workspacePath, listOptions)
 		if err != nil {
 			return "", err
@@ -5630,7 +5931,7 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		response["items"] = items
 		response["summary"] = summary
 	case "summary":
-		listOptions := manageTodoListScope(ownerKind, scope.SessionID)
+		listOptions := mergeManageTodoAccountScope(manageTodoListScope(ownerKind, scope.SessionID), scope.Principal.AccountScopeID)
 		_, summary, err := r.todos.List(workspacePath, listOptions)
 		if err != nil {
 			return "", err
@@ -5646,15 +5947,15 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 			sessionID = strings.TrimSpace(scope.SessionID)
 		}
 		item, summary, _, err := r.todos.Create(todoruntime.CreateInput{
-			WorkspacePath: workspacePath,
-			OwnerKind:     ownerKind,
-			Text:          text,
-			Priority:      asString(args["priority"]),
-			Group:         asString(args["group"]),
-			Tags:          asStringSlice(args["tags"]),
-			InProgress:    asBool(args["in_progress"]),
-			SessionID:     sessionID,
-			ParentID:      asString(args["parent_id"]),
+			AccountScopeID: scope.Principal.AccountScopeID, WorkspacePath: workspacePath,
+			OwnerKind:  ownerKind,
+			Text:       text,
+			Priority:   asString(args["priority"]),
+			Group:      asString(args["group"]),
+			Tags:       asStringSlice(args["tags"]),
+			InProgress: asBool(args["in_progress"]),
+			SessionID:  sessionID,
+			ParentID:   asString(args["parent_id"]),
 		})
 		if err != nil {
 			return "", err
@@ -5712,17 +6013,17 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 			updateSessionID = strings.TrimSpace(scope.SessionID)
 		}
 		item, summary, _, err := r.todos.Update(todoruntime.UpdateInput{
-			WorkspacePath: workspacePath,
-			ID:            id,
-			Text:          text,
-			Done:          done,
-			Priority:      priority,
-			Group:         group,
-			Tags:          tags,
-			InProgress:    inProgress,
-			SessionID:     sessionID,
-			ParentID:      parentID,
-		}, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: updateSessionID})
+			AccountScopeID: scope.Principal.AccountScopeID, WorkspacePath: workspacePath,
+			ID:         id,
+			Text:       text,
+			Done:       done,
+			Priority:   priority,
+			Group:      group,
+			Tags:       tags,
+			InProgress: inProgress,
+			SessionID:  sessionID,
+			ParentID:   parentID,
+		}, todoruntime.ListOptions{AccountScopeID: scope.Principal.AccountScopeID, OwnerKind: ownerKind, SessionID: updateSessionID})
 		if err != nil {
 			return "", err
 		}
@@ -5733,21 +6034,21 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		if id == "" {
 			return "", errors.New("id is required")
 		}
-		summary, _, err := r.todos.Delete(workspacePath, id, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
+		summary, _, err := r.todos.Delete(workspacePath, id, todoruntime.ListOptions{AccountScopeID: scope.Principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
 		response["id"] = id
 		response["summary"] = summary
 	case "delete_done":
-		items, summary, _, err := r.todos.DeleteDone(workspacePath, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
+		items, summary, _, err := r.todos.DeleteDone(workspacePath, todoruntime.ListOptions{AccountScopeID: scope.Principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
 		response["items"] = items
 		response["summary"] = summary
 	case "delete_all":
-		items, summary, _, err := r.todos.DeleteAll(workspacePath, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
+		items, summary, _, err := r.todos.DeleteAll(workspacePath, todoruntime.ListOptions{AccountScopeID: scope.Principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
@@ -5758,7 +6059,7 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		if len(orderedIDs) == 0 {
 			return "", errors.New("ordered_ids is required")
 		}
-		items, summary, _, err := r.todos.Reorder(todoruntime.ReorderInput{WorkspacePath: workspacePath, OwnerKind: ownerKind, OrderedIDs: orderedIDs}, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
+		items, summary, _, err := r.todos.Reorder(todoruntime.ReorderInput{AccountScopeID: scope.Principal.AccountScopeID, WorkspacePath: workspacePath, OwnerKind: ownerKind, OrderedIDs: orderedIDs}, todoruntime.ListOptions{AccountScopeID: scope.Principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
@@ -5769,7 +6070,7 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		if id == "" {
 			return "", errors.New("id is required")
 		}
-		item, summary, _, err := r.todos.SetInProgress(workspacePath, id, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
+		item, summary, _, err := r.todos.SetInProgress(workspacePath, id, todoruntime.ListOptions{AccountScopeID: scope.Principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
@@ -5780,7 +6081,7 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		if err != nil {
 			return "", err
 		}
-		results, items, summary, _, err := r.todos.ApplyBatch(workspacePath, operations, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
+		results, items, summary, _, err := r.todos.ApplyBatch(workspacePath, operations, todoruntime.ListOptions{AccountScopeID: scope.Principal.AccountScopeID, OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
@@ -5792,6 +6093,279 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		return "", fmt.Errorf("unsupported todo action %q", action)
 	}
 
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]any) (string, error) {
+	if r == nil || r.sessions == nil || r.worktrees == nil {
+		return "", errors.New("manage-worktree integrate requires session and worktree services")
+	}
+	parentSessionID := strings.TrimSpace(firstNonEmptyString(scope.SessionID, scope.Principal.SessionID))
+	parent, ok, err := r.sessions.GetSession(parentSessionID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("parent session %q not found", parentSessionID)
+	}
+	parentPath, err := r.manageWorktreeResolveWorkspacePath(scope, "")
+	if err != nil {
+		return "", err
+	}
+	selected := asStringSlice(args["session_ids"])
+	if len(selected) == 0 {
+		return "", errors.New("integrate requires selected committed child session_ids; call recall once to obtain them")
+	}
+	selectedSet := map[string]bool{}
+	for _, id := range selected {
+		id = strings.TrimSpace(id)
+		if id == "" || selectedSet[id] {
+			return "", fmt.Errorf("invalid or duplicate selected session_id %q", id)
+		}
+		selectedSet[id] = true
+	}
+	launchMap, _ := parent.Metadata["task_launches"].(map[string]any)
+	type candidate struct {
+		callID string
+		index  int
+		child  worktreeruntime.TaskIntegrationChild
+	}
+	candidates := make([]candidate, 0, len(selected))
+	for callID, raw := range launchMap {
+		entry, _ := raw.(map[string]any)
+		rows, _ := entry["launches"].([]any)
+		if typed, ok := entry["launches"].([]map[string]any); ok {
+			for _, row := range typed {
+				rows = append(rows, row)
+			}
+		}
+		for _, rawRow := range rows {
+			row, _ := rawRow.(map[string]any)
+			id := strings.TrimSpace(asString(row["child_session_id"]))
+			if !selectedSet[id] || !agentruntime.IsCoderAgentName(asString(row["subagent"])) {
+				continue
+			}
+			childSession, found, sessionErr := r.sessions.GetSession(id)
+			if sessionErr != nil {
+				return "", fmt.Errorf("verify selected child session %q: %w", id, sessionErr)
+			}
+			if !found {
+				return "", fmt.Errorf("verify selected child session %q: not found", id)
+			}
+			if childSession.AccountScopeID != parent.AccountScopeID || childSession.UserID != parent.UserID ||
+				strings.TrimSpace(asString(childSession.Metadata["parent_session_id"])) != parentSessionID ||
+				strings.TrimSpace(asString(childSession.Metadata["lineage_kind"])) != "delegated_subagent" ||
+				!agentruntime.IsCoderAgentName(asString(childSession.Metadata["subagent"])) {
+				return "", fmt.Errorf("selected child %q is not an owned Coder child of this parent", id)
+			}
+			path := strings.TrimSpace(firstNonEmptyString(childSession.WorktreeRootPath, childSession.WorkspacePath))
+			baseCommit := strings.TrimSpace(asString(row["base_commit"]))
+			headCommit := strings.TrimSpace(asString(row["head_commit"]))
+			state, inspectErr := r.worktrees.VerifyTaskIntegrationWorkspace(parentPath, path, id, childSession.WorktreeBranch, baseCommit, headCommit)
+			if inspectErr != nil {
+				return "", fmt.Errorf("verify selected child %q lineage: %w", id, inspectErr)
+			}
+			if !state.Clean {
+				return "", fmt.Errorf("selected child %q is dirty:\n%s", id, state.Status)
+			}
+			candidates = append(candidates, candidate{callID: callID, index: asInt(row["launch_index"], 0), child: worktreeruntime.TaskIntegrationChild{SessionID: id, BaseCommit: baseCommit, HeadCommit: state.HeadCommit}})
+		}
+	}
+	if len(candidates) != len(selectedSet) {
+		return "", errors.New("one or more selected children are missing or unauthorized by durable parent lineage")
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].callID != candidates[j].callID {
+			return candidates[i].callID < candidates[j].callID
+		}
+		return candidates[i].index < candidates[j].index
+	})
+	children := make([]worktreeruntime.TaskIntegrationChild, 0, len(candidates))
+	for _, item := range candidates {
+		children = append(children, item.child)
+	}
+	parentState, inspectErr := r.worktrees.InspectTaskWorkspace(parentPath)
+	if inspectErr != nil {
+		return "", fmt.Errorf("inspect current parent before integration: %w", inspectErr)
+	}
+	plan, err := r.worktrees.PrepareTaskIntegration(parentPath, parentState.HeadCommit, children)
+	if err != nil {
+		var conflict *worktreeruntime.TaskIntegrationConflictError
+		if errors.As(err, &conflict) {
+			encoded, _ := json.Marshal(map[string]any{
+				"status": "conflict", "action": "integrate", "parent_unchanged": true,
+				"parent_head": parentState.HeadCommit, "conflicting_commit": conflict.Commit,
+				"detail":      conflict.Detail,
+				"next_action": "Resolve the reported child-stack conflict in a dedicated child or choose a non-conflicting subset, then call integrate once with the final selected session_ids. Do not retry the same batch unchanged.",
+				"path_id":     toolPathID("manage-worktree"),
+			})
+			return string(encoded), err
+		}
+		return "", err
+	}
+	result, err := r.worktrees.ApplyTaskIntegration(parentPath, plan)
+	if err != nil {
+		return "", err
+	}
+	childStates := make(map[string]string, len(result.Entries))
+	for _, entry := range result.Entries {
+		childStates[entry.SessionID] = "integrated"
+	}
+	encoded, err := json.Marshal(map[string]any{"status": "ok", "action": "integrate", "parent_session_id": parentSessionID, "child_states": childStates, "resulting_parent_head": result.ResultingParentHead, "integration": result, "path_id": toolPathID("manage-worktree")})
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any) (string, error) {
+	if r == nil || r.sessions == nil || r.worktrees == nil {
+		return "", errors.New("manage-worktree recall requires session and worktree services")
+	}
+	parentSessionID := strings.TrimSpace(firstNonEmptyString(scope.SessionID, scope.Principal.SessionID))
+	if parentSessionID == "" {
+		return "", errors.New("manage-worktree recall requires current parent session_id")
+	}
+	parent, ok, err := r.sessions.GetSession(parentSessionID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("parent session %q not found", parentSessionID)
+	}
+	limit := asInt(args["limit"], 25)
+	if limit <= 0 {
+		limit = 25
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	cursor := asInt(args["cursor"], 0)
+	if cursor < 0 {
+		cursor = 0
+	}
+	parentPath, parentPathErr := r.manageWorktreeResolveWorkspacePath(scope, "")
+	parentState := worktreeruntime.TaskWorkspaceState{}
+	if parentPathErr == nil {
+		parentState, parentPathErr = r.worktrees.InspectTaskWorkspace(parentPath)
+	}
+	launchMap, _ := parent.Metadata["task_launches"].(map[string]any)
+	children := make([]map[string]any, 0)
+	for callID, raw := range launchMap {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		rows := make([]any, 0)
+		switch typed := entry["launches"].(type) {
+		case []any:
+			rows = typed
+		case []map[string]any:
+			for _, row := range typed {
+				rows = append(rows, row)
+			}
+		}
+		for _, rawRow := range rows {
+			row, ok := rawRow.(map[string]any)
+			if !ok || !agentruntime.IsCoderAgentName(asString(row["subagent"])) {
+				continue
+			}
+			child := make(map[string]any, len(row)+2)
+			for key, value := range row {
+				child[key] = value
+			}
+			child["task_call_id"] = callID
+			child["parent_session_id"] = parentSessionID
+			path := strings.TrimSpace(firstNonEmptyString(asString(row["worktree_root_path"]), asString(row["workspace_path"])))
+			childState := "blocked"
+			if path != "" {
+				if state, inspectErr := r.worktrees.InspectTaskWorkspace(path); inspectErr != nil {
+					child["git_inspection_error"] = inspectErr.Error()
+				} else {
+					child["worktree_path"] = state.WorkspacePath
+					child["child_branch"] = state.BranchName
+					child["head_commit"] = state.HeadCommit
+					child["git_status"] = state.Status
+					child["worktree_clean"] = state.Clean
+					recordedBranch := strings.TrimSpace(asString(row["worktree_branch"]))
+					recordedBase := strings.TrimSpace(asString(row["base_commit"]))
+					recordedHead := strings.TrimSpace(asString(row["head_commit"]))
+					switch {
+					case !state.Clean:
+						childState = "dirty-recoverable"
+					case recordedBranch == "" || recordedBase == "" || recordedHead == "" || recordedBase == recordedHead:
+						childState = "blocked"
+					case state.BranchName != recordedBranch || state.HeadCommit != recordedHead:
+						childState = "stale"
+					case parentPathErr != nil:
+						child["parent_git_inspection_error"] = parentPathErr.Error()
+						// Parent inspection affects integrated-vs-committed detection, not
+						// whether this clean child has a durable committed handoff.
+						childState = "committed"
+					default:
+						integrated, ancestryErr := r.worktrees.TaskCommitDescendsFrom(parentPath, recordedHead, parentState.HeadCommit)
+						if ancestryErr != nil {
+							child["integration_inspection_error"] = ancestryErr.Error()
+							childState = "blocked"
+						} else if integrated {
+							childState = "integrated"
+						} else {
+							childState = "committed"
+						}
+					}
+				}
+			}
+			child["child_state"] = childState
+			children = append(children, child)
+		}
+	}
+	sort.SliceStable(children, func(i, j int) bool {
+		leftCall, rightCall := asString(children[i]["task_call_id"]), asString(children[j]["task_call_id"])
+		if leftCall != rightCall {
+			return leftCall < rightCall
+		}
+		return asInt(children[i]["launch_index"], 0) < asInt(children[j]["launch_index"], 0)
+	})
+	total := len(children)
+	end := cursor + limit
+	if end > total {
+		end = total
+	}
+	page := []map[string]any{}
+	if cursor < total {
+		page = children[cursor:end]
+	}
+	nextCursor := 0
+	if end < total {
+		nextCursor = end
+	}
+	integrationInfo := map[string]any{
+		"recommended_order": "review children in task call order then launch_index; call integrate once with only the complete selected committed session_ids, then recall once to verify",
+		"state_labels":      []string{"committed", "dirty-recoverable", "integrated", "blocked", "stale", "conflicting"},
+		"conflict_policy":   "the complete ordered stack is preflighted before mutation; conflicts return the exact failing commit and leave the parent unchanged",
+		"automatic":         true,
+	}
+	committedIDs := make([]string, 0)
+	for _, child := range children {
+		if strings.EqualFold(asString(child["child_state"]), "committed") {
+			committedIDs = append(committedIDs, strings.TrimSpace(asString(child["child_session_id"])))
+		}
+	}
+	if len(committedIDs) > 0 {
+		integrationInfo["ready_session_ids"] = committedIDs
+		integrationInfo["integrate_request"] = map[string]any{"action": "integrate", "session_ids": committedIDs}
+	}
+	response := map[string]any{
+		"status": "ok", "action": "recall", "parent_session_id": parentSessionID,
+		"children": page, "total": total, "returned": len(page), "cursor": cursor, "limit": limit,
+		"next_cursor": nextCursor, "has_more": nextCursor > 0,
+		"integration": integrationInfo,
+		"path_id":     toolPathID("manage-worktree"), "details_truncated": false,
+	}
 	encoded, err := json.Marshal(response)
 	if err != nil {
 		return "", err
@@ -5818,7 +6392,7 @@ func (r *Runtime) manageWorktreeInspect(scope WorkspaceScope, args map[string]an
 
 	config := manageWorktreeConfig{}
 	if r != nil && r.worktrees != nil {
-		cfg, cfgErr := r.worktrees.GetConfig(workspacePath)
+		cfg, cfgErr := r.worktrees.GetConfigForPrincipal(scope.Principal, workspacePath)
 		if cfgErr != nil {
 			return "", fmt.Errorf("manage-worktree get config failed: %w", cfgErr)
 		}
@@ -5827,7 +6401,7 @@ func (r *Runtime) manageWorktreeInspect(scope WorkspaceScope, args map[string]an
 
 	workspaceName := filepath.Base(strings.TrimSpace(workspacePath))
 	if r != nil && r.workspace != nil {
-		if info, scopeErr := r.workspace.ScopeForPath(workspacePath); scopeErr == nil {
+		if info, scopeErr := r.workspace.ScopeForPathForPrincipal(scope.Principal, workspacePath); scopeErr == nil {
 			if strings.TrimSpace(info.WorkspaceName) != "" {
 				workspaceName = strings.TrimSpace(info.WorkspaceName)
 			}
@@ -5999,13 +6573,26 @@ done`, branchGlob, branchGlob)
 }
 
 func (r *Runtime) manageWorktreeResolveWorkspacePath(scope WorkspaceScope, requested string) (string, error) {
+	if strings.TrimSpace(scope.SessionID) == "" {
+		return "", errors.New("manage-worktree calling context missing backend session_id")
+	}
+	if !scope.Principal.Valid() {
+		return "", errors.New("manage-worktree calling context missing authenticated principal")
+	}
 	if requested != "" {
 		return resolveWorkspacePath(scope, requested)
 	}
+	// The calling session is the authority for the parent workspace. The account's
+	// currently selected binding may change independently while a run is active.
+	if strings.TrimSpace(scope.PrimaryPath) != "" && strings.TrimSpace(scope.PrimaryPath) != "." {
+		return resolveWorkspacePath(scope, scope.PrimaryPath)
+	}
 	if r != nil && r.workspace != nil {
-		if current, ok, err := r.workspace.CurrentBinding(); err != nil {
-			return "", fmt.Errorf("manage-worktree resolve current workspace failed: %w", err)
-		} else if ok {
+		current, ok, err := r.workspace.CurrentBindingForPrincipal(scope.Principal)
+		if err != nil {
+			return "", fmt.Errorf("manage-worktree resolve current workspace from authenticated principal failed: %w", err)
+		}
+		if ok {
 			if path := strings.TrimSpace(current.ResolvedPath); path != "" {
 				return resolveWorkspacePath(scope, path)
 			}
@@ -6014,10 +6601,7 @@ func (r *Runtime) manageWorktreeResolveWorkspacePath(scope WorkspaceScope, reque
 			}
 		}
 	}
-	if strings.TrimSpace(scope.PrimaryPath) != "" {
-		return resolveWorkspacePath(scope, scope.PrimaryPath)
-	}
-	return normalizeScopePath(scope.PrimaryPath), nil
+	return "", errors.New("manage-worktree calling context missing parent workspace_path")
 }
 
 func (r *Runtime) manageWorktreeConfigMap(cfg manageWorktreeConfig) map[string]any {
@@ -6032,15 +6616,17 @@ func (r *Runtime) manageWorktreeConfigMap(cfg manageWorktreeConfig) map[string]a
 }
 
 func manageSkillInspect(scope WorkspaceScope) (string, error) {
-	report, err := discovery.NewService().ScanScope(scope.PrimaryPath, scope.Roots)
+	store, err := openManageSkillStore(scope, false)
 	if err != nil {
 		return "", fmt.Errorf("manage-skill inspect scan failed: %w", err)
 	}
-	skills := make([]map[string]any, 0, len(report.Skills))
-	for _, skill := range report.Skills {
-		if !manageSkillSkillPathAllowed(skill.Path, scope) {
-			continue
-		}
+	defer store.Close()
+	discovered, invalid, err := store.discover()
+	if err != nil {
+		return "", fmt.Errorf("manage-skill inspect scan failed: %w", err)
+	}
+	skills := make([]map[string]any, 0, len(discovered))
+	for _, skill := range discovered {
 		skills = append(skills, map[string]any{
 			"name":           skill.Name,
 			"canonical_name": skill.CanonicalName,
@@ -6055,9 +6641,9 @@ func manageSkillInspect(scope WorkspaceScope) (string, error) {
 	response := map[string]any{
 		"status":               "ok",
 		"action":               "inspect",
-		"skill_root":           manageSkillSkillRoot(scope),
+		"skill_root":           store.rootPath,
 		"skills":               skills,
-		"invalid_skills":       report.InvalidSkills,
+		"invalid_skills":       invalid,
 		"count":                len(skills),
 		"supported_actions":    []string{"inspect", "list", "get", "create", "update", "delete"},
 		"instructions":         "Use manage-skill for workspace skill discovery and CRUD. Call inspect/list to discover available skills, get to read a skill, and create/update/delete for preview-first skill edits under .agents/skills.",
@@ -6078,8 +6664,42 @@ func manageSkillInspect(scope WorkspaceScope) (string, error) {
 	return string(encoded), nil
 }
 
+func (r *Runtime) manageAgentOrchestrationPolicy(scope WorkspaceScope, args map[string]any, update, confirm bool) (string, error) {
+	if r == nil || r.orchestration == nil {
+		return "", errors.New("manage-agent orchestration policy service is not configured")
+	}
+	accountScopeID := strings.TrimSpace(scope.Principal.AccountScopeID)
+	before, err := r.orchestration.CurrentSubagentPolicyForAccount(accountScopeID)
+	if err != nil {
+		return "", err
+	}
+	if !update {
+		return manageAgentEncodeResponse(map[string]any{"status": "ok", "action": "get_orchestration_policy", "orchestration_policy": before})
+	}
+	content, err := manageAgentContentObject(args)
+	if err != nil {
+		return "", err
+	}
+	if !confirm {
+		return manageAgentEncodeResponse(map[string]any{"status": "approval_required", "action": "update_orchestration_policy", "before": before, "after": content, "confirm_required": true})
+	}
+	after, err := r.orchestration.UpdateSubagentPolicyMapForAccount(accountScopeID, content)
+	if err != nil {
+		return "", err
+	}
+	return manageAgentEncodeResponse(map[string]any{"status": "ok", "action": "update_orchestration_policy", "applied": true, "before": before, "after": after})
+}
+
 func manageAgentInstructionsText() string {
-	return "Use manage-agent to inspect and manage saved agents, custom tools, and subagent transcripts. Call inspect/list first, then get before mutating an agent profile. If the user asks to create an agent but does not specify the agent type/mode or execution mode, clarify before creating. Agent modes: primary agents are user-selectable in Desktop/TUI; subagent agents are usable by primary agents for task delegation and are also user-selectable in Desktop/TUI; background agents are for Flows and do not appear in the Desktop/TUI selector. Execution modes are explicit: runtime_mode=plan_auto means plan approval mode and forces exit_plan_mode_enabled=true; runtime_mode=read means direct read-only mode and forces exit_plan_mode_enabled=false; runtime_mode=readwrite means direct read/write mode and forces exit_plan_mode_enabled=false. Treat runtime_mode as authoritative for create/update. execution_setting is a legacy alias for direct read/readwrite only; do not use it with plan_auto and prefer runtime_mode for new changes. Tool presets are least-privilege grant suggestions and may imply a default direct mode, but they must not override an explicit user-requested runtime_mode. Use action=transcript/session_transcript with session_id from a task report_ref to read a child subagent transcript when inline task output was truncated or omitted. Inspect output includes tool_inventory.tools and tool_inventory.presets; each preset lists the concrete tools it grants. For create/update, prefer object-form `content`, set explicit `runtime_mode`, choose the smallest preset/bundle that fits the requested job, and avoid overscoping. Use explicit `tool_contract.tools.{tool}.enabled` overrides only when the user request needs narrower or slightly broader access than a preset; override names must come from tool_inventory.tools[].contract_name/name. Do not enable bash unless it is limited by explicit bash_prefixes. Do not use inherit_policy for model-created profiles. Custom tool actions use `content={name,kind,description?,command}` and assignment actions use top-level `agent` plus `tool_name`. Mutating actions return approval-ready previews unless confirm=true."
+	return "Use manage-agent to inspect and manage saved agents, custom tools, and subagent transcripts. Call inspect/list first, then get before mutating an agent profile. If the user asks to create an agent but does not specify the agent type/mode or execution mode, clarify before creating. Agent modes: primary agents are user-selectable in Desktop/TUI; subagent agents are usable by primary agents for task delegation and are also user-selectable in Desktop/TUI; background agents are reserved for non-interactive system work and do not appear in the Desktop/TUI selector. Execution modes are explicit: runtime_mode=plan_auto means plan approval mode and forces exit_plan_mode_enabled=true; runtime_mode=read means direct read-only mode and forces exit_plan_mode_enabled=false; runtime_mode=readwrite means direct read/write mode and forces exit_plan_mode_enabled=false. Treat runtime_mode as authoritative for create/update. execution_setting is a legacy alias for direct read/readwrite only; do not use it with plan_auto and prefer runtime_mode for new changes. Tool presets are least-privilege grant suggestions and may imply a default direct mode, but they must not override an explicit user-requested runtime_mode. Use action=transcript/session_transcript with session_id from a task report_ref to read a child subagent transcript when inline task output was truncated or omitted. Inspect output includes tool_inventory.tools and tool_inventory.presets; each preset lists the concrete tools it grants. For create/update, prefer object-form `content`, set explicit `runtime_mode`, choose the smallest preset/bundle that fits the requested job, and avoid overscoping. Use explicit `tool_contract.tools.{tool}.enabled` overrides only when the user request needs narrower or slightly broader access than a preset; override names must come from tool_inventory.tools[].contract_name/name. Do not enable bash unless it is limited by explicit bash_prefixes. Do not use inherit_policy for model-created profiles. Custom tool actions use `content={name,kind,description?,command}` and assignment actions use top-level `agent` plus `tool_name`. Mutating actions return approval-ready previews unless confirm=true."
+}
+
+func isReservedCloneName(args map[string]any) bool {
+	name := strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "agent"), manageAgentStringArg(args, "name")))
+	if content, err := manageAgentContentObject(args); err == nil {
+		name = firstNonEmptyString(name, manageAgentStringArg(content, "name"))
+	}
+	return strings.EqualFold(strings.TrimSpace(name), "clone")
 }
 
 func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
@@ -6109,7 +6729,7 @@ func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
 		"active_primary":    strings.TrimSpace(state.ActivePrimary),
 		"active_subagent":   cloneStringMap(state.ActiveSubagent),
 		"version":           state.Version,
-		"supported_actions": []string{"inspect", "list", "get", "transcript", "session_transcript", "create", "update", "delete", "activate_primary", "set_active_subagent", "remove_active_subagent", "create_custom_tool", "update_custom_tool", "delete_custom_tool", "assign_custom_tool", "unassign_custom_tool"},
+		"supported_actions": []string{"inspect", "list", "get_orchestration_policy", "update_orchestration_policy", "get", "transcript", "session_transcript", "create", "update", "delete", "activate_primary", "set_active_subagent", "remove_active_subagent", "create_custom_tool", "update_custom_tool", "delete_custom_tool", "assign_custom_tool", "unassign_custom_tool"},
 		"instructions":      manageAgentInstructionsText(),
 		"examples": []map[string]any{
 			{"action": "inspect"},
@@ -6219,6 +6839,9 @@ func (r *Runtime) manageAgentSessionTranscript(scope WorkspaceScope, args map[st
 }
 
 func (r *Runtime) manageAgentUpsert(scope WorkspaceScope, args map[string]any, mustExist, confirm bool) (string, error) {
+	if isReservedCloneName(args) {
+		return "", errors.New("agent name clone is reserved for the built-in parent-copying subagent")
+	}
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}
@@ -6304,6 +6927,9 @@ func (r *Runtime) manageAgentUpsert(scope WorkspaceScope, args map[string]any, m
 }
 
 func (r *Runtime) manageAgentDelete(scope WorkspaceScope, args map[string]any, confirm bool) (string, error) {
+	if isReservedCloneName(args) {
+		return "", errors.New("agent name clone is reserved for the built-in parent-copying subagent")
+	}
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}
@@ -6888,12 +7514,13 @@ func manageAgentUpsertInputFromArgs(args map[string]any) (agentruntime.UpsertInp
 		return agentruntime.UpsertInput{}, errors.New("manage-agent requires agent or name")
 	}
 	input := agentruntime.UpsertInput{
-		Name:             name,
-		Mode:             strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "mode"), manageAgentStringArg(content, "mode"))),
-		Description:      strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "description"), manageAgentStringArg(content, "description"))),
-		Prompt:           strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "prompt"), manageAgentStringArg(content, "prompt"))),
-		RuntimeMode:      strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "runtime_mode"), manageAgentStringArg(content, "runtime_mode"))),
-		ExecutionSetting: strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "execution_setting"), manageAgentStringArg(content, "execution_setting"))),
+		Name:               name,
+		Mode:               strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "mode"), manageAgentStringArg(content, "mode"))),
+		Description:        strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "description"), manageAgentStringArg(content, "description"))),
+		Prompt:             strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "prompt"), manageAgentStringArg(content, "prompt"))),
+		RuntimeMode:        strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "runtime_mode"), manageAgentStringArg(content, "runtime_mode"))),
+		DefaultSessionMode: strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "default_session_mode"), manageAgentStringArg(content, "default_session_mode"))),
+		ExecutionSetting:   strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "execution_setting"), manageAgentStringArg(content, "execution_setting"))),
 	}
 	if value, ok := manageAgentValue(args, content, "provider"); ok {
 		input.Provider = strings.TrimSpace(asString(value))
@@ -7151,39 +7778,6 @@ func validateManageAgentToolContract(contract *pebblestore.AgentToolContract, kn
 	return nil
 }
 
-func integrationContentObject(args map[string]any) (map[string]any, error) {
-	raw, ok := args["content"]
-	if !ok || raw == nil {
-		return nil, nil
-	}
-	switch typed := raw.(type) {
-	case map[string]any:
-		return cloneStringAnyMap(typed), nil
-	case string:
-		text := strings.TrimSpace(typed)
-		if text == "" {
-			return nil, nil
-		}
-		var payload map[string]any
-		if err := json.Unmarshal([]byte(text), &payload); err != nil {
-			return nil, fmt.Errorf("manage-integrations content must be a JSON object string or object payload: %w", err)
-		}
-		return payload, nil
-	case []byte:
-		text := strings.TrimSpace(string(typed))
-		if text == "" {
-			return nil, nil
-		}
-		var payload map[string]any
-		if err := json.Unmarshal(typed, &payload); err != nil {
-			return nil, fmt.Errorf("manage-integrations content must be a JSON object string or object payload: %w", err)
-		}
-		return payload, nil
-	default:
-		return nil, errors.New("manage-integrations content must be an object or JSON object string")
-	}
-}
-
 func manageAgentContentObject(args map[string]any) (map[string]any, error) {
 	raw, ok := args["content"]
 	if !ok || raw == nil {
@@ -7423,6 +8017,7 @@ func manageAgentProfileMap(profile pebblestore.AgentProfile, activePrimary bool,
 		"thinking":                    strings.TrimSpace(profile.Thinking),
 		"prompt":                      strings.TrimSpace(profile.Prompt),
 		"runtime_mode":                pebblestore.AgentProfileRuntimeMode(profile),
+		"default_session_mode":        pebblestore.AgentProfileDefaultSessionMode(profile),
 		"execution_setting":           strings.TrimSpace(profile.ExecutionSetting),
 		"effective_execution_setting": manageAgentEffectiveExecutionSetting(profile),
 		"exit_plan_mode_enabled":      pebblestore.AgentExitPlanModeEnabled(profile),
@@ -7640,13 +8235,6 @@ func manageAgentToolPresets() []manageAgentToolPresetDefinition {
 			DisabledByDefault: []string{"write", "edit", "bash", "task"},
 		},
 		{
-			ID:                "integration_builder",
-			Label:             "Integration builder",
-			Description:       "Inspect local/web context and manage Integration Pack drafts without shell or file mutation tools.",
-			EnabledTools:      []string{"read", "search", "list", "websearch", "webfetch", "manage_integrations"},
-			DisabledByDefault: []string{"write", "edit", "bash", "task"},
-		},
-		{
 			ID:                "read_write",
 			Label:             "Read/write",
 			Description:       "Inspect and edit workspace files without shell execution or delegation.",
@@ -7697,7 +8285,7 @@ func manageAgentToolGroup(name string) string {
 		return "conversation_control"
 	case "git_status", "git_diff", "git_add", "git_commit":
 		return "git_commit"
-	case "skill-use", "skill_use", "manage-skill", "manage_skill", "manage-agent", "manage_agent", "manage-integrations", "manage_integrations", "manage-image", "manage_image", "manage-theme", "manage_theme", "manage-worktree", "manage_worktree", "manage_todos":
+	case "skill-use", "skill_use", "manage-skill", "manage_skill", "manage-agent", "manage_agent", "manage-theme", "manage_theme", "manage-worktree", "manage_worktree", "manage_todos":
 		return "management"
 	default:
 		return "other"
@@ -7740,18 +8328,12 @@ func manageAgentCanonicalToolName(name string) string {
 		return "manage_skill"
 	case "manage-agent", "manage_agent":
 		return "manage_agent"
-	case "manage-integrations", "manage_integrations":
-		return "manage_integrations"
 	case "manage-theme", "manage_theme":
 		return "manage_theme"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
-	case "manage-flow", "manage_flow":
-		return "manage_flow"
-	case "manage-image", "manage_image":
-		return "manage_image"
 	default:
 		return strings.ToLower(strings.TrimSpace(name))
 	}
@@ -7873,7 +8455,12 @@ func manageSkillGet(scope WorkspaceScope, args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	raw, err := os.ReadFile(matched.Path)
+	store, err := openManageSkillStore(scope, false)
+	if err != nil {
+		return "", fmt.Errorf("manage-skill get open skill root failed: %w", err)
+	}
+	defer store.Close()
+	raw, err := store.read(matched.CanonicalName)
 	if err != nil {
 		return "", fmt.Errorf("manage-skill get read failed: %w", err)
 	}
@@ -7933,14 +8520,17 @@ func manageSkillProposeChange(scope WorkspaceScope, args map[string]any, mustExi
 	if err := discovery.ValidateSkillFrontmatter(frontmatter, canonical); err != nil {
 		return "", fmt.Errorf("manage-skill invalid skill content: %w", err)
 	}
-	path := manageSkillSkillPath(scope, canonical)
-	beforeBytes, readErr := os.ReadFile(path)
-	before := ""
-	if readErr == nil {
-		before = string(beforeBytes)
-	} else if !errors.Is(readErr, os.ErrNotExist) {
+	store, err := openManageSkillStore(scope, false)
+	if err != nil {
+		return "", fmt.Errorf("manage-skill open skill root failed: %w", err)
+	}
+	defer store.Close()
+	path := store.skillPath(canonical)
+	revision, beforeBytes, readErr := store.revision(canonical)
+	if readErr != nil {
 		return "", fmt.Errorf("manage-skill read existing skill failed: %w", readErr)
 	}
+	before := string(beforeBytes)
 	if mustExist && strings.TrimSpace(before) == "" {
 		return "", fmt.Errorf("skill %q does not exist", canonical)
 	}
@@ -7967,11 +8557,12 @@ func manageSkillProposeChange(scope WorkspaceScope, args map[string]any, mustExi
 			"metadata":       frontmatter.Metadata,
 		},
 		"change": map[string]any{
-			"kind":      "skill_change",
-			"operation": action,
-			"path":      path,
-			"before":    before,
-			"after":     formatted,
+			"kind":              "skill_change",
+			"operation":         action,
+			"path":              path,
+			"before":            before,
+			"after":             formatted,
+			"expected_revision": revision,
 		},
 		"path_id":              toolPathID("manage-skill"),
 		"summary":              summary,
@@ -7991,7 +8582,12 @@ func manageSkillProposeDelete(scope WorkspaceScope, args map[string]any) (string
 	if err != nil {
 		return "", err
 	}
-	beforeBytes, err := os.ReadFile(matched.Path)
+	store, err := openManageSkillStore(scope, false)
+	if err != nil {
+		return "", fmt.Errorf("manage-skill delete open skill root failed: %w", err)
+	}
+	defer store.Close()
+	revision, beforeBytes, err := store.revision(matched.CanonicalName)
 	if err != nil {
 		return "", fmt.Errorf("manage-skill delete read failed: %w", err)
 	}
@@ -8007,11 +8603,12 @@ func manageSkillProposeDelete(scope WorkspaceScope, args map[string]any) (string
 			"metadata":       matched.Metadata,
 		},
 		"change": map[string]any{
-			"kind":      "skill_change",
-			"operation": "delete",
-			"path":      matched.Path,
-			"before":    before,
-			"after":     "",
+			"kind":              "skill_change",
+			"operation":         "delete",
+			"path":              matched.Path,
+			"before":            before,
+			"after":             "",
+			"expected_revision": revision,
 		},
 		"path_id":              toolPathID("manage-skill"),
 		"summary":              fmt.Sprintf("proposed delete for skill %s", matched.CanonicalName),
@@ -8041,13 +8638,16 @@ func manageSkillApplyChange(scope WorkspaceScope, args map[string]any, mustExist
 	if path == "" {
 		return "", errors.New("manage-skill apply proposal missing path")
 	}
-	if !manageSkillSkillPathAllowed(path, scope) {
+	canonical := manageSkillRequestedCanonical(args)
+	store, err := openManageSkillStore(scope, true)
+	if err != nil {
+		return "", fmt.Errorf("manage-skill open skill root failed: %w", err)
+	}
+	defer store.Close()
+	if path != store.skillPath(canonical) {
 		return "", fmt.Errorf("manage-skill path %q is outside workspace skill root", path)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", fmt.Errorf("manage-skill create skill directory failed: %w", err)
-	}
-	if err := os.WriteFile(path, []byte(after), 0o644); err != nil {
+	if err := store.write(canonical, []byte(after), mustExist, strings.TrimSpace(asString(args["expected_revision"]))); err != nil {
 		return "", fmt.Errorf("manage-skill write failed: %w", err)
 	}
 	response := map[string]any{
@@ -8087,13 +8687,18 @@ func manageSkillDelete(scope WorkspaceScope, args map[string]any) (string, error
 	if path == "" {
 		return "", errors.New("manage-skill delete proposal missing path")
 	}
-	if !manageSkillSkillPathAllowed(path, scope) {
+	canonical := strings.TrimSpace(asString(proposal["skill"].(map[string]any)["canonical_name"]))
+	store, err := openManageSkillStore(scope, false)
+	if err != nil {
+		return "", fmt.Errorf("manage-skill delete open skill root failed: %w", err)
+	}
+	defer store.Close()
+	if path != store.skillPath(canonical) {
 		return "", fmt.Errorf("manage-skill path %q is outside workspace skill root", path)
 	}
-	if err := os.Remove(path); err != nil {
+	if err := store.delete(canonical, strings.TrimSpace(asString(args["expected_revision"]))); err != nil {
 		return "", fmt.Errorf("manage-skill delete failed: %w", err)
 	}
-	_ = os.Remove(filepath.Dir(path))
 	response := map[string]any{
 		"status":               "ok",
 		"action":               "delete",
@@ -8125,15 +8730,17 @@ func manageSkillLookupSkill(scope WorkspaceScope, args map[string]any) (discover
 	if requested == "" {
 		return discovery.SkillSource{}, errors.New("manage-skill requires skill or name")
 	}
-	report, err := discovery.NewService().ScanScope(scope.PrimaryPath, scope.Roots)
+	store, err := openManageSkillStore(scope, false)
+	if err != nil {
+		return discovery.SkillSource{}, fmt.Errorf("manage-skill scan failed: %w", err)
+	}
+	defer store.Close()
+	skills, _, err := store.discover()
 	if err != nil {
 		return discovery.SkillSource{}, fmt.Errorf("manage-skill scan failed: %w", err)
 	}
 	target := normalizeSkillLookup(requested)
-	for _, candidate := range report.Skills {
-		if !manageSkillSkillPathAllowed(candidate.Path, scope) {
-			continue
-		}
+	for _, candidate := range skills {
 		if normalizeSkillLookup(candidate.CanonicalName) == target || normalizeSkillLookup(candidate.Name) == target {
 			return candidate, nil
 		}
@@ -8150,32 +8757,6 @@ func manageSkillRequestedCanonical(args map[string]any) string {
 		return ""
 	}
 	return discovery.NormalizeSkillName(requested)
-}
-
-func manageSkillSkillRoot(scope WorkspaceScope) string {
-	return filepath.Join(scope.PrimaryPath, ".agents", "skills")
-}
-
-func manageSkillSkillPath(scope WorkspaceScope, canonical string) string {
-	canonical = discovery.NormalizeSkillName(canonical)
-	if canonical == "" {
-		canonical = "skill"
-	}
-	return filepath.Join(manageSkillSkillRoot(scope), canonical, "SKILL.md")
-}
-
-func manageSkillSkillPathAllowed(path string, scope WorkspaceScope) bool {
-	root := manageSkillSkillRoot(scope)
-	path = filepath.Clean(strings.TrimSpace(path))
-	root = filepath.Clean(strings.TrimSpace(root))
-	if path == "" || root == "" {
-		return false
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
 func ensureTrailingNewline(value string) string {
@@ -8241,19 +8822,20 @@ func normalizeSkillLookup(value string) string {
 	return strings.Trim(b.String(), "-")
 }
 
-func collectListEntries(rootPath, mode string, maxDepth int) ([]listEntry, bool, error) {
+func collectListEntries(rootPath *rootedWorkspacePath, mode string, maxDepth int) ([]listEntry, bool, error) {
 	entries := make([]listEntry, 0, 256)
 	scanLimited := false
 
-	walkErr := filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
+	fsys := rootPath.root.FS()
+	walkErr := fs.WalkDir(fsys, rootPath.relative, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if path == rootPath {
+		if path == rootPath.relative {
 			return nil
 		}
 
-		relative, relErr := filepath.Rel(rootPath, path)
+		relative, relErr := filepath.Rel(rootPath.relative, path)
 		if relErr != nil {
 			return nil
 		}
@@ -8265,7 +8847,7 @@ func collectListEntries(rootPath, mode string, maxDepth int) ([]listEntry, bool,
 		depth := listPathDepth(relative)
 		if mode == "tree" && depth > maxDepth {
 			if d.IsDir() {
-				return filepath.SkipDir
+				return fs.SkipDir
 			}
 			return nil
 		}
@@ -8327,10 +8909,6 @@ func canonicalStubToolName(raw string) string {
 		return "manage_skill"
 	case "manage-agent", "manage_agent":
 		return "manage_agent"
-	case "manage-image", "manage_image":
-		return "manage_image"
-	case "manage-integrations", "manage_integrations":
-		return "manage_integrations"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
 	case "manage-todos", "manage_todos":
@@ -8354,10 +8932,6 @@ func stubToolPathID(name string) string {
 		return "tool.manage-skill.v1"
 	case "manage_agent":
 		return "tool.manage-agent.v1"
-	case "manage_image":
-		return "tool.manage-image.v1"
-	case "manage_integrations":
-		return "tool.manage-integrations.v1"
 	case "manage_worktree":
 		return "tool.manage-worktree.v1"
 	case "manage_todos":
@@ -8776,10 +9350,6 @@ func toolPathID(name string) string {
 		return "tool.manage-skill.v1"
 	case "manage-agent", "manage_agent":
 		return "tool.manage-agent.v1"
-	case "manage-image", "manage_image":
-		return "tool.manage-image.v1"
-	case "manage-integrations", "manage_integrations":
-		return "tool.manage-integrations.v1"
 	case "manage-worktree", "manage_worktree":
 		return "tool.manage-worktree.v1"
 	case "manage-todos", "manage_todos":
@@ -8880,6 +9450,36 @@ func searchSummaryForQueries(queries []string, root string, count int, truncated
 	notes := []string{countSummary(count, "file", "files")}
 	if contentMode {
 		notes[0] = countSummary(count, "match", "matches")
+	}
+	if timedOut {
+		notes = append(notes, "timed out")
+	} else if truncated {
+		notes = append(notes, "partial results")
+	}
+	return parentheticalSummary(label, notes...)
+}
+
+func findSummaryForQueries(queries []string, root string, count int, truncated, timedOut bool, mode string) string {
+	label := "find"
+	queries = compactSearchQueries(queries)
+	if len(queries) == 1 {
+		label += " " + fmt.Sprintf("%q", truncateSummary(queries[0], 80))
+	} else if len(queries) > 1 {
+		label += " [" + countSummary(len(queries), "query", "queries") + "]"
+	}
+	if root = strings.TrimSpace(truncateSummary(root, 120)); root != "" {
+		label += " in " + root
+	}
+	mode = strings.TrimSpace(mode)
+	itemSingular, itemPlural := "path", "paths"
+	if mode == "directories" {
+		itemSingular, itemPlural = "directory", "directories"
+	} else if mode == "files" || mode == "glob" {
+		itemSingular, itemPlural = "file", "files"
+	}
+	notes := []string{countSummary(count, itemSingular, itemPlural)}
+	if mode != "" {
+		notes = append(notes, mode)
 	}
 	if timedOut {
 		notes = append(notes, "timed out")

@@ -1,6 +1,6 @@
 import { useMemo, useState, type DragEvent, useRef, useEffect, useLayoutEffect, type FocusEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, Copy, GripVertical, ListChecks, MoreHorizontal, Play, Plus, Trash2, X } from 'lucide-react'
+import { Check, Copy, ExternalLink, GripVertical, ListChecks, MoreHorizontal, Play, Plus, Trash2, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Input } from '../../../../components/ui/input'
@@ -22,6 +22,7 @@ interface WorkspaceTodoModalProps {
   workspaceName: string
   userSection: WorkspaceTodoModalSection
   saving: boolean
+  onOpenManagedSession?: (sessionId: string) => void
   onOpenChange: (open: boolean) => void
   onCreate: (ownerKind: WorkspaceTodoOwnerKind, input: { text: string; priority: WorkspaceTodoPriority; group: string; tags: string[]; sessionId?: string; parentId?: string }) => Promise<void> | void
   onToggleDone: (item: WorkspaceTodoItem, done: boolean) => Promise<void> | void
@@ -36,6 +37,10 @@ interface WorkspaceTodoModalProps {
 const PRIORITY_GROUPS: WorkspaceTodoPriority[] = ['urgent', 'high', 'medium', 'low']
 const TODO_DRAG_MIME = 'application/x-swarm-workspace-todo'
 const BULK_MENU_WIDTH = 180
+
+function isActiveAITask(item: WorkspaceTodoItem): boolean {
+  return item.aiState === 'queued' || item.aiState === 'preparing' || item.aiState === 'in_progress'
+}
 
 function formatSummary(summary: WorkspaceTodoSummary): string {
   return `${summary.openCount} open · ${summary.inProgressCount} in progress · ${summary.taskCount} total`
@@ -59,6 +64,7 @@ export function WorkspaceTodoModal({
   workspaceName,
   userSection,
   saving,
+  onOpenManagedSession,
   onOpenChange,
   onCreate,
   onToggleDone,
@@ -88,6 +94,7 @@ export function WorkspaceTodoModal({
   const items = useMemo(() => [...userSection.items], [userSection.items])
   const summary = userSection.summary
   const userCompletedCount = useMemo(() => userSection.items.filter((item) => item.done).length, [userSection.items])
+  const userActiveAITaskCount = useMemo(() => userSection.items.filter(isActiveAITask).length, [userSection.items])
 
   const clearFocusedTodo = () => {
     setFocusedTodoID(null)
@@ -106,6 +113,7 @@ export function WorkspaceTodoModal({
   }
 
   const persistTodoText = (item: WorkspaceTodoItem, nextDraft: string) => {
+    if (isActiveAITask(item)) return
     const nextText = nextDraft.trim()
     if (nextText === '' || nextText === item.text) {
       return
@@ -309,6 +317,8 @@ export function WorkspaceTodoModal({
   }
 
   const renderTodoRow = (item: WorkspaceTodoItem, options: { allowDrag: boolean; childCount?: number }) => {
+    const aiTaskActive = isActiveAITask(item)
+    const allowMutations = !aiTaskActive
     const isFocused = focusedTodoID === item.id
     const copyStatus = copyFeedback?.id === item.id ? copyFeedback.status : null
     const mobileActionsOpen = mobileActionTodoID === item.id
@@ -323,9 +333,27 @@ export function WorkspaceTodoModal({
     if (item.ownerKind === 'user' && item.tags.length > 0) {
       metaParts.push(item.tags.map((tag) => `#${tag}`).join(' '))
     }
+    if (item.aiState) {
+      const stateLabel = item.aiState === 'in_progress' ? 'Started' : item.aiState.charAt(0).toUpperCase() + item.aiState.slice(1)
+      metaParts.push(`AI · ${stateLabel}${item.aiMode ? ` · ${item.aiMode}` : ''}${item.aiWorktree ? ' · worktree' : ''}`)
+    }
+    if (item.aiError) {
+      metaParts.push(item.aiError)
+    }
 
     const actionButtons = (
       <>
+        {item.managedSessionId && onOpenManagedSession ? (
+          <button
+            type="button"
+            onClick={() => onOpenManagedSession(item.managedSessionId)}
+            className="flex size-7 items-center justify-center rounded text-[var(--app-primary)] transition-colors hover:bg-[var(--app-surface-subtle)]"
+            title="Open managed session"
+            aria-label="Open managed session"
+          >
+            <ExternalLink size={14} className="shrink-0" />
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={() => void handleCopyTodo(item)}
@@ -343,8 +371,9 @@ export function WorkspaceTodoModal({
         </button>
         <button
           type="button"
+          disabled={!allowMutations}
           onClick={() => onToggleInProgress(item, !item.inProgress)}
-          className={`flex size-7 items-center justify-center rounded transition-colors hover:bg-[var(--app-surface-subtle)] ${
+          className={`flex size-7 items-center justify-center rounded transition-colors hover:bg-[var(--app-surface-subtle)] disabled:cursor-not-allowed disabled:opacity-40 ${
             item.inProgress ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)] hover:text-[var(--app-text-muted)]'
           }`}
           title={item.inProgress ? 'Clear in-progress' : 'Mark in progress'}
@@ -353,8 +382,9 @@ export function WorkspaceTodoModal({
         </button>
         <button
           type="button"
+          disabled={!allowMutations}
           onClick={() => onDelete(item)}
-          className="flex size-7 items-center justify-center rounded text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)]"
+          className="flex size-7 items-center justify-center rounded text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-40"
           title="Delete task"
         >
           <Trash2 size={14} className="shrink-0" />
@@ -370,7 +400,7 @@ export function WorkspaceTodoModal({
     return (
       <div
         key={item.id}
-        draggable={options.allowDrag ? !isFocused : undefined}
+        draggable={options.allowDrag ? !isFocused && allowMutations : undefined}
         onDragStart={options.allowDrag ? (event) => {
           event.dataTransfer.effectAllowed = 'move'
           event.dataTransfer.setData(TODO_DRAG_MIME, item.id)
@@ -392,8 +422,9 @@ export function WorkspaceTodoModal({
         <div className="flex shrink-0 items-center justify-center pt-1">
           <button
             type="button"
+            disabled={!allowMutations}
             onClick={() => onToggleDone(item, !item.done)}
-            className={`flex size-4 items-center justify-center rounded-[3px] border ${
+            className={`flex size-4 items-center justify-center rounded-[3px] border disabled:cursor-not-allowed disabled:opacity-40 ${
               item.done
                 ? 'border-[var(--app-text)] bg-[var(--app-text)] text-[var(--app-surface)]'
                 : 'border-[var(--app-text-muted)] bg-[var(--app-surface)] hover:border-[var(--app-text)]'
@@ -432,8 +463,8 @@ export function WorkspaceTodoModal({
           ) : (
             <button
               type="button"
-              onClick={() => focusTodo(item)}
-              onFocus={() => focusTodo(item)}
+              onClick={() => { if (allowMutations) focusTodo(item) }}
+              onFocus={() => { if (allowMutations) focusTodo(item) }}
               className="block w-full rounded px-1 py-0.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
               title="Focus to view and edit the full todo"
             >
@@ -508,11 +539,11 @@ export function WorkspaceTodoModal({
                 <button
                   type="button"
                   onClick={() => setConfirmDeleteAllOwner('user')}
-                  disabled={saving || userSection.items.length === 0}
+                  disabled={saving || userSection.items.length === 0 || userActiveAITaskCount > 0}
                   className="flex w-full items-center justify-between px-3 py-2 text-left text-sm text-amber-600 transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <span>Delete All</span>
-                  <span className="text-xs text-[var(--app-text-subtle)]">warning</span>
+                  <span className="text-xs text-[var(--app-text-subtle)]">{userActiveAITaskCount > 0 ? 'active task' : 'warning'}</span>
                 </button>
               ) : (
                 <div className="border-t border-[var(--app-border)] px-3 py-2">

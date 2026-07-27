@@ -20,7 +20,7 @@ func TestTaskLaunchPermissionModalDrawsOnNarrowScreen(t *testing.T) {
 		SessionID:     "session-1",
 		ToolName:      "task",
 		Requirement:   "task_launch",
-		ToolArguments: `{"goal":"Inspect repo","description":"Inspect repo","prompt":"Map files and summarize findings.","launch_count":1,"resolved_agent_name":"explorer","launches":[{"launch_index":1,"requested_subagent_type":"explorer","resolved_agent_name":"explorer","meta_prompt":"map repository structure"}]}`,
+		ToolArguments: `{"goal":"Inspect repo","description":"Inspect repo","prompt":"Map files and summarize findings.","launch_count":1,"resolved_agent_name":"finder","launches":[{"launch_index":1,"requested_subagent_type":"finder","resolved_agent_name":"finder","meta_prompt":"map repository structure"}]}`,
 		Status:        "pending",
 	})
 
@@ -62,13 +62,13 @@ func TestTaskLaunchPermissionModalUsesDesktopLikeLayout(t *testing.T) {
 		SessionID:     "session-1",
 		ToolName:      "task",
 		Requirement:   "task_launch",
-		ToolArguments: `{"goal":"Inspect repo","description":"Inspect repo","prompt":"Map files and summarize findings. Include architecture, risks, and relevant filepaths.","launch_count":2,"allow_bash":true,"resolved_agent_name":"explorer","resolved_tools":{"preset":"read_only","runtime_mode":"auto","effective_execution_mode":"read","allowed_tools":["read","search"]},"launches":[{"launch_index":1,"requested_subagent_type":"explorer","resolved_agent_name":"explorer","assignment_label":"Backend","meta_prompt":"backend/core service architecture","subagent_provider":"anthropic","subagent_model":"claude-sonnet","resolved_tools":{"preset":"read_only","runtime_mode":"auto","effective_execution_mode":"read","allowed_tools":["read","search"],"disabled_tools":["write"],"launch_disabled_tools":["edit"],"bash_prefixes":["git status"]}},{"launch_index":2,"requested_subagent_type":"parallel","resolved_agent_name":"parallel","meta_prompt":"desktop permissions UI"}]}`,
+		ToolArguments: `{"goal":"Inspect repo","description":"Inspect repo","prompt":"Map files and summarize findings. Include architecture, risks, and relevant filepaths.","launch_count":2,"allow_bash":true,"resolved_agent_name":"finder","resolved_tools":{"preset":"read_only","runtime_mode":"auto","effective_execution_mode":"read","allowed_tools":["read","search"]},"launches":[{"launch_index":1,"requested_subagent_type":"finder","resolved_agent_name":"finder","assignment_label":"Backend","meta_prompt":"backend/core service architecture","subagent_provider":"anthropic","subagent_model":"claude-sonnet","resolved_tools":{"preset":"read_only","runtime_mode":"auto","effective_execution_mode":"read","allowed_tools":["read","search"],"disabled_tools":["write"],"launch_disabled_tools":["edit"],"bash_prefixes":["git status"]}},{"launch_index":2,"requested_subagent_type":"clone","resolved_agent_name":"clone","meta_prompt":"desktop permissions UI"}]}`,
 		Status:        "pending",
 	})
 
 	lines := page.taskLaunchModalLines(page.pendingPerms[0], 72)
 	text := renderLinesText(lines)
-	for _, want := range []string{"[^ 2 launches]", "[! read-only tools]", "[# Router: explorer]", "SUBAGENTS", "(1) explorer · read-only tools", "backend/core service architecture", "(2) parallel", "desktop permissions UI", "FULL PROMPT", "Prompt · 11 words", "Map files and summarize findings.", "[Ctrl+P] Show full prompt", "┌─ Prompt"} {
+	for _, want := range []string{"[^ 2 launches]", "[! read-only tools]", "[# Router: finder]", "SUBAGENTS", "(1) finder · read-only tools", "backend/core service architecture", "(2) clone", "desktop permissions UI", "FULL PROMPT", "Prompt · 11 words", "Map files and summarize findings.", "[Ctrl+P] Show full prompt", "┌─ Prompt"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected task launch layout to contain %q, got:\n%s", want, text)
 		}
@@ -93,7 +93,7 @@ func TestTaskLaunchPermissionModalPromptToggleShowsFullPrompt(t *testing.T) {
 		SessionID:     "session-1",
 		ToolName:      "task",
 		Requirement:   "task_launch",
-		ToolArguments: `{"goal":"Inspect repo","description":"Inspect repo","prompt":"one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo twentythree twentyfour twentyfive twentysix twentyseven twentyeight twentynine thirty thirtyone thirtytwo thirtythree thirtyfour thirtyfive thirtysix thirtyseven thirtyeight thirtynine forty fortyone fortytwo fortythree fortyfour","launch_count":1,"resolved_agent_name":"explorer","launches":[{"launch_index":1,"requested_subagent_type":"explorer","resolved_agent_name":"explorer","meta_prompt":"backend/core service architecture"}]}`,
+		ToolArguments: `{"goal":"Inspect repo","description":"Inspect repo","prompt":"one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo twentythree twentyfour twentyfive twentysix twentyseven twentyeight twentynine thirty thirtyone thirtytwo thirtythree thirtyfour thirtyfive thirtysix thirtyseven thirtyeight thirtynine forty fortyone fortytwo fortythree fortyfour","launch_count":1,"resolved_agent_name":"finder","launches":[{"launch_index":1,"requested_subagent_type":"finder","resolved_agent_name":"finder","meta_prompt":"backend/core service architecture"}]}`,
 		Status:        "pending",
 	})
 

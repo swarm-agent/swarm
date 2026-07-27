@@ -147,6 +147,27 @@ func TestLocalProductSessionRejectsUserWithoutSelectedMembership(t *testing.T) {
 	}
 }
 
+func TestLocalProductSessionRejectsInactiveAccountMembership(t *testing.T) {
+	rawStore, identityStore := newSessionTestIdentityStore(t)
+	bootstrapSessionIdentity(t, identityStore)
+	sessions := NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(rawStore))
+	issued, err := sessions.IssueForCurrentSelection()
+	if err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+	membership, ok, err := identityStore.GetAccountUser("acct_session_test", "user_session_test")
+	if err != nil || !ok {
+		t.Fatalf("get account user ok=%v err=%v", ok, err)
+	}
+	membership.Status = "suspended"
+	if _, err := identityStore.PutAccountUser(membership); err != nil {
+		t.Fatalf("put inactive account user: %v", err)
+	}
+	if _, err := sessions.Validate(issued.Token); !errors.Is(err, ErrProductIdentityRequired) {
+		t.Fatalf("inactive membership err=%v, want ErrProductIdentityRequired", err)
+	}
+}
+
 func mustVerifySessionClaims(t *testing.T, rawStore *pebblestore.Store, token string) localProductClaims {
 	t.Helper()
 	key, _, err := pebblestore.NewIdentitySessionStore(rawStore).EnsureLocalProductJWTSigningKey()

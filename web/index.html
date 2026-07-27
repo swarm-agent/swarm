@@ -12,6 +12,35 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <title>Swarm Desktop</title>
+    <script>
+      (() => {
+        const rootReserved = new Set(['settings', 'integrations', 'tools', 'flow'])
+        const workspaceReserved = new Set(['settings', 'tools', 'flow'])
+        const parts = window.location.pathname.split('/').map((part) => {
+          try {
+            return decodeURIComponent(part).trim()
+          } catch {
+            return ''
+          }
+        }).filter(Boolean)
+        if (parts.length !== 2) return
+        const [workspaceSlug, sessionId] = parts
+        if (!workspaceSlug || !sessionId || rootReserved.has(workspaceSlug) || workspaceReserved.has(sessionId)) return
+        const startedAt = performance.now()
+        window.__swarmV3SessionPreload = {
+          sessionId,
+          startedAt,
+          promise: fetch(`/v3/sessions/${encodeURIComponent(sessionId)}`, {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' },
+          }).then((response) => {
+            if (!response.ok) return null
+            return response.json()
+          }).catch(() => null),
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -152,7 +152,7 @@ func run(argv0 string, args []string) error {
 		return launcher.StartBackend(profile, launcher.StartBackendOptions{BuildIfMissing: false, ForceRestart: true, Bootstrap: bootstrap})
 	case "update":
 		if len(args) < 2 {
-			return errors.New("usage: swarm [main|dev] update [apply|dev|dev-step]")
+			return errors.New("usage: swarm [main|dev] update [apply|dev]")
 		}
 		switch args[1] {
 		case "apply":
@@ -166,17 +166,8 @@ func run(argv0 string, args []string) error {
 				return err
 			}
 			return launcher.RunDevUpdate(buildProfile, nil)
-		case "dev-step":
-			if len(args) < 3 {
-				return errors.New("usage: swarm [main|dev] update dev-step <inspect|sync|remote-start|verify>")
-			}
-			buildProfile, err := loadBuildProfile(lane, bypassOverride)
-			if err != nil {
-				return err
-			}
-			return launcher.RunManagedDevUpdateStep(buildProfile, args[2])
 		default:
-			return errors.New("usage: swarm [main|dev] update [apply|dev|dev-step]")
+			return errors.New("usage: swarm [main|dev] update [apply|dev]")
 		}
 	case "backend-build":
 		buildProfile, err := loadBuildProfile(lane, bypassOverride)
@@ -258,7 +249,7 @@ func runInstallCommand(args []string) error {
 		fmt.Println("Swarm service installed, enabled, and started.")
 	} else {
 		fmt.Println("Swarm runtime and launchers installed. No daemon service was installed or started.")
-		fmt.Println("Configure your supervisor to run: /usr/local/bin/swarm server run")
+		fmt.Println("Configure your supervisor to run: /usr/local/bin/swarm main server run")
 	}
 	return nil
 }
@@ -429,22 +420,6 @@ func parseInstallArgs(args []string) (bool, bool, bool, error) {
 		}
 	}
 	return assumeYes, service, false, nil
-}
-
-func parseYesOnly(args []string, usage string) (bool, bool, error) {
-	assumeYes := false
-	for _, arg := range args {
-		switch arg {
-		case "--yes", "-y":
-			assumeYes = true
-		case "help", "-h", "--help":
-			fmt.Println("usage: " + usage)
-			return false, true, nil
-		default:
-			return false, false, fmt.Errorf("usage: %s", usage)
-		}
-	}
-	return assumeYes, false, nil
 }
 
 func parseNoArgs(args []string, usage string) (bool, error) {
@@ -646,7 +621,6 @@ Usage:
   swarm [main|dev] backend-build
   swarm [main|dev] update apply
   swarm [main|dev] update dev
-  swarm [main|dev] update dev-step <inspect|sync|remote-start|verify>
   swarm [main|dev] info
   swarm help
 
@@ -659,6 +633,5 @@ Alias:
   swarmdev auth <swarmctl-auth-args...>
   swarmdev backend-up|down|restart|rebuild|build|info
   swarmdev update dev
-  swarmdev update dev-step <inspect|sync|remote-start|verify>
 `)
 }

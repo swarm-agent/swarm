@@ -1,76 +1,96 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { JSX, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
-import { Bell, Bot, Box, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
-import { debugLog } from '../../../lib/debug-log'
+import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, ListChecks, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
+import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
-import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { cn } from '../../../lib/cn'
-import { useDesktopStore } from '../state/use-desktop-store'
 import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-workspace-launcher'
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
-import { agentStateQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
-import { desktopV3SessionQueryOptions, getCachedDesktopV3SessionSnapshot, hydrateDesktopV3SessionSnapshot, readDesktopV3CachedSession, writeDesktopV3SessionSnapshot } from '../state/desktop-v3-cache'
-import type { DesktopSessionRecord } from '../types/realtime'
+import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
+import type { DesktopNotificationCenterRecord, DesktopSessionRecord } from '../types/realtime'
+import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../chat/types/chat'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
-import { DesktopChatPanel } from '../chat/components/desktop-chat-panel'
-import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
-import { syncWorkspaceOverviewSession } from '../../workspaces/launcher/services/workspace-overview-cache'
 import { buildWorkspaceRouteSlugMap, resolveWorkspaceBySlug, workspaceRouteSlugBase } from '../../workspaces/launcher/services/workspace-route'
 import type { WorkspaceEntry } from '../../workspaces/launcher/types/workspace'
 import { WorkspaceTodoModal } from '../../workspaces/todos/components/workspace-todo-modal'
 import type { WorkspaceTodoItem, WorkspaceTodoOwnerKind, WorkspaceTodoSummary } from '../../workspaces/todos/types'
 import {
   createEmptyWorkspaceTodoSummary,
+  createWorkspaceAITask,
   createWorkspaceTodo,
   deleteAllWorkspaceTodos,
   deleteDoneWorkspaceTodos,
   deleteWorkspaceTodo,
-  fetchWorkspaceTodos,
   reorderWorkspaceTodos,
   setWorkspaceTodoInProgress,
   updateWorkspaceTodo,
 } from '../../workspaces/todos/types'
+import { mergeWorkspaceAITaskMonotonic } from '../../workspaces/todos/ai-task-reconciliation'
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
-import { saveLocalContainerUpdateWarningDismissal } from '../settings/swarm/mutations/save-local-container-update-warning-dismissal'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
-import { localContainerUpdateWarningDismissed, normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
-import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm/api/swarm-targets'
-import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/api/deploy-container'
-import { approveRemoteSwarmPairing, fetchPendingRemoteSwarmPairings, type RemoteSwarmPendingPairing } from '../onboarding/api'
-import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from '../swarm/components/managed-host-link-request-modal'
-import { mapDesktopSession } from '../chat/queries/chat-queries'
-import { buildDesktopChatRouteOptions, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
-import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
+import { normalizeDefaultNewSessionMode, normalizeSidebarHideInactiveHours, type DesktopSessionMode, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import { saveSidebarHideInactiveHours } from '../settings/swarm/mutations/save-sidebar-hide-inactive-hours'
+import { fetchSwarmTargets } from '../swarm/api/swarm-targets'
+import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
+import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
+import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
+import { createDesktopV3CreateOnlySessionOperation, createDesktopV3NewSessionOperation, startDesktopV3CreateOnlySession, startNewDesktopV3Session } from '../session-v3/new-session-flow'
+import { DesktopPlanModal, type DesktopPlanRecoveryInput } from '../chat/components/desktop-plan-modal'
+import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
+import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
+import { preferenceFromModelProfile } from '../chat/services/model-profiles'
+import { resolveDesktopWorktreeSessionDefaults } from '../chat/services/desktop-worktree-session-defaults'
+import { parseDesktopTaskCommand, type DesktopSlashCommand } from '../chat/services/slash-commands'
+import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
-import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, fetchLocalContainerUpdatePlan, startDesktopUpdate, type DesktopUpdateJob, type LocalContainerUpdatePlan } from '../update/api'
-import { fetchFlows, flowsQueryKey, setFlowEnabled, type FlowSummaryRecord } from '../settings/flows/api'
-import { FlowsSettingsPage } from '../settings/flows/components/flows-settings-page'
+import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, startDesktopUpdate, type DesktopUpdateJob } from '../update/api'
 import {
   sessionBackgroundInfo,
   sessionChildDescriptor,
   sessionParentSessionID,
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
+import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
+import { selectSession } from '../state/desktop-v3-cache-wire'
+import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
+import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
+import { fetchAndApplyDesktopV3PlanSnapshot } from '../state/desktop-v3-session-api'
+import { archiveDesktopV3Sessions, jumpDesktopPlanToRevisionCheckpoint, restartDesktopPlanFromRevision, restoreDesktopPlanRevision, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
+import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned, updateSessionV3Title } from '../session-v3/api'
+import { sessionWorkspaceBindingId } from '../services/session-workspace'
+import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
+import { isDesktopV3NavigationHiddenRecord } from '../state/desktop-v3-session-visibility'
+import { clearNotifications, updateNotification } from '../notifications/api'
+import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
+import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-status'
+import { SearchChatsModal } from '../session-search/search-chats-modal'
+import type { DesktopSessionSearchItem } from '../session-search/session-search-api'
+import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortcuts/components/desktop-quick-actions-modal'
+import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
+import { buildReviewWorktreeFixPrompt, resolveReviewWorktreeRepairAgent, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
+import {
+  loadDesktopMainSidebarMode,
+  saveDesktopMainSidebarMode,
+  type DesktopMainSidebarMode,
+} from './main-sidebar-focus-state'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
-const MIN_WORKSPACE_SECTION_HEIGHT_PX = 120
 const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
 const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 28
 const MOBILE_SIDEBAR_SWIPE_MIN_X_PX = 72
 const MOBILE_SIDEBAR_SWIPE_MAX_Y_PX = 48
 type MobileSidebarSwipeState = { startX: number; startY: number; tracking: boolean; completed: boolean; mode: 'open' | 'close' }
-type DesktopV3BootstrapState = { status: 'idle' | 'running' | 'ready' | 'error'; epoch: number; error: string | null }
 const UPDATE_STATUS_REFETCH_INTERVAL_MS = 5 * 60_000
 const SWARM_TARGET_REFETCH_INTERVAL_MS = 10_000
-const PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS = 1_250
 const SIDEBAR_ACTION_RAIL_WIDTH_CLASS = 'w-[52px]'
 const SIDEBAR_ACTION_ROW_CLASS = `grid min-w-0 grid-cols-[minmax(0,1fr)_52px] items-center gap-2.5`
 const SIDEBAR_ACTION_RAIL_CLASS = `grid ${SIDEBAR_ACTION_RAIL_WIDTH_CLASS} shrink-0 grid-cols-[24px_24px] justify-end gap-1`
@@ -79,20 +99,14 @@ const SIDEBAR_ACTION_BUTTON_CLASS = `${SIDEBAR_ACTION_BOX_CLASS} text-[var(--app
 const PWA_DEBUG_QUERY_PARAM = 'pwaDebug'
 const UPDATE_PROGRESS_STEP_TITLES = [
   'Start update helper',
-  'Inspect managed hosts',
-  'Sync managed checkouts',
+  'Check prerequisites',
   'Rebuild/apply Swarm',
-  'Restart/reconnect backends',
-  'Verify/update containers',
+  'Restart/reconnect backend',
+  'Verify update',
 ] as const
-const MANAGED_DEV_UPDATE_PHASES = ['inspect', 'sync', 'rebuild', 'reconnect', 'verify'] as const
 
 function SidebarActionRail({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cn(SIDEBAR_ACTION_RAIL_CLASS, className)}>{children}</div>
-}
-
-function SidebarActionRailSpacer() {
-  return <span aria-hidden="true" className={SIDEBAR_ACTION_BOX_CLASS} />
 }
 
 function PwaLayoutDebugOverlay() {
@@ -141,15 +155,6 @@ interface SidebarWorkspaceLayout {
   ratio: number
 }
 
-interface SidebarResizeState {
-  topPath: string
-  bottomPath: string
-  startY: number
-  topRatio: number
-  bottomRatio: number
-  totalVisibleRatio: number
-}
-
 interface TodoModalState {
   workspacePath: string
   workspaceName: string
@@ -170,15 +175,21 @@ interface StoredDesktopToastState extends DesktopToastState {
   createdAt: number
 }
 
-interface SwarmTargetMenuState {
-  open: boolean
+interface DesktopV3CompactingSessionState {
+  sessionId: string
+  startedAt: number
 }
 
-interface LocalContainerUpdateConfirmState {
-  plan: LocalContainerUpdatePlan
-  remoteSessions: RemoteDeploySession[]
-  managedHostCount: number
-  pendingDismiss: boolean
+type DesktopSessionModeCommand = 'toggle-plan-auto'
+
+interface PlanModalState {
+  sessionId: string
+}
+
+interface GitCommitModalState {
+  workspacePath: string
+  sessionId: string
+  files: GitFileStatus[]
 }
 
 interface GitPanelState {
@@ -186,19 +197,876 @@ interface GitPanelState {
   workspaceName: string
 }
 
-type SidebarFlowStatus = 'active' | 'paused' | 'draft' | 'needs_review' | 'failed'
-
-interface SidebarFlowRow {
-  id: string
-  name: string
-  agent: string
-  enabled: boolean
-  status: SidebarFlowStatus
-  detail: string
-  raw: FlowSummaryRecord
+interface ManagedWorktreeOption {
+  path: string
+  branch: string
+  workspaceID: string
 }
 
-function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onClose }: { state: GitPanelState | null; snapshot: GitSnapshot | null; loading: boolean; error: string | null; onRefresh: () => void; onClose: () => void }) {
+interface WorktreeSessionModalState {
+  presentation: 'dialog' | 'page'
+  workspacePath: string
+  workspaceName: string
+  workspaceSlug: string
+  routeOptions: DesktopChatRoute[]
+  branchPrefix: string
+  managedWorktrees: ManagedWorktreeOption[]
+  settingsLoading: boolean
+}
+
+function desktopRunIntentFromV3(runIntent: V3SessionRunIntent | undefined) {
+  if (!runIntent) return null
+  return {
+    sessionId: runIntent.session_id,
+    runId: runIntent.run_id,
+    status: runIntent.status,
+    blockedReason: runIntent.blocked_reason ?? '',
+    createdAt: runIntent.created_at,
+    startedAt: runIntent.started_at,
+    completedAt: runIntent.completed_at,
+    durationMs: runIntent.duration_ms,
+    cumulativeDurationMs: runIntent.cumulative_duration_ms,
+    updatedAt: runIntent.updated_at,
+    eventSeq: runIntent.event_seq,
+  }
+}
+
+const EMPTY_DESKTOP_V3_RENDERED_MESSAGES: RenderedSessionMessages = {
+  committed: [],
+  pendingUser: [],
+  liveRuns: [],
+  runIntents: [],
+}
+
+function runIntentEqual(left: V3SessionRunIntent | undefined, right: V3SessionRunIntent | undefined): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.session_id === right.session_id
+    && left.run_id === right.run_id
+    && left.status === right.status
+    && left.blocked_reason === right.blocked_reason
+    && left.created_at === right.created_at
+    && left.started_at === right.started_at
+    && left.completed_at === right.completed_at
+    && left.duration_ms === right.duration_ms
+    && left.cumulative_duration_ms === right.cumulative_duration_ms
+    && left.updated_at === right.updated_at
+    && left.event_seq === right.event_seq
+}
+
+function runIntentArrayEqual(left: V3SessionRunIntent[], right: V3SessionRunIntent[]): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (!runIntentEqual(left[index], right[index])) return false
+  }
+  return true
+}
+
+function desktopV3RenderedMessagesEqual(left: RenderedSessionMessages, right: RenderedSessionMessages): boolean {
+  return left.committed === right.committed
+    && pendingUserMessagesEqual(left.pendingUser, right.pendingUser)
+    && liveRunsEqual(left.liveRuns, right.liveRuns)
+    && runIntentArrayEqual(left.runIntents, right.runIntents)
+    && runIntentEqual(left.currentRunIntent, right.currentRunIntent)
+    && runIntentEqual(left.latestRunIntent, right.latestRunIntent)
+}
+
+function desktopV3ConnectionStateFromRealtimeStatus(
+  hydrateStatus: 'idle' | 'loading' | 'cached' | 'ready' | 'error',
+  notificationCount: number,
+): 'idle' | 'connecting' | 'open' | 'error' {
+  if (hydrateStatus === 'loading' && notificationCount === 0) return 'connecting'
+  if (hydrateStatus === 'error') return 'error'
+  if (hydrateStatus === 'ready' || hydrateStatus === 'cached') return 'open'
+  return 'idle'
+}
+
+function pendingUserMessagesEqual(left: RenderedSessionMessages['pendingUser'], right: RenderedSessionMessages['pendingUser']): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index]
+    const b = right[index]
+    if (!a || !b) return false
+    if (a.clientRequestId !== b.clientRequestId
+      || a.messageId !== b.messageId
+      || a.sessionId !== b.sessionId
+      || a.content !== b.content
+      || a.createdAt !== b.createdAt
+      || a.timelineSeq !== b.timelineSeq
+      || a.status !== b.status
+      || a.error !== b.error) return false
+  }
+  return true
+}
+
+function liveRunsEqual(left: RenderedSessionMessages['liveRuns'], right: RenderedSessionMessages['liveRuns']): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (!liveRunEqual(left[index], right[index])) return false
+  }
+  return true
+}
+
+function liveRunEqual(left: RenderedSessionMessages['liveRuns'][number] | undefined, right: RenderedSessionMessages['liveRuns'][number] | undefined): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.sessionId === right.sessionId
+    && left.runId === right.runId
+    && left.status === right.status
+    && left.lastEventSeqSeen === right.lastEventSeqSeen
+    && liveAssistantDraftEqual(left.assistantDraft, right.assistantDraft)
+    && liveAssistantSegmentsEqual(left.assistantSegments, right.assistantSegments)
+    && liveReasoningEqual(left.reasoning, right.reasoning)
+    && liveReasoningByKeyEqual(left.reasoningByKey, right.reasoningByKey)
+    && shallowNestedRecordEqual(left.toolCallsByCallId, right.toolCallsByCallId)
+}
+
+function liveAssistantDraftEqual(
+  left: RenderedSessionMessages['liveRuns'][number]['assistantDraft'],
+  right: RenderedSessionMessages['liveRuns'][number]['assistantDraft'],
+): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.content === right.content
+    && left.updatedAt === right.updatedAt
+    && left.timelineSeq === right.timelineSeq
+}
+
+function liveAssistantSegmentsEqual(
+  left: RenderedSessionMessages['liveRuns'][number]['assistantSegments'],
+  right: RenderedSessionMessages['liveRuns'][number]['assistantSegments'],
+): boolean {
+  if (left === right) return true
+  if ((left?.length ?? 0) !== (right?.length ?? 0)) return false
+  for (let index = 0; index < (left?.length ?? 0); index += 1) {
+    const a = left?.[index]
+    const b = right?.[index]
+    if (!a || !b) return false
+    if (a.id !== b.id || a.content !== b.content || a.createdAt !== b.createdAt || a.updatedAt !== b.updatedAt || a.timelineSeq !== b.timelineSeq) return false
+  }
+  return true
+}
+
+function liveReasoningEqual(
+  left: RenderedSessionMessages['liveRuns'][number]['reasoning'],
+  right: RenderedSessionMessages['liveRuns'][number]['reasoning'],
+): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.key === right.key
+    && left.state === right.state
+    && left.summary === right.summary
+    && left.text === right.text
+    && left.startedAt === right.startedAt
+    && left.completedAt === right.completedAt
+    && left.updatedAt === right.updatedAt
+    && left.timelineSeq === right.timelineSeq
+    && left.updatedSeq === right.updatedSeq
+}
+
+function desktopV3SidebarRowsEqual(left: DesktopV3SidebarRow[], right: DesktopV3SidebarRow[]): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (!desktopV3SidebarRowEqual(left[index], right[index])) return false
+  }
+  return true
+}
+
+function desktopV3SidebarRowEqual(left: DesktopV3SidebarRow | undefined, right: DesktopV3SidebarRow | undefined): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.sessionId === right.sessionId
+    && sessionRecordEqual(left.record, right.record)
+    && projectionEqual(left.projection, right.projection)
+    && runIntentEqual(left.currentRunIntent, right.currentRunIntent)
+    && runIntentRecordEqual(left.runIntents, right.runIntents)
+    && left.pendingPermissionCount === right.pendingPermissionCount
+    && pendingPermissionIdsEqual(left.pendingPermissions, right.pendingPermissions)
+    && left.hasActivePlan === right.hasActivePlan
+    && left.rowType === right.rowType
+    && left.sidebarGroup === right.sidebarGroup
+    && left.branchLabel === right.branchLabel
+    && left.activePlan?.id === right.activePlan?.id
+    && left.planExecution?.status === right.planExecution?.status
+    && left.planExecution?.statusLabel === right.planExecution?.statusLabel
+    && left.planExecution?.checkpointProgress.label === right.planExecution?.checkpointProgress.label
+    && left.planExecution?.activeCheckpointId === right.planExecution?.activeCheckpointId
+    && left.planExecution?.activeCheckpointStatus === right.planExecution?.activeCheckpointStatus
+    && left.planExecution?.currentRunId === right.planExecution?.currentRunId
+}
+
+function sessionRecordEqual(left: DesktopV3SidebarRow['record'], right: DesktopV3SidebarRow['record']): boolean {
+  if (left === right) return true
+  if (left.kind !== right.kind) return false
+  if (left.kind === 'stub' || right.kind === 'stub') {
+    if (left.kind !== 'stub' || right.kind !== 'stub') return false
+    return left.id === right.id
+      && left.needsHydrate === right.needsHydrate
+      && left.discoveredAt === right.discoveredAt
+      && left.discoveredByWorksetId === right.discoveredByWorksetId
+  }
+  const a = left.session
+  const b = right.session
+  return a.id === b.id
+    && a.title === b.title
+    && a.workspace_path === b.workspace_path
+    && a.workspace_name === b.workspace_name
+    && a.mode === b.mode
+    && a.created_at === b.created_at
+    && a.updated_at === b.updated_at
+    && a.message_count === b.message_count
+    && a.last_message_at === b.last_message_at
+    && a.worktree_enabled === b.worktree_enabled
+    && a.worktree_root_path === b.worktree_root_path
+    && a.worktree_base_branch === b.worktree_base_branch
+    && a.worktree_branch === b.worktree_branch
+    && shallowRecordEqual(a.metadata, b.metadata)
+}
+
+function projectionEqual(left: DesktopV3SidebarRow['projection'], right: DesktopV3SidebarRow['projection']): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.session_id === right.session_id
+    && left.last_event_seq === right.last_event_seq
+    && left.projection_high_watermark_seq === right.projection_high_watermark_seq
+    && left.updated_at === right.updated_at
+}
+
+function runIntentRecordEqual(left: Record<string, V3SessionRunIntent>, right: Record<string, V3SessionRunIntent>): boolean {
+  const leftKeys = Object.keys(left)
+  const rightKeys = Object.keys(right)
+  if (leftKeys.length !== rightKeys.length) return false
+  for (const key of leftKeys) {
+    if (!runIntentEqual(left[key], right[key])) return false
+  }
+  return true
+}
+
+function pendingPermissionIdsEqual(left: DesktopV3SidebarRow['pendingPermissions'], right: DesktopV3SidebarRow['pendingPermissions']): boolean {
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index]?.id !== right[index]?.id || left[index]?.status !== right[index]?.status) return false
+  }
+  return true
+}
+
+function liveReasoningByKeyEqual(
+  left: RenderedSessionMessages['liveRuns'][number]['reasoningByKey'],
+  right: RenderedSessionMessages['liveRuns'][number]['reasoningByKey'],
+): boolean {
+  const leftKeys = Object.keys(left ?? {})
+  const rightKeys = Object.keys(right ?? {})
+  if (leftKeys.length !== rightKeys.length) return false
+  for (const key of leftKeys) {
+    if (!liveReasoningEqual(left?.[key], right?.[key])) return false
+  }
+  return true
+}
+
+function shallowNestedRecordEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false
+  const a = left as Record<string, unknown>
+  const b = right as Record<string, unknown>
+  const aKeys = Object.keys(a)
+  const bKeys = Object.keys(b)
+  if (aKeys.length !== bKeys.length) return false
+  for (const key of aKeys) {
+    if (!shallowRecordEqual(a[key], b[key])) return false
+  }
+  return true
+}
+
+function shallowRecordEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false
+  const a = left as Record<string, unknown>
+  const b = right as Record<string, unknown>
+  const aKeys = Object.keys(a)
+  const bKeys = Object.keys(b)
+  if (aKeys.length !== bKeys.length) return false
+  for (const key of aKeys) {
+    if (!Object.is(a[key], b[key])) return false
+  }
+  return true
+}
+
+function metadataStringValue(metadata: Record<string, unknown> | undefined, key: string): string {
+  const value = metadata?.[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+export function desktopSidebarWorkspacePathForSession(
+  session: Pick<DesktopSessionRecord, 'workspacePath' | 'metadata'>,
+  workspacePathByBindingId?: ReadonlyMap<string, string>,
+): string {
+  const bindingID = sessionWorkspaceBindingId(session.metadata)
+  if (bindingID) {
+    const boundPath = workspacePathByBindingId?.get(bindingID)?.trim()
+    if (boundPath) return boundPath
+  }
+
+  const sourceWorkspacePath = metadataStringValue(session.metadata, 'swarm_v3_source_workspace_path')
+  if (sourceWorkspacePath) return sourceWorkspacePath
+
+  return session.workspacePath.trim()
+}
+
+export function desktopRouteWorkspacePathForSession(
+  session: Pick<DesktopSessionRecord, 'workspacePath' | 'metadata'>,
+  workspacePathByBindingId: ReadonlyMap<string, string>,
+  knownWorkspacePaths: ReadonlySet<string>,
+): string {
+  const bindingID = sessionWorkspaceBindingId(session.metadata)
+  if (bindingID) {
+    const boundPath = workspacePathByBindingId.get(bindingID)?.trim()
+    if (boundPath) return boundPath
+  }
+
+  const candidates = [
+    metadataStringValue(session.metadata, 'swarm_v3_source_workspace_path'),
+    session.workspacePath.trim(),
+  ]
+  return candidates.find((path) => path && knownWorkspacePaths.has(path)) ?? ''
+}
+
+export function desktopSessionRecordFromV3SidebarRow(row: DesktopV3SidebarRow): DesktopSessionRecord {
+  const record = row.record
+  const session = record.kind === 'full'
+    ? record.session
+    : {
+        id: record.id,
+        title: record.id,
+        workspace_path: '',
+        workspace_name: 'Unknown workspace',
+        mode: 'auto',
+        created_at: record.discoveredAt ?? 0,
+        updated_at: record.discoveredAt ?? 0,
+        message_count: 0,
+        last_message_at: record.discoveredAt ?? 0,
+      }
+  const runIntent = desktopRunIntentFromV3(row.currentRunIntent)
+  const runIntentActive = runIntent ? ['pending_executor', 'running', 'dispatch_blocked'].includes(runIntent.status) : false
+  const runIntentBlocked = runIntent?.status === 'dispatch_blocked'
+  const pendingPermissionCount = row.pendingPermissionCount
+  const liveStatus = pendingPermissionCount > 0 || runIntentBlocked ? 'blocked' : runIntentActive ? 'running' : 'idle'
+  const updatedAt = row.projection?.updated_at ?? session.updated_at ?? session.last_message_at ?? session.created_at ?? 0
+
+  return {
+    id: session.id,
+    title: record.kind === 'stub' ? `${session.id} · needs hydrate` : session.title || session.id,
+    workspacePath: session.workspace_path || '',
+    workspaceName: session.workspace_name || 'Unknown workspace',
+    mode: session.mode || 'auto',
+    lastEventSeq: row.projection?.last_event_seq,
+    projectionHighWatermarkSeq: row.projection?.projection_high_watermark_seq,
+    messageCount: session.message_count ?? 0,
+    updatedAt,
+    createdAt: session.created_at ?? updatedAt,
+    permissionsHydrated: true,
+    worktreeEnabled: session.worktree_enabled,
+    worktreeRootPath: session.worktree_root_path,
+    worktreeBaseBranch: session.worktree_base_branch,
+    worktreeBranch: session.worktree_branch,
+    lifecycle: null,
+    runIntent,
+    metadata: {
+      ...(session.metadata ?? {}),
+      swarm_v3_has_active_plan: row.hasActivePlan,
+      swarm_v3_active_plan_id: row.activePlan?.id,
+      swarm_v3_active_plan_title: row.activePlan?.title,
+      swarm_v3_sidebar_row_type: row.rowType,
+      swarm_v3_sidebar_group: row.sidebarGroup,
+      swarm_v3_branch_label: row.branchLabel,
+      swarm_v3_plan_execution_status: row.planExecution?.status,
+      swarm_v3_plan_status_label: row.planExecution?.statusLabel,
+      swarm_v3_plan_checkpoint_progress: row.planExecution?.checkpointProgress.label,
+      swarm_v3_plan_checkpoint_active_index: row.planExecution?.checkpointProgress.activeIndex,
+      swarm_v3_plan_checkpoint_completed_count: row.planExecution?.checkpointProgress.completedCount,
+      swarm_v3_plan_checkpoint_total_count: row.planExecution?.checkpointProgress.totalCount,
+      swarm_v3_active_checkpoint_id: row.planExecution?.activeCheckpointId,
+      swarm_v3_active_checkpoint_title: row.planExecution?.activeCheckpointTitle,
+      swarm_v3_active_checkpoint_status: row.planExecution?.activeCheckpointStatus,
+      swarm_v3_plan_current_run_id: row.planExecution?.currentRunId,
+      swarm_v3_plan_current_session_id: row.planExecution?.currentSessionId,
+    },
+    live: {
+      runId: runIntentActive ? runIntent?.runId ?? null : null,
+      agentName: null,
+      startedAt: runIntentActive ? runIntent?.startedAt ?? null : null,
+      status: liveStatus,
+      step: 0,
+      toolName: null,
+      sidebarToolName: null,
+      toolCallId: null,
+      toolArguments: null,
+      toolOutput: '',
+      retainedToolName: null,
+      retainedToolCallId: null,
+      retainedToolArguments: null,
+      retainedToolOutput: '',
+      retainedToolState: null,
+      toolHistory: [],
+      summary: record.kind === 'stub' ? 'Session not hydrated yet' : null,
+      lastEventType: null,
+      lastEventAt: runIntent?.updatedAt ?? null,
+      error: null,
+      seq: row.projection?.last_event_seq ?? 0,
+      assistantDraft: '',
+      retainedAssistantSegments: [],
+      reasoningSummary: '',
+      reasoningText: '',
+      reasoningState: 'idle',
+      reasoningSegment: 0,
+      reasoningStartedAt: null,
+      awaitingAck: false,
+    },
+    pendingPermissions: row.pendingPermissions,
+    pendingPermissionCount,
+    usage: null,
+  }
+}
+
+interface WorktreeSettingsWire {
+  workspace_path?: string
+  enabled?: boolean
+  use_current_branch?: boolean
+  base_branch?: string
+  branch_name?: string
+  updated_at?: number
+}
+
+interface ManagedWorktreeWire {
+  path?: string
+  workspace_id?: string
+  branch?: string
+  detached?: boolean
+  exists?: boolean
+  managed?: boolean
+}
+
+interface WorktreeSettingsResponseWire {
+  ok?: boolean
+  worktrees?: WorktreeSettingsWire
+  managed?: ManagedWorktreeWire[]
+}
+
+function normalizeWorktreeBranchPrefix(value: string | undefined): string {
+  const trimmed = (value ?? '').trim().replace(/^\/+|\/+$/g, '')
+  if (!trimmed) return ''
+  if (trimmed.toLowerCase().endsWith('/<id>')) {
+    return trimmed.slice(0, -'/<id>'.length).replace(/^\/+|\/+$/g, '')
+  }
+  return trimmed
+}
+
+function normalizeManagedWorktreeBranch(value: string | undefined): string {
+  return (value ?? '').trim().replace(/^refs\/heads\//, '')
+}
+
+async function fetchWorktreeSessionSettings(workspacePath: string): Promise<{ branchPrefix: string; managedWorktrees: ManagedWorktreeOption[] }> {
+  const params = new URLSearchParams()
+  const normalizedWorkspacePath = workspacePath.trim()
+  if (normalizedWorkspacePath) params.set('workspace_path', normalizedWorkspacePath)
+  const response = await requestJson<WorktreeSettingsResponseWire>(`/v1/worktrees?${params.toString()}`)
+  const branchPrefix = normalizeWorktreeBranchPrefix(response.worktrees?.branch_name)
+  if (!branchPrefix) {
+    throw new Error('Worktree settings did not return a branch prefix')
+  }
+  const managedWorktrees = (response.managed ?? [])
+    .map((item) => ({
+      path: item.path?.trim() ?? '',
+      branch: normalizeManagedWorktreeBranch(item.branch),
+      workspaceID: item.workspace_id?.trim() ?? '',
+      exists: item.exists === true,
+      managed: item.managed === true,
+      detached: item.detached === true,
+    }))
+    .filter((item) => item.path && item.branch && item.exists && item.managed && !item.detached)
+    .sort((left, right) => left.branch.localeCompare(right.branch))
+    .map(({ path, branch, workspaceID }) => ({ path, branch, workspaceID }))
+  return { branchPrefix, managedWorktrees }
+}
+
+export function titleToWorktreeBranchSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+function normalizeWorktreeBranchSuffix(value: string): string {
+  return value.trim().replace(/^\/+|\/+$/g, '')
+}
+
+function composeWorktreeBranchName(prefix: string, suffix: string): string {
+  const normalizedPrefix = normalizeWorktreeBranchPrefix(prefix)
+  const normalizedSuffix = normalizeWorktreeBranchSuffix(suffix)
+  return normalizedSuffix ? `${normalizedPrefix}/${normalizedSuffix}` : normalizedPrefix
+}
+
+type SpeechRecognitionResultEventLike = Event & {
+  results: ArrayLike<{ 0?: { transcript?: string }; isFinal?: boolean }>
+}
+
+type SpeechRecognitionErrorEventLike = Event & {
+  error?: string
+  message?: string
+}
+
+type SpeechRecognitionLike = {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  maxAlternatives: number
+  onstart: ((event: Event) => void) | null
+  onend: ((event: Event) => void) | null
+  onresult: ((event: SpeechRecognitionResultEventLike) => void) | null
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null
+  start: () => void
+  stop: () => void
+  abort: () => void
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
+
+type SpeechRecognitionWindow = Window & typeof globalThis & {
+  SpeechRecognition?: SpeechRecognitionConstructor
+  webkitSpeechRecognition?: SpeechRecognitionConstructor
+}
+
+function browserSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {
+  if (typeof window === 'undefined') return null
+  const speechWindow = window as SpeechRecognitionWindow
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null
+}
+
+function appendBrowserDictation(base: string, transcript: string): string {
+  const addition = transcript.replace(/\s+/g, ' ').trim()
+  if (!addition) return base
+  const trimmedBase = base.replace(/[ \t]+$/g, '')
+  if (!trimmedBase) return addition
+  const separator = /[\s\n]$/.test(trimmedBase) || /^[,.;:!?]/.test(addition) ? '' : ' '
+  return `${trimmedBase}${separator}${addition}`
+}
+
+function browserDictationError(error: string, message = ''): string {
+  if (error === 'not-allowed' || error === 'service-not-allowed') return 'Microphone permission was denied or blocked.'
+  if (error === 'audio-capture') return 'No microphone was found.'
+  if (error === 'no-speech') return 'No speech was detected. Try again.'
+  return message.trim() || 'Browser dictation could not start.'
+}
+
+function useBrowserDictation(value: string, onValueChange: (value: string) => void, disabled: boolean) {
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
+  const valueRef = useRef(value)
+  const [supported, setSupported] = useState(false)
+  const [listening, setListening] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    valueRef.current = value
+  }, [value])
+
+  useEffect(() => {
+    const Recognition = browserSpeechRecognitionConstructor()
+    setSupported(Boolean(Recognition))
+    if (!Recognition) return
+    const recognition = new Recognition()
+    recognition.continuous = false
+    recognition.interimResults = false
+    recognition.lang = typeof navigator === 'undefined' ? 'en-US' : navigator.language || 'en-US'
+    recognition.maxAlternatives = 1
+    recognition.onstart = () => {
+      setListening(true)
+      setError(null)
+    }
+    recognition.onend = () => setListening(false)
+    recognition.onerror = (event) => {
+      setListening(false)
+      setError(browserDictationError(event.error ?? '', event.message))
+    }
+    recognition.onresult = (event) => {
+      let transcript = ''
+      for (let index = 0; index < event.results.length; index += 1) {
+        transcript += ` ${event.results[index]?.[0]?.transcript ?? ''}`
+      }
+      const nextValue = appendBrowserDictation(valueRef.current, transcript)
+      valueRef.current = nextValue
+      onValueChange(nextValue)
+    }
+    recognitionRef.current = recognition
+    return () => {
+      recognitionRef.current = null
+      try {
+        recognition.abort()
+      } catch {
+        // Ignore browser recognition teardown races.
+      }
+    }
+  }, [onValueChange])
+
+  useEffect(() => {
+    if (!disabled || !listening) return
+    try {
+      recognitionRef.current?.stop()
+    } catch {
+      recognitionRef.current?.abort()
+    }
+  }, [disabled, listening])
+
+  const toggle = useCallback(() => {
+    const recognition = recognitionRef.current
+    if (!recognition || disabled) return
+    if (listening) {
+      recognition.stop()
+      return
+    }
+    setError(null)
+    try {
+      recognition.start()
+    } catch (startError) {
+      setError(startError instanceof Error ? startError.message : 'Browser dictation could not start.')
+    }
+  }, [disabled, listening])
+
+  return { supported, listening, error, toggle }
+}
+
+function BackgroundTaskForm({ presentation, workspaceName, request, busy, error, onRequestChange, onSubmit, onClose }: {
+  presentation: 'dialog' | 'page'
+  workspaceName: string
+  request: string
+  busy: boolean
+  error: string | null
+  onRequestChange: (value: string) => void
+  onSubmit: (request: string) => void
+  onClose: () => void
+}) {
+  const dictation = useBrowserDictation(request, onRequestChange, busy)
+  if (presentation === 'page') {
+    return (
+      <section data-testid="mobile-task-page" className="flex h-full min-h-0 flex-col bg-[var(--app-surface)] pt-[var(--app-safe-area-top)] font-mono">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--app-border)] px-4 py-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]">
+              <ListChecks size={16} aria-hidden="true" />
+              <span>Background task</span>
+            </div>
+            <div className="mt-1 truncate text-xs text-[var(--app-text-subtle)]">{workspaceName}</div>
+          </div>
+          <button type="button" className="grid size-11 shrink-0 touch-manipulation place-items-center rounded-xl text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]" onClick={onClose} disabled={busy} aria-label="Back to workspace">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col justify-end">
+          <p className="px-4 pb-1 pt-5 text-sm leading-6 text-[var(--app-text-muted)]">
+            Send Swarm a background task. Sessions start automatically.
+          </p>
+          <DesktopV3AgenticComposer
+            draft={request}
+            onDraftChange={onRequestChange}
+            placeholder="What should Swarm do?"
+            inputLabel="Send Swarm a background task"
+            disabled={busy}
+            busy={busy}
+            canSubmit={Boolean(request.trim()) && !busy}
+            error={error}
+            onSubmit={onSubmit}
+            mode="auto"
+            showModePicker={false}
+            executionLabel="background"
+            currentAgent="swarm"
+            selectedPrimaryAgent="swarm"
+            agents={[]}
+            modelOptions={[]}
+            selectedModelKey=""
+            thinking="off"
+          />
+        </div>
+      </section>
+    )
+  }
+  const content = (
+    <>
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--app-border)] px-4 py-3 sm:px-5 sm:py-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]">
+              <ListChecks size={16} aria-hidden="true" />
+              <span>Background task</span>
+            </div>
+            <div className="mt-1 truncate text-xs text-[var(--app-text-subtle)]">{workspaceName}</div>
+          </div>
+          <button type="button" className="grid size-11 shrink-0 touch-manipulation place-items-center rounded-xl text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]" onClick={onClose} disabled={busy} aria-label="Close background task dialog">
+            <X size={18} />
+          </button>
+        </div>
+        <form
+          className="flex min-h-0 flex-1 flex-col"
+          onSubmit={(event) => {
+            event.preventDefault()
+            onSubmit(request)
+          }}
+        >
+          <div data-creation-form-scroll className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-4 py-4 [-webkit-overflow-scrolling:touch] sm:px-5">
+            <p className="text-xs leading-5 text-[var(--app-text-muted)]">
+              Describe the work once. Swarm will run it in the background in a managed session, so you can close this window and follow progress from the active session list.
+            </p>
+          <label className="grid min-h-0 gap-1.5 text-xs text-[var(--app-text-muted)]">
+            <span>What should Swarm do?</span>
+            <div className="relative">
+              <textarea
+                autoFocus={presentation === 'dialog'}
+                value={request}
+                onChange={(event) => onRequestChange(event.target.value)}
+                disabled={busy}
+                rows={6}
+                className="min-h-32 w-full resize-y rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-3 pr-14 text-[16px] leading-6 text-[var(--app-text)] outline-none focus:border-[var(--app-border-strong)] max-sm:max-h-[34dvh]"
+                placeholder="Describe a complete task for this workspace…"
+              />
+              {dictation.supported ? (
+                <button type="button" className={cn('absolute bottom-2 right-2 grid size-11 touch-manipulation place-items-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]', dictation.listening && 'border-[var(--app-primary)] text-[var(--app-primary)]')} onClick={dictation.toggle} disabled={busy} aria-pressed={dictation.listening} aria-label={dictation.listening ? 'Stop microphone dictation' : 'Start microphone dictation'} title={dictation.listening ? 'Stop dictation' : 'Dictate task'}>
+                  <Mic size={18} className={dictation.listening ? 'animate-pulse' : undefined} aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+          </label>
+            {dictation.error ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs text-[var(--app-warning)]" role="alert">{dictation.error}</div> : null}
+            {error ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs text-[var(--app-warning)]" role="alert">{error}</div> : null}
+          </div>
+          <div className="grid shrink-0 grid-cols-2 gap-3 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 max-sm:pb-[calc(0.75rem+var(--app-safe-area-bottom))] sm:flex sm:justify-end sm:px-5">
+            <Button className="min-h-11" type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+            <Button className="min-h-11" type="submit" disabled={busy || !request.trim()}>{busy ? 'Starting…' : 'Start task'}</Button>
+          </div>
+        </form>
+    </>
+  )
+  return (
+    <Dialog>
+      <DialogBackdrop onClick={busy ? undefined : onClose} />
+      <DialogPanel className="w-[min(560px,100%)] gap-0 overflow-hidden p-0 font-mono">{content}</DialogPanel>
+    </Dialog>
+  )
+}
+
+function WorktreeSessionForm({ presentation, state, title, branch, selectedExistingPath, busy, authorityPending, error, onTitleChange, onBranchChange, onSelectedExistingPathChange, onSubmit, onClose }: {
+  presentation: 'dialog' | 'page'
+  state: WorktreeSessionModalState | null
+  title: string
+  branch: string
+  selectedExistingPath: string
+  busy: boolean
+  authorityPending: boolean
+  error: string | null
+  onTitleChange: (value: string) => void
+  onBranchChange: (value: string) => void
+  onSelectedExistingPathChange: (value: string) => void
+  onSubmit: () => void
+  onClose: () => void
+}) {
+  const reusingExistingWorktree = Boolean(selectedExistingPath.trim())
+  if (!state) {
+    return presentation === 'page' ? (
+      <section data-testid="mobile-worktree-page" className="flex h-full items-center justify-center bg-[var(--app-surface)] pt-[var(--app-safe-area-top)] font-mono text-sm text-[var(--app-text-muted)]">
+        Loading worktree settings…
+      </section>
+    ) : null
+  }
+  const content = (
+    <>
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--app-border)] px-4 py-3 sm:px-5 sm:py-4">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-[var(--app-text)]">Worktree Session</div>
+            <div className="mt-1 truncate text-xs text-[var(--app-text-subtle)]">{state.workspaceName || state.workspacePath}</div>
+          </div>
+          <button type="button" className="grid size-11 shrink-0 touch-manipulation place-items-center rounded-xl text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]" onClick={onClose} disabled={busy} title="Close" aria-label={presentation === 'page' ? 'Back to workspace' : 'Close worktree session dialog'}>
+            <X size={18} />
+          </button>
+        </div>
+        <form
+          className="flex min-h-0 flex-1 flex-col"
+          onSubmit={(event) => {
+            event.preventDefault()
+            onSubmit()
+          }}
+        >
+          <div data-creation-form-scroll className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-4 py-4 [-webkit-overflow-scrolling:touch] sm:px-5">
+          <label className="grid gap-1.5 text-xs text-[var(--app-text-muted)]">
+            <span>Title:</span>
+            <input
+              name="title"
+              className="min-h-11 w-full min-w-0 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[16px] text-[var(--app-text)] outline-none focus:border-[var(--app-border-strong)]"
+              value={title}
+              onChange={(event) => onTitleChange(event.target.value)}
+              disabled={busy}
+              autoFocus={presentation === 'dialog'}
+            />
+          </label>
+          <label className="grid gap-1.5 text-xs text-[var(--app-text-muted)]">
+            <span>Reuse existing worktree:</span>
+            <select
+              className="min-h-11 w-full min-w-0 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[16px] text-[var(--app-text)] outline-none focus:border-[var(--app-border-strong)]"
+              value={selectedExistingPath}
+              onChange={(event) => onSelectedExistingPathChange(event.target.value)}
+              disabled={busy || state.settingsLoading || state.managedWorktrees.length === 0}
+            >
+              <option value="">Create a new worktree branch…</option>
+              {state.managedWorktrees.map((item) => (
+                <option key={item.path} value={item.path}>{item.branch}</option>
+              ))}
+            </select>
+            <span className="text-[11px] text-[var(--app-text-subtle)]">Select a previous managed worktree to start a new conversation in it without creating or overwriting a branch.</span>
+          </label>
+          {!reusingExistingWorktree ? (
+            <label className="grid gap-1.5 text-xs text-[var(--app-text-muted)]">
+              <span>Branch suffix:</span>
+              <div className="flex min-h-11 min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-sm focus-within:border-[var(--app-border-strong)]">
+                <span className="flex max-w-[45%] shrink-0 items-center truncate border-r border-[var(--app-border)] bg-[var(--app-bg)] px-3 font-mono text-[var(--app-text-muted)]">
+                  {state.settingsLoading ? 'Loading…' : `${state.branchPrefix}/`}
+                </span>
+                <input
+                  name="branch"
+                  className="min-w-0 flex-1 bg-transparent px-3 text-[16px] text-[var(--app-text)] outline-none"
+                  value={branch}
+                  onChange={(event) => onBranchChange(event.target.value)}
+                  disabled={busy || state.settingsLoading || !state.branchPrefix.trim()}
+                  autoComplete="off"
+                />
+              </div>
+              <span className="text-[11px] text-[var(--app-text-subtle)]">Prefix comes from Worktree settings. Change it in Settings → Worktrees.</span>
+            </label>
+          ) : null}
+            {error ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs text-[var(--app-warning)]" role="alert">{error}</div> : null}
+          </div>
+          <div className="grid shrink-0 grid-cols-2 gap-3 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 max-sm:pb-[calc(0.75rem+var(--app-safe-area-bottom))] sm:flex sm:justify-end sm:px-5">
+            <Button className="min-h-11" type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+            <Button className="min-h-11" type="submit" disabled={busy || authorityPending || state.settingsLoading || !state.branchPrefix.trim() || !title.trim() || (!reusingExistingWorktree && !normalizeWorktreeBranchSuffix(branch))}>
+              {busy ? 'Creating…' : authorityPending ? 'Loading settings…' : 'Create session'}
+            </Button>
+          </div>
+        </form>
+    </>
+  )
+  if (presentation === 'page') {
+    return (
+      <section data-testid="mobile-worktree-page" className="flex h-full min-h-0 flex-col bg-[var(--app-surface)] pt-[var(--app-safe-area-top)] font-mono">
+        {content}
+      </section>
+    )
+  }
+  return (
+    <Dialog>
+      <DialogBackdrop onClick={busy ? undefined : onClose} />
+      <DialogPanel className="w-[min(520px,100%)] gap-0 overflow-hidden p-0 font-mono">{content}</DialogPanel>
+    </Dialog>
+  )
+}
+
+function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onCommit, onClose }: { state: GitPanelState | null; snapshot: GitSnapshot | null; loading: boolean; error: string | null; onRefresh: () => void; onCommit: (files: GitFileStatus[]) => void; onClose: () => void }) {
   if (!state) return null
   const files = snapshot?.files ?? []
   return (
@@ -220,7 +1088,7 @@ function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onClose
           </div>
         </div>
         {error ? <div className="border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs text-[var(--app-warning)]">{error}</div> : null}
-        {snapshot?.has_git ? (
+        {loading && !snapshot ? <div className="border border-[var(--app-border)] px-3 py-4 text-xs text-[var(--app-text-subtle)]">Loading Git status…</div> : snapshot?.has_git ? (
           <>
             <div className="grid gap-2 text-xs text-[var(--app-text-muted)] sm:grid-cols-4">
               <div className="border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Branch</div><div className="truncate text-[var(--app-text)]">{snapshot.branch || 'detached'}</div></div>
@@ -239,38 +1107,11 @@ function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onClose
                 ))}
               </div>
             </div>
+            {files.length > 0 ? <div className="flex justify-end"><Button type="button" onClick={() => onCommit(files)}>Commit changes…</Button></div> : null}
           </>
         ) : <div className="border border-[var(--app-border)] px-3 py-4 text-xs text-[var(--app-text-subtle)]">No git repository detected for this workspace.</div>}
       </DialogPanel>
     </Dialog>
-  )
-}
-
-function DesktopNotificationsOverlay({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const connectionState = useDesktopStore((state) => state.connectionState)
-  const notificationCenter = useDesktopStore((state) => state.notificationCenter)
-  const updateNotificationRecord = useDesktopStore((state) => state.updateNotificationRecord)
-  return (
-    <DesktopNotificationsModal
-      open={open}
-      onOpenChange={onOpenChange}
-      notifications={notificationCenter.items}
-      summary={notificationCenter.summary}
-      loading={notificationCenter.loading}
-      connectionState={connectionState}
-      onMarkRead={async (record) => {
-        await updateNotificationRecord(record.id, { read: true })
-      }}
-      onAcknowledge={async (record) => {
-        await updateNotificationRecord(record.id, { acked: true, status: 'resolved' })
-      }}
-      onMute={async (record) => {
-        await updateNotificationRecord(record.id, { muted: true })
-      }}
-      onClearAll={async () => {
-        await useDesktopStore.getState().clearNotifications()
-      }}
-    />
   )
 }
 
@@ -297,7 +1138,7 @@ function upsertWorkspaceTodoItem(existing: WorkspaceTodoItem[], nextItem: Worksp
   const updated = existing.map((item) => {
     if (item.id === nextItem.id) {
       found = true
-      return nextItem
+      return item.aiState || nextItem.aiState ? mergeWorkspaceAITaskMonotonic(item, nextItem) : nextItem
     }
     if (clearOtherAgentInProgress && item.ownerKind === 'agent' && item.inProgress) {
       return { ...item, inProgress: false }
@@ -326,21 +1167,6 @@ function gitFileStatusLabel(file: GitFileStatus): string {
   if (file.staged) labels.push('staged')
   if (file.modified) labels.push('modified')
   return labels.join(' + ') || file.kind || 'changed'
-}
-
-function gitSummaryTooltip(status: GitSnapshot | null | undefined): string {
-  if (!status?.has_git) return 'No git repository detected'
-  const files = status.files ?? []
-  const header = [
-    status.branch ? `branch ${status.branch}` : 'detached',
-    status.upstream ? `upstream ${status.upstream}` : '',
-    status.ahead_count > 0 ? `ahead ${status.ahead_count}` : '',
-    status.behind_count > 0 ? `behind ${status.behind_count}` : '',
-  ].filter(Boolean).join(' · ')
-  if (files.length === 0) return `${header || 'git'} · clean`
-  const lines = files.slice(0, 12).map((file) => `${gitFileStatusLabel(file)}: ${file.path}`)
-  if (files.length > 12) lines.push(`+${files.length - 12} more files`)
-  return [header, ...lines].filter(Boolean).join('\n')
 }
 
 function buildTemporaryWorkspaceEntry(path: string, workspaceName: string): WorkspaceEntry {
@@ -372,68 +1198,6 @@ function buildTemporaryWorkspaceEntry(path: string, workspaceName: string): Work
     gitCommittedAdditions: 0,
     gitCommittedDeletions: 0,
   }
-}
-
-function connectionTone(connectionState: 'idle' | 'connecting' | 'open' | 'closed' | 'error'): 'muted' | 'success' | 'warning' | 'danger' {
-  switch (connectionState) {
-    case 'open':
-      return 'success'
-    case 'connecting':
-      return 'warning'
-    case 'error':
-      return 'danger'
-    default:
-      return 'muted'
-  }
-}
-
-function workspaceSectionHeightStyle(ratio: number, totalVisibleRatio: number, collapsed: boolean): CSSProperties {
-  if (collapsed) {
-    return {
-      flexShrink: 0,
-      flexGrow: 0,
-    }
-  }
-  const safeTotal = totalVisibleRatio > 0 ? totalVisibleRatio : 1
-  const safeRatio = normalizeRatio(ratio)
-  return {
-    flexGrow: safeRatio,
-    flexBasis: `${(safeRatio / safeTotal) * 100}%`,
-    minHeight: MIN_WORKSPACE_SECTION_HEIGHT_PX,
-  }
-}
-
-function formatLocalContainerUpdateTarget(plan: LocalContainerUpdatePlan): string {
-  const target = plan.target ?? {}
-  if (plan.dev_mode) {
-    const postRebuildFingerprint = target.post_rebuild_fingerprint?.trim()
-    const fingerprint = postRebuildFingerprint || target.fingerprint?.trim()
-    return fingerprint ? `Target dev image fingerprint: ${fingerprint.slice(0, 12)}` : 'Target dev image fingerprint unavailable'
-  }
-  const version = target.version?.trim()
-  const digest = target.digest_ref?.trim()
-  if (version && digest) {
-    return `Target ${version} (${digest})`
-  }
-  if (version) {
-    return `Target ${version}`
-  }
-  if (digest) {
-    return `Target ${digest}`
-  }
-  return 'Target version unavailable'
-}
-
-function localContainerUpdateAffected(plan: LocalContainerUpdatePlan): boolean {
-  return (plan.summary?.affected ?? 0) > 0 || (plan.summary?.needs_update ?? 0) > 0 || (plan.summary?.unknown ?? 0) > 0 || (plan.summary?.errors ?? 0) > 0
-}
-
-function remoteDeployUpdateSessionCount(sessions: RemoteDeploySession[]): number {
-  return sessions.filter((session) => session.status?.trim().toLowerCase() === 'attached' && Boolean(session.ssh_session_target?.trim())).length
-}
-
-function managedHostUpdateTargetCount(targets: SwarmTarget[]): number {
-  return targets.filter((target) => target.selectable && target.relationship?.trim().toLowerCase() === 'managed' && target.kind !== 'self').length
 }
 
 function updateJobMessage(job: DesktopUpdateJob | null): string {
@@ -491,19 +1255,13 @@ function updateProgressStepIndex(job: DesktopUpdateJob | null): number {
     return UPDATE_PROGRESS_STEP_TITLES.length
   }
   if (message.includes('container image') || message.includes('container images') || message.includes('local and remote') || message.includes('verify')) {
-    return 5
-  }
-  if (message.includes('restart') || message.includes('reconnect')) {
     return 4
   }
-  if (message.includes('rebuild') || message.includes('build') || message.includes('applying') || message.includes('installing') || message.includes('staging') || message.includes('fingerprint')) {
+  if (message.includes('restart') || message.includes('reconnect')) {
     return 3
   }
-  if (message.includes('syncing') || message.includes('sync')) {
+  if (message.includes('rebuild') || message.includes('build') || message.includes('applying') || message.includes('installing') || message.includes('staging') || message.includes('fingerprint')) {
     return 2
-  }
-  if (message.includes('inspect') || message.includes('checking managed')) {
-    return 1
   }
   return status === 'running' ? 1 : 0
 }
@@ -538,222 +1296,55 @@ function loadSidebarWorkspaceLayout(): Record<string, SidebarWorkspaceLayout> {
   }
 }
 
-function connectionDotClass(connectionState: 'idle' | 'connecting' | 'open' | 'closed' | 'error'): string {
-  switch (connectionTone(connectionState)) {
-    case 'success':
-      return 'bg-emerald-500'
-    case 'warning':
-      return 'bg-amber-400'
-    case 'danger':
-      return 'bg-rose-500'
-    default:
-      return 'bg-[var(--app-border-strong)]'
-  }
-}
-
-function swarmKindDotClass(kind: SwarmTarget['kind'] | undefined, online = true): string {
-  if (!online) {
-    return 'bg-[var(--app-warning)]'
-  }
-  if (kind === 'remote' || kind === 'mirrored') {
-    return 'bg-[var(--app-info)]'
-  }
-  return 'bg-[var(--app-success)]'
-}
-
-function swarmHostDisplayName(hostSwarmID: string | undefined, targets: SwarmTarget[]): string {
-  const normalizedHostSwarmID = hostSwarmID?.trim() ?? ''
-  if (!normalizedHostSwarmID) {
-    return ''
-  }
-  const host = targets.find((target) => target.swarm_id.trim() === normalizedHostSwarmID)
-  return host?.name?.trim() || normalizedHostSwarmID
-}
-
-function swarmTargetPrimaryLabel(target: SwarmTarget): string {
-  return target.name?.trim() || target.swarm_id?.trim() || 'Swarm'
-}
-
-function swarmTargetSecondaryLabel(target: SwarmTarget, targets: SwarmTarget[]): string {
-  if (target.kind === 'mirrored') {
-    const source = swarmHostDisplayName(target.host_swarm_id, targets)
-    return source || 'managed host'
-  }
-  return `${swarmKindLabel(target)} · ${swarmTargetStatusLabel(target)}`
-}
-
-function swarmTargetTitle(target: SwarmTarget, targets: SwarmTarget[]): string {
-  const secondary = swarmTargetSecondaryLabel(target, targets)
-  const openURL = swarmTargetOpenURL(target)
-  return `${secondary}${!target.current && target.online && openURL ? ' · open in new window' : ''}`
-}
-
-function swarmRoleLabel(target: Pick<SwarmTarget, 'role'> | null | undefined): string {
-  const role = target?.role?.trim().toLowerCase() || ''
-  switch (role) {
-    case 'managed':
-      return 'Managed Host'
-    case 'child':
-      return 'Child'
-    case 'controller':
-    case 'parent':
-    case 'master':
-      return 'Master'
-    default:
-      return role ? role.replace(/_/g, ' ') : 'Swarm'
-  }
-}
-
-function swarmKindLabel(target: SwarmTarget): string {
-  if (target.kind === 'self') {
-    return swarmRoleLabel(target)
-  }
-  if (target.kind === 'host' || target.relationship?.trim().toLowerCase() === 'managed') {
-    return 'host'
-  }
-  return target.kind === 'remote' ? 'remote' : 'local'
-}
-
-function swarmTargetStatusLabel(target: SwarmTarget): string {
-  if (target.current) {
-    return 'active here'
-  }
-  if (target.online) {
-    return 'online'
-  }
-  const status = target.attach_status?.trim()
-  if (!status || status === 'attached') {
-    return 'offline'
-  }
-  return status
-}
-
-function swarmTargetOpenURL(target: SwarmTarget): string {
-  const raw = target.desktop_url?.trim() || target.backend_url?.trim() || ''
-  if (!raw) {
-    return ''
-  }
-  try {
-    const parsed = new URL(raw)
-    if (parsed.hostname.includes('.ts.net')) {
-      parsed.port = ''
-      parsed.pathname = ''
-      parsed.search = ''
-      parsed.hash = ''
-      return parsed.toString().replace(/\/$/, '')
-    }
-  } catch {
-    return raw
-  }
-  return raw
-}
-
-function flowAgentLabel(record: FlowSummaryRecord): string {
-  return record.agent_detail?.name?.trim()
-    || record.definition.agent.profile_name?.trim()
-    || 'unassigned'
-}
-
-function sidebarFlowStatus(record: FlowSummaryRecord): SidebarFlowStatus {
-  if (record.last_run?.status === 'failed') return 'failed'
-  if (record.last_run?.status === 'review') return 'needs_review'
-  if (!record.definition.enabled) return record.history_count > 0 ? 'paused' : 'draft'
-  const statuses = record.assignment_statuses ?? []
-  if (statuses.some((status) => status.pending_sync || status.status === 'target_offline' || status.status === 'target_unusable')) {
-    return 'needs_review'
-  }
-  return 'active'
-}
-
-function sidebarFlowStatusLabel(status: SidebarFlowStatus): string {
-  switch (status) {
-    case 'active':
-      return 'active'
-    case 'paused':
-      return 'paused'
-    case 'draft':
-      return 'draft'
-    case 'needs_review':
-      return 'review'
-    case 'failed':
-      return 'failed'
-  }
-}
-
-function sidebarFlowDotClass(status: SidebarFlowStatus): string {
-  switch (status) {
-    case 'active':
-      return 'bg-[var(--app-success)]'
-    case 'needs_review':
-      return 'bg-[var(--app-warning)]'
-    case 'failed':
-      return 'bg-[var(--app-danger)]'
-    default:
-      return 'bg-[var(--app-text-subtle)]'
-  }
-}
-
-function sidebarFlowDetail(record: FlowSummaryRecord): string {
-  const workspace = record.workspace_detail?.workspace_path?.trim()
-    || record.definition.workspace.workspace_path?.trim()
-    || record.definition.workspace.host_workspace_path?.trim()
-    || 'workspace'
-  const target = record.target_detail?.name?.trim()
-    || record.definition.target.name?.trim()
-    || record.definition.target.swarm_id?.trim()
-    || record.definition.target.kind?.trim()
-    || 'target'
-  return `${fallbackWorkspaceNameFromPath(workspace)} · ${target}`
-}
-
-function sidebarFlowRow(record: FlowSummaryRecord): SidebarFlowRow {
-  return {
-    id: record.definition.flow_id,
-    name: record.definition.name?.trim() || record.definition.flow_id,
-    agent: flowAgentLabel(record),
-    enabled: record.definition.enabled,
-    status: sidebarFlowStatus(record),
-    detail: sidebarFlowDetail(record),
-    raw: record,
-  }
+export function sidebarWorkspaceContextLabel(workspaceName: string, branch: string | null | undefined): string {
+  const normalizedWorkspaceName = workspaceName.trim()
+  const normalizedBranch = branch?.trim() ?? ''
+  if (!normalizedBranch) return normalizedWorkspaceName
+  return normalizedWorkspaceName ? `${normalizedBranch} · ${normalizedWorkspaceName}` : normalizedBranch
 }
 
 function sessionPendingPermissionCount(session: DesktopSessionRecord): number {
-  return countApprovalRequiredPermissions(session.pendingPermissions, session.mode)
+  return session.pendingPermissionCount
 }
 
 function sessionHasPendingPermission(session: DesktopSessionRecord): boolean {
   return sessionPendingPermissionCount(session) > 0
 }
 
-function sessionStatusTone(session: DesktopSessionRecord): 'blocked' | 'running' | 'error' | 'idle' {
+export function sessionActiveRunIntent(session: DesktopSessionRecord) {
+  const runIntent = session.runIntent
+  if (!runIntent) {
+    return null
+  }
+  const status = runIntent.status.trim().toLowerCase()
+  return status === 'pending_executor' || status === 'running' ? runIntent : null
+}
+
+function sessionHasCanonicalActiveRun(session: DesktopSessionRecord): boolean {
+  return Boolean(sessionActiveRunIntent(session)?.runId.trim())
+}
+
+export function sessionStatusTone(session: DesktopSessionRecord): 'blocked' | 'running' | 'error' | 'idle' {
   if (sessionHasPendingPermission(session)) {
     return 'blocked'
   }
-
-  switch (session.live.status) {
-    case 'blocked':
-      return session.live.runId || session.live.startedAt !== null || session.live.awaitingAck ? 'running' : 'idle'
-    case 'starting':
-    case 'running':
-      return 'running'
-    case 'error':
-      return 'error'
-    default:
-      return 'idle'
+  if (sessionHasCanonicalActiveRun(session)) {
+    return 'running'
   }
+  return session.live.status === 'error' ? 'error' : 'idle'
 }
 
 function sessionMeta(session: DesktopSessionRecord): string | null {
   if (sessionHasPendingPermission(session)) {
     return 'Blocked • needs approval'
   }
+  if (!sessionHasCanonicalActiveRun(session)) {
+    return session.live.status === 'error' ? 'failed' : null
+  }
 
   switch (session.live.status) {
     case 'blocked':
       return session.live.toolName ? `running ${session.live.toolName}` : 'running'
-    case 'error':
-      return 'failed'
     case 'starting':
       return 'running'
     case 'running':
@@ -776,6 +1367,10 @@ function formatDurationCompact(durationMs: number): string {
   return `${minutes}m${String(seconds).padStart(2, '0')}s`
 }
 
+function nonNegativeDuration(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+}
+
 function formatRelativeTime(timestamp: number | null, now: number): string {
   if (typeof timestamp !== 'number' || timestamp <= 0) {
     return ''
@@ -788,16 +1383,16 @@ function formatRelativeTime(timestamp: number | null, now: number): string {
 
   const minutes = Math.floor(deltaMs / 60_000)
   if (minutes < 60) {
-    return `${minutes} min${minutes === 1 ? '' : 's'} ago`
+    return `${minutes} min${minutes === 1 ? '' : 's'}`
   }
 
   const hours = Math.floor(minutes / 60)
   if (hours < 24) {
-    return `${hours} hr${hours === 1 ? '' : 's'} ago`
+    return `${hours} hr${hours === 1 ? '' : 's'}`
   }
 
   const days = Math.floor(hours / 24)
-  return `${days} day${days === 1 ? '' : 's'} ago`
+  return `${days} day${days === 1 ? '' : 's'}`
 }
 
 function sessionOriginLabel(session: DesktopSessionRecord, routeOptions: DesktopChatRoute[], fallbackSwarmName: string): string {
@@ -879,81 +1474,6 @@ function sessionStatusTooltip(session: DesktopSessionRecord): string {
   return lines.join('\n')
 }
 
-function workspaceWorktreeTitle(enabled: boolean, busy: boolean): string {
-  if (busy) {
-    return 'Updating worktree setting…'
-  }
-  return enabled
-    ? 'Worktrees on for new sessions. Click to turn them off.'
-    : 'Worktrees off for new sessions. Click to turn them on.'
-}
-
-function renderWorkspaceGitBar(args: {
-  workspace: WorkspaceEntry
-  worktreeBusy: boolean
-  gitSnapshot: GitSnapshot | null
-  gitLoading: boolean
-  gitError: string | null
-  onOpenGit: () => void
-  onToggle: () => void
-}): JSX.Element {
-  const { workspace, worktreeBusy, gitSnapshot, gitLoading, gitError, onOpenGit, onToggle } = args
-  const enabled = workspace.worktreeEnabled
-  const title = workspaceWorktreeTitle(enabled, worktreeBusy)
-  const branch = gitSnapshot?.branch?.trim() || workspace.gitBranch?.trim() || 'git'
-  const ahead = Math.max(0, Number(gitSnapshot?.ahead_count ?? workspace.gitAheadCount ?? 0))
-  const behind = Math.max(0, Number(gitSnapshot?.behind_count ?? workspace.gitBehindCount ?? 0))
-  const syncLabel = `↑${ahead} ↓${behind}`
-  const modified = Math.max(0, Number(gitSnapshot?.modified_count ?? workspace.gitModifiedCount ?? 0))
-  const untracked = Math.max(0, Number(gitSnapshot?.untracked_count ?? workspace.gitUntrackedCount ?? 0))
-  const dirtyDetailParts: string[] = []
-  if (modified > 0) {
-    dirtyDetailParts.push(`${modified}M`)
-  }
-  if (untracked > 0) {
-    dirtyDetailParts.push(`${untracked}U`)
-  }
-  const dirtyLabel = dirtyDetailParts.join(' ')
-  const gitTitle = gitError ? `Git realtime error: ${gitError}` : gitSummaryTooltip(gitSnapshot)
-
-  return (
-    <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'pb-2 pl-6 pr-1 pt-0.5 text-[11px]')}>
-      <button
-        type="button"
-        className="flex min-w-0 items-center gap-2 overflow-hidden text-left hover:text-[var(--app-text)]"
-        onClick={onOpenGit}
-        title={gitTitle}
-        aria-label={`Open git status for ${workspace.workspaceName}`}
-      >
-        <span className={cn('truncate font-semibold text-[var(--app-text-muted)]', gitLoading && 'animate-pulse')}>{branch}</span>
-        <span className="shrink-0 text-[var(--app-text-muted)]">/</span>
-        <span className="shrink-0 text-[var(--app-text-muted)]">{syncLabel}</span>
-        {dirtyLabel ? <span className="shrink-0 text-[var(--app-text-muted)]">/</span> : null}
-        {dirtyLabel ? <span className="shrink-0 text-[10px] text-[var(--app-text-muted)]">{dirtyLabel}</span> : null}
-      </button>
-      <SidebarActionRail>
-        <SidebarActionRailSpacer />
-        <button
-          type="button"
-          className={cn(
-            SIDEBAR_ACTION_BUTTON_CLASS,
-            'text-[10px]',
-            enabled ? 'text-[var(--app-selection)]' : 'text-[var(--app-text-muted)] opacity-45 hover:opacity-85',
-            worktreeBusy && 'cursor-progress opacity-70',
-          )}
-          onClick={onToggle}
-          aria-busy={worktreeBusy}
-          aria-disabled={worktreeBusy}
-          aria-pressed={enabled}
-          title={title}
-        >
-          wt
-        </button>
-      </SidebarActionRail>
-    </div>
-  )
-}
-
 function sidebarSummaryLabel(session: DesktopSessionRecord): string {
   const compactLabel = sidebarCompactionLabel(session)
   if (compactLabel) {
@@ -970,6 +1490,10 @@ function sidebarSummaryLabel(session: DesktopSessionRecord): string {
     summary.includes('\n')
     || normalized === 'starting...'
     || normalized === 'starting…'
+    || normalized === 'assistant responding...'
+    || normalized === 'assistant responding…'
+    || normalized === 'streaming response...'
+    || normalized === 'streaming response…'
     || normalized.startsWith('tool.')
     || normalized.startsWith('tool:')
     || normalized.startsWith('turn.')
@@ -1009,26 +1533,111 @@ function sidebarCompactionLabel(session: DesktopSessionRecord): string {
   }
 }
 
-function sessionIsActive(session: DesktopSessionRecord): boolean {
-  return sessionHasPendingPermission(session) || session.live.awaitingAck || ['starting', 'running', 'blocked'].includes(session.live.status)
+function sidebarLiveToolLabel(session: DesktopSessionRecord): string {
+  if (!['starting', 'running', 'blocked'].includes(session.live.status)) {
+    return ''
+  }
+  return session.live.sidebarToolName?.trim() ?? ''
 }
 
-function sessionActivityAnchor(session: DesktopSessionRecord): number {
-  return session.live.startedAt
-    ?? (session.lifecycle?.startedAt && session.lifecycle.startedAt > 0 ? session.lifecycle.startedAt : null)
-    ?? session.live.lastEventAt
-    ?? session.updatedAt
-    ?? 0
+function metadataText(session: DesktopSessionRecord, key: string): string {
+  const value = session.metadata?.[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function sessionSidebarRowType(session: DesktopSessionRecord): 'plan_session' | 'single_chat' {
+  return metadataText(session, 'swarm_v3_sidebar_row_type') === 'plan_session' ? 'plan_session' : 'single_chat'
+}
+
+type SidebarBaseSessionGroupID = 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
+type SidebarSessionGroupID = SidebarBaseSessionGroupID | 'pinned'
+
+function sessionSidebarGroup(session: DesktopSessionRecord): SidebarBaseSessionGroupID {
+  const group = metadataText(session, 'swarm_v3_sidebar_group')
+  return group === 'needs_review' || group === 'in_progress' || group === 'archived' ? group : 'active_chats'
+}
+
+function sessionManuallyPinnedInSidebar(session: DesktopSessionRecord): boolean {
+  return session.metadata?.[DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY] === true
+}
+
+function sessionAllowsManualSidebarPin(session: DesktopSessionRecord): boolean {
+  return sessionSidebarGroup(session) === 'active_chats'
+}
+
+export function sessionSidebarDisplayGroup(session: DesktopSessionRecord): SidebarSessionGroupID {
+  const group = sessionSidebarGroup(session)
+  if (group === 'active_chats' && sessionManuallyPinnedInSidebar(session)) {
+    return 'pinned'
+  }
+  return group
+}
+
+function sessionPlanCheckpointProgressLabel(session: DesktopSessionRecord): string {
+  return metadataText(session, 'swarm_v3_plan_checkpoint_progress')
+}
+
+function metadataNumber(session: DesktopSessionRecord, key: string): number {
+  const value = session.metadata?.[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function sessionPlanCheckpointCounts(session: DesktopSessionRecord): { activeIndex: number; completedCount: number; totalCount: number } {
+  return {
+    activeIndex: metadataNumber(session, 'swarm_v3_plan_checkpoint_active_index'),
+    completedCount: metadataNumber(session, 'swarm_v3_plan_checkpoint_completed_count'),
+    totalCount: metadataNumber(session, 'swarm_v3_plan_checkpoint_total_count'),
+  }
+}
+
+function sessionWorkspaceLabel(session: DesktopSessionRecord): string {
+  return session.workspaceName?.trim() || fallbackWorkspaceNameFromPath(session.workspacePath || '') || 'Workspace'
+}
+
+function sessionBranchLabel(session: DesktopSessionRecord): string {
+  return metadataText(session, 'swarm_v3_branch_label') || session.worktreeBranch?.trim() || session.gitBranch?.trim() || ''
+}
+
+function sessionRowMetadataLabel(session: DesktopSessionRecord): string {
+  const seen = new Set<string>()
+  return [sessionWorkspaceLabel(session), sessionBranchLabel(session)]
+    .filter((value) => {
+      const normalized = value.trim().toLowerCase()
+      if (!normalized || seen.has(normalized)) return false
+      seen.add(normalized)
+      return true
+    })
+    .join(' · ')
+}
+
+function sessionIsActive(session: DesktopSessionRecord): boolean {
+  return sessionHasPendingPermission(session) || sessionHasCanonicalActiveRun(session)
+}
+
+export function sessionIsMobileActive(session: DesktopSessionRecord): boolean {
+  const group = sessionSidebarDisplayGroup(session)
+  return sessionIsActive(session) || group === 'needs_review' || group === 'in_progress'
+}
+
+function positiveTimestamp(value: number | null | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+}
+
+function sessionStartedSortAnchor(session: DesktopSessionRecord): number {
+  const activeRun = sessionActiveRunIntent(session)
+  return positiveTimestamp(activeRun?.startedAt)
+    || positiveTimestamp(activeRun?.createdAt)
+    || positiveTimestamp(session.live.startedAt)
+    || positiveTimestamp(session.createdAt)
+    || positiveTimestamp(session.updatedAt)
 }
 
 function sessionDurableActivityAt(session: DesktopSessionRecord): number {
-  if (session.updatedAt > 0) {
-    return session.updatedAt
+  const updatedAt = positiveTimestamp(session.updatedAt)
+  if (updatedAt > 0) {
+    return updatedAt
   }
-  if (session.createdAt > 0) {
-    return session.createdAt
-  }
-  return 0
+  return positiveTimestamp(session.createdAt)
 }
 
 function sessionSidebarDisplayTimestamp(session: DesktopSessionRecord): number | null {
@@ -1041,13 +1650,16 @@ function sessionSidebarDisplayTimestamp(session: DesktopSessionRecord): number |
 
 function sessionSidebarSortAnchor(session: DesktopSessionRecord): number {
   if (sessionIsActive(session)) {
-    return sessionActivityAnchor(session)
+    return sessionStartedSortAnchor(session)
   }
-  return sessionDurableActivityAt(session)
+  return sessionDurableActivityAt(session) || sessionStartedSortAnchor(session)
 }
 
 function sessionShouldPinInSidebar(session: DesktopSessionRecord, now: number): boolean {
   if (sessionIsActive(session)) {
+    return true
+  }
+  if (sessionAllowsManualSidebarPin(session) && sessionManuallyPinnedInSidebar(session)) {
     return true
   }
 
@@ -1057,66 +1669,94 @@ function sessionShouldPinInSidebar(session: DesktopSessionRecord, now: number): 
     && sessionSidebarSortAnchor(session) > 0
 }
 
-function compareSidebarSessions(left: DesktopSessionRecord, right: DesktopSessionRecord, now: number): number {
+export function compareSidebarSessions(left: DesktopSessionRecord, right: DesktopSessionRecord, now: number): number {
   const leftPinned = sessionShouldPinInSidebar(left, now)
   const rightPinned = sessionShouldPinInSidebar(right, now)
   if (leftPinned !== rightPinned) {
     return leftPinned ? -1 : 1
   }
 
+  const leftActive = sessionIsActive(left)
+  const rightActive = sessionIsActive(right)
   if (leftPinned && rightPinned) {
-    const anchorDelta = sessionSidebarSortAnchor(left) - sessionSidebarSortAnchor(right)
+    if (leftActive !== rightActive) {
+      return leftActive ? -1 : 1
+    }
+
+    const leftAnchor = sessionSidebarSortAnchor(left)
+    const rightAnchor = sessionSidebarSortAnchor(right)
+    const anchorDelta = leftActive && rightActive
+      ? leftAnchor - rightAnchor
+      : rightAnchor - leftAnchor
     if (anchorDelta !== 0) {
       return anchorDelta
     }
   }
 
-  const updatedDelta = right.updatedAt - left.updatedAt
-  if (updatedDelta !== 0) {
-    return updatedDelta
+  if (!leftActive && !rightActive) {
+    const activityDelta = sessionSidebarSortAnchor(right) - sessionSidebarSortAnchor(left)
+    if (activityDelta !== 0) {
+      return activityDelta
+    }
   }
 
-  const createdDelta = right.createdAt - left.createdAt
-  if (createdDelta !== 0) {
-    return createdDelta
+  const startedDelta = sessionStartedSortAnchor(right) - sessionStartedSortAnchor(left)
+  if (startedDelta !== 0) {
+    return startedDelta
+  }
+
+  const updatedDelta = positiveTimestamp(right.updatedAt) - positiveTimestamp(left.updatedAt)
+  if (updatedDelta !== 0) {
+    return updatedDelta
   }
 
   return left.id.localeCompare(right.id)
 }
 
-function sessionStatusDetail(session: DesktopSessionRecord, now: number): string {
+export function sessionStatusDetail(session: DesktopSessionRecord, now: number): string {
   return formatRelativeTime(sessionSidebarDisplayTimestamp(session), now)
 }
 
-function sessionTimerLabel(session: DesktopSessionRecord, now: number): string {
-  const activeSince = session.live.startedAt ?? session.live.lastEventAt ?? session.updatedAt
-  return typeof activeSince === 'number' && activeSince > 0
-    ? formatDurationCompact(now - activeSince)
-    : 'live'
+function activeRunTimerAnchor(activeRun: NonNullable<ReturnType<typeof sessionActiveRunIntent>>): number {
+  return positiveTimestamp(activeRun.startedAt)
+    || positiveTimestamp(activeRun.createdAt)
+    || positiveTimestamp(activeRun.updatedAt)
 }
 
-function sessionActivityLabel(session: DesktopSessionRecord): string {
+export function sessionTimerLabel(session: DesktopSessionRecord, now: number): string {
+  const activeRun = sessionActiveRunIntent(session)
+  if (!activeRun) return ''
+
+  const storedRunDurationMs = nonNegativeDuration(activeRun.durationMs)
+  const startedAt = activeRunTimerAnchor(activeRun)
+  const loopDurationMs = startedAt > 0 ? Math.max(0, now - startedAt) : storedRunDurationMs
+  if (loopDurationMs === null) return ''
+
+  const cumulativeDurationMs = nonNegativeDuration(activeRun.cumulativeDurationMs)
+  const loopTimer = formatDurationCompact(loopDurationMs)
+  const overallDurationMs = cumulativeDurationMs !== null ? cumulativeDurationMs + loopDurationMs : loopDurationMs
+  const overallTimer = formatDurationCompact(overallDurationMs)
+  return cumulativeDurationMs !== null && overallTimer !== loopTimer ? `${loopTimer} (${overallTimer})` : loopTimer
+}
+
+function sessionTimerTooltip(session: DesktopSessionRecord): string {
+  return sessionActiveRunIntent(session) ? DESKTOP_V3_RUN_TIMER_TOOLTIP : ''
+}
+
+export function sessionActivityLabel(session: DesktopSessionRecord): string {
   if (sessionHasPendingPermission(session)) {
     return 'Needs approval'
   }
 
-  switch (session.live.status) {
-    case 'blocked':
-      return session.live.toolName?.trim()
-        || sidebarSummaryLabel(session)
-        || 'running'
-    case 'error':
-      return 'failed'
-    case 'starting':
-      return 'Starting'
-    case 'running':
-      return sidebarCompactionLabel(session)
-        || session.live.toolName?.trim()
-        || sidebarSummaryLabel(session)
-        || 'running'
-    default:
-      return ''
+  if (!sessionHasCanonicalActiveRun(session)) {
+    return session.live.status === 'error' ? 'failed' : ''
   }
+
+  const toolLabel = sidebarLiveToolLabel(session)
+  return sidebarCompactionLabel(session)
+    || toolLabel
+    || sidebarSummaryLabel(session)
+    || ''
 }
 
 interface SidebarSessionNode {
@@ -1128,10 +1768,12 @@ interface SidebarSessionNode {
   assignmentLabel: string | null
 }
 
-function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number): SidebarSessionNode[] {
-  const sortedSessions = sessions.length > 1
-    ? [...sessions].sort((left, right) => compareSidebarSessions(left, right, now))
-    : sessions
+export function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number, preserveInputOrder = false): SidebarSessionNode[] {
+  const sortedSessions = preserveInputOrder
+    ? sessions
+    : sessions.length > 1
+      ? [...sessions].sort((left, right) => compareSidebarSessions(left, right, now))
+      : sessions
   const byID = new Map<string, SidebarSessionNode>()
   for (const session of sortedSessions) {
     const descriptor = sessionChildDescriptor(session)
@@ -1147,7 +1789,7 @@ function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number):
 
   const roots: SidebarSessionNode[] = []
   const attachNode = (node: SidebarSessionNode, seen: Set<string>) => {
-    const parentSessionID = sessionParentSessionID(node.session)
+    const parentSessionID = node.kind === 'root' ? '' : sessionParentSessionID(node.session)
     const parentNode = parentSessionID ? byID.get(parentSessionID) : undefined
     if (!parentNode || parentNode === node || seen.has(parentNode.session.id)) {
       node.depth = 0
@@ -1188,7 +1830,9 @@ function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number):
       }
     }
   }
-  sortNodes(uniqueRoots)
+  if (!preserveInputOrder) {
+    sortNodes(uniqueRoots)
+  }
   return uniqueRoots
 }
 
@@ -1196,6 +1840,8 @@ interface SessionAgentSummary {
   total: number
   running: number
 }
+
+const EMPTY_SESSION_AGENT_SUMMARY: SessionAgentSummary = { total: 0, running: 0 }
 
 function summarizeSubagentDescendants(node: SidebarSessionNode): SessionAgentSummary {
   let total = 0
@@ -1239,6 +1885,38 @@ function nodeContainsDescendantSession(node: SidebarSessionNode, sessionID: stri
   return false
 }
 
+function sidebarNodeLastActivityAt(node: SidebarSessionNode): number {
+  return Math.max(sessionDurableActivityAt(node.session), ...node.children.map(sidebarNodeLastActivityAt))
+}
+
+function sidebarNodeIsProtected(node: SidebarSessionNode, selectedSessionID: string): boolean {
+  return node.session.id === selectedSessionID
+    || nodeContainsDescendantSession(node, selectedSessionID)
+    || sessionIsActive(node.session)
+    || (sessionAllowsManualSidebarPin(node.session) && sessionManuallyPinnedInSidebar(node.session))
+    || node.children.some((child) => sidebarNodeIsProtected(child, selectedSessionID))
+}
+
+export function filterInactiveSidebarSessionTrees(nodes: SidebarSessionNode[], now: number, hideAfterHours: number | null, selectedSessionID = ''): { nodes: SidebarSessionNode[]; hiddenCount: number } {
+  if (hideAfterHours === null) return { nodes, hiddenCount: 0 }
+  const cutoff = now - hideAfterHours * 60 * 60 * 1000
+  const visible: SidebarSessionNode[] = []
+  let hiddenCount = 0
+  for (const node of nodes) {
+    const ordinary = sessionSidebarDisplayGroup(node.session) === 'active_chats'
+    if (ordinary && sidebarNodeLastActivityAt(node) < cutoff && !sidebarNodeIsProtected(node, selectedSessionID)) {
+      hiddenCount += 1
+    } else {
+      visible.push(node)
+    }
+  }
+  return { nodes: visible, hiddenCount }
+}
+
+function sidebarNodeSessionIDs(node: SidebarSessionNode): string[] {
+  return [node.session.id, ...node.children.flatMap(sidebarNodeSessionIDs)]
+}
+
 function flattenVisibleSidebarSessionNodes(
   nodes: SidebarSessionNode[],
   expandedSessionIDs: Record<string, boolean>,
@@ -1263,270 +1941,749 @@ function flattenVisibleSidebarSessionNodes(
   return output
 }
 
-function agentSummaryDescriptor(summary: SessionAgentSummary): { primary: string; secondary: string; secondaryRunning: boolean } {
-  const total = summary.total
-  const running = summary.running
-  if (running > 0) {
-    return { primary: `${running} live`, secondary: `${total} agents`, secondaryRunning: false }
-  }
-  return { primary: `${total} agents`, secondary: '', secondaryRunning: false }
-}
-
 interface SessionRowProps {
   active: boolean
   now: number
   session: DesktopSessionRecord
   fallbackSwarmName: string
   routeOptions: DesktopChatRoute[]
-  workspaceSlug: string
+  workspaceSlug: string | ((session: DesktopSessionRecord) => string)
   depth?: number
   childLabel?: string | null
   childAssignmentLabel?: string | null
   childKind?: SidebarSessionNode['kind']
   agentSummary: SessionAgentSummary
   agentsExpanded: boolean
-  onSelect: (sessionId: string) => void
+  compactingStartedAt?: number | null
+  pendingAction?: 'pin' | 'archive' | 'rename' | null
+  selectionMode?: boolean
+  selectionGroup?: SidebarSessionGroupID
+  selected?: boolean
+  onSelect: (sessionId: string) => void | boolean
+  onEnterSelectionMode?: (group: SidebarSessionGroupID) => void
+  onToggleSelected?: (sessionId: string, range: boolean) => void
   onPrefetch: (sessionId: string) => void
   onToggleAgents: (sessionId: string) => void
+  onTogglePinned: (sessionId: string) => void
+  onArchive: (sessionId: string) => void
+  onRename: (sessionId: string, title: string) => Promise<void>
 }
 
-function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', agentSummary, agentsExpanded, onSelect, onPrefetch, onToggleAgents }: SessionRowProps) {
-  const session = useDesktopStore((state) => state.sessions[initialSession.id] ?? initialSession)
-  const activeSession = sessionIsActive(session)
+const SessionRow = memo(function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childAssignmentLabel = null, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
+  const session = initialSession
+  const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
+  const activeSession = compactingActive || sessionIsActive(session)
   const originLabel = sessionOriginLabel(session, routeOptions, fallbackSwarmName)
   const backgroundInfo = sessionBackgroundInfo(session, originLabel)
-  const timerLabel = activeSession ? sessionTimerLabel(session, now) : ''
-  const bottomLeftLabel = backgroundInfo?.targetLabel || originLabel
-  const bottomRightLabel = backgroundInfo?.active
-    ? timerLabel
-    : activeSession
-      ? sessionActivityLabel(session) || sessionMeta(session) || ''
-      : sessionStatusDetail(session, now) || sessionMeta(session) || ''
-  const commitSummary = sessionCommitSummary(session)
-  const committedFileSummary = sessionCommittedFileSummary(session)
-  const committedDeltaSummary = sessionCommittedDeltaSummary(session)
-  const commitMetaLabel = [commitSummary, committedFileSummary, committedDeltaSummary].filter(Boolean).join(' · ')
-  const tooltip = sessionStatusTooltip(session)
+  const rowWorkspaceSlug = typeof workspaceSlug === 'function' ? workspaceSlug(session) : workspaceSlug
+  const rowType = sessionSidebarRowType(session)
+  const isPlanRow = rowType === 'plan_session'
+  const checkpointProgressLabel = sessionPlanCheckpointProgressLabel(session)
+  const checkpointCounts = sessionPlanCheckpointCounts(session)
+  const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
+  const tooltip = [sessionStatusTooltip(session), sessionTimerTooltip(session)].filter(Boolean).join('\n')
   const isNestedSession = depth > 0
   const nestedAssignmentTitle = isNestedSession && childAssignmentLabel ? childAssignmentLabel : ''
   const rowTitle = nestedAssignmentTitle || session.title || 'New conversation'
-  const visibleChildLabel = childLabel && childLabel !== rowTitle ? childLabel : ''
-  const nestedToneClass = childKind === 'subagent' ? 'text-sky-300/80' : 'text-[var(--app-text-subtle)]'
   const hasAgentChildren = agentSummary.total > 0
-  const agentDescriptor = agentSummaryDescriptor(agentSummary)
-
+  const metadataLabel = sessionRowMetadataLabel(session)
+  const relativeActivityLabel = sessionStatusDetail(session, now)
+  const hasPendingPermission = sessionHasPendingPermission(session)
+  const pendingPermissionAlertActive = hasPendingPermission && !active
+  const rowTimerLabel = pendingPermissionAlertActive
+    ? 'Needs approval'
+    : compactingActive
+      ? compactingTimer
+      : sessionHasCanonicalActiveRun(session)
+        ? sessionTimerLabel(session, now)
+        : relativeActivityLabel
+  const singleStatusLabel = compactingActive
+    ? 'Compacting'
+    : activeSession
+      ? sessionActivityLabel(session)
+      : sessionMeta(session) || ''
+  const rightSideLabel = hasPendingPermission || isPlanRow ? '' : singleStatusLabel
+  const statusTone = sessionStatusTone(session)
+  const showStatusCircle = activeSession || statusTone === 'error'
+  const checkpointTotalCount = Math.max(0, checkpointCounts.totalCount)
+  const checkpointCompletedCount = Math.min(Math.max(0, checkpointCounts.completedCount), checkpointTotalCount)
+  const showPlanProgressBar = isPlanRow && sessionSidebarGroup(session) === 'in_progress' && checkpointTotalCount > 0
+  const checkpointProgressPercent = checkpointTotalCount > 0 ? Math.min(100, (checkpointCompletedCount / checkpointTotalCount) * 100) : 0
+  const checkpointProgressAriaLabel = checkpointProgressLabel || `Checkpoint progress: ${checkpointCompletedCount} of ${checkpointTotalCount} complete`
+  const [actionsOpen, setActionsOpen] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [renameDraft, setRenameDraft] = useState(rowTitle)
+  const [renameError, setRenameError] = useState<string | null>(null)
+  const actionMenuRef = useRef<HTMLSpanElement | null>(null)
+  const actionMenuCloseTimerRef = useRef<number | null>(null)
+  const clearActionMenuCloseTimer = useCallback(() => {
+    if (actionMenuCloseTimerRef.current !== null) {
+      window.clearTimeout(actionMenuCloseTimerRef.current)
+      actionMenuCloseTimerRef.current = null
+    }
+  }, [])
+  const closeActionMenu = useCallback(() => {
+    clearActionMenuCloseTimer()
+    setActionsOpen(false)
+  }, [clearActionMenuCloseTimer])
+  useEffect(() => clearActionMenuCloseTimer, [clearActionMenuCloseTimer])
+  useEffect(() => {
+    if (!actionsOpen) {
+      return undefined
+    }
+    const handlePointerDownOutside = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Node && actionMenuRef.current?.contains(target)) {
+        return
+      }
+      closeActionMenu()
+    }
+    document.addEventListener('pointerdown', handlePointerDownOutside, true)
+    return () => document.removeEventListener('pointerdown', handlePointerDownOutside, true)
+  }, [actionsOpen, closeActionMenu])
+  const hasDetailsRowContent = Boolean(backgroundInfo)
+  const showDetailsRow = !isPlanRow && hasDetailsRowContent
+  const pinned = sessionAllowsManualSidebarPin(session) && sessionManuallyPinnedInSidebar(session)
+  const pinDisabled = pendingAction !== null || !sessionAllowsManualSidebarPin(session)
+  const archiveDisabled = pendingAction !== null
+  const actionButtonBaseClass = cn(
+    'inline-flex h-6 w-full shrink-0 items-center gap-2 rounded border-0 bg-transparent px-2 text-left font-inherit text-[11px] leading-6 text-[var(--app-text-subtle)] transition-[background-color,color] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent',
+  )
+  const hoverActionButtonClass = 'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border-0 bg-transparent p-0 text-[var(--app-text-subtle)] opacity-0 transition-[background-color,color,opacity] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] focus:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-default disabled:opacity-40'
+  const actionMenuButtonClass = cn(
+    hoverActionButtonClass,
+    actionsOpen ? 'opacity-100 text-[var(--app-text)]' : null,
+  )
+  const pinActionControl = sessionAllowsManualSidebarPin(session) ? (
+    <button
+      type="button"
+      className={cn(hoverActionButtonClass, pinned ? 'text-[var(--app-primary)] hover:text-[var(--app-primary-hover)]' : null)}
+      disabled={pinDisabled}
+      aria-label={pinned ? `Unpin ${rowTitle}` : `Pin ${rowTitle}`}
+      aria-pressed={pinned}
+      title={pinned ? 'Unpin from sidebar' : 'Pin to sidebar'}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        if (!pinDisabled) {
+          closeActionMenu()
+          onTogglePinned(session.id)
+        }
+      }}
+    >
+      {pendingAction === 'pin' ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : <Pin size={12} aria-hidden="true" />}
+    </button>
+  ) : null
+  const renameActionControl = (
+    <button
+      type="button"
+      className={actionButtonBaseClass}
+      disabled={pendingAction !== null}
+      aria-label={`Rename ${rowTitle}`}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        closeActionMenu()
+        setRenameDraft('')
+        setRenameError(null)
+        setRenaming(true)
+      }}
+    >
+      {pendingAction === 'rename' ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : <Pencil size={12} aria-hidden="true" />}
+      <span>Rename</span>
+    </button>
+  )
+  const archiveActionControl = (
+    <button
+      type="button"
+      className={hoverActionButtonClass}
+      disabled={archiveDisabled}
+      aria-label={`Archive ${rowTitle}`}
+      title="Archive session"
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        if (!archiveDisabled) {
+          closeActionMenu()
+          onArchive(session.id)
+        }
+      }}
+    >
+      {pendingAction === 'archive' ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : <Archive size={12} aria-hidden="true" />}
+    </button>
+  )
+  const selectActionControl = depth === 0 && selectionGroup && onEnterSelectionMode ? (
+    <button
+      type="button"
+      className={actionButtonBaseClass}
+      disabled={selectionMode}
+      aria-label="Select sessions to archive"
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        closeActionMenu()
+        onEnterSelectionMode(selectionGroup)
+      }}
+    >
+      <ListChecks size={12} aria-hidden="true" />
+      <span>Select</span>
+    </button>
+  ) : null
+  const subagentSessionsActionControl = hasAgentChildren ? (
+    <button
+      type="button"
+      className={cn(actionButtonBaseClass, agentsExpanded ? 'text-[var(--app-primary)] hover:text-[var(--app-primary-hover)]' : null)}
+      aria-label={`${agentsExpanded ? 'Hide' : 'Show'} ${agentSummary.total} subagent session${agentSummary.total === 1 ? '' : 's'}`}
+      aria-pressed={agentsExpanded}
+      title={agentsExpanded ? 'Hide subagent sessions' : 'Show subagent sessions'}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        onToggleAgents(session.id)
+      }}
+    >
+      <Bot size={12} aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate">Subagents</span>
+      <span className="ml-auto font-mono tabular-nums text-[10px] leading-none text-[var(--app-text-muted)]">{agentSummary.total}</span>
+    </button>
+  ) : null
+  const actionMenu = (
+    <span
+      ref={actionMenuRef}
+      className={cn('relative z-20 inline-flex shrink-0 items-center', actionsOpen ? 'z-40' : null)}
+      onPointerDownCapture={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+      }}
+      onMouseEnter={clearActionMenuCloseTimer}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          closeActionMenu()
+        }
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          closeActionMenu()
+        }
+      }}
+    >
+      <button
+        type="button"
+        className={actionMenuButtonClass}
+        aria-label={`Open actions for ${rowTitle}`}
+        aria-expanded={actionsOpen}
+        title="Session actions"
+        onClick={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          setActionsOpen((open) => {
+            clearActionMenuCloseTimer()
+            return !open
+          })
+        }}
+      >
+        <MoreVertical size={12} aria-hidden="true" />
+      </button>
+      {actionsOpen ? (
+        <span
+          className="absolute right-0 top-full z-50 mt-1 grid min-w-40 gap-0.5 rounded-md border border-[var(--app-border-strong)] bg-[var(--app-surface-elevated)] p-1 opacity-100 shadow-lg backdrop-blur-none [background-color:var(--app-surface-elevated)]"
+          onMouseEnter={clearActionMenuCloseTimer}
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+          }}
+        >
+          {subagentSessionsActionControl}
+          {renameActionControl}
+          {selectActionControl}
+        </span>
+      ) : null}
+    </span>
+  )
   return (
     <Link
       to="/$workspaceSlug/$sessionId"
-      params={{ workspaceSlug, sessionId: session.id }}
+      params={{ workspaceSlug: rowWorkspaceSlug, sessionId: session.id }}
       onClick={(event) => {
-        if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) {
+        if (event.defaultPrevented || event.button !== 0) return
+        if (selectionMode && depth === 0) {
+          event.preventDefault()
+          onToggleSelected?.(session.id, event.shiftKey)
           return
         }
+        if (event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return
         event.preventDefault()
         onSelect(session.id)
       }}
       onKeyDown={(event) => {
         if (event.key === ' ') {
           event.preventDefault()
+          if (selectionMode && depth === 0) {
+            onToggleSelected?.(session.id, event.shiftKey)
+            return
+          }
           onSelect(session.id)
         }
       }}
       onMouseEnter={() => onPrefetch(session.id)}
       onFocus={() => onPrefetch(session.id)}
       className={cn(
-        'grid w-full min-w-0 gap-1 rounded-lg text-left transition-colors outline-none',
-        isNestedSession ? 'px-2.5 py-1.5' : 'px-3 py-2',
+        'group relative grid w-full min-w-0 rounded-md border text-left outline-none transition-[background-color,border-color,box-shadow,transform]',
+        isPlanRow ? 'gap-1.5 px-2.5 py-2' : 'gap-1 px-2.5 py-1.5',
         active
-          ? 'bg-[var(--app-surface-subtle)]'
-          : isNestedSession
-            ? 'bg-[var(--app-surface)]/45 hover:bg-[var(--app-surface-subtle)]'
-            : 'bg-transparent hover:bg-[var(--app-surface-subtle)]',
-        isNestedSession ? 'rounded-md border border-[var(--app-border)]/60' : null,
-        hasAgentChildren && agentsExpanded ? 'ring-1 ring-sky-400/20' : null,
+          ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)]/45 shadow-[0_0_0_1px_color-mix(in_oklab,var(--app-border-accent)_20%,transparent)]'
+          : 'border-transparent bg-[var(--app-surface)]/45 hover:-translate-y-px hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:shadow-[0_10px_24px_rgba(0,0,0,0.10)]',
+        pendingPermissionAlertActive ? 'border-transparent bg-[var(--app-warning-bg)] hover:border-transparent hover:bg-[var(--app-warning-bg)]' : null,
+        isNestedSession ? 'ml-0 rounded-sm border-transparent bg-[var(--app-bg-alt)]/20 py-1 pl-1 pr-2 hover:translate-y-0 hover:border-transparent hover:bg-[var(--app-surface)]/25 hover:shadow-[0_6px_16px_rgba(0,0,0,0.06)]' : null,
+        isNestedSession && active ? 'border-transparent bg-[var(--app-surface)]/30' : null,
+        hasAgentChildren && agentsExpanded && !isNestedSession ? 'border-[var(--app-border-accent)]' : null,
+        actionsOpen ? 'z-30' : null,
       )}
+      title={tooltip || metadataLabel}
     >
-      <div className="flex items-center justify-between gap-3 min-w-0 w-full">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          {isNestedSession ? (
-            <span aria-hidden="true" className={cn('relative grid h-5 w-5 shrink-0 place-items-center rounded-full border bg-[var(--app-bg-alt)]', nestedToneClass, childKind === 'subagent' ? 'border-sky-400/25' : 'border-[var(--app-border)]')}>
-              {childKind === 'subagent' ? <Bot size={10} /> : <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />}
-            </span>
-          ) : null}
-          <span className={cn('truncate flex-1 min-w-0 font-medium text-[var(--app-text)]', isNestedSession ? 'text-[13px]' : 'text-sm')}>{rowTitle}</span>
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-1 items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center">
+              {selectionMode && depth === 0 ? (
+                <input
+                  type="checkbox"
+                  checked={selected}
+                  aria-label={`Select ${rowTitle}`}
+                  onChange={() => undefined}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    onToggleSelected?.(session.id, event.shiftKey)
+                  }}
+                  className="mr-2 h-4 w-4 shrink-0 accent-[var(--app-primary)]"
+                />
+              ) : null}
+              {renaming ? (
+                <form
+                  className="min-w-0 flex-1"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    const title = renameDraft.trim()
+                    if (!title) { setRenameError('Title is required.'); return }
+                    void onRename(session.id, title).then(() => setRenaming(false)).catch((error) => setRenameError(error instanceof Error ? error.message : 'Rename failed'))
+                  }}
+                >
+                  <input
+                    autoFocus
+                    value={renameDraft}
+                    disabled={pendingAction === 'rename'}
+                    aria-label={`Rename ${rowTitle}`}
+                    onChange={(event) => setRenameDraft(event.target.value)}
+                    onClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setRenameError(null); setRenaming(false) }
+                    }}
+                    className="h-6 w-full rounded border border-[var(--app-border-accent)] bg-[var(--app-bg-inset)] px-1.5 text-[12px] text-[var(--app-text)] outline-none"
+                  />
+                  {renameError ? <span className="block truncate text-[9px] text-[var(--app-error)]">{renameError}</span> : null}
+                </form>
+              ) : (
+                <span className={cn('min-w-0 flex-1 truncate font-medium text-[var(--app-text)]', isNestedSession ? 'text-[12px]' : 'text-[13px]')}>
+                  {rowTitle}
+                </span>
+              )}
+
+            </div>
+          </div>
         </div>
-        <span
-          className={cn(
-            'h-2 w-2 shrink-0 rounded-full',
-            sessionStatusTone(session) === 'running'
-              ? 'bg-emerald-500'
-              : sessionStatusTone(session) === 'blocked'
-                ? 'bg-amber-400'
-                : sessionStatusTone(session) === 'error'
-                  ? 'bg-rose-500'
-                  : 'bg-[var(--app-border-strong)]',
-          )}
-        />
-      </div>
-      <div className="flex items-center justify-between gap-3 text-xs text-[var(--app-text-muted)] min-w-0 w-full">
-        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
-          <span className={cn(backgroundInfo?.active ? 'max-w-[8rem]' : null, 'truncate')}>{bottomLeftLabel}</span>
-          {backgroundInfo ? (
-            <span className="inline-flex h-4 shrink-0 items-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 text-[10px] font-medium leading-none text-[var(--app-text-subtle)]">
-              {backgroundInfo.badge}
-            </span>
-          ) : visibleChildLabel ? (
-            <span className={cn(
-              'shrink-0 truncate text-[11px]',
-              childKind === 'subagent' ? 'text-sky-300/90' : 'text-[var(--app-text-subtle)]',
-            )}>
-              {visibleChildLabel}
-            </span>
-          ) : null}
-        </div>
-        <span className={cn('shrink-0 text-[var(--app-text-subtle)]', backgroundInfo?.active ? 'font-mono tabular-nums' : null)}>{bottomRightLabel}</span>
-      </div>
-      {session.worktreeEnabled || commitMetaLabel || hasAgentChildren ? (
-        <div className="flex items-center justify-between gap-3 text-[10px] leading-4 text-[var(--app-text-subtle)] min-w-0 w-full">
-          {commitMetaLabel ? (
+        <span className="inline-flex shrink-0 items-center justify-end gap-1.5 text-[10px] leading-4 text-[var(--app-text-muted)]">
+          {compactingActive ? <LoaderCircle size={10} className="animate-spin text-[var(--app-primary)]" aria-hidden="true" /> : null}
+          {rightSideLabel ? <span className="max-w-[5.5rem] truncate text-right">{rightSideLabel}</span> : null}
+          <span className="inline-flex shrink-0 items-center gap-1">
+            {pinActionControl}
+            {archiveActionControl}
+            {actionMenu}
+          </span>
+          {showStatusCircle ? (
             <span
-              className="inline-flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden font-mono tabular-nums"
-              title={tooltip}
-            >
-              <GitCommitHorizontal size={11} className="shrink-0 opacity-70" />
-              <span className="truncate">{commitMetaLabel}</span>
-            </span>
-          ) : <span className="min-w-0 flex-1" />}
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            {hasAgentChildren ? (
-              <button
-                type="button"
-                className={cn(
-                  'inline-flex h-4 shrink-0 items-center gap-1 border-0 bg-transparent p-0 font-mono tabular-nums text-[10px] leading-4 transition-colors',
-                  agentsExpanded
-                    ? 'text-[var(--app-text)]'
-                    : 'text-[var(--app-text-subtle)] hover:text-[var(--app-text)]',
-                )}
-                onClick={(event) => {
-                  event.preventDefault()
-                  event.stopPropagation()
-                  onToggleAgents(session.id)
-                }}
-                aria-label={`${agentSummary.running} running of ${agentSummary.total} subagents`}
-                aria-pressed={agentsExpanded}
-                title={`${agentSummary.total} subagent${agentSummary.total === 1 ? '' : 's'} · ${agentSummary.running} running${agentsExpanded ? ' · click to hide subagent sessions' : ' · click to show subagent sessions'}`}
-              >
-                {agentsExpanded ? <ChevronDown size={10} className="shrink-0 opacity-75" /> : <ChevronRight size={10} className="shrink-0 opacity-75" />}
-                <Bot size={11} className={cn('shrink-0', agentSummary.running > 0 ? 'animate-pulse' : null)} />
-                <span className={cn('font-mono tabular-nums text-[10px] leading-none', agentSummary.running > 0 ? 'text-emerald-300' : null)}>{agentDescriptor.primary}</span>
-                {agentDescriptor.secondary ? (
-                  <span className={cn(
-                    'font-mono tabular-nums text-[10px] leading-none',
-                    agentSummary.running > 0 ? 'text-[var(--app-text-subtle)]' : 'text-[var(--app-text)]',
-                  )}>{agentDescriptor.secondary}</span>
-                ) : null}
-              </button>
-            ) : null}
-            {session.worktreeEnabled ? (
-              <span
-                className="inline-flex shrink-0 items-center justify-center text-[var(--app-text-subtle)] opacity-80"
-                title={tooltip || 'Worktree enabled'}
-              >
-                <GitBranch size={12} />
+              className={cn(
+                'h-1.5 w-1.5 shrink-0 rounded-full',
+                compactingActive || statusTone === 'running'
+                  ? 'bg-[var(--app-success)]'
+                  : statusTone === 'blocked'
+                    ? 'bg-[var(--app-warning)]'
+                    : statusTone === 'error'
+                      ? 'bg-[var(--app-danger)]'
+                      : 'bg-[var(--app-border-strong)]',
+              )}
+            />
+          ) : null}
+        </span>
+      </div>
+      <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+        <span className="min-w-0 truncate">{metadataLabel}</span>
+        <span className="ml-auto inline-flex shrink-0 items-center justify-end gap-1 text-right tabular-nums text-[var(--app-text-muted)]">
+          {rowTimerLabel ? <span>{rowTimerLabel}</span> : null}
+        </span>
+      </div>
+
+      {showPlanProgressBar ? (
+        <div className="flex min-w-0 items-center gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+          <div
+            className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-[var(--app-surface-subtle)]"
+            role="progressbar"
+            aria-label={checkpointProgressAriaLabel}
+            aria-valuemin={0}
+            aria-valuemax={checkpointTotalCount}
+            aria-valuenow={checkpointCompletedCount}
+            aria-valuetext={`${checkpointCompletedCount} of ${checkpointTotalCount} checkpoints complete`}
+          >
+            <div
+              className="h-full rounded-full bg-[var(--app-primary)] transition-[width]"
+              style={{ width: `${checkpointProgressPercent}%` }}
+            />
+          </div>
+        </div>
+      ) : null}
+
+      {showDetailsRow ? (
+        <div className="flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate">
+            {backgroundInfo ? (
+              <span className="inline-flex h-4 shrink-0 items-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-1.5 font-medium leading-none text-[var(--app-text-muted)]">
+                {backgroundInfo.badge}
               </span>
             ) : null}
+            {backgroundInfo?.targetLabel ? <span className="truncate">{backgroundInfo.targetLabel}</span> : null}
           </div>
         </div>
       ) : null}
     </Link>
   )
+})
+
+interface RenderSidebarSessionGroupsInput {
+  nodes: SidebarSessionNode[]
+  presentation?: 'desktop' | 'mobile'
+  routeSessionId: string
+  now: number
+  fallbackSwarmName: string
+  routeOptions: DesktopChatRoute[]
+  workspaceSlug: string | ((session: DesktopSessionRecord) => string)
+  expandedAgentSessions: Record<string, boolean>
+  agentSummaries: Map<string, SessionAgentSummary>
+  compactingSession: DesktopV3CompactingSessionState | null
+  pendingActions: Record<string, 'pin' | 'archive' | 'rename' | undefined>
+  selectionMode: boolean
+  selectedRootIDs: Set<string>
+  hideInactiveHours: number | null
+  thresholdSaving: boolean
+  bulkArchivePending: boolean
+  masterSelectionGroup: SidebarSessionGroupID | null
+  reviewCleanupOpen: boolean
+  gitHasGit: boolean
+  gitAheadCount: number
+  gitBehindCount: number
+  gitDirtyCount: number
+  onOpenGit: () => void
+  onToggleReviewCleanup: () => void
+  onEnterSelectionMode: (group: SidebarSessionGroupID) => void
+  onClearSelection: () => void
+  onBulkArchive: () => void
+  onThresholdChange: (hours: number | null) => void
+  onSelect: (sessionId: string) => void | boolean
+  onToggleSelected: (sessionId: string, range: boolean) => void
+  onPrefetch: (sessionId: string) => void
+  onToggleAgents: (sessionId: string) => void
+  onTogglePinned: (sessionId: string) => void
+  onArchive: (sessionId: string) => void
+  onRename: (sessionId: string, title: string) => Promise<void>
+}
+
+export function sidebarRootIDsForSelectionGroup(nodes: SidebarSessionNode[], group: SidebarSessionGroupID | null): string[] {
+  return nodes
+    .filter((node) => !group || sessionSidebarDisplayGroup(node.session) === group)
+    .map((node) => node.session.id)
+}
+
+export function sidebarShouldRenderSelectionToolbar(
+  selectionMode: boolean,
+  masterGroup: SidebarSessionGroupID | null,
+  group: SidebarSessionGroupID,
+): boolean {
+  return selectionMode && masterGroup === group
+}
+
+export function sidebarShouldShowReviewAction(group: SidebarSessionGroupID, selectionMode: boolean): boolean {
+  return group === 'needs_review' && !selectionMode
+}
+
+export const SIDEBAR_SESSION_GROUPS = [
+  { id: 'needs_review', label: 'Needs Review', showInactiveThreshold: false },
+  { id: 'in_progress', label: 'In Progress', showInactiveThreshold: false },
+  { id: 'pinned', label: 'Pinned', showInactiveThreshold: false },
+  { id: 'active_chats', label: 'Active Chats', showInactiveThreshold: true },
+] as const satisfies ReadonlyArray<{ id: SidebarSessionGroupID; label: string; showInactiveThreshold: boolean }>
+
+function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX.Element[] | null {
+  if (input.nodes.length === 0) return null
+  const grouped = new Map<SidebarSessionGroupID, SidebarSessionNode[]>()
+  for (const group of SIDEBAR_SESSION_GROUPS) {
+    grouped.set(group.id, [])
+  }
+  let currentRootGroup: SidebarSessionGroupID | null = null
+  for (const node of input.nodes) {
+    if (node.depth === 0 || !currentRootGroup) {
+      currentRootGroup = sessionSidebarDisplayGroup(node.session)
+    }
+    grouped.get(currentRootGroup)?.push(node)
+  }
+  return SIDEBAR_SESSION_GROUPS.flatMap((group) => {
+    const nodes = grouped.get(group.id) ?? []
+    if (nodes.length === 0) return []
+    const groupControls = (
+      <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${group.id === 'needs_review' || input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
+            {sidebarShouldShowReviewAction(group.id, input.selectionMode) ? (
+              <>
+                <button
+                  type="button"
+                  className={input.presentation === 'mobile'
+                    ? 'inline-flex min-h-11 touch-manipulation items-center gap-1 rounded-xl border border-[var(--app-border)] px-3 text-xs font-semibold text-[var(--app-text-muted)] active:bg-[var(--app-surface-hover)] active:text-[var(--app-text)]'
+                    : 'inline-flex h-5 items-center gap-1 rounded border border-[var(--app-border)] px-1.5 text-[9px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}
+                  aria-label="Review worktrees"
+                  title="Review worktrees"
+                  aria-expanded={input.reviewCleanupOpen}
+                  onClick={input.onToggleReviewCleanup}
+                >
+                  <span>Manage</span>
+                </button>
+              </>
+            ) : null}
+            {group.showInactiveThreshold ? (
+              <label className="flex items-center gap-1 font-normal">
+                <span>Show last</span>
+                <select
+                  aria-label="Show Active Chats from the last"
+                  disabled={input.thresholdSaving}
+                  value={input.hideInactiveHours === null ? 'never' : String(input.hideInactiveHours)}
+                  onChange={(event) => input.onThresholdChange(event.target.value === 'never' ? null : Number(event.target.value))}
+                  className="h-5 rounded border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-1 text-[9px] text-[var(--app-text)]"
+                >
+                  <option value="1">1h</option><option value="6">6h</option><option value="12">12h</option><option value="24">24h</option><option value="168">7d</option><option value="never">All</option>
+                </select>
+              </label>
+            ) : null}
+            {sidebarShouldRenderSelectionToolbar(input.selectionMode, input.masterSelectionGroup, group.id) ? (
+              <>
+                <span>{input.selectedRootIDs.size} selected</span>
+                <button type="button" onClick={input.onClearSelection}>Clear</button>
+                <button type="button" disabled={input.bulkArchivePending || input.selectedRootIDs.size === 0} className="rounded bg-[var(--app-primary)] px-1.5 py-0.5 text-[var(--app-primary-text)] disabled:opacity-50" onClick={input.onBulkArchive}>Archive</button>
+              </>
+            ) : null}
+      </div>
+    )
+    return [(
+      <section key={group.id} className="group/section grid content-start gap-1.5">
+        {group.id === 'needs_review' ? (
+          <>
+            <div data-sidebar-review-toolbar className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold text-[var(--app-text-subtle)]">
+              {input.gitHasGit ? (
+                <button
+                  type="button"
+                  data-sidebar-dirty-git-entry
+                  className={`flex h-5 items-center gap-1 rounded px-1 text-[9px] font-medium hover:bg-[var(--app-surface-hover)] ${input.gitDirtyCount > 0 ? 'text-[var(--app-warning)]' : 'text-[var(--app-text-muted)]'}`}
+                  onClick={input.onOpenGit}
+                  aria-label={`Open Git details: ${input.gitAheadCount} ahead, ${input.gitBehindCount} behind, ${input.gitDirtyCount} dirty files`}
+                  title="Open Git details"
+                >
+                  <span aria-hidden="true">↑{input.gitAheadCount} ↓{input.gitBehindCount}</span>
+                  <span>· {input.gitDirtyCount > 0 ? `${input.gitDirtyCount} dirty` : 'clean'}</span>
+                </button>
+              ) : null}
+              {groupControls}
+            </div>
+            <div data-sidebar-needs-review-heading className="flex min-h-6 items-center px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+              <span>{group.label}</span>
+            </div>
+          </>
+        ) : (
+          <div className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+            <span>{group.label}</span>
+            {groupControls}
+          </div>
+        )}
+        <div className="grid gap-1">
+          {nodes.map((node) => (
+          <SessionRow
+            key={node.session.id}
+            active={input.routeSessionId === node.session.id}
+            now={input.now}
+            session={node.session}
+            fallbackSwarmName={input.fallbackSwarmName}
+            routeOptions={input.routeOptions}
+            workspaceSlug={input.workspaceSlug}
+            depth={node.depth}
+            childLabel={node.label}
+            childAssignmentLabel={node.assignmentLabel}
+            childKind={node.kind}
+            agentSummary={input.agentSummaries.get(node.session.id) ?? EMPTY_SESSION_AGENT_SUMMARY}
+            agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
+            compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
+            pendingAction={input.pendingActions[node.session.id] ?? null}
+            selectionMode={input.selectionMode}
+            selectionGroup={group.id}
+            selected={input.selectedRootIDs.has(node.session.id)}
+            onSelect={input.onSelect}
+            onEnterSelectionMode={input.onEnterSelectionMode}
+            onToggleSelected={input.onToggleSelected}
+            onPrefetch={input.onPrefetch}
+            onToggleAgents={input.onToggleAgents}
+            onTogglePinned={input.onTogglePinned}
+            onArchive={input.onArchive}
+            onRename={input.onRename}
+          />
+          ))}
+        </div>
+      </section>
+    )]
+  })
 }
 
 export function DesktopAppPage() {
-  debugLog('desktop-app-page', 'render')
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const search = useSearch({ strict: false }) as { agentSetup?: unknown; agent?: unknown }
+  const requestedAgentSetup = search.agentSetup === '1'
+  const requestedAgentName = typeof search.agent === 'string' ? search.agent.trim() : 'swarm'
+  const agentSettingsOpenSignal = requestedAgentSetup ? 1 : 0
   const matchRoute = useMatchRoute()
-  const workspaceFlowDetailMatch = matchRoute({ to: '/$workspaceSlug/flow/$flowId', fuzzy: false })
-  const workspaceFlowMatch = matchRoute({ to: '/$workspaceSlug/flow', fuzzy: false })
+  const workspaceTaskMatch = matchRoute({ to: '/$workspaceSlug/task', fuzzy: false })
+  const workspaceWorktreeMatch = matchRoute({ to: '/$workspaceSlug/worktree', fuzzy: false })
   const workspaceSessionMatch = matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
   const workspaceMatch = matchRoute({ to: '/$workspaceSlug', fuzzy: false })
-  const isFlowRoute = Boolean(workspaceFlowDetailMatch || workspaceFlowMatch)
-  const routeWorkspaceSlug = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.workspaceSlug : workspaceFlowMatch ? workspaceFlowMatch.workspaceSlug : workspaceSessionMatch ? workspaceSessionMatch.workspaceSlug : workspaceMatch ? workspaceMatch.workspaceSlug : '').trim()
-  const routeSessionId = (!isFlowRoute && workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
+  const routeWorkspaceSlug = (workspaceTaskMatch
+    ? workspaceTaskMatch.workspaceSlug
+    : workspaceWorktreeMatch
+      ? workspaceWorktreeMatch.workspaceSlug
+      : workspaceSessionMatch
+        ? workspaceSessionMatch.workspaceSlug
+        : workspaceMatch
+          ? workspaceMatch.workspaceSlug
+          : '').trim()
+  const mobileCreationPage = workspaceTaskMatch ? 'task' : workspaceWorktreeMatch ? 'worktree' : null
+  const routeSessionId = mobileCreationPage ? '' : (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
-  const { workspaces, selectingPath, savingPath, saveWorkspace, setWorktreeEnabled, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
-  const connectionState = useDesktopStore((state) => state.connectionState)
-  const liveSessions = useDesktopStore((state) => state.sessions)
-  const activeSessionId = useDesktopStore((state) => state.activeSessionId)
-  const activeWorkspacePath = useDesktopStore((state) => state.activeWorkspacePath)
-  const refreshNotifications = useDesktopStore((state) => state.refreshNotifications)
-  const notificationCenter = useDesktopStore((state) => state.notificationCenter)
-  const setActiveSession = useDesktopStore((state) => state.setActiveSession)
-  const setActiveWorkspacePath = useDesktopStore((state) => state.setActiveWorkspacePath)
-  const upsertSession = useDesktopStore((state) => state.upsertSession)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const { workspaces, currentWorkspacePath, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
+  const [sidebarDisplayMode, setSidebarDisplayModeState] = useState<DesktopMainSidebarMode>(() => loadDesktopMainSidebarMode())
+  const focusMode = sidebarDisplayMode === 'focus'
+  const setSidebarDisplayMode = useCallback((mode: DesktopMainSidebarMode) => {
+    setSidebarDisplayModeState(mode)
+    saveDesktopMainSidebarMode(mode)
+  }, [])
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
+  const [mobilePreviousSessionsOpen, setMobilePreviousSessionsOpen] = useState(false)
+  const [backgroundTaskOpen, setBackgroundTaskOpen] = useState(false)
+  const [backgroundTaskRequest, setBackgroundTaskRequest] = useState('')
+  const [backgroundTaskBusy, setBackgroundTaskBusy] = useState(false)
+  const [backgroundTaskError, setBackgroundTaskError] = useState<string | null>(null)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
   const [notificationsOpen, setNotificationsOpen] = useState(false)
-  const [pairingRequestsOpen, setPairingRequestsOpen] = useState(false)
-  const [pendingPairingRequests, setPendingPairingRequests] = useState<RemoteSwarmPendingPairing[]>([])
-  const [pairingDecisionBusyID, setPairingDecisionBusyID] = useState<string | null>(null)
-  const [pairingConfirmations, setPairingConfirmations] = useState<Record<string, boolean>>({})
-  const [pairingRequestError, setPairingRequestError] = useState<string | null>(null)
-  const [pairingRequestStatus, setPairingRequestStatus] = useState<string | null>(null)
-  const [pairingReplicationTarget, setPairingReplicationTarget] = useState<SwarmTarget | null>(null)
+  const [codexUsageOpen, setCodexUsageOpen] = useState(false)
+  const [notificationActionError, setNotificationActionError] = useState<string | null>(null)
+  const [searchModalOpen, setSearchModalOpen] = useState(false)
   const [todoModal, setTodoModal] = useState<TodoModalState | null>(null)
   const [gitPanel, setGitPanel] = useState<GitPanelState | null>(null)
+  const [gitCommitModal, setGitCommitModal] = useState<GitCommitModalState | null>(null)
+  const [gitCommitMessage, setGitCommitMessage] = useState('')
+  const [gitCommitBusy, setGitCommitBusy] = useState(false)
+  const [gitCommitError, setGitCommitError] = useState<string | null>(null)
+  const [planModal, setPlanModal] = useState<PlanModalState | null>(null)
+  const [planModalLoading, setPlanModalLoading] = useState(false)
+  const [planModalSaving, setPlanModalSaving] = useState(false)
+  const [planModalExecuting, setPlanModalExecuting] = useState(false)
+  const [planModalError, setPlanModalError] = useState<string | null>(null)
   const [quickSettingsTab, setQuickSettingsTab] = useState<QuickSettingsTabID | null>(null)
+  const [quickActionsOpen, setQuickActionsOpen] = useState(false)
+  const [sessionModeCommand, setSessionModeCommand] = useState<DesktopSessionModeCommand | null>(null)
   const [gitRealtimeErrors, setGitRealtimeErrors] = useState<Record<string, string>>({})
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
-  const [swarmMenu, setSwarmMenu] = useState<SwarmTargetMenuState>({ open: false })
   const [editingSidebarSwarmName, setEditingSidebarSwarmName] = useState(false)
   const [sidebarSwarmNameDraft, setSidebarSwarmNameDraft] = useState('')
   const [sidebarSwarmNameSaving, setSidebarSwarmNameSaving] = useState(false)
   const [sidebarSwarmNameError, setSidebarSwarmNameError] = useState<string | null>(null)
-  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
-  const [flowMenuOpen, setFlowMenuOpen] = useState(false)
-  const [flowBusyID, setFlowBusyID] = useState<string | null>(null)
-  const [flowMenuError, setFlowMenuError] = useState<string | null>(null)
   const [updateRunning, setUpdateRunning] = useState(false)
   const [updateError, setUpdateError] = useState<string | null>(null)
   const [updateProgress, setUpdateProgress] = useState<DesktopUpdateProgressState>({ open: false, job: null, startedAt: null })
   const [desktopToast, setDesktopToast] = useState<DesktopToastState | null>(() => loadPendingDesktopToast())
+  const [worktreeSessionModal, setWorktreeSessionModal] = useState<WorktreeSessionModalState | null>(null)
+  const [worktreeSessionTitle, setWorktreeSessionTitle] = useState('')
+  const [worktreeSessionBranch, setWorktreeSessionBranch] = useState('')
+  const [worktreeSessionBranchOverridden, setWorktreeSessionBranchOverridden] = useState(false)
+  const [worktreeSessionExistingPath, setWorktreeSessionExistingPath] = useState('')
+  const [worktreeSessionCreating, setWorktreeSessionCreating] = useState(false)
+  const [worktreeSessionError, setWorktreeSessionError] = useState<string | null>(null)
+  const [newSessionModeByWorkspace, setNewSessionModeByWorkspace] = useState<Record<string, DesktopSessionMode>>({})
   const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
-  const [localContainerUpdateConfirm, setLocalContainerUpdateConfirm] = useState<LocalContainerUpdateConfirmState | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
-  const [desktopV3Bootstrap, setDesktopV3Bootstrap] = useState<DesktopV3BootstrapState>({ status: 'idle', epoch: 0, error: null })
+  const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false)
+  const workspaceDropdownRef = useRef<HTMLDivElement | null>(null)
+  const [compactingSession, setCompactingSession] = useState<DesktopV3CompactingSessionState | null>(null)
+  const [sidebarSessionActions, setSidebarSessionActions] = useState<Record<string, 'pin' | 'archive' | 'rename' | undefined>>({})
+  const [sidebarSelectionMode, setSidebarSelectionMode] = useState(false)
+  const [sidebarMasterSelectionGroup, setSidebarMasterSelectionGroup] = useState<SidebarSessionGroupID | null>(null)
+  const [selectedSidebarRootIDs, setSelectedSidebarRootIDs] = useState<Set<string>>(() => new Set())
+  const lastSelectedSidebarRootIDRef = useRef<string | null>(null)
+  const [bulkArchivePending, setBulkArchivePending] = useState(false)
+  const [needsReviewCleanupOpen, setNeedsReviewCleanupOpen] = useState(false)
+  const [sidebarThresholdSaving, setSidebarThresholdSaving] = useState(false)
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
+  const [previousChatSessionId, setPreviousChatSessionId] = useState<string | null>(null)
+  const activeChatSessionIdRef = useRef<string | null>(null)
+  const aiTaskLifecycleByID = useDesktopV3CacheSelector((state) => state.aiTasksById)
+  const aiTaskObservedStateRef = useRef(new Map<string, WorkspaceTodoItem['aiState']>())
+  const aiTaskTerminalToastRef = useRef(new Set<string>())
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
-  const resizeStateRef = useRef<SidebarResizeState | null>(null)
-  const desktopV3BootstrapEpochRef = useRef(0)
+  useEffect(() => {
+    if (!workspaceDropdownOpen) return
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null
+      if (target && !workspaceDropdownRef.current?.contains(target)) {
+        setWorkspaceDropdownOpen(false)
+      }
+    }
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setWorkspaceDropdownOpen(false)
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [workspaceDropdownOpen])
+
   const workspaceByPath = useMemo<Map<string, WorkspaceEntry>>(
     () => new Map(workspaces.map((workspace) => [workspace.path, workspace] as const)),
+    [workspaces],
+  )
+  const workspacePathByBindingId = useMemo<Map<string, string>>(
+    () => new Map(workspaces
+      .map((workspace) => [workspace.localWorkspaceBindingId.trim(), workspace.path] as const)
+      .filter(([bindingID]) => bindingID !== '')),
+    [workspaces],
+  )
+  const knownWorkspacePaths = useMemo<Set<string>>(
+    () => new Set(workspaces.map((workspace) => workspace.path)),
     [workspaces],
   )
   const routeWorkspace = useMemo(
     () => (routeWorkspaceSlug ? resolveWorkspaceBySlug(workspaces, routeWorkspaceSlug) : null),
     [routeWorkspaceSlug, workspaces],
   )
-  const routeSessionSnapshotQuery = useQuery({
-    ...desktopV3SessionQueryOptions(routeSessionId),
-    enabled: routeSessionId !== '',
-    initialData: routeSessionId ? getCachedDesktopV3SessionSnapshot(queryClient, routeSessionId) ?? undefined : undefined,
-  })
-  useEffect(() => {
-    const snapshot = routeSessionSnapshotQuery.data
-    if (!routeSessionId || !snapshot) {
-      return
-    }
-    writeDesktopV3SessionSnapshot(queryClient, snapshot)
-    upsertSession(snapshot.session)
-    syncWorkspaceOverviewSession(queryClient, snapshot.session)
-  }, [queryClient, routeSessionId, routeSessionSnapshotQuery.data, upsertSession])
   useEffect(() => {
     if (!desktopToast) {
       return
@@ -1536,30 +2693,12 @@ export function DesktopAppPage() {
   }, [desktopToast])
 
   const temporaryRouteWorkspace = useMemo<WorkspaceEntry | null>(() => {
-    const candidatePath = activeWorkspacePath?.trim() ?? ''
-    if (!routeWorkspaceSlug || routeSessionId || routeWorkspace || !candidatePath || workspaceByPath.has(candidatePath)) {
+    if (!routeWorkspaceSlug || routeSessionId || routeWorkspace) {
       return null
     }
-    const workspaceName = fallbackWorkspaceNameFromPath(candidatePath)
-    if (workspaceRouteSlugBase({ path: candidatePath, workspaceName }) !== routeWorkspaceSlug) {
-      return null
-    }
-    return buildTemporaryWorkspaceEntry(candidatePath, workspaceName)
-  }, [activeWorkspacePath, routeSessionId, routeWorkspace, routeWorkspaceSlug, workspaceByPath])
-  const cachedRouteSession = useMemo<DesktopSessionRecord | null>(() => {
-    if (!routeSessionId) {
-      return null
-    }
-    return routeSessionSnapshotQuery.data?.session
-      ?? readDesktopV3CachedSession(queryClient, routeSessionId)
-      ?? liveSessions[routeSessionId]
-      ?? null
-  }, [liveSessions, queryClient, routeSessionId, routeSessionSnapshotQuery.data?.session])
-
+    return null
+  }, [routeSessionId, routeWorkspace, routeWorkspaceSlug])
   const selectedWorkspacePath = useMemo<string | null>(() => {
-    if (cachedRouteSession?.workspacePath) {
-      return cachedRouteSession.workspacePath
-    }
     if (routeWorkspace?.path) {
       return routeWorkspace.path
     }
@@ -1567,7 +2706,7 @@ export function DesktopAppPage() {
       return temporaryRouteWorkspace.path
     }
     return null
-  }, [cachedRouteSession?.workspacePath, routeWorkspace?.path, temporaryRouteWorkspace])
+  }, [routeWorkspace?.path, temporaryRouteWorkspace])
   const savedSelectedWorkspace = selectedWorkspacePath ? workspaceByPath.get(selectedWorkspacePath) ?? null : null
   const selectedWorkspace = savedSelectedWorkspace ?? (temporaryRouteWorkspace?.path === selectedWorkspacePath ? temporaryRouteWorkspace : null)
   const sidebarWorkspaceEntries = useMemo<WorkspaceEntry[]>(() => {
@@ -1587,45 +2726,6 @@ export function DesktopAppPage() {
     [mergedSidebarWorkspaceEntries, workspaceLayout],
   )
   const visibleWorkspacePaths = useMemo<string[]>(() => visibleSidebarWorkspaceEntries.map((workspace) => workspace.path), [visibleSidebarWorkspaceEntries])
-  const selectedGitWorkspacePath = selectedWorkspacePath ?? visibleWorkspacePaths[0] ?? ''
-
-  const gitStatusQuery = useQuery({
-    queryKey: gitStatusQueryKey(selectedGitWorkspacePath),
-    queryFn: () => fetchGitStatus(selectedGitWorkspacePath, 12),
-    enabled: selectedGitWorkspacePath.trim() !== '',
-    staleTime: 0,
-    refetchOnWindowFocus: true,
-  })
-  const gitSnapshot = gitStatusQuery.data?.status ?? null
-  const gitSnapshotByPath = useMemo(() => {
-    const entries = new Map<string, GitSnapshot>()
-    if (gitSnapshot?.workspace_path) entries.set(gitSnapshot.workspace_path, gitSnapshot)
-    if (selectedGitWorkspacePath && gitSnapshot) entries.set(selectedGitWorkspacePath, gitSnapshot)
-    return entries
-  }, [gitSnapshot, selectedGitWorkspacePath])
-
-  useEffect(() => {
-    let cancelled = false
-    visibleWorkspacePaths.forEach((workspacePath) => {
-      void startGitRealtime(workspacePath)
-        .then(() => {
-          if (!cancelled) {
-            setGitRealtimeErrors((current) => {
-              if (!current[workspacePath]) return current
-              const next = { ...current }
-              delete next[workspacePath]
-              return next
-            })
-          }
-        })
-        .catch((error) => {
-          if (!cancelled) {
-            setGitRealtimeErrors((current) => ({ ...current, [workspacePath]: error instanceof Error ? error.message : String(error) }))
-          }
-        })
-    })
-    return () => { cancelled = true }
-  }, [visibleWorkspacePaths])
 
   const overviewQuery = useQuery({
     ...workspaceOverviewQueryOptions([], 25),
@@ -1637,6 +2737,10 @@ export function DesktopAppPage() {
     queryFn: () => getUISettings(),
     staleTime: 30_000,
   })
+  const agentStateQuery = useQuery(agentStateQueryOptions())
+  const modelOptionsQuery = useQuery(modelOptionsQueryOptions())
+  const modelProfilesQuery = useQuery(modelProfilesQueryOptions())
+  const draftPreferenceQuery = useQuery(draftModelQueryOptions())
   useEffect(() => {
     if (uiSettingsQuery.data) {
       setUISettings(uiSettingsQuery.data)
@@ -1657,11 +2761,6 @@ export function DesktopAppPage() {
     refetchInterval: SWARM_TARGET_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: true,
   })
-  const flowsQuery = useQuery({
-    queryKey: flowsQueryKey,
-    queryFn: ({ signal }) => fetchFlows(signal),
-    staleTime: 15_000,
-  })
   const updateStatusQuery = useQuery({
     queryKey: ['desktop-update-status'] as const,
     queryFn: () => fetchDesktopUpdateStatus(),
@@ -1671,14 +2770,13 @@ export function DesktopAppPage() {
   })
 
   const updateStatus = updateStatusQuery.data ?? null
-  const effectiveUISettings = uiSettings ?? uiSettingsQuery.data ?? null
   const updateAvailable = updateStatus?.update_available === true
   const updateDevMode = updateStatus?.dev_mode === true
   const updateActionEnabled = updateAvailable || updateDevMode
   const updateActionLabel = updateDevMode ? 'Update Dev' : 'Update Swarm'
   const updateLatestVersion = updateStatus?.latest_version?.trim() ?? ''
   const updateStatusError = updateStatusQuery.error instanceof Error ? updateStatusQuery.error.message : null
-  const updateAttentionVisible = updateActionEnabled || updateRunning || Boolean(updateError)
+  const updateAttentionVisible = !updateDevMode && (updateActionEnabled || updateRunning || Boolean(updateError))
   const updateActionTitle = updateError
     || (updateRunning
       ? updateDevMode ? 'Rebuilding Swarm dev checkout…' : 'Updating Swarm…'
@@ -1698,67 +2796,28 @@ export function DesktopAppPage() {
   const currentSwarmTarget = swarmTargets.find((target) => target.current) ?? null
   const swarmName = currentSwarmTarget?.name ?? swarmSettingsQuery.data?.name ?? 'Local'
   const sidebarSwarmNameDirty = sidebarSwarmNameDraft.trim() !== swarmName.trim()
-  const currentSwarmRoleLabel = swarmRoleLabel(currentSwarmTarget)
   const masterWorkspaceName = selectedWorkspace?.workspaceName ?? routeWorkspace?.workspaceName ?? fallbackWorkspaceNameFromPath(selectedWorkspacePath ?? '')
-  const sortedSwarmTargets = useMemo(() => [...swarmTargets]
-    .sort((left, right) => {
-      if (left.current !== right.current) {
-        return left.current ? -1 : 1
-      }
-      if (left.online !== right.online) {
-        return left.online ? -1 : 1
-      }
-      return left.name.localeCompare(right.name)
-    }), [swarmTargets])
-  const selfSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => target.kind === 'self' || target.current), [sortedSwarmTargets])
-  const localSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => target.kind === 'local' && !target.current), [sortedSwarmTargets])
-  const remoteSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => (target.kind === 'remote' || target.kind === 'host' || target.kind === 'mirrored') && !target.current), [sortedSwarmTargets])
-  const swarmTargetCounts = useMemo(() => {
-    const local = selfSwarmTargets.length + localSwarmTargets.length
-    const remote = remoteSwarmTargets.length
-    const offline = sortedSwarmTargets.filter((target) => !target.online && !target.current).length
-    return { local, remote, offline }
-  }, [localSwarmTargets.length, remoteSwarmTargets, selfSwarmTargets.length, sortedSwarmTargets])
-  const swarmTargetSummary = `${swarmTargetCounts.local} local · ${swarmTargetCounts.remote} host/remote${swarmTargetCounts.offline > 0 ? ` · ${swarmTargetCounts.offline} offline` : ''}`
-  const swarmTargetCountLabel = `${swarmTargets.length} ${swarmTargets.length === 1 ? 'swarm' : 'swarms'}`
-  const activePairingRequests = useMemo(() => activePendingPairings(pendingPairingRequests), [pendingPairingRequests])
-  const pairingRequestCount = activePairingRequests.length
-  const pairingRequestAttentionVisible = pairingRequestCount > 0
-  const headerActionCount = 2 + (pairingRequestAttentionVisible ? 1 : 0) + (updateAttentionVisible ? 1 : 0)
-  const headerActionRowClass = headerActionCount === 4
-    ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_108px] items-center gap-2.5 min-h-7 pr-4'
-    : headerActionCount === 3
-      ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_80px] items-center gap-2.5 min-h-7 pr-4'
+  const notificationItems = useDesktopV3CacheSelector(selectOrderedNotifications)
+  const notificationSummary = useDesktopV3CacheSelector(selectNotificationSummary)
+  const notificationUnreadCount = Math.max(0, notificationSummary.unreadCount)
+  const notificationAttentionVisible = true
+  const headerActionCount = 1 + (notificationAttentionVisible ? 1 : 0) + (updateAttentionVisible ? 1 : 0)
+  const headerActionRowClass = headerActionCount === 3
+    ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_80px] items-center gap-2.5 min-h-7 pr-4'
+    : headerActionCount === 1
+      ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_24px] items-center gap-2.5 min-h-7 pr-4'
       : cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4')
-  const headerActionRailClass = headerActionCount === 4
-    ? '!w-[108px] !grid-cols-[24px_24px_24px_24px]'
-    : headerActionCount === 3
-      ? '!w-[80px] !grid-cols-[24px_24px_24px]'
+  const headerActionRailClass = headerActionCount === 3
+    ? '!w-[80px] !grid-cols-[24px_24px_24px]'
+    : headerActionCount === 1
+      ? '!w-6 !grid-cols-[24px]'
       : undefined
-  const workspaceCount = mergedSidebarWorkspaceEntries.length
-  const sidebarFlows = useMemo(() => (flowsQuery.data ?? []).map(sidebarFlowRow), [flowsQuery.data])
-  const flowCount = sidebarFlows.length
-  const activeFlowCount = sidebarFlows.filter((flow) => flow.enabled).length
-  const flowSummary = flowsQuery.isLoading ? 'loading flows' : `${flowCount} flows${activeFlowCount !== flowCount ? ` · ${activeFlowCount} active` : ''}`
-  const selectedWorkspaceFlowRows = useMemo(() => {
-    const workspacePath = selectedWorkspacePath?.trim() ?? ''
-    if (!workspacePath) return sidebarFlows
-    return sidebarFlows.filter((flow) => {
-      const flowWorkspace = flow.raw.workspace_detail?.workspace_path?.trim()
-        || flow.raw.definition.workspace.workspace_path?.trim()
-        || flow.raw.definition.workspace.host_workspace_path?.trim()
-        || ''
-      return !flowWorkspace || flowWorkspace === workspacePath
-    })
-  }, [selectedWorkspacePath, sidebarFlows])
   const swarmTopologySignature = useMemo(
     () => swarmTargets
       .map((target) => [
-        target.swarm_id.trim(),
-        target.relationship.trim(),
-        target.role.trim(),
-        target.attach_status?.trim() ?? '',
-        target.backend_url?.trim() ?? '',
+        (target.swarm_id ?? '').trim(),
+        (target.relationship ?? '').trim(),
+        (target.role ?? '').trim(),
         target.current ? '1' : '0',
         target.online ? '1' : '0',
       ].join(':'))
@@ -1766,8 +2825,6 @@ export function DesktopAppPage() {
       .join('|'),
     [swarmTargets],
   )
-  const [swarmSwitchError, setSwarmSwitchError] = useState<string | null>(null)
-
   useEffect(() => {
     if (!editingSidebarSwarmName) {
       setSidebarSwarmNameDraft(swarmName)
@@ -1775,24 +2832,6 @@ export function DesktopAppPage() {
   }, [editingSidebarSwarmName, swarmName])
 
   useEffect(() => {
-    debugLog('desktop-app-page', 'route-state', {
-      routeWorkspaceSlug,
-      routeSessionId,
-      selectedWorkspacePath,
-      activeWorkspacePath,
-      activeSessionId,
-      liveSessionCount: Object.keys(liveSessions).length,
-      workspacesLoading,
-      connectionState,
-    })
-  }, [activeSessionId, activeWorkspacePath, connectionState, liveSessions, routeSessionId, routeWorkspaceSlug, selectedWorkspacePath, workspacesLoading])
-
-  useEffect(() => {
-    debugLog('desktop-app-page', 'overview-query-state', {
-      status: overviewQuery.status,
-      fetchStatus: overviewQuery.fetchStatus,
-      workspaceCount: overviewQuery.data?.workspaces?.length ?? 0,
-    })
   }, [overviewQuery.data?.workspaces, overviewQuery.fetchStatus, overviewQuery.status])
 
   useEffect(() => {
@@ -1802,102 +2841,80 @@ export function DesktopAppPage() {
     void queryClient.invalidateQueries({ queryKey: ['workspace-overview'] })
   }, [queryClient, swarmTopologySignature])
 
-  const refreshPairingRequests = useCallback(() => {
-    void fetchPendingRemoteSwarmPairings()
-      .then((items) => {
-        setPendingPairingRequests(items)
-        setPairingRequestError(null)
-      })
-      .catch((error) => {
-        setPairingRequestError(error instanceof Error ? error.message : 'Failed to load link requests')
-      })
+  const handleOpenNotifications = useCallback(() => {
+    setNotificationsOpen(true)
+    setNotificationActionError(null)
   }, [])
+
+  const mutateNotificationState = useCallback(async (action: () => Promise<void>, fallbackMessage: string): Promise<void> => {
+    setNotificationActionError(null)
+    try {
+      await action()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : fallbackMessage
+      setNotificationActionError(message)
+      setDesktopToast({ message, tone: 'error' })
+    }
+  }, [])
+
+  const handleMarkNotificationRead = useCallback((record: DesktopNotificationCenterRecord) => (
+    mutateNotificationState(async () => {
+      await updateNotification(record.id, { read: true })
+    }, 'Failed to mark notification read')
+  ), [mutateNotificationState])
+
+  const handleAcknowledgeNotification = useCallback((record: DesktopNotificationCenterRecord) => (
+    mutateNotificationState(async () => {
+      await updateNotification(record.id, { acked: true })
+    }, 'Failed to acknowledge notification')
+  ), [mutateNotificationState])
+
+  const handleMuteNotification = useCallback((record: DesktopNotificationCenterRecord) => (
+    mutateNotificationState(async () => {
+      await updateNotification(record.id, { muted: true })
+    }, 'Failed to mute notification')
+  ), [mutateNotificationState])
+
+  const handleClearNotifications = useCallback(() => (
+    mutateNotificationState(async () => {
+      await clearNotifications()
+    }, 'Failed to clear notifications')
+  ), [mutateNotificationState])
 
   useEffect(() => {
-    // Link-request badges are sidebar/background affordances, not chat-render inputs.
-    // Keep them out of the first-second Desktop bootstrap request set.
-    const initialTimer = window.setTimeout(refreshPairingRequests, PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS)
-    const pollTimer = window.setInterval(refreshPairingRequests, 5_000)
-    return () => {
-      window.clearTimeout(initialTimer)
-      window.clearInterval(pollTimer)
-    }
-  }, [refreshPairingRequests])
-
-  const handleOpenPairingRequests = useCallback(() => {
-    setPairingRequestsOpen(true)
-    setPairingRequestStatus(null)
-    refreshPairingRequests()
-  }, [refreshPairingRequests])
-
-  const handlePairingDecision = useCallback(async (request: RemoteSwarmPendingPairing, approve: boolean) => {
-    const requestID = request.request_id.trim()
-    if (!requestID) {
-      setPairingRequestError('Pairing request id is missing.')
-      return
-    }
-    setPairingDecisionBusyID(requestID)
-    setPairingRequestError(null)
-    setPairingRequestStatus(null)
-    try {
-      const result = await approveRemoteSwarmPairing({
-        requestID,
-        approve,
-        confirmed: approve ? pairingConfirmations[requestID] === true : undefined,
-        reason: approve ? undefined : 'Rejected from Link request modal',
-      })
-      setPendingPairingRequests((items) => items.filter((item) => item.request_id !== requestID))
-      setPairingConfirmations((current) => {
-        const next = { ...current }
-        delete next[requestID]
-        return next
-      })
-      if (approve) {
-        const target = managedHostTargetFromPairingResult({ request, result })
-        if (target) {
-          setPairingReplicationTarget(target)
-          setPairingRequestsOpen(true)
-        }
-      } else {
-        setPairingReplicationTarget(null)
+    const lifecycleItems = Object.values(aiTaskLifecycleByID)
+    if (lifecycleItems.length === 0) return
+    setTodoItems((current) => {
+      const next = { ...current }
+      for (const lifecycle of lifecycleItems) {
+        next[lifecycle.workspacePath] = upsertWorkspaceTodoItem(next[lifecycle.workspacePath] ?? [], lifecycle)
       }
-      setPairingRequestStatus(approve ? `Approved ${request.managed_name || request.managed_swarm_id || 'Managed Host'}. Workspace link/import review is ready.` : `Rejected link request ${requestID}.`)
-      void queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
-      refreshPairingRequests()
-    } catch (error) {
-      setPairingRequestError(error instanceof Error ? error.message : 'Failed to update link request')
-    } finally {
-      setPairingDecisionBusyID(null)
+      return next
+    })
+    for (const lifecycle of lifecycleItems) {
+      const previousState = aiTaskObservedStateRef.current.get(lifecycle.id)
+      aiTaskObservedStateRef.current.set(lifecycle.id, lifecycle.aiState)
+      if (!previousState || previousState === lifecycle.aiState || aiTaskTerminalToastRef.current.has(lifecycle.id)) continue
+      const title = lifecycle.aiDisplayTitle || lifecycle.text || 'Task'
+      if (lifecycle.aiState === 'in_progress') {
+        setDesktopToast({ message: `${title} started.`, tone: 'info' })
+      } else if (lifecycle.aiState === 'completed') {
+        aiTaskTerminalToastRef.current.add(lifecycle.id)
+        setDesktopToast({ message: `${title} completed.`, tone: 'success' })
+      } else if (lifecycle.aiState === 'failed') {
+        aiTaskTerminalToastRef.current.add(lifecycle.id)
+        setDesktopToast({ message: lifecycle.aiError || `${title} failed.`, tone: 'error' })
+      } else if (lifecycle.aiState === 'cancelled') {
+        aiTaskTerminalToastRef.current.add(lifecycle.id)
+        setDesktopToast({ message: `${title} was cancelled.`, tone: 'info' })
+      }
     }
-  }, [pairingConfirmations, queryClient, refreshPairingRequests])
-
-  const openTodoModal = useCallback((workspacePath: string, workspaceName: string) => {
-    const normalizedPath = workspacePath.trim()
-    if (!normalizedPath) {
-      return
-    }
-    setTodoModal({ workspacePath: normalizedPath, workspaceName })
-    void Promise.all([
-      fetchWorkspaceTodos(normalizedPath, 'user'),
-      fetchWorkspaceTodos(normalizedPath, 'agent'),
-    ])
-      .then(([userResult, agentResult]) => {
-        setTodoItems((current) => ({
-          ...current,
-          [normalizedPath]: [...userResult.items, ...agentResult.items],
-        }))
-        setTodoSummaries((current) => ({ ...current, [normalizedPath]: normalizeWorkspaceTodoSummary(userResult.summary) }))
-      })
-      .catch(() => {
-        setTodoItems((current) => ({ ...current, [normalizedPath]: [] }))
-        setTodoSummaries((current) => ({ ...current, [normalizedPath]: createEmptyWorkspaceTodoSummary() }))
-      })
-  }, [])
+  }, [aiTaskLifecycleByID])
 
   const closeTodoModal = useCallback(() => {
     setTodoModal(null)
   }, [])
-  const openGitPanel = useCallback((workspacePath: string, workspaceName: string) => {
+  const openMainWorktreeGitPanel = useCallback((workspacePath: string, workspaceName: string) => {
     const normalizedPath = workspacePath.trim()
     if (!normalizedPath) return
     setGitPanel({ workspacePath: normalizedPath, workspaceName })
@@ -1954,36 +2971,6 @@ export function DesktopAppPage() {
     }
   }, [queryClient, sidebarSwarmNameDirty, sidebarSwarmNameDraft])
 
-  const handleSelectSwarmTarget = useCallback(async (target: SwarmTarget) => {
-    setSwarmSwitchError(null)
-    if (target.current || target.kind === 'self') {
-      try {
-        await selectSwarmTarget(target.swarm_id)
-        await queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to return to master'
-        setSwarmSwitchError(message)
-      } finally {
-        setSwarmMenu({ open: false })
-      }
-      return
-    }
-
-    const openURL = swarmTargetOpenURL(target)
-    if (!target.online) {
-      setSwarmSwitchError(`${target.name || 'This swarm'} is offline.`)
-      setSwarmMenu({ open: false })
-      void queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
-      return
-    }
-    if (!openURL) {
-      setSwarmSwitchError(`${target.name || 'This swarm'} does not have a desktop URL yet.`)
-      return
-    }
-    window.open(openURL, '_blank', 'noopener,noreferrer')
-    setSwarmMenu({ open: false })
-  }, [queryClient])
-
   const mutateTodoState = useCallback(async <T,>(workspacePath: string, action: () => Promise<T>): Promise<T> => {
     const normalizedPath = workspacePath.trim()
     setTodoSavingWorkspacePath(normalizedPath)
@@ -2030,181 +3017,280 @@ export function DesktopAppPage() {
     saveStoredValue(DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY, JSON.stringify(workspaceLayout))
   }, [workspaceLayout])
 
-  const sessionsByWorkspace = useMemo<Map<string, DesktopSessionRecord[]>>(() => {
-    const grouped = new Map<string, DesktopSessionRecord[]>()
+  const desktopInitialHydrate = useDesktopV3CacheSelector((state) => state.desktopInitialHydrate)
+  const routeSessionNavigationHidden = useDesktopV3CacheSelector((state) => (
+    routeSessionId ? isDesktopV3NavigationHiddenRecord(state.sessionsById[routeSessionId]) : false
+  ))
+  const selectedDesktopV3Messages = useDesktopV3CacheSelector((state) => (
+    routeSessionId ? selectRenderedSessionMessages(state, routeSessionId) : EMPTY_DESKTOP_V3_RENDERED_MESSAGES
+  ), desktopV3RenderedMessagesEqual)
+  const selectedDesktopV3MessagesLoaded = useDesktopV3CacheSelector((state) => (
+    routeSessionId ? isDesktopV3SessionTailReady(state, routeSessionId) : false
+  ))
+  const selectedDesktopV3LoadedMessageCount = useDesktopV3CacheSelector((state) => (
+    routeSessionId ? (state.messagesBySession[routeSessionId]?.items.length ?? 0) : 0
+  ))
+  const desktopSidebarRows = useDesktopV3CacheSelector(selectDesktopSidebarRows, desktopV3SidebarRowsEqual)
+  const desktopStateSessions = useMemo<DesktopSessionRecord[]>(
+    () => desktopSidebarRows.map(desktopSessionRecordFromV3SidebarRow),
+    [desktopSidebarRows],
+  )
+  useEffect(() => {
+    const sessionId = routeSessionId.trim()
+    if (!sessionId) return
+    void selectAndHydrateDesktopV3Session(sessionId)
+  }, [routeSessionId])
 
-    for (const workspace of mergedSidebarWorkspaceEntries) {
-      grouped.set(workspace.path, [])
-    }
-    for (const workspace of overviewQuery.data?.workspaces ?? []) {
-      grouped.set(workspace.path, workspace.sessions)
-    }
-    for (const session of Object.values(liveSessions)) {
-      const workspacePath = session.workspacePath?.trim()
-      if (!workspacePath || !grouped.has(workspacePath)) {
-        continue
-      }
-      const existing = grouped.get(workspacePath) ?? []
-      const existingIndex = existing.findIndex((entry) => entry.id === session.id)
-      if (existingIndex >= 0) {
-        const next = [...existing]
-        next[existingIndex] = session
-        grouped.set(workspacePath, next)
-        continue
-      }
-      grouped.set(workspacePath, [session, ...existing])
-    }
+  useEffect(() => {
+    if (!routeSessionNavigationHidden || !routeWorkspaceSlug) return
+    dispatchDesktopV3Cache(selectSession(undefined))
+    void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
+  }, [navigate, routeSessionNavigationHidden, routeWorkspaceSlug])
 
-    return grouped
-  }, [liveSessions, overviewQuery.data?.workspaces, mergedSidebarWorkspaceEntries])
+  useEffect(() => {
+    if (routeSessionId.trim()) return
+    if (!routeWorkspace?.path) return
 
-  const allSessions = useMemo<DesktopSessionRecord[]>(
-    () => {
-      const sessionMap = new Map<string, DesktopSessionRecord>()
-      for (const session of Array.from(sessionsByWorkspace.values()).flat()) {
-        sessionMap.set(session.id, session)
-      }
-      const activeSession = activeSessionId ? useDesktopStore.getState().sessions[activeSessionId] : null
-      if (activeSession?.id) {
-        sessionMap.set(activeSession.id, activeSession)
-      }
-      return Array.from(sessionMap.values())
-    },
-    [activeSessionId, sessionsByWorkspace],
+    dispatchDesktopV3Cache(selectSession(undefined))
+  }, [routeSessionId, routeWorkspace?.path])
+
+  const globalSidebarSessionNodes = useMemo(
+    () => buildSidebarSessionTree(desktopStateSessions, sidebarNow),
+    [desktopStateSessions, sidebarNow],
+  )
+  const sidebarHideInactiveHours = normalizeSidebarHideInactiveHours(uiSettings?.chat?.sidebar_hide_inactive_hours)
+  const filteredSidebarTrees = useMemo(
+    () => filterInactiveSidebarSessionTrees(globalSidebarSessionNodes, sidebarNow, sidebarHideInactiveHours, routeSessionId),
+    [globalSidebarSessionNodes, routeSessionId, sidebarHideInactiveHours, sidebarNow],
+  )
+  const globalFlattenedSessionNodes = useMemo(
+    () => flattenVisibleSidebarSessionNodes(filteredSidebarTrees.nodes, expandedAgentSessions, routeSessionId),
+    [expandedAgentSessions, filteredSidebarTrees.nodes, routeSessionId],
+  )
+  const mobileWorkspaceSessionNodes = useMemo(
+    () => globalFlattenedSessionNodes.filter((node) => (
+      routeWorkspace?.path
+        ? desktopRouteWorkspacePathForSession(node.session, workspacePathByBindingId, knownWorkspacePaths) === routeWorkspace.path
+        : false
+    )),
+    [globalFlattenedSessionNodes, knownWorkspacePaths, routeWorkspace?.path, workspacePathByBindingId],
+  )
+  const mobileActiveSessionNodes = useMemo(
+    () => mobileWorkspaceSessionNodes.filter((node) => sessionIsMobileActive(node.session)),
+    [mobileWorkspaceSessionNodes],
+  )
+  const mobilePreviousSessionNodes = useMemo(
+    () => mobileWorkspaceSessionNodes.filter((node) => !sessionIsMobileActive(node.session)),
+    [mobileWorkspaceSessionNodes],
+  )
+  const visibleSidebarRootIDs = useMemo(
+    () => sidebarRootIDsForSelectionGroup(filteredSidebarTrees.nodes, null),
+    [filteredSidebarTrees.nodes],
+  )
+  const sidebarAgentSummaries = useMemo(
+    () => new Map(globalFlattenedSessionNodes.map((node) => [node.session.id, summarizeSubagentDescendants(node)] as const)),
+    [globalFlattenedSessionNodes],
   )
 
   const sessionById = useMemo<Map<string, DesktopSessionRecord>>(
-    () => new Map(allSessions.map((session) => [session.id, session] as const)),
-    [allSessions],
+    () => new Map(desktopStateSessions.map((session) => [session.id, session] as const)),
+    [desktopStateSessions],
   )
-
-  const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(mergedSidebarWorkspaceEntries), [mergedSidebarWorkspaceEntries])
-
-  const backgroundBootstrapSessionIds = useMemo<string[]>(() => {
-    const routeCriticalSessionId = routeSessionId.trim()
-    const activeBackgroundSessionId = activeSessionId?.trim() ?? ''
-    if (!activeBackgroundSessionId || activeBackgroundSessionId === routeCriticalSessionId) {
-      return []
-    }
-
-    // Sidebar rows render from workspace overview summaries plus live session state. Do not
-    // hydrate every visible sidebar row with full V3 snapshots on refresh; explicit hover,
-    // focus, or route navigation owns those non-critical snapshot loads.
-    return [activeBackgroundSessionId]
-  }, [activeSessionId, routeSessionId])
-  const backgroundBootstrapSessionIdsKey = backgroundBootstrapSessionIds.join('\u0000')
+  const activeGitSession = routeSessionId ? sessionById.get(routeSessionId) ?? null : null
+  const selectedGitSessionId = activeGitSession?.id ?? ''
+  const selectedGitWorkspacePath = activeGitSession?.worktreeEnabled
+    ? activeGitSession.worktreeRootPath?.trim() || ''
+    : activeGitSession
+      ? desktopRouteWorkspacePathForSession(activeGitSession, workspacePathByBindingId, knownWorkspacePaths)
+      : ''
+  const gitStatusQuery = useQuery({
+    queryKey: gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId),
+    queryFn: () => fetchGitStatus(selectedGitWorkspacePath, 12, selectedGitSessionId),
+    enabled: selectedGitSessionId !== '' && selectedGitWorkspacePath !== '',
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+  })
+  const gitSnapshot = gitStatusQuery.data?.status ?? null
 
   useEffect(() => {
-    const normalizedRouteSessionId = routeSessionId?.trim() ?? ''
-    const epoch = desktopV3BootstrapEpochRef.current + 1
-    desktopV3BootstrapEpochRef.current = epoch
+    if (!selectedGitWorkspacePath || document.visibilityState === 'hidden') return
     let cancelled = false
-    const isCurrentEpoch = () => !cancelled && desktopV3BootstrapEpochRef.current === epoch
-    if (backgroundBootstrapSessionIds.length === 0) {
-      setDesktopV3Bootstrap({ status: 'idle', epoch, error: null })
+    let token = ''
+    const refresh = async () => {
+      const startedAt = Date.now()
+      const requestedToken = token
+      try {
+        const response = await startGitRealtime(selectedGitWorkspacePath, selectedGitSessionId, requestedToken)
+        if (cancelled) return
+        if (response.watch_token !== requestedToken) {
+          token = response.watch_token
+          queryClient.setQueryData(gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId), { ok: true, status: response.status })
+        } else {
+          // A current daemon holds this request for the long-poll window. Keep a
+          // defensive floor for stale/nonconforming daemons that ignore the token
+          // so an immediate unchanged response cannot create a hot request loop.
+          const remaining = 1_000 - (Date.now() - startedAt)
+          if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining))
+        }
+        setGitRealtimeErrors((current) => {
+          if (!current[selectedGitWorkspacePath]) return current
+          const next = { ...current }; delete next[selectedGitWorkspacePath]; return next
+        })
+        return true
+      } catch (error) {
+        if (!cancelled) setGitRealtimeErrors((current) => ({ ...current, [selectedGitWorkspacePath]: error instanceof Error ? error.message : String(error) }))
+        return false
+      }
+    }
+    const poll = async () => {
+      while (!cancelled) {
+        const ok = document.visibilityState === 'visible' ? await refresh() : true
+        if (!cancelled) await new Promise((resolve) => window.setTimeout(resolve, document.visibilityState !== 'visible' ? 1_000 : ok ? 250 : 5_000))
+      }
+    }
+    void poll()
+    return () => { cancelled = true }
+  }, [queryClient, selectedGitSessionId, selectedGitWorkspacePath])
+  const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(
+    mergedSidebarWorkspaceEntries.map((workspace) => ({
+      path: workspace.path,
+      workspaceName: workspace.workspaceName,
+    })),
+  ), [mergedSidebarWorkspaceEntries])
+  const topWorkspace = selectedWorkspace
+    ?? routeWorkspace
+    ?? mergedSidebarWorkspaceEntries[0]
+    ?? visibleSidebarWorkspaceEntries[0]
+    ?? null
+  const topWorkspaceLabel = topWorkspace?.workspaceName?.trim() || 'Default Workspace'
+  const topWorkspacePath = topWorkspace?.path || selectedWorkspacePath || ''
+  const topWorkspaceSlug = topWorkspacePath
+    ? workspaceSlugByPath.get(topWorkspacePath) ?? workspaceRouteSlugBase({ path: topWorkspacePath, workspaceName: topWorkspaceLabel })
+    : routeWorkspaceSlug
+  const topWorkspaceOptions = useMemo(() => mergedSidebarWorkspaceEntries, [mergedSidebarWorkspaceEntries])
+  const topWorkspaceGitStatusQuery = useQuery({
+    queryKey: gitStatusQueryKey(topWorkspacePath),
+    queryFn: () => fetchGitStatus(topWorkspacePath),
+    enabled: Boolean(topWorkspacePath),
+    staleTime: 5_000,
+    refetchOnWindowFocus: true,
+  })
+  const topWorkspaceGitSnapshot = topWorkspaceGitStatusQuery.data?.status ?? null
+  const topWorkspaceGitAheadCount = topWorkspaceGitSnapshot?.ahead_count ?? topWorkspace?.gitAheadCount ?? 0
+  const topWorkspaceGitBehindCount = topWorkspaceGitSnapshot?.behind_count ?? topWorkspace?.gitBehindCount ?? 0
+  const topWorkspaceGitDirtyCount = topWorkspaceGitSnapshot?.dirty_count ?? topWorkspace?.gitDirtyCount ?? 0
+  const topWorkspaceHasGit = topWorkspaceGitSnapshot?.has_git ?? topWorkspace?.gitHasGit ?? false
+  const sidebarWorkspaceBranch = activeGitSession?.worktreeEnabled
+    ? gitSnapshot?.branch
+    : gitSnapshot?.branch || selectedWorkspace?.gitBranch || routeWorkspace?.gitBranch || topWorkspace?.gitBranch
+  const sidebarWorkspaceContext = sidebarWorkspaceContextLabel(masterWorkspaceName || topWorkspaceLabel, sidebarWorkspaceBranch)
+  const defaultNewChatWorkspace = useMemo(() => {
+    const defaultPath = currentWorkspacePath?.trim() || ''
+    if (defaultPath) {
+      return mergedSidebarWorkspaceEntries.find((workspace) => workspace.path === defaultPath)
+        ?? buildTemporaryWorkspaceEntry(defaultPath, fallbackWorkspaceNameFromPath(defaultPath))
+    }
+    return topWorkspace
+  }, [currentWorkspacePath, mergedSidebarWorkspaceEntries, topWorkspace])
+  const defaultNewChatWorkspacePath = defaultNewChatWorkspace?.path || ''
+  const defaultNewChatWorkspaceLabel = defaultNewChatWorkspace?.workspaceName?.trim() || 'Default Workspace'
+  const globalSessionWorkspaceSlug = useCallback((session: DesktopSessionRecord): string => {
+    const workspacePath = desktopRouteWorkspacePathForSession(session, workspacePathByBindingId, knownWorkspacePaths)
+      || selectedWorkspacePath
+      || visibleWorkspacePaths[0]
+      || ''
+    if (!workspacePath) return topWorkspaceSlug || routeWorkspaceSlug || 'workspace'
+    return workspaceSlugByPath.get(workspacePath)
+      ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: session.workspaceName || fallbackWorkspaceNameFromPath(workspacePath) })
+  }, [knownWorkspacePaths, routeWorkspaceSlug, selectedWorkspacePath, topWorkspaceSlug, visibleWorkspacePaths, workspacePathByBindingId, workspaceSlugByPath])
+  const globalSessionRouteOptions = useMemo(() => buildDesktopChatRouteOptions({
+    hostSwarmName: swarmName,
+    workspacePath: topWorkspacePath,
+    workspaceName: topWorkspaceLabel,
+    topologyRoutes: topWorkspace?.topologyRoutes ?? [],
+    localWorkspaceBindingId: topWorkspace?.localWorkspaceBindingId ?? '',
+    hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
+  }), [currentSwarmTarget?.swarm_id, swarmName, topWorkspace?.localWorkspaceBindingId, topWorkspace?.topologyRoutes, topWorkspaceLabel, topWorkspacePath])
+  const reviewFixAgent = resolveReviewWorktreeRepairAgent(agentStateQuery.data)
+  const reviewFixAvailable = Boolean(reviewFixAgent && topWorkspacePath)
+  const handleAskSwarmToFixReviewIntegration = useCallback(async (failure: ReviewWorktreeIntegrationFailure) => {
+    if (!reviewFixAgent || !topWorkspacePath) return
+    const route = globalSessionRouteOptions.find((option) => getDesktopSessionCreateTarget(option).endpoint === '/v3/sessions') ?? null
+    const draftPreference = draftPreferenceQuery.data?.preference
+    const modelProfileState = modelProfilesQuery.data
+    const defaultModelProfile = modelProfileState?.profiles.find((candidate) => candidate.profileId === modelProfileState.defaultProfileId) ?? null
+    const defaultModelProfilePreference = defaultModelProfile
+      ? preferenceFromModelProfile(defaultModelProfile, 'auto', defaultModelProfile.updatedAt)
+      : null
+    const agentModel = resolveDesktopV3AgentModelLock(agentStateQuery.data?.profiles ?? [], reviewFixAgent, 'auto')
+    const preference = defaultModelProfilePreference ?? (agentModel.locked
+      ? {
+          provider: agentModel.provider,
+          model: agentModel.model,
+          thinking: agentModel.thinking || draftPreference?.thinking || '',
+          serviceTier: agentModel.serviceTier,
+          contextMode: draftPreference?.contextMode || '',
+        }
+      : draftPreference)
+    const modelProfileChoice = defaultModelProfilePreference ? { kind: 'account-default' as const } : undefined
+    if (!route || !preference?.provider?.trim() || !preference.model?.trim() || !preference.thinking?.trim()) {
+      setNeedsReviewCleanupOpen(false)
+      setDesktopToast({ message: 'Swarm could not start a repair session because its Desktop V3 route or model preference is unavailable.', tone: 'error' })
       return
     }
-
-    const abortController = new AbortController()
-    setDesktopV3Bootstrap({ status: 'running', epoch, error: null })
-    const applySnapshotSession = (session: DesktopSessionRecord) => {
-      if (!isCurrentEpoch()) {
-        return
-      }
-      upsertSession(session)
-      syncWorkspaceOverviewSession(queryClient, session)
+    setNeedsReviewCleanupOpen(false)
+    try {
+      const operation = createDesktopV3NewSessionOperation({
+        workspacePath: topWorkspacePath,
+        workspaceName: topWorkspaceLabel,
+        route,
+        prompt: buildReviewWorktreeFixPrompt(failure, topWorkspacePath),
+        title: `${failure.operation === 'commit_and_integrate' ? 'Fix commit and integration' : 'Fix integration'}: ${failure.candidate.title || failure.candidate.worktree_branch || failure.candidate.session_id}`,
+        mode: 'auto',
+        agentName: reviewFixAgent,
+        modelProfileChoice,
+        worktree: { mode: 'off' },
+        preference: {
+          provider: preference.provider,
+          model: preference.model,
+          thinking: preference.thinking,
+          serviceTier: preference.serviceTier,
+          contextMode: preference.contextMode,
+        },
+        sessionMetadata: { source: 'desktop-v3-review-worktrees-recovery', workspace_path: topWorkspacePath },
+        messageMetadata: { source: 'desktop-v3-review-worktrees-recovery', failed_session_id: failure.candidate.session_id },
+      })
+      await startNewDesktopV3Session({
+        operation,
+        onSessionStarted: (sessionId) => {
+          void navigate({
+            to: '/$workspaceSlug/$sessionId',
+            params: { workspaceSlug: topWorkspaceSlug, sessionId },
+          })
+        },
+      })
+    } catch (cause) {
+      setDesktopToast({ message: cause instanceof Error ? cause.message : 'Could not start a Swarm repair session.', tone: 'error' })
     }
+  }, [agentStateQuery.data?.profiles, draftPreferenceQuery.data?.preference, globalSessionRouteOptions, modelProfilesQuery.data, navigate, reviewFixAgent, topWorkspaceLabel, topWorkspacePath, topWorkspaceSlug])
 
-    const idsToHydrate: string[] = []
-    for (const sessionId of backgroundBootstrapSessionIds) {
-      const cachedSnapshot = getCachedDesktopV3SessionSnapshot(queryClient, sessionId)
-      if (cachedSnapshot) {
-        applySnapshotSession(cachedSnapshot.session)
-        continue
-      }
-      idsToHydrate.push(sessionId)
+  useEffect(() => {
+    if (!routeSessionId) return
+    if (activeChatSessionIdRef.current && activeChatSessionIdRef.current !== routeSessionId) {
+      setPreviousChatSessionId(activeChatSessionIdRef.current)
     }
+    activeChatSessionIdRef.current = routeSessionId
+  }, [routeSessionId])
 
-    const routeSessionCached = Boolean(
-      normalizedRouteSessionId && readDesktopV3CachedSession(queryClient, normalizedRouteSessionId),
-    )
-    debugLog('desktop-app-page', 'effect:v3-bootstrap-hydration-check', {
-      routeSessionId: normalizedRouteSessionId,
-      backgroundSessionCount: backgroundBootstrapSessionIds.length,
-      hydrateCount: idsToHydrate.length,
-      routeSessionCached,
-    })
-
-    const bootstrapTasks: Promise<void>[] = [
-      queryClient.ensureQueryData(agentStateQueryOptions()).then(() => undefined),
-      ...idsToHydrate.map(async (sessionId) => {
-        const snapshot = await hydrateDesktopV3SessionSnapshot(queryClient, sessionId, { signal: abortController.signal })
-        if (!snapshot || cancelled) {
-          return
-        }
-        applySnapshotSession(snapshot.session)
-      }),
-    ]
-
-    void Promise.allSettled(bootstrapTasks).then((results) => {
-      if (!isCurrentEpoch()) {
-        return
-      }
-      const rejected = results.filter((result) => result.status === 'rejected')
-      if (rejected.length > 0) {
-        const error = rejected.map((result) => result.reason).join('\n')
-        console.error('[desktop-app] failed to hydrate desktop v3 bootstrap data', rejected.map((result) => result.reason))
-        setDesktopV3Bootstrap({ status: 'error', epoch, error })
-      } else {
-        setDesktopV3Bootstrap({ status: 'ready', epoch, error: null })
-      }
-    })
-
-    return () => {
-      cancelled = true
-      abortController.abort()
-    }
-  }, [backgroundBootstrapSessionIdsKey, queryClient, routeSessionId, upsertSession])
-
-  const routeSession = routeSessionId
-    ? routeSessionSnapshotQuery.data?.session
-      ?? readDesktopV3CachedSession(queryClient, routeSessionId)
-      ?? liveSessions[routeSessionId]
-      ?? sessionById.get(routeSessionId)
-      ?? null
-    : null
-  const routeFallbackSession = useMemo<DesktopSessionRecord | null>(() => {
-    if (!routeSessionId || routeSessionSnapshotQuery.isError || !selectedWorkspacePath) {
-      return null
-    }
-    return mapDesktopSession({
-      id: routeSessionId,
-      title: 'Loading session…',
-      workspace_path: selectedWorkspacePath,
-      workspace_name: selectedWorkspace?.workspaceName ?? fallbackWorkspaceNameFromPath(selectedWorkspacePath),
-      mode: 'auto',
-      session_api: 'v3',
-    })
-  }, [routeSessionId, routeSessionSnapshotQuery.isError, selectedWorkspace?.workspaceName, selectedWorkspacePath])
-
-  const selectedSession = routeSessionId ? routeSession ?? routeFallbackSession : null
+  const routeReadinessStatus = routeSessionNavigationHidden ? 'navigation_hidden' : 'idle'
+  const routeSessionUnavailable = routeSessionNavigationHidden
 
   useEffect(() => {
     if (!selectedWorkspacePath) {
-      if (activeWorkspacePath !== null) {
-        setActiveWorkspacePath(null)
-      }
-      if (activeSessionId !== null) {
-        setActiveSession(null)
-      }
       return
     }
 
-    if (selectedWorkspacePath !== activeWorkspacePath) {
-      setActiveWorkspacePath(selectedWorkspacePath)
-    }
-
-    if (routeSessionId || selectedSession?.id) {
+    if (routeSessionId || routeSessionId) {
       setWorkspaceLayout((current) => {
         const currentEntry = current[selectedWorkspacePath]
         if (currentEntry && currentEntry.collapsed === false && currentEntry.hidden !== true) {
@@ -2220,103 +3306,29 @@ export function DesktopAppPage() {
         }
       })
     }
+  }, [routeSessionId, routeSessionId, selectedWorkspacePath])
 
-    if (routeSessionId && selectedSession?.id) {
-      if (selectedSession.id !== activeSessionId) {
-        setActiveSession(selectedSession.id)
-      }
-      return
-    }
-
-    if (activeSessionId !== null) {
-      setActiveSession(null)
-    }
-  }, [activeSessionId, activeWorkspacePath, routeSessionId, selectedSession, selectedWorkspacePath, setActiveSession, setActiveWorkspacePath])
-
-  const stopResize = useCallback(() => {
-    resizeStateRef.current = null
+  const handleClearSidebarSelection = useCallback(() => {
+    setSelectedSidebarRootIDs(new Set())
+    setSidebarSelectionMode(false)
+    setSidebarMasterSelectionGroup(null)
+    lastSelectedSidebarRootIDRef.current = null
   }, [])
 
-  const handlePointerMove = useCallback((event: PointerEvent) => {
-    const activeResize = resizeStateRef.current
-    const containerHeight = sidebarBodyRef.current?.getBoundingClientRect().height ?? 0
-    if (!activeResize || containerHeight <= 0) {
-      return
-    }
-
-    const pairRatio = activeResize.topRatio + activeResize.bottomRatio
-    const desiredMinRatio = (MIN_WORKSPACE_SECTION_HEIGHT_PX / containerHeight) * activeResize.totalVisibleRatio
-    const minRatio = Math.min(Math.max(desiredMinRatio, 0.12), Math.max((pairRatio - 0.12) / 2, 0.06))
-    const deltaRatio = ((event.clientY - activeResize.startY) / containerHeight) * activeResize.totalVisibleRatio
-    const nextTopRatio = Math.min(Math.max(activeResize.topRatio + deltaRatio, minRatio), pairRatio - minRatio)
-    const nextBottomRatio = pairRatio - nextTopRatio
-
-    setWorkspaceLayout((current) => ({
-      ...current,
-      [activeResize.topPath]: {
-        collapsed: current[activeResize.topPath]?.collapsed ?? true,
-        hidden: current[activeResize.topPath]?.hidden ?? false,
-        ratio: nextTopRatio,
-      },
-      [activeResize.bottomPath]: {
-        collapsed: current[activeResize.bottomPath]?.collapsed ?? true,
-        hidden: current[activeResize.bottomPath]?.hidden ?? false,
-        ratio: nextBottomRatio,
-      },
-    }))
-  }, [])
-
-  useEffect(() => {
-    const handlePointerUp = () => {
-      stopResize()
-    }
-
-    window.addEventListener('pointermove', handlePointerMove)
-    window.addEventListener('pointerup', handlePointerUp)
-    return () => {
-      window.removeEventListener('pointermove', handlePointerMove)
-      window.removeEventListener('pointerup', handlePointerUp)
-    }
-  }, [handlePointerMove, stopResize])
-
-  const handleResizeStart = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>, topPath: string, bottomPath: string) => {
-      event.preventDefault()
-
-      resizeStateRef.current = {
-        topPath,
-        bottomPath,
-        startY: event.clientY,
-        topRatio: normalizeRatio(workspaceLayout[topPath]?.ratio),
-        bottomRatio: normalizeRatio(workspaceLayout[bottomPath]?.ratio),
-        totalVisibleRatio: visibleWorkspacePaths.reduce((sum, path) => sum + normalizeRatio(workspaceLayout[path]?.ratio), 0) || visibleWorkspacePaths.length || 1,
-      }
-    },
-    [visibleWorkspacePaths, workspaceLayout],
-  )
-
-  const toggleWorkspaceCollapse = useCallback((path: string) => {
-    setWorkspaceLayout((current) => ({
-      ...current,
-      [path]: {
-        collapsed: !current[path]?.collapsed,
-        hidden: current[path]?.hidden ?? false,
-        ratio: normalizeRatio(current[path]?.ratio),
-      },
-    }))
-  }, [])
-
-  const toggleWorkspaceHidden = useCallback((path: string) => {
-    setWorkspaceLayout((current) => ({
-      ...current,
-      [path]: {
-        collapsed: current[path]?.collapsed ?? true,
-        hidden: !current[path]?.hidden,
-        ratio: normalizeRatio(current[path]?.ratio),
-      },
-    }))
-  }, [])
-
+  const handleOpenSearchResult = useCallback((item: DesktopSessionSearchItem) => {
+    const sessionId = item.id.trim()
+    if (!sessionId) return
+    const workspacePath = item.workspace_path?.trim() ?? ''
+    const workspaceSlug = workspacePath
+      ? workspaceSlugByPath.get(workspacePath) ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: item.workspace_name || 'Workspace' })
+      : ''
+    if (!workspaceSlug) return
+    setSearchModalOpen(false)
+    setMobileSidebarOpen(false)
+    handleClearSidebarSelection()
+    void selectAndHydrateDesktopV3Session(sessionId)
+    void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId } })
+  }, [handleClearSidebarSelection, navigate, workspaceSlugByPath])
 
   useEffect(() => {
     if (!routeWorkspaceSlug || routeSessionId || !routeWorkspace?.path) {
@@ -2326,11 +3338,6 @@ export function DesktopAppPage() {
     if (!canonicalWorkspaceSlug || canonicalWorkspaceSlug === routeWorkspaceSlug) {
       return
     }
-    debugLog('desktop-app-page', 'effect:canonicalize-workspace-route', {
-      from: routeWorkspaceSlug,
-      to: canonicalWorkspaceSlug,
-      workspacePath: routeWorkspace.path,
-    })
     void navigate({
       to: '/$workspaceSlug',
       params: { workspaceSlug: canonicalWorkspaceSlug },
@@ -2339,53 +3346,50 @@ export function DesktopAppPage() {
   }, [navigate, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, workspaceSlugByPath])
 
   useEffect(() => {
-    if (!routeSession?.id || !routeSession.workspacePath) {
+    if (!routeWorkspaceSlug || !routeSessionId) {
       return
     }
-    const canonicalWorkspaceSlug = workspaceSlugByPath.get(routeSession.workspacePath)
-    if (!canonicalWorkspaceSlug || (canonicalWorkspaceSlug === routeWorkspaceSlug && routeSession.id === routeSessionId)) {
+    const session = sessionById.get(routeSessionId)
+    if (!session) {
       return
     }
-    debugLog('desktop-app-page', 'effect:canonicalize-session-route', {
-      fromWorkspaceSlug: routeWorkspaceSlug,
-      toWorkspaceSlug: canonicalWorkspaceSlug,
-      routeSessionId,
-      canonicalSessionId: routeSession.id,
-    })
+    const workspacePath = desktopRouteWorkspacePathForSession(session, workspacePathByBindingId, knownWorkspacePaths)
+    if (!workspacePath) {
+      return
+    }
+    const canonicalWorkspaceSlug = workspaceSlugByPath.get(workspacePath)
+      ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: session.workspaceName })
+    if (!canonicalWorkspaceSlug || canonicalWorkspaceSlug === routeWorkspaceSlug) {
+      return
+    }
     void navigate({
       to: '/$workspaceSlug/$sessionId',
-      params: {
-        workspaceSlug: canonicalWorkspaceSlug,
-        sessionId: routeSession.id,
-      },
+      params: { workspaceSlug: canonicalWorkspaceSlug, sessionId: session.id },
       replace: true,
     })
-  }, [navigate, routeSession?.id, routeSession?.workspacePath, routeSessionId, routeWorkspaceSlug, workspaceSlugByPath])
+  }, [knownWorkspacePaths, navigate, routeSessionId, routeWorkspaceSlug, sessionById, workspacePathByBindingId, workspaceSlugByPath])
 
-  const handleSelectSession = useCallback(async (sessionId: string) => {
+
+
+  const handleSelectSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
-    const cachedSnapshot = readDesktopV3CachedSession(queryClient, normalizedSessionId)
-    let session = cachedSnapshot ?? sessionById.get(normalizedSessionId)
-    if (!session?.workspacePath) {
-      return
+    handleClearSidebarSelection()
+    void selectAndHydrateDesktopV3Session(normalizedSessionId)
+    const session = sessionById.get(normalizedSessionId)
+    if (!session) {
+      return false
+    }
+    const workspacePath = desktopRouteWorkspacePathForSession(session, workspacePathByBindingId, knownWorkspacePaths)
+      || selectedWorkspacePath
+      || visibleWorkspacePaths[0]
+      || ''
+    if (!workspacePath) {
+      return false
     }
     setMobileSidebarOpen(false)
 
-    if (!cachedSnapshot) {
-      try {
-        const snapshot = await hydrateDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
-        if (snapshot?.session) {
-          session = snapshot.session
-          upsertSession(snapshot.session)
-          syncWorkspaceOverviewSession(queryClient, snapshot.session)
-        }
-      } catch (error) {
-        console.warn('[desktop-app] failed to prehydrate sidebar session before navigation', error)
-      }
-    }
-
-    const workspaceSlug = workspaceSlugByPath.get(session.workspacePath)
-      ?? workspaceRouteSlugBase({ path: session.workspacePath, workspaceName: session.workspaceName })
+    const workspaceSlug = workspaceSlugByPath.get(workspacePath)
+      ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: session.workspaceName })
     void navigate({
       to: '/$workspaceSlug/$sessionId',
       params: {
@@ -2393,125 +3397,745 @@ export function DesktopAppPage() {
         sessionId: session.id,
       },
     })
-  }, [navigate, queryClient, sessionById, upsertSession, workspaceSlugByPath])
+    return true
+  }, [handleClearSidebarSelection, knownWorkspacePaths, navigate, selectedWorkspacePath, sessionById, visibleWorkspacePaths, workspacePathByBindingId, workspaceSlugByPath])
 
-  const handleSessionCreated = useCallback((session: DesktopSessionRecord) => {
-    setActiveSession(session.id)
-    if (session.workspacePath) {
-      setActiveWorkspacePath(session.workspacePath)
-    }
-    if (!session.workspacePath) {
-      return
-    }
-    const workspaceSlug = workspaceSlugByPath.get(session.workspacePath)
-      ?? workspaceRouteSlugBase({ path: session.workspacePath, workspaceName: session.workspaceName })
-    void navigate({
-      to: '/$workspaceSlug/$sessionId',
-      params: {
-        workspaceSlug,
-        sessionId: session.id,
-      },
-    })
-  }, [navigate, setActiveSession, setActiveWorkspacePath, workspaceSlugByPath])
 
-  const chatWorkspacePath = selectedSession?.workspacePath || selectedWorkspace?.path || ''
-  const chatWorkspaceName = selectedSession?.workspaceName || selectedWorkspace?.workspaceName || ''
 
-  const handleStartNewSessionInWorkspace = useCallback((wsPath: string, wsName: string) => {
+  const chatWorkspacePath = selectedWorkspace?.path || ''
+  const planModalPlan = useDesktopV3CacheSelector((state) => planModal?.sessionId ? (state.plansBySession[planModal.sessionId] ?? null) : null) as DesktopSessionPlanRecord | null
+  const planModalRevisions = useDesktopV3CacheSelector((state) => planModal?.sessionId ? (state.planRevisionsBySession[planModal.sessionId] ?? []) : []) as DesktopSessionPlanRevisionRecord[]
+
+  const handleOpenWorkspace = useCallback((wsPath: string, wsName: string) => {
     setMobileSidebarOpen(false)
-    setActiveSession(null)
-    setActiveWorkspacePath(wsPath)
     const workspaceSlug = workspaceSlugByPath.get(wsPath)
       ?? workspaceRouteSlugBase({ path: wsPath, workspaceName: wsName })
     void navigate({
       to: '/$workspaceSlug',
       params: { workspaceSlug },
     })
-  }, [navigate, setActiveSession, setActiveWorkspacePath, workspaceSlugByPath])
+  }, [navigate, workspaceSlugByPath])
 
-  const handleOpenSettingsTab = useCallback((tab: SettingsTabID) => {
-    setQuickSettingsTab(null)
-    setMobileSidebarOpen(false)
-    if (routeWorkspaceSlug) {
-      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: { tab } })
-      return
-    }
-    void navigate({ to: '/settings', search: { tab } })
-  }, [navigate, routeWorkspaceSlug])
+  const handleStartNewSessionInWorkspace = useCallback((wsPath: string, wsName: string) => {
+    dispatchDesktopV3Cache(selectSession(undefined))
+    handleOpenWorkspace(wsPath, wsName)
+  }, [handleOpenWorkspace])
 
-  const handleOpenFlowsSettings = useCallback(() => {
-    setFlowMenuOpen(false)
-    setWorkspaceMenuOpen(false)
-    setMobileSidebarOpen(false)
-    if (routeWorkspaceSlug) {
-      void navigate({ to: '/$workspaceSlug/flow', params: { workspaceSlug: routeWorkspaceSlug } })
-      return
-    }
-    const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || ''
+  const handleArchivePlanSession = useCallback((sessionId: string) => {
+    const normalizedSessionId = sessionId.trim()
+    const routeSession = normalizedSessionId ? sessionById.get(normalizedSessionId) : null
+    const workspacePath = routeSession
+      ? desktopRouteWorkspacePathForSession(routeSession, workspacePathByBindingId, knownWorkspacePaths)
+        || selectedWorkspacePath
+        || routeWorkspace?.path
+        || ''
+      : selectedWorkspacePath || routeWorkspace?.path || ''
+    const workspaceName = routeSession?.workspaceName || selectedWorkspace?.workspaceName || routeWorkspace?.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
+    dispatchDesktopV3Cache(selectSession(undefined))
     if (workspacePath) {
-      const workspaceSlug = workspaceSlugByPath.get(workspacePath)
-        ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: selectedWorkspace?.workspaceName ?? '' })
-      void navigate({ to: '/$workspaceSlug/flow', params: { workspaceSlug } })
+      handleOpenWorkspace(workspacePath, workspaceName)
       return
     }
-    void navigate({ to: '/flow' })
-  }, [navigate, routeWorkspaceSlug, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, workspaceSlugByPath])
-
-  const handleOpenFlow = useCallback((flow: SidebarFlowRow) => {
-    setFlowMenuOpen(false)
-    setWorkspaceMenuOpen(false)
-    setMobileSidebarOpen(false)
     if (routeWorkspaceSlug) {
-      void navigate({ to: '/$workspaceSlug/flow/$flowId', params: { workspaceSlug: routeWorkspaceSlug, flowId: flow.id } })
+      void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
       return
     }
-    const workspacePath = flow.raw.workspace_detail?.workspace_path?.trim()
-      || flow.raw.definition.workspace.workspace_path?.trim()
-      || flow.raw.definition.workspace.host_workspace_path?.trim()
-      || selectedWorkspace?.path
-      || selectedWorkspacePath
-      || ''
-    if (workspacePath) {
-      const workspaceSlug = workspaceSlugByPath.get(workspacePath)
-        ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: fallbackWorkspaceNameFromPath(workspacePath) })
-      void navigate({ to: '/$workspaceSlug/flow/$flowId', params: { workspaceSlug, flowId: flow.id } })
-      return
-    }
-    void navigate({ to: '/flow/$flowId', params: { flowId: flow.id } })
-  }, [navigate, routeWorkspaceSlug, selectedWorkspace?.path, selectedWorkspacePath, workspaceSlugByPath])
+    void navigate({ to: '/' })
+  }, [handleOpenWorkspace, knownWorkspacePaths, navigate, routeWorkspace?.path, routeWorkspace?.workspaceName, routeWorkspaceSlug, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, workspacePathByBindingId])
 
-  const handleToggleFlowEnabled = useCallback(async (flow: SidebarFlowRow) => {
-    if (flowBusyID) return
-    setFlowBusyID(flow.id)
-    setFlowMenuError(null)
+  const handleToggleSidebarPinned = useCallback((sessionId: string) => {
+    const normalizedSessionId = sessionId.trim()
+    const session = normalizedSessionId ? sessionById.get(normalizedSessionId) : null
+    if (!session || sidebarSessionActions[normalizedSessionId]) return
+    if (!sessionAllowsManualSidebarPin(session)) {
+      return
+    }
+    const nextPinned = !sessionManuallyPinnedInSidebar(session)
+    setSidebarSessionActions((current) => ({ ...current, [normalizedSessionId]: 'pin' }))
+    void updateAndApplySessionV3DesktopSidebarPinned(normalizedSessionId, nextPinned, session.metadata ?? {})
+      .then(() => {
+        setDesktopToast({ message: nextPinned ? 'Pinned session to sidebar.' : 'Unpinned session from sidebar.', tone: 'success' })
+      })
+      .catch((error) => {
+        setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to update sidebar pin.', tone: 'error' })
+      })
+      .finally(() => {
+        setSidebarSessionActions((current) => {
+          if (current[normalizedSessionId] !== 'pin') return current
+          const next = { ...current }
+          delete next[normalizedSessionId]
+          return next
+        })
+      })
+  }, [sessionById, sidebarSessionActions])
+
+  const handleArchiveSidebarSession = useCallback((sessionId: string) => {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId || sidebarSessionActions[normalizedSessionId]) return
+    setSidebarSessionActions((current) => ({ ...current, [normalizedSessionId]: 'archive' }))
+    void archiveDesktopV3Sessions([normalizedSessionId])
+      .then(() => {
+        setDesktopToast({ message: 'Archived session.', tone: 'success' })
+        if (routeSessionId === normalizedSessionId) {
+          handleArchivePlanSession(normalizedSessionId)
+        }
+      })
+      .catch((error) => {
+        setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to archive session.', tone: 'error' })
+      })
+      .finally(() => {
+        setSidebarSessionActions((current) => {
+          if (current[normalizedSessionId] !== 'archive') return current
+          const next = { ...current }
+          delete next[normalizedSessionId]
+          return next
+        })
+      })
+  }, [handleArchivePlanSession, routeSessionId, sidebarSessionActions])
+
+  const handleRenameSidebarSession = useCallback(async (sessionId: string, title: string): Promise<void> => {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId || sidebarSessionActions[normalizedSessionId]) return
+    setSidebarSessionActions((current) => ({ ...current, [normalizedSessionId]: 'rename' }))
     try {
-      await setFlowEnabled(flow.id, !flow.enabled)
-      await queryClient.invalidateQueries({ queryKey: flowsQueryKey })
-    } catch (error) {
-      setFlowMenuError(error instanceof Error ? error.message : 'Failed to update flow')
+      await updateSessionV3Title(normalizedSessionId, title, crypto.randomUUID())
+      setDesktopToast({ message: 'Renamed session.', tone: 'success' })
     } finally {
-      setFlowBusyID(null)
+      setSidebarSessionActions((current) => {
+        const next = { ...current }
+        delete next[normalizedSessionId]
+        return next
+      })
     }
-  }, [flowBusyID, queryClient])
+  }, [sidebarSessionActions])
 
-  const handleOpenQuickSettings = useCallback((tab: QuickSettingsTabID) => {
-    setQuickSettingsTab(tab)
+  const handleEnterSidebarSelectionMode = useCallback((group: SidebarSessionGroupID) => {
+    setSidebarMasterSelectionGroup((current) => current ?? group)
+    setSidebarSelectionMode(true)
   }, [])
 
-  const handleOpenPermissions = useCallback(() => {
-    handleOpenQuickSettings('permissions')
-  }, [handleOpenQuickSettings])
+  const handleToggleSidebarSelected = useCallback((sessionId: string, range: boolean) => {
+    const normalized = sessionId.trim()
+    if (!normalized) return
+    setSelectedSidebarRootIDs((current) => {
+      const next = new Set(current)
+      const lastSelectedSidebarRootID = lastSelectedSidebarRootIDRef.current
+      if (range && lastSelectedSidebarRootID) {
+        const start = visibleSidebarRootIDs.indexOf(lastSelectedSidebarRootID)
+        const end = visibleSidebarRootIDs.indexOf(normalized)
+        if (start >= 0 && end >= 0) visibleSidebarRootIDs.slice(Math.min(start, end), Math.max(start, end) + 1).forEach((id) => next.add(id))
+      } else if (next.has(normalized)) next.delete(normalized)
+      else next.add(normalized)
+      return next
+    })
+    lastSelectedSidebarRootIDRef.current = normalized
+  }, [visibleSidebarRootIDs])
 
-  const handleOpenSwarmDashboard = useCallback(() => {
-    handleOpenSettingsTab('swarm')
-  }, [handleOpenSettingsTab])
+  const handleBulkArchiveSidebar = useCallback(async () => {
+    const roots = globalSidebarSessionNodes.filter((node) => selectedSidebarRootIDs.has(node.session.id))
+    const ids = Array.from(new Set(roots.flatMap(sidebarNodeSessionIDs)))
+    if (ids.length === 0) return
+    setBulkArchivePending(true)
+    try {
+      await archiveDesktopV3Sessions(ids)
+      setDesktopToast({ message: `Archived ${roots.length} conversation${roots.length === 1 ? '' : 's'} (${ids.length} sessions).`, tone: 'success' })
+      const selectedRouteArchived = ids.includes(routeSessionId)
+      setSelectedSidebarRootIDs(new Set())
+      setSidebarSelectionMode(false)
+      setSidebarMasterSelectionGroup(null)
+      lastSelectedSidebarRootIDRef.current = null
+      setMobileSidebarOpen(false)
+      if (selectedRouteArchived) handleArchivePlanSession(routeSessionId)
+    } catch (error) {
+      setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to archive selected conversations.', tone: 'error' })
+    } finally {
+      setBulkArchivePending(false)
+    }
+  }, [globalSidebarSessionNodes, handleArchivePlanSession, routeSessionId, selectedSidebarRootIDs])
 
-  useEffect(() => {
-    if (!updateAvailable) {
+  const handleSidebarThresholdChange = useCallback(async (hours: number | null) => {
+    setSidebarThresholdSaving(true)
+    try {
+      const saved = await saveSidebarHideInactiveHours({ current: uiSettings ?? {}, hours })
+      setUISettings(saved)
+      queryClient.setQueryData(uiSettingsQueryKey(), saved)
+    } catch (error) {
+      setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to save sidebar visibility.', tone: 'error' })
+    } finally {
+      setSidebarThresholdSaving(false)
+    }
+  }, [queryClient, uiSettings])
+
+  const activeRouteSession = routeSessionId ? (sessionById.get(routeSessionId) ?? null) : null
+  const activeRouteSessionCanPin = activeRouteSession ? sessionAllowsManualSidebarPin(activeRouteSession) : false
+  const activeRouteSessionIsRegularChat = activeRouteSession ? sessionSidebarRowType(activeRouteSession) === 'single_chat' : false
+  const activeRouteSessionActions = routeSessionId
+    ? {
+        pinned: Boolean(activeRouteSession && activeRouteSessionCanPin && sessionManuallyPinnedInSidebar(activeRouteSession)),
+        canPin: Boolean(activeRouteSession && activeRouteSessionIsRegularChat && activeRouteSessionCanPin),
+        pendingAction: sidebarSessionActions[routeSessionId] === 'pin' || sidebarSessionActions[routeSessionId] === 'archive' || sidebarSessionActions[routeSessionId] === 'rename'
+          ? sidebarSessionActions[routeSessionId]
+          : null,
+        onTogglePinned: () => {
+          if (activeRouteSession && activeRouteSessionIsRegularChat && activeRouteSessionCanPin) {
+            handleToggleSidebarPinned(activeRouteSession.id)
+          }
+        },
+        onArchive: () => handleArchiveSidebarSession(routeSessionId),
+        onRename: (title: string) => handleRenameSidebarSession(routeSessionId, title),
+      }
+    : null
+
+  const openWorktreeSessionModal = useCallback((input: {
+    workspace: WorkspaceEntry
+    workspaceSlug: string
+    routeOptions: DesktopChatRoute[]
+    presentation?: 'dialog' | 'page'
+  }) => {
+    const workspacePath = input.workspace.path
+    setWorktreeSessionModal({
+      presentation: input.presentation ?? 'dialog',
+      workspacePath,
+      workspaceName: input.workspace.workspaceName,
+      workspaceSlug: input.workspaceSlug,
+      routeOptions: input.routeOptions,
+      branchPrefix: '',
+      managedWorktrees: [],
+      settingsLoading: true,
+    })
+    setWorktreeSessionTitle('')
+    setWorktreeSessionBranch('')
+    setWorktreeSessionBranchOverridden(false)
+    setWorktreeSessionExistingPath('')
+    setWorktreeSessionError(null)
+    void fetchWorktreeSessionSettings(workspacePath)
+      .then(({ branchPrefix, managedWorktrees }) => {
+        setWorktreeSessionModal((current) => current?.workspacePath === workspacePath
+          ? { ...current, branchPrefix, managedWorktrees, settingsLoading: false }
+          : current)
+      })
+      .catch((error) => {
+        setWorktreeSessionModal((current) => current?.workspacePath === workspacePath
+          ? { ...current, settingsLoading: false }
+          : current)
+        setWorktreeSessionError(error instanceof Error ? error.message : 'Failed to load worktree settings')
+      })
+  }, [])
+
+  const closeWorktreeSessionModal = useCallback(() => {
+    if (worktreeSessionCreating) return
+    setWorktreeSessionModal(null)
+    setWorktreeSessionError(null)
+    if (mobileCreationPage === 'worktree' && routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
+    }
+  }, [mobileCreationPage, navigate, routeWorkspaceSlug, worktreeSessionCreating])
+
+  const handleCreateWorktreeSession = useCallback(async () => {
+    if (!worktreeSessionModal || worktreeSessionCreating) return
+    const title = worktreeSessionTitle.trim()
+    const existingPath = worktreeSessionExistingPath.trim()
+    const existingWorktree = existingPath ? worktreeSessionModal.managedWorktrees.find((item) => item.path === existingPath) ?? null : null
+    const branchSuffix = normalizeWorktreeBranchSuffix(worktreeSessionBranch)
+    const branchPrefix = normalizeWorktreeBranchPrefix(worktreeSessionModal.branchPrefix)
+    const branch = existingWorktree?.branch ?? composeWorktreeBranchName(branchPrefix, branchSuffix)
+    if (worktreeSessionModal.settingsLoading) {
+      setWorktreeSessionError('Worktree settings are still loading.')
       return
     }
-    void refreshNotifications()
-  }, [refreshNotifications, updateAvailable, updateLatestVersion])
+    if (!branchPrefix) {
+      setWorktreeSessionError('Worktree settings did not return a branch prefix.')
+      return
+    }
+    if (!title) {
+      setWorktreeSessionError('Title is required.')
+      return
+    }
+    if (existingPath && !existingWorktree) {
+      setWorktreeSessionError('Selected worktree is no longer available.')
+      return
+    }
+    if (!existingWorktree && !branchSuffix) {
+      setWorktreeSessionError('Branch suffix is required.')
+      return
+    }
+    const selectedRoute = worktreeSessionModal.routeOptions.find((route) => getDesktopSessionCreateTarget(route).endpoint === '/v3/sessions') ?? null
+    if (!selectedRoute) {
+      setWorktreeSessionError('No writable self/host Desktop V3 route is available for this workspace.')
+      return
+    }
+    if (agentStateQuery.isPending || modelOptionsQuery.isPending || modelProfilesQuery.isPending || draftPreferenceQuery.isPending) {
+      setWorktreeSessionError('Desktop agent and model-profile settings are still loading.')
+      return
+    }
+    if (agentStateQuery.error || modelOptionsQuery.error || modelProfilesQuery.error || draftPreferenceQuery.error) {
+      setWorktreeSessionError('Desktop agent and model-profile settings could not be loaded.')
+      return
+    }
+    if (!agentStateQuery.data || !modelOptionsQuery.data || !modelProfilesQuery.data) {
+      setWorktreeSessionError('Desktop agent and model-profile settings are unavailable.')
+      return
+    }
+    let defaults: ReturnType<typeof resolveDesktopWorktreeSessionDefaults>
+    try {
+      defaults = resolveDesktopWorktreeSessionDefaults({
+        agentState: agentStateQuery.data,
+        modelProfiles: modelProfilesQuery.data,
+        modelOptions: modelOptionsQuery.data,
+        draftPreference: draftPreferenceQuery.data,
+        explicitMode: newSessionModeByWorkspace[worktreeSessionModal.workspacePath],
+        globalDefaultMode: normalizeDefaultNewSessionMode((uiSettingsQuery.data ?? uiSettings)?.chat?.default_new_session_mode),
+      })
+    } catch (error) {
+      setWorktreeSessionError(error instanceof Error ? error.message : 'Desktop worktree session settings are unresolved.')
+      return
+    }
+    setWorktreeSessionCreating(true)
+    setWorktreeSessionError(null)
+    try {
+      const operation = createDesktopV3CreateOnlySessionOperation({
+        workspacePath: worktreeSessionModal.workspacePath,
+        workspaceName: worktreeSessionModal.workspaceName,
+        route: selectedRoute,
+        title,
+        mode: defaults.mode,
+        agentName: defaults.agentName,
+        preference: {
+          provider: defaults.preference.provider,
+          model: defaults.preference.model,
+          thinking: defaults.preference.thinking,
+          serviceTier: defaults.preference.serviceTier,
+          contextMode: defaults.preference.contextMode,
+        },
+        modelProfileChoice: defaults.modelProfileChoice,
+        sessionMetadata: {
+          source: 'desktop-v3',
+          workspace_path: worktreeSessionModal.workspacePath,
+        },
+        worktree: { mode: 'on', branchName: branch, existingPath: existingWorktree?.path },
+      })
+      await startDesktopV3CreateOnlySession({
+        operation,
+        onSessionStarted: (sessionId) => {
+          void navigate({
+            to: '/$workspaceSlug/$sessionId',
+            params: { workspaceSlug: worktreeSessionModal.workspaceSlug, sessionId },
+          })
+        },
+      })
+      setWorktreeSessionModal(null)
+      setMobileSidebarOpen(false)
+      setDesktopToast({ message: `Created worktree session on ${branch}`, tone: 'success' })
+    } catch (error) {
+      setWorktreeSessionError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setWorktreeSessionCreating(false)
+    }
+  }, [agentStateQuery.data, agentStateQuery.error, agentStateQuery.isPending, draftPreferenceQuery.data, draftPreferenceQuery.error, draftPreferenceQuery.isPending, modelOptionsQuery.data, modelOptionsQuery.error, modelOptionsQuery.isPending, modelProfilesQuery.data, modelProfilesQuery.error, modelProfilesQuery.isPending, navigate, newSessionModeByWorkspace, uiSettings, uiSettingsQuery.data, worktreeSessionBranch, worktreeSessionCreating, worktreeSessionExistingPath, worktreeSessionModal, worktreeSessionTitle])
+
+  useEffect(() => {
+    if (mobileCreationPage !== 'worktree' || !routeWorkspace?.path || worktreeSessionModal?.presentation === 'page') return
+    openWorktreeSessionModal({
+      workspace: routeWorkspace,
+      workspaceSlug: routeWorkspaceSlug || workspaceRouteSlugBase({ path: routeWorkspace.path, workspaceName: routeWorkspace.workspaceName }),
+      presentation: 'page',
+      routeOptions: buildDesktopChatRouteOptions({
+        hostSwarmName: swarmName,
+        workspacePath: routeWorkspace.path,
+        workspaceName: routeWorkspace.workspaceName,
+        topologyRoutes: routeWorkspace.topologyRoutes,
+        localWorkspaceBindingId: routeWorkspace.localWorkspaceBindingId,
+        hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
+      }),
+    })
+  }, [currentSwarmTarget?.swarm_id, mobileCreationPage, openWorktreeSessionModal, routeWorkspace, routeWorkspaceSlug, swarmName, worktreeSessionModal])
+
+  const openPlanModalForSession = useCallback((sessionId: string) => {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId) return
+    setPlanModal({ sessionId: normalizedSessionId })
+    setPlanModalLoading(true)
+    setPlanModalError(null)
+    void fetchAndApplyDesktopV3PlanSnapshot(normalizedSessionId)
+      .catch((error) => setPlanModalError(error instanceof Error ? error.message : String(error)))
+      .finally(() => setPlanModalLoading(false))
+  }, [])
+
+  const handleCopyPlanText = useCallback(async (text: string): Promise<boolean> => {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
+  const handleRestorePlanRevisionModal = useCallback(async (revision: DesktopSessionPlanRevisionRecord, input: DesktopPlanRecoveryInput = {}) => {
+    const sessionId = planModal?.sessionId.trim() ?? ''
+    if (!sessionId || !planModalPlan?.id) return
+    setPlanModalSaving(true)
+    setPlanModalError(null)
+    try {
+      const payload = {
+        planId: planModalPlan.id,
+        version: revision.version,
+        checkpointId: input.checkpointId,
+        executionGranularity: input.executionGranularity,
+        continuationPolicy: input.continuationPolicy,
+        continueAutomatically: input.continueAutomatically,
+        restart: input.restart,
+        start: input.start,
+        skipPrior: input.skipPrior,
+      }
+      if (input.skipPrior) {
+        await jumpDesktopPlanToRevisionCheckpoint(sessionId, payload)
+      } else if (input.start || input.restart || input.checkpointId) {
+        await restartDesktopPlanFromRevision(sessionId, payload)
+      } else {
+        await restoreDesktopPlanRevision(sessionId, payload)
+      }
+      await fetchAndApplyDesktopV3PlanSnapshot(sessionId)
+      if (input.start) setPlanModal(null)
+    } catch (error) {
+      setPlanModalError(error instanceof Error ? error.message : String(error))
+      throw error
+    } finally {
+      setPlanModalSaving(false)
+    }
+  }, [planModal?.sessionId, planModalPlan?.id])
+
+  const handleApproveStartPlanModal = useCallback(async (input: { checkpointId?: string; executionGranularity: 'checkpointed'; continueAutomatically: true; continuationPolicy: 'automatic' }) => {
+    const sessionId = planModal?.sessionId.trim() ?? ''
+    if (!sessionId || !planModalPlan?.id) return
+    setPlanModalExecuting(true)
+    setPlanModalError(null)
+    try {
+      await startDesktopPlanCheckpointed(sessionId, planModalPlan.id, {
+        checkpointId: input.checkpointId,
+        executionGranularity: 'checkpointed',
+        continuationPolicy: 'automatic',
+        continueAutomatically: true,
+      })
+      setPlanModal(null)
+    } catch (error) {
+      setPlanModalError(error instanceof Error ? error.message : String(error))
+      throw error
+    } finally {
+      setPlanModalExecuting(false)
+    }
+  }, [planModal?.sessionId, planModalPlan?.id])
+
+  const handleOpenSettingsTab = useCallback((tab: SettingsTabID | 'agents') => {
+    if (tab === 'agents') {
+      const search = { agentSetup: '1', agent: 'swarm' }
+      if (routeSessionId && routeWorkspaceSlug) {
+        void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: routeSessionId }, search })
+      } else if (routeWorkspaceSlug) {
+        void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug }, search })
+      }
+      return
+    }
+    setQuickSettingsTab(null)
+    setQuickActionsOpen(false)
+    setMobileSidebarOpen(false)
+    const search = { tab, ...(routeSessionId ? { returnSessionId: routeSessionId } : {}) }
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search })
+      return
+    }
+    void navigate({ to: '/settings', search })
+  }, [navigate, routeSessionId, routeWorkspaceSlug])
+
+  const handleSlashCommand = useCallback(async (command: DesktopSlashCommand, draft = '') => {
+    const action = command.action
+    switch (action.kind) {
+      case 'open-settings':
+        handleOpenSettingsTab(action.tab)
+        return
+      case 'open-quick-settings':
+        setQuickSettingsTab(action.tab)
+        setMobileSidebarOpen(false)
+        return
+      case 'open-permissions':
+        setQuickSettingsTab('permissions')
+        setMobileSidebarOpen(false)
+        return
+      case 'open-workspace-launcher':
+        setMobileSidebarOpen(true)
+        void navigate({ to: '/' })
+        return
+      case 'open-codex-usage':
+        setCodexUsageOpen(true)
+        setMobileSidebarOpen(false)
+        return
+      case 'open-commit-modal': {
+        const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || ''
+        const workspaceName = selectedWorkspace?.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
+        if (workspacePath) openMainWorktreeGitPanel(workspacePath, workspaceName)
+        return
+      }
+      case 'open-plan-modal':
+        if (routeSessionId) openPlanModalForSession(routeSessionId)
+        else setDesktopToast({ message: 'Open an existing session to view its plan.', tone: 'info' })
+        return
+      case 'open-quick-actions':
+        setQuickActionsOpen(true)
+        setMobileSidebarOpen(false)
+        setDesktopToast({ message: 'Desktop shortcuts differ from TUI keybindings. Open Settings → Shortcuts for the Desktop list.', tone: 'info' })
+        return
+      case 'new-session': {
+        const session = routeSessionId ? sessionById.get(routeSessionId) : null
+        const workspacePath = session?.workspacePath || selectedWorkspace?.path || selectedWorkspacePath || ''
+        const workspaceName = session?.workspaceName || selectedWorkspace?.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
+        if (workspacePath) handleStartNewSessionInWorkspace(workspacePath, workspaceName)
+        return
+      }
+      case 'queue-ai-task': {
+        const { request, mode } = parseDesktopTaskCommand(draft)
+        if (!request) {
+          const error = new Error('Enter a task request after /task.')
+          setDesktopToast({ message: error.message, tone: 'error' })
+          throw error
+        }
+        const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || topWorkspacePath
+        if (!workspacePath) {
+          const error = new Error('Select a workspace before queuing a task.')
+          setDesktopToast({ message: error.message, tone: 'error' })
+          throw error
+        }
+        const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `task-${Date.now()}-${Math.random().toString(36).slice(2)}`
+        try {
+          const result = await createWorkspaceAITask(workspacePath, request, idempotencyKey, mode, routeSessionId ?? undefined)
+          dispatchDesktopV3Cache({ type: 'aiTasks.mergeItems', items: [result.item] })
+          setTodoItems((current) => ({ ...current, [workspacePath]: upsertWorkspaceTodoItem(current[workspacePath] ?? [], result.item) }))
+          setTodoSummaries((current) => ({ ...current, [workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
+          if (result.item.managedSessionId || result.item.aiState === 'in_progress') {
+            setDesktopToast({ message: `${result.item.aiDisplayTitle || result.item.text || 'Task'} started.`, tone: 'info' })
+          } else if (result.item.aiState === 'completed') {
+            aiTaskTerminalToastRef.current.add(result.item.id)
+            setDesktopToast({ message: `${result.item.aiDisplayTitle || result.item.text || 'Task'} completed.`, tone: 'success' })
+          } else if (result.item.aiState === 'failed') {
+            aiTaskTerminalToastRef.current.add(result.item.id)
+            setDesktopToast({ message: result.item.aiError || 'Swarm could not start the task.', tone: 'error' })
+          } else if (result.item.aiState === 'cancelled') {
+            aiTaskTerminalToastRef.current.add(result.item.id)
+            setDesktopToast({ message: `${result.item.aiDisplayTitle || result.item.text || 'Task'} was cancelled.`, tone: 'info' })
+          } else {
+            setDesktopToast({ message: result.item.aiState === 'preparing' ? 'Swarm is preparing the queued task.' : 'Task queued for Swarm.', tone: 'info' })
+          }
+        } catch (error) {
+          setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to queue task', tone: 'error' })
+          throw error
+        }
+        return
+      }
+      case 'show-help':
+        setDesktopToast({ message: 'Slash commands: use ↑/↓ to choose, Enter to run, Tab to insert.', tone: 'info' })
+        return
+      case 'open-model-picker':
+      case 'toggle-fast':
+      case 'compact-session':
+        return
+      default: {
+        const _exhaustive: never = action
+        return _exhaustive
+      }
+    }
+  }, [handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath])
+
+  const latestNeedsApprovalSession = useMemo(() => {
+    return desktopStateSessions
+      .filter((session) => sessionHasPendingPermission(session))
+      .sort((left, right) => right.updatedAt - left.updatedAt)[0] ?? null
+  }, [desktopStateSessions])
+
+  const handleOpenLatestNeedsApproval = useCallback(() => {
+    if (latestNeedsApprovalSession && handleSelectSession(latestNeedsApprovalSession.id)) {
+      return
+    }
+    setDesktopToast({ message: 'No session currently needs approval.', tone: 'info' })
+  }, [handleSelectSession, latestNeedsApprovalSession])
+
+  const handleOpenPreviousChat = useCallback(() => {
+    if (previousChatSessionId && handleSelectSession(previousChatSessionId)) {
+      return
+    }
+    setDesktopToast({ message: 'No previous chat is available in this window yet.', tone: 'info' })
+  }, [handleSelectSession, previousChatSessionId])
+
+  const handleOpenSearchChats = useCallback(() => {
+    setSearchModalOpen(true)
+    setMobileSidebarOpen(false)
+    setQuickActionsOpen(false)
+  }, [])
+
+  const handleOpenQuickActions = useCallback(() => {
+    setQuickActionsOpen(true)
+    setMobileSidebarOpen(false)
+  }, [])
+
+  const canStartNewSession = Boolean(topWorkspacePath)
+  const canReturnToPreviousChat = Boolean(previousChatSessionId && sessionById.has(previousChatSessionId))
+  useEffect(() => {
+    function desktopShortcutMatches(event: globalThis.KeyboardEvent, key: string): boolean {
+      const normalizedKey = event.key.toLowerCase()
+      return (event.metaKey || event.ctrlKey) && event.altKey && !event.shiftKey && normalizedKey === key
+    }
+
+    function shortcutTargetIsChatComposer(target: EventTarget | null): boolean {
+      if (!(target instanceof HTMLElement)) return false
+      return Boolean(target.closest('[data-testid="desktop-v3-agentic-composer"]'))
+    }
+
+    function shortcutTargetBlocksDesktopShortcuts(target: EventTarget | null): boolean {
+      if (!(target instanceof HTMLElement)) return false
+      if (target.closest('[role="dialog"]')) return true
+      if (target.isContentEditable) return true
+      return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'))
+    }
+
+    function handleDesktopShortcut(event: globalThis.KeyboardEvent) {
+      if (event.defaultPrevented) return
+      const target = event.target
+      const element = target instanceof HTMLElement ? target : null
+      const insideDialog = Boolean(element?.closest('[role="dialog"]'))
+      const insideChatComposer = shortcutTargetIsChatComposer(target)
+      const targetBlocksDesktopShortcuts = shortcutTargetBlocksDesktopShortcuts(target)
+      if (desktopShortcutMatches(event, 'n') && (!targetBlocksDesktopShortcuts || insideChatComposer)) {
+        event.preventDefault()
+        if (topWorkspacePath) handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel)
+        return
+      }
+      if (desktopShortcutMatches(event, 'f') && (!targetBlocksDesktopShortcuts || insideChatComposer)) {
+        event.preventDefault()
+        handleOpenSearchChats()
+        return
+      }
+      if (desktopShortcutMatches(event, 'a') && (!targetBlocksDesktopShortcuts || insideChatComposer)) {
+        event.preventDefault()
+        handleOpenLatestNeedsApproval()
+        return
+      }
+      if (desktopShortcutMatches(event, 'm') && (!targetBlocksDesktopShortcuts || insideChatComposer)) {
+        event.preventDefault()
+        setSessionModeCommand('toggle-plan-auto')
+        return
+      }
+      if (desktopShortcutMatches(event, 'p') && (!targetBlocksDesktopShortcuts || insideChatComposer)) {
+        event.preventDefault()
+        handleOpenPreviousChat()
+        return
+      }
+      if (targetBlocksDesktopShortcuts) {
+        return
+      }
+      if (desktopShortcutMatches(event, 'k') && !insideDialog) {
+        event.preventDefault()
+        handleOpenQuickActions()
+        return
+      }
+      if (desktopShortcutMatches(event, 's')) {
+        event.preventDefault()
+        handleOpenSettingsTab('shortcuts')
+        return
+      }
+    }
+
+    window.addEventListener('keydown', handleDesktopShortcut)
+    return () => window.removeEventListener('keydown', handleDesktopShortcut)
+  }, [handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleStartNewSessionInWorkspace, topWorkspaceLabel, topWorkspacePath])
+
+  const quickActions = useMemo<DesktopQuickActionItem[]>(() => [
+    {
+      id: 'quick-actions',
+      label: 'Open quick actions',
+      description: 'Show Desktop shortcut actions and run the supported ones from one modal.',
+      keys: ['⌘/Ctrl', 'Alt', 'K'],
+      availability: 'Available anywhere in Desktop unless another modal or text field owns the shortcut.',
+      enabled: true,
+      icon: Keyboard,
+      onRun: handleOpenQuickActions,
+    },
+    {
+      id: 'new-session',
+      label: 'New session',
+      description: 'Start a fresh chat in the current or top selected workspace.',
+      keys: ['⌘/Ctrl', 'Alt', 'N'],
+      availability: 'Requires a selected workspace.',
+      enabled: canStartNewSession,
+      disabledReason: 'Select a workspace before starting a new session.',
+      icon: Plus,
+      onRun: () => {
+        if (topWorkspacePath) handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel)
+        setQuickActionsOpen(false)
+      },
+    },
+    {
+      id: 'settings',
+      label: 'Open settings',
+      description: 'Open Desktop Settings, preserving the current workspace route when possible.',
+      keys: ['⌘/Ctrl', 'Alt', 'S'],
+      availability: 'Available anywhere in Desktop.',
+      enabled: true,
+      icon: Settings,
+      onRun: () => handleOpenSettingsTab('shortcuts'),
+    },
+    {
+      id: 'search-chats',
+      label: 'Search chats',
+      description: 'Open Desktop chat search.',
+      keys: ['⌘/Ctrl', 'Alt', 'F'],
+      availability: 'Available anywhere in Desktop.',
+      enabled: true,
+      icon: Search,
+      onRun: handleOpenSearchChats,
+    },
+    {
+      id: 'latest-needs-approval',
+      label: 'Latest needs approval',
+      description: 'Jump to the newest visible chat that has a pending permission request.',
+      keys: ['⌘/Ctrl', 'Alt', 'A'],
+      availability: 'Requires a session with pending permissions in the sidebar.',
+      enabled: Boolean(latestNeedsApprovalSession),
+      disabledReason: 'No session currently needs approval.',
+      icon: Bell,
+      onRun: () => {
+        setQuickActionsOpen(false)
+        handleOpenLatestNeedsApproval()
+      },
+    },
+    {
+      id: 'previous-chat',
+      label: 'Previous chat',
+      description: 'Return to the previously selected Desktop chat in this window.',
+      keys: ['⌘/Ctrl', 'Alt', 'P'],
+      availability: 'Available after switching between chats in the same Desktop window.',
+      enabled: canReturnToPreviousChat,
+      disabledReason: 'Switch chats once before using previous chat.',
+      icon: ChevronLeft,
+      onRun: () => {
+        setQuickActionsOpen(false)
+        handleOpenPreviousChat()
+      },
+    },
+    {
+      id: 'toggle-plan-auto',
+      label: 'Toggle plan/auto mode',
+      description: 'Switch the active chat composer between plan and auto mode.',
+      keys: ['⌘/Ctrl', 'Alt', 'M'],
+      availability: 'Requires an active Desktop chat route.',
+      enabled: Boolean(routeSessionId || (routeWorkspaceSlug && routeWorkspace?.path)),
+      disabledReason: 'Open a Desktop chat composer to toggle plan/auto mode.',
+      icon: CheckCircle2,
+      onRun: () => {
+        if (routeSessionId || (routeWorkspaceSlug && routeWorkspace?.path)) {
+          setSessionModeCommand('toggle-plan-auto')
+          setQuickActionsOpen(false)
+        }
+      },
+    },
+  ], [canReturnToPreviousChat, canStartNewSession, handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleStartNewSessionInWorkspace, latestNeedsApprovalSession, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, topWorkspaceLabel, topWorkspacePath])
+
 
   const runDesktopUpdate = useCallback(async () => {
     setUpdateRunning(true)
@@ -2519,7 +4143,6 @@ export function DesktopAppPage() {
     try {
       const initialJob = await startDesktopUpdate()
       setUpdateProgress((current) => ({ ...current, job: initialJob }))
-      await refreshNotifications()
       const startedAt = Date.now()
       let sawBackendDrop = false
       while (Date.now() - startedAt < 30 * 60_000) {
@@ -2560,14 +4183,13 @@ export function DesktopAppPage() {
           error: message,
         },
       }))
-      await refreshNotifications()
     } finally {
       setUpdateRunning(false)
     }
-  }, [refreshNotifications, updateDevMode])
+  }, [updateDevMode])
 
   const handleDesktopUpdate = useCallback(async () => {
-    if (updateRunning || localContainerUpdateConfirm) {
+    if (updateRunning) {
       return
     }
     setUpdateError(null)
@@ -2598,60 +4220,8 @@ export function DesktopAppPage() {
       setUpdateError(message)
       return
     }
-    let settings = effectiveUISettings
-    if (!settings) {
-      try {
-        settings = await uiSettingsQuery.refetch().then((result) => result.data ?? null)
-      } catch {
-        settings = null
-      }
-    }
-    try {
-      const remoteSessions = await fetchRemoteDeploySessions()
-      const remoteUpdateCount = remoteDeployUpdateSessionCount(remoteSessions)
-      const managedHostCount = status.dev_mode ? managedHostUpdateTargetCount(swarmTargetsQuery.data?.targets ?? []) : 0
-      const warningDismissed = localContainerUpdateWarningDismissed(settings)
-      if (!warningDismissed || remoteUpdateCount > 0 || managedHostCount > 0) {
-        const plan = await fetchLocalContainerUpdatePlan({ devMode: status.dev_mode, targetVersion: status.latest_version, postRebuildCheck: status.dev_mode })
-        if ((!warningDismissed && localContainerUpdateAffected(plan)) || remoteUpdateCount > 0 || managedHostCount > 0) {
-          setLocalContainerUpdateConfirm({ plan, remoteSessions, managedHostCount, pendingDismiss: false })
-          return
-        }
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to check container images before update'
-      setUpdateError(message)
-      return
-    }
     await runDesktopUpdate()
-  }, [effectiveUISettings, localContainerUpdateConfirm, runDesktopUpdate, swarmTargetsQuery.data?.targets, uiSettingsQuery, updateRunning, updateStatus, updateStatusError, updateStatusQuery])
-
-  const handleConfirmLocalContainerUpdate = useCallback(async () => {
-    const confirmState = localContainerUpdateConfirm
-    if (!confirmState || updateRunning) {
-      return
-    }
-    if (confirmState.pendingDismiss) {
-      try {
-        const saved = await saveLocalContainerUpdateWarningDismissal(true)
-        setUISettings(saved)
-        queryClient.setQueryData(uiSettingsQueryKey(), saved)
-        queryClient.setQueryData(['ui-settings', 'swarm'], normalizeSwarmSettings(saved))
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to save container image update warning setting'
-        setUpdateError(message)
-        return
-      }
-    }
-    setLocalContainerUpdateConfirm(null)
-    setUpdateError(null)
-    await runDesktopUpdate()
-  }, [localContainerUpdateConfirm, queryClient, runDesktopUpdate, updateRunning])
-
-  const handleCancelLocalContainerUpdate = useCallback(() => {
-    setLocalContainerUpdateConfirm(null)
-    setUpdateError(null)
-  }, [])
+  }, [runDesktopUpdate, updateRunning, updateStatus, updateStatusError, updateStatusQuery])
 
   const handleCloseUpdateProgress = useCallback(() => {
     if (updateRunning) {
@@ -2660,18 +4230,7 @@ export function DesktopAppPage() {
     setUpdateProgress((current) => ({ ...current, open: false }))
   }, [updateRunning])
 
-  const handleToggleLocalContainerUpdateDismissal = useCallback((checked: boolean) => {
-    setLocalContainerUpdateConfirm((current) => current ? { ...current, pendingDismiss: checked } : current)
-  }, [])
-
-  const handleOpenWorkspaceLauncher = useCallback(() => {
-    setMobileSidebarOpen(false)
-    setActiveSession(null)
-    void navigate({ to: '/' })
-  }, [navigate, setActiveSession])
-
   const handleOpenMobileSidebar = useCallback(() => {
-    setSidebarCollapsed(false)
     setMobileSidebarOpen(true)
   }, [])
 
@@ -2727,21 +4286,8 @@ export function DesktopAppPage() {
   }, [])
 
   const handlePrefetchSession = useCallback((sessionId: string) => {
-    if (readDesktopV3CachedSession(queryClient, sessionId)) {
-      return
-    }
-    void hydrateDesktopV3SessionSnapshot(queryClient, sessionId)
-      .then((snapshot) => {
-        if (!snapshot) {
-          return
-        }
-        upsertSession(snapshot.session)
-        syncWorkspaceOverviewSession(queryClient, snapshot.session)
-      })
-      .catch((error) => {
-        console.error('[desktop-app] failed to prefetch desktop v3 session snapshot', error)
-      })
-  }, [queryClient, upsertSession])
+    void sessionId
+  }, [])
 
   const handleToggleAgentSessions = useCallback((sessionId: string) => {
     setExpandedAgentSessions((current) => ({
@@ -2750,71 +4296,244 @@ export function DesktopAppPage() {
     }))
   }, [])
 
-  const handleToggleWorkspaceMenu = useCallback(() => {
-    setSwarmMenu({ open: false })
-    setFlowMenuOpen(false)
-    setWorkspaceMenuOpen((open) => !open)
-  }, [])
+  const openBackgroundTaskModal = useCallback(() => {
+    setBackgroundTaskRequest('')
+    setBackgroundTaskError(null)
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 639px)').matches && routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/task', params: { workspaceSlug: routeWorkspaceSlug } })
+      return
+    }
+    setBackgroundTaskOpen(true)
+  }, [navigate, routeWorkspaceSlug])
 
-  const handleToggleFlowMenu = useCallback(() => {
-    setSwarmMenu({ open: false })
-    setWorkspaceMenuOpen(false)
-    setFlowMenuOpen((open) => !open)
-  }, [])
+  const closeBackgroundTaskModal = useCallback(() => {
+    if (backgroundTaskBusy) return
+    setBackgroundTaskOpen(false)
+    setBackgroundTaskError(null)
+    if (mobileCreationPage === 'task' && routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
+    }
+  }, [backgroundTaskBusy, mobileCreationPage, navigate, routeWorkspaceSlug])
+
+  const handleQueueBackgroundTask = useCallback(async (submittedRequest = backgroundTaskRequest) => {
+    const request = submittedRequest.trim()
+    const workspacePath = routeWorkspace?.path.trim() ?? ''
+    if (!request || !workspacePath || backgroundTaskBusy) return
+    setBackgroundTaskBusy(true)
+    setBackgroundTaskError(null)
+    const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `task-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    try {
+      const result = await createWorkspaceAITask(workspacePath, request, idempotencyKey, 'auto')
+      dispatchDesktopV3Cache({ type: 'aiTasks.mergeItems', items: [result.item] })
+      setTodoItems((current) => ({ ...current, [workspacePath]: upsertWorkspaceTodoItem(current[workspacePath] ?? [], result.item) }))
+      setTodoSummaries((current) => ({ ...current, [workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
+      if (result.item.aiState === 'failed') {
+        setBackgroundTaskError(result.item.aiError || 'Swarm could not start the task.')
+        return
+      }
+      if (result.item.aiState === 'completed' || result.item.aiState === 'cancelled') {
+        aiTaskTerminalToastRef.current.add(result.item.id)
+      }
+      setBackgroundTaskOpen(false)
+      setBackgroundTaskRequest('')
+      const taskTitle = result.item.aiDisplayTitle || result.item.text || 'Task'
+      setDesktopToast(result.item.aiState === 'completed'
+        ? { message: `${taskTitle} completed.`, tone: 'success' }
+        : result.item.aiState === 'cancelled'
+          ? { message: `${taskTitle} was cancelled.`, tone: 'info' }
+          : { message: result.item.aiState === 'in_progress' ? `${taskTitle} started.` : 'Task queued for Swarm.', tone: 'info' })
+      if (mobileCreationPage === 'task' && routeWorkspaceSlug) {
+        void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
+      }
+    } catch (error) {
+      setBackgroundTaskError(error instanceof Error ? error.message : 'Failed to start task')
+    } finally {
+      setBackgroundTaskBusy(false)
+    }
+  }, [backgroundTaskBusy, backgroundTaskRequest, mobileCreationPage, navigate, routeWorkspace?.path, routeWorkspaceSlug])
+
+  const openRouteWorkspaceWorktree = useCallback(() => {
+    if (!routeWorkspace?.path) return
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 639px)').matches && routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/worktree', params: { workspaceSlug: routeWorkspaceSlug } })
+      return
+    }
+    openWorktreeSessionModal({
+      workspace: routeWorkspace,
+      workspaceSlug: routeWorkspaceSlug || workspaceRouteSlugBase({ path: routeWorkspace.path, workspaceName: routeWorkspace.workspaceName }),
+      routeOptions: buildDesktopChatRouteOptions({
+        hostSwarmName: swarmName,
+        workspacePath: routeWorkspace.path,
+        workspaceName: routeWorkspace.workspaceName,
+        topologyRoutes: routeWorkspace.topologyRoutes,
+        localWorkspaceBindingId: routeWorkspace.localWorkspaceBindingId,
+        hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
+      }),
+    })
+  }, [currentSwarmTarget?.swarm_id, navigate, openWorktreeSessionModal, routeWorkspace, routeWorkspaceSlug, swarmName])
+
+  const renderMobileSessions = (nodes: SidebarSessionNode[]) => renderSidebarSessionGroups({
+    nodes,
+    presentation: 'mobile',
+    routeSessionId,
+    now: sidebarNow,
+    fallbackSwarmName: swarmName,
+    routeOptions: globalSessionRouteOptions,
+    workspaceSlug: globalSessionWorkspaceSlug,
+    expandedAgentSessions,
+    agentSummaries: sidebarAgentSummaries,
+    compactingSession,
+    pendingActions: sidebarSessionActions,
+    selectionMode: sidebarSelectionMode,
+    selectedRootIDs: selectedSidebarRootIDs,
+    hideInactiveHours: sidebarHideInactiveHours,
+    thresholdSaving: sidebarThresholdSaving,
+    bulkArchivePending,
+    masterSelectionGroup: sidebarMasterSelectionGroup,
+    reviewCleanupOpen: needsReviewCleanupOpen,
+    gitHasGit: topWorkspaceHasGit,
+    gitAheadCount: topWorkspaceGitAheadCount,
+    gitBehindCount: topWorkspaceGitBehindCount,
+    gitDirtyCount: topWorkspaceGitDirtyCount,
+    onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
+    onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
+    onEnterSelectionMode: handleEnterSidebarSelectionMode,
+    onClearSelection: handleClearSidebarSelection,
+    onBulkArchive: () => { void handleBulkArchiveSidebar() },
+    onThresholdChange: (hours) => { void handleSidebarThresholdChange(hours) },
+    onSelect: handleSelectSession,
+    onToggleSelected: handleToggleSidebarSelected,
+    onPrefetch: handlePrefetchSession,
+    onToggleAgents: handleToggleAgentSessions,
+    onTogglePinned: handleToggleSidebarPinned,
+    onArchive: handleArchiveSidebarSession,
+    onRename: handleRenameSidebarSession,
+  })
+
+  const mobileSessionQuickMenu = routeWorkspace?.path ? (
+    <div className="flex min-h-0 w-full flex-1 flex-col gap-4 pb-2" data-testid="mobile-workspace-home">
+      <section className="shrink-0" aria-label="Workspace actions">
+        <div className="grid grid-cols-2 gap-3">
+          <button type="button" className="flex min-h-20 touch-manipulation flex-col items-start justify-between rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left shadow-sm transition active:bg-[var(--app-surface-hover)]" onClick={openBackgroundTaskModal}>
+            <ListChecks size={21} className="text-[var(--app-primary)]" aria-hidden="true" />
+            <span className="text-sm font-semibold text-[var(--app-text)]">Task</span>
+          </button>
+          <button type="button" className="flex min-h-20 touch-manipulation flex-col items-start justify-between rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left shadow-sm transition active:bg-[var(--app-surface-hover)] disabled:opacity-50" onClick={openRouteWorkspaceWorktree} disabled={!routeWorkspace}>
+            <GitBranch size={21} className="text-[var(--app-primary)]" aria-hidden="true" />
+            <span className="text-sm font-semibold text-[var(--app-text)]">Worktree</span>
+          </button>
+        </div>
+      </section>
+
+      <Card className="flex min-h-0 w-full flex-1 flex-col border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-sm">
+        <div data-mobile-active-sessions-header className="mb-2 flex min-h-11 shrink-0 items-center px-1">
+          <h2 className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Active sessions</h2>
+        </div>
+        <div className="grid min-h-0 content-start gap-2 overflow-y-auto pr-1 [-webkit-overflow-scrolling:touch]">
+          {renderMobileSessions(mobileActiveSessionNodes) ?? (
+            <div className="rounded-xl border border-dashed border-[var(--app-border)] px-3 py-4 text-center text-xs text-[var(--app-text-subtle)]">No active sessions.</div>
+          )}
+          {mobilePreviousSessionNodes.length > 0 ? (
+            <div className="mt-1 border-t border-[var(--app-border)] pt-2">
+              <button type="button" className="flex min-h-11 w-full touch-manipulation items-center justify-between rounded-xl px-3 text-left text-xs text-[var(--app-text-muted)] active:bg-[var(--app-surface-hover)]" onClick={() => setMobilePreviousSessionsOpen((open) => !open)} aria-expanded={mobilePreviousSessionsOpen}>
+                <span>{mobilePreviousSessionNodes.length} previous session{mobilePreviousSessionNodes.length === 1 ? '' : 's'}</span>
+                <ChevronDown size={16} className={cn('transition-transform', mobilePreviousSessionsOpen && 'rotate-180')} aria-hidden="true" />
+              </button>
+              {mobilePreviousSessionsOpen ? <div className="mt-2 grid gap-2">{renderMobileSessions(mobilePreviousSessionNodes)}</div> : null}
+            </div>
+          ) : null}
+        </div>
+      </Card>
+    </div>
+  ) : null
 
   useEffect(() => {
     setMobileSidebarOpen(false)
   }, [routeSessionId, routeWorkspaceSlug])
 
-  const totalVisibleRatio = useMemo(
-    () => visibleSidebarWorkspaceEntries.reduce((sum, workspace) => {
-      const layout = workspaceLayout[workspace.path]
-      if (layout?.collapsed) return sum
-      return sum + normalizeRatio(layout?.ratio)
-    }, 0) || visibleSidebarWorkspaceEntries.length || 1,
-    [visibleSidebarWorkspaceEntries, workspaceLayout],
-  )
-
-  const openSwarmMenu = useCallback(() => {
-    setWorkspaceMenuOpen(false)
-    setFlowMenuOpen(false)
-    setSwarmMenu((current) => ({ open: !current.open }))
+  const handleCompactingSessionChange = useCallback((sessionId: string, startedAt: number | null) => {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId) return
+    setCompactingSession((current) => {
+      if (startedAt === null) {
+        return current?.sessionId === normalizedSessionId ? null : current
+      }
+      return { sessionId: normalizedSessionId, startedAt }
+    })
   }, [])
+
+  const handleGitCommit = async () => {
+    const message = gitCommitMessage.trim()
+    if (!gitCommitModal || gitCommitBusy || !message) return
+
+    setGitCommitBusy(true)
+    setGitCommitError(null)
+    try {
+      await commitWorkspaceChanges({
+        workspacePath: gitCommitModal.workspacePath,
+        sessionId: gitCommitModal.sessionId,
+        message,
+        all: true,
+      })
+      setGitCommitModal(null)
+      setGitCommitMessage('')
+      setDesktopToast({ message: 'Changes committed successfully.', tone: 'success' })
+      await queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] })
+    } catch (error) {
+      setGitCommitError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setGitCommitBusy(false)
+    }
+  }
+
+  const planSidebarGitPanel = selectedGitSessionId && selectedGitWorkspacePath ? (
+    <section data-testid="desktop-plan-git-sidebar" className="flex min-h-[160px] min-w-0 flex-1 flex-col overflow-hidden" data-plan-git-layout="protected">
+      <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+        <GitBranch size={13} />
+        <span className="min-w-0 flex-1 truncate">{gitSnapshot?.branch || 'Git changes'}</span>
+        {gitSnapshot?.has_git ? <span>{gitSnapshot.dirty_count}</span> : null}
+        <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={() => { void gitStatusQuery.refetch() }} aria-label="Refresh Git status" title="Refresh Git status"><RefreshCcw size={12} className={cn(gitStatusQuery.isFetching && 'animate-spin')} /></button>
+      </div>
+      <div className="min-h-0 shrink overflow-hidden">
+        {gitRealtimeErrors[selectedGitWorkspacePath] || gitStatusQuery.error instanceof Error ? <div className="mt-2 text-xs text-[var(--app-warning)]">{gitRealtimeErrors[selectedGitWorkspacePath] || (gitStatusQuery.error as Error).message}</div>
+          : gitStatusQuery.isPending ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Loading scoped changes…</div>
+          : !gitSnapshot?.has_git ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">No Git repository for this session.</div>
+          : gitSnapshot.files.length === 0 ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Clean working tree.</div>
+          : <div className="mt-2 h-[calc(100%-0.5rem)] overflow-y-auto rounded-lg border border-[var(--app-border)] [scrollbar-gutter:stable]" data-plan-git-file-list>{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span></div>)}</div>}
+      </div>
+      {gitSnapshot?.has_git && gitSnapshot.files.length > 0 ? <button type="button" className="mt-3 w-full shrink-0 rounded-lg border border-[var(--app-border)] px-2 py-1.5 text-xs text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]" data-plan-git-commit onClick={() => { setGitCommitMessage(''); setGitCommitError(null); setGitCommitModal({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files }) }}>Commit all changes…</button> : null}
+    </section>
+  ) : null
+
+  const focusedSidebarContent = (
+    <div className="flex h-full flex-col items-center gap-1 py-3" data-testid="desktop-focus-sidebar-controls">
+      <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => setSidebarDisplayMode('full')} aria-label="Expand sidebar to full width" title="Full-width sidebar">
+        <ChevronRight size={28} className="shrink-0" />
+      </Button>
+      <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => void navigate({ to: '/' })} aria-label="Back to launcher">
+        <Folder size={24} className="shrink-0" />
+      </Button>
+      {notificationAttentionVisible ? (
+        <Button variant="ghost" className={cn('relative h-12 w-12 min-w-12 p-0', notificationUnreadCount > 0 && 'text-[var(--app-primary)]')} onClick={handleOpenNotifications} aria-label="Open notifications" title={notificationUnreadCount > 0 ? `${notificationUnreadCount} unread notification${notificationUnreadCount === 1 ? '' : 's'}` : 'Notifications'}>
+          <Bell size={24} className="shrink-0" />
+          {notificationUnreadCount > 0 ? <span aria-hidden="true" className="absolute right-2 top-2 grid h-4 min-w-4 place-items-center rounded-full bg-[var(--app-primary)] px-1 text-[9px] font-semibold text-[var(--app-primary-text)]">{notificationUnreadCount > 99 ? '99+' : notificationUnreadCount}</span> : null}
+        </Button>
+      ) : null}
+      {updateAttentionVisible ? (
+        <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label={updateActionLabel} title={updateActionTitle} disabled={updateRunning || !updateActionEnabled}>
+          <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse', updateActionEnabled && 'text-[var(--app-primary)]', updateError && 'text-[var(--app-error)]')} />
+          {updateActionEnabled ? <span aria-hidden="true" className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_10px_var(--app-primary)]" /> : null}
+        </Button>
+      ) : null}
+      <Button variant="ghost" className="mt-auto h-12 w-12 min-w-12 p-0" onClick={() => handleOpenSettingsTab('account')} aria-label="Open settings" title="Settings">
+        <Settings size={24} className="shrink-0" />
+      </Button>
+    </div>
+  )
 
   const sidebarContent = (
     <>
-      {sidebarCollapsed ? (
-        <div className="flex h-full flex-col items-center gap-1 py-3">
-          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => setSidebarCollapsed(false)} aria-label="Expand sidebar">
-            <ChevronRight size={28} className="shrink-0" />
-          </Button>
-          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => void navigate({ to: '/' })} aria-label="Back to launcher">
-            <Home size={24} className="shrink-0" />
-          </Button>
-          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={handleOpenSwarmDashboard} aria-label="Open swarm dashboard">
-            <Settings size={24} className="shrink-0" />
-          </Button>
-          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { if (selectedWorkspacePath) { openTodoModal(selectedWorkspacePath, selectedWorkspace?.workspaceName ?? 'Workspace') } }} aria-label="Open tasks" disabled={!selectedWorkspacePath}>
-            <ListChecks size={24} className="shrink-0" />
-          </Button>
-          {pairingRequestAttentionVisible ? (
-            <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0 text-[var(--app-primary)]" onClick={handleOpenPairingRequests} aria-label="Open link requests" title={`${pairingRequestCount} pending link request${pairingRequestCount === 1 ? '' : 's'}`}>
-              <Link2 size={24} className="shrink-0" />
-              <span aria-hidden="true" className="absolute right-2 top-2 grid h-4 min-w-4 place-items-center rounded-full bg-[var(--app-warning)] px-1 text-[9px] font-semibold text-[var(--app-background)]">{pairingRequestCount}</span>
-            </Button>
-          ) : null}
-          {updateAttentionVisible ? (
-            <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label={updateActionLabel} title={updateActionTitle} disabled={updateRunning || !updateActionEnabled}>
-              <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse', updateActionEnabled && 'text-[var(--app-primary)]', updateError && 'text-[var(--app-error)]')} />
-              {updateActionEnabled ? <span aria-hidden="true" className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_10px_var(--app-primary)]" /> : null}
-            </Button>
-          ) : null}
-          <div className="mt-2 flex flex-col items-center">
-            <span className={cn('h-2.5 w-2.5 rounded-full', connectionDotClass(connectionState))} />
-          </div>
-        </div>
-      ) : (
-        <div className="flex h-full flex-col min-h-0">
+      <div className="flex h-full flex-col min-h-0">
           <div className="font-mono">
             <div className="grid h-[60px] items-center border-b border-[var(--app-border)] bg-[var(--app-surface)] pl-[13px] pr-0">
                 <div className={headerActionRowClass}>
@@ -2871,36 +4590,30 @@ export function DesktopAppPage() {
                         {swarmName}
                       </button>
                     )}
-                    <div className="mt-px truncate text-[10px] leading-[1.25] text-[var(--app-text-subtle)]">
-                      <strong className="font-medium text-[var(--app-text-muted)]">{currentSwarmRoleLabel}</strong> · {masterWorkspaceName}
+                    <div
+                      className="mt-px truncate text-[10px] font-medium leading-[1.25] text-[var(--app-text-muted)]"
+                      title={sidebarWorkspaceContext}
+                    >
+                      {sidebarWorkspaceContext}
                     </div>
                   </div>
                   <SidebarActionRail className={headerActionRailClass}>
-                    {pairingRequestAttentionVisible ? (
+                    {notificationAttentionVisible ? (
                       <button
                         type="button"
-                        className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'relative text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] hover:text-[var(--app-primary-hover)]')}
-                        onClick={handleOpenPairingRequests}
-                        aria-label="Open link requests"
-                        title={`${pairingRequestCount} pending link request${pairingRequestCount === 1 ? '' : 's'}`}
+                        className={cn(
+                          SIDEBAR_ACTION_BUTTON_CLASS,
+                          'relative text-[var(--app-text-subtle)]',
+                          notificationUnreadCount > 0 && 'text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] hover:text-[var(--app-primary-hover)]',
+                        )}
+                        onClick={handleOpenNotifications}
+                        aria-label="Open notifications"
+                        title={notificationUnreadCount > 0 ? `${notificationUnreadCount} unread notification${notificationUnreadCount === 1 ? '' : 's'}` : 'Notifications'}
                       >
-                        <Link2 size={14} strokeWidth={1.8} className="shrink-0" />
-                        <span aria-hidden="true" className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-warning)] shadow-[0_0_8px_var(--app-warning)]" />
+                        <Bell size={14} strokeWidth={1.8} className="shrink-0" />
+                        {notificationUnreadCount > 0 ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 grid h-3 min-w-3 place-items-center rounded-full bg-[var(--app-primary)] px-0.5 text-[7px] font-semibold leading-none text-[var(--app-primary-text)]">{notificationUnreadCount > 9 ? '9+' : notificationUnreadCount}</span> : null}
                       </button>
                     ) : null}
-                    <button
-                      type="button"
-                      className={cn(
-                        SIDEBAR_ACTION_BUTTON_CLASS,
-                        'text-[var(--app-text-subtle)]',
-                        notificationCenter.summary.unreadCount > 0 && 'text-[color-mix(in_srgb,var(--app-warning)_82%,var(--app-text-muted))] hover:bg-[var(--app-warning-bg)] hover:text-[var(--app-primary-hover)]',
-                      )}
-                      onClick={() => setNotificationsOpen(true)}
-                      aria-label="Open notifications"
-                      title={notificationCenter.summary.unreadCount > 0 ? `${notificationCenter.summary.unreadCount} unread notifications` : 'Notifications'}
-                    >
-                      <Bell size={14} strokeWidth={1.8} className="shrink-0" />
-                    </button>
                     {updateAttentionVisible ? (
                       <button
                         type="button"
@@ -2924,9 +4637,9 @@ export function DesktopAppPage() {
                     <button
                       type="button"
                       className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-text-subtle)]')}
-                      onClick={() => setSidebarCollapsed(true)}
-                      aria-label="Collapse sidebar"
-                      title="Collapse"
+                      onClick={() => setSidebarDisplayMode('focus')}
+                      aria-label="Enter focus mode"
+                      title="Focus mode"
                     >
                       <ChevronLeft size={14} strokeWidth={1.8} className="shrink-0" />
                     </button>
@@ -2936,312 +4649,53 @@ export function DesktopAppPage() {
 
             <div className="border-b border-[var(--app-border)] bg-[var(--app-surface)] px-[9px] py-2">
               <div className="grid gap-0.5 text-[11px] text-[var(--app-text-subtle)]">
-                  <div>
-                    <div
-                      className={cn(
-                        'grid min-h-[30px] w-full grid-cols-[minmax(0,1fr)_28px] items-center rounded-md text-[var(--app-text-muted)]',
-                        swarmMenu.open && 'bg-[var(--app-surface-active)] text-[var(--app-text)]',
-                      )}
-                    >
-                      {routeWorkspaceSlug ? (
-                        <Link
-                          to="/$workspaceSlug/settings"
-                          params={{ workspaceSlug: routeWorkspaceSlug }}
-                          search={{ tab: 'swarm' }}
-                          className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                          onClick={() => {
-                            setQuickSettingsTab(null)
-                            setMobileSidebarOpen(false)
-                          }}
-                          aria-label="Open swarm settings"
-                          title={swarmTargetSummary}
-                        >
-                          <Box size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                          <span className="min-w-0 truncate">{swarmTargetCountLabel}</span>
-                        </Link>
-                      ) : (
-                        <Link
-                          to="/settings"
-                          search={{ tab: 'swarm' }}
-                          className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                          onClick={() => {
-                            setQuickSettingsTab(null)
-                            setMobileSidebarOpen(false)
-                          }}
-                          aria-label="Open swarm settings"
-                          title={swarmTargetSummary}
-                        >
-                          <Box size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                          <span className="min-w-0 truncate">{swarmTargetCountLabel}</span>
-                        </Link>
-                      )}
-                      <button
-                        type="button"
-                        className="grid min-h-[30px] place-items-center rounded-r-md hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                        onClick={openSwarmMenu}
-                        aria-expanded={swarmMenu.open}
-                        aria-label={`${swarmMenu.open ? 'Collapse' : 'Expand'} swarm list`}
-                        title={`${swarmMenu.open ? 'Collapse' : 'Expand'} swarms`}
-                      >
-                        <ChevronDown size={13} strokeWidth={1.8} className={cn('transition-transform', swarmMenu.open && 'rotate-180')} />
-                      </button>
-                    </div>
-                    {swarmMenu.open ? (
-                      <div className="py-1 pl-5">
-                        {swarmTargets.length === 0 ? (
-                          <div className="px-2 py-1.5 text-[11px] text-[var(--app-text-subtle)]">No swarms.</div>
-                        ) : swarmTargets.map((target) => {
-                          const openURL = swarmTargetOpenURL(target)
-                          const statusLabel = swarmTargetStatusLabel(target)
-                          const secondaryLabel = swarmTargetSecondaryLabel(target, swarmTargets)
-                          return (
-                            <button
-                              key={target.swarm_id}
-                              type="button"
-                              onClick={() => { void handleSelectSwarmTarget(target) }}
-                              className={cn(
-                                SIDEBAR_ACTION_ROW_CLASS,
-                                'min-h-[30px] w-full px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
-                                target.current && 'bg-[var(--app-surface-active)] text-[var(--app-text)] shadow-[inset_2px_0_0_var(--app-success)]',
-                                !target.online && !target.current && 'opacity-65',
-                              )}
-                              title={swarmTargetTitle(target, swarmTargets)}
-                            >
-                              <span className="flex min-w-0 items-start gap-2">
-                                <span className={cn('mt-[6px] h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
-                                <span className="grid min-w-0 gap-0.5">
-                                  <span className="truncate">{swarmTargetPrimaryLabel(target)}</span>
-                                  {target.kind === 'mirrored' ? (
-                                    <span className="truncate text-[10px] leading-tight text-[var(--app-text-subtle)]">{secondaryLabel}</span>
-                                  ) : null}
-                                </span>
-                                {!target.current && target.online && openURL ? <ExternalLink size={11} strokeWidth={1.8} className="mt-[2px] shrink-0 opacity-70" /> : null}
-                              </span>
-                              <span className="shrink-0 truncate text-right text-[10px] text-[var(--app-text-subtle)]">
-                                {target.kind === 'mirrored' ? statusLabel : secondaryLabel}
-                              </span>
-                            </button>
-                          )
-                        })}
-                        {swarmSwitchError ? <div className="mx-1 mt-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[10px] text-[var(--app-warning)]">{swarmSwitchError}</div> : null}
-                        <button
-                          type="button"
-                          className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                          onClick={handleOpenSwarmDashboard}
-                        >
-                          <Plus size={14} className="shrink-0" />
-                          Add / manage swarms
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div>
-                    <div
-                      className={cn(
-                        'grid min-h-[30px] w-full grid-cols-[minmax(0,1fr)_28px] items-center rounded-md text-[var(--app-text-muted)]',
-                        workspaceMenuOpen && 'bg-[var(--app-surface-active)] text-[var(--app-text)]',
-                      )}
-                    >
-                      <Link
-                        to="/"
-                        className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                        onClick={() => {
-                          setMobileSidebarOpen(false)
-                          setActiveSession(null)
-                        }}
-                        aria-label="Open workspace settings"
-                        title="Workspace settings"
-                      >
-                        <Home size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                        <span className="min-w-0 truncate">{workspaceCount} workspaces</span>
-                      </Link>
-                      <button
-                        type="button"
-                        className="grid min-h-[30px] place-items-center rounded-r-md hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                        onClick={handleToggleWorkspaceMenu}
-                        aria-expanded={workspaceMenuOpen}
-                        aria-label={`${workspaceMenuOpen ? 'Collapse' : 'Expand'} workspace list`}
-                        title={`${workspaceMenuOpen ? 'Collapse' : 'Expand'} workspaces`}
-                      >
-                        <ChevronDown size={13} strokeWidth={1.8} className={cn('transition-transform', workspaceMenuOpen && 'rotate-180')} />
-                      </button>
-                    </div>
-                    {workspaceMenuOpen ? (
-                      <div className="py-1 pl-5">
-                        {mergedSidebarWorkspaceEntries.length === 0 ? (
-                          <div className="px-2 py-1.5 text-[11px] text-[var(--app-text-subtle)]">No saved workspaces.</div>
-                        ) : mergedSidebarWorkspaceEntries.map((workspace) => {
-                          const hidden = workspaceLayout[workspace.path]?.hidden ?? false
-                          return (
-                            <div key={workspace.path} className={cn('group min-h-[30px] px-[7px] py-[5px] text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]', SIDEBAR_ACTION_ROW_CLASS)}>
-                              <button
-                                type="button"
-                                className="flex min-w-0 items-center gap-2 overflow-hidden text-left"
-                                onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)}
-                                title={workspace.path}
-                              >
-                                <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', hidden ? 'bg-[var(--app-text-subtle)]' : 'bg-[var(--app-success)]')} />
-                                <span className={cn('truncate', hidden && 'opacity-60')}>{workspace.workspaceName}</span>
-                              </button>
-                              <SidebarActionRail>
-                                <SidebarActionRailSpacer />
-                                <button
-                                  type="button"
-                                  className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-text-subtle)] opacity-0 hover:bg-[var(--app-surface-active)] group-hover:opacity-100')}
-                                  onClick={(e) => { e.stopPropagation(); toggleWorkspaceHidden(workspace.path) }}
-                                  aria-label={`${hidden ? 'Show' : 'Hide'} ${workspace.workspaceName} in sidebar`}
-                                  title={`${hidden ? 'Show' : 'Hide'} in sidebar`}
-                                >
-                                  {hidden ? <EyeOff size={14} /> : <Eye size={14} />}
-                                </button>
-                              </SidebarActionRail>
-                            </div>
-                          )
-                        })}
-                        <Link
-                          to="/"
-                          className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                          onClick={() => {
-                            setMobileSidebarOpen(false)
-                            setActiveSession(null)
-                          }}
-                        >
-                          <Home size={14} className="shrink-0" />
-                          Workspace settings
-                        </Link>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div>
-                    <div
-                      className={cn(
-                        'grid min-h-[30px] w-full grid-cols-[minmax(0,1fr)_28px] items-center rounded-md text-[var(--app-text-muted)]',
-                        flowMenuOpen && 'bg-[var(--app-surface-active)] text-[var(--app-text)]',
-                      )}
-                    >
-                      {routeWorkspaceSlug ? (
-                        <Link
-                          to="/$workspaceSlug/flow"
-                          params={{ workspaceSlug: routeWorkspaceSlug }}
-                          className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                          onClick={() => {
-                            setFlowMenuOpen(false)
-                            setWorkspaceMenuOpen(false)
-                            setMobileSidebarOpen(false)
-                          }}
-                          aria-label="Open flow settings"
-                          title={flowSummary}
-                        >
-                          <Workflow size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                          <span className="min-w-0 truncate">{flowCount} flows</span>
-                        </Link>
-                      ) : (
-                        <Link
-                          to="/flow"
-                          className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                          onClick={() => {
-                            setFlowMenuOpen(false)
-                            setWorkspaceMenuOpen(false)
-                            setMobileSidebarOpen(false)
-                          }}
-                          aria-label="Open flow settings"
-                          title={flowSummary}
-                        >
-                          <Workflow size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                          <span className="min-w-0 truncate">{flowCount} flows</span>
-                        </Link>
-                      )}
-                      <button
-                        type="button"
-                        className="grid min-h-[30px] place-items-center rounded-r-md hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-progress disabled:opacity-70"
-                        onClick={handleToggleFlowMenu}
-                        disabled={flowsQuery.isFetching}
-                        aria-expanded={flowMenuOpen}
-                        aria-label={`${flowMenuOpen ? 'Collapse' : 'Expand'} flow list`}
-                        title={`${flowMenuOpen ? 'Collapse' : 'Expand'} flows`}
-                      >
-                        {flowsQuery.isFetching ? <LoaderCircle size={11} strokeWidth={1.8} className="animate-spin" /> : <ChevronDown size={13} strokeWidth={1.8} className={cn('transition-transform', flowMenuOpen && 'rotate-180')} />}
-                      </button>
-                    </div>
-                    {flowMenuOpen ? (
-                      <div className="py-1 pl-5">
-                        {flowsQuery.isLoading ? (
-                          <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">Loading flows…</div>
-                        ) : flowsQuery.isError ? (
-                          <div className="px-2 py-2 text-xs text-[var(--app-warning)]">Flows unavailable.</div>
-                        ) : sidebarFlows.length === 0 ? (
-                          <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">No flows yet.</div>
-                        ) : sidebarFlows.slice(0, 8).map((flow) => {
-                          const busy = flowBusyID === flow.id
-                          return (
-                            <div key={flow.id} className="group grid min-h-[40px] grid-cols-[minmax(0,1fr)_58px] items-center gap-2 px-[7px] py-1.5 text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-                              <button type="button" className="min-w-0 text-left" onClick={() => handleOpenFlow(flow)} title={flow.detail}>
-                                <span className="flex min-w-0 items-center gap-1.5">
-                                  <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', sidebarFlowDotClass(flow.status))} />
-                                  <span className="truncate text-[var(--app-text)]">{flow.name}</span>
-                                </span>
-                                <span className="mt-1 block truncate text-[10px] leading-4 text-[var(--app-text-subtle)]">{sidebarFlowStatusLabel(flow.status)} · {flow.agent}</span>
-                              </button>
-                              <button
-                                type="button"
-                                className="justify-self-end rounded border border-[var(--app-border)] px-1.5 py-1 text-[10px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:cursor-progress disabled:opacity-60"
-                                onClick={() => { void handleToggleFlowEnabled(flow) }}
-                                disabled={Boolean(flowBusyID)}
-                                aria-label={`${flow.enabled ? 'Pause' : 'Start'} ${flow.name}`}
-                                title={flow.enabled ? 'Pause flow' : 'Start flow'}
-                              >
-                                {busy ? <LoaderCircle size={11} className="animate-spin" /> : flow.enabled ? <Pause size={11} /> : <Play size={11} />}
-                              </button>
-                            </div>
-                          )
-                        })}
-                        {sidebarFlows.length > 8 ? <div className="px-2 py-1 text-[11px] text-[var(--app-text-subtle)]">+{sidebarFlows.length - 8} more on the Flow page</div> : null}
-                        {flowMenuError ? <div className="mx-1 mt-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[11px] text-[var(--app-warning)]">{flowMenuError}</div> : null}
-                        {routeWorkspaceSlug ? (
-                          <Link
-                            to="/$workspaceSlug/flow"
-                            params={{ workspaceSlug: routeWorkspaceSlug }}
-                            className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                            onClick={() => {
-                              setFlowMenuOpen(false)
-                              setWorkspaceMenuOpen(false)
-                              setMobileSidebarOpen(false)
-                            }}
-                          >
-                            <Workflow size={14} className="shrink-0" />
-                            Add / manage flows
-                          </Link>
-                        ) : (
-                          <Link
-                            to="/flow"
-                            className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                            onClick={() => {
-                              setFlowMenuOpen(false)
-                              setWorkspaceMenuOpen(false)
-                              setMobileSidebarOpen(false)
-                            }}
-                          >
-                            <Workflow size={14} className="shrink-0" />
-                            Add / manage flows
-                          </Link>
-                        )}
-                      </div>
-                    ) : null}
-                  </div>
-
                   <div className="grid gap-0.5 pt-1">
+                    <button
+                      type="button"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => {
+                        if (defaultNewChatWorkspacePath) {
+                          handleStartNewSessionInWorkspace(defaultNewChatWorkspacePath, defaultNewChatWorkspaceLabel)
+                        }
+                        setMobileSidebarOpen(false)
+                      }}
+                      disabled={!defaultNewChatWorkspacePath}
+                      aria-label={`New chat in ${defaultNewChatWorkspaceLabel}`}
+                      title={`New chat in ${defaultNewChatWorkspaceLabel}`}
+                    >
+                      <MessageSquare size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 truncate">New Chat</span>
+                    </button>
                     <Link
-                      to="/tools"
+                      to="/"
                       className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
                       onClick={() => setMobileSidebarOpen(false)}
-                      aria-label="Open Swarm Tools"
-                      title="Tools"
+                      aria-label="Open workspaces"
+                      title="Workspaces"
                     >
-                      <LayoutGrid size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">Tools</span>
+                      <Folder size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 truncate">Workspaces</span>
                     </Link>
+                    <button
+                      type="button"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
+                      onClick={handleOpenQuickActions}
+                      aria-label="Open Desktop quick actions"
+                      title="Quick Actions"
+                    >
+                      <Keyboard size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 truncate">Quick Actions</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
+                      onClick={handleOpenSearchChats}
+                      aria-label="Open Search Chats"
+                      title="Search Chats"
+                    >
+                      <Search size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 truncate">Search Chats</span>
+                    </button>
                     {routeWorkspaceSlug ? (
                       <Link
                         to="/$workspaceSlug/settings"
@@ -3277,206 +4731,156 @@ export function DesktopAppPage() {
             </div>
           </div>
           <div className="flex min-h-0 flex-1 flex-col">
-            <div ref={sidebarBodyRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
-              {isFlowRoute ? (
-                <div className="flex min-h-0 flex-1 flex-col gap-2 font-mono">
-                  <div className="flex items-center justify-between gap-2 px-1 py-1">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">Flows</div>
-                      <div className="mt-0.5 truncate text-xs text-[var(--app-text-subtle)]">{flowSummary}</div>
-                    </div>
-                    <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={handleOpenFlowsSettings} aria-label="Open flow page" title="Open flow page">
-                      <Workflow size={14} strokeWidth={1.8} className="shrink-0" />
-                    </button>
-                  </div>
-                  <div className="grid min-h-0 flex-1 content-start gap-1 overflow-y-auto">
-                    {flowsQuery.isLoading ? (
-                      <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">Loading flows…</div>
-                    ) : flowsQuery.isError ? (
-                      <div className="px-2 py-2 text-xs text-[var(--app-warning)]">Flows unavailable.</div>
-                    ) : selectedWorkspaceFlowRows.length === 0 ? (
-                      <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">No flows for this workspace yet.</div>
-                    ) : selectedWorkspaceFlowRows.map((flow) => {
-                      const busy = flowBusyID === flow.id
-                      return (
-                        <div key={flow.id} className="group grid min-h-[52px] grid-cols-[minmax(0,1fr)_28px] items-center gap-2 border border-transparent px-2 py-2 text-[13px] text-[var(--app-text-muted)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-                          <button type="button" className="min-w-0 text-left" onClick={() => handleOpenFlow(flow)} title={flow.detail}>
-                            <span className="flex min-w-0 items-center gap-1.5">
-                              <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', sidebarFlowDotClass(flow.status))} />
-                              <span className="truncate text-[var(--app-text)]">{flow.name}</span>
-                            </span>
-                            <span className="mt-1 block truncate text-[11px] leading-4 text-[var(--app-text-subtle)]">{sidebarFlowStatusLabel(flow.status)} · {flow.agent} · {flow.detail}</span>
-                          </button>
-                          <button
-                            type="button"
-                            className="grid h-7 w-7 place-items-center justify-self-end rounded border border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:cursor-progress disabled:opacity-60"
-                            onClick={() => { void handleToggleFlowEnabled(flow) }}
-                            disabled={Boolean(flowBusyID)}
-                            aria-label={`${flow.enabled ? 'Pause' : 'Start'} ${flow.name}`}
-                            title={flow.enabled ? 'Pause flow' : 'Start flow'}
-                          >
-                            {busy ? <LoaderCircle size={11} className="animate-spin" /> : flow.enabled ? <Pause size={11} /> : <Play size={11} />}
-                          </button>
-                        </div>
-                      )
-                    })}
-                  </div>
-                  {flowMenuError ? <div className="border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[11px] text-[var(--app-warning)]">{flowMenuError}</div> : null}
-                </div>
-              ) : visibleSidebarWorkspaceEntries.map((workspace, index) => {
-                const workspaceSessions = sessionsByWorkspace.get(workspace.path) ?? []
-                const sessionNodes = buildSidebarSessionTree(workspaceSessions, sidebarNow)
-                const flattenedSessionNodes = flattenVisibleSidebarSessionNodes(sessionNodes, expandedAgentSessions, selectedSession?.id)
-                const layout = workspaceLayout[workspace.path]
-                const collapsed = layout?.collapsed ?? true
-                const worktreeBusy = savingPath === workspace.path
-                const workspaceGitSnapshot = gitSnapshotByPath.get(workspace.path) ?? (workspace.path === selectedGitWorkspacePath ? gitSnapshot : null)
-                const workspaceGitLoading = workspace.path === selectedGitWorkspacePath && gitStatusQuery.isFetching
-                const workspaceGitError = gitRealtimeErrors[workspace.path] ?? (workspace.path === selectedGitWorkspacePath && gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : null)
-                const workspaceSlug = workspaceSlugByPath.get(workspace.path)
-                  ?? workspaceRouteSlugBase({ path: workspace.path, workspaceName: workspace.workspaceName })
-                const workspaceRouteOptions = buildDesktopChatRouteOptions({
-                  hostSwarmName: swarmName,
-                  workspacePath: workspace.path,
-                  workspaceName: workspace.workspaceName,
-                  topologyRoutes: workspace.topologyRoutes,
-                })
-                const handleToggleWorkspaceWorktree = () => {
-                  if (worktreeBusy) {
-                    return
-                  }
-                  void setWorktreeEnabled(workspace.path, !workspace.worktreeEnabled)
-                }
-                return (
-                  <Fragment key={workspace.path}>
-                    <section style={workspaceSectionHeightStyle(layout?.ratio ?? 1, totalVisibleRatio, collapsed)} className="flex min-h-0 flex-col overflow-hidden">
-                      <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'px-1 py-1')}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            toggleWorkspaceCollapse(workspace.path)
-                          }}
-                          className="flex min-w-0 items-center gap-2 overflow-hidden text-left transition-colors hover:text-[var(--app-text)]"
-                          aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${workspace.workspaceName}`}
+            <div ref={sidebarBodyRef} className="scrollbar-hidden flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
+              <div className="scrollbar-hidden grid min-h-0 flex-1 content-start gap-2 overflow-y-auto font-mono">
+                  <div className="grid min-h-[34px] grid-cols-[minmax(0,1fr)_24px_24px] items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1">
+                    <div ref={workspaceDropdownRef} className="relative min-w-0">
+                      <button
+                        type="button"
+                        className="flex h-7 w-full min-w-0 items-center justify-between gap-2 rounded border border-transparent bg-transparent px-1 text-left text-[11px] font-semibold text-[var(--app-text)] outline-none hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] focus-visible:border-[var(--app-border-accent)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:opacity-70"
+                        onClick={() => setWorkspaceDropdownOpen((open) => !open)}
+                        disabled={topWorkspaceOptions.length === 0}
+                        aria-label="Workspace"
+                        aria-haspopup="menu"
+                        aria-expanded={workspaceDropdownOpen}
+                        title={topWorkspacePath || 'Default Workspace'}
+                      >
+                        <span className="min-w-0 truncate">{topWorkspaceLabel}</span>
+                        <ChevronDown size={12} strokeWidth={1.8} className={cn('shrink-0 text-[var(--app-text-subtle)] transition-transform', workspaceDropdownOpen && 'rotate-180')} />
+                      </button>
+                      {workspaceDropdownOpen ? (
+                        <div
+                          role="menu"
+                          aria-label="Workspaces"
+                          className="absolute left-0 top-[calc(100%+6px)] z-50 min-w-full w-max max-w-[280px] overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-1 text-[var(--app-text)] shadow-xl shadow-black/30"
                         >
-                          {collapsed ? <ChevronRight size={16} className="shrink-0 text-[var(--app-text-subtle)]" /> : <ChevronDown size={16} className="shrink-0 text-[var(--app-text-subtle)]" />}
-                          <div className="truncate text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">{workspace.workspaceName}</div>
-                        </button>
-                        <SidebarActionRail>
-                          {!workspaceByPath.has(workspace.path) ? (
+                          {topWorkspaceOptions.map((workspace) => (
                             <button
+                              key={workspace.path}
                               type="button"
-                              className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-warning)] hover:bg-[var(--app-warning-bg)] hover:text-[var(--app-warning)]')}
+                              role="menuitem"
+                              className="flex min-w-[190px] w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[11px] font-medium text-[var(--app-text-muted)] outline-none hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
                               onClick={() => {
-                                void saveWorkspace({
-                                  path: workspace.path,
-                                  name: workspace.workspaceName,
-                                  themeId: workspace.themeId,
-                                  makeCurrent: true,
-                                  linkedDirectories: [],
-                                })
+                                setWorkspaceDropdownOpen(false)
+                                handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)
                               }}
-                              aria-label="Save this temporary folder as a workspace"
-                              title="Save this temporary folder as a workspace"
+                              aria-label={`New chat in ${workspace.workspaceName}`}
+                              title={`New chat in ${workspace.workspaceName}`}
                             >
-                              !
+                              <span className="min-w-0 flex-1 truncate">{workspace.workspaceName}</span>
                             </button>
-                          ) : selectingPath === workspace.path ? <span className="grid h-6 w-6 place-items-center text-[10px] text-[var(--app-text-muted)]">…</span> : (
-                            <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={() => { openTodoModal(workspace.path, workspace.workspaceName) }} aria-label={`Open tasks for ${workspace.workspaceName}`} title={`${workspace.todoSummary?.user.taskCount ?? 0} tasks`}>
-                              <ListChecks size={14} strokeWidth={1.8} className="shrink-0" />
-                            </button>
-                          )}
-                          <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)} aria-label={`New session in ${workspace.workspaceName}`} title="New session">
-                            <Plus size={14} strokeWidth={1.8} className="shrink-0" />
-                          </button>
-                        </SidebarActionRail>
-                      </div>
-                      {!collapsed && renderWorkspaceGitBar({
-                        workspace,
-                        worktreeBusy,
-                        gitSnapshot: workspaceGitSnapshot,
-                        gitLoading: workspaceGitLoading,
-                        gitError: workspaceGitError,
-                        onOpenGit: () => openGitPanel(workspace.path, workspace.workspaceName),
-                        onToggle: handleToggleWorkspaceWorktree,
-                      })}
-                      {!collapsed && (
-                        <div className="grid min-h-0 flex-1 content-start gap-0.5 overflow-y-auto">
-                          {flattenedSessionNodes.length === 0 ? null : flattenedSessionNodes.map((node) => (
-                            <SessionRow
-                              key={node.session.id}
-                              active={selectedSession?.id === node.session.id}
-                              now={sidebarNow}
-                              session={node.session}
-                              fallbackSwarmName={swarmName}
-                              routeOptions={workspaceRouteOptions}
-                              workspaceSlug={workspaceSlug}
-                              depth={node.depth}
-                              childLabel={node.label}
-                              childAssignmentLabel={node.assignmentLabel}
-                              childKind={node.kind}
-                              agentSummary={summarizeSubagentDescendants(node)}
-                              agentsExpanded={Boolean(expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, selectedSession?.id)}
-                              onSelect={handleSelectSession}
-                              onPrefetch={handlePrefetchSession}
-                              onToggleAgents={handleToggleAgentSessions}
-                            />
                           ))}
                         </div>
-                      )}
-                    </section>
-                    {index < visibleSidebarWorkspaceEntries.length - 1 && !collapsed && !workspaceLayout[visibleSidebarWorkspaceEntries[index + 1].path]?.collapsed ? (
-                      <div
-                        role="separator"
-                        aria-orientation="horizontal"
-                        className="relative my-2 h-4 cursor-row-resize group px-1"
-                        onPointerDown={(event) => handleResizeStart(event, workspace.path, visibleSidebarWorkspaceEntries[index + 1].path)}
-                      >
-                        <div className="absolute inset-x-1 top-1/2 h-px bg-[var(--app-border)] group-hover:bg-[var(--app-border-strong)] transition-colors" />
-                      </div>
-                    ) : index < visibleSidebarWorkspaceEntries.length - 1 ? (
-                      <div className="h-2" />
-                    ) : null}
-                  </Fragment>
-                )
-              })}
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      className={SIDEBAR_ACTION_BUTTON_CLASS}
+                      onClick={() => {
+                        if (topWorkspacePath) handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel)
+                      }}
+                      disabled={!topWorkspacePath}
+                      aria-label={`New chat in ${topWorkspaceLabel}`}
+                      title="New Chat"
+                    >
+                      <MessageSquare size={13} strokeWidth={1.8} className="shrink-0" />
+                    </button>
+                    <button
+                      type="button"
+                      className={SIDEBAR_ACTION_BUTTON_CLASS}
+                      onClick={() => {
+                        if (topWorkspace && topWorkspacePath) {
+                          openWorktreeSessionModal({
+                            workspace: topWorkspace,
+                            workspaceSlug: topWorkspaceSlug || workspaceRouteSlugBase({ path: topWorkspacePath, workspaceName: topWorkspaceLabel }),
+                            routeOptions: buildDesktopChatRouteOptions({
+                              hostSwarmName: swarmName,
+                              workspacePath: topWorkspace.path,
+                              workspaceName: topWorkspace.workspaceName,
+                              topologyRoutes: topWorkspace.topologyRoutes,
+                              localWorkspaceBindingId: topWorkspace.localWorkspaceBindingId,
+                              hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
+                            }),
+                          })
+                        }
+                      }}
+                      disabled={!topWorkspace}
+                      aria-label={`New worktree for ${topWorkspaceLabel}`}
+                      title="Worktree"
+                    >
+                      <GitBranch size={13} strokeWidth={1.8} className="shrink-0" />
+                    </button>
+                  </div>
+                  {renderSidebarSessionGroups({
+                    nodes: globalFlattenedSessionNodes,
+                    routeSessionId,
+                    now: sidebarNow,
+                    fallbackSwarmName: swarmName,
+                    routeOptions: globalSessionRouteOptions,
+                    workspaceSlug: globalSessionWorkspaceSlug,
+                    expandedAgentSessions,
+                    agentSummaries: sidebarAgentSummaries,
+                    compactingSession,
+                    pendingActions: sidebarSessionActions,
+                    selectionMode: sidebarSelectionMode,
+                    selectedRootIDs: selectedSidebarRootIDs,
+                    hideInactiveHours: sidebarHideInactiveHours,
+                    thresholdSaving: sidebarThresholdSaving,
+                    bulkArchivePending,
+                    masterSelectionGroup: sidebarMasterSelectionGroup,
+                    reviewCleanupOpen: needsReviewCleanupOpen,
+                    gitHasGit: topWorkspaceHasGit,
+                    gitAheadCount: topWorkspaceGitAheadCount,
+                    gitBehindCount: topWorkspaceGitBehindCount,
+                    gitDirtyCount: topWorkspaceGitDirtyCount,
+                    onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
+                    onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
+                    onEnterSelectionMode: handleEnterSidebarSelectionMode,
+                    onClearSelection: handleClearSidebarSelection,
+                    onBulkArchive: () => { void handleBulkArchiveSidebar() },
+                    onThresholdChange: (hours) => { void handleSidebarThresholdChange(hours) },
+                    onSelect: handleSelectSession,
+                    onToggleSelected: handleToggleSidebarSelected,
+                    onPrefetch: handlePrefetchSession,
+                    onToggleAgents: handleToggleAgentSessions,
+                    onTogglePinned: handleToggleSidebarPinned,
+                    onArchive: handleArchiveSidebarSession,
+                    onRename: handleRenameSidebarSession,
+                  })}
+                  {globalFlattenedSessionNodes.length === 0 ? (
+                    <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">No active sessions.</div>
+                  ) : null}
+                </div>
             </div>
 
           </div>
         </div>
-      )}
     </>
   )
 
-  const localContainerConfirmPlan = localContainerUpdateConfirm?.plan ?? null
-  const remoteContainerUpdateCount = localContainerUpdateConfirm ? remoteDeployUpdateSessionCount(localContainerUpdateConfirm.remoteSessions) : 0
-  const managedHostUpdateCount = localContainerUpdateConfirm?.managedHostCount ?? 0
-  const localContainerConfirmSummary = localContainerConfirmPlan?.summary ?? null
   const updateProgressJob = updateProgress.job
   const updateProgressMessage = updateJobMessage(updateProgressJob)
   const updateProgressStep = updateProgressStepIndex(updateProgressJob)
   const updateProgressFailed = updateProgressJob?.status === 'failed'
   const updateProgressCompleted = updateProgressJob?.status === 'completed'
-  const localContainerAffectedCount = localContainerConfirmSummary
-    ? Math.max(
-      localContainerConfirmSummary.affected ?? 0,
-      (localContainerConfirmSummary.needs_update ?? 0) + (localContainerConfirmSummary.unknown ?? 0) + (localContainerConfirmSummary.errors ?? 0),
-    )
-    : 0
-
   return (
     <div
       className="absolute inset-0 flex h-full min-h-0 w-full overflow-hidden bg-[var(--app-surface)] p-0 text-[var(--app-text)]"
-      data-v3-bootstrap-status={desktopV3Bootstrap.status}
-      data-v3-bootstrap-epoch={desktopV3Bootstrap.epoch}
-      data-v3-bootstrap-error={desktopV3Bootstrap.error ?? undefined}
+      data-v3-route-readiness={routeReadinessStatus}
       onTouchStart={handleMobileSidebarTouchStart}
       onTouchMove={handleMobileSidebarTouchMove}
       onTouchEnd={handleMobileSidebarTouchEnd}
       onTouchCancel={handleMobileSidebarTouchEnd}
     >
-      <aside data-testid="desktop-workspace-sidebar" className={cn('hidden shrink-0 flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] sm:flex', sidebarCollapsed ? 'sm:w-[56px]' : 'sm:w-[320px]')}>
-        {sidebarContent}
+      <aside
+        data-testid="desktop-workspace-sidebar"
+        data-sidebar-display-mode={sidebarDisplayMode}
+        className={cn(
+          'hidden shrink-0 flex-col overflow-hidden border-r border-[var(--app-border)] bg-[var(--app-surface)] transition-[width] sm:flex',
+          focusMode ? 'sm:w-[56px]' : 'sm:w-[320px]',
+        )}
+      >
+        {focusMode ? focusedSidebarContent : sidebarContent}
       </aside>
       {mobileSidebarOpen ? (
         <div className="absolute inset-0 z-40 flex sm:hidden pt-[var(--app-safe-area-top)] pr-[var(--app-safe-area-right)] pb-[var(--app-safe-area-bottom)] pl-[var(--app-safe-area-left)]" aria-modal="true" role="dialog">
@@ -3507,23 +4911,105 @@ export function DesktopAppPage() {
       ) : null}
 
       <main className="flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden sm:pr-[var(--app-safe-area-right)] sm:pl-[var(--app-safe-area-left)]">
-        {routeSessionId && !selectedSession ? (
+        {mobileCreationPage === 'task' && routeWorkspace ? (
+          <BackgroundTaskForm
+            presentation="page"
+            workspaceName={routeWorkspace.workspaceName || routeWorkspace.path}
+            request={backgroundTaskRequest}
+            busy={backgroundTaskBusy}
+            error={backgroundTaskError}
+            onRequestChange={setBackgroundTaskRequest}
+            onSubmit={(request) => { void handleQueueBackgroundTask(request) }}
+            onClose={closeBackgroundTaskModal}
+          />
+        ) : mobileCreationPage === 'worktree' && routeWorkspace ? (
+          <WorktreeSessionForm
+            presentation="page"
+            state={worktreeSessionModal?.presentation === 'page' ? worktreeSessionModal : null}
+            title={worktreeSessionTitle}
+            branch={worktreeSessionBranch}
+            selectedExistingPath={worktreeSessionExistingPath}
+            busy={worktreeSessionCreating}
+            authorityPending={agentStateQuery.isPending || modelOptionsQuery.isPending || modelProfilesQuery.isPending || draftPreferenceQuery.isPending}
+            error={worktreeSessionError}
+            onTitleChange={(value) => {
+              setWorktreeSessionTitle(value)
+              if (!worktreeSessionBranchOverridden) setWorktreeSessionBranch(titleToWorktreeBranchSlug(value))
+            }}
+            onBranchChange={(value) => {
+              setWorktreeSessionBranch(value)
+              setWorktreeSessionBranchOverridden(true)
+            }}
+            onSelectedExistingPathChange={setWorktreeSessionExistingPath}
+            onSubmit={() => { void handleCreateWorktreeSession() }}
+            onClose={closeWorktreeSessionModal}
+          />
+        ) : routeSessionUnavailable ? (
           <div className="flex h-full flex-1 items-center justify-center px-6">
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
-              <div className="text-lg font-semibold">{routeSessionSnapshotQuery.isError ? 'Session not found' : 'Loading session…'}</div>
+              <div className="text-lg font-semibold">Session not available</div>
               <p className="mt-2 text-sm text-[var(--app-text-muted)]">
-                {routeSessionSnapshotQuery.isError
-                  ? 'We couldn’t find that session in cache or on the server.'
-                  : 'Opening the chat shell while the latest V3 snapshot hydrates in the background.'}
+                Desktop state route readiness marked this session as {routeReadinessStatus}. Refresh the workspace if this session was just created elsewhere.
               </p>
             </Card>
           </div>
-        ) : isFlowRoute ? (
-          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[var(--app-bg)] px-3 pb-[calc(var(--app-safe-area-bottom)_+_1.25rem)] pt-[calc(var(--app-safe-area-top)_+_1rem)] sm:px-6 sm:py-8">
-            <div className="mx-auto min-h-full w-full max-w-6xl min-w-0">
-              <FlowsSettingsPage />
-            </div>
-          </div>
+        ) : routeSessionId ? (
+          <DesktopV3ExistingConversationPane
+            key={`existing:${routeSessionId}`}
+            sessionId={routeSessionId}
+            initialHydrateStatus={desktopInitialHydrate.status}
+            renderedMessages={selectedDesktopV3Messages}
+            messagesLoaded={selectedDesktopV3MessagesLoaded}
+            loadedMessageCount={selectedDesktopV3LoadedMessageCount}
+            modeCommand={sessionModeCommand}
+            onModeCommandHandled={() => setSessionModeCommand(null)}
+            onModeChange={(mode) => {
+              const routeSession = sessionById.get(routeSessionId)
+              const workspacePath = routeSession
+                ? desktopRouteWorkspacePathForSession(routeSession, workspacePathByBindingId, knownWorkspacePaths)
+                : ''
+              if (workspacePath) setNewSessionModeByWorkspace((current) => ({ ...current, [workspacePath]: mode }))
+            }}
+            session={sessionById.get(routeSessionId) ?? null}
+            routeOptions={sessionById.get(routeSessionId) ? (() => {
+              const sessionWorkspacePath = desktopRouteWorkspacePathForSession(sessionById.get(routeSessionId)!, workspacePathByBindingId, knownWorkspacePaths)
+              const sessionWorkspace = mergedSidebarWorkspaceEntries.find((workspace) => workspace.path === sessionWorkspacePath) ?? null
+              return buildDesktopChatRouteOptions({
+                hostSwarmName: swarmName,
+                workspacePath: sessionWorkspacePath,
+                workspaceName: sessionById.get(routeSessionId)?.workspaceName ?? '',
+                topologyRoutes: sessionWorkspace?.topologyRoutes ?? [],
+                localWorkspaceBindingId: sessionWorkspace?.localWorkspaceBindingId ?? '',
+                hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
+              })
+            })() : []}
+            onOpenChats={() => setMobileSidebarOpen(true)}
+            onOpenChildSession={(sessionId, workspacePath) => {
+              const workspaceSlug = workspacePath
+                ? workspaceSlugByPath.get(workspacePath) ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: 'Workspace' })
+                : routeWorkspaceSlug
+              if (!workspaceSlug) return
+              void selectAndHydrateDesktopV3Session(sessionId)
+              void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId } })
+            }}
+            sessionActions={activeRouteSessionActions}
+            onCompactingChange={handleCompactingSessionChange}
+            onArchivePlanSession={handleArchivePlanSession}
+            onNewSession={() => {
+              const routeSession = sessionById.get(routeSessionId)
+              const workspacePath = routeSession
+                ? desktopRouteWorkspacePathForSession(routeSession, workspacePathByBindingId, knownWorkspacePaths)
+                  || selectedWorkspacePath
+                  || ''
+                : ''
+              if (routeSession && workspacePath) handleStartNewSessionInWorkspace(workspacePath, routeSession.workspaceName)
+            }}
+            onSlashCommand={handleSlashCommand}
+            agentSettingsOpenSignal={agentSettingsOpenSignal}
+            agentSettingsInitialAgent={requestedAgentName}
+            onOpenPlan={() => openPlanModalForSession(routeSessionId)}
+            planSidebarBelowActions={planSidebarGitPanel}
+          />
         ) : routeWorkspaceSlug && !chatWorkspacePath && !workspacesLoading ? (
           <div className="flex h-full flex-1 items-center justify-center px-6">
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
@@ -3533,23 +5019,28 @@ export function DesktopAppPage() {
               </p>
             </Card>
           </div>
-        ) : chatWorkspacePath ? (
-          <DesktopChatPanel
-            hostSwarmName={swarmName}
-            workspacePath={chatWorkspacePath}
-            workspaceName={chatWorkspaceName}
-            workspaceWorktreeEnabled={selectedWorkspace?.worktreeEnabled ?? false}
-            workspaceTopologyRoutes={selectedWorkspace?.topologyRoutes ?? []}
-            localWorkspaceBindingId={selectedWorkspace?.localWorkspaceBindingId}
-            hostSwarmId={currentSwarmTarget?.swarm_id ?? null}
-            session={selectedSession}
-            onSessionCreated={handleSessionCreated}
-            onOpenSettingsTab={handleOpenSettingsTab}
-            onOpenQuickSettings={handleOpenQuickSettings}
-            onOpenPermissions={handleOpenPermissions}
-            onOpenWorkspaceLauncher={handleOpenWorkspaceLauncher}
-            onOpenSidebarMenu={handleOpenMobileSidebar}
-            onStartNewSession={handleStartNewSessionInWorkspace}
+        ) : routeWorkspace?.path ? (
+          <DesktopV3NewSessionPane
+            key={`new:${routeWorkspace.path}`}
+            modeCommand={sessionModeCommand}
+            onModeCommandHandled={() => setSessionModeCommand(null)}
+            workspace={routeWorkspace}
+            workspaceSlug={routeWorkspaceSlug}
+            routeOptions={buildDesktopChatRouteOptions({
+              hostSwarmName: swarmName,
+              workspacePath: routeWorkspace.path,
+              workspaceName: routeWorkspace.workspaceName,
+              topologyRoutes: routeWorkspace.topologyRoutes,
+              localWorkspaceBindingId: routeWorkspace.localWorkspaceBindingId,
+              hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
+            })}
+            initialMode={newSessionModeByWorkspace[routeWorkspace.path]}
+            onModeChange={(mode) => setNewSessionModeByWorkspace((current) => ({ ...current, [routeWorkspace.path]: mode }))}
+            onOpenChats={() => setMobileSidebarOpen(true)}
+            mobileSessionQuickMenu={mobileSessionQuickMenu}
+            onSlashCommand={handleSlashCommand}
+            agentSettingsOpenSignal={agentSettingsOpenSignal}
+            agentSettingsInitialAgent={requestedAgentName}
           />
         ) : (
           <div className="flex h-full flex-1 items-center justify-center px-6">
@@ -3563,10 +5054,73 @@ export function DesktopAppPage() {
         )}
       </main>
 
+      {needsReviewCleanupOpen ? <ReviewWorktreesModal workspacePath={topWorkspacePath || undefined} onClose={() => setNeedsReviewCleanupOpen(false)} repairFixAvailable={reviewFixAvailable} onAskSwarmFix={handleAskSwarmToFixReviewIntegration} /> : null}
+
       <DesktopQuickSettingsModal
         tab={quickSettingsTab}
         onClose={() => setQuickSettingsTab(null)}
         onOpenFullSettings={handleOpenSettingsTab}
+      />
+
+      <DesktopQuickActionsModal
+        open={quickActionsOpen}
+        actions={quickActions}
+        onClose={() => setQuickActionsOpen(false)}
+        onOpenShortcutsSettings={() => handleOpenSettingsTab('shortcuts')}
+      />
+
+      <SearchChatsModal
+        open={searchModalOpen}
+        onOpenChange={setSearchModalOpen}
+        onOpenSession={handleOpenSearchResult}
+      />
+
+      <DesktopCodexUsageModal
+        open={codexUsageOpen}
+        onOpenChange={setCodexUsageOpen}
+        onOpenAuthSettings={() => {
+          setCodexUsageOpen(false)
+          handleOpenSettingsTab('auth')
+        }}
+      />
+
+      <DesktopNotificationsModal
+        open={notificationsOpen}
+        onOpenChange={(open) => {
+          setNotificationsOpen(open)
+          if (open) setNotificationActionError(null)
+        }}
+        notifications={notificationItems}
+        summary={notificationSummary}
+        loading={false}
+        connectionState={desktopV3ConnectionStateFromRealtimeStatus(desktopInitialHydrate.status, notificationItems.length)}
+        onMarkRead={handleMarkNotificationRead}
+        onAcknowledge={handleAcknowledgeNotification}
+        onMute={handleMuteNotification}
+        onClearAll={handleClearNotifications}
+      />
+      {notificationsOpen && notificationActionError ? (
+        <div className="pointer-events-none absolute left-1/2 top-6 z-[90] w-[min(520px,calc(100vw-32px))] -translate-x-1/2" role="alert">
+          <Card className="border-[var(--app-error)] bg-[color-mix(in_srgb,var(--app-error)_12%,var(--app-surface))] p-3 text-sm text-[var(--app-error)] shadow-2xl">
+            {notificationActionError}
+          </Card>
+        </div>
+      ) : null}
+
+      <DesktopPlanModal
+        open={Boolean(planModal)}
+        plan={planModalPlan}
+        revisions={planModalRevisions}
+        historyLoading={planModalLoading}
+        saving={planModalSaving}
+        executing={planModalExecuting}
+        error={planModalError}
+        onOpenChange={(open) => {
+          if (!open) setPlanModal(null)
+        }}
+        onCopy={handleCopyPlanText}
+        onRestoreRevision={handleRestorePlanRevisionModal}
+        onApproveStart={handleApproveStartPlanModal}
       />
 
       {todoModal ? (
@@ -3587,6 +5141,11 @@ export function DesktopAppPage() {
             },
           }}
           saving={todoSavingWorkspacePath === todoModal.workspacePath}
+          onOpenManagedSession={(sessionId) => {
+            const workspaceSlug = workspaceSlugByPath.get(todoModal.workspacePath) ?? workspaceRouteSlugBase({ path: todoModal.workspacePath, workspaceName: todoModal.workspaceName })
+            closeTodoModal()
+            void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId } })
+          }}
           onOpenChange={(nextOpen) => {
             if (!nextOpen) {
               closeTodoModal()
@@ -3665,7 +5224,7 @@ export function DesktopAppPage() {
       ) : null}
 
       {desktopToast ? (
-        <div className="pointer-events-none absolute right-6 top-6 z-[70] max-w-md" role="status" aria-live="polite">
+        <div className="pointer-events-none absolute left-4 right-4 top-[calc(var(--app-safe-area-top)+1rem)] z-[70] sm:left-auto sm:right-6 sm:top-6 sm:max-w-md" role="status" aria-live="polite">
           <Card className={cn(
             'border p-4 shadow-2xl',
             desktopToast.tone === 'success'
@@ -3699,31 +5258,6 @@ export function DesktopAppPage() {
             <div className={cn('mt-4 rounded-xl border p-4 text-sm', updateProgressFailed ? 'border-[var(--app-error)] bg-[color-mix(in_srgb,var(--app-error)_10%,transparent)] text-[var(--app-error)]' : 'border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-text)]')}>
               {updateProgressMessage}
             </div>
-            {updateProgressJob?.hosts?.length ? (
-              <div className="mt-4 space-y-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3 text-sm">
-                <div className="font-medium">Managed host phases</div>
-                {updateProgressJob.hosts.map((host) => (
-                  <div key={host.host_id || host.name} className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="font-medium">{host.name || host.host_id || 'managed host'}</span>
-                      <span className={cn('text-xs uppercase tracking-wide', host.status === 'failed' ? 'text-[var(--app-error)]' : host.status === 'completed' ? 'text-[var(--app-success)]' : 'text-[var(--app-text-muted)]')}>{host.status || 'running'}</span>
-                    </div>
-                    <div className="mt-2 grid grid-cols-5 gap-1 text-[11px]">
-                      {MANAGED_DEV_UPDATE_PHASES.map((phaseName) => {
-                        const phase = host.phases?.find((entry) => entry.name === phaseName)
-                        const phaseStatus = phase?.status ?? 'pending'
-                        return (
-                          <div key={phaseName} className={cn('rounded border px-2 py-1 text-center capitalize', phaseStatus === 'failed' ? 'border-[var(--app-error)] text-[var(--app-error)]' : phaseStatus === 'completed' ? 'border-[var(--app-success)] text-[var(--app-success)]' : phaseStatus === 'running' ? 'border-[var(--app-primary)] text-[var(--app-primary)]' : 'border-[var(--app-border)] text-[var(--app-text-muted)]')}>
-                            {phaseName}
-                          </div>
-                        )
-                      })}
-                    </div>
-                    {(host.error || host.message) ? <div className="mt-2 text-xs text-[var(--app-text-muted)]">{host.error || host.message}</div> : null}
-                  </div>
-                ))}
-              </div>
-            ) : null}
             <ol className="mt-4 space-y-3">
               {UPDATE_PROGRESS_STEP_TITLES.map((title, index) => {
                 const done = updateProgressCompleted || index < updateProgressStep
@@ -3758,99 +5292,66 @@ export function DesktopAppPage() {
         </div>
       ) : null}
 
-      {localContainerConfirmPlan ? (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-[var(--app-backdrop)] px-4" aria-modal="true" role="dialog">
-          <Card className="w-full max-w-lg border-[var(--app-warning-border)] bg-[var(--app-surface)] p-6 shadow-2xl">
-            <div className="text-lg font-semibold">Update container images too?</div>
-            <p className="mt-3 text-sm text-[var(--app-text-muted)]">
-              {localContainerConfirmPlan.contract?.warning_copy || 'This will also update local and remote container images.'}
-            </p>
-            <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4 text-sm">
-              <div className="font-medium">
-                {localContainerAffectedCount > 0
-                  ? `${localContainerAffectedCount} local container${localContainerAffectedCount === 1 ? '' : 's'} may need attention.`
-                  : 'No local containers need attention.'}
-              </div>
-              {remoteContainerUpdateCount > 0 ? (
-                <div className="mt-1 text-sm text-[var(--app-text)]">{remoteContainerUpdateCount} remote SSH session{remoteContainerUpdateCount === 1 ? '' : 's'} will be checked.</div>
-              ) : null}
-              {managedHostUpdateCount > 0 ? (
-                <div className="mt-2 rounded-lg border border-[var(--app-warning-border)] bg-[color-mix(in_srgb,var(--app-warning)_12%,transparent)] p-3 text-sm text-[var(--app-text)]">
-                  Dev update will hard-reset and clean {managedHostUpdateCount} managed host dev checkout{managedHostUpdateCount === 1 ? '' : 's'} before rebuilding them.
-                </div>
-              ) : null}
-              <div className="mt-2 text-xs text-[var(--app-text-muted)]">
-                {formatLocalContainerUpdateTarget(localContainerConfirmPlan)}
-              </div>
-              {localContainerConfirmSummary ? (
-                <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-[var(--app-text-muted)]">
-                  <div>Total: {localContainerConfirmSummary.total}</div>
-                  <div>Needs update: {localContainerConfirmSummary.needs_update}</div>
-                  <div>Already current: {localContainerConfirmSummary.already_current}</div>
-                  <div>Unknown/errors: {(localContainerConfirmSummary.unknown ?? 0) + (localContainerConfirmSummary.errors ?? 0)}</div>
-                </div>
-              ) : null}
-            </div>
-            <p className="mt-3 text-xs text-[var(--app-text-muted)]">
-              {localContainerConfirmPlan.contract?.failure_semantics || 'Swarm update succeeds independently; local or remote container update failures are reported as resumable follow-up work.'}
-            </p>
-            {remoteContainerUpdateCount === 0 && managedHostUpdateCount === 0 ? (
-              <label className="mt-4 flex items-center gap-2 text-sm text-[var(--app-text-muted)]">
-                <input
-                  type="checkbox"
-                  checked={localContainerUpdateConfirm?.pendingDismiss ?? false}
-                  onChange={(event) => {
-                      const dismissed = event.target.checked
-                      handleToggleLocalContainerUpdateDismissal(dismissed)
-                    }}
-                />
-                <span>Don&apos;t show this again for local-only container image warnings</span>
-              </label>
-            ) : null}
-            <div className="mt-6 flex justify-end gap-3">
-              <Button variant="ghost" onClick={handleCancelLocalContainerUpdate} disabled={updateRunning}>Cancel</Button>
-              <Button onClick={() => { void handleConfirmLocalContainerUpdate() }} disabled={updateRunning}>
-                Continue update
-              </Button>
-            </div>
-          </Card>
-        </div>
+      {backgroundTaskOpen && routeWorkspace && mobileCreationPage !== 'task' ? (
+        <BackgroundTaskForm
+          presentation="dialog"
+          workspaceName={routeWorkspace.workspaceName || routeWorkspace.path}
+          request={backgroundTaskRequest}
+          busy={backgroundTaskBusy}
+          error={backgroundTaskError}
+          onRequestChange={setBackgroundTaskRequest}
+          onSubmit={() => { void handleQueueBackgroundTask() }}
+          onClose={closeBackgroundTaskModal}
+        />
       ) : null}
-
+      {mobileCreationPage !== 'worktree' ? <WorktreeSessionForm
+        presentation="dialog"
+        state={worktreeSessionModal?.presentation === 'dialog' ? worktreeSessionModal : null}
+        title={worktreeSessionTitle}
+        branch={worktreeSessionBranch}
+        selectedExistingPath={worktreeSessionExistingPath}
+        busy={worktreeSessionCreating}
+        authorityPending={agentStateQuery.isPending || modelOptionsQuery.isPending || modelProfilesQuery.isPending || draftPreferenceQuery.isPending}
+        error={worktreeSessionError}
+        onTitleChange={(value) => {
+          setWorktreeSessionTitle(value)
+          if (!worktreeSessionBranchOverridden) setWorktreeSessionBranch(titleToWorktreeBranchSlug(value))
+        }}
+        onBranchChange={(value) => {
+          setWorktreeSessionBranch(value)
+          setWorktreeSessionBranchOverridden(true)
+        }}
+        onSelectedExistingPathChange={setWorktreeSessionExistingPath}
+        onSubmit={() => { void handleCreateWorktreeSession() }}
+        onClose={closeWorktreeSessionModal}
+      /> : null}
+      {gitCommitModal ? <Dialog>
+        <DialogBackdrop onClick={() => { if (!gitCommitBusy) setGitCommitModal(null) }} />
+        <DialogPanel className="w-[min(560px,100%)] gap-4">
+          <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void handleGitCommit() }}>
+            <div><div className="text-sm font-semibold text-[var(--app-text)]">Commit all changes</div><div className="mt-1 text-xs text-[var(--app-text-subtle)]">This explicitly stages and commits all {gitCommitModal.files.length} shown files, including untracked files.</div></div>
+            <div className="max-h-48 overflow-y-auto border border-[var(--app-border)] font-mono text-xs">{gitCommitModal.files.map((file) => <div key={`${file.kind}:${file.path}`} className="flex gap-2 border-b border-[var(--app-border)] px-2 py-1 last:border-0"><span className="text-[var(--app-text-subtle)]">{gitFileStatusLabel(file)}</span><span className="truncate">{file.path}</span></div>)}</div>
+            <label className="grid gap-1 text-xs text-[var(--app-text-muted)]"><span>Commit message</span><input autoFocus value={gitCommitMessage} onChange={(event) => setGitCommitMessage(event.target.value)} className="h-10 border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[var(--app-text)] outline-none" /></label>
+            {gitCommitError ? <div className="text-xs text-[var(--app-warning)]">{gitCommitError}</div> : null}
+            <div className="flex justify-end gap-2"><Button variant="ghost" disabled={gitCommitBusy} onClick={() => setGitCommitModal(null)}>Cancel</Button><Button type="submit" disabled={gitCommitBusy || !gitCommitMessage.trim()}>{gitCommitBusy ? 'Committing…' : 'Commit all changes'}</Button></div>
+          </form>
+        </DialogPanel>
+      </Dialog> : null}
       <GitDetailsOverlay
         state={gitPanel}
-        snapshot={gitPanel ? (gitSnapshotByPath.get(gitPanel.workspacePath) ?? (gitPanel.workspacePath === selectedGitWorkspacePath ? gitSnapshot : null)) : null}
-        loading={Boolean(gitPanel && gitPanel.workspacePath === selectedGitWorkspacePath && gitStatusQuery.isFetching)}
-        error={gitPanel ? (gitRealtimeErrors[gitPanel.workspacePath] ?? (gitPanel.workspacePath === selectedGitWorkspacePath && gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : null)) : null}
+        snapshot={gitPanel ? topWorkspaceGitSnapshot : null}
+        loading={Boolean(gitPanel && topWorkspaceGitStatusQuery.isFetching)}
+        error={gitPanel && topWorkspaceGitStatusQuery.error instanceof Error ? topWorkspaceGitStatusQuery.error.message : null}
         onRefresh={() => { if (gitPanel) void queryClient.invalidateQueries({ queryKey: gitStatusQueryKey(gitPanel.workspacePath) }) }}
+        onCommit={(files) => {
+          if (!gitPanel || files.length === 0) return
+          setGitCommitMessage('')
+          setGitCommitError(null)
+          setGitCommitModal({ workspacePath: gitPanel.workspacePath, sessionId: '', files })
+          setGitPanel(null)
+        }}
         onClose={closeGitPanel}
       />
-      <ManagedHostLinkRequestModal
-        open={pairingRequestsOpen}
-        requests={activePairingRequests}
-        busyID={pairingDecisionBusyID}
-        confirmations={pairingConfirmations}
-        error={pairingRequestError}
-        status={pairingRequestStatus}
-        now={sidebarNow}
-        linkReviewTarget={pairingReplicationTarget}
-        onOpenChange={setPairingRequestsOpen}
-        onRefresh={refreshPairingRequests}
-        onConfirmationChange={(requestID, confirmed) => setPairingConfirmations((current) => ({ ...current, [requestID]: confirmed }))}
-        onDecision={(request, approve) => { void handlePairingDecision(request, approve) }}
-        onLinkReviewComplete={async (message: string) => {
-          setPairingReplicationTarget(null)
-          setPairingRequestError(null)
-          setPairingRequestStatus(message)
-          await queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
-        }}
-        onLinkReviewSkip={(message: string) => {
-          setPairingReplicationTarget(null)
-          setPairingRequestError(null)
-          setPairingRequestStatus(message)
-        }}
-      />
-      <DesktopNotificationsOverlay open={notificationsOpen} onOpenChange={setNotificationsOpen} />
       {pwaDebugEnabled ? <PwaLayoutDebugOverlay /> : null}
 
     </div>

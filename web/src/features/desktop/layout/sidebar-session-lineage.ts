@@ -1,4 +1,4 @@
-import type { DesktopSessionRecord } from '../types/realtime'
+import type { DesktopRunIntentRecord, DesktopSessionRecord } from '../types/realtime'
 
 export type SidebarSessionNodeKind = 'root' | 'subagent' | 'background'
 
@@ -66,22 +66,17 @@ function sessionLineageLabel(metadata: Record<string, unknown> | null): string {
   ))
 }
 
-function sessionHasFlowIdentity(metadata: Record<string, unknown> | null): boolean {
-  return metadataString(metadata, 'source').toLowerCase() === 'flow'
-    || metadataString(metadata, 'lineage_kind').toLowerCase() === 'flow'
-    || metadataString(metadata, 'flow_id') !== ''
-}
-
 function sessionHasBackgroundLineage(metadata: Record<string, unknown> | null): boolean {
   const background = metadata?.background === true
   const launchMode = metadataString(metadata, 'launch_mode').toLowerCase()
   const lineageKind = metadataString(metadata, 'lineage_kind').toLowerCase()
   const targetKind = metadataString(metadata, 'target_kind').toLowerCase()
-  return background || launchMode === 'background' || lineageKind === 'background_agent' || sessionHasFlowIdentity(metadata) || targetKind === 'background'
+  return background || launchMode === 'background' || lineageKind === 'background_agent' || targetKind === 'background'
 }
 
-function sessionBackgroundBadge(metadata: Record<string, unknown> | null): string {
-  return sessionHasFlowIdentity(metadata) ? 'flow' : 'background'
+function sessionActiveRunIntent(runIntent: DesktopRunIntentRecord | null | undefined): DesktopRunIntentRecord | null {
+  const status = runIntent?.status.trim().toLowerCase() ?? ''
+  return status === 'pending_executor' || status === 'running' ? runIntent ?? null : null
 }
 
 export function sessionBackgroundInfo(session: DesktopSessionRecord, fallbackTargetLabel = ''): SidebarSessionBackgroundInfo | null {
@@ -90,8 +85,8 @@ export function sessionBackgroundInfo(session: DesktopSessionRecord, fallbackTar
     return null
   }
   return {
-    active: session.lifecycle?.active === true || ['starting', 'running', 'blocked'].includes(session.live.status),
-    badge: sessionBackgroundBadge(metadata),
+    active: Boolean(sessionActiveRunIntent(session.runIntent)),
+    badge: 'background',
     targetLabel: firstNonEmpty(
       fallbackTargetLabel,
       metadataString(metadata, 'swarm_target_name'),
@@ -105,22 +100,22 @@ export function sessionChildDescriptor(session: DesktopSessionRecord): SidebarSe
   const metadata = normalizeMetadataRecord(session.metadata)
   const parentSessionID = sessionParentSessionID(session)
   const assignmentLabel = metadataString(metadata, 'assignment_label')
-  if (!parentSessionID) {
+  const lineageKind = metadataString(metadata, 'lineage_kind').toLowerCase()
+  // A managed deployment is a canonical conversation in its own right. Keep
+  // parent_session_id as durable provenance, but do not present the deployed
+  // session as an agent child of the conversation that launched it.
+  if (!parentSessionID || lineageKind === 'session_deploy') {
     return { kind: 'root', label: null, assignmentLabel: assignmentLabel || null }
   }
   const requestedSubagent = metadataString(metadata, 'requested_subagent')
   const resolvedSubagent = metadataString(metadata, 'subagent')
-  const lineageKind = metadataString(metadata, 'lineage_kind').toLowerCase()
   const lineageLabel = sessionLineageLabel(metadata)
   const subagent = resolvedSubagent || requestedSubagent
-  if (sessionHasFlowIdentity(metadata)) {
-    return { kind: 'background', label: 'flow', assignmentLabel: assignmentLabel || null }
-  }
   if (subagent || lineageKind === 'delegated_subagent') {
     return { kind: 'subagent', label: lineageLabel || '@subagent', assignmentLabel: assignmentLabel || null }
   }
   if (sessionHasBackgroundLineage(metadata)) {
-    return { kind: 'background', label: sessionBackgroundBadge(metadata), assignmentLabel: assignmentLabel || null }
+    return { kind: 'background', label: 'background', assignmentLabel: assignmentLabel || null }
   }
   if (lineageLabel) {
     return { kind: lineageLabel.startsWith('@') ? 'subagent' : 'background', label: lineageLabel, assignmentLabel: assignmentLabel || null }

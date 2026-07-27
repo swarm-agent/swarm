@@ -41,9 +41,12 @@ func (p *ChatPage) drawHeader(s tcell.Screen, rect Rect) {
 	}
 
 	todoBadge := formatAgentTodoBadge(p.meta)
-	rightParts := make([]string, 0, 2)
+	rightParts := make([]string, 0, 3)
 	if todoBadge != "" {
 		rightParts = append(rightParts, todoBadge)
+	}
+	if branch := chatHeaderBranchLabel(p.meta.Branch); branch != "" {
+		rightParts = append(rightParts, branch)
 	}
 	if status != "" {
 		rightParts = append(rightParts, status)
@@ -59,6 +62,14 @@ func (p *ChatPage) drawHeader(s tcell.Screen, rect Rect) {
 	if rightW > 0 && textW > rightW+2 {
 		DrawTextRight(s, textX+textW-1, rect.Y, rightW, statusStyle, right)
 	}
+}
+
+func chatHeaderBranchLabel(branch string) string {
+	branch = strings.TrimSpace(branch)
+	if branch == "" || branch == "-" {
+		return ""
+	}
+	return "branch " + clampEllipsis(branch, 32)
 }
 
 func formatAgentTodoBadge(meta ChatSessionMeta) string {
@@ -173,66 +184,24 @@ func (p *ChatPage) permissionComposerHeight(width, availableHeight int) int {
 	return height
 }
 
-type footerToken struct {
-	Text   string
-	Style  tcell.Style
-	Action string
-}
-
 func (p *ChatPage) drawFooterBar(s tcell.Screen, rect Rect) {
-	if rect.H <= 0 || rect.W <= 0 {
-		return
-	}
-	if rect.H >= 2 {
-		DrawHLine(s, rect.X, rect.Y, rect.W, p.theme.Border)
-	}
-
-	textX := rect.X
-	textW := rect.W
-	if rect.W > 2 {
-		textX = rect.X + 1
-		textW = rect.W - 2
-	}
-	if textW < 1 {
-		textX = rect.X
-		textW = rect.W
-	}
-
-	lineY := rect.Y
-	if rect.H >= 2 {
-		lineY = rect.Y + 1
-	}
 	p.footerTargets = p.footerTargets[:0]
-
-	right := clampEllipsis(p.footerRightLine(28), 28)
-	rightW := utf8.RuneCountInString(right)
-	leftW := textW
-	if rightW > 0 && leftW > rightW+2 {
-		leftW -= rightW + 2
-	}
-
-	tokens := p.footerSettingsTokens()
-	drawFooterTokenRowWithTargets(s, textX, lineY, leftW, tokens, func(rect Rect, token footerToken) {
+	drawUnifiedFooterBar(s, p.theme, rect, p.chatFooterState(), func(rect Rect, token footerToken) {
 		if token.Action == "" {
 			return
 		}
 		p.footerTargets = append(p.footerTargets, clickTarget{Rect: rect, Action: token.Action})
 	})
-	if rightW > 0 && textW > rightW+2 {
-		DrawTextRight(s, textX+textW-1, lineY, rightW, p.theme.Secondary, right)
-	}
 }
 
 func chatDisplayedMode(meta ChatSessionMeta, sessionMode string) string {
-	if meta.AgentRuntimeKnown {
-		if meta.AgentExitPlanMode {
-			return normalizeSessionMode(sessionMode)
-		}
+	mode := normalizeSessionMode(sessionMode)
+	if meta.AgentRuntimeKnown && !meta.AgentExitPlanMode {
 		if setting := normalizeAgentExecutionSetting(meta.AgentExecutionSetting); setting != "" {
 			return setting
 		}
 	}
-	return normalizeSessionMode(sessionMode)
+	return mode
 }
 
 func normalizeAgentExecutionSetting(setting string) string {
@@ -247,22 +216,28 @@ func normalizeAgentExecutionSetting(setting string) string {
 }
 
 func (p *ChatPage) footerSettingsTokens() []footerToken {
-	swarmLabel := p.activeSwarmFooterLabel()
-	if p.swarmNotificationCount > 0 {
-		swarmLabel = fmt.Sprintf("%s !%d", swarmLabel, p.swarmNotificationCount)
+	return footerTokensFromState(p.theme, p.chatFooterState())
+}
+
+func (p *ChatPage) chatFooterState() FooterState {
+	return FooterState{
+		RouteLabel:        p.activeSwarmFooterLabel(),
+		NotificationCount: p.swarmNotificationCount,
+		DisplayedMode:     chatDisplayedMode(p.meta, p.sessionMode),
+		Agent:             strings.TrimSpace(p.meta.Agent),
+		ModelLabel:        model.DisplayModelLabel(p.modelProvider, p.modelName, p.serviceTier, p.contextMode),
+		Thinking:          strings.TrimSpace(p.thinkingLevel),
+		PlanToggle:        true,
+		RightFacts:        p.chatFooterRightFacts(),
 	}
-	swarmLabel = clampSwarmNotificationLabel(swarmLabel, p.swarmNotificationCount, 20)
-	primaryStyle := styleForCurrentCellBackground(p.theme.Accent.Bold(true))
-	modeStyle := styleForCurrentCellBackground(p.theme.Secondary.Bold(true))
-	metaStyle := styleForCurrentCellBackground(p.theme.Text)
-	displayedMode := chatDisplayedMode(p.meta, p.sessionMode)
-	return []footerToken{
-		{Text: swarmLabel, Style: primaryStyle, Action: "cycle-route"},
-		{Text: displayedMode, Style: modeStyle},
-		{Text: "[a:" + clampEllipsis(emptyValue(strings.TrimSpace(p.meta.Agent), "swarm"), 12) + "]", Style: metaStyle, Action: "open-agents-modal"},
-		{Text: "[m:" + clampEllipsis(model.DisplayModelLabel(p.modelProvider, p.modelName, p.serviceTier, p.contextMode), 24) + "]", Style: metaStyle, Action: "open-models-modal"},
-		{Text: "[t:" + clampEllipsis(emptyValue(strings.TrimSpace(p.thinkingLevel), "-"), 10) + "]", Style: metaStyle, Action: "cycle-thinking"},
+}
+
+func (p *ChatPage) chatFooterRightFacts() []string {
+	segments := make([]string, 0, 1)
+	if usage := strings.TrimSpace(p.footerContextUsageLabel()); usage != "" {
+		segments = append(segments, usage)
 	}
+	return segments
 }
 
 func (p *ChatPage) activeSwarmFooterLabel() string {
@@ -271,45 +246,6 @@ func (p *ChatPage) activeSwarmFooterLabel() string {
 		label = strings.TrimSpace(p.swarmName)
 	}
 	return emptyValue(label, "Local")
-}
-
-func drawFooterTokenRow(s tcell.Screen, x, y, maxWidth int, tokens []footerToken) {
-	drawFooterTokenRowWithTargets(s, x, y, maxWidth, tokens, nil)
-}
-
-func drawFooterTokenRowWithTargets(s tcell.Screen, x, y, maxWidth int, tokens []footerToken, register func(Rect, footerToken)) {
-	if maxWidth <= 0 || len(tokens) == 0 {
-		return
-	}
-	selected := make([]footerToken, 0, len(tokens))
-	used := 0
-	for _, token := range tokens {
-		label := " " + strings.TrimSpace(token.Text) + " "
-		if strings.TrimSpace(label) == "" {
-			continue
-		}
-		width := utf8.RuneCountInString(label)
-		if len(selected) > 0 {
-			width++
-		}
-		if used+width > maxWidth {
-			break
-		}
-		selected = append(selected, footerToken{Text: label, Style: token.Style, Action: token.Action})
-		used += width
-	}
-	cx := x
-	for i, token := range selected {
-		if i > 0 {
-			cx++
-		}
-		DrawText(s, cx, y, maxWidth-(cx-x), token.Style, token.Text)
-		width := utf8.RuneCountInString(token.Text)
-		if register != nil && token.Action != "" {
-			register(Rect{X: cx, Y: y, W: width, H: 1}, token)
-		}
-		cx += width
-	}
 }
 
 func (p *ChatPage) footerSettingsLine(maxWidth int) string {
@@ -335,9 +271,6 @@ func (p *ChatPage) footerWorkspaceLine(maxWidth int) string {
 	cwd := clampTail(emptyValue(strings.TrimSpace(p.meta.Path), "."), 42)
 
 	segments := []string{fmt.Sprintf("workspace %s", workspace)}
-	if p.meta.WorktreeEnabled {
-		segments = append(segments, "wt on")
-	}
 	if p.meta.BypassPermissions {
 		segments = append(segments, "bypass permissions")
 	}
@@ -364,9 +297,6 @@ func (p *ChatPage) footerInfoLine(maxWidth int) string {
 		if plan != "" {
 			segments = append(segments, clampEllipsis(plan, 22))
 		}
-		if p.meta.WorktreeEnabled {
-			segments = append(segments, "wt:on")
-		}
 		segments = append(segments, branch, cwd)
 		line := strings.Join(segments, "  |  ")
 		return clampEllipsis(line, maxWidth)
@@ -375,9 +305,6 @@ func (p *ChatPage) footerInfoLine(maxWidth int) string {
 	segments := []string{swarmName, fmt.Sprintf("mode %s", mode), fmt.Sprintf("workspace %s", workspace)}
 	if p.meta.BypassPermissions {
 		segments = append(segments, "bypass permissions")
-	}
-	if p.meta.WorktreeEnabled {
-		segments = append(segments, "wt on")
 	}
 	segments = append(segments, fmt.Sprintf("branch %s", branch), fmt.Sprintf("cwd %s", cwd))
 	line := strings.Join(segments, "  |  ")
@@ -440,14 +367,7 @@ func (p *ChatPage) footerContextUsageLabel() string {
 }
 
 func (p *ChatPage) footerRightLine(maxWidth int) string {
-	segments := make([]string, 0, 2)
-	if p.meta.WorktreeEnabled {
-		segments = append(segments, "wt on")
-	}
-	if usage := strings.TrimSpace(p.footerContextUsageLabel()); usage != "" {
-		segments = append(segments, usage)
-	}
-	return clampEllipsis(strings.Join(segments, "  "), maxWidth)
+	return p.chatFooterState().rightLine(maxWidth)
 }
 
 func (p *ChatPage) pulseFrame() string {

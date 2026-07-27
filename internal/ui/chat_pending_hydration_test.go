@@ -12,6 +12,9 @@ import (
 type chatPendingHydrationBackendStub struct {
 	recent         []ChatPermissionRecord
 	pending        []ChatPermissionRecord
+	setModeResult  string
+	preference     [5]string
+	contextWindow  int
 	listCalls      int
 	listLimit      int
 	pendingCalls   int
@@ -33,11 +36,14 @@ func (s *chatPendingHydrationBackendStub) GetSessionMode(context.Context, string
 }
 
 func (s *chatPendingHydrationBackendStub) SetSessionMode(context.Context, string, string) (string, error) {
+	if strings.TrimSpace(s.setModeResult) != "" {
+		return s.setModeResult, nil
+	}
 	return "auto", nil
 }
 
 func (s *chatPendingHydrationBackendStub) GetSessionPreference(context.Context, string) (string, string, string, string, string, int, error) {
-	return "", "", "", "", "", 0, nil
+	return s.preference[0], s.preference[1], s.preference[2], s.preference[3], s.preference[4], s.contextWindow, nil
 }
 
 func (s *chatPendingHydrationBackendStub) SetSessionPreference(context.Context, string, string, string, string, string, string) (string, string, string, string, string, int, error) {
@@ -100,12 +106,39 @@ func (s *chatPendingHydrationBackendStub) StopRun(context.Context, string, strin
 	return nil
 }
 
-func (s *chatPendingHydrationBackendStub) RunTurn(context.Context, string, ChatRunRequest) (ChatRunResponse, error) {
-	return ChatRunResponse{}, nil
-}
+func TestChatPageModeSwitchRefreshesEffectiveModelState(t *testing.T) {
+	backend := &chatPendingHydrationBackendStub{
+		setModeResult: "auto",
+		preference:    [5]string{"codex", "auto-model", "medium", "fast", "session"},
+		contextWindow: 240000,
+	}
+	page := NewChatPage(ChatPageOptions{
+		Backend:        backend,
+		SessionID:      "session-1",
+		SessionMode:    "plan",
+		AuthConfigured: true,
+		ModelProvider:  "codex",
+		ModelName:      "plan-model",
+		ThinkingLevel:  "xhigh",
+	})
 
-func (s *chatPendingHydrationBackendStub) RunTurnStream(context.Context, string, ChatRunRequest, func(ChatRunStreamEvent)) (ChatRunResponse, error) {
-	return ChatRunResponse{}, nil
+	page.queueSetMode("auto", false)
+	deadline := time.Now().Add(2 * time.Second)
+	for page.SessionMode() != "auto" && time.Now().Before(deadline) {
+		page.drainPermissionActions()
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if got := page.SessionMode(); got != "auto" {
+		t.Fatalf("SessionMode = %q, want auto", got)
+	}
+	provider, model, thinking, tier, contextMode := page.ModelState()
+	if provider != "codex" || model != "auto-model" || thinking != "medium" || tier != "fast" || contextMode != "session" {
+		t.Fatalf("ModelState = (%q, %q, %q, %q, %q), want auto-mode preference", provider, model, thinking, tier, contextMode)
+	}
+	if page.contextWindow != 240000 {
+		t.Fatalf("contextWindow = %d, want 240000", page.contextWindow)
+	}
 }
 
 func TestChatPageInitialHydrationMergesDedicatedPendingPermissionsIntoConversation(t *testing.T) {
@@ -172,6 +205,16 @@ func TestChatPageInitialHydrationMergesDedicatedPendingPermissionsIntoConversati
 	if page.pendingPerms[0].ID != pending.ID {
 		t.Fatalf("pendingPerms[0].ID = %q, want %q", page.pendingPerms[0].ID, pending.ID)
 	}
+	if !page.OrdinaryPermissionComposerVisible() {
+		t.Fatal("hydrated Bash permission did not activate the inline permission composer")
+	}
+	if page.planExitModalActive() || page.planUpdateModalActive() {
+		t.Fatal("hydrated Bash permission activated a centered plan modal")
+	}
+	indexes := page.ordinaryPermissionIndexes()
+	if len(indexes) != 1 || page.pendingPerms[indexes[0]].ID != pending.ID {
+		t.Fatalf("ordinary permission indexes = %#v, want hydrated Bash permission", indexes)
+	}
 
 	foundTimeline := false
 	for _, item := range page.timeline {
@@ -182,6 +225,46 @@ func TestChatPageInitialHydrationMergesDedicatedPendingPermissionsIntoConversati
 	}
 	if !foundTimeline {
 		t.Fatalf("pending permission was not rebuilt into the conversation timeline; timeline=%#v", page.timeline)
+	}
+}
+
+func TestChatPageInitialHydrationRoutesPlanPermissionToStandaloneModal(t *testing.T) {
+	backend := &chatPendingHydrationBackendStub{pending: []ChatPermissionRecord{
+		planPermissionTestRecord("pending-plan", "plan_manage", "plan_new_request"),
+	}}
+	page := NewChatPage(ChatPageOptions{Backend: backend, SessionID: "session-1", AuthConfigured: true, SessionMode: "auto"})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for page.permissionsLoading && time.Now().Before(deadline) {
+		page.drainPermissionLoads()
+		time.Sleep(5 * time.Millisecond)
+	}
+	page.drainPermissionLoads()
+	if !page.planPermissionModalActive() || page.planPermission != "pending-plan" {
+		t.Fatalf("hydrated plan modal = active %v permission %q", page.planPermissionModalActive(), page.planPermission)
+	}
+	if page.planExitModalActive() || page.planUpdateModalActive() || page.planEditorModalActive() {
+		t.Fatal("hydrated V3 plan permission activated a legacy plan modal")
+	}
+}
+
+func TestChatPageInitialHydrationRoutesManageSessionsPermissionToDedicatedModal(t *testing.T) {
+	backend := &chatPendingHydrationBackendStub{pending: []ChatPermissionRecord{
+		manageSessionsPermissionTestRecord("pending-sessions", "session_archive"),
+	}}
+	page := NewChatPage(ChatPageOptions{Backend: backend, SessionID: "session-1", AuthConfigured: true, SessionMode: "auto"})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for page.permissionsLoading && time.Now().Before(deadline) {
+		page.drainPermissionLoads()
+		time.Sleep(5 * time.Millisecond)
+	}
+	page.drainPermissionLoads()
+	if !page.manageSessionsPermissionModalActive() || page.manageSessionsPermission != "pending-sessions" {
+		t.Fatalf("hydrated manage-sessions modal = active %v permission %q", page.manageSessionsPermissionModalActive(), page.manageSessionsPermission)
+	}
+	if page.OrdinaryPermissionComposerVisible() || page.planPermissionModalActive() {
+		t.Fatal("hydrated manage-sessions permission activated another approval surface")
 	}
 }
 

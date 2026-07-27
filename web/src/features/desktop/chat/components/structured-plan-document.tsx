@@ -10,6 +10,7 @@ import {
   Circle,
   PlayCircle,
   ListTodo,
+  ChevronRight,
   type LucideIcon
 } from 'lucide-react'
 
@@ -26,6 +27,51 @@ export interface StructuredPlanInfo {
   validationStrategy: string
 }
 
+export interface StructuredPlanExecutionPolicy {
+  mode: string
+  shape: string
+  followupCheckpointPolicy: string
+}
+
+export interface StructuredPlanExecutionState {
+  status: string
+  activeAttemptId: string
+  parentSessionId: string
+  currentSessionId: string
+  currentRunId: string
+  lastCheckpointId: string
+  lastAttemptId: string
+  lastOutcome: string
+  startedAt: number
+  updatedAt: number
+  completedAt: number
+}
+
+export interface StructuredPlanCheckpointReview {
+  status: string
+  reviewerId: string
+  reviewerType: string
+  result: string
+  notes: string
+  reviewedAt: number
+}
+
+export interface StructuredPlanCheckpointAttempt {
+  id: string
+  checkpointId: string
+  status: string
+  outcome: string
+  runId: string
+  sessionId: string
+  parentSessionId: string
+  startedAt: number
+  completedAt: number
+  report: string
+  result: string
+  changedFiles: string[]
+  validation: string[]
+}
+
 export interface StructuredPlanCheckpoint {
   id: string
   title: string
@@ -38,6 +84,13 @@ export interface StructuredPlanCheckpoint {
   result: string
   changedFiles: string[]
   validation: string[]
+  attemptId: string
+  runId: string
+  sessionId: string
+  startedAt: number
+  completedAt: number
+  review: StructuredPlanCheckpointReview | null
+  attempts: StructuredPlanCheckpointAttempt[]
   order: number
 }
 
@@ -48,10 +101,45 @@ export interface StructuredPlanDocument {
   schemaVersion: string
   revisionId: string
   info: StructuredPlanInfo
+  executionPolicy: StructuredPlanExecutionPolicy | null
+  executionState: StructuredPlanExecutionState | null
   checkpoints: StructuredPlanCheckpoint[]
   activeCheckpointId: string
   renderedText: string
   displayText: string
+}
+
+export interface StructuredPlanReviewCheckpoint {
+  id: string
+  order: number
+  title: string
+  objective: string
+  tasks: string[]
+  acceptanceCriteria: string[]
+}
+
+export interface StructuredPlanReviewProjection {
+  title: string
+  objective: string
+  checkpoints: StructuredPlanReviewCheckpoint[]
+  /** The unabridged normalized document remains the authority for expansion and agent context. */
+  authoritativeDocument: StructuredPlanDocument
+}
+
+export function structuredPlanReviewProjection(document: StructuredPlanDocument): StructuredPlanReviewProjection {
+  return {
+    title: document.title || document.info.goal || 'Plan proposal',
+    objective: document.info.goal || document.title,
+    checkpoints: document.checkpoints.map((checkpoint) => ({
+      id: checkpoint.id,
+      order: checkpoint.order,
+      title: checkpoint.title || checkpoint.objective || checkpoint.id || 'Untitled checkpoint',
+      objective: checkpoint.objective,
+      tasks: checkpoint.tasks,
+      acceptanceCriteria: checkpoint.acceptanceCriteria,
+    })),
+    authoritativeDocument: document,
+  }
 }
 
 function objectValue(value: unknown): Record<string, unknown> | null {
@@ -107,6 +195,72 @@ function numberValue(record: Record<string, unknown>, ...keys: string[]): number
   return 0
 }
 
+function normalizeStructuredPlanExecutionPolicy(value: unknown): StructuredPlanDocument['executionPolicy'] {
+  const record = objectValue(value)
+  if (!record) return null
+  const policy = {
+    mode: stringValue(record, 'mode'),
+    shape: stringValue(record, 'shape'),
+    followupCheckpointPolicy: stringValue(record, 'followupCheckpointPolicy', 'followup_checkpoint_policy'),
+  }
+  return policy.mode || policy.shape || policy.followupCheckpointPolicy ? policy : null
+}
+
+function normalizeStructuredPlanExecutionState(value: unknown): StructuredPlanDocument['executionState'] {
+  const record = objectValue(value)
+  if (!record) return null
+  const state = {
+    status: stringValue(record, 'status'),
+    activeAttemptId: stringValue(record, 'activeAttemptId', 'active_attempt_id'),
+    parentSessionId: stringValue(record, 'parentSessionId', 'parent_session_id'),
+    currentSessionId: stringValue(record, 'currentSessionId', 'current_session_id'),
+    currentRunId: stringValue(record, 'currentRunId', 'current_run_id'),
+    lastCheckpointId: stringValue(record, 'lastCheckpointId', 'last_checkpoint_id'),
+    lastAttemptId: stringValue(record, 'lastAttemptId', 'last_attempt_id'),
+    lastOutcome: stringValue(record, 'lastOutcome', 'last_outcome'),
+    startedAt: numberValue(record, 'startedAt', 'started_at'),
+    updatedAt: numberValue(record, 'updatedAt', 'updated_at'),
+    completedAt: numberValue(record, 'completedAt', 'completed_at'),
+  }
+  return state.status || state.activeAttemptId || state.currentRunId || state.lastCheckpointId ? state : null
+}
+
+function normalizeStructuredPlanCheckpointReview(value: unknown): StructuredPlanCheckpoint['review'] {
+  const record = objectValue(value)
+  if (!record) return null
+  const review = {
+    status: stringValue(record, 'status'),
+    reviewerId: stringValue(record, 'reviewerId', 'reviewer_id'),
+    reviewerType: stringValue(record, 'reviewerType', 'reviewer_type'),
+    result: stringValue(record, 'result'),
+    notes: stringValue(record, 'notes'),
+    reviewedAt: numberValue(record, 'reviewedAt', 'reviewed_at'),
+  }
+  return review.status || review.reviewerId || review.result || review.notes || review.reviewedAt > 0 ? review : null
+}
+
+function normalizeStructuredPlanCheckpointAttempts(value: unknown): StructuredPlanCheckpoint['attempts'] {
+  if (!Array.isArray(value)) return []
+  return value.map((entry) => {
+    const record = objectValue(entry) ?? {}
+    return {
+      id: stringValue(record, 'id'),
+      checkpointId: stringValue(record, 'checkpointId', 'checkpoint_id'),
+      status: stringValue(record, 'status'),
+      outcome: stringValue(record, 'outcome'),
+      runId: stringValue(record, 'runId', 'run_id'),
+      sessionId: stringValue(record, 'sessionId', 'session_id'),
+      parentSessionId: stringValue(record, 'parentSessionId', 'parent_session_id'),
+      startedAt: numberValue(record, 'startedAt', 'started_at'),
+      completedAt: numberValue(record, 'completedAt', 'completed_at'),
+      report: stringValue(record, 'report'),
+      result: stringValue(record, 'result'),
+      changedFiles: stringArrayValue(record, 'changedFiles', 'changed_files'),
+      validation: stringArrayValue(record, 'validation'),
+    }
+  })
+}
+
 export function normalizeStructuredPlanDocument(value: unknown): StructuredPlanDocument | null {
   const record = objectValue(value)
   if (!record) {
@@ -132,6 +286,13 @@ export function normalizeStructuredPlanDocument(value: unknown): StructuredPlanD
         result: stringValue(checkpoint, 'result'),
         changedFiles: stringArrayValue(checkpoint, 'changedFiles', 'changed_files'),
         validation: stringArrayValue(checkpoint, 'validation'),
+        attemptId: stringValue(checkpoint, 'attemptId', 'attempt_id'),
+        runId: stringValue(checkpoint, 'runId', 'run_id'),
+        sessionId: stringValue(checkpoint, 'sessionId', 'session_id'),
+        startedAt: numberValue(checkpoint, 'startedAt', 'started_at'),
+        completedAt: numberValue(checkpoint, 'completedAt', 'completed_at'),
+        review: normalizeStructuredPlanCheckpointReview(checkpoint.review),
+        attempts: normalizeStructuredPlanCheckpointAttempts(checkpoint.attempts),
         order: numberValue(checkpoint, 'order') || index + 1,
       }
     })
@@ -156,6 +317,8 @@ export function normalizeStructuredPlanDocument(value: unknown): StructuredPlanD
       successCriteria: stringArrayValue(infoRecord, 'successCriteria', 'success_criteria'),
       validationStrategy: stringValue(infoRecord, 'validationStrategy', 'validation_strategy', 'validation'),
     },
+    executionPolicy: normalizeStructuredPlanExecutionPolicy(record.executionPolicy ?? record.execution_policy),
+    executionState: normalizeStructuredPlanExecutionState(record.executionState ?? record.execution_state),
     checkpoints,
     activeCheckpointId: stringValue(record, 'activeCheckpointId', 'active_checkpoint_id'),
     renderedText: rawStringValue(record, 'renderedText', 'rendered_text'),
@@ -196,6 +359,34 @@ export function structuredPlanCheckpointToWire(checkpoint: StructuredPlanCheckpo
     result: checkpoint.result,
     changed_files: checkpoint.changedFiles,
     validation: checkpoint.validation,
+    attempt_id: checkpoint.attemptId,
+    run_id: checkpoint.runId,
+    session_id: checkpoint.sessionId,
+    started_at: checkpoint.startedAt,
+    completed_at: checkpoint.completedAt,
+    review: checkpoint.review ? {
+      status: checkpoint.review.status,
+      reviewer_id: checkpoint.review.reviewerId,
+      reviewer_type: checkpoint.review.reviewerType,
+      result: checkpoint.review.result,
+      notes: checkpoint.review.notes,
+      reviewed_at: checkpoint.review.reviewedAt,
+    } : undefined,
+    attempts: checkpoint.attempts.map((attempt) => ({
+      id: attempt.id,
+      checkpoint_id: attempt.checkpointId,
+      status: attempt.status,
+      outcome: attempt.outcome,
+      run_id: attempt.runId,
+      session_id: attempt.sessionId,
+      parent_session_id: attempt.parentSessionId,
+      started_at: attempt.startedAt,
+      completed_at: attempt.completedAt,
+      report: attempt.report,
+      result: attempt.result,
+      changed_files: attempt.changedFiles,
+      validation: attempt.validation,
+    })),
     order: checkpoint.order,
   }
 }
@@ -208,6 +399,24 @@ export function structuredPlanDocumentToWire(document: StructuredPlanDocument): 
     schema_version: document.schemaVersion,
     revision_id: document.revisionId,
     info: structuredPlanInfoToWire(document.info),
+    execution_policy: document.executionPolicy ? {
+      mode: document.executionPolicy.mode,
+      shape: document.executionPolicy.shape,
+      followup_checkpoint_policy: document.executionPolicy.followupCheckpointPolicy,
+    } : undefined,
+    execution_state: document.executionState ? {
+      status: document.executionState.status,
+      active_attempt_id: document.executionState.activeAttemptId,
+      parent_session_id: document.executionState.parentSessionId,
+      current_session_id: document.executionState.currentSessionId,
+      current_run_id: document.executionState.currentRunId,
+      last_checkpoint_id: document.executionState.lastCheckpointId,
+      last_attempt_id: document.executionState.lastAttemptId,
+      last_outcome: document.executionState.lastOutcome,
+      started_at: document.executionState.startedAt,
+      updated_at: document.executionState.updatedAt,
+      completed_at: document.executionState.completedAt,
+    } : undefined,
     checkpoints: document.checkpoints.map((checkpoint) => structuredPlanCheckpointToWire(checkpoint)),
     active_checkpoint_id: document.activeCheckpointId,
     rendered_text: document.renderedText,
@@ -443,16 +652,53 @@ function CheckpointsList({ document, activeID }: { document: StructuredPlanDocum
   )
 }
 
+export function StructuredPlanReviewView({ document, className }: { document: StructuredPlanDocument; className?: string }) {
+  const review = structuredPlanReviewProjection(document)
+  return (
+    <div className={cn('grid gap-4', className)}>
+      <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4 sm:p-5">
+        <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Objective</div>
+        <h3 className="mt-1 text-lg font-semibold text-[var(--app-text)]">{review.title}</h3>
+        {review.objective && review.objective !== review.title ? (
+          <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--app-text)]">{review.objective}</p>
+        ) : null}
+      </section>
+      <section className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)]">
+        <div className="flex items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
+          <div className="flex items-center gap-2"><ListTodo className="size-4 text-[var(--app-primary)]" /><h3 className="font-semibold text-[var(--app-text)]">Checkpoints</h3></div>
+          <span className="text-xs text-[var(--app-text-muted)]">{review.checkpoints.length}</span>
+        </div>
+        {review.checkpoints.length ? review.checkpoints.map((checkpoint, index) => (
+          <details key={checkpoint.id || `${checkpoint.order}:${checkpoint.title}`} className="group border-b border-[var(--app-border)] last:border-b-0">
+            <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--app-focus-ring)]">
+              <Circle className="size-4 shrink-0 text-[var(--app-text-muted)]" />
+              <span className="min-w-0 flex-1 text-sm font-medium text-[var(--app-text)]"><span className="mr-1.5 text-[var(--app-text-muted)]">{index + 1}.</span>{checkpoint.title}</span>
+              <ChevronRight className="size-4 shrink-0 text-[var(--app-text-muted)] transition-transform group-open:rotate-90" />
+            </summary>
+            <div className="grid gap-3 px-4 pb-4 pl-11">
+              <CheckpointTextSection title="Objective" value={checkpoint.objective} />
+              <CheckpointSection title="Tasks" values={checkpoint.tasks} />
+              <CheckpointSection title="Acceptance" values={checkpoint.acceptanceCriteria} />
+            </div>
+          </details>
+        )) : <p className="px-4 py-4 text-sm text-[var(--app-text-muted)]">No checkpoints are defined.</p>}
+      </section>
+    </div>
+  )
+}
+
 export function StructuredPlanDocumentView({
   document,
   emptyText = 'No structured plan document was provided.',
   className,
   compact = false,
+  review = false,
 }: {
   document: StructuredPlanDocument | null
   emptyText?: string
   className?: string
   compact?: boolean
+  review?: boolean
 }) {
   if (!document) {
     return (
@@ -463,6 +709,10 @@ export function StructuredPlanDocumentView({
   }
 
   const activeID = document.activeCheckpointId.trim()
+
+  if (review) {
+    return <StructuredPlanReviewView document={document} className={className} />
+  }
 
   if (compact) {
     return (

@@ -1,6 +1,7 @@
 package localupdate
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -41,5 +42,30 @@ func TestUpdateJobStatusRoundTripsHostPhases(t *testing.T) {
 	}
 	if filepath.Clean(UpdateJobStatusPath(dataDir)) != filepath.Join(dataDir, updateJobStatusRelativePath) {
 		t.Fatalf("unexpected update status path %q", UpdateJobStatusPath(dataDir))
+	}
+	info, err := os.Stat(UpdateJobStatusPath(dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("status mode = %o, want 600", got)
+	}
+}
+
+func TestUpdateJobStatusRejectsStaleWriter(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := WriteUpdateJobStatus(dataDir, UpdateJobStatus{ID: "new-job", Status: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	written, err := WriteUpdateJobStatusIfCurrent(dataDir, "old-job", UpdateJobStatus{ID: "old-job", Status: "failed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if written {
+		t.Fatal("stale writer unexpectedly replaced current job")
+	}
+	got, ok, err := ReadUpdateJobStatusPath(UpdateJobStatusPath(dataDir))
+	if err != nil || !ok || got.ID != "new-job" || got.Status != "running" {
+		t.Fatalf("status = %#v ok=%v err=%v", got, ok, err)
 	}
 }

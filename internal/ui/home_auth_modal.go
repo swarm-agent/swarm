@@ -145,7 +145,7 @@ type authModalState struct {
 func (p *HomePage) ShowAuthModal() {
 	p.authModal.Visible = true
 	if p.authModal.Focus < authModalFocusProviders || p.authModal.Focus > authModalFocusCredentialSearch {
-		p.authModal.Focus = authModalFocusCredentials
+		p.authModal.Focus = authModalFocusProviders
 	}
 	p.authModal.ConfirmDelete = false
 }
@@ -155,6 +155,11 @@ func (p *HomePage) OpenAuthModalAPIKeyEditor(providerID string) {
 	p.ShowAuthModal()
 	p.authModal.ProviderSearch = ""
 	p.authModal.CredentialSearch = ""
+	if providerID == "codex" {
+		p.authModal.Focus = authModalFocusProviders
+		p.triggerProviderLogin(providerID)
+		return
+	}
 
 	if providerID != "" {
 		idx := p.findAuthProviderIndex(providerID)
@@ -346,6 +351,16 @@ func (p *HomePage) PopAuthModalAction() (AuthModalAction, bool) {
 }
 
 func (p *HomePage) handleAuthModalKey(ev *tcell.EventKey) {
+	if p.onboarding.Visible {
+		if p.keybinds.Match(ev, KeybindEditorClose) {
+			p.authModal.Visible = false
+			p.authModal.Editor = nil
+			p.authModal.ConfirmDelete = false
+			p.HideOnboarding()
+			p.statusLine = "Provider auth skipped. Needs auth remains until /auth is completed."
+			return
+		}
+	}
 	if p.authModal.Editor != nil {
 		p.handleAuthModalEditorKey(ev)
 		return
@@ -353,6 +368,14 @@ func (p *HomePage) handleAuthModalKey(ev *tcell.EventKey) {
 
 	switch {
 	case p.keybinds.Match(ev, KeybindModalClose):
+		if p.onboarding.Visible {
+			p.authModal.Visible = false
+			p.authModal.Editor = nil
+			p.authModal.ConfirmDelete = false
+			p.HideOnboarding()
+			p.statusLine = "Provider auth skipped. Needs auth remains until /auth is completed."
+			return
+		}
 		p.HideAuthModal()
 		return
 	case p.keybinds.Match(ev, KeybindModalFocusNext):
@@ -486,9 +509,15 @@ func (p *HomePage) handleAuthModalRune(ev *tcell.EventKey) {
 		})
 		p.authModal.ConfirmDelete = false
 	case p.keybinds.Match(ev, KeybindAuthNewAPI):
-		if strings.EqualFold(strings.TrimSpace(p.authContextProviderID()), "copilot") {
+		providerID := p.authContextProviderID()
+		if strings.EqualFold(strings.TrimSpace(providerID), "copilot") {
 			p.openCopilotAuthEditor("token", nil)
 			p.authModal.Status = "Advanced: add a GitHub token for Copilot. Default path is Copilot CLI sidecar via `copilot login`."
+			return
+		}
+		if strings.EqualFold(strings.TrimSpace(providerID), "codex") {
+			p.authModal.Status = "Codex supports OAuth only here. Press Enter or l for Codex OAuth, or choose OpenAI to add an API key."
+			p.authModal.Error = ""
 			return
 		}
 		p.openAuthModalEditor("api")
@@ -500,6 +529,14 @@ func (p *HomePage) handleAuthModalRune(ev *tcell.EventKey) {
 		}
 		p.openAuthModalEditor("oauth")
 	case p.keybinds.Match(ev, KeybindAuthEdit):
+		if p.authModal.Focus == authModalFocusProviders {
+			p.authModal.Focus = authModalFocusCredentials
+			p.authModal.reconcileSelections()
+			if _, ok := p.selectedAuthCredential(); !ok {
+				p.authModal.Status = "No credentials for this provider yet. Press p, then Enter to add one."
+			}
+			return
+		}
 		credential, ok := p.selectedAuthCredential()
 		if !ok {
 			p.authModal.Status = "No credential selected"
@@ -518,22 +555,13 @@ func (p *HomePage) handleAuthModalEnter() {
 	case authModalFocusProviders:
 		p.triggerProviderLogin(p.selectedAuthProviderID())
 	case authModalFocusCredentials:
-		providerID := p.authContextProviderID()
 		credential, ok := p.selectedAuthCredential()
 		if !ok {
-			if strings.EqualFold(strings.TrimSpace(providerID), "copilot") {
-				p.triggerProviderLogin(providerID)
-				return
-			}
-			p.triggerProviderLogin(providerID)
+			p.authModal.Focus = authModalFocusProviders
+			p.triggerProviderLogin(p.authContextProviderID())
 			return
 		}
-		p.enqueueAuthModalAction(AuthModalAction{
-			Kind:       AuthModalActionSetActive,
-			Provider:   credential.Provider,
-			ID:         credential.ID,
-			StatusHint: fmt.Sprintf("Setting this credential active for %s...", credential.Provider),
-		})
+		p.openAuthModalEditorForUpdate(credential)
 	}
 }
 
@@ -608,7 +636,7 @@ func (p *HomePage) triggerProviderLogin(providerID string) {
 		return
 	}
 	p.openAuthModalEditor("codex_login")
-	p.authModal.Status = "Codex auth: press Enter for browser sign-in, ←/→ to choose API key or remote, or ↑ to add an optional label first."
+	p.authModal.Status = "Codex auth: OAuth only. Press Enter for browser sign-in, ←/→ to choose browser or remote OAuth, or ↑ to add an optional label first. Use OpenAI for API-key auth."
 	p.authModal.Error = ""
 }
 
@@ -731,6 +759,39 @@ func (p *HomePage) openAuthModalEditorForUpdate(credential AuthModalCredential) 
 		return
 	}
 	p.authModal.Status = fmt.Sprintf("Editing OAuth credential for %s. You can rename this credential.", credential.Provider)
+}
+
+func (p *HomePage) appendAuthModalEditorPaste(batch string) int {
+	if batch == "" || p.authModal.Editor == nil {
+		return 0
+	}
+	editor := p.authModal.Editor
+	if editor.Selected < 0 || editor.Selected >= len(editor.Fields) {
+		return 0
+	}
+	field := &editor.Fields[editor.Selected]
+	switch editor.Mode {
+	case "codex_browser_pending":
+		return 0
+	case "codex_callback":
+		if field.Key != "callback_input" {
+			return 0
+		}
+	case "codex_login":
+		if field.Key != "label" {
+			return 0
+		}
+	case "copilot_login":
+		if field.Key != "label" && field.Key != "token" {
+			return 0
+		}
+	}
+	before := len(field.Value)
+	field.Value = appendSingleLineInput(field.Value, batch, homeMaxInputRunes)
+	if len(field.Value) <= before {
+		return 0
+	}
+	return len(field.Value) - before
 }
 
 func (p *HomePage) handleAuthModalEditorKey(ev *tcell.EventKey) {
@@ -886,8 +947,6 @@ func (p *HomePage) handleAuthModalEditorKey(ev *tcell.EventKey) {
 					field.Value = "browser"
 				case r == '2' || r == 'r' || r == 'R':
 					field.Value = "remote"
-				case r == '3' || r == 'a' || r == 'A':
-					field.Value = "api key"
 				}
 			}
 			return
@@ -936,24 +995,6 @@ func (p *HomePage) submitAuthModalEditor() {
 		method, openBrowser := normalizeCodexLoginMethod(get("method"))
 		label := get("label")
 		provider := "codex"
-		if method == "api" {
-			p.openAuthModalEditor("api")
-			if p.authModal.Editor != nil {
-				for i := range p.authModal.Editor.Fields {
-					switch p.authModal.Editor.Fields[i].Key {
-					case "provider":
-						p.authModal.Editor.Fields[i].Value = provider
-					case "label":
-						p.authModal.Editor.Fields[i].Value = label
-					case "api_key":
-						p.authModal.Editor.Selected = i
-					}
-				}
-			}
-			p.authModal.Status = "Paste Codex API key and press Enter to save."
-			p.authModal.Error = ""
-			return
-		}
 		authURL := ""
 		if p.authModal.Login != nil {
 			authURL = strings.TrimSpace(p.authModal.Login.AuthURL)
@@ -1480,6 +1521,9 @@ func (p *HomePage) drawAuthModal(s tcell.Screen) {
 	DrawBox(s, rect, p.theme.BorderActive)
 
 	title := "Auth Manager"
+	if p.onboarding.Visible {
+		title = "Provider auth setup — optional, Esc skips"
+	}
 	if p.authModal.Loading {
 		title += " [loading]"
 	}
@@ -1529,15 +1573,11 @@ func (p *HomePage) drawAuthModal(s tcell.Screen) {
 	DrawText(s, rect.X+2, providerSearchY, rect.W-4, p.theme.TextMuted, "provider search"+providerFocus+": "+p.authModal.ProviderSearch)
 	DrawText(s, rect.X+2, credentialSearchY, rect.W-4, p.theme.TextMuted, "credential search"+credentialFocus+": "+p.authModal.CredentialSearch)
 
-	providerW := 28
-	if strings.EqualFold(strings.TrimSpace(p.authContextProviderID()), "copilot") && len(p.authFilteredCredentialIndexes()) == 0 {
-		providerW = 22
-	}
-	enterHelp := "Enter login/add key/set active"
+	enterHelp := "Enter add auth from card"
 	if strings.EqualFold(strings.TrimSpace(p.authContextProviderID()), "copilot") {
 		enterHelp = "Enter/l choose Copilot auth • r/v verify"
 	}
-	help := fmt.Sprintf("Tab focus • / provider search • f credential search • %s • n/o add • e edit • Esc close", enterHelp)
+	help := fmt.Sprintf("Tab focus • / provider search • f credential search • %s • e manage selected provider credentials • Esc close", enterHelp)
 	helpLines := Wrap(help, rect.W-4)
 	if len(helpLines) == 0 {
 		helpLines = []string{""}
@@ -1549,42 +1589,12 @@ func (p *HomePage) drawAuthModal(s tcell.Screen) {
 		H: rect.H - ((credentialSearchY + 1) - rect.Y) - (len(helpLines) + 1),
 	}
 	if listRect.W >= 20 && listRect.H >= 4 {
-		compactWidth := listRect.W < 72
-		compactHeight := listRect.H < 8
-		stackedLayout := compactWidth && !compactHeight && listRect.H >= 10
-		if stackedLayout {
-			providerRows := len(p.authFilteredProviderIndexes()) + 2
-			providerH := maxInt(4, minInt(providerRows, maxInt(4, listRect.H/3)))
-			if providerH > listRect.H-5 {
-				providerH = maxInt(4, listRect.H-5)
-			}
-			credentialH := listRect.H - providerH - 1
-			if credentialH < 4 {
-				credentialH = 4
-				providerH = maxInt(4, listRect.H-credentialH-1)
-			}
-			providerRect := Rect{X: listRect.X, Y: listRect.Y, W: listRect.W, H: providerH}
-			credentialRect := Rect{X: listRect.X, Y: providerRect.Y + providerRect.H + 1, W: listRect.W, H: listRect.H - providerRect.H - 1}
-			p.drawAuthProviderPane(s, providerRect)
-			p.drawAuthCredentialPane(s, credentialRect)
-		} else if compactWidth || compactHeight {
-			if p.authModal.Focus == authModalFocusCredentials || p.authModal.Editor != nil {
-				p.drawAuthCredentialPane(s, listRect)
-			} else {
-				p.drawAuthProviderPane(s, listRect)
-			}
+		if len(p.authModal.Providers) == 0 {
+			p.drawAuthProviderPane(s, listRect)
+		} else if p.authModal.Focus == authModalFocusCredentials {
+			p.drawAuthCredentialPane(s, listRect)
 		} else {
-			if providerW > listRect.W/2 {
-				providerW = listRect.W / 2
-			}
-			providerRect := Rect{X: listRect.X, Y: listRect.Y, W: providerW, H: listRect.H}
-			credentialRect := Rect{X: providerRect.X + providerRect.W + 1, Y: listRect.Y, W: listRect.W - providerRect.W - 1, H: listRect.H}
-			if credentialRect.W < 20 {
-				credentialRect.W = 20
-			}
-
-			p.drawAuthProviderPane(s, providerRect)
-			p.drawAuthCredentialPane(s, credentialRect)
+			p.drawAuthProviderPane(s, listRect)
 		}
 	}
 	helpStartY := rect.Y + rect.H - 1 - len(helpLines)
@@ -1598,7 +1608,7 @@ func (p *HomePage) drawAuthModal(s tcell.Screen) {
 	if p.authModal.ConfirmDelete {
 		DrawText(s, rect.X+2, rect.Y+rect.H-1, rect.W-4, p.theme.Warning, "Delete is armed: press d again to confirm")
 	} else {
-		DrawText(s, rect.X+2, rect.Y+rect.H-1, rect.W-4, p.theme.TextMuted, "↑/↓ move • p providers • c credentials")
+		DrawText(s, rect.X+2, rect.Y+rect.H-1, rect.W-4, p.theme.TextMuted, "↑/↓ move cards/list • Enter add auth • e manage credentials • p cards • c credentials")
 	}
 
 	if p.authModal.Editor != nil {
@@ -1691,7 +1701,7 @@ func (p *HomePage) authModalAffectedAgentsForProvider(provider string) []string 
 
 func (p *HomePage) drawAuthProviderPane(s tcell.Screen, rect Rect) {
 	borderStyle := p.theme.Border
-	header := "Providers"
+	header := "Provider Cards"
 	if p.authModal.Focus == authModalFocusProviders {
 		borderStyle = p.theme.BorderActive
 		header += " [focus]"
@@ -1700,38 +1710,118 @@ func (p *HomePage) drawAuthProviderPane(s tcell.Screen, rect Rect) {
 	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.TextMuted, header)
 
 	matches := p.authFilteredProviderIndexes()
-	rowY := rect.Y + 1
-	availableRows := rect.H - 2
-	for i := 0; i < availableRows && i < len(matches); i++ {
-		idx := matches[i]
-		provider := p.authModal.Providers[idx]
-		prefix := "  "
-		if idx == p.authModal.SelectedProvider {
-			prefix = "> "
-		}
-		health := "ready"
-		switch {
-		case !provider.Ready:
-			health = "needs auth"
-		case !provider.Runnable:
-			if strings.Contains(strings.ToLower(strings.TrimSpace(provider.RunReason)), "search-only provider") {
-				health = "search-only"
-			} else {
-				health = "not runnable"
-			}
-		}
-		line := fmt.Sprintf("%s%s [%s]", prefix, provider.ID, health)
-		DrawText(s, rect.X+1, rowY, rect.W-2, p.theme.Text, clampEllipsis(line, rect.W-2))
-		rowY++
-	}
 	if len(matches) == 0 {
 		DrawText(s, rect.X+2, rect.Y+1, rect.W-4, p.theme.Warning, "no providers")
+		return
 	}
+
+	innerX := rect.X + 1
+	innerY := rect.Y + 1
+	innerW := rect.W - 2
+	innerH := rect.H - 2
+	if innerW < 12 || innerH < 3 {
+		return
+	}
+	columns := 1
+	gap := 1
+	if innerW >= 68 {
+		columns = 2
+	}
+	cardW := innerW
+	if columns == 2 {
+		cardW = (innerW - gap) / 2
+	}
+	cardH := 5
+	if innerH < cardH {
+		cardH = innerH
+	}
+	rowStride := cardH + 1
+	rows := 1
+	if rowStride > 0 {
+		rows = maxInt(1, (innerH+1)/rowStride)
+	}
+	visible := minInt(len(matches), rows*columns)
+	for i := 0; i < visible; i++ {
+		idx := matches[i]
+		provider := p.authModal.Providers[idx]
+		col := i % columns
+		row := i / columns
+		card := Rect{X: innerX + col*(cardW+gap), Y: innerY + row*rowStride, W: cardW, H: cardH}
+		if card.Y+card.H > rect.Y+rect.H-1 {
+			card.H = rect.Y + rect.H - 1 - card.Y
+		}
+		if card.W < 8 || card.H < 3 {
+			continue
+		}
+		cardBorder := p.theme.Border
+		textStyle := p.theme.Text
+		if idx == p.authModal.SelectedProvider {
+			cardBorder = p.theme.BorderActive
+			textStyle = p.theme.Primary
+		}
+		DrawBox(s, card, cardBorder)
+		status := authProviderStatusLabel(provider)
+		countSummary := p.authProviderCredentialCountSummary(provider.ID)
+		methodSummary := providerAuthMethodsSummary(provider)
+		if methodSummary == "" {
+			methodSummary = "default API-key route"
+		}
+		if strings.EqualFold(strings.TrimSpace(provider.ID), "codex") {
+			methodSummary = "OAuth only"
+		}
+		DrawText(s, card.X+1, card.Y+1, card.W-2, textStyle, clampEllipsis(provider.ID+" · "+status, card.W-2))
+		if card.H > 3 {
+			DrawText(s, card.X+1, card.Y+2, card.W-2, p.theme.TextMuted, clampEllipsis(countSummary, card.W-2))
+		}
+		if card.H > 4 {
+			DrawText(s, card.X+1, card.Y+3, card.W-2, p.theme.TextMuted, clampEllipsis(methodSummary, card.W-2))
+		}
+	}
+	if hidden := len(matches) - visible; hidden > 0 {
+		DrawText(s, rect.X+2, rect.Y+rect.H-1, rect.W-4, p.theme.TextMuted, fmt.Sprintf("%d more providers; use search to narrow", hidden))
+	}
+}
+
+func authProviderStatusLabel(provider AuthModalProvider) string {
+	status := "ready"
+	switch {
+	case !provider.Ready:
+		status = "needs auth"
+	case !provider.Runnable:
+		if strings.Contains(strings.ToLower(strings.TrimSpace(provider.RunReason)), "search-only provider") {
+			status = "search-only"
+		} else {
+			status = "not runnable"
+		}
+	}
+	return status
+}
+
+func (p *HomePage) authProviderCredentialCountSummary(providerID string) string {
+	providerID = strings.ToLower(strings.TrimSpace(providerID))
+	total := 0
+	active := 0
+	for _, credential := range p.authModal.Credentials {
+		if providerID != "" && !strings.EqualFold(strings.TrimSpace(credential.Provider), providerID) {
+			continue
+		}
+		total++
+		if credential.Active {
+			active++
+		}
+	}
+	if total == 0 {
+		return "0 credentials"
+	}
+	if active == 0 {
+		return fmt.Sprintf("%d credentials · none active", total)
+	}
+	return fmt.Sprintf("%d credentials · %d active", total, active)
 }
 
 func (p *HomePage) drawAuthCredentialPane(s tcell.Screen, rect Rect) {
 	borderStyle := p.theme.Border
-	header := "Credentials"
+	header := "Manage Credentials"
 	if p.authModal.Focus == authModalFocusCredentials {
 		borderStyle = p.theme.BorderActive
 		header += " [focus]"
@@ -1741,7 +1831,7 @@ func (p *HomePage) drawAuthCredentialPane(s tcell.Screen, rect Rect) {
 	if providerID == "" {
 		providerID = "all"
 	}
-	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.TextMuted, header+" · "+providerID)
+	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.TextMuted, header+" · "+providerID+" · a active • d delete • Enter/e edit")
 
 	matches := p.authFilteredCredentialIndexes()
 	rowY := rect.Y + 1
@@ -1917,7 +2007,7 @@ func (p *HomePage) drawAuthModalEditor(s tcell.Screen, parent Rect) {
 			}
 			style = p.theme.TextMuted
 		} else if field.Secret {
-			value = strings.Repeat("*", minInt(utf8.RuneCountInString(value), 24))
+			value = maskedSecretPreview(value)
 			style = p.theme.Text
 		} else {
 			style = p.theme.Text
@@ -1950,6 +2040,13 @@ func (p *HomePage) drawAuthModalEditor(s tcell.Screen, parent Rect) {
 	DrawText(s, rect.X+2, rect.Y+rect.H-2, rect.W-4, p.theme.TextMuted, authEditorHelpText(editor.Mode))
 }
 
+func maskedSecretPreview(value string) string {
+	if value == "" {
+		return ""
+	}
+	return "•••• " + strconv.Itoa(len(value)) + " chars"
+}
+
 func parseYN(value string) bool {
 	value = strings.ToLower(strings.TrimSpace(value))
 	switch value {
@@ -1961,7 +2058,7 @@ func parseYN(value string) bool {
 }
 
 func cycleCodexLoginMethodValue(value string, delta int) string {
-	options := []string{"browser", "remote", "api key"}
+	options := []string{"browser", "remote"}
 	if len(options) == 0 {
 		return "browser"
 	}
@@ -1971,8 +2068,6 @@ func cycleCodexLoginMethodValue(value string, delta int) string {
 	switch value {
 	case "remote", "code", "manual":
 		index = 1
-	case "api", "api key", "apikey", "key":
-		index = 2
 	default:
 		index = 0
 	}
@@ -2042,7 +2137,7 @@ func authEditorHelpText(mode string) string {
 	case "codex_browser_pending":
 		return "Enter copies URL • Esc close"
 	case "codex_login":
-		return "Enter starts selected method • ↑ label first • ←/→ or 1/2/3 choose browser/remote/API key • Esc cancel"
+		return "Enter starts selected method • ↑ label first • ←/→ or 1/2 choose browser/remote OAuth • Esc cancel"
 	case "copilot_login":
 		return "Tab/↑/↓ move • ←/→ toggle Method/active • type in Name or Token • Enter next/submit"
 	default:
@@ -2055,8 +2150,6 @@ func normalizeCodexLoginMethod(value string) (method string, openBrowser bool) {
 	switch value {
 	case "remote", "code", "manual":
 		return "code", false
-	case "api", "api key", "apikey", "key":
-		return "api", false
 	default:
 		return "auto", true
 	}

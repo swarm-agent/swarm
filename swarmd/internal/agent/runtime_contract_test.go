@@ -7,6 +7,20 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestAgentDefaultSessionModeValidation(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, _, _, err := svc.Upsert(UpsertInput{
+		Name:               "invalid-default-mode",
+		Mode:               ModeSubagent,
+		RuntimeMode:        pebblestore.AgentRuntimeModeRead,
+		DefaultSessionMode: "later",
+		ToolContract:       &pebblestore.AgentToolContract{Preset: "read_only"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid default_session_mode") {
+		t.Fatalf("Upsert() error = %v, want invalid default_session_mode", err)
+	}
+}
+
 func TestUpsertPlanAutoClearsExecutionSetting(t *testing.T) {
 	svc, _ := newTestService(t)
 	profile, _, _, err := svc.Upsert(UpsertInput{

@@ -60,15 +60,16 @@ func TestDesktopSessionBootstrapIssuesJWTAndProtectedAPIAcceptsAfterRestart(t *t
 		}
 	}
 	var response struct {
-		OK       bool   `json:"ok"`
-		Token    string `json:"token"`
-		UserID   string `json:"user_id"`
-		Username string `json:"username"`
+		OK             bool   `json:"ok"`
+		Token          string `json:"token"`
+		UserID         string `json:"user_id"`
+		AccountScopeID string `json:"account_scope_id"`
+		Username       string `json:"username"`
 	}
 	if err := json.Unmarshal(bootstrapRec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode bootstrap response: %v", err)
 	}
-	if !response.OK || response.Token != cookie.Value || response.UserID != "user_desktop_jwt_test" || response.Username != "desktop-jwt-user" {
+	if !response.OK || response.Token != cookie.Value || response.UserID != "user_desktop_jwt_test" || response.AccountScopeID != "acct_desktop_jwt_test" || response.Username != "desktop-jwt-user" {
 		t.Fatalf("bootstrap response = %+v", response)
 	}
 
@@ -100,15 +101,16 @@ func TestLocalTransportSessionBootstrapReturnsTokenForTUI(t *testing.T) {
 		t.Fatalf("local transport session status=%d want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	var response struct {
-		OK       bool   `json:"ok"`
-		Token    string `json:"token"`
-		UserID   string `json:"user_id"`
-		Username string `json:"username"`
+		OK             bool   `json:"ok"`
+		Token          string `json:"token"`
+		UserID         string `json:"user_id"`
+		AccountScopeID string `json:"account_scope_id"`
+		Username       string `json:"username"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode local transport session response: %v", err)
 	}
-	if !response.OK || strings.TrimSpace(response.Token) == "" || response.UserID != "user_desktop_jwt_test" || response.Username != "desktop-jwt-user" {
+	if !response.OK || strings.TrimSpace(response.Token) == "" || response.UserID != "user_desktop_jwt_test" || response.AccountScopeID != "acct_desktop_jwt_test" || response.Username != "desktop-jwt-user" {
 		t.Fatalf("local transport session response = %+v", response)
 	}
 
@@ -170,6 +172,21 @@ func TestXSwarmTokenPrincipalTakesPrecedenceOverInvalidDesktopCookie(t *testing.
 	}
 	if me.Type != "user" || me.UserID != "user_desktop_jwt_test" || me.AccountScopeID != "acct_desktop_jwt_test" || me.TeamID != nil {
 		t.Fatalf("/me principal = %+v", me)
+	}
+}
+
+func TestExtractAttachTokenIgnoresURLQuery(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/v1/me?token=query-secret", nil)
+	if token := extractAttachToken(req); token != "" {
+		t.Fatalf("query attach token = %q, want empty", token)
+	}
+	req.Header.Set("Authorization", "Bearer bearer-secret")
+	if token := extractAttachToken(req); token != "bearer-secret" {
+		t.Fatalf("bearer attach token = %q, want bearer-secret", token)
+	}
+	req.Header.Set("X-Swarm-Token", "header-secret")
+	if token := extractAttachToken(req); token != "header-secret" {
+		t.Fatalf("X-Swarm-Token attach token = %q, want header-secret", token)
 	}
 }
 

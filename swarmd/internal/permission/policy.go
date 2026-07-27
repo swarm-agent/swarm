@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -23,9 +24,174 @@ const (
 )
 
 type Policy struct {
-	Version   int          `json:"version"`
-	Rules     []PolicyRule `json:"rules,omitempty"`
-	UpdatedAt int64        `json:"updated_at,omitempty"`
+	Version        int                  `json:"version"`
+	BashProfile    BashApprovalProfile  `json:"bash_profile"`
+	Rules          []PolicyRule         `json:"rules,omitempty"`
+	Subagents      SubagentPolicy       `json:"subagents"`
+	SessionDeploy  SessionDeployPolicy  `json:"session_deploy"`
+	PlanAcceptance PlanAcceptancePolicy `json:"plan_acceptance"`
+	UpdatedAt      int64                `json:"updated_at,omitempty"`
+}
+
+type SubagentOrchestrationMode string
+
+type SubagentOverBudgetAction string
+
+type CapabilityPolicyMode string
+
+type BashApprovalProfile string
+
+type BashEffectCategory string
+
+type SessionDeployOverLimitAction string
+
+const (
+	SubagentModeDirect  SubagentOrchestrationMode = "direct"
+	SubagentModeAsk     SubagentOrchestrationMode = "ask"
+	SubagentModeBounded SubagentOrchestrationMode = "bounded"
+
+	SubagentOverBudgetAsk  SubagentOverBudgetAction = "ask"
+	SubagentOverBudgetDeny SubagentOverBudgetAction = "deny"
+
+	CapabilityModeAsk         CapabilityPolicyMode = "ask"
+	CapabilityModeAlwaysAllow CapabilityPolicyMode = "always_allow"
+	CapabilityModeBounded     CapabilityPolicyMode = "bounded"
+
+	BashApprovalProfileCurrentRules        BashApprovalProfile = "current_rules"
+	BashApprovalProfileAllowEveryRead      BashApprovalProfile = "allow_every_read"
+	BashApprovalProfileOnlyCriticalPrompts BashApprovalProfile = "only_critical_prompts"
+
+	BashEffectRead   BashEffectCategory = "read"
+	BashEffectWrite  BashEffectCategory = "write"
+	BashEffectUpdate BashEffectCategory = "update"
+	BashEffectDelete BashEffectCategory = "delete"
+
+	SessionDeployOverLimitAsk  SessionDeployOverLimitAction = "ask"
+	SessionDeployOverLimitDeny SessionDeployOverLimitAction = "deny"
+
+	// These are validation safety bounds, not orchestration defaults. Account policy
+	// remains authoritative within them and can support substantial refactor waves.
+	MaxSubagentWaveSize = 256
+	MaxSubagentDepth    = 16
+)
+
+// SessionDeployPolicy controls only durable manage-sessions deployment. It is
+// intentionally separate from generic manage_sessions tool rules.
+type SessionDeployPolicy struct {
+	Mode                             CapabilityPolicyMode         `json:"mode"`
+	AutomaticDeploymentsPerParentRun int                          `json:"automatic_deployments_per_parent_run"`
+	OverLimitAction                  SessionDeployOverLimitAction `json:"over_limit_action"`
+}
+
+// PlanAcceptancePolicy controls only structured plan acceptance boundaries. The
+// validated backend-owned document and canonical arguments remain authoritative.
+type PlanAcceptancePolicy struct {
+	Mode CapabilityPolicyMode `json:"mode"`
+}
+
+// SubagentPolicy is the single account-scoped delegation policy. Launches share one
+// budget regardless of child purpose (for example Finder or Clone).
+type SubagentPolicy struct {
+	Mode                          SubagentOrchestrationMode `json:"mode"`
+	AutomaticLaunchesPerParentRun int                       `json:"automatic_launches_per_parent_run"`
+	ActiveChildLimit              int                       `json:"active_child_limit"`
+	OverBudgetAction              SubagentOverBudgetAction  `json:"over_budget_action"`
+	AbsoluteWaveMaximum           int                       `json:"absolute_wave_maximum"`
+	MaxDepth                      int                       `json:"max_depth"`
+	RequireWriteIsolation         bool                      `json:"require_write_isolation"`
+}
+
+func DefaultSessionDeployPolicy() SessionDeployPolicy {
+	return SessionDeployPolicy{Mode: CapabilityModeAsk, AutomaticDeploymentsPerParentRun: 0, OverLimitAction: SessionDeployOverLimitAsk}
+}
+
+func DefaultPlanAcceptancePolicy() PlanAcceptancePolicy {
+	return PlanAcceptancePolicy{Mode: CapabilityModeAsk}
+}
+
+func DefaultBashApprovalProfile() BashApprovalProfile {
+	return BashApprovalProfileCurrentRules
+}
+
+func ValidateBashApprovalProfile(profile BashApprovalProfile) error {
+	switch profile {
+	case BashApprovalProfileCurrentRules, BashApprovalProfileAllowEveryRead, BashApprovalProfileOnlyCriticalPrompts:
+		return nil
+	default:
+		return fmt.Errorf("unsupported bash approval profile %q", profile)
+	}
+}
+
+func ValidateSessionDeployPolicy(policy SessionDeployPolicy) error {
+	switch policy.Mode {
+	case CapabilityModeAsk, CapabilityModeAlwaysAllow, CapabilityModeBounded:
+	default:
+		return fmt.Errorf("unsupported session deployment policy mode %q", policy.Mode)
+	}
+	if policy.AutomaticDeploymentsPerParentRun < 0 || policy.AutomaticDeploymentsPerParentRun > manageSessionDeployPolicyMaximum {
+		return fmt.Errorf("automatic deployments per parent run must be between 0 and %d", manageSessionDeployPolicyMaximum)
+	}
+	switch policy.OverLimitAction {
+	case SessionDeployOverLimitAsk, SessionDeployOverLimitDeny:
+	default:
+		return fmt.Errorf("unsupported session deployment over-limit action %q", policy.OverLimitAction)
+	}
+	return nil
+}
+
+func ValidatePlanAcceptancePolicy(policy PlanAcceptancePolicy) error {
+	switch policy.Mode {
+	case CapabilityModeAsk, CapabilityModeAlwaysAllow:
+		return nil
+	default:
+		return fmt.Errorf("unsupported plan acceptance policy mode %q", policy.Mode)
+	}
+}
+
+const manageSessionDeployPolicyMaximum = 256
+
+func DefaultSubagentPolicy() SubagentPolicy {
+	return SubagentPolicy{
+		Mode:                          SubagentModeBounded,
+		AutomaticLaunchesPerParentRun: 5,
+		ActiveChildLimit:              5,
+		OverBudgetAction:              SubagentOverBudgetAsk,
+		AbsoluteWaveMaximum:           16,
+		MaxDepth:                      2,
+		RequireWriteIsolation:         true,
+	}
+}
+
+func ValidateSubagentPolicy(policy SubagentPolicy) error {
+	switch policy.Mode {
+	case SubagentModeDirect, SubagentModeAsk, SubagentModeBounded:
+	default:
+		return fmt.Errorf("unsupported subagent orchestration mode %q", policy.Mode)
+	}
+	switch policy.OverBudgetAction {
+	case SubagentOverBudgetAsk, SubagentOverBudgetDeny:
+	default:
+		return fmt.Errorf("unsupported subagent over-budget action %q", policy.OverBudgetAction)
+	}
+	if policy.AutomaticLaunchesPerParentRun < 0 {
+		return fmt.Errorf("automatic launches per parent run cannot be negative")
+	}
+	if policy.ActiveChildLimit < 1 {
+		return fmt.Errorf("active child limit must be at least 1")
+	}
+	if policy.AbsoluteWaveMaximum < 1 || policy.AbsoluteWaveMaximum > MaxSubagentWaveSize {
+		return fmt.Errorf("absolute wave maximum must be between 1 and %d", MaxSubagentWaveSize)
+	}
+	if policy.ActiveChildLimit > MaxSubagentWaveSize {
+		return fmt.Errorf("active child limit cannot exceed %d", MaxSubagentWaveSize)
+	}
+	if policy.AutomaticLaunchesPerParentRun > MaxSubagentWaveSize {
+		return fmt.Errorf("automatic launches per parent run cannot exceed %d", MaxSubagentWaveSize)
+	}
+	if policy.MaxDepth < 0 || policy.MaxDepth > MaxSubagentDepth {
+		return fmt.Errorf("subagent delegation depth must be between 0 and %d", MaxSubagentDepth)
+	}
+	return nil
 }
 
 type PolicyRule struct {
@@ -39,13 +205,17 @@ type PolicyRule struct {
 }
 
 type PolicyExplain struct {
-	Decision    PolicyDecision `json:"decision"`
-	Source      string         `json:"source"`
-	Reason      string         `json:"reason"`
-	ToolName    string         `json:"tool_name,omitempty"`
-	Command     string         `json:"command,omitempty"`
-	Rule        *PolicyRule    `json:"rule,omitempty"`
-	RulePreview string         `json:"rule_preview,omitempty"`
+	Decision        PolicyDecision        `json:"decision"`
+	Source          string                `json:"source"`
+	Reason          string                `json:"reason"`
+	ToolName        string                `json:"tool_name,omitempty"`
+	Command         string                `json:"command,omitempty"`
+	Rule            *PolicyRule           `json:"rule,omitempty"`
+	RulePreview     string                `json:"rule_preview,omitempty"`
+	BashEffect      *BashEffectAssessment `json:"bash_effect,omitempty"`
+	BashProfile     BashApprovalProfile   `json:"bash_profile,omitempty"`
+	ProfileDecision PolicyDecision        `json:"profile_decision,omitempty"`
+	ProfileReason   string                `json:"profile_reason,omitempty"`
 }
 
 type policyEvalContext struct {
@@ -54,11 +224,25 @@ type policyEvalContext struct {
 	NormalizedArgs string
 	BashCommand    string
 	BashPrefix     string
+	BashEffect     BashEffectAssessment
+}
+
+type BashEffectAssessment struct {
+	DeclaredCategory BashEffectCategory `json:"declared_category,omitempty"`
+	Category         BashEffectCategory `json:"category"`
+	Critical         bool               `json:"critical"`
+	Valid            bool               `json:"valid"`
+	Promoted         bool               `json:"promoted,omitempty"`
+	Reason           string             `json:"reason,omitempty"`
 }
 
 func DefaultPolicy() Policy {
 	return Policy{
-		Version: 1,
+		Version:        1,
+		BashProfile:    DefaultBashApprovalProfile(),
+		Subagents:      DefaultSubagentPolicy(),
+		SessionDeploy:  DefaultSessionDeployPolicy(),
+		PlanAcceptance: DefaultPlanAcceptancePolicy(),
 		Rules: []PolicyRule{
 			{ID: "default_deny_bash_rm_root", Kind: PolicyRuleKindPhrase, Decision: PolicyDecisionDeny, Tool: "bash", Pattern: "rm -rf /"},
 			{ID: "default_deny_bash_rm_root_glob", Kind: PolicyRuleKindPhrase, Decision: PolicyDecisionDeny, Tool: "bash", Pattern: "rm -rf /*"},
@@ -80,6 +264,19 @@ func NormalizePolicy(policy Policy) Policy {
 		out = append(out, normalized)
 	}
 	policy.Rules = out
+	policy.BashProfile = BashApprovalProfile(strings.TrimSpace(strings.ToLower(string(policy.BashProfile))))
+	if err := ValidateBashApprovalProfile(policy.BashProfile); err != nil {
+		policy.BashProfile = DefaultBashApprovalProfile()
+	}
+	if err := ValidateSubagentPolicy(policy.Subagents); err != nil {
+		policy.Subagents = DefaultSubagentPolicy()
+	}
+	if err := ValidateSessionDeployPolicy(policy.SessionDeploy); err != nil {
+		policy.SessionDeploy = DefaultSessionDeployPolicy()
+	}
+	if err := ValidatePlanAcceptancePolicy(policy.PlanAcceptance); err != nil {
+		policy.PlanAcceptance = DefaultPlanAcceptancePolicy()
+	}
 	if policy.UpdatedAt < 0 {
 		policy.UpdatedAt = 0
 	}
@@ -87,6 +284,30 @@ func NormalizePolicy(policy Policy) Policy {
 }
 
 func ExplainPolicy(mode, toolName, toolArguments string, policy Policy) PolicyExplain {
+	policy = NormalizePolicy(policy)
+	ctx := buildPolicyEvalContext(toolName, toolArguments)
+	explain := explainPolicyDecision(mode, toolName, toolArguments, policy)
+	if ctx.ToolName != "bash" {
+		return explain
+	}
+	assessment := ctx.BashEffect
+	explain.BashEffect = &assessment
+	explain.BashProfile = policy.BashProfile
+	if profileExplain, ok := explainBashProfile(ctx, policy.BashProfile); ok {
+		explain.ProfileDecision = profileExplain.Decision
+		explain.ProfileReason = profileExplain.Reason
+	} else {
+		explain.ProfileDecision = explain.Decision
+		if policy.BashProfile == BashApprovalProfileCurrentRules {
+			explain.ProfileReason = "current rules use existing granular and default bash authorization"
+		} else {
+			explain.ProfileReason = "selected bash profile leaves this operation to granular and default authorization"
+		}
+	}
+	return explain
+}
+
+func explainPolicyDecision(mode, toolName, toolArguments string, policy Policy) PolicyExplain {
 	ctx := buildPolicyEvalContext(toolName, toolArguments)
 	policy = NormalizePolicy(policy)
 	mode, bypass := splitPolicyMode(mode)
@@ -96,10 +317,41 @@ func ExplainPolicy(mode, toolName, toolArguments string, policy Policy) PolicyEx
 	if explain, ok := explainPhraseDeny(ctx, policy); ok {
 		return explain
 	}
-	if explain, ok := explainExplicitRule(ctx, policy); ok {
-		return explain
+	// Dedicated capabilities are evaluated before generic rules and bypass so a
+	// broad manage_sessions/plan_manage rule cannot authorize either boundary.
+	if ctx.ToolName == "session_deploy" {
+		decision := PolicyDecisionAsk
+		reason := "session deployment policy requires approval"
+		switch policy.SessionDeploy.Mode {
+		case CapabilityModeAlwaysAllow:
+			decision, reason = PolicyDecisionAllow, "session deployment capability is always allowed"
+		case CapabilityModeBounded:
+			// Durable per-run accounting resolves bounded calls at the approval boundary.
+			decision, reason = PolicyDecisionAllow, "session deployment uses bounded per-run accounting"
+		}
+		return PolicyExplain{Decision: decision, Source: "session_deploy_policy", Reason: reason, ToolName: ctx.ToolName}
+	}
+	if ctx.ToolName == "plan_acceptance" {
+		decision := PolicyDecisionAsk
+		reason := "plan acceptance policy requires approval"
+		if policy.PlanAcceptance.Mode == CapabilityModeAlwaysAllow {
+			decision, reason = PolicyDecisionAllow, "plan acceptance capability is always allowed"
+		}
+		return PolicyExplain{Decision: decision, Source: "plan_acceptance_policy", Reason: reason, ToolName: ctx.ToolName}
 	}
 	if explain, ok := explainBuiltinDeny(mode, ctx); ok {
+		return explain
+	}
+	if explain, ok := explainExplicitDeny(ctx, policy); ok {
+		return explain
+	}
+	if ctx.ToolName == "bash" && !ctx.BashEffect.Valid {
+		return bashProfileExplain(ctx, PolicyDecisionAsk, "bash effect metadata is malformed or contradictory: "+ctx.BashEffect.Reason)
+	}
+	if explain, ok := explainBashProfile(ctx, policy.BashProfile); ok {
+		return explain
+	}
+	if explain, ok := explainExplicitRule(ctx, policy); ok {
 		return explain
 	}
 	if explain, ok := explainBuiltinAllow(mode, ctx); ok {
@@ -148,6 +400,26 @@ func previewPolicyRule(rule PolicyRule) string {
 func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	toolName = normalizePolicyToolName(toolName)
 	toolArguments = strings.TrimSpace(toolArguments)
+	// Session mutations are separate policy capabilities even though they share the
+	// manage_sessions transport tool. This prevents a generic manage_sessions rule,
+	// or a rule for another mutation, from authorizing this action.
+	if toolName == "exit_plan_mode" {
+		toolName = "plan_acceptance"
+	} else if toolName == "plan_manage" && IsPlanAcceptanceLifecycleRequirement(PlanManageLifecycleRequirement(toolArguments)) {
+		toolName = "plan_acceptance"
+	}
+	if toolName == "manage_sessions" {
+		switch {
+		case ShouldApproveManageSessionsDeploy(toolArguments):
+			toolName = "session_deploy"
+		case ShouldApproveManageSessionsCommit(toolArguments):
+			toolName = "session_commit"
+		case ShouldApproveManageSessionsArchive(toolArguments):
+			toolName = "session_archive"
+		case ShouldApproveManageSessionsUnarchive(toolArguments):
+			toolName = "session_unarchive"
+		}
+	}
 	ctx := policyEvalContext{
 		ToolName:       toolName,
 		ToolArguments:  toolArguments,
@@ -156,6 +428,7 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	if toolName == "bash" {
 		ctx.BashCommand = extractNormalizedBashCommand(toolArguments)
 		ctx.BashPrefix = extractBashCommandPrefix(ctx.BashCommand)
+		ctx.BashEffect = assessBashEffect(toolArguments, ctx.BashCommand)
 	}
 	return ctx
 }
@@ -281,9 +554,74 @@ func explainPhraseDeny(ctx policyEvalContext, policy Policy) (PolicyExplain, boo
 	return PolicyExplain{}, false
 }
 
+func explainExplicitDeny(ctx policyEvalContext, policy Policy) (PolicyExplain, bool) {
+	for _, rule := range policy.Rules {
+		if rule.Decision != PolicyDecisionDeny || !policyRuleMatches(ctx, rule) {
+			continue
+		}
+		matched := rule
+		return PolicyExplain{
+			Decision:    PolicyDecisionDeny,
+			Source:      "rule",
+			Reason:      fmt.Sprintf("denied by %s", previewPolicyRule(matched)),
+			ToolName:    ctx.ToolName,
+			Command:     ctx.BashCommand,
+			Rule:        &matched,
+			RulePreview: previewPolicyRule(matched),
+		}, true
+	}
+	return PolicyExplain{}, false
+}
+
+func explainBashProfile(ctx policyEvalContext, profile BashApprovalProfile) (PolicyExplain, bool) {
+	if ctx.ToolName != "bash" || profile == BashApprovalProfileCurrentRules {
+		return PolicyExplain{}, false
+	}
+	assessment := ctx.BashEffect
+	if !assessment.Valid {
+		reason := "bash effect metadata is malformed or contradictory"
+		if strings.TrimSpace(assessment.Reason) != "" {
+			reason += ": " + assessment.Reason
+		}
+		return bashProfileExplain(ctx, PolicyDecisionAsk, reason), true
+	}
+	if assessment.Category == BashEffectDelete {
+		return bashProfileExplain(ctx, PolicyDecisionAsk, "every bash delete requires approval"), true
+	}
+	if assessment.Critical {
+		if profile == BashApprovalProfileAllowEveryRead && assessment.Category == BashEffectRead {
+			return bashProfileExplain(ctx, PolicyDecisionAllow, "allow every read profile includes critical bash reads"), true
+		}
+		return bashProfileExplain(ctx, PolicyDecisionAsk, "critical bash operation requires approval"), true
+	}
+	switch profile {
+	case BashApprovalProfileAllowEveryRead:
+		if assessment.Category == BashEffectRead {
+			return bashProfileExplain(ctx, PolicyDecisionAllow, "bash read is auto-approved by the selected profile"), true
+		}
+	case BashApprovalProfileOnlyCriticalPrompts:
+		switch assessment.Category {
+		case BashEffectRead, BashEffectWrite, BashEffectUpdate:
+			return bashProfileExplain(ctx, PolicyDecisionAllow, "noncritical bash operation is auto-approved by the selected profile"), true
+		}
+	}
+	return PolicyExplain{}, false
+}
+
+func bashProfileExplain(ctx policyEvalContext, decision PolicyDecision, reason string) PolicyExplain {
+	return PolicyExplain{
+		Decision:    decision,
+		Source:      "bash_profile",
+		Reason:      reason,
+		ToolName:    ctx.ToolName,
+		Command:     ctx.BashCommand,
+		RulePreview: previewPolicyRule(policyRuleFromContext(ctx, PolicyDecisionAllow)),
+	}
+}
+
 func explainExplicitRule(ctx policyEvalContext, policy Policy) (PolicyExplain, bool) {
 	for _, rule := range policy.Rules {
-		if rule.Kind == PolicyRuleKindPhrase && rule.Decision == PolicyDecisionDeny {
+		if rule.Decision == PolicyDecisionDeny {
 			continue
 		}
 		if !policyRuleMatches(ctx, rule) {
@@ -464,10 +802,6 @@ func normalizePolicyToolName(name string) string {
 		return "exit_plan_mode"
 	case "managetheme":
 		return "manage_theme"
-	case "manageimage":
-		return "manage_image"
-	case "manageflow":
-		return "manage_flow"
 	default:
 		return name
 	}
@@ -485,6 +819,197 @@ func policyRuleSignature(rule PolicyRule) string {
 		rule.Tool,
 		rule.Pattern,
 	}, "\x00")
+}
+
+func assessBashEffect(arguments, normalizedCommand string) BashEffectAssessment {
+	invalid := func(reason string) BashEffectAssessment {
+		return BashEffectAssessment{Valid: false, Reason: reason}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &payload); err != nil || payload == nil {
+		return invalid("arguments must be a JSON object")
+	}
+	command, ok := payload["command"].(string)
+	if !ok || strings.TrimSpace(command) == "" {
+		return invalid("command is required")
+	}
+	explanation, ok := payload["explanation"].([]any)
+	if !ok || len(explanation) == 0 {
+		return invalid("explanation must contain at least one item")
+	}
+	for _, item := range explanation {
+		text, ok := item.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return invalid("explanation items must be non-empty strings")
+		}
+	}
+	categoryText, ok := payload["category"].(string)
+	if !ok {
+		return invalid("category is required")
+	}
+	category := BashEffectCategory(strings.TrimSpace(strings.ToLower(categoryText)))
+	switch category {
+	case BashEffectRead, BashEffectWrite, BashEffectUpdate, BashEffectDelete:
+	default:
+		return invalid("category must be read, write, update, or delete")
+	}
+	critical, ok := payload["critical"].(bool)
+	if !ok {
+		return invalid("critical must be a boolean")
+	}
+	if category == BashEffectDelete && !critical {
+		return invalid("delete requires critical=true")
+	}
+
+	assessment := BashEffectAssessment{DeclaredCategory: category, Category: category, Critical: critical, Valid: true}
+	commandLower := strings.TrimSpace(strings.ToLower(normalizedCommand))
+	if commandLower == "" {
+		commandLower = strings.ToLower(strings.Join(strings.Fields(command), " "))
+	}
+	correctCategory := func(next BashEffectCategory, reason string) {
+		if assessment.Category != next {
+			assessment.Category = next
+			assessment.Promoted = true
+		}
+		if assessment.Reason == "" {
+			assessment.Reason = reason
+		}
+	}
+	promote := func(next BashEffectCategory, reason string) {
+		correctCategory(next, reason)
+		if !assessment.Critical {
+			assessment.Critical = true
+			assessment.Promoted = true
+		}
+	}
+	if obviousBashDelete(commandLower) {
+		promote(BashEffectDelete, "backend detected a delete operation")
+		return assessment
+	}
+	if redirect, ok := obviousBashOutputRedirect(commandLower); ok && assessment.Category == BashEffectRead {
+		correctCategory(BashEffectWrite, "backend corrected declared read to effective write after detecting output redirect "+redirect)
+	}
+	if obviousBashMutation(commandLower) && assessment.Category == BashEffectRead {
+		return invalid("read category contradicts a mutating command")
+	}
+	if obviousCriticalBash(commandLower) {
+		if !assessment.Critical {
+			assessment.Critical = true
+			assessment.Promoted = true
+		}
+		if assessment.Reason == "" {
+			assessment.Reason = "backend detected a sensitive, privileged, expensive, or outbound operation"
+		}
+	}
+	return assessment
+}
+
+var obviousBashDeleteCommand = regexp.MustCompile(`(?:^|[;&|]\s*)(?:sudo\s+)?(?:[^\s;&|]+/)?(?:rm|rmdir|unlink|shred)(?:\s|$)`)
+
+func obviousBashDelete(command string) bool {
+	if obviousBashDeleteCommand.MatchString(command) {
+		return true
+	}
+	for _, marker := range []string{" -delete", "git clean ", "truncate -s 0 "} {
+		if strings.Contains(command, marker) || strings.HasPrefix(command, strings.TrimSpace(marker)+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+func obviousBashMutation(command string) bool {
+	if _, ok := obviousBashOutputRedirect(command); ok {
+		return true
+	}
+	for _, marker := range []string{"tee ", "touch ", "mkdir ", "mv ", "cp ", "install ", "chmod ", "chown ", "sed -i", "git add ", "git commit ", "git checkout ", "git switch ", "git merge ", "git rebase ", "docker run ", "kubectl apply ", "terraform apply"} {
+		if strings.HasPrefix(command, marker) || strings.Contains(command, marker) {
+			return true
+		}
+	}
+	return obviousMutatingSystemctl(command)
+}
+
+func obviousBashOutputRedirect(command string) (string, bool) {
+	var quote byte
+	escaped := false
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' && quote != '\'' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			continue
+		}
+		if ch != '>' || (i > 0 && command[i-1] == '<') {
+			continue
+		}
+
+		start := i
+		for start > 0 && command[start-1] >= '0' && command[start-1] <= '9' {
+			start--
+		}
+		if start > 0 && command[start-1] == '&' {
+			start--
+		}
+		end := i + 1
+		if end < len(command) && command[end] == '>' {
+			end++
+		}
+		for end < len(command) && (command[end] == ' ' || command[end] == '\t') {
+			end++
+		}
+		targetStart := end
+		for end < len(command) && !strings.ContainsRune(" \t\r\n;&|", rune(command[end])) {
+			end++
+		}
+		target := strings.Trim(strings.TrimSpace(command[targetStart:end]), "'\"")
+		if target == "" || target == "/dev/null" || strings.HasPrefix(target, "&") {
+			continue
+		}
+		return strings.TrimSpace(command[start:end]), true
+	}
+	return "", false
+}
+
+var mutatingSystemctlCommand = regexp.MustCompile(`(?:^|[;&|]\s*)(?:sudo\s+)?(?:[^\s;&|]+/)?systemctl(?:\s+[^\s;&|]+)*\s+(?:start|stop|reload|restart|try-restart|reload-or-restart|reload-or-try-restart|isolate|kill|clean|freeze|thaw|set-property|bind|mount-image|service-log-level|service-log-target|reset-failed|enable|disable|reenable|preset|preset-all|mask|unmask|link|revert|add-wants|add-requires|edit|set-default|import-environment|unset-environment|daemon-reload|daemon-reexec|cancel|emergency|rescue|halt|poweroff|reboot|kexec|exit|switch-root|suspend|hibernate|hybrid-sleep|suspend-then-hibernate|soft-reboot)(?:\s|$)`)
+
+func obviousMutatingSystemctl(command string) bool {
+	return mutatingSystemctlCommand.MatchString(command)
+}
+
+const (
+	criticalBashSystemConfigMarker = "/etc/"
+	criticalBashSystemDataMarker   = "/var/lib/"
+)
+
+func obviousCriticalBash(command string) bool {
+	if obviousMutatingSystemctl(command) {
+		return true
+	}
+	for _, marker := range []string{
+		"sudo ", "su ", criticalBashSystemConfigMarker, criticalBashSystemDataMarker,
+		".env", "credentials", "secret", "private_key", "id_rsa",
+		"curl ", "wget ", " nc ", "netcat ", "ssh ", "scp ", "rsync ", "--listen", " -l ",
+		"pg_dump", "mysqldump", "terraform apply", "kubectl ",
+	} {
+		if strings.HasPrefix(command, marker) || strings.Contains(command, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func extractNormalizedBashCommand(arguments string) string {
@@ -646,15 +1171,20 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 	toolName = normalizePolicyToolName(toolName)
 	mode, bypass := splitPolicyMode(mode)
 	switch toolName {
-	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme":
+	case "manage_worktree":
+		// Integration is constrained to clean, committed children recorded in the
+		// current parent's durable lineage. The worktree service preflights the
+		// complete batch and applies it atomically, so this canonical operation is
+		// safe to flow without a separate permission round trip.
 		return PolicyDecisionAllow
-	case "manage_image":
-		if ShouldApproveManageImage(toolArguments) {
-			return PolicyDecisionAsk
-		}
+	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_todos", "manage_theme":
 		return PolicyDecisionAllow
+	case "manage_sessions":
+		return PolicyDecisionAllow
+	case "session_deploy", "session_commit", "session_archive", "session_unarchive":
+		return PolicyDecisionAsk
 	case "plan_manage":
-		if ShouldApprovePlanManageUpdate(toolArguments) {
+		if PlanManageLifecycleRequirement(toolArguments) != "" {
 			return PolicyDecisionAsk
 		}
 		return PolicyDecisionAllow
@@ -665,11 +1195,6 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		return PolicyDecisionAsk
 	case "manage_agent":
 		if ShouldApproveManageAgentMutation(toolArguments) {
-			return PolicyDecisionAsk
-		}
-		return PolicyDecisionAllow
-	case "manage_flow":
-		if ShouldApproveManageFlowMutation(toolArguments) {
 			return PolicyDecisionAsk
 		}
 		return PolicyDecisionAllow

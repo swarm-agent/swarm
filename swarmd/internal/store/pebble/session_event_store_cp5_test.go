@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -189,5 +190,397 @@ func TestV3RunIntentPreservesCreatedAtAcrossStatusTransitions(t *testing.T) {
 	}
 	if len(failedIndexed) != 1 || failedIndexed[0].RunID != "run-timestamps" || failedIndexed[0].CreatedAt != 2000 || failedIndexed[0].UpdatedAt != 4000 {
 		t.Fatalf("failed indexed intents = %+v", failedIndexed)
+	}
+}
+
+func TestV3RunStatePersistsSequentialRunTiming(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-run-timing")
+
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-run-timing",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "run-timing-1-pending",
+		PayloadHash:    "hash-run-timing-1-pending",
+		Kind:           V3SessionMutationAppendMessage,
+		Message:        &MessageSnapshot{Role: "user", Content: "first timed run"},
+		RunIntent:      &V3SessionRunIntent{RunID: "run-timing-1", Status: V3RunIntentPendingExecutor},
+		NowUnixMs:      1000,
+	}); err != nil {
+		t.Fatalf("record first pending run: %v", err)
+	}
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-run-timing",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "run-timing-1-running",
+		PayloadHash:    "hash-run-timing-1-running",
+		Kind:           V3SessionMutationRecordRunIntent,
+		RunIntent:      &V3SessionRunIntent{RunID: "run-timing-1", Status: V3RunIntentRunning},
+		NowUnixMs:      1500,
+	}); err != nil {
+		t.Fatalf("record first running run: %v", err)
+	}
+	runningFirst, ok, err := sessions.GetV3SessionRunState("session-run-timing")
+	if err != nil || !ok {
+		t.Fatalf("load first running state ok=%v err=%v", ok, err)
+	}
+	if !runningFirst.Active || runningFirst.RunID != "run-timing-1" || runningFirst.StartedAt != 1000 || runningFirst.CompletedAt != 0 || runningFirst.DurationMs != 0 || runningFirst.CumulativeDurationMs != 0 {
+		t.Fatalf("first running state = %+v", runningFirst)
+	}
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-run-timing",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "run-timing-1-completed",
+		PayloadHash:    "hash-run-timing-1-completed",
+		Kind:           V3SessionMutationRecordRunIntent,
+		RunIntent:      &V3SessionRunIntent{RunID: "run-timing-1", Status: V3RunIntentCompleted},
+		NowUnixMs:      4000,
+	}); err != nil {
+		t.Fatalf("record first completed run: %v", err)
+	}
+	terminalFirst, ok, err := sessions.GetV3SessionRunState("session-run-timing")
+	if err != nil || !ok {
+		t.Fatalf("load first terminal state ok=%v err=%v", ok, err)
+	}
+	if terminalFirst.Active || terminalFirst.RunID != "run-timing-1" || terminalFirst.StartedAt != 1000 || terminalFirst.CompletedAt != 4000 || terminalFirst.DurationMs != 3000 || terminalFirst.CumulativeDurationMs != 3000 {
+		t.Fatalf("first terminal state = %+v", terminalFirst)
+	}
+
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-run-timing",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "run-timing-2-pending",
+		PayloadHash:    "hash-run-timing-2-pending",
+		Kind:           V3SessionMutationAppendMessage,
+		Message:        &MessageSnapshot{Role: "user", Content: "second timed run"},
+		RunIntent:      &V3SessionRunIntent{RunID: "run-timing-2", Status: V3RunIntentPendingExecutor},
+		NowUnixMs:      7000,
+	}); err != nil {
+		t.Fatalf("record second pending run: %v", err)
+	}
+	pendingSecond, ok, err := sessions.GetV3SessionRunState("session-run-timing")
+	if err != nil || !ok {
+		t.Fatalf("load second pending state ok=%v err=%v", ok, err)
+	}
+	if !pendingSecond.Active || pendingSecond.RunID != "run-timing-2" || pendingSecond.StartedAt != 7000 || pendingSecond.CompletedAt != 0 || pendingSecond.DurationMs != 0 || pendingSecond.CumulativeDurationMs != 3000 {
+		t.Fatalf("second pending state = %+v", pendingSecond)
+	}
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-run-timing",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "run-timing-2-running",
+		PayloadHash:    "hash-run-timing-2-running",
+		Kind:           V3SessionMutationRecordRunIntent,
+		RunIntent:      &V3SessionRunIntent{RunID: "run-timing-2", Status: V3RunIntentRunning},
+		NowUnixMs:      9000,
+	}); err != nil {
+		t.Fatalf("record second running run: %v", err)
+	}
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-run-timing",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "run-timing-2-failed",
+		PayloadHash:    "hash-run-timing-2-failed",
+		Kind:           V3SessionMutationRecordRunIntent,
+		RunIntent:      &V3SessionRunIntent{RunID: "run-timing-2", Status: V3RunIntentFailed},
+		NowUnixMs:      10000,
+	}); err != nil {
+		t.Fatalf("record second failed run: %v", err)
+	}
+	terminalSecond, ok, err := sessions.GetV3SessionRunState("session-run-timing")
+	if err != nil || !ok {
+		t.Fatalf("load second terminal state ok=%v err=%v", ok, err)
+	}
+	if terminalSecond.Active || terminalSecond.RunID != "run-timing-2" || terminalSecond.StartedAt != 7000 || terminalSecond.CompletedAt != 10000 || terminalSecond.DurationMs != 3000 || terminalSecond.CumulativeDurationMs != 6000 {
+		t.Fatalf("second terminal state = %+v", terminalSecond)
+	}
+	storedSecond, ok, err := sessions.GetV3SessionRunIntent("session-run-timing", "run-timing-2")
+	if err != nil || !ok {
+		t.Fatalf("load second stored intent ok=%v err=%v", ok, err)
+	}
+	if storedSecond.StartedAt != 7000 || storedSecond.CompletedAt != 10000 || storedSecond.DurationMs != 3000 || storedSecond.CumulativeDurationMs != 6000 {
+		t.Fatalf("second stored intent timing = %+v", storedSecond)
+	}
+	outbox, err := sessions.ListV3RealtimeOutboxForSessionAfterSeq("session-run-timing", 0, 100)
+	if err != nil {
+		t.Fatalf("list run timing outbox: %v", err)
+	}
+	var streamedPendingSecond V3SessionRunIntent
+	var streamedTerminalSecond V3SessionRunIntent
+	for _, record := range outbox {
+		var payload struct {
+			RunIntent V3SessionRunIntent `json:"run_intent"`
+		}
+		if err := json.Unmarshal(record.Event.Payload, &payload); err != nil {
+			t.Fatalf("decode run timing payload: %v", err)
+		}
+		if payload.RunIntent.RunID != "run-timing-2" {
+			continue
+		}
+		switch payload.RunIntent.Status {
+		case V3RunIntentPendingExecutor:
+			streamedPendingSecond = payload.RunIntent
+		case V3RunIntentFailed:
+			streamedTerminalSecond = payload.RunIntent
+		}
+	}
+	if streamedPendingSecond.StartedAt != 7000 || streamedPendingSecond.CompletedAt != 0 || streamedPendingSecond.DurationMs != 0 || streamedPendingSecond.CumulativeDurationMs != 3000 {
+		t.Fatalf("second pending streamed intent timing = %+v", streamedPendingSecond)
+	}
+	if streamedTerminalSecond.StartedAt != 7000 || streamedTerminalSecond.CompletedAt != 10000 || streamedTerminalSecond.DurationMs != 3000 || streamedTerminalSecond.CumulativeDurationMs != 6000 {
+		t.Fatalf("second terminal streamed intent timing = %+v", streamedTerminalSecond)
+	}
+}
+
+func TestRepairV3SessionRunStateBackfillsLegacyRunIntentsOnly(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-legacy-repair")
+	createV3SessionForTest(t, sessions, "session-lifecycle-only")
+
+	legacyPending := V3SessionRunIntent{
+		SessionID:      "session-legacy-repair",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		RunID:          "run-pending-old",
+		Status:         V3RunIntentPendingExecutor,
+		CreatedAt:      2000,
+		UpdatedAt:      3000,
+		EventSeq:       2,
+	}
+	legacyRunning := V3SessionRunIntent{
+		SessionID:      "session-legacy-repair",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		RunID:          "run-running-new",
+		Status:         V3RunIntentRunning,
+		CreatedAt:      2500,
+		UpdatedAt:      3500,
+		EventSeq:       3,
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntent(legacyPending.SessionID, legacyPending.RunID), legacyPending); err != nil {
+		t.Fatalf("seed legacy pending intent: %v", err)
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntentStatus(legacyPending.Status, legacyPending.UpdatedAt, legacyPending.AccountScopeID, legacyPending.SessionID, legacyPending.RunID), legacyPending); err != nil {
+		t.Fatalf("seed pending status index: %v", err)
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntent(legacyRunning.SessionID, legacyRunning.RunID), legacyRunning); err != nil {
+		t.Fatalf("seed legacy running intent: %v", err)
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntentStatus(legacyRunning.Status, legacyRunning.UpdatedAt, legacyRunning.AccountScopeID, legacyRunning.SessionID, legacyRunning.RunID), legacyRunning); err != nil {
+		t.Fatalf("seed running status index: %v", err)
+	}
+	if err := store.PutJSON(KeySessionLifecycle("session-lifecycle-only"), SessionLifecycleSnapshot{
+		SessionID:      "session-lifecycle-only",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		RunID:          "run-lifecycle-only",
+		Active:         true,
+		Phase:          "running",
+		StartedAt:      2600,
+		UpdatedAt:      3600,
+	}); err != nil {
+		t.Fatalf("seed lifecycle-only active: %v", err)
+	}
+
+	repair, err := sessions.RepairV3SessionRunStatesFromLegacyRunIntents("account-1", 0)
+	if err != nil {
+		t.Fatalf("repair legacy run states: %v", err)
+	}
+	if repair.CandidateSessions != 1 || repair.RepairedSessions != 1 || repair.SkippedCanonical != 0 {
+		t.Fatalf("repair summary = %+v", repair)
+	}
+	state, ok, err := sessions.GetV3SessionRunState("session-legacy-repair")
+	if err != nil || !ok {
+		t.Fatalf("load repaired run state ok=%v err=%v", ok, err)
+	}
+	if !state.Active || state.RunID != "run-running-new" || state.Status != V3RunIntentRunning || state.EventSeq != 3 || state.StartedAt != 2500 {
+		t.Fatalf("repaired run state = %+v", state)
+	}
+	active, ok, err := sessions.GetV3SessionActiveRunIntent("session-legacy-repair")
+	if err != nil || !ok || active.RunID != "run-running-new" {
+		t.Fatalf("active run after repair ok=%v err=%v intent=%+v", ok, err, active)
+	}
+	if lifecycleState, ok, err := sessions.GetV3SessionRunState("session-lifecycle-only"); err != nil || ok {
+		t.Fatalf("lifecycle-only record must not repair canonical run state ok=%v err=%v state=%+v", ok, err, lifecycleState)
+	}
+}
+
+func TestRepairV3SessionRunStateDoesNotOverwriteCanonicalInactive(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-canonical-inactive")
+
+	legacyRunning := V3SessionRunIntent{
+		SessionID:      "session-canonical-inactive",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		RunID:          "run-stale-running",
+		Status:         V3RunIntentRunning,
+		CreatedAt:      2000,
+		UpdatedAt:      3000,
+		EventSeq:       2,
+	}
+	canonicalTerminal := V3SessionRunIntent{
+		SessionID:      "session-canonical-inactive",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		RunID:          "run-terminal",
+		Status:         V3RunIntentCompleted,
+		CreatedAt:      4000,
+		UpdatedAt:      5000,
+		EventSeq:       4,
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntent(legacyRunning.SessionID, legacyRunning.RunID), legacyRunning); err != nil {
+		t.Fatalf("seed stale running intent: %v", err)
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntentStatus(legacyRunning.Status, legacyRunning.UpdatedAt, legacyRunning.AccountScopeID, legacyRunning.SessionID, legacyRunning.RunID), legacyRunning); err != nil {
+		t.Fatalf("seed stale running status index: %v", err)
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntentActive("session-canonical-inactive"), v3SessionRunStateFromIntent(canonicalTerminal)); err != nil {
+		t.Fatalf("seed canonical inactive run state: %v", err)
+	}
+
+	repair, err := sessions.RepairV3SessionRunStatesFromLegacyRunIntents("account-1", 0)
+	if err != nil {
+		t.Fatalf("repair legacy run states: %v", err)
+	}
+	if repair.CandidateSessions != 1 || repair.RepairedSessions != 0 || repair.SkippedCanonical != 1 {
+		t.Fatalf("repair summary = %+v", repair)
+	}
+	state, ok, err := sessions.GetV3SessionRunState("session-canonical-inactive")
+	if err != nil || !ok {
+		t.Fatalf("load canonical inactive ok=%v err=%v", ok, err)
+	}
+	if state.Active || state.RunID != "run-terminal" || state.Status != V3RunIntentCompleted {
+		t.Fatalf("canonical inactive was overwritten by repair: %+v", state)
+	}
+	if active, ok, err := sessions.GetV3SessionActiveRunIntent("session-canonical-inactive"); err != nil || ok {
+		t.Fatalf("canonical inactive must win over stale legacy scan ok=%v err=%v intent=%+v", ok, err, active)
+	}
+}
+
+func TestV3RunStateIndexMigrationRunsOnceAndReadsDoNotRepair(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-migrate-run-state")
+
+	legacyRunning := V3SessionRunIntent{
+		SessionID:      "session-migrate-run-state",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		RunID:          "run-legacy-running",
+		Status:         V3RunIntentRunning,
+		CreatedAt:      2000,
+		UpdatedAt:      3000,
+		EventSeq:       2,
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntent(legacyRunning.SessionID, legacyRunning.RunID), legacyRunning); err != nil {
+		t.Fatalf("seed legacy running intent: %v", err)
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntentStatus(legacyRunning.Status, legacyRunning.UpdatedAt, legacyRunning.AccountScopeID, legacyRunning.SessionID, legacyRunning.RunID), legacyRunning); err != nil {
+		t.Fatalf("seed running status index: %v", err)
+	}
+
+	if state, ok, err := sessions.GetV3SessionRunState("session-migrate-run-state"); err != nil || ok {
+		t.Fatalf("normal run-state read must not lazily repair legacy intent ok=%v err=%v state=%+v", ok, err, state)
+	}
+	activeBefore, err := sessions.ListV3ActiveSessionRunStates("account-1", 10)
+	if err != nil {
+		t.Fatalf("list active states before migration: %v", err)
+	}
+	if len(activeBefore) != 0 {
+		t.Fatalf("active states before migration = %+v", activeBefore)
+	}
+
+	if err := sessions.EnsureV3RunStateIndex(); err != nil {
+		t.Fatalf("ensure run-state index: %v", err)
+	}
+	if _, ok, err := store.GetBytes(v3RunStateIndexMigrationKey); err != nil || !ok {
+		t.Fatalf("migration marker ok=%v err=%v", ok, err)
+	}
+	state, ok, err := sessions.GetV3SessionRunState("session-migrate-run-state")
+	if err != nil || !ok || state.RunID != "run-legacy-running" || !state.Active {
+		t.Fatalf("migrated run state ok=%v err=%v state=%+v", ok, err, state)
+	}
+
+	corruptPending := V3SessionRunIntent{
+		SessionID:      "session-corrupt-legacy-index",
+		AccountScopeID: "account-1",
+		RunID:          "run-corrupt",
+		Status:         V3RunIntentPendingExecutor,
+		UpdatedAt:      4000,
+	}
+	corruptKey := KeyV3SessionRunIntentStatus(corruptPending.Status, corruptPending.UpdatedAt, corruptPending.AccountScopeID, corruptPending.SessionID, corruptPending.RunID)
+	if err := store.PutBytes(corruptKey, []byte("{not-json")); err != nil {
+		t.Fatalf("seed corrupt legacy status index: %v", err)
+	}
+
+	if err := sessions.EnsureV3RunStateIndex(); err != nil {
+		t.Fatalf("ensure run-state index after marker must not rescan corrupt legacy index: %v", err)
+	}
+	state, ok, err = sessions.GetV3SessionRunState("session-migrate-run-state")
+	if err != nil || !ok || state.RunID != "run-legacy-running" {
+		t.Fatalf("run-state read after corrupt legacy index ok=%v err=%v state=%+v", ok, err, state)
+	}
+	activeAfter, err := sessions.ListV3ActiveSessionRunStates("account-1", 10)
+	if err != nil {
+		t.Fatalf("active-state index read after corrupt legacy index: %v", err)
+	}
+	if len(activeAfter) != 1 || activeAfter[0].SessionID != "session-migrate-run-state" || activeAfter[0].RunID != "run-legacy-running" {
+		t.Fatalf("active states after migration = %+v", activeAfter)
+	}
+}
+
+func TestApplyV3SessionMutationExpectedLastEventSeqConflicts(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-settings-conflict")
+
+	expected := uint64(0)
+	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:            "session-settings-conflict",
+		UserID:               "user-1",
+		AccountScopeID:       "account-1",
+		IdempotencyKey:       "settings-conflict",
+		PayloadHash:          "hash-settings-conflict",
+		Kind:                 V3SessionMutationUpdateSettings,
+		Session:              &SessionSnapshot{ID: "session-settings-conflict", Mode: "plan"},
+		ExpectedLastEventSeq: &expected,
+	})
+	if err == nil {
+		t.Fatal("expected projection conflict")
+	}
+	conflict, ok := err.(*V3ProjectionConflictError)
+	if !ok {
+		t.Fatalf("err = %T %v, want V3ProjectionConflictError", err, err)
+	}
+	if conflict.SessionID != "session-settings-conflict" || conflict.Expected != 0 || conflict.Actual != 1 {
+		t.Fatalf("conflict = %+v", conflict)
+	}
+
+	expected = 1
+	result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:            "session-settings-conflict",
+		UserID:               "user-1",
+		AccountScopeID:       "account-1",
+		IdempotencyKey:       "settings-ok",
+		PayloadHash:          "hash-settings-ok",
+		Kind:                 V3SessionMutationUpdateSettings,
+		Session:              &SessionSnapshot{ID: "session-settings-conflict", Mode: "plan"},
+		ExpectedLastEventSeq: &expected,
+	})
+	if err != nil {
+		t.Fatalf("settings update: %v", err)
+	}
+	if result.Event.EventType != "session.settings.updated" || result.Projection.LastEventSeq != 2 {
+		t.Fatalf("settings mutation result = %+v", result)
 	}
 }

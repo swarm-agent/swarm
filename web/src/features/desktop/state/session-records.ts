@@ -1,34 +1,7 @@
-import type { DesktopSessionRecord } from '../types/realtime'
-
-function metadataString(metadata: Record<string, unknown> | undefined, key: string): string {
-  const value = metadata?.[key]
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function isFlowSessionMetadata(metadata: Record<string, unknown> | undefined): boolean {
-  return metadataString(metadata, 'source').toLowerCase() === 'flow'
-    || metadataString(metadata, 'lineage_kind').toLowerCase() === 'flow'
-    || metadataString(metadata, 'flow_id') !== ''
-}
-
-function isPlaceholderSessionTitle(title: string): boolean {
-  const normalized = title.trim().toLowerCase()
-  return normalized === 'new session' || normalized === 'new conversation'
-}
+import type { DesktopLiveReasoningRecord, DesktopSessionRecord } from '../types/realtime'
 
 function mergeSessionTitle(existing: DesktopSessionRecord, incoming: DesktopSessionRecord): string {
-  const incomingTitle = incoming.title.trim()
-  const existingTitle = existing.title.trim()
-  if (!incomingTitle) {
-    return existing.title
-  }
-  if ((isFlowSessionMetadata(existing.metadata) || isFlowSessionMetadata(incoming.metadata))
-    && isPlaceholderSessionTitle(incomingTitle)
-    && existingTitle
-    && !isPlaceholderSessionTitle(existingTitle)) {
-    return existing.title
-  }
-  return incoming.title
+  return incoming.title.trim() ? incoming.title : existing.title
 }
 
 function mergeSessionLiveState(
@@ -39,23 +12,223 @@ function mergeSessionLiveState(
   const existingRetainedAssistantSegments = existing.retainedAssistantSegments ?? []
   const incomingToolHistory = incoming.toolHistory ?? []
   const existingToolHistory = existing.toolHistory ?? []
+  const incomingReasoningHistory = incoming.reasoningHistory ?? []
+  const existingReasoningHistory = existing.reasoningHistory ?? []
+  const incomingHasToolDetails = liveHasToolDetails(incoming)
+  const existingHasToolDetails = liveHasToolDetails(existing)
+  const incomingHasAssistantDetails = liveHasAssistantDetails(incoming)
+  const existingHasAssistantDetails = liveHasAssistantDetails(existing)
+  const incomingHasReasoningDetails = liveHasReasoningDetails(incoming)
+  const existingHasReasoningDetails = liveHasReasoningDetails(existing)
+  const incomingClearsAssistantDetails = liveClearsAssistantDetails(incoming)
+  const incomingTerminalStatus = incoming.status === 'idle' || incoming.status === 'error'
+  const preserveActiveExistingLive = liveHasActiveRun(existing) && !liveHasActiveRun(incoming) && !incomingClearsAssistantDetails && !incomingTerminalStatus
 
   return {
     ...incoming,
     seq: Math.max(existing.seq ?? 0, incoming.seq ?? 0),
-    retainedAssistantSegments: incomingRetainedAssistantSegments.length > 0
+    runId: preserveActiveExistingLive ? existing.runId : incoming.runId,
+    startedAt: preserveActiveExistingLive ? existing.startedAt : incoming.startedAt,
+    status: preserveActiveExistingLive ? existing.status : incoming.status,
+    summary: preserveActiveExistingLive ? existing.summary : mergeLiveSummary(existing, incoming, existingHasToolDetails, incomingHasToolDetails),
+    lastEventType: preserveActiveExistingLive ? existing.lastEventType : incoming.lastEventType,
+    lastEventAt: preserveActiveExistingLive ? existing.lastEventAt : incoming.lastEventAt,
+    error: preserveActiveExistingLive ? existing.error : incoming.error,
+    awaitingAck: preserveActiveExistingLive ? existing.awaitingAck : incoming.awaitingAck,
+    toolName: mergeLiveToolValue(existing.toolName, incoming.toolName, existingHasToolDetails, incomingHasToolDetails),
+    sidebarToolName: mergeLiveToolValue(existing.sidebarToolName, incoming.sidebarToolName, existingHasToolDetails, incomingHasToolDetails),
+    toolCallId: mergeLiveToolValue(existing.toolCallId, incoming.toolCallId, existingHasToolDetails, incomingHasToolDetails),
+    toolArguments: mergeLiveToolValue(existing.toolArguments, incoming.toolArguments, existingHasToolDetails, incomingHasToolDetails),
+    toolOutput: mergeLiveToolValue(existing.toolOutput, incoming.toolOutput, existingHasToolDetails, incomingHasToolDetails),
+    retainedToolName: mergeLiveToolValue(existing.retainedToolName, incoming.retainedToolName, existingHasToolDetails, incomingHasToolDetails),
+    retainedToolCallId: mergeLiveToolValue(existing.retainedToolCallId, incoming.retainedToolCallId, existingHasToolDetails, incomingHasToolDetails),
+    retainedToolArguments: mergeLiveToolValue(existing.retainedToolArguments, incoming.retainedToolArguments, existingHasToolDetails, incomingHasToolDetails),
+    retainedToolOutput: mergeLiveToolValue(existing.retainedToolOutput, incoming.retainedToolOutput, existingHasToolDetails, incomingHasToolDetails),
+    retainedToolState: mergeLiveToolValue(existing.retainedToolState, incoming.retainedToolState, existingHasToolDetails, incomingHasToolDetails),
+    assistantDraft: incomingClearsAssistantDetails
+      ? incoming.assistantDraft
+      : incoming.assistantDraft || (!incomingHasAssistantDetails && existingHasAssistantDetails ? existing.assistantDraft : incoming.assistantDraft),
+    retainedAssistantSegments: incomingClearsAssistantDetails
       ? incomingRetainedAssistantSegments
-      : existingRetainedAssistantSegments,
+      : incomingRetainedAssistantSegments.length > 0
+        ? incomingRetainedAssistantSegments
+        : existingRetainedAssistantSegments,
+    reasoningSummary: incoming.reasoningSummary || (!incomingHasReasoningDetails && existingHasReasoningDetails ? existing.reasoningSummary : incoming.reasoningSummary),
+    reasoningText: incoming.reasoningText || (!incomingHasReasoningDetails && existingHasReasoningDetails ? existing.reasoningText : incoming.reasoningText),
+    reasoningState: incomingHasReasoningDetails || !existingHasReasoningDetails ? incoming.reasoningState : existing.reasoningState,
+    reasoningSegment: Math.max(existing.reasoningSegment ?? 0, incoming.reasoningSegment ?? 0),
+    reasoningStartedAt: incoming.reasoningStartedAt || (!incomingHasReasoningDetails && existingHasReasoningDetails ? existing.reasoningStartedAt : incoming.reasoningStartedAt),
+    reasoningCompletedAt: incoming.reasoningCompletedAt || (!incomingHasReasoningDetails && existingHasReasoningDetails ? existing.reasoningCompletedAt ?? null : incoming.reasoningCompletedAt ?? null),
+    reasoningTimelineSeq: (incoming.reasoningTimelineSeq ?? 0) > 0
+      ? incoming.reasoningTimelineSeq
+      : existing.reasoningTimelineSeq ?? 0,
+    reasoningHistory: mergeReasoningHistory(existingReasoningHistory, incomingReasoningHistory),
     toolHistory: incomingToolHistory.length > 0
       ? incomingToolHistory
       : existingToolHistory,
   }
 }
 
+function mergeReasoningHistory(
+  existing: DesktopLiveReasoningRecord[],
+  incoming: DesktopLiveReasoningRecord[],
+): DesktopLiveReasoningRecord[] {
+  if (incoming.length === 0) {
+    return existing
+  }
+  const merged = existing.slice()
+  for (const record of incoming) {
+    const existingIndex = merged.findIndex((candidate) => reasoningHistoryRecordsMatch(candidate, record))
+    if (existingIndex >= 0) {
+      merged[existingIndex] = mergeReasoningHistoryRecord(merged[existingIndex], record)
+    } else {
+      merged.push(record)
+    }
+  }
+  return merged.sort((a, b) => {
+    if (a.timelineSeq !== b.timelineSeq) {
+      return b.timelineSeq - a.timelineSeq
+    }
+    if (a.startedAt !== b.startedAt) {
+      return b.startedAt - a.startedAt
+    }
+    return b.key.localeCompare(a.key)
+  })
+}
+
+function mergeReasoningHistoryRecord(
+  existing: DesktopLiveReasoningRecord,
+  incoming: DesktopLiveReasoningRecord,
+): DesktopLiveReasoningRecord {
+  const existingSeq = existing.updatedSeq || existing.timelineSeq || 0
+  const incomingSeq = incoming.updatedSeq || incoming.timelineSeq || 0
+  if (incomingSeq < existingSeq) {
+    return existing
+  }
+  return incoming
+}
+
+function reasoningHistoryRecordsMatch(a: DesktopLiveReasoningRecord, b: DesktopLiveReasoningRecord): boolean {
+  const aKey = a.key.trim()
+  const bKey = b.key.trim()
+  if (aKey && bKey && aKey === bKey) {
+    return true
+  }
+  const aRunId = a.runId.trim()
+  const bRunId = b.runId.trim()
+  const aStepId = a.stepId.trim()
+  const bStepId = b.stepId.trim()
+  const aReasoningId = a.reasoningId.trim()
+  const bReasoningId = b.reasoningId.trim()
+  if (aRunId && bRunId && aStepId && bStepId && aReasoningId && bReasoningId
+    && aRunId === bRunId && aStepId === bStepId && aReasoningId === bReasoningId) {
+    return true
+  }
+  const aReasoningKey = a.reasoningKey.trim()
+  const bReasoningKey = b.reasoningKey.trim()
+  if (aRunId && bRunId && aStepId && bStepId && aReasoningKey && bReasoningKey
+    && aRunId === bRunId && aStepId === bStepId && aReasoningKey === bReasoningKey) {
+    return true
+  }
+  return a.timelineSeq > 0 && b.timelineSeq > 0 && a.timelineSeq === b.timelineSeq
+}
+
+function liveHasActiveRun(live: DesktopSessionRecord['live']): boolean {
+  const status = live.status.trim().toLowerCase()
+  return Boolean(
+    live.runId?.trim()
+    || live.awaitingAck
+    || status === 'starting'
+    || status === 'running'
+    || status === 'blocked',
+  )
+}
+
+function liveClearsAssistantDetails(live: DesktopSessionRecord['live']): boolean {
+  switch (live.lastEventType) {
+    case 'session.assistant.completed':
+    case 'session.assistant.failed':
+    case 'session.run.completed':
+    case 'session.run.cancelled':
+    case 'session.run.expired':
+    case 'session.run.interrupted':
+      return live.assistantDraft === '' && (live.retainedAssistantSegments?.length ?? 0) === 0
+    default:
+      return false
+  }
+}
+
+function mergeLiveToolValue<T extends string | null>(
+  existing: T,
+  incoming: T,
+  existingHasToolDetails: boolean,
+  incomingHasToolDetails: boolean,
+): T {
+  return incoming || (!incomingHasToolDetails && existingHasToolDetails ? existing : incoming)
+}
+
+function liveHasToolDetails(live: DesktopSessionRecord['live']): boolean {
+  return Boolean(
+    live.toolName?.trim()
+    || live.sidebarToolName?.trim()
+    || live.toolCallId?.trim()
+    || live.toolArguments?.trim()
+    || live.toolOutput.trim()
+    || live.retainedToolName?.trim()
+    || live.retainedToolCallId?.trim()
+    || live.retainedToolArguments?.trim()
+    || live.retainedToolOutput.trim()
+    || live.retainedToolState
+    || (live.toolHistory?.length ?? 0) > 0,
+  )
+}
+
+function liveHasAssistantDetails(live: DesktopSessionRecord['live']): boolean {
+  return Boolean(live.assistantDraft.trim() || live.retainedAssistantSegments.length > 0)
+}
+
+function liveHasReasoningDetails(live: DesktopSessionRecord['live']): boolean {
+  return Boolean(
+    live.reasoningSummary.trim()
+    || live.reasoningText.trim()
+    || live.reasoningState !== 'idle'
+    || live.reasoningSegment > 0
+    || live.reasoningStartedAt !== null
+    || live.reasoningCompletedAt !== null
+    || (live.reasoningTimelineSeq ?? 0) > 0
+    || (live.reasoningHistory?.length ?? 0) > 0,
+  )
+}
+
+function mergeLiveSummary(
+  existing: DesktopSessionRecord['live'],
+  incoming: DesktopSessionRecord['live'],
+  existingHasToolDetails: boolean,
+  incomingHasToolDetails: boolean,
+): string | null {
+  const incomingSummary = incoming.summary?.trim() ?? ''
+  if (incomingSummary) {
+    if (!incomingHasToolDetails && existingHasToolDetails && isGenericAssistantSummary(incomingSummary)) {
+      return existing.summary || existing.toolName || existing.retainedToolName || incoming.summary
+    }
+    return incoming.summary
+  }
+  if (!incomingHasToolDetails && existingHasToolDetails) {
+    return existing.summary
+  }
+  return incoming.summary
+}
+
+function isGenericAssistantSummary(summary: string): boolean {
+  const normalized = summary.trim().toLowerCase()
+  return normalized === 'assistant responding...' || normalized === 'assistant responding…' || normalized === 'streaming response...' || normalized === 'streaming response…'
+}
+
 export function mergeSessionRecords(existing: DesktopSessionRecord | null, incoming: DesktopSessionRecord): DesktopSessionRecord {
   if (!existing) {
     return incoming
   }
+  const mergedLive = mergeSessionLiveState(existing.live, incoming.live)
 
   return {
     ...incoming,
@@ -95,10 +268,29 @@ export function mergeSessionRecords(existing: DesktopSessionRecord | null, incom
     gitCommittedAdditions: incoming.gitCommittedAdditions ?? existing.gitCommittedAdditions ?? 0,
     gitCommittedDeletions: incoming.gitCommittedDeletions ?? existing.gitCommittedDeletions ?? 0,
     lifecycle: incoming.lifecycle ?? existing.lifecycle,
-    runIntent: incoming.runIntent === undefined ? existing.runIntent ?? null : incoming.runIntent,
-    live: mergeSessionLiveState(existing.live, incoming.live),
-    pendingPermissions: incoming.pendingPermissions,
-    pendingPermissionCount: incoming.pendingPermissionCount,
+    runIntent: mergeSessionRunIntent(existing.runIntent, incoming.runIntent, mergedLive),
+    live: mergedLive,
+    pendingPermissions: incoming.permissionsHydrated ? incoming.pendingPermissions : existing.pendingPermissions,
+    pendingPermissionCount: incoming.permissionsHydrated ? incoming.pendingPermissionCount : existing.pendingPermissionCount,
     usage: incoming.usage ?? existing.usage,
   }
+}
+
+function mergeSessionRunIntent(
+  existing: DesktopSessionRecord['runIntent'],
+  incoming: DesktopSessionRecord['runIntent'] | undefined,
+  mergedLive: DesktopSessionRecord['live'],
+): DesktopSessionRecord['runIntent'] {
+  if (incoming === undefined) {
+    return existing ?? null
+  }
+  if (incoming === null && existing && liveHasActiveRun(mergedLive) && runIntentStatusActive(existing.status)) {
+    return existing
+  }
+  return incoming
+}
+
+function runIntentStatusActive(status: string): boolean {
+  const normalized = status.trim().toLowerCase()
+  return normalized === 'pending_executor' || normalized === 'running' || normalized === 'blocked'
 }

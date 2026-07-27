@@ -2,6 +2,7 @@ package ui
 
 import (
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -54,6 +55,13 @@ func (p *ChatPage) SetStatus(status string) {
 	p.errorLine = ""
 }
 
+func (p *ChatPage) LiveAssistantText() string {
+	if p == nil {
+		return ""
+	}
+	return p.liveAssistant
+}
+
 func (p *ChatPage) Status() string {
 	if p == nil {
 		return ""
@@ -76,11 +84,11 @@ func (p *ChatPage) SetSessionTitle(title string) {
 			continue
 		}
 		p.sessionTabs[i].Title = title
-		p.sessionsPaletteItems = normalizeChatSessionPaletteItems(p.sessionTabs)
+		p.sessionsPaletteItems = prepareSessionManagerItems(normalizeChatSessionPaletteItems(p.sessionTabs))
 		return
 	}
 	p.sessionTabs = normalizeChatSessionTabs(p.sessionTabs, currentID, title)
-	p.sessionsPaletteItems = normalizeChatSessionPaletteItems(p.sessionTabs)
+	p.sessionsPaletteItems = prepareSessionManagerItems(normalizeChatSessionPaletteItems(p.sessionTabs))
 }
 
 func (p *ChatPage) SetSessionBranch(branch string) {
@@ -143,7 +151,82 @@ func (p *ChatPage) SetSessionTabs(tabs []ChatSessionTab) {
 	}
 	normalized := normalizeChatSessionTabs(tabs, p.sessionID, p.sessionTitle)
 	p.sessionTabs = normalized
-	p.sessionsPaletteItems = normalizeChatSessionPaletteItems(normalized)
+	p.sessionsPaletteItems = prepareSessionManagerItems(normalizeChatSessionPaletteItems(normalized))
+}
+
+func (p *ChatPage) SetMessages(messages []ChatMessageRecord) {
+	if p == nil {
+		return
+	}
+	lifecycle := p.lifecycle
+	restoreLiveAssistant := p.liveAssistant
+	restoreLiveAssistantRunID := p.liveAssistantRunID
+	restoreLiveAssistantStreamID := p.liveAssistantStreamID
+	restoreLiveAssistantNextSeq := p.liveAssistantNextSeq
+	restoreLiveAssistantOffset := p.liveAssistantOffset
+	restoreLiveThinking := p.liveThinking
+	restoreThinkingSummary := p.thinkingSummary
+	restoreThinkingCompletedAt := p.thinkingCompletedAt
+	restoreReasoningActive := p.reasoningActive
+	restoreReasoningStartedAt := p.reasoningStartedAt
+	restoreActiveReasoningMessageID := p.activeReasoningMessageID
+	restoreToolStream := cloneChatToolStreamEntries(p.toolStream)
+	restoreBashOutput := p.bashOutput
+	restoreStreamedTools := cloneStringSet(p.streamedTools)
+	restoreLiveState := lifecycle != nil && lifecycle.Active && !chatMessagesContainAssistantForRun(messages, lifecycle.RunID)
+	messages = p.reconcilePendingLocalUserMessages(messages)
+	p.timeline = nil
+	p.toolStream = nil
+	p.bashOutput = chatBashOutputState{}
+	p.liveAssistant = ""
+	p.resetLiveAssistantStream()
+	p.liveThinking = ""
+	p.thinkingCompletedAt = time.Time{}
+	p.reasoningActive = false
+	p.reasoningStartedAt = time.Time{}
+	p.activeReasoningMessageID = ""
+	p.streamedTools = make(map[string]struct{}, 16)
+	p.resetTimelineRenderCache()
+	p.applyHistory(messages)
+	if restoreLiveState {
+		p.lifecycle = lifecycle
+		p.busy = true
+		p.liveAssistant = restoreLiveAssistant
+		p.liveAssistantRunID = restoreLiveAssistantRunID
+		p.liveAssistantStreamID = restoreLiveAssistantStreamID
+		p.liveAssistantNextSeq = restoreLiveAssistantNextSeq
+		p.liveAssistantOffset = restoreLiveAssistantOffset
+		p.liveThinking = restoreLiveThinking
+		p.thinkingSummary = restoreThinkingSummary
+		p.thinkingCompletedAt = restoreThinkingCompletedAt
+		p.reasoningActive = restoreReasoningActive
+		p.reasoningStartedAt = restoreReasoningStartedAt
+		p.activeReasoningMessageID = restoreActiveReasoningMessageID
+		p.toolStream = mergeChatToolStreamEntries(p.toolStream, restoreToolStream)
+		p.bashOutput = restoreBashOutput
+		p.streamedTools = mergeStringSets(p.streamedTools, restoreStreamedTools)
+		p.rebuildToolLifecycleViews()
+	}
+}
+
+// ApplyPermissionRecords merges authoritative V3 permission records into the
+// chat page and immediately synchronizes the visible approval surface. This is
+// used by the TUI hydration/realtime store in addition to ChatPage's direct
+// permission backfill so a missed legacy event cannot hide a durable pending
+// permission.
+func (p *ChatPage) ApplyPermissionRecords(records []ChatPermissionRecord) {
+	if p == nil || len(records) == 0 {
+		return
+	}
+	p.permissions = mergePermissionHistory(p.permissions, records)
+	p.rebuildToolLifecycleViews()
+}
+
+func (p *ChatPage) SetUsageSummary(summary *ChatUsageSummary) {
+	if p == nil {
+		return
+	}
+	p.applyContextUsageSummary(summary)
 }
 
 func (p *ChatPage) ApplySessionTitleWarning(warning string) {
@@ -163,7 +246,11 @@ func (p *ChatPage) SetVoiceInputState(state VoiceInputState) {
 }
 
 func (p *ChatPage) PermissionModalVisible() bool {
-	return p.permissionModalActive() || p.planUpdateModalActive() || p.workspaceScopeModalActive() || p.taskLaunchModalActive() || p.themeChangeModalActive() || p.agentChangeModalActive() || p.skillChangeModalActive()
+	return p.ordinaryPermissionComposerActive() || p.planPermissionModalActive() || p.manageSessionsPermissionModalActive() || p.planUpdateModalActive() || p.workspaceScopeModalActive() || p.taskLaunchModalActive() || p.themeChangeModalActive() || p.agentChangeModalActive() || p.skillChangeModalActive()
+}
+
+func (p *ChatPage) OrdinaryPermissionComposerVisible() bool {
+	return p.ordinaryPermissionComposerActive()
 }
 
 func (p *ChatPage) AgentChangeModalVisible() bool {
@@ -207,6 +294,17 @@ func (p *ChatPage) SessionID() string {
 	return strings.TrimSpace(p.sessionID)
 }
 
+func (p *ChatPage) CurrentPlanModalVisible() bool {
+	return p != nil && p.planEditorModalActive()
+}
+
+func (p *ChatPage) CloseCurrentPlanModal() {
+	if p == nil {
+		return
+	}
+	p.closePlanEditorModal()
+}
+
 func (p *ChatPage) OpenCurrentPlanModal(plan ChatSessionPlan) bool {
 	return p.OpenCurrentPlanModalWithPlans(plan, nil, strings.TrimSpace(plan.ID))
 }
@@ -215,7 +313,7 @@ func (p *ChatPage) OpenCurrentPlanModalWithPlans(plan ChatSessionPlan, plans []C
 	if p == nil {
 		return false
 	}
-	if p.planUpdateModalActive() || p.permissionModalActive() || p.askUserModalActive() || p.workspaceScopeModalActive() || p.taskLaunchModalActive() || p.themeChangeModalActive() || p.agentChangeModalActive() || p.skillChangeModalActive() || p.sessionsPaletteActive() {
+	if p.planPermissionModalActive() || p.manageSessionsPermissionModalActive() || p.planUpdateModalActive() || p.ordinaryPermissionComposerActive() || p.askUserModalActive() || p.workspaceScopeModalActive() || p.taskLaunchModalActive() || p.themeChangeModalActive() || p.agentChangeModalActive() || p.skillChangeModalActive() || p.sessionsPaletteActive() {
 		return false
 	}
 	if p.planExitModalActive() {
@@ -269,6 +367,23 @@ func (p *ChatPage) SetThinkingTagsVisible(show bool) {
 	p.bumpTimelineRenderGeneration()
 }
 
+func (p *ChatPage) SetPlanExecutionState(plan ChatSessionPlan, revisions []ChatSessionPlan, runID, runStatus string) {
+	if p == nil {
+		return
+	}
+	p.planExecutionPlan = plan
+	p.planExecutionRevisions = append([]ChatSessionPlan(nil), revisions...)
+	p.planExecutionRunID = strings.TrimSpace(runID)
+	p.planExecutionRunStatus = strings.TrimSpace(runStatus)
+}
+
+func (p *ChatPage) PlanExecutionState() (ChatSessionPlan, []ChatSessionPlan, string, string) {
+	if p == nil {
+		return ChatSessionPlan{}, nil, "", ""
+	}
+	return p.planExecutionPlan, append([]ChatSessionPlan(nil), p.planExecutionRevisions...), p.planExecutionRunID, p.planExecutionRunStatus
+}
+
 func (p *ChatPage) SetActivePlan(plan string) {
 	p.meta.Plan = strings.TrimSpace(plan)
 }
@@ -295,18 +410,11 @@ func (p *ChatPage) ToggleInlineBashOutputExpanded() bool {
 	return p.toggleInlineBashOutputExpanded()
 }
 
-func (p *ChatPage) StartManualCompact(note string) bool {
-	if p == nil {
-		return false
-	}
-	return p.startManualCompact(note)
-}
-
 func (p *ChatPage) ConsumeQuitScrollbackJump() bool {
 	if p == nil {
 		return false
 	}
-	if p.planEditorModalActive() || p.planUpdateModalActive() || p.planExitModalActive() || p.askUserModalActive() || p.workspaceScopeModalActive() || p.taskLaunchModalActive() || p.themeChangeModalActive() || p.agentChangeModalActive() || p.skillChangeModalActive() || p.permissionModalActive() {
+	if p.planPermissionModalActive() || p.manageSessionsPermissionModalActive() || p.planEditorModalActive() || p.planUpdateModalActive() || p.planExitModalActive() || p.askUserModalActive() || p.workspaceScopeModalActive() || p.taskLaunchModalActive() || p.themeChangeModalActive() || p.agentChangeModalActive() || p.skillChangeModalActive() || p.ordinaryPermissionComposerActive() {
 		return false
 	}
 	if p.timelineScroll <= 0 {

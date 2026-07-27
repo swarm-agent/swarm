@@ -10,6 +10,10 @@ type ProviderDefaults struct {
 	ProviderID       string
 	PrimaryModel     string
 	PrimaryThinking  string
+	PlanModel        string
+	PlanThinking     string
+	AutoModel        string
+	AutoThinking     string
 	UtilityModel     string
 	UtilityThinking  string
 	UtilitySubagents []string
@@ -22,7 +26,7 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 		PrimaryThinking:  "xhigh",
 		UtilityModel:     "claude-sonnet-4-6",
 		UtilityThinking:  "xhigh",
-		UtilitySubagents: []string{"explorer", "memory", "parallel"},
+		UtilitySubagents: []string{"finder", "memory"},
 	},
 	"codex": {
 		ProviderID:       "codex",
@@ -30,7 +34,15 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 		PrimaryThinking:  "high",
 		UtilityModel:     "gpt-5.4-mini",
 		UtilityThinking:  "medium",
-		UtilitySubagents: []string{"explorer", "memory", "parallel"},
+		UtilitySubagents: []string{"finder", "memory"},
+	},
+	"openai": {
+		ProviderID:       "openai",
+		PrimaryModel:     "gpt-5.5",
+		PrimaryThinking:  "high",
+		UtilityModel:     "gpt-5.4-mini",
+		UtilityThinking:  "medium",
+		UtilitySubagents: []string{"finder", "memory"},
 	},
 	// Copilot defaults are retained for the dormant provider implementation, but
 	// Copilot is filtered out of option surfaces until we can fairly test it with
@@ -41,7 +53,7 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 		PrimaryThinking:  "high",
 		UtilityModel:     "gemini-3-flash-preview",
 		UtilityThinking:  "high",
-		UtilitySubagents: []string{"explorer", "memory", "parallel"},
+		UtilitySubagents: []string{"finder", "memory"},
 	},
 	"fireworks": {
 		ProviderID:       "fireworks",
@@ -49,7 +61,7 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 		PrimaryThinking:  "high",
 		UtilityModel:     "accounts/fireworks/models/minimax-m2p7",
 		UtilityThinking:  "high",
-		UtilitySubagents: []string{"explorer", "memory", "parallel"},
+		UtilitySubagents: []string{"finder", "memory"},
 	},
 	"google": {
 		ProviderID:       "google",
@@ -57,7 +69,7 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 		PrimaryThinking:  "high",
 		UtilityModel:     "gemini-3-flash-preview",
 		UtilityThinking:  "high",
-		UtilitySubagents: []string{"explorer", "memory", "parallel"},
+		UtilitySubagents: []string{"finder", "memory"},
 	},
 	"openrouter": {
 		ProviderID:       "openrouter",
@@ -65,7 +77,7 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 		PrimaryThinking:  "high",
 		UtilityModel:     "google/gemini-3-flash-preview",
 		UtilityThinking:  "high",
-		UtilitySubagents: []string{"explorer", "memory", "parallel"},
+		UtilitySubagents: []string{"finder", "memory"},
 	},
 }
 
@@ -78,8 +90,24 @@ func Lookup(providerID string) (ProviderDefaults, bool) {
 	defaults.ProviderID = providerID
 	defaults.PrimaryModel = strings.TrimSpace(defaults.PrimaryModel)
 	defaults.PrimaryThinking = normalizeThinking(defaults.PrimaryThinking)
+	defaults.PlanModel = strings.TrimSpace(defaults.PlanModel)
+	defaults.PlanThinking = normalizeThinking(defaults.PlanThinking)
+	defaults.AutoModel = strings.TrimSpace(defaults.AutoModel)
+	defaults.AutoThinking = normalizeThinking(defaults.AutoThinking)
 	defaults.UtilityModel = strings.TrimSpace(defaults.UtilityModel)
 	defaults.UtilityThinking = normalizeThinking(defaults.UtilityThinking)
+	if defaults.PlanModel == "" {
+		defaults.PlanModel = defaults.PrimaryModel
+	}
+	if defaults.PlanThinking == "" {
+		defaults.PlanThinking = defaults.PrimaryThinking
+	}
+	if defaults.AutoModel == "" {
+		defaults.AutoModel = defaults.PrimaryModel
+	}
+	if defaults.AutoThinking == "" {
+		defaults.AutoThinking = defaults.PrimaryThinking
+	}
 	defaults.UtilitySubagents = dedupeNames(defaults.UtilitySubagents)
 	return defaults, true
 }
@@ -108,7 +136,7 @@ func SupportedProviders() []string {
 
 func normalizeThinking(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "off", "low", "medium", "high", "xhigh":
+	case "off", "low", "medium", "high", "xhigh", "max", "ultra":
 		return strings.ToLower(strings.TrimSpace(value))
 	default:
 		return ""

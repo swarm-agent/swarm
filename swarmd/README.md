@@ -33,7 +33,7 @@ SWARM_LANE=dev  ./scripts/dev-up.sh   # 127.0.0.1:7782
 
 ## MVP Network Access
 
-Direct private-LAN desktop access is not a supported secure path for the MVP. Keep `swarm.conf` bound to `127.0.0.1` for the desktop/backend unless you are working on the LAN pairing implementation itself.
+Direct private-LAN desktop access is not a supported secure path for the MVP. Keep `swarm.conf` bound to `127.0.0.1` for the desktop/backend.
 
 For access from another device, use an SSH tunnel to the desktop port, for example `ssh -L 5555:127.0.0.1:5555 <host>`, or use Tailscale. Direct private LAN HTTP may show browser "Not Secure" warnings and desktop API auth may reject the request.
 
@@ -135,3 +135,29 @@ go run ./cmd/swarmctl model catalog get --provider openrouter
 ```
 
 All non-health endpoints require attach auth via `X-Swarm-Token` (or `Authorization: Bearer <token>`).
+
+## Long-session diagnostics
+
+`long_session_diagnostics` is an opt-in, metadata-only recorder for investigating memory growth and UI lag during multi-hour Swarm sessions. It is disabled by default and independent of `v3_diagnostics` and `provider_api_diagnostics`; leave those payload-oriented flags disabled during this capture to avoid changing the workload.
+
+### Five-hour capture
+
+1. Edit the canonical daemon startup config (`swarm.conf`) and set `long_session_diagnostics = true`.
+2. Restart the daemon. Startup fails clearly if the private diagnostics directory cannot be created. Confirm the daemon log reports the selected run directory.
+3. Open the browser-based Desktop. When the flag is detected, a memory-chip button appears immediately left of the notification bell. The browser automatically sends an authenticated metadata sample every 30 seconds. Use **Capture now** to send a current browser sample and ask the daemon to write a fresh Go runtime sample plus pprof snapshots. The dialog reports only the artifact directory and filenames returned by the daemon.
+4. Copy the reported run directory for analysis. Set `long_session_diagnostics = false` and restart the daemon to disable the control and recorder.
+
+The run directory is `long-session-diagnostics/run-<UTC timestamp>-<suffix>` below the platform's canonical Swarm logs root (`storagecontract.RootLogs`; `/var/log/swarmd` for the default Linux installation). Directories are mode `0700`, files are mode `0600`, and each run has a hard 512 MiB budget.
+
+Artifacts:
+
+- `manifest.json`: capture times, cadence, budget, and content policy.
+- `samples.jsonl`: daemon/runtime/subsystem snapshots, including Go memory, RSS, goroutines, Pebble size, Codex retained-size counters, queues, and fixed-label latency aggregates.
+- `desktop-samples.jsonl`: browser-attributed memory when the current `Performance.measureUserAgentSpecificMemory()` API is available (secure and cross-origin-isolated contexts only), plus event-loop drift, supported PerformanceObserver long-task and long-animation-frame duration/blocking time, DOM nodes, cache mutation timing grouped by bounded action type, sampler overhead, query-cache count/estimated bytes, V3 cache counts/estimated bytes, and largest cache-owning sessions represented only by stable hashes. Browser memory may be unavailable on the default local Desktop because this API has limited browser support and requires cross-origin isolation. The recorder does not use the deprecated, non-standard `performance.memory` API and does not claim to capture a browser heap snapshot.
+- `operations.jsonl`: bounded metadata-only operation durations and dimensions with run-local hashed session identifiers.
+- `profile-*.pprof`: periodic heap, allocation, goroutine, block, mutex, and occasional bounded CPU profiles.
+- `latest-findings.json`: ranked baseline/current deltas for daemon, Codex/context, Desktop cache/DOM, realtime queues, storage, and provider/API latency. Rankings are correlations, not proof of causation.
+
+Inspect `latest-findings.json` first, then correlate the spike window in `desktop-samples.jsonl`. For frontend CPU, prioritize `long_animation_frame_blocking_duration_ms`, `long_task_duration_ms`, `event_loop_drift_ms`, and `cache_action_duration_ms`; these are responsiveness signals, not an OS process CPU percentage or a JavaScript CPU profile. For memory, compare `browser_memory_bytes` when available with V3/query cache estimates and DOM nodes. A true JavaScript heap snapshot or frontend CPU profile must be captured externally with Chrome DevTools' Memory/Performance panels or a Chrome DevTools Protocol client; ordinary page JavaScript cannot invoke those profiler domains. Inspect daemon profiles with the Go pprof CLI and the matching daemon binary: `go tool pprof <daemon-binary> <profile-file>`.
+
+The recorder omits prompts, message/tool content, headers, credentials, raw session identifiers, URLs, and workspace paths. Desktop ingestion is authenticated, flag-gated, typed, size-limited, and rate-limited. Profiling, heap estimation, DOM scans, and cache aggregation add CPU and private local disk overhead; enable only for a controlled capture, do not publish the run directory, and disable it afterward.

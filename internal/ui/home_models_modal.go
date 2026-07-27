@@ -19,18 +19,22 @@ type ModelsModalProvider struct {
 }
 
 type ModelsModalEntry struct {
-	Provider         string
-	Model            string
-	ContextMode      string
-	ContextWindow    int
-	MaxOutputTokens  int
-	Reasoning        bool
-	Source           string
-	Favorite         bool
-	FavoriteLabel    string
-	FavoriteThinking string
-	AddedAt          int64
-	UpdatedAt        int64
+	Provider           string
+	Model              string
+	ContextMode        string
+	ContextWindow      int
+	MaxOutputTokens    int
+	Reasoning          bool
+	ThinkingOptions    []string
+	DefaultThinking    string
+	ServiceTiers       []string
+	DefaultServiceTier string
+	Source             string
+	Favorite           bool
+	FavoriteLabel      string
+	FavoriteThinking   string
+	AddedAt            int64
+	UpdatedAt          int64
 }
 
 func (e ModelsModalEntry) DisplayName() string {
@@ -988,36 +992,44 @@ func modelMatchesQuery(model ModelsModalEntry, query string) bool {
 }
 
 func modelThinkingForAction(model ModelsModalEntry, activeThinking string) string {
-	if !model.Reasoning {
-		return "off"
-	}
-
-	resolve := func() string {
-		if thinking := normalizeModelThinking(model.FavoriteThinking); thinking != "" {
+	options := normalizeModelThinkingOptions(model.ThinkingOptions)
+	for _, candidate := range []string{model.FavoriteThinking, activeThinking, model.DefaultThinking} {
+		if thinking := normalizeModelThinking(candidate); containsModelThinkingOption(options, thinking) {
 			return thinking
 		}
-		if thinking := normalizeModelThinking(activeThinking); thinking != "" {
-			return thinking
-		}
-		return "high"
 	}
-
-	thinking := resolve()
-	providerID := strings.ToLower(strings.TrimSpace(model.Provider))
-	if thinking == "xhigh" && providerID == "copilot" {
-		return "high"
-	}
-	return thinking
+	return ""
 }
 
 func normalizeModelThinking(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
-	switch value {
-	case "off", "low", "medium", "high", "xhigh":
-		return value
-	default:
-		return ""
+	if value == "x-high" {
+		return "xhigh"
 	}
+	return value
+}
+
+func normalizeModelThinkingOptions(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = normalizeModelThinking(value)
+		if value != "" && !containsModelThinkingOption(out, value) {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func containsModelThinkingOption(options []string, target string) bool {
+	if target == "" {
+		return false
+	}
+	for _, option := range options {
+		if strings.EqualFold(strings.TrimSpace(option), target) {
+			return true
+		}
+	}
+	return false
 }
 
 func modelKey(providerID, modelID, contextMode string) string {

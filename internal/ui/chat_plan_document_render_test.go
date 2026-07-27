@@ -13,7 +13,11 @@ func TestStructuredPlanDocumentTextFromValueRendersInfoAndCheckpoints(t *testing
 		"info": map[string]any{
 			"goal":                "Ship structured rendering",
 			"scope":               "render modular info fields",
+			"context":             "match the Desktop projection",
 			"decisions":           []any{"document is canonical"},
+			"constraints":         []any{"display only"},
+			"assumptions":         []any{"a plan already exists"},
+			"open_questions":      []any{"plan agent later"},
 			"relevant_files":      []any{"internal/ui/chat_plan_document_render.go"},
 			"success_criteria":    []any{"criteria survives"},
 			"validation_strategy": "targeted tests",
@@ -30,8 +34,17 @@ func TestStructuredPlanDocumentTextFromValueRendersInfoAndCheckpoints(t *testing
 		"Structured plan: Structured Plan",
 		"Goal: Ship structured rendering",
 		"Scope: render modular info fields",
+		"Context: match the Desktop projection",
 		"Decisions:",
 		"- document is canonical",
+		"Success criteria:",
+		"- criteria survives",
+		"Constraints:",
+		"- display only",
+		"Assumptions:",
+		"- a plan already exists",
+		"Open questions:",
+		"- plan agent later",
 		"Files:",
 		"- internal/ui/chat_plan_document_render.go",
 		"Validation: targeted tests",
@@ -47,6 +60,36 @@ func TestStructuredPlanDocumentTextFromValueRendersInfoAndCheckpoints(t *testing
 	}
 	if strings.Index(got, "1. Model") > strings.Index(got, "2. UI") {
 		t.Fatalf("checkpoints not rendered by order:\n%s", got)
+	}
+}
+
+func TestExitPlanPermissionPayloadDerivesMissingTitleForActionableDocument(t *testing.T) {
+	record := ChatPermissionRecord{
+		ToolName:      "exit_plan_mode",
+		ToolArguments: `{"document":{"info":{"goal":"Auto-complete checkpoint plan"},"checkpoints":[{"id":"cp-1","title":"Complete checkpoint","status":"pending"}]},"approved_arguments":{"document":{"info":{"goal":"Auto-complete checkpoint plan"},"checkpoints":[{"id":"cp-1","title":"Complete checkpoint","status":"pending"}]}}}`,
+	}
+
+	title, _, _, _, approvedArguments := exitPlanPermissionPayload(record)
+	if title != "Auto-complete checkpoint plan" {
+		t.Fatalf("derived title = %q", title)
+	}
+	if !strings.Contains(approvedArguments, `"title":"Auto-complete checkpoint plan"`) {
+		t.Fatalf("approved arguments missing derived title: %s", approvedArguments)
+	}
+}
+
+func TestExitPlanPermissionPayloadDoesNotTitleEmptyDocument(t *testing.T) {
+	record := ChatPermissionRecord{
+		ToolName:      "exit_plan_mode",
+		ToolArguments: `{"document":{"info":{"goal":"Not actionable"}},"approved_arguments":{"document":{"info":{"goal":"Not actionable"}}}}`,
+	}
+
+	title, _, _, _, approvedArguments := exitPlanPermissionPayload(record)
+	if title != "Exit Plan Mode" {
+		t.Fatalf("title = %q, want modal fallback", title)
+	}
+	if strings.Contains(approvedArguments, `"title"`) {
+		t.Fatalf("empty plan should remain invalid: %s", approvedArguments)
 	}
 }
 

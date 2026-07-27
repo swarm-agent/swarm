@@ -86,12 +86,6 @@ func (s *Server) handleVaultUnlock(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, err)
 		return
 	}
-	if s.deployContainers != nil {
-		ctx := identity.ContextWithPrincipal(r.Context(), principal)
-		if childErr := s.deployContainers.UnlockManagedLocalChildVaults(ctx); childErr != nil {
-			status.Warning = strings.TrimSpace(childErr.Error())
-		}
-	}
 	writeJSON(w, http.StatusOK, status)
 }
 
@@ -252,7 +246,7 @@ func (s *Server) withVaultGate(next http.Handler) http.Handler {
 
 func isVaultExemptRequest(r *http.Request) bool {
 	switch r.URL.Path {
-	case "/healthz", "/readyz", "/v1/auth/desktop/session", "/v1/vault", "/v1/vault/enable", "/v1/vault/unlock", "/v1/vault/lock", "/v1/vault/disable", "/v1/vault/export", "/v1/vault/import", "/v1/system/shutdown", "/v1/swarm/discovery", "/v1/deploy/container/sync/credentials", "/v1/deploy/container/sync/agents", "/v1/deploy/remote/session/sync/credentials":
+	case "/healthz", "/readyz", "/v1/auth/desktop/session", "/v1/vault", "/v1/vault/enable", "/v1/vault/unlock", "/v1/vault/lock", "/v1/vault/disable", "/v1/vault/export", "/v1/vault/import", "/v1/system/shutdown":
 		return true
 	default:
 		return false

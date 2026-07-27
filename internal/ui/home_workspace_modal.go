@@ -125,6 +125,9 @@ type workspaceModalState struct {
 func (p *HomePage) ShowWorkspaceModal() {
 	p.workspaceModal.Visible = true
 	p.workspaceModal.Focus = workspaceModalFocusList
+	if p.WorkspaceModalIntent() == "select" {
+		p.workspaceModal.Focus = workspaceModalFocusSearch
+	}
 	p.workspaceModal.Search = ""
 	p.workspaceModal.reconcileSelections()
 	p.workspaceModal.ConfirmDelete = false
@@ -221,8 +224,10 @@ func (p *HomePage) handleWorkspaceModalKey(ev *tcell.EventKey) {
 		if p.workspaceModal.ActionMenuVisible {
 			p.workspaceModal.Focus = workspaceModalFocusDetails
 			p.reconcileWorkspaceModalActionSelection(false)
-		} else {
+		} else if p.workspaceModal.Focus == workspaceModalFocusSearch {
 			p.workspaceModal.Focus = workspaceModalFocusList
+		} else {
+			p.workspaceModal.Focus = workspaceModalFocusSearch
 		}
 		return
 	case p.keybinds.Match(ev, KeybindModalFocusLeft):
@@ -247,12 +252,42 @@ func (p *HomePage) handleWorkspaceModalKey(ev *tcell.EventKey) {
 		p.workspaceModal.ConfirmDelete = false
 		return
 	case p.keybinds.Match(ev, KeybindModalMoveUp), p.keybinds.Match(ev, KeybindModalMoveUpAlt):
+		p.workspaceModal.Focus = workspaceModalFocusList
 		p.moveWorkspaceModalSelectionByDirection(0, -1)
 		p.workspaceModal.ConfirmDelete = false
 		return
 	case p.keybinds.Match(ev, KeybindModalMoveDown), p.keybinds.Match(ev, KeybindModalMoveDownAlt):
+		p.workspaceModal.Focus = workspaceModalFocusList
 		p.moveWorkspaceModalSelectionByDirection(0, 1)
 		p.workspaceModal.ConfirmDelete = false
+		return
+	case p.keybinds.Match(ev, KeybindModalPageUp):
+		p.workspaceModal.Focus = workspaceModalFocusList
+		p.moveWorkspaceModalSelection(-p.workspaceModalPageSize())
+		return
+	case p.keybinds.Match(ev, KeybindModalPageDown):
+		p.workspaceModal.Focus = workspaceModalFocusList
+		p.moveWorkspaceModalSelection(p.workspaceModalPageSize())
+		return
+	case p.keybinds.Match(ev, KeybindModalJumpHome):
+		p.workspaceModal.Focus = workspaceModalFocusList
+		p.selectWorkspaceModalMatch(0)
+		return
+	case p.keybinds.Match(ev, KeybindModalJumpEnd):
+		p.workspaceModal.Focus = workspaceModalFocusList
+		p.selectWorkspaceModalMatch(len(p.workspaceModal.filteredIndexes()) - 1)
+		return
+	case p.keybinds.Match(ev, KeybindModalSearchBackspace):
+		if p.workspaceModal.Focus == workspaceModalFocusSearch && p.workspaceModal.Search != "" {
+			runes := []rune(p.workspaceModal.Search)
+			p.workspaceModal.Search = string(runes[:len(runes)-1])
+			p.workspaceModal.reconcileSelections()
+			return
+		}
+	case p.keybinds.Match(ev, KeybindModalSearchClear):
+		p.workspaceModal.Search = ""
+		p.workspaceModal.Focus = workspaceModalFocusSearch
+		p.workspaceModal.reconcileSelections()
 		return
 	case ev.Key() == tcell.KeyLeft:
 		p.moveWorkspaceModalSelectionByDirection(-1, 0)
@@ -268,6 +303,11 @@ func (p *HomePage) handleWorkspaceModalKey(ev *tcell.EventKey) {
 	}
 
 	if ev.Key() == tcell.KeyRune {
+		if p.workspaceModal.Focus == workspaceModalFocusSearch && unicode.IsPrint(ev.Rune()) {
+			p.workspaceModal.Search += string(ev.Rune())
+			p.workspaceModal.reconcileSelections()
+			return
+		}
 		p.handleWorkspaceModalRune(ev)
 	}
 }
@@ -301,8 +341,12 @@ func (p *HomePage) handleWorkspaceModalRune(ev *tcell.EventKey) {
 		p.moveSelectedWorkspace(1)
 	case p.keybinds.Match(ev, KeybindWorkspaceOpenKeybinds):
 		p.workspaceModalOpenKeybinds()
-	case p.keybinds.Match(ev, KeybindModalSearchFocus), p.keybinds.Match(ev, KeybindWorkspaceClearSearchAlt):
-		// Search removed from workspace modal.
+	case p.keybinds.Match(ev, KeybindModalSearchFocus):
+		p.workspaceModal.Focus = workspaceModalFocusSearch
+	case p.keybinds.Match(ev, KeybindWorkspaceClearSearchAlt):
+		p.workspaceModal.Search = ""
+		p.workspaceModal.Focus = workspaceModalFocusSearch
+		p.workspaceModal.reconcileSelections()
 	default:
 		_ = r
 	}
@@ -316,6 +360,10 @@ func (p *HomePage) handleWorkspaceModalEnter() {
 	}
 	if _, ok := p.selectedWorkspaceModal(); !ok {
 		p.workspaceModal.Status = "Select a workspace first"
+		return
+	}
+	if p.WorkspaceModalIntent() == "select" {
+		p.workspaceModalActivateSelected()
 		return
 	}
 	p.workspaceModalEditSelected()
@@ -1080,11 +1128,7 @@ func (p *HomePage) workspaceByPath(path string) (WorkspaceModalWorkspace, bool) 
 }
 
 func (p *HomePage) workspaceFilteredIndexes() []int {
-	indexes := make([]int, 0, len(p.workspaceModal.Workspaces))
-	for i := range p.workspaceModal.Workspaces {
-		indexes = append(indexes, i)
-	}
-	return indexes
+	return p.workspaceModal.filteredIndexes()
 }
 
 func workspaceModalDirectories(workspace WorkspaceModalWorkspace) []string {
@@ -1100,11 +1144,63 @@ func workspaceModalDirectories(workspace WorkspaceModalWorkspace) []string {
 }
 
 func (s *workspaceModalState) filteredIndexes() []int {
+	query := strings.ToLower(strings.TrimSpace(s.Search))
 	out := make([]int, 0, len(s.Workspaces))
-	for i := range s.Workspaces {
+	for i, workspace := range s.Workspaces {
+		if query != "" {
+			haystack := strings.ToLower(strings.Join([]string{workspace.Name, workspace.Path, strings.Join(workspace.Directories, " ")}, " "))
+			matched := true
+			for _, term := range strings.Fields(query) {
+				if !strings.Contains(haystack, term) {
+					matched = false
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
 		out = append(out, i)
 	}
 	return out
+}
+
+func (p *HomePage) moveWorkspaceModalSelection(delta int) {
+	matches := p.workspaceModal.filteredIndexes()
+	if len(matches) == 0 || delta == 0 {
+		return
+	}
+	pos := indexInList(matches, p.workspaceModal.SelectedWorkspace)
+	if pos < 0 {
+		pos = 0
+	}
+	pos = (pos + delta) % len(matches)
+	if pos < 0 {
+		pos += len(matches)
+	}
+	p.workspaceModal.SelectedWorkspace = matches[pos]
+	p.workspaceModal.ConfirmDelete = false
+}
+
+func (p *HomePage) selectWorkspaceModalMatch(pos int) {
+	matches := p.workspaceModal.filteredIndexes()
+	if len(matches) == 0 {
+		p.workspaceModal.SelectedWorkspace = -1
+		return
+	}
+	if pos < 0 {
+		pos = 0
+	}
+	if pos >= len(matches) {
+		pos = len(matches) - 1
+	}
+	p.workspaceModal.SelectedWorkspace = matches[pos]
+	p.workspaceModal.ConfirmDelete = false
+}
+
+func (p *HomePage) workspaceModalPageSize() int {
+	columns := maxInt(1, p.workspaceModal.CardColumns)
+	return maxInt(columns, columns*3)
 }
 
 func (p *HomePage) currentWorkspaceModalDirectoryPath() string {
@@ -1716,10 +1812,12 @@ func (p *HomePage) drawWorkspaceModal(s tcell.Screen) {
 	if status == "" {
 		if p.workspaceModal.ActionMenuVisible {
 			status = "Choose an action for the selected workspace. Enter runs it, Esc goes back to cards."
+		} else if p.WorkspaceModalIntent() == "select" {
+			status = "Type to filter saved workspaces. Use arrows or Page Up/Down to navigate, Enter to activate, Esc to cancel."
 		} else if p.WorkspaceModalIntent() == "add_dir" {
-			status = "Start on the current workspace. Use ←/→ to move across cards, Enter to edit, or l to link a directory."
+			status = "Type to filter. Use arrows to move across cards, Enter to edit, or l to link a directory."
 		} else {
-			status = "Start on the current workspace. Use ←/→ to move across cards, Enter to edit, or press action keys directly."
+			status = "Type to filter. Use arrows to move across cards, Enter to edit, or press action keys directly."
 		}
 	}
 	statusLines := workspaceModalWrap(status, rect.W-4)
@@ -1732,12 +1830,14 @@ func (p *HomePage) drawWorkspaceModal(s tcell.Screen) {
 		DrawText(s, rect.X+2, y, rect.W-4, statusStyle, line)
 	}
 
-	help := "Arrow keys move cards • Enter/e edit selected workspace • edit screen can unlink linked folders • Esc close"
+	help := "Type to filter • arrows move • Enter/e edit • edit screen can unlink linked folders • Esc close"
 	if p.workspaceModal.ActionMenuVisible {
 		help = "↑/↓ choose workspace action • Enter run action • Esc back to cards"
 	}
-	if p.WorkspaceModalIntent() == "add_dir" && !p.workspaceModal.ActionMenuVisible {
-		help = "Arrow keys move cards • Enter edits selected workspace • l link dir • s save current • n new • Esc close"
+	if p.WorkspaceModalIntent() == "select" && !p.workspaceModal.ActionMenuVisible {
+		help = "Type to filter • arrows/Page Up/Page Down navigate • Enter activates • Tab toggles search/list • Esc cancels"
+	} else if p.WorkspaceModalIntent() == "add_dir" && !p.workspaceModal.ActionMenuVisible {
+		help = "Type to filter • arrows move • Enter edits • l link dir • s save current • n new • Esc close"
 	}
 	helpLines := workspaceModalWrap(help, rect.W-4)
 	footerText := "Workspace switcher keys are configured in /keybinds."
@@ -1796,6 +1896,12 @@ func (p *HomePage) drawWorkspaceModal(s tcell.Screen) {
 func (p *HomePage) drawWorkspaceModalCards(s tcell.Screen, rect Rect) {
 	DrawBox(s, rect, p.theme.Border)
 	header := "Workspace Cards"
+	query := strings.TrimSpace(p.workspaceModal.Search)
+	if p.workspaceModal.Focus == workspaceModalFocusSearch && !p.workspaceModal.ActionMenuVisible {
+		header = "Filter: " + query + "▌"
+	} else if query != "" {
+		header = fmt.Sprintf("Workspace Cards · filter %q", query)
+	}
 	if p.workspaceModal.Focus == workspaceModalFocusList && !p.workspaceModal.ActionMenuVisible {
 		header += " [focus]"
 	}
@@ -1803,8 +1909,15 @@ func (p *HomePage) drawWorkspaceModalCards(s tcell.Screen, rect Rect) {
 	matches := p.workspaceFilteredIndexes()
 	if len(matches) == 0 {
 		p.workspaceModal.CardColumns = 1
-		DrawText(s, rect.X+2, rect.Y+2, rect.W-4, p.theme.Warning, "No saved workspaces yet")
+		emptyText := "No saved workspaces yet"
+		if strings.TrimSpace(p.workspaceModal.Search) != "" {
+			emptyText = "No workspaces match the filter"
+		}
+		DrawText(s, rect.X+2, rect.Y+2, rect.W-4, p.theme.Warning, emptyText)
 		emptyHint := "Press s to create the first workspace"
+		if strings.TrimSpace(p.workspaceModal.Search) != "" {
+			emptyHint = "Backspace edits the filter; Ctrl+U clears it"
+		}
 		if p.WorkspaceModalIntent() == "add_dir" {
 			emptyHint = "Press s to create the first workspace, then link another directory"
 		}

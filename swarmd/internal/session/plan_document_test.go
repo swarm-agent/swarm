@@ -34,6 +34,21 @@ func TestNormalizePlanDocumentForSaveFillsPlanIdentityAndValidatesStructure(t *t
 	}
 }
 
+func TestNormalizePlanDocumentForSaveDefaultsLegacyExecutionOriginToApprovedPlan(t *testing.T) {
+	doc, err := NormalizePlanDocumentForSave("plan-legacy", "Legacy Plan", &pebblestore.SessionPlanDocument{
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("normalize legacy document: %v", err)
+	}
+	if got, want := doc.ExecutionOrigin, PlanExecutionOriginApprovedPlan; got != want {
+		t.Fatalf("legacy execution origin = %q, want %q", got, want)
+	}
+	if got := NormalizePlanExecutionOrigin("unexpected"); got != PlanExecutionOriginApprovedPlan {
+		t.Fatalf("unknown origin = %q, want fail-safe approved-plan origin", got)
+	}
+}
+
 func TestValidatePlanDocumentRejectsStructuralInconsistency(t *testing.T) {
 	_, err := NormalizePlanDocumentForSave("plan-one", "One Plan", &pebblestore.SessionPlanDocument{
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1"}, {ID: "cp-1"}},
@@ -205,13 +220,76 @@ func TestSetActivePlanDoesNotCreateRevisionOrMutateDocument(t *testing.T) {
 	}
 }
 
+func TestPlanRevisionHistoryCanFilterDefinitionAndExecutionSnapshots(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	first, _, err := svc.SavePlanWithMetadata(sessionID, "plan-one", "One Plan", "# Plan", "approved", "approved", true, PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Info:            pebblestore.SessionPlanInfo{Goal: "initial goal"},
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Model", Status: PlanCheckpointStatusInProgress},
+			{ID: "cp-2", Title: "API", Status: PlanCheckpointStatusCompleted},
+		},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save initial plan: %v", err)
+	}
+	if first.RevisionKind != PlanRevisionKindDefinition {
+		t.Fatalf("initial revision kind = %q", first.RevisionKind)
+	}
+
+	definition, _, err := svc.PatchPlan(sessionID, PlanPatchOptions{
+		PlanID:        first.ID,
+		DocumentPatch: &PlanDocumentPatch{Operation: "update_info", Info: &pebblestore.SessionPlanInfo{Goal: "definition update"}},
+		Metadata:      PlanSaveMetadata{UpdateSummary: "update goal", UpdateScope: "plan info", UpdateKind: "document_patch"},
+	})
+	if err != nil {
+		t.Fatalf("save definition revision: %v", err)
+	}
+	execution, _, err := svc.PatchPlan(sessionID, PlanPatchOptions{
+		PlanID:        first.ID,
+		DocumentPatch: &PlanDocumentPatch{Operation: "checkpoint_outcome", CheckpointID: "cp-1", Status: PlanCheckpointStatusCompleted, Report: "model done"},
+		Metadata:      PlanSaveMetadata{UpdateSummary: "complete cp-1", UpdateScope: "cp-1"},
+	})
+	if err != nil {
+		t.Fatalf("save execution revision: %v", err)
+	}
+	if definition.RevisionKind != PlanRevisionKindDefinition || execution.RevisionKind != PlanRevisionKindExecution {
+		t.Fatalf("revision kinds definition=%q execution=%q", definition.RevisionKind, execution.RevisionKind)
+	}
+
+	definitionRevisions, err := svc.ListPlanRevisionsByKind(sessionID, first.ID, 10, PlanRevisionKindDefinition)
+	if err != nil {
+		t.Fatalf("list definition revisions: %v", err)
+	}
+	if len(definitionRevisions) != 2 {
+		t.Fatalf("definition revision count = %d, want 2: %#v", len(definitionRevisions), definitionRevisions)
+	}
+	for _, revision := range definitionRevisions {
+		if revision.RevisionKind != PlanRevisionKindDefinition {
+			t.Fatalf("definition history included non-definition revision: %#v", revision)
+		}
+	}
+	executionRevisions, err := svc.ListPlanRevisionsByKind(sessionID, first.ID, 10, PlanRevisionKindExecution)
+	if err != nil {
+		t.Fatalf("list execution revisions: %v", err)
+	}
+	if len(executionRevisions) != 1 || executionRevisions[0].Version != execution.Version {
+		t.Fatalf("execution revisions = %#v, want checkpoint execution snapshot", executionRevisions)
+	}
+}
+
 func TestApplyPlanDocumentPatchBatchCreatesOneRevision(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()
 
 	sessionID := createPlanTestSession(t, svc)
 	first, _, err := svc.SavePlanWithMetadata(sessionID, "plan-one", "One Plan", "# Plan", "draft", "draft", true, PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
-		Info: pebblestore.SessionPlanInfo{Goal: "initial goal", Scope: "initial scope"},
+		Info:            pebblestore.SessionPlanInfo{Goal: "initial goal", Scope: "initial scope"},
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
 			{ID: "cp-1", Title: "Model", Status: "active"},
 			{ID: "cp-2", Title: "API", Status: "pending"},
@@ -241,7 +319,7 @@ func TestApplyPlanDocumentPatchBatchCreatesOneRevision(t *testing.T) {
 	if updated.Document == nil || updated.Document.Info.Goal != "modular one-plan system" || updated.Document.Info.Scope != "initial scope" || updated.Document.ActiveCheckpointID != "cp-2" {
 		t.Fatalf("updated document = %#v", updated.Document)
 	}
-	if updated.Document.Checkpoints[0].ID != "cp-2" || updated.Document.Checkpoints[0].Order != 1 || updated.Document.Checkpoints[1].Status != "done" || updated.Document.Checkpoints[1].Report != "model complete" {
+	if updated.Document.Checkpoints[0].ID != "cp-2" || updated.Document.Checkpoints[0].Order != 1 || updated.Document.Checkpoints[1].Status != PlanCheckpointStatusCompleted || updated.Document.Checkpoints[1].Report != "model complete" {
 		t.Fatalf("checkpoint patch/order failed: %#v", updated.Document.Checkpoints)
 	}
 	revisions, err := svc.ListPlanRevisions(sessionID, first.ID, 10)
@@ -313,6 +391,37 @@ func TestApplyPlanDocumentPatchInfoJSONPresenceAllowsClearingList(t *testing.T) 
 	}
 	if doc.Info.Goal != "initial" || len(doc.Info.Decisions) != 0 || doc.Info.RelevantFiles[0] != "keep.go" {
 		t.Fatalf("json presence patch result = %#v", doc.Info)
+	}
+}
+
+func TestApplyPlanDocumentPatchUpdateCheckpointTasksPreservesMetadata(t *testing.T) {
+	var patch PlanDocumentPatch
+	if err := json.Unmarshal([]byte(`{"operation":"update_checkpoint","checkpoint_id":"cp-1","checkpoint":{"tasks":["[x] Inspect plan_manage support","[ ] Add guardrails"],"notes":"started guardrails"}}`), &patch); err != nil {
+		t.Fatalf("unmarshal patch: %v", err)
+	}
+	doc, err := ApplyPlanDocumentPatch("plan-one", "One Plan", &pebblestore.SessionPlanDocument{
+		ID: "plan-one",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID:                 "cp-1",
+			Title:              "Guardrails",
+			Status:             PlanCheckpointStatusInProgress,
+			Tasks:              []string{"Inspect plan_manage support", "Add guardrails"},
+			AcceptanceCriteria: []string{"progress stays in plan_manage"},
+		}},
+		ActiveCheckpointID: "cp-1",
+	}, patch)
+	if err != nil {
+		t.Fatalf("apply patch: %v", err)
+	}
+	checkpoint := doc.Checkpoints[0]
+	if checkpoint.Status != PlanCheckpointStatusInProgress || checkpoint.Title != "Guardrails" || checkpoint.Notes != "started guardrails" {
+		t.Fatalf("checkpoint metadata not preserved/updated: %#v", checkpoint)
+	}
+	if len(checkpoint.Tasks) != 2 || checkpoint.Tasks[0] != "[x] Inspect plan_manage support" || checkpoint.Tasks[1] != "[ ] Add guardrails" {
+		t.Fatalf("checkpoint task checklist not updated: %#v", checkpoint.Tasks)
+	}
+	if len(checkpoint.AcceptanceCriteria) != 1 || checkpoint.AcceptanceCriteria[0] != "progress stays in plan_manage" {
+		t.Fatalf("acceptance criteria not preserved: %#v", checkpoint.AcceptanceCriteria)
 	}
 }
 

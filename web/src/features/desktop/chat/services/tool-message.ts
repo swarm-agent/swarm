@@ -6,6 +6,11 @@ import type {
   StructuredToolMessage,
   TodoToolData,
   TodoToolSummaryCounts,
+  WebFetchStatusData,
+  WebFetchToolData,
+  WebResourceData,
+  WebSearchQueryData,
+  WebSearchToolData,
 } from "../types/chat";
 
 interface ToolHistoryPayload {
@@ -13,6 +18,7 @@ interface ToolHistoryPayload {
   tool?: string;
   tool_name?: string;
   call_id?: string;
+  run_id?: string;
   tool_instance_id?: string;
   arguments?: string;
   output?: string;
@@ -25,16 +31,27 @@ interface StructuredToolMessageInput {
   pathId?: StructuredToolMessage["pathId"];
   tool: string;
   callId?: string;
+  runId?: string;
   toolInstanceId?: string;
   argumentsText?: string;
   outputText?: string;
   completedOutputText?: string;
+  taskStream?: {
+    launchesByKey: Record<string, Record<string, unknown>>;
+    launchOrder: string[];
+  };
   error?: string;
   durationMs?: number;
   state?: StructuredToolMessage["state"];
 }
 
-function parseJsonRecord(value: string): Record<string, unknown> | null {
+const MAX_STRUCTURED_OUTPUT_PARSE_BYTES = 1_000_000;
+const MAX_PREVIEW_LINES = 12;
+const MAX_PREVIEW_SCAN_BYTES = 32_000;
+const MAX_PREVIEW_LINE_BYTES = 2_000;
+
+function parseJsonRecord(value: string, maxBytes = Number.POSITIVE_INFINITY): Record<string, unknown> | null {
+  if (value.length > maxBytes) return null;
   const trimmed = value.trim();
   if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
     return null;
@@ -53,6 +70,12 @@ function jsonStr(obj: Record<string, unknown> | null, key: string): string {
   if (!obj) return "";
   const v = obj[key];
   return typeof v === "string" ? v.trim() : "";
+}
+
+function jsonRawStr(obj: Record<string, unknown> | null, key: string): string {
+  if (!obj) return "";
+  const v = obj[key];
+  return typeof v === "string" ? v : "";
 }
 
 function jsonNum(obj: Record<string, unknown> | null, key: string): number {
@@ -95,6 +118,159 @@ function jsonObjectSlice(
   );
 }
 
+function jsonRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function nestedObjectSlice(
+  obj: Record<string, unknown> | null,
+  key: string,
+): Record<string, unknown>[] {
+  const direct = jsonObjectSlice(obj, key);
+  if (direct.length > 0) return direct;
+  for (const nestedKey of ["data", "response", "output"]) {
+    const nested = jsonRecord(obj?.[nestedKey]);
+    const found = jsonObjectSlice(nested, key);
+    if (found.length > 0) return found;
+  }
+  return [];
+}
+
+function webError(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  const record = jsonRecord(value);
+  return firstNonEmpty(
+    jsonStr(record, "message"),
+    jsonStr(record, "error"),
+    jsonStr(record, "tag"),
+  );
+}
+
+function webDomain(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+      ? parsed.hostname.replace(/^www\./i, "")
+      : "";
+  } catch {
+    return "";
+  }
+}
+
+function extractWebResource(value: Record<string, unknown>): WebResourceData {
+  const url = firstNonEmpty(jsonStr(value, "url"), jsonStr(value, "source_url"));
+  const highlights = jsonStrArray(value, "highlights");
+  const subpages = jsonObjectSlice(value, "subpages").map(extractWebResource);
+  return {
+    url,
+    title: firstNonEmpty(jsonStr(value, "title"), jsonStr(value, "name")),
+    domain: webDomain(url),
+    author: jsonStr(value, "author"),
+    publishedDate: firstNonEmpty(jsonStr(value, "published_date"), jsonStr(value, "publishedDate")),
+    summary: jsonStr(value, "summary"),
+    text: firstNonEmptyRaw(jsonRawStr(value, "text"), jsonRawStr(value, "content")),
+    highlights,
+    error: webError(value.error),
+    status: jsonStr(value, "status"),
+    subpages,
+  };
+}
+
+function extractWebSearchToolData(
+  outputJson: Record<string, unknown> | null,
+  argumentsJson: Record<string, unknown> | null,
+): WebSearchToolData | null {
+  const effective = outputJson ?? argumentsJson;
+  if (!effective) return null;
+
+  const requestedQueries = [
+    ...jsonStrArray(outputJson, "queries"),
+    ...jsonStrArray(argumentsJson, "queries"),
+  ];
+  const singleQuery = firstNonEmpty(jsonStr(outputJson, "query"), jsonStr(argumentsJson, "query"));
+  const queries = Array.from(new Set([...requestedQueries, ...(singleQuery ? [singleQuery] : [])]));
+  const rawResults = nestedObjectSlice(outputJson, "results");
+  const wrapperResults = rawResults.filter((item) => Array.isArray(item.results) || Boolean(jsonStr(item, "query")));
+  const directHits = wrapperResults.length === 0 ? rawResults : [];
+  const queryResults: WebSearchQueryData[] = wrapperResults.map((item, index) => {
+    const results = jsonObjectSlice(item, "results").map(extractWebResource);
+    const query = jsonStr(item, "query") || queries[index] || "";
+    return {
+      query,
+      count: hasJsonKey(item, "count") ? jsonNum(item, "count") : results.length,
+      searchType: firstNonEmpty(jsonStr(item, "resolved_search_type"), jsonStr(item, "requested_search_type")),
+      timedOut: jsonBool(item, "timed_out"),
+      error: webError(item.error),
+      results,
+    };
+  });
+  if (directHits.length > 0) {
+    queryResults.push({
+      query: queries[0] || "",
+      count: directHits.length,
+      searchType: firstNonEmpty(jsonStr(outputJson, "search_type"), jsonStr(argumentsJson, "search_type")),
+      timedOut: jsonBool(outputJson, "timed_out"),
+      error: webError(outputJson?.error),
+      results: directHits.map(extractWebResource),
+    });
+  }
+  if (queryResults.length === 0 && queries.length > 0) {
+    queryResults.push(...queries.map((query) => ({
+      query,
+      count: 0,
+      searchType: firstNonEmpty(jsonStr(outputJson, "search_type"), jsonStr(argumentsJson, "search_type")),
+      timedOut: jsonBool(outputJson, "timed_out"),
+      error: "",
+      results: [],
+    })));
+  }
+
+  const resultCount = queryResults.reduce((sum, item) => sum + item.results.length, 0);
+  const failedCount = queryResults.filter((item) => Boolean(item.error)).length;
+  const searchTypes = jsonStrArray(outputJson, "resolved_search_types");
+  return {
+    queries: queries.length > 0 ? queries : queryResults.map((item) => item.query).filter(Boolean),
+    queryCount: jsonNum(outputJson, "query_count") || queryResults.length || queries.length,
+    totalResults: hasJsonKey(outputJson, "total_results") ? jsonNum(outputJson, "total_results") : resultCount,
+    failedQueries: hasJsonKey(outputJson, "failed_queries") ? jsonNum(outputJson, "failed_queries") : failedCount,
+    truncated: jsonBool(outputJson, "details_truncated") || jsonBool(outputJson, "truncated_queries") || jsonBool(outputJson, "truncated"),
+    searchType: searchTypes.join(", ") || firstNonEmpty(jsonStr(outputJson, "requested_search_type"), jsonStr(argumentsJson, "search_type")),
+    queryResults,
+  };
+}
+
+function extractWebFetchToolData(
+  outputJson: Record<string, unknown> | null,
+  argumentsJson: Record<string, unknown> | null,
+): WebFetchToolData | null {
+  const effective = outputJson ?? argumentsJson;
+  if (!effective) return null;
+  const urls = Array.from(new Set([
+    ...jsonStrArray(outputJson, "urls"),
+    ...jsonStrArray(argumentsJson, "urls"),
+    ...[firstNonEmpty(jsonStr(outputJson, "url"), jsonStr(argumentsJson, "url"))].filter(Boolean),
+  ]));
+  const results = nestedObjectSlice(outputJson, "results").map(extractWebResource);
+  const statuses: WebFetchStatusData[] = nestedObjectSlice(outputJson, "statuses").map((item) => ({
+    id: jsonStr(item, "id"),
+    status: jsonStr(item, "status"),
+    source: jsonStr(item, "source"),
+    error: webError(item.error),
+  }));
+  const inferredSuccess = results.filter((item) => !item.error).length;
+  return {
+    urls,
+    count: hasJsonKey(outputJson, "count") ? jsonNum(outputJson, "count") : results.length,
+    successCount: hasJsonKey(outputJson, "success_count") ? jsonNum(outputJson, "success_count") : inferredSuccess,
+    timedOut: jsonBool(outputJson, "timed_out"),
+    truncated: jsonBool(outputJson, "details_truncated") || jsonBool(outputJson, "truncated_urls") || jsonBool(outputJson, "truncated"),
+    results,
+    statuses,
+  };
+}
+
 function firstNonEmpty(...values: string[]): string {
   for (const value of values) {
     const trimmed = value.trim();
@@ -103,9 +279,11 @@ function firstNonEmpty(...values: string[]): string {
   return "";
 }
 
-function clamp(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return text.slice(0, max - 1) + "…";
+function firstNonEmptyRaw(...values: string[]): string {
+  for (const value of values) {
+    if (value.trim()) return value;
+  }
+  return "";
 }
 
 function resolveToolTarget(
@@ -133,6 +311,9 @@ function summarizeToolOutput(
   const effective = outputJson ?? argumentsJson;
   if (!effective) return toolName || "tool";
   const tool = toolName.toLowerCase();
+  if (tool === "thinking") {
+    return "THINKING";
+  }
 
   switch (tool) {
     case "compact": {
@@ -316,7 +497,7 @@ function summarizeToolOutput(
       if (count > 0 || hasJsonKey(effective, "count"))
         notes.push(countLabel(count, "record", "records"));
       if (successCount > 0) notes.push(`${successCount} ok`);
-      if (url) return summaryWithNotes(`webfetch ${clamp(url, 80)}`, notes);
+      if (url) return summaryWithNotes(`webfetch ${url}`, notes);
       return summaryWithNotes("webfetch", notes);
     }
     case "task": {
@@ -337,23 +518,6 @@ function summarizeToolOutput(
       if (launchCount > 1) parts.push(`(${launchCount} launches)`);
       if (status) parts.push("(" + status + ")");
       return parts.length ? "task " + parts.join(" ") : "task";
-    }
-    case "manage-image":
-    case "manage_image": {
-      const action = jsonStr(effective, "action");
-      const status = jsonStr(effective, "status");
-      const threadId = jsonStr(effective, "thread_id");
-      const provider = jsonStr(effective, "provider");
-      const model = jsonStr(effective, "model");
-      const requestedCount = jsonNum(effective, "requested_count");
-      const savedCount = jsonNum(effective, "saved_count");
-      if (action === "inspect") return "manage-image inspect";
-      const parts = ["manage-image"];
-      if (status) parts.push(status);
-      if (savedCount > 0 || requestedCount > 0) parts.push(`${savedCount || requestedCount} image${(savedCount || requestedCount) === 1 ? "" : "s"}`);
-      if (provider || model) parts.push([provider, model].filter(Boolean).join("/"));
-      if (threadId) parts.push(`session ${threadId}`);
-      return parts.join(" · ");
     }
     case "plan_manage":
     case "plan-manage": {
@@ -380,7 +544,7 @@ function summarizeToolOutput(
           : null;
       const text = item ? jsonStr(item, "text") : "";
       const id = item ? jsonStr(item, "id") : jsonStr(effective, "id");
-      if (text) return `${summary} · ${[clamp(text, 80), ...notes].join(" · ")}`;
+      if (text) return `${summary} · ${[text, ...notes].join(" · ")}`;
       if (id) return `${summary} · ${[id, ...notes].join(" · ")}`;
       if (notes.length) return `${summary} (${notes.join(", ")})`;
       return summary;
@@ -388,7 +552,7 @@ function summarizeToolOutput(
     case "ask-user":
     case "ask_user": {
       const question = jsonStr(effective, "question");
-      if (question) return "ask-user " + clamp(question, 80);
+      if (question) return "ask-user " + question;
       return "ask-user";
     }
     case "exit-plan-mode":
@@ -401,23 +565,12 @@ function summarizeToolOutput(
       );
       if (exitPlanSummary) return exitPlanSummary;
       const title = jsonStr(effective, "title");
-      if (title) return "plan " + clamp(title, 80);
+      if (title) return "plan " + title;
       return tool === "permission" ? "permission" : "plan";
     }
     default:
       return toolName || "tool";
   }
-}
-
-function jsonRecord(
-  obj: Record<string, unknown> | null,
-  key: string,
-): Record<string, unknown> | null {
-  if (!obj) return null;
-  const value = obj[key];
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
 }
 
 function normalizePlanManageAction(action: string): string {
@@ -451,17 +604,12 @@ function planManageActionDisplay(action: string): string {
 }
 
 function firstPlanPreviewLine(planBody: string): string {
-  return planBody
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .split("\n")
-    .map((line) => line.trim())
-    .find(Boolean) ?? "";
+  return previewTextLines(planBody, 1)[0] ?? "";
 }
 
 function summarizePlanManageToolOutput(payload: Record<string, unknown>): string {
   const action = normalizePlanManageAction(jsonStr(payload, "action"));
-  const plan = jsonRecord(payload, "plan");
+  const plan = jsonRecord(payload.plan);
   const title = jsonStr(plan, "title");
   const planId = firstNonEmpty(
     jsonStr(plan, "id"),
@@ -473,7 +621,7 @@ function summarizePlanManageToolOutput(payload: Record<string, unknown>): string
   if (action) summary += ` ${planManageActionDisplay(action)}`;
 
   const notes: string[] = [];
-  if (title) notes.push(clamp(title, 80));
+  if (title) notes.push(title);
   else if (planId && action !== "list" && action !== "history") notes.push(planId);
 
   if (action === "list") {
@@ -492,7 +640,7 @@ function summarizePlanManageToolOutput(payload: Record<string, unknown>): string
 
   if (notes.length) return `${summary} (${notes.join(", ")})`;
   const fallback = jsonStr(payload, "summary");
-  return fallback ? `plan · ${clamp(fallback, 120)}` : summary;
+  return fallback ? `plan · ${fallback}` : summary;
 }
 
 function planListPreviewLine(plan: Record<string, unknown>): string {
@@ -524,14 +672,14 @@ function buildPlanManagePreviewLines(
   payload: Record<string, unknown> | null,
   maxLines: number,
 ): string[] {
-  if (!payload || maxLines <= 0) return [];
+  if (!payload) return [];
   const out: string[] = [];
   const action = normalizePlanManageAction(jsonStr(payload, "action"));
   if (action) pushPreviewLine(out, `action: ${planManageActionDisplay(action)}`, maxLines);
   const status = jsonStr(payload, "status");
   if (status) pushPreviewLine(out, `status: ${status}`, maxLines);
 
-  const plan = jsonRecord(payload, "plan");
+  const plan = jsonRecord(payload.plan);
   if (plan) {
     const title = jsonStr(plan, "title");
     const planId = jsonStr(plan, "id");
@@ -619,8 +767,8 @@ function formatDurationCompact(ms: number): string {
   return `${(ms / 60_000).toFixed(1)}m`;
 }
 
-function quotedSummary(value: string, max: number): string {
-  return JSON.stringify(clamp(value, max));
+function quotedSummary(value: string, _max: number): string {
+  return JSON.stringify(value);
 }
 
 function listModeLabel(mode: string): string {
@@ -688,16 +836,20 @@ function extractEditDiff(
   };
 }
 
-function previewTextLines(value: string, maxLines: number): string[] {
-  if (!value) return [];
-  return value
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim() !== "")
-    .slice(0, maxLines)
-    .map((line) => clamp(line, 200));
+function previewTextLines(value: string, maxLines = MAX_PREVIEW_LINES): string[] {
+  if (!value || maxLines <= 0) return [];
+  const scan = value.slice(0, MAX_PREVIEW_SCAN_BYTES);
+  const lines: string[] = [];
+  let start = 0;
+  while (start < scan.length && lines.length < maxLines) {
+    const newline = scan.indexOf("\n", start);
+    const end = newline === -1 ? scan.length : newline;
+    const line = scan.slice(start, end).replace(/\r$/, "").trimEnd();
+    if (line.trim()) lines.push(line.slice(0, MAX_PREVIEW_LINE_BYTES));
+    if (newline === -1) break;
+    start = newline + 1;
+  }
+  return lines;
 }
 
 function taskPreviewText(payload: Record<string, unknown> | null): string {
@@ -744,8 +896,10 @@ function buildTaskToolRow(
 ): StructuredToolMessage["taskRows"][number] | null {
   if (!payload) return null;
   const status = jsonStr(payload, "status") || "pending";
+  const phase = jsonStr(payload, "phase");
   const normalizedStatus = status.trim().toLowerCase();
-  const terminal = ["done", "ok", "success", "completed", "complete", "error", "failed"].includes(normalizedStatus);
+  const terminal = ["done", "ok", "success", "completed", "complete", "error", "failed", "cancelled", "canceled"].includes(normalizedStatus);
+  const launchKey = jsonStr(payload, "launch_key");
   const launchIndex = Math.max(0, jsonNum(payload, "launch_index") || fallbackLaunchIndex);
   const childSessionId = firstNonEmpty(
     jsonStr(payload, "session_id"),
@@ -762,7 +916,8 @@ function buildTaskToolRow(
   const assignmentLabel = jsonStr(payload, "assignment_label");
   const modelLabel = [jsonStr(payload, "subagent_provider"), jsonStr(payload, "subagent_model")].filter(Boolean).join(" / ");
   const rawPreviewKind = jsonStr(payload, "current_preview_kind");
-  let tool = jsonStr(payload, "current_tool");
+  const error = jsonStr(payload, "error");
+  let tool = firstNonEmpty(jsonStr(payload, "current_tool_display"), jsonStr(payload, "current_tool"));
   if (!tool && rawPreviewKind.trim().toLowerCase() !== "reasoning") {
     const toolOrder = jsonStrArray(payload, "tool_order");
     tool = toolOrder[toolOrder.length - 1] || "-";
@@ -770,15 +925,17 @@ function buildTaskToolRow(
   const currentToolMs = jsonNum(payload, "current_tool_ms");
   const elapsedMs = jsonNum(payload, "elapsed_ms");
   const time = terminal ? formatDurationCompact(elapsedMs || currentToolMs) : "";
-  const previewText = taskPreviewText(payload);
-  const normalized = normalizeTaskToolDisplay(tool, rawPreviewKind, previewText);
+  const previewText = error || taskPreviewText(payload);
+  const normalized = normalizeTaskToolDisplay(tool, error ? "error" : rawPreviewKind, previewText);
   const launchStartedAtMs = jsonNum(payload, "launch_started_at_ms");
   const currentToolStartedAtMs = jsonNum(payload, "current_tool_started_at_ms");
   if (!agent && normalized.tool === "-" && !time && !status && !normalized.previewText) return null;
   return {
+    launchKey: launchKey || undefined,
     launchIndex,
     childSessionId,
     status,
+    phase,
     agent,
     assignmentLabel,
     modelLabel,
@@ -794,9 +951,24 @@ function buildTaskToolRow(
   };
 }
 
+function isTerminalTaskPayload(payload: Record<string, unknown> | null): boolean {
+  if (!payload || jsonStr(payload, "path_id") !== "tool.task.v1") return false;
+  const status = jsonStr(payload, "status").toLowerCase();
+  return ["done", "ok", "success", "completed", "complete", "error", "failed", "cancelled", "canceled"].includes(status);
+}
+
 function buildTaskToolRows(
   payload: Record<string, unknown> | null,
+  taskStream?: StructuredToolMessageInput["taskStream"],
 ): StructuredToolMessage["taskRows"] {
+  if (taskStream && !isTerminalTaskPayload(payload)) {
+    return taskStream.launchOrder
+      .map((launchKey, index) => {
+        const launch = taskStream.launchesByKey[launchKey] ?? null;
+        return buildTaskToolRow(launch ? { ...launch, launch_key: jsonStr(launch, "launch_key") || launchKey } : null, index + 1);
+      })
+      .filter((row): row is StructuredToolMessage["taskRows"][number] => Boolean(row));
+  }
   if (!payload) return [];
 
   const launches = jsonObjectSlice(payload, "launches");
@@ -804,6 +976,14 @@ function buildTaskToolRows(
     return launches
       .map((launch, index) => buildTaskToolRow(launch, index + 1))
       .filter((row): row is StructuredToolMessage["taskRows"][number] => Boolean(row));
+  }
+
+  if (payload.path_id === "tool.task.stream.v2") {
+    const launch = payload.launch && typeof payload.launch === "object" && !Array.isArray(payload.launch)
+      ? payload.launch as Record<string, unknown>
+      : null;
+    const row = buildTaskToolRow(launch ? { ...launch, launch_key: jsonStr(launch, "launch_key") || jsonStr(payload, "launch_key") } : payload, 1);
+    return row ? [row] : [];
   }
 
   const row = buildTaskToolRow(payload, 1);
@@ -815,14 +995,9 @@ function pushPreviewLine(
   value: string,
   maxLines: number,
 ): void {
-  const trimmed = value.trim();
-  if (!trimmed || lines.length >= maxLines) {
-    return;
-  }
-  const next = clamp(trimmed, 200);
-  if (lines.includes(next)) {
-    return;
-  }
+  if (lines.length >= maxLines) return;
+  const next = value.trim().slice(0, MAX_PREVIEW_LINE_BYTES);
+  if (!next || lines.includes(next)) return;
   lines.push(next);
 }
 
@@ -835,7 +1010,10 @@ function extractSearchToolData(
 
   const mode = jsonStr(effective, "search_mode").toLowerCase();
   const path = jsonStr(effective, "path");
-  const queryCount = jsonNum(effective, "query_count");
+  const queryCount = Math.max(
+    jsonNum(effective, "query_count"),
+    jsonObjectSlice(effective, "query_results").length,
+  );
   const count = jsonNum(effective, "count");
   const totalMatched = jsonNum(effective, "total_matched");
   const truncated =
@@ -873,7 +1051,10 @@ function buildSearchFileGroups(
 function buildSearchFileModeGroups(
   outputJson: Record<string, unknown> | null,
 ): SearchToolFileGroup[] {
-  const items = jsonObjectSlice(outputJson, "files");
+  const items = [
+    ...jsonObjectSlice(outputJson, "files"),
+    ...jsonObjectSlice(outputJson, "results"),
+  ];
   return items
     .map((item) => {
       const path = firstNonEmpty(
@@ -896,10 +1077,21 @@ function buildSearchFileModeGroups(
     .filter((item): item is SearchToolFileGroup => Boolean(item));
 }
 
+function compactSearchContentItems(
+  outputJson: Record<string, unknown> | null,
+): Record<string, unknown>[] {
+  const legacy = jsonObjectSlice(outputJson, "matches");
+  const compact = jsonObjectSlice(outputJson, "results").flatMap((group) => {
+    const path = firstNonEmpty(jsonStr(group, "relative_path"), jsonStr(group, "path"));
+    return jsonObjectSlice(group, "items").map((item) => ({ ...item, path }));
+  });
+  return [...legacy, ...compact];
+}
+
 function buildSearchContentFileGroups(
   outputJson: Record<string, unknown> | null,
 ): SearchToolFileGroup[] {
-  const items = jsonObjectSlice(outputJson, "matches");
+  const items = compactSearchContentItems(outputJson);
   const fileMap = new Map<
     string,
     {
@@ -910,8 +1102,8 @@ function buildSearchContentFileGroups(
         {
           query: string;
           lines: number[];
-          matches: { line: number; text: string }[];
-          seen: Set<number>;
+          matches: { line: number; column: number; text: string }[];
+          seen: Set<string>;
         }
       >;
     }
@@ -926,6 +1118,7 @@ function buildSearchContentFileGroups(
     const query = jsonStr(item, "query");
     const queryKey = query.toLowerCase();
     const line = jsonNum(item, "line");
+    const column = jsonNum(item, "column");
 
     let fileGroup = fileMap.get(path);
     if (!fileGroup) {
@@ -935,53 +1128,72 @@ function buildSearchContentFileGroups(
 
     let queryGroup = fileGroup.queryMap.get(queryKey);
     if (!queryGroup) {
-      queryGroup = { query, lines: [], matches: [], seen: new Set<number>() };
+      queryGroup = { query, lines: [], matches: [], seen: new Set<string>() };
       fileGroup.queryMap.set(queryKey, queryGroup);
       fileGroup.queryOrder.push(queryKey);
     }
 
     if (!queryGroup.query && query) queryGroup.query = query;
     const text = jsonStr(item, "text");
-    if (line > 0 && !queryGroup.seen.has(line)) {
-      queryGroup.seen.add(line);
-      queryGroup.lines.push(line);
-      queryGroup.matches.push({ line, text });
+    const matchKey = `${line}:${column}:${text}`;
+    if (line > 0 && !queryGroup.seen.has(matchKey)) {
+      queryGroup.seen.add(matchKey);
+      if (!queryGroup.lines.includes(line)) queryGroup.lines.push(line);
+      queryGroup.matches.push({ line, column, text });
     } else if (line <= 0 && text) {
-      queryGroup.matches.push({ line: 0, text });
+      queryGroup.matches.push({ line: 0, column, text });
     }
   }
 
   return Array.from(fileMap.values()).map((fileGroup) => {
-    const displayedQueryKeys = fileGroup.queryOrder.slice(0, 3);
+    const displayedQueryKeys = fileGroup.queryOrder;
     const queryGroups: SearchToolLineGroup[] = displayedQueryKeys.map(
       (queryKey) => {
         const queryGroup = fileGroup.queryMap.get(queryKey);
         const allLines = queryGroup?.lines ?? [];
         return {
           query: queryGroup?.query ?? "",
-          lines: allLines.slice(0, 6),
-          matches: (queryGroup?.matches ?? []).slice(0, 6),
-          extraLineCount: Math.max(
-            0,
-            Math.max(allLines.length, queryGroup?.matches.length ?? 0) - 6,
-          ),
+          lines: allLines,
+          matches: queryGroup?.matches ?? [],
+          extraLineCount: 0,
         };
       },
     );
     const matchCount = Array.from(fileGroup.queryMap.values()).reduce(
-      (sum, queryGroup) => sum + Math.max(queryGroup.lines.length, 1),
+      (sum, queryGroup) => sum + Math.max(queryGroup.matches.length, queryGroup.lines.length, 1),
       0,
     );
     return {
       path: fileGroup.path,
       matchCount,
       queryGroups,
-      extraQueryCount: Math.max(
-        0,
-        fileGroup.queryOrder.length - displayedQueryKeys.length,
-      ),
+      extraQueryCount: 0,
     };
   });
+}
+
+function extractBashToolData(
+  outputJson: Record<string, unknown> | null,
+  outputText: string,
+  argumentsJson: Record<string, unknown> | null,
+): NonNullable<StructuredToolMessage["bashData"]> {
+  const output = firstNonEmptyRaw(
+    jsonRawStr(outputJson, "output"),
+    jsonRawStr(outputJson, "stdout"),
+    jsonRawStr(outputJson, "output_text"),
+  );
+  const stdout = jsonRawStr(outputJson, "stdout");
+  const stderr = jsonRawStr(outputJson, "stderr");
+  const exitCode = hasJsonKey(outputJson, "exit_code")
+    ? jsonNum(outputJson, "exit_code")
+    : null;
+  return {
+    command: jsonStr(outputJson, "command") || jsonStr(argumentsJson, "command"),
+    output: output || (outputJson ? "" : outputText),
+    stdout: stdout === output ? "" : stdout,
+    stderr: stderr === output ? "" : stderr,
+    exitCode,
+  };
 }
 
 function extractPreviewLines(
@@ -991,36 +1203,47 @@ function extractPreviewLines(
   argumentsJson: Record<string, unknown> | null,
 ): string[] {
   const tool = toolName.toLowerCase();
+  if (tool === "thinking") {
+    return previewTextLines(outputText);
+  }
   const effective = outputJson ?? argumentsJson;
   if (!effective) return [];
 
   switch (tool) {
     case "compact": {
       const lines: string[] = [];
-      for (const line of previewTextLines(outputText, 6)) {
+      for (const line of previewTextLines(outputText)) {
         pushPreviewLine(lines, line, 6);
       }
       return lines;
     }
     case "bash": {
       const lines: string[] = [];
-      const stdout =
-        jsonStr(outputJson, "output") ||
-        jsonStr(outputJson, "stdout") ||
-        jsonStr(outputJson, "output_text") ||
-        (outputJson ? "" : outputText);
-      for (const line of previewTextLines(stdout, 5)) {
+      const bashData = extractBashToolData(outputJson, outputText, argumentsJson);
+      for (const line of previewTextLines(bashData.output || bashData.stdout || bashData.stderr)) {
         pushPreviewLine(lines, line, 6);
       }
       return lines;
     }
     case "read":
       return [];
+    case "list": {
+      const entries = jsonObjectSlice(outputJson, "entries");
+      if (entries.length === 0) return [];
+      const visible = entries.slice(0, 12).flatMap((entry) => {
+        const path = firstNonEmpty(jsonStr(entry, "path"), jsonStr(entry, "relative_path"));
+        if (!path) return [];
+        const type = jsonStr(entry, "type").toLowerCase();
+        return [type === "dir" && !path.endsWith("/") ? `${path}/` : path];
+      });
+      if (entries.length > 12) visible.push(`+${entries.length - 12} more`);
+      return visible;
+    }
     case "grep": {
       const out: string[] = [];
       const matches = outputJson?.matches;
       if (!Array.isArray(matches) || matches.length === 0) return out;
-      for (let i = 0; i < matches.length && out.length < 6; i++) {
+      for (let i = 0; i < matches.length; i++) {
         const m = matches[i] as Record<string, unknown> | null;
         if (!m || typeof m !== "object") continue;
         const path = typeof m["path"] === "string" ? m["path"] : "";
@@ -1028,9 +1251,9 @@ function extractPreviewLines(
         const text =
           typeof m["text"] === "string" ? (m["text"] as string).trim() : "";
         if (path && line > 0 && text) {
-          out.push(clamp(`${path}:${line}: ${text}`, 200));
+          out.push(`${path}:${line}: ${text}`);
         } else if (text) {
-          out.push(clamp(text, 200));
+          out.push(text);
         }
       }
       return out;
@@ -1043,7 +1266,7 @@ function extractPreviewLines(
       const queryResults = outputJson?.results;
       if (!Array.isArray(queryResults)) return out;
       const multiQuery = queryResults.length > 1;
-      for (let i = 0; i < queryResults.length && out.length < 6; i++) {
+      for (let i = 0; i < queryResults.length; i++) {
         const item = queryResults[i] as Record<string, unknown> | null;
         if (!item || typeof item !== "object") continue;
         const query =
@@ -1059,11 +1282,11 @@ function extractPreviewLines(
         }
         const hits = item["results"];
         if (!Array.isArray(hits)) continue;
-        for (let j = 0; j < hits.length && out.length < 6; j++) {
+        for (let j = 0; j < hits.length; j++) {
           const hit = hits[j] as Record<string, unknown> | null;
           if (!hit || typeof hit !== "object") continue;
           pushPreviewLine(out, webHitLabel(hit), 6);
-          if (!multiQuery && out.length >= 3) break;
+
         }
       }
       return out;
@@ -1072,7 +1295,7 @@ function extractPreviewLines(
       const out: string[] = [];
       const results = outputJson?.results;
       if (!Array.isArray(results)) return out;
-      for (let i = 0; i < results.length && out.length < 6; i++) {
+      for (let i = 0; i < results.length; i++) {
         const item = results[i] as Record<string, unknown> | null;
         if (!item || typeof item !== "object") continue;
         pushPreviewLine(out, webHitLabel(item), 6);
@@ -1084,33 +1307,13 @@ function extractPreviewLines(
     }
     case "task": {
       const out: string[] = [];
-      for (const row of buildTaskToolRows(effective).slice(0, 6)) {
+      for (const row of buildTaskToolRows(effective)) {
         const status = row.status ? `[${row.status}]` : "";
         const tool = row.tool && row.tool !== "-" ? ` · ${row.tool}` : "";
         const time = row.time ? ` · ${row.time}` : "";
         const label = row.assignmentLabel || row.agent;
         const model = row.modelLabel ? ` · ${row.modelLabel}` : "";
         pushPreviewLine(out, `${label}${model}${tool}${time} ${status}`.trim(), 6);
-      }
-      return out;
-    }
-    case "manage-image":
-    case "manage_image": {
-      const out: string[] = [];
-      const threadId = jsonStr(effective, "thread_id");
-      const openUrl = jsonStr(effective, "open_url");
-      const provider = jsonStr(effective, "provider");
-      const model = jsonStr(effective, "model");
-      const savedCount = jsonNum(effective, "saved_count");
-      const requestedCount = jsonNum(effective, "requested_count");
-      if (threadId) pushPreviewLine(out, `image session: ${threadId}`, 6);
-      if (openUrl) pushPreviewLine(out, `open: ${openUrl}`, 6);
-      if (provider || model) pushPreviewLine(out, `model: ${[provider, model].filter(Boolean).join(" / ")}`, 6);
-      if (savedCount > 0 || requestedCount > 0) pushPreviewLine(out, `saved: ${savedCount} / ${requestedCount || savedCount}`, 6);
-      for (const asset of jsonObjectSlice(effective, "assets").slice(0, 2)) {
-        const assetId = jsonStr(asset, "asset_id");
-        const url = jsonStr(asset, "url");
-        pushPreviewLine(out, `asset: ${[assetId, url].filter(Boolean).join(" · ")}`, 6);
       }
       return out;
     }
@@ -1135,9 +1338,9 @@ function extractPreviewLines(
 
 function buildManageTodosPreviewLines(
   payload: Record<string, unknown> | null,
-  maxLines: number,
+  _maxLines: number,
 ): string[] {
-  if (!payload || maxLines <= 0) return [];
+  if (!payload) return [];
   const out: string[] = [];
   const action = jsonStr(payload, "action").toLowerCase();
   const summary =
@@ -1147,20 +1350,17 @@ function buildManageTodosPreviewLines(
       ? (payload.summary as Record<string, unknown>)
       : null;
   if (summary && shouldShowManageTodosSummaryLines(action)) {
-    for (const line of buildManageTodosSummaryLines(summary, maxLines - out.length)) {
-      pushPreviewLine(out, line, maxLines);
-      if (out.length >= maxLines) return out;
+    for (const line of buildManageTodosSummaryLines(summary)) {
+      pushPreviewLine(out, line, _maxLines);
     }
   }
   for (const item of prioritizeManageTodosPreviewItems(payload)) {
     for (const line of manageTodosItemPreviewLines(item)) {
-      pushPreviewLine(out, line, maxLines);
-      if (out.length >= maxLines) return out;
+      pushPreviewLine(out, line, _maxLines);
     }
   }
-  for (const line of manageTodosStatusPreviewLines(payload, maxLines - out.length)) {
-    pushPreviewLine(out, line, maxLines);
-    if (out.length >= maxLines) return out;
+  for (const line of manageTodosStatusPreviewLines(payload)) {
+    pushPreviewLine(out, line, _maxLines);
   }
   if (out.length > 0) return out;
   const emptyLine = manageTodosEmptyPreviewLine(payload);
@@ -1259,25 +1459,22 @@ function manageTodosListPreviewItems(
   return filtered.length > 0 ? filtered : [];
 }
 
-function manageTodosStatusPreviewLines(
-  payload: Record<string, unknown>,
-  maxLines: number,
-): string[] {
-  if (maxLines <= 0) return [];
+function manageTodosStatusPreviewLines(payload: Record<string, unknown>): string[] {
+
   const action = jsonStr(payload, "action").toLowerCase();
   switch (action) {
     case "delete": {
       const id = jsonStr(payload, "id");
-      return [id ? `Deleted ${id}.` : "Deleted todo."].slice(0, maxLines);
+      return [id ? `Deleted ${id}.` : "Deleted todo."];
     }
     case "delete_done":
-      return ["Deleted completed todos."].slice(0, maxLines);
+      return ["Deleted completed todos."];
     case "delete_all":
-      return ["Deleted todos."].slice(0, maxLines);
+      return ["Deleted todos."];
     case "reorder":
-      return ["Reordered todos."].slice(0, maxLines);
+      return ["Reordered todos."];
     case "batch":
-      return manageTodosBatchStatusPreviewLines(payload).slice(0, maxLines);
+      return manageTodosBatchStatusPreviewLines(payload);
     default:
       return [];
   }
@@ -1356,21 +1553,18 @@ function manageTodosItemPreviewLines(
   const priority = jsonStr(item, "priority");
   if (priority) body += ` · ${priority}`;
   const lines: string[] = [];
-  if (metadata.length > 0) lines.push(clamp(metadata.join(" · "), 200));
-  lines.push(clamp(body, 200));
+  if (metadata.length > 0) lines.push(metadata.join(" · "));
+  lines.push(body);
   return lines;
 }
 
-function buildManageTodosSummaryLines(
-  summary: Record<string, unknown>,
-  maxLines: number,
-): string[] {
+function buildManageTodosSummaryLines(summary: Record<string, unknown>): string[] {
   const lines: string[] = [];
   const appendSummary = (
     label: string,
     value: Record<string, unknown> | null,
   ) => {
-    if (!value || lines.length >= maxLines) return;
+    if (!value) return;
     const total = jsonNum(value, "task_count");
     const open = jsonNum(value, "open_count");
     const inProgress = jsonNum(value, "in_progress_count");
@@ -1395,7 +1589,7 @@ function buildManageTodosSummaryLines(
       ? (summary.agent as Record<string, unknown>)
       : null,
   );
-  return lines.slice(0, maxLines).map((line) => clamp(line, 200));
+  return lines;
 }
 
 function webHitLabel(item: Record<string, unknown>): string {
@@ -1409,7 +1603,7 @@ function webHitLabel(item: Record<string, unknown>): string {
   const headline = title || host || url;
   const parts = [headline];
   if (host && host !== headline) parts.push(host);
-  if (published) parts.push(published.slice(0, 10));
+  if (published) parts.push(published);
   return parts.filter(Boolean).join(" · ");
 }
 
@@ -1601,7 +1795,7 @@ function summarizeExitPlanToolOutput(
   const details = extractExitPlanDetails(toolName, outputJson, argumentsJson);
   if (!details) return "";
   const action = details.action || "updated";
-  if (details.title) return `plan ${action} · ${clamp(details.title, 80)}`;
+  if (details.title) return `plan ${action} · ${details.title}`;
   return `plan ${action}`;
 }
 
@@ -1638,22 +1832,39 @@ export function buildStructuredToolMessage(
   const argumentsJson = argumentsText ? parseJsonRecord(argumentsText) : null;
   const outputText = String(input.outputText ?? "").trim();
   const completedOutputText = String(input.completedOutputText ?? "").trim();
+  const normalizedToolName = toolName.toLowerCase();
+  const outputParseLimit = normalizedToolName === "bash"
+    ? Number.POSITIVE_INFINITY
+    : MAX_STRUCTURED_OUTPUT_PARSE_BYTES;
+  const parsedOutputJson = parseJsonRecord(outputText, outputParseLimit);
+  const parsedCompletedOutputJson = parseJsonRecord(completedOutputText, outputParseLimit);
   const outputJson =
-    parseJsonRecord(outputText) ?? parseJsonRecord(completedOutputText);
+    parsedOutputJson && jsonBool(parsedOutputJson, "result_details_omitted") && parsedCompletedOutputJson
+      ? parsedCompletedOutputJson
+      : parsedOutputJson ?? parsedCompletedOutputJson;
 
   const summary = summarizeToolOutput(toolName, outputJson, argumentsJson);
   const editDiff =
-    toolName.toLowerCase() === "edit" ? extractEditDiff(outputJson) : null;
-  const normalizedToolName = toolName.toLowerCase();
+    normalizedToolName === "edit" ? extractEditDiff(outputJson) : null;
   const searchData =
     normalizedToolName === "search"
       ? extractSearchToolData(outputJson, argumentsJson)
       : null;
+  const webSearchData = normalizedToolName === "websearch"
+    ? extractWebSearchToolData(outputJson, argumentsJson)
+    : null;
+  const webFetchData = normalizedToolName === "webfetch"
+    ? extractWebFetchToolData(outputJson, argumentsJson)
+    : null;
   const todoData =
     normalizedToolName === "manage_todos" || normalizedToolName === "manage-todos"
       ? extractTodoToolData(outputJson ?? argumentsJson)
       : null;
-  const previewLines = searchData
+  const bashData =
+    normalizedToolName === "bash"
+      ? extractBashToolData(outputJson, outputText || completedOutputText, argumentsJson)
+      : null;
+  const previewLines = searchData || webSearchData || webFetchData
     ? []
     : extractPreviewLines(
         toolName,
@@ -1663,31 +1874,47 @@ export function buildStructuredToolMessage(
       );
   const taskRows =
     toolName.toLowerCase() === "task"
-      ? buildTaskToolRows(outputJson ?? argumentsJson)
+      ? buildTaskToolRows(outputJson ?? argumentsJson, input.taskStream)
       : [];
   const error = String(input.error ?? "").trim();
+
+  const retainOutputJson = [
+    "manage-sessions",
+    "manage_sessions",
+    "plan-manage",
+    "plan_manage",
+    "exit-plan-mode",
+    "exit_plan_mode",
+  ].includes(normalizedToolName);
+  const outputWasStructured = outputJson !== null;
 
   return {
     pathId: input.pathId ?? "run.tool-history.v2",
     tool: toolName,
     callId: String(input.callId ?? "").trim(),
+    runId: String(input.runId ?? "").trim(),
     toolInstanceId: String(input.toolInstanceId ?? "").trim(),
     target: resolveToolTarget(argumentsJson) ?? resolveToolTarget(outputJson),
-    commandText:
-      toolName.toLowerCase() === "bash"
-        ? jsonStr(outputJson, "command") || jsonStr(argumentsJson, "command")
-        : "",
+    commandText: bashData?.command ?? "",
     argumentsText,
     argumentsJson,
-    output: outputText,
-    completedOutput: completedOutputText || outputText,
+    outputJson: retainOutputJson ? outputJson : null,
+    output: normalizedToolName === "bash" || (outputWasStructured && !retainOutputJson) ? "" : outputText,
+    completedOutput: normalizedToolName === "bash"
+      || completedOutputText === outputText
+      || (parsedCompletedOutputJson !== null && !retainOutputJson)
+      ? ""
+      : completedOutputText,
     error,
     durationMs: typeof input.durationMs === "number" ? input.durationMs : 0,
     summary,
     state: input.state ?? (error ? "error" : "done"),
     editDiff,
     searchData,
+    webSearchData,
+    webFetchData,
     todoData,
+    bashData,
     previewLines,
     taskRows,
   };
@@ -1712,6 +1939,7 @@ export function parseStructuredToolMessage(
     pathId,
     tool: String(payload.tool ?? payload.tool_name ?? "").trim(),
     callId: String(payload.call_id ?? "").trim(),
+    runId: String(payload.run_id ?? "").trim(),
     toolInstanceId: String(payload.tool_instance_id ?? "").trim(),
     argumentsText: String(payload.arguments ?? "").trim(),
     outputText: String(payload.output ?? "").trim(),

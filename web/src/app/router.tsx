@@ -1,16 +1,47 @@
-import { createRootRoute, createRoute, createRouter, lazyRouteComponent } from '@tanstack/react-router'
-import { queryClient } from './query-client'
-import { prefetchSessionRuntimeData } from '../features/queries/query-options'
+import { createRootRoute, createRoute, createRouter, lazyRouteComponent, useNavigate } from '@tanstack/react-router'
+import { useEffect } from 'react'
+import { DesktopDocumentTitleController } from '../features/desktop/runtime/desktop-document-title-controller'
 import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-vault-shell'
+import { useWorkspaceLauncher } from '../features/workspaces/launcher/state/use-workspace-launcher'
+import { workspaceRouteSlugBase } from '../features/workspaces/launcher/services/workspace-route'
 
 const WorkspaceHomePage = lazyRouteComponent(() => import('../features/workspaces/pages/workspace-home-page'), 'WorkspaceHomePage')
-const DesktopAppPage = lazyRouteComponent(() => import('../features/desktop/layout/desktop-app-page'), 'DesktopAppPage')
+const importDesktopAppPage = () => import('../features/desktop/layout/desktop-app-page')
+const DesktopAppPage = lazyRouteComponent(importDesktopAppPage, 'DesktopAppPage')
 const DesktopSettingsPage = lazyRouteComponent(() => import('../features/desktop/settings/components/desktop-settings-page'), 'DesktopSettingsPage')
 const IntegrationsPage = lazyRouteComponent(() => import('../features/desktop/integrations/pages/integrations-page'), 'IntegrationsPage')
 const SwarmToolsPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/swarm-tools-page'), 'SwarmToolsPage')
 const VideoToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/video-tool-page'), 'VideoToolPage')
 const ImageToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/image-tool-page'), 'ImageToolPage')
-const FlowRedirectRoute = lazyRouteComponent(() => import('./flow-redirect-route'), 'FlowRedirectRoute')
+const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'agents'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree'])
+
+function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
+  const parts = pathname.split('/').map((part) => decodeURIComponent(part).trim()).filter(Boolean)
+  if (parts.length !== 1 && parts.length !== 2) {
+    return null
+  }
+  const [workspaceSlug, sessionId] = parts
+  if (!workspaceSlug || ROOT_RESERVED_ROUTE_SEGMENTS.has(workspaceSlug)) {
+    return null
+  }
+  if (sessionId && WORKSPACE_RESERVED_ROUTE_SEGMENTS.has(sessionId)) {
+    return null
+  }
+  return { sessionId: sessionId || undefined }
+}
+
+function currentWorkspaceSessionRoute(pathname: string): { sessionId: string } | null {
+  const route = currentWorkspaceRoute(pathname)
+  return route?.sessionId ? { sessionId: route.sessionId } : null
+}
+
+if (typeof window !== 'undefined') {
+  const route = currentWorkspaceSessionRoute(window.location.pathname)
+  if (route) {
+    void importDesktopAppPage()
+  }
+}
 
 function validateWorkspaceParams(params: Record<string, unknown>): { workspaceSlug: string } {
   const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
@@ -39,30 +70,65 @@ function validateWorkspaceSessionParams(params: Record<string, unknown>): { work
   return { workspaceSlug, sessionId }
 }
 
-function validateFlowParams(params: Record<string, unknown>): { flowId: string } {
-  const flowId = typeof params.flowId === 'string' ? params.flowId.trim() : ''
-  return { flowId }
-}
-
-function validateWorkspaceFlowParams(params: Record<string, unknown>): { workspaceSlug: string; flowId: string } {
-  const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
-  const flowId = typeof params.flowId === 'string' ? params.flowId.trim() : ''
-  return { workspaceSlug, flowId }
-}
-
-function validateSettingsSearch(search: Record<string, unknown>): { tab?: string } {
+function validateSettingsSearch(search: Record<string, unknown>): { tab?: string; returnSessionId?: string; agentSetup?: string; agent?: string } {
   const tab = typeof search.tab === 'string' ? search.tab.trim() : ''
-  return tab ? { tab } : {}
+  const returnSessionId = typeof search.returnSessionId === 'string' ? search.returnSessionId.trim() : ''
+  const agentSetup = typeof search.agentSetup === 'string' ? search.agentSetup.trim() : ''
+  const agent = typeof search.agent === 'string' ? search.agent.trim() : ''
+  return {
+    ...(tab ? { tab } : {}),
+    ...(returnSessionId ? { returnSessionId } : {}),
+    ...(agentSetup ? { agentSetup } : {}),
+    ...(agent ? { agent } : {}),
+  }
 }
 
 const rootRoute = createRootRoute({
-  component: DesktopVaultShell,
+  component: DesktopRootShell,
 })
+
+function AgentSetupRedirect() {
+  const navigate = useNavigate()
+  const { workspaces, currentWorkspacePath, loading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
+  useEffect(() => {
+    if (loading) return
+    const workspace = workspaces.find((entry) => entry.path === currentWorkspacePath) ?? workspaces[0]
+    if (!workspace) {
+      void navigate({ to: '/', replace: true })
+      return
+    }
+    void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: workspaceRouteSlugBase(workspace) }, search: { agentSetup: '1', agent: 'swarm' }, replace: true })
+  }, [currentWorkspacePath, loading, navigate, workspaces])
+  return null
+}
+
+function DesktopRootShell() {
+  const initialPreferredSessionId = initialDesktopV3PreferredSessionId()
+  return (
+    <>
+      <DesktopDocumentTitleController />
+      <DesktopVaultShell initialPreferredSessionId={initialPreferredSessionId} />
+    </>
+  )
+}
+
+function initialDesktopV3PreferredSessionId(): string | null | undefined {
+  if (typeof window === 'undefined') return undefined
+  const route = currentWorkspaceRoute(window.location.pathname)
+  if (!route) return undefined
+  return route.sessionId || null
+}
 
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
   component: WorkspaceHomePage,
+})
+
+const agentsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/agents',
+  component: AgentSetupRedirect,
 })
 
 const settingsRoute = createRoute({
@@ -110,23 +176,11 @@ const imageToolSessionRoute = createRoute({
   component: ImageToolPage,
 })
 
-const flowRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/flow',
-  component: FlowRedirectRoute,
-})
-
-const flowDetailRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/flow/$flowId',
-  parseParams: validateFlowParams,
-  component: FlowRedirectRoute,
-})
-
 const workspaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug',
   parseParams: validateWorkspaceParams,
+  validateSearch: validateSettingsSearch,
   component: DesktopAppPage,
 })
 
@@ -134,14 +188,28 @@ const workspaceSessionRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/$sessionId',
   parseParams: validateWorkspaceSessionParams,
+  validateSearch: validateSettingsSearch,
   loader: ({ params }) => {
     const sessionId = params.sessionId.trim()
     if (!sessionId) {
       return null
     }
-    void prefetchSessionRuntimeData(queryClient, sessionId)
     return { sessionId }
   },
+  component: DesktopAppPage,
+})
+
+const workspaceTaskRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/task',
+  parseParams: validateWorkspaceParams,
+  component: DesktopAppPage,
+})
+
+const workspaceWorktreeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/worktree',
+  parseParams: validateWorkspaceParams,
   component: DesktopAppPage,
 })
 
@@ -151,20 +219,6 @@ const workspaceSettingsRoute = createRoute({
   parseParams: validateWorkspaceParams,
   validateSearch: validateSettingsSearch,
   component: DesktopSettingsPage,
-})
-
-const workspaceFlowRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/$workspaceSlug/flow',
-  parseParams: validateWorkspaceParams,
-  component: DesktopAppPage,
-})
-
-const workspaceFlowDetailRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/$workspaceSlug/flow/$flowId',
-  parseParams: validateWorkspaceFlowParams,
-  component: DesktopAppPage,
 })
 
 const workspaceToolsRoute = createRoute({
@@ -198,19 +252,18 @@ const workspaceImageToolSessionRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   settingsRoute,
+  agentsRoute,
   integrationsRoute,
   integrationSessionRoute,
   toolsRoute,
   videoToolRoute,
   imageToolRoute,
   imageToolSessionRoute,
-  flowRoute,
-  flowDetailRoute,
   workspaceRoute,
   workspaceSessionRoute,
+  workspaceTaskRoute,
+  workspaceWorktreeRoute,
   workspaceSettingsRoute,
-  workspaceFlowRoute,
-  workspaceFlowDetailRoute,
   workspaceToolsRoute,
   workspaceVideoToolRoute,
   workspaceImageToolRoute,

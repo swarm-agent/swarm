@@ -23,6 +23,7 @@ func (s *Server) cleanupProviderAfterCredentialDeletion(ctx context.Context, pro
 }
 
 func (s *Server) cleanupProviderAfterCredentialDeletionForAccount(ctx context.Context, accountScopeID, provider string) (authCredentialDeleteCleanup, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	cleanup := authCredentialDeleteCleanup{}
 	if provider == "" {
@@ -73,6 +74,9 @@ func (s *Server) cleanupProviderAfterCredentialDeletionForAccount(ctx context.Co
 			return cleanup, fmt.Errorf("list sessions after credential delete: %w", err)
 		}
 		for _, session := range sessions {
+			if accountScopeID != "" && strings.TrimSpace(session.AccountScopeID) != accountScopeID {
+				continue
+			}
 			if !strings.EqualFold(strings.TrimSpace(session.Preference.Provider), provider) {
 				continue
 			}

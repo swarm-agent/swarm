@@ -16,6 +16,12 @@ func TestUISettingsStoreDefaultsEnableThinkingTags(t *testing.T) {
 	if !defaults.Chat.ToolStream.ShowAnchor {
 		t.Fatal("default tool stream anchor = false, want true")
 	}
+	if defaults.Chat.FollowupCheckpointPolicyDefault != "auto_start" {
+		t.Fatalf("default follow-up checkpoint policy = %q, want auto_start", defaults.Chat.FollowupCheckpointPolicyDefault)
+	}
+	if defaults.Chat.SidebarHideInactiveHours == nil || *defaults.Chat.SidebarHideInactiveHours != 12 {
+		t.Fatalf("default sidebar hide inactive hours = %v, want 12", defaults.Chat.SidebarHideInactiveHours)
+	}
 }
 
 func TestUISettingsStoreUpdateFromEmptyStorePreservesTrueDefaults(t *testing.T) {
@@ -58,6 +64,14 @@ func TestUISettingsStoreUpdateFromEmptyStorePreservesTrueDefaults(t *testing.T) 
 	}
 }
 
+func TestUISettingsStorePreservesExplicitNeverHideSidebarValue(t *testing.T) {
+	never := 0
+	record := NormalizeUISettingsRecordForExternal(UISettingsRecord{Chat: UIChatSettingsRecord{SidebarHideInactiveHours: &never}})
+	if record.Chat.SidebarHideInactiveHours == nil || *record.Chat.SidebarHideInactiveHours != 0 {
+		t.Fatalf("sidebar hide inactive hours = %v, want explicit Never (0)", record.Chat.SidebarHideInactiveHours)
+	}
+}
+
 func TestUISettingsStoreCanPersistThinkingTagsDisabled(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "ui-settings-thinking-disabled.pebble"))
 	if err != nil {
@@ -94,5 +108,23 @@ func TestUISettingsStoreCanPersistThinkingTagsDisabled(t *testing.T) {
 	}
 	if stored.Chat.ThinkingTags {
 		t.Fatal("stored thinking tags = true after explicit disable, want false")
+	}
+}
+
+func TestUISettingsStoreFollowupCheckpointPolicyDefaultNormalization(t *testing.T) {
+	cases := map[string]string{
+		"":                 "auto_start",
+		"unknown":          "auto_start",
+		"auto":             "auto_start",
+		"auto_start":       "auto_start",
+		"append_and_start": "auto_start",
+		"ask":              "require_approval",
+		"manual":           "require_approval",
+		"require_approval": "require_approval",
+	}
+	for input, want := range cases {
+		if got := normalizeFollowupCheckpointPolicyDefault(input); got != want {
+			t.Fatalf("normalizeFollowupCheckpointPolicyDefault(%q) = %q, want %q", input, got, want)
+		}
 	}
 }

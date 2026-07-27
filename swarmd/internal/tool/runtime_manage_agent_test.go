@@ -12,6 +12,49 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+type manageAgentOrchestrationPolicyStub struct{}
+
+func (manageAgentOrchestrationPolicyStub) CurrentSubagentPolicyForAccount(string) (map[string]any, error) {
+	return map[string]any{"mode": "bounded"}, nil
+}
+
+func (manageAgentOrchestrationPolicyStub) UpdateSubagentPolicyMapForAccount(_ string, input map[string]any) (map[string]any, error) {
+	return input, nil
+}
+
+func TestManageAgentOrchestrationPolicyAppliedMarker(t *testing.T) {
+	rt := NewRuntime(1)
+	rt.SetManageOrchestrationPolicyService(manageAgentOrchestrationPolicyStub{})
+	for _, test := range []struct {
+		name        string
+		confirm     bool
+		wantApplied bool
+	}{
+		{name: "preview", confirm: false, wantApplied: false},
+		{name: "applied", confirm: true, wantApplied: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			results := rt.ExecuteBatch(context.Background(), t.TempDir(), []Call{{
+				CallID: "manage-agent-policy-" + test.name,
+				Name:   "manage-agent",
+				Arguments: mustManageAgentArgsJSON(t, map[string]any{
+					"action":  "update_orchestration_policy",
+					"confirm": test.confirm,
+					"content": map[string]any{"mode": "bounded"},
+				}),
+			}})
+			if len(results) != 1 || strings.TrimSpace(results[0].Error) != "" {
+				t.Fatalf("result = %#v", results)
+			}
+			payload := decodeManageAgentResultJSON(t, results[0].Output)
+			applied, _ := payload["applied"].(bool)
+			if applied != test.wantApplied {
+				t.Fatalf("applied = %v, want %v; payload=%v", applied, test.wantApplied, payload)
+			}
+		})
+	}
+}
+
 func TestManageAgentCreateAcceptsBackgroundMode(t *testing.T) {
 	workspace := t.TempDir()
 	store, err := pebblestore.Open(filepath.Join(workspace, "state.pebble"))
@@ -31,10 +74,10 @@ func TestManageAgentCreateAcceptsBackgroundMode(t *testing.T) {
 	results := rt.ExecuteBatch(context.Background(), workspace, []Call{{
 		CallID: "manage-agent-create-background",
 		Name:   "manage-agent",
-		Arguments: mustManageAgentArgsJSON(t, map[string]any{"action": "create", "confirm": true, "agent": "flow-worker", "content": map[string]any{
-			"name":              "flow-worker",
+		Arguments: mustManageAgentArgsJSON(t, map[string]any{"action": "create", "confirm": true, "agent": "background-worker", "content": map[string]any{
+			"name":              "background-worker",
 			"mode":              "background",
-			"prompt":            "Run scheduled flow work.",
+			"prompt":            "Run scheduled background work.",
 			"execution_setting": "read",
 			"tool_contract":     map[string]any{"preset": "read_only"},
 		}}),
@@ -53,12 +96,12 @@ func TestManageAgentCreateAcceptsBackgroundMode(t *testing.T) {
 	if got := agent["mode"]; got != "background" {
 		t.Fatalf("agent.mode = %v, want background", got)
 	}
-	profile, ok, err := agents.GetProfile("flow-worker")
+	profile, ok, err := agents.GetProfile("background-worker")
 	if err != nil {
 		t.Fatalf("get profile: %v", err)
 	}
 	if !ok {
-		t.Fatal("flow-worker profile missing")
+		t.Fatal("background-worker profile missing")
 	}
 	if profile.Mode != agentruntime.ModeBackground {
 		t.Fatalf("persisted mode = %q, want background", profile.Mode)
@@ -147,7 +190,7 @@ func TestManageAgentInspectExplainsAgentModeAndExecutionModeRelationship(t *test
 		"primary agents are user-selectable in Desktop/TUI",
 		"subagent agents are usable by primary agents for task delegation",
 		"also user-selectable in Desktop/TUI",
-		"background agents are for Flows",
+		"background agents are reserved for non-interactive system work",
 		"do not appear in the Desktop/TUI selector",
 		"Execution modes are explicit",
 		"runtime_mode=plan_auto means plan approval mode and forces exit_plan_mode_enabled=true",
@@ -687,9 +730,9 @@ func TestManageAgentTranscriptReadsSessionMessages(t *testing.T) {
 		Metadata: map[string]any{
 			"parent_session_id":  "parent-session-1",
 			"lineage_kind":       "delegated_subagent",
-			"lineage_label":      "@explorer",
-			"requested_subagent": "explorer",
-			"subagent":           "explorer",
+			"lineage_label":      "@finder",
+			"requested_subagent": "finder",
+			"subagent":           "finder",
 		},
 	})
 	if err != nil {

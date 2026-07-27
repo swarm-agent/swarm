@@ -351,6 +351,58 @@ func TestGlobalWebsocketSessionWildcardStillAllowsExactLegacySessionSubscription
 	}
 }
 
+func TestSessionsV3CreateReachesGlobalWebsocketSessionWildcard(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	conn, _, err := gorillaws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial global websocket: %v", err)
+	}
+	defer conn.Close()
+	readGlobalWSFrame(t, conn, "connected")
+	writeGlobalWSFrame(t, conn, map[string]any{"type": "subscribe", "channel": "session:*"})
+	readGlobalWSFrame(t, conn, "subscribed")
+
+	result, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       "session-global-created-ws",
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "create-global-created-ws",
+		IdempotencyKey:  "create-global-created-ws",
+		PayloadHash:     "hash-create-global-created-ws",
+		Kind:            sessionruntime.SessionMutationCreateSession,
+		Session: &pebblestore.SessionSnapshot{
+			ID:             "session-global-created-ws",
+			UserID:         testPrincipal().UserID,
+			AccountScopeID: testPrincipal().AccountScopeID,
+			WorkspacePath:  "/workspace/global-v3",
+			WorkspaceName:  "global-v3",
+			Title:          "session-global-created-ws",
+		},
+		NowUnixMs: 1000,
+	})
+	if err != nil {
+		t.Fatalf("create websocket session: %v", err)
+	}
+	if result.Session == nil {
+		t.Fatalf("create websocket result missing session: %+v", result)
+	}
+	created := *result.Session
+
+	frame := readGlobalWSFrame(t, conn, "event")
+	if frame.Event == nil {
+		t.Fatalf("global websocket create frame missing event: %+v", frame)
+	}
+	if frame.Event.Stream != "session:"+created.ID || frame.Event.EventType != "session.created" || frame.Event.EntityID != created.ID || frame.Event.Source != "v3" || frame.Event.SourceSeq != 1 {
+		t.Fatalf("global websocket create event = %+v", *frame.Event)
+	}
+}
+
 func TestSessionsV3CommittedMutationReachesGlobalWebsocketSessionWildcard(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createGlobalV3TestSession(t, sessionSvc, "session-global-ws", "create-global-ws")
@@ -395,6 +447,37 @@ func TestSessionsV3CommittedMutationReachesGlobalWebsocketSessionWildcard(t *tes
 		t.Fatalf("global websocket event = %+v", *frame.Event)
 	}
 	assertJSONEqualRaw(t, frame.Event.Payload, result.Event.Payload)
+}
+
+func TestSessionDeleteReachesGlobalWebsocketSessionWildcard(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createGlobalV3TestSession(t, server.sessions, "session-global-delete-ws", "create-global-delete-ws")
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	conn, _, err := gorillaws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial global websocket: %v", err)
+	}
+	defer conn.Close()
+	readGlobalWSFrame(t, conn, "connected")
+	writeGlobalWSFrame(t, conn, map[string]any{"type": "subscribe", "channel": "session:*"})
+	readGlobalWSFrame(t, conn, "subscribed")
+
+	if cleanupErr := server.deleteSessionAndRoutes(created.ID); cleanupErr != nil {
+		t.Fatalf("delete session: %v", cleanupErr)
+	}
+
+	frame := readGlobalWSFrame(t, conn, "event")
+	if frame.Event == nil {
+		t.Fatalf("global websocket delete frame missing event: %+v", frame)
+	}
+	if frame.Event.Stream != "session:"+created.ID || frame.Event.EventType != "session.deleted" || frame.Event.EntityID != created.ID || frame.Event.Source != "v3" {
+		t.Fatalf("global websocket delete event = %+v", *frame.Event)
+	}
 }
 
 func assertGlobalV3EnvelopeForResult(t *testing.T, server *Server, result sessionruntime.SessionMutationResult) pebblestore.EventEnvelope {

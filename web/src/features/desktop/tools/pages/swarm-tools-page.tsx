@@ -4,7 +4,6 @@ import { ArrowLeft, Film, Image, Sparkles } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
 import { cn } from '../../../../lib/cn'
-import { useDesktopStore } from '../../state/use-desktop-store'
 
 type ToolCard = {
   id: string
@@ -37,16 +36,9 @@ export function SwarmToolsPage() {
   const toolsRouteMatch = matchRoute({ to: '/tools', fuzzy: false })
   const workspaceToolsRouteMatch = matchRoute({ to: '/$workspaceSlug/tools', fuzzy: false })
   const routeWorkspaceSlug = workspaceToolsRouteMatch ? workspaceToolsRouteMatch.workspaceSlug.trim() : ''
-  const activeSessionId = useDesktopStore((state) => state.activeSessionId)
-
-  const backLabel = routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Back to workspace') : 'Back to launcher'
+  const backLabel = routeWorkspaceSlug ? 'Back to workspace' : 'Back to launcher'
   const handleBack = useMemo(() => {
     if (routeWorkspaceSlug) {
-      if (activeSessionId) {
-        return () => {
-          void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: activeSessionId } })
-        }
-      }
       return () => {
         void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
       }
@@ -59,7 +51,7 @@ export function SwarmToolsPage() {
     return () => {
       void navigate({ to: '/' })
     }
-  }, [activeSessionId, navigate, routeWorkspaceSlug, toolsRouteMatch])
+  }, [navigate, routeWorkspaceSlug, toolsRouteMatch])
 
 
   const openTool = (toolID: string) => {

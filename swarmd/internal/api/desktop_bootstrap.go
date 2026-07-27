@@ -1,9 +1,6 @@
 package api
 
 import (
-	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -11,6 +8,7 @@ import (
 	"sync"
 
 	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/workspace"
 )
@@ -54,7 +52,6 @@ type workspaceOverviewTopologyRoute struct {
 	HostWorkspacePath    string                               `json:"host_workspace_path"`
 	HostWorkspaceName    string                               `json:"host_workspace_name,omitempty"`
 	RuntimeWorkspacePath string                               `json:"runtime_workspace_path"`
-	ContainerID          string                               `json:"container_id,omitempty"`
 	ReplicationMode      string                               `json:"replication_mode,omitempty"`
 	Writable             bool                                 `json:"writable"`
 	Sync                 pebblestore.WorkspaceReplicationSync `json:"sync,omitempty"`
@@ -99,16 +96,6 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 	swarmTargets, currentTarget, err := s.swarmTargetsForRequest(r)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if currentTarget != nil && !strings.EqualFold(strings.TrimSpace(currentTarget.Relationship), "self") {
-		if strings.TrimSpace(currentTarget.BackendURL) == "" {
-			writeError(w, http.StatusBadGateway, errors.New("selected swarm target is missing backend_url"))
-			return
-		}
-		if err := s.handleWorkspaceOverviewForRemoteTarget(w, r, *currentTarget); err != nil {
-			writeError(w, http.StatusBadGateway, err)
-		}
 		return
 	}
 	if s.workspace == nil {
@@ -261,59 +248,6 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-func (s *Server) handleWorkspaceOverviewForRemoteTarget(w http.ResponseWriter, r *http.Request, currentTarget swarmTarget) error {
-	if s.swarm == nil {
-		return errors.New("swarm service not configured")
-	}
-	cfg, err := s.loadStartupConfig()
-	if err != nil {
-		return err
-	}
-	state, err := s.currentSwarmState(cfg)
-	if err != nil {
-		return err
-	}
-	peerToken, err := s.outgoingPeerAuthTokenForTarget(r, currentTarget)
-	if err != nil {
-		return err
-	}
-	endpoint, err := cloneURLWithQuery(strings.TrimRight(currentTarget.BackendURL, "/")+"/v1/workspace/overview", r.URL.Query())
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	req.Header = cloneHeaderExcludingAuth(r.Header)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set(peerAuthSwarmIDHeader, strings.TrimSpace(state.Node.SwarmID))
-	req.Header.Set(peerAuthTokenHeader, peerToken)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	payload, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var remoteErr struct {
-			Error string `json:"error"`
-		}
-		_ = json.Unmarshal(payload, &remoteErr)
-		return errors.New(firstNonEmpty(strings.TrimSpace(remoteErr.Error), resp.Status))
-	}
-	var decoded workspaceOverviewResponse
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return err
-	}
-	decoded.SwarmTarget = &currentTarget
-	writeJSON(w, http.StatusOK, decoded)
-	return nil
-}
-
 func (s *Server) workspaceOverviewSessionsByWorkspace(groups []pebblestore.WorkspaceSessionList, permissionLimit int) (map[string][]workspaceOverviewSession, error) {
 	result := make(map[string][]workspaceOverviewSession, len(groups))
 	if len(groups) == 0 {
@@ -371,13 +305,13 @@ func (s *Server) workspaceOverviewSessionsByWorkspace(groups []pebblestore.Works
 					enriched.PendingPermissions = records
 					enriched.PendingPermissionCount = len(records)
 				}
-				if lifecycle := item.session.Lifecycle; lifecycle != nil && lifecycle.Active {
-					enriched.ActiveRun = &runStreamActiveRun{
-						RunID:  strings.TrimSpace(lifecycle.RunID),
-						Status: strings.TrimSpace(lifecycle.Phase),
-					}
+				if runState, ok, err := s.sessions.GetSessionRunState(item.session.ID); err != nil {
+					results <- jobResult{err: err}
+					continue
+				} else {
+					enriched.ActiveRun = workspaceOverviewActiveRun(runState, ok)
+					enriched.SessionStatus = workspaceOverviewSessionStatus(runState, ok)
 				}
-				enriched.SessionStatus = workspaceOverviewSessionStatus(item.session.Lifecycle)
 				results <- jobResult{
 					workspacePath: item.workspacePath,
 					index:         item.index,
@@ -469,9 +403,7 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(principal identity.P
 			continue
 		}
 		if !runtimeTarget.Online || !runtimeTarget.Selectable {
-			if !s.topologyRouteOwnerHostSelectable(runtimeTarget, runtimeRecord, runtimeTargets) {
-				continue
-			}
+			continue
 		}
 		workspaceRoute, ok := s.workspaceOverviewTopologyRouteForBinding(binding, runtimeTarget, runtimeRecord, runtimeTargets, workspacePath, workspacePath, workspaceNameByID[workspaceID])
 		if ok {
@@ -523,7 +455,6 @@ func (s *Server) workspaceOverviewTopologyRouteForBinding(binding pebblestore.To
 		HostWorkspacePath:    strings.TrimSpace(hostWorkspacePath),
 		HostWorkspaceName:    strings.TrimSpace(hostWorkspaceName),
 		RuntimeWorkspacePath: runtimeWorkspacePath,
-		ContainerID:          strings.TrimSpace(binding.DestinationContainerID),
 		ReplicationMode:      strings.TrimSpace(binding.ReplicationMode),
 		Writable:             binding.Writable,
 		Sync:                 binding.Sync,
@@ -548,7 +479,7 @@ func localWorkspaceBindingIDsByWorkspaceID(workspaces []workspace.Entry, routesB
 			continue
 		}
 		for _, route := range routes {
-			if strings.EqualFold(strings.TrimSpace(route.RuntimeSwarmID), strings.TrimSpace(route.AuthorityHostSwarmID)) && strings.TrimSpace(route.ContainerID) == "" {
+			if strings.EqualFold(strings.TrimSpace(route.RuntimeSwarmID), strings.TrimSpace(route.AuthorityHostSwarmID)) {
 				out[workspaceID] = strings.TrimSpace(route.WorkspaceBindingID)
 				break
 			}
@@ -572,15 +503,6 @@ func appendWorkspaceOverviewTopologyRoute(out map[string][]workspaceOverviewTopo
 	out[workspacePath] = append(out[workspacePath], route)
 }
 
-func (s *Server) topologyRouteOwnerHostSelectable(runtimeTarget swarmTarget, runtimeRecord pebblestore.TopologyRuntimeRecord, runtimeTargets map[string]swarmTarget) bool {
-	hostSwarmID := firstNonEmpty(strings.TrimSpace(runtimeTarget.HostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID))
-	if hostSwarmID == "" || s.isLocalSwarmID(hostSwarmID) || !isLoopbackBackendURL(runtimeTarget.BackendURL) {
-		return false
-	}
-	hostTarget, ok := runtimeTargets[strings.ToLower(hostSwarmID)]
-	return ok && hostTarget.Online && hostTarget.Selectable && strings.TrimSpace(hostTarget.BackendURL) != ""
-}
-
 func workspaceOverviewTopologyRouteID(runtimeSwarmID, workspaceBindingID string) string {
 	runtimeSwarmID = strings.TrimSpace(runtimeSwarmID)
 	workspaceBindingID = strings.TrimSpace(workspaceBindingID)
@@ -590,29 +512,43 @@ func workspaceOverviewTopologyRouteID(runtimeSwarmID, workspaceBindingID string)
 	return "swarm:" + runtimeSwarmID + ":binding:" + workspaceBindingID
 }
 
-func workspaceOverviewSessionStatus(lifecycle *pebblestore.SessionLifecycleSnapshot) string {
-	if lifecycle == nil {
+func workspaceOverviewActiveRun(runState sessionruntime.SessionRunState, ok bool) *runStreamActiveRun {
+	if !ok || !runState.Active || strings.TrimSpace(runState.RunID) == "" {
+		return nil
+	}
+	return &runStreamActiveRun{
+		RunID:     strings.TrimSpace(runState.RunID),
+		Status:    strings.TrimSpace(runState.Status),
+		CreatedAt: runState.CreatedAt,
+		StartedAt: runState.StartedAt,
+		UpdatedAt: runState.UpdatedAt,
+		EventSeq:  runState.EventSeq,
+	}
+}
+
+func workspaceOverviewSessionStatus(runState sessionruntime.SessionRunState, ok bool) string {
+	if !ok {
 		return "idle"
 	}
-	phase := strings.ToLower(strings.TrimSpace(lifecycle.Phase))
-	if lifecycle.Active {
-		switch phase {
-		case "blocked":
-			return "blocked"
-		case "starting":
+	switch strings.ToLower(strings.TrimSpace(runState.Status)) {
+	case sessionruntime.RunIntentPendingExecutor:
+		if runState.Active {
 			return "starting"
-		case "running":
-			return "running"
-		default:
+		}
+	case sessionruntime.RunIntentRunning:
+		if runState.Active {
 			return "running"
 		}
+	case sessionruntime.RunIntentDispatchBlocked:
+		return "blocked"
+	case sessionruntime.RunIntentCancelled:
+		return "cancelled"
+	case sessionruntime.RunIntentFailed:
+		return "errored"
+	case sessionruntime.RunIntentInterrupted:
+		return "interrupted"
 	}
-	switch phase {
-	case "cancelled", "errored", "interrupted":
-		return phase
-	default:
-		return "idle"
-	}
+	return "idle"
 }
 
 func parsePositiveIntOrDefault(raw string, fallback int) int {

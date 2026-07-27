@@ -66,6 +66,99 @@ func TestFormatUnifiedToolEntry_PlanManageShowsPlanLabelAndAction(t *testing.T) 
 	}
 }
 
+func TestRenderPlanManageToolUsesCollapsedPlanCardAndKeepsDocumentForModal(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-1"})
+	page.SetPlanExecutionState(ChatSessionPlan{ID: "plan_123", Title: "Implementation Plan", Document: map[string]any{"checkpoints": []any{map[string]any{"id": "cp-1"}, map[string]any{"id": "cp-2"}}}}, nil, "", "")
+	message := chatMessageItem{
+		Role:      "tool",
+		ToolState: "done",
+		Metadata: map[string]any{
+			chatToolTimelineObjectMetadataKey:   true,
+			chatToolTimelineToolNameMetadataKey: "plan_manage",
+			chatToolTimelinePayloadMetadataKey:  `{"tool":"plan_manage","action":"save","status":"ok","plan":{"id":"plan_123","title":"Implementation Plan","update_summary":"Ready for review","document":{"title":"Implementation Plan","status":"approved","info":{"goal":"Ship a readable TUI plan"},"checkpoints":[{"id":"cp-1","title":"Inspect","status":"done","order":1},{"id":"cp-2","title":"Render","status":"pending","order":2}]}}}`,
+		},
+	}
+
+	lines := page.renderToolMessageLines(message, 72)
+	var rendered []string
+	for _, line := range lines {
+		rendered = append(rendered, chatRenderLineText(line))
+	}
+	joined := strings.Join(rendered, "\n")
+	for _, want := range []string{"┌", "PLAN  ·  save  ·  2 checkpoints  ·  Approved", "Implementation Plan", "Ship a readable TUI plan", "Ctrl+P or /plan  Open full plan", "└"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("collapsed plan card missing %q:\n%s", want, joined)
+		}
+	}
+	for _, unwanted := range []string{"Inspect", "Render", "acceptance_criteria", "plan_manage"} {
+		if strings.Contains(joined, unwanted) {
+			t.Fatalf("collapsed plan card exposed document detail %q:\n%s", unwanted, joined)
+		}
+	}
+	if !page.OpenCurrentPlanModal(page.planExecutionPlan) || !page.planEditorVisible {
+		t.Fatal("full structured plan should remain available through the plan modal")
+	}
+}
+
+func TestRenderRequestNewPlanPermissionPayloadUsesPlanCardAndRetainsModalDocument(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-1"})
+	message := chatMessageItem{
+		Role:      "tool",
+		ToolState: "done",
+		Metadata: map[string]any{
+			chatToolTimelineObjectMetadataKey:   true,
+			chatToolTimelineToolNameMetadataKey: "tool",
+			chatToolTimelinePayloadMetadataKey: `{
+				"path_id":"tool.plan-new-request.v1",
+				"document_operation":"request_new_plan",
+				"plan_id":"plan_perm_123",
+				"proposal_revision":1,
+				"title":"Two-step completion plan",
+				"update_kind":"request_new_plan",
+				"update_type":"new_plan",
+				"document":{
+					"id":"plan_perm_123",
+					"title":"Two-step completion plan",
+					"info":{"goal":"Finish the target work end-to-end.","scope":"Identify and implement the work."},
+					"checkpoints":[
+						{"id":"cp-1","title":"Verify the work","status":"pending","order":1,"tasks":["Inspect the target"],"acceptance_criteria":["Scope is explicit"]},
+						{"id":"cp-2","title":"Finish the work","status":"pending","order":2,"tasks":["Implement the target"],"acceptance_criteria":["Work is complete"]}
+					]
+				}
+			}`,
+		},
+	}
+
+	lines := page.renderToolMessageLines(message, 72)
+	var rendered []string
+	for _, line := range lines {
+		rendered = append(rendered, chatRenderLineText(line))
+	}
+	joined := strings.Join(rendered, "\n")
+	for _, want := range []string{"PLAN  ·  request new plan  ·  2 checkpoints", "Two-step completion plan", "Finish the target work end-to-end.", "Ctrl+P or /plan  Open full plan"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("request_new_plan card missing %q:\n%s", want, joined)
+		}
+	}
+	for _, unwanted := range []string{"path_id", "proposal_revision", "acceptance_criteria", "Verify the work"} {
+		if strings.Contains(joined, unwanted) {
+			t.Fatalf("request_new_plan card exposed raw payload detail %q:\n%s", unwanted, joined)
+		}
+	}
+	if page.planExecutionPlan.ID != "plan_perm_123" {
+		t.Fatalf("retained plan id = %q", page.planExecutionPlan.ID)
+	}
+	if !page.OpenCurrentPlanModal(page.planExecutionPlan) || !page.planEditorVisible {
+		t.Fatal("request_new_plan document should open in the full-plan modal")
+	}
+	detail := planEditorDisplayText(page.planEditorPlan)
+	for _, want := range []string{"Goal: Finish the target work end-to-end.", "1. Verify the work [pending]", "Acceptance:", "- Work is complete"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("retained modal document missing %q:\n%s", want, detail)
+		}
+	}
+}
+
 func TestFormatUnifiedToolEntry_ExitPlanModeUsesFlatPlanStyling(t *testing.T) {
 	entry := chatToolStreamEntry{
 		ToolName: "exit_plan_mode",
@@ -98,7 +191,7 @@ func TestRenderTaskToolTableLines_StackedShowsCriticalSubagentFields(t *testing.
 		ToolState: "running",
 		Metadata: map[string]any{
 			chatToolTimelineObjectMetadataKey:    true,
-			chatToolTimelinePayloadMetadataKey:   `{"tool":"task","status":"running","launches":[{"launch_index":1,"subagent":"explorer","assignment_label":"Backend architecture mapper","subagent_provider":"anthropic","subagent_model":"claude-sonnet","status":"running","current_tool":"search","current_tool_ms":1500}]}`,
+			chatToolTimelinePayloadMetadataKey:   `{"tool":"task","status":"running","launches":[{"launch_index":1,"subagent":"finder","assignment_label":"Backend architecture mapper","subagent_provider":"anthropic","subagent_model":"claude-sonnet","status":"running","current_tool":"search","current_tool_ms":1500}]}`,
 			chatToolTimelineStartedAtMetadataKey: int64(100),
 		},
 	}
@@ -112,7 +205,7 @@ func TestRenderTaskToolTableLines_StackedShowsCriticalSubagentFields(t *testing.
 		joinedParts = append(joinedParts, line.Text)
 	}
 	joined := strings.Join(joinedParts, "\n")
-	for _, want := range []string{"Subagents · 1 running", "Backend architecture mapper", "@explorer", "anthropic/claude-sonnet", "search", "1.5s"} {
+	for _, want := range []string{"Subagents · 1 running", "Backend architecture mapper", "@finder", "anthropic/claude-sonnet", "search", "1.5s"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("stacked task view missing %q:\n%s", want, joined)
 		}

@@ -1,11 +1,8 @@
 package app
 
 import (
-	"context"
 	"fmt"
 	"strings"
-
-	"swarm-refactor/swarmtui/internal/model"
 )
 
 // handleSwarmCommand manages the device identity name.
@@ -20,35 +17,20 @@ func (a *App) handleSwarmCommand(args []string) {
 		return
 	}
 	if len(args) == 0 {
-		a.showSwarmSelectorOverlay("swarm selectors")
+		a.home.SetCommandOverlay(a.swarmStatusLines())
+		a.home.SetStatus("usage: /swarm set <name>")
 		return
 	}
 
 	sub := strings.ToLower(strings.TrimSpace(args[0]))
 	switch sub {
-	case "status":
-		a.showSwarmStatusOverlay(fmt.Sprintf("swarm name: %s, role: %s", a.currentSwarmName(), a.currentSwarmRole()))
-	case "pending":
-		a.showSwarmStatusOverlay("pending swarm enrollments")
-	case "approve", "reject":
-		if len(args) < 2 {
-			a.home.SetStatus(fmt.Sprintf("usage: /swarm %s <enrollment_id>", sub))
-			return
-		}
-		approve := sub == "approve"
-		enrollment, _, err := a.api.DecideSwarmEnrollment(context.Background(), args[1], approve, strings.TrimSpace(strings.Join(args[2:], " ")))
-		if err != nil {
-			a.home.SetStatus(fmt.Sprintf("/swarm %s failed: %v", sub, err))
-			return
-		}
-		if approve {
-			a.showSwarmStatusOverlay(fmt.Sprintf("approved child %s", enrollment.ChildName))
-			return
-		}
-		a.showSwarmStatusOverlay(fmt.Sprintf("rejected child %s", enrollment.ChildName))
+	case "status", "pending", "approve", "reject":
+		a.home.SetCommandOverlay(a.swarmStatusLines())
+		a.home.SetStatus("that /swarm panel command was removed; use /swarm set <name>")
 	case "set", "name":
 		if len(args) < 2 {
-			a.showSwarmStatusOverlay(fmt.Sprintf("usage: /swarm %s <name>", sub))
+			a.home.SetCommandOverlay(a.swarmStatusLines())
+			a.home.SetStatus(fmt.Sprintf("usage: /swarm %s <name>", sub))
 			return
 		}
 		a.applySwarmNameSetting(strings.Join(args[1:], " "))
@@ -78,12 +60,14 @@ func (a *App) applySwarmNameSetting(name string) {
 		a.chat.SetSwarmName(name)
 	}
 
-	a.showSwarmStatusOverlay("saving swarm name...")
+	a.home.SetCommandOverlay(a.swarmStatusLines())
+	a.home.SetStatus("saving swarm name...")
 	if err := saveSwarmNameSetting(a.api, name); err != nil {
 		a.home.SetStatus(fmt.Sprintf("swarm name updated to %q (settings save failed: %v)", name, err))
 		return
 	}
-	a.showSwarmStatusOverlay(fmt.Sprintf("swarm name set to %q", name))
+	a.home.SetCommandOverlay(a.swarmStatusLines())
+	a.home.SetStatus(fmt.Sprintf("swarm name set to %q", name))
 }
 
 func (a *App) applySwarmRoleSetting(role string) {
@@ -124,95 +108,13 @@ func (a *App) swarmStatusLines() []string {
 		lines = append(lines, "current target swarm_id: "+strings.TrimSpace(target.SwarmID))
 	}
 	lines = append(lines,
-		fmt.Sprintf("pending swarm notifications: %d", a.swarmNotificationCount),
-		"usage: /swarm [status|pending|approve <id>|reject <id>|set <name>|role <master|child>|<name>]",
-		"master role note: future controller for child swarms; pairing and sync come later.",
+		"usage: /swarm set <name> | /swarm name <name> | /swarm <name> | /swarm role <master|child>",
+		"role note: topology role metadata only.",
 	)
 	if strings.TrimSpace(a.settingsLabel) != "" {
 		lines = append(lines, "settings: "+a.settingsLabel)
 	}
 	return lines
-}
-
-func (a *App) showSwarmSelectorOverlay(status string) {
-	if a == nil || a.home == nil {
-		return
-	}
-	workspacePath := strings.TrimSpace(a.activeWorkspacePath())
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.workspacePath)
-	}
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.startupCWD)
-	}
-	routes := a.homeModel.ChatRoutes
-	selected := normalizeSelectedRouteID(a.selectedChatRouteID, routes)
-	lines := []string{
-		"current: " + a.selectedChatRouteLabelForWorkspace(workspacePath),
-		"default: " + a.chatRouteLabelForID(routes, emptyFallback(strings.TrimSpace(a.config.Chat.DefaultWorkspaceRoutes[workspacePath]), "host")),
-	}
-	if target := a.homeModel.CurrentSwarmTarget; target != nil && strings.TrimSpace(target.SwarmID) != "" {
-		lines = append(lines, "current target swarm_id: "+strings.TrimSpace(target.SwarmID))
-	}
-	lines = append(lines, "selectors:")
-	for _, route := range routes {
-		marker := "  "
-		if strings.TrimSpace(route.ID) == selected {
-			marker = "* "
-		}
-		lines = append(lines, marker+a.displayChatRouteLabel(route))
-	}
-	lines = append(lines,
-		"commands:",
-		"  Alt+R: switch route for this TUI",
-		"  /swarm status: pairing status",
-		"  /swarm pending: pending enrollments",
-	)
-	a.home.ShowSwarmModal("Swarm", lines, "")
-	a.home.SetStatus(status)
-}
-
-func (a *App) chatRouteLabelForID(routes []model.ChatRoute, routeID string) string {
-	routeID = strings.TrimSpace(routeID)
-	for _, route := range routes {
-		if strings.TrimSpace(route.ID) == routeID {
-			return a.displayChatRouteLabel(route)
-		}
-	}
-	return "host"
-}
-
-func (a *App) showSwarmStatusOverlay(status string) {
-	if a == nil || a.api == nil || a.home == nil {
-		return
-	}
-	ctx := context.Background()
-	state, stateErr := a.api.GetSwarmState(ctx)
-	pending, pendingErr := a.api.ListPendingSwarmEnrollments(ctx)
-	if stateErr != nil {
-		a.home.SetStatus(fmt.Sprintf("swarm state failed: %v", stateErr))
-		return
-	}
-	if pendingErr != nil {
-		a.home.SetStatus(fmt.Sprintf("swarm pending enrollments failed: %v", pendingErr))
-		return
-	}
-	lines := []string{
-		"swarm name: " + a.currentSwarmName(),
-		"swarm role: " + a.currentSwarmRole(),
-		"pairing state: " + strings.TrimSpace(state.Pairing.PairingState),
-		fmt.Sprintf("pending enrollments: %d", len(pending)),
-		fmt.Sprintf("peer count: %d", len(state.TrustedPeers)),
-		fmt.Sprintf("pending notifications: %d", a.swarmNotificationCount),
-		"usage: /swarm name <name> | /swarm pending | /swarm approve <id> | /swarm reject <id>",
-	}
-	if status == "pending swarm enrollments" {
-		for _, item := range pending {
-			lines = append(lines, fmt.Sprintf("pending %s  %s", item.ID, emptyFallback(strings.TrimSpace(item.ChildName), "child")))
-		}
-	}
-	a.home.ShowSwarmModal("Swarm Status", lines, "")
-	a.home.SetStatus(status)
 }
 
 func isValidSwarmRoleSetting(role string) bool {

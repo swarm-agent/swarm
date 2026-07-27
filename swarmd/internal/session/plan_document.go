@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	pathpkg "path"
 	"strings"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -18,7 +19,13 @@ func NormalizePlanDocumentForSave(planID, title string, incoming, existing *pebb
 	planID = strings.TrimSpace(planID)
 	title = strings.TrimSpace(title)
 	if incoming == nil {
-		return clonePlanDocument(existing), nil
+		doc := clonePlanDocument(existing)
+		if doc != nil {
+			doc.ExecutionOrigin = NormalizePlanExecutionOrigin(doc.ExecutionOrigin)
+			restoreOriginalCheckpointsForCheckpointedExecution(doc)
+			normalizePlanExecutionPolicy(&doc.ExecutionPolicy, len(doc.Checkpoints))
+		}
+		return doc, nil
 	}
 	doc := clonePlanDocument(incoming)
 	if doc == nil {
@@ -36,19 +43,142 @@ func NormalizePlanDocumentForSave(planID, title string, incoming, existing *pebb
 	doc.SchemaVersion = strings.TrimSpace(doc.SchemaVersion)
 	doc.RevisionID = strings.TrimSpace(doc.RevisionID)
 	doc.ActiveCheckpointID = strings.TrimSpace(doc.ActiveCheckpointID)
+	doc.ExecutionOrigin = NormalizePlanExecutionOrigin(doc.ExecutionOrigin)
 	doc.RenderedText = strings.TrimSpace(doc.RenderedText)
 	doc.DisplayText = strings.TrimSpace(doc.DisplayText)
 	trimPlanInfo(&doc.Info)
+	doc.Artifacts = trimPlanArtifacts(doc.Artifacts)
 	for i := range doc.Checkpoints {
 		trimPlanCheckpoint(&doc.Checkpoints[i])
 		if doc.Checkpoints[i].Order == 0 {
 			doc.Checkpoints[i].Order = i + 1
 		}
 	}
+	for i := range doc.OriginalCheckpoints {
+		trimPlanCheckpoint(&doc.OriginalCheckpoints[i])
+		if doc.OriginalCheckpoints[i].Order == 0 {
+			doc.OriginalCheckpoints[i].Order = i + 1
+		}
+	}
+	restoreOriginalCheckpointsForCheckpointedExecution(doc)
+	normalizePlanExecutionPolicy(&doc.ExecutionPolicy, len(doc.Checkpoints))
+	normalizePlanExecutionState(doc.ExecutionState)
+	if doc.ActiveCheckpointID == "" && doc.ExecutionPolicy.Shape == PlanExecutionShapeCheckpointed {
+		doc.ActiveCheckpointID = defaultActiveCheckpointID(doc.Checkpoints)
+	}
 	if err := ValidatePlanDocument(doc); err != nil {
 		return nil, err
 	}
 	return doc, nil
+}
+
+// ExecutablePlanValidationIssue identifies one field that prevents a plan
+// document from being approved or started. Draft documents intentionally use
+// ValidatePlanDocument instead and may remain incomplete.
+type ExecutablePlanValidationIssue struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
+// ExecutablePlanValidationError reports every actionable defect in an
+// approval-bearing plan document so callers can return one useful retry prompt.
+type ExecutablePlanValidationError struct {
+	Issues []ExecutablePlanValidationIssue `json:"issues"`
+}
+
+func (e *ExecutablePlanValidationError) Error() string {
+	if e == nil || len(e.Issues) == 0 {
+		return "executable plan document is invalid"
+	}
+	parts := make([]string, 0, len(e.Issues))
+	for _, issue := range e.Issues {
+		parts = append(parts, issue.Field+": "+issue.Message)
+	}
+	return "executable plan document is invalid: " + strings.Join(parts, "; ")
+}
+
+// ValidateExecutablePlanDocument applies the strict contract for a plan that
+// is about to cross an approval or execution boundary. It never normalizes or
+// synthesizes content; callers must submit the exact structured plan they want
+// the user to approve. ValidatePlanDocument remains the looser draft validator.
+func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error {
+	validationErr := &ExecutablePlanValidationError{}
+	add := func(field, message string) {
+		validationErr.Issues = append(validationErr.Issues, ExecutablePlanValidationIssue{Field: field, Message: message})
+	}
+	if doc == nil {
+		add("document", "structured document is required")
+		return validationErr
+	}
+	if strings.TrimSpace(doc.Title) == "" {
+		add("title", "plan title is required")
+	}
+	if strings.TrimSpace(doc.Info.Goal) == "" {
+		add("info.goal", "plan goal is required")
+	}
+	if len(doc.Checkpoints) == 0 {
+		add("checkpoints", "at least one checkpoint is required")
+	}
+
+	for i, artifact := range doc.Artifacts {
+		if err := validatePlanArtifact(artifact); err != nil {
+			add(fmt.Sprintf("artifacts[%d].path", i), err.Error())
+		}
+	}
+	seenIDs := make(map[string]struct{}, len(doc.Checkpoints))
+	pendingIDs := make(map[string]struct{}, len(doc.Checkpoints))
+	firstPendingID := ""
+	for i, checkpoint := range doc.Checkpoints {
+		prefix := fmt.Sprintf("checkpoints[%d]", i)
+		id := strings.TrimSpace(checkpoint.ID)
+		if id == "" {
+			add(prefix+".id", "checkpoint id is required")
+		} else if _, exists := seenIDs[id]; exists {
+			add(prefix+".id", fmt.Sprintf("checkpoint id %q is duplicated", id))
+		} else {
+			seenIDs[id] = struct{}{}
+		}
+		if strings.TrimSpace(checkpoint.Title) == "" {
+			add(prefix+".title", "checkpoint title is required")
+		}
+		if strings.TrimSpace(checkpoint.Objective) == "" && len(trimStringSlice(checkpoint.Tasks)) == 0 {
+			add(prefix+".objective", "checkpoint objective or at least one concrete task is required")
+		}
+		if len(trimStringSlice(checkpoint.AcceptanceCriteria)) == 0 {
+			add(prefix+".acceptance_criteria", "at least one acceptance criterion is required")
+		}
+		if checkpoint.Order != i+1 {
+			add(prefix+".order", fmt.Sprintf("checkpoint order must be %d", i+1))
+		}
+		if !isValidPlanCheckpointStatus(checkpoint.Status) {
+			add(prefix+".status", fmt.Sprintf("checkpoint status %q is not supported", checkpoint.Status))
+		}
+		for artifactIndex, artifact := range checkpoint.Artifacts {
+			if err := validatePlanArtifact(artifact); err != nil {
+				add(fmt.Sprintf("%s.artifacts[%d].path", prefix, artifactIndex), err.Error())
+			}
+		}
+		if checkpoint.Status == PlanCheckpointStatusPending && id != "" {
+			pendingIDs[id] = struct{}{}
+			if firstPendingID == "" {
+				firstPendingID = id
+			}
+		}
+	}
+
+	activeID := strings.TrimSpace(doc.ActiveCheckpointID)
+	if firstPendingID == "" {
+		add("active_checkpoint_id", "a pending checkpoint is required for execution")
+	} else if activeID != "" {
+		if _, ok := pendingIDs[activeID]; !ok {
+			add("active_checkpoint_id", fmt.Sprintf("must identify a pending checkpoint; got %q", activeID))
+		}
+	} // An empty active id resolves deterministically to the first pending checkpoint.
+
+	if len(validationErr.Issues) > 0 {
+		return validationErr
+	}
+	return nil
 }
 
 func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
@@ -61,6 +191,15 @@ func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 	if strings.TrimSpace(doc.Title) == "" {
 		return errors.New("plan document title is required")
 	}
+	if err := validatePlanExecutionPolicy(doc.ExecutionPolicy); err != nil {
+		return err
+	}
+	if err := validatePlanExecutionState(doc.ExecutionState); err != nil {
+		return err
+	}
+	if err := validatePlanArtifacts("artifacts", doc.Artifacts); err != nil {
+		return err
+	}
 	seen := make(map[string]struct{}, len(doc.Checkpoints))
 	for i, checkpoint := range doc.Checkpoints {
 		id := strings.TrimSpace(checkpoint.ID)
@@ -71,12 +210,21 @@ func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 			return fmt.Errorf("plan document checkpoint id %q is duplicated", id)
 		}
 		seen[id] = struct{}{}
+		if err := validatePlanCheckpointRuntime(checkpoint); err != nil {
+			return err
+		}
+		if err := validatePlanArtifacts(fmt.Sprintf("checkpoints[%d].artifacts", i), checkpoint.Artifacts); err != nil {
+			return err
+		}
 	}
 	activeID := strings.TrimSpace(doc.ActiveCheckpointID)
 	if activeID != "" {
 		if _, ok := seen[activeID]; !ok {
 			return fmt.Errorf("plan document active_checkpoint_id %q does not match a checkpoint", activeID)
 		}
+	}
+	if err := validatePlanCheckpointContinuity(doc); err != nil {
+		return err
 	}
 	return nil
 }
@@ -85,21 +233,36 @@ func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 // documents. The service applies the whole patch atomically and stores exactly
 // one normal plan revision for the accepted update.
 type PlanDocumentPatch struct {
-	Operation          string                             `json:"operation,omitempty"`
-	Info               *pebblestore.SessionPlanInfo       `json:"info,omitempty"`
-	InfoFields         map[string]json.RawMessage         `json:"-"`
-	Checkpoint         *pebblestore.SessionPlanCheckpoint `json:"checkpoint,omitempty"`
-	CheckpointFields   map[string]json.RawMessage         `json:"-"`
-	CheckpointID       string                             `json:"checkpoint_id,omitempty"`
-	CheckpointOrder    []string                           `json:"checkpoint_order,omitempty"`
-	ActiveCheckpointID string                             `json:"active_checkpoint_id,omitempty"`
-	Status             string                             `json:"status,omitempty"`
-	Notes              string                             `json:"notes,omitempty"`
-	Report             string                             `json:"report,omitempty"`
-	Result             string                             `json:"result,omitempty"`
-	ChangedFiles       []string                           `json:"changed_files,omitempty"`
-	Validation         []string                           `json:"validation,omitempty"`
-	Operations         []PlanDocumentPatchOperation       `json:"operations,omitempty"`
+	Operation          string                                           `json:"operation,omitempty"`
+	Info               *pebblestore.SessionPlanInfo                     `json:"info,omitempty"`
+	InfoFields         map[string]json.RawMessage                       `json:"-"`
+	ExecutionPolicy    *pebblestore.SessionPlanExecutionPolicy          `json:"execution_policy,omitempty"`
+	ExecutionState     *pebblestore.SessionPlanExecutionState           `json:"execution_state,omitempty"`
+	Checkpoint         *pebblestore.SessionPlanCheckpoint               `json:"checkpoint,omitempty"`
+	CheckpointFields   map[string]json.RawMessage                       `json:"-"`
+	CheckpointID       string                                           `json:"checkpoint_id,omitempty"`
+	CheckpointOrder    []string                                         `json:"checkpoint_order,omitempty"`
+	Subtask            *pebblestore.SessionPlanSubtask                  `json:"subtask,omitempty"`
+	SubtaskID          string                                           `json:"subtask_id,omitempty"`
+	SubtaskIDs         []string                                         `json:"subtask_ids,omitempty"`
+	SubtaskOrder       []string                                         `json:"subtask_order,omitempty"`
+	CompleteCheckpoint bool                                             `json:"complete_checkpoint,omitempty"`
+	ActiveCheckpointID string                                           `json:"active_checkpoint_id,omitempty"`
+	Status             string                                           `json:"status,omitempty"`
+	AttemptID          string                                           `json:"attempt_id,omitempty"`
+	RunID              string                                           `json:"run_id,omitempty"`
+	RunSessionID       string                                           `json:"run_session_id,omitempty"`
+	ParentSessionID    string                                           `json:"parent_session_id,omitempty"`
+	StartedAt          int64                                            `json:"started_at,omitempty"`
+	CompletedAt        int64                                            `json:"completed_at,omitempty"`
+	Notes              string                                           `json:"notes,omitempty"`
+	Report             string                                           `json:"report,omitempty"`
+	Result             string                                           `json:"result,omitempty"`
+	ChangedFiles       []string                                         `json:"changed_files,omitempty"`
+	Validation         []string                                         `json:"validation,omitempty"`
+	Recommendation     *pebblestore.SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	Handoff            *pebblestore.SessionPlanCheckpointHandoff        `json:"handoff,omitempty"`
+	Operations         []PlanDocumentPatchOperation                     `json:"operations,omitempty"`
 }
 
 type PlanDocumentPatchOperation = PlanDocumentPatch
@@ -149,7 +312,7 @@ func (p *PlanDocumentPatch) UnmarshalJSON(raw []byte) error {
 }
 
 func (p PlanDocumentPatch) IsZero() bool {
-	return strings.TrimSpace(p.Operation) == "" && p.Info == nil && len(p.InfoFields) == 0 && p.Checkpoint == nil && len(p.CheckpointFields) == 0 && strings.TrimSpace(p.CheckpointID) == "" && len(p.CheckpointOrder) == 0 && strings.TrimSpace(p.ActiveCheckpointID) == "" && strings.TrimSpace(p.Status) == "" && strings.TrimSpace(p.Notes) == "" && strings.TrimSpace(p.Report) == "" && strings.TrimSpace(p.Result) == "" && len(p.ChangedFiles) == 0 && len(p.Validation) == 0 && len(p.Operations) == 0
+	return strings.TrimSpace(p.Operation) == "" && p.Info == nil && len(p.InfoFields) == 0 && p.ExecutionPolicy == nil && p.ExecutionState == nil && p.Checkpoint == nil && len(p.CheckpointFields) == 0 && strings.TrimSpace(p.CheckpointID) == "" && len(p.CheckpointOrder) == 0 && p.Subtask == nil && strings.TrimSpace(p.SubtaskID) == "" && len(p.SubtaskIDs) == 0 && len(p.SubtaskOrder) == 0 && !p.CompleteCheckpoint && strings.TrimSpace(p.ActiveCheckpointID) == "" && strings.TrimSpace(p.Status) == "" && strings.TrimSpace(p.AttemptID) == "" && strings.TrimSpace(p.RunID) == "" && strings.TrimSpace(p.RunSessionID) == "" && strings.TrimSpace(p.ParentSessionID) == "" && p.StartedAt == 0 && p.CompletedAt == 0 && strings.TrimSpace(p.Notes) == "" && strings.TrimSpace(p.Report) == "" && strings.TrimSpace(p.Result) == "" && len(p.ChangedFiles) == 0 && len(p.Validation) == 0 && len(p.Operations) == 0
 }
 
 func ApplyPlanDocumentPatch(planID, title string, existing *pebblestore.SessionPlanDocument, patch PlanDocumentPatch) (*pebblestore.SessionPlanDocument, error) {
@@ -179,10 +342,18 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 		switch {
 		case op.Info != nil || len(op.InfoFields) > 0:
 			operation = "update_info"
+		case op.ExecutionPolicy != nil:
+			operation = "update_execution_policy"
+		case op.ExecutionState != nil:
+			operation = "update_execution_state"
 		case op.Checkpoint != nil:
 			operation = "upsert_checkpoint"
 		case len(op.CheckpointOrder) > 0:
 			operation = "reorder_checkpoints"
+		case op.Subtask != nil:
+			operation = "add_subtask"
+		case len(op.SubtaskOrder) > 0:
+			operation = "reorder_subtasks"
 		case strings.TrimSpace(op.ActiveCheckpointID) != "":
 			operation = "set_active_checkpoint"
 		default:
@@ -206,6 +377,21 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 		doc.Info = *op.Info
 		trimPlanInfo(&doc.Info)
 		return nil
+	case "update_execution_policy", "set_execution_policy", "execution_policy":
+		if op.ExecutionPolicy == nil {
+			return errors.New("update_execution_policy plan document patch requires execution_policy")
+		}
+		doc.ExecutionPolicy = *op.ExecutionPolicy
+		normalizePlanExecutionPolicy(&doc.ExecutionPolicy, len(doc.Checkpoints))
+		return nil
+	case "update_execution_state", "set_execution_state", "execution_state":
+		if op.ExecutionState == nil {
+			return errors.New("update_execution_state plan document patch requires execution_state")
+		}
+		state := *op.ExecutionState
+		doc.ExecutionState = &state
+		normalizePlanExecutionState(doc.ExecutionState)
+		return nil
 	case "upsert_checkpoint", "replace_checkpoint", "set_checkpoint":
 		if op.Checkpoint == nil {
 			return errors.New("upsert_checkpoint plan document patch requires checkpoint")
@@ -214,6 +400,11 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 		trimPlanCheckpoint(&checkpoint)
 		if checkpoint.ID == "" {
 			return errors.New("upsert_checkpoint plan document patch requires checkpoint.id")
+		}
+		if checkpoint.Status == PlanCheckpointStatusInProgress {
+			if inProgressID, _, ok := findInProgressPlanCheckpoint(doc.Checkpoints, checkpoint.ID); ok {
+				return fmt.Errorf("cannot upsert checkpoint %q as in_progress while checkpoint %q is in_progress; resolve it first", checkpoint.ID, inProgressID)
+			}
 		}
 		idx := findPlanCheckpointIndex(doc.Checkpoints, checkpoint.ID)
 		if idx >= 0 {
@@ -245,17 +436,110 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 		}
 		applyCheckpointCompletionFields(&doc.Checkpoints[idx], op, false)
 		return nil
+	case "start_checkpoint", "continue_checkpoint", "advance_checkpoint", "next_checkpoint":
+		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
+		_, err := ApplyPlanCheckpointStart(doc, PlanCheckpointStartOptions{
+			CheckpointID:    id,
+			AttemptID:       op.AttemptID,
+			RunID:           op.RunID,
+			SessionID:       op.RunSessionID,
+			ParentSessionID: op.ParentSessionID,
+			StartedAt:       op.StartedAt,
+		})
+		return err
 	case "complete_checkpoint", "finish_checkpoint":
 		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
 		if id == "" {
-			return errors.New("complete_checkpoint plan document patch requires checkpoint_id")
+			id = strings.TrimSpace(doc.ActiveCheckpointID)
 		}
-		idx := findPlanCheckpointIndex(doc.Checkpoints, id)
-		if idx < 0 {
-			return fmt.Errorf("plan document checkpoint %q was not found", id)
+		if id == "" {
+			return errors.New("complete_checkpoint plan document patch requires checkpoint_id or active_checkpoint_id")
 		}
-		applyCheckpointCompletionFields(&doc.Checkpoints[idx], op, true)
-		return nil
+		_, err := ApplyPlanCheckpointOutcome(doc, PlanCheckpointOutcomeOptions{
+			CheckpointID:    id,
+			Outcome:         firstNonBlank(op.Status, PlanCheckpointStatusCompleted),
+			AttemptID:       op.AttemptID,
+			RunID:           op.RunID,
+			SessionID:       op.RunSessionID,
+			ParentSessionID: op.ParentSessionID,
+			Report:          op.Report,
+			Result:          op.Result,
+			ChangedFiles:    op.ChangedFiles,
+			Validation:      op.Validation,
+			Recommendation:  op.Recommendation,
+			Handoff:         op.Handoff,
+			StartedAt:       op.StartedAt,
+			CompletedAt:     op.CompletedAt,
+		})
+		return err
+	case "checkpoint_outcome", "mark_checkpoint_outcome", "mark_checkpoint", "finish_checkpoint_with_outcome", "mark_needs_review", "mark_completed", "mark_blocked", "mark_failed":
+		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
+		if id == "" {
+			id = strings.TrimSpace(doc.ActiveCheckpointID)
+		}
+		if id == "" {
+			return errors.New("checkpoint_outcome plan document patch requires checkpoint_id or active_checkpoint_id")
+		}
+		outcome := op.Status
+		switch operation {
+		case "mark_needs_review":
+			outcome = PlanCheckpointStatusNeedsReview
+		case "mark_completed":
+			outcome = PlanCheckpointStatusCompleted
+		case "mark_blocked":
+			outcome = PlanCheckpointStatusBlocked
+		case "mark_failed":
+			outcome = PlanCheckpointStatusFailed
+		}
+		_, err := ApplyPlanCheckpointOutcome(doc, PlanCheckpointOutcomeOptions{
+			CheckpointID:    id,
+			Outcome:         outcome,
+			AttemptID:       op.AttemptID,
+			RunID:           op.RunID,
+			SessionID:       op.RunSessionID,
+			ParentSessionID: op.ParentSessionID,
+			Report:          op.Report,
+			Result:          op.Result,
+			ChangedFiles:    op.ChangedFiles,
+			Validation:      op.Validation,
+			Recommendation:  op.Recommendation,
+			Handoff:         op.Handoff,
+			StartedAt:       op.StartedAt,
+			CompletedAt:     op.CompletedAt,
+		})
+		return err
+	case "accept_checkpoint_review", "approve_checkpoint":
+		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
+		if id == "" {
+			id = strings.TrimSpace(doc.ActiveCheckpointID)
+		}
+		_, err := ApplyPlanCheckpointReviewAcceptance(doc, PlanCheckpointReviewAcceptanceOptions{
+			CheckpointID: id,
+			Result:       op.Result,
+			Notes:        firstNonBlank(op.Notes, op.Report),
+			ReviewedAt:   op.CompletedAt,
+		})
+		return err
+	case "restart_checkpoint", "retry_checkpoint", "restart_checkpoint_from_zero", "reset_checkpoint":
+		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
+		_, err := ApplyPlanCheckpointReset(doc, PlanCheckpointResetOptions{CheckpointID: id})
+		return err
+	case "rewind_to_checkpoint", "rewind_checkpoint":
+		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
+		_, err := ApplyPlanCheckpointReset(doc, PlanCheckpointResetOptions{CheckpointID: id, Rewind: true})
+		return err
+	case "add_subtask", "create_subtask", "upsert_subtask":
+		return addPlanCheckpointSubtask(doc, op)
+	case "update_subtask", "patch_subtask":
+		return updatePlanCheckpointSubtask(doc, op)
+	case "focus_subtask", "set_active_subtask", "start_subtask":
+		return focusPlanCheckpointSubtask(doc, op)
+	case "complete_subtask", "finish_subtask":
+		return completePlanCheckpointSubtask(doc, op)
+	case "remove_subtask", "delete_subtask":
+		return removePlanCheckpointSubtask(doc, op)
+	case "reorder_subtasks":
+		return reorderPlanCheckpointSubtasks(doc, op)
 	case "remove_checkpoint", "delete_checkpoint":
 		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
 		if id == "" {
@@ -278,8 +562,23 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 		if id == "" {
 			return errors.New("set_active_checkpoint plan document patch requires active_checkpoint_id or checkpoint_id")
 		}
-		if findPlanCheckpointIndex(doc.Checkpoints, id) < 0 {
+		idx := findPlanCheckpointIndex(doc.Checkpoints, id)
+		if idx < 0 {
 			return fmt.Errorf("plan document checkpoint %q was not found", id)
+		}
+		if inProgressID, _, ok := findInProgressPlanCheckpoint(doc.Checkpoints, id); ok {
+			return fmt.Errorf("cannot set active_checkpoint_id to %q while checkpoint %q is in_progress; resolve it first", id, inProgressID)
+		}
+		for i := 0; i < idx; i++ {
+			checkpoint := doc.Checkpoints[i]
+			status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
+			checkpointID := strings.TrimSpace(checkpoint.ID)
+			if status != PlanCheckpointStatusCompleted {
+				return fmt.Errorf("cannot set active_checkpoint_id to %q while earlier checkpoint %q status is %q; resolve it first", id, checkpointID, status)
+			}
+			if planCheckpointReviewPending(doc.ExecutionPolicy, checkpoint, i < len(doc.Checkpoints)-1) {
+				return fmt.Errorf("cannot set active_checkpoint_id to %q while earlier checkpoint %q is waiting for review; resolve it first", id, checkpointID)
+			}
 		}
 		doc.ActiveCheckpointID = id
 		return nil
@@ -403,13 +702,31 @@ func mergePlanCheckpointPatch(target *pebblestore.SessionPlanCheckpoint, checkpo
 		case "title":
 			target.Title = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.Title))
 		case "status":
-			target.Status = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.Status))
+			target.Status = normalizePlanCheckpointStatus(stringFromPlanInfoRaw(raw, trimmed.Status))
 		case "objective":
 			target.Objective = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.Objective))
 		case "tasks":
 			target.Tasks = trimStringSlice(stringSliceFromPlanInfoRaw(raw, trimmed.Tasks))
+			if len(target.Subtasks) > 0 {
+				target.Subtasks = nil
+				target.ActiveSubtaskID = ""
+				normalizePlanCheckpointSubtasks(target)
+			}
+		case "subtasks":
+			var subtasks []pebblestore.SessionPlanSubtask
+			if len(raw) > 0 && json.Unmarshal(raw, &subtasks) == nil {
+				target.Subtasks = subtasks
+				normalizePlanCheckpointSubtasks(target)
+			}
+		case "active_subtask_id":
+			target.ActiveSubtaskID = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.ActiveSubtaskID))
 		case "acceptance_criteria":
 			target.AcceptanceCriteria = trimStringSlice(stringSliceFromPlanInfoRaw(raw, trimmed.AcceptanceCriteria))
+		case "artifacts":
+			var artifacts []pebblestore.SessionPlanArtifactReference
+			if len(raw) > 0 && json.Unmarshal(raw, &artifacts) == nil {
+				target.Artifacts = trimPlanArtifacts(artifacts)
+			}
 		case "notes":
 			target.Notes = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.Notes))
 		case "report":
@@ -420,6 +737,40 @@ func mergePlanCheckpointPatch(target *pebblestore.SessionPlanCheckpoint, checkpo
 			target.ChangedFiles = trimStringSlice(stringSliceFromPlanInfoRaw(raw, trimmed.ChangedFiles))
 		case "validation":
 			target.Validation = trimStringSlice(stringSliceFromPlanInfoRaw(raw, trimmed.Validation))
+		case "attempt_id":
+			target.AttemptID = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.AttemptID))
+		case "run_id":
+			target.RunID = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.RunID))
+		case "session_id", "run_session_id":
+			target.SessionID = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.SessionID))
+		case "started_at":
+			var startedAt int64
+			if len(raw) > 0 && json.Unmarshal(raw, &startedAt) == nil {
+				target.StartedAt = startedAt
+			} else if trimmed.StartedAt != 0 {
+				target.StartedAt = trimmed.StartedAt
+			}
+		case "completed_at":
+			var completedAt int64
+			if len(raw) > 0 && json.Unmarshal(raw, &completedAt) == nil {
+				target.CompletedAt = completedAt
+			} else if trimmed.CompletedAt != 0 {
+				target.CompletedAt = trimmed.CompletedAt
+			}
+		case "review":
+			var review pebblestore.SessionPlanCheckpointReview
+			if len(raw) > 0 && json.Unmarshal(raw, &review) == nil {
+				normalizePlanCheckpointReview(&review)
+				target.Review = &review
+			}
+		case "attempts":
+			var attempts []pebblestore.SessionPlanCheckpointAttempt
+			if len(raw) > 0 && json.Unmarshal(raw, &attempts) == nil {
+				target.Attempts = attempts
+				for i := range target.Attempts {
+					normalizePlanCheckpointAttempt(&target.Attempts[i], target.ID)
+				}
+			}
 		case "order":
 			var order int
 			if len(raw) > 0 && json.Unmarshal(raw, &order) == nil {
@@ -487,10 +838,10 @@ func checkpointIDFromPatch(checkpoint *pebblestore.SessionPlanCheckpoint) string
 
 func applyCheckpointCompletionFields(checkpoint *pebblestore.SessionPlanCheckpoint, op PlanDocumentPatchOperation, complete bool) {
 	if complete {
-		checkpoint.Status = "done"
+		checkpoint.Status = PlanCheckpointStatusCompleted
 	}
 	if status := strings.TrimSpace(op.Status); status != "" {
-		checkpoint.Status = status
+		checkpoint.Status = normalizePlanCheckpointStatus(status)
 	}
 	if notes := strings.TrimSpace(op.Notes); notes != "" {
 		checkpoint.Notes = notes
@@ -506,6 +857,16 @@ func applyCheckpointCompletionFields(checkpoint *pebblestore.SessionPlanCheckpoi
 	}
 	if len(op.Validation) > 0 {
 		checkpoint.Validation = trimStringSlice(op.Validation)
+	}
+	if op.Recommendation != nil {
+		recommendation := normalizePlanCheckpointRecommendation(*op.Recommendation)
+		if validatePlanCheckpointRecommendation(recommendation) == nil {
+			checkpoint.Recommendation = &recommendation
+		}
+	}
+	if op.Handoff != nil {
+		handoff := *op.Handoff
+		checkpoint.Handoff = &handoff
 	}
 }
 
@@ -572,15 +933,42 @@ func clonePlanDocument(doc *pebblestore.SessionPlanDocument) *pebblestore.Sessio
 	clone.Info.OpenQuestions = cloneStringSlice(doc.Info.OpenQuestions)
 	clone.Info.RelevantFiles = cloneStringSlice(doc.Info.RelevantFiles)
 	clone.Info.SuccessCriteria = cloneStringSlice(doc.Info.SuccessCriteria)
-	clone.Checkpoints = make([]pebblestore.SessionPlanCheckpoint, len(doc.Checkpoints))
-	for i := range doc.Checkpoints {
-		clone.Checkpoints[i] = doc.Checkpoints[i]
-		clone.Checkpoints[i].Tasks = cloneStringSlice(doc.Checkpoints[i].Tasks)
-		clone.Checkpoints[i].AcceptanceCriteria = cloneStringSlice(doc.Checkpoints[i].AcceptanceCriteria)
-		clone.Checkpoints[i].ChangedFiles = cloneStringSlice(doc.Checkpoints[i].ChangedFiles)
-		clone.Checkpoints[i].Validation = cloneStringSlice(doc.Checkpoints[i].Validation)
+	if doc.ExecutionState != nil {
+		state := *doc.ExecutionState
+		clone.ExecutionState = &state
 	}
+	clone.Artifacts = clonePlanArtifacts(doc.Artifacts)
+	clone.Checkpoints = clonePlanDocumentCheckpointSlice(doc.Checkpoints)
+	clone.OriginalCheckpoints = clonePlanDocumentCheckpointSlice(doc.OriginalCheckpoints)
 	return &clone
+}
+
+func clonePlanDocumentCheckpointSlice(checkpoints []pebblestore.SessionPlanCheckpoint) []pebblestore.SessionPlanCheckpoint {
+	if checkpoints == nil {
+		return nil
+	}
+	clone := make([]pebblestore.SessionPlanCheckpoint, len(checkpoints))
+	for i := range checkpoints {
+		clone[i] = checkpoints[i]
+		clone[i].Tasks = cloneStringSlice(checkpoints[i].Tasks)
+		clone[i].Subtasks = append([]pebblestore.SessionPlanSubtask(nil), checkpoints[i].Subtasks...)
+		clone[i].AcceptanceCriteria = cloneStringSlice(checkpoints[i].AcceptanceCriteria)
+		clone[i].Artifacts = clonePlanArtifacts(checkpoints[i].Artifacts)
+		clone[i].SourceMessageID = strings.TrimSpace(checkpoints[i].SourceMessageID)
+		clone[i].ChangedFiles = cloneStringSlice(checkpoints[i].ChangedFiles)
+		clone[i].Validation = cloneStringSlice(checkpoints[i].Validation)
+		if checkpoints[i].Review != nil {
+			review := *checkpoints[i].Review
+			clone[i].Review = &review
+		}
+		clone[i].Attempts = make([]pebblestore.SessionPlanCheckpointAttempt, len(checkpoints[i].Attempts))
+		for j := range checkpoints[i].Attempts {
+			clone[i].Attempts[j] = checkpoints[i].Attempts[j]
+			clone[i].Attempts[j].ChangedFiles = cloneStringSlice(checkpoints[i].Attempts[j].ChangedFiles)
+			clone[i].Attempts[j].Validation = cloneStringSlice(checkpoints[i].Attempts[j].Validation)
+		}
+	}
+	return clone
 }
 
 func cloneStringSlice(in []string) []string {
@@ -617,15 +1005,74 @@ func trimPlanCheckpoint(checkpoint *pebblestore.SessionPlanCheckpoint) {
 	}
 	checkpoint.ID = strings.TrimSpace(checkpoint.ID)
 	checkpoint.Title = strings.TrimSpace(checkpoint.Title)
-	checkpoint.Status = strings.TrimSpace(checkpoint.Status)
+	checkpoint.Status = normalizePlanCheckpointStatusForSave(checkpoint.Status)
 	checkpoint.Objective = strings.TrimSpace(checkpoint.Objective)
 	checkpoint.Tasks = trimStringSlice(checkpoint.Tasks)
+	checkpoint.ActiveSubtaskID = strings.TrimSpace(checkpoint.ActiveSubtaskID)
 	checkpoint.AcceptanceCriteria = trimStringSlice(checkpoint.AcceptanceCriteria)
+	checkpoint.Artifacts = trimPlanArtifacts(checkpoint.Artifacts)
+	checkpoint.SourceMessageID = strings.TrimSpace(checkpoint.SourceMessageID)
 	checkpoint.Notes = strings.TrimSpace(checkpoint.Notes)
 	checkpoint.Report = strings.TrimSpace(checkpoint.Report)
 	checkpoint.Result = strings.TrimSpace(checkpoint.Result)
 	checkpoint.ChangedFiles = trimStringSlice(checkpoint.ChangedFiles)
 	checkpoint.Validation = trimStringSlice(checkpoint.Validation)
+	normalizePlanCheckpointRuntime(checkpoint)
+}
+
+func clonePlanArtifacts(in []pebblestore.SessionPlanArtifactReference) []pebblestore.SessionPlanArtifactReference {
+	if in == nil {
+		return nil
+	}
+	out := make([]pebblestore.SessionPlanArtifactReference, len(in))
+	copy(out, in)
+	return out
+}
+
+func trimPlanArtifacts(in []pebblestore.SessionPlanArtifactReference) []pebblestore.SessionPlanArtifactReference {
+	if in == nil {
+		return nil
+	}
+	out := make([]pebblestore.SessionPlanArtifactReference, 0, len(in))
+	for _, artifact := range in {
+		artifact.Path = strings.TrimSpace(artifact.Path)
+		artifact.Role = strings.ToLower(strings.TrimSpace(artifact.Role))
+		artifact.Description = strings.TrimSpace(artifact.Description)
+		artifact.MediaType = strings.TrimSpace(artifact.MediaType)
+		out = append(out, artifact)
+	}
+	return out
+}
+
+func validatePlanArtifacts(field string, artifacts []pebblestore.SessionPlanArtifactReference) error {
+	for i, artifact := range artifacts {
+		if err := validatePlanArtifact(artifact); err != nil {
+			return fmt.Errorf("plan document %s[%d].path %w", field, i, err)
+		}
+	}
+	return nil
+}
+
+func validatePlanArtifact(artifact pebblestore.SessionPlanArtifactReference) error {
+	role := strings.ToLower(strings.TrimSpace(artifact.Role))
+	if role != "" && role != "input" && role != "deliverable" {
+		return errors.New("has unsupported role; use input or deliverable")
+	}
+	path := strings.TrimSpace(artifact.Path)
+	if path == "" {
+		return errors.New("is required")
+	}
+	if strings.Contains(path, "\\") || strings.HasPrefix(path, "/") || (len(path) >= 2 && path[1] == ':') {
+		return errors.New("must be a portable workspace-relative path")
+	}
+	clean := pathpkg.Clean(path)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return errors.New("must remain within the workspace")
+	}
+	if clean != path {
+		return errors.New("must be a clean portable workspace-relative path")
+	}
+	return nil
 }
 
 func trimStringSlice(in []string) []string {

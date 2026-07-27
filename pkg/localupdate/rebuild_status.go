@@ -3,30 +3,17 @@ package localupdate
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
-const rebuildStatusRelativePath = "update/local-container-rebuild.json"
 const updateJobStatusRelativePath = "update/update-job.json"
-
-// RebuildStatus records the local child-image target produced by a Swarm update.
-// It is status-only traceability for local-container update checkpoints; it does
-// not imply that existing child containers have been replaced.
-type RebuildStatus struct {
-	Mode        string `json:"mode,omitempty"`
-	Version     string `json:"version,omitempty"`
-	ImageRef    string `json:"image_ref,omitempty"`
-	Fingerprint string `json:"fingerprint,omitempty"`
-	UpdatedAt   string `json:"updated_at,omitempty"`
-}
 
 // UpdateJobStatus is the durable desktop-visible state for an update helper.
 // The helper runs outside swarmd while swarmd restarts, so this file lets the
-// restarted backend keep reporting "running" until container image propagation
-// has been attempted.
+// restarted backend keep reporting progress until the update helper completes.
 type UpdateJobStatus struct {
 	ID              string                `json:"id"`
 	Kind            string                `json:"kind"`
@@ -65,70 +52,56 @@ type UpdateJobHostPhase struct {
 	CompletedAtUnix int64  `json:"completed_at_unix_ms,omitempty"`
 }
 
-func RebuildStatusPath(dataDir string) string {
-	return filepath.Join(strings.TrimSpace(dataDir), rebuildStatusRelativePath)
-}
-
 func UpdateJobStatusPath(dataDir string) string {
 	return filepath.Join(strings.TrimSpace(dataDir), updateJobStatusRelativePath)
 }
 
-func WriteRebuildStatus(dataDir string, status RebuildStatus) error {
-	dataDir = strings.TrimSpace(dataDir)
-	if dataDir == "" {
-		return errors.New("local update rebuild status data dir is required")
-	}
-	statusPath := RebuildStatusPath(dataDir)
-	if err := os.MkdirAll(filepath.Dir(statusPath), 0o755); err != nil {
-		return err
-	}
-	status.Mode = strings.TrimSpace(status.Mode)
-	status.Version = strings.TrimSpace(status.Version)
-	status.ImageRef = strings.TrimSpace(status.ImageRef)
-	status.Fingerprint = strings.TrimSpace(status.Fingerprint)
-	status.UpdatedAt = strings.TrimSpace(status.UpdatedAt)
-	if status.UpdatedAt == "" {
-		status.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	}
-	raw, err := json.MarshalIndent(status, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(statusPath, append(raw, '\n'), 0o644)
-}
-
-func ReadRebuildStatusPath(path string) (RebuildStatus, bool, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return RebuildStatus{}, false, nil
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return RebuildStatus{}, false, nil
-		}
-		return RebuildStatus{}, false, err
-	}
-	var status RebuildStatus
-	if err := json.Unmarshal(raw, &status); err != nil {
-		return RebuildStatus{}, false, err
-	}
-	status.Mode = strings.TrimSpace(status.Mode)
-	status.Version = strings.TrimSpace(status.Version)
-	status.ImageRef = strings.TrimSpace(status.ImageRef)
-	status.Fingerprint = strings.TrimSpace(status.Fingerprint)
-	status.UpdatedAt = strings.TrimSpace(status.UpdatedAt)
-	return status, true, nil
-}
-
 func WriteUpdateJobStatus(dataDir string, status UpdateJobStatus) error {
+	_, err := writeUpdateJobStatus(dataDir, status, "")
+	return err
+}
+
+// WriteUpdateJobStatusIfCurrent updates status only while jobID still owns the
+// durable status slot. This prevents a detached helper from overwriting a newer
+// job after the daemon has restarted.
+func WriteUpdateJobStatusIfCurrent(dataDir, jobID string, status UpdateJobStatus) (bool, error) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return false, errors.New("local update job id is required")
+	}
+	return writeUpdateJobStatus(dataDir, status, jobID)
+}
+
+func writeUpdateJobStatus(dataDir string, status UpdateJobStatus, expectedJobID string) (bool, error) {
 	dataDir = strings.TrimSpace(dataDir)
 	if dataDir == "" {
-		return errors.New("local update job status data dir is required")
+		return false, errors.New("local update job status data dir is required")
 	}
 	statusPath := UpdateJobStatusPath(dataDir)
-	if err := os.MkdirAll(filepath.Dir(statusPath), 0o755); err != nil {
-		return err
+	statusDir := filepath.Dir(statusPath)
+	if err := os.MkdirAll(statusDir, 0o700); err != nil {
+		return false, err
+	}
+	if err := os.Chmod(statusDir, 0o700); err != nil {
+		return false, err
+	}
+	lock, err := os.OpenFile(filepath.Join(statusDir, ".update-job.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return false, err
+	}
+	defer lock.Close()
+	if err := lockUpdateStatusFile(lock); err != nil {
+		return false, err
+	}
+	defer unlockUpdateStatusFile(lock)
+	if expectedJobID != "" {
+		current, ok, err := ReadUpdateJobStatusPath(statusPath)
+		if err != nil {
+			return false, err
+		}
+		if !ok || current.ID != expectedJobID {
+			return false, nil
+		}
 	}
 	status.ID = strings.TrimSpace(status.ID)
 	status.Kind = strings.TrimSpace(status.Kind)
@@ -143,9 +116,33 @@ func WriteUpdateJobStatus(dataDir string, status UpdateJobStatus) error {
 	}
 	raw, err := json.MarshalIndent(status, "", "  ")
 	if err != nil {
-		return err
+		return false, err
 	}
-	return os.WriteFile(statusPath, append(raw, '\n'), 0o644)
+	tmp, err := os.CreateTemp(statusDir, ".update-job-*.tmp")
+	if err != nil {
+		return false, err
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return false, err
+	}
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(append(raw, '\n')); err != nil {
+		tmp.Close()
+		return false, err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		return false, err
+	}
+	if err := os.Rename(tmpPath, statusPath); err != nil {
+		return false, fmt.Errorf("replace local update job status: %w", err)
+	}
+	return true, nil
 }
 
 func ReadUpdateJobStatusPath(path string) (UpdateJobStatus, bool, error) {

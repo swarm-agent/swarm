@@ -151,7 +151,7 @@ func realisticAppStreamEnvelopeBurst() []client.StreamEventEnvelope {
 	envelopes := make([]client.StreamEventEnvelope, 0, len(chunks)+10)
 	now := time.Now().UnixMilli()
 	seq := uint64(1)
-	appendRunEvent := func(eventType string, payload client.SessionRunStreamEvent) {
+	appendRunEvent := func(eventType string, payload sharedChatRuntimeEventPayload) {
 		payload.SessionID = "session-test"
 		payload.RunID = "run-stream-spike"
 		if payload.Type == "" {
@@ -175,17 +175,17 @@ func realisticAppStreamEnvelopeBurst() []client.StreamEventEnvelope {
 		seq++
 	}
 
-	appendRunEvent("session.lifecycle.updated", client.SessionRunStreamEvent{Type: "session.lifecycle.updated", Lifecycle: &client.SessionLifecycleSnapshot{SessionID: "session-test", RunID: "run-stream-spike", Active: true, Phase: "running", StartedAt: now}})
-	appendRunEvent("run.turn.started", client.SessionRunStreamEvent{Type: "turn.started", Agent: "swarm"})
-	appendRunEvent("run.tool.started", client.SessionRunStreamEvent{Type: "tool.started", ToolName: "search", CallID: "call-search", Arguments: `{"query":"stream spike"}`})
+	appendRunEvent("session.lifecycle.updated", sharedChatRuntimeEventPayload{Type: "session.lifecycle.updated", Lifecycle: &client.SessionLifecycleSnapshot{SessionID: "session-test", RunID: "run-stream-spike", Active: true, Phase: "running", StartedAt: now}})
+	appendRunEvent("run.turn.started", sharedChatRuntimeEventPayload{Type: "turn.started", Agent: "swarm"})
+	appendRunEvent("run.tool.started", sharedChatRuntimeEventPayload{Type: "tool.started", ToolName: "search", CallID: "call-search", Arguments: `{"query":"stream spike"}`})
 	for i := 0; i < 6; i++ {
-		appendRunEvent("run.tool.delta", client.SessionRunStreamEvent{Type: "tool.delta", ToolName: "search", CallID: "call-search", Output: fmt.Sprintf("result %02d internal/ui/chat_page.go\n", i+1)})
+		appendRunEvent("run.tool.delta", sharedChatRuntimeEventPayload{Type: "tool.delta", ToolName: "search", CallID: "call-search", Output: fmt.Sprintf("result %02d internal/ui/chat_page.go\n", i+1)})
 	}
-	appendRunEvent("run.tool.completed", client.SessionRunStreamEvent{Type: "tool.completed", ToolName: "search", CallID: "call-search", Output: "search complete", RawOutput: "search complete", DurationMS: 41})
+	appendRunEvent("run.tool.completed", sharedChatRuntimeEventPayload{Type: "tool.completed", ToolName: "search", CallID: "call-search", Output: "search complete", RawOutput: "search complete", DurationMS: 41})
 	for _, chunk := range chunks {
-		appendRunEvent("run.assistant.delta", client.SessionRunStreamEvent{Type: "assistant.delta", Delta: chunk})
+		appendRunEvent("run.assistant.delta", sharedChatRuntimeEventPayload{Type: "assistant.delta", Delta: chunk})
 	}
-	appendRunEvent("session.lifecycle.updated", client.SessionRunStreamEvent{Type: "session.lifecycle.updated", Lifecycle: &client.SessionLifecycleSnapshot{SessionID: "session-test", RunID: "run-stream-spike", Active: false, Phase: "completed", StartedAt: now, EndedAt: now + int64(seq)}})
+	appendRunEvent("session.lifecycle.updated", sharedChatRuntimeEventPayload{Type: "session.lifecycle.updated", Lifecycle: &client.SessionLifecycleSnapshot{SessionID: "session-test", RunID: "run-stream-spike", Active: false, Phase: "completed", StartedAt: now, EndedAt: now + int64(seq)}})
 	return envelopes
 }
 

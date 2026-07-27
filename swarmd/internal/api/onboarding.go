@@ -21,12 +21,7 @@ import (
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
 
-const (
-	bootstrapRoleStandalone = "standalone"
-	bootstrapRoleMaster     = "master"
-	bootstrapRoleChild      = "child"
-	bootstrapRoleManaged    = startupconfig.SwarmRoleManaged
-)
+const bootstrapRoleMaster = "master"
 
 type onboardingTransportPayload struct {
 	Kind    string   `json:"kind"`
@@ -37,8 +32,6 @@ type onboardingTransportPayload struct {
 type onboardingConfigPayload struct {
 	SwarmName                 string `json:"swarm_name"`
 	DesktopOnboardingComplete bool   `json:"desktop_onboarding_complete"`
-	Child                     bool   `json:"child"`
-	SwarmRole                 string `json:"swarm_role,omitempty"`
 	Mode                      string `json:"mode"`
 	Host                      string `json:"host,omitempty"`
 	Port                      int    `json:"port"`
@@ -56,6 +49,7 @@ type onboardingConfigPayload struct {
 type onboardingHeuristicsPayload struct {
 	MissingSwarmName    bool `json:"missing_swarm_name"`
 	CredentialCount     int  `json:"credential_count"`
+	AgentCount          int  `json:"agent_count"`
 	SavedWorkspaceCount int  `json:"saved_workspace_count"`
 	VaultConfigured     bool `json:"vault_configured"`
 }
@@ -101,23 +95,6 @@ type onboardingTailscalePayload struct {
 	Serve        onboardingTailscaleServePayload `json:"serve"`
 }
 
-type onboardingDiscoveredSwarmPayload struct {
-	ID                   string                       `json:"id,omitempty"`
-	Name                 string                       `json:"name,omitempty"`
-	Role                 string                       `json:"role,omitempty"`
-	Endpoint             string                       `json:"endpoint,omitempty"`
-	TailnetURL           string                       `json:"tailnet_url,omitempty"`
-	DNSName              string                       `json:"dns_name,omitempty"`
-	IPs                  []string                     `json:"ips,omitempty"`
-	Online               bool                         `json:"online"`
-	Source               string                       `json:"source,omitempty"`
-	Running              bool                         `json:"running"`
-	InCurrentGroup       bool                         `json:"in_current_group,omitempty"`
-	CurrentRelationship  string                       `json:"current_relationship,omitempty"`
-	TransportMode        string                       `json:"transport_mode,omitempty"`
-	RendezvousTransports []onboardingTransportPayload `json:"rendezvous_transports,omitempty"`
-}
-
 type onboardingResponse struct {
 	OK              bool                        `json:"ok"`
 	NeedsOnboarding bool                        `json:"needs_onboarding"`
@@ -132,13 +109,25 @@ type onboardingUpdateRequest struct {
 	Username                  *string `json:"username,omitempty"`
 	SwarmName                 *string `json:"swarm_name,omitempty"`
 	DesktopOnboardingComplete *bool   `json:"desktop_onboarding_complete,omitempty"`
-	Child                     *bool   `json:"child,omitempty"`
 	Mode                      *string `json:"mode,omitempty"`
 	Port                      *int    `json:"port,omitempty"`
 	AdvertiseHost             *string `json:"advertise_host,omitempty"`
 	AdvertisePort             *int    `json:"advertise_port,omitempty"`
 	TailscaleURL              *string `json:"tailscale_url,omitempty"`
 	PeerTransportPort         *int    `json:"peer_transport_port,omitempty"`
+}
+
+type onboardingProviderCredentialRequest struct {
+	Provider     string   `json:"provider"`
+	Type         string   `json:"type"`
+	Label        string   `json:"label"`
+	Tags         []string `json:"tags"`
+	APIKey       string   `json:"api_key"`
+	AccessToken  string   `json:"access_token"`
+	RefreshToken string   `json:"refresh_token"`
+	ExpiresAt    int64    `json:"expires_at"`
+	AccountID    string   `json:"account_id"`
+	Active       *bool    `json:"active,omitempty"`
 }
 
 type tailscalePeerStatusWire struct {
@@ -176,73 +165,6 @@ type tailscaleServeWebStatusWire struct {
 
 type tailscaleServeHandlerWire struct {
 	Proxy string `json:"Proxy"`
-}
-
-type remoteSwarmDiscoverySeed struct {
-	Source        string
-	Name          string
-	Endpoint      string
-	TailnetURL    string
-	DNSName       string
-	IPs           []string
-	Online        bool
-	Probe         bool
-	TransportMode string
-	Transports    []onboardingTransportPayload
-}
-
-func discoverTailscaleSwarmSeeds(tailscaleStatus *tailscaleStatusWire) []remoteSwarmDiscoverySeed {
-	if tailscaleStatus == nil || len(tailscaleStatus.Peer) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(tailscaleStatus.Peer))
-	for key := range tailscaleStatus.Peer {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	seeds := make([]remoteSwarmDiscoverySeed, 0, len(keys))
-	for _, key := range keys {
-		peer := tailscaleStatus.Peer[key]
-		if peer.Self {
-			continue
-		}
-		dnsName := strings.TrimSuffix(strings.TrimSpace(peer.DNSName), ".")
-		ips := dedupeTransportStrings(peer.TailscaleIPs)
-		transports := []onboardingTransportPayload{{
-			Kind:    startupconfig.NetworkModeTailscale,
-			Primary: firstNonEmptyTransport(dnsName, firstString(ips)),
-			All:     dedupeTransportStrings(append([]string{dnsName}, ips...)),
-		}}
-		seeds = append(seeds, remoteSwarmDiscoverySeed{
-			Source:        startupconfig.NetworkModeTailscale,
-			Name:          tailscalePeerDisplayName(dnsName),
-			Endpoint:      remoteSwarmProbeEndpoint(startupconfig.NetworkModeTailscale, dnsName, ips),
-			TailnetURL:    tailscalePeerURL(dnsName),
-			DNSName:       dnsName,
-			IPs:           ips,
-			Online:        peer.Online || peer.Active,
-			Probe:         peer.Online || peer.Active,
-			TransportMode: startupconfig.NetworkModeTailscale,
-			Transports:    transports,
-		})
-	}
-	return seeds
-}
-
-func fetchRemoteSwarmDiscovery(seed remoteSwarmDiscoverySeed) (swarmDiscoveryResponse, error) {
-	var remote swarmDiscoveryResponse
-	if err := getRemoteSwarmJSONWithTransportFallback(seed.Endpoint, "/v1/swarm/discovery", seed.Transports, &remote); err != nil {
-		return swarmDiscoveryResponse{}, err
-	}
-	return remote, nil
-}
-
-func remoteSwarmProbeEndpoint(mode, dnsName string, ips []string) string {
-	dnsName = strings.TrimSpace(dnsName)
-	if dnsName != "" {
-		return normalizeRemoteSwarmEndpoint(dnsName)
-	}
-	return ""
 }
 
 func tailscalePeerDisplayName(dnsName string) string {
@@ -295,6 +217,52 @@ func (s *Server) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleOnboardingProviderCredential(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	var req onboardingProviderCredentialRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	status, err := s.acceptFirstOnboardingProviderCredential(r.Context(), principal, req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) allowsUnauthenticatedOnboardingPost(r *http.Request) bool {
+	if s == nil || r == nil || r.Method != http.MethodPost {
+		return false
+	}
+	if !shouldAllowDesktopLocalSessionBootstrapRequest(r) {
+		return false
+	}
+	if _, err := s.loadStartupConfig(); err != nil {
+		return false
+	}
+	if s.identityService == nil {
+		return false
+	}
+	summary, err := s.identityService.StateSummary()
+	if err != nil {
+		return false
+	}
+	return summary.Counts == (pebblestore.IdentityCounts{}) &&
+		summary.CurrentUser == nil &&
+		summary.AccountScope == nil &&
+		summary.CurrentSelection == nil
+}
+
 func (s *Server) allowSensitiveOnboardingMetadata(r *http.Request) bool {
 	if r == nil {
 		return false
@@ -316,15 +284,6 @@ func (s *Server) allowSensitiveOnboardingMetadata(r *http.Request) bool {
 			return true
 		}
 	}
-	if s != nil && s.swarm != nil {
-		peerSwarmID, peerToken := extractPeerAuth(r)
-		if strings.TrimSpace(peerSwarmID) != "" && strings.TrimSpace(peerToken) != "" {
-			ok, err := s.swarm.ValidateIncomingPeerAuth(peerSwarmID, peerToken)
-			if err == nil && ok {
-				return true
-			}
-		}
-	}
 	return false
 }
 
@@ -333,10 +292,6 @@ func (s *Server) onboardingResponse(includeSensitive bool) (onboardingResponse, 
 }
 
 func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, detectServe bool) (onboardingResponse, error) {
-	return s.onboardingResponseWithServeDetectionAndLocalLinkState(includeSensitive, detectServe, nil)
-}
-
-func (s *Server) onboardingResponseWithServeDetectionAndLocalLinkState(includeSensitive bool, detectServe bool, localLinkState *localManagedLinkState) (onboardingResponse, error) {
 	cfg, err := s.loadStartupConfig()
 	if err != nil {
 		return onboardingResponse{}, err
@@ -356,6 +311,10 @@ func (s *Server) onboardingResponseWithServeDetectionAndLocalLinkState(includeSe
 	if err != nil {
 		return onboardingResponse{}, err
 	}
+	agentCount, err := s.readAgentCount(identityPayload.AccountScopeID)
+	if err != nil {
+		return onboardingResponse{}, err
+	}
 	savedCount, err := s.readSavedWorkspaceCount(identityPayload.AccountScopeID, identityPayload.UserID)
 	if err != nil {
 		return onboardingResponse{}, err
@@ -366,13 +325,6 @@ func (s *Server) onboardingResponseWithServeDetectionAndLocalLinkState(includeSe
 		tailscale.TailnetURL = firstNonEmpty(strings.TrimSpace(cfg.TailscaleURL), strings.TrimSpace(tailscale.TailnetURL))
 		tailscale.Available = tailscale.Available || tailscale.TailnetURL != ""
 	}
-	if localLinkState == nil {
-		resolvedLocalLinkState, err := s.onboardingLocalManagedLinkState(cfg)
-		if err != nil {
-			return onboardingResponse{}, err
-		}
-		localLinkState = &resolvedLocalLinkState
-	}
 	response := onboardingResponse{
 		OK:              true,
 		NeedsOnboarding: needsOnboarding,
@@ -380,8 +332,6 @@ func (s *Server) onboardingResponseWithServeDetectionAndLocalLinkState(includeSe
 		Config: onboardingConfigPayload{
 			SwarmName:                 strings.TrimSpace(cfg.SwarmName),
 			DesktopOnboardingComplete: cfg.DesktopOnboardingComplete,
-			Child:                     localLinkState.Managed,
-			SwarmRole:                 localLinkState.Role,
 			Host:                      strings.TrimSpace(cfg.Host),
 			Port:                      cfg.Port,
 			DesktopPort:               cfg.DesktopPort,
@@ -395,6 +345,7 @@ func (s *Server) onboardingResponseWithServeDetectionAndLocalLinkState(includeSe
 		Heuristics: onboardingHeuristicsPayload{
 			MissingSwarmName:    strings.TrimSpace(cfg.SwarmName) == "",
 			CredentialCount:     credentialList.Total,
+			AgentCount:          agentCount,
 			SavedWorkspaceCount: savedCount,
 			VaultConfigured:     vaultStatus.Enabled,
 		},
@@ -411,9 +362,6 @@ func (s *Server) onboardingResponseWithServeDetectionAndLocalLinkState(includeSe
 	} else {
 		response.Tailscale.Serve = expectedTailscaleServe(cfg, response.Tailscale)
 	}
-	// Keep first-launch onboarding fast: remote swarm discovery probes peers and
-	// should not block the initial setup screen. Discovery can be loaded by
-	// explicit swarm-management screens instead of the base onboarding status.
 	return response, nil
 }
 
@@ -516,7 +464,6 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 
 	updated := cfg
 	changed := false
-	turnedOffChildMode := false
 	restartRequired := false
 	var restartReasons []string
 
@@ -530,18 +477,6 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	if req.DesktopOnboardingComplete != nil {
 		updated.DesktopOnboardingComplete = *req.DesktopOnboardingComplete
 		updated.DesktopOnboardingCompleteSet = true
-		changed = true
-	}
-	if req.Child != nil {
-		if *req.Child {
-			return onboardingResponse{}, nil, errors.New("primary onboarding cannot enable child mode; use Link Swarm pairing to make this swarm managed")
-		}
-		updated.Child = false
-		turnedOffChildMode = cfg.Child
-		if turnedOffChildMode {
-			updated = startupconfig.ScrubManagedLinkState(updated)
-			updated.PairingState = startupconfig.PairingStateUnpaired
-		}
 		changed = true
 	}
 	if req.Mode != nil {
@@ -599,25 +534,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	if err := startupconfig.Write(updated); err != nil {
 		return onboardingResponse{}, nil, err
 	}
-	if turnedOffChildMode && s.swarm != nil {
-		state, err := s.currentSwarmState(cfg)
-		if err != nil {
-			return onboardingResponse{}, nil, err
-		}
-		if err := s.swarm.DetachToStandalone(strings.TrimSpace(state.Node.SwarmID)); err != nil {
-			return onboardingResponse{}, nil, err
-		}
-	}
-	var responseLocalLinkState *localManagedLinkState
 	if req.SwarmName != nil {
-		if s.swarm != nil {
-			state, err := s.currentSwarmState(updated)
-			if err != nil {
-				return onboardingResponse{}, nil, err
-			}
-			linkState := dbBackedLocalManagedLinkState(state)
-			responseLocalLinkState = &linkState
-		}
 		if err := s.persistUISwarmName(updated.SwarmName); err != nil {
 			return onboardingResponse{}, nil, err
 		}
@@ -631,14 +548,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		if s.identitySessions == nil {
 			return onboardingResponse{}, nil, identity.ErrSessionServiceNotConfigured
 		}
-		if s.agents == nil {
-			return onboardingResponse{}, nil, errors.New("agent service not configured")
-		}
-		bootstrapResult, err := s.identityService.BootstrapFirstIdentity(bootstrapUsername)
-		if err != nil {
-			return onboardingResponse{}, nil, err
-		}
-		if _, _, _, err := s.agents.RestoreDefaultsForAccount(bootstrapResult.AccountScope.ID); err != nil {
+		if _, err := s.identityService.BootstrapFirstIdentity(bootstrapUsername); err != nil {
 			return onboardingResponse{}, nil, err
 		}
 		createdSession, err := s.identitySessions.IssueForCurrentSelection()
@@ -651,7 +561,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	if err := s.ensureOnboardingPrimaryTopology(identityPayload); err != nil {
 		return onboardingResponse{}, nil, err
 	}
-	response, err := s.onboardingResponseWithServeDetectionAndLocalLinkState(includeSensitive, true, responseLocalLinkState)
+	response, err := s.onboardingResponseWithServeDetection(includeSensitive, true)
 	if err != nil {
 		return onboardingResponse{}, nil, err
 	}
@@ -709,6 +619,17 @@ func (s *Server) persistUISwarmName(name string) error {
 	settings.Swarm.Name = strings.TrimSpace(name)
 	_, err = s.uiSettings.Set(settings)
 	return err
+}
+
+func (s *Server) readAgentCount(accountScopeID string) (int, error) {
+	if s == nil || s.agents == nil || strings.TrimSpace(accountScopeID) == "" {
+		return 0, nil
+	}
+	state, err := s.agents.ListStateForAccount(accountScopeID, 2000)
+	if err != nil {
+		return 0, err
+	}
+	return len(state.Profiles), nil
 }
 
 func (s *Server) readSavedWorkspaceCount(accountScopeID, userID string) (int, error) {
@@ -780,7 +701,6 @@ func isPrimarySelfPlacement(placement pebblestore.TopologyRuntimePlacementRecord
 	return runtimeSwarmID != "" &&
 		strings.TrimSpace(placement.AuthorityHostSwarmID) == runtimeSwarmID &&
 		strings.TrimSpace(placement.RuntimeKind) == pebblestore.TopologyRuntimeKindHost &&
-		strings.TrimSpace(placement.AuthorityContainerID) == "" &&
 		strings.TrimSpace(placement.State) == pebblestore.TopologyRuntimePlacementStateActive &&
 		placement.PlacementGeneration > 0
 }
@@ -792,7 +712,6 @@ func isPrimarySelfWorkspaceBinding(placement pebblestore.TopologyRuntimePlacemen
 		strings.TrimSpace(binding.DestinationAuthorityHostSwarmID) == runtimeSwarmID &&
 		strings.TrimSpace(binding.DestinationHostSwarmID) == runtimeSwarmID &&
 		strings.TrimSpace(binding.DestinationRuntimeKind) == pebblestore.TopologyRuntimeKindHost &&
-		strings.TrimSpace(binding.DestinationContainerID) == "" &&
 		strings.TrimSpace(binding.State) == pebblestore.TopologyWorkspaceBindingStateBound &&
 		binding.PlacementGeneration == placement.PlacementGeneration &&
 		binding.BindingGeneration > 0 &&
@@ -816,7 +735,7 @@ func shouldShowOnboarding(cfg startupconfig.FileConfig, identityBootstrapped boo
 }
 
 func requestChangesSwarmShape(req onboardingUpdateRequest) bool {
-	return req.DesktopOnboardingComplete != nil || req.Child != nil || requestChangesSwarmReachability(req)
+	return req.DesktopOnboardingComplete != nil || requestChangesSwarmReachability(req)
 }
 
 func requestChangesSwarmReachability(req onboardingUpdateRequest) bool {
@@ -851,38 +770,6 @@ func hostnameFromURL(raw string) string {
 		return ""
 	}
 	return strings.TrimSpace(parsed.Hostname())
-}
-
-type localManagedLinkState struct {
-	Role           string
-	Managed        bool
-	ManagerSwarmID string
-}
-
-func (s *Server) onboardingLocalManagedLinkState(cfg startupconfig.FileConfig) (localManagedLinkState, error) {
-	if s.swarm == nil {
-		return localManagedLinkState{Role: bootstrapRoleMaster}, nil
-	}
-	state, err := s.currentSwarmState(cfg)
-	if err != nil {
-		return localManagedLinkState{}, err
-	}
-	return dbBackedLocalManagedLinkState(state), nil
-}
-
-func dbBackedLocalManagedLinkState(state swarmruntime.LocalState) localManagedLinkState {
-	link := localManagedLinkState{Role: bootstrapRoleMaster}
-	if dbPairingIsActiveManaged(state.Pairing) {
-		link.Role = bootstrapRoleManaged
-		link.Managed = true
-		link.ManagerSwarmID = strings.TrimSpace(state.Pairing.ParentSwarmID)
-		return link
-	}
-	return link
-}
-
-func dbPairingIsActiveManaged(pairing swarmruntime.PairingState) bool {
-	return strings.EqualFold(strings.TrimSpace(pairing.PairingState), startupconfig.PairingStatePaired) && strings.TrimSpace(pairing.ParentSwarmID) != ""
 }
 
 func tailscaleCandidateURL(cfg startupconfig.FileConfig, tailscale onboardingTailscalePayload) string {
@@ -1115,7 +1002,7 @@ func detectTailscaleServe(cfg startupconfig.FileConfig, tailscale onboardingTail
 	}
 	payload.Configured = true
 	payload.Mode = classifyTailscaleServeMode(proxyTarget, payload.ExpectedDesktopProxy, payload.ExpectedAPIProxy, payload.ExpectedPeerTransportProxy)
-	payload.Ready = tailscaleServeModePairingReady(payload.Mode)
+	payload.Ready = tailscaleServeModeReady(payload.Mode)
 	return payload
 }
 
@@ -1215,7 +1102,7 @@ func classifyTailscaleServeMode(proxyTarget, desktopProxy, apiProxy, peerProxy s
 	}
 }
 
-func tailscaleServeModePairingReady(mode string) bool {
+func tailscaleServeModeReady(mode string) bool {
 	switch strings.TrimSpace(mode) {
 	case "desktop", "api":
 		return true
@@ -1233,33 +1120,6 @@ func tailscaleServeCommand(cfg startupconfig.FileConfig) string {
 		return ""
 	}
 	return "tailscale serve --bg " + target
-}
-
-func tailscaleServePairingError(serve onboardingTailscaleServePayload) error {
-	command := strings.TrimSpace(serve.Command)
-	if command == "" {
-		command = "tailscale serve --bg http://127.0.0.1:5555"
-	}
-	if strings.TrimSpace(serve.Error) != "" {
-		return fmt.Errorf("this requester is not ready for Link Swarm because Tailscale Serve status could not be checked: %s. Run `%s` on this host, then press Link again", strings.TrimSpace(serve.Error), command)
-	}
-	if !serve.Configured {
-		return fmt.Errorf("this requester is not ready for Link Swarm because its Tailscale URL is not being served. Run `%s` on this host, then press Link again", command)
-	}
-	return fmt.Errorf("this requester is not ready for Link Swarm because Tailscale Serve points to %q instead of the Swarm desktop/API port. Run `%s` on this host, then press Link again", strings.TrimSpace(serve.ProxyTarget), command)
-}
-
-func requireTailscaleServeReadyForPairing(cfg startupconfig.FileConfig, status onboardingResponse) error {
-	if canonicalRemoteSwarmEndpoint(cfg, status) == "" {
-		return nil
-	}
-	if !status.Tailscale.Available || strings.TrimSpace(status.Tailscale.Error) != "" || !status.Tailscale.Connected {
-		return tailscaleServePairingError(status.Tailscale.Serve)
-	}
-	if status.Tailscale.Serve.Ready {
-		return nil
-	}
-	return tailscaleServePairingError(status.Tailscale.Serve)
 }
 
 func detectTailscaleWithStatus() (onboardingTailscalePayload, *tailscaleStatusWire) {

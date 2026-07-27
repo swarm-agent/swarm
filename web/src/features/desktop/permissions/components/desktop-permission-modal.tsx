@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
-import { Copy, Check, AlertCircle, ChevronDown, ChevronRight, Circle, Compass, Brain, CheckCircle2, FileText, ListTodo, PlayCircle, Rocket, LockKeyhole, Server, ShieldCheck, Target, type LucideIcon } from 'lucide-react'
+import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react'
+import { Copy, Check, AlertCircle, Archive, CalendarClock, ChevronDown, Folder, GitCommit, Rocket, LockKeyhole, Server, type LucideIcon } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -7,32 +7,17 @@ import { Textarea } from '../../../../components/ui/textarea'
 import { cn } from '../../../../lib/cn'
 import { requestJson } from '../../../../app/api'
 import { ChatMarkdown } from '../../chat/components/chat-markdown'
-import { StructuredPlanDocumentView, normalizeStructuredPlanDocument, type StructuredPlanCheckpoint, type StructuredPlanDocument } from '../../chat/components/structured-plan-document'
+import { StructuredPlanDocumentView, normalizeStructuredPlanDocument, type StructuredPlanDocument } from '../../chat/components/structured-plan-document'
+import { displayAgentName } from '../../chat/services/agent-display'
 import { getToolTheme } from '../../chat/services/tool-theme'
 import { AGENT_TOOL_PRESET_OPTIONS, CUSTOM_AGENT_TOOL_PRESET_ID } from '../../chat/services/agent-tool-presets'
 import type { ModelOptionRecord } from '../../chat/types/chat'
+import { defaultModelThinking, modelThinkingOptions } from '../../chat/services/model-options'
 import { modelOptionsQueryOptions } from '../../../queries/query-options'
 import { useQuery } from '@tanstack/react-query'
 import type { DesktopPermissionRecord } from '../../types/realtime'
-import {
-  FlowSettingsModal,
-  agentContractSummary,
-  agentOptionGroupLabel,
-  agentOptionGroupRank,
-  agentOptionHelper,
-  agentOptionKey,
-  agentOptionLabel,
-  recordToFlowForm,
-  targetOptionGroupLabel,
-  targetOptionHelper,
-  targetOptionKey,
-  targetOptionLabel,
-  workspaceOptionsFromEntries,
-  type FlowAgentOption,
-  type FlowTargetOption,
-  type FlowWorkspaceOption,
-} from '../../settings/flows/components/flows-settings-page'
-import type { CreateFlowInput, FlowAgentProfile, FlowDetailRecord, FlowSwarmTarget, FlowWorkspaceEntry } from '../../settings/flows/api'
+import { safeString } from '../services/desktop-permission-normalization'
+import { saveCapabilityPolicies, savePlanAcceptanceMode, type SessionDeployPolicy } from '../services/capability-policy'
 import {
   buildAskUserResolutionReason,
   buildWorkspaceScopeResolutionReason,
@@ -44,9 +29,13 @@ import {
   parseAskUserPermission,
   parseExitPlanPermission,
   parseManageTodosPermission,
-  parseManageFlowPermission,
-  parseManageImagePermission,
+  parseSessionArchivePermission,
+  parseSessionCommitPermission,
+  parseSessionDeployPermission,
+  type SessionDeployProposal,
   parsePlanUpdatePermission,
+  type PlanUpdatePayload,
+  type PlanAmendmentDeltaItem,
   parseTaskLaunchPermission,
   type TaskLaunchPayload,
   type TaskLaunchResolvedTools,
@@ -62,6 +51,7 @@ interface DesktopPermissionModalProps {
   pendingCount: number
   sessionMode: string
   onOpenChange: (open: boolean) => void
+  onOpenPermissions?: () => void
   onResolve: (
     action: 'approve' | 'deny' | 'approve_always' | 'always_allow' | 'always_deny',
     reason: string,
@@ -256,6 +246,7 @@ function PermissionActionBar({
   shortcutHint = 'Enter approves · Esc denies',
   compactDesktop = false,
   denyVariant = 'ghost',
+  leadingAction,
 }: {
   onApprove: () => void
   onDeny: () => void
@@ -274,6 +265,7 @@ function PermissionActionBar({
   shortcutHint?: string
   compactDesktop?: boolean
   denyVariant?: 'secondary' | 'ghost' | 'outline'
+  leadingAction?: ReactNode
 }) {
   const [noteOpen, setNoteOpen] = useState(false)
   const showPersistentGroup = showPersistentActions && (onAlwaysDeny || onAlwaysAllow)
@@ -329,6 +321,7 @@ function PermissionActionBar({
           >
             {approveLabel}
           </Button>
+          {leadingAction ? <div className="order-0 w-full sm:w-auto">{leadingAction}</div> : null}
           <Button
             type="button"
             variant={denyVariant}
@@ -518,536 +511,20 @@ function GenericPermissionModal({
 }
 
 
-function stringFromRecord(record: Record<string, unknown>, key: string): string {
-  const value = record[key]
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function recordFromUnknown(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
-}
-
-function flowTargetFromContent(content: Record<string, unknown>, fallbackID: string): FlowSwarmTarget {
-  const target = recordFromUnknown(content.target)
-  const swarmID = stringFromRecord(target, 'swarm_id')
-  const kind = (stringFromRecord(target, 'kind') || 'self') as FlowSwarmTarget['kind']
-  const name = stringFromRecord(target, 'name') || swarmID || 'Target'
-  return {
-    swarm_id: swarmID || fallbackID || 'self',
-    name,
-    role: '',
-    relationship: kind === 'self' ? 'self' : '',
-    kind,
-    deployment_id: stringFromRecord(target, 'deployment_id') || undefined,
-    online: true,
-    selectable: true,
-    current: kind === 'self' || (!swarmID && !fallbackID),
-  }
-}
-
-function flowWorkspaceFromContent(content: Record<string, unknown>): FlowWorkspaceEntry {
-  const workspace = recordFromUnknown(content.workspace)
-  const path = stringFromRecord(workspace, 'workspace_path') || stringFromRecord(workspace, 'host_workspace_path') || stringFromRecord(workspace, 'cwd') || ''
-  return {
-    path,
-    localWorkspaceBindingId: '',
-    workspaceName: path.split('/').filter(Boolean).pop() || path || 'workspace',
-    themeId: '',
-    directories: [],
-    isGitRepo: false,
-    topologyRoutes: [],
-    sortIndex: 0,
-    addedAt: 0,
-    updatedAt: 0,
-    lastSelectedAt: 0,
-    active: true,
-    worktreeEnabled: false,
-  }
-}
-
-function flowAgentFromContent(content: Record<string, unknown>): FlowAgentProfile {
-  const agent = recordFromUnknown(content.agent)
-  return {
-    name: stringFromRecord(agent, 'profile_name') || 'background',
-    mode: stringFromRecord(agent, 'profile_mode') || 'background',
-    description: 'Flow agent selected by manage-flow approval payload.',
-    provider: '',
-    model: '',
-    thinking: '',
-    prompt: '',
-    runtimeMode: '',
-    executionSetting: '',
-    exitPlanModeEnabled: false,
-    toolScope: null,
-    toolContract: null,
-    enabled: true,
-    protected: false,
-    updatedAt: 0,
-  }
-}
-
-function flowDetailFromManageFlowPayload(payload: ReturnType<typeof parseManageFlowPermission>): FlowDetailRecord {
-  const content = payload.content
-  const flowID = payload.flowId || stringFromRecord(content, 'flow_id') || stringFromRecord(content, 'id') || 'proposed-flow'
-  const target = recordFromUnknown(content.target) as unknown as FlowDetailRecord['definition']['target']
-  const agent = recordFromUnknown(content.agent) as unknown as FlowDetailRecord['definition']['agent']
-  const workspace = recordFromUnknown(content.workspace) as unknown as FlowDetailRecord['definition']['workspace']
-  const schedule = recordFromUnknown(content.schedule)
-  const catchUpPolicy = recordFromUnknown(content.catch_up_policy)
-  const intent = recordFromUnknown(content.intent)
-  return {
-    definition: {
-      flow_id: flowID,
-      revision: 1,
-      name: stringFromRecord(content, 'name') || payload.flowName || flowID,
-      enabled: typeof content.enabled === 'boolean' ? content.enabled : true,
-      target,
-      agent,
-      workspace,
-      schedule: {
-        cadence: stringFromRecord(schedule, 'cadence') || 'daily',
-        timezone: stringFromRecord(schedule, 'timezone') || 'UTC',
-        time: stringFromRecord(schedule, 'time') || undefined,
-        times: Array.isArray(schedule.times) ? schedule.times.filter((entry): entry is string => typeof entry === 'string') : undefined,
-        weekday: stringFromRecord(schedule, 'weekday') || undefined,
-        month_day: typeof schedule.month_day === 'number' ? schedule.month_day : undefined,
-        cron: stringFromRecord(schedule, 'cron') || undefined,
-      },
-      catch_up_policy: { mode: stringFromRecord(catchUpPolicy, 'mode') || 'once' },
-      intent: { prompt: stringFromRecord(intent, 'prompt'), mode: stringFromRecord(intent, 'mode') || undefined },
-    },
-    target_detail: flowTargetFromContent(content, flowID),
-    agent_detail: null,
-    workspace_detail: null,
-    assignment_statuses: [],
-    history: [],
-    history_count: 0,
-    outbox: [],
-  }
-}
-
-function optionsFromManageFlowPayload(payload: ReturnType<typeof parseManageFlowPermission>) {
-  const content = payload.content
-  const target = flowTargetFromContent(content, payload.flowId)
-  const workspace = flowWorkspaceFromContent(content)
-  const agent = flowAgentFromContent(content)
-  const targetOptions: FlowTargetOption[] = [{
-    key: targetOptionKey(target),
-    label: targetOptionLabel(target),
-    helper: targetOptionHelper(target),
-    groupLabel: targetOptionGroupLabel(target, [target]),
-    target,
-  }]
-  const workspaceOptions: FlowWorkspaceOption[] = workspace.path ? workspaceOptionsFromEntries([workspace]) : []
-  const agentOptions: FlowAgentOption[] = [{
-    key: agentOptionKey(agent),
-    label: agentOptionLabel(agent),
-    helper: agentOptionHelper(agent),
-    contractSummary: agentContractSummary(agent),
-    groupLabel: agentOptionGroupLabel(agent),
-    profile: agent,
-  }].sort((left, right) => agentOptionGroupRank(left.profile) - agentOptionGroupRank(right.profile) || left.label.localeCompare(right.label))
-  return { targetOptions, workspaceOptions, agentOptions }
-}
-
-function ManageFlowModal({
-  permission,
-  open,
-  pendingCount,
-  sessionMode,
-  onOpenChange,
-  onResolve,
-}: DesktopPermissionModalProps) {
-  const [note, setNote] = useState('')
-  const [loading, setLoading] = useState(false)
-
-  useEffect(() => {
-    if (open) {
-      setNote('')
-      setLoading(false)
-    }
-  }, [open, permission?.id])
-
-  if (!permission) {
-    return null
-  }
-
-  const payload = parseManageFlowPermission(permission)
-  const { targetOptions, workspaceOptions, agentOptions } = optionsFromManageFlowPayload(payload)
-  const initialForm = payload.isDelete ? null : recordToFlowForm(flowDetailFromManageFlowPayload(payload), targetOptions, workspaceOptions, agentOptions)
-
-  const approveWithInput = async (input: CreateFlowInput) => {
-    setLoading(true)
-    try {
-      const approvedArguments: Record<string, unknown> = {
-        ...payload.approvedArguments,
-        action: payload.action === 'update' ? 'update' : 'create',
-        confirm: true,
-        content: input,
-      }
-      if (payload.flowId) {
-        approvedArguments.flow_id = payload.flowId
-      }
-      await onResolve('approve', note.trim(), approvedArguments)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const resolveDelete = async (action: 'approve' | 'deny') => {
-    setLoading(true)
-    try {
-      await onResolve(action, note.trim(), action === 'approve' && Object.keys(payload.approvedArguments).length > 0 ? payload.approvedArguments : undefined)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  if (payload.isDelete) {
-    const body = [payload.summary, '', `Flow: ${payload.flowName || payload.flowId || 'unknown'}`, payload.flowId ? `ID: ${payload.flowId}` : ''].filter(Boolean).join('\n')
-    return (
-      <ModalShell
-        open={open}
-        title="Delete Flow"
-        subtitle={payload.subtitle}
-        pendingCount={pendingCount}
-        sessionMode={sessionMode}
-        widthClassName="w-full sm:w-[min(760px,calc(100vw-48px))]"
-        footer={<PermissionActionBar loading={loading} onApprove={() => void resolveDelete('approve')} onDeny={() => void resolveDelete('deny')} approveLabel="Delete flow" note={note} onNoteChange={setNote} noteLabel="Message to agent" />}
-        onOpenChange={onOpenChange}
-        onPrimaryShortcut={() => void resolveDelete('approve')}
-        onDenyShortcut={() => void resolveDelete('deny')}
-        shortcutsDisabled={loading}
-      >
-        <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2.5 text-sm leading-6 text-[var(--app-danger)]">
-          <ChatMarkdown content={body} />
-        </div>
-      </ModalShell>
-    )
-  }
-
-  const footerAccessory = (
-    <label className="grid gap-1.5">
-      <span className="text-xs font-medium uppercase tracking-[0.08em] text-[rgba(255,255,255,0.42)]">Message to agent</span>
-      <Textarea
-        value={note}
-        onChange={(event) => setNote(event.target.value)}
-        placeholder="Optional note to send back with this action…"
-        className="min-h-11 resize-none border-[rgba(255,255,255,0.12)] bg-[rgba(255,255,255,0.035)] text-[rgba(255,255,255,0.82)] placeholder:text-[rgba(255,255,255,0.35)]"
-        rows={2}
-      />
-    </label>
-  )
-
-  return (
-    <FlowSettingsModal
-      open={open}
-      mode={payload.action === 'update' ? 'edit' : 'create'}
-      initialForm={initialForm}
-      enabledOverride={typeof payload.content.enabled === 'boolean' ? payload.content.enabled : undefined}
-      onClose={() => void resolveDelete('deny')}
-      onConfirm={(input) => void approveWithInput(input)}
-      busy={loading}
-      targetOptions={targetOptions}
-      workspaceOptions={workspaceOptions}
-      agentOptions={agentOptions}
-      loadingOptions={false}
-      loadWorkspacesForTarget={() => Promise.resolve(workspaceOptions.map((option) => option.workspace))}
-      footerAccessory={footerAccessory}
-    />
-  )
-}
-function ExitPlanSectionEyebrow({ children, className }: { children: string; className?: string }) {
-  return <div className={cn('text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]', className)}>{children}</div>
-}
-
-function ExitPlanTextBlock({ value }: { value: string }) {
-  if (!value.trim()) {
-    return null
-  }
-  return <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--app-text)]">{value}</p>
-}
-
-function ExitPlanBulletList({ values, mono = false }: { values: string[]; mono?: boolean }) {
-  if (values.length === 0) {
-    return null
-  }
-  return (
-    <ul className="grid gap-1.5">
-      {values.map((value, index) => (
-        <li key={`${index}:${value}`} className={cn('flex min-w-0 gap-2 text-sm leading-6 text-[var(--app-text)]', mono ? 'font-mono text-xs' : '')}>
-          <span className="mt-2.5 size-1.5 shrink-0 rounded-full bg-[var(--app-primary)]" />
-          <span className="min-w-0 whitespace-pre-wrap break-words">{value}</span>
-        </li>
-      ))}
-    </ul>
-  )
-}
-
-function ExitPlanInfoSection({ title, icon: Icon, children }: { title: string; icon: LucideIcon; children: React.ReactNode }) {
-  return (
-    <section className="grid gap-2 py-4 last:pb-0">
-      <div className="flex items-center gap-2">
-        <Icon className="size-4 shrink-0 text-[var(--app-primary)]" />
-        <h4 className="text-sm font-semibold text-[var(--app-text)]">{title}</h4>
-      </div>
-      <div className="min-w-0 pl-6">{children}</div>
-    </section>
-  )
-}
-
-function ExitPlanDetails({ document }: { document: StructuredPlanDocument }) {
-  const validationFiles = document.info.validationStrategy.trim() !== '' || document.info.relevantFiles.length > 0
-  const hasDetails = Boolean(
-    document.info.goal
-      || document.info.scope
-      || document.info.decisions.length
-      || validationFiles
-      || document.info.successCriteria.length
-      || document.info.constraints.length
-      || document.info.assumptions.length
-      || document.info.openQuestions.length,
-  )
-
-  return (
-    <section className="min-w-0 content-start">
-      <ExitPlanSectionEyebrow>Plan details</ExitPlanSectionEyebrow>
-      {hasDetails ? (
-        <div className="mt-2 grid">
-          {document.info.goal ? (
-            <ExitPlanInfoSection title="Goal" icon={Target}>
-              <ExitPlanTextBlock value={document.info.goal} />
-            </ExitPlanInfoSection>
-          ) : null}
-          {document.info.scope ? (
-            <ExitPlanInfoSection title="Scope" icon={Compass}>
-              <ExitPlanTextBlock value={document.info.scope} />
-            </ExitPlanInfoSection>
-          ) : null}
-          {document.info.decisions.length > 0 ? (
-            <ExitPlanInfoSection title="Decisions" icon={Brain}>
-              <ExitPlanBulletList values={document.info.decisions} />
-            </ExitPlanInfoSection>
-          ) : null}
-          {validationFiles ? (
-            <ExitPlanInfoSection title="Validation & files" icon={ShieldCheck}>
-              <div className="grid gap-3">
-                <ExitPlanTextBlock value={document.info.validationStrategy} />
-                {document.info.relevantFiles.length > 0 ? (
-                  <div className="grid gap-2">
-                    <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
-                      <FileText className="size-3.5 shrink-0 text-[var(--app-primary)]" />
-                      Relevant files
-                    </div>
-                    <ExitPlanBulletList values={document.info.relevantFiles} mono />
-                  </div>
-                ) : null}
-              </div>
-            </ExitPlanInfoSection>
-          ) : null}
-          {document.info.successCriteria.length > 0 ? (
-            <ExitPlanInfoSection title="Success criteria" icon={CheckCircle2}>
-              <ExitPlanBulletList values={document.info.successCriteria} />
-            </ExitPlanInfoSection>
-          ) : null}
-          {document.info.constraints.length > 0 ? (
-            <ExitPlanInfoSection title="Constraints" icon={ShieldCheck}>
-              <ExitPlanBulletList values={document.info.constraints} />
-            </ExitPlanInfoSection>
-          ) : null}
-          {document.info.assumptions.length > 0 ? (
-            <ExitPlanInfoSection title="Assumptions" icon={Compass}>
-              <ExitPlanBulletList values={document.info.assumptions} />
-            </ExitPlanInfoSection>
-          ) : null}
-          {document.info.openQuestions.length > 0 ? (
-            <ExitPlanInfoSection title="Open questions" icon={ListTodo}>
-              <ExitPlanBulletList values={document.info.openQuestions} />
-            </ExitPlanInfoSection>
-          ) : null}
-        </div>
-      ) : (
-        <p className="mt-3 rounded-xl border border-dashed border-[var(--app-border)] px-3 py-3 text-sm text-[var(--app-text-muted)]">No plan details are defined.</p>
-      )}
-    </section>
-  )
-}
-
-function ExitPlanCheckpointStatusIcon({ status, active }: { status: string; active: boolean }) {
-  const normStatus = status.toLowerCase()
-  if (normStatus === 'completed' || normStatus === 'done' || normStatus === 'success') {
-    return <CheckCircle2 className="size-4 text-[var(--app-success)]" />
-  }
-  if (active || normStatus === 'in_progress' || normStatus === 'in-progress' || normStatus === 'active') {
-    return <PlayCircle className="size-4 text-[var(--app-primary)]" />
-  }
-  return <Circle className="size-4 text-[var(--app-text-muted)]" />
-}
-
-function exitPlanFormatStatusLabel(status: string, active: boolean): string {
-  if (active) {
-    return 'Active'
-  }
-  const trimmed = status.trim()
-  if (!trimmed) {
-    return ''
-  }
-  return trimmed
-    .replace(/[-_]+/g, ' ')
-    .replace(/\w\S*/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-}
-
-function ExitPlanCheckpointStatusText({ status, active }: { status: string; active: boolean }) {
-  const label = exitPlanFormatStatusLabel(status, active)
-  if (!label) {
-    return null
-  }
-  const normStatus = status.toLowerCase()
-  const done = normStatus === 'done' || normStatus === 'completed' || normStatus === 'success'
-  return (
-    <span className={cn('shrink-0 text-xs font-medium', done ? 'text-[var(--app-success)]' : active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-muted)]')}>
-      {label}
-    </span>
-  )
-}
-
-function ExitPlanCheckpointSection({ title, values, mono = false }: { title: string; values: string[]; mono?: boolean }) {
-  if (values.length === 0) {
-    return null
-  }
-  return (
-    <div className="grid min-w-0 gap-1.5">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{title}</div>
-      <ExitPlanBulletList values={values} mono={mono} />
-    </div>
-  )
-}
-
-function ExitPlanCheckpointTextSection({ title, value }: { title: string; value: string }) {
-  if (!value.trim()) {
-    return null
-  }
-  return (
-    <div className="grid min-w-0 gap-1.5">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{title}</div>
-      <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--app-text-muted)]">{value}</p>
-    </div>
-  )
-}
-
-function ExitPlanCheckpointRow({
-  checkpoint,
-  index,
-  active,
-  expanded,
-  onToggle,
-}: {
-  checkpoint: StructuredPlanCheckpoint
-  index: number
-  active: boolean
-  expanded: boolean
-  onToggle: () => void
-}) {
-  const title = checkpoint.title || checkpoint.id || 'Untitled checkpoint'
-  return (
-    <div className={cn('border-b border-[var(--app-border)] last:border-b-0', active ? 'bg-[var(--app-primary-soft)]/35' : '')}>
-      <button
-        type="button"
-        onClick={onToggle}
-        className={cn(
-          'grid w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 px-1 py-3 text-left transition hover:bg-[var(--app-surface-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] sm:px-2',
-          active ? 'border-l-2 border-[var(--app-primary)] pl-2 sm:pl-3' : 'border-l-2 border-transparent pl-2 sm:pl-3',
-        )}
-        aria-expanded={expanded}
-      >
-        <ExitPlanCheckpointStatusIcon status={checkpoint.status} active={active} />
-        <span className={cn('min-w-0 truncate text-sm font-medium', active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text)]')}>
-          <span className="mr-1.5 font-semibold text-[var(--app-text-muted)]">{index + 1}.</span>
-          {title}
-        </span>
-        <ExitPlanCheckpointStatusText status={checkpoint.status} active={active} />
-        {expanded ? <ChevronDown className="size-4 text-[var(--app-text-muted)]" /> : <ChevronRight className="size-4 text-[var(--app-text-muted)]" />}
-      </button>
-      {expanded ? (
-        <div className={cn('grid gap-3 pb-4 pl-12 pr-3 pt-1', active ? 'border-l-2 border-[var(--app-primary)]' : 'border-l-2 border-transparent')}>
-          <ExitPlanCheckpointTextSection title="Objective" value={checkpoint.objective} />
-          <ExitPlanCheckpointSection title="Tasks" values={checkpoint.tasks} />
-          <ExitPlanCheckpointSection title="Acceptance" values={checkpoint.acceptanceCriteria} />
-          <ExitPlanCheckpointTextSection title="Notes" value={checkpoint.notes} />
-          <ExitPlanCheckpointTextSection title="Report" value={checkpoint.report} />
-          <ExitPlanCheckpointTextSection title="Result" value={checkpoint.result} />
-          <ExitPlanCheckpointSection title="Changed files" values={checkpoint.changedFiles} mono />
-          <ExitPlanCheckpointSection title="Validation" values={checkpoint.validation} />
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-function ExitPlanCheckpointList({ document }: { document: StructuredPlanDocument }) {
-  const activeID = document.activeCheckpointId.trim()
-  const activeLabel = activeID || 'none'
-  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set())
-
-  useEffect(() => {
-    setCollapsedIds(new Set())
-  }, [document.id, document.revisionId])
-
-  return (
-    <section className="min-w-0 content-start">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <ExitPlanSectionEyebrow>Checkpoints</ExitPlanSectionEyebrow>
-          <div className="mt-1 text-sm text-[var(--app-text-muted)]">
-            {document.checkpoints.length} step{document.checkpoints.length === 1 ? '' : 's'} · {activeLabel} active
-          </div>
-        </div>
-      </div>
-      {document.checkpoints.length > 0 ? (
-        <div className="mt-4">
-          {document.checkpoints.map((checkpoint, index) => {
-            const active = activeID !== '' && checkpoint.id === activeID
-            const rowId = checkpoint.id || `${checkpoint.order}:${checkpoint.title}`
-            return (
-              <ExitPlanCheckpointRow
-                key={rowId}
-                checkpoint={checkpoint}
-                index={index}
-                active={active}
-                expanded={!collapsedIds.has(rowId)}
-                onToggle={() => {
-                  setCollapsedIds((current) => {
-                    const next = new Set(current)
-                    if (next.has(rowId)) {
-                      next.delete(rowId)
-                    } else {
-                      next.add(rowId)
-                    }
-                    return next
-                  })
-                }}
-              />
-            )
-          })}
-        </div>
-      ) : (
-        <p className="mt-3 rounded-xl border border-dashed border-[var(--app-border)] px-3 py-3 text-sm text-[var(--app-text-muted)]">No checkpoints are defined.</p>
-      )}
-    </section>
-  )
-}
-
 function ExitPlanDocumentView({ document }: { document: StructuredPlanDocument }) {
-  return (
-    <div className="grid min-h-0 grid-cols-1 gap-6 min-[901px]:grid-cols-[minmax(380px,0.85fr)_minmax(520px,1.15fr)] min-[901px]:gap-0">
-      <div className="min-w-0 min-[901px]:pr-6">
-        <ExitPlanDetails document={document} />
-      </div>
-      <div className="min-w-0 border-t border-[var(--app-border)] pt-6 min-[901px]:border-l min-[901px]:border-t-0 min-[901px]:pl-6 min-[901px]:pt-0">
-        <ExitPlanCheckpointList document={document} />
-      </div>
-    </div>
-  )
+  return <StructuredPlanDocumentView document={document} review />
+}
+
+export function exitPlanExecutionArguments(): {
+  execution_granularity: 'checkpointed'
+  continue_automatically: true
+  continuation_policy: 'automatic'
+} {
+  return {
+    execution_granularity: 'checkpointed',
+    continue_automatically: true,
+    continuation_policy: 'automatic',
+  }
 }
 
 function ExitPlanModal({
@@ -1068,7 +545,7 @@ function ExitPlanModal({
       setLoading(false)
       setCopyState('idle')
     }
-  }, [open, permission?.id])
+  }, [open, permission])
 
   if (!permission) {
     return null
@@ -1076,7 +553,7 @@ function ExitPlanModal({
 
   const payload = parseExitPlanPermission(permission)
   const structuredDocument = normalizeStructuredPlanDocument(payload.document)
-
+  const hasStructuredPlan = Boolean(structuredDocument)
   const handleCopy = async () => {
     try {
       if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
@@ -1089,13 +566,21 @@ function ExitPlanModal({
     }
   }
 
-  const resolve = async (action: 'approve' | 'deny') => {
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always') => {
     setLoading(true)
     try {
-      const approvedArguments = action === 'approve' && structuredDocument
-        ? { plan_id: payload.planId || structuredDocument.id, title: payload.title || structuredDocument.title, plan: payload.body, document: payload.document }
+      if (action === 'approve_always') await savePlanAcceptanceMode('always_allow')
+      const approvedArguments = action !== 'deny'
+        ? {
+            ...payload.approvedArguments,
+            plan_id: payload.planId || structuredDocument?.id || payload.approvedArguments.plan_id,
+            title: payload.title || structuredDocument?.title || payload.approvedArguments.title,
+            plan: payload.body,
+            document: payload.document ?? payload.approvedArguments.document,
+            ...exitPlanExecutionArguments(),
+          }
         : undefined
-      await onResolve(action, note.trim(), approvedArguments)
+      await onResolve(action === 'approve_always' ? 'approve' : action, note.trim(), approvedArguments)
     } finally {
       setLoading(false)
     }
@@ -1129,8 +614,14 @@ function ExitPlanModal({
           loading={loading}
           onApprove={() => void resolve('approve')}
           onDeny={() => void resolve('deny')}
+          onAlwaysAllow={() => void resolve('approve_always')}
+          showPersistentActions
+          alwaysAllowLabel="Always allow plan acceptance"
           note={note}
           onNoteChange={setNote}
+          leadingAction={hasStructuredPlan ? (
+            <span className="text-sm text-[var(--app-text-muted)]">Starts automatically after approval</span>
+          ) : undefined}
         />
       }
       onOpenChange={onOpenChange}
@@ -1138,13 +629,15 @@ function ExitPlanModal({
       onDenyShortcut={() => void resolve('deny')}
       shortcutsDisabled={loading}
     >
-      {structuredDocument ? (
-        <ExitPlanDocumentView document={structuredDocument} />
-      ) : (
-        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-5">
-          <ChatMarkdown content={payload.body} className="text-base leading-7" />
-        </section>
-      )}
+      <div className="grid gap-4">
+        {structuredDocument ? (
+          <ExitPlanDocumentView document={structuredDocument} />
+        ) : (
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-5">
+            <ChatMarkdown content={payload.body} className="text-base leading-7" />
+          </section>
+        )}
+      </div>
     </ModalShell>
   )
 }
@@ -1383,6 +876,398 @@ function PlanUpdateReview({
   )
 }
 
+export function planLifecycleApprovedArguments(payload: PlanUpdatePayload, fallbackAction: string): Record<string, unknown> {
+  if (Object.keys(payload.approvedArguments).length > 0) {
+    return payload.approvedArguments
+  }
+  const approved: Record<string, unknown> = {
+    action: payload.action || fallbackAction,
+  }
+  if (payload.planId) approved.plan_id = payload.planId
+  if (payload.title) approved.title = payload.title
+  if (payload.plan) approved.plan = payload.plan
+  if (payload.document) approved.document = payload.document
+  if (payload.changeRequest) approved.change_request = payload.changeRequest
+  if (payload.checkpointTitle) approved.checkpoint_title = payload.checkpointTitle
+  if (payload.tasks.length > 0) approved.tasks = payload.tasks
+  if (payload.acceptanceCriteria.length > 0) approved.acceptance_criteria = payload.acceptanceCriteria
+  if (payload.notes) approved.notes = payload.notes
+  if (payload.followupCheckpointPolicy) approved.followup_checkpoint_policy = payload.followupCheckpointPolicy
+  if (
+    payload.action === 'request_followup_checkpoint' ||
+    fallbackAction === 'request_followup_checkpoint' ||
+    payload.action === 'request_new_plan' ||
+    fallbackAction === 'request_new_plan'
+  ) approved.approval_confirmed = true
+  return approved
+}
+
+export function newPlanLifecycleApprovedArguments(
+  payload: PlanUpdatePayload,
+): Record<string, unknown> {
+  return {
+    ...planLifecycleApprovedArguments(payload, 'request_new_plan'),
+    approval_confirmed: true,
+    ...exitPlanExecutionArguments(),
+  }
+}
+
+function followupPolicyLabel(policy: string): string {
+  switch (policy.trim().toLowerCase()) {
+    case 'auto_start':
+      return 'Auto-add & start session checkpoint'
+    case 'require_approval':
+      return 'Ask before adding session checkpoint'
+    default:
+      return policy.trim() || 'Ask before adding session checkpoint'
+  }
+}
+
+function followupApproveLabel(policy: string): string {
+  switch (policy.trim().toLowerCase()) {
+    case 'auto_start':
+      return 'Add & start session checkpoint'
+    default:
+      return 'Approve session checkpoint'
+  }
+}
+
+function planLifecycleDocumentPreview(payload: PlanUpdatePayload, emptyText: string) {
+  const structuredDocument = normalizeStructuredPlanDocument(payload.document)
+  if (structuredDocument) {
+    return <ExitPlanDocumentView document={structuredDocument} />
+  }
+  return (
+    <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+      {payload.plan.trim() ? (
+        <ChatMarkdown content={payload.plan} className="text-base leading-7" />
+      ) : (
+        <div className="text-sm text-[var(--app-text-muted)]">{emptyText}</div>
+      )}
+    </section>
+  )
+}
+
+function PlanFollowupRequestModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setNote('')
+      setLoading(false)
+    }
+  }, [open, permission?.id])
+
+  if (!permission) return null
+
+  const payload = parsePlanUpdatePermission(permission)
+  const effectivePolicy = payload.policyEffective || 'require_approval'
+  const checkpointTitle = payload.checkpointTitle || payload.title || `Session checkpoint: ${promptWordPreview(payload.changeRequest, 10) || 'New checkpoint'}`
+  const tasks = payload.tasks.length > 0 ? payload.tasks : payload.changeRequest ? [payload.changeRequest] : []
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always') => {
+    setLoading(true)
+    try {
+      if (action === 'approve_always') await savePlanAcceptanceMode('always_allow')
+      await onResolve(
+        action === 'approve_always' ? 'approve' : action,
+        note.trim(),
+        action !== 'deny' ? planLifecycleApprovedArguments(payload, 'request_followup_checkpoint') : undefined,
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title || 'Review Session Checkpoint'}
+      subtitle={payload.planId ? `Plan ${payload.planId}` : 'Add one ordered checkpoint to the active session'}
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-full sm:w-[min(980px,calc(100vw-48px))]"
+      bodyClassName="overflow-y-auto"
+      footer={
+        <PermissionActionBar
+          loading={loading}
+          onApprove={() => void resolve('approve')}
+          onDeny={() => void resolve('deny')}
+          onAlwaysAllow={() => void resolve('approve_always')}
+          showPersistentActions
+          alwaysAllowLabel="Always allow plan acceptance"
+          approveLabel={followupApproveLabel(effectivePolicy)}
+          note={note}
+          onNoteChange={setNote}
+          noteLabel="Message to agent"
+        />
+      }
+      onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
+    >
+      <div className="grid gap-4">
+        <section className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-4">
+          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">User request</div>
+          <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--app-text)]">{payload.changeRequest || 'No change request text was provided.'}</p>
+        </section>
+        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Checkpoint preview</div>
+          <div className="mt-2 text-base font-semibold text-[var(--app-text)]">{checkpointTitle}</div>
+          {tasks.length > 0 ? (
+            <ul className="mt-3 grid gap-2 text-sm leading-6 text-[var(--app-text)]">
+              {tasks.map((task) => <li key={task} className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">{task}</li>)}
+            </ul>
+          ) : null}
+          {payload.acceptanceCriteria.length > 0 ? (
+            <div className="mt-3">
+              <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Acceptance criteria</div>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm leading-6 text-[var(--app-text-muted)]">
+                {payload.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}
+              </ul>
+            </div>
+          ) : null}
+          {payload.notes ? (
+            <div className="mt-3">
+              <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Handoff context</div>
+              <p className="mt-2 whitespace-pre-wrap break-words rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm leading-6 text-[var(--app-text-muted)]">{payload.notes}</p>
+            </div>
+          ) : null}
+        </section>
+        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm leading-6">
+          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Effective session checkpoint policy</div>
+          <div className="mt-2 font-medium text-[var(--app-text)]">{followupPolicyLabel(effectivePolicy)}</div>
+          <p className="mt-1 text-[var(--app-text-muted)]">Session checkpoint requests add one ordered checkpoint to the active session chain. They preserve lifecycle states for completed, review, blocked, and failed checkpoints and do not imply a single related thread of work.</p>
+        </section>
+      </div>
+    </ModalShell>
+  )
+}
+
+function checkpointDeltaDisplay(item: PlanAmendmentDeltaItem): string {
+  const id = item.id.trim()
+  const title = item.title.trim()
+  if (id && title) return `${id} — ${title}`
+  return id || title || 'checkpoint'
+}
+
+function PlanAmendmentDeltaPreview({ payload }: { payload: PlanUpdatePayload }) {
+  const delta = payload.planAmendmentDelta
+  const bullets = delta?.bullets ?? []
+  const preserved = delta?.preservedCheckpoints ?? []
+  const replaced = delta?.replacedCheckpoints ?? []
+  const replacements = delta?.replacementCheckpoints ?? []
+  return (
+    <section className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-4 text-sm leading-6 text-[var(--app-text)]">
+      <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Amendment delta</div>
+      {bullets.length > 0 ? (
+        <ul className="mt-3 list-disc space-y-1 pl-5">
+          {bullets.map((bullet) => <li key={bullet}>{bullet}</li>)}
+        </ul>
+      ) : (
+        <p className="mt-2 text-[var(--app-text-muted)]">Review the amendment control fields and structured document before approving.</p>
+      )}
+      <div className="mt-3 grid gap-3 md:grid-cols-3">
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Preserved</div>
+          {preserved.length > 0 ? preserved.map((item) => <div key={`${item.id}:${item.title}`} className="mt-2 text-sm">{checkpointDeltaDisplay(item)} <span className="text-[var(--app-text-muted)]">{item.status}</span></div>) : <div className="mt-2 text-sm text-[var(--app-text-muted)]">No earlier checkpoints listed.</div>}
+        </div>
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Replaced from {delta?.replaceFromCheckpointId || 'future checkpoint'}</div>
+          {replaced.length > 0 ? replaced.map((item) => <div key={`${item.id}:${item.title}`} className="mt-2 text-sm">{checkpointDeltaDisplay(item)} <span className="text-[var(--app-text-muted)]">{item.status}</span></div>) : <div className="mt-2 text-sm text-[var(--app-text-muted)]">Replacement start is recorded in the approved arguments.</div>}
+        </div>
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">New future work</div>
+          {replacements.length > 0 ? replacements.map((item) => <div key={`${item.id}:${item.title}`} className="mt-2 text-sm">{checkpointDeltaDisplay(item)} <span className="text-[var(--app-text-muted)]">{item.status}</span></div>) : <div className="mt-2 text-sm text-[var(--app-text-muted)]">Open the full document preview for replacement details.</div>}
+        </div>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2 text-xs text-[var(--app-text-muted)]">
+        {delta?.baseRevision || payload.baseRevision ? <span>base revision {delta?.baseRevision || payload.baseRevision}</span> : null}
+        {delta?.currentRevision || payload.currentRevision ? <span>current revision {delta?.currentRevision || payload.currentRevision}</span> : null}
+        {delta?.overrideStale ? <span>override stale enabled</span> : null}
+      </div>
+    </section>
+  )
+}
+
+function PlanAmendmentRequestModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setNote('')
+      setLoading(false)
+    }
+  }, [open, permission?.id])
+
+  if (!permission) return null
+  const payload = parsePlanUpdatePermission(permission)
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always') => {
+    setLoading(true)
+    try {
+      if (action === 'approve_always') await savePlanAcceptanceMode('always_allow')
+      await onResolve(action === 'approve_always' ? 'approve' : action, note.trim(), action !== 'deny' ? planLifecycleApprovedArguments(payload, 'amend_plan') : undefined)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title || 'Review Plan Amendment'}
+      subtitle={payload.planId ? `Plan ${payload.planId} · future-checkpoint amendment` : 'Future-checkpoint amendment approval required'}
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-full sm:w-[min(1180px,calc(100vw-48px))]"
+      bodyClassName="overflow-y-auto"
+      footer={<PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} onAlwaysAllow={() => void resolve('approve_always')} showPersistentActions alwaysAllowLabel="Always allow plan acceptance" approveLabel="Approve amendment" note={note} onNoteChange={setNote} noteLabel="Message to agent" />}
+      onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
+    >
+      <div className="grid gap-4">
+        <PlanAmendmentDeltaPreview payload={payload} />
+        {planLifecycleDocumentPreview(payload, 'No proposed amendment document or plan text was provided.')}
+      </div>
+    </ModalShell>
+  )
+}
+
+function NewPlanRequestModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
+
+  useEffect(() => {
+    if (open) {
+      setNote('')
+      setLoading(false)
+      setCopyState('idle')
+    }
+  }, [open, permission?.id])
+
+  if (!permission) return null
+  const payload = parsePlanUpdatePermission(permission)
+  const structuredDocument = normalizeStructuredPlanDocument(payload.document)
+  const handleCopy = async () => {
+    try {
+      if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
+        throw new Error('Clipboard unavailable')
+      }
+      await navigator.clipboard.writeText(structuredDocument ? JSON.stringify(payload.document, null, 2) : payload.plan)
+      setCopyState('copied')
+    } catch {
+      setCopyState('error')
+    }
+  }
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always') => {
+    setLoading(true)
+    try {
+      if (action === 'approve_always') await savePlanAcceptanceMode('always_allow')
+      await onResolve(
+        action === 'approve_always' ? 'approve' : action,
+        note.trim(),
+        action !== 'deny' ? newPlanLifecycleApprovedArguments(payload) : undefined,
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title || 'Review New Plan'}
+      subtitle="Explicit approval required before approving and activating a new plan"
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-[min(1180px,calc(100vw-24px))] sm:w-[min(1280px,calc(100vw-48px))]"
+      bodyClassName="overflow-y-auto"
+      showSessionMeta={false}
+      planStyle
+      headerActions={
+        <Button type="button" variant="outline" size="sm" onClick={() => void handleCopy()}>
+          {copyState === 'copied' ? (
+            <Check className="size-4" />
+          ) : copyState === 'error' ? (
+            <AlertCircle className="size-4" />
+          ) : (
+            <Copy className="size-4" />
+          )}
+          {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy'}
+        </Button>
+      }
+      footer={
+        <PermissionActionBar
+          loading={loading}
+          onApprove={() => void resolve('approve')}
+          onDeny={() => void resolve('deny')}
+          onAlwaysAllow={() => void resolve('approve_always')}
+          showPersistentActions
+          alwaysAllowLabel="Always allow plan acceptance"
+          approveLabel="Approve new plan"
+          note={note}
+          onNoteChange={setNote}
+          noteLabel="Message to agent"
+          leadingAction={
+            <span className="text-sm text-[var(--app-text-muted)]">Starts automatically after approval</span>
+          }
+        />
+      }
+      onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
+    >
+      <div className="grid gap-4">
+        <section className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-4 text-sm leading-6 text-[var(--app-text)]">
+          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Lifecycle action</div>
+          <p className="mt-2">Approve, activate, and prepare this separate new plan for execution. It will replace the current active plan only after this approval.</p>
+          {payload.updateSummary ? <p className="mt-2 whitespace-pre-wrap break-words text-[var(--app-text-muted)]">{payload.updateSummary}</p> : null}
+        </section>
+        {structuredDocument ? (
+          <ExitPlanDocumentView document={structuredDocument} />
+        ) : (
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-5">
+            {payload.plan.trim() ? (
+              <ChatMarkdown content={payload.plan} className="text-base leading-7" />
+            ) : (
+              <div className="text-sm text-[var(--app-text-muted)]">No proposed new plan document or plan text was provided.</div>
+            )}
+          </section>
+        )}
+      </div>
+    </ModalShell>
+  )
+}
+
+// Legacy generic plan update approvals are reserved for draft/non-lifecycle saves.
+// Active approved-plan lifecycle changes route to the typed modals above.
 function PlanUpdateModal({
   permission,
   open,
@@ -1410,23 +1295,7 @@ function PlanUpdateModal({
   const resolve = async (action: 'approve' | 'deny') => {
     setLoading(true)
     try {
-      const reason =
-        action === 'approve'
-          ? JSON.stringify({
-              action: 'save',
-              approved_arguments:
-                Object.keys(payload.approvedArguments).length > 0
-                  ? payload.approvedArguments
-                  : {
-                      action: 'save',
-                      plan_id: payload.planId,
-                      title: payload.title,
-                      plan: payload.plan,
-                    },
-              note: note.trim(),
-            })
-          : note.trim()
-      await onResolve(action, reason)
+      await onResolve(action, note.trim(), action === 'approve' ? planLifecycleApprovedArguments(payload, 'save') : undefined)
     } finally {
       setLoading(false)
     }
@@ -1572,7 +1441,220 @@ function ManageTodosModal({
   )
 }
 
-function ManageImageModal({
+function sessionArchiveStateLabel(state: string): string {
+  return state.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function sessionArchiveUpdatedLabel(updatedAt: number): string {
+  if (!updatedAt) {
+    return 'Update time unavailable'
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(updatedAt))
+}
+
+interface SessionDeployFormProposal extends SessionDeployProposal {
+  selected: boolean
+}
+
+function sessionDeployInitialProposals(proposals: SessionDeployProposal[]): SessionDeployFormProposal[] {
+  const selectedIndex = proposals.findIndex((proposal) => proposal.selected)
+  return proposals.map((proposal, index) => ({
+    ...proposal,
+    selected: index === (selectedIndex >= 0 ? selectedIndex : 0),
+  }))
+}
+
+const SESSION_DEPLOY_CONTROL_CLASS = 'block h-10 w-full min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap rounded-xl border border-[var(--app-border)] px-3 text-base text-[var(--app-text)] [field-sizing:fixed] sm:text-sm'
+
+export function alwaysAllowSessionDeployPolicy(): SessionDeployPolicy {
+  return {
+    mode: 'always_allow',
+    automatic_deployments_per_parent_run: 0,
+    over_limit_action: 'ask',
+  }
+}
+
+function SessionDeployModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onOpenPermissions,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const payload = useMemo(() => permission ? parseSessionDeployPermission(permission) : null, [permission])
+  const [proposals, setProposals] = useState<SessionDeployFormProposal[]>(() => sessionDeployInitialProposals(payload?.proposals ?? []))
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!open || !payload) return
+    setProposals(sessionDeployInitialProposals(payload.proposals))
+    setLoading(false)
+    setError('')
+  }, [open, payload, permission?.id])
+
+  if (!permission || !payload) return null
+
+  const updateProposal = (id: string, change: Partial<SessionDeployFormProposal>) => {
+    setProposals((current) => current.map((proposal) => proposal.id === id ? { ...proposal, ...change } : proposal))
+    setError('')
+  }
+  const selectedCount = proposals.filter((proposal) => proposal.selected).length
+  const submit = async (action: 'approve' | 'deny' | 'approve_always') => {
+    if (action === 'deny') {
+      setLoading(true)
+      try { await onResolve('deny', '') } finally { setLoading(false) }
+      return
+    }
+    const selected = proposals.filter((proposal) => proposal.selected)
+    if (selected.length === 0) {
+      setError('Select at least one session to deploy.')
+      return
+    }
+    if (selected.some((proposal) => !proposal.prompt.trim() || !proposal.agentName.trim() || !proposal.workspacePath.trim())) {
+      setError('Every selected session requires a prompt, agent, and workspace.')
+      return
+    }
+    if (selected.some((proposal) => proposal.managedWorktree && !proposal.worktreeBranch.trim())) {
+      setError('Managed worktree sessions require the AI-provided branch suggestion.')
+      return
+    }
+    const approvedProposals = proposals.map((proposal) => ({
+      ...proposal.manifest,
+      title: proposal.title.trim(),
+      prompt: proposal.prompt.trim(),
+      mode: proposal.mode,
+      agent_name: proposal.agentName,
+      agent_mode: proposal.agentMode,
+      managed_worktree: proposal.managedWorktree,
+      worktree_base_branch: proposal.worktreeBaseBranch.trim(),
+      worktree_branch: proposal.worktreeBranch.trim(),
+      selected: proposal.selected,
+    }))
+    setLoading(true)
+    try {
+      if (action === 'approve_always') await saveCapabilityPolicies({ session_deploy: alwaysAllowSessionDeployPolicy() })
+      await onResolve('approve', '', {
+        ...payload.approvedArguments,
+        action: 'deploy',
+        manifest_version: payload.manifestVersion,
+        manifest_digest: payload.manifestDigest,
+        selected_proposal_ids: selected.map((proposal) => proposal.id),
+        proposals: approvedProposals,
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title="Deploy sessions?"
+      subtitle="Review and select the exact local V3 sessions to create and start"
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="min-w-0 w-full max-w-[1100px]"
+      bodyClassName="min-w-0 overflow-x-hidden overflow-y-auto"
+      footer={<PermissionActionBar loading={loading} onApprove={() => void submit('approve')} onDeny={() => void submit('deny')} onAlwaysAllow={() => void submit('approve_always')} showPersistentActions alwaysAllowLabel="Always allow" approveLabel={selectedCount === 1 ? 'Deploy 1 session' : `Deploy ${selectedCount} sessions`} shortcutHint="Enter deploys selected · Esc denies" />}
+      onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void submit('approve')}
+      onDenyShortcut={() => void submit('deny')}
+      shortcutsDisabled={loading}
+      onRequestClose={() => void submit('deny')}
+    >
+      <div className="grid min-w-0 gap-3 sm:gap-4">
+        <div className="min-w-0 break-words rounded-2xl border border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_8%,var(--app-surface))] px-3 py-3 text-sm leading-6 text-[var(--app-text-muted)] sm:px-4">
+          One safe default is selected. Check additional proposals to allow more in this batch. Deploy approves only this request; Always allow also lets future session deployments run without asking.
+        </div>
+        <section className="flex min-w-0 flex-col gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3 sm:flex-row sm:items-center sm:justify-between sm:p-4" aria-label="Session deployment permission options">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-[var(--app-text)]">Need granular deployment controls?</div>
+            <div className="mt-1 break-words text-xs leading-5 text-[var(--app-text-muted)]">Set ask, bounded automatic limits, or over-limit behavior in Permissions settings.</div>
+          </div>
+          {onOpenPermissions ? <Button type="button" variant="outline" onClick={onOpenPermissions} className="w-full shrink-0 sm:w-auto">Permissions settings</Button> : null}
+        </section>
+        {proposals.length === 0 ? <div className="rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">No valid deployment proposals were provided.</div> : null}
+        <section className="grid min-w-0 gap-3" aria-label="Session deployment proposals">
+          {proposals.map((proposal, index) => (
+            <article key={proposal.id} className={cn('min-w-0 overflow-hidden rounded-2xl border p-3 sm:p-4', proposal.selected ? 'border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_6%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface)]')}>
+              <label className="flex cursor-pointer items-start gap-3">
+                <input type="checkbox" checked={proposal.selected} onChange={(event) => updateProposal(proposal.id, { selected: event.target.checked })} className="mt-1 size-4 accent-[var(--app-primary)]" />
+                <span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-[var(--app-text)]">Session {index + 1}</span><span className="block min-w-0 truncate text-xs text-[var(--app-text-muted)]" title={proposal.workspaceName || proposal.workspacePath}>{proposal.agentMode === 'primary' ? 'Primary agent' : 'Subagent'} · {proposal.workspaceName || proposal.workspacePath}</span></span>
+              </label>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <SessionDeployField label="Title"><input value={proposal.title} onChange={(event) => updateProposal(proposal.id, { title: event.target.value })} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)]')} placeholder="New session" /></SessionDeployField>
+                <SessionDeployField label="Mode"><select value={proposal.mode} onChange={(event) => updateProposal(proposal.id, { mode: event.target.value as 'plan' | 'auto' })} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)]')}><option value="auto">Auto</option><option value="plan">Plan</option></select></SessionDeployField>
+                <SessionDeployField label="Allowed agent"><select value={proposal.agentName} title={proposal.agentName} onChange={(event) => { const agent = payload.allowedAgents.find((candidate) => candidate.name === event.target.value); if (agent) updateProposal(proposal.id, { agentName: agent.name, agentMode: agent.mode }) }} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)]')}>{payload.allowedAgents.map((agent) => <option key={`${agent.mode}:${agent.name}`} value={agent.name}>{agent.name} ({agent.mode})</option>)}</select></SessionDeployField>
+                <SessionDeployField label="Workspace"><select value={proposal.workspacePath} title={proposal.workspaceName || proposal.workspacePath} disabled={payload.allowedWorkspaces.length === 0} onChange={(event) => { const workspace = payload.allowedWorkspaces.find((candidate) => candidate.path === event.target.value); if (workspace) updateProposal(proposal.id, { workspacePath: workspace.path, workspaceName: workspace.name, manifest: { ...proposal.manifest, workspace_id: workspace.id, workspace_generation: workspace.generation, workspace_path: workspace.path, workspace_name: workspace.name } }) }} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)] disabled:opacity-50')}>{payload.allowedWorkspaces.length === 0 ? <option value="">No saved workspaces</option> : payload.allowedWorkspaces.map((workspace) => <option key={`${workspace.id}:${workspace.generation}`} value={workspace.path}>{workspace.name || workspace.path}</option>)}</select></SessionDeployField>
+              </div>
+              <SessionDeployField label="Prompt" className="mt-3"><Textarea value={proposal.prompt} onChange={(event) => updateProposal(proposal.id, { prompt: event.target.value })} rows={4} className="min-h-24 resize-y bg-[var(--app-bg-alt)]" /></SessionDeployField>
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <SessionDeployField label="Worktree mode"><select aria-label="Worktree mode" value={proposal.managedWorktree ? 'managed' : 'workspace'} onChange={(event) => updateProposal(proposal.id, { managedWorktree: event.target.value === 'managed' })} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)]')}><option value="managed">Managed worktree (recommended)</option><option value="workspace">Use current workspace</option></select></SessionDeployField>
+                <SessionDeployField label="Base branch"><input value={proposal.worktreeBaseBranch} disabled={!proposal.managedWorktree} onChange={(event) => updateProposal(proposal.id, { worktreeBaseBranch: event.target.value })} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)] disabled:opacity-50')} placeholder="Current branch" /></SessionDeployField>
+                <SessionDeployField label="AI branch suggestion"><input value={proposal.worktreeBranch} disabled={!proposal.managedWorktree} onChange={(event) => updateProposal(proposal.id, { worktreeBranch: event.target.value })} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)] disabled:opacity-50')} placeholder="Provided automatically" /></SessionDeployField>
+              </div>
+            </article>
+          ))}
+        </section>
+        {error ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
+      </div>
+    </ModalShell>
+  )
+}
+
+function SessionDeployField({ label, className, children }: { label: string; className?: string; children: React.ReactNode }) {
+  return <label className={cn('grid min-w-0 max-w-full gap-1.5 overflow-hidden', className)}><span className="min-w-0 break-words text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{label}</span>{children}</label>
+}
+
+function SessionCommitModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+  useEffect(() => {
+    if (open) { setNote(''); setLoading(false) }
+  }, [open, permission?.id])
+  if (!permission) return null
+  const payload = parseSessionCommitPermission(permission)
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always' | 'always_deny') => {
+    setLoading(true)
+    try {
+      const approved = (action === 'approve' || action === 'approve_always') && Object.keys(payload.approvedArguments).length > 0
+        ? payload.approvedArguments
+        : undefined
+      await onResolve(action, note.trim(), approved)
+    } finally { setLoading(false) }
+  }
+  return (
+    <ModalShell open={open} title="Commit session changes?" subtitle="Review each exact commit message and attributed file before Git is mutated" pendingCount={pendingCount} sessionMode={sessionMode}
+      widthClassName="w-full sm:w-[min(820px,calc(100vw-48px))]" bodyClassName="overflow-y-auto"
+      footer={<PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} onAlwaysAllow={() => void resolve('approve_always')} onAlwaysDeny={() => void resolve('always_deny')} showPersistentActions approveLabel={payload.commits.length === 1 ? 'Approve commit' : `Approve ${payload.commits.length} commits`} note={note} onNoteChange={setNote} noteLabel="Message to agent" />}
+      onOpenChange={onOpenChange} onPrimaryShortcut={() => void resolve('approve')} onDenyShortcut={() => void resolve('deny')} shortcutsDisabled={loading}>
+      <section className="grid gap-3" aria-label="Session commits">
+        {payload.commits.length === 0 ? <div className="rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">No valid commit details were provided.</div> : payload.commits.map((commit, index) => (
+          <article key={`${index}:${commit.repository}:${commit.message}`} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 shadow-sm">
+            <div className="flex items-start gap-3"><span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-[var(--app-primary-soft)] text-[var(--app-primary)]"><GitCommit className="size-4" aria-hidden="true" /></span><div className="min-w-0"><h3 className="font-semibold text-[var(--app-text)]">Commit {index + 1}</h3><p className="mt-1 whitespace-pre-wrap break-words text-sm text-[var(--app-text)]">{commit.message || 'No commit message'}</p></div></div>
+            {commit.repository ? <div className="mt-3 break-all font-mono text-xs text-[var(--app-text-muted)]">{commit.repository}</div> : null}
+            <ul className="mt-3 grid gap-1.5" aria-label={`Changed files for commit ${index + 1}`}>{commit.files.map((file) => <li key={file} className="break-all rounded-lg bg-[var(--app-bg-alt)] px-3 py-2 font-mono text-xs text-[var(--app-text)]">{file}</li>)}</ul>
+          </article>
+        ))}
+      </section>
+    </ModalShell>
+  )
+}
+
+function SessionArchiveModal({
   permission,
   open,
   pendingCount,
@@ -1594,41 +1676,43 @@ function ManageImageModal({
     return null
   }
 
-  const payload = parseManageImagePermission(permission)
-  const resolve = async (action: 'approve' | 'deny') => {
+  const payload = parseSessionArchivePermission(permission)
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always' | 'always_deny') => {
     setLoading(true)
     try {
-      await onResolve(
-        action,
-        note.trim(),
-        action === 'approve' && Object.keys(payload.approvedArguments).length > 0
-          ? payload.approvedArguments
-          : undefined,
-      )
+      const approved = (action === 'approve' || action === 'approve_always') && Object.keys(payload.approvedArguments).length > 0
+        ? payload.approvedArguments
+        : undefined
+      await onResolve(action, note.trim(), approved)
     } finally {
       setLoading(false)
     }
   }
+  const unarchive = payload.action === 'unarchive'
+  const verb = unarchive ? 'Unarchive' : 'Archive'
 
   return (
     <ModalShell
       open={open}
-      title={payload.title}
-      subtitle={payload.subtitle}
+      title={`${verb} sessions?`}
+      subtitle={unarchive ? 'Review the durable sessions that will be restored to your workspace view' : 'Review the sessions that will be removed from your active workspace view'}
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-full sm:w-[min(980px,calc(100vw-48px))]"
+      widthClassName="w-full sm:w-[min(760px,calc(100vw-48px))]"
       bodyClassName="overflow-y-auto"
       footer={
         <PermissionActionBar
           loading={loading}
           onApprove={() => void resolve('approve')}
           onDeny={() => void resolve('deny')}
-          approveLabel={payload.action.trim().toLowerCase() === 'inspect' ? 'Allow inspect' : 'Generate images'}
+          onAlwaysAllow={() => void resolve('approve_always')}
+          onAlwaysDeny={() => void resolve('always_deny')}
+          showPersistentActions
+          approveLabel={payload.sessions.length === 1 ? `${verb} session` : `${verb} ${payload.sessions.length} sessions`}
           note={note}
           onNoteChange={setNote}
           noteLabel="Message to agent"
-          notePlaceholder="Optional note about this image request…"
+          notePlaceholder="Optional note…"
         />
       }
       onOpenChange={onOpenChange}
@@ -1637,43 +1721,34 @@ function ManageImageModal({
       shortcutsDisabled={loading}
     >
       <div className="grid gap-4">
-        <section className="rounded-2xl border border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_8%,var(--app-surface))] p-4">
-          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Request</div>
-          <p className="mt-2 text-sm leading-6 text-[var(--app-text)]">{payload.summary}</p>
-        </section>
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          <ImagePermissionField label="Action" value={payload.action || 'generate'} />
-          <ImagePermissionField label="Count" value={String(payload.count)} />
-          <ImagePermissionField label="Provider" value={payload.provider} />
-          <ImagePermissionField label="Model" value={payload.model} />
-          <ImagePermissionField label="Size/aspect" value={payload.size || 'provider default'} />
-          <ImagePermissionField label="Image session" value={payload.threadId || 'new session'} mono />
+        <div className="flex items-start gap-3 rounded-2xl border border-[color-mix(in_oklab,var(--app-warning)_28%,var(--app-border))] bg-[color-mix(in_oklab,var(--app-warning)_8%,var(--app-surface))] px-4 py-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[color-mix(in_oklab,var(--app-warning)_16%,transparent)] text-[var(--app-warning)]">
+            <Archive className="size-5" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <div className="font-semibold text-[var(--app-text)]">{payload.sessions.length} {payload.sessions.length === 1 ? 'session' : 'sessions'} selected</div>
+            <p className="mt-1 text-sm leading-5 text-[var(--app-text-muted)]">{unarchive ? 'Unarchived sessions return to the active workspace view with their durable messages and history intact.' : 'Archived sessions stay in durable history and can be found later. This does not delete their messages.'}</p>
+          </div>
         </div>
 
-        {payload.purpose ? <ImagePermissionField label="Purpose/title" value={payload.purpose} /> : null}
-        {payload.prompt ? (
-          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Prompt</div>
-            <div className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[var(--app-text)]">{payload.prompt}</div>
-          </section>
-        ) : null}
-
-        <section className="grid gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm leading-6 text-[var(--app-text-muted)]">
-          <div>{payload.hostExecution || 'The workspace-owning daemon executes provider calls and writes durable host image session storage.'}</div>
-          <div>{payload.transcriptPolicy || 'The agent transcript receives compact IDs/URLs/asset refs only, never raw image bytes.'}</div>
+        <section className="grid gap-2.5" aria-label={unarchive ? 'Sessions to unarchive' : 'Sessions to archive'}>
+          {payload.sessions.length === 0 ? (
+            <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-5 text-sm text-[var(--app-text-muted)]">No session details were provided.</div>
+          ) : payload.sessions.map((session, index) => (
+            <article key={`${index}:${session.title}:${session.updatedAt}`} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 shadow-sm">
+              <div className="flex min-w-0 items-start justify-between gap-3">
+                <h3 className="min-w-0 break-words font-semibold leading-6 text-[var(--app-text)]">{session.title}</h3>
+                <span className="shrink-0 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text-muted)]">{sessionArchiveStateLabel(session.state)}</span>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-[var(--app-text-muted)]">
+                <span className="inline-flex items-center gap-1.5"><Folder className="size-3.5" aria-hidden="true" />{session.workspaceName}</span>
+                <span className="inline-flex items-center gap-1.5"><CalendarClock className="size-3.5" aria-hidden="true" />Updated {sessionArchiveUpdatedLabel(session.updatedAt)}</span>
+              </div>
+            </article>
+          ))}
         </section>
       </div>
     </ModalShell>
-  )
-}
-
-function ImagePermissionField({ label, value, mono = false }: { label: string, value: string, mono?: boolean }) {
-  return (
-    <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-      <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{label}</div>
-      <div className={cn('mt-2 break-words text-sm text-[var(--app-text)]', mono && 'font-mono')}>{value || 'n/a'}</div>
-    </section>
   )
 }
 
@@ -2025,6 +2100,9 @@ function TaskLaunchModal({
   const launchSummary = `${payload.launchCount} launch${payload.launchCount === 1 ? '' : 'es'}`
   const toolsSummary = taskLaunchToolsSummary(payload.resolvedTools)
   const routerSummary = payload.resolvedAgentName ? `Router: ${payload.resolvedAgentName}` : ''
+  const budgetSummary = payload.automaticBudgetUsed || payload.automaticBudgetRemaining
+    ? `Budget ${payload.automaticBudgetUsed} used · ${payload.automaticBudgetRemaining} remaining`
+    : ''
 
   const resolve = async (action: 'approve' | 'deny') => {
     setLoading(true)
@@ -2050,6 +2128,7 @@ function TaskLaunchModal({
           <HeaderChip icon={Rocket}>{launchSummary}</HeaderChip>
           {toolsSummary ? <HeaderChip icon={LockKeyhole}>{toolsSummary}</HeaderChip> : null}
           {routerSummary ? <HeaderChip icon={Server}>{routerSummary}</HeaderChip> : null}
+          {budgetSummary ? <HeaderChip icon={Rocket}>{budgetSummary}</HeaderChip> : null}
         </div>
       }
       footer={
@@ -2081,8 +2160,9 @@ function TaskLaunchModal({
           {payload.launches.length > 0 ? (
             <div className="grid max-h-[min(52dvh,34rem)] gap-3 overflow-y-auto overscroll-contain pr-1 sm:max-h-[min(56dvh,36rem)]">
               {payload.launches.map((launch) => {
-                const agentName = launch.resolvedAgentName || launch.requestedSubagentType || 'subagent'
-                const requestedLabel = launch.requestedSubagentType && launch.requestedSubagentType !== agentName ? launch.requestedSubagentType : ''
+                const resolvedAgentName = launch.resolvedAgentName || launch.requestedSubagentType || 'subagent'
+                const agentName = displayAgentName(resolvedAgentName)
+                const requestedLabel = launch.requestedSubagentType && displayAgentName(launch.requestedSubagentType) !== agentName ? displayAgentName(launch.requestedSubagentType) : ''
                 const modelLabel = [launch.subagentProvider, launch.subagentModel].filter(Boolean).join(' / ')
                 const toolLabel = taskLaunchToolsSummary(launch.resolvedTools)
                 return (
@@ -2107,6 +2187,16 @@ function TaskLaunchModal({
                           {[requestedLabel ? `via ${requestedLabel}` : '', modelLabel].filter(Boolean).join(' · ')}
                         </div>
                       ) : null}
+                      <div className="mt-2 grid gap-1 text-xs text-[var(--app-text-muted)] sm:grid-cols-2">
+                        {launch.sourceAgentName ? <div><span className="text-[var(--app-text-subtle)]">Coder source:</span> {displayAgentName(launch.sourceAgentName)}</div> : null}
+                        {launch.sourceProfileMode ? <div><span className="text-[var(--app-text-subtle)]">Profile mode:</span> {launch.sourceProfileMode}</div> : null}
+                        {launch.inheritedRuntimeMode ? <div><span className="text-[var(--app-text-subtle)]">Runtime/session:</span> {launch.inheritedRuntimeMode} / {launch.childMode || '—'}</div> : null}
+                        {launch.deliverable ? <div><span className="text-[var(--app-text-subtle)]">Deliverable:</span> {launch.deliverable}</div> : null}
+                        {launch.ownedScope.length ? <div><span className="text-[var(--app-text-subtle)]">Owned scope:</span> {launch.ownedScope.join(', ')}</div> : null}
+                        {launch.dependencyEvidence ? <div><span className="text-[var(--app-text-subtle)]">Dependency evidence:</span> {launch.dependencyEvidence}</div> : null}
+                        {launch.isolation ? <div><span className="text-[var(--app-text-subtle)]">Isolation:</span> {launch.isolation}</div> : null}
+                        {launch.resolvedTools.allowedTools.length ? <div><span className="text-[var(--app-text-subtle)]">Tools:</span> {launch.resolvedTools.allowedTools.join(', ')}</div> : null}
+                      </div>
                       <div className="mt-3 min-w-0 text-sm leading-6 text-[var(--app-text)]">
                         <ChatMarkdown className="[overflow-wrap:anywhere]" content={launch.assignment || 'No launch-specific instructions.'} />
                         {launch.resolvedAgentError ? <div className="mt-2 text-sm text-[var(--app-danger)]">{launch.resolvedAgentError}</div> : null}
@@ -2289,13 +2379,15 @@ function toolInventoryTools(payload: ReturnType<typeof parseAgentChangePermissio
 
 const AGENT_WRITE_TOOL_NAMES = new Set(['write', 'edit', 'bash', 'task', 'git_add', 'git_commit'])
 const AGENT_DEFAULT_READWRITE_TOOL_NAMES = ['write', 'edit']
-const AGENT_THINKING_OPTIONS = [
+const FALLBACK_AGENT_THINKING_OPTIONS = [
   { value: '', label: 'Default' },
   { value: 'off', label: 'Off' },
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Medium' },
   { value: 'high', label: 'High' },
   { value: 'xhigh', label: 'X-High' },
+  { value: 'max', label: 'Max' },
+  { value: 'ultra', label: 'Ultra' },
 ]
 
 function deriveExecutionSettingFromTools(tools: Record<string, AgentToolConfigFormState>): AgentEffectiveExecution {
@@ -2696,6 +2788,19 @@ function AgentProfileApprovalForm({
     return groups
   }, [form.provider, modelOptions])
   const activeModels = providers.find(([provider]) => provider === form.provider)?.[1] ?? []
+  const activeModel = activeModels.find((option) => option.model === form.model)
+  const thinkingOptions = activeModel
+    ? [
+        { value: '', label: 'Default' },
+        ...modelThinkingOptions(activeModel).map((value) => ({
+          value,
+          label: value === 'xhigh' ? 'X-High' : `${value.charAt(0).toUpperCase()}${value.slice(1)}`,
+        })),
+      ]
+    : FALLBACK_AGENT_THINKING_OPTIONS
+  const visibleThinkingOptions = form.thinking && !thinkingOptions.some((option) => option.value === form.thinking)
+    ? [...thinkingOptions, { value: form.thinking, label: form.thinking }]
+    : thinkingOptions
   const inventoryTools = toolInventoryTools(payload, form)
   const presetOptions = agentToolInventoryPresetOptions(payload)
   const activePreset = agentToolInventoryPreset(payload, form.toolContractPreset)
@@ -2761,8 +2866,13 @@ function AgentProfileApprovalForm({
           <div className="relative">
             <select value={form.provider} onChange={(event: ChangeEvent<HTMLSelectElement>) => {
               const provider = event.target.value
-              const firstModel = providers.find(([candidate]) => candidate === provider)?.[1]?.[0]?.model ?? ''
-              onChange({ ...form, provider, model: firstModel })
+              const firstOption = providers.find(([candidate]) => candidate === provider)?.[1]?.[0]
+              onChange({
+                ...form,
+                provider,
+                model: firstOption?.model ?? '',
+                thinking: firstOption ? defaultModelThinking(firstOption) : '',
+              })
             }} disabled={disabled} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
               <option value="">None / inherit default</option>
               {providers.map(([provider]) => <option key={provider} value={provider}>{provider}</option>)}
@@ -2773,7 +2883,15 @@ function AgentProfileApprovalForm({
         <label className="grid gap-1.5 text-sm">
           <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Model</span>
           <div className="relative">
-            <select value={form.model} onChange={(event: ChangeEvent<HTMLSelectElement>) => onChange({ ...form, model: event.target.value })} disabled={disabled || !form.provider} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
+            <select value={form.model} onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+              const model = event.target.value
+              const option = activeModels.find((candidate) => candidate.model === model)
+              onChange({
+                ...form,
+                model,
+                thinking: option ? defaultModelThinking(option) : form.thinking,
+              })
+            }} disabled={disabled || !form.provider} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
               <option value="">Choose model</option>
               {form.model && !activeModels.some((option) => option.model === form.model) ? <option value={form.model}>{form.model}</option> : null}
               {activeModels.map((option) => <option key={`${option.provider}:${option.model}:${option.contextMode}`} value={option.model}>{option.label || option.model}</option>)}
@@ -2785,8 +2903,7 @@ function AgentProfileApprovalForm({
           <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Thinking</span>
           <div className="relative">
             <select value={form.thinking} onChange={(event: ChangeEvent<HTMLSelectElement>) => onChange({ ...form, thinking: event.target.value })} disabled={disabled} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
-              {AGENT_THINKING_OPTIONS.map((option) => <option key={option.value || 'default'} value={option.value}>{option.label}</option>)}
-              {form.thinking && !AGENT_THINKING_OPTIONS.some((option) => option.value === form.thinking) ? <option value={form.thinking}>{form.thinking}</option> : null}
+              {visibleThinkingOptions.map((option) => <option key={option.value || 'default'} value={option.value}>{option.label}</option>)}
             </select>
             <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
           </div>
@@ -2998,7 +3115,7 @@ function AgentChangeModal({
 
 function genericPermissionSupportsPersistentActions(permission: DesktopPermissionRecord): boolean {
   const toolName = permissionDisplayToolName(permission.toolName)
-  return toolName !== 'ask-user' && toolName !== 'exit_plan_mode'
+  return toolName !== 'ask-user' && toolName !== 'exit_plan_mode' && toolName !== 'manage_sessions'
 }
 
 interface PermissionExplainResponse {
@@ -3016,8 +3133,8 @@ function bashPersistentPrefixFromRulePreview(preview: string): string {
 async function permissionPersistentRulePreview(permission: DesktopPermissionRecord, sessionMode: string): Promise<string> {
   const params = new URLSearchParams()
   params.set('mode', (permission.mode || sessionMode).trim())
-  params.set('tool', permission.toolName.trim())
-  params.set('arguments', permission.toolArguments.trim())
+  params.set('tool', safeString(permission.toolName))
+  params.set('arguments', safeString(permission.toolArguments))
   const response = await requestJson<PermissionExplainResponse>(`/v1/permissions/explain?${params.toString()}`)
   const preview = response.explain?.rule_preview?.trim() || ''
   if (preview && permissionDisplayToolName(permission.toolName) === 'bash') {
@@ -3056,20 +3173,32 @@ export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
   if (kind === 'exit-plan') {
     return <ExitPlanModal {...props} />
   }
+  if (kind === 'plan-followup-request') {
+    return <PlanFollowupRequestModal {...props} />
+  }
+  if (kind === 'plan-amendment-request') {
+    return <PlanAmendmentRequestModal {...props} />
+  }
+  if (kind === 'plan-new-request') {
+    return <NewPlanRequestModal {...props} />
+  }
   if (kind === 'plan-update') {
     return <PlanUpdateModal {...props} />
   }
   if (kind === 'manage-todos') {
     return <ManageTodosModal {...props} />
   }
+  if (kind === 'session-commit') {
+    return <SessionCommitModal {...props} />
+  }
+  if (kind === 'session-archive' || kind === 'session-unarchive') {
+    return <SessionArchiveModal {...props} />
+  }
+  if (kind === 'session-deploy') {
+    return <SessionDeployModal {...props} />
+  }
   if (kind === 'ask-user') {
     return <AskUserModal {...props} />
-  }
-  if (kind === 'manage-image') {
-    return <ManageImageModal {...props} />
-  }
-  if (kind === 'manage-flow') {
-    return <ManageFlowModal {...props} />
   }
   if (kind === 'task-launch') {
     return <TaskLaunchModal {...props} />

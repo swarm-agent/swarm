@@ -1,71 +1,65 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-test('desktop websocket clients bootstrap the local session cookie and do not send token query params', async () => {
+import { buildDesktopV3RealtimeTransportSocketURL } from './client'
+
+test('Desktop local session bootstrap exposes canonical account/user identity without a second request', async () => {
   const fetchCalls: string[] = []
-  const websocketURLs: string[] = []
   const originalFetch = globalThis.fetch
-  const originalWindow = globalThis.window
-  const originalWebSocket = globalThis.WebSocket
-
-  class FakeWebSocket {
-    url: string
-
-    constructor(input: string | URL) {
-      this.url = String(input)
-      websocketURLs.push(this.url)
-    }
-
-    addEventListener() {}
-
-    removeEventListener() {}
-
-    send() {}
-
-    close() {}
-  }
 
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input)
     fetchCalls.push(url)
     if (url === '/v1/auth/desktop/session') {
-      return new Response(JSON.stringify({ ok: true }), {
+      return new Response(JSON.stringify({
+        ok: true,
+        user_id: 'user-local',
+        account_scope_id: 'acct-local',
+        username: 'local-user',
+        expires_at: '2030-01-01T00:00:00Z',
+      }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
     }
     throw new Error(`unexpected fetch: ${url}`)
   }) as typeof fetch
-  globalThis.window = {
-    location: {
-      protocol: 'http:',
-      host: '127.0.0.1:5555',
-    },
-  } as unknown as Window & typeof globalThis
-  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
 
   try {
-    const { openDesktopWebSocket } = await import('./client')
-    const { openRunStream } = await import('../chat/queries/chat-queries')
+    const { ensureDesktopSession, getDesktopSessionIdentitySnapshot } = await import('../../../app/api')
 
-    await openDesktopWebSocket()
-    await openRunStream('session-local-auth')
-    await assert.rejects(
-      () => openRunStream('session-zero', { sessionApi: 'v3', afterSeq: 0 }),
-      /global \/ws session:\* connection/,
-    )
+    const identity = await ensureDesktopSession(true)
 
-    assert.deepEqual(fetchCalls, ['/v1/auth/desktop/session', '/v1/auth/desktop/session'])
-    assert.deepEqual(websocketURLs, [
-      'ws://127.0.0.1:5555/ws',
-      'ws://127.0.0.1:5555/v2/sessions/session-local-auth/run/stream',
-    ])
-    for (const url of websocketURLs) {
-      assert.equal(new URL(url).searchParams.get('token'), null)
-    }
+    assert.deepEqual(identity, {
+      userId: 'user-local',
+      accountScopeId: 'acct-local',
+      username: 'local-user',
+      expiresAt: '2030-01-01T00:00:00Z',
+    })
+    assert.deepEqual(getDesktopSessionIdentitySnapshot(), identity)
+
+    const cachedIdentity = await ensureDesktopSession()
+    assert.deepEqual(cachedIdentity, identity)
+    assert.deepEqual(fetchCalls, ['/v1/auth/desktop/session'])
   } finally {
     globalThis.fetch = originalFetch
-    globalThis.window = originalWindow
-    globalThis.WebSocket = originalWebSocket
   }
+})
+
+
+test('Desktop V3 realtime transport URL contains only opaque endpoint cursor', () => {
+  const url = buildDesktopV3RealtimeTransportSocketURL({
+    endpointCursor: 'v3c1.payload with spaces.signature/opaque',
+    protocol: 'ws:',
+    host: '127.0.0.1:5555',
+  })
+
+  assert.equal(url.toString(), 'ws://127.0.0.1:5555/v3/realtime/stream?endpoint_cursor=v3c1.payload+with+spaces.signature%2Fopaque')
+  assert.equal(url.pathname, '/v3/realtime/stream')
+  assert.deepEqual(Array.from(url.searchParams.keys()), ['endpoint_cursor'])
+  assert.equal(url.searchParams.get('endpoint_cursor'), 'v3c1.payload with spaces.signature/opaque')
+  assert.equal(url.searchParams.get('token'), null)
+  assert.equal(url.searchParams.get('auth_token'), null)
+  assert.equal(url.searchParams.get('after_seq'), null)
+  assert.equal(url.searchParams.get('after_rev'), null)
 })

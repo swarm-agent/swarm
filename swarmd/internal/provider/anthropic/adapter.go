@@ -62,6 +62,20 @@ func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 			AuthMethods:     anthropicAuthMethods(),
 		}, nil
 	}
+	if record.Connection != nil && !record.Connection.Connected {
+		reason := strings.TrimSpace(record.Connection.Message)
+		if reason == "" {
+			reason = "anthropic api key has not been verified"
+		}
+		return provideriface.Status{
+			ID:              "anthropic",
+			Ready:           false,
+			Reason:          reason,
+			DefaultModel:    providerDefaults.PrimaryModel,
+			DefaultThinking: providerDefaults.PrimaryThinking,
+			AuthMethods:     anthropicAuthMethods(),
+		}, nil
+	}
 	return provideriface.Status{
 		ID:              "anthropic",
 		Ready:           true,

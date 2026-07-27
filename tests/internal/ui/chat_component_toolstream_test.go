@@ -309,13 +309,13 @@ func TestFormatUnifiedToolEntry_TaskMultiLaunchIncludesAllLaunches(t *testing.T)
 func TestTaskLaunchPreviewLineUsesMetaPhaseOnly(t *testing.T) {
 	line := taskLaunchPreviewLine(map[string]any{
 		"launch_index": 1,
-		"subagent":     "explorer",
+		"subagent":     "finder",
 		"meta_prompt":  "map repo",
 		"status":       "running",
 		"phase":        "running grep",
 		"summary":      "should not appear",
 	}, 200)
-	if got := strings.TrimSpace(line); got != "1. explorer — map repo [running] · running grep" {
+	if got := strings.TrimSpace(line); got != "1. finder — map repo [running] · running grep" {
 		t.Fatalf("line = %q", got)
 	}
 	if strings.Contains(line, "should not appear") {
@@ -371,15 +371,15 @@ func TestRenderLiveToolEntryLines_TaskShowsAllLaunches(t *testing.T) {
 		State:    "running",
 		Output: `{
 			"tool":"task",
-			"goal":"Run explorers",
-			"description":"Run explorers",
+			"goal":"Run finders",
+			"description":"Run finders",
 			"status":"running",
 			"launch_count":3,
 			"path_id":"tool.task.stream.v1",
 			"launches":[
-				{"launch_index":1,"subagent":"explorer","meta_prompt":"map auth","status":"ok","phase":"completed"},
-				{"launch_index":2,"subagent":"explorer","meta_prompt":"map tui","status":"running","phase":"running grep"},
-				{"launch_index":3,"subagent":"explorer","meta_prompt":"map api","status":"running","phase":"running read"}
+				{"launch_index":1,"subagent":"finder","meta_prompt":"map auth","status":"ok","phase":"completed"},
+				{"launch_index":2,"subagent":"finder","meta_prompt":"map tui","status":"running","phase":"running grep"},
+				{"launch_index":3,"subagent":"finder","meta_prompt":"map api","status":"running","phase":"running read"}
 			]
 		}`,
 	}
@@ -393,13 +393,13 @@ func TestRenderLiveToolEntryLines_TaskShowsAllLaunches(t *testing.T) {
 		body = append(body, line.Text)
 	}
 	joined := strings.Join(body, "\n")
-	if !strings.Contains(joined, "1. explorer — map auth [ok] · completed") {
+	if !strings.Contains(joined, "1. finder — map auth [ok] · completed") {
 		t.Fatalf("live entry missing launch 1: %q", joined)
 	}
-	if !strings.Contains(joined, "2. explorer — map tui [running] · running grep") {
+	if !strings.Contains(joined, "2. finder — map tui [running] · running grep") {
 		t.Fatalf("live entry missing launch 2: %q", joined)
 	}
-	if !strings.Contains(joined, "3. explorer — map api [running] · running read") {
+	if !strings.Contains(joined, "3. finder — map api [running] · running read") {
 		t.Fatalf("live entry missing launch 3: %q", joined)
 	}
 }
@@ -407,18 +407,18 @@ func TestRenderLiveToolEntryLines_TaskShowsAllLaunches(t *testing.T) {
 func TestMergeTaskLaunchPayloads_SortsByLaunchIndex(t *testing.T) {
 	existing := []map[string]any{{
 		"launch_index": 2,
-		"subagent":     "explorer",
+		"subagent":     "finder",
 		"status":       "running",
 		"phase":        "running grep",
 	}}
 	incoming := []map[string]any{{
 		"launch_index": 1,
-		"subagent":     "explorer",
+		"subagent":     "finder",
 		"status":       "ok",
 		"phase":        "completed",
 	}, {
 		"launch_index": 3,
-		"subagent":     "explorer",
+		"subagent":     "finder",
 		"status":       "running",
 		"phase":        "running read",
 	}}
@@ -442,8 +442,8 @@ func TestToolPreviewLineLimit_TaskUsesLaunchCount(t *testing.T) {
 			"path_id":"tool.task.stream.v1",
 			"launch_count":20,
 			"launches":[
-				{"launch_index":1,"subagent":"explorer","status":"running","phase":"grep"},
-				{"launch_index":2,"subagent":"explorer","status":"running","phase":"read"}
+				{"launch_index":1,"subagent":"finder","status":"running","phase":"grep"},
+				{"launch_index":2,"subagent":"finder","status":"running","phase":"read"}
 			]
 		}`,
 	}
@@ -459,9 +459,9 @@ func TestToolPreviewLineLimit_TaskUsesVisibleLaunchesWhenCountMissing(t *testing
 			"tool":"task",
 			"path_id":"tool.task.stream.v1",
 			"launches":[
-				{"launch_index":1,"subagent":"explorer","status":"running","phase":"grep"},
-				{"launch_index":2,"subagent":"explorer","status":"running","phase":"read"},
-				{"launch_index":3,"subagent":"explorer","status":"ok","phase":"completed"}
+				{"launch_index":1,"subagent":"finder","status":"running","phase":"grep"},
+				{"launch_index":2,"subagent":"finder","status":"running","phase":"read"},
+				{"launch_index":3,"subagent":"finder","status":"ok","phase":"completed"}
 			]
 		}`,
 	}
@@ -478,9 +478,9 @@ func TestToolPreviewLines_TaskLaunchesStayOrderedAndMetaOnly(t *testing.T) {
 			"path_id":"tool.task.stream.v1",
 			"launch_count":3,
 			"launches":[
-				{"launch_index":1,"subagent":"explorer","meta_prompt":"first","status":"ok","phase":"completed","summary":"hide me"},
-				{"launch_index":2,"subagent":"explorer","meta_prompt":"second","status":"running","phase":"running grep","report_excerpt":"hide me too"},
-				{"launch_index":3,"subagent":"explorer","meta_prompt":"third","status":"running","phase":"running read"}
+				{"launch_index":1,"subagent":"finder","meta_prompt":"first","status":"ok","phase":"completed","summary":"hide me"},
+				{"launch_index":2,"subagent":"finder","meta_prompt":"second","status":"running","phase":"running grep","report_excerpt":"hide me too"},
+				{"launch_index":3,"subagent":"finder","meta_prompt":"third","status":"running","phase":"running read"}
 			]
 		}`,
 	}
@@ -489,13 +489,13 @@ func TestToolPreviewLines_TaskLaunchesStayOrderedAndMetaOnly(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("len(lines) = %d, want 3", len(lines))
 	}
-	if got := strings.TrimSpace(lines[0]); got != "1. explorer — first [ok] · completed" {
+	if got := strings.TrimSpace(lines[0]); got != "1. finder — first [ok] · completed" {
 		t.Fatalf("lines[0] = %q", got)
 	}
-	if got := strings.TrimSpace(lines[1]); got != "2. explorer — second [running] · running grep" {
+	if got := strings.TrimSpace(lines[1]); got != "2. finder — second [running] · running grep" {
 		t.Fatalf("lines[1] = %q", got)
 	}
-	if got := strings.TrimSpace(lines[2]); got != "3. explorer — third [running] · running read" {
+	if got := strings.TrimSpace(lines[2]); got != "3. finder — third [running] · running read" {
 		t.Fatalf("lines[2] = %q", got)
 	}
 	joined := strings.Join(lines, "\n")
@@ -507,7 +507,7 @@ func TestToolPreviewLines_TaskLaunchesStayOrderedAndMetaOnly(t *testing.T) {
 func TestTaskToolLaunchRow_ReasoningMapsToThinkingToolWithoutPreview(t *testing.T) {
 	row := taskToolLaunchRow(map[string]any{
 		"launch_index":               1,
-		"subagent":                   "explorer",
+		"subagent":                   "finder",
 		"status":                     "running",
 		"current_preview_kind":       "reasoning",
 		"current_preview_text":       "<reasoning>Inspecting files</reasoning>",
@@ -1493,7 +1493,7 @@ func TestRenderTaskToolTableLines_ReasoningMapsToThinkingWithoutLeak(t *testing.
 		ToolState: "running",
 		Metadata: map[string]any{
 			chatToolTimelineObjectMetadataKey:    true,
-			chatToolTimelinePayloadMetadataKey:   `{"tool":"task","status":"running","launches":[{"launch_index":1,"subagent":"explorer","status":"running","current_preview_kind":"reasoning","current_preview_text":"<reasoning>Inspecting files</reasoning>","reasoning_summary":"Inspecting files before edit"}]}`,
+			chatToolTimelinePayloadMetadataKey:   `{"tool":"task","status":"running","launches":[{"launch_index":1,"subagent":"finder","status":"running","current_preview_kind":"reasoning","current_preview_text":"<reasoning>Inspecting files</reasoning>","reasoning_summary":"Inspecting files before edit"}]}`,
 			chatToolTimelineStartedAtMetadataKey: int64(100),
 		},
 	}

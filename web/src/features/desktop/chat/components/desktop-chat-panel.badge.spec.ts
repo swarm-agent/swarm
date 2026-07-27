@@ -1,9 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import type { DesktopLiveAssistantSegment, DesktopSessionRecord } from '../../types/realtime'
+import type { DesktopLiveAssistantSegment, DesktopRunIntentRecord, DesktopSessionRecord } from '../../types/realtime'
 import type { ChatMessageRecord } from '../types/chat'
-import { buildLiveToolMessages, desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, orderDesktopTimelineItems, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
+import { buildLiveToolMessages, dedupeMessages, deriveDesktopChatRunControls, desktopChatVirtualItemKey, formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, liveAssistantDraftHasCanonicalReplay, metadataTodoSummary, orderDesktopTimelineItems, resolveMessageAssistantLabel, retainedAssistantSegmentsWithoutCanonicalReplay, savedRuleCountdownSeconds, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
@@ -88,6 +88,7 @@ function makeSession(overrides: Partial<DesktopSessionRecord> = {}): DesktopSess
       status: 'idle',
       step: 0,
       toolName: null,
+    sidebarToolName: null,
       toolCallId: null,
       toolArguments: null,
       toolOutput: '',
@@ -299,33 +300,6 @@ test('desktop timeline keeps testbench interleaved read/list/search stream in se
   ])
 })
 
-test('flow sessions are treated as read-only flow identity and resolve their real flow agent name', () => {
-  const session = makeSession({
-    metadata: {
-      source: 'flow',
-      lineage_kind: 'flow',
-      flow_id: 'flow-123',
-      flow_agent_name: 'memory',
-      agent_name: 'swarm',
-      requested_subagent: 'explorer',
-    },
-  })
-
-  assert.equal(sessionUsesReadOnlyFlowIdentity(session), true)
-  assert.equal(resolveSessionEffectiveAgentName(session, 'swarm'), 'memory')
-})
-
-test('non-flow sessions still resolve requested subagent before falling back to primary', () => {
-  const session = makeSession({
-    metadata: {
-      requested_subagent: 'explorer',
-    },
-  })
-
-  assert.equal(sessionUsesReadOnlyFlowIdentity(session), false)
-  assert.equal(resolveSessionEffectiveAgentName(session, 'swarm'), 'explorer')
-})
-
 function makeMessage(overrides: Partial<ChatMessageRecord> = {}): ChatMessageRecord {
   return {
     id: 'message-1',
@@ -339,9 +313,9 @@ function makeMessage(overrides: Partial<ChatMessageRecord> = {}): ChatMessageRec
 }
 
 test('resolveMessageAssistantLabel uses per-turn message metadata before current agent fallback', () => {
-  assert.equal(resolveMessageAssistantLabel(makeMessage({ metadata: { agent_name: 'swarm', model: 'gpt-5.4' } }), 'explorer'), 'swarm')
+  assert.equal(resolveMessageAssistantLabel(makeMessage({ metadata: { agent_name: 'swarm', model: 'gpt-5.4' } }), 'finder'), 'swarm')
   assert.equal(resolveMessageAssistantLabel(makeMessage({ metadata: { agent_name: 'reviewer', model: 'claude-sonnet' } }), 'swarm'), 'reviewer')
-  assert.equal(resolveMessageAssistantLabel(makeMessage(), 'explorer'), 'explorer')
+  assert.equal(resolveMessageAssistantLabel(makeMessage(), 'finder'), 'finder')
 })
 
 test('desktop chat suppresses retained assistant replay segments once canonical messages load', () => {
@@ -382,6 +356,15 @@ test('desktop chat keeps retained assistant replay segments until matching canon
   )
 })
 
+test('desktop chat suppresses live assistant draft once matching canonical assistant loads', () => {
+  const messages = [makeMessage({ role: 'assistant', content: 'Hey! What can I help with?' })]
+
+  assert.equal(liveAssistantDraftHasCanonicalReplay('Hey! What can I help with?', messages), true)
+  assert.equal(liveAssistantDraftHasCanonicalReplay(' Hey! What can I help with?\r\n', messages), true)
+  assert.equal(liveAssistantDraftHasCanonicalReplay('Still streaming…', messages), false)
+  assert.equal(liveAssistantDraftHasCanonicalReplay('Hey! What can I help with?', [makeMessage({ role: 'tool', content: 'Hey! What can I help with?' })]), false)
+})
+
 test('desktop chat shows the context compact checkpoint and hides the duplicate ack', () => {
   const checkpoint = makeMessage({
     id: 'checkpoint',
@@ -407,4 +390,109 @@ test('thinking tags visibility is part of desktop virtual item keys', () => {
   assert.equal(desktopChatVirtualItemKey(baseKey, true), 'thinking-tags:on:message-reasoning-1')
   assert.equal(desktopChatVirtualItemKey(baseKey, false), 'thinking-tags:off:message-reasoning-1')
   assert.notEqual(desktopChatVirtualItemKey(baseKey, true), desktopChatVirtualItemKey(baseKey, false))
+})
+
+test('dedupeMessages reconciles pending user messages without dropping unrelated sequence collisions', () => {
+  const pending = makeMessage({
+    id: 'pending-user:session-1:12',
+    sessionId: 'session-1',
+    globalSeq: 12,
+    role: 'user',
+    content: 'send this',
+    createdAt: 10,
+    metadata: { client_request_id: 'desktop-v3-message:pending-user:session-1:12' },
+  })
+  const canonical = makeMessage({
+    id: 'msg-user-12',
+    sessionId: 'session-1',
+    globalSeq: 12,
+    role: 'user',
+    content: 'send this',
+    createdAt: 10,
+    metadata: { client_request_id: 'desktop-v3-message:pending-user:session-1:12' },
+  })
+  const liveTool = makeMessage({
+    id: 'live-tool:call-12',
+    sessionId: 'session-1',
+    globalSeq: 12,
+    role: 'tool',
+    content: '{"path_id":"run.tool-history.v2","tool":"bash","call_id":"call-12"}',
+    createdAt: 11,
+  })
+  const assistant = makeMessage({
+    id: 'msg-assistant-12',
+    sessionId: 'session-1',
+    globalSeq: 12,
+    role: 'assistant',
+    content: 'working',
+    createdAt: 12,
+  })
+
+  const deduped = dedupeMessages([pending, liveTool, assistant, canonical])
+
+  assert.deepEqual(deduped.map((message) => message.id), ['msg-user-12', 'live-tool:call-12', 'msg-assistant-12'])
+})
+
+function runIntent(overrides: Partial<DesktopRunIntentRecord> = {}): DesktopRunIntentRecord {
+  return {
+    sessionId: 'session-run-controls',
+    runId: 'run-canonical',
+    status: 'running',
+    blockedReason: '',
+    createdAt: 1_000,
+    updatedAt: 1_500,
+    eventSeq: 1,
+    ...overrides,
+  }
+}
+
+test('deriveDesktopChatRunControls enables stop, composer lock, and timer only from canonical active run intent', () => {
+  const controls = deriveDesktopChatRunControls(runIntent({ status: 'running', createdAt: 1_000 }), {
+    liveSummary: null,
+    timerNow: 2_500,
+  })
+
+  assert.equal(controls.canStop, true)
+  assert.equal(controls.composerDisabled, true)
+  assert.equal(controls.runActive, true)
+  assert.equal(controls.showRunTimer, true)
+  assert.equal(controls.runTimerLabel, '1.5s')
+})
+
+test('deriveDesktopChatRunControls treats pending executor canonical intent as submitting', () => {
+  const controls = deriveDesktopChatRunControls(runIntent({ status: 'pending_executor' }), {
+    liveSummary: null,
+    timerNow: 2_000,
+  })
+
+  assert.equal(controls.submitting, true)
+  assert.equal(controls.canStop, true)
+  assert.equal(controls.composerDisabled, true)
+})
+
+test('deriveDesktopChatRunControls ignores lifecycle and live-only liveness when canonical active run is absent', () => {
+  const controls = deriveDesktopChatRunControls(null, {
+    liveSummary: 'Reconnecting…',
+    timerNow: 2_500,
+  })
+
+  assert.equal(controls.activeRunIntent, null)
+  assert.equal(controls.canStop, false)
+  assert.equal(controls.composerDisabled, false)
+  assert.equal(controls.runActive, false)
+  assert.equal(controls.showRunTimer, false)
+  assert.equal(controls.runTimerLabel, '')
+})
+
+test('deriveDesktopChatRunControls clears active UI for terminal canonical run intent', () => {
+  const controls = deriveDesktopChatRunControls(runIntent({ status: 'cancelled' }), {
+    liveSummary: null,
+    timerNow: 2_500,
+  })
+
+  assert.equal(controls.activeRunIntent, null)
+  assert.equal(controls.canStop, false)
+  assert.equal(controls.composerDisabled, false)
+  assert.equal(controls.runActive, false)
+  assert.equal(controls.showRunTimer, false)
 })

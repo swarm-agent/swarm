@@ -15,11 +15,9 @@ import (
 	"syscall"
 	"time"
 
-	"swarm-refactor/swarmtui/pkg/devmode"
 	"swarm-refactor/swarmtui/pkg/localupdate"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/identity"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/update"
 )
@@ -95,6 +93,10 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
+	if !isLocalAdministrativeRequest(r) {
+		writeError(w, http.StatusForbidden, errors.New("host update requires the local administrative transport"))
+		return
+	}
 	principal, ok := PrincipalFromRequest(r)
 	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
@@ -116,56 +118,11 @@ func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, plan)
 }
 
-func (s *Server) handleUpdateLocalContainers(w http.ResponseWriter, r *http.Request) {
-	if s.localContainers == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("local container service not configured"))
-		return
-	}
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
-	input := localcontainers.UpdatePlanInput{}
-	if devModeRaw := strings.TrimSpace(r.URL.Query().Get("dev_mode")); devModeRaw != "" {
-		switch strings.ToLower(devModeRaw) {
-		case "1", "true", "yes", "dev":
-			value := true
-			input.DevMode = &value
-		case "0", "false", "no", "release", "prod", "production":
-			value := false
-			input.DevMode = &value
-		default:
-			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid dev_mode %q", devModeRaw))
-			return
-		}
-	}
-	if postRebuildRaw := strings.TrimSpace(r.URL.Query().Get("post_rebuild_check")); postRebuildRaw != "" {
-		switch strings.ToLower(postRebuildRaw) {
-		case "1", "true", "yes":
-			input.PostRebuildCheck = true
-		case "0", "false", "no":
-			input.PostRebuildCheck = false
-		default:
-			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid post_rebuild_check %q", postRebuildRaw))
-			return
-		}
-	}
-	input.TargetVersion = strings.TrimSpace(r.URL.Query().Get("target_version"))
-	principal, ok := PrincipalFromRequest(r)
-	if !ok {
-		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
-		return
-	}
-	ctx := identity.ContextWithPrincipal(r.Context(), principal)
-	plan, err := s.localContainers.UpdatePlan(ctx, input)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, plan)
-}
-
 func (s *Server) handleUpdateRun(w http.ResponseWriter, r *http.Request) {
+	if !isLocalAdministrativeRequest(r) {
+		writeError(w, http.StatusForbidden, errors.New("host update requires the local administrative transport"))
+		return
+	}
 	principal, ok := PrincipalFromRequest(r)
 	if !ok || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
@@ -178,17 +135,25 @@ func (s *Server) handleUpdateRun(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job": defaultUpdateJobRunner.StatusForAccount(principal.AccountScopeID, s)})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job": publicDesktopUpdateJob(defaultUpdateJobRunner.StatusForAccount(principal.AccountScopeID, s))})
 	case http.MethodPost:
 		job, err := defaultUpdateJobRunner.Start(ctx, s)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "job": job})
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "job": publicDesktopUpdateJob(job)})
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func publicDesktopUpdateJob(job desktopUpdateJob) desktopUpdateJob {
+	job.Command = ""
+	job.HelperPID = 0
+	job.LogPath = ""
+	job.Hosts = nil
+	return job
 }
 
 func (r *updateJobRunner) Status(s *Server) desktopUpdateJob {
@@ -375,7 +340,7 @@ func (s *Server) startDetachedUpdateCommand(ctx context.Context, kind, jobID str
 	}
 	logPath := s.updateHelperLogPath(jobID)
 	if logPath != "" {
-		if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 			return updateLaunchDetails{}, fmt.Errorf("prepare update helper log: %w", err)
 		}
 	}
@@ -396,7 +361,7 @@ func (s *Server) startDetachedUpdateCommand(ctx context.Context, kind, jobID str
 	cmd.Dir = launch.Dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if logPath != "" {
-		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			return updateLaunchDetails{}, fmt.Errorf("open update helper log: %w", err)
 		}
@@ -559,7 +524,7 @@ func devUpdateToolchainEnv(root string) (map[string]string, error) {
 		env["GOROOT"] = goRoot
 	}
 	if strings.TrimSpace(os.Getenv("GOTOOLCHAIN")) == "" {
-		env["GOTOOLCHAIN"] = "local"
+		env["GOTOOLCHAIN"] = "auto"
 	}
 	return env, nil
 }
@@ -729,11 +694,33 @@ func (s *Server) configuredDevRoot() (string, error) {
 	if devRoot == "" {
 		return "", errors.New("update dev requires dev_root in swarm.conf; run rebuild once from the source checkout")
 	}
-	resolved, err := devmode.ResolveRoot(devRoot)
+	resolved, err := resolveUpdateDevRoot(devRoot)
 	if err != nil {
 		return "", fmt.Errorf("resolve dev_root %q: %w", devRoot, err)
 	}
 	return resolved, nil
+}
+
+func resolveUpdateDevRoot(root string) (string, error) {
+	absRoot, err := filepath.Abs(strings.TrimSpace(root))
+	if err != nil {
+		return "", err
+	}
+	absRoot = filepath.Clean(absRoot)
+	for _, path := range []string{
+		filepath.Join(absRoot, "go.mod"),
+		filepath.Join(absRoot, "cmd", "swarmtui", "main.go"),
+		filepath.Join(absRoot, "swarmd", "go.mod"),
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			return "", fmt.Errorf("missing required path %s", path)
+		}
+		if info.IsDir() {
+			return "", fmt.Errorf("expected file at %s", path)
+		}
+	}
+	return absRoot, nil
 }
 
 func (s *Server) readPersistedUpdateJobStatus() (desktopUpdateJob, bool) {

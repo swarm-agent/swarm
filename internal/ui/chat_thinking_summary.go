@@ -208,7 +208,7 @@ func normalizeAssistantLineEndings(value string) string {
 }
 
 func mergeStreamDelta(current, delta string, normalize func(string) string) string {
-	if strings.TrimSpace(delta) == "" {
+	if delta == "" {
 		return current
 	}
 	if strings.TrimSpace(current) == "" {

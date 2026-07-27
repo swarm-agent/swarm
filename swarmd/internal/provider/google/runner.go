@@ -16,15 +16,19 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/privacy"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 const (
-	generateContentURL       = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
-	streamGenerateContentURL = "https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent"
-	googleAPIKeyHeader       = "x-goog-api-key"
-	maxResponseBytes         = 8 << 20
+	generateContentURL         = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
+	streamGenerateContentURL   = "https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent"
+	googleAPIKeyHeader         = "x-goog-api-key"
+	maxResponseBytes           = 8 << 20
+	maxStreamEvents            = 16_384
+	maxStreamOutputBytes       = 4 << 20
+	maxStreamToolArgumentBytes = 1 << 20
 )
 
 var googleAPIKeyQueryPattern = regexp.MustCompile(`(?i)([?&]key=)[^&#\s]+`)
@@ -86,7 +90,8 @@ type googleGenerationConfig struct {
 }
 
 type googleThinkingConfig struct {
-	ThinkingBudget *int `json:"thinkingBudget,omitempty"`
+	ThinkingBudget *int   `json:"thinkingBudget,omitempty"`
+	ThinkingLevel  string `json:"thinkingLevel,omitempty"`
 }
 
 type googleRequest struct {
@@ -110,9 +115,11 @@ type googleCandidate struct {
 type googleUsageMetadata struct {
 	PromptTokenCount        int64 `json:"promptTokenCount,omitempty"`
 	CandidatesTokenCount    int64 `json:"candidatesTokenCount,omitempty"`
+	ResponseTokenCount      int64 `json:"responseTokenCount,omitempty"`
 	ThoughtsTokenCount      int64 `json:"thoughtsTokenCount,omitempty"`
 	TotalTokenCount         int64 `json:"totalTokenCount,omitempty"`
 	CachedContentTokenCount int64 `json:"cachedContentTokenCount,omitempty"`
+	ToolUsePromptTokenCount int64 `json:"toolUsePromptTokenCount,omitempty"`
 }
 
 func NewRunner(authStore *pebblestore.AuthStore) *Runner {
@@ -126,6 +133,12 @@ func NewRunner(authStore *pebblestore.AuthStore) *Runner {
 
 func (r *Runner) ID() string {
 	return "google"
+}
+
+func (r *Runner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
+	return provideriface.ExecutionEpochLifecycleCapabilities{
+		ContextMode: provideriface.ExecutionEpochContextStatelessFullInput,
+	}
 }
 
 func (r *Runner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
@@ -163,14 +176,18 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set(googleAPIKeyHeader, auth.APIKey)
 
+	providerdiagnostics.LogRequest("google", "generateContent", httpReq, raw)
 	resp, err := r.httpClient.Do(httpReq)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "google", "generateContent", err)
 		return provideriface.Response{}, sanitizeGoogleError("google generateContent request failed", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	providerdiagnostics.LogResponse("google", "generateContent", resp, body)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "google", "generateContent", err)
 		return provideriface.Response{}, sanitizeGoogleError("read google generateContent response", err)
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
@@ -217,25 +234,35 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	httpReq.URL.RawQuery = query.Encode()
 	httpReq.Header.Set(googleAPIKeyHeader, auth.APIKey)
 
+	providerdiagnostics.LogRequest("google", "streamGenerateContent", httpReq, raw)
 	resp, err := r.httpClient.Do(httpReq)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", err)
 		return provideriface.Response{}, sanitizeGoogleError("google streamGenerateContent request failed", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		providerdiagnostics.LogResponse("google", "streamGenerateContent", resp, body)
 		if readErr != nil {
+			providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", readErr)
 			return provideriface.Response{}, sanitizeGoogleError("read google streamGenerateContent error response", readErr)
 		}
 		return provideriface.Response{}, googleStatusError("google streamGenerateContent failed", resp.StatusCode, body)
 	}
 
+	providerdiagnostics.LogResponse("google", "streamGenerateContent", resp, nil)
 	accumulator := newGoogleStreamAccumulator(modelID)
 	if err := parseGoogleEventStream(resp.Body, func(payload string) error {
+		providerdiagnostics.LogStreamChunkContext(ctx, "google", "streamGenerateContent", []byte(payload))
 		return accumulator.applyPayload(payload, onEvent)
 	}); err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", err)
 		return provideriface.Response{}, sanitizeGoogleError("decode google stream response", err)
+	}
+	if !accumulator.finished {
+		return provideriface.Response{}, errors.New("google stream ended without a finish reason")
 	}
 	return accumulator.response(), nil
 }
@@ -267,14 +294,8 @@ func buildGoogleRequest(req provideriface.Request) googleRequest {
 			Parts: []googlePart{{Text: strings.TrimSpace(req.Instructions)}},
 		}
 	}
-	if supportsGoogleThinking(req.Model) {
-		if thinkingBudget := googleThinkingBudget(req.Thinking); thinkingBudget != nil {
-			out.GenerationConfig = &googleGenerationConfig{
-				ThinkingConfig: &googleThinkingConfig{
-					ThinkingBudget: thinkingBudget,
-				},
-			}
-		}
+	if thinkingConfig := googleThinkingConfigForRequest(req); thinkingConfig != nil {
+		out.GenerationConfig = &googleGenerationConfig{ThinkingConfig: thinkingConfig}
 	}
 	if len(req.Tools) > 0 {
 		declarations := make([]googleFunctionDeclaration, 0, len(req.Tools))
@@ -299,6 +320,76 @@ func buildGoogleRequest(req provideriface.Request) googleRequest {
 	return out
 }
 
+func googleThinkingConfigForRequest(req provideriface.Request) *googleThinkingConfig {
+	level := normalizeGoogleThinkingLevel(req.Thinking)
+	if level == "" {
+		return nil
+	}
+	if config := googleThinkingConfigFromCatalog(req.ModelCatalog, level); config != nil {
+		return config
+	}
+	if !supportsGoogleThinking(req.Model) {
+		return nil
+	}
+	return googleLegacyThinkingBudgetConfig(level)
+}
+
+func googleThinkingConfigFromCatalog(catalog any, level string) *googleThinkingConfig {
+	record, ok := catalog.(pebblestore.ModelCatalogRecord)
+	if !ok {
+		return nil
+	}
+	for _, mapping := range record.ThinkingMappings {
+		if !strings.EqualFold(strings.TrimSpace(mapping.SwarmSetting), level) {
+			continue
+		}
+		return googleThinkingConfigFromMapping(mapping, level)
+	}
+	return nil
+}
+
+func googleThinkingConfigFromMapping(mapping pebblestore.ModelCatalogThinkingMapping, level string) *googleThinkingConfig {
+	providerParameter := strings.ToLower(strings.TrimSpace(mapping.ProviderParameter))
+	providerValue := firstNonEmpty(strings.TrimSpace(mapping.EffectiveProviderValue), strings.TrimSpace(mapping.ProviderValue))
+	behavior := strings.ToLower(strings.TrimSpace(mapping.Behavior))
+	if behavior == "disabled" || strings.EqualFold(level, "off") {
+		return &googleThinkingConfig{ThinkingBudget: intPointer(0)}
+	}
+	if strings.Contains(providerParameter, "thinkinglevel") {
+		providerValue = strings.ToLower(strings.TrimSpace(providerValue))
+		switch providerValue {
+		case "minimal", "low", "medium", "high":
+			return &googleThinkingConfig{ThinkingLevel: providerValue}
+		default:
+			return nil
+		}
+	}
+	if strings.Contains(providerParameter, "thinkingbudget") {
+		budget := googleThinkingBudgetFromMapping(providerValue)
+		if budget == nil {
+			return nil
+		}
+		return &googleThinkingConfig{ThinkingBudget: budget}
+	}
+	return nil
+}
+
+func googleThinkingBudgetFromMapping(providerValue string) *int {
+	providerValue = strings.TrimSpace(providerValue)
+	if providerValue == "" {
+		return nil
+	}
+	var parsed int64
+	if _, err := fmt.Sscan(providerValue, &parsed); err != nil {
+		return nil
+	}
+	if parsed < -1 {
+		return nil
+	}
+	value := int(parsed)
+	return &value
+}
+
 func supportsGoogleThinking(modelID string) bool {
 	modelID = strings.ToLower(strings.TrimSpace(modelID))
 	if modelID == "" || !strings.Contains(modelID, "gemini") {
@@ -309,18 +400,18 @@ func supportsGoogleThinking(modelID string) bool {
 		strings.Contains(modelID, "thinking")
 }
 
-func googleThinkingBudget(thinking string) *int {
-	switch normalizeGoogleThinkingLevel(thinking) {
+func googleLegacyThinkingBudgetConfig(level string) *googleThinkingConfig {
+	switch level {
 	case "off":
-		return intPointer(0)
+		return &googleThinkingConfig{ThinkingBudget: intPointer(0)}
 	case "low":
-		return intPointer(1024)
+		return &googleThinkingConfig{ThinkingBudget: intPointer(1024)}
 	case "medium":
-		return intPointer(4096)
+		return &googleThinkingConfig{ThinkingBudget: intPointer(4096)}
 	case "high":
-		return intPointer(8192)
+		return &googleThinkingConfig{ThinkingBudget: intPointer(8192)}
 	case "xhigh":
-		return intPointer(16384)
+		return &googleThinkingConfig{ThinkingBudget: intPointer(16384)}
 	default:
 		return nil
 	}
@@ -330,6 +421,8 @@ func normalizeGoogleThinkingLevel(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "off":
 		return "off"
+	case "minimal":
+		return "minimal"
 	case "low":
 		return "low"
 	case "medium":
@@ -341,6 +434,15 @@ func normalizeGoogleThinkingLevel(value string) string {
 	default:
 		return ""
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func intPointer(value int) *int {
@@ -555,20 +657,33 @@ func parseGoogleResponse(resp googleResponse) provideriface.Response {
 }
 
 type googleStreamAccumulator struct {
-	modelID       string
-	merged        googleResponse
-	text          string
-	functionCalls []provideriface.FunctionCall
+	modelID                 string
+	merged                  googleResponse
+	text                    string
+	functionCalls           []provideriface.FunctionCall
+	pendingThoughtSignature string
+	toolState               *googleToolCallConstructionState
+	finished                bool
+	eventCount              int
+	outputBytes             int
+	toolArgumentBytes       int
 }
 
 func newGoogleStreamAccumulator(modelID string) *googleStreamAccumulator {
-	return &googleStreamAccumulator{modelID: strings.TrimSpace(modelID)}
+	return &googleStreamAccumulator{
+		modelID:   strings.TrimSpace(modelID),
+		toolState: newGoogleToolCallConstructionState(),
+	}
 }
 
 func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(provideriface.StreamEvent)) error {
 	payload = strings.TrimSpace(payload)
 	if payload == "" {
 		return nil
+	}
+	a.eventCount++
+	if a.eventCount > maxStreamEvents {
+		return errors.New("google stream event limit exceeded")
 	}
 	var decoded googleResponse
 	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
@@ -580,10 +695,13 @@ func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(prov
 	}
 	candidate := decoded.Candidates[0]
 	functionCallSequence := 0
-	pendingThoughtSignature := ""
 	for _, part := range candidate.Content.Parts {
 		partThoughtSignature := partThoughtSignatureValue(part)
 		if part.Text != "" {
+			a.outputBytes += len(part.Text)
+			if a.outputBytes > maxStreamOutputBytes {
+				return errors.New("google stream output limit exceeded")
+			}
 			a.text += part.Text
 			if onEvent != nil {
 				onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: part.Text})
@@ -591,16 +709,26 @@ func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(prov
 		}
 		if part.FunctionCall == nil {
 			if partThoughtSignature != "" {
-				pendingThoughtSignature = partThoughtSignature
+				a.pendingThoughtSignature = partThoughtSignature
 			}
 			continue
 		}
 		functionCallSequence++
 		if partThoughtSignature == "" {
-			partThoughtSignature = strings.TrimSpace(pendingThoughtSignature)
+			partThoughtSignature = strings.TrimSpace(a.pendingThoughtSignature)
 		}
-		pendingThoughtSignature = ""
-		a.upsertFunctionCall(buildGoogleFunctionCall(part, functionCallSequence, partThoughtSignature))
+		a.pendingThoughtSignature = ""
+		call := buildGoogleFunctionCall(part, functionCallSequence, partThoughtSignature)
+		a.toolArgumentBytes += len(call.Arguments)
+		if a.toolArgumentBytes > maxStreamToolArgumentBytes {
+			return errors.New("google stream tool argument limit exceeded")
+		}
+		a.upsertFunctionCall(call)
+		a.emitToolCallConstructionEvents(functionCallSequence-1, call, onEvent)
+	}
+	if strings.TrimSpace(candidate.FinishReason) != "" {
+		a.finished = true
+		a.completeToolCallConstructionEvents(candidate.FinishReason, onEvent)
 	}
 	return nil
 }
@@ -651,9 +779,11 @@ func sanitizeGoogleText(raw string) string {
 }
 
 func parseGoogleEventStream(reader io.Reader, onPayload func(string) error) error {
-	scanner := bufio.NewScanner(reader)
+	scanner := bufio.NewScanner(io.LimitReader(reader, maxResponseBytes+1))
 	scanner.Buffer(make([]byte, 0, 64*1024), maxResponseBytes)
 	dataLines := make([]string, 0, 8)
+	totalBytes := 0
+	eventCount := 0
 	flush := func() error {
 		if len(dataLines) == 0 {
 			return nil
@@ -663,10 +793,18 @@ func parseGoogleEventStream(reader io.Reader, onPayload func(string) error) erro
 		if strings.TrimSpace(payload) == "[DONE]" {
 			return nil
 		}
+		eventCount++
+		if eventCount > maxStreamEvents {
+			return errors.New("google stream event limit exceeded")
+		}
 		return onPayload(payload)
 	}
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
+		totalBytes += len(line) + 1
+		if totalBytes > maxResponseBytes {
+			return errors.New("google stream byte limit exceeded")
+		}
 		if strings.TrimSpace(line) == "" {
 			if err := flush(); err != nil {
 				return err
@@ -710,6 +848,88 @@ func (a *googleStreamAccumulator) upsertFunctionCall(call provideriface.Function
 		return
 	}
 	a.functionCalls = append(a.functionCalls, call)
+}
+
+type googleToolCallConstructionState struct {
+	seenStarted   map[int]bool
+	seenCompleted map[int]bool
+	arguments     map[int]string
+	ids           map[int]string
+	names         map[int]string
+	metadata      map[int]map[string]any
+}
+
+func newGoogleToolCallConstructionState() *googleToolCallConstructionState {
+	return &googleToolCallConstructionState{
+		seenStarted:   make(map[int]bool),
+		seenCompleted: make(map[int]bool),
+		arguments:     make(map[int]string),
+		ids:           make(map[int]string),
+		names:         make(map[int]string),
+		metadata:      make(map[int]map[string]any),
+	}
+}
+
+func (a *googleStreamAccumulator) emitToolCallConstructionEvents(index int, call provideriface.FunctionCall, onEvent func(provideriface.StreamEvent)) {
+	if a == nil || a.toolState == nil || onEvent == nil {
+		return
+	}
+	state := a.toolState
+	if callID := strings.TrimSpace(call.CallID); callID != "" {
+		state.ids[index] = callID
+	}
+	if name := strings.TrimSpace(call.Name); name != "" {
+		state.names[index] = name
+	}
+	if metadata := cloneGoogleMetadataMap(call.Metadata); len(metadata) > 0 {
+		state.metadata[index] = metadata
+	}
+	if !state.seenStarted[index] {
+		state.seenStarted[index] = true
+		onEvent(provideriface.StreamEvent{
+			Type:          provideriface.StreamEventToolCallStarted,
+			ToolCallID:    state.ids[index],
+			ToolCallIndex: intPointer(index),
+			ToolName:      state.names[index],
+			Metadata:      cloneGoogleMetadataMap(state.metadata[index]),
+		})
+	}
+	arguments := strings.TrimSpace(call.Arguments)
+	if arguments == "" {
+		return
+	}
+	state.arguments[index] = arguments
+	onEvent(provideriface.StreamEvent{
+		Type:              provideriface.StreamEventToolCallArgumentsSnapshot,
+		ToolCallID:        state.ids[index],
+		ToolCallIndex:     intPointer(index),
+		ToolName:          state.names[index],
+		ArgumentsSnapshot: arguments,
+		Metadata:          cloneGoogleMetadataMap(state.metadata[index]),
+	})
+}
+
+func (a *googleStreamAccumulator) completeToolCallConstructionEvents(finishReason string, onEvent func(provideriface.StreamEvent)) {
+	if a == nil || a.toolState == nil || onEvent == nil {
+		return
+	}
+	state := a.toolState
+	for index := range state.seenStarted {
+		if state.seenCompleted[index] {
+			continue
+		}
+		state.seenCompleted[index] = true
+		onEvent(provideriface.StreamEvent{
+			Type:          provideriface.StreamEventToolCallCompleted,
+			ToolCallID:    state.ids[index],
+			ToolCallIndex: intPointer(index),
+			ToolName:      state.names[index],
+			Arguments:     strings.TrimSpace(state.arguments[index]),
+			Metadata: mergeGoogleFunctionCallMetadata(state.metadata[index], map[string]any{
+				"google": map[string]any{"finish_reason": strings.TrimSpace(finishReason)},
+			}),
+		})
+	}
 }
 
 func mergeGoogleProviderFunctionCall(existing, incoming provideriface.FunctionCall) provideriface.FunctionCall {
@@ -795,13 +1015,19 @@ func parseGoogleUsage(resp googleResponse) provideriface.TokenUsage {
 	usageRaw := map[string]any{
 		"promptTokenCount":        usage.PromptTokenCount,
 		"candidatesTokenCount":    usage.CandidatesTokenCount,
+		"responseTokenCount":      usage.ResponseTokenCount,
 		"thoughtsTokenCount":      usage.ThoughtsTokenCount,
 		"totalTokenCount":         usage.TotalTokenCount,
 		"cachedContentTokenCount": usage.CachedContentTokenCount,
+		"toolUsePromptTokenCount": usage.ToolUsePromptTokenCount,
+	}
+	outputTokens := usage.CandidatesTokenCount
+	if outputTokens == 0 {
+		outputTokens = usage.ResponseTokenCount
 	}
 	out := provideriface.TokenUsage{
 		InputTokens:      usage.PromptTokenCount,
-		OutputTokens:     usage.CandidatesTokenCount,
+		OutputTokens:     outputTokens,
 		ThinkingTokens:   usage.ThoughtsTokenCount,
 		TotalTokens:      usage.TotalTokenCount,
 		CacheReadTokens:  usage.CachedContentTokenCount,

@@ -14,6 +14,7 @@ import (
 const (
 	desktopAssetImmutableCacheControl = "public, max-age=31536000, immutable"
 	desktopDocumentCacheControl       = "no-cache"
+	desktopServiceWorkerCacheControl  = "no-store, no-cache, must-revalidate"
 )
 
 func (s *Server) withDesktopAssets(next http.Handler) http.Handler {
@@ -109,7 +110,7 @@ func serveDesktopIndex(w http.ResponseWriter, r *http.Request, staticFS fs.FS) {
 
 func setDesktopAssetHeaders(w http.ResponseWriter, relPath string) {
 	if isRootServiceWorker(relPath) {
-		w.Header().Set("Cache-Control", desktopDocumentCacheControl)
+		w.Header().Set("Cache-Control", desktopServiceWorkerCacheControl)
 		w.Header().Set("Service-Worker-Allowed", "/")
 		return
 	}

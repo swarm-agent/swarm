@@ -48,6 +48,18 @@ func planDocumentFromArgsForTool(args map[string]any, toolName string) (*pebbles
 	return &document, nil
 }
 
+func planArtifactsFromArgs(args map[string]any) ([]pebblestore.SessionPlanArtifactReference, error) {
+	value, ok := args["artifacts"]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	var artifacts []pebblestore.SessionPlanArtifactReference
+	if err := unmarshalPlanToolArg(value, &artifacts, "plan_manage artifacts"); err != nil {
+		return nil, err
+	}
+	return artifacts, nil
+}
+
 func unmarshalPlanToolArg(value any, target any, label string) error {
 	raw, err := planToolArgJSON(value)
 	if err != nil {
@@ -70,6 +82,70 @@ func planToolArgJSON(value any) ([]byte, error) {
 	return json.Marshal(value)
 }
 
+func planManageDocumentPatchActions() map[string]bool {
+	return map[string]bool{
+		"update_info":             true,
+		"update_execution_policy": true,
+		"update_execution_state":  true,
+		"upsert_checkpoint":       true,
+		"update_checkpoint":       true,
+		"start_checkpoint":        true,
+		"continue_checkpoint":     true,
+		"complete_checkpoint":     true,
+		"checkpoint_outcome":      true,
+		"mark_needs_review":       true,
+		"mark_blocked":            true,
+		"mark_failed":             true,
+		"remove_checkpoint":       true,
+		"reorder_checkpoints":     true,
+		"set_active_checkpoint":   true,
+		"add_subtask":             true,
+		"update_subtask":          true,
+		"remove_subtask":          true,
+		"reorder_subtasks":        true,
+		"focus_subtask":           true,
+		"complete_subtask":        true,
+	}
+}
+
+func planManageActionUsesDocumentPatch(action string) bool {
+	return planManageDocumentPatchActions()[strings.ReplaceAll(strings.ToLower(strings.TrimSpace(action)), "-", "_")]
+}
+
+func planManageApprovedArgumentKeys(action string) map[string]bool {
+	keys := map[string]bool{}
+	add := func(names ...string) {
+		for _, name := range names {
+			keys[name] = true
+		}
+	}
+	if planManageActionUsesDocumentPatch(action) {
+		add("plan", "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "subtask", "subtask_id", "subtask_ids", "subtask_order", "complete_checkpoint", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "recommendation", "handoff_title", "handoff_overview", "impact_bullets", "suggested_prompts")
+		return keys
+	}
+	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(action)), "-", "_") {
+	case "patch", "update_section":
+		add("plan_id", "id", "patch", "operation", "patch_operation", "patch_action", "section", "update_scope", "scope", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all")
+	case "approve_and_start":
+		add("plan_id", "id", "checkpoint_id", "active_checkpoint_id", "active_checkpoint", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically")
+	case "restart_checkpoint":
+		add("plan_id", "id", "checkpoint_id", "active_checkpoint_id", "active_checkpoint", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "artifacts", "notes", "handoff_notes", "context", "source_message_id", "source_message")
+	case "rewind_to_checkpoint":
+		add("plan_id", "id", "checkpoint_id", "active_checkpoint_id", "active_checkpoint")
+	case "resolve_blocked_checkpoint", "resolve_block", "clear_block", "unblock_checkpoint":
+		add("plan_id", "id", "checkpoint_id", "active_checkpoint_id", "active_checkpoint", "result", "resolution_result", "notes", "resolution_notes", "report", "reviewed_at", "start_next", "continue_next", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at")
+	case "start_session_checkpoint":
+		add("checkpoint_id", "id", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "artifacts", "notes", "handoff_notes", "context", "source_message_id", "source_message", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "fresh_context", "execution_context")
+	case "request_followup_checkpoint":
+		add("plan_id", "id", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "artifacts", "notes", "handoff_notes", "context", "source_message_id", "source_message", "approval_confirmed", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at")
+	case "amend_plan":
+		add("plan_id", "id", "title", "plan", "document", "base_revision", "update_summary", "summary", "reason", "replace_from_checkpoint_id", "checkpoint_id", "amend_future_checkpoints", "override_stale")
+	case "request_new_plan":
+		add("plan_id", "id", "title", "plan", "document", "reason", "update_summary", "summary", "approval_confirmed", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically")
+	}
+	return keys
+}
+
 func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumentPatch, error) {
 	if value, ok := args["document_patch"]; ok && value != nil {
 		var patch sessionruntime.PlanDocumentPatch
@@ -85,13 +161,54 @@ func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumen
 		Operation:          strings.TrimSpace(firstNonEmptyString(mapString(args, "document_operation"), mapString(args, "operation"), mapString(args, "op"))),
 		CheckpointID:       strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_id"), mapString(args, "id"))),
 		CheckpointOrder:    mapStringSlice(args, "checkpoint_order"),
+		SubtaskID:          strings.TrimSpace(mapString(args, "subtask_id")),
+		SubtaskIDs:         mapStringSlice(args, "subtask_ids"),
+		SubtaskOrder:       mapStringSlice(args, "subtask_order"),
+		CompleteCheckpoint: mapBool(args, "complete_checkpoint"),
 		ActiveCheckpointID: strings.TrimSpace(firstNonEmptyString(mapString(args, "active_checkpoint_id"), mapString(args, "active_checkpoint"))),
-		Status:             strings.TrimSpace(mapString(args, "status")),
+		Status:             strings.TrimSpace(firstNonEmptyString(mapString(args, "status"), mapString(args, "outcome"))),
+		AttemptID:          strings.TrimSpace(mapString(args, "attempt_id")),
+		RunID:              strings.TrimSpace(mapString(args, "run_id")),
+		RunSessionID:       strings.TrimSpace(firstNonEmptyString(mapString(args, "run_session_id"), mapString(args, "session_id"))),
+		ParentSessionID:    strings.TrimSpace(mapString(args, "parent_session_id")),
+		StartedAt:          int64(mapInt(args, "started_at")),
+		CompletedAt:        int64(mapInt(args, "completed_at")),
 		Notes:              rawStringArg(args, "notes"),
 		Report:             rawStringArg(args, "report"),
 		Result:             rawStringArg(args, "result"),
 		ChangedFiles:       mapStringSlice(args, "changed_files"),
 		Validation:         mapStringSlice(args, "validation"),
+	}
+	if value, ok := args["recommendation"]; ok && value != nil {
+		var recommendation pebblestore.SessionPlanCheckpointRecommendation
+		if err := unmarshalPlanToolArg(value, &recommendation, "plan_manage recommendation"); err != nil {
+			return nil, err
+		}
+		patch.Recommendation = &recommendation
+	}
+	if planFinalHandoffArgsPresent(args) {
+		handoff := pebblestore.SessionPlanCheckpointHandoff{
+			Title:         rawStringArg(args, "handoff_title"),
+			Overview:      rawStringArg(args, "handoff_overview"),
+			ImpactBullets: mapStringSlice(args, "impact_bullets"),
+		}
+		if value, ok := args["suggested_prompts"]; ok && value != nil {
+			if err := unmarshalPlanToolArg(value, &handoff.SuggestedPrompts, "plan_manage suggested_prompts"); err != nil {
+				return nil, err
+			}
+		}
+		normalized, err := sessionruntime.NormalizePlanCheckpointHandoff(handoff)
+		if err != nil {
+			return nil, err
+		}
+		patch.Handoff = &normalized
+	}
+	if value, ok := args["subtask"]; ok && value != nil {
+		var subtask pebblestore.SessionPlanSubtask
+		if err := unmarshalPlanToolArg(value, &subtask, "plan_manage subtask"); err != nil {
+			return nil, err
+		}
+		patch.Subtask = &subtask
 	}
 	if value, ok := args["info"]; ok && value != nil {
 		var info pebblestore.SessionPlanInfo
@@ -114,6 +231,20 @@ func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumen
 		}
 		patch.Info = &info
 		patch.InfoFields = fields
+	}
+	if value, ok := args["execution_policy"]; ok && value != nil {
+		var policy pebblestore.SessionPlanExecutionPolicy
+		if err := unmarshalPlanToolArg(value, &policy, "plan_manage execution_policy"); err != nil {
+			return nil, err
+		}
+		patch.ExecutionPolicy = &policy
+	}
+	if value, ok := args["execution_state"]; ok && value != nil {
+		var state pebblestore.SessionPlanExecutionState
+		if err := unmarshalPlanToolArg(value, &state, "plan_manage execution_state"); err != nil {
+			return nil, err
+		}
+		patch.ExecutionState = &state
 	}
 	if value, ok := args["checkpoint"]; ok && value != nil {
 		if _, isBool := value.(bool); isBool {
@@ -143,8 +274,26 @@ func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumen
 	return &patch, nil
 }
 
+func planDocumentActionUsesStatusForDocument(action string) bool {
+	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(action)), "-", "_") {
+	case "upsert_checkpoint", "replace_checkpoint", "set_checkpoint", "update_checkpoint", "patch_checkpoint", "start_checkpoint", "continue_checkpoint", "advance_checkpoint", "next_checkpoint", "complete_checkpoint", "finish_checkpoint", "checkpoint_outcome", "mark_checkpoint_outcome", "mark_checkpoint", "finish_checkpoint_with_outcome", "mark_needs_review", "mark_completed", "mark_blocked", "mark_failed", "accept_checkpoint_review", "approve_checkpoint", "restart_checkpoint", "retry_checkpoint", "restart_checkpoint_from_zero", "reset_checkpoint", "rewind_to_checkpoint", "rewind_checkpoint":
+		return true
+	default:
+		return false
+	}
+}
+
+func planFinalHandoffArgsPresent(args map[string]any) bool {
+	for _, key := range []string{"handoff_title", "handoff_overview", "impact_bullets", "suggested_prompts"} {
+		if _, ok := args[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func planDocumentPatchArgsPresent(args map[string]any) bool {
-	keys := []string{"document_patch", "document_operation", "info", "checkpoint", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "notes", "report", "result", "changed_files", "validation", "operations"}
+	keys := []string{"document_patch", "document_operation", "info", "execution_policy", "execution_state", "checkpoint", "checkpoint_id", "checkpoint_order", "subtask", "subtask_id", "subtask_ids", "subtask_order", "complete_checkpoint", "active_checkpoint_id", "active_checkpoint", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "notes", "report", "result", "changed_files", "validation", "recommendation", "handoff_title", "handoff_overview", "impact_bullets", "suggested_prompts", "operations"}
 	for _, key := range keys {
 		value, ok := args[key]
 		if !ok {
@@ -157,11 +306,13 @@ func planDocumentPatchArgsPresent(args map[string]any) bool {
 		}
 		return true
 	}
-	operation := strings.ToLower(strings.TrimSpace(firstNonEmptyString(mapString(args, "operation"), mapString(args, "op"))))
+	operation := strings.ToLower(strings.TrimSpace(firstNonEmptyString(mapString(args, "document_operation"), mapString(args, "operation"), mapString(args, "op"))))
 	switch strings.ReplaceAll(operation, "-", "_") {
-	case "update_info", "patch_info", "replace_info", "set_info", "upsert_checkpoint", "replace_checkpoint", "set_checkpoint", "update_checkpoint", "patch_checkpoint", "complete_checkpoint", "finish_checkpoint", "remove_checkpoint", "delete_checkpoint", "reorder_checkpoints", "reorder_checkpoint", "set_active_checkpoint", "activate_checkpoint":
+	case "update_info", "patch_info", "replace_info", "set_info", "update_execution_policy", "set_execution_policy", "execution_policy", "update_execution_state", "set_execution_state", "execution_state", "upsert_checkpoint", "replace_checkpoint", "set_checkpoint", "update_checkpoint", "patch_checkpoint", "start_checkpoint", "continue_checkpoint", "advance_checkpoint", "next_checkpoint", "complete_checkpoint", "finish_checkpoint", "checkpoint_outcome", "mark_checkpoint_outcome", "mark_checkpoint", "finish_checkpoint_with_outcome", "mark_needs_review", "mark_completed", "mark_blocked", "mark_failed", "accept_checkpoint_review", "approve_checkpoint", "restart_checkpoint", "retry_checkpoint", "restart_checkpoint_from_zero", "reset_checkpoint", "rewind_to_checkpoint", "rewind_checkpoint", "remove_checkpoint", "delete_checkpoint", "reorder_checkpoints", "reorder_checkpoint", "set_active_checkpoint", "activate_checkpoint", "add_subtask", "create_subtask", "upsert_subtask", "update_subtask", "patch_subtask", "remove_subtask", "delete_subtask", "reorder_subtasks", "focus_subtask", "set_active_subtask", "start_subtask", "complete_subtask", "finish_subtask":
 		return true
-	default:
-		return false
 	}
+	if planDocumentActionUsesStatusForDocument(mapString(args, "action")) {
+		return true
+	}
+	return false
 }

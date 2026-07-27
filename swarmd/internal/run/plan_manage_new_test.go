@@ -30,7 +30,25 @@ func TestExecutePlanManageNewRefusesWithoutOverrideWhenActivePlanExists(t *testi
 	}
 }
 
-func TestExecutePlanManageNewOverrideCreatesReplacementPlan(t *testing.T) {
+func TestExecutePlanManageNewWithDocumentRefusesAutoModeDraftMaze(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	if _, _, err := sessionSvc.SetMode(sessionID, sessionruntime.ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"new","title":"Big Draft","document":{"title":"Big Draft","checkpoints":[{"id":"cp-1","title":"First","status":"pending"}]}}`, "")
+	if err == nil || !strings.Contains(err.Error(), "request_new_plan") {
+		t.Fatalf("new with document err=%v raw=%s, want request_new_plan guidance", err, raw)
+	}
+	if active, ok, err := sessionSvc.GetActivePlan(sessionID); err != nil || ok {
+		t.Fatalf("new with document should not create active plan: ok=%v err=%v active=%#v", ok, err, active)
+	}
+}
+
+func TestExecutePlanManageNewOverrideRejectsCompetingReplacementPath(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()
 
@@ -42,22 +60,12 @@ func TestExecutePlanManageNewOverrideCreatesReplacementPlan(t *testing.T) {
 	first := decodePlanManageTestPlanID(t, firstRaw)
 
 	secondRaw, err := runSvc.executePlanManageTool(sessionID, `{"action":"new","title":"Second Plan","override":true}`, "")
-	if err != nil {
-		t.Fatalf("create replacement plan: %v output=%s", err, secondRaw)
+	if err == nil || !strings.Contains(err.Error(), "request_new_plan") {
+		t.Fatalf("legacy replacement err=%v raw=%s", err, secondRaw)
 	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(secondRaw), &payload); err != nil {
-		t.Fatalf("decode second payload: %v", err)
-	}
-	if payload["override"] != true {
-		t.Fatalf("payload override = %v, want true", payload["override"])
-	}
-	if payload["warning"] == "" {
-		t.Fatalf("expected override warning in payload: %#v", payload)
-	}
-	second := decodePlanManageTestPlanID(t, secondRaw)
-	if second == first {
-		t.Fatalf("replacement plan id = %q, want different from first", second)
+	active, ok, getErr := sessionSvc.GetActivePlan(sessionID)
+	if getErr != nil || !ok || active.ID != first {
+		t.Fatalf("rejected replacement mutated active plan: ok=%v err=%v active=%#v", ok, getErr, active)
 	}
 }
 

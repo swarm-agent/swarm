@@ -4,11 +4,9 @@ import (
 	"context"
 	"net/http"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
-	agentruntime "swarm/packages/swarmd/internal/agent"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
 	"swarm/packages/swarmd/internal/permission"
 	runruntime "swarm/packages/swarmd/internal/run"
@@ -53,7 +51,7 @@ func TestIntegrationWorkspaceOpenCreatesLatestChildAndContext(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("created session lookup ok=%v err=%v", ok, err)
 	}
-	if got := created.Metadata["source"]; got != integrationBuilderSessionSource {
+	if got := created.Metadata["source"]; got != integrationWorkspaceSessionSource {
 		t.Fatalf("session source metadata = %v", got)
 	}
 	if got := created.Metadata[integrationSessionContextKeyWorkspaceID]; got != "spotify draft" {
@@ -125,14 +123,8 @@ func TestIntegrationWorkspaceSessionNewSwitchAndRunContext(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("run status=%d response=%+v", status, runResp)
 	}
-	if runner.sessionID != created.Session.ID || !runner.meta.IntegrationFlow {
-		t.Fatalf("runner session/meta = %q %+v", runner.sessionID, runner.meta)
-	}
-	if runner.request.AgentName != agentruntime.IntegrationBuilderAgentID {
-		t.Fatalf("runner agent = %q", runner.request.AgentName)
-	}
-	if !strings.Contains(runner.request.Instructions, "workspace_id: demo") || !strings.Contains(runner.request.Instructions, "pack_id: demopack") || !strings.Contains(runner.request.Instructions, "draft_version_id: draftone") {
-		t.Fatalf("runner instructions missing integration context: %q", runner.request.Instructions)
+	if runner.sessionID != created.Session.ID {
+		t.Fatalf("runner session = %q, want %q", runner.sessionID, created.Session.ID)
 	}
 }
 

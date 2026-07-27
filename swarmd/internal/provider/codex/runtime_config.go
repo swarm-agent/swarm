@@ -3,16 +3,16 @@ package codex
 import "strings"
 
 const (
-	ServiceTierFast           = "fast"
-	ServiceTierFlex           = "flex"
-	ContextMode1M             = "1m"
-	gpt54DefaultContextWindow = 272_000
-	gpt54LargeContextWindow   = 1_050_000
-	gpt55DefaultContextWindow = 272_000
+	ServiceTierFast     = "fast"
+	ServiceTierFlex     = "flex"
+	ServiceTierPriority = "priority"
+	ContextMode1M       = "1m"
 )
 
 func NormalizeServiceTier(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case ServiceTierPriority:
+		return ServiceTierPriority
 	case ServiceTierFast:
 		return ServiceTierFast
 	case ServiceTierFlex:
@@ -31,20 +31,4 @@ func NormalizeContextMode(value string) string {
 	default:
 		return ""
 	}
-}
-
-func EffectiveContextWindow(modelName, contextMode string, baseContextWindow int) int {
-	switch strings.ToLower(strings.TrimSpace(modelName)) {
-	case "gpt-5.4":
-		if NormalizeContextMode(contextMode) == ContextMode1M {
-			return gpt54LargeContextWindow
-		}
-		return gpt54DefaultContextWindow
-	case "gpt-5.5":
-		return gpt55DefaultContextWindow
-	}
-	if baseContextWindow < 0 {
-		return 0
-	}
-	return baseContextWindow
 }

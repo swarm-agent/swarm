@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 type Runner struct {
@@ -20,22 +21,39 @@ func (r *Runner) ID() string {
 	return "codex"
 }
 
+func (r *Runner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
+	return provideriface.ExecutionEpochLifecycleCapabilities{
+		ContextMode:                provideriface.ExecutionEpochContextResponsesChain,
+		EpochScopedCacheKey:        true,
+		EpochScopedSessionAffinity: true,
+		TransportReusable:          true,
+	}
+}
+
 func (r *Runner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	if r.client == nil {
 		return provideriface.Response{}, errors.New("codex runner client is not configured")
 	}
-	out, err := r.client.CreateResponse(ctx, toCodexRequest(req))
+	out, err := r.client.CreateResponse(ctx, ToRequest(req))
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	return fromCodexResponse(out), nil
+	return FromResponse(out), nil
 }
 
 func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
 	if r.client == nil {
 		return provideriface.Response{}, errors.New("codex runner client is not configured")
 	}
-	out, err := r.client.CreateResponseStreaming(ctx, toCodexRequest(req), func(event StreamEvent) {
+	out, err := r.client.CreateResponseStreaming(ctx, ToRequest(req), ToProviderStreamEventCallback(onEvent))
+	if err != nil {
+		return provideriface.Response{}, err
+	}
+	return FromResponse(out), nil
+}
+
+func ToProviderStreamEventCallback(onEvent func(provideriface.StreamEvent)) func(StreamEvent) {
+	return func(event StreamEvent) {
 		if onEvent == nil {
 			return
 		}
@@ -56,29 +74,174 @@ func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.
 			onEvent(provideriface.StreamEvent{
 				Type:         provideriface.StreamEventReasoningSummaryDelta,
 				Delta:        event.Delta,
+				DeltaMode:    provideriface.StreamEventDeltaModeReplace,
 				ReasoningKey: event.ReasoningKey,
 			})
+		case StreamEventToolCallStarted:
+			onEvent(provideriface.StreamEvent{
+				Type:          provideriface.StreamEventToolCallStarted,
+				ToolCallID:    event.ToolCallID,
+				ToolCallIndex: cloneIntPtr(event.ToolCallIndex),
+				ToolName:      event.ToolName,
+				Metadata:      cloneMapStringAny(event.Metadata),
+			})
+		case StreamEventToolCallArgumentsDelta:
+			onEvent(provideriface.StreamEvent{
+				Type:           provideriface.StreamEventToolCallArgumentsDelta,
+				Delta:          event.Delta,
+				ToolCallID:     event.ToolCallID,
+				ToolCallIndex:  cloneIntPtr(event.ToolCallIndex),
+				ToolName:       event.ToolName,
+				ArgumentsDelta: event.ArgumentsDelta,
+				Metadata:       cloneMapStringAny(event.Metadata),
+			})
+		case StreamEventToolCallArgumentsSnapshot:
+			onEvent(provideriface.StreamEvent{
+				Type:              provideriface.StreamEventToolCallArgumentsSnapshot,
+				ToolCallID:        event.ToolCallID,
+				ToolCallIndex:     cloneIntPtr(event.ToolCallIndex),
+				ToolName:          event.ToolName,
+				Arguments:         event.Arguments,
+				ArgumentsSnapshot: event.ArgumentsSnapshot,
+				Metadata:          cloneMapStringAny(event.Metadata),
+			})
+		case StreamEventToolCallCompleted:
+			onEvent(provideriface.StreamEvent{
+				Type:          provideriface.StreamEventToolCallCompleted,
+				ToolCallID:    event.ToolCallID,
+				ToolCallIndex: cloneIntPtr(event.ToolCallIndex),
+				ToolName:      event.ToolName,
+				Arguments:     event.Arguments,
+				Metadata:      cloneMapStringAny(event.Metadata),
+			})
 		}
-	})
-	if err != nil {
-		return provideriface.Response{}, err
 	}
-	return fromCodexResponse(out), nil
 }
 
 func toCodexRequest(req provideriface.Request) Request {
+	return ToRequest(req)
+}
+
+func ToRequest(req provideriface.Request) Request {
+	serviceTier := strings.ToLower(strings.TrimSpace(req.ServiceTier))
+	reasoningProviderValue := ""
+	if catalog, ok := req.ModelCatalog.(pebblestore.ModelCatalogRecord); ok {
+		serviceTier = codexServiceTierProviderValue(catalog, serviceTier)
+		reasoningProviderValue = codexThinkingProviderValue(catalog, req.Thinking)
+	}
 	return Request{
-		SessionID:         req.SessionID,
-		Model:             req.Model,
-		Thinking:          req.Thinking,
-		Instructions:      req.Instructions,
-		Input:             req.Input,
-		Tools:             toCodexTools(req.Tools),
-		ToolChoice:        req.ToolChoice,
-		ServiceTier:       NormalizeServiceTier(req.ServiceTier),
-		ContextMode:       NormalizeContextMode(req.ContextMode),
-		ContextWindow:     req.ContextWindow,
-		ParallelToolCalls: req.ParallelToolCalls,
+		SessionID:                     req.SessionID,
+		ProviderLineageID:             req.ProviderLineageID,
+		ContextBranchID:               req.ContextBranchID,
+		ProviderCacheKey:              req.EffectiveProviderCacheKey(),
+		SessionAffinityKey:            req.EffectiveSessionAffinityKey(),
+		TransportAffinityKey:          req.TransportAffinityKey,
+		BoundaryReason:                req.BoundaryReason,
+		PreviousProviderLineageID:     req.PreviousProviderLineageID,
+		PreviousProviderID:            req.PreviousProviderID,
+		PreviousModel:                 req.PreviousModel,
+		NewProviderID:                 req.NewProviderID,
+		NewModel:                      req.NewModel,
+		HandoffSummaryMessageID:       req.HandoffSummaryMessageID,
+		HandoffSummaryGlobalSeq:       req.HandoffSummaryGlobalSeq,
+		ProviderLineageStartMessageID: req.ProviderLineageStartMessageID,
+		ProviderLineageStartRunID:     req.ProviderLineageStartRunID,
+		ProviderLineageStartGlobalSeq: req.ProviderLineageStartGlobalSeq,
+		StartNewChain:                 req.StartNewChain,
+		AllowContinuation:             req.AllowContinuation,
+		ReuseTransport:                req.ReuseTransport,
+		ResetTransport:                req.ResetTransport,
+		NativeContinuationAllowed:     req.NativeContinuationAllowed,
+		ForceFreshProviderContext:     req.ForceFreshProviderContext,
+		Model:                         req.Model,
+		Thinking:                      req.Thinking,
+		ReasoningProviderValue:        reasoningProviderValue,
+		Instructions:                  req.Instructions,
+		Input:                         req.Input,
+		Tools:                         toCodexTools(req.Tools),
+		ToolChoice:                    req.ToolChoice,
+		ServiceTier:                   serviceTier,
+		ContextMode:                   NormalizeContextMode(req.ContextMode),
+		ContextWindow:                 req.ContextWindow,
+		ParallelToolCalls:             req.ParallelToolCalls,
+	}
+}
+
+func codexServiceTierProviderValue(catalog pebblestore.ModelCatalogRecord, serviceTier string) string {
+	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
+	if serviceTier == "" {
+		return ""
+	}
+	for _, mapping := range catalog.ServiceTierMappings {
+		matchesTier := strings.EqualFold(strings.TrimSpace(mapping.Tier), serviceTier)
+		matchesSwarmSetting := strings.EqualFold(strings.TrimSpace(mapping.SwarmSetting), serviceTier)
+		if !matchesTier && !matchesSwarmSetting {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(mapping.ProviderParameter), "service_tier") {
+			return strings.TrimSpace(mapping.ProviderValue)
+		}
+		return ""
+	}
+	return ""
+}
+
+func codexThinkingProviderValue(catalog pebblestore.ModelCatalogRecord, thinking string) string {
+	thinking = strings.ToLower(strings.TrimSpace(thinking))
+	for _, mapping := range catalog.ThinkingMappings {
+		if strings.EqualFold(strings.TrimSpace(mapping.SwarmSetting), thinking) {
+			if value := strings.TrimSpace(mapping.EffectiveProviderValue); value != "" {
+				return value
+			}
+			return strings.TrimSpace(mapping.ProviderValue)
+		}
+	}
+	return codexDefaultReasoningEffortProviderValue(catalog, thinking)
+}
+
+func codexDefaultReasoningEffortProviderValue(catalog pebblestore.ModelCatalogRecord, thinking string) string {
+	if !catalog.Reasoning {
+		return ""
+	}
+	if !codexUsesReasoningEffortParameter(catalog.ThinkingProviderParameter) && !strings.EqualFold(strings.TrimSpace(catalog.Provider), "openai") {
+		return ""
+	}
+	thinking = strings.ToLower(strings.TrimSpace(thinking))
+	switch thinking {
+	case "low", "medium", "high":
+		return thinking
+	case "xhigh":
+		if strings.EqualFold(strings.TrimSpace(catalog.Provider), "openai") && codexOpenAIModelSupportsXHighFallback(catalog.Model) {
+			return thinking
+		}
+		return ""
+	case "off":
+		return "none"
+	default:
+		return ""
+	}
+}
+
+func codexOpenAIModelSupportsXHighFallback(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	switch model {
+	case "gpt-5.2", "gpt-5.2-pro", "gpt-5.4", "gpt-5.5":
+		return true
+	}
+	for _, prefix := range []string{"gpt-5.2-", "gpt-5.2-pro-", "gpt-5.4-", "gpt-5.5-"} {
+		if strings.HasPrefix(model, prefix) && len(model) > len(prefix) && model[len(prefix)] >= '0' && model[len(prefix)] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+func codexUsesReasoningEffortParameter(parameter string) bool {
+	switch strings.ToLower(strings.TrimSpace(parameter)) {
+	case "reasoning.effort", "reasoning_effort":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -430,7 +593,7 @@ func shouldRewriteCodexFreeformObjectSchema(schema map[string]any) bool {
 	return ok && flag
 }
 
-func fromCodexResponse(resp Response) provideriface.Response {
+func FromResponse(resp Response) provideriface.Response {
 	out := provideriface.Response{
 		ID:               resp.ID,
 		Model:            resp.Model,
@@ -445,6 +608,8 @@ func fromCodexResponse(resp Response) provideriface.Response {
 			TotalTokens:      resp.Usage.TotalTokens,
 			CacheReadTokens:  resp.Usage.CacheReadTokens,
 			CacheWriteTokens: resp.Usage.CacheWriteTokens,
+			ServiceTier:      resp.Usage.ServiceTier,
+			EstimatedCostUSD: resp.Usage.EstimatedCostUSD,
 			Source:           resp.Usage.Source,
 			Transport:        resp.Usage.Transport,
 			ConnectedViaWS:   cloneBoolPointer(resp.Usage.ConnectedViaWS),
@@ -484,4 +649,23 @@ func cloneBoolPointer(value *bool) *bool {
 	}
 	out := *value
 	return &out
+}
+
+func cloneIntPtr(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	out := *value
+	return &out
+}
+
+func cloneMapStringAny(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(value))
+	for key, item := range value {
+		out[key] = item
+	}
+	return out
 }

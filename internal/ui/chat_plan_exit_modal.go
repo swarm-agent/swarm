@@ -34,9 +34,11 @@ func (p *ChatPage) OpenExitPlanModeModal(title, body string) bool {
 	p.planExitApprovedArgs = ""
 	p.planExitScroll = 0
 	p.planExitSelection = chatPlanExitSelectConfirm
+	p.planExitManualReview = false
 	p.planExitInput = ""
 	p.planExitCancelRect = Rect{}
 	p.planExitConfirmRect = Rect{}
+	p.planExitReviewRect = Rect{}
 	return true
 }
 
@@ -58,9 +60,11 @@ func (p *ChatPage) OpenExitPlanModePermissionModal(permissionID, planID, title, 
 	p.planExitApprovedArgs = strings.TrimSpace(approvedArguments)
 	p.planExitScroll = 0
 	p.planExitSelection = chatPlanExitSelectConfirm
+	p.planExitManualReview = false
 	p.planExitInput = ""
 	p.planExitCancelRect = Rect{}
 	p.planExitConfirmRect = Rect{}
+	p.planExitReviewRect = Rect{}
 	return true
 }
 
@@ -79,6 +83,7 @@ func (p *ChatPage) closePlanExitModal() {
 	p.planExitSelection = chatPlanExitSelectConfirm
 	p.planExitCancelRect = Rect{}
 	p.planExitConfirmRect = Rect{}
+	p.planExitReviewRect = Rect{}
 }
 
 func (p *ChatPage) handlePlanExitModalMouse(ev *tcell.EventMouse) bool {
@@ -94,6 +99,9 @@ func (p *ChatPage) handlePlanExitModalMouse(ev *tcell.EventMouse) bool {
 			return true
 		case p.planExitConfirmRect.Contains(x, y):
 			p.resolvePlanExitModal(true)
+			return true
+		case p.planExitReviewRect.Contains(x, y):
+			p.planExitManualReview = !p.planExitManualReview
 			return true
 		}
 	}
@@ -127,6 +135,9 @@ func (p *ChatPage) handlePlanExitModalKey(ev *tcell.EventKey) bool {
 		} else {
 			p.planExitSelection = chatPlanExitSelectConfirm
 		}
+		return true
+	case ev.Key() == tcell.KeyRune && ev.Rune() == ' ':
+		p.planExitManualReview = !p.planExitManualReview
 		return true
 	case p.keybinds.Match(ev, KeybindPlanExitMoveUp):
 		p.shiftPlanExitScroll(-1)
@@ -198,6 +209,7 @@ func (p *ChatPage) drawPlanExitModal(s tcell.Screen, screen Rect) {
 
 	p.planExitCancelRect = Rect{}
 	p.planExitConfirmRect = Rect{}
+	p.planExitReviewRect = Rect{}
 
 	FillRect(s, modal, p.theme.Panel)
 	onPanel := func(style tcell.Style) tcell.Style {
@@ -220,7 +232,7 @@ func (p *ChatPage) drawPlanExitModal(s tcell.Screen, screen Rect) {
 	DrawText(s, modal.X+2, modal.Y+2, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(subtitle, modal.W-4))
 
 	contentTop := modal.Y + 3
-	contentHeight := modal.H - (inputRows + 7)
+	contentHeight := modal.H - (inputRows + 11)
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
@@ -237,6 +249,16 @@ func (p *ChatPage) drawPlanExitModal(s tcell.Screen, screen Rect) {
 		}
 		DrawTimelineLine(s, modal.X+2, contentTop+row, modal.W-4, lines[idx])
 	}
+
+	choiceY := modal.Y + modal.H - (inputRows + 6)
+	mark := "[ ]"
+	if p.planExitManualReview {
+		mark = "[x]"
+	}
+	choice := mark + " Pause for review after each checkpoint"
+	choiceW := minInt(utf8.RuneCountInString(choice), modal.W-4)
+	DrawText(s, modal.X+2, choiceY, choiceW, onPanel(p.theme.Warning.Bold(true)), clampEllipsis(choice, choiceW))
+	p.planExitReviewRect = Rect{X: modal.X + 2, Y: choiceY, W: choiceW, H: 1}
 
 	inputY := modal.Y + modal.H - (inputRows + 3)
 	textX := modal.X + 2
@@ -288,7 +310,7 @@ func (p *ChatPage) drawPlanExitModal(s tcell.Screen, screen Rect) {
 	}
 
 	helpY := modal.Y + modal.H - 3
-	help := "↑/↓ scroll • Tab switch • Enter confirm • Esc cancel"
+	help := "Space toggle review • ↑/↓ scroll • Tab switch • Enter confirm • Esc cancel"
 	helpWidth := modal.W - 4
 	if maxScroll > 0 {
 		scrollLabel := fmt.Sprintf("scroll %d/%d", p.planExitScroll+1, maxScroll+1)
@@ -347,7 +369,7 @@ func (p *ChatPage) planExitModalRect(screen Rect, contentLines, inputRows int) (
 		inputRows = chatPlanExitInputMaxLines
 	}
 
-	desiredH := contentLines + inputRows + 7
+	desiredH := contentLines + inputRows + 11
 	if desiredH < 14 {
 		desiredH = 14
 	}
@@ -429,6 +451,7 @@ func (p *ChatPage) planExitModalLines(width int) []chatRenderLine {
 	lines = append(lines, chatRenderLine{Text: "", Style: styleForCurrentCellBackground(p.theme.Text)})
 	lines = appendPlain(lines, "Approving this request switches the session from plan mode to auto mode.", p.theme.TextMuted)
 	lines = appendPlain(lines, "Execution can then proceed with normal tool permissions for auto mode.", p.theme.TextMuted)
+	lines = appendPlain(lines, "Automatic checkpoint execution is selected by default; enable review to pause after each checkpoint.", p.theme.Secondary.Bold(true))
 	lines = append(lines, chatRenderLine{Text: "", Style: styleForCurrentCellBackground(p.theme.Text)})
 	if document := strings.TrimSpace(p.planExitDocument); document != "" {
 		lines = appendPlain(lines, "Structured plan document:", p.theme.Secondary.Bold(true))
@@ -512,12 +535,10 @@ func (p *ChatPage) clampPlanExitScroll(maxScroll int) {
 }
 
 func (p *ChatPage) resolvePlanExitModal(approve bool) {
-	permissionID := strings.TrimSpace(p.planExitPermission)
-	note := strings.TrimSpace(p.planExitInput)
-	p.closePlanExitModal()
+	permissionID, note, approvedArguments := p.takePlanExitResolution(approve)
 	if permissionID != "" {
 		if approve {
-			p.queueResolvePermissionByID(permissionID, "approve", note, strings.TrimSpace(p.planExitApprovedArgs))
+			p.queueResolvePermissionByID(permissionID, "approve", note, approvedArguments)
 			p.statusLine = "exit plan mode approved"
 		} else {
 			p.queueResolvePermissionByID(permissionID, "deny", note)
@@ -532,9 +553,39 @@ func (p *ChatPage) resolvePlanExitModal(approve bool) {
 	p.statusLine = "exit plan mode cancelled"
 }
 
+func (p *ChatPage) takePlanExitResolution(approve bool) (string, string, string) {
+	permissionID := strings.TrimSpace(p.planExitPermission)
+	note := strings.TrimSpace(p.planExitInput)
+	approvedArguments := ""
+	if permissionID != "" && approve {
+		approvedArguments = p.planExitApprovedArguments()
+	}
+	p.closePlanExitModal()
+	return permissionID, note, approvedArguments
+}
+
+func (p *ChatPage) planExitApprovedArguments() string {
+	args := map[string]any{}
+	if raw := strings.TrimSpace(p.planExitApprovedArgs); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &args)
+	}
+	args["execution_granularity"] = "checkpointed"
+	if p.planExitManualReview {
+		args["continuation_policy"] = "review_each_checkpoint"
+		args["continue_automatically"] = false
+	} else {
+		args["continuation_policy"] = "automatic"
+		args["continue_automatically"] = true
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return strings.TrimSpace(p.planExitApprovedArgs)
+	}
+	return string(raw)
+}
+
 func isExitPlanPermission(record ChatPermissionRecord) bool {
-	name := normalizePermissionToolName(record.ToolName)
-	return name == "exit_plan_mode"
+	return classifyChatPermission(record) == chatPermissionDestinationPlanModal && normalizePermissionToolName(record.ToolName) == "exit_plan_mode"
 }
 
 func exitPlanPermissionPayload(record ChatPermissionRecord) (string, string, string, string, string) {
@@ -554,6 +605,8 @@ func exitPlanPermissionPayload(record ChatPermissionRecord) (string, string, str
 	}
 	if value := mapStringArg(args, "title"); value != "" {
 		title = value
+	} else if value := titleForActionablePlanDocument(args["document"]); value != "" {
+		title = value
 	}
 	if value := mapStringArg(args, "plan"); value != "" {
 		body = value
@@ -566,9 +619,40 @@ func exitPlanPermissionPayload(record ChatPermissionRecord) (string, string, str
 		documentText = StructuredPlanDocumentTextFromValue(document)
 	}
 	if approved, ok := args["approved_arguments"]; ok {
+		if approvedMap := structuredPlanDocumentMap(approved); len(approvedMap) > 0 {
+			if mapStringArg(approvedMap, "title") == "" && !strings.EqualFold(title, "Exit Plan Mode") {
+				approvedMap["title"] = title
+			}
+			approved = approvedMap
+		}
 		if rawApproved, err := json.Marshal(approved); err == nil {
 			approvedArguments = string(rawApproved)
 		}
 	}
 	return title, body, planID, documentText, approvedArguments
+}
+
+func titleForActionablePlanDocument(value any) string {
+	document := structuredPlanDocumentMap(value)
+	if len(document) == 0 {
+		return ""
+	}
+	checkpoints, ok := document["checkpoints"].([]any)
+	if !ok || len(checkpoints) == 0 {
+		return ""
+	}
+	if title := mapStringArg(document, "title"); title != "" {
+		return title
+	}
+	if info := structuredPlanDocumentMap(document["info"]); len(info) > 0 {
+		if goal := mapStringArg(info, "goal"); goal != "" {
+			return goal
+		}
+	}
+	for _, checkpoint := range checkpoints {
+		if title := mapStringArg(structuredPlanDocumentMap(checkpoint), "title"); title != "" {
+			return title
+		}
+	}
+	return ""
 }

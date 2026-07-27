@@ -30,6 +30,9 @@ func (s *Server) providerDefaultsPreviewForState(state agentruntime.State) *prov
 	if !ok {
 		return nil
 	}
+	if err := s.applySnapshotRecommendedDefaults(providerID, &providerDefaults); err != nil {
+		return nil
+	}
 	utilityAgents := utilityAgentNames(providerDefaults)
 	preview := &providerDefaultsPreviewResponse{
 		Provider:              providerID,
@@ -49,6 +52,9 @@ func (s *Server) providerDefaultsPreviewForState(state agentruntime.State) *prov
 	}
 	profilesByName := agentProfilesByName(state.Profiles)
 	for _, name := range utilityAgents {
+		if agentruntime.IsCoderAgentName(name) {
+			continue
+		}
 		profile, found := profilesByName[strings.ToLower(strings.TrimSpace(name))]
 		if !found {
 			preview.StaleInheritedAgents = append(preview.StaleInheritedAgents, name)
@@ -81,6 +87,9 @@ func (s *Server) applyProviderDefaultsToBuiltInsForAccount(accountScopeID string
 	if !ok {
 		return state, nil
 	}
+	if err := s.applySnapshotRecommendedDefaults(providerID, &providerDefaults); err != nil {
+		return state, err
+	}
 	return s.applyUtilityAIToBuiltInsForAccount(accountScopeID, state, providerID, providerDefaults.UtilityModel, providerDefaults.UtilityThinking, false)
 }
 
@@ -112,6 +121,9 @@ func (s *Server) applyUtilityAIToBuiltInsForAccount(accountScopeID string, state
 	}
 	updated := false
 	for _, name := range builtinUtilityAgentNames() {
+		if agentruntime.IsCoderAgentName(name) {
+			continue
+		}
 		key := strings.ToLower(strings.TrimSpace(name))
 		if !overwriteExplicit {
 			if _, ok := baselineKeys[key]; !ok {
@@ -141,6 +153,7 @@ func (s *Server) applyUtilityAIToBuiltInsForAccount(accountScopeID string, state
 				ThinkingSet:         true,
 				Prompt:              profile.Prompt,
 				RuntimeMode:         profile.RuntimeMode,
+				DefaultSessionMode:  profile.DefaultSessionMode,
 				ExecutionSetting:    profile.ExecutionSetting,
 				ExitPlanModeEnabled: pebblestore.CloneBoolPtr(profile.ExitPlanModeEnabled),
 				ToolScope:           pebblestore.CloneAgentToolScope(profile.ToolScope),
@@ -160,6 +173,7 @@ func (s *Server) applyUtilityAIToBuiltInsForAccount(accountScopeID string, state
 				ThinkingSet:         true,
 				Prompt:              profile.Prompt,
 				RuntimeMode:         profile.RuntimeMode,
+				DefaultSessionMode:  profile.DefaultSessionMode,
 				ExecutionSetting:    profile.ExecutionSetting,
 				ExitPlanModeEnabled: pebblestore.CloneBoolPtr(profile.ExitPlanModeEnabled),
 				ToolScope:           pebblestore.CloneAgentToolScope(profile.ToolScope),
@@ -205,8 +219,8 @@ func (s *Server) resolveAgentProviderDefaultsForAccount(accountScopeID string) (
 		if err == nil {
 			providerID := strings.ToLower(strings.TrimSpace(pref.Provider))
 			if providerID != "" {
-				providerDefaults, ok := defaults.Lookup(providerID)
-				if ok {
+				providerDefaults, ok, err := s.snapshotRecommendedProviderDefaults(providerID, false)
+				if err == nil && ok {
 					return providerID, providerDefaults, true
 				}
 			}
@@ -233,11 +247,19 @@ func agentProfilesByName(profiles []pebblestore.AgentProfile) map[string]pebbles
 }
 
 func builtinUtilityAgentNames() []string {
-	return []string{"explorer", "memory", "parallel"}
+	// Compact and Finder are compiled system agents resolved from account-scoped
+	// utility settings; neither is a persisted/default agent row.
+	return nil
 }
 
 func utilityAgentNames(providerDefaults defaults.ProviderDefaults) []string {
-	return uniqueNamesInOrder(providerDefaults.UtilitySubagents)
+	names := make([]string, 0, len(providerDefaults.UtilitySubagents))
+	for _, name := range providerDefaults.UtilitySubagents {
+		if !agentruntime.IsCoderAgentName(name) {
+			names = append(names, name)
+		}
+	}
+	return uniqueNamesInOrder(names)
 }
 
 func agentProfileInheritsModel(profile pebblestore.AgentProfile) bool {

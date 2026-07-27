@@ -1,15 +1,26 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Lock, Key, Shield, ChevronLeft } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
 import { Input } from '../../../../components/ui/input'
-import { useDesktopStore } from '../../state/use-desktop-store'
+import { fetchVaultStatus, unlockVault } from '../api'
+import type { VaultStatus } from '../types'
 
 export function DesktopVaultGate() {
-  const vault = useDesktopStore((state) => state.vault)
-  const unlock = useDesktopStore((state) => state.unlockVault)
+  const [vault, setVault] = useState<VaultStatus>({ enabled: false, unlocked: false, unlockRequired: false, storageMode: '', warning: '' })
+  const [vaultLoading, setVaultLoading] = useState(true)
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setVaultLoading(true)
+    void fetchVaultStatus()
+      .then((next) => { if (!cancelled) setVault(next) })
+      .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load vault status') })
+      .finally(() => { if (!cancelled) setVaultLoading(false) })
+    return () => { cancelled = true }
+  }, [])
   const [view, setView] = useState<'locked' | 'unlocking'>('locked')
 
   const submit = async () => {
@@ -19,10 +30,13 @@ export function DesktopVaultGate() {
     }
     setError(null)
     try {
-      await unlock(password)
+      setVaultLoading(true)
+      setVault(await unlockVault(password))
       setPassword('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to unlock vault')
+    } finally {
+      setVaultLoading(false)
     }
   }
 
@@ -52,9 +66,9 @@ export function DesktopVaultGate() {
                   placeholder="Enter password to unlock"
                 />
 
-                {error || vault.error ? (
+                {error ? (
                   <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-xs text-[var(--app-danger)]">
-                    {error || vault.error}
+                    {error}
                   </div>
                 ) : null}
 
@@ -62,9 +76,9 @@ export function DesktopVaultGate() {
                   data-testid="desktop-vault-unlock"
                   className="h-12 w-full rounded-xl bg-[var(--app-primary)] hover:bg-[var(--app-primary-hover)] text-white shadow-lg shadow-[var(--app-primary)]/10"
                   onClick={() => void submit()} 
-                  disabled={vault.loading}
+                  disabled={vaultLoading}
                 >
-                  {vault.loading ? (
+                  {vaultLoading ? (
                     <span className="flex items-center gap-2">
                       <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/20 border-t-white" />
                       Unlocking…
@@ -128,9 +142,9 @@ export function DesktopVaultGate() {
                   />
                 </div>
 
-                {error || vault.error ? (
+                {error ? (
                   <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-xs text-[var(--app-danger)]">
-                    {error || vault.error}
+                    {error}
                   </div>
                 ) : null}
 
@@ -138,9 +152,9 @@ export function DesktopVaultGate() {
                   data-testid="desktop-vault-unlock"
                   className="h-12 w-full rounded-xl bg-[var(--app-primary)] hover:bg-[var(--app-primary-hover)] text-white shadow-lg shadow-[var(--app-primary)]/10"
                   onClick={() => void submit()} 
-                  disabled={vault.loading}
+                  disabled={vaultLoading}
                 >
-                  {vault.loading ? (
+                  {vaultLoading ? (
                     <span className="flex items-center gap-2">
                       <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/20 border-t-white" />
                       Unlocking…

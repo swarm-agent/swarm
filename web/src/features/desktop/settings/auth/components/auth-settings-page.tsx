@@ -119,6 +119,7 @@ async function refreshAuthDependentQueries(): Promise<void> {
     queryClient.invalidateQueries({ queryKey: draftModelQueryOptions().queryKey }),
     queryClient.invalidateQueries({ queryKey: modelOptionsQueryOptions().queryKey }),
     queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey }),
+    queryClient.invalidateQueries({ queryKey: ['auth-credentials'] }),
   ])
 }
 
@@ -437,7 +438,7 @@ export function AuthSettingsPage() {
       <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold text-[var(--app-text)]">Vault Credentials</h1>
-          <p className="mt-1 text-sm text-[var(--app-text-muted)]">Securely managed LLM provider keys.</p>
+          <p className="mt-1 text-sm text-[var(--app-text-muted)]">Securely managed provider credentials. Adding and activating an Exa API key opts in to Exa-hosted web search and page retrieval: queries and selected URLs are sent to Exa, results return to the agent/model context, and your browser profile is not used.</p>
         </div>
         <div className="flex items-center gap-2 w-full sm:w-auto">
           <div className="w-full sm:w-36">

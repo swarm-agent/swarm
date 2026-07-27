@@ -149,57 +149,22 @@ func TestDrawCommandPaletteRegistersOptionMouseTargets(t *testing.T) {
 	}
 }
 
-func TestHomeCommandPaletteCanonicalizesWorktreesAliasQuery(t *testing.T) {
+func TestHomeCommandPaletteOffersOnlyWorktreeNewCommands(t *testing.T) {
 	home := NewHomePage(model.EmptyHome())
-	home.SetCommandSuggestions([]CommandSuggestion{{
-		Command:   "/worktrees",
-		Hint:      "Open worktrees menu for the active workspace",
-		QuickTips: []string{"/wt", "/worktrees on", "/worktrees off", "/worktrees status", "/worktrees branch <name|current>"},
-	}})
-
-	home.SetPrompt("/wt off")
-	matches := home.commandPaletteMatches()
-	if len(matches) != 1 {
-		t.Fatalf("expected one match for /wt off, got %d", len(matches))
-	}
-	if got := commandSuggestionCanonicalQuery(matches[0], commandPaletteQuery(home.PromptValue())); got != "worktrees off" {
-		t.Fatalf("expected canonical query worktrees off, got %q", got)
-	}
-	if idx, ok := commandPaletteAutoOptionIndex(matches[0], commandPaletteQuery(home.PromptValue())); !ok || idx != 1 {
-		t.Fatalf("expected /worktrees off option index 1, got idx=%d ok=%v", idx, ok)
-	}
-}
-
-func TestHomeCommandPaletteEnterUsesCanonicalWorktreesCommandForAlias(t *testing.T) {
-	home := NewHomePage(model.EmptyHome())
-	home.SetCommandSuggestions([]CommandSuggestion{{
-		Command:   "/worktrees",
-		Hint:      "Open worktrees menu for the active workspace",
-		QuickTips: []string{"/wt", "/worktrees on", "/worktrees off", "/worktrees status", "/worktrees branch <name|current>"},
-	}})
+	home.SetCommandSuggestions([]CommandSuggestion{
+		{Command: "/worktrees new", Hint: "Create a new session in its own worktree"},
+		{Command: "/wt new", Hint: "Create a new worktree session (short alias)"},
+	})
 
 	home.SetPrompt("/wt")
+	matches := home.commandPaletteMatches()
+	if len(matches) != 1 || matches[0].Command != "/wt new" {
+		t.Fatalf("worktree matches = %#v, want only /wt new", matches)
+	}
 	if !home.AcceptCommandPaletteEnter() {
-		t.Fatal("expected Enter to complete /wt to canonical /worktrees")
+		t.Fatal("expected Enter to complete /wt to /wt new")
 	}
-	if got := home.PromptValue(); got != "/worktrees " {
-		t.Fatalf("expected canonical /worktrees prompt, got %q", got)
-	}
-}
-
-func TestHomeCommandPaletteEnterKeepsCanonicalWorktreesArgsForAlias(t *testing.T) {
-	home := NewHomePage(model.EmptyHome())
-	home.SetCommandSuggestions([]CommandSuggestion{{
-		Command:   "/worktrees",
-		Hint:      "Open worktrees menu for the active workspace",
-		QuickTips: []string{"/wt", "/worktrees on", "/worktrees off", "/worktrees status", "/worktrees branch <name|current>"},
-	}})
-
-	home.SetPrompt("/wt on")
-	if !home.AcceptCommandPaletteEnter() {
-		t.Fatal("expected Enter to complete /wt on to canonical /worktrees on")
-	}
-	if got := home.PromptValue(); got != "/worktrees on " {
-		t.Fatalf("expected canonical /worktrees on prompt, got %q", got)
+	if got := home.PromptValue(); got != "/wt new " {
+		t.Fatalf("completed prompt = %q, want /wt new", got)
 	}
 }

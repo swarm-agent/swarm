@@ -1,0 +1,55 @@
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import test from 'node:test'
+
+test('/task submit is intercepted before ordinary session creation', async () => {
+  const composer = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
+  const pane = await readFile(new URL('./desktop-v3-new-session-pane.tsx', import.meta.url), 'utf8')
+  const submitService = await readFile(new URL('../services/composer-submit.ts', import.meta.url), 'utf8')
+  const app = await readFile(new URL('../../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
+
+  assert.match(composer, /await submitDesktopComposer\(\{/)
+  assert.match(composer, /slashPalette\.exactMatch\?\.action\.kind === 'queue-ai-task'[\s\S]*?void handleSubmitClick\(\)/)
+  assert.match(composer, /onClick=\{handleSubmitClick\}/)
+  assert.ok(submitService.indexOf('if (taskCommand)') < submitService.indexOf('if (input.canStop)'))
+  assert.match(submitService, /submittedPalette\.exactMatch\?\.action\.kind === 'queue-ai-task'/)
+  assert.doesNotMatch(submitService, /submittedPalette\.hasArguments && submittedPalette\.exactMatch\?\.action\.kind === 'queue-ai-task'/)
+  assert.match(submitService, /await input\.onSlashCommand\(taskCommand, input\.draft\)[\s\S]*?input\.clear\(\)/)
+  assert.match(submitService, /catch \{\s*return 'task-queue-failed'\s*\}/)
+  assert.match(pane, /onSubmit=\{handleSubmit\}/)
+  assert.match(app, /replace\(\/\^\\\/task\(\?:\\s\+\|\$\)\/i, ''\)\.trim\(\)/)
+  assert.match(app, /const idempotencyKey = globalThis\.crypto/)
+  assert.match(app, /createWorkspaceAITask\(workspacePath, request, idempotencyKey, routeSessionId \?\? undefined\)/)
+  const queueTaskCase = app.match(/case 'queue-ai-task': \{([\s\S]*?)\n      case 'show-help':/)?.[1] ?? ''
+  assert.notEqual(queueTaskCase, '')
+  assert.doesNotMatch(queueTaskCase, /navigate\(/)
+  assert.match(app, /dispatchDesktopV3Cache\(\{ type: 'aiTasks\.mergeItems', items: \[result\.item\] \}\)/)
+  assert.doesNotMatch(app, /AI_TASK_RECONCILE_INTERVAL_MS|aiTaskPollersRef|reconcileWorkspaceAITask|setInterval\([^)]*fetchWorkspaceTodos/)
+  assert.match(app, /const openTodoModal = useCallback[\s\S]*?void fetchWorkspaceTodos\(normalizedPath, 'user'\)[\s\S]*?dispatchDesktopV3Cache\(\{ type: 'aiTasks\.mergeItems'/)
+  const lifecycleEffect = app.match(/const lifecycleItems = Object\.values\(aiTaskLifecycleByID\)([\s\S]*?)\n  \}, \[aiTaskLifecycleByID\]\)/)?.[1] ?? ''
+  assert.notEqual(lifecycleEffect, '')
+  assert.doesNotMatch(lifecycleEffect, /fetchWorkspaceTodos|setTimeout|setInterval|['"]\/ws['"]|\/v3\/sessions\/\$\{[^}]+\}\/stream/)
+  assert.match(app, /aiTaskLifecycleByID/)
+  assert.match(app, /Task queued for Swarm\.', tone: 'info'/)
+  assert.match(app, /const title = lifecycle\.aiDisplayTitle \|\| lifecycle\.text \|\| 'Task'/)
+  assert.match(app, /lifecycle\.aiState === 'completed'[\s\S]*?\$\{title\} completed\.', tone: 'success'/)
+  assert.match(app, /aiTaskTerminalToastRef\.current\.has\(lifecycle\.id\)/)
+  assert.match(app, /aiTaskTerminalToastRef\.current\.add\(lifecycle\.id\)/)
+  assert.match(app, /lifecycle\.aiState === 'failed'/)
+  assert.match(app, /lifecycle\.aiState === 'cancelled'/)
+  assert.match(app, /Enter a task request after \/task\./)
+})
+
+test('/task uses the authenticated workspace todo API', async () => {
+  const api = await readFile(new URL('../../../workspaces/todos/types.ts', import.meta.url), 'utf8')
+  assert.match(api, /fetchWorkspaceTodos\([^)]*signal\?: AbortSignal/)
+  assert.match(api, /requestJson<WorkspaceTodosResponseWire>/)
+  assert.match(api, /\/v1\/workspace\/todos/)
+  assert.match(api, /'Idempotency-Key': idempotencyKey\.trim\(\)/)
+  assert.match(api, /action: 'ai_task'/)
+  assert.doesNotMatch(api, /temporarily unavailable/)
+  assert.match(api, /preparation_session_id\?: string/)
+  assert.match(api, /ai_state_version\?: number/)
+  assert.match(api, /ai_display_title\?: string/)
+  assert.match(api, /'completed'.*'failed'.*'cancelled'/)
+})

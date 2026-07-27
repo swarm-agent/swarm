@@ -1,3 +1,5 @@
+import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
+
 export interface ChatMessageRecord {
   id: string;
   sessionId: string;
@@ -28,13 +30,16 @@ export interface EditDiffPreview {
 export type ToolMessageState = "done" | "running" | "error";
 
 export interface TaskToolRow {
+  launchKey?: string;
   launchIndex: number;
   childSessionId: string;
   status: string;
+  phase: string;
   agent: string;
   assignmentLabel: string;
   modelLabel: string;
   tool: string;
+  toolActivitySummary?: string;
   time: string;
   previewKind: string;
   previewText: string;
@@ -47,6 +52,7 @@ export interface TaskToolRow {
 
 export interface SearchToolLineMatch {
   line: number;
+  column: number;
   text: string;
 }
 
@@ -75,6 +81,56 @@ export interface SearchToolData {
   files: SearchToolFileGroup[];
 }
 
+export interface WebResourceData {
+  url: string;
+  title: string;
+  domain: string;
+  author: string;
+  publishedDate: string;
+  summary: string;
+  text: string;
+  highlights: string[];
+  error: string;
+  status: string;
+  subpages: WebResourceData[];
+}
+
+export interface WebSearchQueryData {
+  query: string;
+  count: number;
+  searchType: string;
+  timedOut: boolean;
+  error: string;
+  results: WebResourceData[];
+}
+
+export interface WebSearchToolData {
+  queries: string[];
+  queryCount: number;
+  totalResults: number;
+  failedQueries: number;
+  truncated: boolean;
+  searchType: string;
+  queryResults: WebSearchQueryData[];
+}
+
+export interface WebFetchStatusData {
+  id: string;
+  status: string;
+  source: string;
+  error: string;
+}
+
+export interface WebFetchToolData {
+  urls: string[];
+  count: number;
+  successCount: number;
+  timedOut: boolean;
+  truncated: boolean;
+  results: WebResourceData[];
+  statuses: WebFetchStatusData[];
+}
+
 export interface TodoToolSummaryCounts {
   taskCount: number;
   openCount: number;
@@ -88,15 +144,31 @@ export interface TodoToolData {
   summary: TodoToolSummaryCounts | null;
 }
 
+export interface BashToolData {
+  command: string;
+  output: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+}
+
+export interface TaskChildCardActions {
+  workspaceSlug: string;
+  parentSessionId: string;
+  onNavigate: (sessionId: string, workspacePath: string) => void;
+}
+
 export interface StructuredToolMessage {
   pathId: "run.tool-history.v2" | "run.v3.provider-tool-result.v1";
   tool: string;
   callId: string;
+  runId?: string;
   toolInstanceId?: string;
   target: string | null;
   commandText: string;
   argumentsText: string;
   argumentsJson?: Record<string, unknown> | null;
+  outputJson?: Record<string, unknown> | null;
   output: string;
   completedOutput: string;
   error: string;
@@ -106,7 +178,10 @@ export interface StructuredToolMessage {
   timelineSeq?: number;
   editDiff: EditDiffPreview | null;
   searchData?: SearchToolData | null;
+  webSearchData?: WebSearchToolData | null;
+  webFetchData?: WebFetchToolData | null;
   todoData?: TodoToolData | null;
+  bashData?: BashToolData | null;
   previewLines: string[];
   taskRows: TaskToolRow[];
 }
@@ -140,6 +215,52 @@ export interface SessionPreferenceRecord {
   updatedAt: number;
 }
 
+export interface ModelProfileSelectionRecord {
+  provider: string;
+  model: string;
+  thinking: string;
+  serviceTier: string;
+  contextMode: string;
+}
+
+export interface ModelProfileRecord {
+  profileId: string;
+  name: string;
+  modelMode: 'single' | 'split';
+  single: ModelProfileSelectionRecord | null;
+  plan: ModelProfileSelectionRecord | null;
+  auto: ModelProfileSelectionRecord | null;
+  createdAt: number;
+  updatedAt: number;
+  isDefault: boolean;
+}
+
+export interface ModelProfileState {
+  profiles: ModelProfileRecord[];
+  defaultProfileId: string;
+}
+
+export interface ModelProfileInput {
+  name: string;
+  modelMode: 'single' | 'split';
+  single: ModelProfileSelectionRecord | null;
+  plan: ModelProfileSelectionRecord | null;
+  auto: ModelProfileSelectionRecord | null;
+}
+
+export type ModelProfileChoice =
+  | { kind: 'account-default' }
+  | { kind: 'saved'; profileId: string }
+  | { kind: 'temporary'; profile: ModelProfileInput }
+  | { kind: 'agent-default' }
+
+export interface ActiveModelProfileState {
+  source: 'saved' | 'temporary' | 'agent-default' | '';
+  profileId: string;
+  name: string;
+  modelMode: 'single' | 'split' | '';
+}
+
 export interface ResolvedSessionPreference {
   preference: SessionPreferenceRecord;
   contextWindow: number;
@@ -155,6 +276,10 @@ export interface AgentModelPolicyRecord {
   preference: SessionPreferenceRecord;
   contextWindow: number;
   maxOutputTokens: number;
+  profileId?: string;
+  profileName?: string;
+  profileSource?: string;
+  profileMode?: string;
 }
 
 export interface AgentToolScopeRecord {
@@ -206,8 +331,18 @@ export interface AgentProfileRecord {
   provider: string;
   model: string;
   thinking: string;
+  modelMode: "single" | "split";
+  planProvider: string;
+  planModel: string;
+  planThinking: string;
+  planServiceTier: string;
+  autoProvider: string;
+  autoModel: string;
+  autoThinking: string;
+  autoServiceTier: string;
   prompt: string;
   runtimeMode: "plan_auto" | "read" | "readwrite" | "";
+  defaultSessionMode: DesktopSessionMode;
   executionSetting: "read" | "readwrite" | "";
   exitPlanModeEnabled: boolean;
   toolScope: AgentToolScopeRecord | null;
@@ -266,6 +401,44 @@ export interface AgentStateRecord {
   toolInventory: AgentToolInventoryRecord | null;
 }
 
+export interface ModelPricingRecord {
+  currency?: string;
+  input_price_per_million_tokens?: number | null;
+  output_price_per_million_tokens?: number | null;
+  cached_input_price_per_million_tokens?: number | null;
+  reasoning_price_per_million_tokens?: number | null;
+  image_input_price?: number | null;
+  image_output_price?: number | null;
+  audio_input_price?: number | null;
+  audio_output_price?: number | null;
+  is_free?: boolean | null;
+  [key: string]: unknown;
+}
+
+export interface ModelThinkingMappingRecord {
+  swarm_setting: string;
+  provider_parameter?: string;
+  provider_value?: string;
+  effective_provider_value?: string;
+  behavior?: string;
+}
+
+export interface ModelServiceTierMappingRecord {
+  tier: string;
+  swarm_setting?: string;
+  provider_parameter?: string;
+  provider_value?: string;
+  beta_header?: string;
+  request_model_path?: string;
+}
+
+export interface ModelContextModeRecord {
+  mode: string;
+  label?: string;
+  context_window?: number;
+  default?: boolean;
+}
+
 export interface ModelOptionRecord {
   key: string;
   provider: string;
@@ -273,8 +446,17 @@ export interface ModelOptionRecord {
   contextMode: string;
   label: string;
   thinking: string;
+  thinkingOptions: string[];
+  defaultThinking: string;
+  thinkingProviderParameter: string;
+  thinkingMappings: ModelThinkingMappingRecord[];
   favorite: boolean;
   contextWindow: number;
+  pricing: ModelPricingRecord | null;
+  serviceTiers: string[];
+  defaultServiceTier: string;
+  serviceTierMappings: ModelServiceTierMappingRecord[];
+  contextModes: ModelContextModeRecord[];
 }
 
 export interface DesktopSessionPlanInfo {
@@ -290,18 +472,122 @@ export interface DesktopSessionPlanInfo {
   validationStrategy: string;
 }
 
+export interface DesktopSessionPlanExecutionPolicy {
+  mode: string;
+  shape: string;
+  followupCheckpointPolicy: string;
+}
+
+export interface DesktopSessionPlanExecutionState {
+  status: string;
+  activeAttemptId: string;
+  parentSessionId: string;
+  currentSessionId: string;
+  currentRunId: string;
+  lastCheckpointId: string;
+  lastAttemptId: string;
+  lastOutcome: string;
+  startedAt: number;
+  updatedAt: number;
+  completedAt: number;
+}
+
+export interface DesktopSessionPlanCheckpointReview {
+  status: string;
+  reviewerId: string;
+  reviewerType: string;
+  result: string;
+  notes: string;
+  reviewedAt: number;
+}
+
+export interface DesktopSessionPlanCheckpointRecommendation {
+  decision: string;
+  action: string;
+  reason: string;
+  actionState: string;
+}
+
+export interface DesktopPlanFinalHandoffSuggestedPrompt {
+  label: string;
+  prompt: string;
+}
+
+export interface DesktopPlanFinalHandoffDetails {
+  report: string;
+  result: string;
+  changedFiles: string[];
+  validation: string[];
+}
+
+export interface DesktopPlanFinalHandoff {
+  schemaVersion: number;
+  title: string;
+  overview: string;
+  impactBullets: string[];
+  recommendation: DesktopSessionPlanCheckpointRecommendation | null;
+  suggestedPrompts: DesktopPlanFinalHandoffSuggestedPrompt[];
+  details: DesktopPlanFinalHandoffDetails;
+}
+
+export interface DesktopSessionPlanCheckpointAttempt {
+  id: string;
+  checkpointId: string;
+  status: string;
+  outcome: string;
+  runId: string;
+  sessionId: string;
+  parentSessionId: string;
+  startedAt: number;
+  completedAt: number;
+  report: string;
+  result: string;
+  changedFiles: string[];
+  validation: string[];
+}
+
+export interface DesktopSessionPlanSubtask {
+  id: string;
+  title: string;
+  status: string;
+  notes: string;
+  result: string;
+  startedAt: number;
+  completedAt: number;
+  order: number;
+}
+
+export interface DesktopSessionPlanArtifactReference {
+  path: string;
+  role: string;
+  description: string;
+  mediaType: string;
+}
+
 export interface DesktopSessionPlanCheckpoint {
   id: string;
   title: string;
   status: string;
   objective: string;
   tasks: string[];
+  subtasks?: DesktopSessionPlanSubtask[];
+  activeSubtaskId?: string;
   acceptanceCriteria: string[];
+  artifacts: DesktopSessionPlanArtifactReference[];
   notes: string;
   report: string;
   result: string;
   changedFiles: string[];
   validation: string[];
+  attemptId: string;
+  runId: string;
+  sessionId: string;
+  startedAt: number;
+  completedAt: number;
+  review: DesktopSessionPlanCheckpointReview | null;
+  recommendation?: DesktopSessionPlanCheckpointRecommendation | null;
+  finalHandoff?: DesktopPlanFinalHandoff | null;
+  attempts: DesktopSessionPlanCheckpointAttempt[];
   order: number;
 }
 
@@ -312,7 +598,11 @@ export interface DesktopSessionPlanDocument {
   schemaVersion: string;
   revisionId: string;
   info: DesktopSessionPlanInfo;
+  executionPolicy: DesktopSessionPlanExecutionPolicy | null;
+  executionState: DesktopSessionPlanExecutionState | null;
+  artifacts: DesktopSessionPlanArtifactReference[];
   checkpoints: DesktopSessionPlanCheckpoint[];
+  originalCheckpoints: DesktopSessionPlanCheckpoint[];
   activeCheckpointId: string;
   renderedText: string;
   displayText: string;
@@ -337,6 +627,8 @@ export interface DesktopSessionPlanRevisionRecord extends DesktopSessionPlanReco
   updateSummary: string;
   updateScope: string;
   updateKind: string;
+  revisionKind: string;
+  restoredFromVersion: number;
   version: number;
   parentRevision: number;
   checkpoint: boolean;

@@ -8,10 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 
+	"swarm-refactor/swarmtui/internal/safefile"
 	"swarm-refactor/swarmtui/pkg/storagecontract"
 )
 
@@ -19,27 +19,17 @@ const (
 	NetworkModeLAN       = "lan"
 	NetworkModeTailscale = "tailscale"
 
-	PairingStateUnpaired        = "unpaired"
-	PairingStateBootstrapReady  = "bootstrap_configured"
-	PairingStatePendingApproval = "pending_approval"
-	PairingStatePaired          = "paired"
-	PairingStateRejected        = "rejected"
-
-	SwarmRoleManaged = "managed"
-
 	DefaultHost              = "127.0.0.1"
 	DefaultPort              = 7781
 	DefaultDesktopPort       = 5555
 	DefaultPeerTransportPort = 7791
 
-	configFileName                  = "swarm.conf"
-	remoteDeployBootstrapSecretName = "remote-deploy-bootstrap.secret"
-	configFileMode                  = 0o600
+	configFileName = "swarm.conf"
+	configFileMode = 0o600
 
 	devModeKey                   = "dev_mode"
 	devRootKey                   = "dev_root"
 	desktopOnboardingCompleteKey = "desktop_onboarding_complete"
-	swarmRoleKey                 = "swarm_role"
 	childStartupConfigEnv        = "SWARM_CHILD_STARTUP_CONFIG"
 )
 
@@ -55,57 +45,15 @@ type FileConfig struct {
 	DesktopPort                  int
 	BypassPermissions            bool
 	RetainToolOutputHistory      bool
+	V3Diagnostics                bool
+	ProviderAPIDiagnostics       bool
+	LongSessionDiagnostics       bool
 	SwarmName                    string
 	DesktopOnboardingComplete    bool
 	DesktopOnboardingCompleteSet bool
 	Child                        bool
-	SwarmRole                    string
 	TailscaleURL                 string
 	PeerTransportPort            int
-	ParentSwarmID                string
-	PairingState                 string
-	ManagedHostSync              ManagedHostSyncConfig
-	DeployContainer              DeployContainerBootstrap
-	RemoteDeploy                 RemoteDeployBootstrap
-}
-
-type ManagedHostSyncConfig struct {
-	Mode              string
-	Modules           []string
-	OwnerSwarmID      string
-	HostAPIBaseURL    string
-	SyncCredentialURL string
-	SyncAgentURL      string
-}
-
-type DeployContainerBootstrap struct {
-	Enabled                  bool
-	HostDriven               bool
-	SyncEnabled              bool
-	SyncMode                 string
-	SyncModules              []string
-	SyncOwnerSwarmID         string
-	SyncCredentialURL        string
-	SyncAgentURL             string
-	DeploymentID             string
-	HostAPIBaseURL           string
-	HostDesktopURL           string
-	LocalTransportSocketPath string
-	BootstrapSecret          string
-	VerificationCode         string
-}
-
-type RemoteDeployBootstrap struct {
-	Enabled           bool
-	SessionID         string
-	SessionToken      string
-	HostAPIBaseURL    string
-	HostDesktopURL    string
-	InviteToken       string
-	SyncEnabled       bool
-	SyncMode          string
-	SyncOwnerSwarmID  string
-	SyncCredentialURL string
 }
 
 type BootstrapFlags struct {
@@ -184,19 +132,6 @@ func ResolvePath() (string, error) {
 	return storagecontract.Join(configDir, configFileName)
 }
 
-func RemoteDeployBootstrapSecretPath(configPath string) string {
-	return filepath.Join(filepath.Dir(configPath), remoteDeployBootstrapSecretName)
-}
-
-func ScrubManagedLinkState(cfg FileConfig) FileConfig {
-	cfg.Child = false
-	cfg.SwarmRole = ""
-	cfg.ParentSwarmID = ""
-	cfg.PairingState = ""
-	cfg.ManagedHostSync = ManagedHostSyncConfig{}
-	return cfg
-}
-
 func Default(path string) FileConfig {
 	return FileConfig{
 		Path:                         path,
@@ -209,18 +144,15 @@ func Default(path string) FileConfig {
 		DesktopPort:                  DefaultDesktopPort,
 		BypassPermissions:            false,
 		RetainToolOutputHistory:      false,
+		V3Diagnostics:                false,
+		ProviderAPIDiagnostics:       false,
+		LongSessionDiagnostics:       false,
 		SwarmName:                    "",
 		DesktopOnboardingComplete:    true,
 		DesktopOnboardingCompleteSet: false,
 		Child:                        false,
-		SwarmRole:                    "",
 		TailscaleURL:                 "",
 		PeerTransportPort:            DefaultPeerTransportPort,
-		ParentSwarmID:                "",
-		PairingState:                 "",
-		ManagedHostSync:              ManagedHostSyncConfig{Mode: "managed"},
-		DeployContainer:              DeployContainerBootstrap{},
-		RemoteDeploy:                 RemoteDeployBootstrap{},
 	}
 }
 
@@ -239,7 +171,7 @@ func Load(path string) (FileConfig, error) {
 		}
 		return parsed, nil
 	}
-	info, err := os.Stat(path)
+	_, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return cfg, nil
@@ -255,23 +187,16 @@ func Load(path string) (FileConfig, error) {
 	if err != nil {
 		return FileConfig{}, fmt.Errorf("parse startup config %q: %w", path, err)
 	}
-	parsed, err = loadRemoteDeployBootstrapSecrets(path, parsed)
-	if err != nil {
-		return FileConfig{}, fmt.Errorf("parse startup config %q: %w", path, err)
-	}
 	if _, ok := seen["peer_transport_port"]; !ok {
 		parsed.PeerTransportPort = chooseAvailablePeerTransportPort(parsed)
-	}
-	if err := appendMissingKeys(path, textWithoutLegacyIgnoredEntries(text), info.Mode().Perm(), parsed, seen); err != nil {
-		return FileConfig{}, err
-	}
-	for _, key := range requiredKeys() {
-		seen[key] = struct{}{}
 	}
 	parsed.Path = path
 	parsed.Exists = true
 	if err := validate(parsed); err != nil {
 		return FileConfig{}, fmt.Errorf("parse startup config %q: %w", path, err)
+	}
+	if err := appendMissingKeys(path, textWithoutLegacyIgnoredEntries(text), configFileMode, parsed, seen); err != nil {
+		return FileConfig{}, err
 	}
 	return parsed, nil
 }
@@ -310,18 +235,8 @@ func Write(cfg FileConfig) error {
 		return fmt.Errorf("create startup config directory: %w", err)
 	}
 	content := Format(cfg)
-	if err := os.WriteFile(cfg.Path, []byte(content), configFileMode); err != nil {
+	if err := writeConfigFile(cfg.Path, []byte(content), configFileMode); err != nil {
 		return fmt.Errorf("write startup config %q: %w", cfg.Path, err)
-	}
-	if cfg.RemoteDeploy.Enabled && (strings.TrimSpace(cfg.RemoteDeploy.SessionToken) != "" || strings.TrimSpace(cfg.RemoteDeploy.InviteToken) != "") {
-		if err := WriteRemoteDeployBootstrapSecret(cfg.Path, cfg); err != nil {
-			return err
-		}
-	} else {
-		secretPath := RemoteDeployBootstrapSecretPath(cfg.Path)
-		if err := os.Remove(secretPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove remote deploy bootstrap secret %q: %w", secretPath, err)
-		}
 	}
 	return nil
 }
@@ -331,13 +246,14 @@ func DirectLANDesktopWarning(cfg FileConfig) string {
 		return ""
 	}
 	host := strings.TrimSpace(cfg.Host)
-	if host == "" || isLoopbackHost(host) {
+	if host == "" || IsLoopbackHost(host) {
 		return ""
 	}
 	return "Direct LAN desktop access is not implemented safely in this MVP. Keep host=127.0.0.1 and use an SSH tunnel, or use Tailscale, instead of opening the desktop directly on a private LAN address."
 }
 
-func isLoopbackHost(host string) bool {
+// IsLoopbackHost reports whether host names a loopback-only interface.
+func IsLoopbackHost(host string) bool {
 	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
 	if host == "" {
 		return false
@@ -386,6 +302,18 @@ bypass_permissions = %t
 # false keeps the current privacy-preserving placeholder behavior.
 retain_tool_output_history = %t
 
+# Persist verbose V3 diagnostic events.
+# Enable temporarily while debugging failed sessions; diagnostics may contain request context.
+v3_diagnostics = %t
+
+# Log sanitized outbound provider API request and response payloads to daemon logs.
+# This is separate from v3_diagnostics and omits/redacts API keys and auth headers.
+provider_api_diagnostics = %t
+
+# Record bounded metadata-only diagnostics for investigating long-session memory and lag.
+# Artifacts are private local files under the canonical logs root; changing this requires a restart.
+long_session_diagnostics = %t
+
 # Human-readable Swarm name shown in onboarding and discovery surfaces.
 # Leave blank to set it later.
 swarm_name = %s
@@ -395,14 +323,10 @@ swarm_name = %s
 desktop_onboarding_complete = %t
 
 # Whether this Swarm should bootstrap as a child.
-# false = master/default, true = child.
+# false = primary/default, true = child.
 child = %t
 
-# Optional additive swarm role marker.
-# managed = paired host managed by another Swarm; blank = derive from child/pairing state.
-swarm_role = %s
-
-# Canonical persisted Tailscale URL for bootstrap and pairing flows.
+# Canonical persisted Tailscale URL for bootstrap and connectivity.
 # Leave blank when not using a manual Tailscale address.
 tailscale_url = %s
 
@@ -410,47 +334,7 @@ tailscale_url = %s
 # Changing it requires a restart.
 peer_transport_port = %d
 
-# Parent swarm ID for child bootstrap/attach flows.
-parent_swarm_id = %s
-
-# Persisted local pairing state.
-pairing_state = %s
-
-# Managed Host Link Mode sync. Active whenever swarm_role = managed and pairing_state = paired.
-# To stop management sync, unlink/detach this Managed Host from its Manager.
-managed_host_sync_mode = %s
-managed_host_sync_modules = %s
-managed_host_sync_owner_swarm_id = %s
-managed_host_sync_host_api_base_url = %s
-managed_host_sync_credential_url = %s
-managed_host_sync_agent_url = %s
-
-# Deploy/container child attach bootstrap payload.
-deploy_container_enabled = %t
-deploy_container_host_driven = %t
-deploy_container_sync_enabled = %t
-deploy_container_sync_mode = %s
-deploy_container_sync_modules = %s
-deploy_container_sync_owner_swarm_id = %s
-deploy_container_sync_credential_url = %s
-deploy_container_sync_agent_url = %s
-deploy_container_deployment_id = %s
-deploy_container_host_api_base_url = %s
-deploy_container_host_desktop_url = %s
-deploy_container_local_transport_socket_path = %s
-deploy_container_bootstrap_secret = %s
-deploy_container_verification_code = %s
-
-# Remote deploy child bootstrap payload.
-remote_deploy_enabled = %t
-remote_deploy_session_id = %s
-remote_deploy_host_api_base_url = %s
-remote_deploy_host_desktop_url = %s
-remote_deploy_sync_enabled = %t
-remote_deploy_sync_mode = %s
-remote_deploy_sync_owner_swarm_id = %s
-remote_deploy_sync_credential_url = %s
-`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.SwarmRole, cfg.TailscaleURL, cfg.PeerTransportPort, cfg.ParentSwarmID, cfg.PairingState, cfg.ManagedHostSync.Mode, formatCSVList(cfg.ManagedHostSync.Modules), cfg.ManagedHostSync.OwnerSwarmID, cfg.ManagedHostSync.HostAPIBaseURL, cfg.ManagedHostSync.SyncCredentialURL, cfg.ManagedHostSync.SyncAgentURL, cfg.DeployContainer.Enabled, cfg.DeployContainer.HostDriven, cfg.DeployContainer.SyncEnabled, cfg.DeployContainer.SyncMode, formatCSVList(cfg.DeployContainer.SyncModules), cfg.DeployContainer.SyncOwnerSwarmID, cfg.DeployContainer.SyncCredentialURL, cfg.DeployContainer.SyncAgentURL, cfg.DeployContainer.DeploymentID, cfg.DeployContainer.HostAPIBaseURL, cfg.DeployContainer.HostDesktopURL, cfg.DeployContainer.LocalTransportSocketPath, cfg.DeployContainer.BootstrapSecret, cfg.DeployContainer.VerificationCode, cfg.RemoteDeploy.Enabled, cfg.RemoteDeploy.SessionID, cfg.RemoteDeploy.HostAPIBaseURL, cfg.RemoteDeploy.HostDesktopURL, cfg.RemoteDeploy.SyncEnabled, cfg.RemoteDeploy.SyncMode, cfg.RemoteDeploy.SyncOwnerSwarmID, cfg.RemoteDeploy.SyncCredentialURL)
+`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -592,6 +476,39 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 				return FileConfig{}, nil, fmt.Errorf("line %d: invalid retain_tool_output_history %q", lineNumber+1, value)
 			}
 			cfg.RetainToolOutputHistory = retainToolOutputHistory
+		case "v3_diagnostics":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen["v3_diagnostics"] = struct{}{}
+			v3Diagnostics, err := strconv.ParseBool(value)
+			if err != nil {
+				return FileConfig{}, nil, fmt.Errorf("line %d: invalid %s %q", lineNumber+1, key, value)
+			}
+			cfg.V3Diagnostics = v3Diagnostics
+		case "provider_api_diagnostics":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen["provider_api_diagnostics"] = struct{}{}
+			providerAPIDiagnostics, err := strconv.ParseBool(value)
+			if err != nil {
+				return FileConfig{}, nil, fmt.Errorf("line %d: invalid provider_api_diagnostics %q", lineNumber+1, value)
+			}
+			cfg.ProviderAPIDiagnostics = providerAPIDiagnostics
+		case "long_session_diagnostics":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen["long_session_diagnostics"] = struct{}{}
+			longSessionDiagnostics, err := strconv.ParseBool(value)
+			if err != nil {
+				return FileConfig{}, nil, fmt.Errorf("line %d: invalid long_session_diagnostics %q", lineNumber+1, value)
+			}
+			cfg.LongSessionDiagnostics = longSessionDiagnostics
 		case "swarm_name":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
@@ -630,13 +547,6 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 				return FileConfig{}, nil, fmt.Errorf("line %d: invalid child %q", lineNumber+1, value)
 			}
 			cfg.Child = child
-		case swarmRoleKey:
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen[swarmRoleKey] = struct{}{}
-			cfg.SwarmRole = normalizeSwarmRole(value)
 		case "network_mode", "advertise_mode":
 			if legacyBootstrapModeSeen {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate legacy bootstrap mode", lineNumber+1)
@@ -701,236 +611,6 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 				return FileConfig{}, nil, fmt.Errorf("line %d: invalid peer_transport_port %q", lineNumber+1, value)
 			}
 			cfg.PeerTransportPort = peerTransportPort
-		case "parent_swarm_id":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["parent_swarm_id"] = struct{}{}
-			cfg.ParentSwarmID = strings.TrimSpace(value)
-		case "pairing_state":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["pairing_state"] = struct{}{}
-			cfg.PairingState = normalizePairingState(value)
-		case "managed_host_sync_mode":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["managed_host_sync_mode"] = struct{}{}
-			cfg.ManagedHostSync.Mode = strings.TrimSpace(value)
-		case "managed_host_sync_modules":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["managed_host_sync_modules"] = struct{}{}
-			cfg.ManagedHostSync.Modules = parseCSVList(value)
-		case "managed_host_sync_owner_swarm_id":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["managed_host_sync_owner_swarm_id"] = struct{}{}
-			cfg.ManagedHostSync.OwnerSwarmID = strings.TrimSpace(value)
-		case "managed_host_sync_host_api_base_url":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["managed_host_sync_host_api_base_url"] = struct{}{}
-			cfg.ManagedHostSync.HostAPIBaseURL = strings.TrimSpace(value)
-		case "managed_host_sync_credential_url":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["managed_host_sync_credential_url"] = struct{}{}
-			cfg.ManagedHostSync.SyncCredentialURL = strings.TrimSpace(value)
-		case "managed_host_sync_agent_url":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["managed_host_sync_agent_url"] = struct{}{}
-			cfg.ManagedHostSync.SyncAgentURL = strings.TrimSpace(value)
-		case "deploy_container_enabled":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["deploy_container_enabled"] = struct{}{}
-			enabled, err := strconv.ParseBool(value)
-			if err != nil {
-				return FileConfig{}, nil, fmt.Errorf("line %d: invalid deploy_container_enabled %q", lineNumber+1, value)
-			}
-			cfg.DeployContainer.Enabled = enabled
-		case "deploy_container_host_driven":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["deploy_container_host_driven"] = struct{}{}
-			hostDriven, err := strconv.ParseBool(value)
-			if err != nil {
-				return FileConfig{}, nil, fmt.Errorf("line %d: invalid deploy_container_host_driven %q", lineNumber+1, value)
-			}
-			cfg.DeployContainer.HostDriven = hostDriven
-		case "deploy_container_sync_enabled":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["deploy_container_sync_enabled"] = struct{}{}
-			enabled, err := strconv.ParseBool(value)
-			if err != nil {
-				return FileConfig{}, nil, fmt.Errorf("line %d: invalid deploy_container_sync_enabled %q", lineNumber+1, value)
-			}
-			cfg.DeployContainer.SyncEnabled = enabled
-		case "deploy_container_sync_mode":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["deploy_container_sync_mode"] = struct{}{}
-			cfg.DeployContainer.SyncMode = strings.TrimSpace(value)
-		case "deploy_container_sync_modules":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["deploy_container_sync_modules"] = struct{}{}
-			cfg.DeployContainer.SyncModules = parseCSVList(value)
-		case "deploy_container_sync_owner_swarm_id":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["deploy_container_sync_owner_swarm_id"] = struct{}{}
-			cfg.DeployContainer.SyncOwnerSwarmID = strings.TrimSpace(value)
-		case "deploy_container_sync_credential_url":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["deploy_container_sync_credential_url"] = struct{}{}
-			cfg.DeployContainer.SyncCredentialURL = strings.TrimSpace(value)
-		case "deploy_container_sync_agent_url":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["deploy_container_sync_agent_url"] = struct{}{}
-			cfg.DeployContainer.SyncAgentURL = strings.TrimSpace(value)
-		case "deploy_container_deployment_id":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["deploy_container_deployment_id"] = struct{}{}
-			cfg.DeployContainer.DeploymentID = strings.TrimSpace(value)
-		case "deploy_container_host_api_base_url":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["deploy_container_host_api_base_url"] = struct{}{}
-			cfg.DeployContainer.HostAPIBaseURL = strings.TrimSpace(value)
-		case "deploy_container_host_desktop_url":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["deploy_container_host_desktop_url"] = struct{}{}
-			cfg.DeployContainer.HostDesktopURL = strings.TrimSpace(value)
-		case "deploy_container_local_transport_socket_path":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["deploy_container_local_transport_socket_path"] = struct{}{}
-			cfg.DeployContainer.LocalTransportSocketPath = strings.TrimSpace(value)
-		case "deploy_container_bootstrap_secret":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["deploy_container_bootstrap_secret"] = struct{}{}
-			cfg.DeployContainer.BootstrapSecret = strings.TrimSpace(value)
-		case "deploy_container_verification_code":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["deploy_container_verification_code"] = struct{}{}
-			cfg.DeployContainer.VerificationCode = strings.TrimSpace(value)
-		case "remote_deploy_enabled":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["remote_deploy_enabled"] = struct{}{}
-			enabled, err := strconv.ParseBool(value)
-			if err != nil {
-				return FileConfig{}, nil, fmt.Errorf("line %d: invalid remote_deploy_enabled %q", lineNumber+1, value)
-			}
-			cfg.RemoteDeploy.Enabled = enabled
-		case "remote_deploy_session_id":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["remote_deploy_session_id"] = struct{}{}
-			cfg.RemoteDeploy.SessionID = strings.TrimSpace(value)
-		case "remote_deploy_host_api_base_url":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["remote_deploy_host_api_base_url"] = struct{}{}
-			cfg.RemoteDeploy.HostAPIBaseURL = strings.TrimSpace(value)
-		case "remote_deploy_host_desktop_url":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["remote_deploy_host_desktop_url"] = struct{}{}
-			cfg.RemoteDeploy.HostDesktopURL = strings.TrimSpace(value)
-		case "remote_deploy_sync_enabled":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["remote_deploy_sync_enabled"] = struct{}{}
-			enabled, err := strconv.ParseBool(value)
-			if err != nil {
-				return FileConfig{}, nil, fmt.Errorf("line %d: invalid remote_deploy_sync_enabled %q", lineNumber+1, value)
-			}
-			cfg.RemoteDeploy.SyncEnabled = enabled
-		case "remote_deploy_sync_mode":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["remote_deploy_sync_mode"] = struct{}{}
-			cfg.RemoteDeploy.SyncMode = strings.TrimSpace(value)
-		case "remote_deploy_sync_owner_swarm_id":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["remote_deploy_sync_owner_swarm_id"] = struct{}{}
-			cfg.RemoteDeploy.SyncOwnerSwarmID = strings.TrimSpace(value)
-		case "remote_deploy_sync_credential_url":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-			}
-			rawSeen[key] = struct{}{}
-			seen["remote_deploy_sync_credential_url"] = struct{}{}
-			cfg.RemoteDeploy.SyncCredentialURL = strings.TrimSpace(value)
 		default:
 			if isLegacyIgnoredKey(key) {
 				continue
@@ -967,8 +647,15 @@ func appendMissingKeys(path, text string, perm os.FileMode, cfg FileConfig, seen
 		text += "\n"
 	}
 	text += "\n" + strings.Join(lines, "\n") + "\n"
-	if err := os.WriteFile(path, []byte(text), perm); err != nil {
-		return fmt.Errorf("migrate startup config %q: %w", path, err)
+	if err := writeConfigFile(path, []byte(text), perm); err != nil {
+		return fmt.Errorf("update startup config %q: %w", path, err)
+	}
+	return nil
+}
+
+func writeConfigFile(path string, payload []byte, createMode os.FileMode) error {
+	if err := safefile.WriteFile(path, payload, createMode); err != nil {
+		return fmt.Errorf("write startup config safely: %w", err)
 	}
 	return nil
 }
@@ -987,6 +674,27 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 			"# Keep sanitized tool/permission output in persisted history so refresh can show it.",
 			"# false keeps the current privacy-preserving placeholder behavior.",
 			fmt.Sprintf("retain_tool_output_history = %t", cfg.RetainToolOutputHistory),
+		)
+	}
+	if _, ok := seen["v3_diagnostics"]; !ok {
+		lines = append(lines,
+			"# Persist verbose V3 diagnostic events.",
+			"# Enable temporarily while debugging failed sessions; diagnostics may contain request context.",
+			fmt.Sprintf("v3_diagnostics = %t", cfg.V3Diagnostics),
+		)
+	}
+	if _, ok := seen["provider_api_diagnostics"]; !ok {
+		lines = append(lines,
+			"# Log sanitized outbound provider API request and response payloads to daemon logs.",
+			"# This is separate from v3_diagnostics and omits/redacts API keys and auth headers.",
+			fmt.Sprintf("provider_api_diagnostics = %t", cfg.ProviderAPIDiagnostics),
+		)
+	}
+	if _, ok := seen["long_session_diagnostics"]; !ok {
+		lines = append(lines,
+			"# Record bounded metadata-only diagnostics for investigating long-session memory and lag.",
+			"# Artifacts are private local files under the canonical logs root; changing this requires a restart.",
+			fmt.Sprintf("long_session_diagnostics = %t", cfg.LongSessionDiagnostics),
 		)
 	}
 	if _, ok := seen[devModeKey]; !ok {
@@ -1029,20 +737,13 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 	if _, ok := seen["child"]; !ok {
 		lines = append(lines,
 			"# Whether this Swarm should bootstrap as a child.",
-			"# false = master/default, true = child.",
+			"# false = primary/default, true = child.",
 			fmt.Sprintf("child = %t", cfg.Child),
-		)
-	}
-	if _, ok := seen[swarmRoleKey]; !ok {
-		lines = append(lines,
-			"# Optional additive swarm role marker.",
-			"# managed = paired host managed by another Swarm; blank = derive from child/pairing state.",
-			fmt.Sprintf("%s = %s", swarmRoleKey, cfg.SwarmRole),
 		)
 	}
 	if _, ok := seen["tailscale_url"]; !ok {
 		lines = append(lines,
-			"# Canonical persisted Tailscale URL for bootstrap and pairing flows.",
+			"# Canonical persisted Tailscale URL for bootstrap and connectivity.",
 			"# Leave blank when not using a manual Tailscale address.",
 			fmt.Sprintf("tailscale_url = %s", cfg.TailscaleURL),
 		)
@@ -1054,62 +755,6 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 			fmt.Sprintf("peer_transport_port = %d", cfg.PeerTransportPort),
 		)
 	}
-	if _, ok := seen["parent_swarm_id"]; !ok {
-		lines = append(lines,
-			"# Parent swarm ID for child bootstrap/attach flows.",
-			fmt.Sprintf("parent_swarm_id = %s", cfg.ParentSwarmID),
-		)
-	}
-	if _, ok := seen["pairing_state"]; !ok {
-		lines = append(lines,
-			"# Persisted local pairing state.",
-			fmt.Sprintf("pairing_state = %s", cfg.PairingState),
-		)
-	}
-	if _, ok := seen["managed_host_sync_mode"]; !ok {
-		lines = append(lines,
-			"# Managed Host Link Mode sync. Active whenever swarm_role = managed and pairing_state = paired.",
-			"# To stop management sync, unlink/detach this Managed Host from its Manager.",
-			fmt.Sprintf("managed_host_sync_mode = %s", cfg.ManagedHostSync.Mode),
-			fmt.Sprintf("managed_host_sync_modules = %s", formatCSVList(cfg.ManagedHostSync.Modules)),
-			fmt.Sprintf("managed_host_sync_owner_swarm_id = %s", cfg.ManagedHostSync.OwnerSwarmID),
-			fmt.Sprintf("managed_host_sync_host_api_base_url = %s", cfg.ManagedHostSync.HostAPIBaseURL),
-			fmt.Sprintf("managed_host_sync_credential_url = %s", cfg.ManagedHostSync.SyncCredentialURL),
-			fmt.Sprintf("managed_host_sync_agent_url = %s", cfg.ManagedHostSync.SyncAgentURL),
-		)
-	}
-	if _, ok := seen["deploy_container_enabled"]; !ok {
-		lines = append(lines,
-			"# Deploy/container child attach bootstrap payload.",
-			fmt.Sprintf("deploy_container_enabled = %t", cfg.DeployContainer.Enabled),
-			fmt.Sprintf("deploy_container_host_driven = %t", cfg.DeployContainer.HostDriven),
-			fmt.Sprintf("deploy_container_sync_enabled = %t", cfg.DeployContainer.SyncEnabled),
-			fmt.Sprintf("deploy_container_sync_mode = %s", cfg.DeployContainer.SyncMode),
-			fmt.Sprintf("deploy_container_sync_modules = %s", formatCSVList(cfg.DeployContainer.SyncModules)),
-			fmt.Sprintf("deploy_container_sync_owner_swarm_id = %s", cfg.DeployContainer.SyncOwnerSwarmID),
-			fmt.Sprintf("deploy_container_sync_credential_url = %s", cfg.DeployContainer.SyncCredentialURL),
-			fmt.Sprintf("deploy_container_sync_agent_url = %s", cfg.DeployContainer.SyncAgentURL),
-			fmt.Sprintf("deploy_container_deployment_id = %s", cfg.DeployContainer.DeploymentID),
-			fmt.Sprintf("deploy_container_host_api_base_url = %s", cfg.DeployContainer.HostAPIBaseURL),
-			fmt.Sprintf("deploy_container_host_desktop_url = %s", cfg.DeployContainer.HostDesktopURL),
-			fmt.Sprintf("deploy_container_local_transport_socket_path = %s", cfg.DeployContainer.LocalTransportSocketPath),
-			fmt.Sprintf("deploy_container_bootstrap_secret = %s", cfg.DeployContainer.BootstrapSecret),
-			fmt.Sprintf("deploy_container_verification_code = %s", cfg.DeployContainer.VerificationCode),
-		)
-	}
-	if _, ok := seen["remote_deploy_enabled"]; !ok {
-		lines = append(lines,
-			"# Remote deploy child bootstrap payload.",
-			fmt.Sprintf("remote_deploy_enabled = %t", cfg.RemoteDeploy.Enabled),
-			fmt.Sprintf("remote_deploy_session_id = %s", cfg.RemoteDeploy.SessionID),
-			fmt.Sprintf("remote_deploy_host_api_base_url = %s", cfg.RemoteDeploy.HostAPIBaseURL),
-			fmt.Sprintf("remote_deploy_host_desktop_url = %s", cfg.RemoteDeploy.HostDesktopURL),
-			fmt.Sprintf("remote_deploy_sync_enabled = %t", cfg.RemoteDeploy.SyncEnabled),
-			fmt.Sprintf("remote_deploy_sync_mode = %s", cfg.RemoteDeploy.SyncMode),
-			fmt.Sprintf("remote_deploy_sync_owner_swarm_id = %s", cfg.RemoteDeploy.SyncOwnerSwarmID),
-			fmt.Sprintf("remote_deploy_sync_credential_url = %s", cfg.RemoteDeploy.SyncCredentialURL),
-		)
-	}
 	return lines
 }
 
@@ -1119,6 +764,9 @@ func validate(cfg FileConfig) error {
 	}
 	if strings.TrimSpace(cfg.Host) == "" {
 		return errors.New("host must not be empty")
+	}
+	if !IsLoopbackHost(cfg.Host) {
+		return fmt.Errorf("unsupported non-loopback host %q: authenticated API/desktop exposure is not configured; keep host=%s and use an SSH tunnel or Tailscale forwarding", cfg.Host, DefaultHost)
 	}
 	if cfg.Port < 1 || cfg.Port > 65535 {
 		return fmt.Errorf("invalid port %d (expected 1-65535)", cfg.Port)
@@ -1135,22 +783,12 @@ func validate(cfg FileConfig) error {
 	if cfg.PeerTransportPort < 1 || cfg.PeerTransportPort > 65535 {
 		return fmt.Errorf("invalid peer_transport_port %d (expected 1-65535)", cfg.PeerTransportPort)
 	}
-	if !isValidPairingState(cfg.PairingState) {
-		return fmt.Errorf("invalid pairing_state %q", cfg.PairingState)
-	}
-	if !isValidSwarmRole(cfg.SwarmRole) {
-		return fmt.Errorf("invalid %s %q", swarmRoleKey, cfg.SwarmRole)
-	}
 	return nil
-}
-
-func requiredKeys() []string {
-	return []string{devModeKey, devRootKey, "host", "port", "advertise_host", "advertise_port", "desktop_port", "bypass_permissions", "retain_tool_output_history", "swarm_name", "child", swarmRoleKey, "tailscale_url", "peer_transport_port", "parent_swarm_id", "pairing_state", "managed_host_sync_mode", "managed_host_sync_modules", "managed_host_sync_owner_swarm_id", "managed_host_sync_host_api_base_url", "managed_host_sync_credential_url", "managed_host_sync_agent_url", "deploy_container_enabled", "deploy_container_sync_enabled", "deploy_container_sync_mode", "deploy_container_sync_modules", "deploy_container_sync_owner_swarm_id", "deploy_container_sync_credential_url", "deploy_container_sync_agent_url", "deploy_container_deployment_id", "deploy_container_host_api_base_url", "deploy_container_host_desktop_url", "deploy_container_local_transport_socket_path", "deploy_container_bootstrap_secret", "deploy_container_verification_code", "remote_deploy_enabled", "remote_deploy_session_id", "remote_deploy_host_api_base_url", "remote_deploy_host_desktop_url", "remote_deploy_sync_enabled", "remote_deploy_sync_mode", "remote_deploy_sync_owner_swarm_id", "remote_deploy_sync_credential_url"}
 }
 
 func allowsEmptyValue(key string) bool {
 	switch key {
-	case devRootKey, swarmRoleKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id", "parent_swarm_id", "pairing_state", "managed_host_sync_mode", "managed_host_sync_modules", "managed_host_sync_owner_swarm_id", "managed_host_sync_host_api_base_url", "managed_host_sync_credential_url", "managed_host_sync_agent_url", "deploy_container_sync_mode", "deploy_container_sync_modules", "deploy_container_sync_owner_swarm_id", "deploy_container_sync_credential_url", "deploy_container_sync_agent_url", "deploy_container_deployment_id", "deploy_container_host_api_base_url", "deploy_container_host_desktop_url", "deploy_container_local_transport_socket_path", "deploy_container_bootstrap_secret", "deploy_container_verification_code", "remote_deploy_session_id", "remote_deploy_host_api_base_url", "remote_deploy_host_desktop_url", "remote_deploy_sync_mode", "remote_deploy_sync_owner_swarm_id", "remote_deploy_sync_credential_url":
+	case devRootKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id":
 		return true
 	default:
 		return false
@@ -1159,125 +797,11 @@ func allowsEmptyValue(key string) bool {
 
 func isLegacyIgnoredKey(key string) bool {
 	switch key {
-	case "webauth_enabled", "onboarding_state", "swarm_id", "swarm" + "_mode", "local_transport_port", "tailscale_transport_port", "deploy_container_sync_skill_url", "deploy_container_sync_permission_url":
+	case "webauth_enabled", "onboarding_state", "swarm_id", "swarm_role", "swarm" + "_mode", "local_transport_port", "tailscale_transport_port":
 		return true
 	default:
 		return false
 	}
-}
-
-func loadRemoteDeployBootstrapSecrets(configPath string, cfg FileConfig) (FileConfig, error) {
-	if !cfg.RemoteDeploy.Enabled {
-		return cfg, nil
-	}
-	secretPath := RemoteDeployBootstrapSecretPath(configPath)
-	data, err := os.ReadFile(secretPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			if strings.TrimSpace(cfg.RemoteDeploy.SessionID) == "" {
-				return cfg, nil
-			}
-			return FileConfig{}, fmt.Errorf("remote deploy bootstrap secret %q is required when remote_deploy_enabled is true", secretPath)
-		}
-		return FileConfig{}, fmt.Errorf("read remote deploy bootstrap secret %q: %w", secretPath, err)
-	}
-	parsed, err := parseRemoteDeployBootstrapSecretEntries(string(data))
-	if err != nil {
-		return FileConfig{}, fmt.Errorf("parse remote deploy bootstrap secret %q: %w", secretPath, err)
-	}
-	cfg.RemoteDeploy.SessionToken = strings.TrimSpace(parsed.SessionToken)
-	cfg.RemoteDeploy.InviteToken = strings.TrimSpace(parsed.InviteToken)
-	return cfg, nil
-}
-
-func parseRemoteDeployBootstrapSecretEntries(text string) (struct {
-	SessionToken string
-	InviteToken  string
-}, error) {
-	var parsed struct {
-		SessionToken string
-		InviteToken  string
-	}
-	seen := map[string]struct{}{}
-	for lineNumber, rawLine := range strings.Split(text, "\n") {
-		line := strings.TrimSpace(rawLine)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			return parsed, fmt.Errorf("line %d: expected key = value", lineNumber+1)
-		}
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		if _, exists := seen[key]; exists {
-			return parsed, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
-		}
-		seen[key] = struct{}{}
-		switch key {
-		case "remote_deploy_session_token":
-			parsed.SessionToken = value
-		case "remote_deploy_invite_token":
-			parsed.InviteToken = value
-		default:
-			return parsed, fmt.Errorf("line %d: unknown key %q", lineNumber+1, key)
-		}
-	}
-	return parsed, nil
-}
-
-func formatRemoteDeployBootstrapSecrets(cfg FileConfig) string {
-	return fmt.Sprintf("remote_deploy_session_token = %s\nremote_deploy_invite_token = %s\n", cfg.RemoteDeploy.SessionToken, cfg.RemoteDeploy.InviteToken)
-}
-
-func FormatRemoteDeployBootstrapSecrets(cfg FileConfig) string {
-	return formatRemoteDeployBootstrapSecrets(cfg)
-}
-
-func WriteRemoteDeployBootstrapSecret(configPath string, cfg FileConfig) error {
-	secretPath := RemoteDeployBootstrapSecretPath(configPath)
-	if err := os.MkdirAll(filepath.Dir(secretPath), 0o755); err != nil {
-		return fmt.Errorf("create remote deploy bootstrap secret directory: %w", err)
-	}
-	content := formatRemoteDeployBootstrapSecrets(cfg)
-	if err := os.WriteFile(secretPath, []byte(content), configFileMode); err != nil {
-		return fmt.Errorf("write remote deploy bootstrap secret %q: %w", secretPath, err)
-	}
-	return nil
-}
-
-func parseCSVList(value string) []string {
-	if strings.TrimSpace(value) == "" {
-		return nil
-	}
-	parts := strings.Split(value, ",")
-	seen := make(map[string]struct{}, len(parts))
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		item := strings.TrimSpace(part)
-		if item == "" {
-			continue
-		}
-		key := strings.ToLower(item)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, key)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	sort.Strings(out)
-	return out
-}
-
-func formatCSVList(values []string) string {
-	if len(values) == 0 {
-		return ""
-	}
-	normalized := parseCSVList(strings.Join(values, ","))
-	return strings.Join(normalized, ",")
 }
 
 func decodeEnvMultiline(value string) string {
@@ -1303,30 +827,4 @@ func normalizeAdvertiseHost(value string) (string, error) {
 		value = strings.TrimSuffix(strings.TrimPrefix(value, "["), "]")
 	}
 	return value, nil
-}
-
-func normalizePairingState(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
-}
-
-func normalizeSwarmRole(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
-}
-
-func isValidPairingState(value string) bool {
-	switch normalizePairingState(value) {
-	case "", PairingStateUnpaired, PairingStateBootstrapReady, PairingStatePendingApproval, PairingStatePaired, PairingStateRejected:
-		return true
-	default:
-		return false
-	}
-}
-
-func isValidSwarmRole(value string) bool {
-	switch normalizeSwarmRole(value) {
-	case "", SwarmRoleManaged:
-		return true
-	default:
-		return false
-	}
 }

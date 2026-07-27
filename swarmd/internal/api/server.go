@@ -22,19 +22,19 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/auth"
-	containerprofiles "swarm/packages/swarmd/internal/containerprofiles"
-	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
+	"swarm/packages/swarmd/internal/longsessiondiag"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/permission"
+	"swarm/packages/swarmd/internal/provider/codex"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
-	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	runruntime "swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -47,6 +47,7 @@ import (
 	"swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/update"
 	"swarm/packages/swarmd/internal/voice"
+	"swarm/packages/swarmd/internal/webpush"
 	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -68,23 +69,27 @@ type codexOAuthSession struct {
 	UpdatedAt      time.Time
 }
 
-type peerAuthContextKey string
+const (
+	v3LivePatchDefaultEnabled = true
 
-const peerAuthAuthorizedContextKey peerAuthContextKey = "peer-auth-authorized"
-
-type peerAuthContextValue struct {
-	SwarmID string
-}
+	maxSTTDecodedAudioBytes = 25 << 20
+	maxSTTRequestBodyBytes  = (maxSTTDecodedAudioBytes*4)/3 + (64 << 10)
+)
 
 type Server struct {
 	auth                        *auth.Service
 	agents                      *agentruntime.Service
 	model                       *model.Service
+	modelProfiles               *modelprofile.Service
+	swarmProfiles               *modelprofile.SwarmService
 	runner                      runService
-	runStreams                  *runStreamManager
-	v3SessionStreams            *sessionV3StreamHub
+	runStreams                  *runControlAllocator
 	v3RealtimeOutbox            *v3RealtimeOutboxHub
+	v3LiveHub                   *v3LiveHub
+	v3LivePatchEnabled          bool
+	v3SyncCursors               *v3SyncCursorKeyring
 	v3SessionExecutor           *sessionV3Executor
+	planLifecycle               *sessionruntime.PlanLifecycleService
 	sessions                    *sessionruntime.Service
 	workspace                   *workspace.Service
 	discovery                   *discovery.Service
@@ -92,25 +97,20 @@ type Server struct {
 	mcp                         mcpService
 	security                    *security.Service
 	providers                   *registry.Registry
+	codexAccount                codexAccountClient
 	perm                        permissionService
 	notifications               notificationService
+	webPush                     *webpush.Service
 	hub                         *stream.Hub
 	events                      *pebblestore.EventLog
 	voice                       *voice.Service
 	uiSettings                  *uisettings.Service
 	todos                       *todo.Service
+	aiTasks                     aiTaskEnqueuer
 	swarm                       swarmService
-	containerProfiles           containerProfileService
-	localContainers             localContainerService
-	deployContainers            deployContainerService
-	remoteDeploys               remoteDeployService
-	remotePairingPending        map[string]swarmRemotePairingPendingRequest
-	swarmNodes                  *pebblestore.SwarmNodeStore
 	update                      *update.Service
 	topology                    *topologyruntime.Service
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
-	sessionRoutes               *pebblestore.SessionRouteStore
-	flows                       *pebblestore.FlowStore
 	videoThreads                *pebblestore.VideoThreadStore
 	imageThreads                *pebblestore.ImageThreadStore
 	imageGen                    *imagegen.Service
@@ -119,26 +119,38 @@ type Server struct {
 	startupConfigPath           string
 	startedAt                   time.Time
 	bypassPermissions           bool
+	longSessionDiagnostics      *longsessiondiag.Recorder
+
+	longSessionDesktopSampleLogOnce sync.Once
 
 	codexOAuthMu       sync.Mutex
 	codexOAuthSessions map[string]*codexOAuthSession
 
-	shuttingDown              atomic.Bool
-	runCtx                    context.Context
-	runCancel                 context.CancelFunc
-	runWG                     sync.WaitGroup
-	activeRuns                atomic.Int32
-	requestStop               func(reason string)
-	desktopLocalSessions      *desktopLocalSessionManager
-	identityService           *identity.Service
-	identitySessions          *identity.SessionService
-	gitRealtime               *gitRealtimeManager
-	swarmTargetHealth         swarmTargetHealthCache
-	authorityConnections      AuthorityConnectionRegistry
-	swarmStore                *pebblestore.SwarmStore
-	swarmMirror               *pebblestore.SwarmMirrorStore
-	mirrorSyncStarted         atomic.Bool
-	remoteCandidateProbePorts []int
+	shuttingDown          atomic.Bool
+	activeRunMu           sync.Mutex
+	runCtx                context.Context
+	runCancel             context.CancelFunc
+	runWG                 sync.WaitGroup
+	activeRuns            atomic.Int32
+	requestStop           func(reason string)
+	desktopLocalSessions  *desktopLocalSessionManager
+	identityService       *identity.Service
+	identitySessions      *identity.SessionService
+	gitRealtime           *gitRealtimeManager
+	swarmStore            *pebblestore.SwarmStore
+	reviewCommitMu        sync.Mutex
+	reviewCommitActive    map[string]string
+	reviewAutoArchiveOnce sync.Once
+}
+
+type aiTaskEnqueuer interface {
+	Enqueue(pebblestore.WorkspaceTodoItem) bool
+}
+
+type codexAccountClient interface {
+	GetAccountUsage(context.Context) (codex.AccountUsage, error)
+	GetResetCredits(context.Context) (codex.ResetCredits, error)
+	ConsumeResetCredit(context.Context, codex.ConsumeResetCreditRequest) (codex.ConsumeResetCreditResponse, error)
 }
 
 type runService interface {
@@ -159,79 +171,14 @@ type swarmService interface {
 	UpsertGroup(input swarmruntime.UpsertGroupInput) (swarmruntime.Group, error)
 	DeleteGroup(groupID string) error
 	SetCurrentGroup(groupID string, localSwarmID string) (swarmruntime.GroupState, error)
-	OutgoingPeerAuthToken(swarmID string) (string, bool, error)
-	ValidateIncomingPeerAuth(swarmID, rawToken string) (bool, error)
 	UpsertGroupMember(input swarmruntime.UpsertGroupMemberInput) (swarmruntime.GroupMember, error)
 	RemoveGroupMember(input swarmruntime.RemoveGroupMemberInput) error
-	CreateInvite(input swarmruntime.CreateInviteInput) (swarmruntime.Invite, error)
-	SubmitEnrollment(input swarmruntime.SubmitEnrollmentInput) (swarmruntime.Enrollment, error)
-	ListPendingEnrollments(limit int) ([]swarmruntime.Enrollment, error)
-	DecideEnrollment(input swarmruntime.DecideEnrollmentInput) (swarmruntime.Enrollment, []swarmruntime.TrustedPeer, error)
-	PrepareRemoteBootstrapParentPeer(input swarmruntime.PrepareRemoteBootstrapParentPeerInput) error
-	ApproveManagedPairing(input swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error)
-	TrustManagedPeer(input swarmruntime.TrustManagedPeerInput) (swarmruntime.TrustedPeer, error)
-	RemoveManagedPeer(input swarmruntime.RemoveManagedPeerInput) (swarmruntime.RemoveManagedPeerResult, error)
-	UpdateLocalPairingFromConfig(cfg startupconfig.FileConfig, transports []swarmruntime.TransportSummary) (swarmruntime.PairingState, error)
-	DetachToStandalone(localSwarmID string) error
-}
-
-type containerProfileService interface {
-	ListProfiles(ctx context.Context) ([]containerprofiles.Profile, error)
-	ListProfilesForAccount(ctx context.Context, accountScopeID string) ([]containerprofiles.Profile, error)
-	UpsertProfile(ctx context.Context, input containerprofiles.UpsertInput) (containerprofiles.Profile, error)
-	DeleteProfile(ctx context.Context, profileID string) (containerprofiles.DeleteResult, error)
-	DeleteProfileForAccount(ctx context.Context, accountScopeID, profileID string) (containerprofiles.DeleteResult, error)
-}
-
-type localContainerService interface {
-	RuntimeStatus(ctx context.Context) (localcontainers.RuntimeStatus, error)
-	List(ctx context.Context) ([]localcontainers.Container, error)
-	ListForAccount(ctx context.Context, accountScopeID string) ([]localcontainers.Container, error)
-	Create(ctx context.Context, input localcontainers.CreateInput) (localcontainers.Container, error)
-	Act(ctx context.Context, input localcontainers.ActionInput) (localcontainers.Container, error)
-	BulkDelete(ctx context.Context, containerIDs []string) (localcontainers.DeleteResult, error)
-	PruneMissing(ctx context.Context) (localcontainers.DeleteResult, error)
-	UpdatePlan(ctx context.Context, input localcontainers.UpdatePlanInput) (localcontainers.UpdatePlan, error)
-	RunUpdateJob(ctx context.Context, input localcontainers.UpdateJobInput) (localcontainers.UpdateJobResult, error)
-	SetHostCallbackURL(runtimeName, baseURL string)
-	HostCallbackURL(runtimeName string) (string, bool)
-}
-
-type deployContainerService interface {
-	RuntimeStatus(ctx context.Context) (deployruntime.ContainerRuntimeStatus, error)
-	List(ctx context.Context) ([]deployruntime.ContainerDeployment, error)
-	Create(ctx context.Context, input deployruntime.ContainerCreateInput) (deployruntime.ContainerDeployment, error)
-	Act(ctx context.Context, input deployruntime.ContainerActionInput) (deployruntime.ContainerDeployment, error)
-	Delete(ctx context.Context, deploymentIDs []string) (localcontainers.DeleteResult, error)
-	ChildAttachState(ctx context.Context, input deployruntime.ContainerAttachStatusInput) (swarmruntime.LocalState, error)
-	AttachRequest(ctx context.Context, input deployruntime.ContainerAttachRequestInput) (deployruntime.ContainerAttachState, error)
-	AttachStatus(ctx context.Context, input deployruntime.ContainerAttachStatusInput) (deployruntime.ContainerAttachState, error)
-	AttachApprove(ctx context.Context, input deployruntime.ContainerAttachApproveInput) (deployruntime.ContainerAttachState, error)
-	FinalizeAttachFromHost(ctx context.Context, input deployruntime.ContainerAttachFinalizeInput) error
-	SyncCredentialBundle(ctx context.Context, input deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncCredentialBundle, error)
-	SyncAgentBundle(ctx context.Context, input deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncAgentBundle, error)
-	WorkspaceBootstrap(ctx context.Context, input deployruntime.ContainerWorkspaceBootstrapRequestInput) ([]deployruntime.ContainerWorkspaceBootstrap, error)
-	AutoAttachChild(ctx context.Context) error
-	UnlockManagedLocalChildVaults(ctx context.Context) error
-}
-
-type remoteDeployService interface {
-	List(ctx context.Context) ([]remotedeploy.Session, error)
-	ListCached(ctx context.Context) ([]remotedeploy.Session, error)
-	Get(ctx context.Context, sessionID string, refresh bool) (remotedeploy.Session, error)
-	Create(ctx context.Context, input remotedeploy.CreateSessionInput) (remotedeploy.Session, error)
-	UpdateSettings(ctx context.Context, input remotedeploy.UpdateSettingsInput) (remotedeploy.Session, error)
-	Delete(ctx context.Context, input remotedeploy.DeleteSessionInput) (localcontainers.DeleteResult, error)
-	Start(ctx context.Context, input remotedeploy.StartSessionInput) (remotedeploy.Session, error)
-	RunUpdateJob(ctx context.Context, input remotedeploy.UpdateJobInput) (remotedeploy.UpdateJobResult, error)
-	Approve(ctx context.Context, input remotedeploy.ApproveSessionInput) (remotedeploy.Session, error)
-	ChildStatus(ctx context.Context, input remotedeploy.ChildStatusInput) (remotedeploy.Session, error)
-	SyncCredentialBundle(ctx context.Context, input remotedeploy.SyncCredentialRequestInput) (deployruntime.ContainerSyncCredentialBundle, error)
 }
 
 type permissionService interface {
 	ListPermissions(sessionID string, limit int) ([]pebblestore.PermissionRecord, error)
 	ListPending(sessionID string, limit int) ([]pebblestore.PermissionRecord, error)
+	ListPendingSummaries(accountScopeID, principalID string, limit int) ([]pebblestore.PermissionSummary, error)
 	PendingCount(sessionID string) (int, error)
 	CreatePending(input permission.CreateInput) (pebblestore.PermissionRecord, error)
 	Resolve(sessionID, permissionID, action, reason string) (pebblestore.PermissionRecord, error)
@@ -241,18 +188,18 @@ type permissionService interface {
 	CancelRunPending(sessionID, runID, reason string) ([]pebblestore.PermissionRecord, error)
 	CurrentPolicy() (permission.Policy, error)
 	CurrentPolicyForAccount(accountScopeID string) (permission.Policy, error)
+	UpdateCapabilityPoliciesForAccount(accountScopeID string, sessionDeploy permission.SessionDeployPolicy, planAcceptance permission.PlanAcceptancePolicy) (permission.Policy, error)
+	UpdateBashApprovalProfileForAccount(accountScopeID string, profile permission.BashApprovalProfile) (permission.Policy, error)
 	UpsertRule(rule permission.PolicyRule) (permission.PolicyRule, error)
 	UpsertRuleForAccount(accountScopeID string, rule permission.PolicyRule) (permission.PolicyRule, error)
 	RemoveRule(ruleID string) (bool, error)
 	RemoveRuleForAccount(accountScopeID, ruleID string) (bool, error)
 	ResetPolicy() (permission.Policy, error)
 	ResetPolicyForAccount(accountScopeID string) (permission.Policy, error)
-	ApplyManagedPolicyState(state permission.ManagedPolicyState) (permission.ManagedPolicyState, error)
 	ExplainTool(mode, toolName, toolArguments string, overlay *permission.Policy) (permission.PolicyExplain, error)
 	ExplainToolForAccount(accountScopeID, mode, toolName, toolArguments string, overlay *permission.Policy) (permission.PolicyExplain, error)
 	ResolveWithPolicy(sessionID, permissionID, action, reason string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
 	ResolveWithPolicyAndArguments(sessionID, permissionID, action, reason, approvedArguments string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
-	StoreMirroredPermission(record pebblestore.PermissionRecord) error
 	MarkToolStarted(sessionID, runID, callID string, step int, startedAt int64) (pebblestore.PermissionRecord, bool, error)
 	MarkToolCompleted(sessionID, runID, callID string, step int, result tool.Result, completedAt int64) (pebblestore.PermissionRecord, bool, error)
 	SetBypassPermissions(enabled bool)
@@ -300,9 +247,10 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		agents:               agentSvc,
 		model:                modelSvc,
 		runner:               runSvc,
-		runStreams:           newRunStreamManager(),
-		v3SessionStreams:     newSessionV3StreamHub(),
+		runStreams:           newRunControlAllocator(),
 		v3RealtimeOutbox:     newV3RealtimeOutboxHub(),
+		v3LiveHub:            newV3LiveHub(),
+		v3LivePatchEnabled:   v3LivePatchDefaultEnabled,
 		sessions:             sessionSvc,
 		workspace:            workspaceSvc,
 		discovery:            discoverySvc,
@@ -315,9 +263,8 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		startedAt:            time.Now(),
 		codexOAuthSessions:   make(map[string]*codexOAuthSession),
 		desktopLocalSessions: newDesktopLocalSessionManager(),
-		remotePairingPending: make(map[string]swarmRemotePairingPendingRequest),
 		gitRealtime:          nil,
-		authorityConnections: newAuthorityConnectionRegistry(),
+		reviewCommitActive:   make(map[string]string),
 		runCtx:               runCtx,
 		runCancel:            runCancel,
 	}
@@ -325,12 +272,72 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		server.desktopLocalSessions.server = server
 	}
 	if permissionSvc, ok := permSvc.(*permission.Service); ok {
-		permissionSvc.SetHostedSync(NewManagedHostPermissionControlClient(server))
+		permissionSvc.SetSummaryRealtimePublisher(server.publishPermissionSummaryV3Realtime)
+		permissionSvc.SetPermissionRealtimePublisher(func(sessionID string, record pebblestore.PermissionRecord) error {
+			_, _, err := server.publishSessionV3PermissionUpdatedFromRecord(identity.Principal{}, sessionID, record)
+			return err
+		})
+	}
+	if notificationSvc, ok := notificationSvc.(*notification.Service); ok {
+		notificationSvc.SetRealtimePublisher(server.publishNotificationV3Realtime)
 	}
 	if sessionSvc != nil {
 		server.v3SessionExecutor = newSessionV3Executor(server)
+		server.planLifecycle = sessionruntime.NewPlanLifecycleService(sessionSvc)
+		server.planLifecycle.SetApplySessionMutation(server.applySessionV3PrimaryMutation)
 	}
+	server.gitRealtime = newGitRealtimeManager(server)
 	return server
+}
+
+func (s *Server) SetLongSessionDiagnostics(recorder *longsessiondiag.Recorder) {
+	if s != nil {
+		s.longSessionDiagnostics = recorder
+	}
+}
+
+func (s *Server) LongSessionSnapshot() map[string]any {
+	if s == nil || s.longSessionDiagnostics == nil {
+		return nil
+	}
+	legacy := map[string]any(nil)
+	if s.hub != nil {
+		stats := s.hub.Stats()
+		legacy = map[string]any{"clients": stats.ConnectedClients, "subscriptions": stats.Subscriptions, "pending_messages": stats.PendingMessages}
+	}
+	executor := map[string]any(nil)
+	if s.v3SessionExecutor != nil {
+		executor = s.v3SessionExecutor.diagnosticsSnapshot()
+	}
+	return map[string]any{"active_api_runs": s.activeRuns.Load(), "run_stream": s.runStreams.diagnosticsSnapshot(), "v3_executor": executor, "realtime_outbox": s.v3RealtimeOutbox.diagnosticsSnapshot(), "live_patch": s.v3LiveHub.diagnosticsSnapshot(), "legacy_hub": legacy}
+}
+
+func (s *Server) SetCodexAccountClient(client codexAccountClient) {
+	if s == nil {
+		return
+	}
+	s.codexAccount = client
+}
+
+func (s *Server) SetModelProfileService(service *modelprofile.Service) {
+	if s == nil {
+		return
+	}
+	s.modelProfiles = service
+}
+
+func (s *Server) SetSwarmProfileService(service *modelprofile.SwarmService) {
+	if s == nil {
+		return
+	}
+	s.swarmProfiles = service
+}
+
+func (s *Server) SetWebPushService(service *webpush.Service) {
+	if s == nil {
+		return
+	}
+	s.webPush = service
 }
 
 func (s *Server) SetBypassPermissions(enabled bool) {
@@ -415,11 +422,23 @@ func (s *Server) SetVoiceService(voiceSvc *voice.Service) {
 	s.voice = voiceSvc
 }
 
+func (s *Server) SetPlanLifecycleService(planLifecycle *sessionruntime.PlanLifecycleService) {
+	if s == nil {
+		return
+	}
+	s.planLifecycle = planLifecycle
+}
+
 func (s *Server) SetUISettingsService(uiSettingsSvc *uisettings.Service) {
 	if s == nil {
 		return
 	}
 	s.uiSettings = uiSettingsSvc
+	if uiSettingsSvc != nil && s.sessions != nil && s.runCtx != nil {
+		s.reviewAutoArchiveOnce.Do(func() {
+			go s.runSessionsV3ReviewAutoArchive(s.runCtx)
+		})
+	}
 }
 
 func (s *Server) SetTodoService(todoSvc *todo.Service) {
@@ -427,6 +446,16 @@ func (s *Server) SetTodoService(todoSvc *todo.Service) {
 		return
 	}
 	s.todos = todoSvc
+	if todoSvc != nil {
+		todoSvc.SetAITaskLifecyclePublisher(s.publishAITaskLifecycle)
+	}
+}
+
+func (s *Server) SetAITaskEnqueuer(enqueuer aiTaskEnqueuer) {
+	if s == nil {
+		return
+	}
+	s.aiTasks = enqueuer
 }
 
 func (s *Server) SetIntegrationService(integrationSvc *integrationruntime.Service) {
@@ -467,53 +496,11 @@ func (s *Server) swarmLocalNode() (pebblestore.SwarmLocalNodeRecord, bool, error
 	return s.swarmStore.GetLocalNode()
 }
 
-func (s *Server) SetContainerProfileService(containerProfileSvc containerProfileService) {
-	if s == nil {
-		return
-	}
-	s.containerProfiles = containerProfileSvc
-}
-
-func (s *Server) SetLocalContainerService(localContainerSvc localContainerService) {
-	if s == nil {
-		return
-	}
-	s.localContainers = localContainerSvc
-}
-
-func (s *Server) SetDeployContainerService(deployContainerSvc deployContainerService) {
-	if s == nil {
-		return
-	}
-	s.deployContainers = deployContainerSvc
-}
-
-func (s *Server) SetRemoteDeployService(remoteDeploySvc remoteDeployService) {
-	if s == nil {
-		return
-	}
-	s.remoteDeploys = remoteDeploySvc
-}
-
-func (s *Server) SetSwarmNodeStore(store *pebblestore.SwarmNodeStore) {
-	if s == nil {
-		return
-	}
-	s.swarmNodes = store
-}
-
 func (s *Server) SetSwarmDesktopTargetSelectionStore(store *pebblestore.SwarmDesktopTargetSelectionStore) {
 	if s == nil {
 		return
 	}
 	s.swarmDesktopTargetSelection = store
-}
-
-func (s *Server) SetSessionRouteStore(store *pebblestore.SessionRouteStore) {
-	if s == nil {
-		return
-	}
-	s.sessionRoutes = store
 }
 
 func (s *Server) SetShutdownHandler(handler func(reason string)) {
@@ -527,7 +514,9 @@ func (s *Server) BeginShutdown() {
 	if s == nil {
 		return
 	}
+	s.activeRunMu.Lock()
 	s.shuttingDown.Store(true)
+	s.activeRunMu.Unlock()
 }
 
 func (s *Server) CancelInFlightRuns() {
@@ -547,6 +536,9 @@ func (s *Server) WaitForInFlightRuns(timeout time.Duration) bool {
 	if s == nil {
 		return true
 	}
+	s.activeRunMu.Lock()
+	s.shuttingDown.Store(true)
+	s.activeRunMu.Unlock()
 	if timeout <= 0 {
 		s.runWG.Wait()
 		return true
@@ -575,12 +567,18 @@ func (s *Server) ActiveRunCount() int {
 	return int(count)
 }
 
-func (s *Server) beginActiveRun() {
+func (s *Server) beginActiveRun() bool {
 	if s == nil {
-		return
+		return false
+	}
+	s.activeRunMu.Lock()
+	defer s.activeRunMu.Unlock()
+	if s.shuttingDown.Load() {
+		return false
 	}
 	s.runWG.Add(1)
 	s.activeRuns.Add(1)
+	return true
 }
 
 func (s *Server) endActiveRun() {
@@ -601,13 +599,10 @@ func (s *Server) apiMux() *http.ServeMux {
 	s.registerAuthVaultRoutes(mux)
 	s.registerOnboardingRoutes(mux)
 	s.registerSwarmRoutes(mux)
-	s.registerFlowRoutes(mux)
-	s.registerDeployRoutes(mux)
 	s.registerAgentRoutes(mux)
 	s.registerProviderRoutes(mux)
 	s.registerWorkspaceRoutes(mux)
 	s.registerRuntimeRoutes(mux)
-	s.registerPeerRoutes(mux)
 	return mux
 }
 
@@ -626,224 +621,6 @@ func (s *Server) LocalTransportHandler() http.Handler {
 	})
 }
 
-func hostedSessionHostBackendURL(cfg startupconfig.FileConfig) string {
-	if endpoint := canonicalRemoteSwarmEndpoint(cfg, onboardingResponse{}); endpoint != "" {
-		return endpoint
-	}
-	host := strings.TrimSpace(cfg.AdvertiseHost)
-	if host == "" {
-		host = strings.TrimSpace(cfg.Host)
-	}
-	if host == "" {
-		return ""
-	}
-	if strings.HasPrefix(host, "https://") || strings.HasPrefix(host, "http://") {
-		return strings.TrimSuffix(host, "/")
-	}
-	port := cfg.AdvertisePort
-	if port < 1 || port > 65535 {
-		port = cfg.Port
-	}
-	if port < 1 || port > 65535 {
-		return ""
-	}
-	return "http://" + net.JoinHostPort(host, strconv.Itoa(port))
-}
-
-type primaryRoutedSessionOpenContract struct {
-	PrimaryRequest  sessionCreateRequest
-	ChildRequest    sessionCreateRequest
-	RouteMetadata   map[string]any
-	Descriptor      sessionruntime.HostedSessionDescriptor
-	Route           pebblestore.SessionRouteRecord
-	ProxyTarget     swarmTarget
-	RequireWorktree bool
-	WorkspaceRoute  targetWorkspaceRoute
-}
-
-func routedSessionOpenDispatchTarget(target swarmTarget, authorityHostSwarmID, workspaceBindingID string) swarmTarget {
-	authorityHostSwarmID = strings.TrimSpace(authorityHostSwarmID)
-	if authorityHostSwarmID == "" || strings.TrimSpace(workspaceBindingID) == "" || strings.EqualFold(authorityHostSwarmID, strings.TrimSpace(target.SwarmID)) || strings.EqualFold(authorityHostSwarmID, strings.TrimSpace(target.HostSwarmID)) {
-		return target
-	}
-	authority := target
-	authority.SwarmID = authorityHostSwarmID
-	authority.Name = authorityHostSwarmID
-	authority.Role = "authority"
-	authority.Relationship = "managed"
-	authority.Kind = "authority"
-	authority.HostSwarmID = authorityHostSwarmID
-	authority.Online = true
-	authority.Selectable = true
-	return authority
-}
-
-func routedSessionRequiresWorkspaceBinding(target swarmTarget) bool {
-	if strings.TrimSpace(target.HostSwarmID) != "" {
-		return true
-	}
-	switch strings.ToLower(strings.TrimSpace(target.Kind)) {
-	case "local", "local-container", "mirrored":
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Principal, req sessionCreateRequest, target swarmTarget, state swarmruntime.LocalState, hostBackendURL, sessionID string) (primaryRoutedSessionOpenContract, error) {
-	var contract primaryRoutedSessionOpenContract
-	if !principal.Valid() {
-		return contract, identity.ErrPrincipalRequired
-	}
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return contract, errors.New("session id is required")
-	}
-	hostSwarmID := strings.TrimSpace(state.Node.SwarmID)
-	if hostSwarmID == "" {
-		return contract, errors.New("host swarm id is required")
-	}
-	childSwarmID := strings.TrimSpace(target.SwarmID)
-	if childSwarmID == "" {
-		return contract, errors.New("routed session child swarm id is required")
-	}
-	hostBackendURL = strings.TrimSpace(hostBackendURL)
-	if hostBackendURL == "" {
-		return contract, errors.New("routed session host backend url is required")
-	}
-
-	primaryReq := req
-	primaryReq.WorkspacePath = strings.TrimSpace(primaryReq.WorkspacePath)
-	primaryReq.HostWorkspacePath = strings.TrimSpace(primaryReq.HostWorkspacePath)
-	primaryReq.RuntimeWorkspacePath = strings.TrimSpace(primaryReq.RuntimeWorkspacePath)
-	primaryReq.WorkspaceBindingID = strings.TrimSpace(primaryReq.WorkspaceBindingID)
-	primaryReq.WorkspaceName = strings.TrimSpace(primaryReq.WorkspaceName)
-	bindingRequired := routedSessionRequiresWorkspaceBinding(target)
-	workspaceBacked := bindingRequired || primaryReq.WorkspaceBindingID != "" || len(target.WorkspaceRoutes) > 0
-	if workspaceBacked && (primaryReq.WorkspacePath != "" || primaryReq.HostWorkspacePath != "" || primaryReq.RuntimeWorkspacePath != "") {
-		return contract, errors.New("routed session workspace paths must be resolved from workspace binding")
-	}
-	if err := validateRoutedSessionCreateMetadata(primaryReq.Metadata); err != nil {
-		return contract, err
-	}
-	worktreeMode, requireWorktree, err := terminalPeerSessionOpenWorktreeMode(primaryReq)
-	if err != nil {
-		return contract, err
-	}
-	primaryReq.WorktreeMode = worktreeMode
-	binding, bindingOK, bindingErr := s.resolveAccountRoutedSessionWorkspaceBinding(principal, primaryReq, target)
-	if bindingErr != nil {
-		return contract, bindingErr
-	}
-	if workspaceBacked && !bindingOK {
-		return contract, errors.New("routed session workspace binding is required")
-	}
-	if bindingOK {
-		resolvedRoute, err := newTargetWorkspaceRoute(principal.AccountScopeID, target, binding)
-		if err != nil {
-			return contract, err
-		}
-		matchedRoute := false
-		for _, route := range target.WorkspaceRoutes {
-			if strings.EqualFold(route.WorkspaceBindingID, resolvedRoute.WorkspaceBindingID) {
-				matchedRoute = true
-				break
-			}
-		}
-		if len(target.WorkspaceRoutes) > 0 && !matchedRoute {
-			return contract, errors.New("routed session workspace binding is not advertised by target route identity")
-		}
-	}
-	workspaceRoute := targetWorkspaceRoute{}
-	workspaceBindingID := ""
-	childRuntimePath := ""
-	routeHostSwarmID := ""
-	if bindingOK {
-		workspaceRoute, err = newTargetWorkspaceRoute(principal.AccountScopeID, target, binding)
-		if err != nil {
-			return contract, err
-		}
-		workspaceBindingID = workspaceRoute.WorkspaceBindingID
-		childRuntimePath = workspaceRoute.RuntimeWorkspacePath
-		routeHostSwarmID = workspaceRoute.HostSwarmID
-		primaryReq.WorkspaceBindingID = workspaceRoute.WorkspaceBindingID
-		primaryReq.WorkspaceName = workspaceRoute.WorkspaceName
-		primaryReq.WorkspacePath = workspaceRoute.HostWorkspacePath
-		primaryReq.HostWorkspacePath = workspaceRoute.HostWorkspacePath
-		primaryReq.RuntimeWorkspacePath = workspaceRoute.RuntimeWorkspacePath
-	} else if !workspaceBacked {
-		routeHostSwarmID = strings.TrimSpace(target.HostSwarmID)
-	}
-	if childRuntimePath == "" {
-		return contract, errors.New("runtime_workspace_path is required for routed session creation")
-	}
-	if routeHostSwarmID == "" {
-		return contract, errors.New("routed session host swarm id is required")
-	}
-
-	childReq := primaryReq
-	childReq.WorkspacePath = childRuntimePath
-	childReq.HostWorkspacePath = childRuntimePath
-	childReq.RuntimeWorkspacePath = childRuntimePath
-	if bindingOK {
-		childReq.WorkspaceName = workspaceRoute.WorkspaceName
-	}
-	if strings.TrimSpace(childReq.WorkspaceName) == "" {
-		return contract, errors.New("workspace_name is required for routed session creation")
-	}
-
-	routeID := "swarm:" + childSwarmID + ":" + childRuntimePath
-	if workspaceBindingID != "" {
-		routeID = workspaceRoute.routeID()
-	}
-	routeHostWorkspacePath := primaryReq.HostWorkspacePath
-	if bindingOK {
-		routeHostWorkspacePath = workspaceRoute.HostWorkspacePath
-	}
-	routeMetadata := map[string]any{
-		"swarm_route_id":                                         routeID,
-		"swarm_route_label":                                      firstNonEmpty(strings.TrimSpace(target.Name), childSwarmID),
-		"swarm_route_target_kind":                                strings.TrimSpace(target.Kind),
-		"owner_transport":                                        "routed_session_peer",
-		sessionruntime.HostedSessionMetadataHostSwarmID:          routeHostSwarmID,
-		sessionruntime.HostedSessionMetadataHostBackendURL:       hostBackendURL,
-		sessionruntime.HostedSessionMetadataChildSwarmID:         childSwarmID,
-		sessionruntime.HostedSessionMetadataHostWorkspacePath:    routeHostWorkspacePath,
-		sessionruntime.HostedSessionMetadataRuntimeWorkspacePath: childRuntimePath,
-		"swarm_routed_workspace_binding_id":                      workspaceBindingID,
-	}
-
-	contract = primaryRoutedSessionOpenContract{
-		PrimaryRequest: primaryReq,
-		ChildRequest:   childReq,
-		RouteMetadata:  routeMetadata,
-		Descriptor: sessionruntime.HostedSessionDescriptor{
-			HostSwarmID:          routeHostSwarmID,
-			HostBackendURL:       hostBackendURL,
-			HostWorkspacePath:    routeHostWorkspacePath,
-			RuntimeWorkspacePath: childRuntimePath,
-			ChildSwarmID:         childSwarmID,
-			OwnerTransport:       "routed_session_peer",
-		},
-		Route: pebblestore.SessionRouteRecord{
-			SessionID:            sessionID,
-			UserID:               strings.TrimSpace(principal.UserID),
-			AccountScopeID:       strings.TrimSpace(principal.AccountScopeID),
-			ChildSwarmID:         childSwarmID,
-			HostSwarmID:          routeHostSwarmID,
-			HostContainerID:      strings.TrimSpace(binding.DestinationContainerID),
-			RuntimeWorkspacePath: childRuntimePath,
-			WorkspaceBindingID:   workspaceBindingID,
-			PlacementGeneration:  workspaceRoute.PlacementGeneration,
-			BindingGeneration:    workspaceRoute.BindingGeneration,
-		},
-		ProxyTarget:     routedSessionOpenDispatchTarget(target, routeHostSwarmID, workspaceBindingID),
-		RequireWorktree: requireWorktree,
-		WorkspaceRoute:  workspaceRoute,
-	}
-	return contract, nil
-}
-
 func (s *Server) DesktopHandler() http.Handler {
 	apiHandler := s.withDesktopLocalSession(s.withAuth(s.withVaultGate(s.withJSON(s.apiMux()))))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -856,17 +633,6 @@ func (s *Server) DesktopHandler() http.Handler {
 }
 
 func (s *Server) handleDesktopStream(w http.ResponseWriter, r *http.Request) {
-	remoteTarget, err := s.currentRemoteSwarmTargetForRequest(r)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	if remoteTarget != nil {
-		if err := s.proxyRequestToSwarmTarget(w, r, *remoteTarget); err != nil {
-			writeError(w, http.StatusBadGateway, err)
-		}
-		return
-	}
 	if s.hub == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("stream hub not configured"))
 		return
@@ -906,6 +672,10 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSystemShutdown(w http.ResponseWriter, r *http.Request) {
+	if !isLocalAdministrativeRequest(r) {
+		writeError(w, http.StatusForbidden, errors.New("host shutdown requires the local administrative transport"))
+		return
+	}
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
@@ -1178,7 +948,8 @@ func (s *Server) handleCodexAuth(w http.ResponseWriter, r *http.Request) {
 		)
 		switch authType {
 		case "api":
-			status, event, err = s.auth.SetCodexKeyForAccount(accountScopeID, req.APIKey)
+			writeError(w, http.StatusBadRequest, errors.New("codex api-key auth moved to the openai provider; configure provider=openai through /v1/auth/credentials"))
+			return
 		case "oauth":
 			status, event, err = s.auth.SetCodexOAuthForAccount(accountScopeID, req.AccessToken, req.RefreshToken, req.ExpiresAt, req.AccountID)
 		default:
@@ -1192,7 +963,7 @@ func (s *Server) handleCodexAuth(w http.ResponseWriter, r *http.Request) {
 		if event != nil {
 			s.hub.Publish(*event)
 		}
-		autoDefaults, defaultsErr := s.applyUtilityModelDefaultsForAccount(accountScopeID, principal.UserID, "codex")
+		autoDefaults, defaultsErr := s.hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(accountScopeID, principal.UserID, "codex")
 		if defaultsErr != nil {
 			status.AutoDefaults = &auth.AutoDefaultsStatus{Error: defaultsErr.Error()}
 		} else if autoDefaults != nil {
@@ -1253,7 +1024,17 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("provider is required"))
 			return
 		}
-		status, event, err := s.auth.UpsertCredential(auth.CredentialUpsertInput{
+		if req.Active {
+			if firstRun, _, _, firstRunErr := s.firstOnboardingProviderHydrationState(accountScopeID); firstRunErr != nil {
+				writeError(w, http.StatusBadRequest, firstRunErr)
+				return
+			} else if firstRun {
+				writeError(w, http.StatusBadRequest, errors.New("first onboarding provider credential must use /v1/onboarding/provider/credential"))
+				return
+			}
+		}
+		wantsActive := req.Active
+		input := auth.CredentialUpsertInput{
 			ID:             req.ID,
 			Provider:       provider,
 			AccountScopeID: accountScopeID,
@@ -1265,8 +1046,29 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 			RefreshToken:   req.RefreshToken,
 			ExpiresAt:      req.ExpiresAt,
 			AccountID:      req.AccountID,
-			Active:         req.Active,
+			Active:         false,
+		}
+		connection, verifyErr := s.verifyCredentialMaterialForAccount(r.Context(), accountScopeID, provideriface.AuthCredential{
+			ID:           strings.ToLower(strings.TrimSpace(input.ID)),
+			Provider:     provider,
+			Type:         input.Type,
+			Label:        input.Label,
+			Tags:         append([]string(nil), input.Tags...),
+			APIKey:       input.APIKey,
+			AccessToken:  input.AccessToken,
+			RefreshToken: input.RefreshToken,
+			ExpiresAt:    input.ExpiresAt,
+			AccountID:    input.AccountID,
 		})
+		if verifyErr != nil {
+			writeError(w, http.StatusInternalServerError, verifyErr)
+			return
+		}
+		if !authCredentialVerificationAccepted(connection) {
+			writeError(w, http.StatusBadRequest, authCredentialVerificationError(connection))
+			return
+		}
+		status, event, err := s.auth.UpsertCredential(input)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -1274,17 +1076,35 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 		if event != nil {
 			s.hub.Publish(*event)
 		}
-		connection, verifyErr := s.verifyAuthCredentialConnectionForAccount(r.Context(), accountScopeID, provider, status.ID)
-		if verifyErr != nil {
-			writeError(w, http.StatusInternalServerError, verifyErr)
-			return
+		if connection != nil {
+			updated, updateEvent, updateErr := s.auth.UpdateCredentialConnectionForAccount(accountScopeID, provider, status.ID, connection)
+			if updateErr != nil {
+				writeError(w, http.StatusInternalServerError, updateErr)
+				return
+			}
+			status = updated
+			if updateEvent != nil {
+				s.hub.Publish(*updateEvent)
+			}
+		}
+		if wantsActive {
+			status, event, err = s.auth.SetActiveCredentialForAccount(accountScopeID, provider, status.ID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if event != nil {
+				s.hub.Publish(*event)
+			}
 		}
 		status.Connection = connection
-		autoDefaults, defaultsErr := s.applyUtilityModelDefaultsForAccount(accountScopeID, principal.UserID, provider)
-		if defaultsErr != nil {
-			status.AutoDefaults = &auth.AutoDefaultsStatus{Error: defaultsErr.Error()}
-		} else if autoDefaults != nil {
-			status.AutoDefaults = autoDefaults
+		if wantsActive {
+			autoDefaults, defaultsErr := s.hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(accountScopeID, principal.UserID, provider)
+			if defaultsErr != nil {
+				status.AutoDefaults = &auth.AutoDefaultsStatus{Error: defaultsErr.Error()}
+			} else if autoDefaults != nil {
+				status.AutoDefaults = autoDefaults
+			}
 		}
 		writeJSON(w, http.StatusOK, status)
 	default:
@@ -1364,7 +1184,21 @@ func (s *Server) handleAuthCredentialActive(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, errors.New("provider is required"))
 		return
 	}
-	status, event, err := s.auth.SetActiveCredentialForAccount(accountScopeID, provider, req.ID)
+	credentialID := strings.ToLower(strings.TrimSpace(req.ID))
+	if credentialID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("id is required"))
+		return
+	}
+	connection, verifyErr := s.verifyAuthCredentialConnectionForAccount(r.Context(), accountScopeID, provider, credentialID)
+	if verifyErr != nil {
+		writeError(w, http.StatusInternalServerError, verifyErr)
+		return
+	}
+	if !authCredentialVerificationAccepted(connection) {
+		writeError(w, http.StatusBadRequest, authCredentialVerificationError(connection))
+		return
+	}
+	status, event, err := s.auth.SetActiveCredentialForAccount(accountScopeID, provider, credentialID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1372,13 +1206,8 @@ func (s *Server) handleAuthCredentialActive(w http.ResponseWriter, r *http.Reque
 	if event != nil {
 		s.hub.Publish(*event)
 	}
-	connection, verifyErr := s.verifyAuthCredentialConnectionForAccount(r.Context(), accountScopeID, provider, status.ID)
-	if verifyErr != nil {
-		writeError(w, http.StatusInternalServerError, verifyErr)
-		return
-	}
 	status.Connection = connection
-	autoDefaults, defaultsErr := s.applyUtilityModelDefaultsForAccount(accountScopeID, principal.UserID, provider)
+	autoDefaults, defaultsErr := s.hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(accountScopeID, principal.UserID, provider)
 	if defaultsErr != nil {
 		status.AutoDefaults = &auth.AutoDefaultsStatus{Error: defaultsErr.Error()}
 	} else if autoDefaults != nil {
@@ -1498,12 +1327,28 @@ func (s *Server) handleModelPreference(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
 	if _, ok := PrincipalFromRequest(r); !ok {
 		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	if r.Method == http.MethodPost {
+		refresh, err := s.model.RefreshCatalogManual(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]any{
+				"ok":      false,
+				"error":   err.Error(),
+				"refresh": refresh,
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"refresh": refresh,
+		})
+		return
+	}
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
 		return
 	}
 
@@ -1543,6 +1388,7 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 		if metaOK {
 			body["meta"] = meta
 		}
+		body["catalog_status"] = catalogStatusPayload(meta, metaOK)
 		writeJSON(w, http.StatusOK, body)
 		return
 	}
@@ -1571,7 +1417,44 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	if metaOK {
 		body["meta"] = meta
 	}
+	body["catalog_status"] = catalogStatusPayload(meta, metaOK)
 	writeJSON(w, http.StatusOK, body)
+}
+
+func catalogStatusPayload(meta pebblestore.ModelCatalogMeta, ok bool) map[string]any {
+	status := map[string]any{
+		"configured": ok,
+	}
+	if !ok {
+		return status
+	}
+	status["source"] = meta.Source
+	status["source_url"] = meta.SourceURL
+	status["version_url"] = meta.VersionURL
+	status["snapshot_id"] = meta.SnapshotID
+	status["snapshot_version"] = meta.SnapshotVersion
+	status["generated_at"] = meta.GeneratedAt
+	status["fetched_at"] = meta.FetchedAt
+	status["last_checked_at"] = meta.LastCheckedAt
+	status["expires_at"] = meta.ExpiresAt
+	status["record_count"] = meta.RecordCount
+	status["model_count"] = meta.ModelCount
+	status["pinned_snapshot_id"] = meta.PinnedSnapshotID
+	status["pinned_snapshot_version"] = meta.PinnedSnapshotVersion
+	status["live_snapshot_id"] = meta.LiveSnapshotID
+	status["live_snapshot_version"] = meta.LiveSnapshotVersion
+	status["live_checked_at"] = meta.LiveCheckedAt
+	status["using_cache_fallback"] = meta.UsingCacheFallback
+	status["last_error"] = meta.LastError
+	status["last_error_at"] = meta.LastErrorAt
+	status["last_refresh_reason"] = meta.LastRefreshReason
+	if meta.PinnedSnapshotVersion != "" && meta.SnapshotVersion != "" {
+		status["matches_pinned_snapshot"] = meta.PinnedSnapshotID == meta.SnapshotID && meta.PinnedSnapshotVersion == meta.SnapshotVersion
+	}
+	if meta.LiveSnapshotVersion != "" && meta.SnapshotVersion != "" {
+		status["matches_live_snapshot"] = meta.LiveSnapshotID == meta.SnapshotID && meta.LiveSnapshotVersion == meta.SnapshotVersion
+	}
+	return status
 }
 
 func (s *Server) handleModelFavorites(w http.ResponseWriter, r *http.Request) {
@@ -2126,242 +2009,6 @@ func (s *Server) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleWorkspaceTodos(w http.ResponseWriter, r *http.Request) {
-	if s.todos == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("todo service not configured"))
-		return
-	}
-	if s.workspace == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("workspace service not configured"))
-		return
-	}
-	principal, principalOK := PrincipalFromRequest(r)
-	if !principalOK {
-		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
-		return
-	}
-	resolveWorkspacePath := func(raw string) (string, error) {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			return "", errors.New("workspace path is required")
-		}
-		scope, err := s.workspace.ScopeForPathForPrincipal(principal, raw)
-		if err != nil {
-			return "", err
-		}
-		if scope.Matched && strings.TrimSpace(scope.WorkspacePath) != "" {
-			return strings.TrimSpace(scope.WorkspacePath), nil
-		}
-		return "", errAccountOwnedWorkspacePathRequired
-	}
-
-	switch r.Method {
-	case http.MethodGet:
-		workspacePath, err := resolveWorkspacePath(r.URL.Query().Get("workspace_path"))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		ownerKind, err := normalizeWorkspaceTodoOwnerKindRequest(r.URL.Query().Get("owner_kind"))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
-		items, summary, err := s.todos.List(workspacePath, todo.ListOptions{OwnerKind: ownerKind, SessionID: sessionID})
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":             true,
-			"workspace_path": workspacePath,
-			"owner_kind":     ownerKind,
-			"session_id":     sessionID,
-			"items":          items,
-			"summary":        summary,
-		})
-	case http.MethodPost:
-		var req struct {
-			Action        string   `json:"action"`
-			WorkspacePath string   `json:"workspace_path"`
-			OwnerKind     string   `json:"owner_kind"`
-			ID            string   `json:"id"`
-			Text          string   `json:"text"`
-			Done          *bool    `json:"done"`
-			Priority      string   `json:"priority"`
-			Group         string   `json:"group"`
-			Tags          []string `json:"tags"`
-			InProgress    *bool    `json:"in_progress"`
-			SessionID     string   `json:"session_id"`
-			ParentID      string   `json:"parent_id"`
-			OrderedIDs    []string `json:"ordered_ids"`
-			Operations    []struct {
-				Action     string   `json:"action"`
-				ID         string   `json:"id"`
-				OwnerKind  string   `json:"owner_kind"`
-				Text       *string  `json:"text"`
-				Done       *bool    `json:"done"`
-				Priority   *string  `json:"priority"`
-				Group      *string  `json:"group"`
-				Tags       []string `json:"tags"`
-				InProgress *bool    `json:"in_progress"`
-				SessionID  *string  `json:"session_id"`
-				ParentID   *string  `json:"parent_id"`
-				OrderedIDs []string `json:"ordered_ids"`
-			} `json:"operations"`
-		}
-		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		workspacePath, err := resolveWorkspacePath(req.WorkspacePath)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		ownerKind, err := normalizeWorkspaceTodoOwnerKindRequest(req.OwnerKind)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		action := strings.ToLower(strings.TrimSpace(req.Action))
-		if action == "" {
-			action = "upsert"
-		}
-		switch action {
-		case "create":
-			item, summary, _, err := s.todos.Create(todo.CreateInput{
-				WorkspacePath: workspacePath,
-				OwnerKind:     ownerKind,
-				Text:          req.Text,
-				Priority:      req.Priority,
-				Group:         req.Group,
-				Tags:          req.Tags,
-				InProgress:    req.InProgress != nil && *req.InProgress,
-				SessionID:     req.SessionID,
-				ParentID:      req.ParentID,
-			})
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "item": item, "summary": summary})
-		case "update", "upsert":
-			priority := req.Priority
-			group := req.Group
-			sessionID := req.SessionID
-			if ownerKind == pebblestore.WorkspaceTodoOwnerKindAgent && strings.TrimSpace(sessionID) == "" {
-				sessionID = req.SessionID
-			}
-			item, summary, _, err := s.todos.Update(todo.UpdateInput{
-				WorkspacePath: workspacePath,
-				ID:            req.ID,
-				Text:          stringPointerIfPresent(req.Text),
-				Done:          req.Done,
-				Priority:      stringPointerIfPresent(priority),
-				Group:         stringPointerIfPresent(group),
-				Tags:          req.Tags,
-				InProgress:    req.InProgress,
-				SessionID:     stringPointerIfPresent(sessionID),
-				ParentID:      stringPointerIfPresent(req.ParentID),
-			}, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(sessionID)})
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "item": item, "summary": summary})
-		case "delete":
-			summary, _, err := s.todos.Delete(workspacePath, req.ID, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": strings.TrimSpace(req.ID), "summary": summary})
-		case "delete_done":
-			items, summary, _, err := s.todos.DeleteDone(workspacePath, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "items": items, "summary": summary})
-		case "delete_all":
-			items, summary, _, err := s.todos.DeleteAll(workspacePath, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "items": items, "summary": summary})
-		case "reorder":
-			items, summary, _, err := s.todos.Reorder(todo.ReorderInput{WorkspacePath: workspacePath, OwnerKind: ownerKind, OrderedIDs: req.OrderedIDs}, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "items": items, "summary": summary})
-		case "in_progress":
-			item, summary, _, err := s.todos.SetInProgress(workspacePath, req.ID, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "item": item, "summary": summary})
-		case "batch":
-			operations := make([]todo.BatchOperation, 0, len(req.Operations))
-			for _, rawOp := range req.Operations {
-				opOwnerKind := rawOp.OwnerKind
-				if strings.TrimSpace(opOwnerKind) == "" {
-					opOwnerKind = ownerKind
-				}
-				operations = append(operations, todo.BatchOperation{
-					Action:     rawOp.Action,
-					ID:         rawOp.ID,
-					OwnerKind:  opOwnerKind,
-					Text:       rawOp.Text,
-					Done:       rawOp.Done,
-					Priority:   rawOp.Priority,
-					Group:      rawOp.Group,
-					Tags:       rawOp.Tags,
-					InProgress: rawOp.InProgress,
-					SessionID:  rawOp.SessionID,
-					ParentID:   rawOp.ParentID,
-					OrderedIDs: rawOp.OrderedIDs,
-				})
-			}
-			results, items, summary, _, err := s.todos.ApplyBatch(workspacePath, operations, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "results": results, "items": items, "summary": summary, "operation_count": len(operations)})
-		default:
-			writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported todo action %q", action))
-		}
-	default:
-		methodNotAllowed(w)
-	}
-}
-
-func stringPointerIfPresent(value string) *string {
-	if strings.TrimSpace(value) == "" {
-		return nil
-	}
-	copyValue := value
-	return &copyValue
-}
-
-func normalizeWorkspaceTodoOwnerKindRequest(raw string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", nil
-	}
-	normalized, ok := pebblestore.ParseWorkspaceTodoOwnerKind(trimmed)
-	if !ok {
-		return "", fmt.Errorf("owner_kind must be user or agent")
-	}
-	return normalized, nil
-}
-
 func (s *Server) handleContextSources(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -2418,18 +2065,12 @@ func (s *Server) handleContextSources(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
-	requestPath := ""
-	if r != nil && r.URL != nil {
-		requestPath = r.URL.Path
-	}
 	if s.sessions == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
 		return
 	}
 	principal, principalOK := PrincipalFromRequest(r)
-	flowRouteDiagLog("desktop_sessions_auth", "path", requestPath, "method", r.Method, "principal_ok", principalOK, "principal_valid", principal.Valid(), "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID, "principal_session_id", principal.SessionID)
 	if !principalOK || !principal.Valid() {
-		flowRouteDiagLog("desktop_sessions_reject", "path", requestPath, "method", r.Method, "reason", "principal_required")
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
@@ -2460,7 +2101,13 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, listErr)
 			return
 		}
-		responseSessions, enrichErr := s.enrichSessionSummariesForList(sessions)
+		visibleSessions := sessions[:0]
+		for _, session := range sessions {
+			if !sessionsV3SystemSidechat(session) {
+				visibleSessions = append(visibleSessions, session)
+			}
+		}
+		responseSessions, enrichErr := s.enrichSessionSummariesForList(visibleSessions)
 		if enrichErr != nil {
 			writeError(w, http.StatusInternalServerError, enrichErr)
 			return
@@ -2470,7 +2117,6 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			"sessions": responseSessions,
 		})
 	case http.MethodPost:
-		flowRouteDiagLog("desktop_session_create_start", "path", requestPath, "query_swarm_id", requestedSwarmTargetID(r), "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
 		req, principal, principalOK, err := s.decodeSessionCreateRequest(r)
 		if err != nil {
 			status := http.StatusBadRequest
@@ -2478,120 +2124,6 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				status = http.StatusUnauthorized
 			}
 			writeError(w, status, err)
-			return
-		}
-		flowRouteDiagLog("desktop_session_create_request", "workspace_binding_id", req.WorkspaceBindingID, "workspace_name", req.WorkspaceName, "workspace_path_present", strings.TrimSpace(req.WorkspacePath) != "", "host_workspace_path_present", strings.TrimSpace(req.HostWorkspacePath) != "", "runtime_workspace_path_present", strings.TrimSpace(req.RuntimeWorkspacePath) != "", "worktree_mode", req.WorktreeMode, "provider", req.Preference.Provider, "model", req.Preference.Model)
-		remoteTarget, err := s.currentRemoteSwarmTargetForRequest(r)
-		if err != nil {
-			writeError(w, http.StatusBadGateway, err)
-			return
-		}
-		if remoteTarget != nil {
-			flowRouteDiagLog("desktop_session_create_target", "target_swarm_id", remoteTarget.SwarmID, "target_kind", remoteTarget.Kind, "target_relationship", remoteTarget.Relationship, "target_host_swarm_id", remoteTarget.HostSwarmID, "target_backend_url_present", strings.TrimSpace(remoteTarget.BackendURL) != "", "workspace_route_count", len(remoteTarget.WorkspaceRoutes))
-			if s.sessionRoutes == nil {
-				writeError(w, http.StatusInternalServerError, errors.New("session route store not configured"))
-				return
-			}
-			cfg, cfgErr := s.loadStartupConfig()
-			if cfgErr != nil {
-				writeError(w, http.StatusInternalServerError, cfgErr)
-				return
-			}
-			state, stateErr := s.currentSwarmState(cfg)
-			if stateErr != nil {
-				writeError(w, http.StatusInternalServerError, stateErr)
-				return
-			}
-			hostBackendURL := hostedSessionHostBackendURL(cfg)
-			if resolved := s.resolveRemoteHostBackendURL(r.Context(), *remoteTarget); strings.TrimSpace(resolved) != "" {
-				hostBackendURL = strings.TrimSpace(resolved)
-			}
-			sessionID := sessionruntime.NewSessionID()
-			contract, contractErr := s.buildPrimaryRoutedSessionOpenContract(principal, req, *remoteTarget, state, hostBackendURL, sessionID)
-			if contractErr == nil {
-				flowRouteDiagLog("desktop_session_create_contract", "session_id", sessionID, "target_swarm_id", remoteTarget.SwarmID, "route_host_swarm_id", contract.Route.HostSwarmID, "route_child_swarm_id", contract.Route.ChildSwarmID, "route_workspace_binding_id", contract.Route.WorkspaceBindingID, "route_host_workspace_path", contract.Route.HostWorkspacePath, "route_runtime_workspace_path", contract.Route.RuntimeWorkspacePath, "child_workspace_path", contract.ChildRequest.WorkspacePath, "child_workspace_name", contract.ChildRequest.WorkspaceName)
-			}
-			if contractErr != nil {
-				writeError(w, http.StatusBadRequest, contractErr)
-				return
-			}
-			session, event, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(contract.PrimaryRequest, contract.RouteMetadata, false, sessionID, principal, principalOK)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
-			rollbackHostedCreate := func(cause error) {
-				if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
-					log.Printf("hosted session create rollback failed session_id=%q err=%v", session.ID, cleanupErr)
-				}
-				writeError(w, http.StatusBadGateway, cause)
-			}
-			routeRecord := contract.Route
-			routeRecord.CreatedAt = session.CreatedAt
-			routeRecord.UpdatedAt = session.UpdatedAt
-			if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
-				if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
-					log.Printf("hosted session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
-				}
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			childDescriptor := contract.Descriptor
-			var childResp struct {
-				OK      bool                        `json:"ok"`
-				Session pebblestore.SessionSnapshot `json:"session"`
-				Warning string                      `json:"warning,omitempty"`
-			}
-			flowRouteDiagLog("desktop_session_create_peer_open", "session_id", session.ID, "target_swarm_id", contract.ProxyTarget.SwarmID, "target_backend_url_present", strings.TrimSpace(contract.ProxyTarget.BackendURL) != "", "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
-			if err := s.postPeerJSONToSwarmTarget(r.Context(), contract.ProxyTarget, "/v1/swarm/peer/sessions/open", peerSessionOpenRequest{
-				SessionID: session.ID,
-				Request:   contract.ChildRequest,
-				Hosted:    childDescriptor,
-				Route:     routeRecord,
-				Principal: principal,
-			}, &childResp); err != nil {
-				rollbackHostedCreate(hostedSessionOpenError(contract.ProxyTarget, err))
-				return
-			}
-			routeChanged := false
-			if syncedRoute, changed, syncErr := syncRoutedSessionRouteWithRealizedSession(routeRecord, childResp.Session, contract.RequireWorktree); syncErr != nil {
-				rollbackHostedCreate(syncErr)
-				return
-			} else if changed {
-				routeRecord = syncedRoute
-				routeChanged = true
-			}
-			flowRouteDiagLog("desktop_session_create_peer_open_success", "session_id", session.ID, "child_session_id", childResp.Session.ID, "child_workspace_path", childResp.Session.WorkspacePath, "route_workspace_binding_id", routeRecord.WorkspaceBindingID)
-			if routeChanged {
-				if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
-					if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
-						log.Printf("hosted session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
-					}
-					writeError(w, http.StatusInternalServerError, err)
-					return
-				}
-			}
-			if err := s.upsertTopologySessionRoute(routeRecord); err != nil {
-				if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
-					log.Printf("hosted session topology route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
-				}
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			syncedSession, syncErr := s.sessions.SyncHostedMirrorOpenState(session.ID, childResp.Session)
-			if syncErr != nil {
-				rollbackHostedCreate(syncErr)
-				return
-			}
-			session = syncedSession
-			if event != nil {
-				s.hub.Publish(*event)
-			}
-			writeJSON(w, http.StatusOK, map[string]any{
-				"ok":      true,
-				"session": session,
-				"warning": strings.TrimSpace(strings.Join([]string{warning, modeWarning, childResp.Warning}, " ")),
-			})
 			return
 		}
 		session, event, warning, modeWarning, err := s.createSessionFromRequest(req, principal, principalOK, nil, true)
@@ -2651,18 +2183,6 @@ func (s *Server) enrichSessionSummariesForList(sessions []pebblestore.SessionSna
 			defer wg.Done()
 			for index := range jobs {
 				session := sessions[index]
-				if flowRouteDiagMetadataMarksFlow(session.Metadata) {
-					flowRouteDiagLog("sessions_list_flow_session",
-						"session_id", session.ID,
-						"flow_id", flowRouteDiagMetadataValue(session.Metadata, "flow_id"),
-						"workspace_path", session.WorkspacePath,
-						"metadata_target_swarm_id", flowRouteDiagMetadataValue(session.Metadata, "target_swarm_id"),
-						"metadata_swarm_target_swarm_id", flowRouteDiagMetadataValue(session.Metadata, "swarm_target_swarm_id"),
-						"metadata_routed_child_swarm_id", flowRouteDiagMetadataValue(session.Metadata, sessionruntime.HostedSessionMetadataChildSwarmID),
-						"metadata_target_kind", flowRouteDiagMetadataValue(session.Metadata, "target_kind"),
-						"metadata_target_name", flowRouteDiagMetadataValue(session.Metadata, "target_name"),
-					)
-				}
 				pendingPermissionCount := 0
 				if s.perm != nil {
 					count, err := s.perm.PendingCount(session.ID)
@@ -2708,18 +2228,7 @@ func (s *Server) enrichSessionSummariesForList(sessions []pebblestore.SessionSna
 	return responseSessions, nil
 }
 
-func hostedSessionOpenError(target swarmTarget, err error) error {
-	if err == nil {
-		return nil
-	}
-	trimmed := strings.TrimSpace(err.Error())
-	if strings.HasPrefix(trimmed, "404 ") || strings.EqualFold(trimmed, http.StatusText(http.StatusNotFound)) {
-		return fmt.Errorf("child swarm %q at %q returned 404 for routed peer session open; the child runtime is missing the routed session API. Rebuild the child image/runtime and recreate the deployment", strings.TrimSpace(target.SwarmID), strings.TrimSpace(target.BackendURL))
-	}
-	return err
-}
-
-func (s *Server) rollbackHostedSessionCreate(sessionID string) error {
+func (s *Server) deleteSessionAndRoutes(sessionID string) error {
 	if s == nil {
 		return nil
 	}
@@ -2728,17 +2237,11 @@ func (s *Server) rollbackHostedSessionCreate(sessionID string) error {
 		return nil
 	}
 	var failures []string
-	if err := s.deleteTopologySessionRoute(sessionID); err != nil {
-		failures = append(failures, "delete topology session route: "+err.Error())
-	}
-	if s.sessionRoutes != nil {
-		if err := s.sessionRoutes.Delete(sessionID); err != nil {
-			failures = append(failures, "delete session route: "+err.Error())
-		}
-	}
 	if s.sessions != nil {
-		if err := s.sessions.DeleteSession(sessionID); err != nil {
+		if event, err := s.sessions.DeleteSessionWithEvent(sessionID); err != nil {
 			failures = append(failures, "delete session: "+err.Error())
+		} else if event != nil && s.hub != nil {
+			s.hub.Publish(*event)
 		}
 	}
 	if len(failures) == 0 {
@@ -2772,56 +2275,27 @@ func overridableSessionCreateMetadataKey(key string) bool {
 
 func (s *Server) verifySessionOwnershipForRequest(w http.ResponseWriter, r *http.Request, sessionID string) (identity.Principal, pebblestore.SessionSnapshot, bool) {
 	sessionID = strings.TrimSpace(sessionID)
-	path := ""
-	if r != nil && r.URL != nil {
-		path = r.URL.Path
-	}
 	if sessionID == "" {
-		flowRouteDiagLog("verify_session_ownership_reject", "reason", "empty_session_id", "path", path)
 		writeError(w, http.StatusBadRequest, errors.New("session id is required"))
 		return identity.Principal{}, pebblestore.SessionSnapshot{}, false
 	}
 	principal, ok := PrincipalFromRequest(r)
-	flowRouteDiagLog("verify_session_ownership_start", "path", path, "session_id", sessionID, "principal_ok", ok, "principal_valid", principal.Valid(), "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID, "principal_session_id", principal.SessionID, "principal_scope_source", principal.AccountScopeSource)
 	if !ok || !principal.Valid() {
-		flowRouteDiagLog("verify_session_ownership_reject", "reason", "principal_required", "path", path, "session_id", sessionID, "principal_ok", ok, "principal_valid", principal.Valid())
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return identity.Principal{}, pebblestore.SessionSnapshot{}, false
 	}
 	session, found, err := s.sessions.GetSession(sessionID)
 	if err != nil {
-		flowRouteDiagLog("verify_session_ownership_reject", "reason", "session_lookup_error", "path", path, "session_id", sessionID, "error", err)
 		writeError(w, http.StatusBadRequest, err)
 		return identity.Principal{}, pebblestore.SessionSnapshot{}, false
 	}
-	flowRouteDiagLog("verify_session_ownership_session_lookup", "path", path, "session_id", sessionID, "found", found, "session_user_id", session.UserID, "session_account_scope_id", session.AccountScopeID)
 	if found {
 		if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
-			flowRouteDiagLog("verify_session_ownership_reject", "reason", "session_account_scope_mismatch", "path", path, "session_id", sessionID, "session_account_scope_id", session.AccountScopeID, "principal_account_scope_id", principal.AccountScopeID)
 			writeSessionNotFound(w)
 			return identity.Principal{}, pebblestore.SessionSnapshot{}, false
 		}
-		flowRouteDiagLog("verify_session_ownership_success", "source", "session", "path", path, "session_id", sessionID, "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
 		return principal, session, true
 	}
-	if s.sessionRoutes != nil {
-		route, routeFound, routeErr := s.sessionRoutes.Get(sessionID)
-		if routeErr != nil {
-			flowRouteDiagLog("verify_session_ownership_reject", "reason", "route_lookup_error", "path", path, "session_id", sessionID, "error", routeErr)
-			writeError(w, http.StatusBadRequest, routeErr)
-			return identity.Principal{}, pebblestore.SessionSnapshot{}, false
-		}
-		flowRouteDiagLog("verify_session_ownership_route_lookup", "path", path, "session_id", sessionID, "found", routeFound, "route_user_id", route.UserID, "route_account_scope_id", route.AccountScopeID, "route_child_swarm_id", route.ChildSwarmID, "route_host_swarm_id", route.HostSwarmID)
-		if routeFound && strings.TrimSpace(route.AccountScopeID) != "" && strings.TrimSpace(route.AccountScopeID) == strings.TrimSpace(principal.AccountScopeID) {
-			if routeUserID := strings.TrimSpace(route.UserID); routeUserID == "" || routeUserID == strings.TrimSpace(principal.UserID) {
-				flowRouteDiagLog("verify_session_ownership_success", "source", "route", "path", path, "session_id", sessionID, "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
-				return principal, pebblestore.SessionSnapshot{}, true
-			}
-		}
-	} else {
-		flowRouteDiagLog("verify_session_ownership_route_lookup", "path", path, "session_id", sessionID, "found", false, "reason", "session_routes_store_nil")
-	}
-	flowRouteDiagLog("verify_session_ownership_reject", "reason", "session_or_route_not_owned", "path", path, "session_id", sessionID, "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
 	writeSessionNotFound(w)
 	return identity.Principal{}, pebblestore.SessionSnapshot{}, false
 }
@@ -2855,13 +2329,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		}
 		principal, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID)
 		if !ok {
-			return
-		}
-		if r.Method == http.MethodPost && s.isManagedHostMirroredSession(sessionID) {
-			s.handleManagedHostSessionCanonicalMessage(w, r, sessionID)
-			return
-		}
-		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
 			return
 		}
 		switch r.Method {
@@ -2936,9 +2403,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 			return
 		}
-		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
-			return
-		}
 		switch r.Method {
 		case http.MethodGet:
 			_, session, ok := s.verifySessionOwnershipForRequest(w, r, sessionID)
@@ -2986,9 +2450,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		}
 		principal, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID)
 		if !ok {
-			return
-		}
-		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
 			return
 		}
 		switch r.Method {
@@ -3064,9 +2525,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 			return
 		}
-		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
-			return
-		}
 		switch r.Method {
 		case http.MethodGet:
 			pref, err := s.sessions.GetSessionPreference(sessionID)
@@ -3128,9 +2586,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 			return
 		}
-		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
-			return
-		}
 		switch r.Method {
 		case http.MethodGet:
 			config, err := s.sessions.GetCodexConfig(sessionID)
@@ -3174,9 +2629,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
-			return
-		}
-		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
 			return
 		}
 		switch r.Method {
@@ -3262,17 +2714,22 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 				}
 				limit = parsed
 			}
-			revisions, err := s.sessions.ListPlanRevisions(sessionID, planID, limit)
+			revisionKind := strings.ToLower(strings.TrimSpace(firstNonEmpty(r.URL.Query().Get("revision_kind"), r.URL.Query().Get("kind"))))
+			if revisionKind == "" {
+				revisionKind = sessionruntime.PlanRevisionKindDefinition
+			}
+			revisions, err := s.sessions.ListPlanRevisionsByKind(sessionID, planID, limit, revisionKind)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
-				"ok":         true,
-				"session_id": sessionID,
-				"plan_id":    planID,
-				"count":      len(revisions),
-				"revisions":  revisions,
+				"ok":            true,
+				"session_id":    sessionID,
+				"plan_id":       planID,
+				"revision_kind": revisionKind,
+				"count":         len(revisions),
+				"revisions":     revisions,
 			})
 			return
 		}
@@ -3325,9 +2782,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 			return
 		}
-		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
-			return
-		}
 		switch r.Method {
 		case http.MethodGet:
 			limit := 100
@@ -3365,6 +2819,7 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 				UpdateScope   string                            `json:"update_scope"`
 				Scope         string                            `json:"scope"`
 				UpdateKind    string                            `json:"update_kind"`
+				RevisionKind  string                            `json:"revision_kind"`
 				Checkpoint    bool                              `json:"checkpoint"`
 				Activate      *bool                             `json:"activate"`
 			}
@@ -3384,7 +2839,7 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			if updateScope == "" {
 				updateScope = strings.TrimSpace(req.Scope)
 			}
-			metadata := sessionruntime.PlanSaveMetadata{UpdateSummary: req.UpdateSummary, UpdateScope: updateScope, UpdateKind: req.UpdateKind, Checkpoint: req.Checkpoint, Document: req.Document}
+			metadata := sessionruntime.PlanSaveMetadata{UpdateSummary: req.UpdateSummary, UpdateScope: updateScope, UpdateKind: req.UpdateKind, RevisionKind: req.RevisionKind, Checkpoint: req.Checkpoint, Document: req.Document}
 			var plan pebblestore.SessionPlanSnapshot
 			var event *pebblestore.EventEnvelope
 			var err error
@@ -3496,10 +2951,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		record, savedRule, err := s.perm.ResolveWithPolicyAndArguments(sessionID, permissionID, req.Action, req.Reason, string(req.ApprovedArguments))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		if err := s.routeMirroredPermissionToManagedHost(r.Context(), sessionID, record, savedRule); err != nil {
-			writeError(w, http.StatusBadGateway, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -3625,13 +3076,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		if s.isManagedHostMirroredSession(sessionID) {
-			s.handleManagedHostSessionCanonicalRun(w, r, sessionID)
-			return
-		}
-		if s.proxyRoutedSessionRequest(w, r, sessionID) {
-			return
-		}
 		if s.runner == nil {
 			writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
 			return
@@ -3650,20 +3094,12 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, err)
 			return
 		}
-		integrationCtx, err := s.applyIntegrationBuilderRunContext(principal, sessionID, &sessionRunRequestAdapter{
-			agentName:       func() string { return req.AgentName },
-			setAgentName:    func(value string) { req.AgentName = value },
-			instructions:    func() string { return req.Instructions },
-			setInstructions: func(value string) { req.Instructions = value },
-		})
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
+		if !s.beginActiveRun() {
+			writeError(w, http.StatusServiceUnavailable, errors.New("daemon is shutting down"))
 			return
 		}
-
-		s.beginActiveRun()
 		defer s.endActiveRun()
-		result, err := s.runner.RunTurn(identity.ContextWithPrincipal(r.Context(), principal), sessionID, req, runruntime.RunStartMeta{IntegrationFlow: integrationCtx.IntegrationFlow, Principal: principal})
+		result, err := s.runner.RunTurn(identity.ContextWithPrincipal(r.Context(), principal), sessionID, req, runruntime.RunStartMeta{Principal: principal})
 		if err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, runruntime.ErrSessionAlreadyActive) {
@@ -3682,28 +3118,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.HasSuffix(rest, "/run/stream") {
-		sessionID := strings.TrimSuffix(rest, "/run/stream")
-		sessionID = strings.Trim(sessionID, "/")
-		if sessionID == "" {
-			writeError(w, http.StatusBadRequest, errors.New("session id is required"))
-			return
-		}
-		principal, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID)
-		if !ok {
-			return
-		}
-		switch r.Method {
-		case http.MethodGet:
-			s.handleRunStreamWebsocket(w, r, sessionID, principal)
-		case http.MethodPost:
-			s.handleRunStreamControl(w, r, sessionID, principal)
-		default:
-			writeError(w, http.StatusUpgradeRequired, errors.New("run stream requires websocket upgrade (GET) or control POST"))
-		}
-		return
-	}
-
 	sessionID := strings.Trim(rest, "/")
 	if sessionID == "" {
 		writeError(w, http.StatusBadRequest, errors.New("session id is required"))
@@ -3715,82 +3129,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, session, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 		return
-	} else if routedSession, routedOK, err := s.localCanonicalSessionForRoutedFetch(sessionID); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	} else if routedOK {
-		s.writeSessionSnapshot(w, routedSession)
-		return
-	} else if s.proxyRoutedSessionRequest(w, r, sessionID) {
-		return
 	} else {
 		s.writeSessionSnapshot(w, session)
 	}
-}
-
-func (s *Server) localCanonicalSessionForRoutedFetch(sessionID string) (pebblestore.SessionSnapshot, bool, error) {
-	if s == nil || s.sessions == nil || s.sessionRoutes == nil {
-		return pebblestore.SessionSnapshot{}, false, nil
-	}
-	if strings.TrimSpace(sessionID) == "" {
-		return pebblestore.SessionSnapshot{}, false, nil
-	}
-	if _, ok, err := s.sessionRoutes.Get(sessionID); err != nil {
-		return pebblestore.SessionSnapshot{}, false, err
-	} else if !ok {
-		return pebblestore.SessionSnapshot{}, false, nil
-	}
-	session, ok, err := s.sessions.GetSession(sessionID)
-	if err != nil || !ok {
-		return pebblestore.SessionSnapshot{}, ok, err
-	}
-	if !sessionHasCanonicalFlowMirrorMetadata(session.Metadata) && !sessionHasControllerOwnedRoutedMirrorMetadata(session.Metadata) {
-		return pebblestore.SessionSnapshot{}, false, nil
-	}
-	if route, ok, routeErr := s.sessionRoutes.Get(sessionID); routeErr != nil {
-		return pebblestore.SessionSnapshot{}, false, routeErr
-	} else if ok {
-		if runtimeWorkspacePath := strings.TrimSpace(route.RuntimeWorkspacePath); runtimeWorkspacePath != "" {
-			descriptor, hosted := sessionruntime.HostedSessionFromMetadata(session.Metadata)
-			if hosted && strings.TrimSpace(descriptor.RuntimeWorkspacePath) != runtimeWorkspacePath {
-				descriptor.RuntimeWorkspacePath = runtimeWorkspacePath
-				session.Metadata = descriptor.WithMetadata(session.Metadata)
-			}
-		}
-	}
-	return session, true, nil
-}
-
-func sessionHasCanonicalFlowMirrorMetadata(metadata map[string]any) bool {
-	if len(metadata) == 0 {
-		return false
-	}
-	return strings.TrimSpace(fmt.Sprint(metadata["flow_id"])) != "" &&
-		strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["source"])), "flow") &&
-		strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["lineage_kind"])), "flow") &&
-		strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["owner_transport"])), "flow_scheduler") &&
-		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath])) != "" &&
-		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath])) != "" &&
-		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataChildSwarmID])) != ""
-}
-
-func sessionHasControllerOwnedRoutedMirrorMetadata(metadata map[string]any) bool {
-	if len(metadata) == 0 {
-		return false
-	}
-	ownerTransport := strings.TrimSpace(fmt.Sprint(metadata["owner_transport"]))
-	return strings.EqualFold(ownerTransport, "routed_session_peer") &&
-		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath])) != "" &&
-		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath])) != "" &&
-		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataChildSwarmID])) != ""
-}
-
-func sessionHasRoutedWorkspaceBindingMetadata(metadata map[string]any) bool {
-	if len(metadata) == 0 {
-		return false
-	}
-	return strings.TrimSpace(fmt.Sprint(metadata["swarm_routed_workspace_binding_id"])) != "" ||
-		strings.TrimSpace(fmt.Sprint(metadata["swarm_managed_host_workspace_binding_id"])) != ""
 }
 
 func (s *Server) writeSessionSnapshot(w http.ResponseWriter, session pebblestore.SessionSnapshot) {
@@ -3873,11 +3214,11 @@ func (s *Server) handleSTTTranscribe(w http.ResponseWriter, r *http.Request) {
 		Language  string `json:"language"`
 		AudioBase string `json:"audio_base64"`
 	}
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if err := decodeJSONLimited(w, r, &req, maxSTTRequestBodyBytes); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid STT request: %w", err))
 		return
 	}
-	audio, err := decodeBase64Audio(req.AudioBase)
+	audio, err := decodeBase64Audio(req.AudioBase, maxSTTDecodedAudioBytes)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -3906,8 +3247,8 @@ type uiSettingsPatchPresence struct {
 	Chat      *uiChatSettingsPatchPresence     `json:"chat"`
 	Swarming  *uiSwarmingSettingsPatchPresence `json:"swarming"`
 	Swarm     *uiSwarmSettingsPatchPresence    `json:"swarm"`
-	Updates   *uiUpdateSettingsPatchPresence   `json:"updates"`
 	Tools     *uiToolSettingsPatchPresence     `json:"tools"`
+	Agents    *uiAgentSettingsPatchPresence    `json:"agents"`
 	UpdatedAt *int64                           `json:"updated_at"`
 }
 
@@ -3930,11 +3271,15 @@ type uiChatToolStreamSettingsPatchPresence struct {
 }
 
 type uiChatSettingsPatchPresence struct {
-	ShowHeader             *bool                                  `json:"show_header"`
-	ThinkingTags           *bool                                  `json:"thinking_tags"`
-	DefaultNewSessionMode  *string                                `json:"default_new_session_mode"`
-	DefaultWorkspaceRoutes *map[string]string                     `json:"default_workspace_routes"`
-	ToolStream             *uiChatToolStreamSettingsPatchPresence `json:"tool_stream"`
+	ShowHeader                      *bool                                  `json:"show_header"`
+	ThinkingTags                    *bool                                  `json:"thinking_tags"`
+	ShowCompactButton               *bool                                  `json:"show_compact_button"`
+	DefaultNewSessionMode           *string                                `json:"default_new_session_mode"`
+	FollowupCheckpointPolicyDefault *string                                `json:"followup_checkpoint_policy_default"`
+	ReviewAutoArchiveMinutes        *int                                   `json:"review_auto_archive_minutes"`
+	SidebarHideInactiveHours        *int                                   `json:"sidebar_hide_inactive_hours"`
+	DefaultWorkspaceRoutes          *map[string]string                     `json:"default_workspace_routes"`
+	ToolStream                      *uiChatToolStreamSettingsPatchPresence `json:"tool_stream"`
 }
 
 type uiSwarmingSettingsPatchPresence struct {
@@ -3947,16 +3292,26 @@ type uiSwarmSettingsPatchPresence struct {
 	RemoteSSHTargets *[]string `json:"remote_ssh_targets"`
 }
 
-type uiUpdateSettingsPatchPresence struct {
-	LocalContainerWarningDismissed *bool `json:"local_container_warning_dismissed"`
-}
-
 type uiToolImageSettingsPatchPresence struct {
 	DefaultModel *string `json:"default_model"`
 }
 
 type uiToolSettingsPatchPresence struct {
 	Image *uiToolImageSettingsPatchPresence `json:"image"`
+}
+
+type uiCompactAgentSettingsPatchPresence struct {
+	Provider    *string `json:"provider"`
+	Model       *string `json:"model"`
+	Thinking    *string `json:"thinking"`
+	ServiceTier *string `json:"service_tier"`
+}
+
+type uiAgentSettingsPatchPresence struct {
+	Compact  *uiCompactAgentSettingsPatchPresence `json:"compact"`
+	Finder   *uiCompactAgentSettingsPatchPresence `json:"finder"`
+	Coder    *uiCompactAgentSettingsPatchPresence `json:"coder"`
+	Designer *uiCompactAgentSettingsPatchPresence `json:"designer"`
 }
 
 func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPatchPresence) uisettings.UISettings {
@@ -3984,8 +3339,20 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 		if raw.Chat.ThinkingTags != nil {
 			settings.Chat.ThinkingTags = patch.Chat.ThinkingTags
 		}
+		if raw.Chat.ShowCompactButton != nil {
+			settings.Chat.ShowCompactButton = patch.Chat.ShowCompactButton
+		}
 		if raw.Chat.DefaultNewSessionMode != nil {
 			settings.Chat.DefaultNewSessionMode = patch.Chat.DefaultNewSessionMode
+		}
+		if raw.Chat.FollowupCheckpointPolicyDefault != nil {
+			settings.Chat.FollowupCheckpointPolicyDefault = patch.Chat.FollowupCheckpointPolicyDefault
+		}
+		if raw.Chat.ReviewAutoArchiveMinutes != nil {
+			settings.Chat.ReviewAutoArchiveMinutes = patch.Chat.ReviewAutoArchiveMinutes
+		}
+		if raw.Chat.SidebarHideInactiveHours != nil {
+			settings.Chat.SidebarHideInactiveHours = patch.Chat.SidebarHideInactiveHours
 		}
 		if raw.Chat.DefaultWorkspaceRoutes != nil {
 			settings.Chat.DefaultWorkspaceRoutes = patch.Chat.DefaultWorkspaceRoutes
@@ -4024,12 +3391,65 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 			settings.Swarm.RemoteSSHTargets = patch.Swarm.RemoteSSHTargets
 		}
 	}
-	if raw.Updates != nil && raw.Updates.LocalContainerWarningDismissed != nil {
-		settings.Updates.LocalContainerWarningDismissed = patch.Updates.LocalContainerWarningDismissed
-	}
 	if raw.Tools != nil && raw.Tools.Image != nil {
 		if raw.Tools.Image.DefaultModel != nil {
 			settings.Tools.Image.DefaultModel = patch.Tools.Image.DefaultModel
+		}
+	}
+	if raw.Agents != nil && raw.Agents.Compact != nil {
+		if raw.Agents.Compact.Provider != nil {
+			settings.Agents.Compact.Provider = patch.Agents.Compact.Provider
+		}
+		if raw.Agents.Compact.Model != nil {
+			settings.Agents.Compact.Model = patch.Agents.Compact.Model
+		}
+		if raw.Agents.Compact.Thinking != nil {
+			settings.Agents.Compact.Thinking = patch.Agents.Compact.Thinking
+		}
+		if raw.Agents.Compact.ServiceTier != nil {
+			settings.Agents.Compact.ServiceTier = patch.Agents.Compact.ServiceTier
+		}
+	}
+	if raw.Agents != nil && raw.Agents.Finder != nil {
+		if raw.Agents.Finder.Provider != nil {
+			settings.Agents.Finder.Provider = patch.Agents.Finder.Provider
+		}
+		if raw.Agents.Finder.Model != nil {
+			settings.Agents.Finder.Model = patch.Agents.Finder.Model
+		}
+		if raw.Agents.Finder.Thinking != nil {
+			settings.Agents.Finder.Thinking = patch.Agents.Finder.Thinking
+		}
+		if raw.Agents.Finder.ServiceTier != nil {
+			settings.Agents.Finder.ServiceTier = patch.Agents.Finder.ServiceTier
+		}
+	}
+	if raw.Agents != nil && raw.Agents.Coder != nil {
+		if raw.Agents.Coder.Provider != nil {
+			settings.Agents.Coder.Provider = patch.Agents.Coder.Provider
+		}
+		if raw.Agents.Coder.Model != nil {
+			settings.Agents.Coder.Model = patch.Agents.Coder.Model
+		}
+		if raw.Agents.Coder.Thinking != nil {
+			settings.Agents.Coder.Thinking = patch.Agents.Coder.Thinking
+		}
+		if raw.Agents.Coder.ServiceTier != nil {
+			settings.Agents.Coder.ServiceTier = patch.Agents.Coder.ServiceTier
+		}
+	}
+	if raw.Agents != nil && raw.Agents.Designer != nil {
+		if raw.Agents.Designer.Provider != nil {
+			settings.Agents.Designer.Provider = patch.Agents.Designer.Provider
+		}
+		if raw.Agents.Designer.Model != nil {
+			settings.Agents.Designer.Model = patch.Agents.Designer.Model
+		}
+		if raw.Agents.Designer.Thinking != nil {
+			settings.Agents.Designer.Thinking = patch.Agents.Designer.Thinking
+		}
+		if raw.Agents.Designer.ServiceTier != nil {
+			settings.Agents.Designer.ServiceTier = patch.Agents.Designer.ServiceTier
 		}
 	}
 	return settings
@@ -4378,26 +3798,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		loopback := isLoopbackRequest(r)
-		trustedNetwork := isTrustedNetworkRequest(r)
-		peerSwarmID, peerToken := extractPeerAuth(r)
-		if peerSwarmID != "" && peerToken != "" && s.swarm != nil {
-			peerOK, err := s.swarm.ValidateIncomingPeerAuth(peerSwarmID, peerToken)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			if peerOK {
-				ctx := context.WithValue(r.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: peerSwarmID})
-				next.ServeHTTP(w, s.requestWithPeerSessionPrincipal(r.WithContext(ctx)))
-				return
-			}
-			log.Printf("peer auth denied method=%s path=%s remote_addr=%s peer_swarm_id=%q", r.Method, r.URL.Path, strings.TrimSpace(r.RemoteAddr), peerSwarmID)
-			s.security.AuditDenied(r.Method, r.URL.Path, r.RemoteAddr, "invalid peer auth", peerToken)
-			writeError(w, http.StatusUnauthorized, errors.New("invalid peer auth"))
-			return
-		}
-		if isAuthExemptRequest(r, loopback, trustedNetwork) {
+		if s.isAuthExemptRequest(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -4416,19 +3817,9 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 					return
 				}
 			}
-			next.ServeHTTP(w, s.requestWithPeerSessionPrincipal(r))
+			next.ServeHTTP(w, r)
 			return
 		}
-		if bootstrapAuthed, updatedReq, err := authorizeBootstrapRequest(r); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		} else if bootstrapAuthed {
-			next.ServeHTTP(w, updatedReq)
-			return
-		} else {
-			r = updatedReq
-		}
-
 		token := extractAttachToken(r)
 		ok, err := s.security.ValidateAttachToken(token)
 		if err != nil {
@@ -4445,48 +3836,6 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		writeError(w, http.StatusUnauthorized, errors.New("invalid or missing attach token"))
 	})
 }
-func authorizeBootstrapRequest(r *http.Request) (bool, *http.Request, error) {
-	if r == nil {
-		return false, r, nil
-	}
-	switch r.URL.Path {
-	case "/v1/swarm/enroll":
-		inviteToken, updatedReq, err := inviteTokenFromBootstrapRequest(r)
-		if err != nil {
-			return false, updatedReq, err
-		}
-		return strings.TrimSpace(inviteToken) != "", updatedReq, nil
-	default:
-		return false, r, nil
-	}
-}
-
-func inviteTokenFromBootstrapRequest(r *http.Request) (string, *http.Request, error) {
-	if r == nil {
-		return "", r, nil
-	}
-	if r.Body == nil {
-		return "", r, nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return "", r, err
-	}
-	_ = r.Body.Close()
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
-	if len(body) == 0 {
-		return "", r, nil
-	}
-	var payload struct {
-		InviteToken string `json:"invite_token"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", r, err
-	}
-	return strings.TrimSpace(payload.InviteToken), r, nil
-}
-
 func extractAttachToken(r *http.Request) string {
 	headerToken := strings.TrimSpace(r.Header.Get("X-Swarm-Token"))
 	if headerToken != "" {
@@ -4496,67 +3845,20 @@ func extractAttachToken(r *http.Request) string {
 	if strings.HasPrefix(strings.ToLower(authz), "bearer ") {
 		return strings.TrimSpace(authz[7:])
 	}
-	return strings.TrimSpace(r.URL.Query().Get("token"))
+	return ""
 }
 
-func extractPeerAuth(r *http.Request) (string, string) {
-	if r == nil {
-		return "", ""
-	}
-	return strings.TrimSpace(r.Header.Get(peerAuthSwarmIDHeader)), strings.TrimSpace(r.Header.Get(peerAuthTokenHeader))
-}
-
-func authorizedPeerSwarmID(r *http.Request) (string, bool) {
-	if r == nil {
-		return "", false
-	}
-	value, ok := r.Context().Value(peerAuthAuthorizedContextKey).(peerAuthContextValue)
-	if !ok {
-		return "", false
-	}
-	swarmID := strings.TrimSpace(value.SwarmID)
-	return swarmID, swarmID != ""
-}
-
-func isAuthExemptRequest(r *http.Request, loopback, trustedNetwork bool) bool {
+func (s *Server) isAuthExemptRequest(r *http.Request) bool {
 	switch r.URL.Path {
 	case "/healthz", "/readyz":
 		return true
 	case "/v1/auth/desktop/session":
 		return r.Method == http.MethodGet && shouldAllowDesktopLocalSessionBootstrapRequest(r)
 	case "/v1/onboarding":
-		return r.Method == http.MethodGet || (r.Method == http.MethodPost && shouldUseDesktopLocalSessionAuth(r))
-	case "/v1/swarm/state":
-		return r.Method == http.MethodGet && shouldUseDesktopLocalSessionAuth(r)
-	case "/v1/swarm/discovery":
-		return trustedNetwork && r.Method == http.MethodGet
-	case "/v1/swarm/remote-pairing/offer":
-		return r.Method == http.MethodPost && (loopback || isTailscaleIP(remoteRequestIP(r)))
-	case "/v1/swarm/remote-pairing/request":
-		return r.Method == http.MethodPost && (loopback || isTailscaleIP(remoteRequestIP(r)))
-	case "/v1/swarm/remote-pairing/finalize", "/v1/swarm/managed-host/remove":
-		return false
-	case "/v1/deploy/container/attach/child-state", "/v1/deploy/container/attach/request", "/v1/deploy/container/attach/approve", "/v1/deploy/container/attach/finalize", "/v1/deploy/container/pairing/account-bind", "/v1/deploy/container/sync/credentials", "/v1/deploy/container/sync/agents", "/v1/deploy/container/sync/skills", "/v1/deploy/container/sync/permissions", "/v1/deploy/container/sync/model-defaults", "/v1/deploy/container/managed/credentials/apply", "/v1/deploy/container/managed/agents/apply", "/v1/deploy/container/managed/model-defaults/apply", "/v1/deploy/container/managed/skills/apply", "/v1/permissions/managed/apply", "/v1/permissions/bypass", "/v1/deploy/container/workspaces/bootstrap", "/v1/deploy/remote/session/sync/credentials":
-		return trustedNetwork && r.Method == http.MethodPost
+		return r.Method == http.MethodGet || (r.Method == http.MethodPost && s.allowsUnauthenticatedOnboardingPost(r))
 	default:
 		return false
 	}
-}
-
-func isLoopbackRequest(r *http.Request) bool {
-	ip := remoteRequestIP(r)
-	return ip != nil && ip.IsLoopback()
-}
-
-func isTrustedNetworkRequest(r *http.Request) bool {
-	ip := remoteRequestIP(r)
-	if ip == nil {
-		return false
-	}
-	if ip.IsLoopback() || ip.IsPrivate() {
-		return true
-	}
-	return isTailscaleIP(ip)
 }
 
 func isSameOriginBrowserRequest(r *http.Request) bool {
@@ -4662,6 +3964,21 @@ func decodeJSON(r *http.Request, out any) error {
 	return decodeJSONBytes(body, out)
 }
 
+func decodeJSONLimited(w http.ResponseWriter, r *http.Request, out any, maxBytes int64) error {
+	if maxBytes <= 0 {
+		return errors.New("request body limit must be positive")
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	if err := decodeJSON(r, out); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return fmt.Errorf("request body exceeds %d bytes", maxBytes)
+		}
+		return err
+	}
+	return nil
+}
+
 func decodeJSONBytes(body []byte, out any) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	return decodeJSONObject(decoder, out)
@@ -4679,20 +3996,39 @@ func decodeJSONObject(decoder *json.Decoder, out any) error {
 	return nil
 }
 
-func decodeBase64Audio(raw string) ([]byte, error) {
+func decodeBase64Audio(raw string, maxDecodedBytes int) ([]byte, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil, errors.New("audio_base64 is required")
 	}
-	audio, err := base64.StdEncoding.DecodeString(raw)
-	if err == nil {
-		return audio, nil
+	if maxDecodedBytes <= 0 {
+		return nil, errors.New("decoded audio limit must be positive")
 	}
-	audio, rawErr := base64.RawStdEncoding.DecodeString(raw)
-	if rawErr == nil {
-		return audio, nil
+
+	encoding := base64.RawStdEncoding
+	decodedLen := encoding.DecodedLen(len(raw))
+	if strings.HasSuffix(raw, "=") {
+		encoding = base64.StdEncoding
+		decodedLen = encoding.DecodedLen(len(raw))
+		if strings.HasSuffix(raw, "==") {
+			decodedLen -= 2
+		} else {
+			decodedLen--
+		}
 	}
-	return nil, fmt.Errorf("decode audio_base64: %w", err)
+	if decodedLen < 0 {
+		return nil, errors.New("decode audio_base64: invalid padding")
+	}
+	if decodedLen > maxDecodedBytes {
+		return nil, fmt.Errorf("audio_base64 exceeds %d decoded bytes", maxDecodedBytes)
+	}
+
+	audio := make([]byte, decodedLen)
+	n, err := encoding.Decode(audio, []byte(raw))
+	if err != nil {
+		return nil, fmt.Errorf("decode audio_base64: %w", err)
+	}
+	return audio[:n], nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -4752,25 +4088,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.SetBypassPermissions(req.Enabled)
-		s.triggerPermissionSyncReconcile()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bypass_permissions": s.BypassPermissions()})
-		return
-	case "/v1/permissions/managed/apply":
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w)
-			return
-		}
-		var req permission.ManagedPolicyState
-		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		state, err := s.perm.ApplyManagedPolicyState(req)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": state})
 		return
 	}
 	var accountScopeID string
@@ -4793,6 +4111,104 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	switch {
+	case path == "/v1/permissions/bash-profile":
+		switch r.Method {
+		case http.MethodGet:
+			policy, err := s.perm.CurrentPolicyForAccount(accountScopeID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bash_profile": policy.BashProfile})
+		case http.MethodPost, http.MethodPut:
+			var req struct {
+				BashProfile permission.BashApprovalProfile `json:"bash_profile"`
+			}
+			if err := decodeJSON(r, &req); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			policy, err := s.perm.UpdateBashApprovalProfileForAccount(accountScopeID, req.BashProfile)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bash_profile": policy.BashProfile})
+		default:
+			methodNotAllowed(w)
+		}
+		return
+	case path == "/v1/permissions/capabilities":
+		switch r.Method {
+		case http.MethodGet:
+			policy, err := s.perm.CurrentPolicyForAccount(accountScopeID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_deploy": policy.SessionDeploy, "plan_acceptance": policy.PlanAcceptance})
+		case http.MethodPost, http.MethodPut:
+			current, err := s.perm.CurrentPolicyForAccount(accountScopeID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			var req struct {
+				SessionDeploy  *permission.SessionDeployPolicy  `json:"session_deploy"`
+				PlanAcceptance *permission.PlanAcceptancePolicy `json:"plan_acceptance"`
+			}
+			if err := decodeJSON(r, &req); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if req.SessionDeploy != nil {
+				current.SessionDeploy = *req.SessionDeploy
+			}
+			if req.PlanAcceptance != nil {
+				current.PlanAcceptance = *req.PlanAcceptance
+			}
+			policy, err := s.perm.UpdateCapabilityPoliciesForAccount(accountScopeID, current.SessionDeploy, current.PlanAcceptance)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_deploy": policy.SessionDeploy, "plan_acceptance": policy.PlanAcceptance})
+		default:
+			methodNotAllowed(w)
+		}
+		return
+	case path == "/v1/permissions/subagents":
+		switch r.Method {
+		case http.MethodGet:
+			policy, err := s.perm.CurrentPolicyForAccount(accountScopeID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "subagents": policy.Subagents})
+		case http.MethodPost, http.MethodPut:
+			var req permission.SubagentPolicy
+			if err := decodeJSON(r, &req); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			updater, ok := s.perm.(interface {
+				UpdateSubagentPolicyForAccount(string, permission.SubagentPolicy) (permission.Policy, error)
+			})
+			if !ok {
+				writeError(w, http.StatusInternalServerError, errors.New("subagent permission policy updates are not configured"))
+				return
+			}
+			policy, err := updater.UpdateSubagentPolicyForAccount(accountScopeID, req)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "subagents": policy.Subagents})
+		default:
+			methodNotAllowed(w)
+		}
+		return
 	case path == "/v1/permissions":
 		switch r.Method {
 		case http.MethodGet:
@@ -4823,7 +4239,6 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			s.triggerPermissionSyncReconcile()
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "rule": rule})
 		default:
 			methodNotAllowed(w)
@@ -4839,7 +4254,6 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		s.triggerPermissionSyncReconcile()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "policy": policy})
 		return
 	case path == "/v1/permissions/explain":
@@ -4870,29 +4284,9 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if removed {
-			s.triggerPermissionSyncReconcile()
-		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed, "rule_id": ruleID})
 		return
 	default:
 		writeError(w, http.StatusNotFound, errors.New("permission path not found"))
 	}
-}
-
-func (s *Server) triggerPermissionSyncReconcile() {
-	if s == nil || s.deployContainers == nil {
-		return
-	}
-	reconciler, ok := s.deployContainers.(interface{ ReconcilePermissionSync(context.Context) error })
-	if !ok {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := reconciler.ReconcilePermissionSync(ctx); err != nil {
-			log.Printf("warning: permission sync reconcile failed: %v", err)
-		}
-	}()
 }

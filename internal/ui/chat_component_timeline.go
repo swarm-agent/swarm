@@ -147,6 +147,12 @@ func (p *ChatPage) renderToolMessageLines(message chatMessageItem, width int) []
 		return nil
 	}
 	if payload, ok := toolTimelinePayload(message); ok {
+		if isPlanManagePayload(chatToolStreamEntry{ToolName: toolTimelineMessageToolName(message)}, payload) {
+			p.retainPlanTimelineDocument(payload)
+			if lines := p.renderPlanToolCardLines(message, payload, width); len(lines) > 0 {
+				return lines
+			}
+		}
 		if isTaskToolPayload(payload) {
 			if lines := p.renderTaskToolTableLines(message, payload, width); len(lines) > 0 {
 				return lines

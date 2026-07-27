@@ -1,5 +1,6 @@
 import type { VaultImportResult } from '../vault/types'
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
+import type { ResolvedSessionPreference } from '../chat/types/chat'
 
 export interface DesktopSessionUsageRecord {
   sessionId: string
@@ -7,8 +8,16 @@ export interface DesktopSessionUsageRecord {
   model: string
   source: string
   contextWindow: number
+  turnCount: number
+  inputTokens: number
+  outputTokens: number
+  thinkingTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
   totalTokens: number
   remainingTokens: number
+  serviceTier: string
+  estimatedCostUSD: number
   updatedAt: number
 }
 
@@ -18,6 +27,10 @@ export interface DesktopRunIntentRecord {
   status: string
   blockedReason: string
   createdAt: number
+  startedAt?: number
+  completedAt?: number
+  durationMs?: number
+  cumulativeDurationMs?: number
   updatedAt: number
   eventSeq: number
 }
@@ -36,6 +49,7 @@ export interface DesktopLiveToolRecord {
   stepId: string
   callId: string
   toolInstanceId: string
+  pathId?: 'run.tool-history.v2' | 'run.v3.provider-tool-result.v1'
   toolName: string | null
   toolArguments: string | null
   toolOutput: string
@@ -45,6 +59,22 @@ export interface DesktopLiveToolRecord {
   startedAt: number
   updatedAt: number
   completedAt: number | null
+}
+
+export interface DesktopLiveReasoningRecord {
+  key: string
+  runId: string
+  step: number
+  stepId: string
+  reasoningId: string
+  reasoningKey: string
+  text: string
+  summary: string
+  state: 'running' | 'done' | 'error'
+  startedAt: number
+  completedAt: number | null
+  timelineSeq: number
+  updatedSeq: number
 }
 
 export interface DesktopSessionRecord {
@@ -97,11 +127,14 @@ export interface DesktopSessionRecord {
   runIntent?: DesktopRunIntentRecord | null
   live: {
     runId: string | null
+    terminalRunId?: string | null
+    terminalEventSeq?: number
     agentName: string | null
     startedAt: number | null
     status: 'idle' | 'starting' | 'running' | 'blocked' | 'error'
     step: number
     toolName: string | null
+    sidebarToolName: string | null
     toolCallId: string | null
     toolArguments: string | null
     toolOutput: string
@@ -123,6 +156,9 @@ export interface DesktopSessionRecord {
     reasoningState: 'idle' | 'running' | 'done' | 'error'
     reasoningSegment: number
     reasoningStartedAt: number | null
+    reasoningCompletedAt?: number | null
+    reasoningTimelineSeq?: number
+    reasoningHistory?: DesktopLiveReasoningRecord[]
     awaitingAck: boolean
   }
   pendingPermissions: DesktopPermissionRecord[]
@@ -174,6 +210,7 @@ export interface DesktopNotificationRecord {
 
 export interface DesktopNotificationCenterRecord {
   id: string
+  accountScopeID: string | null
   swarmID: string
   originSwarmID: string | null
   sessionId: string | null
@@ -201,6 +238,7 @@ export interface DesktopNotificationCenterRecord {
 }
 
 export interface DesktopNotificationSummary {
+  accountScopeID: string | null
   swarmID: string
   totalCount: number
   unreadCount: number
@@ -237,10 +275,10 @@ export interface DesktopStoreState {
     loading: boolean
     hydrated: boolean
   }
-  reconnectTimer: number | null
+  realtimeRetryTimer: number | null
   heartbeatTimer: number | null
   livenessTimer: number | null
-  reconnectAttempt: number
+  realtimeRetryAttempt: number
   connectionGeneration: number
   realtimeDesired: boolean
   lastGlobalSeq: number
@@ -256,6 +294,9 @@ export interface DesktopStoreState {
   updateNotificationRecord: (id: string, patch: { read?: boolean; acked?: boolean; muted?: boolean; status?: string }) => Promise<void>
   setSessionDraft: (sessionId: string, draft: string) => void
   setSessionDraftMode: (sessionId: string, mode: 'plan' | 'auto' | 'read' | 'readwrite') => void
+  applySessionMode: (sessionId: string, mode: string) => Promise<void>
+  applySessionAgent: (sessionId: string, agentName: string) => Promise<DesktopSessionRecord>
+  applySessionMetadata: (sessionId: string, metadata: Record<string, unknown>) => Promise<void>
   getSessionDraft: (sessionId: string | null, workspacePath?: string | null) => string
   getSessionDraftMode: (sessionId: string | null, workspacePath?: string | null) => 'plan' | 'auto' | 'read' | 'readwrite'
   bootstrapVault: () => Promise<void>
@@ -271,8 +312,23 @@ export interface DesktopStoreState {
   clearOnboardingFlow: () => void
   hydrate: () => Promise<void>
   connect: () => Promise<void>
-  reconnectIfStale: (reason: string) => Promise<void>
+  refreshRealtimeIfStale: (reason: string) => Promise<void>
+  syncV3RealtimeSessions: (options?: { force?: boolean }) => void
   disconnect: () => void
+  createSession: (input: {
+    title?: string
+    workspacePath: string
+    workspaceName: string
+    mode: string
+    agentName?: string
+    metadata?: Record<string, unknown>
+    preference: ResolvedSessionPreference['preference']
+    route?: DesktopChatRoute | null
+    worktreeMode?: string
+    worktreeUseCurrentBranch?: boolean
+    worktreeBaseBranch?: string
+    worktreeBranchName?: string
+  }) => Promise<DesktopSessionRecord>
   submitPrompt: (input: {
     sessionId: string | null
     route?: DesktopChatRoute | null
@@ -288,6 +344,7 @@ export interface DesktopStoreState {
   }) => Promise<void>
   ensureRunStream: (sessionId: string, runId?: string | null) => Promise<void>
   closeRunStream: (sessionId: string) => void
-  stopRun: (sessionId: string, route?: DesktopChatRoute | null) => Promise<void>
+  stopRun: (sessionId: string, route?: DesktopChatRoute | null, runId?: string | null) => Promise<void>
   __testApplyRunStreamFrame?: (sessionId: string, payload: Record<string, unknown>, ts?: number) => void
+  __testApplyV3RealtimeFrame?: (sessionId: string, payload: Record<string, unknown>, ts?: number) => void
 }

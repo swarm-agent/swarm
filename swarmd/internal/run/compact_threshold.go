@@ -120,7 +120,7 @@ func formatThresholdCompactionStatus(summary pebblestore.SessionUsageSummary, th
 	)
 }
 
-func (s *Service) maybeAutoCompactRunContext(ctx context.Context, sessionID, runPrompt, providerID, modelName string, metadata map[string]any, preference pebblestore.ModelPreference, contextWindow, maxOutputTokens, step int, emit StreamHandler) ([]map[string]any, *pebblestore.SessionUsageSummary, []pebblestore.EventEnvelope, error) {
+func (s *Service) maybeAutoCompactRunContext(ctx context.Context, sessionID, runPrompt, providerID, modelName string, metadata map[string]any, preference pebblestore.ModelPreference, contextWindow, maxOutputTokens, step int, emit StreamHandler, appendInput runAppendMessageInput) ([]map[string]any, *pebblestore.SessionUsageSummary, []pebblestore.EventEnvelope, error) {
 	if s == nil || s.sessions == nil {
 		return nil, nil, nil, errors.New("run service is not fully configured")
 	}
@@ -148,6 +148,7 @@ func (s *Service) maybeAutoCompactRunContext(ctx context.Context, sessionID, run
 		maxOutputTokens,
 		false,
 		contextCompactionOriginThreshold,
+		appendInput.ApplySessionMutation != nil,
 		step,
 		1,
 		emit,
@@ -157,7 +158,12 @@ func (s *Service) maybeAutoCompactRunContext(ctx context.Context, sessionID, run
 		return nil, nil, nil, fmt.Errorf("threshold auto compact failed: %w", compactErr)
 	}
 	compactEvents := make([]pebblestore.EventEnvelope, 0, 4)
-	if toolMessage, persistErr := persistMemoryCompactionToolMessage(s.sessions, sessionID, &compactEvents, nil, compactionToolStream); persistErr != nil {
+	toolAppendInput := appendInput
+	toolAppendInput.Step = step
+	if compactionToolStream != nil {
+		toolAppendInput.LogicalKey = fmt.Sprintf("tool:%d:%s", step, strings.TrimSpace(compactionToolStream.CallID))
+	}
+	if toolMessage, persistErr := s.persistMemoryCompactionToolMessage(sessionID, &compactEvents, nil, compactionToolStream, toolAppendInput); persistErr != nil {
 		return nil, nil, nil, persistErr
 	} else if toolMessage != nil {
 		emit(StreamEvent{Type: StreamEventMessageStored, Step: step, Message: toolMessage})
@@ -171,6 +177,7 @@ func (s *Service) maybeAutoCompactRunContext(ctx context.Context, sessionID, run
 		modelName,
 		step,
 		emit,
+		runAppendMessageInput{RunID: appendInput.RunID, Step: step, LogicalKey: fmt.Sprintf("system:context_compaction:%d", step), Principal: appendInput.Principal, ApplySessionMutation: appendInput.ApplySessionMutation},
 	)
 	if compactErr != nil {
 		return nil, nil, nil, fmt.Errorf("threshold auto compact bookkeeping failed: %w", compactErr)

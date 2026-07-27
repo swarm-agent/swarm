@@ -26,33 +26,19 @@ type WorkspaceReplicationSync struct {
 	Modules []string `json:"modules,omitempty"`
 }
 
-type WorkspaceReplicationLink struct {
-	ID                  string                   `json:"id"`
-	TargetKind          string                   `json:"target_kind"`
-	TargetSwarmID       string                   `json:"target_swarm_id"`
-	TargetSwarmName     string                   `json:"target_swarm_name"`
-	TargetWorkspacePath string                   `json:"target_workspace_path"`
-	ReplicationMode     string                   `json:"replication_mode"`
-	Writable            bool                     `json:"writable"`
-	Sync                WorkspaceReplicationSync `json:"sync"`
-	CreatedAt           int64                    `json:"created_at"`
-	UpdatedAt           int64                    `json:"updated_at"`
-}
-
 type WorkspaceEntry struct {
-	AccountScopeID      string                     `json:"account_scope_id,omitempty"`
-	WorkspaceID         string                     `json:"workspace_id"`
-	WorkspaceGeneration int64                      `json:"workspace_generation"`
-	State               string                     `json:"state,omitempty"`
-	Path                string                     `json:"path"`
-	Name                string                     `json:"name"`
-	ThemeID             string                     `json:"theme_id,omitempty"`
-	Directories         []string                   `json:"directories,omitempty"`
-	ReplicationLinks    []WorkspaceReplicationLink `json:"replication_links,omitempty"`
-	SortIndex           int                        `json:"sort_index,omitempty"`
-	AddedAt             int64                      `json:"added_at"`
-	UpdatedAt           int64                      `json:"updated_at"`
-	LastSelectedAt      int64                      `json:"last_selected_at"`
+	AccountScopeID      string   `json:"account_scope_id,omitempty"`
+	WorkspaceID         string   `json:"workspace_id"`
+	WorkspaceGeneration int64    `json:"workspace_generation"`
+	State               string   `json:"state,omitempty"`
+	Path                string   `json:"path"`
+	Name                string   `json:"name"`
+	ThemeID             string   `json:"theme_id,omitempty"`
+	Directories         []string `json:"directories,omitempty"`
+	SortIndex           int      `json:"sort_index,omitempty"`
+	AddedAt             int64    `json:"added_at"`
+	UpdatedAt           int64    `json:"updated_at"`
+	LastSelectedAt      int64    `json:"last_selected_at"`
 }
 
 type WorkspaceStore struct {
@@ -495,90 +481,6 @@ func (s *WorkspaceStore) GetCurrent() (WorkspaceBinding, bool, error) {
 	return WorkspaceBinding{}, false, fmt.Errorf("legacy global workspace current is disabled; account scope is required")
 }
 
-func (s *WorkspaceStore) AddReplicationLink(path string, link WorkspaceReplicationLink) (WorkspaceEntry, WorkspaceReplicationLink, error) {
-	return WorkspaceEntry{}, WorkspaceReplicationLink{}, fmt.Errorf("legacy workspace replication links are disabled; write topology workspace bindings instead")
-}
-
-func (s *WorkspaceStore) PurgeAllReplicationLinks() (int, error) {
-	if s == nil || s.store == nil {
-		return 0, fmt.Errorf("workspace store is not configured")
-	}
-	removed := 0
-	accounts, err := s.accountScopeIDsWithWorkspaceEntries()
-	if err != nil {
-		return 0, err
-	}
-	now := time.Now().UnixMilli()
-	for _, accountScopeID := range accounts {
-		entries, err := s.listAllForAccount(accountScopeID)
-		if err != nil {
-			return removed, err
-		}
-		for _, entry := range entries {
-			if len(entry.ReplicationLinks) == 0 {
-				continue
-			}
-			removed += len(entry.ReplicationLinks)
-			entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
-			entry.ReplicationLinks = nil
-			entry.UpdatedAt = now
-			if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
-				return removed, err
-			}
-		}
-	}
-	return removed, nil
-}
-
-func (s *WorkspaceStore) RemoveReplicationLink(path, linkID string) (WorkspaceEntry, error) {
-	return WorkspaceEntry{}, fmt.Errorf("legacy global workspace replication links are disabled; account scope is required")
-}
-
-func (s *WorkspaceStore) RemoveReplicationLinksByTargetSwarmIDForAccount(accountScopeID, targetSwarmID string) (int, error) {
-	accountScopeID = strings.TrimSpace(accountScopeID)
-	if accountScopeID == "" {
-		return 0, fmt.Errorf("account scope is required")
-	}
-	targetSwarmID = strings.TrimSpace(targetSwarmID)
-	if targetSwarmID == "" {
-		return 0, nil
-	}
-	entries, err := s.listAllForAccount(accountScopeID)
-	if err != nil {
-		return 0, err
-	}
-	removed := 0
-	now := time.Now().UnixMilli()
-	for _, entry := range entries {
-		links := normalizeWorkspaceReplicationLinks(entry.ReplicationLinks)
-		if len(links) == 0 {
-			continue
-		}
-		kept := make([]WorkspaceReplicationLink, 0, len(links))
-		for _, link := range links {
-			if strings.TrimSpace(link.TargetSwarmID) == targetSwarmID {
-				removed++
-				continue
-			}
-			kept = append(kept, link)
-		}
-		if len(kept) == len(links) {
-			continue
-		}
-		entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
-		entry.ReplicationLinks = normalizeWorkspaceReplicationLinks(kept)
-		entry.UpdatedAt = now
-		if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
-			return removed, err
-		}
-	}
-	return removed, nil
-}
-
-func (s *WorkspaceStore) ListReplicationLinks(path string) ([]WorkspaceReplicationLink, error) {
-	return nil, fmt.Errorf("legacy global workspace replication links are disabled; account scope is required")
-}
-
 // AddDirectory is disabled for legacy global workspaces. Use
 // AddDirectoryForAccount for persistent linked roots.
 func (s *WorkspaceStore) AddDirectory(path, directory string) (WorkspaceEntry, error) {
@@ -766,29 +668,6 @@ func (s *WorkspaceStore) findLinkedDirectoryOwnerForAccount(accountScopeID, dire
 	return WorkspaceEntry{}, false, nil
 }
 
-func (s *WorkspaceStore) accountScopeIDsWithWorkspaceEntries() ([]string, error) {
-	seen := make(map[string]struct{})
-	err := s.store.IteratePrefix(KeyWorkspaceEntryAccountPrefix, 100000, func(key string, _ []byte) error {
-		part := strings.TrimPrefix(key, KeyWorkspaceEntryAccountPrefix)
-		if idx := strings.Index(part, "/"); idx >= 0 {
-			part = part[:idx]
-		}
-		if part != "" {
-			seen[part] = struct{}{}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(seen))
-	for accountScopeID := range seen {
-		out = append(out, accountScopeID)
-	}
-	sort.Strings(out)
-	return out, nil
-}
-
 func sortWorkspaceEntries(out []WorkspaceEntry) {
 	sort.SliceStable(out, func(i, j int) bool {
 		left := out[i]
@@ -846,78 +725,6 @@ func normalizeWorkspaceDirectories(primary string, directories []string) []strin
 	return out
 }
 
-func normalizeWorkspaceReplicationLinks(links []WorkspaceReplicationLink) []WorkspaceReplicationLink {
-	if len(links) == 0 {
-		return nil
-	}
-	out := make([]WorkspaceReplicationLink, 0, len(links))
-	seen := make(map[string]struct{}, len(links))
-	for _, raw := range links {
-		link := normalizeWorkspaceReplicationLink(raw)
-		if link.ID == "" {
-			continue
-		}
-		if _, ok := seen[link.ID]; ok {
-			continue
-		}
-		seen[link.ID] = struct{}{}
-		out = append(out, link)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].UpdatedAt != out[j].UpdatedAt {
-			return out[i].UpdatedAt > out[j].UpdatedAt
-		}
-		if out[i].CreatedAt != out[j].CreatedAt {
-			return out[i].CreatedAt > out[j].CreatedAt
-		}
-		return out[i].ID < out[j].ID
-	})
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func normalizeWorkspaceReplicationLink(link WorkspaceReplicationLink) WorkspaceReplicationLink {
-	link.ID = strings.TrimSpace(link.ID)
-	link.TargetKind = strings.TrimSpace(strings.ToLower(link.TargetKind))
-	link.TargetSwarmID = strings.TrimSpace(link.TargetSwarmID)
-	link.TargetSwarmName = strings.TrimSpace(link.TargetSwarmName)
-	link.TargetWorkspacePath = strings.TrimSpace(link.TargetWorkspacePath)
-	link.ReplicationMode = strings.TrimSpace(strings.ToLower(link.ReplicationMode))
-	link.Sync = normalizeWorkspaceReplicationSync(link.Sync)
-	return link
-}
-
-func normalizeWorkspaceReplicationSync(sync WorkspaceReplicationSync) WorkspaceReplicationSync {
-	sync.Mode = strings.TrimSpace(strings.ToLower(sync.Mode))
-	sync.Modules = normalizeWorkspaceReplicationSyncModules(sync.Modules)
-	return sync
-}
-
-func normalizeWorkspaceReplicationSyncModules(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(values))
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(strings.ToLower(value))
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
 func (s *WorkspaceStore) putWorkspaceEntryForAccount(accountScopeID string, entry WorkspaceEntry) error {
 	entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
 	if strings.TrimSpace(entry.Path) == "" {
@@ -950,7 +757,6 @@ func normalizeWorkspaceEntryForAccount(accountScopeID string, entry WorkspaceEnt
 	entry.Name = strings.TrimSpace(entry.Name)
 	entry.ThemeID = normalizeWorkspaceThemeID(entry.ThemeID)
 	entry.Directories = normalizeWorkspaceDirectories(entry.Path, entry.Directories)
-	entry.ReplicationLinks = normalizeWorkspaceReplicationLinks(entry.ReplicationLinks)
 	entry.State = normalizeWorkspaceState(entry.State)
 	if entry.WorkspaceGeneration <= 0 {
 		entry.WorkspaceGeneration = 1
@@ -978,16 +784,6 @@ func newWorkspaceID() string {
 func legacyWorkspaceID(accountScopeID, path string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(accountScopeID) + "\x00" + strings.TrimSpace(path)))
 	return "ws_legacy_" + hex.EncodeToString(sum[:16])
-}
-
-func findWorkspaceReplicationLinkByID(links []WorkspaceReplicationLink, linkID string) WorkspaceReplicationLink {
-	linkID = strings.TrimSpace(linkID)
-	for _, link := range links {
-		if link.ID == linkID {
-			return link
-		}
-	}
-	return WorkspaceReplicationLink{}
 }
 
 func normalizeWorkspaceThemeID(raw string) string {

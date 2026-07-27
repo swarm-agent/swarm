@@ -1,18 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { ArrowUp, Check, ChevronDown, ChevronRight, Folder, FolderPlus, Home, RefreshCw, Search } from 'lucide-react'
+import { ArrowUp, Check, ChevronDown, ChevronRight, Folder, FolderPlus, Home, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { Card } from '../../../../components/ui/card'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
 import { cn } from '../../../../lib/cn'
-import type { SwarmTarget } from '../../../desktop/swarm/api/swarm-targets'
-import {
-  workspaceRouteDisplayPath,
-  workspaceRouteHoverTitle,
-  workspaceRouteModeLabel,
-  workspaceRouteTargetName,
-  workspacePlacementLinks,
-} from '../services/workspace-placement'
 import { formatWorkspacePath } from '../services/workspace-format'
 import { createWorkspaceThemeStyle, WORKSPACE_THEME_OPTIONS } from '../services/workspace-theme'
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../types/workspace'
@@ -21,11 +13,6 @@ export interface WorkspaceEditorAvailableDirectory {
   path: string
   name: string
   meta: string
-}
-
-export interface WorkspaceEditorManagedLinkDraft {
-  targetSwarmID: string
-  destinationPath: string
 }
 
 type FolderPickerMode = 'workspace-folder' | 'linked-folders' | null
@@ -39,9 +26,7 @@ interface WorkspaceEditorModalProps {
   themeId: string
   linkedDirectories: string[]
   availableDirectories: WorkspaceEditorAvailableDirectory[]
-  pendingManagedLinks?: WorkspaceEditorManagedLinkDraft[]
   workspaces?: WorkspaceEntry[]
-  availableSwarmTargets?: SwarmTarget[]
   browser?: WorkspaceBrowseResult | null
   browserLoading?: boolean
   browserError?: string | null
@@ -58,12 +43,11 @@ interface WorkspaceEditorModalProps {
   onCreateFolder?: (parentPath: string, name: string) => Promise<string>
   onSelectWorkspace?: (path: string) => void
   onMoveWorkspaceToIndex?: (path: string, index: number) => void
+  onDeleteWorkspace?: (path: string) => void
+  deletingWorkspacePath?: string | null
   onAddLinkedDirectory: (path: string) => void
   onAddLinkedDirectories?: (paths: string[]) => void
   onRemoveLinkedDirectory: (path: string) => void
-  onAddManagedLink?: (targetSwarmID: string, destinationPath: string) => void
-  onRemoveManagedLink?: (linkID: string) => void
-  onRemovePendingManagedLink?: (targetSwarmID: string, destinationPath: string) => void
   onClose: () => void
   onSubmit: () => void
 }
@@ -124,7 +108,6 @@ function isPathInside(childPath: string, parentPath: string): boolean {
 const fieldLabelClass = 'text-sm font-medium text-[var(--app-text)]'
 const helperTextClass = 'text-sm leading-6 text-[var(--app-text-muted)]'
 const inputClass = 'min-h-10 w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-subtle)] hover:border-[var(--app-border-strong)] focus-visible:border-[var(--app-border-accent)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:cursor-not-allowed disabled:bg-[var(--app-bg-inset)]'
-const subtleCardClass = 'grid gap-3 rounded-xl border border-[color-mix(in_oklab,var(--app-border)_58%,transparent)] bg-[color-mix(in_oklab,var(--app-surface-subtle)_70%,transparent)] p-3'
 const workspaceSelectorCardClass = 'flex min-w-[148px] flex-col gap-1 rounded-2xl border px-3 py-3 text-left transition'
 
 export function WorkspaceEditorModal({
@@ -136,9 +119,7 @@ export function WorkspaceEditorModal({
   themeId,
   linkedDirectories,
   availableDirectories,
-  pendingManagedLinks = [],
   workspaces = [],
-  availableSwarmTargets = [],
   browser = null,
   browserLoading = false,
   browserError = null,
@@ -155,19 +136,15 @@ export function WorkspaceEditorModal({
   onCreateFolder,
   onSelectWorkspace,
   onMoveWorkspaceToIndex,
+  onDeleteWorkspace,
+  deletingWorkspacePath = null,
   onAddLinkedDirectory,
   onAddLinkedDirectories,
   onRemoveLinkedDirectory,
-  onAddManagedLink,
-  onRemoveManagedLink,
-  onRemovePendingManagedLink,
   onClose,
   onSubmit,
 }: WorkspaceEditorModalProps) {
   const [draggingWorkspacePath, setDraggingWorkspacePath] = useState<string | null>(null)
-  const [managedTargetID, setManagedTargetID] = useState('')
-  const [managedDestinationPath, setManagedDestinationPath] = useState('')
-  const [managedRoutingOpen, setManagedRoutingOpen] = useState(false)
   const [folderPickerMode, setFolderPickerMode] = useState<FolderPickerMode>(null)
   const [folderPickerSearch, setFolderPickerSearch] = useState('')
   const [selectedLinkedFolderDraft, setSelectedLinkedFolderDraft] = useState<Set<string>>(() => new Set())
@@ -178,9 +155,6 @@ export function WorkspaceEditorModal({
       setFolderPickerMode(null)
       setSelectedLinkedFolderDraft(new Set())
       setFolderPickerSearch('')
-      setManagedRoutingOpen(false)
-      setManagedTargetID('')
-      setManagedDestinationPath('')
     }
   }, [open])
 
@@ -191,14 +165,6 @@ export function WorkspaceEditorModal({
     ...WORKSPACE_THEME_OPTIONS,
   ]
   const selectedWorkspaceIndex = workspaces.findIndex((workspace) => workspace.path === workspacePath)
-  const selectedWorkspace = selectedWorkspaceIndex >= 0 ? workspaces[selectedWorkspaceIndex] : null
-  const placementLinks = workspacePlacementLinks(selectedWorkspace?.topologyRoutes ?? [], availableSwarmTargets)
-  const managedHostTargets = availableSwarmTargets.filter((target) => {
-    const relationship = String(target.relationship || '').trim().toLowerCase()
-    const role = String(target.role || '').trim().toLowerCase()
-    return target.selectable && (relationship === 'managed' || role === 'managed' || target.kind === 'host')
-  })
-  const showManagedRouting = managedHostTargets.length > 0
   const currentPath = browser?.resolvedPath ?? ''
   const currentPathLabel = currentPath ? formatWorkspacePath(currentPath) : '—'
   const visiblePickerEntries = useMemo(() => {
@@ -514,12 +480,11 @@ export function WorkspaceEditorModal({
                   <div className="flex gap-2 overflow-x-auto pb-1" aria-label="Workspace switcher">
                     {workspaces.map((workspace, index) => {
                       const selected = workspace.path === workspacePath
+                      const deleting = deletingWorkspacePath === workspace.path
                       return (
-                        <button
+                        <div
                           key={workspace.path}
-                          type="button"
-                          onClick={() => onSelectWorkspace(workspace.path)}
-                          draggable={Boolean(onMoveWorkspaceToIndex)}
+                          draggable={Boolean(onMoveWorkspaceToIndex) && !deleting}
                           onDragStart={(event) => {
                             if (!onMoveWorkspaceToIndex) {
                               return
@@ -557,14 +522,18 @@ export function WorkspaceEditorModal({
                               : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:text-[var(--app-text)]',
                             draggingWorkspacePath === workspace.path && 'scale-[1.01] opacity-70 shadow-[var(--shadow-card)]',
                           )}
-                          aria-pressed={selected}
                         >
-                          <span className="text-xs font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
-                            {index + 1}
-                          </span>
-                          <span className="truncate text-sm font-semibold">{workspace.workspaceName}</span>
-                          <span className="truncate text-xs">{formatWorkspacePath(workspace.path)}</span>
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => onSelectWorkspace(workspace.path)}
+                            disabled={deleting}
+                            className="grid w-full min-w-0 gap-1 text-left disabled:opacity-50"
+                            aria-pressed={selected}
+                          >
+                            <span className="truncate text-sm font-semibold">{workspace.workspaceName}</span>
+                            <span className="truncate text-xs">{formatWorkspacePath(workspace.path)}</span>
+                          </button>
+                        </div>
                       )
                     })}
                   </div>
@@ -666,109 +635,21 @@ export function WorkspaceEditorModal({
                 </div>
               </section>
 
-              {showManagedRouting ? (
-                <section className="grid gap-3 border-t border-[color-mix(in_oklab,var(--app-border)_48%,transparent)] pt-4">
-                  <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Advanced</h3>
-                  <div className="rounded-xl border border-[color-mix(in_oklab,var(--app-border)_58%,transparent)] bg-[color-mix(in_oklab,var(--app-surface-subtle)_58%,transparent)]">
-                    <button
-                      type="button"
-                      className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left"
-                      onClick={() => setManagedRoutingOpen((value) => !value)}
-                      aria-expanded={managedRoutingOpen}
-                    >
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]">
-                          <ChevronRight size={14} className={cn('transition-transform', managedRoutingOpen && 'rotate-90')} />
-                          Managed Host routing
-                        </div>
-                        <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">Optional. Map this workspace to a folder on a Managed Host.</p>
-                      </div>
-                    </button>
-                    {managedRoutingOpen ? (
-                      <div className="grid gap-3 border-t border-[color-mix(in_oklab,var(--app-border)_48%,transparent)] p-3">
-                        {placementLinks.length > 0 || pendingManagedLinks.length > 0 ? (
-                          <div className="grid gap-2">
-                            {placementLinks.map(({ route, target, targetType }) => {
-                              const displayPath = workspaceRouteDisplayPath(route)
-                              return (
-                                <div
-                                  key={route.workspaceBindingId || route.routeId}
-                                  className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3 transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]"
-                                  title={workspaceRouteHoverTitle(route, target)}
-                                >
-                                  <div className="grid min-w-0 gap-1">
-                                    <span className="truncate text-sm font-medium text-[var(--app-text)]">{workspaceRouteTargetName(route, target)}</span>
-                                    {displayPath ? <span className="truncate text-xs text-[var(--app-text-muted)]">{displayPath}</span> : null}
-                                    <span className="truncate text-xs text-[var(--app-text-muted)]">{workspaceRouteModeLabel(route)}</span>
-                                  </div>
-                                  <div className="flex shrink-0 items-center gap-2">
-                                    <span className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface-elevated)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-text-muted)]">
-                                      {targetType}
-                                    </span>
-                                    {onRemoveManagedLink ? <Button type="button" size="sm" onClick={() => onRemoveManagedLink(route.workspaceBindingId)}>Remove</Button> : null}
-                                  </div>
-                                </div>
-                              )
-                            })}
-                            {pendingManagedLinks.map((link) => {
-                              const target = availableSwarmTargets.find((item) => item.swarm_id === link.targetSwarmID)
-                              return (
-                                <div key={`pending:${link.targetSwarmID}:${link.destinationPath}`} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-dashed border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-                                  <div className="grid min-w-0 gap-1">
-                                    <span className="truncate text-sm font-medium text-[var(--app-text)]">{target?.name || link.targetSwarmID}</span>
-                                    <span className="truncate text-xs text-[var(--app-text-muted)]">{link.destinationPath || 'Default path on save'}</span>
-                                    <span className="truncate text-xs text-[var(--app-text-muted)]">Pending until workspace is saved</span>
-                                  </div>
-                                  {onRemovePendingManagedLink ? <Button type="button" size="sm" onClick={() => onRemovePendingManagedLink(link.targetSwarmID, link.destinationPath)}>Remove</Button> : null}
-                                </div>
-                              )
-                            })}
-                          </div>
-                        ) : null}
-                        <div className={subtleCardClass}>
-                          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                            <label className="grid gap-1 text-sm">
-                              <span className={fieldLabelClass}>Managed Host</span>
-                              <select
-                                value={managedTargetID}
-                                onChange={(event) => setManagedTargetID(event.target.value)}
-                                className={inputClass}
-                              >
-                                <option value="">Select host…</option>
-                                {managedHostTargets.map((target) => (
-                                  <option key={target.swarm_id} value={target.swarm_id}>{target.name || target.swarm_id}</option>
-                                ))}
-                              </select>
-                            </label>
-                            <label className="grid gap-1 text-sm">
-                              <span className={fieldLabelClass}>Destination path</span>
-                              <input
-                                value={managedDestinationPath}
-                                onChange={(event) => setManagedDestinationPath(event.target.value)}
-                                placeholder="Blank uses ~/same-relative-path"
-                                className={inputClass}
-                              />
-                            </label>
-                          </div>
-                          <div>
-                            <Button
-                              type="button"
-                              size="sm"
-                              disabled={!managedTargetID || !onAddManagedLink || saving}
-                              onClick={() => {
-                                onAddManagedLink?.(managedTargetID, managedDestinationPath)
-                                setManagedDestinationPath('')
-                              }}
-                            >
-                              Add route link
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                </section>
+              {mode === 'edit' && onDeleteWorkspace ? (
+                <div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => onDeleteWorkspace(workspacePath)}
+                    disabled={deletingWorkspacePath === workspacePath}
+                    className="border-[var(--app-danger-border)] text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)]"
+                  >
+                    {deletingWorkspacePath === workspacePath ? <RefreshCw size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                    {deletingWorkspacePath === workspacePath ? 'Deleting…' : 'Delete workspace'}
+                  </Button>
+                </div>
               ) : null}
+
             </div>
           </div>
 

@@ -15,22 +15,10 @@ import (
 func TestSessionsV3PrimaryHydrateIncludesActiveRunIntentFromDurableStore(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"v3-active-run-create","workspace_path":"/workspace/v3","workspace_name":"v3","title":"V3 Active Run","mode":"auto","agent_name":"swarm"}`))
-	createReq.Header.Set("Content-Type", "application/json")
-	createRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
-	if createRec.Code != http.StatusOK {
-		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
-	}
-	var created struct {
-		Session pebblestore.SessionSnapshot `json:"session"`
-	}
-	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
-		t.Fatalf("decode create response: %v", err)
-	}
+	created := createSessionsV3PrimaryResourceTestSession(t, server, "v3-active-run", "V3 Active Run")
 
 	pending, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
-		SessionID:      created.Session.ID,
+		SessionID:      created.ID,
 		UserID:         testPrincipal().UserID,
 		AccountScopeID: testPrincipal().AccountScopeID,
 		IdempotencyKey: "v3-active-run-pending",
@@ -44,7 +32,7 @@ func TestSessionsV3PrimaryHydrateIncludesActiveRunIntentFromDurableStore(t *test
 		t.Fatalf("record pending run intent: result=%+v err=%v", pending, err)
 	}
 	if _, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
-		SessionID:      created.Session.ID,
+		SessionID:      created.ID,
 		UserID:         testPrincipal().UserID,
 		AccountScopeID: testPrincipal().AccountScopeID,
 		IdempotencyKey: "v3-active-run-running",
@@ -56,7 +44,7 @@ func TestSessionsV3PrimaryHydrateIncludesActiveRunIntentFromDurableStore(t *test
 		t.Fatalf("record running run intent: %v", err)
 	}
 
-	hydrateReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.Session.ID, nil)
+	hydrateReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.ID, nil)
 	hydrateRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(hydrateRec, withTestPrincipal(hydrateReq))
 	if hydrateRec.Code != http.StatusOK {
@@ -74,22 +62,82 @@ func TestSessionsV3PrimaryHydrateIncludesActiveRunIntentFromDurableStore(t *test
 	}
 }
 
+func TestSessionsV3PrimaryHydrateIgnoresLifecycleActiveWithoutCanonicalRunState(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryResourceTestSession(t, server, "hydrate-lifecycle-only", "Hydrate Lifecycle Only")
+	recordSessionsV3ReconnectLifecycle(t, server, created.ID, true)
+
+	hydrateReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.ID, nil)
+	hydrateRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(hydrateRec, withTestPrincipal(hydrateReq))
+	if hydrateRec.Code != http.StatusOK {
+		t.Fatalf("hydrate status = %d, want %d, body=%s", hydrateRec.Code, http.StatusOK, hydrateRec.Body.String())
+	}
+	var hydrated struct {
+		OK              bool                            `json:"ok"`
+		ActiveRunIntent *pebblestore.V3SessionRunIntent `json:"active_run_intent"`
+	}
+	if err := json.Unmarshal(hydrateRec.Body.Bytes(), &hydrated); err != nil {
+		t.Fatalf("decode hydrate response: %v", err)
+	}
+	if !hydrated.OK || hydrated.ActiveRunIntent != nil {
+		t.Fatalf("hydrate active_run_intent = %+v, want nil for lifecycle-only active", hydrated.ActiveRunIntent)
+	}
+}
+
+func TestSessionsV3PrimaryHydrateKeepsCanonicalActiveWithInactiveLifecycle(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryResourceTestSession(t, server, "hydrate-stale-lifecycle", "Hydrate Stale Lifecycle")
+	if _, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:      created.ID,
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		IdempotencyKey: "hydrate-stale-lifecycle-pending",
+		PayloadHash:    "hash-hydrate-stale-lifecycle-pending",
+		Kind:           sessionruntime.SessionMutationRecordRunIntent,
+		RunIntent:      &pebblestore.V3SessionRunIntent{RunID: "run-canonical", Status: sessionruntime.RunIntentPendingExecutor},
+		NowUnixMs:      1000,
+	}); err != nil {
+		t.Fatalf("record pending run intent: %v", err)
+	}
+	if _, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:      created.ID,
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		IdempotencyKey: "hydrate-stale-lifecycle-running",
+		PayloadHash:    "hash-hydrate-stale-lifecycle-running",
+		Kind:           sessionruntime.SessionMutationRecordRunIntent,
+		RunIntent:      &pebblestore.V3SessionRunIntent{RunID: "run-canonical", Status: sessionruntime.RunIntentRunning},
+		NowUnixMs:      2000,
+	}); err != nil {
+		t.Fatalf("record running run intent: %v", err)
+	}
+	recordSessionsV3ReconnectLifecycle(t, server, created.ID, false)
+
+	hydrateReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.ID, nil)
+	hydrateRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(hydrateRec, withTestPrincipal(hydrateReq))
+	if hydrateRec.Code != http.StatusOK {
+		t.Fatalf("hydrate status = %d, want %d, body=%s", hydrateRec.Code, http.StatusOK, hydrateRec.Body.String())
+	}
+	var hydrated struct {
+		OK              bool                            `json:"ok"`
+		ActiveRunIntent *pebblestore.V3SessionRunIntent `json:"active_run_intent"`
+	}
+	if err := json.Unmarshal(hydrateRec.Body.Bytes(), &hydrated); err != nil {
+		t.Fatalf("decode hydrate response: %v", err)
+	}
+	if !hydrated.OK || hydrated.ActiveRunIntent == nil || hydrated.ActiveRunIntent.RunID != "run-canonical" || hydrated.ActiveRunIntent.Status != sessionruntime.RunIntentRunning {
+		t.Fatalf("hydrate canonical active_run_intent = %+v", hydrated.ActiveRunIntent)
+	}
+}
+
 func TestSessionsV3PrimaryHydrateIncludesPermissionsAndUsage(t *testing.T) {
 	server, sessionSvc, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"v3-resources-create","workspace_path":"/workspace/v3","title":"V3 Resources","mode":"auto","agent_name":"swarm"}`))
-	createReq.Header.Set("Content-Type", "application/json")
-	createRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
-	if createRec.Code != http.StatusOK {
-		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
-	}
-	var created struct {
-		Session pebblestore.SessionSnapshot `json:"session"`
-	}
-	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
-		t.Fatalf("decode create response: %v", err)
-	}
+	created := struct {
+		Session pebblestore.SessionSnapshot
+	}{Session: createSessionsV3PrimaryResourceTestSession(t, server, "session-v3-resources", "V3 Resources")}
 
 	pending, err := permissionSvc.CreatePending(permission.CreateInput{SessionID: created.Session.ID, RunID: "run-v3", CallID: "call-v3", ToolName: "bash", ToolArguments: "{}", Requirement: "approval", Mode: "auto"})
 	if err != nil {
@@ -122,25 +170,61 @@ func TestSessionsV3PrimaryHydrateIncludesPermissionsAndUsage(t *testing.T) {
 	}
 }
 
-func TestSessionsV3PrimaryPermissionResolveUsesV3Path(t *testing.T) {
+func createSessionsV3PrimaryResourceTestSession(t *testing.T, server *Server, sessionID, title string) pebblestore.SessionSnapshot {
+	t.Helper()
+	now := int64(1000)
+	session := pebblestore.SessionSnapshot{
+		ID:             sessionID,
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		WorkspacePath:  "/workspace/v3",
+		WorkspaceName:  "v3",
+		Title:          title,
+		Mode:           sessionruntime.ModeAuto,
+		Preference:     pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "medium"},
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:      sessionID,
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		IdempotencyKey: sessionID + "-create",
+		PayloadHash:    sessionID + "-hash",
+		Kind:           sessionruntime.SessionMutationCreateSession,
+		Session:        &session,
+		NowUnixMs:      now,
+	}); err != nil {
+		t.Fatalf("create v3 session: %v", err)
+	}
+	return session
+}
+
+func TestSessionsV3PrimaryPermissionsListAndResolveUseV3Path(t *testing.T) {
 	server, _, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"v3-permission-create","workspace_path":"/workspace/v3","title":"V3 Permission","mode":"auto","agent_name":"swarm"}`))
-	createReq.Header.Set("Content-Type", "application/json")
-	createRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
-	if createRec.Code != http.StatusOK {
-		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
-	}
-	var created struct {
-		Session pebblestore.SessionSnapshot `json:"session"`
-	}
-	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
-		t.Fatalf("decode create response: %v", err)
-	}
+	created := struct {
+		Session pebblestore.SessionSnapshot
+	}{Session: createSessionsV3PrimaryResourceTestSession(t, server, "session-v3-permission", "V3 Permission")}
 	pending, err := permissionSvc.CreatePending(permission.CreateInput{SessionID: created.Session.ID, RunID: "run-v3", CallID: "call-v3", ToolName: "bash", ToolArguments: "{}", Requirement: "approval", Mode: "auto"})
 	if err != nil {
 		t.Fatalf("create pending permission: %v", err)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.Session.ID+"/permissions?status=pending&limit=20", nil)
+	listRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(listRec, withTestPrincipal(listReq))
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list permissions status = %d, want %d, body=%s", listRec.Code, http.StatusOK, listRec.Body.String())
+	}
+	var listed struct {
+		Permissions []pebblestore.PermissionRecord `json:"permissions"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listed.Permissions) != 1 || listed.Permissions[0].ID != pending.ID {
+		t.Fatalf("listed permissions = %+v", listed.Permissions)
 	}
 
 	resolveReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.Session.ID+"/permissions/"+pending.ID+"/resolve", bytes.NewBufferString(`{"action":"approve","reason":"v3"}`))

@@ -1,6 +1,5 @@
-import type { QueryClient } from '@tanstack/react-query'
-import { fetchAgentState, fetchAgentToolContract, fetchDraftModelPreference, fetchModelOptions } from '../desktop/chat/queries/chat-queries'
-import { desktopV3SessionQueryKey, desktopV3SessionQueryOptions, ensureDesktopV3SessionSnapshot, writeDesktopV3SessionSnapshot, type DesktopV3SessionSnapshot } from '../desktop/state/desktop-v3-cache'
+import { fetchAgentState, fetchAgentStateSummary, fetchAgentToolContract, fetchDraftModelPreference, fetchModelOptions } from '../desktop/chat/queries/chat-queries'
+import { fetchModelProfiles } from '../desktop/chat/queries/model-profile-queries'
 import { getUISettings } from '../desktop/settings/swarm/queries/get-ui-settings'
 import { fetchWorkspaceOverview } from '../workspaces/launcher/queries/fetch-workspace-overview'
 
@@ -35,46 +34,6 @@ export function uiSettingsQueryOptions() {
   }
 }
 
-export function sessionMessagesQueryKey(sessionId: string) {
-  return ['session-messages', sessionId] as const
-}
-
-export function sessionMessagesQueryOptions(sessionId: string, queryClient?: QueryClient) {
-  const normalizedSessionId = sessionId.trim()
-  return {
-    queryKey: sessionMessagesQueryKey(normalizedSessionId),
-    queryFn: async () => {
-      if (!queryClient) {
-        throw new Error('Desktop V3 session messages require the canonical session snapshot cache.')
-      }
-      const snapshot = await ensureDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
-      return snapshot?.messages ?? []
-    },
-    staleTime: 60_000,
-    enabled: normalizedSessionId !== '',
-  }
-}
-
-export function sessionPreferenceQueryKey(sessionId: string) {
-  return ['session-preference', sessionId] as const
-}
-
-export function sessionPreferenceQueryOptions(sessionId: string, queryClient?: QueryClient) {
-  const normalizedSessionId = sessionId.trim()
-  return {
-    queryKey: sessionPreferenceQueryKey(normalizedSessionId),
-    queryFn: async () => {
-      if (!queryClient) {
-        throw new Error('Desktop V3 session preference requires the canonical session snapshot cache.')
-      }
-      const snapshot = await ensureDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
-      return snapshot?.preference ?? { preference: { provider: '', model: '', thinking: '', serviceTier: '', contextMode: '', updatedAt: 0 }, contextWindow: 0, maxOutputTokens: 0 }
-    },
-    staleTime: 60_000,
-    enabled: normalizedSessionId !== '',
-  }
-}
-
 export function draftModelQueryKey() {
   return ['draft-model'] as const
 }
@@ -90,6 +49,14 @@ export function draftModelQueryOptions() {
 export function agentStateQueryOptions() {
   return {
     queryKey: ['agent-state'] as const,
+    queryFn: ({ signal }: { signal?: AbortSignal }) => fetchAgentStateSummary(signal),
+    staleTime: 5 * 60_000,
+  }
+}
+
+export function agentSettingsStateQueryOptions() {
+  return {
+    queryKey: ['agent-state', 'settings'] as const,
     queryFn: ({ signal }: { signal?: AbortSignal }) => fetchAgentState(signal),
     staleTime: 5 * 60_000,
   }
@@ -113,26 +80,14 @@ export function modelOptionsQueryOptions() {
   }
 }
 
-export function ensureSessionRuntimeData(queryClient: QueryClient, sessionId: string) {
-  const normalizedSessionId = sessionId.trim()
-  if (!normalizedSessionId) {
-    return Promise.resolve()
-  }
-
-  return ensureDesktopV3SessionSnapshot(queryClient, normalizedSessionId)
+export function modelProfilesQueryKey() {
+  return ['model-profiles'] as const
 }
 
-export function prefetchSessionRuntimeData(queryClient: QueryClient, sessionId: string) {
-  const normalizedSessionId = sessionId.trim()
-  if (!normalizedSessionId) {
-    return Promise.resolve()
+export function modelProfilesQueryOptions() {
+  return {
+    queryKey: modelProfilesQueryKey(),
+    queryFn: ({ signal }: { signal?: AbortSignal }) => fetchModelProfiles(signal),
+    staleTime: 30_000,
   }
-
-  return queryClient.prefetchQuery(desktopV3SessionQueryOptions(normalizedSessionId))
-    .then(() => {
-      const snapshot = queryClient.getQueryData<DesktopV3SessionSnapshot | null>(desktopV3SessionQueryKey(normalizedSessionId))
-      if (snapshot) {
-        writeDesktopV3SessionSnapshot(queryClient, snapshot)
-      }
-    })
 }

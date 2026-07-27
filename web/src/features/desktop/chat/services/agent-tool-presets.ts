@@ -27,14 +27,6 @@ export const AGENT_TOOL_PRESET_OPTIONS: AgentToolPresetOption[] = [
     bashPrefixes: [],
   },
   {
-    id: 'integration_builder',
-    label: 'Integration builder',
-    description: 'Inspect local/web context and manage Integration Pack drafts without shell or file mutation tools.',
-    enabledTools: ['read', 'search', 'list', 'websearch', 'webfetch', 'manage_integrations'],
-    disabledByDefault: ['write', 'edit', 'bash', 'task'],
-    bashPrefixes: [],
-  },
-  {
     id: 'read_write',
     label: 'Read/write',
     description: 'Inspect and edit workspace files without shell execution or delegation.',

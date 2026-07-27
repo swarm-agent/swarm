@@ -17,13 +17,24 @@ hits="$(
     --glob '!**/.bin/**' \
     --glob '!**/*.svg' \
     --glob '!scripts/check-secrets.sh' \
-    '(-----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----|(^|[^A-Za-z0-9_])(AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|xox[baprs]-[A-Za-z0-9-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-or-v1-[A-Za-z0-9_-]{20,}|sk-or-[A-Za-z0-9_-]{20,}|sk-(proj-)?[A-Za-z0-9_-]{20,}|fw_[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9]{20,}|xai-[A-Za-z0-9_-]{20,}|exa_[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9._-]{10,}\.[A-Za-z0-9._-]{10,}))' \
+    '(?i)(-----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----|-----BEGIN PGP PRIVATE KEY BLOCK-----|ya29\.[A-Za-z0-9._-]{20,}|\b(gcloud|gpg)[-_[:space:]]+(credential|secret|token|password|passphrase|private[-_[:space:]]*key)\b|(^|[^A-Za-z0-9_])(AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|AQ\.[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-or-v1-[A-Za-z0-9_-]{20,}|sk-or-[A-Za-z0-9_-]{20,}|sk-(proj-)?[A-Za-z0-9_-]{20,}|fw_[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9]{20,}|xai-[A-Za-z0-9_-]{20,}|exa_[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9._-]{10,}\.[A-Za-z0-9._-]{10,}))' \
     "${ROOT_DIR}" || true
 )"
 
 if [[ -n "${hits}" ]]; then
   echo "[secret-check] FAIL: possible secret material found:"
   echo "${hits}"
+  exit 1
+fi
+
+path_hits="$(
+  git ls-files --cached --others --exclude-standard |
+    rg -n -i '(^|/)(gcloud|gpg|gnupg)(/|$)|(^|/)(\.?password|passwd|passphrase)(\.(txt|json|ya?ml|env|ini|conf|cfg|toml))?$|application_default_credentials\.json$|service[-_]?account.*\.json$|\.(gpg|asc|kbx|p12|pfx|pem|key)$' || true
+)"
+
+if [[ -n "${path_hits}" ]]; then
+  echo "[secret-check] FAIL: possible secret-bearing filename found:"
+  echo "${path_hits}"
   exit 1
 fi
 

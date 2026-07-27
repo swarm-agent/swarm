@@ -301,7 +301,7 @@ func (p *HomePage) drawPresetsRow(s tcell.Screen, rect Rect, centered bool) {
 	if len(p.model.QuickActions) == 0 {
 		line := "/auth"
 		if p.model.AuthConfigured {
-			line = "/models"
+			line = "/profiles"
 		}
 		DrawText(s, rect.X, rect.Y, rect.W, p.theme.TextMuted, line)
 		return
@@ -373,12 +373,8 @@ func homePresetChip(action string, compact bool) string {
 	}
 
 	switch key {
-	case "agent":
-		return "[a:" + clampEllipsis(emptyValue(value, "swarm"), 16) + "]"
-	case "model":
-		return "[m:" + clampEllipsis(emptyValue(value, "unset"), 24) + "]"
-	case "thinking":
-		return "[t:" + clampEllipsis(emptyValue(value, "unset"), 10) + "]"
+	case "agent", "model", "thinking", "profile":
+		return "[profile:" + clampEllipsis(emptyValue(value, "setup"), 28) + "]"
 	default:
 		return "[" + action + "]"
 	}
@@ -395,12 +391,10 @@ func homePresetChipAction(action string) string {
 	}
 	key := strings.ToLower(strings.TrimSpace(action[:sep]))
 	switch key {
-	case "agent":
+	case "agent", "model", "thinking":
 		return "open-agents-modal"
-	case "model":
-		return "open-models-modal"
-	case "thinking":
-		return "cycle-thinking"
+	case "profile":
+		return "open-profiles-modal"
 	default:
 		return ""
 	}
@@ -410,29 +404,24 @@ func (p *HomePage) drawTipsRow(s tcell.Screen, rect Rect, centered bool) {
 	if rect.H < 1 {
 		return
 	}
-	hint := strings.TrimSpace(p.model.HintLine)
-	tip := strings.TrimSpace(p.model.TipLine)
 	modeKeyLabel := "Shift+Tab"
 	if p.keybinds != nil {
 		if label := strings.TrimSpace(p.keybinds.Label(KeybindChatCycleMode)); label != "" {
 			modeKeyLabel = label
 		}
 	}
-	modeHint := fmt.Sprintf("%s changes mode", modeKeyLabel)
-	line := ""
-	switch {
-	case hint != "" && tip != "":
-		line = fmt.Sprintf("%s • %s", hint, tip)
-	case hint != "":
-		line = hint
-	case tip != "":
-		line = tip
-	default:
-		line = modeHint
+	modeHint := "Plan: " + currentDisplayedHomeSessionMode(p)
+	if p.CanCycleSessionMode() {
+		modeHint = fmt.Sprintf("%s toggles Plan on/off", modeKeyLabel)
 	}
-	if !strings.Contains(strings.ToLower(line), "changes mode") {
-		line = fmt.Sprintf("%s • %s", line, modeHint)
+	sessionsKeyLabel := "Ctrl+X"
+	if p.keybinds != nil {
+		if label := strings.TrimSpace(p.keybinds.Label(KeybindHomeOpenSessions)); label != "" {
+			sessionsKeyLabel = label
+		}
 	}
+	sessionsHint := fmt.Sprintf("%s sessions", sessionsKeyLabel)
+	line := fmt.Sprintf("%s • %s • / for commands", modeHint, sessionsHint)
 	if centered {
 		DrawCenteredText(s, rect.X, rect.Y, rect.W, p.theme.TextMuted, line)
 		return
@@ -441,21 +430,43 @@ func (p *HomePage) drawTipsRow(s tcell.Screen, rect Rect, centered bool) {
 }
 
 func (p *HomePage) homeFooterTokens() []footerToken {
-	swarmLabel := p.activeSwarmFooterLabel()
-	if p.swarmNotificationCount > 0 {
-		swarmLabel = fmt.Sprintf("%s !%d", swarmLabel, p.swarmNotificationCount)
+	return footerTokensFromState(p.theme, p.homeFooterState())
+}
+
+func (p *HomePage) homeFooterState() FooterState {
+	provider, modelName, thinking, serviceTier, _ := p.ModelState()
+	return FooterState{
+		RouteLabel:        p.activeSwarmFooterLabel(),
+		NotificationCount: p.swarmNotificationCount,
+		DisplayedMode:     currentDisplayedHomeSessionMode(p),
+		Agent:             emptyValue(strings.TrimSpace(p.model.ActiveAgent), "swarm"),
+		ProfileLabel:      p.ProfileLabel(),
+		ModelLabel:        model.DisplayModelName(provider, modelName),
+		Thinking:          strings.TrimSpace(thinking),
+		ServiceTier:       strings.TrimSpace(serviceTier),
+		UnifiedProfile:    true,
+		PlanToggle:        true,
+		RightFacts:        p.homeFooterRightFacts(),
+		StatusLine:        strings.TrimSpace(p.statusLine),
+		StatusStyle:       p.homeStatusStyle(p.statusLine),
 	}
-	swarmLabel = clampSwarmNotificationLabel(swarmLabel, p.swarmNotificationCount, 18)
-	primaryStyle := styleForCurrentCellBackground(p.theme.Accent.Bold(true))
-	modeStyle := styleForCurrentCellBackground(p.theme.Secondary.Bold(true))
-	metaStyle := styleForCurrentCellBackground(p.theme.Text)
-	return []footerToken{
-		{Text: swarmLabel, Style: primaryStyle, Action: "cycle-route"},
-		{Text: currentDisplayedHomeSessionMode(p), Style: modeStyle},
-		{Text: "[a:" + clampEllipsis(emptyValue(strings.TrimSpace(p.model.ActiveAgent), "swarm"), 12) + "]", Style: metaStyle, Action: "open-agents-modal"},
-		{Text: "[m:" + clampEllipsis(model.DisplayModelLabel(p.model.ModelProvider, p.model.ModelName, p.model.ServiceTier, p.model.ContextMode), 24) + "]", Style: metaStyle, Action: "open-models-modal"},
-		{Text: "[t:" + clampEllipsis(emptyValue(strings.TrimSpace(p.model.ThinkingLevel), "-"), 10) + "]", Style: metaStyle, Action: "cycle-thinking"},
+}
+
+func (p *HomePage) homeFooterRightFacts() []string {
+	segments := make([]string, 0, 2)
+	version := strings.TrimSpace(p.model.Version)
+	if version != "" {
+		segments = append(segments, "v "+version)
 	}
+	if status := p.model.UpdateStatus; status != nil && status.UpdateAvailable {
+		latest := strings.TrimSpace(status.LatestVersion)
+		if latest != "" {
+			segments = append(segments, "update "+latest)
+		} else {
+			segments = append(segments, "update available")
+		}
+	}
+	return segments
 }
 
 func (p *HomePage) activeSwarmFooterLabel() string {
@@ -495,23 +506,7 @@ func displayHomeChatRouteLabel(m model.HomeModel, route model.ChatRoute) string 
 }
 
 func (p *HomePage) homeFooterRightLine(maxWidth int) string {
-	segments := make([]string, 0, 3)
-	if p.model.WorktreesEnabled {
-		segments = append(segments, "wt on")
-	}
-	version := strings.TrimSpace(p.model.Version)
-	if version != "" {
-		segments = append(segments, "v "+version)
-	}
-	if status := p.model.UpdateStatus; status != nil && status.UpdateAvailable {
-		latest := strings.TrimSpace(status.LatestVersion)
-		if latest != "" {
-			segments = append(segments, "update "+latest)
-		} else {
-			segments = append(segments, "update available")
-		}
-	}
-	return clampEllipsis(strings.Join(segments, "  "), maxWidth)
+	return p.homeFooterState().rightLine(maxWidth)
 }
 
 func (p *HomePage) homeStatusStyle(status string) tcell.Style {
@@ -539,53 +534,12 @@ func (p *HomePage) homeStatusStyle(status string) tcell.Style {
 }
 
 func (p *HomePage) drawBottomBar(s tcell.Screen, rect Rect, variant layoutVariant) {
-	if rect.H <= 0 || rect.W <= 0 {
-		return
-	}
 	_ = variant
-
-	footerY := rect.Y + rect.H - 1
-	if rect.H >= 2 {
-		DrawHLine(s, rect.X, footerY-1, rect.W, p.theme.Border)
-	}
-
-	textX := rect.X
-	textW := rect.W
-	if rect.W > 2 {
-		textX = rect.X + 1
-		textW = rect.W - 2
-	}
-	if textW <= 0 {
-		return
-	}
 	p.bottomBarTargets = p.bottomBarTargets[:0]
-
-	right := clampEllipsis(p.homeFooterRightLine(28), 28)
-	rightW := utf8.RuneCountInString(right)
-	leftW := textW
-	if rightW > 0 && leftW > rightW+2 {
-		leftW -= rightW + 2
-	}
-
-	status := strings.TrimSpace(p.statusLine)
-	if status != "" {
-		statusStyle := p.homeStatusStyle(status)
-		statusWidth := maxInt(1, minInt(leftW, maxInt(leftW/2, 18)))
-		if rect.H >= 3 {
-			DrawTextRight(s, textX+textW-1, rect.Y, statusWidth, statusStyle, clampEllipsis(status, statusWidth))
-		} else if leftW > statusWidth+2 {
-			leftW -= statusWidth + 2
-			DrawTextRight(s, textX+leftW-1, footerY, statusWidth, statusStyle, clampEllipsis(status, statusWidth))
-		}
-	}
-
-	drawFooterTokenRowWithTargets(s, textX, footerY, leftW, p.homeFooterTokens(), func(rect Rect, token footerToken) {
+	drawUnifiedFooterBar(s, p.theme, rect, p.homeFooterState(), func(rect Rect, token footerToken) {
 		if token.Action == "" {
 			return
 		}
 		p.registerBottomTarget(rect, token.Action, 0)
 	})
-	if rightW > 0 && textW > rightW+2 {
-		DrawTextRight(s, textX+textW-1, footerY, rightW, p.theme.Secondary, right)
-	}
 }

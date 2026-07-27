@@ -3,16 +3,19 @@ import type { SettingsTabID } from '../../settings/types/settings-tabs'
 export type DesktopSlashCommandState = 'ready' | 'coming-soon'
 
 export type DesktopSlashCommandAction =
-  | { kind: 'open-settings'; tab: SettingsTabID }
+  | { kind: 'open-settings'; tab: SettingsTabID | 'agents' }
   | { kind: 'open-quick-settings'; tab: Extract<SettingsTabID, 'permissions' | 'themes' | 'worktrees'> }
   | { kind: 'open-permissions' }
   | { kind: 'open-workspace-launcher' }
   | { kind: 'open-model-picker' }
+  | { kind: 'open-codex-usage' }
   | { kind: 'toggle-fast' }
   | { kind: 'open-commit-modal' }
   | { kind: 'open-plan-modal' }
+  | { kind: 'open-quick-actions' }
   | { kind: 'compact-session' }
   | { kind: 'new-session' }
+  | { kind: 'queue-ai-task' }
   | { kind: 'show-help' }
 
 export interface DesktopSlashCommand {
@@ -32,6 +35,13 @@ export interface DesktopSlashPaletteState {
   hasArguments: boolean
   exactMatch: DesktopSlashCommand | null
   matches: DesktopSlashCommand[]
+}
+
+export type DesktopTaskMode = 'plan' | 'auto'
+
+export interface DesktopTaskCommandRequest {
+  request: string
+  mode: DesktopTaskMode
 }
 
 const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
@@ -54,26 +64,6 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/auth', 'Manage provider credentials', 'Use this to set up auth'],
     state: 'ready',
     action: { kind: 'open-settings', tab: 'auth' },
-  },
-  {
-    id: 'swarm',
-    command: '/swarm',
-    aliases: [],
-    hint: 'Open the Swarm dashboard',
-    actionLabel: 'Open Swarm dashboard',
-    tips: ['/swarm', 'Manage local and attached swarms', 'Inspect swarm status from settings'],
-    state: 'ready',
-    action: { kind: 'open-settings', tab: 'swarm' },
-  },
-  {
-    id: 'vault',
-    command: '/vault',
-    aliases: [],
-    hint: 'Open vault settings and status',
-    actionLabel: 'Open Settings → Vault',
-    tips: ['/vault', 'Check vault state', 'Manage vault export and import'],
-    state: 'ready',
-    action: { kind: 'open-settings', tab: 'vault' },
   },
   {
     id: 'worktrees',
@@ -106,12 +96,22 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     action: { kind: 'new-session' },
   },
   {
+    id: 'task',
+    command: '/task',
+    aliases: [],
+    hint: 'Queue a durable AI task for Swarm',
+    actionLabel: 'Queue AI Task',
+    tips: ['/task <request> (auto)', '/task plan <request>', 'The task opens a managed worktree session'],
+    state: 'ready',
+    action: { kind: 'queue-ai-task' },
+  },
+  {
     id: 'agents',
     command: '/agents',
     aliases: [],
-    hint: 'Open agent settings',
-    actionLabel: 'Open Settings → Agents',
-    tips: ['/agents', 'Manage shared agent profiles', 'Set the active primary agent'],
+    hint: 'Open Agent Setup',
+    actionLabel: 'Open Agent Setup',
+    tips: ['/agents', 'Configure Swarm and user-facing system agents'],
     state: 'ready',
     action: { kind: 'open-settings', tab: 'agents' },
   },
@@ -119,11 +119,11 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     id: 'codex',
     command: '/codex',
     aliases: [],
-    hint: 'Open Codex runtime controls',
-    actionLabel: 'Open Model Picker',
-    tips: ['/codex status', '/codex fast', '/fast toggles Fast'],
+    hint: 'View ChatGPT plan usage and reset credits',
+    actionLabel: 'Open Codex Usage',
+    tips: ['/codex', 'View five-hour and weekly usage', 'Use available usage-limit resets'],
     state: 'ready',
-    action: { kind: 'open-model-picker' },
+    action: { kind: 'open-codex-usage' },
   },
   {
     id: 'fast',
@@ -141,7 +141,7 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     aliases: [],
     hint: 'MCP management is deferred until Swarm Sync integration',
     actionLabel: 'Deferred',
-    tips: ['Free Exa MCP search stays built in', 'Use an Exa API key for webfetch/deep fetch', 'Coming later'],
+    tips: ['Generic MCP management is coming later', 'Exa web access requires an active Exa API key', 'Add one in Settings → Providers'],
     state: 'coming-soon',
     action: { kind: 'show-help' },
   },
@@ -196,6 +196,20 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     action: { kind: 'open-plan-modal' },
   },
   {
+    id: 'keybindings',
+    command: '/keybindings',
+    aliases: ['/shortcuts', '/keys'],
+    hint: 'Desktop shortcuts differ from TUI keybindings',
+    actionLabel: 'Open Desktop Quick Actions',
+    tips: [
+      'Desktop shortcuts are separate from TUI keybindings',
+      'This opens the Desktop quick actions modal',
+      'Open Settings → Shortcuts for the full Desktop list',
+    ],
+    state: 'ready',
+    action: { kind: 'open-quick-actions' },
+  },
+  {
     id: 'sessions',
     command: '/sessions',
     aliases: [],
@@ -214,16 +228,6 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/theme', '/themes', 'Set the desktop theme or workspace overrides'],
     state: 'ready',
     action: { kind: 'open-quick-settings', tab: 'themes' },
-  },
-  {
-    id: 'voice',
-    command: '/voice',
-    aliases: [],
-    hint: 'Voice controls are not available yet',
-    actionLabel: 'Coming soon',
-    tips: ['/voice open', '/voice devices', 'Coming later'],
-    state: 'coming-soon',
-    action: { kind: 'show-help' },
   },
 ]
 
@@ -269,6 +273,18 @@ function sortCommands(left: DesktopSlashCommand, right: DesktopSlashCommand, que
 
 export function getDesktopSlashCommands(): DesktopSlashCommand[] {
   return DESKTOP_SLASH_COMMANDS.slice()
+}
+
+export function parseDesktopTaskCommand(input: string): DesktopTaskCommandRequest {
+  const taskBody = input.trimStart().replace(/^\/task(?:\s+|$)/i, '').trim()
+  if (!taskBody) {
+    return { request: '', mode: 'auto' }
+  }
+  const firstToken = taskBody.match(/^(\S+)(?:\s+([\s\S]*))?$/)
+  if (firstToken?.[1].toLowerCase() === 'plan') {
+    return { request: (firstToken[2] ?? '').trim(), mode: 'plan' }
+  }
+  return { request: taskBody, mode: 'auto' }
 }
 
 export function buildDesktopSlashPaletteState(input: string): DesktopSlashPaletteState {

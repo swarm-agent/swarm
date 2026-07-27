@@ -19,17 +19,8 @@ export function sessionMetadataString(metadata: Record<string, unknown> | null |
   return metadata && typeof metadata[key] === 'string' ? metadata[key].trim() : ''
 }
 
-export function sessionMetadataBoolean(metadata: Record<string, unknown> | null | undefined, key: string): boolean | undefined {
-  const value = metadata?.[key]
-  if (typeof value === 'boolean') {
-    return value
-  }
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase()
-    if (normalized === 'true') return true
-    if (normalized === 'false') return false
-  }
-  return undefined
+export function sessionWorkspaceBindingId(metadata: Record<string, unknown> | null | undefined): string {
+  return sessionMetadataString(metadata, 'swarm_v3_workspace_binding_id')
 }
 
 export function sessionWorkspaceFactsFromMetadata(metadata: Record<string, unknown> | null | undefined): {
@@ -39,40 +30,34 @@ export function sessionWorkspaceFactsFromMetadata(metadata: Record<string, unkno
   worktreeRootPath: string
 } {
   return {
-    sourceWorkspacePath: sessionMetadataString(metadata, 'swarm_v2_source_workspace_path')
-      || sessionMetadataString(metadata, 'swarm_routed_host_workspace_path'),
-    runtimeWorkspacePath: sessionMetadataString(metadata, 'swarm_v2_runtime_workspace_path')
-      || sessionMetadataString(metadata, 'swarm_routed_runtime_workspace_path'),
-    worktreeEnabled: sessionMetadataBoolean(metadata, 'swarm_v2_worktree_enabled'),
-    worktreeRootPath: sessionMetadataString(metadata, 'swarm_v2_worktree_root_path'),
+    sourceWorkspacePath: sessionMetadataString(metadata, 'swarm_v3_source_workspace_path'),
+    runtimeWorkspacePath: sessionMetadataString(metadata, 'swarm_v3_runtime_workspace_path'),
+    worktreeEnabled: undefined,
+    worktreeRootPath: '',
   }
 }
 
 export function canonicalSessionWorkspacePath(input: {
   workspacePath: string
-  hostedHostWorkspacePath?: string
-  hostedRuntimeWorkspacePath?: string
   sourceWorkspacePath?: string
   runtimeWorkspacePath?: string
-  preferHostedRuntimeWorkspacePath?: boolean
+  preferRuntimeWorkspacePath?: boolean
   worktreeEnabled?: boolean
   worktreeRootPath?: string
 }): string {
   const workspacePath = input.workspacePath.trim()
   const sourceWorkspacePath = input.sourceWorkspacePath?.trim() ?? ''
   const runtimeWorkspacePath = input.runtimeWorkspacePath?.trim() ?? ''
-  const hostedRuntimeWorkspacePath = input.hostedRuntimeWorkspacePath?.trim() || runtimeWorkspacePath
-  if (input.preferHostedRuntimeWorkspacePath && hostedRuntimeWorkspacePath) {
-    return hostedRuntimeWorkspacePath
+  if (input.preferRuntimeWorkspacePath && runtimeWorkspacePath) {
+    return runtimeWorkspacePath
   }
 
-  const hostedHostWorkspacePath = input.hostedHostWorkspacePath?.trim() || sourceWorkspacePath
-  if (hostedHostWorkspacePath) {
-    return hostedHostWorkspacePath
+  if (sourceWorkspacePath) {
+    return sourceWorkspacePath
   }
 
-  if (hostedRuntimeWorkspacePath && normalizeWorkspacePathForComparison(workspacePath) === normalizeWorkspacePathForComparison(hostedRuntimeWorkspacePath)) {
-    return hostedRuntimeWorkspacePath
+  if (runtimeWorkspacePath && normalizeWorkspacePathForComparison(workspacePath) === normalizeWorkspacePathForComparison(runtimeWorkspacePath)) {
+    return runtimeWorkspacePath
   }
 
   const worktreeRootPath = input.worktreeRootPath?.trim() ?? ''

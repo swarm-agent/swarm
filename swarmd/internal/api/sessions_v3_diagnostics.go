@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -119,6 +120,10 @@ func sessionV3DiagnosticsEnabled() bool {
 	return os.Getenv("SWARM_V3_DIAGNOSTICS") == "1"
 }
 
+func sessionV3IsDiagnosticEventType(eventType string) bool {
+	return strings.HasPrefix(strings.TrimSpace(eventType), "session.diagnostic")
+}
+
 func shouldRecordV3StoreDiagnostic(input sessionruntime.SessionMutationInput) bool {
 	if !sessionV3DiagnosticsEnabled() {
 		return false
@@ -145,9 +150,7 @@ func (s *Server) recordV3StoreInputDiagnostic(input sessionruntime.SessionMutati
 		Stage:          "session.diagnostic.store.input",
 		Source:         "backend.store",
 		SequenceLabel:  sessionV3StoreDiagnosticSequence("input", input.Kind, input.ClientRequestID, time.Now().UnixNano()),
-		Payload: map[string]any{
-			"mutation_input": input,
-		},
+		Payload:        sessionV3StoreDiagnosticMetadata(input, sessionruntime.SessionMutationResult{}, nil),
 	}); err != nil {
 		log.Printf("warning: failed to record v3 store input diagnostic session=%q kind=%q request=%q: %v", input.SessionID, input.Kind, input.ClientRequestID, err)
 	}
@@ -157,22 +160,12 @@ func (s *Server) recordV3StoreResultDiagnostic(input sessionruntime.SessionMutat
 	if !shouldRecordV3StoreDiagnostic(input) {
 		return
 	}
-	runID := ""
-	if input.RunIntent != nil {
-		runID = input.RunIntent.RunID
-	}
-	payload := map[string]any{
-		"mutation_input":  input,
-		"mutation_result": result,
-	}
-	if applyErr != nil {
-		payload["error"] = applyErr.Error()
-	}
+	payload := sessionV3StoreDiagnosticMetadata(input, result, applyErr)
 	if _, err := s.appendSessionV3Diagnostic(sessionV3DiagnosticInput{
 		SessionID:      input.SessionID,
 		UserID:         input.UserID,
 		AccountScopeID: input.AccountScopeID,
-		RunID:          runID,
+		RunID:          sessionV3StoreDiagnosticRunID(input),
 		Stage:          "session.diagnostic.store.result",
 		Source:         "backend.store",
 		SequenceLabel:  sessionV3StoreDiagnosticSequence("result", input.Kind, input.ClientRequestID, int64(result.Event.Seq)),
@@ -182,14 +175,113 @@ func (s *Server) recordV3StoreResultDiagnostic(input sessionruntime.SessionMutat
 	}
 }
 
+func sessionV3StoreDiagnosticRunID(input sessionruntime.SessionMutationInput) string {
+	if input.RunIntent != nil {
+		return input.RunIntent.RunID
+	}
+	return ""
+}
+
+func sessionV3StoreDiagnosticMetadata(input sessionruntime.SessionMutationInput, result sessionruntime.SessionMutationResult, applyErr error) map[string]any {
+	runID := sessionV3StoreDiagnosticRunID(input)
+	payload := map[string]any{
+		"session_id": input.SessionID, "run_id": runID, "kind": input.Kind, "event_type": input.EventType,
+		"client_request_id": input.ClientRequestID, "idempotency_key": input.IdempotencyKey,
+		"payload_hash": input.PayloadHash, "request_hash": input.RequestHash,
+		"event_payload_bytes": len(input.EventPayload), "event_payload_sha256": sessionV3DiagnosticBytesHash(input.EventPayload),
+		"result_event_id": result.Event.ID, "result_event_seq": result.Event.Seq,
+	}
+	if result.Conflict != nil {
+		payload["conflict_code"] = result.Conflict.Code
+		payload["conflict_existing_payload_hash"] = result.Conflict.ExistingPayloadHash
+		payload["conflict_incoming_payload_hash"] = result.Conflict.IncomingPayloadHash
+	}
+	if applyErr != nil {
+		payload["error_type"] = fmt.Sprintf("%T", applyErr)
+		payload["error_hash"] = sessionV3DiagnosticSafeKeyHash(applyErr.Error())
+	}
+	return payload
+}
+
+func sessionV3DiagnosticBytesHash(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:8])
+}
+
 func sessionV3StoreDiagnosticSequence(prefix, kind, requestID string, discriminator int64) string {
 	label := strings.NewReplacer(".", "_", "/", "_", " ", "_", ":", "_").Replace(strings.TrimSpace(kind))
 	requestID = strings.NewReplacer(".", "_", "/", "_", " ", "_", ":", "_").Replace(strings.TrimSpace(requestID))
 	return fmt.Sprintf("%s-%s-%s-%d", strings.TrimSpace(prefix), label, requestID, discriminator)
 }
 
+func (e *sessionV3Executor) recordSessionV3ProviderAPIDiagnostic(job sessionV3ExecutorJob, event providerdiagnostics.Event) {
+	if e == nil || e.server == nil || !providerdiagnostics.Enabled() {
+		return
+	}
+	stage := "session.diagnostic.provider.api"
+	if eventStage := strings.TrimSpace(event.Stage); eventStage != "" {
+		stage += "." + strings.NewReplacer(" ", "_", "/", "_", ":", "_", "-", "_").Replace(eventStage)
+	}
+	sequence := fmt.Sprintf("provider-api-%s-%s-%s-%d-%d", strings.TrimSpace(event.Provider), strings.TrimSpace(event.Operation), strings.TrimSpace(event.Stage), event.RecordedAt, time.Now().UnixNano())
+	if _, err := e.server.appendSessionV3Diagnostic(sessionV3DiagnosticInput{
+		SessionID:      job.SessionID,
+		UserID:         job.Principal.UserID,
+		AccountScopeID: job.Principal.AccountScopeID,
+		RunID:          job.RunID,
+		Stage:          stage,
+		Source:         "backend.provider.api",
+		SequenceLabel:  sequence,
+		Payload:        event,
+		NowUnixMs:      event.RecordedAt,
+	}); err != nil {
+		log.Printf("warning: failed to record provider api diagnostic session=%q run=%q provider=%q stage=%q: %v", job.SessionID, job.RunID, event.Provider, event.Stage, err)
+	}
+}
+
+func (e *sessionV3Executor) recordSessionV3ContextOverflowDecision(job sessionV3ExecutorJob, phase string, cause error) {
+	if e == nil || e.server == nil || !sessionV3DiagnosticsEnabled() {
+		return
+	}
+	now := time.Now().UnixMilli()
+	rawError := ""
+	if cause != nil {
+		rawError = cause.Error()
+	}
+	payload := map[string]any{
+		"phase":              strings.TrimSpace(phase),
+		"raw_error":          rawError,
+		"classifier":         "sessionV3IsContextOverflowDiagnostic",
+		"classifier_matched": sessionV3IsContextOverflowDiagnostic(rawError),
+	}
+	if e.server.sessions != nil {
+		if summary, ok, err := e.server.sessions.GetUsageSummary(job.SessionID); err != nil {
+			payload["usage_summary_error"] = err.Error()
+		} else if ok {
+			payload["last_usage_summary"] = summary
+		} else {
+			payload["last_usage_summary_present"] = false
+		}
+	}
+	if _, err := e.server.appendSessionV3Diagnostic(sessionV3DiagnosticInput{
+		SessionID:      job.SessionID,
+		UserID:         job.Principal.UserID,
+		AccountScopeID: job.Principal.AccountScopeID,
+		RunID:          job.RunID,
+		Stage:          "session.diagnostic.context_overflow.decision",
+		Source:         "backend.executor",
+		SequenceLabel:  fmt.Sprintf("context-overflow-decision-%d", now),
+		Payload:        payload,
+		NowUnixMs:      now,
+	}); err != nil {
+		log.Printf("warning: failed to record v3 context overflow decision diagnostic session=%q run=%q: %v", job.SessionID, job.RunID, err)
+	}
+}
+
 func (e *sessionV3Executor) recordSessionV3Diagnostic(job sessionV3ExecutorJob, stage, source, sequenceLabel string, payload any) {
-	if e == nil || e.server == nil {
+	if e == nil || e.server == nil || !sessionV3DiagnosticsEnabled() {
 		return
 	}
 	if _, err := e.server.appendSessionV3Diagnostic(sessionV3DiagnosticInput{
@@ -229,30 +321,106 @@ func sessionV3DiagnosticErrorString(err error) string {
 }
 
 func sessionV3ProviderRequestDiagnostic(req provideriface.Request) map[string]any {
+	inputCount, inputCharCount, nativeInputCount, encryptedInputCount := sessionV3ProviderInputDiagnosticShape(req.Input)
+	toolsCount := len(req.Tools)
 	return map[string]any{
-		"session_id":           req.SessionID,
-		"model":                req.Model,
-		"thinking":             req.Thinking,
-		"instructions":         req.Instructions,
-		"input":                req.Input,
-		"tools":                req.Tools,
-		"tool_choice":          req.ToolChoice,
-		"service_tier":         req.ServiceTier,
-		"context_mode":         req.ContextMode,
-		"context_window":       req.ContextWindow,
-		"parallel_tool_calls":  req.ParallelToolCalls,
-		"workspace_path":       req.WorkspacePath,
-		"tool_invoker_present": req.ToolInvoker != nil,
+		"session_id":                        req.SessionID,
+		"provider_lineage_id":               req.ProviderLineageID,
+		"context_branch_id":                 req.ContextBranchID,
+		"provider_cache_key_present":        strings.TrimSpace(req.ProviderCacheKey) != "",
+		"provider_cache_key_hash":           sessionV3DiagnosticSafeKeyHash(req.ProviderCacheKey),
+		"session_affinity_key_present":      strings.TrimSpace(req.SessionAffinityKey) != "",
+		"session_affinity_key_hash":         sessionV3DiagnosticSafeKeyHash(req.SessionAffinityKey),
+		"cache_affinity_decoupled":          strings.TrimSpace(req.ProviderCacheKey) != "" && strings.TrimSpace(req.SessionAffinityKey) != "" && strings.TrimSpace(req.ProviderCacheKey) != strings.TrimSpace(req.SessionAffinityKey),
+		"boundary_reason":                   req.BoundaryReason,
+		"previous_provider_lineage_id":      req.PreviousProviderLineageID,
+		"previous_provider":                 req.PreviousProviderID,
+		"previous_model":                    req.PreviousModel,
+		"new_provider":                      req.NewProviderID,
+		"new_model":                         req.NewModel,
+		"handoff_summary_message_id":        req.HandoffSummaryMessageID,
+		"handoff_summary_global_seq":        req.HandoffSummaryGlobalSeq,
+		"provider_lineage_start_message_id": req.ProviderLineageStartMessageID,
+		"provider_lineage_start_run_id":     req.ProviderLineageStartRunID,
+		"provider_lineage_start_global_seq": req.ProviderLineageStartGlobalSeq,
+		"native_continuation_allowed":       req.NativeContinuationAllowed,
+		"force_fresh_provider_context":      req.ForceFreshProviderContext,
+		"model":                             req.Model,
+		"thinking":                          req.Thinking,
+		"instructions_present":              strings.TrimSpace(req.Instructions) != "",
+		"input_items":                       inputCount,
+		"input_text_chars":                  inputCharCount,
+		"native_input_items":                nativeInputCount,
+		"encrypted_input_items":             encryptedInputCount,
+		"tools_count":                       toolsCount,
+		"tool_choice":                       req.ToolChoice,
+		"service_tier":                      req.ServiceTier,
+		"context_mode":                      req.ContextMode,
+		"context_window":                    req.ContextWindow,
+		"model_catalog_present":             req.ModelCatalog != nil,
+		"parallel_tool_calls":               req.ParallelToolCalls,
+		"workspace_path_present":            strings.TrimSpace(req.WorkspacePath) != "",
+		"tool_invoker_present":              req.ToolInvoker != nil,
 	}
+}
+
+func sessionV3ProviderInputDiagnosticShape(input []map[string]any) (int, int, int, int) {
+	chars := 0
+	nativeItems := 0
+	encryptedItems := 0
+	var walk func(any)
+	walk = func(value any) {
+		switch typed := value.(type) {
+		case string:
+			chars += len([]rune(typed))
+		case []map[string]any:
+			for _, child := range typed {
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		case map[string]any:
+			itemType := strings.ToLower(strings.TrimSpace(fmt.Sprint(typed["type"])))
+			if itemType == "reasoning" || itemType == "function_call" || itemType == "function_call_output" {
+				nativeItems++
+			}
+			if encryptedContent, ok := typed["encrypted_content"]; ok && strings.TrimSpace(fmt.Sprint(encryptedContent)) != "" {
+				encryptedItems++
+			}
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	walk(input)
+	return len(input), chars, nativeItems, encryptedItems
+}
+
+func sessionV3DiagnosticSafeKeyHash(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:8])
 }
 
 func sessionV3ProviderStreamEventDiagnostic(event provideriface.StreamEvent, step, index int) map[string]any {
 	return map[string]any{
-		"step":          step,
-		"stream_index":  index,
-		"type":          event.Type,
-		"delta":         event.Delta,
-		"phase":         event.Phase,
-		"reasoning_key": event.ReasoningKey,
+		"step":               step,
+		"stream_index":       index,
+		"type":               event.Type,
+		"delta":              event.Delta,
+		"phase":              event.Phase,
+		"reasoning_key":      event.ReasoningKey,
+		"tool_call_id":       event.ToolCallID,
+		"tool_call_index":    event.ToolCallIndex,
+		"tool_name":          event.ToolName,
+		"arguments":          event.Arguments,
+		"arguments_delta":    event.ArgumentsDelta,
+		"arguments_snapshot": event.ArgumentsSnapshot,
+		"metadata":           event.Metadata,
 	}
 }

@@ -343,6 +343,10 @@ func (p *ChatPage) taskLaunchSummaryChipLines(manifest map[string]any, launchCou
 	if resolvedAgent := strings.TrimSpace(jsonString(manifest, "resolved_agent_name")); resolvedAgent != "" {
 		chips = append(chips, "[# Router: "+resolvedAgent+"]")
 	}
+	used, remaining := jsonInt(manifest, "automatic_budget_used"), jsonInt(manifest, "automatic_budget_remaining")
+	if used > 0 || remaining > 0 {
+		chips = append(chips, fmt.Sprintf("[Budget: %d used · %d remaining]", used, remaining))
+	}
 
 	lines := make([]chatRenderLine, 0, len(chips))
 	current := ""
@@ -596,6 +600,21 @@ func (p *ChatPage) taskLaunchLaunchCardLines(launches []map[string]any, width in
 		out = append(out, p.taskLaunchCardContentLine(chatRenderLine{Text: chatRenderSpansText(headerSpans), Style: p.theme.Text, Spans: headerSpans}, innerWidth))
 		if len(metaParts) > 0 {
 			out = append(out, p.taskLaunchCardContentLine(chatRenderLine{Text: strings.Join(metaParts, " · "), Style: p.theme.TextMuted}, innerWidth))
+		}
+		details := []struct{ label, value string }{
+			{"Coder source", jsonString(launch, "source_agent_name")},
+			{"Profile mode", jsonString(launch, "source_profile_mode")},
+			{"Inherited runtime", jsonString(launch, "inherited_runtime_mode")},
+			{"Deliverable", jsonString(launch, "deliverable")},
+			{"Owned scope", strings.Join(jsonStringSlice(launch, "owned_scope"), ", ")},
+			{"Dependency evidence", jsonString(launch, "dependency_evidence")},
+			{"Isolation", firstNonEmptyToolValue(jsonString(launch, "isolation"), jsonString(launch, "worktree_isolation"))},
+			{"Tools", strings.Join(jsonStringSlice(jsonObject(launch, "resolved_tools"), "allowed_tools"), ", ")},
+		}
+		for _, detail := range details {
+			if strings.TrimSpace(detail.value) != "" {
+				out = append(out, p.taskLaunchCardContentLine(p.taskLaunchKeyValueLine(detail.label, detail.value, p.theme.Text), innerWidth))
+			}
 		}
 		assignment := p.taskLaunchMarkdownSectionLines(p.taskLaunchLaunchAssignment(launch), "No launch-specific instructions.")
 		if len(assignment) > 0 {

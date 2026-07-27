@@ -1,0 +1,85 @@
+import { useStoreWithEqualityFn } from 'zustand/traditional'
+import { createStore } from 'zustand/vanilla'
+import { applyDesktopV3LivePatchBatch, createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop-v3-cache-reducer'
+import type { DesktopV3CacheAction, DesktopV3CacheState } from './desktop-v3-cache-types'
+import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
+
+export interface DesktopV3CacheMutation {
+  action: DesktopV3CacheAction
+  previousState: DesktopV3CacheState
+  nextState: DesktopV3CacheState
+  durationMS: number
+}
+
+type DesktopV3CacheListener = (mutation?: DesktopV3CacheMutation) => void
+
+const store = createStore<DesktopV3CacheState>(() => createEmptyDesktopV3CacheState())
+const mutationListeners = new Set<DesktopV3CacheListener>()
+
+export function getDesktopV3CacheSnapshot(): DesktopV3CacheState {
+  return store.getState()
+}
+
+export function subscribeDesktopV3Cache(listener: DesktopV3CacheListener): () => void {
+  mutationListeners.add(listener)
+  return () => {
+    mutationListeners.delete(listener)
+  }
+}
+
+export function dispatchDesktopV3Cache(action: DesktopV3CacheAction): void {
+  dispatchDesktopV3CacheBatch([action])
+}
+
+export function dispatchDesktopV3CacheBatch(actions: DesktopV3CacheAction[]): void {
+  if (actions.length === 0) return
+  const previousState = store.getState()
+  let nextState: DesktopV3CacheState = { ...previousState }
+  const startedAt = performance.now()
+  for (const action of actions) {
+    nextState = desktopV3CacheReducer(nextState, action)
+  }
+  commitDesktopV3CacheSnapshot(previousState, nextState, actions, performance.now() - startedAt)
+}
+
+export function commitDesktopV3LivePatchBatch(
+  patches: SessionV3RealtimeLivePatchWire[],
+): void {
+  const previous = getDesktopV3CacheSnapshot()
+  const action: DesktopV3CacheAction = {
+    type: 'realtime.applyLivePatchBatch',
+    patches,
+  }
+  const startedAt = performance.now()
+  const next = applyDesktopV3LivePatchBatch(previous, patches)
+  commitDesktopV3CacheSnapshot(previous, next, [action], performance.now() - startedAt)
+}
+
+export function commitDesktopV3CacheSnapshot(
+  previousState: DesktopV3CacheState,
+  nextState: DesktopV3CacheState,
+  actions: DesktopV3CacheAction[],
+  durationMS = 0,
+): void {
+  store.setState(nextState, true)
+  for (const action of actions) {
+    const mutation: DesktopV3CacheMutation = { action, previousState, nextState, durationMS }
+    for (const listener of mutationListeners) {
+      listener(mutation)
+    }
+  }
+}
+
+export function useDesktopV3CacheSelector<T>(
+  selector: (state: DesktopV3CacheState) => T,
+  equalityFn?: (left: T, right: T) => boolean,
+): T {
+  return useStoreWithEqualityFn(store, selector, equalityFn)
+}
+
+export function resetDesktopV3CacheForTests(state: DesktopV3CacheState = createEmptyDesktopV3CacheState()): void {
+  store.setState(state, true)
+  for (const listener of mutationListeners) {
+    listener()
+  }
+}

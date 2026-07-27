@@ -17,38 +17,28 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 	originalResolveLifecycle := resolveLifecycleManagerForUpdate
 	originalServiceActive := serviceActiveForUpdate
 	originalRestartSystemd := restartSystemdServiceForUpdate
-	originalManagedDevPhase := runManagedDevHostUpdatePhaseForUpdate
 	originalPreflight := preflightDevUpdateForUpdate
 	originalBuildSwarmd := buildSwarmdBinariesForUpdate
 	originalForceBuildTools := forceBuildToolBinariesForUpdate
 	originalBuildTUI := buildSwarmTUIForUpdate
 	originalWebNeedsRebuild := devFrontendAssetsNeedRebuildForUpdate
 	originalBuildWeb := buildAndInstallWebAssetsForUpdate
-	originalSyncContainers := syncDevContainerImagesWithFingerprintForUpdate
-	originalWriteRebuildStatus := writeLocalContainerUpdateRebuildStatusForUpdate
 	originalInstallLaunchers := installLaunchersForUpdate
 	originalEnsureUnit := ensureSystemdServiceUnitForUpdate
-	originalRunLocalContainers := runDevLocalContainerUpdateJobAfterRestartForUpdate
-	originalRunRemoteContainers := runDevRemoteDeployUpdateJobAfterRestartForUpdate
 	defer func() {
 		stopBackendForUpdate = originalStopBackend
 		startBackendForUpdate = originalStartBackend
 		resolveLifecycleManagerForUpdate = originalResolveLifecycle
 		serviceActiveForUpdate = originalServiceActive
 		restartSystemdServiceForUpdate = originalRestartSystemd
-		runManagedDevHostUpdatePhaseForUpdate = originalManagedDevPhase
 		preflightDevUpdateForUpdate = originalPreflight
 		buildSwarmdBinariesForUpdate = originalBuildSwarmd
 		forceBuildToolBinariesForUpdate = originalForceBuildTools
 		buildSwarmTUIForUpdate = originalBuildTUI
 		devFrontendAssetsNeedRebuildForUpdate = originalWebNeedsRebuild
 		buildAndInstallWebAssetsForUpdate = originalBuildWeb
-		syncDevContainerImagesWithFingerprintForUpdate = originalSyncContainers
-		writeLocalContainerUpdateRebuildStatusForUpdate = originalWriteRebuildStatus
 		installLaunchersForUpdate = originalInstallLaunchers
 		ensureSystemdServiceUnitForUpdate = originalEnsureUnit
-		runDevLocalContainerUpdateJobAfterRestartForUpdate = originalRunLocalContainers
-		runDevRemoteDeployUpdateJobAfterRestartForUpdate = originalRunRemoteContainers
 	}()
 
 	calls := []string{}
@@ -56,10 +46,6 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 
 	preflightDevUpdateForUpdate = func(Profile) error {
 		calls = append(calls, "preflight")
-		return nil
-	}
-	runManagedDevHostUpdatePhaseForUpdate = func(Profile) error {
-		calls = append(calls, "managed-dev")
 		return nil
 	}
 	resolveLifecycleManagerForUpdate = func(Profile) (lifecycleManager, bool, error) {
@@ -100,14 +86,6 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 		t.Fatalf("web asset build should not run when assets are current")
 		return nil
 	}
-	syncDevContainerImagesWithFingerprintForUpdate = func(Profile, string, bool, string) error {
-		calls = append(calls, "sync-container-images")
-		return nil
-	}
-	writeLocalContainerUpdateRebuildStatusForUpdate = func(Profile, string, string, string, string) error {
-		calls = append(calls, "write-rebuild-status")
-		return nil
-	}
 	installLaunchersForUpdate = func(string) (InstallReport, error) {
 		calls = append(calls, "install-launchers")
 		return InstallReport{}, nil
@@ -127,15 +105,6 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 		t.Fatalf("direct backend start should not run for systemd restart plan")
 		return nil
 	}
-	runDevLocalContainerUpdateJobAfterRestartForUpdate = func(Profile) error {
-		calls = append(calls, "local-container-update")
-		return nil
-	}
-	runDevRemoteDeployUpdateJobAfterRestartForUpdate = func(Profile) error {
-		calls = append(calls, "remote-container-update")
-		return nil
-	}
-
 	if err := RunDevUpdate(profile, nil); err != nil {
 		t.Fatalf("RunDevUpdate: %v", err)
 	}
@@ -149,7 +118,7 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 	if !(installIndex < ensureIndex && ensureIndex < restartIndex) {
 		t.Fatalf("systemd unit reconciliation order wrong: calls=%v", calls)
 	}
-	want := []string{"preflight", "managed-dev", "resolve-lifecycle", "service-active", "stop", "build-swarmd", "build-tools", "build-tui", "web-check", "sync-container-images", "write-rebuild-status", "install-launchers", "ensure-unit", "restart-systemd", "local-container-update", "remote-container-update"}
+	want := []string{"preflight", "resolve-lifecycle", "service-active", "stop", "build-swarmd", "build-tools", "build-tui", "web-check", "install-launchers", "ensure-unit", "restart-systemd"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %v, want %v", calls, want)
 	}
@@ -157,20 +126,14 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 
 func TestRunDevUpdatePreflightsBeforeStoppingBackend(t *testing.T) {
 	originalStopBackend := stopBackendForUpdate
-	originalManagedDevPhase := runManagedDevHostUpdatePhaseForUpdate
 	originalPreflight := preflightDevUpdateForUpdate
 	defer func() {
 		stopBackendForUpdate = originalStopBackend
-		runManagedDevHostUpdatePhaseForUpdate = originalManagedDevPhase
 		preflightDevUpdateForUpdate = originalPreflight
 	}()
 
 	profile := newDevUpdateTestProfile(t)
 	preflightDevUpdateForUpdate = func(Profile) error { return errors.New("missing Go toolchain") }
-	runManagedDevHostUpdatePhaseForUpdate = func(Profile) error {
-		t.Fatalf("managed dev phase should not run after preflight failure")
-		return nil
-	}
 	stopBackendForUpdate = func(Profile) error {
 		t.Fatalf("backend must not stop after preflight failure")
 		return nil
@@ -191,44 +154,33 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 	originalResolveLifecycle := resolveLifecycleManagerForUpdate
 	originalServiceActive := serviceActiveForUpdate
 	originalRestartSystemd := restartSystemdServiceForUpdate
-	originalManagedDevPhase := runManagedDevHostUpdatePhaseForUpdate
 	originalPreflight := preflightDevUpdateForUpdate
 	originalBuildSwarmd := buildSwarmdBinariesForUpdate
 	originalForceBuildTools := forceBuildToolBinariesForUpdate
 	originalBuildTUI := buildSwarmTUIForUpdate
 	originalWebNeedsRebuild := devFrontendAssetsNeedRebuildForUpdate
 	originalBuildWeb := buildAndInstallWebAssetsForUpdate
-	originalSyncContainers := syncDevContainerImagesWithFingerprintForUpdate
-	originalWriteRebuildStatus := writeLocalContainerUpdateRebuildStatusForUpdate
 	originalInstallLaunchers := installLaunchersForUpdate
 	originalEnsureUnit := ensureSystemdServiceUnitForUpdate
-	originalRunLocalContainers := runDevLocalContainerUpdateJobAfterRestartForUpdate
-	originalRunRemoteContainers := runDevRemoteDeployUpdateJobAfterRestartForUpdate
 	defer func() {
 		stopBackendForUpdate = originalStopBackend
 		startBackendForUpdate = originalStartBackend
 		resolveLifecycleManagerForUpdate = originalResolveLifecycle
 		serviceActiveForUpdate = originalServiceActive
 		restartSystemdServiceForUpdate = originalRestartSystemd
-		runManagedDevHostUpdatePhaseForUpdate = originalManagedDevPhase
 		preflightDevUpdateForUpdate = originalPreflight
 		buildSwarmdBinariesForUpdate = originalBuildSwarmd
 		forceBuildToolBinariesForUpdate = originalForceBuildTools
 		buildSwarmTUIForUpdate = originalBuildTUI
 		devFrontendAssetsNeedRebuildForUpdate = originalWebNeedsRebuild
 		buildAndInstallWebAssetsForUpdate = originalBuildWeb
-		syncDevContainerImagesWithFingerprintForUpdate = originalSyncContainers
-		writeLocalContainerUpdateRebuildStatusForUpdate = originalWriteRebuildStatus
 		installLaunchersForUpdate = originalInstallLaunchers
 		ensureSystemdServiceUnitForUpdate = originalEnsureUnit
-		runDevLocalContainerUpdateJobAfterRestartForUpdate = originalRunLocalContainers
-		runDevRemoteDeployUpdateJobAfterRestartForUpdate = originalRunRemoteContainers
 	}()
 
 	profile := newDevUpdateTestProfile(t)
 
 	preflightDevUpdateForUpdate = func(Profile) error { return nil }
-	runManagedDevHostUpdatePhaseForUpdate = func(Profile) error { return nil }
 	resolveLifecycleManagerForUpdate = func(Profile) (lifecycleManager, bool, error) {
 		return lifecycleManager{Kind: lifecycleKindSystemd, Scope: string(systemdServiceSystem), Unit: "swarm.service"}, true, nil
 	}
@@ -239,8 +191,6 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 	buildSwarmTUIForUpdate = func(Profile) error { return nil }
 	devFrontendAssetsNeedRebuildForUpdate = func(Profile) (bool, error) { return false, nil }
 	buildAndInstallWebAssetsForUpdate = func(Profile) error { return nil }
-	syncDevContainerImagesWithFingerprintForUpdate = func(Profile, string, bool, string) error { return nil }
-	writeLocalContainerUpdateRebuildStatusForUpdate = func(Profile, string, string, string, string) error { return nil }
 	installLaunchersForUpdate = func(string) (InstallReport, error) { return InstallReport{}, nil }
 	ensureSystemdServiceUnitForUpdate = func() error { return errors.New("unit denied") }
 	restartSystemdServiceForUpdate = func(systemdServiceScope, string, bool) error {
@@ -251,15 +201,6 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 		t.Fatalf("direct backend start should not run after unit reconciliation failure")
 		return nil
 	}
-	runDevLocalContainerUpdateJobAfterRestartForUpdate = func(Profile) error {
-		t.Fatalf("post-restart local container update should not run after unit reconciliation failure")
-		return nil
-	}
-	runDevRemoteDeployUpdateJobAfterRestartForUpdate = func(Profile) error {
-		t.Fatalf("post-restart remote container update should not run after unit reconciliation failure")
-		return nil
-	}
-
 	err := RunDevUpdate(profile, nil)
 	if err == nil {
 		t.Fatalf("RunDevUpdate succeeded; want unit reconciliation failure")
@@ -274,22 +215,11 @@ func newDevUpdateTestProfile(t *testing.T) Profile {
 	root := t.TempDir()
 	for _, path := range []string{
 		filepath.Join(root, "scripts"),
-		filepath.Join(root, "deploy", "container-mvp"),
 		filepath.Join(root, "web", "dist"),
 		filepath.Join(root, "swarmd", "internal", "fff", "lib", "linux-amd64-gnu"),
 	} {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", path, err)
-		}
-	}
-	for _, path := range []string{
-		filepath.Join(root, "scripts", "rebuild-container.sh"),
-		filepath.Join(root, "deploy", "container-mvp", "Containerfile.base"),
-		filepath.Join(root, "deploy", "container-mvp", "Containerfile"),
-		filepath.Join(root, "deploy", "container-mvp", "entrypoint.sh"),
-	} {
-		if err := os.WriteFile(path, []byte("test\n"), 0o755); err != nil {
-			t.Fatalf("write %s: %v", path, err)
 		}
 	}
 	binDir := t.TempDir()

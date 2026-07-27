@@ -272,36 +272,6 @@ function testManageTodosBatchShowsOnlyChangedItems(): void {
   );
 }
 
-function testManageImageGenerateShowsSessionRefs(): void {
-  const message = buildStructuredToolMessage({
-    tool: "manage-image",
-    callId: "call_image_1",
-    outputText: JSON.stringify({
-      status: "completed",
-      tool: "manage-image",
-      thread_id: "thread_1",
-      open_url: "swarm://tools/image/sessions/thread_1",
-      provider: "google_gemini",
-      model: "gemini-test",
-      requested_count: 2,
-      saved_count: 2,
-      assets: [
-        { asset_id: "asset_1", url: "/v1/image/assets?thread_id=thread_1&asset_id=asset_1" },
-      ],
-    }),
-  });
-  assert(Boolean(message), "expected structured manage-image message");
-  assert(
-    message?.summary === "manage-image · completed · 2 images · google_gemini/gemini-test · session thread_1",
-    `unexpected manage-image summary: ${message?.summary}`,
-  );
-  assert(message?.target === "swarm://tools/image/sessions/thread_1", `unexpected image target: ${message?.target}`);
-  assert(
-    message?.previewLines.includes("open: swarm://tools/image/sessions/thread_1") === true,
-    `missing image open url: ${message?.previewLines.join(" | ")}`,
-  );
-}
-
 function testManageTodosAgentListShowsOnlyCurrentSession(): void {
   const message = buildStructuredToolMessage({
     tool: "manage_todos",
@@ -430,7 +400,7 @@ function testTaskRowsMapReasoningToThinkingWithoutPreviewLeak(): void {
       launches: [
         {
           launch_index: 1,
-          subagent: 'explorer',
+          subagent: 'finder',
           status: 'running',
           current_preview_kind: 'reasoning',
           current_preview_text: '<reasoning>Inspecting files</reasoning>',
@@ -484,6 +454,7 @@ function testBashToolMessageShowsCommandAsMetadata(): void {
   assert(Boolean(message), 'expected structured bash tool message')
   assert(message?.summary === 'bash', `unexpected bash summary: ${message?.summary}`)
   assert(message?.commandText === command, `missing bash command metadata: ${message?.commandText}`)
+  assert(message?.bashData?.command === command, `missing bash data command: ${message?.bashData?.command}`)
   assert(
     message?.previewLines.includes(`$ ${command}`) === false,
     `command should not be quoted in preview lines: ${message?.previewLines.join(' | ')}`,
@@ -492,6 +463,54 @@ function testBashToolMessageShowsCommandAsMetadata(): void {
     message?.previewLines.includes('ok') === true,
     `missing bash output preview: ${message?.previewLines.join(' | ')}`,
   )
+}
+
+function testBashToolMessagePreservesFullOutput(): void {
+  const command = 'printf long-output'
+  const fullOutput = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join('\n')
+  const stderr = 'warning\nsecond warning'
+  const message = parseStructuredToolMessage(JSON.stringify({
+    path_id: 'run.tool-history.v2',
+    tool: 'bash',
+    call_id: 'call_bash_long_output',
+    arguments: JSON.stringify({ command }),
+    output: JSON.stringify({ command, exit_code: 0, output: fullOutput, stdout: fullOutput, stderr }),
+  }))
+
+  assert(Boolean(message), 'expected structured bash tool message')
+  assert(message?.bashData?.output === fullOutput, 'bash data should preserve one canonical full output text')
+  assert(message?.bashData?.stdout === '', 'bash data should not duplicate output as stdout')
+  assert(message?.bashData?.stderr === stderr, 'bash data should preserve distinct stderr text')
+  assert(message?.output === '', 'structured bash message should not duplicate the parsed output envelope')
+  assert(message?.completedOutput === '', 'structured bash message should not duplicate completed output')
+  assert(message?.bashData?.output.includes('line 20') === true, 'bash data should include the final output line')
+  assert(message?.commandText === command, `missing bash command metadata: ${message?.commandText}`)
+}
+
+function testLargePlainPreviewIsBoundedBeforeSplitting(): void {
+  const largeOutput = Array.from({ length: 5_000 }, (_, index) => `line ${index + 1}`).join("\n");
+  const message = buildStructuredToolMessage({
+    tool: "thinking",
+    outputText: largeOutput,
+  });
+
+  assert(Boolean(message), "expected structured thinking tool message");
+  assert(message?.previewLines.length === 12, `unexpected preview line count: ${message?.previewLines.length}`);
+  assert(message?.previewLines[0] === "line 1", `unexpected first preview line: ${message?.previewLines[0]}`);
+  assert(message?.previewLines.at(-1) === "line 12", `unexpected last preview line: ${message?.previewLines.at(-1)}`);
+}
+
+function testHugeJsonSkipsSummaryParsing(): void {
+  const hugeOutput = `{"summary":"${"x".repeat(1_100_000)}"}`;
+  const message = buildStructuredToolMessage({
+    tool: "custom-tool",
+    outputText: hugeOutput,
+  });
+
+  assert(Boolean(message), "expected structured custom tool message");
+  assert(message?.summary === "custom-tool", `unexpected huge-output summary: ${message?.summary}`);
+  assert(message?.outputJson == null, "huge output should not retain a parsed JSON graph");
+  assert(message?.previewLines.length === 0, "huge JSON should not be converted into preview rows");
 }
 
 function testSearchToolPreservesContentMatchText(): void {
@@ -510,6 +529,7 @@ function testSearchToolPreservesContentMatchText(): void {
           path: 'web/src/features/desktop/chat/components/chat-markdown.tsx',
           query: 'SearchToolView',
           line: 307,
+          column: 12,
           text: 'function SearchToolView({ toolMessage }: { toolMessage: StructuredToolMessage }) {',
         },
       ],
@@ -519,6 +539,7 @@ function testSearchToolPreservesContentMatchText(): void {
   assert(Boolean(message), 'expected structured search tool message')
   const match = message?.searchData?.files[0]?.queryGroups[0]?.matches[0]
   assert(match?.line === 307, `unexpected search match line: ${match?.line}`)
+  assert(match?.column === 12, `unexpected search match column: ${match?.column}`)
   assert(
     match?.text.includes('function SearchToolView') === true,
     `missing search match text: ${match?.text}`,
@@ -527,6 +548,34 @@ function testSearchToolPreservesContentMatchText(): void {
     message?.previewLines.length === 0,
     `search tool should use rich search data, got preview lines: ${message?.previewLines.join(' | ')}`,
   )
+}
+
+function testSearchToolParsesCompactGroupedResults(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'search',
+    callId: 'call_search_compact',
+    outputText: JSON.stringify({
+      tool: 'search',
+      search_mode: 'content',
+      path: 'web/src',
+      count: 2,
+      total_matched: 4,
+      query_results: [{ query: 'SearchToolView' }, { query: 'ManageSessionsCard' }],
+      results: [{
+        path: 'features/desktop/chat/components/chat-markdown.tsx',
+        items: [
+          { query: 'SearchToolView', line: 1204, column: 9, text: 'function SearchToolView() {' },
+          { query: 'ManageSessionsCard', line: 1077, column: 9, text: 'function ManageSessionsCard() {' },
+        ],
+      }],
+    }),
+  })
+
+  assert(Boolean(message), 'expected compact grouped search tool message')
+  assert(message?.searchData?.queryCount === 2, `unexpected compact search query count: ${message?.searchData?.queryCount}`)
+  assert(message?.searchData?.files.length === 1, `unexpected compact search file count: ${message?.searchData?.files.length}`)
+  assert(message?.searchData?.files[0]?.matchCount === 2, `unexpected compact search match count: ${message?.searchData?.files[0]?.matchCount}`)
+  assert(message?.searchData?.files[0]?.queryGroups[1]?.matches[0]?.line === 1077, 'expected grouped line metadata')
 }
 
 function testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads(): void {
@@ -538,7 +587,7 @@ function testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads(): voi
       {
         launch_index: 1,
         child_session_id: 'child-1',
-        subagent: 'explorer',
+        subagent: 'finder',
         status: 'ok',
         current_tool: '',
         elapsed_ms: 1200,
@@ -561,7 +610,7 @@ function testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads(): voi
       {
         launch_index: 1,
         child_session_id: 'child-1',
-        subagent: 'explorer',
+        subagent: 'finder',
         status: 'ok',
         elapsed_ms: 1400,
       },
@@ -612,9 +661,9 @@ function testTaskRowsParseCanonicalStreamContractFields(): void {
         launch_index: 2,
         child_session_id: 'child-session-2',
         child_mode: 'auto',
-        requested_subagent: 'explorer',
-        subagent: 'explorer-v2',
-        agent_type: 'explorer-v2',
+        requested_subagent: 'finder',
+        subagent: 'finder-v2',
+        agent_type: 'finder-v2',
         meta_prompt: 'map backend files',
         assignment_label: 'Backend map',
         subagent_provider: 'test-provider',
@@ -642,7 +691,7 @@ function testTaskRowsParseCanonicalStreamContractFields(): void {
   assert(row?.launchIndex === 2, `unexpected launch index: ${row?.launchIndex}`)
   assert(row?.childSessionId === 'child-session-2', `unexpected child session id: ${row?.childSessionId}`)
   assert(row?.status === 'running', `unexpected status: ${row?.status}`)
-  assert(row?.agent === 'explorer-v2', `unexpected agent: ${row?.agent}`)
+  assert(row?.agent === 'finder-v2', `unexpected agent: ${row?.agent}`)
   assert(row?.assignmentLabel === 'Backend map', `unexpected assignment label: ${row?.assignmentLabel}`)
   assert(row?.modelLabel === 'test-provider / test-model', `unexpected model label: ${row?.modelLabel}`)
   assert(row?.tool === 'search', `unexpected current tool: ${row?.tool}`)
@@ -651,6 +700,129 @@ function testTaskRowsParseCanonicalStreamContractFields(): void {
   assert(row?.launchStartedAtMs === 123000, `unexpected launch start: ${row?.launchStartedAtMs}`)
   assert(row?.currentToolStartedAtMs === 124000, `unexpected current tool start: ${row?.currentToolStartedAtMs}`)
   assert(row?.terminal === false, 'running task stream row should not be terminal')
+}
+
+function testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_native_stream',
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.stream.v1',
+      status: 'running',
+      launches: [{
+        launch_index: 1,
+        child_session_id: 'legacy-child',
+        subagent: 'legacy',
+        status: 'running',
+        current_preview_kind: 'assistant',
+        current_preview_text: 'legacy transcript text must not drive rows',
+      }],
+    }),
+    taskStream: {
+      launchOrder: ['child-native-1', 'child-native-2'],
+      launchesByKey: {
+        'child-native-1': {
+          launch_index: 1,
+          child_session_id: 'child-native-1',
+          status: 'running',
+          phase: 'tool.started',
+          subagent: 'finder',
+          assignment_label: 'Explore frontend',
+          subagent_provider: 'provider-a',
+          subagent_model: 'model-a',
+          current_tool: 'search',
+          current_tool_identity: 'search',
+          current_tool_run_count: 3,
+          current_tool_display: 'search x3',
+          launch_started_at_ms: 123000,
+          current_tool_started_at_ms: 124000,
+        },
+        'child-native-2': {
+          launch_index: 2,
+          child_session_id: 'child-native-2',
+          status: 'failed',
+          phase: 'failed',
+          subagent: 'parallel',
+          error: 'subagent failed',
+          elapsed_ms: 2400,
+        },
+      },
+    },
+  })
+
+  assert(Boolean(message), 'expected structured native task stream message')
+  assert(message?.taskRows.length === 2, `expected native task stream rows, got ${message?.taskRows.length}`)
+  assert(message?.taskRows[0]?.launchKey === 'child-native-1', `expected launch key from native state, got ${message?.taskRows[0]?.launchKey}`)
+  assert(message?.taskRows[0]?.childSessionId === 'child-native-1', `expected native child session, got ${message?.taskRows[0]?.childSessionId}`)
+  assert(message?.taskRows[0]?.phase === 'tool.started', `expected phase, got ${message?.taskRows[0]?.phase}`)
+  assert(message?.taskRows[0]?.tool === 'search x3', `expected backend progression label, got ${message?.taskRows[0]?.tool}`)
+  assert(message?.taskRows[0]?.previewText === '', `native lifecycle state should not render transcript preview text, got ${message?.taskRows[0]?.previewText}`)
+  assert(message?.taskRows[1]?.previewText === 'subagent failed', `expected failure text, got ${message?.taskRows[1]?.previewText}`)
+}
+
+function testTerminalTaskPayloadOverridesStaleNativeTaskStream(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_terminal_overrides_stream',
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.v1',
+      status: 'ok',
+      launches: [{
+        launch_index: 1,
+        child_session_id: 'child-final',
+        subagent: 'explorer',
+        assignment_label: 'Canonical final launch',
+        status: 'ok',
+        elapsed_ms: 4200,
+      }],
+    }),
+    taskStream: {
+      launchOrder: ['child-final'],
+      launchesByKey: {
+        'child-final': {
+          launch_index: 1,
+          child_session_id: 'child-final',
+          subagent: 'explorer',
+          assignment_label: 'Stale streaming launch',
+          status: 'running',
+          current_tool: 'search',
+        },
+      },
+    },
+  })
+
+  assert(Boolean(message), 'expected terminal task message')
+  assert(message?.taskRows.length === 1, `expected one final row, got ${message?.taskRows.length}`)
+  assert(message?.taskRows[0]?.status === 'ok', `terminal payload must override stale stream status: ${message?.taskRows[0]?.status}`)
+  assert(message?.taskRows[0]?.assignmentLabel === 'Canonical final launch', 'terminal payload must supply canonical final metadata')
+  assert(message?.taskRows[0]?.terminal === true, 'terminal payload row must be terminal')
+}
+
+function testTaskRowsParseSingleV2PatchAsHistoricalCompatibility(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_v2_patch',
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.stream.v2',
+      launch_key: 'child-v2',
+      launch: {
+        launch_index: 1,
+        child_session_id: 'child-v2',
+        status: 'running',
+        phase: 'tool.completed',
+        subagent: 'finder',
+        current_tool: 'read',
+      },
+    }),
+  })
+
+  assert(Boolean(message), 'expected v2 patch task message')
+  assert(message?.taskRows.length === 1, `expected one v2 patch row, got ${message?.taskRows.length}`)
+  assert(message?.taskRows[0]?.launchKey === 'child-v2', `expected v2 launch key, got ${message?.taskRows[0]?.launchKey}`)
+  assert(message?.taskRows[0]?.phase === 'tool.completed', `expected v2 phase, got ${message?.taskRows[0]?.phase}`)
 }
 
 function testTaskRowsAcceptFinalPayloadSessionIdAlias(): void {
@@ -664,7 +836,7 @@ function testTaskRowsAcceptFinalPayloadSessionIdAlias(): void {
       launches: [{
         launch_index: 1,
         session_id: 'child-session-final',
-        subagent: 'explorer',
+        subagent: 'finder',
         status: 'ok',
         elapsed_ms: 1200,
       }],
@@ -688,7 +860,7 @@ function testRunningTaskRowDoesNotUseStreamDurationAsDisplayTime(): void {
       launches: [{
         launch_index: 1,
         child_session_id: 'child-1',
-        subagent: 'explorer',
+        subagent: 'finder',
         status: 'running',
         current_tool: 'search',
         launch_started_at_ms: 123000,
@@ -717,7 +889,7 @@ function testTerminalTaskRowUsesFinalElapsedAsDisplayTime(): void {
       launches: [{
         launch_index: 1,
         child_session_id: 'child-1',
-        subagent: 'explorer',
+        subagent: 'finder',
         status: 'ok',
         elapsed_ms: 3400,
       }],
@@ -798,6 +970,126 @@ function testParsesV3ProviderToolResultEnvelope(): void {
   assert(!parsed?.previewLines.some((line) => line.includes("run.v3.provider-tool-result.v1")), "should not leak raw V3 envelope path_id into preview");
 }
 
+function testWebSearchParsesBatchedNestedResultsAndFailures(): void {
+  const longText = `Full durable search body ${"detail ".repeat(120)}`;
+  const message = buildStructuredToolMessage({
+    tool: "websearch",
+    callId: "call_websearch_card",
+    argumentsText: JSON.stringify({ queries: ["desktop tool cards", "failed query"] }),
+    outputText: JSON.stringify({
+      queries: ["desktop tool cards", "failed query"],
+      query_count: 2,
+      total_results: 2,
+      failed_queries: 1,
+      requested_search_type: "auto",
+      resolved_search_types: ["neural"],
+      details_truncated: true,
+      results: [
+        {
+          query: "desktop tool cards",
+          count: 2,
+          resolved_search_type: "neural",
+          results: [
+            {
+              url: "https://example.com/tools/cards",
+              title: "Polished desktop cards",
+              summary: "A concise result summary.",
+              highlights: ["A useful highlighted passage."],
+              text: longText,
+              subpages: [{ url: "https://example.com/tools/cards/details", title: "Card details" }],
+            },
+            { url: "not a valid link", title: "Non-link result", text: "Still structured." },
+          ],
+        },
+        { query: "failed query", count: 0, error: "provider unavailable", results: [] },
+      ],
+    }),
+  });
+
+  assert(Boolean(message?.webSearchData), "expected structured websearch data");
+  assert(message?.webSearchData?.queryCount === 2, "expected batched query count");
+  assert(message?.webSearchData?.totalResults === 2, "expected total result count");
+  assert(message?.webSearchData?.failedQueries === 1, "expected failed query count");
+  assert(message?.webSearchData?.truncated === true, "expected partial marker");
+  assert(message?.webSearchData?.queryResults[0]?.results[0]?.domain === "example.com", "expected parsed domain");
+  assert(message?.webSearchData?.queryResults[0]?.results[0]?.text === longText, "long search content must remain durable");
+  assert(message?.webSearchData?.queryResults[0]?.results[0]?.subpages.length === 1, "expected nested subpage");
+  assert(message?.webSearchData?.queryResults[1]?.error === "provider unavailable", "expected per-query failure");
+  assert(message?.previewLines.length === 0, "dedicated websearch data should suppress generic preview rows");
+}
+
+function testWebFetchParsesBatchedContentStatusesAndLongText(): void {
+  const longText = `Fetched page body ${"content ".repeat(150)}`;
+  const message = buildStructuredToolMessage({
+    tool: "webfetch",
+    callId: "call_webfetch_card",
+    outputText: JSON.stringify({
+      urls: ["https://docs.example.com/guide", "https://broken.example.com"],
+      count: 2,
+      success_count: 1,
+      details_truncated: true,
+      results: [
+        { url: "https://docs.example.com/guide", title: "Desktop guide", summary: "Guide summary", text: longText },
+        { url: "https://broken.example.com", title: "Unavailable page", error: "fetch failed" },
+      ],
+      statuses: [
+        { id: "guide", status: "completed", source: "https://docs.example.com/guide" },
+        { id: "broken", status: "error", source: "https://broken.example.com", error: { tag: "CRAWL_FAILED", http_status_code: 502 } },
+      ],
+    }),
+  });
+
+  assert(Boolean(message?.webFetchData), "expected structured webfetch data");
+  assert(message?.webFetchData?.urls.length === 2, "expected batched URLs");
+  assert(message?.webFetchData?.successCount === 1, "expected successful fetch count");
+  assert(message?.webFetchData?.truncated === true, "expected fetch partial marker");
+  assert(message?.webFetchData?.results[0]?.domain === "docs.example.com", "expected fetched page domain");
+  assert(message?.webFetchData?.results[0]?.text === longText, "long fetched content must remain durable");
+  assert(message?.webFetchData?.results[1]?.error === "fetch failed", "expected failed record");
+  assert(message?.webFetchData?.statuses[1]?.error === "CRAWL_FAILED", "expected nested status error");
+  assert(message?.previewLines.length === 0, "dedicated webfetch data should suppress generic preview rows");
+}
+
+function testWebSearchPrefersFullDurablePayloadOverCompactedLiveOutput(): void {
+  const fullResult = {
+    queries: ["desktop tool cards"],
+    query_count: 1,
+    total_results: 1,
+    results: [{
+      query: "desktop tool cards",
+      count: 1,
+      results: [{ url: "https://example.com/full", title: "Full result", text: "durable full body" }],
+    }],
+  };
+  const message = buildStructuredToolMessage({
+    tool: "websearch",
+    outputText: JSON.stringify({
+      query: "desktop tool cards",
+      query_count: 1,
+      total_results: 1,
+      result_details_omitted: true,
+      original_bytes: 4096,
+    }),
+    completedOutputText: JSON.stringify(fullResult),
+  });
+  assert(message?.webSearchData?.queryResults[0]?.results[0]?.text === "durable full body", "durable payload should supply full WebSearch rows after compact live output");
+}
+
+function testWebToolsRetainStructuredArgumentsWhileRunning(): void {
+  const search = buildStructuredToolMessage({
+    tool: "websearch",
+    argumentsText: JSON.stringify({ queries: ["first query", "second query"] }),
+    state: "running",
+  });
+  const fetch = buildStructuredToolMessage({
+    tool: "webfetch",
+    argumentsText: JSON.stringify({ urls: ["https://example.com/a", "invalid://local"] }),
+    state: "running",
+  });
+  assert(search?.webSearchData?.queries.length === 2, "running search should retain argument queries");
+  assert(fetch?.webFetchData?.urls.length === 2, "running fetch should retain argument URLs");
+}
+
 function main(): void {
   testExitPlanApprovedShowsMetadata();
   testExitPlanDeniedPermissionShowsFeedbackAndPlan();
@@ -805,7 +1097,6 @@ function main(): void {
   testManageTodosListShowsItems();
   testManageTodosSummaryShowsCounts();
   testManageTodosBatchShowsOnlyChangedItems();
-  testManageImageGenerateShowsSessionRefs();
   testManageTodosAgentListShowsOnlyCurrentSession();
   testManageTodosAgentListPrioritizesActiveOpenItems();
   testEditToolPreservesFullExpandedDiff();
@@ -813,15 +1104,26 @@ function main(): void {
   testTaskRowsMapReasoningToThinkingWithoutPreviewLeak();
   testTaskRowsHideAssistantPreviewText();
   testBashToolMessageShowsCommandAsMetadata();
+  testBashToolMessagePreservesFullOutput();
+  testLargePlainPreviewIsBoundedBeforeSplitting();
+  testHugeJsonSkipsSummaryParsing();
   testSearchToolPreservesContentMatchText();
+  testSearchToolParsesCompactGroupedResults();
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
   testTaskRowsParseCanonicalStreamContractFields();
+  testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload();
+  testTerminalTaskPayloadOverridesStaleNativeTaskStream();
+  testTaskRowsParseSingleV2PatchAsHistoricalCompatibility();
   testTaskRowsAcceptFinalPayloadSessionIdAlias();
   testRunningTaskRowDoesNotUseStreamDurationAsDisplayTime();
   testTerminalTaskRowUsesFinalElapsedAsDisplayTime();
   testPlanManageShowsPlanLabelAndAction();
   testToolMessagePreservesToolInstanceID();
   testParsesV3ProviderToolResultEnvelope();
+  testWebSearchParsesBatchedNestedResultsAndFailures();
+  testWebFetchParsesBatchedContentStatusesAndLongText();
+  testWebSearchPrefersFullDurablePayloadOverCompactedLiveOutput();
+  testWebToolsRetainStructuredArgumentsWhileRunning();
   console.log("tool-message tests passed");
 }
 

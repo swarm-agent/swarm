@@ -44,7 +44,7 @@ func TestLookupCodexDefaults(t *testing.T) {
 	if got.UtilityThinking != "medium" {
 		t.Fatalf("utility thinking = %q", got.UtilityThinking)
 	}
-	wantSubagents := []string{"explorer", "memory", "parallel"}
+	wantSubagents := []string{"finder", "memory"}
 	if len(got.UtilitySubagents) != len(wantSubagents) {
 		t.Fatalf("utility subagents = %v", got.UtilitySubagents)
 	}
@@ -52,6 +52,28 @@ func TestLookupCodexDefaults(t *testing.T) {
 		if got.UtilitySubagents[i] != wantSubagents[i] {
 			t.Fatalf("utility subagents[%d] = %q, want %q", i, got.UtilitySubagents[i], wantSubagents[i])
 		}
+	}
+}
+
+func TestLookupOpenAIDefaults(t *testing.T) {
+	got, ok := Lookup("openai")
+	if !ok {
+		t.Fatalf("Lookup(openai) ok = false")
+	}
+	if got.ProviderID != "openai" {
+		t.Fatalf("provider = %q, want openai", got.ProviderID)
+	}
+	if got.PrimaryModel != "gpt-5.5" {
+		t.Fatalf("primary model = %q", got.PrimaryModel)
+	}
+	if got.PrimaryThinking != "high" {
+		t.Fatalf("primary thinking = %q", got.PrimaryThinking)
+	}
+	if got.UtilityModel != "gpt-5.4-mini" {
+		t.Fatalf("utility model = %q", got.UtilityModel)
+	}
+	if got.UtilityThinking != "medium" {
+		t.Fatalf("utility thinking = %q", got.UtilityThinking)
 	}
 }
 
@@ -130,7 +152,7 @@ func TestLookupUnknownProvider(t *testing.T) {
 
 func TestSupportedProvidersSorted(t *testing.T) {
 	got := SupportedProviders()
-	want := []string{"anthropic", "codex", "fireworks", "google", "openrouter"}
+	want := []string{"anthropic", "codex", "fireworks", "google", "openai", "openrouter"}
 	if len(got) != len(want) {
 		t.Fatalf("providers = %v", got)
 	}

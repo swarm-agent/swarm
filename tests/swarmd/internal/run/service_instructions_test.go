@@ -120,9 +120,9 @@ func TestDefaultInstructions_IncludeParallelAndDelegationGuidance(t *testing.T) 
 		"Before delegating, do a quick first pass with agentic_search/read/list",
 		"Match effort to request scope: for narrow, explicit asks",
 		"Delegate to subagents only when scope is broad, cross-cutting, or still unclear",
-		"For unfamiliar codebases, use task with subagent_type=explorer",
+		"For unfamiliar codebases, use task with subagent_type=finder",
 		"Do not send vague delegation prompts; include what you already checked",
-		"run multiple explorer delegations in parallel when possible",
+		"run multiple finder delegations in parallel when possible",
 		"Avoid over-delegation: if one quick read/agentic_search confirms the needed change",
 		"final Relevant filepaths list",
 		"Keep operations inside workspace root: /tmp/workspace",
@@ -133,13 +133,13 @@ func TestDefaultInstructions_IncludeParallelAndDelegationGuidance(t *testing.T) 
 	}
 }
 
-func TestBuildTaskDelegationPrompt_IncludesExplorerAndPathGuidance(t *testing.T) {
+func TestBuildTaskDelegationPrompt_IncludesFinderAndPathGuidance(t *testing.T) {
 	out := buildTaskDelegationPrompt(taskDelegationPromptConfig{
 		Description: "scope repo",
 		Prompt:      "inspect the runtime",
 		ParentSession: pebblestore.SessionSnapshot{
 			ID:                 "session-1",
-			Title:              "Investigate @explorer",
+			Title:              "Investigate @finder",
 			Mode:               "auto",
 			WorkspacePath:      "/tmp/workspace",
 			WorkspaceName:      "workspace",
@@ -155,7 +155,7 @@ func TestBuildTaskDelegationPrompt_IncludesExplorerAndPathGuidance(t *testing.T)
 			{Role: "tool", Content: `{"path_id":"tool.history.v1","tool":"search","call_id":"search_1","arguments":"{\"query\":\"buildTaskDelegationPrompt\"}","output":"found buildTaskDelegationPrompt in service_tools.go","completed_output":"search \"buildTaskDelegationPrompt\" (1 match)"}`},
 		},
 		PermissionSessionID:  "session-1",
-		TargetedSubagentName: "explorer",
+		TargetedSubagentName: "finder",
 	})
 	for _, expected := range []string{
 		"Completion contract:",
@@ -176,7 +176,7 @@ func TestBuildTaskDelegationPrompt_IncludesExplorerAndPathGuidance(t *testing.T)
 		"- metadata_json:",
 		"- git_metadata_json:",
 		"- launch source: targeted_subagent",
-		"- requested subagent: @explorer",
+		"- requested subagent: @finder",
 	} {
 		if !strings.Contains(out, expected) {
 			t.Fatalf("expected %q in output:\n%s", expected, out)

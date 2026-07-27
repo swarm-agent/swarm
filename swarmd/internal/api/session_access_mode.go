@@ -38,25 +38,12 @@ func (s *Server) sessionWorkspaceBindingForAccess(principal identity.Principal, 
 		return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
 	}
 	bindingID := ""
-	if route, ok, err := s.topology.GetSessionRouteForAccount(principal.AccountScopeID, sessionID); err != nil {
-		return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
-	} else if ok {
-		bindingID = strings.TrimSpace(route.WorkspaceBindingID)
-	}
-	if bindingID == "" && s.sessionRoutes != nil {
-		if route, ok, err := s.sessionRoutes.Get(sessionID); err != nil {
-			return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
-		} else if ok && strings.TrimSpace(route.AccountScopeID) == strings.TrimSpace(principal.AccountScopeID) {
-			bindingID = strings.TrimSpace(route.WorkspaceBindingID)
-		}
-	}
-	if bindingID == "" && s.sessions != nil {
+	if s.sessions != nil {
 		if session, ok, err := s.sessions.GetSession(sessionID); err != nil {
 			return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
 		} else if ok && strings.TrimSpace(session.AccountScopeID) == strings.TrimSpace(principal.AccountScopeID) {
 			bindingID = firstNonEmpty(
-				strings.TrimSpace(fmt.Sprint(session.Metadata["swarm_routed_workspace_binding_id"])),
-				strings.TrimSpace(fmt.Sprint(session.Metadata["swarm_managed_host_workspace_binding_id"])),
+				strings.TrimSpace(fmt.Sprint(session.Metadata["swarm_v3_workspace_binding_id"])),
 				strings.TrimSpace(fmt.Sprint(session.Metadata["local_workspace_binding_id"])),
 			)
 		}

@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -36,31 +38,32 @@ const (
 	updateJobStatusFailed     = "failed"
 	updateKindRelease         = "release"
 	updateKindDev             = "dev"
+	maxUpdateArchiveBytes     = 1 << 30
+	maxUpdateArchiveEntries   = 10_000
+	maxUpdateFileBytes        = 512 << 20
+	maxUpdateExpandedBytes    = 2 << 30
 )
 
+var stableUpdateVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+
 var (
-	stopBackendForUpdate                               = StopBackend
-	applyReleaseUpdateForUpdate                        = ApplyReleaseUpdate
-	startBackendForUpdate                              = StartBackend
-	runTUIWithExtraEnvForUpdate                        = RunTUIWithExtraEnv
-	resolveLifecycleManagerForUpdate                   = resolveLifecycleManager
-	serviceActiveForUpdate                             = serviceActiveForScope
-	stopSystemdServiceForUpdate                        = stopSystemdService
-	restartSystemdServiceForUpdate                     = restartSystemdService
-	runManagedDevHostUpdatePhaseForUpdate              = runManagedDevHostUpdatePhase
-	preflightDevUpdateForUpdate                        = PreflightDevUpdate
-	buildSwarmdBinariesForUpdate                       = BuildSwarmdBinaries
-	forceBuildToolBinariesForUpdate                    = ForceBuildToolBinaries
-	buildSwarmTUIForUpdate                             = BuildSwarmTUI
-	devFrontendAssetsNeedRebuildForUpdate              = DevFrontendAssetsNeedRebuild
-	buildAndInstallWebAssetsForUpdate                  = BuildAndInstallWebAssets
-	syncDevContainerImagesWithFingerprintForUpdate     = SyncDevContainerImagesWithFingerprint
-	writeLocalContainerUpdateRebuildStatusForUpdate    = writeLocalContainerUpdateRebuildStatus
-	installLaunchersForUpdate                          = InstallLaunchers
-	ensureSystemdServiceUnitForUpdate                  = EnsureSystemdServiceUnit
-	runDevLocalContainerUpdateJobAfterRestartForUpdate = runDevLocalContainerUpdateJobAfterRestart
-	runDevRemoteDeployUpdateJobAfterRestartForUpdate   = runDevRemoteDeployUpdateJobAfterRestart
-	rollbackPendingUpdateAndRestartForUpdate           = rollbackPendingUpdateAndRestart
+	stopBackendForUpdate                     = StopBackend
+	applyReleaseUpdateForUpdate              = ApplyReleaseUpdate
+	startBackendForUpdate                    = StartBackend
+	runTUIWithExtraEnvForUpdate              = RunTUIWithExtraEnv
+	resolveLifecycleManagerForUpdate         = resolveLifecycleManager
+	serviceActiveForUpdate                   = serviceActiveForScope
+	stopSystemdServiceForUpdate              = stopSystemdService
+	restartSystemdServiceForUpdate           = restartSystemdService
+	preflightDevUpdateForUpdate              = PreflightDevUpdate
+	buildSwarmdBinariesForUpdate             = BuildSwarmdBinaries
+	forceBuildToolBinariesForUpdate          = ForceBuildToolBinaries
+	buildSwarmTUIForUpdate                   = BuildSwarmTUI
+	devFrontendAssetsNeedRebuildForUpdate    = DevFrontendAssetsNeedRebuild
+	buildAndInstallWebAssetsForUpdate        = BuildAndInstallWebAssets
+	installLaunchersForUpdate                = InstallLaunchers
+	ensureSystemdServiceUnitForUpdate        = EnsureSystemdServiceUnit
+	rollbackPendingUpdateAndRestartForUpdate = rollbackPendingUpdateAndRestart
 )
 
 type runtimeBootStatus struct {
@@ -86,13 +89,6 @@ type updateRestartPlan struct {
 	blockedErr    error
 }
 
-type postUpdateContainerImageOutcome struct {
-	LocalResult  client.LocalContainerUpdateJobResult
-	RemoteResult client.RemoteDeployUpdateJobResult
-	LocalErr     error
-	RemoteErr    error
-}
-
 func ApplyReleaseUpdate(ctx context.Context, profile Profile, plan client.UpdateApplyPlan) (UpdateResult, error) {
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		return UpdateResult{}, fmt.Errorf("update apply currently supports linux/amd64 only (running on %s/%s)", runtime.GOOS, runtime.GOARCH)
@@ -101,34 +97,45 @@ func ApplyReleaseUpdate(ctx context.Context, profile Profile, plan client.Update
 		return UpdateResult{}, errors.New("update apply is disabled for the dev lane")
 	}
 	version := strings.TrimSpace(plan.TargetVersion)
-	if version == "" {
-		return UpdateResult{}, errors.New("target version is required")
+	if !stableUpdateVersionPattern.MatchString(version) {
+		return UpdateResult{}, fmt.Errorf("target version %q is not a canonical stable version", version)
 	}
-	if strings.TrimSpace(plan.AssetURL) == "" {
-		return UpdateResult{}, errors.New("asset url is required")
+	expectedAssetName := fmt.Sprintf("swarm-%s-%s-%s.tar.gz", version, runtime.GOOS, runtime.GOARCH)
+	if strings.TrimSpace(plan.AssetName) != expectedAssetName {
+		return UpdateResult{}, fmt.Errorf("release asset name %q does not match required platform asset %q", plan.AssetName, expectedAssetName)
+	}
+	if err := validateUpdateDownloadURL(plan.AssetURL); err != nil {
+		return UpdateResult{}, fmt.Errorf("invalid release asset url: %w", err)
 	}
 	sha256Digest := normalizeUpdateSHA256(plan.SHA256)
 	if sha256Digest == "" {
 		return UpdateResult{}, errors.New("sha256 digest is required")
 	}
 
-	versionsDir := filepath.Join(profile.InstallRoot, "versions")
+	installRoot, err := filepath.Abs(filepath.Clean(strings.TrimSpace(profile.InstallRoot)))
+	if err != nil || strings.TrimSpace(profile.InstallRoot) == "" {
+		return UpdateResult{}, errors.New("install root is required")
+	}
+	versionsDir := filepath.Join(installRoot, "versions")
 	targetRoot := filepath.Join(versionsDir, version)
-	currentLink := filepath.Join(profile.InstallRoot, "current")
-	previousLink := filepath.Join(profile.InstallRoot, "previous")
+	if err := requirePathWithin(versionsDir, targetRoot); err != nil {
+		return UpdateResult{}, err
+	}
+	currentLink := filepath.Join(installRoot, "current")
+	previousLink := filepath.Join(installRoot, "previous")
 	previousRoot, _ := resolveRuntimeLink(currentLink)
 
 	if err := os.MkdirAll(versionsDir, 0o755); err != nil {
 		return UpdateResult{}, err
 	}
 	if installedVersionMatches(targetRoot, version) {
-		if err := switchRuntimeLinks(profile.InstallRoot, targetRoot); err != nil {
+		if err := markPendingRuntimeUpdate(installRoot, targetRoot, previousRoot, version); err != nil {
 			return UpdateResult{}, err
 		}
-		if err := markPendingRuntimeUpdate(profile.InstallRoot, targetRoot, previousRoot, version); err != nil {
+		if err := switchRuntimeLinks(installRoot, targetRoot); err != nil {
 			return UpdateResult{}, err
 		}
-		if err := installLauncherSymlinks(profile.InstallRoot); err != nil {
+		if err := installLauncherSymlinks(installRoot); err != nil {
 			return UpdateResult{}, err
 		}
 		return UpdateResult{Version: version, RuntimeRoot: targetRoot, CurrentLink: currentLink, PreviousLink: previousLink}, nil
@@ -181,13 +188,13 @@ func ApplyReleaseUpdate(ctx context.Context, profile Profile, plan client.Update
 	if err := validateInstalledRuntime(targetRoot, version); err != nil {
 		return UpdateResult{}, err
 	}
-	if err := switchRuntimeLinks(profile.InstallRoot, targetRoot); err != nil {
+	if err := markPendingRuntimeUpdate(installRoot, targetRoot, previousRoot, version); err != nil {
 		return UpdateResult{}, err
 	}
-	if err := markPendingRuntimeUpdate(profile.InstallRoot, targetRoot, previousRoot, version); err != nil {
+	if err := switchRuntimeLinks(installRoot, targetRoot); err != nil {
 		return UpdateResult{}, err
 	}
-	if err := installLauncherSymlinks(profile.InstallRoot); err != nil {
+	if err := installLauncherSymlinks(installRoot); err != nil {
 		return UpdateResult{}, err
 	}
 	return UpdateResult{Version: version, RuntimeRoot: targetRoot, CurrentLink: currentLink, PreviousLink: previousLink}, nil
@@ -246,7 +253,10 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	if err != nil {
 		return err
 	}
-	if restartPlan.managerKind == lifecycleKindSystemd && restartPlan.blockedErr == nil && restartPlan.systemdActive {
+	if restartPlan.blockedErr != nil {
+		return restartPlan.blockedErr
+	}
+	if restartPlan.managerKind == lifecycleKindSystemd && restartPlan.systemdActive {
 		_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, fmt.Sprintf("Stopping Swarm backend via systemd (%s).", restartPlan.systemdUnit), "")
 		if err := stopSystemdServiceForUpdate(restartPlan.systemdScope, restartPlan.systemdUnit); err != nil {
 			return err
@@ -260,40 +270,45 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Applying Swarm release update.", "")
 	result, err := applyReleaseUpdateForUpdate(context.Background(), profile, plan)
 	if err != nil {
-		return err
+		recoveryErr := restartLastWorkingRuntime(profile, restartPlan)
+		if recoveryErr != nil {
+			return errors.Join(err, fmt.Errorf("restart last working runtime after failed update apply: %w", recoveryErr))
+		}
+		return fmt.Errorf("apply release update (last working runtime restarted): %w", err)
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Restarting Swarm backend.", "")
-	if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
+	if err := restartLastWorkingRuntime(profile, restartPlan); err != nil {
+		if restartPlan.managerKind == lifecycleKindSystemd {
+			return rollbackPendingUpdateAndRestartWithPlan(profile, relaunchArgs, nil, err, restartPlan)
+		}
 		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, nil, err)
 	}
-	if err := writeLocalContainerUpdateRebuildStatus(profile, "release", result.Version, "", ""); err != nil {
-		return err
-	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Updating local and remote container images.", "")
-	outcome := runReleaseContainerImageUpdateJobsAfterRestart(profile, result.Version)
-	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusCompleted, releaseUpdateCompletedMessage(result.Version, outcome), "")
+	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusCompleted, releaseUpdateCompletedMessage(result.Version), "")
 	jobTerminalStatusWritten = true
 	return runTUIWithExtraEnvForUpdate(profile, relaunchArgs, map[string]string{
 		appliedUpdateToastEnv: fmt.Sprintf("Updated to %s", strings.TrimSpace(result.Version)),
 	})
 }
 
-func runReleaseContainerImageUpdateJobsAfterRestart(profile Profile, targetVersion string) postUpdateContainerImageOutcome {
-	var outcome postUpdateContainerImageOutcome
-	outcome.LocalResult, outcome.LocalErr = runReleaseLocalContainerUpdateJobAfterRestart(profile, targetVersion)
-	outcome.RemoteResult, outcome.RemoteErr = runReleaseRemoteDeployUpdateJobAfterRestart(profile)
-	return outcome
+func restartLastWorkingRuntime(profile Profile, plan updateRestartPlan) error {
+	if plan.managerKind == lifecycleKindSystemd {
+		if plan.blockedErr != nil {
+			return plan.blockedErr
+		}
+		if strings.TrimSpace(plan.systemdUnit) == "" {
+			return errors.New("systemd service unit is required to restart the last working runtime")
+		}
+		return restartSystemdServiceForUpdate(plan.systemdScope, plan.systemdUnit, false)
+	}
+	return startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true})
 }
 
-func releaseUpdateCompletedMessage(version string, outcome postUpdateContainerImageOutcome) string {
+func releaseUpdateCompletedMessage(version string) string {
 	version = strings.TrimSpace(version)
 	if version == "" {
 		version = "new release"
 	}
-	if outcome.LocalErr != nil || outcome.RemoteErr != nil || outcome.LocalResult.Summary.Failed > 0 || outcome.RemoteResult.Summary.Failed > 0 {
-		return fmt.Sprintf("Updated to %s. Container image update needs attention.", version)
-	}
-	return fmt.Sprintf("Updated to %s. Local and remote container image updates completed.", version)
+	return fmt.Sprintf("Updated to %s.", version)
 }
 
 func writeLauncherUpdateJobStatus(profile Profile, kind, status, message, errorMessage string) error {
@@ -327,16 +342,8 @@ func writeLauncherUpdateJobStatus(profile Profile, kind, status, message, errorM
 	if status == updateJobStatusCompleted || status == updateJobStatusFailed {
 		next.CompletedAtUnix = now
 	}
-	return localupdate.WriteUpdateJobStatus(profile.DataDir, next)
-}
-
-func writeLocalContainerUpdateRebuildStatus(profile Profile, mode, version, imageRef, fingerprint string) error {
-	return localupdate.WriteRebuildStatus(profile.DataDir, localupdate.RebuildStatus{
-		Mode:        mode,
-		Version:     version,
-		ImageRef:    imageRef,
-		Fingerprint: fingerprint,
-	})
+	_, err := localupdate.WriteUpdateJobStatusIfCurrent(profile.DataDir, jobID, next)
+	return err
 }
 
 func firstNonEmptyString(values ...string) string {
@@ -659,6 +666,9 @@ func installLauncherSymlinks(installRoot string) error {
 }
 
 func downloadAndVerifyArchive(ctx context.Context, targetPath, rawURL, expectedSHA string) error {
+	if err := validateUpdateDownloadURL(rawURL); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return err
 	}
@@ -669,11 +679,23 @@ func downloadAndVerifyArchive(ctx context.Context, targetPath, rawURL, expectedS
 		return fmt.Errorf("build download request: %w", err)
 	}
 	req.Header.Set("Accept", "application/octet-stream")
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{
+		Timeout: updateDownloadTimeout,
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			return validateUpdateDownloadURL(req.URL.String())
+		},
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("download release asset: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.Request == nil || resp.Request.URL == nil {
+		return errors.New("download response is missing its final request URL")
+	}
+	if err := validateUpdateDownloadURL(resp.Request.URL.String()); err != nil {
+		return fmt.Errorf("download release asset redirect: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download release asset: github returned %s", resp.Status)
 	}
@@ -682,9 +704,18 @@ func downloadAndVerifyArchive(ctx context.Context, targetPath, rawURL, expectedS
 		return err
 	}
 	hash := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(file, hash), resp.Body); err != nil {
+	written, err := io.Copy(io.MultiWriter(file, hash), io.LimitReader(resp.Body, maxUpdateArchiveBytes+1))
+	if err != nil {
 		_ = file.Close()
 		return fmt.Errorf("write release asset: %w", err)
+	}
+	if written > maxUpdateArchiveBytes {
+		_ = file.Close()
+		return fmt.Errorf("release asset exceeds %d bytes", maxUpdateArchiveBytes)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
 	}
 	if err := file.Close(); err != nil {
 		return err
@@ -709,6 +740,12 @@ func extractTarGz(archivePath, targetDir string) (string, error) {
 	defer gz.Close()
 	tr := tar.NewReader(gz)
 	var root string
+	var entries int
+	var expandedBytes int64
+	targetRoot, err := filepath.Abs(filepath.Clean(targetDir))
+	if err != nil {
+		return "", err
+	}
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -716,6 +753,10 @@ func extractTarGz(archivePath, targetDir string) (string, error) {
 		}
 		if err != nil {
 			return "", fmt.Errorf("read tar entry: %w", err)
+		}
+		entries++
+		if entries > maxUpdateArchiveEntries {
+			return "", fmt.Errorf("archive exceeds %d entries", maxUpdateArchiveEntries)
 		}
 		name := strings.TrimSpace(hdr.Name)
 		if name == "" {
@@ -729,13 +770,20 @@ func extractTarGz(archivePath, targetDir string) (string, error) {
 		if len(parts) > 0 && root == "" {
 			root = parts[0]
 		}
-		targetPath := filepath.Join(targetDir, cleanName)
+		targetPath := filepath.Join(targetRoot, cleanName)
+		if err := requirePathWithin(targetRoot, targetPath); err != nil {
+			return "", fmt.Errorf("invalid archive entry %q: %w", name, err)
+		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(targetPath, os.FileMode(hdr.Mode).Perm()); err != nil {
 				return "", err
 			}
 		case tar.TypeReg, tar.TypeRegA:
+			if hdr.Size < 0 || hdr.Size > maxUpdateFileBytes || expandedBytes > maxUpdateExpandedBytes-hdr.Size {
+				return "", fmt.Errorf("archive entry %q exceeds extraction limits", name)
+			}
+			expandedBytes += hdr.Size
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 				return "", err
 			}
@@ -743,9 +791,10 @@ func extractTarGz(archivePath, targetDir string) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			if _, err := io.Copy(file, tr); err != nil {
+			written, copyErr := io.CopyN(file, tr, hdr.Size)
+			if copyErr != nil || written != hdr.Size {
 				_ = file.Close()
-				return "", err
+				return "", fmt.Errorf("extract archive entry %q: copied %d of %d bytes: %w", name, written, hdr.Size, copyErr)
 			}
 			if err := file.Close(); err != nil {
 				return "", err
@@ -755,6 +804,41 @@ func extractTarGz(archivePath, targetDir string) (string, error) {
 		}
 	}
 	return root, nil
+}
+
+func validateUpdateDownloadURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "https" || u.User != nil || u.Port() != "" {
+		return errors.New("url must use HTTPS without userinfo or an explicit port")
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com":
+		return nil
+	default:
+		return fmt.Errorf("untrusted GitHub asset host %q", u.Hostname())
+	}
+}
+
+func requirePathWithin(root, candidate string) error {
+	rootAbs, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return err
+	}
+	candidateAbs, err := filepath.Abs(filepath.Clean(candidate))
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(rootAbs, candidateAbs)
+	if err != nil {
+		return err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("path %s escapes root %s", candidateAbs, rootAbs)
+	}
+	return nil
 }
 
 func readBuildInfoVersion(path string) (string, error) {
@@ -911,7 +995,16 @@ func markCurrentRuntimeBootSuccessful(installRoot string) error {
 		return errors.New("current runtime link is missing")
 	}
 	if currentRoot != pendingRoot {
-		return fmt.Errorf("pending runtime %s does not match current runtime %s", pendingRoot, currentRoot)
+		if err := removeIfExists(pendingRuntimeLink(installRoot)); err != nil {
+			return err
+		}
+		return writeRuntimeBootStatus(installRoot, runtimeBootStatus{
+			Version:     runtimeVersionFromRoot(currentRoot),
+			RuntimeRoot: currentRoot,
+			State:       "activation_repaired",
+			Failure:     "discarded an update intent that was not activated",
+			UpdatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		})
 	}
 	if err := replaceSymlink(lastKnownGoodRuntimeLink(installRoot), currentRoot); err != nil {
 		return fmt.Errorf("set last-known-good runtime link: %w", err)
@@ -977,15 +1070,32 @@ func rollbackPendingRuntimeUpdate(installRoot string, cause error) (string, erro
 }
 
 func rollbackPendingUpdateAndRestart(profile Profile, relaunchArgs []string, proc *os.Process, cause error) error {
+	plan, err := resolveUpdateRestartPlan(profile)
+	if err != nil {
+		return err
+	}
+	return rollbackPendingUpdateAndRestartWithPlan(profile, relaunchArgs, proc, cause, plan)
+}
+
+func rollbackPendingUpdateAndRestartWithPlan(profile Profile, relaunchArgs []string, proc *os.Process, cause error, plan updateRestartPlan) error {
 	terminateProcess(proc, 5*time.Second)
-	_ = StopBackend(profile)
+	if plan.blockedErr != nil {
+		return plan.blockedErr
+	}
+	if plan.managerKind == lifecycleKindSystemd && plan.systemdActive {
+		if err := stopSystemdServiceForUpdate(plan.systemdScope, plan.systemdUnit); err != nil {
+			return err
+		}
+	} else if err := stopBackendForUpdate(profile); err != nil {
+		return err
+	}
 	if _, err := rollbackPendingRuntimeUpdate(profile.InstallRoot, cause); err != nil {
 		return err
 	}
-	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
+	if err := restartLastWorkingRuntime(profile, plan); err != nil {
 		return err
 	}
-	return RunTUIWithExtraEnv(profile, relaunchArgs, runtimeBootEnvironment())
+	return runTUIWithExtraEnvForUpdate(profile, relaunchArgs, runtimeBootEnvironment())
 }
 
 func writeRuntimeBootStatus(installRoot string, status runtimeBootStatus) error {

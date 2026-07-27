@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,6 +20,9 @@ type systemDirSpec struct {
 }
 
 func EnsureSystemInstallReady() error {
+	if err := validateInstallOwner(); err != nil {
+		return err
+	}
 	roots, err := storagecontract.ResolveRoots(storagecontract.Options{})
 	if err != nil {
 		return err
@@ -55,10 +59,22 @@ func EnsureSystemInstallReady() error {
 
 func ensureDirsLocal(dirs []systemDirSpec) error {
 	for _, dir := range dirs {
+		info, statErr := os.Lstat(dir.Path)
+		existed := statErr == nil
+		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+		if existed {
+			if err := validateExistingDirectoryTarget(dir.Path, info); err != nil {
+				return err
+			}
+		}
 		if err := os.MkdirAll(dir.Path, dir.Mode); err != nil {
 			return err
 		}
-		if dir.Owner {
+		// Existing canonical config/data directories retain operator-selected
+		// ownership and mode. Only newly created directories receive defaults.
+		if dir.Owner && !existed {
 			if err := os.Chmod(dir.Path, dir.Mode); err != nil {
 				return err
 			}
@@ -71,6 +87,81 @@ func ensureDirsLocal(dirs []systemDirSpec) error {
 		}
 	}
 	return nil
+}
+
+func validateExistingDirectoryTarget(path string, info os.FileInfo) error {
+	if info.Mode()&os.ModeSymlink == 0 {
+		if info.IsDir() {
+			return nil
+		}
+		return fmt.Errorf("refusing unsafe existing directory target %q", path)
+	}
+	if err := validateCanonicalRuntimeDirectorySymlink(path); err != nil {
+		return fmt.Errorf("refusing unsafe existing directory target %q: %w", path, err)
+	}
+	return nil
+}
+
+func validateCanonicalRuntimeDirectorySymlink(path string) error {
+	installRoot := filepath.Clean(systemInstallRoot())
+	path = filepath.Clean(path)
+	leaf := filepath.Base(path)
+	if path != filepath.Join(installRoot, leaf) {
+		return errors.New("symlink is outside the installation root")
+	}
+	switch leaf {
+	case "bin", "libexec", "lib", "share":
+	default:
+		return errors.New("symlink is not a supported runtime directory")
+	}
+	for _, dir := range []string{installRoot, filepath.Join(installRoot, "versions")} {
+		info, err := os.Lstat(dir)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("canonical runtime directory %q is missing or unsafe", dir)
+		}
+	}
+	currentLink := filepath.Join(installRoot, "current")
+	currentInfo, err := os.Lstat(currentLink)
+	if err != nil || currentInfo.Mode()&os.ModeSymlink == 0 {
+		return errors.New("canonical current runtime link is missing or unsafe")
+	}
+	leafTarget, err := resolveAbsoluteSymlinkTarget(path)
+	if err != nil || leafTarget != filepath.Join(currentLink, leaf) {
+		return errors.New("runtime directory link does not target its canonical current-runtime path")
+	}
+	currentTarget, err := resolveAbsoluteSymlinkTarget(currentLink)
+	if err != nil {
+		return errors.New("current runtime link cannot be resolved")
+	}
+	versionsDir := filepath.Join(installRoot, "versions")
+	rel, err := filepath.Rel(versionsDir, currentTarget)
+	if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.Contains(rel, string(filepath.Separator)) {
+		return errors.New("current runtime link escapes the version directory")
+	}
+	targetInfo, err := os.Lstat(currentTarget)
+	if err != nil || targetInfo.Mode()&os.ModeSymlink != 0 || !targetInfo.IsDir() {
+		return errors.New("current runtime target is missing or unsafe")
+	}
+	leafInfo, err := os.Lstat(filepath.Join(currentTarget, leaf))
+	if err != nil || leafInfo.Mode()&os.ModeSymlink != 0 || !leafInfo.IsDir() {
+		return errors.New("current runtime directory is missing or unsafe")
+	}
+	resolvedInfo, err := os.Stat(path)
+	if err != nil || !resolvedInfo.IsDir() {
+		return errors.New("runtime directory link does not resolve to a directory")
+	}
+	return nil
+}
+
+func resolveAbsoluteSymlinkTarget(path string) (string, error) {
+	target, err := os.Readlink(path)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(path), target)
+	}
+	return filepath.Clean(target), nil
 }
 
 func dirWritable(path string) bool {
@@ -92,6 +183,14 @@ func dirExists(path string) bool {
 func ensureDirsPrivileged(dirs []systemDirSpec) error {
 	uid, gid := installOwnerIDs()
 	for _, dir := range dirs {
+		if info, err := os.Lstat(dir.Path); err == nil {
+			if err := validateExistingDirectoryTarget(dir.Path, info); err != nil {
+				return err
+			}
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 		args := []string{"install", "-d", "-m", fmt.Sprintf("%04o", dir.Mode.Perm())}
 		if dir.Owner {
 			args = append(args, "-o", uid, "-g", gid)
@@ -128,6 +227,9 @@ func EnsureSystemdServiceUnit() error {
 	if os.Getenv("SWARM_SKIP_SYSTEMD_UNIT") == "1" {
 		return nil
 	}
+	if err := validateInstallOwner(); err != nil {
+		return err
+	}
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return nil
 	}
@@ -140,7 +242,7 @@ func EnsureSystemdServiceUnit() error {
 	if err := installTextFileIfChanged(path, content, 0o644, "systemd service unit"); err != nil {
 		return err
 	}
-	if err := runPrivilegedCommand("systemctl", "daemon-reload"); err != nil && os.Geteuid() == 0 {
+	if err := runPrivilegedCommand("systemctl", "daemon-reload"); err != nil {
 		return fmt.Errorf("reload systemd after service unit update: %w", err)
 	}
 	return nil
@@ -158,9 +260,15 @@ Wants=network-online.target
 Type=simple
 User=%s
 Group=%s
-ExecStart=%s server run
+ExecStart=%s main server run
 Restart=on-failure
 RestartSec=2
+Delegate=cpu memory pids
+PrivateTmp=yes
+TemporaryFileSystem=/tmp:rw,nosuid,nodev,size=8G,mode=1777
+TemporaryFileSystem=/var/tmp:rw,nosuid,nodev,size=8G,mode=1777
+MemoryMax=90%%
+TasksMax=80%%
 StateDirectory=swarmd
 StateDirectoryMode=0700
 CacheDirectory=swarmd
@@ -173,6 +281,7 @@ LogsDirectory=swarmd
 LogsDirectoryMode=0755
 Environment=SWARM_SYSTEMD_SCOPE=system
 Environment=SWARM_SYSTEMD_UNIT=swarm.service
+Environment=SWARMD_BASH_CONTAINMENT_POLICY=required
 Environment=SWARMD_DATA_DIR=%s
 Environment=SWARMD_CACHE_DIR=%s
 Environment=SWARMD_RUNTIME_DIR=%s
@@ -186,8 +295,15 @@ WantedBy=multi-user.target
 }
 
 func installTextFileIfChanged(path, content string, mode os.FileMode, label string) error {
-	if existing, err := os.ReadFile(path); err == nil && string(existing) == content {
-		return nil
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing unsafe existing %s target %q", label, path)
+		}
+		if existing, readErr := os.ReadFile(path); readErr == nil && string(existing) == content && info.Mode().Perm() == mode.Perm() {
+			return nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect %s target %q: %w", label, path, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		if err := runPrivilegedCommand("install", "-d", "-m", "0755", filepath.Dir(path)); err != nil {
@@ -195,6 +311,9 @@ func installTextFileIfChanged(path, content string, mode os.FileMode, label stri
 		}
 	}
 	if err := os.WriteFile(path, []byte(content), mode); err == nil {
+		if err := os.Chmod(path, mode); err != nil {
+			return fmt.Errorf("set %s mode on %q: %w", label, path, err)
+		}
 		return nil
 	}
 	tmp, err := os.CreateTemp("", "swarmd-config-*")
@@ -214,6 +333,25 @@ func installTextFileIfChanged(path, content string, mode os.FileMode, label stri
 	defer os.Remove(tmpPath)
 	if err := runPrivilegedCommand("install", "-m", fmt.Sprintf("%04o", mode.Perm()), tmpPath, path); err != nil {
 		return fmt.Errorf("provision %s %q: %w", label, path, err)
+	}
+	return nil
+}
+
+func validateInstallOwner() error {
+	uid, gid := installOwnerIDs()
+	uidNumber, err := strconv.Atoi(uid)
+	if err != nil || uidNumber <= 0 {
+		return fmt.Errorf("trusted non-root install owner is required (uid %q)", uid)
+	}
+	gidNumber, err := strconv.Atoi(gid)
+	if err != nil || gidNumber <= 0 {
+		return fmt.Errorf("trusted non-root install group is required (gid %q)", gid)
+	}
+	if _, err := user.LookupId(uid); err != nil {
+		return fmt.Errorf("resolve install owner uid %q: %w", uid, err)
+	}
+	if _, err := user.LookupGroupId(gid); err != nil {
+		return fmt.Errorf("resolve install group gid %q: %w", gid, err)
 	}
 	return nil
 }

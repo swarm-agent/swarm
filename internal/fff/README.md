@@ -7,7 +7,7 @@ Canonical locations:
 - `swarmd/internal/fff/`
 
 Contents:
-- `include/fff.h` — upstream generated C header from `dmtrKovalenko/fff.nvim`
+- `include/fff.h` — upstream generated C header from `dmtrKovalenko/fff`
 - `lib/linux-amd64-gnu/libfff_c.so` — vendored Linux x86_64 glibc C library release asset
 - `fff.go` — Go cgo wrapper used by Swarm and by `cmd/fffprobe`
 
@@ -16,10 +16,11 @@ Contents:
 - Vendored runtime target in this repo: Linux amd64 glibc (`c-lib-x86_64-unknown-linux-gnu.so` upstream asset)
 - Wrapper exposes:
   - create/destroy/wait for scan
-  - file search
+  - file search and glob-only file search
   - grep
   - multi-grep
   - scan progress / rescan / restart index
+  - base path, scan state, watcher readiness wait
   - git refresh
   - query tracking / historical query lookup
   - health check
@@ -29,19 +30,20 @@ Contents:
 Use the checked-in helper:
 
 ```bash
-./scripts/update-fff.sh            # latest upstream release
-./scripts/update-fff.sh v0.5.2     # pin a specific release tag
+./scripts/update-fff.sh <reviewed-release-tag>
 ```
 
-What it does:
-1. Resolves the requested or latest GitHub release tag from `dmtrKovalenko/fff.nvim`
-2. Downloads the raw upstream header from `crates/fff-c/include/fff.h`
-3. Downloads the release asset `c-lib-x86_64-unknown-linux-gnu.so`
-4. Verifies the upstream `.sha256`
-5. Replaces both vendored copies under:
-   - `internal/fff/`
-   - `swarmd/internal/fff/`
-6. Prints resulting hashes and warns if the two Go wrappers diverged
+Updates are explicit review events. First inspect the immutable tagged source and release
+asset through an independent trusted channel, calculate SHA-256 for both imported files,
+and add the tag and digests to `scripts/fff-release-manifest.txt`. The helper then:
+1. Rejects omitted, malformed, duplicate, or unreviewed tags.
+2. Downloads the tagged `crates/fff-c/include/fff.h` and release asset
+   `c-lib-x86_64-unknown-linux-gnu.so`.
+3. Verifies both files against the checked-in reviewed manifest. It does not trust a
+   checksum downloaded from the same mutable release channel.
+4. Replaces both vendored copies under `internal/fff/` and `swarmd/internal/fff/` only
+   after all verification succeeds.
+5. Warns if the two Go wrappers diverged.
 
 ## Manual verification after update
 
@@ -70,8 +72,7 @@ nm -D swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so | awk '/ T fff_/ {prin
 
 ### 4. Review packaging references
 
-Current repo-specific place that explicitly packages the daemon-side library:
-- `scripts/rebuild-container-remote.sh`
+The daemon-side library is packaged by `scripts/build-main-dist.sh` and installed by the launcher/runtime artifact flow.
 
 ## Notes
 

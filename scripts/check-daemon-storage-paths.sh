@@ -21,12 +21,9 @@ scan_paths=(
   "swarmd/internal/api/tool_storage.go"
   "swarmd/internal/imagegen"
   "swarmd/internal/imagegen.go"
-  "swarmd/internal/localcontainers"
-  "swarmd/internal/remotedeploy"
   "swarmd/internal/run"
   "swarmd/internal/tool"
   "swarmd/internal/worktree"
-  "deploy/container-mvp"
   "install.sh"
   "scripts/lib-lane.sh"
   "swarmd/scripts/dev-up.sh"
@@ -48,27 +45,23 @@ filter_allowed() {
   # - storagecontract.go intentionally names XDG/home roots only to reject them.
   # - launcher.go intentionally resolves legacy user/XDG locations only for read-only stop diagnostics.
   # - lib-lane.sh still exposes lane metadata helpers for CLI/harness compatibility; daemon roots below in the same file are system paths.
-  # - container entrypoint unsets XDG variables and rejects /root, /home, /workspaces, and /tmp storage paths.
-  # - local deploy/remotedeploy workspace strings are mount targets or API route names, not Swarm-owned daemon storage roots.
+  # - appstorage.go intentionally resolves XDG_DATA_HOME/UserHomeDir only for user-owned git worktree checkout storage.
+  # - local deploy workspace strings are mount targets or API route names, not Swarm-owned daemon storage roots.
+  # Workspace path tokens require a lexical boundary so schema identifiers such as workspace_path are not mistaken for filesystem paths.
   grep -Ev \
     -e '^pkg/storagecontract/storagecontract\.go:.*(HOME|XDG_|\.local|\.config|Library|Desktop|Documents|Downloads|forbidden|reject|~|home-relative|WorkspaceRoots)' \
     -e '^internal/launcher/launcher\.go:.*(legacy|Legacy|XDG_STATE_HOME|XDG_DATA_HOME|UserHomeDir|UserConfigDir|\.local|\.config|resolve legacy|stat legacy|startupCWD|Getwd)' \
     -e '^swarmd/internal/config/config\.go:.*(resolveDefaultStartupCWD|UserHomeDir|user home directory|home = strings\.TrimSpace|return home)' \
+    -e '^swarmd/internal/appstorage/storage\.go:.*(XDG_DATA_HOME|UserHomeDir|\.local)' \
     -e '^internal/launcher/system_paths\.go:.*os\.CreateTemp\("", "swarmd-config-\*"\)' \
     -e '^scripts/lib-lane\.sh:[0-9]+:.*(swarm_xdg_|XDG_|\.local/state|\.local/share|\.config|migrate_legacy)' \
-    -e '^deploy/container-mvp/(entrypoint\.sh|Containerfile\.base):.*(-u XDG_|/root|/home|/workspaces|/tmp|must not be under a user home|~|mkdir -p|VOLUME)' \
-    -e '^swarmd/internal/deploy/service\.go:.*(workspaceruntime|/v1/deploy/container/workspaces/bootstrap|/workspaces)' \
-    -e '^swarmd/internal/remotedeploy/service\.go:.*(workspaceruntime|startupCWD|/workspaces|resolveRemoteDeployBuildRoot)' \
-    -e '^swarmd/internal/localcontainers/service\.go:.*(workspaceruntime|/workspaces)' \
     -e '^swarmd/internal/worktree/service\.go:.*(workspaceruntime|migrateLegacyConfig|MigrateLegacyGlobalConfig)' \
     -e '^swarmd/internal/tool/runtime\.go:.*workspaceruntime' \
-    -e '^swarmd/internal/tool/runtime_manage_flow\.go:.*workspaceruntime' \
     -e '^swarmd/internal/run/service\.go:.*workspaceruntime' \
     -e '^internal/launcher/managed_dev_update\.go:.*(/v1/swarm/topology/workspace-bindings|source_workspace_path)' \
     -e '^swarmd/internal/store/pebble/(keys|auth_store|auth_vault|worktree_store)\.go:.*(legacy|migrat|Migrate)' \
-    -e '^swarmd/internal/store/pebble/swarm_container_profile_store\.go:.*mount\.TargetPath = "/workspace/' \
     -e '^pkg/startupconfig/config\.go:.*migrate startup config' \
-    -e '^(internal/launcher/(launcher|update)\.go|swarmd/internal/(imagegen|remotedeploy)/service\.go):.*(os\.Rename|copyDir|copyDir\(|CopyDir)' \
+    -e '^(internal/launcher/(launcher|update)\.go|swarmd/internal/imagegen/service\.go):.*(os\.Rename|copyDir|copyDir\(|CopyDir)' \
     || true
 }
 
@@ -88,17 +81,17 @@ if [[ -n "${forbidden_home_hits}" ]]; then
   echo "${forbidden_home_hits}"
 fi
 
-forbidden_workspace_hits="$(run_scan '(/workspaces|/workspace|\./tmp|tmp/remote-deploy|tmp/remote-deploy-ui|tmp/flows|startupCWD|WorkingDirectory=\$|WorkingDirectory=\.|MkdirTemp\(""|CreateTemp\(""|os\.TempDir\(\))')"
+forbidden_workspace_hits="$(run_scan '(/workspaces?([^[:alnum:]_]|$)|\./tmp|tmp/flows|startupCWD|WorkingDirectory=\$|WorkingDirectory=\.|MkdirTemp\(""|CreateTemp\(""|os\.TempDir\(\))')"
 if [[ -n "${forbidden_workspace_hits}" ]]; then
   has_failures=1
   echo "[storage-path-check] FAIL: daemon/runtime storage code references workspace, OS temp, or relative temp defaults outside the explicit allowlist:"
   echo "${forbidden_workspace_hits}"
 fi
 
-legacy_remote_hits="$(run_scan '(/var/lib/swarm/rd|/var/lib/swarm/remote-deploy|swarm/rd|remoteRootForHome|remote_root/xdg|run-remote-child\.pid.*remote_root|SWARMD_LOCK_PATH=\$swarmd_state_dir)')"
+legacy_remote_hits="$(run_scan '(/var/lib/swarm/rd|swarm/rd|remoteRootForHome|remote_root/xdg|run-remote-child\.pid.*remote_root|SWARMD_LOCK_PATH=\$swarmd_state_dir)')"
 if [[ -n "${legacy_remote_hits}" ]]; then
   has_failures=1
-  echo "[storage-path-check] FAIL: remote/container storage code references legacy data-root runtime paths:"
+  echo "[storage-path-check] FAIL: remote storage code references legacy data-root runtime paths:"
   echo "${legacy_remote_hits}"
 fi
 
@@ -126,7 +119,28 @@ SWARMD_LOCK_PATH="${SWARMD_DATA_DIR}/swarmd.lock"
 EOF
   if "${BASH_SOURCE[0]}" "${fixture}" >/tmp/swarm-storage-gate-self-test.out 2>&1; then
     cat /tmp/swarm-storage-gate-self-test.out >&2 || true
-    echo "[storage-path-check] FAIL: negative fixture unexpectedly passed" >&2
+    echo "[storage-path-check] FAIL: home-path negative fixture unexpectedly passed" >&2
+    exit 1
+  fi
+  workspace_identifier_fixture="${tmp_dir}/allowed-workspace-identifier.go"
+  cat >"${workspace_identifier_fixture}" <<'EOF'
+package fixture
+
+const workspace_path = "schema field"
+EOF
+  if ! "${BASH_SOURCE[0]}" "${workspace_identifier_fixture}" >/tmp/swarm-storage-gate-self-test.out 2>&1; then
+    cat /tmp/swarm-storage-gate-self-test.out >&2 || true
+    echo "[storage-path-check] FAIL: workspace identifier fixture was mistaken for a filesystem path" >&2
+    exit 1
+  fi
+  workspace_fixture="${tmp_dir}/bad-workspace-storage.sh"
+  cat >"${workspace_fixture}" <<'EOF'
+#!/usr/bin/env bash
+SWARMD_DATA_DIR="/workspace/swarmd"
+EOF
+  if "${BASH_SOURCE[0]}" "${workspace_fixture}" >/tmp/swarm-storage-gate-self-test.out 2>&1; then
+    cat /tmp/swarm-storage-gate-self-test.out >&2 || true
+    echo "[storage-path-check] FAIL: workspace-path negative fixture unexpectedly passed" >&2
     exit 1
   fi
   rm -f /tmp/swarm-storage-gate-self-test.out

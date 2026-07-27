@@ -23,7 +23,9 @@ import (
 	"github.com/gorilla/websocket"
 
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/longsessiondiag"
 	"swarm/packages/swarmd/internal/privacy"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -37,15 +39,20 @@ const (
 	defaultOriginatorHeaderValue               = "codex_cli_rs"
 	userAgentHeader                            = "User-Agent"
 	defaultCodexTransportUserAgent             = "codex_cli_rs/swarm-go"
+	defaultOpenAITransportUserAgent            = "swarm-go/openai-responses"
 	defaultCodexTextVerbosity                  = "low"
 	includeReasoningEncryptedContentPath       = "reasoning.encrypted_content"
 	chatGPTAccountIDHeader                     = "ChatGPT-Account-ID"
 	tokenURL                                   = "https://auth.openai.com/oauth/token"
 	clientID                                   = "app_EMoamEEZ73f0CkXaXp7hrann"
 	maxCodexResponseBodyBytes            int64 = 32 << 20
+	maxCodexStreamBytes                        = 8 << 20
+	maxCodexStreamEvents                       = 16_384
+	maxCodexRawEvents                          = 4_096
 	transportRetryAttempts                     = 2
 	transportRetryBaseDelay                    = 300 * time.Millisecond
 	startedWebsocketStreamRetryLimit           = 3
+	defaultWebsocketFirstFrameTimeout          = 30 * time.Second
 	maxPromptCacheKeyLength                    = 64
 	codexTransportMetadataKey                  = "_swarm_transport"
 	codexConnectedViaWSMetadataKey             = "_swarm_connected_via_websocket"
@@ -54,30 +61,84 @@ const (
 )
 
 var (
-	errWebsocketStreamStarted = errors.New("websocket stream interrupted after payload started")
-	errWebsocketRetryFresh    = errors.New("websocket request requires a fresh connection")
+	errWebsocketStreamStarted     = errors.New("websocket stream interrupted after payload started")
+	errWebsocketRetryFresh        = errors.New("websocket request requires a fresh connection")
+	errWebsocketFirstFrameTimeout = errors.New("websocket first provider frame timed out")
 )
 
 type Client struct {
-	authStore       *pebblestore.AuthStore
-	httpClient      *http.Client
-	earlyExpiry     time.Duration
-	sendWSFn        func(context.Context, pebblestore.CodexAuthRecord, []byte, func(StreamEvent)) (map[string]any, int, error)
-	responsesAPIURL string
-	wsMu            sync.Mutex
-	wsSessions      map[string]*cachedWebsocketSession
+	authStore                  *pebblestore.AuthStore
+	httpClient                 *http.Client
+	earlyExpiry                time.Duration
+	sendWSFn                   func(context.Context, pebblestore.CodexAuthRecord, []byte, func(StreamEvent)) (map[string]any, int, error)
+	responsesAPIURL            string
+	responsesWSURL             string
+	websocketFirstFrameTimeout time.Duration
+	wsMu                       sync.Mutex
+	wsSessions                 map[string]*cachedWebsocketSession
+	diagnostics                *longsessiondiag.Recorder
 }
 
 type startedWebsocketStreamError struct {
 	cause error
 }
 
+type forceFreshProviderContextKey struct{}
+type codexTransportContextKey struct{}
+
+type codexTransportContext struct {
+	PromptCacheKey            string
+	SessionAffinityKey        string
+	StartNewChain             bool
+	AllowContinuation         bool
+	ReuseTransport            bool
+	ResetTransport            bool
+	NativeContinuationAllowed bool
+	ForceFreshProviderContext bool
+	BoundaryReason            string
+}
+
+func contextWithForceFreshProviderContext(ctx context.Context, force bool) context.Context {
+	if !force {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, forceFreshProviderContextKey{}, true)
+}
+
+func forceFreshProviderContextFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(forceFreshProviderContextKey{}).(bool)
+	return value
+}
+
+func contextWithCodexTransportContext(ctx context.Context, transport codexTransportContext) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, codexTransportContextKey{}, transport)
+}
+
+func codexTransportContextFromContext(ctx context.Context) codexTransportContext {
+	if ctx == nil {
+		return codexTransportContext{}
+	}
+	transport, _ := ctx.Value(codexTransportContextKey{}).(codexTransportContext)
+	return transport
+}
+
 type cachedWebsocketSession struct {
-	mu             sync.Mutex
-	conn           *websocket.Conn
-	lastPayload    map[string]any
-	lastResponseID string
-	lastOutput     []any
+	mu                    sync.Mutex
+	conn                  *websocket.Conn
+	lastPayload           map[string]any
+	lastRequestProperties map[string]any
+	lastInputLen          int
+	lastResponseID        string
+	lastOutput            []any
 }
 
 func (e *startedWebsocketStreamError) Error() string {
@@ -127,7 +188,10 @@ func (e *retryAwareStreamEmitter) emit(event StreamEvent) {
 	}
 	switch event.Type {
 	case StreamEventOutputTextDelta:
-		e.attemptOutputText, _ = mergeStreamDelta(e.attemptOutputText, event.Delta)
+		if event.Delta == "" {
+			return
+		}
+		e.attemptOutputText += event.Delta
 		next, appended := mergeRetriedStreamText(e.emittedOutputText, e.attemptOutputText)
 		e.emittedOutputText = next
 		if appended != "" {
@@ -161,17 +225,40 @@ type ToolDefinition struct {
 }
 
 type Request struct {
-	SessionID         string
-	Model             string
-	Thinking          string
-	Instructions      string
-	Input             []map[string]any
-	Tools             []ToolDefinition
-	ToolChoice        string
-	ServiceTier       string
-	ContextMode       string
-	ContextWindow     int
-	ParallelToolCalls bool
+	SessionID                     string
+	ProviderLineageID             string
+	ContextBranchID               string
+	ProviderCacheKey              string
+	SessionAffinityKey            string
+	TransportAffinityKey          string
+	BoundaryReason                string
+	PreviousProviderLineageID     string
+	PreviousProviderID            string
+	PreviousModel                 string
+	NewProviderID                 string
+	NewModel                      string
+	HandoffSummaryMessageID       string
+	HandoffSummaryGlobalSeq       uint64
+	ProviderLineageStartMessageID string
+	ProviderLineageStartRunID     string
+	ProviderLineageStartGlobalSeq uint64
+	StartNewChain                 bool
+	AllowContinuation             bool
+	ReuseTransport                bool
+	ResetTransport                bool
+	NativeContinuationAllowed     bool
+	ForceFreshProviderContext     bool
+	Model                         string
+	Thinking                      string
+	ReasoningProviderValue        string
+	Instructions                  string
+	Input                         []map[string]any
+	Tools                         []ToolDefinition
+	ToolChoice                    string
+	ServiceTier                   string
+	ContextMode                   string
+	ContextWindow                 int
+	ParallelToolCalls             bool
 }
 
 type FunctionCall struct {
@@ -187,6 +274,8 @@ type TokenUsage struct {
 	TotalTokens      int64            `json:"total_tokens,omitempty"`
 	CacheReadTokens  int64            `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int64            `json:"cache_write_tokens,omitempty"`
+	ServiceTier      string           `json:"service_tier,omitempty"`
+	EstimatedCostUSD float64          `json:"estimated_cost_usd,omitempty"`
 	Source           string           `json:"source,omitempty"`
 	Transport        string           `json:"transport,omitempty"`
 	ConnectedViaWS   *bool            `json:"connected_via_websocket,omitempty"`
@@ -219,6 +308,10 @@ const (
 	StreamEventOutputTextDelta              StreamEventType = "response.output_text.delta"
 	StreamEventReasoningSummaryDelta        StreamEventType = "response.reasoning_summary_text.delta"
 	StreamEventAssistantCommentary          StreamEventType = "response.assistant_commentary.delta"
+	StreamEventToolCallStarted              StreamEventType = "response.tool_call.started"
+	StreamEventToolCallArgumentsDelta       StreamEventType = "response.tool_call.arguments.delta"
+	StreamEventToolCallArgumentsSnapshot    StreamEventType = "response.tool_call.arguments.snapshot"
+	StreamEventToolCallCompleted            StreamEventType = "response.tool_call.completed"
 	StreamEventImageGenerationPartialImage  StreamEventType = "response.image_generation_call.partial_image"
 	StreamEventImageGenerationCallCompleted StreamEventType = "response.image_generation_call.completed"
 )
@@ -228,6 +321,13 @@ type StreamEvent struct {
 	Delta             string
 	Phase             provideriface.AssistantPhase
 	ReasoningKey      string
+	ToolCallID        string
+	ToolCallIndex     *int
+	ToolName          string
+	Arguments         string
+	ArgumentsDelta    string
+	ArgumentsSnapshot string
+	Metadata          map[string]any
 	ItemID            string
 	OutputIndex       int
 	SequenceNumber    int
@@ -250,11 +350,122 @@ func NewClient(authStore *pebblestore.AuthStore) *Client {
 		authStore: authStore,
 		// Long-running response streams must be governed by per-request contexts
 		// (run service deadlines), not a global client timeout.
-		httpClient:      &http.Client{},
-		earlyExpiry:     5 * time.Minute,
-		responsesAPIURL: openAIResponsesURL,
-		wsSessions:      make(map[string]*cachedWebsocketSession),
+		httpClient:                 &http.Client{},
+		earlyExpiry:                5 * time.Minute,
+		responsesAPIURL:            openAIResponsesURL,
+		websocketFirstFrameTimeout: defaultWebsocketFirstFrameTimeout,
+		wsSessions:                 make(map[string]*cachedWebsocketSession),
 	}
+}
+
+// SetLongSessionDiagnostics enables metadata-only cache snapshots. A nil
+// recorder restores the zero-overhead disabled path.
+func (c *Client) SetLongSessionDiagnostics(recorder *longsessiondiag.Recorder) {
+	if c != nil {
+		c.diagnostics = recorder
+	}
+}
+
+func (c *Client) LongSessionSnapshot() map[string]any {
+	if c == nil || c.diagnostics == nil {
+		return nil
+	}
+	type cacheEntry struct {
+		id      string
+		session *cachedWebsocketSession
+	}
+	c.wsMu.Lock()
+	totalEntries := len(c.wsSessions)
+	ids := make([]string, 0, totalEntries)
+	for id, session := range c.wsSessions {
+		if session != nil {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	if len(ids) > 64 {
+		ids = ids[:64]
+	}
+	entries := make([]cacheEntry, 0, len(ids))
+	for _, id := range ids {
+		entries = append(entries, cacheEntry{id: id, session: c.wsSessions[id]})
+	}
+	c.wsMu.Unlock()
+	var open, payloadBytes, requestBytes, outputBytes, inputItems int64
+	detail := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		entry.session.mu.Lock()
+		entryOpen := entry.session.conn != nil
+		entryPayloadBytes := estimatedJSONBytes(entry.session.lastPayload)
+		entryRequestBytes := estimatedJSONBytes(entry.session.lastRequestProperties)
+		entryOutputBytes := estimatedJSONBytes(entry.session.lastOutput)
+		entryInputItems := int64(entry.session.lastInputLen)
+		entry.session.mu.Unlock()
+		if entryOpen {
+			open++
+		}
+		payloadBytes += entryPayloadBytes
+		requestBytes += entryRequestBytes
+		outputBytes += entryOutputBytes
+		inputItems += entryInputItems
+		detail = append(detail, map[string]any{"session_hash": c.diagnostics.HashIdentifier(entry.id), "open": entryOpen, "last_payload_bytes": entryPayloadBytes, "request_properties_bytes": entryRequestBytes, "last_output_bytes": entryOutputBytes, "last_input_items": entryInputItems})
+	}
+	return map[string]any{"cache_entries": totalEntries, "sampled_entries": len(entries), "omitted_entries": totalEntries - len(entries), "open_connections": open, "last_payload_bytes": payloadBytes, "request_properties_bytes": requestBytes, "last_output_bytes": outputBytes, "last_input_items": inputItems, "entries": detail}
+}
+
+func estimatedJSONBytes(value any) int64 {
+	const limit = int64(64 << 20)
+	var walk func(any, int) int64
+	walk = func(current any, depth int) int64 {
+		if current == nil || depth > 64 {
+			return 0
+		}
+		switch typed := current.(type) {
+		case string:
+			return min(int64(len(typed)), limit)
+		case []byte:
+			return min(int64(len(typed)), limit)
+		case json.RawMessage:
+			return min(int64(len(typed)), limit)
+		case []any:
+			var total int64
+			for _, item := range typed {
+				total += walk(item, depth+1)
+				if total >= limit {
+					return limit
+				}
+			}
+			return total
+		case []map[string]any:
+			var total int64
+			for _, item := range typed {
+				total += walk(item, depth+1)
+				if total >= limit {
+					return limit
+				}
+			}
+			return total
+		case map[string]any:
+			var total int64
+			for key, item := range typed {
+				total += int64(len(key)) + walk(item, depth+1)
+				if total >= limit {
+					return limit
+				}
+			}
+			return total
+		default:
+			return 8
+		}
+	}
+	return walk(value, 0)
+}
+
+func (c *Client) effectiveWebsocketFirstFrameTimeout() time.Duration {
+	if c != nil && c.websocketFirstFrameTimeout > 0 {
+		return c.websocketFirstFrameTimeout
+	}
+	return defaultWebsocketFirstFrameTimeout
 }
 
 func (c *Client) cachedWebsocketSession(sessionID string) *cachedWebsocketSession {
@@ -275,17 +486,47 @@ func (c *Client) cachedWebsocketSession(sessionID string) *cachedWebsocketSessio
 	return session
 }
 
+func resetCachedWebsocketChainLocked(session *cachedWebsocketSession) {
+	if session == nil {
+		return
+	}
+	session.lastPayload = nil
+	session.lastRequestProperties = nil
+	session.lastInputLen = 0
+	session.lastResponseID = ""
+	session.lastOutput = nil
+}
+
 func closeCachedWebsocketSessionLocked(session *cachedWebsocketSession) {
 	if session == nil {
 		return
 	}
 	if session.conn != nil {
+		pebblestore.ObserveExecutionEpochSocketReset()
 		_ = session.conn.Close()
 		session.conn = nil
 	}
-	session.lastPayload = nil
-	session.lastResponseID = ""
-	session.lastOutput = nil
+	resetCachedWebsocketChainLocked(session)
+}
+
+func prepareCachedWebsocketSessionLocked(session *cachedWebsocketSession, transport codexTransportContext, freshContext, payloadPrepared bool, requestPayload map[string]any) (*websocket.Conn, bool, error) {
+	if session == nil {
+		return nil, false, nil
+	}
+	if transport.ResetTransport || (freshContext && !transport.ReuseTransport) {
+		closeCachedWebsocketSessionLocked(session)
+		if payloadPrepared && asString(requestPayload["previous_response_id"]) != "" {
+			return nil, false, errWebsocketRetryFresh
+		}
+	} else if freshContext {
+		// A new provider chain must not inherit response lineage. Keep the
+		// compatible healthy socket, but clear only chain-scoped cache state.
+		resetCachedWebsocketChainLocked(session)
+	}
+	if session.conn != nil {
+		pebblestore.ObserveExecutionEpochSocketReuse()
+	}
+	return session.conn, session.conn != nil, nil
 }
 
 func contextErr(ctx context.Context) error {
@@ -318,8 +559,16 @@ func (c *Client) CreateResponse(ctx context.Context, req Request) (Response, err
 	return c.createResponse(ctx, req, nil)
 }
 
+func (c *Client) CreateResponseWithAuth(ctx context.Context, record pebblestore.CodexAuthRecord, req Request) (Response, error) {
+	return c.createResponseWithAuth(ctx, record, req, nil)
+}
+
 func (c *Client) CreateResponseStreaming(ctx context.Context, req Request, onEvent func(StreamEvent)) (Response, error) {
 	return c.createResponse(ctx, req, onEvent)
+}
+
+func (c *Client) CreateResponseStreamingWithAuth(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (Response, error) {
+	return c.createResponseWithAuth(ctx, record, req, onEvent)
 }
 
 func (c *Client) createResponse(ctx context.Context, req Request, onEvent func(StreamEvent)) (Response, error) {
@@ -327,13 +576,15 @@ func (c *Client) createResponse(ctx context.Context, req Request, onEvent func(S
 	if err != nil {
 		return Response{}, err
 	}
+	return c.createResponseWithAuth(ctx, record, req, onEvent)
+}
 
-	payload, err := buildRequestPayload(req)
-	if err != nil {
-		return Response{}, err
+func (c *Client) createResponseWithAuth(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (Response, error) {
+	if strings.TrimSpace(record.Provider) == "" {
+		record.Provider = "codex"
 	}
-
-	decoded, statusCode, err := c.send(ctx, record, payload, onEvent)
+	ctx = c.contextWithResponsesLifecycle(ctx, record, req, false)
+	decoded, statusCode, err := c.sendRequest(ctx, record, req, onEvent)
 	if err != nil {
 		return Response{}, err
 	}
@@ -347,20 +598,85 @@ func (c *Client) createResponse(ctx context.Context, req Request, onEvent func(S
 		if err != nil {
 			return Response{}, fmt.Errorf("persist refreshed codex oauth: %w", err)
 		}
-		decoded, statusCode, err = c.send(ctx, record, payload, onEvent)
+		// The refreshed credential must never continue on the socket that rejected
+		// its predecessor. Rebuild compatibility identity and force a redial while
+		// preserving the request's fresh/full-input policy.
+		ctx = c.contextWithResponsesLifecycle(ctx, record, req, true)
+		decoded, statusCode, err = c.sendRequest(ctx, record, req, onEvent)
 		if err != nil {
 			return Response{}, err
 		}
 	}
 
 	if statusCode >= 400 {
-		if transport, _ := extractCodexTransportMetadata(decoded); transport != "" {
-			return Response{}, fmt.Errorf("codex responses request failed status=%d transport=%s body=%s", statusCode, transport, compactBody(decoded))
+		providerLabel := "codex"
+		if strings.EqualFold(strings.TrimSpace(record.Provider), "openai") || record.Type != pebblestore.CodexAuthTypeOAuth {
+			providerLabel = "openai"
 		}
-		return Response{}, fmt.Errorf("codex responses request failed status=%d body=%s", statusCode, compactBody(decoded))
+		if transport, _ := extractCodexTransportMetadata(decoded); transport != "" {
+			return Response{}, fmt.Errorf("%s responses request failed status=%d transport=%s body=%s", providerLabel, statusCode, transport, compactBody(decoded))
+		}
+		return Response{}, fmt.Errorf("%s responses request failed status=%d body=%s", providerLabel, statusCode, compactBody(decoded))
 	}
 
 	return parseResponse(decoded), nil
+}
+
+func (c *Client) contextWithResponsesLifecycle(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, resetTransport bool) context.Context {
+	allowContinuation := req.AllowContinuation || req.NativeContinuationAllowed
+	startNewChain := req.StartNewChain || req.ForceFreshProviderContext || !allowContinuation
+	forceFreshProviderContext := startNewChain
+	ctx = contextWithForceFreshProviderContext(ctx, forceFreshProviderContext)
+	return contextWithCodexTransportContext(ctx, codexTransportContext{
+		PromptCacheKey:            codexPromptCacheKey(firstNonEmpty(req.ProviderCacheKey, req.ProviderLineageID)),
+		SessionAffinityKey:        c.responsesTransportCompatibilityKey(record, req),
+		StartNewChain:             startNewChain,
+		AllowContinuation:         allowContinuation,
+		ReuseTransport:            req.ReuseTransport,
+		ResetTransport:            resetTransport || req.ResetTransport,
+		NativeContinuationAllowed: req.NativeContinuationAllowed,
+		ForceFreshProviderContext: forceFreshProviderContext,
+		BoundaryReason:            strings.TrimSpace(req.BoundaryReason),
+	})
+}
+
+func (c *Client) responsesTransportCompatibilityKey(record pebblestore.CodexAuthRecord, req Request) string {
+	providerID := strings.ToLower(strings.TrimSpace(record.Provider))
+	if providerID == "" {
+		providerID = "codex"
+	}
+	credentialVersion := ""
+	if record.Type != pebblestore.CodexAuthTypeOAuth {
+		// API-key rotation under a stable credential record must not retain a
+		// socket authenticated by the old key. Only the digest enters the key.
+		sum := sha256.Sum256([]byte(strings.TrimSpace(record.APIKey)))
+		credentialVersion = fmt.Sprintf("%x", sum[:8])
+	}
+	return codexSessionAffinityKey(provideriface.ShortProviderLineageKey(
+		"responses.websocket.transport.v1",
+		firstNonEmpty(req.TransportAffinityKey, req.SessionAffinityKey, req.ProviderLineageID),
+		providerID,
+		strings.TrimSpace(req.Model),
+		strings.TrimSpace(record.Type),
+		strings.TrimSpace(record.AccountScopeID),
+		strings.TrimSpace(record.ID),
+		strings.TrimSpace(record.AccountID),
+		credentialVersion,
+		c.responsesEndpointForRecord(record),
+	))
+}
+
+func (c *Client) responsesEndpointForRecord(record pebblestore.CodexAuthRecord) string {
+	if c != nil && strings.TrimSpace(c.responsesWSURL) != "" {
+		return strings.TrimSpace(c.responsesWSURL)
+	}
+	if record.Type == pebblestore.CodexAuthTypeOAuth {
+		return responsesURL
+	}
+	if c != nil && strings.TrimSpace(c.responsesAPIURL) != "" {
+		return strings.TrimSpace(c.responsesAPIURL)
+	}
+	return openAIResponsesURL
 }
 
 func (c *Client) ensureAuth(ctx context.Context) (pebblestore.CodexAuthRecord, error) {
@@ -427,18 +743,22 @@ func (c *Client) refreshOAuth(ctx context.Context, refreshToken string) (oauthTo
 		return oauthTokens{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	providerdiagnostics.LogRequest("codex", "oauth.refresh", httpReq, []byte(values.Encode()))
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "codex", "oauth.refresh", err)
 		return oauthTokens{}, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	providerdiagnostics.LogResponse("codex", "oauth.refresh", resp, body)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "codex", "oauth.refresh", err)
 		return oauthTokens{}, err
 	}
 	if resp.StatusCode >= 400 {
-		return oauthTokens{}, fmt.Errorf("oauth refresh failed status=%d body=%s", resp.StatusCode, sanitizeDiagnosticText(string(body)))
+		return oauthTokens{}, fmt.Errorf("oauth refresh failed status=%d", resp.StatusCode)
 	}
 
 	var decoded tokenRefresh
@@ -467,52 +787,86 @@ type oauthTokens struct {
 }
 
 func buildRequestPayload(req Request) ([]byte, error) {
+	payload, _, err := buildRequestPayloadWithOptions(req)
+	return payload, err
+}
+
+func buildRequestPayloadWithOptions(req Request) ([]byte, bool, error) {
+	body, err := buildCodexRequestBody(req, req.Input)
+	if err != nil {
+		return nil, false, err
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, false, err
+	}
+	return payload, req.ForceFreshProviderContext || !req.NativeContinuationAllowed, nil
+}
+
+func buildCodexRequestBody(req Request, input []map[string]any) (map[string]any, error) {
+	properties, err := buildCodexRequestProperties(req)
+	if err != nil {
+		return nil, err
+	}
+	if len(input) == 0 {
+		return nil, errors.New("input messages are required")
+	}
+	body := cloneMapAny(properties)
+	body["input"] = sanitizeCodexRequestInput(input)
+	return body, nil
+}
+
+func buildCodexRequestProperties(req Request) (map[string]any, error) {
 	modelID := strings.TrimSpace(req.Model)
 	if modelID == "" {
 		return nil, errors.New("model is required")
 	}
-	if len(req.Input) == 0 {
-		return nil, errors.New("input messages are required")
-	}
-
-	body := map[string]any{
+	properties := map[string]any{
 		"model":  modelID,
 		"stream": true,
 		"store":  false,
-		"input":  sanitizeCodexRequestInput(req.Input),
 		"text": map[string]any{
 			"verbosity": defaultCodexTextVerbosity,
 		},
 	}
-	if sessionID := codexPromptCacheKey(req.SessionID); sessionID != "" {
-		body["prompt_cache_key"] = sessionID
+	if cacheKey := codexPromptCacheKey(firstNonEmpty(req.ProviderCacheKey, req.ProviderLineageID)); cacheKey != "" {
+		properties["prompt_cache_key"] = cacheKey
 	}
 	if strings.TrimSpace(req.Instructions) != "" {
-		body["instructions"] = strings.TrimSpace(req.Instructions)
+		properties["instructions"] = strings.TrimSpace(req.Instructions)
 	}
 	if len(req.Tools) > 0 {
-		body["tools"] = normalizeCodexRequestTools(req.Tools)
+		properties["tools"] = normalizeCodexRequestTools(req.Tools)
 		toolChoice := strings.TrimSpace(req.ToolChoice)
 		if toolChoice == "" {
 			toolChoice = "auto"
 		}
-		body["tool_choice"] = toolChoice
-		body["parallel_tool_calls"] = req.ParallelToolCalls
+		properties["tool_choice"] = toolChoice
+		properties["parallel_tool_calls"] = req.ParallelToolCalls
 	}
-	switch NormalizeServiceTier(req.ServiceTier) {
-	case ServiceTierFast:
-		body["service_tier"] = "priority"
-	case ServiceTierFlex:
-		body["service_tier"] = ServiceTierFlex
+	if serviceTier := strings.TrimSpace(req.ServiceTier); serviceTier != "" {
+		properties["service_tier"] = serviceTier
 	}
-	if reasoning := reasoningPayload(req.Thinking); len(reasoning) > 0 {
-		body["reasoning"] = reasoning
-		body["include"] = []string{includeReasoningEncryptedContentPath}
+	if reasoning := reasoningPayloadForRequest(req); len(reasoning) > 0 {
+		properties["reasoning"] = reasoning
+		properties["include"] = []string{includeReasoningEncryptedContentPath}
 	}
-	return json.Marshal(body)
+	return properties, nil
 }
 
 func codexPromptCacheKey(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	if len(sessionID) <= maxPromptCacheKeyLength {
+		return sessionID
+	}
+	sum := sha256.Sum256([]byte(sessionID))
+	return fmt.Sprintf("%x", sum)
+}
+
+func codexSessionAffinityKey(sessionID string) string {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return ""
@@ -539,31 +893,213 @@ func sanitizeCodexRequestInput(input []map[string]any) []map[string]any {
 	}
 	out := make([]map[string]any, 0, len(input))
 	for _, item := range input {
-		cloned := cloneMapAny(item)
-		if strings.EqualFold(strings.TrimSpace(asString(cloned["type"])), "function_call") {
-			delete(cloned, "metadata")
+		sanitized, ok := sanitizeCodexRequestInputValue(item).(map[string]any)
+		if !ok || len(sanitized) == 0 {
+			continue
 		}
-		out = append(out, cloned)
+		out = append(out, sanitized)
 	}
 	return out
 }
 
-func reasoningPayload(thinking string) map[string]any {
-	thinking = strings.ToLower(strings.TrimSpace(thinking))
-	switch thinking {
-	case "", "off":
-		return nil
-	case "low":
-		return map[string]any{"effort": "low", "summary": "auto"}
-	case "medium":
-		return map[string]any{"effort": "medium", "summary": "auto"}
-	case "high":
-		return map[string]any{"effort": "high", "summary": "auto"}
-	case "xhigh":
-		return map[string]any{"effort": "xhigh", "summary": "auto"}
+func sanitizeCodexRequestInputValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		itemType := strings.ToLower(strings.TrimSpace(fmt.Sprint(typed["type"])))
+		for key, child := range typed {
+			if isCodexRequestInputResponseOnlyField(key) {
+				continue
+			}
+			sanitized := sanitizeCodexRequestInputValue(child)
+			if itemType == "reasoning" && strings.EqualFold(strings.TrimSpace(key), "content") {
+				if isCodexRequestInputEmptyValue(sanitized) {
+					out[key] = nil
+				} else {
+					out[key] = sanitized
+				}
+				continue
+			}
+			if isCodexRequestInputEmptyValue(sanitized) {
+				continue
+			}
+			out[key] = sanitized
+		}
+		if itemType == "reasoning" {
+			normalizeCodexReasoningReplayItem(out)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, child := range typed {
+			sanitized := sanitizeCodexRequestInputValue(child)
+			if isCodexRequestInputEmptyValue(sanitized) {
+				continue
+			}
+			out = append(out, sanitized)
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	case []map[string]any:
+		out := make([]any, 0, len(typed))
+		for _, child := range typed {
+			sanitized := sanitizeCodexRequestInputValue(child)
+			if isCodexRequestInputEmptyValue(sanitized) {
+				continue
+			}
+			out = append(out, sanitized)
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
 	default:
-		return map[string]any{"effort": "medium", "summary": "auto"}
+		return value
 	}
+}
+
+func normalizeCodexReasoningReplayItem(item map[string]any) {
+	if len(item) == 0 {
+		return
+	}
+	summary, ok := item["summary"]
+	if !ok || !isCodexRequestInputArrayValue(summary) {
+		item["summary"] = []any{}
+	}
+	content, ok := item["content"]
+	if !ok || !isCodexRequestInputArrayValue(content) || isCodexRequestInputEmptyValue(content) {
+		item["content"] = nil
+	}
+}
+
+func isCodexRequestInputArrayValue(value any) bool {
+	switch value.(type) {
+	case []any, []map[string]any:
+		return true
+	default:
+		return false
+	}
+}
+
+func isCodexRequestInputResponseOnlyField(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "", "metadata", "output_index", "phase", "logprobs", "annotations":
+		return true
+	default:
+		return false
+	}
+}
+
+func sanitizeCodexRequestDeltaInput(input []map[string]any) []any {
+	if len(input) == 0 {
+		return []any{}
+	}
+	out := make([]any, 0, len(input))
+	for _, item := range sanitizeCodexRequestInput(input) {
+		out = append(out, item)
+	}
+	return out
+}
+
+func isCodexRequestInputEmptyValue(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return true
+	case []any:
+		return len(typed) == 0
+	case []map[string]any:
+		return len(typed) == 0
+	case map[string]any:
+		return len(typed) == 0
+	default:
+		return false
+	}
+}
+
+func reasoningPayloadForRequest(req Request) map[string]any {
+	providerValue := strings.ToLower(strings.TrimSpace(req.ReasoningProviderValue))
+	if providerValue == "" || providerValue == "none" {
+		return nil
+	}
+	return map[string]any{"effort": providerValue, "summary": "auto"}
+}
+
+func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (decoded map[string]any, status int, err error) {
+	started := time.Now()
+	defer func() {
+		if c.diagnostics == nil {
+			return
+		}
+		failed := err != nil || status >= http.StatusBadRequest
+		c.diagnostics.ObserveOperation("codex.api_total", req.SessionID, time.Since(started), failed, map[string]int64{"input_items": int64(len(req.Input)), "tools": int64(len(req.Tools)), "status_class": int64(status / 100)}, map[string]bool{"continuation": req.AllowContinuation, "reset_transport": req.ResetTransport, "force_fresh": req.ForceFreshProviderContext})
+	}()
+	if c.sendWSFn != nil {
+		payload, _, err := buildRequestPayloadWithOptions(req)
+		if err != nil {
+			return nil, 0, err
+		}
+		return c.send(ctx, record, payload, onEvent)
+	}
+
+	streamEmitter := &retryAwareStreamEmitter{onEvent: onEvent}
+	for attempt := 1; attempt <= transportRetryAttempts; attempt++ {
+		var wsDecoded map[string]any
+		var wsStatus int
+		var wsErr error
+		for startedRetry := 0; ; startedRetry++ {
+			streamEmitter.beginAttempt()
+			wsDecoded, wsStatus, wsErr = c.sendWebsocketRequest(ctx, record, req, streamEmitter.emit)
+			if wsErr == nil || !errors.Is(wsErr, errWebsocketStreamStarted) {
+				break
+			}
+			if !shouldRetryStartedWebsocketStream(wsErr) || startedRetry >= startedWebsocketStreamRetryLimit {
+				return nil, 0, wsErr
+			}
+			if err := sleepWithContext(ctx, transportRetryBaseDelay*time.Duration(startedRetry+1)); err != nil {
+				return nil, 0, err
+			}
+		}
+		if wsErr != nil {
+			if ctxErr := contextErr(ctx); ctxErr != nil {
+				return nil, 0, ctxErr
+			}
+			if shouldRetryWebsocketTransportError(wsErr) && attempt < transportRetryAttempts {
+				if err := sleepWithContext(ctx, transportRetryBaseDelay*time.Duration(attempt)); err != nil {
+					return nil, 0, err
+				}
+				continue
+			}
+			if errors.Is(wsErr, errWebsocketFirstFrameTimeout) {
+				return nil, 0, exhaustedWebsocketFirstFrameTimeoutError(wsErr, attempt)
+			}
+			if record.Type != pebblestore.CodexAuthTypeOAuth && !errors.Is(wsErr, errWebsocketStreamStarted) {
+				return c.sendOpenAIResponsesRequest(ctx, record, req, streamEmitter.emit)
+			}
+			return nil, 0, wsErr
+		}
+		if ctxErr := contextErr(ctx); ctxErr != nil {
+			return nil, 0, ctxErr
+		}
+		if shouldRetryTransportStatus(wsStatus, wsDecoded) && attempt < transportRetryAttempts {
+			if err := sleepWithContext(ctx, transportRetryBaseDelay*time.Duration(attempt)); err != nil {
+				return nil, 0, err
+			}
+			continue
+		}
+		if record.Type != pebblestore.CodexAuthTypeOAuth && openAIWebsocketShouldFallbackHTTP(wsStatus) {
+			return c.sendOpenAIResponsesRequest(ctx, record, req, streamEmitter.emit)
+		}
+		return annotateRetryAttempts(annotateCodexTransportMetadata(wsDecoded, codexTransportWebsocket, true), attempt), wsStatus, nil
+	}
+	if record.Type != pebblestore.CodexAuthTypeOAuth {
+		return c.sendOpenAIResponsesRequest(ctx, record, req, streamEmitter.emit)
+	}
+	return map[string]any{
+		"raw_body":       "",
+		"retry_attempts": transportRetryAttempts,
+	}, http.StatusServiceUnavailable, nil
 }
 
 func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, payload []byte, onEvent func(StreamEvent)) (map[string]any, int, error) {
@@ -605,6 +1141,9 @@ func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, p
 				}
 				continue
 			}
+			if errors.Is(wsErr, errWebsocketFirstFrameTimeout) {
+				return nil, 0, exhaustedWebsocketFirstFrameTimeoutError(wsErr, attempt)
+			}
 			return nil, 0, wsErr
 		}
 		if ctxErr := contextErr(ctx); ctxErr != nil {
@@ -636,6 +1175,26 @@ func shouldRetryTransportStatus(statusCode int, decoded map[string]any) bool {
 	}
 }
 
+func openAIWebsocketShouldFallbackHTTP(statusCode int) bool {
+	if statusCode == 0 {
+		return true
+	}
+	switch statusCode {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusUpgradeRequired, http.StatusNotImplemented:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) sendOpenAIResponsesRequest(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (map[string]any, int, error) {
+	payload, _, err := buildRequestPayloadWithOptions(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	return c.sendOpenAIResponses(ctx, record, payload, onEvent)
+}
+
 func (c *Client) sendOpenAIResponses(ctx context.Context, record pebblestore.CodexAuthRecord, payload []byte, onEvent func(StreamEvent)) (map[string]any, int, error) {
 	apiURL := strings.TrimSpace(c.responsesAPIURL)
 	if apiURL == "" {
@@ -645,19 +1204,33 @@ func (c *Client) sendOpenAIResponses(ctx context.Context, record pebblestore.Cod
 	if err != nil {
 		return nil, 0, err
 	}
+	providerID := strings.ToLower(strings.TrimSpace(record.Provider))
+	if providerID == "" {
+		providerID = "codex"
+	}
+	diagnosticProvider := providerID
+	userAgent := defaultCodexTransportUserAgent
+	if providerID == "openai" || record.Type != pebblestore.CodexAuthTypeOAuth {
+		diagnosticProvider = "openai"
+		userAgent = defaultOpenAITransportUserAgent
+	}
 	httpReq.Header.Set("Authorization", "Bearer "+bearerToken(record))
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set(userAgentHeader, defaultCodexTransportUserAgent)
+	httpReq.Header.Set(userAgentHeader, userAgent)
 
+	providerdiagnostics.LogRequest(diagnosticProvider, "responses.http", httpReq, payload)
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, diagnosticProvider, "responses.http", err)
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCodexResponseBodyBytes))
+	providerdiagnostics.LogResponse(diagnosticProvider, "responses.http", resp, body)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, diagnosticProvider, "responses.http", err)
 		return nil, resp.StatusCode, err
 	}
 	if resp.StatusCode >= 400 {
@@ -671,6 +1244,40 @@ func (c *Client) sendOpenAIResponses(ctx context.Context, record pebblestore.Cod
 		return nil, resp.StatusCode, err
 	}
 	return annotateCodexTransportMetadata(decoded, codexTransportResponsesHTTP, false), resp.StatusCode, nil
+}
+
+func (c *Client) VerifyOpenAIAPIKey(ctx context.Context, apiKey string) (provideriface.AuthVerification, error) {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return provideriface.AuthVerification{Connected: false, Method: "api"}, errors.New("openai api verification requires api_key")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.openai.com/v1/models", nil)
+	if err != nil {
+		return provideriface.AuthVerification{Connected: false, Method: "api"}, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set(userAgentHeader, defaultOpenAITransportUserAgent)
+	providerdiagnostics.LogRequest("openai", "models.verify", httpReq, nil)
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "openai", "models.verify", err)
+		return provideriface.AuthVerification{Connected: false, Method: "api"}, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCodexResponseBodyBytes))
+	providerdiagnostics.LogResponse("openai", "models.verify", resp, body)
+	if err != nil {
+		return provideriface.AuthVerification{Connected: false, Method: "api"}, err
+	}
+	if resp.StatusCode >= 400 {
+		return provideriface.AuthVerification{Connected: false, Method: "api"}, fmt.Errorf("openai api verification failed status=%d body=%s", resp.StatusCode, sanitizeDiagnosticText(string(body)))
+	}
+	return provideriface.AuthVerification{
+		Connected: true,
+		Method:    "api",
+		Message:   "OpenAI API key verified via /v1/models",
+	}, nil
 }
 
 func parseOpenAIResponsesBody(body []byte, contentType string, onEvent func(StreamEvent)) (map[string]any, error) {
@@ -752,10 +1359,15 @@ func shouldRetryStartedWebsocketStream(err error) bool {
 	}
 	var closeErr *websocket.CloseError
 	if errors.As(err, &closeErr) {
-		return closeErr.Code == websocket.CloseAbnormalClosure
+		return closeErr.Code == websocket.CloseNormalClosure ||
+			closeErr.Code == websocket.CloseAbnormalClosure ||
+			(closeErr.Code == websocket.CloseInternalServerErr && strings.Contains(strings.ToLower(closeErr.Text), "keepalive ping timeout"))
 	}
 	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "close 1006") || strings.Contains(message, "unexpected eof")
+	return strings.Contains(message, "close 1000") ||
+		strings.Contains(message, "close 1006") ||
+		strings.Contains(message, "unexpected eof") ||
+		(strings.Contains(message, "close 1011") && strings.Contains(message, "keepalive ping timeout"))
 }
 
 func mergeRetriedStreamText(current, attempt string) (string, string) {
@@ -782,8 +1394,8 @@ func mergeRetriedReasoningSummary(current, attempt string) (string, string, bool
 	return merged, merged, true
 }
 
-func responsesWebsocketURL() (string, error) {
-	parsed, err := url.Parse(responsesURL)
+func (c *Client) responsesWebsocketURL(record pebblestore.CodexAuthRecord) (string, error) {
+	parsed, err := url.Parse(c.responsesEndpointForRecord(record))
 	if err != nil {
 		return "", fmt.Errorf("parse responses url: %w", err)
 	}
@@ -800,27 +1412,83 @@ func responsesWebsocketURL() (string, error) {
 	return parsed.String(), nil
 }
 
-func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuthRecord, payload []byte, onEvent func(StreamEvent)) (map[string]any, int, error) {
-	wsURL, err := responsesWebsocketURL()
+func (c *Client) codexWebsocketRequestPayload(ctx context.Context, req Request) (map[string]any, map[string]any, int, error) {
+	properties, err := buildCodexRequestProperties(req)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
+	if len(req.Input) == 0 {
+		return nil, nil, 0, errors.New("input messages are required")
+	}
+	requestInputLen := len(req.Input)
+	transportContext := codexTransportContextFromContext(ctx)
+	freshContext := forceFreshProviderContextFromContext(ctx)
+	session := c.cachedWebsocketSession(transportContext.SessionAffinityKey)
+	if session == nil || freshContext || transportContext.ResetTransport {
+		// A forced transport reset cannot safely use previous_response_id from the
+		// socket being discarded. Reconnect with the complete selected input, as
+		// required for store=false Responses websocket recovery.
+		payload, err := buildCodexRequestBody(req, req.Input)
+		return payload, properties, requestInputLen, err
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if strings.TrimSpace(session.lastResponseID) == "" || !codexWebsocketRequestPropertiesMatch(session.lastRequestProperties, properties) {
+		payload, err := buildCodexRequestBody(req, req.Input)
+		return payload, properties, requestInputLen, err
+	}
+	baselineOutputLen := len(session.lastOutput)
+	baselineLen := session.lastInputLen + baselineOutputLen
+	if baselineLen < 0 || baselineLen > len(req.Input) {
+		payload, err := buildCodexRequestBody(req, req.Input)
+		return payload, properties, requestInputLen, err
+	}
+	if baselineOutputLen > 0 && !inputStartsWith(codexInputItemsForIncrementalCompare(mapsToAnySlice(req.Input[session.lastInputLen:baselineLen])), codexInputItemsForIncrementalCompare(session.lastOutput)) {
+		payload, err := buildCodexRequestBody(req, req.Input)
+		return payload, properties, requestInputLen, err
+	}
+	payload := cloneMapAny(properties)
+	payload["input"] = sanitizeCodexRequestDeltaInput(req.Input[baselineLen:])
+	payload["previous_response_id"] = strings.TrimSpace(session.lastResponseID)
+	return payload, properties, requestInputLen, nil
+}
 
+func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuthRecord, payload []byte, onEvent func(StreamEvent)) (map[string]any, int, error) {
 	requestPayload, err := decodeCodexPayload(payload)
 	if err != nil {
 		return nil, 0, err
 	}
-	sessionID := extractSessionIDFromDecodedPayload(requestPayload)
-	headers := buildCodexTransportHeaders(record, payload)
-	session := c.cachedWebsocketSession(sessionID)
+	return c.sendWebsocketMap(ctx, record, requestPayload, codexWebsocketRequestPropertiesFromPayload(requestPayload), len(asSlice(requestPayload["input"])), false, onEvent)
+}
+
+func (c *Client) sendWebsocketRequest(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (map[string]any, int, error) {
+	requestPayload, requestProperties, requestInputLen, err := c.codexWebsocketRequestPayload(ctx, req)
+	if err != nil {
+		return nil, 0, err
+	}
+	return c.sendWebsocketMap(ctx, record, requestPayload, requestProperties, requestInputLen, true, onEvent)
+}
+
+func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexAuthRecord, requestPayload map[string]any, requestProperties map[string]any, requestInputLen int, payloadPrepared bool, onEvent func(StreamEvent)) (map[string]any, int, error) {
+	wsURL, err := c.responsesWebsocketURL(record)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	transportContext := codexTransportContextFromContext(ctx)
+	cacheKey := strings.TrimSpace(transportContext.SessionAffinityKey)
+	freshContext := forceFreshProviderContextFromContext(ctx)
+	headers := buildCodexTransportHeaders(record, transportContext)
+	session := c.cachedWebsocketSession(cacheKey)
 	if session != nil {
 		session.mu.Lock()
 		defer session.mu.Unlock()
 	}
-	conn := (*websocket.Conn)(nil)
-	if session != nil {
-		conn = session.conn
+	conn, websocketReused, err := prepareCachedWebsocketSessionLocked(session, transportContext, freshContext, payloadPrepared, requestPayload)
+	if err != nil {
+		return nil, 0, err
 	}
+	initialConnection := !websocketReused
 	if conn == nil {
 		var failureBody map[string]any
 		var status int
@@ -841,9 +1509,9 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 		}
 	}
 
-	sendPayload := cloneMapAny(requestPayload)
-	if session != nil {
-		sendPayload = prepareIncrementalWebsocketRequest(sendPayload, session.lastPayload, session.lastResponseID, session.lastOutput)
+	sendPayload := requestPayload
+	if !payloadPrepared {
+		sendPayload = codexWebsocketSendPayload(requestPayload, session, freshContext)
 	}
 	websocketPayload, err := buildCodexWebsocketPayload(sendPayload)
 	if err != nil {
@@ -853,20 +1521,33 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 		return nil, 0, err
 	}
 
-	writeMessage := func(activeConn *websocket.Conn, encoded []byte) error {
+	firstFrameTimeout := c.effectiveWebsocketFirstFrameTimeout()
+	writeMessage := func(activeConn *websocket.Conn, encoded []byte, initialConnection bool) error {
 		if activeConn == nil {
 			return errors.New("websocket connection is unavailable")
 		}
 		activeConn.SetReadLimit(maxCodexResponseBodyBytes)
+		if initialConnection {
+			if err := activeConn.SetWriteDeadline(time.Now().Add(firstFrameTimeout)); err != nil {
+				return fmt.Errorf("set initial websocket request deadline: %w", err)
+			}
+		}
 		if err := activeConn.WriteMessage(websocket.TextMessage, encoded); err != nil {
 			if ctxErr := contextErr(ctx); ctxErr != nil {
 				return ctxErr
 			}
 			return fmt.Errorf("send websocket request: %w", err)
 		}
+		if initialConnection {
+			if err := activeConn.SetWriteDeadline(time.Time{}); err != nil {
+				return fmt.Errorf("clear initial websocket request deadline: %w", err)
+			}
+		}
 		return nil
 	}
-	if err := writeMessage(conn, websocketPayload); err != nil {
+	providerdiagnostics.RecordContext(ctx, codexOutboundShapeEvent("websocket_request_shape", transportContext, sendPayload, asString(sendPayload["previous_response_id"]) != "", websocketReused))
+	providerdiagnostics.LogWebsocketRequestContext(ctx, "codex", "responses.websocket", wsURL, headers, websocketPayload)
+	if err := writeMessage(conn, websocketPayload, initialConnection); err != nil {
 		if ctxErr := contextErr(ctx); ctxErr != nil {
 			if session != nil {
 				closeCachedWebsocketSessionLocked(session)
@@ -875,6 +1556,9 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 		}
 		if session != nil {
 			closeCachedWebsocketSessionLocked(session)
+			if payloadPrepared && asString(requestPayload["previous_response_id"]) != "" {
+				return nil, 0, errWebsocketRetryFresh
+			}
 			var failureBody map[string]any
 			var status int
 			var dialErr error
@@ -889,13 +1573,14 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 				return failureBody, status, nil
 			}
 			session.conn = conn
+			initialConnection = true
 			sendPayload = cloneMapAny(requestPayload)
 			websocketPayload, err = buildCodexWebsocketPayload(sendPayload)
 			if err != nil {
 				closeCachedWebsocketSessionLocked(session)
 				return nil, 0, err
 			}
-			if retryErr := writeMessage(conn, websocketPayload); retryErr != nil {
+			if retryErr := writeMessage(conn, websocketPayload, initialConnection); retryErr != nil {
 				closeCachedWebsocketSessionLocked(session)
 				return nil, 0, retryErr
 			}
@@ -907,6 +1592,15 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 	state := &streamDecodeState{}
 	stopCancelWatch := watchCodexWebsocketCancel(ctx, conn)
 	defer stopCancelWatch()
+	if initialConnection {
+		if err := conn.SetReadDeadline(time.Now().Add(firstFrameTimeout)); err != nil {
+			if session != nil {
+				closeCachedWebsocketSessionLocked(session)
+			}
+			return nil, 0, fmt.Errorf("set initial websocket first-frame deadline: %w", err)
+		}
+	}
+	waitingForFirstFrame := initialConnection
 	for {
 		messageType, message, err := conn.ReadMessage()
 		if err != nil {
@@ -916,10 +1610,24 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 			if ctxErr := contextErr(ctx); ctxErr != nil {
 				return nil, 0, ctxErr
 			}
+			if waitingForFirstFrame && websocketTimeoutError(err) {
+				timeoutErr := fmt.Errorf("%w after %s", errWebsocketFirstFrameTimeout, firstFrameTimeout)
+				providerdiagnostics.LogWebsocketErrorContext(ctx, "codex", "responses.websocket", timeoutErr)
+				return nil, 0, timeoutErr
+			}
 			if state.sawPayload {
 				return nil, 0, newStartedWebsocketStreamError(err)
 			}
 			return nil, 0, fmt.Errorf("read websocket response: %w", err)
+		}
+		if waitingForFirstFrame {
+			waitingForFirstFrame = false
+			if err := conn.SetReadDeadline(time.Time{}); err != nil {
+				if session != nil {
+					closeCachedWebsocketSessionLocked(session)
+				}
+				return nil, 0, fmt.Errorf("clear websocket first-frame deadline: %w", err)
+			}
 		}
 
 		if messageType != websocket.TextMessage {
@@ -933,14 +1641,18 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 		}
 
 		payloadText := string(message)
+		providerdiagnostics.LogWebsocketResponseContext(ctx, "codex", "responses.websocket", message)
 		var decoded map[string]any
+		if len(message) > maxCodexStreamBytes {
+			return nil, 0, errors.New("codex websocket event byte limit exceeded")
+		}
 		if err := json.Unmarshal(message, &decoded); err != nil {
 			codexThinkingDebugEvent("event.decode_error", map[string]any{
 				"tag":           "websocket",
 				"payload_chars": len(payloadText),
 				"error":         err.Error(),
 			})
-			continue
+			return nil, 0, fmt.Errorf("decode codex websocket event: %w", err)
 		}
 
 		if strings.EqualFold(strings.TrimSpace(asString(decoded["type"])), "error") {
@@ -959,6 +1671,9 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 		}
 
 		processResponseStreamEvent(asString(decoded["type"]), payloadText, state, onEvent)
+		if state.decodeErr != nil {
+			return nil, 0, state.decodeErr
+		}
 		if strings.EqualFold(strings.TrimSpace(asString(decoded["type"])), "response.completed") {
 			break
 		}
@@ -973,10 +1688,27 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 	}
 	if session != nil {
 		session.lastPayload = cloneMapAny(requestPayload)
+		session.lastRequestProperties = cloneMapAny(requestProperties)
+		session.lastInputLen = requestInputLen
 		session.lastResponseID = extractResponseID(decoded)
-		session.lastOutput = extractResponseOutputItems(decoded)
+		session.lastOutput = normalizeCodexResponseOutputMapsForReplay(state.outputItemsDone)
 	}
 	return decoded, http.StatusOK, nil
+}
+
+func websocketTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	type timeoutError interface {
+		Timeout() bool
+	}
+	var timeout timeoutError
+	return errors.As(err, &timeout) && timeout.Timeout()
+}
+
+func exhaustedWebsocketFirstFrameTimeoutError(err error, attempts int) error {
+	return fmt.Errorf("codex websocket first-frame timeout exhausted after %d attempts: %w", attempts, err)
 }
 
 func dialCodexWebsocket(ctx context.Context, wsURL string, headers http.Header) (*websocket.Conn, map[string]any, int, error) {
@@ -986,7 +1718,9 @@ func dialCodexWebsocket(ctx context.Context, wsURL string, headers http.Header) 
 		EnableCompression: true,
 	}
 
+	dialStart := time.Now()
 	conn, resp, err := dialer.DialContext(ctx, wsURL, headers)
+	pebblestore.ObserveExecutionEpochSocketDial(dialStart)
 	if err != nil {
 		if resp != nil {
 			defer resp.Body.Close()
@@ -1029,11 +1763,28 @@ func buildCodexWebsocketPayload(decoded map[string]any) ([]byte, error) {
 		return nil, fmt.Errorf("unsupported codex websocket request type %q", requestType)
 	}
 	normalizeCodexWebsocketToolParameters(decoded)
+	normalizeCodexWebsocketRequestInput(decoded)
 	encoded, err := json.Marshal(decoded)
 	if err != nil {
 		return nil, fmt.Errorf("encode codex websocket payload: %w", err)
 	}
 	return encoded, nil
+}
+
+func normalizeCodexWebsocketRequestInput(decoded map[string]any) {
+	if decoded == nil {
+		return
+	}
+	raw, ok := decoded["input"]
+	if !ok {
+		return
+	}
+	normalized := sanitizeCodexRequestInputValue(raw)
+	if normalized == nil {
+		decoded["input"] = []any{}
+		return
+	}
+	decoded["input"] = normalized
 }
 
 func normalizeCodexWebsocketToolParameters(decoded map[string]any) {
@@ -1054,51 +1805,149 @@ func normalizeCodexWebsocketToolParameters(decoded map[string]any) {
 	}
 }
 
-func extractSessionIDFromDecodedPayload(decoded map[string]any) string {
-	if len(decoded) == 0 {
+func codexWebsocketSendPayload(requestPayload map[string]any, session *cachedWebsocketSession, freshContext bool) map[string]any {
+	if session == nil || freshContext {
+		return cloneMapAny(requestPayload)
+	}
+	return prepareIncrementalWebsocketRequest(cloneMapAny(requestPayload), session.lastPayload, session.lastResponseID, session.lastOutput)
+}
+
+func codexOutboundShapeEvent(stage string, transport codexTransportContext, payload map[string]any, previousResponseIDPresent, websocketReused bool) providerdiagnostics.Event {
+	inputItems, inputChars, nativeItems, encryptedItems := codexPayloadInputShape(payload)
+	return providerdiagnostics.Event{
+		Provider:  "codex",
+		Operation: "responses.websocket",
+		Stage:     strings.TrimSpace(stage),
+		Extra: map[string]any{
+			"native_continuation_allowed":  transport.NativeContinuationAllowed,
+			"force_fresh_provider_context": transport.ForceFreshProviderContext,
+			"boundary_reason":              transport.BoundaryReason,
+			"prompt_cache_key_present":     strings.TrimSpace(transport.PromptCacheKey) != "",
+			"session_affinity_key_present": strings.TrimSpace(transport.SessionAffinityKey) != "",
+			"session_affinity_key_hash":    codexSafeKeyHash(transport.SessionAffinityKey),
+			"previous_response_id_present": previousResponseIDPresent,
+			"websocket_reused":             websocketReused,
+			"input_items":                  inputItems,
+			"input_text_chars":             inputChars,
+			"native_input_items":           nativeItems,
+			"encrypted_input_items":        encryptedItems,
+		},
+	}
+}
+
+func codexPayloadInputShape(payload map[string]any) (int, int, int, int) {
+	input := asSlice(payload["input"])
+	chars := 0
+	nativeItems := 0
+	encryptedItems := 0
+	var walk func(any)
+	walk = func(value any) {
+		switch typed := value.(type) {
+		case string:
+			chars += len([]rune(typed))
+		case []map[string]any:
+			for _, child := range typed {
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		case map[string]any:
+			itemType := strings.ToLower(strings.TrimSpace(asString(typed["type"])))
+			if itemType == "reasoning" || itemType == "function_call" || itemType == "function_call_output" {
+				nativeItems++
+			}
+			if encryptedContent, ok := typed["encrypted_content"]; ok && strings.TrimSpace(asString(encryptedContent)) != "" {
+				encryptedItems++
+			}
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	walk(input)
+	return len(input), chars, nativeItems, encryptedItems
+}
+
+func codexSafeKeyHash(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
 		return ""
 	}
-	sessionID := strings.TrimSpace(asString(decoded["prompt_cache_key"]))
-	if sessionID == "" {
-		sessionID = strings.TrimSpace(asString(decoded["session_id"]))
-	}
-	return sessionID
+	sum := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%x", sum[:8])
 }
 
 func prepareIncrementalWebsocketRequest(current, previous map[string]any, lastResponseID string, lastOutput []any) map[string]any {
 	if len(current) == 0 || len(previous) == 0 || strings.TrimSpace(lastResponseID) == "" {
 		return current
 	}
-	currentNoInput := cloneMapAny(current)
-	delete(currentNoInput, "input")
-	delete(currentNoInput, "type")
-	delete(currentNoInput, "previous_response_id")
-
-	previousNoInput := cloneMapAny(previous)
-	delete(previousNoInput, "input")
-	delete(previousNoInput, "type")
-	delete(previousNoInput, "previous_response_id")
-
-	if !reflect.DeepEqual(currentNoInput, previousNoInput) {
+	if !reflect.DeepEqual(codexWebsocketRequestPropertiesFromPayload(previous), codexWebsocketRequestPropertiesFromPayload(current)) {
 		return current
 	}
 
-	currentInput := cloneSliceAny(asSlice(current["input"]))
-	baseline := cloneSliceAny(asSlice(previous["input"]))
+	currentInputRaw := asSlice(current["input"])
+	currentInput := codexInputItemsForIncrementalCompare(currentInputRaw)
+	baseline := codexInputItemsForIncrementalCompare(asSlice(previous["input"]))
 	if len(lastOutput) > 0 {
-		baseline = append(baseline, cloneSliceAny(lastOutput)...)
+		baseline = append(baseline, codexInputItemsForIncrementalCompare(lastOutput)...)
 	}
 	if !inputStartsWith(currentInput, baseline) {
 		return current
 	}
 
-	incremental := cloneSliceAny(currentInput[len(baseline):])
+	incremental := cloneSliceAny(currentInputRaw[len(baseline):])
 	if incremental == nil {
 		incremental = []any{}
 	}
 	current["previous_response_id"] = strings.TrimSpace(lastResponseID)
 	current["input"] = incremental
 	return current
+}
+
+func codexWebsocketRequestPropertiesMatch(previous, current map[string]any) bool {
+	return reflect.DeepEqual(codexWebsocketRequestPropertiesFromPayload(previous), codexWebsocketRequestPropertiesFromPayload(current))
+}
+
+func codexWebsocketRequestPropertiesFromPayload(payload map[string]any) map[string]any {
+	if len(payload) == 0 {
+		return nil
+	}
+	properties := make(map[string]any, len(payload))
+	for _, key := range []string{
+		"model",
+		"instructions",
+		"tools",
+		"tool_choice",
+		"parallel_tool_calls",
+		"reasoning",
+		"store",
+		"stream",
+		"include",
+		"service_tier",
+		"prompt_cache_key",
+		"text",
+	} {
+		if value, ok := payload[key]; ok {
+			properties[key] = value
+		}
+	}
+	return properties
+}
+
+func codexInputItemsForIncrementalCompare(items []any) []any {
+	out := cloneSliceAny(items)
+	for i, item := range out {
+		itemMap, ok := item.(map[string]any)
+		if !ok || itemMap == nil {
+			continue
+		}
+		delete(itemMap, "internal_chat_message_metadata_passthrough")
+		delete(itemMap, "internal_chat_message_metadata")
+		out[i] = itemMap
+	}
+	return out
 }
 
 func inputStartsWith(input []any, prefix []any) bool {
@@ -1151,29 +2000,21 @@ func shouldRetryFreshWebsocketRequest(decoded map[string]any) bool {
 	}
 }
 
-func extractSessionIDFromPayload(payload []byte) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return ""
-	}
-	sessionID := strings.TrimSpace(asString(decoded["prompt_cache_key"]))
-	if sessionID == "" {
-		sessionID = strings.TrimSpace(asString(decoded["session_id"]))
-	}
-	return sessionID
-}
-
-func buildCodexTransportHeaders(record pebblestore.CodexAuthRecord, payload []byte) http.Header {
+func buildCodexTransportHeaders(record pebblestore.CodexAuthRecord, transport codexTransportContext) http.Header {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+bearerToken(record))
-	headers.Set(originatorHeader, defaultOriginatorHeaderValue)
-	headers.Set(userAgentHeader, defaultCodexTransportUserAgent)
 	headers.Set(openAIBetaHeader, responsesWebsocketBetaHeaderV2)
-	if sessionID := extractSessionIDFromPayload(payload); sessionID != "" {
+	if record.Type == pebblestore.CodexAuthTypeOAuth {
+		headers.Set(originatorHeader, defaultOriginatorHeaderValue)
+		headers.Set(userAgentHeader, defaultCodexTransportUserAgent)
+	} else {
+		headers.Set(userAgentHeader, defaultOpenAITransportUserAgent)
+	}
+	if sessionID := strings.TrimSpace(transport.SessionAffinityKey); sessionID != "" {
 		headers.Set("session_id", sessionID)
+		if record.Type == pebblestore.CodexAuthTypeOAuth {
+			headers.Set("x-codex-window-id", sessionID)
+		}
 	}
 	if record.Type == pebblestore.CodexAuthTypeOAuth && strings.TrimSpace(record.AccountID) != "" {
 		headers.Set(chatGPTAccountIDHeader, strings.TrimSpace(record.AccountID))
@@ -1192,12 +2033,21 @@ type streamDecodeState struct {
 	reasoningSummary        map[string]string
 	reasoningOrder          []string
 	outputItems             []map[string]any
+	outputItemsDone         []map[string]any
 	outputItemPos           map[string]int
+	outputItemDonePos       map[string]int
 	imageGenerationResults  map[string]string
 	imageGenerationPartials []map[string]any
 	imageGenerationFinals   []map[string]any
+	toolCallArguments       map[string]string
+	toolCallStarted         map[string]struct{}
+	toolCallCompleted       map[string]struct{}
+	toolCallsByIndex        map[int]StreamEvent
 	rawEvents               []map[string]any
 	sawPayload              bool
+	streamBytes             int
+	streamEvents            int
+	decodeErr               error
 }
 
 func processResponseStreamEvent(eventName string, payload string, state *streamDecodeState, onEvent func(StreamEvent)) {
@@ -1205,7 +2055,20 @@ func processResponseStreamEvent(eventName string, payload string, state *streamD
 	if trimmedPayload == "" || trimmedPayload == "[DONE]" {
 		return
 	}
+	if state == nil || state.decodeErr != nil {
+		return
+	}
 	state.sawPayload = true
+	state.streamEvents++
+	state.streamBytes += len(payload)
+	if state.streamEvents > maxCodexStreamEvents {
+		state.decodeErr = errors.New("codex stream event limit exceeded")
+		return
+	}
+	if state.streamBytes > maxCodexStreamBytes {
+		state.decodeErr = errors.New("codex stream byte limit exceeded")
+		return
+	}
 
 	var decoded map[string]any
 	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
@@ -1214,14 +2077,17 @@ func processResponseStreamEvent(eventName string, payload string, state *streamD
 			"payload_chars": len(payload),
 			"error":         err.Error(),
 		})
+		state.decodeErr = fmt.Errorf("decode codex stream event: %w", err)
 		return
 	}
 	state.lastObject = decoded
-	state.rawEvents = append(state.rawEvents, map[string]any{
-		"event":         eventName,
-		"payload_chars": len(payload),
-		"data":          cloneMapAny(decoded),
-	})
+	if len(state.rawEvents) < maxCodexRawEvents {
+		state.rawEvents = append(state.rawEvents, map[string]any{
+			"event":         eventName,
+			"payload_chars": len(payload),
+			"data":          cloneMapAny(decoded),
+		})
+	}
 
 	if strings.TrimSpace(eventName) == "" {
 		eventName = asString(decoded["type"])
@@ -1242,10 +2108,9 @@ func processResponseStreamEvent(eventName string, payload string, state *streamD
 	case "response.output_text.delta":
 		delta := firstNonEmpty(asString(decoded["delta"]), asString(decoded["text"]), asString(decoded["output_text_delta"]))
 		if delta != "" {
-			next, appended := mergeStreamDelta(state.outputText, delta)
-			state.outputText = next
-			if onEvent != nil && appended != "" {
-				onEvent(StreamEvent{Type: StreamEventOutputTextDelta, Delta: appended})
+			state.outputText += delta
+			if onEvent != nil {
+				onEvent(StreamEvent{Type: StreamEventOutputTextDelta, Delta: delta})
 			}
 		}
 	case "response.output_text.done":
@@ -1254,12 +2119,22 @@ func processResponseStreamEvent(eventName string, payload string, state *streamD
 		if text != "" {
 			state.outputText = mergeOutputTextSnapshot(state.outputText, text)
 		}
+	case "response.function_call_arguments.delta", "response.function_call.arguments.delta",
+		"response.custom_tool_call_input.delta", "response.custom_tool_call.input.delta":
+		emitToolCallArgumentsDeltaEvent(state, decoded, onEvent)
+	case "response.function_call_arguments.done", "response.function_call.arguments.done",
+		"response.custom_tool_call_input.done", "response.custom_tool_call.input.done":
+		emitToolCallCompletedEvent(state, decoded, onEvent)
 	case "response.output_item.added", "response.output_item.done":
 		item := extractOutputItemFromEvent(decoded)
 		if len(item) == 0 {
 			break
 		}
 		recordOutputItemEvent(state, item, decoded)
+		if strings.EqualFold(strings.TrimSpace(eventName), "response.output_item.done") {
+			recordDoneOutputItemEvent(state, item, decoded)
+		}
+		emitToolCallOutputItemEvent(eventName, state, item, decoded, onEvent)
 		if text := extractOutputTextFromOutputItem(item); strings.TrimSpace(text) != "" {
 			phase := outputItemAssistantPhase(item)
 			next, appended := mergeStreamDelta(state.outputText, text)
@@ -1297,16 +2172,21 @@ func processResponseStreamEvent(eventName string, payload string, state *streamD
 			previous = ""
 		}
 		next := previous
-		if reasoningEventIsSnapshot(eventName) {
+		if isReasoningSummaryEvent(eventName) {
+			next = mergeReasoningSummaryEvent(previous, delta, reasoningEventIsSnapshot(eventName))
+		} else if reasoningEventIsSnapshot(eventName) {
 			next = mergeReasoningSummarySnapshot(previous, delta)
 		} else {
 			next = mergeReasoningSummaryChunk(previous, delta)
 		}
 		setReasoningStateText(state, reasoningKey, next)
 		codexThinkingDebugf("tag=%s key=%s delta_chars=%d total_reasoning_chars=%d", eventName, reasoningKey, len(delta), len(next))
-		// Emit full merged snapshot so downstream UI can atomically replace
-		// the live reasoning sentence without briefly showing mixed fragments.
-		if onEvent != nil && strings.TrimSpace(next) != "" && next != previous {
+		// Emit full merged snapshots so downstream UI can atomically replace
+		// visible summary content. Hold heading-only partials until their body or
+		// final event arrives, and never emit Codex's empty HTML-comment sentinel.
+		finalSummaryPart := isReasoningSummaryEvent(eventName) && reasoningEventFinalizesPart(eventName)
+		heldHeadingCompleted := finalSummaryPart && next == previous && isHeadingOnlyReasoningSummaryPart(next)
+		if onEvent != nil && (next != previous || heldHeadingCompleted) && (!isReasoningSummaryEvent(eventName) || shouldEmitReasoningSummaryPart(next, finalSummaryPart)) {
 			onEvent(StreamEvent{Type: StreamEventReasoningSummaryDelta, Delta: next, ReasoningKey: reasoningKey})
 		}
 	case "response.completed":
@@ -1326,6 +2206,316 @@ func extractOutputItemFromEvent(decoded map[string]any) map[string]any {
 		return nil
 	}
 	return cloneMapAny(item)
+}
+
+func emitToolCallOutputItemEvent(eventName string, state *streamDecodeState, item map[string]any, event map[string]any, onEvent func(StreamEvent)) {
+	if onEvent == nil || len(item) == 0 || !isToolCallOutputItem(item) {
+		return
+	}
+	streamEvent := streamEventToolCallFromOutputItem(item, event)
+	rememberToolCallEvent(state, streamEvent)
+	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
+		return
+	}
+	key := toolCallStreamKey(streamEvent)
+	if key == "" {
+		return
+	}
+	ensureToolCallStarted(state, key, streamEvent, onEvent)
+	if toolCallCompletedSeen(state, key) {
+		return
+	}
+
+	snapshot := strings.TrimSpace(streamEvent.ArgumentsSnapshot)
+	if snapshot != "" {
+		if state != nil {
+			if state.toolCallArguments == nil {
+				state.toolCallArguments = make(map[string]string, 4)
+			}
+			state.toolCallArguments[key] = snapshot
+		}
+		onEvent(StreamEvent{
+			Type:              StreamEventToolCallArgumentsSnapshot,
+			ToolCallID:        streamEvent.ToolCallID,
+			ToolCallIndex:     cloneIntPtr(streamEvent.ToolCallIndex),
+			ToolName:          streamEvent.ToolName,
+			ArgumentsSnapshot: snapshot,
+			Metadata:          cloneMapAny(streamEvent.Metadata),
+		})
+	}
+
+	if strings.EqualFold(strings.TrimSpace(eventName), "response.output_item.done") || strings.EqualFold(strings.TrimSpace(asString(item["status"])), "completed") {
+		emitCompletedToolCall(state, key, streamEvent, onEvent)
+	}
+}
+
+func emitToolCallArgumentsDeltaEvent(state *streamDecodeState, event map[string]any, onEvent func(StreamEvent)) {
+	if onEvent == nil || len(event) == 0 {
+		return
+	}
+	streamEvent := mergeToolCallEventWithState(state, streamEventToolCallFromArgumentEvent(event))
+	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
+		return
+	}
+	key := toolCallStreamKey(streamEvent)
+	if key == "" {
+		return
+	}
+	ensureToolCallStarted(state, key, streamEvent, onEvent)
+
+	delta := firstNonEmpty(
+		asString(event["delta"]),
+		asString(event["arguments_delta"]),
+		asString(event["input_delta"]),
+	)
+	if delta == "" {
+		return
+	}
+	if state != nil {
+		if state.toolCallArguments == nil {
+			state.toolCallArguments = make(map[string]string, 4)
+		}
+		state.toolCallArguments[key] += delta
+	}
+	onEvent(StreamEvent{
+		Type:           StreamEventToolCallArgumentsDelta,
+		ToolCallID:     streamEvent.ToolCallID,
+		ToolCallIndex:  cloneIntPtr(streamEvent.ToolCallIndex),
+		ToolName:       streamEvent.ToolName,
+		ArgumentsDelta: delta,
+		Delta:          delta,
+		Metadata:       cloneMapAny(streamEvent.Metadata),
+	})
+}
+
+func emitToolCallCompletedEvent(state *streamDecodeState, event map[string]any, onEvent func(StreamEvent)) {
+	if onEvent == nil || len(event) == 0 {
+		return
+	}
+	streamEvent := mergeToolCallEventWithState(state, streamEventToolCallFromArgumentEvent(event))
+	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
+		return
+	}
+	key := toolCallStreamKey(streamEvent)
+	if key == "" {
+		return
+	}
+	ensureToolCallStarted(state, key, streamEvent, onEvent)
+	if streamEvent.Arguments == "" && state != nil && state.toolCallArguments != nil {
+		streamEvent.Arguments = strings.TrimSpace(state.toolCallArguments[key])
+	}
+	emitCompletedToolCall(state, key, streamEvent, onEvent)
+}
+
+func ensureToolCallStarted(state *streamDecodeState, key string, event StreamEvent, onEvent func(StreamEvent)) {
+	if onEvent == nil || key == "" {
+		return
+	}
+	if state != nil {
+		if state.toolCallStarted == nil {
+			state.toolCallStarted = make(map[string]struct{}, 4)
+		}
+		if _, exists := state.toolCallStarted[key]; exists {
+			return
+		}
+		state.toolCallStarted[key] = struct{}{}
+	}
+	onEvent(StreamEvent{
+		Type:          StreamEventToolCallStarted,
+		ToolCallID:    event.ToolCallID,
+		ToolCallIndex: cloneIntPtr(event.ToolCallIndex),
+		ToolName:      event.ToolName,
+		Metadata:      cloneMapAny(event.Metadata),
+	})
+}
+
+func emitCompletedToolCall(state *streamDecodeState, key string, event StreamEvent, onEvent func(StreamEvent)) {
+	if onEvent == nil || key == "" {
+		return
+	}
+	if state != nil {
+		if state.toolCallCompleted == nil {
+			state.toolCallCompleted = make(map[string]struct{}, 4)
+		}
+		if toolCallCompletedSeen(state, key) {
+			return
+		}
+		state.toolCallCompleted[key] = struct{}{}
+		if event.Arguments == "" && state.toolCallArguments != nil {
+			event.Arguments = strings.TrimSpace(state.toolCallArguments[key])
+		}
+	}
+	onEvent(StreamEvent{
+		Type:          StreamEventToolCallCompleted,
+		ToolCallID:    event.ToolCallID,
+		ToolCallIndex: cloneIntPtr(event.ToolCallIndex),
+		ToolName:      event.ToolName,
+		Arguments:     strings.TrimSpace(event.Arguments),
+		Metadata:      cloneMapAny(event.Metadata),
+	})
+}
+
+func toolCallCompletedSeen(state *streamDecodeState, key string) bool {
+	if state == nil || state.toolCallCompleted == nil || key == "" {
+		return false
+	}
+	_, exists := state.toolCallCompleted[key]
+	return exists
+}
+
+func streamEventToolCallFromOutputItem(item map[string]any, event map[string]any) StreamEvent {
+	index := intPointerFromAny(firstPresentValue(event, item, "output_index"))
+	arguments := strings.TrimSpace(asString(item["arguments"]))
+	if arguments == "" {
+		switch typed := item["arguments"].(type) {
+		case map[string]any, []any:
+			arguments = strings.TrimSpace(normalizeArguments(typed))
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(asString(item["type"])), "custom_tool_call") {
+		arguments = strings.TrimSpace(firstNonEmpty(asString(item["input"]), asString(item["arguments"])))
+	}
+	return StreamEvent{
+		ToolCallID:        toolCallIDFromMaps(item, event),
+		ToolCallIndex:     index,
+		ToolName:          toolCallNameFromMap(item),
+		Arguments:         arguments,
+		ArgumentsSnapshot: arguments,
+		Metadata:          toolCallEventMetadata(item, event),
+	}
+}
+
+func streamEventToolCallFromArgumentEvent(event map[string]any) StreamEvent {
+	arguments := strings.TrimSpace(firstNonEmpty(
+		asString(event["arguments"]),
+		asString(event["input"]),
+		asString(event["arguments_done"]),
+		asString(event["input_done"]),
+	))
+	return StreamEvent{
+		ToolCallID:    toolCallIDFromMaps(event),
+		ToolCallIndex: intPointerFromAny(firstPresentValue(event, nil, "output_index", "item_index")),
+		ToolName:      toolCallNameFromMap(event),
+		Arguments:     arguments,
+		Metadata:      toolCallEventMetadata(nil, event),
+	}
+}
+
+func rememberToolCallEvent(state *streamDecodeState, event StreamEvent) {
+	if state == nil || event.ToolCallIndex == nil {
+		return
+	}
+	if state.toolCallsByIndex == nil {
+		state.toolCallsByIndex = make(map[int]StreamEvent, 4)
+	}
+	state.toolCallsByIndex[*event.ToolCallIndex] = event
+}
+
+func mergeToolCallEventWithState(state *streamDecodeState, event StreamEvent) StreamEvent {
+	if state == nil || event.ToolCallIndex == nil || state.toolCallsByIndex == nil {
+		return event
+	}
+	known, ok := state.toolCallsByIndex[*event.ToolCallIndex]
+	if !ok {
+		return event
+	}
+	if known.ToolCallID != "" {
+		event.ToolCallID = known.ToolCallID
+	}
+	if event.ToolName == "" {
+		event.ToolName = known.ToolName
+	}
+	if event.Metadata == nil {
+		event.Metadata = cloneMapAny(known.Metadata)
+	}
+	return event
+}
+
+func isToolCallOutputItem(item map[string]any) bool {
+	switch strings.TrimSpace(asString(item["type"])) {
+	case "function_call", "custom_tool_call":
+		return true
+	default:
+		return false
+	}
+}
+
+func toolCallIDFromMaps(maps ...map[string]any) string {
+	for _, item := range maps {
+		if len(item) == 0 {
+			continue
+		}
+		for _, key := range []string{"call_id", "item_id", "id"} {
+			if value := strings.TrimSpace(asString(item[key])); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func toolCallNameFromMap(item map[string]any) string {
+	if len(item) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(firstNonEmpty(asString(item["name"]), asString(item["tool_name"])))
+}
+
+func toolCallStreamKey(event StreamEvent) string {
+	if event.ToolCallID != "" {
+		return "id:" + event.ToolCallID
+	}
+	if event.ToolCallIndex != nil {
+		return fmt.Sprintf("idx:%d", *event.ToolCallIndex)
+	}
+	if event.ToolName != "" {
+		return "name:" + event.ToolName
+	}
+	return ""
+}
+
+func toolCallEventMetadata(item map[string]any, event map[string]any) map[string]any {
+	metadata := make(map[string]any, 4)
+	if itemType := strings.TrimSpace(asString(item["type"])); itemType != "" {
+		metadata["provider_item_type"] = itemType
+	}
+	if itemID := strings.TrimSpace(asString(item["id"])); itemID != "" {
+		metadata["provider_item_id"] = itemID
+	}
+	if eventType := strings.TrimSpace(asString(event["type"])); eventType != "" {
+		metadata["provider_event_type"] = eventType
+	}
+	if outputIndex, ok := asInt64(firstPresentValue(event, item, "output_index")); ok {
+		metadata["provider_output_index"] = outputIndex
+	}
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
+}
+
+func firstPresentValue(primary map[string]any, secondary map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if primary != nil {
+			if value, exists := primary[key]; exists {
+				return value
+			}
+		}
+		if secondary != nil {
+			if value, exists := secondary[key]; exists {
+				return value
+			}
+		}
+	}
+	return nil
+}
+
+func intPointerFromAny(value any) *int {
+	if number, ok := asInt64(value); ok {
+		out := int(number)
+		return &out
+	}
+	return nil
 }
 
 func streamEventImageGenerationPartialImage(event map[string]any) StreamEvent {
@@ -1378,7 +2568,21 @@ func outputItemAssistantPhase(item map[string]any) provideriface.AssistantPhase 
 }
 
 func recordOutputItemEvent(state *streamDecodeState, item map[string]any, event map[string]any) {
-	if state == nil || len(item) == 0 {
+	if state == nil {
+		return
+	}
+	recordOutputItemInto(state, item, event, &state.outputItems, &state.outputItemPos)
+}
+
+func recordDoneOutputItemEvent(state *streamDecodeState, item map[string]any, event map[string]any) {
+	if state == nil {
+		return
+	}
+	recordOutputItemInto(state, item, event, &state.outputItemsDone, &state.outputItemDonePos)
+}
+
+func recordOutputItemInto(state *streamDecodeState, item map[string]any, event map[string]any, items *[]map[string]any, positions *map[string]int) {
+	if state == nil || len(item) == 0 || items == nil || positions == nil {
 		return
 	}
 	item = cloneMapAny(item)
@@ -1388,16 +2592,16 @@ func recordOutputItemEvent(state *streamDecodeState, item map[string]any, event 
 		}
 	}
 	mergeImageGenerationResultIntoItem(state, item, event)
-	if state.outputItemPos == nil {
-		state.outputItemPos = make(map[string]int, 8)
+	if *positions == nil {
+		*positions = make(map[string]int, 8)
 	}
-	key := outputItemEventKey(item, event, len(state.outputItems))
-	if pos, ok := state.outputItemPos[key]; ok && pos >= 0 && pos < len(state.outputItems) {
-		state.outputItems[pos] = item
+	key := outputItemEventKey(item, event, len(*items))
+	if pos, ok := (*positions)[key]; ok && pos >= 0 && pos < len(*items) {
+		(*items)[pos] = item
 		return
 	}
-	state.outputItems = append(state.outputItems, item)
-	state.outputItemPos[key] = len(state.outputItems) - 1
+	*items = append(*items, item)
+	(*positions)[key] = len(*items) - 1
 }
 
 func recordImageGenerationPartialImageEvent(state *streamDecodeState, event map[string]any) {
@@ -1807,6 +3011,19 @@ func reasoningEventIsSnapshot(eventName string) bool {
 	}
 }
 
+func isReasoningSummaryEvent(eventName string) bool {
+	return strings.HasPrefix(eventName, "response.reasoning_summary_") || eventName == "response.reasoning_summary.delta"
+}
+
+func reasoningEventFinalizesPart(eventName string) bool {
+	switch eventName {
+	case "response.reasoning_summary_part.done", "response.reasoning_summary_text.done":
+		return true
+	default:
+		return false
+	}
+}
+
 func reasoningStateText(state *streamDecodeState, key string) string {
 	if state == nil || state.reasoningSummary == nil {
 		return ""
@@ -1898,28 +3115,13 @@ func extractResponseID(decoded map[string]any) string {
 	return ""
 }
 
-func extractResponseOutputItems(decoded map[string]any) []any {
-	if len(decoded) == 0 {
-		return nil
-	}
-	if response, ok := decoded["response"].(map[string]any); ok {
-		if output := cloneSliceAny(asSlice(response["output"])); len(output) > 0 {
-			return output
-		}
-	}
-	if output := cloneSliceAny(asSlice(decoded["output"])); len(output) > 0 {
-		return output
-	}
-	return nil
-}
-
 func mergeOutputItemsIntoResponse(responseObj map[string]any, outputItems []map[string]any) {
 	if responseObj == nil || len(outputItems) == 0 {
 		return
 	}
 	existingRaw := asSlice(responseObj["output"])
 	if len(existingRaw) == 0 {
-		responseObj["output"] = mapsToAnySlice(outputItems)
+		responseObj["output"] = normalizeCodexResponseOutputMapsForReplay(outputItems)
 		return
 	}
 
@@ -1932,7 +3134,7 @@ func mergeOutputItemsIntoResponse(responseObj map[string]any, outputItems []map[
 		}
 		key := outputItemMergeKey(item, i)
 		seen[key] = struct{}{}
-		merged = append(merged, cloneMapAny(item))
+		merged = append(merged, normalizeCodexResponseOutputItemForReplay(item))
 	}
 	for i, item := range outputItems {
 		key := outputItemMergeKey(item, i+len(merged))
@@ -1940,9 +3142,31 @@ func mergeOutputItemsIntoResponse(responseObj map[string]any, outputItems []map[
 			continue
 		}
 		seen[key] = struct{}{}
-		merged = append(merged, cloneMapAny(item))
+		merged = append(merged, normalizeCodexResponseOutputItemForReplay(item))
 	}
 	responseObj["output"] = mapsToAnySlice(merged)
+}
+
+func normalizeCodexResponseOutputMapsForReplay(items []map[string]any) []any {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		if len(item) == 0 {
+			continue
+		}
+		out = append(out, normalizeCodexResponseOutputItemForReplay(item))
+	}
+	return out
+}
+
+func normalizeCodexResponseOutputItemForReplay(item map[string]any) map[string]any {
+	cloned := cloneMapAny(item)
+	if strings.EqualFold(strings.TrimSpace(asString(cloned["type"])), "reasoning") {
+		normalizeCodexReasoningReplayItem(cloned)
+	}
+	return cloned
 }
 
 func mapsToAnySlice(values []map[string]any) []any {
@@ -2048,6 +3272,15 @@ func mergeImageGenerationOutputItem(existing map[string]any, final map[string]an
 }
 
 func finalizeStreamDecodeState(state *streamDecodeState) (map[string]any, error) {
+	if state == nil {
+		return nil, errors.New("codex stream state is not configured")
+	}
+	if state.decodeErr != nil {
+		return nil, state.decodeErr
+	}
+	if state.completedResponse == nil {
+		return nil, errors.New("codex response stream ended before response.completed")
+	}
 	reasoningSummary := aggregateReasoningStateText(state)
 	if state.completedResponse != nil {
 		mergeOutputItemsIntoResponse(state.completedResponse, state.outputItems)
@@ -2119,13 +3352,15 @@ func finalizeStreamDecodeState(state *streamDecodeState) (map[string]any, error)
 }
 
 func parseEventStreamReader(reader io.Reader, onEvent func(StreamEvent)) (map[string]any, error) {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8<<20)
+	scanner := bufio.NewScanner(io.LimitReader(reader, maxCodexStreamBytes+1))
+	scanner.Buffer(make([]byte, 0, 64*1024), maxCodexStreamBytes)
 
 	state := &streamDecodeState{}
 	eventName := ""
 	dataLines := make([]string, 0, 8)
 
+	totalBytes := 0
+	eventCount := 0
 	flushEvent := func() {
 		if len(dataLines) == 0 {
 			eventName = ""
@@ -2133,12 +3368,22 @@ func parseEventStreamReader(reader io.Reader, onEvent func(StreamEvent)) (map[st
 		}
 		payload := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
+		eventCount++
+		if eventCount > maxCodexStreamEvents {
+			state.decodeErr = errors.New("codex stream event limit exceeded")
+			eventName = ""
+			return
+		}
 		processResponseStreamEvent(eventName, payload, state, onEvent)
 		eventName = ""
 	}
 
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
+		totalBytes += len(line) + 1
+		if totalBytes > maxCodexStreamBytes {
+			return nil, errors.New("codex stream byte limit exceeded")
+		}
 		if strings.TrimSpace(line) == "" {
 			flushEvent()
 			continue
@@ -2278,7 +3523,7 @@ func shouldReplaceFullReasoningSummarySnapshot(current, snapshot string) bool {
 
 func normalizeReasoningSummary(summary string) string {
 	summary = strings.TrimSpace(summary)
-	if summary == "" {
+	if summary == "" || isEmptyReasoningSummaryPart(summary) {
 		return ""
 	}
 	summary = dedupeAdjacentReasoningSummaryBlocks(summary)
@@ -2433,10 +3678,6 @@ func sanitizeDiagnosticValue(value any) any {
 	return privacy.SanitizeValue(value)
 }
 
-func isSensitiveDiagnosticKey(key string) bool {
-	return false
-}
-
 func codexThinkingDebugEnabled() bool {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv("SWARMD_CODEX_THINKING_DEBUG")))
 	switch value {
@@ -2490,10 +3731,6 @@ func codexThinkingDebugEvent(event string, data map[string]any) {
 		return
 	}
 	codexThinkingDebugf("event=%s", event)
-}
-
-func appendCodexThinkingDebugLine(path string, line []byte) error {
-	return nil
 }
 
 func sortedMapKeys(value map[string]any) []string {
@@ -2719,6 +3956,8 @@ func extractTokenUsage(responseObj map[string]any, decoded map[string]any) Token
 	totalTokens, _ := intFromPath(usage, "total_tokens")
 	cacheReadTokens, _ := intFromPath(usage, "input_tokens_details", "cached_tokens")
 	cacheWriteTokens, _ := intFromPath(usage, "input_tokens_details", "cache_creation_tokens")
+	serviceTier := strings.TrimSpace(asString(usage["service_tier"]))
+	estimatedCostUSD, _ := floatFromAny(usage["estimated_cost_usd"])
 
 	usageRaw := cloneMapAny(usage)
 	out := TokenUsage{
@@ -2728,6 +3967,8 @@ func extractTokenUsage(responseObj map[string]any, decoded map[string]any) Token
 		TotalTokens:      totalTokens,
 		CacheReadTokens:  cacheReadTokens,
 		CacheWriteTokens: cacheWriteTokens,
+		ServiceTier:      serviceTier,
+		EstimatedCostUSD: estimatedCostUSD,
 		Source:           "codex_api_usage",
 		Transport:        transport,
 		ConnectedViaWS:   connectedViaWS,
@@ -2768,9 +4009,6 @@ func findUsageObject(responseObj map[string]any, decoded map[string]any) (map[st
 			return usage, "response.usage", true
 		}
 	}
-	if usage, ok := decoded["usage"].(map[string]any); ok && len(usage) > 0 {
-		return usage, "usage", true
-	}
 	return nil, "", false
 }
 
@@ -2791,6 +4029,44 @@ func intFromPath(root map[string]any, path ...string) (int64, bool) {
 		current = next
 	}
 	return asInt64(current)
+}
+
+func floatFromAny(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int8:
+		return float64(typed), true
+	case int16:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case uint:
+		return float64(typed), true
+	case uint8:
+		return float64(typed), true
+	case uint16:
+		return float64(typed), true
+	case uint32:
+		return float64(typed), true
+	case uint64:
+		return float64(typed), true
+	case json.Number:
+		if v, err := typed.Float64(); err == nil {
+			return v, true
+		}
+	case string:
+		if v, err := strconv.ParseFloat(strings.TrimSpace(typed), 64); err == nil {
+			return v, true
+		}
+	}
+	return 0, false
 }
 
 func asInt64(value any) (int64, bool) {
@@ -2940,7 +4216,7 @@ func extractReasoningSummaryFromOutput(value any) string {
 				continue
 			}
 			text := strings.TrimSpace(asString(summaryPart["text"]))
-			if text == "" {
+			if text == "" || isEmptyReasoningSummaryPart(text) {
 				continue
 			}
 			parts = append(parts, text)

@@ -58,14 +58,18 @@ type UIChatToolStreamSettingsRecord struct {
 }
 
 type UIChatSettingsRecord struct {
-	ShowHeader             bool                           `json:"show_header"`
-	ShowHeaderSet          bool                           `json:"-"`
-	ThinkingTags           bool                           `json:"thinking_tags"`
-	ThinkingTagsSet        bool                           `json:"-"`
-	DefaultNewSessionMode  string                         `json:"default_new_session_mode,omitempty"`
-	DefaultWorkspaceRoutes map[string]string              `json:"default_workspace_routes,omitempty"`
-	ToolStream             UIChatToolStreamSettingsRecord `json:"tool_stream,omitempty"`
-	UpdatedAt              int64                          `json:"updated_at"`
+	ShowHeader                      bool                           `json:"show_header"`
+	ShowHeaderSet                   bool                           `json:"-"`
+	ThinkingTags                    bool                           `json:"thinking_tags"`
+	ThinkingTagsSet                 bool                           `json:"-"`
+	ShowCompactButton               bool                           `json:"show_compact_button"`
+	DefaultNewSessionMode           string                         `json:"default_new_session_mode,omitempty"`
+	FollowupCheckpointPolicyDefault string                         `json:"followup_checkpoint_policy_default,omitempty"`
+	ReviewAutoArchiveMinutes        int                            `json:"review_auto_archive_minutes"`
+	SidebarHideInactiveHours        *int                           `json:"sidebar_hide_inactive_hours"`
+	DefaultWorkspaceRoutes          map[string]string              `json:"default_workspace_routes,omitempty"`
+	ToolStream                      UIChatToolStreamSettingsRecord `json:"tool_stream,omitempty"`
+	UpdatedAt                       int64                          `json:"updated_at"`
 }
 
 type UISwarmingSettingsRecord struct {
@@ -83,10 +87,6 @@ type UISwarmSettingsRecord struct {
 	RemoteSSHTargets []string `json:"remote_ssh_targets,omitempty"`
 }
 
-type UIUpdateSettingsRecord struct {
-	LocalContainerWarningDismissed bool `json:"local_container_warning_dismissed,omitempty"`
-}
-
 type UIToolImageSettingsRecord struct {
 	DefaultModel string `json:"default_model,omitempty"`
 }
@@ -95,14 +95,28 @@ type UIToolSettingsRecord struct {
 	Image UIToolImageSettingsRecord `json:"image,omitempty"`
 }
 
+type UICompactAgentSettingsRecord struct {
+	Provider    string `json:"provider,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Thinking    string `json:"thinking,omitempty"`
+	ServiceTier string `json:"service_tier,omitempty"`
+}
+
+type UIAgentSettingsRecord struct {
+	Compact  UICompactAgentSettingsRecord `json:"compact,omitempty"`
+	Finder   UICompactAgentSettingsRecord `json:"finder,omitempty"`
+	Coder    UICompactAgentSettingsRecord `json:"coder,omitempty"`
+	Designer UICompactAgentSettingsRecord `json:"designer,omitempty"`
+}
+
 type UISettingsRecord struct {
 	Theme     UIThemeSettingsRecord    `json:"theme,omitempty"`
 	Input     UIInputSettingsRecord    `json:"input,omitempty"`
 	Chat      UIChatSettingsRecord     `json:"chat,omitempty"`
 	Swarming  UISwarmingSettingsRecord `json:"swarming,omitempty"`
 	Swarm     UISwarmSettingsRecord    `json:"swarm,omitempty"`
-	Updates   UIUpdateSettingsRecord   `json:"updates,omitempty"`
 	Tools     UIToolSettingsRecord     `json:"tools,omitempty"`
+	Agents    UIAgentSettingsRecord    `json:"agents,omitempty"`
 	UpdatedAt int64                    `json:"updated_at"`
 }
 
@@ -112,8 +126,8 @@ type UISettingsPatch struct {
 	Chat     *UIChatSettingsRecord
 	Swarming *UISwarmingSettingsRecord
 	Swarm    *UISwarmSettingsRecord
-	Updates  *UIUpdateSettingsRecord
 	Tools    *UIToolSettingsRecord
+	Agents   *UIAgentSettingsRecord
 }
 
 type UISettingsStore struct {
@@ -174,11 +188,11 @@ func (s *UISettingsStore) UpdateForAccount(accountScopeID string, patch UISettin
 	if patch.Swarm != nil {
 		record.Swarm = *patch.Swarm
 	}
-	if patch.Updates != nil {
-		record.Updates = *patch.Updates
-	}
 	if patch.Tools != nil {
 		record.Tools = *patch.Tools
+	}
+	if patch.Agents != nil {
+		record.Agents = *patch.Agents
 	}
 	record.UpdatedAt = time.Now().UnixMilli()
 	record.Chat.UpdatedAt = record.UpdatedAt
@@ -200,11 +214,14 @@ func DefaultUISettingsRecord() UISettingsRecord {
 			ActiveID: "crimson",
 		},
 		Chat: UIChatSettingsRecord{
-			ShowHeader:            true,
-			ShowHeaderSet:         true,
-			ThinkingTags:          true,
-			ThinkingTagsSet:       true,
-			DefaultNewSessionMode: "auto",
+			ShowHeader:                      true,
+			ShowHeaderSet:                   true,
+			ThinkingTags:                    true,
+			ThinkingTagsSet:                 true,
+			ShowCompactButton:               false,
+			DefaultNewSessionMode:           "auto",
+			FollowupCheckpointPolicyDefault: "auto_start",
+			SidebarHideInactiveHours:        intPointer(12),
 			ToolStream: UIChatToolStreamSettingsRecord{
 				ShowAnchor:    true,
 				PulseFrames:   []string{"·", "•", "◦", "•"},
@@ -244,6 +261,11 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	} else {
 		record.Chat.DefaultNewSessionMode = normalizeDefaultNewSessionMode(record.Chat.DefaultNewSessionMode)
 	}
+	record.Chat.FollowupCheckpointPolicyDefault = normalizeFollowupCheckpointPolicyDefault(record.Chat.FollowupCheckpointPolicyDefault)
+	record.Chat.ReviewAutoArchiveMinutes = normalizeReviewAutoArchiveMinutes(record.Chat.ReviewAutoArchiveMinutes)
+	if record.Chat.SidebarHideInactiveHours == nil || *record.Chat.SidebarHideInactiveHours < 0 {
+		record.Chat.SidebarHideInactiveHours = intPointer(12)
+	}
 	record.Chat.DefaultWorkspaceRoutes = normalizeDefaultWorkspaceRoutes(record.Chat.DefaultWorkspaceRoutes)
 	if len(record.Chat.ToolStream.PulseFrames) == 0 {
 		record.Chat.ToolStream.PulseFrames = []string{"·", "•", "◦", "•"}
@@ -268,7 +290,37 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	}
 	record.Swarm.RemoteSSHTargets = normalizeRemoteSSHTargets(record.Swarm.RemoteSSHTargets)
 	record.Tools.Image.DefaultModel = strings.TrimSpace(record.Tools.Image.DefaultModel)
+	record.Agents.Compact.Provider = strings.ToLower(strings.TrimSpace(record.Agents.Compact.Provider))
+	record.Agents.Compact.Model = strings.TrimSpace(record.Agents.Compact.Model)
+	record.Agents.Compact.Thinking = strings.TrimSpace(record.Agents.Compact.Thinking)
+	record.Agents.Compact.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Compact.ServiceTier))
+	record.Agents.Finder.Provider = strings.ToLower(strings.TrimSpace(record.Agents.Finder.Provider))
+	record.Agents.Finder.Model = strings.TrimSpace(record.Agents.Finder.Model)
+	record.Agents.Finder.Thinking = strings.TrimSpace(record.Agents.Finder.Thinking)
+	record.Agents.Finder.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Finder.ServiceTier))
+	record.Agents.Coder.Provider = strings.ToLower(strings.TrimSpace(record.Agents.Coder.Provider))
+	record.Agents.Coder.Model = strings.TrimSpace(record.Agents.Coder.Model)
+	record.Agents.Coder.Thinking = strings.TrimSpace(record.Agents.Coder.Thinking)
+	record.Agents.Coder.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Coder.ServiceTier))
+	record.Agents.Designer.Provider = strings.ToLower(strings.TrimSpace(record.Agents.Designer.Provider))
+	record.Agents.Designer.Model = strings.TrimSpace(record.Agents.Designer.Model)
+	record.Agents.Designer.Thinking = strings.TrimSpace(record.Agents.Designer.Thinking)
+	record.Agents.Designer.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Designer.ServiceTier))
 	return record
+}
+
+func normalizeReviewAutoArchiveMinutes(value int) int {
+	if value <= 0 {
+		return 0
+	}
+	if value > 60 {
+		value = 60
+	}
+	return ((value + 4) / 5) * 5
+}
+
+func intPointer(value int) *int {
+	return &value
 }
 
 func normalizeDefaultWorkspaceRoutes(values map[string]string) map[string]string {
@@ -322,6 +374,17 @@ func normalizeDefaultNewSessionMode(value string) string {
 		return "plan"
 	default:
 		return "auto"
+	}
+}
+
+func normalizeFollowupCheckpointPolicyDefault(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "approval", "approve", "require_approval", "manual", "ask":
+		return "require_approval"
+	case "auto", "automatic", "auto_start", "append_and_start", "start":
+		return "auto_start"
+	default:
+		return "auto_start"
 	}
 }
 

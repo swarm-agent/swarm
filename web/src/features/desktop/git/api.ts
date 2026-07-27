@@ -1,5 +1,12 @@
 import { requestJson } from '../../../app/api'
-import type { GitRealtimeResponse, GitStatusResponse } from './types'
+import type { GitRealtimeResponse, GitSnapshot, GitStatusResponse } from './types'
+
+function normalizeGitSnapshot(snapshot: GitSnapshot): GitSnapshot {
+  return {
+    ...snapshot,
+    files: Array.isArray(snapshot.files) ? snapshot.files : [],
+  }
+}
 
 export interface GitCommitResponse {
   ok?: boolean
@@ -13,21 +20,35 @@ export interface GitCommitResponse {
   error?: string
 }
 
-export function gitStatusQueryKey(workspacePath: string) {
-  return ['workspace-git-status', workspacePath.trim()] as const
+export function gitStatusQueryKey(workspacePath: string, sessionId = '') {
+  return ['workspace-git-status', sessionId.trim(), workspacePath.trim()] as const
 }
 
-export async function fetchGitStatus(workspacePath: string, recentLimit = 12): Promise<GitStatusResponse> {
+export async function fetchGitStatus(workspacePath: string, recentLimit = 12, sessionId = ''): Promise<GitStatusResponse> {
   const params = new URLSearchParams()
   params.set('workspace_path', workspacePath)
+  if (sessionId.trim()) params.set('session_id', sessionId.trim())
   params.set('recent_limit', String(recentLimit))
-  return requestJson<GitStatusResponse>(`/v1/workspace/git/status?${params.toString()}`)
+  const response = await requestJson<GitStatusResponse>(`/v1/workspace/git/status?${params.toString()}`)
+  return { ...response, status: normalizeGitSnapshot(response.status) }
 }
 
-export async function startGitRealtime(workspacePath: string): Promise<GitRealtimeResponse> {
+const gitRealtimeRequests = new Map<string, Promise<GitRealtimeResponse>>()
+
+export function startGitRealtime(workspacePath: string, sessionId = '', watchToken = ''): Promise<GitRealtimeResponse> {
   const params = new URLSearchParams()
   params.set('workspace_path', workspacePath)
-  return requestJson<GitRealtimeResponse>(`/v1/workspace/git/realtime?${params.toString()}`, { method: 'POST' })
+  if (sessionId.trim()) params.set('session_id', sessionId.trim())
+  if (watchToken.trim()) params.set('watch_token', watchToken.trim())
+  const endpoint = `/v1/workspace/git/realtime?${params.toString()}`
+  const existing = gitRealtimeRequests.get(endpoint)
+  if (existing) return existing
+
+  const request = requestJson<GitRealtimeResponse>(endpoint, { method: 'POST' })
+    .then((response) => ({ ...response, status: normalizeGitSnapshot(response.status) }))
+    .finally(() => { gitRealtimeRequests.delete(endpoint) })
+  gitRealtimeRequests.set(endpoint, request)
+  return request
 }
 
 export async function commitWorkspaceChanges(input: {
@@ -36,8 +57,13 @@ export async function commitWorkspaceChanges(input: {
   message: string
   all?: boolean
   endpoint?: string
+  sessionId?: string
 }): Promise<GitCommitResponse> {
-  return requestJson<GitCommitResponse>(input.endpoint ?? '/v1/workspace/git/commit', {
+  const endpoint = input.endpoint ?? '/v1/workspace/git/commit'
+  const params = new URLSearchParams()
+  if (input.sessionId?.trim()) params.set('session_id', input.sessionId.trim())
+  const requestEndpoint = params.size > 0 ? `${endpoint}?${params.toString()}` : endpoint
+  return requestJson<GitCommitResponse>(requestEndpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

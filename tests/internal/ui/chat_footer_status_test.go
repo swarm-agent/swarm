@@ -352,7 +352,7 @@ func TestChatFooterContextUsageLabel_UsesUsageSummaryWithCacheAdjustment(t *test
 	}
 }
 
-func TestChatFooterRightLine_ShowsWorktreeThenContextUsage(t *testing.T) {
+func TestChatFooterRightLine_ShowsOnlyContextUsage(t *testing.T) {
 	p := NewChatPage(ChatPageOptions{
 		SessionID:      "session-test",
 		ShowHeader:     true,
@@ -372,8 +372,8 @@ func TestChatFooterRightLine_ShowsWorktreeThenContextUsage(t *testing.T) {
 		RemainingTokens: 800,
 	})
 
-	if got := p.footerRightLine(1000); got != "wt on  80% left" {
-		t.Fatalf("footerRightLine = %q, want worktree before compact usage label", got)
+	if got := p.footerRightLine(1000); got != "80% left" {
+		t.Fatalf("footerRightLine = %q, want compact usage without obsolete worktree mode", got)
 	}
 }
 
@@ -401,7 +401,7 @@ func TestChatFooterRightLine_HidesWorktreeIndicatorWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestChatFooterBarRendersWorktreeIndicatorOnRight(t *testing.T) {
+func TestChatFooterBarOmitsObsoleteWorktreeIndicator(t *testing.T) {
 	p := NewChatPage(ChatPageOptions{
 		SessionID:      "session-test",
 		ShowHeader:     true,
@@ -434,8 +434,8 @@ func TestChatFooterBarRendersWorktreeIndicatorOnRight(t *testing.T) {
 	p.Draw(screen)
 
 	text := dumpScreenText(screen, 120, 24)
-	if !strings.Contains(text, "wt on  80% left") {
-		t.Fatalf("expected chat footer to render compact worktree/context indicator on the right, got:\n%s", text)
+	if strings.Contains(text, "wt on") || !strings.Contains(text, "80% left") {
+		t.Fatalf("expected chat footer to render usage without obsolete worktree mode, got:\n%s", text)
 	}
 }
 

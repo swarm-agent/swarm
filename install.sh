@@ -7,11 +7,12 @@ INSTALL_VERSION=""
 ARTIFACT_ROOT=""
 ASSUME_YES=0
 SERVICE_MODE=""
+VERIFY_ONLY=0
 
 usage() {
   cat <<'EOF'
 Usage:
-  sh install.sh [--yes] [--service|--no-service] [--version <tag>] [--artifact-root <path>]
+  sh install.sh [--yes] [--service|--no-service] [--verify-only] [--version <tag>] [--artifact-root <path>]
 
 Options:
   --yes, -y              Run without the confirmation prompt.
@@ -19,6 +20,7 @@ Options:
   --no-service           Install files only; do not install/start a service.
   --version <tag>        Install a specific release tag.
   --artifact-root <path> Install from an extracted release artifact.
+  --verify-only          Validate an artifact root without changing the host.
 
 EOF
 }
@@ -34,6 +36,12 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --yes|-y)
+      ASSUME_YES=1
+      shift
+      ;;
+    --verify-only)
+      VERIFY_ONLY=1
+      SERVICE_MODE="none"
       ASSUME_YES=1
       shift
       ;;
@@ -124,19 +132,65 @@ print_ok() {
 }
 
 current_owner_uid() {
-  if [ -n "${SUDO_UID:-}" ]; then
-    printf '%s\n' "$SUDO_UID"
-  else
-    id -u
+  uid="${SUDO_UID:-$(id -u)}"
+  case "$uid" in ''|*[!0-9]*|0) echo "Swarm requires a trusted non-root service owner; refusing uid=$uid" >&2; return 1 ;; esac
+  if command -v getent >/dev/null 2>&1 && ! getent passwd "$uid" >/dev/null; then
+    echo "unknown service uid: $uid" >&2
+    return 1
   fi
+  printf '%s\n' "$uid"
 }
 
 current_owner_gid() {
-  if [ -n "${SUDO_GID:-}" ]; then
-    printf '%s\n' "$SUDO_GID"
-  else
-    id -g
+  gid="${SUDO_GID:-$(id -g)}"
+  case "$gid" in ''|*[!0-9]*|0) echo "Swarm requires a trusted non-root service group; refusing gid=$gid" >&2; return 1 ;; esac
+  if command -v getent >/dev/null 2>&1 && ! getent group "$gid" >/dev/null; then
+    echo "unknown service gid: $gid" >&2
+    return 1
   fi
+  printf '%s\n' "$gid"
+}
+
+require_safe_target() {
+  kind="$1"
+  path="$2"
+  if [ -L "$path" ]; then
+    if [ "$kind" != "directory" ] || ! is_canonical_runtime_directory_symlink "$path"; then
+      echo "refusing symlink $kind target: $path" >&2
+      return 1
+    fi
+    return 0
+  fi
+  if [ -e "$path" ]; then
+    case "$kind" in
+      directory) [ -d "$path" ] ;;
+      file) [ -f "$path" ] ;;
+      *) return 1 ;;
+    esac || { echo "refusing non-$kind target: $path" >&2; return 1; }
+  fi
+}
+
+is_canonical_runtime_directory_symlink() {
+  path="$1"
+  install_root="/usr/local/share/swarm"
+  current_link="$install_root/current"
+  versions_dir="$install_root/versions"
+  leaf="${path##*/}"
+  case "$leaf" in
+    bin|libexec|lib|share) ;;
+    *) return 1 ;;
+  esac
+  [ "$path" = "$install_root/$leaf" ] || return 1
+  [ -d "$install_root" ] && [ ! -L "$install_root" ] || return 1
+  [ -d "$versions_dir" ] && [ ! -L "$versions_dir" ] || return 1
+  [ -L "$current_link" ] || return 1
+  leaf_target="$(readlink "$path")" || return 1
+  [ "$leaf_target" = "$current_link/$leaf" ] || return 1
+  current_target="$(readlink "$current_link")" || return 1
+  version="${current_target##*/}"
+  [ -n "$version" ] && [ "$current_target" = "$versions_dir/$version" ] || return 1
+  [ -d "$current_target" ] && [ ! -L "$current_target" ] || return 1
+  [ -d "$current_target/$leaf" ] && [ ! -L "$current_target/$leaf" ] && [ -d "$path" ]
 }
 
 run_privileged() {
@@ -146,7 +200,7 @@ run_privileged() {
   fi
   if ! command -v sudo >/dev/null 2>&1; then
     echo "Swarm installs to /usr/local and stores daemon state under /etc, /var, and /run." >&2
-    echo "Install sudo or pre-create the Swarm-owned system directories before running install.sh." >&2
+    echo "Install sudo before running install.sh, or pre-create the Swarm-owned system directories." >&2
     return 1
   fi
   sudo "$@"
@@ -161,6 +215,14 @@ dir_writable() {
 provision_owned_dir() {
   mode="$1"
   path="$2"
+  require_safe_target directory "$path" || return 1
+  if [ -d "$path" ]; then
+    if dir_writable "$path"; then
+      return 0
+    fi
+    echo "existing directory is not writable; refusing to change its ownership or mode: $path" >&2
+    return 1
+  fi
   if mkdir -p "$path" 2>/dev/null && chmod "$mode" "$path" 2>/dev/null && dir_writable "$path"; then
     return 0
   fi
@@ -170,6 +232,7 @@ provision_owned_dir() {
 provision_system_dir() {
   mode="$1"
   path="$2"
+  require_safe_target directory "$path" || return 1
   if mkdir -p "$path" 2>/dev/null && [ -d "$path" ]; then
     return 0
   fi
@@ -177,9 +240,10 @@ provision_system_dir() {
 }
 
 provision_tmpfiles_config() {
+  require_safe_target file "/etc/tmpfiles.d/swarmd.conf" || return 1
   uid="$(current_owner_uid)"
   gid="$(current_owner_gid)"
-  tmp_path="$(mktemp "${TMPDIR:-/tmp}/swarmd-tmpfiles.XXXXXX")"
+  tmp_path="$(mktemp "${TMPDIR:?TMPDIR must be set}/swarmd-tmpfiles.XXXXXX")"
   cat >"$tmp_path" <<EOF
 d /run/swarmd 0700 ${uid} ${gid} -
 d /run/swarmd/dev 0700 ${uid} ${gid} -
@@ -251,10 +315,10 @@ choose_service_mode() {
   fi
   answer="$PROMPT_ANSWER"
   case "$answer" in
-    1|systemd|service|s|S|"")
+    1|systemd|service|s|S)
       SERVICE_MODE="systemd"
       ;;
-    2|none|no-service|no|n|N)
+    2|none|no-service|no|n|N|"")
       SERVICE_MODE="none"
       ;;
     3|cancel|c|C|q|Q)
@@ -291,8 +355,8 @@ confirm_install_plan() {
 
 require_systemd() {
   if ! command -v systemctl >/dev/null 2>&1; then
-    echo "systemctl not found; Swarm installs as an always-on systemd service." >&2
-    echo "Install systemd/systemctl support or install manually on a supported Linux host." >&2
+    echo "systemctl not found; explicit --service installation requires systemd." >&2
+    echo "Install systemd/systemctl support or rerun with --no-service." >&2
     return 1
   fi
   if [ ! -d /run/systemd/system ]; then
@@ -311,7 +375,7 @@ enable_start_service() {
   fi
   if ! run_privileged systemctl enable --now swarm.service; then
     echo "failed to enable/start swarm.service" >&2
-    echo "Remediation: inspect with 'systemctl status swarm.service' and retry with 'sudo systemctl enable --now swarm.service'." >&2
+    echo "Remediation: inspect with 'systemctl status swarm.service' and rerun install.sh after fixing the reported systemd error." >&2
     return 1
   fi
   print_ok
@@ -467,11 +531,11 @@ print_path_refresh_instructions() {
 
 print_no_service_commands() {
   printf '\nNo service manager was configured. To run Swarm, configure your supervisor to execute:\n'
-  printf '  /usr/local/bin/swarm server run\n'
+  printf '  /usr/local/bin/swarm main server run\n'
   printf '\nOr install/start the systemd service later with:\n'
   printf '  swarm install --service\n'
   printf '\nIf PATH still fails, run it directly:\n'
-  printf '  /usr/local/bin/swarm server run\n'
+  printf '  /usr/local/bin/swarm main server run\n'
 }
 
 print_service_commands() {
@@ -535,6 +599,7 @@ need_cmd curl
 need_cmd tar
 need_cmd sed
 need_cmd grep
+need_cmd awk
 need_cmd mktemp
 need_cmd id
 need_cmd install
@@ -547,6 +612,10 @@ fi
 if [ -n "$ARTIFACT_ROOT" ]; then
   script_dir="$ARTIFACT_ROOT"
 fi
+if [ "$VERIFY_ONLY" -eq 1 ] && [ -z "$ARTIFACT_ROOT" ]; then
+  echo "--verify-only requires --artifact-root" >&2
+  exit 2
+fi
 
 platform_dir="$(printf '%s/%s\n' "$script_dir" "linux-amd64")"
 bundle_installer="$(printf '%s/%s\n' "$platform_dir" "root")/swarmsetup"
@@ -554,6 +623,14 @@ bundle_index="$(printf '%s/%s\n' "$script_dir" "web")/index.html"
 if [ -n "$script_dir" ] && [ -x "$bundle_installer" ] && [ -f "$bundle_index" ]; then
   validate_artifact_root "$script_dir"
   version="$(read_build_info_version "$script_dir" 2>/dev/null || true)"
+  if [ "$VERIFY_ONLY" -eq 1 ]; then
+    if [ -z "$version" ]; then
+      echo "artifact root build-info.txt is missing a version" >&2
+      exit 1
+    fi
+    echo "verified artifact root: $script_dir ($version)"
+    exit 0
+  fi
   print_install_plan "$version" "artifact root: $script_dir"
   confirm_install_plan
   if [ "$SERVICE_MODE" = "systemd" ]; then
@@ -627,8 +704,33 @@ if [ "$SERVICE_MODE" = "systemd" ]; then
   require_systemd
 fi
 print_installing "$release_version"
-printf 'downloading release... '
+checksum_name="${asset_name}.sha256"
+checksum_url="${asset_url}.sha256"
+checksum_path="$tmp_dir/$checksum_name"
+need_cmd sha256sum
+printf 'downloading release and checksum... '
 curl -fsSL "$asset_url" -o "$archive_path"
+curl -fsSL "$checksum_url" -o "$checksum_path"
+print_ok
+printf 'verifying release checksum... '
+checksum_line="$(awk -v name="$asset_name" '
+  NF >= 2 {
+    file = $NF
+    sub(/^\*/, "", file)
+    if (length($1) == 64 && $1 ~ /^[[:xdigit:]]+$/ && file == name) {
+      print $1 "  " name
+      exit
+    }
+  }
+' "$checksum_path")"
+if [ -z "$checksum_line" ]; then
+  echo "checksum asset does not contain an exact entry for $asset_name" >&2
+  exit 1
+fi
+(
+  cd "$tmp_dir"
+  printf '%s\n' "$checksum_line" | sha256sum -c -
+)
 print_ok
 
 mkdir -p "$extract_dir"

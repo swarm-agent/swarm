@@ -6,6 +6,54 @@ import (
 	"testing"
 )
 
+func TestCreateSessionRejectsCaseAliasingID(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "sessions.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	sessions := NewSessionStore(store)
+	if err := sessions.CreateSession(SessionSnapshot{ID: "case-session", Title: "original"}); err != nil {
+		t.Fatalf("create lowercase session: %v", err)
+	}
+	if err := sessions.CreateSession(SessionSnapshot{ID: "CASE-session", Title: "alias"}); err == nil {
+		t.Fatal("expected uppercase session id to be rejected")
+	}
+	loaded, ok, err := sessions.GetSession("case-session")
+	if err != nil || !ok {
+		t.Fatalf("load lowercase session ok=%v err=%v", ok, err)
+	}
+	if loaded.ID != "case-session" || loaded.Title != "original" {
+		t.Fatalf("lowercase authority was overwritten by case alias: %+v", loaded)
+	}
+}
+
+func TestApplyV3SessionMutationRejectsCaseAliasingID(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "sessions.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	sessions := NewSessionStore(store)
+	_, err = sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:       "CASE-session",
+		UserID:          "user-1",
+		AccountScopeID:  "account-1",
+		ClientRequestID: "create-case-alias",
+		PayloadHash:     "case-alias-payload",
+		Kind:            V3SessionMutationCreateSession,
+		Session:         &SessionSnapshot{ID: "CASE-session", Title: "alias"},
+	})
+	if err == nil {
+		t.Fatal("expected uppercase V3 session id to be rejected")
+	}
+	if _, ok, getErr := sessions.GetSession("case-session"); getErr != nil || ok {
+		t.Fatalf("rejected case alias persisted session ok=%v err=%v", ok, getErr)
+	}
+}
+
 func TestListTopSessionsByWorkspaceLimitCountsParentSessionsOnly(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "sessions.pebble"))
 	if err != nil {
@@ -114,7 +162,7 @@ func TestListTopSessionsByWorkspaceExcludesChildrenOfUnselectedParents(t *testin
 		CreatedAt:     200,
 		Metadata: map[string]any{
 			"parent_session_id":  "parent-00",
-			"requested_subagent": "explorer",
+			"requested_subagent": "finder",
 		},
 	}); err != nil {
 		t.Fatalf("create selected parent child: %v", err)
@@ -128,7 +176,7 @@ func TestListTopSessionsByWorkspaceExcludesChildrenOfUnselectedParents(t *testin
 		CreatedAt:     300,
 		Metadata: map[string]any{
 			"parent_session_id":  "parent-02",
-			"requested_subagent": "explorer",
+			"requested_subagent": "finder",
 		},
 	}); err != nil {
 		t.Fatalf("create unselected parent child: %v", err)

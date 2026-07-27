@@ -14,11 +14,16 @@ type AttachAuthRecord struct {
 }
 
 type ClientAuthStore struct {
-	store *Store
+	store       *Store
+	secretStore *Store
 }
 
 func NewClientAuthStore(store *Store) *ClientAuthStore {
-	return &ClientAuthStore{store: store}
+	return NewClientAuthStoreWithSecretStore(store, store)
+}
+
+func NewClientAuthStoreWithSecretStore(store, secretStore *Store) *ClientAuthStore {
+	return &ClientAuthStore{store: store, secretStore: secretStore}
 }
 
 func (s *ClientAuthStore) EnsureAttachToken() (AttachAuthRecord, error) {
@@ -46,7 +51,7 @@ func (s *ClientAuthStore) RotateAttachToken(createdAt int64) (AttachAuthRecord, 
 		CreatedAt: createdAt,
 		UpdatedAt: now,
 	}
-	if err := s.store.PutJSON(KeyAuthAttachDefault, record); err != nil {
+	if err := s.secretStore.PutJSON(KeyAuthAttachDefault, record); err != nil {
 		return AttachAuthRecord{}, err
 	}
 	return record, nil
@@ -54,12 +59,30 @@ func (s *ClientAuthStore) RotateAttachToken(createdAt int64) (AttachAuthRecord, 
 
 func (s *ClientAuthStore) GetAttachAuth() (AttachAuthRecord, bool, error) {
 	var record AttachAuthRecord
-	ok, err := s.store.GetJSON(KeyAuthAttachDefault, &record)
+	ok, err := s.secretStore.GetJSON(KeyAuthAttachDefault, &record)
 	if err != nil {
 		return AttachAuthRecord{}, false, err
 	}
-	if !ok {
+	if ok {
+		if s.store != nil && s.store != s.secretStore {
+			if err := s.store.Delete(KeyAuthAttachDefault); err != nil {
+				return AttachAuthRecord{}, false, fmt.Errorf("remove migrated attach token: %w", err)
+			}
+		}
+		return record, true, nil
+	}
+	if s.store == nil || s.store == s.secretStore {
 		return AttachAuthRecord{}, false, nil
+	}
+	ok, err = s.store.GetJSON(KeyAuthAttachDefault, &record)
+	if err != nil || !ok {
+		return AttachAuthRecord{}, false, err
+	}
+	if err := s.secretStore.PutJSON(KeyAuthAttachDefault, record); err != nil {
+		return AttachAuthRecord{}, false, fmt.Errorf("migrate attach token to secret store: %w", err)
+	}
+	if err := s.store.Delete(KeyAuthAttachDefault); err != nil {
+		return AttachAuthRecord{}, false, fmt.Errorf("remove migrated attach token: %w", err)
 	}
 	return record, true, nil
 }

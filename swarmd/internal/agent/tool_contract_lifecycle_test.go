@@ -11,10 +11,9 @@ func TestEnsureDefaultsBackfillsMissingBuiltInToolContractsOnly(t *testing.T) {
 	svc, agents := newTestService(t)
 	legacyBuiltIns := []pebblestore.AgentProfile{
 		{Name: "swarm", Mode: ModePrimary, RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), Prompt: "custom swarm", Enabled: true},
-		{Name: "explorer", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead, Prompt: "custom explorer", Enabled: false},
+		{Name: "finder", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead, Prompt: "custom finder", Enabled: false},
 		{Name: "memory", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite, Prompt: defaultMemoryPrompt(), Enabled: true},
 		{Name: "parallel", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite, Prompt: "custom parallel", Enabled: true},
-		{Name: "clone", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite, Prompt: "custom clone", Enabled: true},
 		{Name: "custom", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead, Prompt: "custom agent", Enabled: true},
 	}
 	for _, profile := range legacyBuiltIns {
@@ -29,10 +28,9 @@ func TestEnsureDefaultsBackfillsMissingBuiltInToolContractsOnly(t *testing.T) {
 
 	wantPresets := map[string]string{
 		"swarm":    "custom",
-		"explorer": "read_only",
+		"finder":   "read_only",
 		"memory":   "background_commit",
 		"parallel": "read_write",
-		"clone":    "read_write",
 	}
 	for name, wantPreset := range wantPresets {
 		profile, ok, err := agents.GetProfile(name)
@@ -52,6 +50,54 @@ func TestEnsureDefaultsBackfillsMissingBuiltInToolContractsOnly(t *testing.T) {
 	}
 	if custom.ToolContract != nil {
 		t.Fatalf("custom tool_contract = %+v, want nil", custom.ToolContract)
+	}
+}
+
+func TestEnsureDefaultsAddsManageSessionsToSwarmAndPreservesExplicitOptOut(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		enabled *bool
+		want    bool
+	}{
+		{name: "missing", want: true},
+		{name: "disabled", enabled: pebblestore.BoolPtr(false), want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, agents := newTestService(t)
+			tools := map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}
+			if tc.enabled != nil {
+				tools["manage_sessions"] = pebblestore.AgentToolConfig{Enabled: tc.enabled}
+			}
+			if err := agents.PutProfile(pebblestore.AgentProfile{Name: "swarm", Mode: ModePrimary, RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: tools}, Enabled: true}); err != nil {
+				t.Fatalf("put swarm: %v", err)
+			}
+			if err := svc.EnsureDefaults(); err != nil {
+				t.Fatalf("EnsureDefaults() error = %v", err)
+			}
+			profile, ok, err := agents.GetProfile("swarm")
+			if err != nil || !ok {
+				t.Fatalf("GetProfile(swarm) ok=%v err=%v", ok, err)
+			}
+			cfg, ok := profile.ToolContract.Tools["manage_sessions"]
+			if !ok || cfg.Enabled == nil || *cfg.Enabled != tc.want {
+				t.Fatalf("manage_sessions = %+v, want enabled=%v", cfg, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuiltInManageSessionsDefaultIsSwarmOnly(t *testing.T) {
+	if cfg := defaultSwarmToolContract().Tools["manage_sessions"]; cfg.Enabled == nil || !*cfg.Enabled {
+		t.Fatalf("swarm manage_sessions = %+v, want enabled", cfg)
+	}
+	for name, contract := range map[string]*pebblestore.AgentToolContract{
+		"finder":     FinderAgentToolContract(),
+		"memory":     defaultMemoryToolContract(),
+		"read_write": defaultReadWriteSubagentToolContract(),
+	} {
+		if cfg, ok := contract.Tools["manage_sessions"]; ok && cfg.Enabled != nil && *cfg.Enabled {
+			t.Fatalf("%s manage_sessions unexpectedly enabled", name)
+		}
 	}
 }
 

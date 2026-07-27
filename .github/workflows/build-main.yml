@@ -7,26 +7,32 @@ on:
   pull_request:
     branches:
       - main
-      - dev
   workflow_dispatch:
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 concurrency:
-  group: build-main-${{ github.ref }}
-  cancel-in-progress: true
+  group: build-main-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build-release:
-    if: ${{ (github.event_name == 'pull_request' && github.head_ref == 'dev') || github.actor == 'swarm-agent' }}
+  build-candidate:
+    if: ${{ (github.event_name == 'pull_request' && github.head_ref == 'dev' && github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
 
@@ -34,12 +40,12 @@ jobs:
         run: ./scripts/check-secrets.sh
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
 
@@ -49,99 +55,191 @@ jobs:
           corepack enable
           corepack pnpm --version
 
-      - name: Resolve build version
+      - name: Resolve candidate version
         id: version
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            short_sha="${GITHUB_SHA::12}"
-            version="pr-${{ github.event.pull_request.number }}-${short_sha}"
-            prerelease="true"
-          else
-            version="$(./scripts/resolve-release-version.sh)"
-            prerelease="false"
-          fi
+          short_sha="${GITHUB_SHA::12}"
+          case "${EVENT_NAME}" in
+            pull_request)
+              version="pr-${PR_NUMBER}-${short_sha}"
+              ;;
+            push)
+              version="$(./scripts/resolve-release-version.sh)"
+              ;;
+            workflow_dispatch)
+              version="dispatch-${short_sha}"
+              ;;
+            *)
+              echo "unsupported event: ${EVENT_NAME}" >&2
+              exit 1
+              ;;
+          esac
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
-          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
 
-      - name: Create release tag when missing
-        if: github.event_name != 'pull_request'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git describe --tags --exact-match >/dev/null 2>&1; then
-            echo "exact tag already present on HEAD"
-            exit 0
-          fi
-          version="${{ steps.version.outputs.version }}"
-          if git rev-parse "${version}" >/dev/null 2>&1; then
-            echo "release tag already exists: ${version}" >&2
-            exit 1
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${version}" -m "Release ${version}"
-          git push origin "refs/tags/${version}"
-
-      - name: Build release bundle
+      - name: Build release candidate
         run: ./scripts/build-main-dist.sh --output-dir dist --version "${{ steps.version.outputs.version }}"
 
-      - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Smoke release archive and artifact-root install
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: ./scripts/smoke-release-archive.sh "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz" "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256" --evidence "dist/smoke-evidence.txt"
 
-      - name: Build and inspect container image artifact
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.2
+
+      - name: Sign final Linux archive with keyless Sigstore
         shell: bash
+        env:
+          ARCHIVE: dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
+        run: cosign sign-blob --yes --bundle "${ARCHIVE}.sigstore.json" "${ARCHIVE}"
+
+      - name: Attest final Linux archive provenance
+        id: provenance
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-checksums: dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256
+
+      - name: Preserve and independently verify release evidence
+        shell: bash
+        env:
+          ARCHIVE: dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+          EXPECTED_WORKFLOW_IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
+          EXPECTED_WORKFLOW_REF: ${{ github.workflow_ref }}
+          EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
-          image_ref="localhost/swarm:${{ steps.version.outputs.version }}"
-          base_ref="localhost/swarm-base:ubuntu26.04-tailscale-stable-v1"
-          push_args=()
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
-            image_ref="ghcr.io/${{ github.repository_owner }}/swarm:${{ steps.version.outputs.version }}"
-            base_ref="ghcr.io/${{ github.repository_owner }}/swarm-base:ubuntu26.04-tailscale-stable-v1"
-            push_args+=(--push)
-          fi
-          ./scripts/build-container-artifact.sh \
-            --dist-dir dist \
-            --output-dir dist/container \
-            --runtime docker \
-            --base-image-name "${base_ref}" \
-            --image-name "${image_ref}" \
-            --source-repository "https://github.com/${{ github.repository }}" \
-            --source-revision "${{ github.sha }}" \
-            --github-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            "${push_args[@]}"
+          cp -- "${PROVENANCE_BUNDLE}" "${ARCHIVE}.provenance.sigstore.json"
+          ./scripts/verify-release-evidence.sh \
+            "${ARCHIVE}" \
+            "${ARCHIVE}.sha256" \
+            "${ARCHIVE}.sigstore.json" \
+            "${ARCHIVE}.provenance.sigstore.json" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --source-sha "${GITHUB_SHA}" \
+            --source-ref "${GITHUB_REF}" \
+            --workflow-ref "${EXPECTED_WORKFLOW_REF}" \
+            --workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
+            --workflow-identity "${EXPECTED_WORKFLOW_IDENTITY}" \
+            --workflow-name "${GITHUB_WORKFLOW}" \
+            --event-name "${GITHUB_EVENT_NAME}"
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v5
+      - name: Upload candidate artifacts
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: main-build-${{ steps.version.outputs.version }}
+          name: release-candidate-${{ steps.version.outputs.version }}
           path: |
-            dist/linux-amd64
-            dist/web
-            dist/build-info.txt
             dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
-            dist/container/swarm-container-image.tar
-            dist/container/container-image-info.txt
+            dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256
+            dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sigstore.json
+            dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.provenance.sigstore.json
+            dist/build-info.txt
+            dist/smoke-evidence.txt
           if-no-files-found: error
+          retention-days: 14
 
-      - name: Publish GitHub release
-        if: github.event_name != 'pull_request'
-        uses: softprops/action-gh-release@v2
+  publish-stable-release:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: build-candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: stable-release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out immutable release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          tag_name: ${{ steps.version.outputs.version }}
-          target_commitish: ${{ github.sha }}
-          name: ${{ steps.version.outputs.version }}
-          prerelease: ${{ steps.version.outputs.prerelease }}
-          generate_release_notes: true
-          files: |
-            dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
-            dist/build-info.txt
-            dist/container/swarm-container-image.tar
-            dist/container/container-image-info.txt
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Download this run's verified candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate-${{ needs.build-candidate.outputs.version }}
+          path: release-evidence
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.2
+
+      - name: Reverify and publish the exact stable evidence set
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build-candidate.outputs.version }}
+          EXPECTED_WORKFLOW_IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
+          EXPECTED_WORKFLOW_REF: ${{ github.workflow_ref }}
+          EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "refusing non-stable release version: ${VERSION}" >&2
+            exit 1
+          }
+
+          archive="release-evidence/swarm-${VERSION}-linux-amd64.tar.gz"
+          checksum="${archive}.sha256"
+          signature="${archive}.sigstore.json"
+          provenance="${archive}.provenance.sigstore.json"
+          build_info="release-evidence/build-info.txt"
+          smoke_evidence="release-evidence/smoke-evidence.txt"
+
+          for required in "${archive}" "${checksum}" "${signature}" "${provenance}" "${build_info}" "${smoke_evidence}"; do
+            [[ -f "${required}" ]] || {
+              echo "required release asset missing: ${required}" >&2
+              exit 1
+            }
+          done
+          [[ "$(awk -F= '$1 == "version" { print $2 }' "${build_info}")" == "${VERSION}" ]] || {
+            echo "build metadata version does not match release version" >&2
+            exit 1
+          }
+          [[ "$(awk -F= '$1 == "commit" { print $2 }' "${build_info}")" == "${GITHUB_SHA}" ]] || {
+            echo "build metadata commit does not match immutable release source" >&2
+            exit 1
+          }
+
+          ./scripts/verify-release-evidence.sh \
+            "${archive}" \
+            "${checksum}" \
+            "${signature}" \
+            "${provenance}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --source-sha "${GITHUB_SHA}" \
+            --source-ref "${GITHUB_REF}" \
+            --workflow-ref "${EXPECTED_WORKFLOW_REF}" \
+            --workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
+            --workflow-identity "${EXPECTED_WORKFLOW_IDENTITY}" \
+            --workflow-name "${GITHUB_WORKFLOW}" \
+            --event-name "${GITHUB_EVENT_NAME}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "release tag already exists: ${VERSION}" >&2
+            exit 1
+          fi
+          if gh release view "${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "GitHub Release already exists: ${VERSION}" >&2
+            exit 1
+          fi
+
+          gh release create "${VERSION}" \
+            "${archive}" \
+            "${checksum}" \
+            "${signature}" \
+            "${provenance}" \
+            "${build_info}" \
+            "${smoke_evidence}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "Swarm ${VERSION}" \
+            --notes "Protected stable release for ${GITHUB_SHA}. The attached archive, checksum, Sigstore signature bundle, provenance bundle, build metadata, and smoke evidence were built once and independently verified in this workflow run."

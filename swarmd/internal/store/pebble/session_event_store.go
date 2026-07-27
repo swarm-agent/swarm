@@ -6,22 +6,30 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/pebble"
 )
 
 const (
-	V3SessionMutationCreateSession    = "session.create"
-	V3SessionMutationAppendMessage    = "message.append"
-	V3SessionMutationUpsertLifecycle  = "lifecycle.upsert"
-	V3SessionMutationRecordRunIntent  = "run_intent.record"
-	V3SessionMutationRecordDiagnostic = "diagnostic.record"
-	V3SessionMutationUpdateMode       = "session.mode.update"
-	V3SessionMutationUpdatePreference = "session.preference.update"
-	V3SessionMutationUpdateMetadata   = "session.metadata.update"
-	V3SessionMutationUpdateTitle      = "session.title.update"
+	V3SessionMutationCreateSession      = "session.create"
+	V3SessionMutationAppendMessage      = "message.append"
+	V3SessionMutationUpsertLifecycle    = "lifecycle.upsert"
+	V3SessionMutationRecordRunIntent    = "run_intent.record"
+	V3SessionMutationRecordDiagnostic   = "diagnostic.record"
+	V3SessionMutationRecordUsage        = "usage.record"
+	V3SessionMutationUpdateMode         = "session.mode.update"
+	V3SessionMutationUpdatePreference   = "session.preference.update"
+	V3SessionMutationUpdateMetadata     = "session.metadata.update"
+	V3SessionMutationUpdateSettings     = "session.settings.update"
+	V3SessionMutationUpdateModelProfile = "session.model_profile.update"
+	V3SessionMutationUpdateTitle        = "session.title.update"
+	V3SessionMutationSavePlan           = "plan.save"
+	V3SessionMutationAcceptPlan         = "plan.accept"
+	V3SessionMutationDeleteSession      = "session.delete"
+	V3SessionMutationArchiveSession     = "session.archive"
+	V3SessionMutationReactivateSession  = "session.reactivate"
 
 	V3SessionMutationResponseVersion = "v3.session_mutation.result.v1"
 	V3SessionMutationStatusCompleted = "completed"
@@ -35,55 +43,74 @@ const (
 	V3RunIntentExpired         = "expired"
 	V3RunIntentInterrupted     = "interrupted"
 	V3RunIntentDispatchBlocked = "dispatch_blocked"
+
+	v3RunStateIndexMigrationKey = "meta/migrations/v3-run-state-index-v1"
 )
 
-var (
-	ErrV3IdempotencyConflict = errors.New("v3 session idempotency conflict")
-	v3SessionMutationMu      sync.Mutex
-)
+var ErrV3IdempotencyConflict = errors.New("v3 session idempotency conflict")
+
+// V3PlanSaveMutation carries legacy-compatible plan snapshot state into the
+// canonical V3 mutation batch. Plan, revision, active-pointer, event,
+// projection, idempotency, and realtime outbox records commit atomically.
+type V3PlanSaveMutation struct {
+	Plan                  SessionPlanSnapshot  `json:"plan"`
+	ArchivedRevision      *SessionPlanSnapshot `json:"archived_revision,omitempty"`
+	Activate              bool                 `json:"activate,omitempty"`
+	ExpectedParentVersion int                  `json:"expected_parent_version,omitempty"`
+}
 
 type V3SessionMutationInput struct {
-	SessionID       string                    `json:"session_id"`
-	UserID          string                    `json:"user_id,omitempty"`
-	AccountScopeID  string                    `json:"account_scope_id,omitempty"`
-	ClientRequestID string                    `json:"client_request_id,omitempty"`
-	IdempotencyKey  string                    `json:"idempotency_key,omitempty"`
-	PayloadHash     string                    `json:"payload_hash,omitempty"`
-	RequestHash     string                    `json:"request_hash,omitempty"`
-	Kind            string                    `json:"kind"`
-	EventID         string                    `json:"event_id,omitempty"`
-	EventType       string                    `json:"event_type,omitempty"`
-	EventPayload    json.RawMessage           `json:"event_payload,omitempty"`
-	CausationID     string                    `json:"causation_id,omitempty"`
-	CorrelationID   string                    `json:"correlation_id,omitempty"`
-	Session         *SessionSnapshot          `json:"session,omitempty"`
-	Message         *MessageSnapshot          `json:"message,omitempty"`
-	Lifecycle       *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
-	RunIntent       *V3SessionRunIntent       `json:"run_intent,omitempty"`
-	NowUnixMs       int64                     `json:"now_unix_ms,omitempty"`
+	SessionID            string                    `json:"session_id"`
+	UserID               string                    `json:"user_id,omitempty"`
+	AccountScopeID       string                    `json:"account_scope_id,omitempty"`
+	ClientRequestID      string                    `json:"client_request_id,omitempty"`
+	IdempotencyKey       string                    `json:"idempotency_key,omitempty"`
+	PayloadHash          string                    `json:"payload_hash,omitempty"`
+	RequestHash          string                    `json:"request_hash,omitempty"`
+	Kind                 string                    `json:"kind"`
+	EventID              string                    `json:"event_id,omitempty"`
+	EventType            string                    `json:"event_type,omitempty"`
+	EventPayload         json.RawMessage           `json:"event_payload,omitempty"`
+	CausationID          string                    `json:"causation_id,omitempty"`
+	CorrelationID        string                    `json:"correlation_id,omitempty"`
+	Session              *SessionSnapshot          `json:"session,omitempty"`
+	Message              *MessageSnapshot          `json:"message,omitempty"`
+	Lifecycle            *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	RunIntent            *V3SessionRunIntent       `json:"run_intent,omitempty"`
+	PlanAcceptance       *V3PlanAcceptanceMutation `json:"plan_acceptance,omitempty"`
+	PlanSave             *V3PlanSaveMutation       `json:"plan_save,omitempty"`
+	EpochID              string                    `json:"epoch_id,omitempty"`
+	TurnUsage            *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
+	ExpectedLastEventSeq *uint64                   `json:"expected_last_event_seq,omitempty"`
+	NowUnixMs            int64                     `json:"now_unix_ms,omitempty"`
 }
 
 type V3SessionMutationResult struct {
-	SessionID       string                     `json:"session_id"`
-	PrimarySeq      uint64                     `json:"primary_seq"`
-	FirstSeq        uint64                     `json:"first_seq"`
-	LastSeq         uint64                     `json:"last_seq"`
-	EventIDs        []string                   `json:"event_ids"`
-	PayloadHash     string                     `json:"payload_hash"`
-	ResponseVersion string                     `json:"response_version,omitempty"`
-	ResponseStatus  string                     `json:"response_status,omitempty"`
-	ResponseBody    json.RawMessage            `json:"response_body,omitempty"`
-	Conflict        *V3SessionMutationConflict `json:"conflict,omitempty"`
-	Error           *V3SessionMutationError    `json:"error,omitempty"`
-	Event           V3SessionEvent             `json:"event"`
-	Session         *SessionSnapshot           `json:"session,omitempty"`
-	Message         *MessageSnapshot           `json:"message,omitempty"`
-	Lifecycle       *SessionLifecycleSnapshot  `json:"lifecycle,omitempty"`
-	RunIntent       *V3SessionRunIntent        `json:"run_intent,omitempty"`
-	Projection      V3SessionProjection        `json:"projection"`
-	Idempotency     V3SessionIdempotencyRecord `json:"idempotency"`
-	RealtimeOutbox  *V3RealtimeOutboxRecord    `json:"realtime_outbox,omitempty"`
-	Replayed        bool                       `json:"replayed,omitempty"`
+	SessionID        string                     `json:"session_id"`
+	PrimarySeq       uint64                     `json:"primary_seq"`
+	FirstSeq         uint64                     `json:"first_seq"`
+	LastSeq          uint64                     `json:"last_seq"`
+	EventIDs         []string                   `json:"event_ids"`
+	PayloadHash      string                     `json:"payload_hash"`
+	ResponseVersion  string                     `json:"response_version,omitempty"`
+	ResponseStatus   string                     `json:"response_status,omitempty"`
+	ResponseBody     json.RawMessage            `json:"response_body,omitempty"`
+	Conflict         *V3SessionMutationConflict `json:"conflict,omitempty"`
+	Error            *V3SessionMutationError    `json:"error,omitempty"`
+	Event            V3SessionEvent             `json:"event"`
+	Session          *SessionSnapshot           `json:"session,omitempty"`
+	Message          *MessageSnapshot           `json:"message,omitempty"`
+	Lifecycle        *SessionLifecycleSnapshot  `json:"lifecycle,omitempty"`
+	RunIntent        *V3SessionRunIntent        `json:"run_intent,omitempty"`
+	TurnUsage        *SessionTurnUsageSnapshot  `json:"turn_usage,omitempty"`
+	UsageSummary     *SessionUsageSummary       `json:"usage_summary,omitempty"`
+	Projection       V3SessionProjection        `json:"projection"`
+	Idempotency      V3SessionIdempotencyRecord `json:"idempotency"`
+	RealtimeOutbox   *V3RealtimeOutboxRecord    `json:"realtime_outbox,omitempty"`
+	Events           []V3SessionEvent           `json:"events,omitempty"`
+	RealtimeOutboxes []V3RealtimeOutboxRecord   `json:"realtime_outboxes,omitempty"`
+	Plan             *SessionPlanSnapshot       `json:"plan,omitempty"`
+	Replayed         bool                       `json:"replayed,omitempty"`
 }
 
 type V3SessionMutationStoredResult struct {
@@ -117,6 +144,19 @@ type V3SessionMutationError struct {
 	Message string `json:"message"`
 }
 
+type V3ProjectionConflictError struct {
+	SessionID string `json:"session_id"`
+	Expected  uint64 `json:"expected"`
+	Actual    uint64 `json:"actual"`
+}
+
+func (e *V3ProjectionConflictError) Error() string {
+	if e == nil {
+		return "v3 session projection conflict"
+	}
+	return fmt.Sprintf("v3 session projection conflict for %q: expected last event seq %d, actual %d", e.SessionID, e.Expected, e.Actual)
+}
+
 type V3SessionIdempotencyRecord struct {
 	SessionID       string                        `json:"session_id"`
 	UserID          string                        `json:"user_id,omitempty"`
@@ -142,6 +182,7 @@ type V3SessionEvent struct {
 	TsUnixMs      int64           `json:"ts_unix_ms"`
 	CausationID   string          `json:"causation_id,omitempty"`
 	CorrelationID string          `json:"correlation_id,omitempty"`
+	EpochID       string          `json:"epoch_id,omitempty"`
 }
 
 type V3SessionProjection struct {
@@ -151,27 +192,192 @@ type V3SessionProjection struct {
 	UpdatedAt                  int64  `json:"updated_at"`
 }
 
+const v3RealtimeOutboxReferenceVersion = 1
+
+type v3RealtimeOutboxReference struct {
+	Version        int    `json:"reference_version"`
+	EndpointSeq    uint64 `json:"endpoint_seq"`
+	SessionID      string `json:"session_id"`
+	EventSeq       uint64 `json:"event_seq"`
+	UserID         string `json:"user_id,omitempty"`
+	AccountScopeID string `json:"account_scope_id,omitempty"`
+}
+
+type V3SessionWriteCounters struct {
+	SuccessfulFreshMutations  uint64 `json:"successful_fresh_mutations"`
+	SuccessfulBatchOperations uint64 `json:"successful_batch_operations"`
+	EstimatedLogicalBytes     uint64 `json:"estimated_logical_bytes"`
+}
+
+var v3SuccessfulFreshMutations atomic.Uint64
+var v3SuccessfulBatchOperations atomic.Uint64
+var v3EstimatedLogicalBytes atomic.Uint64
+
+func CurrentV3SessionWriteCounters() V3SessionWriteCounters {
+	return V3SessionWriteCounters{v3SuccessfulFreshMutations.Load(), v3SuccessfulBatchOperations.Load(), v3EstimatedLogicalBytes.Load()}
+}
+
 type V3RealtimeOutboxRecord struct {
-	EndpointSeq    uint64              `json:"endpoint_seq"`
-	EndpointCursor string              `json:"endpoint_cursor"`
-	SessionID      string              `json:"session_id"`
-	UserID         string              `json:"user_id,omitempty"`
-	AccountScopeID string              `json:"account_scope_id,omitempty"`
-	Event          V3SessionEvent      `json:"event"`
-	Projection     V3SessionProjection `json:"projection"`
-	CreatedAt      int64               `json:"created_at"`
+	EndpointSeq    uint64                      `json:"endpoint_seq"`
+	EndpointCursor string                      `json:"endpoint_cursor"`
+	SessionID      string                      `json:"session_id"`
+	UserID         string                      `json:"user_id,omitempty"`
+	AccountScopeID string                      `json:"account_scope_id,omitempty"`
+	Membership     *V3RealtimeOutboxMembership `json:"membership,omitempty"`
+	Event          V3SessionEvent              `json:"event"`
+	Projection     V3SessionProjection         `json:"projection"`
+	CreatedAt      int64                       `json:"created_at"`
+}
+
+type V3RealtimeOutboxMembership struct {
+	SessionID               string         `json:"session_id"`
+	UserID                  string         `json:"user_id,omitempty"`
+	AccountScopeID          string         `json:"account_scope_id,omitempty"`
+	WorkspacePath           string         `json:"workspace_path,omitempty"`
+	WorkspaceName           string         `json:"workspace_name,omitempty"`
+	WorktreeRootPath        string         `json:"worktree_root_path,omitempty"`
+	TemporaryWorkspaceRoots []string       `json:"temporary_workspace_roots,omitempty"`
+	Metadata                map[string]any `json:"metadata,omitempty"`
+	Deleted                 bool           `json:"deleted,omitempty"`
+	TombstoneKind           string         `json:"tombstone_kind,omitempty"`
+	CapturedAt              int64          `json:"captured_at"`
+}
+
+func marshalV3RealtimeOutboxReference(record V3RealtimeOutboxRecord) ([]byte, error) {
+	return json.Marshal(v3RealtimeOutboxReference{Version: v3RealtimeOutboxReferenceVersion, EndpointSeq: record.EndpointSeq, SessionID: record.SessionID, EventSeq: record.Event.Seq, UserID: record.UserID, AccountScopeID: record.AccountScopeID})
+}
+
+func (s *SessionStore) resolveV3RealtimeOutboxValue(value []byte) (V3RealtimeOutboxRecord, error) {
+	var ref v3RealtimeOutboxReference
+	if err := json.Unmarshal(value, &ref); err != nil {
+		return V3RealtimeOutboxRecord{}, err
+	}
+	if ref.Version == 0 {
+		var record V3RealtimeOutboxRecord
+		if err := json.Unmarshal(value, &record); err != nil {
+			return V3RealtimeOutboxRecord{}, err
+		}
+		return record, nil
+	}
+	if ref.Version != v3RealtimeOutboxReferenceVersion || ref.EndpointSeq == 0 {
+		return V3RealtimeOutboxRecord{}, fmt.Errorf("unsupported v3 realtime outbox reference version %d", ref.Version)
+	}
+	record, ok, err := s.GetV3RealtimeOutbox(ref.EndpointSeq)
+	if err != nil {
+		return V3RealtimeOutboxRecord{}, err
+	}
+	if !ok {
+		return V3RealtimeOutboxRecord{}, fmt.Errorf("v3 realtime outbox reference %d has no canonical record", ref.EndpointSeq)
+	}
+	if record.EndpointSeq != ref.EndpointSeq || record.SessionID != ref.SessionID || record.Event.Seq != ref.EventSeq || record.UserID != ref.UserID || record.AccountScopeID != ref.AccountScopeID {
+		return V3RealtimeOutboxRecord{}, fmt.Errorf("v3 realtime outbox reference %d does not match canonical record", ref.EndpointSeq)
+	}
+	return record, nil
+}
+
+func estimatedSetBytes(key string, value []byte) uint64 { return uint64(len(key) + len(value)) }
+
+func newV3RealtimeOutboxMembershipFromSession(session SessionSnapshot, now int64) *V3RealtimeOutboxMembership {
+	if strings.TrimSpace(session.ID) == "" {
+		return nil
+	}
+	return &V3RealtimeOutboxMembership{
+		SessionID:               strings.TrimSpace(session.ID),
+		UserID:                  strings.TrimSpace(session.UserID),
+		AccountScopeID:          strings.TrimSpace(session.AccountScopeID),
+		WorkspacePath:           strings.TrimSpace(session.WorkspacePath),
+		WorkspaceName:           strings.TrimSpace(session.WorkspaceName),
+		WorktreeRootPath:        strings.TrimSpace(session.WorktreeRootPath),
+		TemporaryWorkspaceRoots: append([]string(nil), session.TemporaryWorkspaceRoots...),
+		Metadata:                v3RealtimeMembershipMetadata(session.Metadata),
+		CapturedAt:              now,
+	}
+}
+
+func v3RealtimeMembershipMetadata(metadata map[string]any) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	for _, key := range []string{
+		"navigation_hidden", "system_session", "system_sidechat", "lineage_kind",
+		"swarm_v3_source_workspace_path",
+		"swarm_v3_tui_cwd_path", "swarm_v3_tui_original_cwd_path", "swarm_v3_tui_worktree_path",
+	} {
+		if value, ok := metadata[key]; ok {
+			out[key] = cloneSessionMetadataValue(value)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func newV3RealtimeOutboxMembershipFromTombstone(tombstone V3SessionTombstone, now int64) *V3RealtimeOutboxMembership {
+	membership := newV3RealtimeOutboxMembershipFromSession(tombstone.Session, now)
+	if membership == nil {
+		membership = &V3RealtimeOutboxMembership{SessionID: strings.TrimSpace(tombstone.SessionID), CapturedAt: now}
+	}
+	if membership.UserID == "" {
+		membership.UserID = strings.TrimSpace(tombstone.UserID)
+	}
+	if membership.AccountScopeID == "" {
+		membership.AccountScopeID = strings.TrimSpace(tombstone.AccountScopeID)
+	}
+	if membership.WorkspacePath == "" {
+		membership.WorkspacePath = strings.TrimSpace(tombstone.WorkspacePath)
+	}
+	membership.Deleted = tombstone.Deleted
+	membership.TombstoneKind = strings.TrimSpace(tombstone.Kind)
+	return membership
 }
 
 type V3SessionRunIntent struct {
-	SessionID      string `json:"session_id"`
-	UserID         string `json:"user_id,omitempty"`
-	AccountScopeID string `json:"account_scope_id,omitempty"`
-	RunID          string `json:"run_id"`
-	Status         string `json:"status"`
-	BlockedReason  string `json:"blocked_reason,omitempty"`
-	CreatedAt      int64  `json:"created_at"`
-	UpdatedAt      int64  `json:"updated_at"`
-	EventSeq       uint64 `json:"event_seq"`
+	SessionID            string `json:"session_id"`
+	UserID               string `json:"user_id,omitempty"`
+	AccountScopeID       string `json:"account_scope_id,omitempty"`
+	RunID                string `json:"run_id"`
+	Status               string `json:"status"`
+	BlockedReason        string `json:"blocked_reason,omitempty"`
+	CreatedAt            int64  `json:"created_at"`
+	StartedAt            int64  `json:"started_at,omitempty"`
+	CompletedAt          int64  `json:"completed_at,omitempty"`
+	DurationMs           int64  `json:"duration_ms,omitempty"`
+	CumulativeDurationMs int64  `json:"cumulative_duration_ms,omitempty"`
+	UpdatedAt            int64  `json:"updated_at"`
+	EventSeq             uint64 `json:"event_seq"`
+	EpochID              string `json:"epoch_id,omitempty"`
+	PlanID               string `json:"plan_id,omitempty"`
+	CheckpointID         string `json:"checkpoint_id,omitempty"`
+	AttemptID            string `json:"attempt_id,omitempty"`
+	RunSessionID         string `json:"run_session_id,omitempty"`
+	ParentSessionID      string `json:"parent_session_id,omitempty"`
+	ResumeContext        bool   `json:"resume_context,omitempty"`
+}
+
+type V3SessionRunState struct {
+	SessionID            string `json:"session_id"`
+	UserID               string `json:"user_id,omitempty"`
+	AccountScopeID       string `json:"account_scope_id,omitempty"`
+	RunID                string `json:"run_id"`
+	Active               bool   `json:"active"`
+	Status               string `json:"status"`
+	BlockedReason        string `json:"blocked_reason,omitempty"`
+	CreatedAt            int64  `json:"created_at"`
+	StartedAt            int64  `json:"started_at,omitempty"`
+	CompletedAt          int64  `json:"completed_at,omitempty"`
+	DurationMs           int64  `json:"duration_ms,omitempty"`
+	CumulativeDurationMs int64  `json:"cumulative_duration_ms,omitempty"`
+	UpdatedAt            int64  `json:"updated_at"`
+	EventSeq             uint64 `json:"event_seq"`
+	EpochID              string `json:"epoch_id,omitempty"`
+	PlanID               string `json:"plan_id,omitempty"`
+	CheckpointID         string `json:"checkpoint_id,omitempty"`
+	AttemptID            string `json:"attempt_id,omitempty"`
+	RunSessionID         string `json:"run_session_id,omitempty"`
+	ParentSessionID      string `json:"parent_session_id,omitempty"`
+	ResumeContext        bool   `json:"resume_context,omitempty"`
 }
 
 type V3SessionReplay struct {
@@ -186,24 +392,30 @@ type V3SessionReplay struct {
 }
 
 type V3SessionHydration struct {
-	Session    SessionSnapshot     `json:"session"`
-	Projection V3SessionProjection `json:"projection"`
-	Messages   []MessageSnapshot   `json:"messages"`
-	Events     []V3SessionEvent    `json:"events"`
+	Session                SessionSnapshot     `json:"session"`
+	Projection             V3SessionProjection `json:"projection"`
+	Messages               []MessageSnapshot   `json:"messages"`
+	Events                 []V3SessionEvent    `json:"events"`
+	SnapshotEndpointCursor string              `json:"snapshot_endpoint_cursor"`
 }
 
 type v3SessionEventReplayPayload struct {
-	SessionID string                    `json:"session_id,omitempty"`
-	Seq       uint64                    `json:"seq,omitempty"`
-	Kind      string                    `json:"kind,omitempty"`
-	Session   *SessionSnapshot          `json:"session,omitempty"`
-	Message   *MessageSnapshot          `json:"message,omitempty"`
-	Lifecycle *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
-	RunIntent *V3SessionRunIntent       `json:"run_intent,omitempty"`
-	MessageID string                    `json:"message_id,omitempty"`
-	Role      string                    `json:"role,omitempty"`
-	RunID     string                    `json:"run_id,omitempty"`
-	Status    string                    `json:"status,omitempty"`
+	SessionID     string                    `json:"session_id,omitempty"`
+	Seq           uint64                    `json:"seq,omitempty"`
+	Kind          string                    `json:"kind,omitempty"`
+	Session       *SessionSnapshot          `json:"session,omitempty"`
+	Message       *MessageSnapshot          `json:"message,omitempty"`
+	Lifecycle     *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	RunIntent     *V3SessionRunIntent       `json:"run_intent,omitempty"`
+	TurnUsage     *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
+	UsageSummary  *SessionUsageSummary      `json:"usage_summary,omitempty"`
+	Tombstone     *V3SessionTombstone       `json:"tombstone,omitempty"`
+	MessageID     string                    `json:"message_id,omitempty"`
+	Role          string                    `json:"role,omitempty"`
+	RunID         string                    `json:"run_id,omitempty"`
+	Status        string                    `json:"status,omitempty"`
+	BlockedReason string                    `json:"blocked_reason,omitempty"`
+	Error         string                    `json:"error,omitempty"`
 }
 
 func KeyV3SessionSequence(sessionID string) string {
@@ -234,6 +446,10 @@ func KeyV3SessionOperationIdempotency(accountScopeID, sessionID, operation, clie
 	return KeyV3SessionIdempotency(accountScopeID, sessionID, strings.Join([]string{operation, clientRequestID}, "/"))
 }
 
+func V3SessionIdempotencyPrefix(accountScopeID, sessionID string) string {
+	return fmt.Sprintf("v3/session_idempotency/%s/%s/", keyPart(accountScopeID), keyPart(sessionID))
+}
+
 func KeyV3SessionMessage(sessionID string, primarySeq uint64) string {
 	return fmt.Sprintf("v3/session_message/%s/%020d", keyPart(sessionID), primarySeq)
 }
@@ -252,6 +468,18 @@ func V3SessionRunIntentPrefix(sessionID string) string {
 
 func KeyV3SessionRunIntentActive(sessionID string) string {
 	return fmt.Sprintf("v3/session_run_intent_active/%s", keyPart(sessionID))
+}
+
+func KeyV3SessionRunIntentActiveByAccount(accountScopeID string, updatedAt int64, sessionID, runID string) string {
+	return fmt.Sprintf("v3/session_run_intent_active_by_account/%s/%020d/%s/%s", keyPart(accountScopeID), reverseMillis(updatedAt), keyPart(sessionID), keyPart(runID))
+}
+
+func V3SessionRunIntentActiveByAccountPrefix(accountScopeID string) string {
+	part := keyPart(accountScopeID)
+	if part == "" {
+		return "v3/session_run_intent_active_by_account/"
+	}
+	return fmt.Sprintf("v3/session_run_intent_active_by_account/%s/", part)
 }
 
 func KeyV3SessionRunIntentStatus(status string, updatedAt int64, accountScopeID, sessionID, runID string) string {
@@ -278,6 +506,30 @@ func V3RealtimeOutboxPrefix() string {
 	return "v3/realtime_outbox/"
 }
 
+func KeyV3RealtimeOutboxBySessionEndpoint(sessionID string, endpointSeq uint64) string {
+	return fmt.Sprintf("v3/realtime_outbox_by_session_endpoint/%s/%020d", keyPart(sessionID), endpointSeq)
+}
+
+func V3RealtimeOutboxBySessionEndpointPrefix(sessionID string) string {
+	return fmt.Sprintf("v3/realtime_outbox_by_session_endpoint/%s/", keyPart(sessionID))
+}
+
+func KeyV3RealtimeOutboxBySessionSeq(sessionID string, eventSeq uint64) string {
+	return fmt.Sprintf("v3/realtime_outbox_by_session_seq/%s/%020d", keyPart(sessionID), eventSeq)
+}
+
+func V3RealtimeOutboxBySessionSeqPrefix(sessionID string) string {
+	return fmt.Sprintf("v3/realtime_outbox_by_session_seq/%s/", keyPart(sessionID))
+}
+
+func KeyV3RealtimeOutboxByAuthScope(accountScopeID, userID string, endpointSeq uint64) string {
+	return fmt.Sprintf("v3/realtime_outbox_by_auth/%s/%s/%020d", keyPart(accountScopeID), keyPart(userID), endpointSeq)
+}
+
+func V3RealtimeOutboxByAuthScopePrefix(accountScopeID, userID string) string {
+	return fmt.Sprintf("v3/realtime_outbox_by_auth/%s/%s/", keyPart(accountScopeID), keyPart(userID))
+}
+
 func V3RealtimeOutboxCursor(endpointSeq uint64) string {
 	return fmt.Sprintf("cursor-%d", endpointSeq)
 }
@@ -291,10 +543,15 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		return V3SessionMutationResult{}, err
 	}
 
-	v3SessionMutationMu.Lock()
-	defer v3SessionMutationMu.Unlock()
+	if input.Kind == V3SessionMutationAcceptPlan {
+		return s.applyV3PlanAcceptanceMutation(input)
+	}
+
+	unlockSession := s.store.sessionMutations.lockSessions(input.SessionID)
+	defer unlockSession()
 
 	idempotencyKey := KeyV3SessionOperationIdempotency(input.AccountScopeID, input.SessionID, input.Kind, input.ClientRequestID)
+
 	if existing, ok, err := s.getV3SessionIdempotencyRecordByKey(idempotencyKey); err != nil {
 		return V3SessionMutationResult{}, err
 	} else if ok {
@@ -316,23 +573,88 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 			return V3SessionMutationResult{}, resultErr
 		}
 		result.Replayed = true
+		result.Plan = committedV3PlanSaveResult(input.PlanSave)
 		return result, nil
 	}
 
+	// Live metric maintenance uses disjoint per-session keys. A shared repair
+	// lock excludes only the versioned full backfill, not unrelated commits.
+	s.store.sessionMutations.libraryRepairMu.RLock()
+	defer s.store.sessionMutations.libraryRepairMu.RUnlock()
 	return s.applyFreshV3SessionMutation(input, idempotencyKey)
 }
 
 func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput, idempotencyStoreKey string) (V3SessionMutationResult, error) {
+	if input.PlanSave != nil {
+		current, found, err := s.GetPlan(input.SessionID, input.PlanSave.Plan.ID)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		expected := input.PlanSave.ExpectedParentVersion
+		if expected == 0 && found {
+			return V3SessionMutationResult{}, fmt.Errorf("plan %q was created concurrently", input.PlanSave.Plan.ID)
+		}
+		if expected > 0 && (!found || current.Version != expected) {
+			return V3SessionMutationResult{}, fmt.Errorf("plan %q revision conflict: expected parent %d", input.PlanSave.Plan.ID, expected)
+		}
+	}
 	currentSeq, err := s.readV3SessionSequence(input.SessionID)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	currentOutboxSeq, err := s.readV3RealtimeOutboxSequence()
+	var archivedTombstone V3SessionTombstone
+	archivedReactivation := false
+	if input.Kind == V3SessionMutationAppendMessage && input.Message != nil {
+		if tombstone, ok, err := s.GetV3SessionTombstone(input.SessionID); err != nil {
+			return V3SessionMutationResult{}, err
+		} else if ok && tombstone.Archived && !tombstone.Deleted {
+			archivedTombstone = tombstone
+			archivedReactivation = true
+		}
+	}
+	if input.ExpectedLastEventSeq != nil && currentSeq != *input.ExpectedLastEventSeq {
+		return V3SessionMutationResult{}, &V3ProjectionConflictError{
+			SessionID: input.SessionID,
+			Expected:  *input.ExpectedLastEventSeq,
+			Actual:    currentSeq,
+		}
+	}
+	reservedOutbox, err := s.store.sessionMutations.reserveOutbox(s.store, 1)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	reservationCommitted := false
+	defer func() {
+		if !reservationCommitted {
+			s.store.sessionMutations.abandonOutbox(reservedOutbox)
+		}
+	}()
 	seq := currentSeq + 1
-	endpointSeq := currentOutboxSeq + 1
+	epochID := strings.TrimSpace(input.EpochID)
+	var initialEpoch *ExecutionEpoch
+	var activeEpoch *ExecutionEpoch
+	if epochID == "" {
+		if active, ok, readErr := s.GetActiveExecutionEpoch(input.SessionID); readErr != nil {
+			return V3SessionMutationResult{}, readErr
+		} else if ok {
+			epochID = active.EpochID
+			activeEpoch = &active
+		} else if input.Kind == V3SessionMutationCreateSession {
+			epoch := NewInitialExecutionEpoch(input.SessionID, input.UserID, input.AccountScopeID, seq, input.NowUnixMs)
+			epochID = epoch.EpochID
+			initialEpoch = &epoch
+		}
+	} else {
+		epoch, ok, readErr := s.GetExecutionEpoch(input.SessionID, epochID)
+		if readErr != nil {
+			return V3SessionMutationResult{}, readErr
+		}
+		if !ok || epoch.Status != ExecutionEpochStatusActive {
+			return V3SessionMutationResult{}, fmt.Errorf("execution epoch %q is not active", epochID)
+		}
+		activeEpoch = &epoch
+	}
+	endpointSeq := reservedOutbox[0]
 	now := input.NowUnixMs
 	if now == 0 {
 		now = time.Now().UnixMilli()
@@ -340,12 +662,29 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 
 	lifecycle, lifecycleProvided := prepareV3LifecycleForMutation(input, seq, now)
 	runIntent, runIntentProvided := prepareV3RunIntentForMutation(input, seq, now)
+	var previousRunIntent V3SessionRunIntent
+	var previousRunIntentOK bool
+	var previousRunState V3SessionRunState
+	var previousRunStateOK bool
 	if runIntentProvided {
+		if strings.TrimSpace(runIntent.EpochID) == "" {
+			runIntent.EpochID = epochID
+		}
 		prepared, err := s.validateV3RunIntentTransition(input.SessionID, runIntent)
 		if err != nil {
 			return V3SessionMutationResult{}, err
 		}
 		runIntent = prepared
+		previousRunIntent, previousRunIntentOK, err = s.GetV3SessionRunIntent(runIntent.SessionID, runIntent.RunID)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		previousRunState, previousRunStateOK, err = s.GetV3SessionRunState(runIntent.SessionID)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		nextRunState := v3SessionRunStateWithPreviousTiming(v3SessionRunStateFromIntent(runIntent), previousRunState, previousRunStateOK)
+		runIntent = v3SessionRunIntentWithStateTiming(runIntent, nextRunState)
 	}
 	session, sessionProvided, err := s.prepareV3SessionForMutation(input, seq, now)
 	if err != nil {
@@ -355,10 +694,25 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	payload, err := input.v3EventPayload(seq, session, message, lifecycle, runIntent)
+	turnUsage, usageSummary, usageProvided, err := s.prepareV3UsageForMutation(input, now)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	payload, err := input.v3EventPayload(seq, session, message, lifecycle, runIntent, turnUsage, usageSummary)
+	if err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	membershipSession := session
+	if strings.TrimSpace(membershipSession.ID) == "" {
+		current, ok, err := s.GetSession(input.SessionID)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if ok {
+			membershipSession = current
+		}
+	}
+	membership := newV3RealtimeOutboxMembershipFromSession(membershipSession, now)
 	event := V3SessionEvent{
 		ID:            strings.TrimSpace(input.EventID),
 		SessionID:     input.SessionID,
@@ -368,9 +722,13 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		TsUnixMs:      now,
 		CausationID:   input.CausationID,
 		CorrelationID: input.CorrelationID,
+		EpochID:       epochID,
 	}
 	if event.ID == "" {
 		event.ID = fmt.Sprintf("v3evt_%s_%020d", input.SessionID, seq)
+	}
+	if archivedReactivation {
+		event.EventType = "session.reactivated"
 	}
 	projection := V3SessionProjection{SessionID: input.SessionID, LastEventSeq: seq, ProjectionHighWatermarkSeq: seq, UpdatedAt: now}
 	storedResult := V3SessionMutationStoredResult{
@@ -391,6 +749,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	if runIntentProvided {
 		storedResult.RunID = runIntent.RunID
+	}
+	if usageProvided {
+		storedResult.RunID = turnUsage.RunID
 	}
 	idempotency := V3SessionIdempotencyRecord{
 		SessionID:       input.SessionID,
@@ -418,6 +779,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		SessionID:      input.SessionID,
 		UserID:         input.UserID,
 		AccountScopeID: input.AccountScopeID,
+		Membership:     membership,
 		Event:          event,
 		Projection:     projection,
 		CreatedAt:      now,
@@ -425,6 +787,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	realtimeOutboxPayload, err := json.Marshal(realtimeOutbox)
 	if err != nil {
 		return V3SessionMutationResult{}, fmt.Errorf("marshal v3 realtime outbox event: %w", err)
+	}
+	realtimeOutboxReferencePayload, err := marshalV3RealtimeOutboxReference(realtimeOutbox)
+	if err != nil {
+		return V3SessionMutationResult{}, fmt.Errorf("marshal v3 realtime outbox reference: %w", err)
 	}
 	projectionPayload, err := json.Marshal(projection)
 	if err != nil {
@@ -443,16 +809,44 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	if input.PlanSave != nil {
+		if err := setV3PlanSaveInBatch(batch, input.SessionID, *input.PlanSave); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
+	if initialEpoch != nil {
+		initialEpoch.CreatedAt = now
+		initialEpoch.UpdatedAt = now
+		initialEpoch.LastRootSeq = seq
+		if err := setExecutionEpochInBatch(batch, *initialEpoch, true); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	} else if activeEpoch != nil {
+		if activeEpoch.Status != ExecutionEpochStatusActive {
+			return V3SessionMutationResult{}, fmt.Errorf("execution epoch %q is not active", activeEpoch.EpochID)
+		}
+		activeEpoch.LastRootSeq = seq
+		activeEpoch.UpdatedAt = now
+		if err := setExecutionEpochInBatch(batch, *activeEpoch, true); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	if err := batch.Set([]byte(KeyV3SessionSequence(input.SessionID)), uint64ToBytes(seq), nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
 	if err := batch.Set([]byte(KeyV3SessionEvent(input.SessionID, seq)), eventPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	if err := batch.Set([]byte(KeyV3RealtimeOutboxSequence()), uint64ToBytes(endpointSeq), nil); err != nil {
+	if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), realtimeOutboxPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), realtimeOutboxPayload, nil); err != nil {
+	if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq)), realtimeOutboxReferencePayload, nil); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq)), realtimeOutboxReferencePayload, nil); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq)), realtimeOutboxReferencePayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
 	if err := batch.Set([]byte(KeyV3SessionProjection(input.SessionID)), projectionPayload, nil); err != nil {
@@ -460,6 +854,27 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	if sessionProvided || messageProvided {
 		if err := s.setSessionInBatch(batch, session); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if archivedReactivation {
+			if err := removeV3SessionTombstoneInBatch(batch, archivedTombstone); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+		if messageProvided {
+			if err := s.appendV3SessionSearchMessageInBatch(batch, s.store.db, session, false, message); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		} else if sessionProvided && v3SessionMutationChangesSearchMetadata(input.Kind) {
+			if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, nil); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+		var appendedMessage *MessageSnapshot
+		if messageProvided {
+			appendedMessage = &message
+		}
+		if err := s.updateV3SessionLibraryMetricInBatch(batch, session, appendedMessage, false, false); err != nil {
 			return V3SessionMutationResult{}, err
 		}
 	}
@@ -486,11 +901,33 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			}
 		}
 	}
-	if runIntentProvided {
-		previousRunIntent, previousRunIntentOK, err := s.GetV3SessionRunIntent(runIntent.SessionID, runIntent.RunID)
+	if usageProvided {
+		usagePayload, err := json.Marshal(turnUsage)
 		if err != nil {
+			return V3SessionMutationResult{}, fmt.Errorf("marshal v3 turn usage %q/%q: %w", turnUsage.SessionID, turnUsage.RunID, err)
+		}
+		if err := batch.Set([]byte(KeySessionTurnUsage(turnUsage.SessionID, turnUsage.RunID)), usagePayload, nil); err != nil {
 			return V3SessionMutationResult{}, err
 		}
+		if turnUsage.AccountScopeID != "" {
+			if err := batch.Set([]byte(KeySessionTurnUsageByAccount(turnUsage.AccountScopeID, turnUsage.SessionID, turnUsage.RunID)), []byte(turnUsage.RunID), nil); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+		summaryPayload, err := json.Marshal(usageSummary)
+		if err != nil {
+			return V3SessionMutationResult{}, fmt.Errorf("marshal v3 usage summary %q: %w", usageSummary.SessionID, err)
+		}
+		if err := batch.Set([]byte(KeySessionUsageSummary(usageSummary.SessionID)), summaryPayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if usageSummary.AccountScopeID != "" {
+			if err := batch.Set([]byte(KeySessionUsageSummaryByAccount(usageSummary.AccountScopeID, usageSummary.SessionID)), summaryPayload, nil); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+	}
+	if runIntentProvided {
 		runPayload, err := json.Marshal(runIntent)
 		if err != nil {
 			return V3SessionMutationResult{}, fmt.Errorf("marshal v3 run intent %q: %w", runIntent.RunID, err)
@@ -508,23 +945,25 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if err := batch.Set([]byte(statusKey), runPayload, nil); err != nil {
 			return V3SessionMutationResult{}, err
 		}
-		activeKey := KeyV3SessionRunIntentActive(runIntent.SessionID)
-		if isV3RunIntentTerminal(runIntent.Status) {
-			if err := batch.Delete([]byte(activeKey), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
-				return V3SessionMutationResult{}, err
-			}
-		} else if runIntent.Status == V3RunIntentRunning {
-			if err := batch.Set([]byte(activeKey), []byte(runIntent.RunID), nil); err != nil {
-				return V3SessionMutationResult{}, err
-			}
+		if err := s.setV3SessionRunStateInBatch(batch, runIntent, previousRunState, previousRunStateOK); err != nil {
+			return V3SessionMutationResult{}, err
 		}
 	}
 	if err := batch.Set([]byte(idempotencyStoreKey), idempotencyPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	if hook := s.store.sessionMutations.beforeDurableCommit; hook != nil {
+		hook(input.SessionID)
+	}
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	reservationCommitted = true
+	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	v3SuccessfulFreshMutations.Add(1)
+	v3EstimatedLogicalBytes.Add(estimatedSetBytes(KeyV3RealtimeOutbox(endpointSeq), realtimeOutboxPayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq), realtimeOutboxReferencePayload))
 
 	result := V3SessionMutationResult{
 		SessionID:       input.SessionID,
@@ -553,7 +992,24 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if runIntentProvided {
 		result.RunIntent = &runIntent
 	}
+	if usageProvided {
+		result.TurnUsage = &turnUsage
+		result.UsageSummary = &usageSummary
+	}
+	result.Plan = committedV3PlanSaveResult(input.PlanSave)
 	return result, nil
+}
+
+func committedV3PlanSaveResult(save *V3PlanSaveMutation) *SessionPlanSnapshot {
+	if save == nil {
+		return nil
+	}
+	plan := save.Plan
+	if plan.Version <= 0 {
+		plan.Version = 1
+	}
+	plan.Active = save.Activate
+	return &plan
 }
 
 func (s *SessionStore) GetV3SessionEvent(sessionID string, seq uint64) (V3SessionEvent, bool, error) {
@@ -570,6 +1026,34 @@ func (s *SessionStore) GetV3SessionEvent(sessionID string, seq uint64) (V3Sessio
 
 func (s *SessionStore) ListV3SessionEvents(sessionID string, afterSeq uint64, limit int) ([]V3SessionEvent, error) {
 	return listV3SessionEventsFromReader(s.store.db, sessionID, afterSeq, limit)
+}
+
+func (s *SessionStore) ListV3SessionEventsBefore(sessionID string, beforeSeq uint64, limit int) ([]V3SessionEvent, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	out := make([]V3SessionEvent, 0, limit)
+	prefix := V3SessionEventPrefix(sessionID)
+	startKey := ""
+	if beforeSeq > 0 {
+		startKey = KeyV3SessionEvent(sessionID, beforeSeq)
+	}
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: startKey, Limit: limit, Reverse: true}, func(_ string, value []byte) (bool, error) {
+		var event V3SessionEvent
+		if err := json.Unmarshal(value, &event); err != nil {
+			return false, err
+		}
+		if beforeSeq > 0 && event.Seq >= beforeSeq {
+			return true, nil
+		}
+		out = append(out, event)
+		return len(out) < limit, nil
+	})
+	return out, err
 }
 
 func listV3SessionEventsFromReader(reader pebble.Reader, sessionID string, afterSeq uint64, limit int) ([]V3SessionEvent, error) {
@@ -781,7 +1265,11 @@ func (s *SessionStore) hydrateV3SessionSnapshotFromReader(reader pebble.Reader, 
 			return V3SessionHydration{}, false, err
 		}
 	}
-	return V3SessionHydration{Session: session, Projection: projection, Messages: messages, Events: events}, true, nil
+	snapshotEndpointSeq, err := readV3RealtimeOutboxSequenceFromReader(reader)
+	if err != nil {
+		return V3SessionHydration{}, false, err
+	}
+	return V3SessionHydration{Session: session, Projection: projection, Messages: messages, Events: events, SnapshotEndpointCursor: V3RealtimeOutboxCursor(snapshotEndpointSeq)}, true, nil
 }
 
 func (s *SessionStore) GetV3SessionIdempotencyRecord(accountScopeID, sessionID, idempotencyKey string) (V3SessionIdempotencyRecord, bool, error) {
@@ -794,6 +1282,44 @@ func (s *SessionStore) GetV3SessionOperationIdempotencyRecord(accountScopeID, se
 
 func (s *SessionStore) ListV3SessionMessages(sessionID string, afterSeq uint64, limit int) ([]MessageSnapshot, error) {
 	return listV3SessionMessagesFromReader(s.store.db, sessionID, afterSeq, limit)
+}
+
+func listV3SessionMessagesRangeFromReader(reader pebble.Reader, sessionID string, firstSeq, lastSeq uint64, limit int) ([]MessageSnapshot, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	if firstSeq == 0 || lastSeq < firstSeq {
+		return nil, errors.New("valid inclusive message range is required")
+	}
+	if limit <= 0 {
+		span := lastSeq - firstSeq + 1
+		if span > uint64(^uint(0)>>1) {
+			return nil, errors.New("execution epoch message range is too large")
+		}
+		limit = int(span)
+	}
+	out := make([]MessageSnapshot, 0, limit)
+	prefix := V3SessionMessagePrefix(sessionID)
+	err := scanRangeFromReader(reader, scanRangeOptions{
+		Prefix:     prefix,
+		StartKey:   KeyV3SessionMessage(sessionID, firstSeq),
+		LowerBound: KeyV3SessionMessage(sessionID, firstSeq),
+		UpperBound: KeyV3SessionMessage(sessionID, lastSeq) + "\x00",
+		Limit:      limit,
+	}, func(_ string, value []byte) (bool, error) {
+		var message MessageSnapshot
+		if err := json.Unmarshal(value, &message); err != nil {
+			return false, err
+		}
+		if message.GlobalSeq < firstSeq || message.GlobalSeq > lastSeq {
+			return true, nil
+		}
+		message.Metadata = sanitizeMessageMetadata(message.Metadata)
+		out = append(out, message)
+		return len(out) < limit, nil
+	})
+	return out, err
 }
 
 func (s *SessionStore) ListV3SessionMessageTail(sessionID string, limit int) ([]MessageSnapshot, error) {
@@ -880,20 +1406,168 @@ func (s *SessionStore) GetV3SessionRunIntent(sessionID, runID string) (V3Session
 	return intent, true, nil
 }
 
-func (s *SessionStore) GetV3SessionActiveRunIntent(sessionID string) (V3SessionRunIntent, bool, error) {
+func (s *SessionStore) GetV3SessionRunState(sessionID string) (V3SessionRunState, bool, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return V3SessionRunIntent{}, false, errors.New("session id is required")
+		return V3SessionRunState{}, false, errors.New("session id is required")
 	}
-	raw, ok, err := s.store.GetBytes(KeyV3SessionRunIntentActive(sessionID))
+	return getV3SessionRunStateFromReader(s.store.db, sessionID)
+}
+
+func (s *SessionStore) GetV3SessionActiveRunIntent(sessionID string) (V3SessionRunIntent, bool, error) {
+	state, ok, err := s.GetV3SessionRunState(sessionID)
+	if err != nil || !ok || !state.Active || strings.TrimSpace(state.RunID) == "" {
+		return V3SessionRunIntent{}, false, err
+	}
+	return v3SessionRunIntentFromState(state), true, nil
+}
+
+func (s *SessionStore) ListV3ActiveSessionRunStates(accountScopeID string, limit int) ([]V3SessionRunState, error) {
+	return listV3ActiveSessionRunStatesFromReader(s.store.db, accountScopeID, limit)
+}
+
+func (s *SessionStore) EnsureV3RunStateIndex() error {
+	if s == nil || s.store == nil {
+		return errors.New("session store is not configured")
+	}
+	if _, ok, err := s.store.GetBytes(v3RunStateIndexMigrationKey); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
+	if _, err := s.RepairV3SessionRunStatesFromLegacyRunIntents("", 0); err != nil {
+		return fmt.Errorf("migrate v3 run-state index: %w", err)
+	}
+	return s.store.PutBytes(v3RunStateIndexMigrationKey, []byte("1"))
+}
+
+func getV3SessionRunStateFromReader(reader pebble.Reader, sessionID string) (V3SessionRunState, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return V3SessionRunState{}, false, errors.New("session id is required")
+	}
+	var state V3SessionRunState
+	ok, err := getJSONFromReader(reader, KeyV3SessionRunIntentActive(sessionID), &state)
 	if err != nil || !ok {
-		return V3SessionRunIntent{}, ok, err
+		return V3SessionRunState{}, ok, err
 	}
-	runID := strings.TrimSpace(string(raw))
-	if runID == "" {
-		return V3SessionRunIntent{}, false, nil
+	return state, true, nil
+}
+
+func listV3ActiveSessionRunStatesFromReader(reader pebble.Reader, accountScopeID string, limit int) ([]V3SessionRunState, error) {
+	if limit <= 0 {
+		limit = 500
 	}
-	return s.GetV3SessionRunIntent(sessionID, runID)
+	out := make([]V3SessionRunState, 0, limit)
+	prefix := V3SessionRunIntentActiveByAccountPrefix(accountScopeID)
+	err := scanRangeFromReader(reader, scanRangeOptions{Prefix: prefix, Limit: limit}, func(_ string, value []byte) (bool, error) {
+		var state V3SessionRunState
+		if err := json.Unmarshal(value, &state); err != nil {
+			return false, err
+		}
+		if !state.Active || strings.TrimSpace(state.RunID) == "" {
+			return true, nil
+		}
+		if strings.TrimSpace(accountScopeID) != "" && strings.TrimSpace(state.AccountScopeID) != "" && strings.TrimSpace(state.AccountScopeID) != strings.TrimSpace(accountScopeID) {
+			return true, nil
+		}
+		out = append(out, state)
+		return len(out) < limit, nil
+	})
+	return out, err
+}
+
+// V3SessionRunStateRepairResult summarizes legacy run-intent repair into the
+// canonical V3 run-state key. Repair candidates come only from non-terminal
+// run intents; lifecycle records are intentionally ignored.
+type V3SessionRunStateRepairResult struct {
+	CandidateSessions int `json:"candidate_sessions"`
+	RepairedSessions  int `json:"repaired_sessions"`
+	SkippedCanonical  int `json:"skipped_canonical"`
+}
+
+// RepairV3SessionRunStatesFromLegacyRunIntents backfills canonical run-state
+// records for legacy stores that have non-terminal run intents but no
+// v3/session_run_intent_active/<session_id> record. If multiple legacy
+// non-terminal intents exist for one session, the repair deterministically picks
+// the latest current run by: running over pending, latest updated_at, latest
+// event_seq, then lexicographically greatest run_id. Existing canonical records
+// are never overwritten, including inactive terminal records; canonical state is
+// the single source of truth once present.
+func (s *SessionStore) RepairV3SessionRunStatesFromLegacyRunIntents(accountScopeID string, limit int) (V3SessionRunStateRepairResult, error) {
+	if s == nil || s.store == nil {
+		return V3SessionRunStateRepairResult{}, errors.New("session store is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if limit <= 0 {
+		limit = 10000
+	}
+	candidates := make(map[string][]V3SessionRunIntent)
+	appendCandidates := func(status string) error {
+		intents, err := s.ListV3SessionRunIntentsByStatus(status, limit)
+		if err != nil {
+			return err
+		}
+		for _, intent := range intents {
+			sessionID := strings.TrimSpace(intent.SessionID)
+			if sessionID == "" || strings.TrimSpace(intent.RunID) == "" || !isV3RunIntentActive(intent.Status) {
+				continue
+			}
+			if accountScopeID != "" && strings.TrimSpace(intent.AccountScopeID) != accountScopeID {
+				continue
+			}
+			candidates[sessionID] = append(candidates[sessionID], intent)
+		}
+		return nil
+	}
+	if err := appendCandidates(V3RunIntentPendingExecutor); err != nil {
+		return V3SessionRunStateRepairResult{}, err
+	}
+	if err := appendCandidates(V3RunIntentRunning); err != nil {
+		return V3SessionRunStateRepairResult{}, err
+	}
+	result := V3SessionRunStateRepairResult{CandidateSessions: len(candidates)}
+	if len(candidates) == 0 {
+		return result, nil
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	for sessionID, intents := range candidates {
+		if _, ok, err := getV3SessionRunStateFromReader(s.store.db, sessionID); err != nil {
+			return V3SessionRunStateRepairResult{}, err
+		} else if ok {
+			result.SkippedCanonical++
+			continue
+		}
+		selected := selectV3LegacyRunStateRepairCandidate(intents)
+		if strings.TrimSpace(selected.RunID) == "" {
+			continue
+		}
+		if err := s.setV3SessionRunStateInBatch(batch, selected, V3SessionRunState{}, false); err != nil {
+			return V3SessionRunStateRepairResult{}, err
+		}
+		result.RepairedSessions++
+	}
+	if result.RepairedSessions == 0 {
+		return result, nil
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return V3SessionRunStateRepairResult{}, err
+	}
+	return result, nil
+}
+
+func selectV3LegacyRunStateRepairCandidate(intents []V3SessionRunIntent) V3SessionRunIntent {
+	var selected V3SessionRunIntent
+	for _, intent := range intents {
+		if !isV3RunIntentActive(intent.Status) {
+			continue
+		}
+		if strings.TrimSpace(selected.RunID) == "" || v3RunIntentLess(selected, intent) {
+			selected = intent
+		}
+	}
+	return selected
 }
 
 func (s *SessionStore) ListV3SessionRunIntents(sessionID string, afterSeq uint64, limit int) ([]V3SessionRunIntent, error) {
@@ -996,7 +1670,26 @@ func (s *SessionStore) GetV3RealtimeOutbox(endpointSeq uint64) (V3RealtimeOutbox
 	return record, true, nil
 }
 
+func (s *SessionStore) CurrentV3RealtimeOutboxRevision() (uint64, error) {
+	return s.readV3RealtimeOutboxSequence()
+}
+
+func (s *SessionStore) CurrentV3RealtimeOutboxCursor() (string, error) {
+	seq, err := s.readV3RealtimeOutboxSequence()
+	if err != nil {
+		return "", err
+	}
+	return V3RealtimeOutboxCursor(seq), nil
+}
+
 func (s *SessionStore) ListV3RealtimeOutboxAfter(afterEndpointSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {
+	publishedHead, err := s.readV3RealtimeOutboxSequence()
+	if err != nil {
+		return nil, err
+	}
+	if afterEndpointSeq >= publishedHead {
+		return []V3RealtimeOutboxRecord{}, nil
+	}
 	if limit <= 0 {
 		limit = 500
 	}
@@ -1005,10 +1698,13 @@ func (s *SessionStore) ListV3RealtimeOutboxAfter(afterEndpointSeq uint64, limit 
 	}
 	out := make([]V3RealtimeOutboxRecord, 0, limit)
 	prefix := V3RealtimeOutboxPrefix()
-	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutbox(afterEndpointSeq + 1), Limit: limit}, func(_ string, value []byte) (bool, error) {
+	err = scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutbox(afterEndpointSeq + 1), Limit: limit}, func(_ string, value []byte) (bool, error) {
 		var record V3RealtimeOutboxRecord
 		if err := json.Unmarshal(value, &record); err != nil {
 			return false, err
+		}
+		if record.EndpointSeq > publishedHead {
+			return false, nil
 		}
 		if record.EndpointSeq <= afterEndpointSeq {
 			return true, nil
@@ -1019,41 +1715,203 @@ func (s *SessionStore) ListV3RealtimeOutboxAfter(afterEndpointSeq uint64, limit 
 	return out, err
 }
 
+func (s *SessionStore) ListV3RealtimeOutboxForAuthScopeAfter(accountScopeID, userID string, afterEndpointSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	userID = strings.TrimSpace(userID)
+	if limit <= 0 {
+		limit = 500
+	}
+	if afterEndpointSeq == ^uint64(0) {
+		return []V3RealtimeOutboxRecord{}, nil
+	}
+	type authScope struct {
+		accountScopeID string
+		userID         string
+	}
+	// Canonical V3 visibility is account + principal/user. Legacy outbox rows
+	// indexed only by account, only by user, or by neither fail closed here.
+	scopes := []authScope{}
+	if accountScopeID != "" && userID != "" {
+		scopes = append(scopes, authScope{accountScopeID: accountScopeID, userID: userID})
+	}
+	seenScopes := map[string]bool{}
+	merged := make([]V3RealtimeOutboxRecord, 0, limit)
+	for _, scope := range scopes {
+		scopeKey := scope.accountScopeID + "\x00" + scope.userID
+		if seenScopes[scopeKey] {
+			continue
+		}
+		seenScopes[scopeKey] = true
+		records, err := s.listV3RealtimeOutboxForExactAuthScopeAfter(scope.accountScopeID, scope.userID, afterEndpointSeq, limit)
+		if err != nil {
+			return nil, err
+		}
+		merged = append(merged, records...)
+	}
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].EndpointSeq < merged[j].EndpointSeq })
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
+}
+
+func (s *SessionStore) listV3RealtimeOutboxForExactAuthScopeAfter(accountScopeID, userID string, afterEndpointSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {
+	publishedHead, err := s.readV3RealtimeOutboxSequence()
+	if err != nil {
+		return nil, err
+	}
+	if afterEndpointSeq >= publishedHead {
+		return []V3RealtimeOutboxRecord{}, nil
+	}
+	out := make([]V3RealtimeOutboxRecord, 0, limit)
+	prefix := V3RealtimeOutboxByAuthScopePrefix(accountScopeID, userID)
+	err = scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutboxByAuthScope(accountScopeID, userID, afterEndpointSeq+1), Limit: limit}, func(_ string, value []byte) (bool, error) {
+		record, err := s.resolveV3RealtimeOutboxValue(value)
+		if err != nil {
+			return false, err
+		}
+		if record.EndpointSeq > publishedHead {
+			return false, nil
+		}
+		if record.EndpointSeq <= afterEndpointSeq {
+			return true, nil
+		}
+		if record.AccountScopeID != accountScopeID || record.UserID != userID {
+			return true, nil
+		}
+		out = append(out, record)
+		return len(out) < limit, nil
+	})
+	return out, err
+}
+
+func (s *SessionStore) ListV3RealtimeOutboxForSessionAfterEndpoint(sessionID string, afterEndpointSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	publishedHead, err := s.readV3RealtimeOutboxSequence()
+	if err != nil {
+		return nil, err
+	}
+	if afterEndpointSeq >= publishedHead {
+		return []V3RealtimeOutboxRecord{}, nil
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	if afterEndpointSeq == ^uint64(0) {
+		return []V3RealtimeOutboxRecord{}, nil
+	}
+	out := make([]V3RealtimeOutboxRecord, 0, limit)
+	prefix := V3RealtimeOutboxBySessionEndpointPrefix(sessionID)
+	err = scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutboxBySessionEndpoint(sessionID, afterEndpointSeq+1), Limit: limit}, func(_ string, value []byte) (bool, error) {
+		record, err := s.resolveV3RealtimeOutboxValue(value)
+		if err != nil {
+			return false, err
+		}
+		if record.EndpointSeq > publishedHead {
+			return false, nil
+		}
+		if record.EndpointSeq <= afterEndpointSeq || record.SessionID != sessionID {
+			return true, nil
+		}
+		out = append(out, record)
+		return len(out) < limit, nil
+	})
+	return out, err
+}
+
+func (s *SessionStore) ListV3RealtimeOutboxForSessionsAfterEndpoint(sessionIDs []string, afterEndpointSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	if afterEndpointSeq == ^uint64(0) {
+		return []V3RealtimeOutboxRecord{}, nil
+	}
+	seen := make(map[string]bool, len(sessionIDs))
+	merged := make([]V3RealtimeOutboxRecord, 0, limit)
+	for _, sessionID := range sessionIDs {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" || seen[sessionID] {
+			continue
+		}
+		seen[sessionID] = true
+		records, err := s.ListV3RealtimeOutboxForSessionAfterEndpoint(sessionID, afterEndpointSeq, limit)
+		if err != nil {
+			return nil, err
+		}
+		merged = append(merged, records...)
+	}
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].EndpointSeq < merged[j].EndpointSeq })
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
+}
+
+func (s *SessionStore) LastV3RealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID string, endpointSeq uint64) (V3RealtimeOutboxRecord, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return V3RealtimeOutboxRecord{}, false, errors.New("session id is required")
+	}
+	if endpointSeq == 0 {
+		return V3RealtimeOutboxRecord{}, false, nil
+	}
+	prefix := V3RealtimeOutboxBySessionEndpointPrefix(sessionID)
+	startKey := ""
+	if endpointSeq != ^uint64(0) {
+		startKey = KeyV3RealtimeOutboxBySessionEndpoint(sessionID, endpointSeq+1)
+	}
+	var out V3RealtimeOutboxRecord
+	found := false
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: startKey, Limit: 1, Reverse: true}, func(_ string, value []byte) (bool, error) {
+		record, err := s.resolveV3RealtimeOutboxValue(value)
+		if err != nil {
+			return false, err
+		}
+		if record.SessionID != sessionID || record.EndpointSeq > endpointSeq {
+			return true, nil
+		}
+		out = record
+		found = true
+		return false, nil
+	})
+	if err != nil {
+		return V3RealtimeOutboxRecord{}, false, err
+	}
+	return out, found, nil
+}
+
 func (s *SessionStore) ListV3RealtimeOutboxForSessionAfterSeq(sessionID string, afterSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return nil, errors.New("session id is required")
 	}
-	records, err := s.ListV3RealtimeOutboxAfter(0, 100000)
-	if err != nil {
-		return nil, err
-	}
 	if limit <= 0 {
 		limit = 500
 	}
+	if afterSeq == ^uint64(0) {
+		return []V3RealtimeOutboxRecord{}, nil
+	}
 	out := make([]V3RealtimeOutboxRecord, 0, limit)
-	for _, record := range records {
-		if len(out) >= limit {
-			break
+	prefix := V3RealtimeOutboxBySessionSeqPrefix(sessionID)
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutboxBySessionSeq(sessionID, afterSeq+1), Limit: limit}, func(_ string, value []byte) (bool, error) {
+		record, err := s.resolveV3RealtimeOutboxValue(value)
+		if err != nil {
+			return false, err
 		}
 		if record.SessionID != sessionID || record.Event.Seq <= afterSeq {
-			continue
+			return true, nil
 		}
 		out = append(out, record)
-	}
-	return out, nil
+		return len(out) < limit, nil
+	})
+	return out, err
 }
 
 func (s *SessionStore) readV3RealtimeOutboxSequence() (uint64, error) {
-	raw, ok, err := s.store.GetBytes(KeyV3RealtimeOutboxSequence())
-	if err != nil || !ok {
-		return 0, err
-	}
-	seq, err := bytesToUint64(raw)
-	if err != nil {
-		return 0, fmt.Errorf("decode v3 realtime outbox sequence: %w", err)
-	}
-	return seq, nil
+	return readV3RealtimeOutboxSequenceFromReader(s.store.db)
 }
 
 func (s *SessionStore) readV3SessionSequence(sessionID string) (uint64, error) {
@@ -1132,6 +1990,144 @@ func (s *SessionStore) resultFromV3IdempotencyRecord(record V3SessionIdempotency
 	return result, nil
 }
 
+func (s *SessionStore) setV3SessionRunStateInBatch(batch *pebble.Batch, intent V3SessionRunIntent, previous V3SessionRunState, previousOK bool) error {
+	if batch == nil {
+		return errors.New("pebble batch is required")
+	}
+	state := v3SessionRunStateFromIntent(intent)
+	state = v3SessionRunStateWithPreviousTiming(state, previous, previousOK)
+	activeKey := KeyV3SessionRunIntentActive(state.SessionID)
+	if previousOK && previous.Active {
+		previousAccountKey := KeyV3SessionRunIntentActiveByAccount(previous.AccountScopeID, previous.UpdatedAt, previous.SessionID, previous.RunID)
+		if err := batch.Delete([]byte(previousAccountKey), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return err
+		}
+	}
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshal v3 run state %q: %w", state.RunID, err)
+	}
+	if err := batch.Set([]byte(activeKey), payload, nil); err != nil {
+		return err
+	}
+	if state.Active {
+		accountKey := KeyV3SessionRunIntentActiveByAccount(state.AccountScopeID, state.UpdatedAt, state.SessionID, state.RunID)
+		if err := batch.Set([]byte(accountKey), payload, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func v3SessionRunStateFromIntent(intent V3SessionRunIntent) V3SessionRunState {
+	status := strings.TrimSpace(intent.Status)
+	updatedAt := intent.UpdatedAt
+	if updatedAt == 0 {
+		updatedAt = intent.CreatedAt
+	}
+	startedAt := int64(0)
+	if isV3RunIntentActive(status) || isV3RunIntentTerminal(status) {
+		startedAt = intent.CreatedAt
+	}
+	completedAt := int64(0)
+	durationMs := int64(0)
+	if isV3RunIntentTerminal(status) {
+		completedAt = updatedAt
+		if completedAt == 0 {
+			completedAt = intent.CreatedAt
+		}
+		durationMs = v3SessionRunDurationMs(startedAt, completedAt)
+	}
+	return V3SessionRunState{
+		SessionID:       strings.TrimSpace(intent.SessionID),
+		UserID:          strings.TrimSpace(intent.UserID),
+		AccountScopeID:  strings.TrimSpace(intent.AccountScopeID),
+		RunID:           strings.TrimSpace(intent.RunID),
+		Active:          isV3RunIntentActive(status),
+		Status:          status,
+		BlockedReason:   strings.TrimSpace(intent.BlockedReason),
+		CreatedAt:       intent.CreatedAt,
+		StartedAt:       startedAt,
+		CompletedAt:     completedAt,
+		DurationMs:      durationMs,
+		UpdatedAt:       updatedAt,
+		EventSeq:        intent.EventSeq,
+		EpochID:         strings.TrimSpace(intent.EpochID),
+		PlanID:          strings.TrimSpace(intent.PlanID),
+		CheckpointID:    strings.TrimSpace(intent.CheckpointID),
+		AttemptID:       strings.TrimSpace(intent.AttemptID),
+		RunSessionID:    strings.TrimSpace(intent.RunSessionID),
+		ParentSessionID: strings.TrimSpace(intent.ParentSessionID),
+		ResumeContext:   intent.ResumeContext,
+	}
+}
+
+func v3SessionRunStateWithPreviousTiming(state V3SessionRunState, previous V3SessionRunState, previousOK bool) V3SessionRunState {
+	if previousOK {
+		state.CumulativeDurationMs = previous.CumulativeDurationMs
+		if previous.RunID == state.RunID && previous.StartedAt > 0 {
+			state.StartedAt = previous.StartedAt
+		}
+	}
+	if !isV3RunIntentTerminal(state.Status) {
+		state.CompletedAt = 0
+		state.DurationMs = 0
+		return state
+	}
+	if state.CompletedAt == 0 {
+		state.CompletedAt = state.UpdatedAt
+		if state.CompletedAt == 0 {
+			state.CompletedAt = state.CreatedAt
+		}
+	}
+	state.DurationMs = v3SessionRunDurationMs(state.StartedAt, state.CompletedAt)
+	priorCumulative := state.CumulativeDurationMs
+	if previousOK && previous.RunID == state.RunID && previous.CompletedAt > 0 {
+		priorCumulative = previous.CumulativeDurationMs - previous.DurationMs
+		if priorCumulative < 0 {
+			priorCumulative = 0
+		}
+	}
+	state.CumulativeDurationMs = priorCumulative + state.DurationMs
+	return state
+}
+
+func v3SessionRunDurationMs(startedAt, completedAt int64) int64 {
+	if startedAt <= 0 || completedAt <= startedAt {
+		return 0
+	}
+	return completedAt - startedAt
+}
+
+func v3SessionRunIntentFromState(state V3SessionRunState) V3SessionRunIntent {
+	return v3SessionRunIntentWithStateTiming(V3SessionRunIntent{
+		SessionID:       strings.TrimSpace(state.SessionID),
+		UserID:          strings.TrimSpace(state.UserID),
+		AccountScopeID:  strings.TrimSpace(state.AccountScopeID),
+		RunID:           strings.TrimSpace(state.RunID),
+		Status:          strings.TrimSpace(state.Status),
+		BlockedReason:   strings.TrimSpace(state.BlockedReason),
+		CreatedAt:       state.CreatedAt,
+		UpdatedAt:       state.UpdatedAt,
+		EventSeq:        state.EventSeq,
+		EpochID:         strings.TrimSpace(state.EpochID),
+		PlanID:          strings.TrimSpace(state.PlanID),
+		CheckpointID:    strings.TrimSpace(state.CheckpointID),
+		AttemptID:       strings.TrimSpace(state.AttemptID),
+		RunSessionID:    strings.TrimSpace(state.RunSessionID),
+		ParentSessionID: strings.TrimSpace(state.ParentSessionID),
+		ResumeContext:   state.ResumeContext,
+	}, state)
+}
+
+func v3SessionRunIntentWithStateTiming(intent V3SessionRunIntent, state V3SessionRunState) V3SessionRunIntent {
+	intent.StartedAt = state.StartedAt
+	intent.CompletedAt = state.CompletedAt
+	intent.DurationMs = state.DurationMs
+	intent.CumulativeDurationMs = state.CumulativeDurationMs
+	return intent
+}
+
 func (s *SessionStore) validateV3RunIntentTransition(sessionID string, incoming V3SessionRunIntent) (V3SessionRunIntent, error) {
 	status := strings.TrimSpace(incoming.Status)
 	if status == "" {
@@ -1166,10 +2162,19 @@ func (s *SessionStore) validateV3RunIntentTransition(sessionID string, incoming 
 	}
 	if active, activeOK, err := s.GetV3SessionActiveRunIntent(sessionID); err != nil {
 		return V3SessionRunIntent{}, err
-	} else if activeOK && active.RunID != incoming.RunID && status == V3RunIntentRunning {
+	} else if activeOK && active.RunID != incoming.RunID && isV3RunIntentActive(status) {
 		return V3SessionRunIntent{}, fmt.Errorf("session %q already has active v3 run %q", sessionID, active.RunID)
 	}
 	return incoming, nil
+}
+
+func isV3RunIntentActive(status string) bool {
+	switch strings.TrimSpace(status) {
+	case V3RunIntentPendingExecutor, V3RunIntentRunning:
+		return true
+	default:
+		return false
+	}
 }
 
 func isV3RunIntentTerminal(status string) bool {
@@ -1179,6 +2184,106 @@ func isV3RunIntentTerminal(status string) bool {
 	default:
 		return false
 	}
+}
+
+func v3RunIntentLess(a, b V3SessionRunIntent) bool {
+	aPriority := v3RunIntentPriority(a.Status)
+	bPriority := v3RunIntentPriority(b.Status)
+	if aPriority != bPriority {
+		return aPriority < bPriority
+	}
+	if a.UpdatedAt != b.UpdatedAt {
+		return a.UpdatedAt < b.UpdatedAt
+	}
+	if a.EventSeq != b.EventSeq {
+		return a.EventSeq < b.EventSeq
+	}
+	return strings.TrimSpace(a.RunID) < strings.TrimSpace(b.RunID)
+}
+
+func v3RunIntentPriority(status string) int {
+	switch strings.TrimSpace(status) {
+	case V3RunIntentRunning:
+		return 2
+	case V3RunIntentPendingExecutor:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, now int64) (SessionTurnUsageSnapshot, SessionUsageSummary, bool, error) {
+	if input.TurnUsage == nil {
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, nil
+	}
+	usage := sanitizeTurnUsageSnapshot(*input.TurnUsage)
+	usage.SessionID = input.SessionID
+	if usage.RunID == "" {
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, errors.New("turn usage run id is required")
+	}
+	session, ok, err := s.GetSession(input.SessionID)
+	if err != nil {
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, err
+	}
+	if !ok {
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, fmt.Errorf("session %q not found", input.SessionID)
+	}
+	previous, hadPrevious, err := s.GetTurnUsage(input.SessionID, usage.RunID)
+	if err != nil {
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, err
+	}
+	summary, hasSummary, err := s.GetUsageSummary(input.SessionID)
+	if err != nil {
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, err
+	}
+	if !hasSummary {
+		summary = SessionUsageSummary{SessionID: input.SessionID}
+	}
+	if !hadPrevious {
+		summary.TurnCount++
+	}
+	usage.UserID = firstNonEmpty(usage.UserID, input.UserID, session.UserID)
+	usage.AccountScopeID = firstNonEmpty(usage.AccountScopeID, input.AccountScopeID, session.AccountScopeID)
+	if usage.CreatedAt <= 0 {
+		if hadPrevious && previous.CreatedAt > 0 {
+			usage.CreatedAt = previous.CreatedAt
+		} else {
+			usage.CreatedAt = now
+		}
+	}
+	usage.UpdatedAt = now
+	if usage.ContextWindow > 0 {
+		summary.ContextWindow = usage.ContextWindow
+	} else if summary.ContextWindow > 0 {
+		usage.ContextWindow = summary.ContextWindow
+	}
+	summary.SessionID = input.SessionID
+	summary.UserID = firstNonEmpty(summary.UserID, usage.UserID)
+	summary.AccountScopeID = firstNonEmpty(summary.AccountScopeID, usage.AccountScopeID)
+	if usage.Provider != "" {
+		summary.Provider = usage.Provider
+	}
+	if usage.Model != "" {
+		summary.Model = usage.Model
+	}
+	if usage.Source != "" {
+		summary.Source = usage.Source
+	}
+	summary.LastTransport = strings.ToLower(strings.TrimSpace(usage.Transport))
+	if usage.ConnectedViaWS != nil {
+		connected := *usage.ConnectedViaWS
+		summary.LastConnectedViaWS = &connected
+	} else {
+		summary.LastConnectedViaWS = nil
+	}
+	summary.LastRunID = usage.RunID
+	summary.UpdatedAt = now
+	if hadPrevious {
+		summary = ApplyProviderUsageSnapshotReplacementToSummary(summary, previous, usage)
+	} else {
+		summary = ApplyProviderUsageSnapshotToSummary(summary, usage)
+	}
+	return usage, summary, true, nil
 }
 
 func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput, seq uint64, now int64) (SessionSnapshot, bool, error) {
@@ -1220,6 +2325,22 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 			if input.Kind != V3SessionMutationUpdateMetadata && len(session.Metadata) == 0 && len(current.Metadata) > 0 {
 				session.Metadata = cloneSessionMetadataMap(current.Metadata)
 			}
+			if input.Kind != V3SessionMutationUpdateModelProfile && session.ModelProfile == nil && current.ModelProfile != nil {
+				profile := *current.ModelProfile
+				if profile.Single != nil {
+					selection := *profile.Single
+					profile.Single = &selection
+				}
+				if profile.Plan != nil {
+					selection := *profile.Plan
+					profile.Plan = &selection
+				}
+				if profile.Auto != nil {
+					selection := *profile.Auto
+					profile.Auto = &selection
+				}
+				session.ModelProfile = &profile
+			}
 		}
 		if session.UserID == "" {
 			session.UserID = input.UserID
@@ -1240,6 +2361,14 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 			return SessionSnapshot{}, false, err
 		}
 		if !ok {
+			if tombstone, tombstoneOK, tombstoneErr := s.GetV3SessionTombstone(input.SessionID); tombstoneErr != nil {
+				return SessionSnapshot{}, false, tombstoneErr
+			} else if tombstoneOK && tombstone.Archived && !tombstone.Deleted && tombstone.Session.ID != "" {
+				session = normalizeSessionForReactivation(tombstone.Session)
+				ok = true
+			}
+		}
+		if !ok {
 			return SessionSnapshot{}, false, fmt.Errorf("session %q not found", input.SessionID)
 		}
 		session.MessageCount++
@@ -1256,11 +2385,15 @@ func (s *SessionStore) setSessionInBatch(batch *pebble.Batch, session SessionSna
 	if err != nil {
 		return fmt.Errorf("marshal session %q: %w", session.ID, err)
 	}
+	var previous *SessionSnapshot
 	if existing, ok, err := s.GetSession(session.ID); err != nil {
 		return err
-	} else if ok && existing.AccountScopeID != "" && existing.AccountScopeID != session.AccountScopeID {
-		if err := batch.Delete([]byte(KeySessionByAccount(existing.AccountScopeID, session.ID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
-			return err
+	} else if ok {
+		previous = &existing
+		if existing.AccountScopeID != "" && existing.AccountScopeID != session.AccountScopeID {
+			if err := batch.Delete([]byte(KeySessionByAccount(existing.AccountScopeID, session.ID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+				return err
+			}
 		}
 	}
 	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
@@ -1270,6 +2403,12 @@ func (s *SessionStore) setSessionInBatch(batch *pebble.Batch, session SessionSna
 		if err := batch.Set([]byte(KeySessionByAccount(session.AccountScopeID, session.ID)), []byte(session.ID), nil); err != nil {
 			return err
 		}
+	}
+	if err := replaceSessionRecentIndexInBatch(batch, previous, &session); err != nil {
+		return err
+	}
+	if err := replaceSessionReviewAutoArchiveDueInBatch(batch, previous, &session); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1399,8 +2538,14 @@ func normalizeV3SessionMutationInput(input V3SessionMutationInput) V3SessionMuta
 }
 
 func validateV3SessionMutationInput(input V3SessionMutationInput) error {
-	if input.SessionID == "" {
-		return errors.New("session id is required")
+	if err := validateCanonicalSessionID(input.SessionID); err != nil {
+		return err
+	}
+	if input.UserID == "" {
+		return errors.New("user id is required")
+	}
+	if input.AccountScopeID == "" {
+		return errors.New("account scope id is required")
 	}
 	if input.ClientRequestID == "" {
 		return errors.New("client request id is required")
@@ -1416,6 +2561,78 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 	}
 	if len(input.EventPayload) > 0 && !json.Valid(input.EventPayload) {
 		return errors.New("event payload must be valid json")
+	}
+	if input.Session != nil {
+		if err := validateV3MutationEmbeddedOwnership(input, "session", input.Session.ID, input.Session.UserID, input.Session.AccountScopeID); err != nil {
+			return err
+		}
+	}
+	if input.Message != nil {
+		if err := validateV3MutationEmbeddedOwnership(input, "message", input.Message.SessionID, input.Message.UserID, input.Message.AccountScopeID); err != nil {
+			return err
+		}
+	}
+	if input.Lifecycle != nil {
+		if err := validateV3MutationEmbeddedOwnership(input, "lifecycle", input.Lifecycle.SessionID, input.Lifecycle.UserID, input.Lifecycle.AccountScopeID); err != nil {
+			return err
+		}
+	}
+	if input.RunIntent != nil {
+		if err := validateV3MutationEmbeddedOwnership(input, "run intent", input.RunIntent.SessionID, input.RunIntent.UserID, input.RunIntent.AccountScopeID); err != nil {
+			return err
+		}
+	}
+	if planSave := input.PlanSave; planSave != nil {
+		if err := validateV3MutationEmbeddedOwnership(input, "plan save", planSave.Plan.SessionID, planSave.Plan.UserID, planSave.Plan.AccountScopeID); err != nil {
+			return err
+		}
+		if planSave.ArchivedRevision != nil {
+			if err := validateV3MutationEmbeddedOwnership(input, "plan save archived revision", planSave.ArchivedRevision.SessionID, planSave.ArchivedRevision.UserID, planSave.ArchivedRevision.AccountScopeID); err != nil {
+				return err
+			}
+		}
+	}
+	if acceptance := input.PlanAcceptance; acceptance != nil {
+		if err := validateV3MutationEmbeddedOwnership(input, "plan", acceptance.Plan.SessionID, acceptance.Plan.UserID, acceptance.Plan.AccountScopeID); err != nil {
+			return err
+		}
+		if err := validateV3MutationEmbeddedOwnership(input, "plan acceptance session", acceptance.Session.ID, acceptance.Session.UserID, acceptance.Session.AccountScopeID); err != nil {
+			return err
+		}
+		if acceptance.ArchivedRevision != nil {
+			if err := validateV3MutationEmbeddedOwnership(input, "plan archived revision", acceptance.ArchivedRevision.SessionID, acceptance.ArchivedRevision.UserID, acceptance.ArchivedRevision.AccountScopeID); err != nil {
+				return err
+			}
+		}
+		if acceptance.ModeMessage != nil {
+			if err := validateV3MutationEmbeddedOwnership(input, "plan acceptance mode message", acceptance.ModeMessage.SessionID, acceptance.ModeMessage.UserID, acceptance.ModeMessage.AccountScopeID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateV3MutationEmbeddedOwnership(input V3SessionMutationInput, label, sessionID, userID, accountScopeID string) error {
+	if sessionID = strings.TrimSpace(sessionID); sessionID != "" && sessionID != input.SessionID {
+		return fmt.Errorf("%s session id does not match mutation session", label)
+	}
+	if userID = strings.TrimSpace(userID); userID != "" && userID != input.UserID {
+		return fmt.Errorf("%s user id does not match mutation ownership", label)
+	}
+	if accountScopeID = strings.TrimSpace(accountScopeID); accountScopeID != "" && accountScopeID != input.AccountScopeID {
+		return fmt.Errorf("%s account scope id does not match mutation ownership", label)
+	}
+	return nil
+}
+
+func validateCanonicalSessionID(sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return errors.New("session id is required")
+	}
+	if sessionID != strings.ToLower(sessionID) {
+		return errors.New("session id must be lowercase")
 	}
 	return nil
 }
@@ -1480,20 +2697,30 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.run_intent.recorded"
 	case V3SessionMutationRecordDiagnostic:
 		return "session.diagnostic"
+	case V3SessionMutationRecordUsage:
+		return "run.usage.updated"
 	case V3SessionMutationUpdateMode:
 		return "session.mode.updated"
 	case V3SessionMutationUpdatePreference:
 		return "session.preference.updated"
 	case V3SessionMutationUpdateMetadata:
 		return "session.metadata.updated"
+	case V3SessionMutationUpdateSettings:
+		return "session.settings.updated"
+	case V3SessionMutationUpdateModelProfile:
+		return "session.model_profile.updated"
 	case V3SessionMutationUpdateTitle:
 		return "session.title.updated"
+	case V3SessionMutationSavePlan:
+		return "session.plan.saved"
+	case V3SessionMutationAcceptPlan:
+		return "session.plan.saved"
 	default:
 		return input.Kind
 	}
 }
 
-func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSnapshot, message MessageSnapshot, lifecycle SessionLifecycleSnapshot, runIntent V3SessionRunIntent) (json.RawMessage, error) {
+func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSnapshot, message MessageSnapshot, lifecycle SessionLifecycleSnapshot, runIntent V3SessionRunIntent, turnUsage SessionTurnUsageSnapshot, usageSummary SessionUsageSummary) (json.RawMessage, error) {
 	if len(input.EventPayload) > 0 {
 		return append(json.RawMessage(nil), input.EventPayload...), nil
 	}
@@ -1522,6 +2749,19 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 		payload.RunIntent = &intent
 		payload.RunID = intent.RunID
 		payload.Status = intent.Status
+		payload.BlockedReason = intent.BlockedReason
+		if intent.Status == V3RunIntentFailed {
+			payload.Error = intent.BlockedReason
+		}
+	}
+	if turnUsage.RunID != "" {
+		usage := turnUsage
+		payload.TurnUsage = &usage
+		payload.RunID = usage.RunID
+	}
+	if usageSummary.SessionID != "" {
+		summary := usageSummary
+		payload.UsageSummary = &summary
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

@@ -25,6 +25,7 @@ function makeSession(overrides: Partial<DesktopSessionRecord> = {}): DesktopSess
       status: 'idle',
       step: 0,
       toolName: null,
+    sidebarToolName: null,
       toolCallId: null,
       toolArguments: null,
       toolOutput: '',
@@ -89,11 +90,10 @@ test('does not hydrate again for a full session.created snapshot', () => {
 
 test('does not hydrate again for a full mirrored session.updated snapshot', () => {
   const session = makeSession({
-    title: 'Remote Flow',
+    title: 'Remote session',
     workspacePath: '/host/workspace',
     workspaceName: 'workspace',
     metadata: {
-      source: 'flow',
       swarm_target_name: 'pc child',
     },
     updatedAt: 2,

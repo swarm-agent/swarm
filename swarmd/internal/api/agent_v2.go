@@ -145,6 +145,18 @@ func (s *Server) handleAgentsV2(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("view")), "summary") {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    true,
+			"state": compactAgentStateForDesktop(state),
+		})
+		return
+	}
+	state.Profiles, err = s.publicAgentProfiles(principal.AccountScopeID, state.Profiles)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	toolInventory, err := s.agentToolInventoryForAccount(principal.AccountScopeID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -156,6 +168,106 @@ func (s *Server) handleAgentsV2(w http.ResponseWriter, r *http.Request) {
 		"provider_defaults_preview": s.providerDefaultsPreviewForState(state),
 		"tool_inventory":            toolInventory,
 	})
+}
+
+func (s *Server) publicAgentProfiles(accountScopeID string, profiles []pebblestore.AgentProfile) ([]pebblestore.AgentProfile, error) {
+	out := make([]pebblestore.AgentProfile, 0, len(profiles)+8)
+	contexts := make(map[string]pebblestore.AgentProfile, len(profiles))
+	for _, profile := range profiles {
+		name := strings.ToLower(strings.TrimSpace(profile.Name))
+		contexts[name] = profile
+		if !agentruntime.IsReservedSystemAgentName(name) {
+			out = append(out, profile)
+		}
+	}
+	registry, err := s.agents.SystemAgentRegistry()
+	if err != nil {
+		return nil, err
+	}
+	systemSettings := map[string]pebblestore.AgentProfile{}
+	if s.uiSettings != nil {
+		settings, settingsErr := s.uiSettings.GetForAccount(strings.TrimSpace(accountScopeID))
+		if settingsErr != nil {
+			return nil, settingsErr
+		}
+		systemSettings[agentruntime.CompactAgentID] = pebblestore.AgentProfile{Provider: settings.Agents.Compact.Provider, Model: settings.Agents.Compact.Model, Thinking: settings.Agents.Compact.Thinking, AutoServiceTier: settings.Agents.Compact.ServiceTier}
+		systemSettings[agentruntime.FinderAgentID] = pebblestore.AgentProfile{Provider: settings.Agents.Finder.Provider, Model: settings.Agents.Finder.Model, Thinking: settings.Agents.Finder.Thinking, AutoServiceTier: settings.Agents.Finder.ServiceTier}
+		systemSettings[agentruntime.CoderAgentID] = pebblestore.AgentProfile{Provider: settings.Agents.Coder.Provider, Model: settings.Agents.Coder.Model, Thinking: settings.Agents.Coder.Thinking, AutoServiceTier: settings.Agents.Coder.ServiceTier}
+		systemSettings[agentruntime.DesignerAgentID] = pebblestore.AgentProfile{Provider: settings.Agents.Designer.Provider, Model: settings.Agents.Designer.Model, Thinking: settings.Agents.Designer.Thinking, AutoServiceTier: settings.Agents.Designer.ServiceTier}
+	}
+	for _, id := range registry.UserVisibleIDs() {
+		context := systemSettings[id]
+		if id == agentruntime.SwarmAgentID {
+			context = contexts[agentruntime.SwarmAgentID]
+		}
+		profile, err := registry.Materialize(id, context)
+		if err != nil {
+			return nil, err
+		}
+		profile.Protected = true
+		out = append(out, profile)
+	}
+	return out, nil
+}
+
+func compactAgentStateForDesktop(state agentruntime.State) map[string]any {
+	profiles := make([]compactAgentProfileForDesktop, 0, len(state.Profiles))
+	for _, profile := range state.Profiles {
+		profile = pebblestore.NormalizeAgentProfile(profile)
+		if agentruntime.IsReservedSystemAgentName(profile.Name) && profile.Name != agentruntime.SwarmAgentID {
+			continue
+		}
+		if profile.Name == agentruntime.SwarmAgentID {
+			profile = agentruntime.SwarmAgentProfileForContext(profile)
+		}
+		profiles = append(profiles, compactAgentProfileForDesktop{
+			Name:               profile.Name,
+			Mode:               profile.Mode,
+			Protected:          profile.Protected,
+			Provider:           profile.Provider,
+			Model:              profile.Model,
+			Thinking:           profile.Thinking,
+			ModelMode:          profile.ModelMode,
+			PlanProvider:       profile.PlanProvider,
+			PlanModel:          profile.PlanModel,
+			PlanThinking:       profile.PlanThinking,
+			PlanServiceTier:    profile.PlanServiceTier,
+			AutoProvider:       profile.AutoProvider,
+			AutoModel:          profile.AutoModel,
+			AutoThinking:       profile.AutoThinking,
+			AutoServiceTier:    profile.AutoServiceTier,
+			RuntimeMode:        pebblestore.AgentProfileRuntimeMode(profile),
+			DefaultSessionMode: pebblestore.AgentProfileDefaultSessionMode(profile),
+			Enabled:            profile.Enabled,
+		})
+	}
+	return map[string]any{
+		"profiles":        profiles,
+		"active_primary":  state.ActivePrimary,
+		"active_subagent": state.ActiveSubagent,
+		"version":         state.Version,
+	}
+}
+
+type compactAgentProfileForDesktop struct {
+	Name               string `json:"name"`
+	Mode               string `json:"mode"`
+	Protected          bool   `json:"protected,omitempty"`
+	Provider           string `json:"provider"`
+	Model              string `json:"model"`
+	Thinking           string `json:"thinking"`
+	ModelMode          string `json:"model_mode,omitempty"`
+	PlanProvider       string `json:"plan_provider,omitempty"`
+	PlanModel          string `json:"plan_model,omitempty"`
+	PlanThinking       string `json:"plan_thinking,omitempty"`
+	PlanServiceTier    string `json:"plan_service_tier,omitempty"`
+	AutoProvider       string `json:"auto_provider,omitempty"`
+	AutoModel          string `json:"auto_model,omitempty"`
+	AutoThinking       string `json:"auto_thinking,omitempty"`
+	AutoServiceTier    string `json:"auto_service_tier,omitempty"`
+	RuntimeMode        string `json:"runtime_mode,omitempty"`
+	DefaultSessionMode string `json:"default_session_mode,omitempty"`
+	Enabled            bool   `json:"enabled"`
 }
 
 func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Request) {
@@ -414,8 +526,26 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !ok {
-			writeError(w, http.StatusNotFound, errors.New("agent not found"))
-			return
+			if systemID, system := agentruntime.CanonicalSystemAgentID(name); system {
+				public, publicErr := s.publicAgentProfiles(principal.AccountScopeID, nil)
+				if publicErr != nil {
+					writeError(w, http.StatusInternalServerError, publicErr)
+					return
+				}
+				for _, candidate := range public {
+					if candidate.Name == systemID {
+						profile, ok = candidate, true
+						break
+					}
+				}
+			}
+			if !ok {
+				writeError(w, http.StatusNotFound, errors.New("agent not found"))
+				return
+			}
+		}
+		if _, system := agentruntime.CanonicalSystemAgentID(profile.Name); system {
+			profile.Protected = true
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":      true,
@@ -428,8 +558,18 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			Provider            *string                                 `json:"provider"`
 			Model               *string                                 `json:"model"`
 			Thinking            *string                                 `json:"thinking"`
+			ModelMode           string                                  `json:"model_mode"`
+			PlanProvider        *string                                 `json:"plan_provider"`
+			PlanModel           *string                                 `json:"plan_model"`
+			PlanThinking        *string                                 `json:"plan_thinking"`
+			PlanServiceTier     *string                                 `json:"plan_service_tier"`
+			AutoProvider        *string                                 `json:"auto_provider"`
+			AutoModel           *string                                 `json:"auto_model"`
+			AutoThinking        *string                                 `json:"auto_thinking"`
+			AutoServiceTier     *string                                 `json:"auto_service_tier"`
 			Prompt              string                                  `json:"prompt"`
 			RuntimeMode         string                                  `json:"runtime_mode"`
+			DefaultSessionMode  string                                  `json:"default_session_mode"`
 			ExecutionSetting    string                                  `json:"execution_setting"`
 			ExitPlanModeEnabled *bool                                   `json:"exit_plan_mode_enabled"`
 			ToolContract        *pebblestore.AgentToolContract          `json:"tool_contract"`
@@ -453,6 +593,38 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 		if req.Thinking != nil {
 			thinking = *req.Thinking
 		}
+		planProvider := ""
+		if req.PlanProvider != nil {
+			planProvider = *req.PlanProvider
+		}
+		planModel := ""
+		if req.PlanModel != nil {
+			planModel = *req.PlanModel
+		}
+		planThinking := ""
+		if req.PlanThinking != nil {
+			planThinking = *req.PlanThinking
+		}
+		planServiceTier := ""
+		if req.PlanServiceTier != nil {
+			planServiceTier = *req.PlanServiceTier
+		}
+		autoProvider := ""
+		if req.AutoProvider != nil {
+			autoProvider = *req.AutoProvider
+		}
+		autoModel := ""
+		if req.AutoModel != nil {
+			autoModel = *req.AutoModel
+		}
+		autoThinking := ""
+		if req.AutoThinking != nil {
+			autoThinking = *req.AutoThinking
+		}
+		autoServiceTier := ""
+		if req.AutoServiceTier != nil {
+			autoServiceTier = *req.AutoServiceTier
+		}
 		storedCustomTools := make([]pebblestore.AgentCustomToolDefinition, 0, len(req.CustomTools))
 		for _, definition := range req.CustomTools {
 			stored, err := s.agents.PutCustomToolForAccount(principal.AccountScopeID, definition)
@@ -472,8 +644,26 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			ProviderSet:         req.Provider != nil,
 			ModelSet:            req.Model != nil,
 			ThinkingSet:         req.Thinking != nil,
+			ModelMode:           req.ModelMode,
+			PlanProvider:        planProvider,
+			PlanModel:           planModel,
+			PlanThinking:        planThinking,
+			PlanServiceTier:     planServiceTier,
+			PlanProviderSet:     req.PlanProvider != nil,
+			PlanModelSet:        req.PlanModel != nil,
+			PlanThinkingSet:     req.PlanThinking != nil,
+			PlanServiceTierSet:  req.PlanServiceTier != nil,
+			AutoProvider:        autoProvider,
+			AutoModel:           autoModel,
+			AutoThinking:        autoThinking,
+			AutoServiceTier:     autoServiceTier,
+			AutoProviderSet:     req.AutoProvider != nil,
+			AutoModelSet:        req.AutoModel != nil,
+			AutoThinkingSet:     req.AutoThinking != nil,
+			AutoServiceTierSet:  req.AutoServiceTier != nil,
 			Prompt:              req.Prompt,
 			RuntimeMode:         req.RuntimeMode,
+			DefaultSessionMode:  req.DefaultSessionMode,
 			ExecutionSetting:    req.ExecutionSetting,
 			ExitPlanModeEnabled: req.ExitPlanModeEnabled,
 			ToolContract:        req.ToolContract,
@@ -518,22 +708,6 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 		})
 	default:
 		methodNotAllowed(w)
-	}
-}
-
-func isIntegrationFlowRequest(r *http.Request) bool {
-	if r == nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("flow"))) {
-	case "integration", "integrations":
-		return true
-	}
-	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("integration_flow"))) {
-	case "1", "true", "yes":
-		return true
-	default:
-		return false
 	}
 }
 

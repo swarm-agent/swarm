@@ -1,9 +1,8 @@
 import type { QueryClient } from "@tanstack/react-query";
 import {
-  requestJson,
   apiFetch,
   readErrorMessage,
-  ensureDesktopSession,
+  requestJson,
 } from "../../../../app/api";
 import type {
   DesktopPermissionRecord,
@@ -18,20 +17,21 @@ import type {
   AgentToolContractRuntimeRecord,
   ResolvedAgentToolContractRecord,
   ChatMessageRecord,
+  ModelContextModeRecord,
   ModelOptionRecord,
+  ModelPricingRecord,
+  ModelServiceTierMappingRecord,
+  ModelThinkingMappingRecord,
   ProviderDefaultsPreviewRecord,
   ResolvedSessionPreference,
+  DesktopSessionPlanCheckpoint,
   DesktopSessionPlanDocument,
   DesktopSessionPlanRecord,
   DesktopSessionPlanRevisionRecord,
 } from "../types/chat";
 import {
   applyDesktopChatRouteToSession,
-  desktopChatRouteFromSessionMetadata,
-  getDesktopSessionCreateV2Target,
-  isLocalContainerDesktopChatRoute,
-  isManagedHostDesktopChatRoute,
-  isPrimaryDesktopChatRoute,
+  getDesktopSessionCreateTarget,
   type DesktopChatRoute,
 } from "../services/chat-routing";
 import {
@@ -41,12 +41,11 @@ import {
 } from "../../services/session-workspace";
 import {
   modelAllowedByProviderPreset,
+  modelOptionKey,
   sortModelOptions,
-  supportsCodex1MMode,
 } from "../services/model-options";
 import { parseStructuredToolMessage } from "../services/tool-message";
-import { countApprovalRequiredPermissions } from "../../permissions/services/permission-payload";
-import { mergeDesktopV3DurableCachePatch } from "../../state/desktop-v3-durable-reducer";
+import { normalizeDesktopPermission } from "../../permissions/services/desktop-permission-normalization";
 
 interface SessionWire {
   id?: string;
@@ -171,14 +170,56 @@ interface V3RunIntentWire {
   status?: string;
   blocked_reason?: string;
   created_at?: number;
+  started_at?: number;
+  completed_at?: number;
+  duration_ms?: number;
+  cumulative_duration_ms?: number;
   updated_at?: number;
   event_seq?: number;
+}
+
+interface V3RealtimeOutboxWire {
+  endpoint_seq?: number;
+  endpoint_cursor?: string;
+  session_id?: string;
+}
+
+interface V3MutationWire {
+  realtime_outbox?: V3RealtimeOutboxWire | null;
+  session?: never;
+  messages?: never;
+  events?: never;
+  workset_id?: never;
+  worksets?: never;
+  subscriptions?: never;
 }
 
 interface V3MessageCommitResponseWire extends V3HydratedSessionResponseWire {
   ok?: boolean;
   message?: MessageWire;
   run_intent?: V3RunIntentWire | null;
+  realtime_outbox?: V3RealtimeOutboxWire | null;
+  mutation?: V3MutationWire | null;
+}
+
+interface V3CompactResponseWire {
+  ok?: boolean;
+  session_id?: string;
+  run_id?: string;
+  status?: string;
+  error?: string;
+  run_intent?: V3RunIntentWire | null;
+  compaction?: {
+    run_id?: string;
+    status?: string;
+    owner_transport?: string;
+  };
+  terminal?: {
+    event_type?: string;
+    phase?: string;
+  };
+  mutation?: V3MutationWire | null;
+  realtime_outbox?: V3RealtimeOutboxWire | null;
 }
 
 export type V3RunIntentRecord = DesktopRunIntentRecord;
@@ -189,6 +230,30 @@ export interface SendSessionMessageResult {
   message?: ChatMessageRecord | null;
   messages?: ChatMessageRecord[];
   runIntent?: V3RunIntentRecord | null;
+  events?: unknown[];
+  realtimeOutbox?: {
+    endpointSeq: number;
+    endpointCursor: string;
+    sessionId: string;
+  } | null;
+}
+
+export interface CompactSessionV3Result {
+  ok?: boolean;
+  sessionId?: string;
+  runId?: string;
+  status?: string;
+  error?: string;
+  ownerTransport?: string;
+  terminal?: {
+    eventType: string;
+    phase: string;
+  };
+  session?: DesktopSessionRecord;
+  runIntent?: V3RunIntentRecord | null;
+  realtimeOutbox?: SendSessionMessageResult['realtimeOutbox'];
+  assistantMessage?: ChatMessageRecord | null;
+  usageSummary?: DesktopSessionUsageRecord | null;
   events?: unknown[];
 }
 
@@ -213,41 +278,19 @@ function resolveSessionApiForSession(
   _sessionId: string,
   options: SessionDataRequestOptions = {},
 ): string {
-  return options.sessionApi?.trim().toLowerCase() ?? "";
+  const sessionApi = options.sessionApi?.trim().toLowerCase() ?? "";
+  if (sessionApi && sessionApi !== "v3") {
+    throw new Error("Desktop sessions only support Sessions API v3.");
+  }
+  return "v3";
 }
 
-function rejectV3SessionV2Subresource(_sessionId: string, _subresource: string): void {
-  // Desktop V3 no longer infers session API from ID shape. Callers that know they
-  // are operating on V3 sessions must use explicit V3 APIs/cache paths instead
-  // of these legacy V2 subresource helpers.
+function rejectLegacyDesktopSessionPath(_sessionId: string, subresource: string): never {
+  throw new Error(`Legacy desktop session ${subresource} is disabled; use Sessions API v3.`);
 }
 
 interface SendSessionMessageOptions extends SessionDataRequestOptions {
   clientRequestId?: string | null;
-}
-
-interface SessionPreferenceWire {
-  preference?: {
-    provider?: string;
-    model?: string;
-    thinking?: string;
-    service_tier?: string;
-    context_mode?: string;
-    updated_at?: number;
-  };
-  context_window?: number;
-  max_output_tokens?: number;
-}
-
-interface SessionCodexConfigWire {
-  session_id?: string;
-  provider?: string;
-  model?: string;
-  thinking?: string;
-  service_tier?: string;
-  context_mode?: string;
-  effective_context_window?: number;
-  updated_at?: number;
 }
 
 export interface DesktopSessionCodexConfig {
@@ -280,8 +323,16 @@ interface SessionUsageSummaryWire {
   model?: string;
   source?: string;
   context_window?: number;
+  turn_count?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  thinking_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
   total_tokens?: number;
   remaining_tokens?: number;
+  service_tier?: string;
+  estimated_cost_usd?: number;
   updated_at?: number;
 }
 
@@ -300,6 +351,58 @@ interface SessionPlanInfoWire {
   validation?: string | string[];
 }
 
+interface SessionPlanExecutionPolicyWire {
+  mode?: string;
+  shape?: string;
+  followup_checkpoint_policy?: string;
+}
+
+interface SessionPlanExecutionStateWire {
+  status?: string;
+  active_attempt_id?: string;
+  parent_session_id?: string;
+  current_session_id?: string;
+  current_run_id?: string;
+  last_checkpoint_id?: string;
+  last_attempt_id?: string;
+  last_outcome?: string;
+  started_at?: number;
+  updated_at?: number;
+  completed_at?: number;
+}
+
+interface SessionPlanCheckpointReviewWire {
+  status?: string;
+  reviewer_id?: string;
+  reviewer_type?: string;
+  result?: string;
+  notes?: string;
+  reviewed_at?: number;
+}
+
+interface SessionPlanCheckpointAttemptWire {
+  id?: string;
+  checkpoint_id?: string;
+  status?: string;
+  outcome?: string;
+  run_id?: string;
+  session_id?: string;
+  parent_session_id?: string;
+  started_at?: number;
+  completed_at?: number;
+  report?: string;
+  result?: string;
+  changed_files?: string[];
+  validation?: string[];
+}
+
+interface SessionPlanArtifactReferenceWire {
+  path?: string;
+  role?: string;
+  description?: string;
+  media_type?: string;
+}
+
 interface SessionPlanCheckpointWire {
   id?: string;
   title?: string;
@@ -307,11 +410,19 @@ interface SessionPlanCheckpointWire {
   objective?: string;
   tasks?: string[];
   acceptance_criteria?: string[];
+  artifacts?: SessionPlanArtifactReferenceWire[] | null;
   notes?: string;
   report?: string;
   result?: string;
   changed_files?: string[];
   validation?: string[];
+  attempt_id?: string;
+  run_id?: string;
+  session_id?: string;
+  started_at?: number;
+  completed_at?: number;
+  review?: SessionPlanCheckpointReviewWire | null;
+  attempts?: SessionPlanCheckpointAttemptWire[] | null;
   order?: number;
 }
 
@@ -322,7 +433,11 @@ interface SessionPlanDocumentWire {
   schema_version?: string;
   revision_id?: string;
   info?: SessionPlanInfoWire | null;
+  execution_policy?: SessionPlanExecutionPolicyWire | null;
+  execution_state?: SessionPlanExecutionStateWire | null;
+  artifacts?: SessionPlanArtifactReferenceWire[] | null;
   checkpoints?: SessionPlanCheckpointWire[] | null;
+  original_checkpoints?: SessionPlanCheckpointWire[] | null;
   active_checkpoint_id?: string;
   rendered_text?: string;
   display_text?: string;
@@ -343,6 +458,8 @@ interface SessionPlanWire {
   update_summary?: string;
   update_scope?: string;
   update_kind?: string;
+  revision_kind?: string;
+  restored_from_version?: number;
   version?: number;
   parent_revision?: number;
   checkpoint?: boolean;
@@ -433,8 +550,18 @@ type AgentStateWire = {
       provider?: string;
       model?: string;
       thinking?: string;
+      model_mode?: string;
+      plan_provider?: string;
+      plan_model?: string;
+      plan_thinking?: string;
+      plan_service_tier?: string;
+      auto_provider?: string;
+      auto_model?: string;
+      auto_thinking?: string;
+      auto_service_tier?: string;
       prompt?: string;
       runtime_mode?: string;
+      default_session_mode?: string;
       execution_setting?: string;
       exit_plan_mode_enabled?: boolean;
       tool_scope?: {
@@ -467,8 +594,18 @@ type RestoreAgentDefaultsWire = {
     provider?: string;
     model?: string;
     thinking?: string;
+    model_mode?: string;
+    plan_provider?: string;
+    plan_model?: string;
+    plan_thinking?: string;
+    plan_service_tier?: string;
+    auto_provider?: string;
+    auto_model?: string;
+    auto_thinking?: string;
+    auto_service_tier?: string;
     prompt?: string;
     runtime_mode?: string;
+    default_session_mode?: string;
     execution_setting?: string;
     exit_plan_mode_enabled?: boolean;
     enabled?: boolean;
@@ -501,10 +638,43 @@ interface FavoritesResponseWire {
   records?: FavoriteRecordWire[];
 }
 
+interface ModelThinkingMappingWire {
+  swarm_setting?: string;
+  provider_parameter?: string;
+  provider_value?: string;
+  effective_provider_value?: string;
+  behavior?: string;
+}
+
+interface ModelServiceTierMappingWire {
+  tier?: string;
+  swarm_setting?: string;
+  provider_parameter?: string;
+  provider_value?: string;
+  beta_header?: string;
+  request_model_path?: string;
+}
+
+interface ModelContextModeWire {
+  mode?: string;
+  label?: string;
+  context_window?: number;
+  default?: boolean;
+}
+
 interface ModelCatalogRecordWire {
   provider?: string;
   model?: string;
   context_window?: number;
+  pricing?: ModelPricingRecord | null;
+  thinking_options?: string[] | null;
+  default_thinking?: string | null;
+  thinking_provider_parameter?: string | null;
+  thinking_mappings?: ModelThinkingMappingWire[] | null;
+  service_tiers?: string[] | null;
+  default_service_tier?: string | null;
+  service_tier_mappings?: ModelServiceTierMappingWire[] | null;
+  context_modes?: ModelContextModeWire[] | null;
 }
 
 interface CatalogResponseWire {
@@ -519,6 +689,7 @@ function emptyLiveState(): DesktopSessionRecord["live"] {
     status: "idle",
     step: 0,
     toolName: null,
+    sidebarToolName: null,
     toolCallId: null,
     toolArguments: null,
     toolOutput: "",
@@ -574,27 +745,17 @@ function mapSessionUsageSummary(
     model: String(summary.model ?? "").trim(),
     source: String(summary.source ?? "").trim(),
     contextWindow,
+    turnCount: typeof summary.turn_count === "number" ? summary.turn_count : 0,
+    inputTokens: typeof summary.input_tokens === "number" ? summary.input_tokens : 0,
+    outputTokens: typeof summary.output_tokens === "number" ? summary.output_tokens : 0,
+    thinkingTokens: typeof summary.thinking_tokens === "number" ? summary.thinking_tokens : 0,
+    cacheReadTokens: typeof summary.cache_read_tokens === "number" ? summary.cache_read_tokens : 0,
+    cacheWriteTokens: typeof summary.cache_write_tokens === "number" ? summary.cache_write_tokens : 0,
     totalTokens,
     remainingTokens,
+    serviceTier: String(summary.service_tier ?? "").trim(),
+    estimatedCostUSD: typeof summary.estimated_cost_usd === "number" ? summary.estimated_cost_usd : 0,
     updatedAt,
-  };
-}
-
-function mapSessionCodexConfig(
-  config: SessionCodexConfigWire | null | undefined,
-): DesktopSessionCodexConfig {
-  return {
-    sessionId: String(config?.session_id ?? "").trim(),
-    provider: String(config?.provider ?? "").trim(),
-    model: String(config?.model ?? "").trim(),
-    thinking: String(config?.thinking ?? "").trim(),
-    serviceTier: String(config?.service_tier ?? "").trim(),
-    contextMode: String(config?.context_mode ?? "").trim(),
-    effectiveContextWindow:
-      typeof config?.effective_context_window === "number"
-        ? config.effective_context_window
-        : 0,
-    updatedAt: typeof config?.updated_at === "number" ? config.updated_at : 0,
   };
 }
 
@@ -625,22 +786,11 @@ function mapSessionPlanDocument(
         ? mapStringArray(info.validation).join("; ")
         : String(info.validation_strategy ?? info.validation ?? "").trim(),
     },
-    checkpoints: Array.isArray(document.checkpoints)
-      ? document.checkpoints.map((checkpoint, index) => ({
-          id: String(checkpoint?.id ?? "").trim(),
-          title: String(checkpoint?.title ?? "").trim(),
-          status: String(checkpoint?.status ?? "").trim(),
-          objective: String(checkpoint?.objective ?? "").trim(),
-          tasks: mapStringArray(checkpoint?.tasks),
-          acceptanceCriteria: mapStringArray(checkpoint?.acceptance_criteria),
-          notes: String(checkpoint?.notes ?? "").trim(),
-          report: String(checkpoint?.report ?? "").trim(),
-          result: String(checkpoint?.result ?? "").trim(),
-          changedFiles: mapStringArray(checkpoint?.changed_files),
-          validation: mapStringArray(checkpoint?.validation),
-          order: typeof checkpoint?.order === "number" ? checkpoint.order : index + 1,
-        }))
-      : [],
+    executionPolicy: mapSessionPlanExecutionPolicy(document.execution_policy),
+    executionState: mapSessionPlanExecutionState(document.execution_state),
+    artifacts: mapSessionPlanArtifacts(document.artifacts),
+    checkpoints: mapSessionPlanCheckpoints(document.checkpoints),
+    originalCheckpoints: mapSessionPlanCheckpoints(document.original_checkpoints),
     activeCheckpointId: String(document.active_checkpoint_id ?? "").trim(),
     renderedText: String(document.rendered_text ?? ""),
     displayText: String(document.display_text ?? ""),
@@ -662,6 +812,106 @@ export function mapDesktopSessionPlan(
   };
 }
 
+function mapSessionPlanCheckpoints(checkpoints: SessionPlanCheckpointWire[] | null | undefined): DesktopSessionPlanCheckpoint[] {
+  return Array.isArray(checkpoints)
+    ? checkpoints.map((checkpoint, index) => ({
+        id: String(checkpoint?.id ?? "").trim(),
+        title: String(checkpoint?.title ?? "").trim(),
+        status: String(checkpoint?.status ?? "").trim(),
+        objective: String(checkpoint?.objective ?? "").trim(),
+        tasks: mapStringArray(checkpoint?.tasks),
+        acceptanceCriteria: mapStringArray(checkpoint?.acceptance_criteria),
+        artifacts: mapSessionPlanArtifacts(checkpoint?.artifacts),
+        notes: String(checkpoint?.notes ?? "").trim(),
+        report: String(checkpoint?.report ?? "").trim(),
+        result: String(checkpoint?.result ?? "").trim(),
+        changedFiles: mapStringArray(checkpoint?.changed_files),
+        validation: mapStringArray(checkpoint?.validation),
+        attemptId: String(checkpoint?.attempt_id ?? "").trim(),
+        runId: String(checkpoint?.run_id ?? "").trim(),
+        sessionId: String(checkpoint?.session_id ?? "").trim(),
+        startedAt: typeof checkpoint?.started_at === "number" ? checkpoint.started_at : 0,
+        completedAt: typeof checkpoint?.completed_at === "number" ? checkpoint.completed_at : 0,
+        review: mapSessionPlanCheckpointReview(checkpoint?.review),
+        attempts: mapSessionPlanCheckpointAttempts(checkpoint?.attempts),
+        order: typeof checkpoint?.order === "number" ? checkpoint.order : index + 1,
+      }))
+    : [];
+}
+
+function mapSessionPlanArtifacts(artifacts: SessionPlanArtifactReferenceWire[] | null | undefined): DesktopSessionPlanDocument['artifacts'] {
+  return Array.isArray(artifacts)
+    ? artifacts
+        .map((artifact) => ({
+          path: String(artifact?.path ?? "").trim(),
+          role: String(artifact?.role ?? "").trim(),
+          description: String(artifact?.description ?? "").trim(),
+          mediaType: String(artifact?.media_type ?? "").trim(),
+        }))
+        .filter((artifact) => artifact.path)
+    : [];
+}
+
+function mapSessionPlanExecutionPolicy(policy: SessionPlanExecutionPolicyWire | null | undefined): DesktopSessionPlanDocument['executionPolicy'] {
+  if (!policy) return null;
+  const mapped = {
+    mode: String(policy.mode ?? "").trim(),
+    shape: String(policy.shape ?? "").trim(),
+    followupCheckpointPolicy: String(policy.followup_checkpoint_policy ?? "").trim(),
+  };
+  return mapped.mode || mapped.shape || mapped.followupCheckpointPolicy ? mapped : null;
+}
+
+function mapSessionPlanExecutionState(state: SessionPlanExecutionStateWire | null | undefined): DesktopSessionPlanDocument['executionState'] {
+  if (!state) return null;
+  const mapped = {
+    status: String(state.status ?? "").trim(),
+    activeAttemptId: String(state.active_attempt_id ?? "").trim(),
+    parentSessionId: String(state.parent_session_id ?? "").trim(),
+    currentSessionId: String(state.current_session_id ?? "").trim(),
+    currentRunId: String(state.current_run_id ?? "").trim(),
+    lastCheckpointId: String(state.last_checkpoint_id ?? "").trim(),
+    lastAttemptId: String(state.last_attempt_id ?? "").trim(),
+    lastOutcome: String(state.last_outcome ?? "").trim(),
+    startedAt: typeof state.started_at === "number" ? state.started_at : 0,
+    updatedAt: typeof state.updated_at === "number" ? state.updated_at : 0,
+    completedAt: typeof state.completed_at === "number" ? state.completed_at : 0,
+  };
+  return mapped.status || mapped.activeAttemptId || mapped.currentRunId || mapped.lastCheckpointId ? mapped : null;
+}
+
+function mapSessionPlanCheckpointReview(review: SessionPlanCheckpointReviewWire | null | undefined): DesktopSessionPlanCheckpoint["review"] {
+  if (!review) return null;
+  const mapped = {
+    status: String(review.status ?? "").trim(),
+    reviewerId: String(review.reviewer_id ?? "").trim(),
+    reviewerType: String(review.reviewer_type ?? "").trim(),
+    result: String(review.result ?? "").trim(),
+    notes: String(review.notes ?? "").trim(),
+    reviewedAt: typeof review.reviewed_at === "number" ? review.reviewed_at : 0,
+  };
+  return mapped.status || mapped.reviewerId || mapped.result || mapped.notes || mapped.reviewedAt > 0 ? mapped : null;
+}
+
+function mapSessionPlanCheckpointAttempts(attempts: SessionPlanCheckpointAttemptWire[] | null | undefined): DesktopSessionPlanCheckpoint["attempts"] {
+  if (!Array.isArray(attempts)) return [];
+  return attempts.map((attempt) => ({
+    id: String(attempt?.id ?? "").trim(),
+    checkpointId: String(attempt?.checkpoint_id ?? "").trim(),
+    status: String(attempt?.status ?? "").trim(),
+    outcome: String(attempt?.outcome ?? "").trim(),
+    runId: String(attempt?.run_id ?? "").trim(),
+    sessionId: String(attempt?.session_id ?? "").trim(),
+    parentSessionId: String(attempt?.parent_session_id ?? "").trim(),
+    startedAt: typeof attempt?.started_at === "number" ? attempt.started_at : 0,
+    completedAt: typeof attempt?.completed_at === "number" ? attempt.completed_at : 0,
+    report: String(attempt?.report ?? "").trim(),
+    result: String(attempt?.result ?? "").trim(),
+    changedFiles: mapStringArray(attempt?.changed_files),
+    validation: mapStringArray(attempt?.validation),
+  }));
+}
+
 export function mapDesktopSessionPlanRevision(
   value: unknown,
   index: number,
@@ -681,15 +931,14 @@ export function mapDesktopSessionPlanRevision(
     updateSummary: String(plan?.update_summary ?? "").trim(),
     updateScope: String(plan?.update_scope ?? "").trim(),
     updateKind: String(plan?.update_kind ?? "").trim(),
+    revisionKind: String(plan?.revision_kind ?? "").trim(),
+    restoredFromVersion:
+      typeof plan?.restored_from_version === "number" ? plan.restored_from_version : 0,
     version,
     parentRevision:
       typeof plan?.parent_revision === "number" ? plan.parent_revision : 0,
     checkpoint: Boolean(plan?.checkpoint),
   };
-}
-
-function routeFromSessionMetadata(session: DesktopSessionRecord): DesktopChatRoute | null {
-  return desktopChatRouteFromSessionMetadata(session);
 }
 
 export function mapDesktopSession(session: unknown): DesktopSessionRecord {
@@ -700,8 +949,8 @@ export function mapDesktopSessionUsageSummary(summary: unknown): DesktopSessionU
   return mapSessionUsageSummary(summary as SessionUsageSummaryWire | null | undefined);
 }
 
-export function mapDesktopSessionPermission(permission: unknown): DesktopPermissionRecord {
-  return mapResolvedPermission(permission as ResolvePermissionResponseWire["permission"]);
+export function mapDesktopSessionPermission(permission: unknown, expectedSessionId = ''): DesktopPermissionRecord | null {
+  return normalizeDesktopPermission(permission, expectedSessionId);
 }
 
 function mapSessionProjectionToSession(session: SessionWire, projection: SessionProjectionWire | null | undefined): SessionWire {
@@ -764,8 +1013,23 @@ function mapV3RunIntent(intent: V3RunIntentWire | null | undefined): DesktopRunI
     status: String(intent.status ?? "").trim(),
     blockedReason: String(intent.blocked_reason ?? "").trim(),
     createdAt: typeof intent.created_at === "number" ? intent.created_at : 0,
+    startedAt: typeof intent.started_at === "number" ? intent.started_at : undefined,
+    completedAt: typeof intent.completed_at === "number" ? intent.completed_at : undefined,
+    durationMs: typeof intent.duration_ms === "number" ? intent.duration_ms : undefined,
+    cumulativeDurationMs: typeof intent.cumulative_duration_ms === "number" ? intent.cumulative_duration_ms : undefined,
     updatedAt: typeof intent.updated_at === "number" ? intent.updated_at : 0,
     eventSeq: typeof intent.event_seq === "number" ? intent.event_seq : 0,
+  };
+}
+
+function mapV3RealtimeOutbox(row: V3RealtimeOutboxWire | null | undefined): SendSessionMessageResult['realtimeOutbox'] {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+  return {
+    endpointSeq: typeof row.endpoint_seq === 'number' ? row.endpoint_seq : 0,
+    endpointCursor: String(row.endpoint_cursor ?? '').trim(),
+    sessionId: String(row.session_id ?? '').trim(),
   };
 }
 
@@ -779,53 +1043,29 @@ function mapV3MessageCommitResponse(response: V3MessageCommitResponseWire): Send
     messages: Array.isArray(response.messages) ? response.messages.map(mapChatMessage) : [],
     runIntent: mapV3RunIntent(response.run_intent),
     events: Array.isArray(response.events) ? response.events : [],
+    realtimeOutbox: mapV3RealtimeOutbox(response.realtime_outbox ?? response.mutation?.realtime_outbox),
   };
 }
 
-function mapLiveStatusFromRunIntent(status: string): DesktopSessionRecord["live"]["status"] {
-  switch (status.trim().toLowerCase()) {
-    case "pending_executor":
-      return "starting";
-    case "running":
-      return "running";
-    case "dispatch_blocked":
-      return "blocked";
-    case "failed":
-    case "cancelled":
-    case "expired":
-    case "interrupted":
-      return "error";
-    case "completed":
-      return "idle";
-    default:
-      return "idle";
-  }
-}
-
-function v3RunIntentStatusActive(status: string): boolean {
-  const normalized = status.trim().toLowerCase();
-  return normalized === "pending_executor" || normalized === "running";
-}
-
-function applyActiveRunIntent(session: DesktopSessionRecord, runIntent: DesktopRunIntentRecord | null): DesktopSessionRecord {
-  if (!runIntent || !v3RunIntentStatusActive(runIntent.status)) {
-    return { ...session, runIntent: null };
-  }
+function mapV3CompactResponse(response: V3CompactResponseWire): CompactSessionV3Result {
   return {
-    ...session,
-    sessionApi: session.sessionApi || "v3",
-    runIntent,
-    live: {
-      ...session.live,
-      runId: runIntent.runId || session.live.runId,
-      startedAt: runIntent.createdAt > 0 ? runIntent.createdAt : session.live.startedAt,
-      status: mapLiveStatusFromRunIntent(runIntent.status),
-      summary: runIntent.status.trim().toLowerCase() === "pending_executor"
-        ? "Pending executor…"
-        : session.live.summary,
-      error: null,
-      lastEventAt: runIntent.updatedAt > 0 ? runIntent.updatedAt : session.live.lastEventAt,
-    },
+    ok: response.ok,
+    sessionId: String(response.session_id ?? '').trim(),
+    runId: String(response.run_id ?? response.compaction?.run_id ?? response.run_intent?.run_id ?? '').trim(),
+    status: String(response.status ?? response.compaction?.status ?? response.run_intent?.status ?? '').trim(),
+    error: typeof response.error === 'string' ? response.error.trim() : undefined,
+    ownerTransport: String(response.compaction?.owner_transport ?? '').trim(),
+    terminal: response.terminal && typeof response.terminal === 'object'
+      ? {
+          eventType: String(response.terminal.event_type ?? '').trim(),
+          phase: String(response.terminal.phase ?? '').trim(),
+        }
+      : undefined,
+    runIntent: mapV3RunIntent(response.run_intent),
+    realtimeOutbox: mapV3RealtimeOutbox(response.realtime_outbox ?? response.mutation?.realtime_outbox),
+    assistantMessage: null,
+    usageSummary: null,
+    events: [],
   };
 }
 
@@ -863,13 +1103,12 @@ function mapSession(session: SessionWire): DesktopSessionRecord {
         }
       : null;
   const normalizedLifecyclePhase = lifecycle?.phase.trim().toLowerCase() ?? "";
-  const liveStatus = lifecycle?.active
-    ? ((["starting", "running", "blocked"].includes(normalizedLifecyclePhase)
-        ? normalizedLifecyclePhase
-        : "running") as DesktopSessionRecord["live"]["status"])
-    : normalizedLifecyclePhase === "errored"
-      ? "error"
-      : "idle";
+  const terminalLifecycleSummary = normalizedLifecyclePhase === "errored"
+    ? (lifecycle?.error ?? lifecycle?.stopReason ?? null)
+    : (lifecycle?.stopReason ?? null);
+  const terminalLifecycleError = normalizedLifecyclePhase === "errored"
+    ? (lifecycle?.error ?? lifecycle?.stopReason ?? null)
+    : null;
   const metadata =
     session.metadata && typeof session.metadata === "object"
       ? (session.metadata as Record<string, unknown>)
@@ -959,22 +1198,9 @@ function mapSession(session: SessionWire): DesktopSessionRecord {
     runIntent: null,
     live: {
       ...emptyLiveState(),
-      runId: lifecycle?.active ? lifecycle.runId : null,
-      startedAt:
-        lifecycle?.active && lifecycle.startedAt > 0
-          ? lifecycle.startedAt
-          : null,
-      status: liveStatus,
       lastEventAt: lifecycle?.updatedAt ? lifecycle.updatedAt : null,
-      summary: lifecycle?.active
-        ? null
-        : normalizedLifecyclePhase === "errored"
-          ? (lifecycle?.error ?? lifecycle?.stopReason ?? null)
-          : (lifecycle?.stopReason ?? null),
-      error:
-        normalizedLifecyclePhase === "errored"
-          ? (lifecycle?.error ?? lifecycle?.stopReason ?? null)
-          : null,
+      summary: terminalLifecycleSummary,
+      error: terminalLifecycleError,
     },
     pendingPermissions: [],
     pendingPermissionCount: 0,
@@ -982,137 +1208,40 @@ function mapSession(session: SessionWire): DesktopSessionRecord {
   };
 }
 
-export async function fetchSession(
-  sessionId: string,
-  options: SessionDataRequestOptions = {},
-): Promise<DesktopSessionRecord | null> {
-  const normalizedSessionId = sessionId.trim();
-  if (!normalizedSessionId) {
-    return null;
-  }
-
-  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options) || "v3";
-  if (sessionApi === "v3") {
-    const response = await requestJson<V3HydratedSessionResponseWire>(
-      `/v3/sessions/${encodeURIComponent(normalizedSessionId)}`,
-    );
-    const mappedSession = applyActiveRunIntent(
-      mapSession(mapSessionProjectionToSession(response.session ?? {}, response.projection)),
-      mapV3RunIntent(response.active_run_intent),
-    );
-    const mapped = applyDesktopChatRouteToSession(
-      mappedSession,
-      routeFromSessionMetadata(mappedSession),
-    );
-    mapped.permissionsHydrated = true;
-    mapped.pendingPermissions = mapDesktopV3PendingPermissions(response.pending_permissions);
-    mapped.pendingPermissionCount = countApprovalRequiredPermissions(mapped.pendingPermissions, mapped.mode);
-    mapped.usage = mapSessionUsageSummary(response.usage_summary);
-    return mapped.id ? applySessionProjectionCursor(mapped, response.projection) : null;
-  }
-
-  const response = await requestJson<{ session?: SessionWire }>(
-    `/v2/sessions/${encodeURIComponent(normalizedSessionId)}`,
-  );
-  const mappedSession = mapSession(response.session ?? {});
-  const mapped = applyDesktopChatRouteToSession(
-    mappedSession,
-    routeFromSessionMetadata(mappedSession),
-  );
-  mapped.permissionsHydrated = false;
-  return mapped.id ? mapped : null;
-}
-
-function mapDesktopV3PendingPermissions(permissions: ResolvePermissionResponseWire["permission"][] | undefined): DesktopPermissionRecord[] {
-  return Array.isArray(permissions)
-    ? permissions
-        .map((permission) => mapResolvedPermission(permission))
-        .filter(
-          (permission) =>
-            permission.id !== "" &&
-            permission.sessionId !== "" &&
-            permission.status === "pending",
-        )
-    : [];
-}
 
 function mapResolvedPermission(
   permission: ResolvePermissionResponseWire["permission"],
   savedRule?: ResolvePermissionResponseWire["saved_rule"],
-): DesktopPermissionRecord {
-  return {
-    id: String(permission?.id ?? "").trim(),
-    sessionId: String(permission?.session_id ?? "").trim(),
-    runId: String(permission?.run_id ?? "").trim(),
-    callId: String(permission?.call_id ?? "").trim(),
-    toolName: String(permission?.tool_name ?? "").trim(),
-    toolArguments: String(permission?.tool_arguments ?? "").trim(),
-    approvedArguments:
-      String(
-        (permission as { approved_arguments?: unknown } | undefined)
-          ?.approved_arguments ?? "",
-      ).trim() || undefined,
-    savedRule: savedRule
-      ? {
-          id: String(savedRule.id ?? "").trim(),
-          kind: String(savedRule.kind ?? "").trim(),
-          decision: String(savedRule.decision ?? "").trim(),
-          tool:
-            typeof savedRule.tool === "string"
-              ? savedRule.tool.trim()
-              : undefined,
-          pattern:
-            typeof savedRule.pattern === "string"
-              ? savedRule.pattern.trim()
-              : undefined,
-          createdAt:
-            typeof savedRule.created_at === "number"
-              ? savedRule.created_at
-              : undefined,
-          updatedAt:
-            typeof savedRule.updated_at === "number"
-              ? savedRule.updated_at
-              : undefined,
-        }
-      : undefined,
-    status: String(permission?.status ?? "").trim(),
-    decision: String(permission?.decision ?? "").trim(),
-    reason: String(permission?.reason ?? "").trim(),
-    requirement: String(permission?.requirement ?? "").trim(),
-    mode: String(permission?.mode ?? "").trim(),
-    createdAt:
-      typeof permission?.created_at === "number" ? permission.created_at : 0,
-    updatedAt:
-      typeof permission?.updated_at === "number" ? permission.updated_at : 0,
-    resolvedAt:
-      typeof permission?.resolved_at === "number" ? permission.resolved_at : 0,
-    permissionRequestedAt:
-      typeof permission?.permission_requested_at === "number"
-        ? permission.permission_requested_at
-        : 0,
-  };
+  expectedSessionId = '',
+): DesktopPermissionRecord | null {
+  return normalizeDesktopPermission(
+    savedRule ? { ...(permission ?? {}), saved_rule: savedRule } : permission,
+    expectedSessionId,
+  );
 }
 
 export async function fetchSessionMessages(
   sessionId: string,
   signal?: AbortSignal,
   afterSeq = 0,
-  options: SessionDataRequestOptions & { beforeSeq?: number; limit?: number; queryClient?: QueryClient } = {},
+  options: SessionDataRequestOptions & { beforeSeq?: number; limit?: number; queryClient?: QueryClient; tail?: boolean } = {},
 ): Promise<FetchSessionMessagesResult> {
   const normalizedSessionId = sessionId.trim();
-  const search = new URLSearchParams({ limit: String(options.limit && options.limit > 0 ? Math.floor(options.limit) : 100) });
+  const search = new URLSearchParams();
   const beforeSeq = options.beforeSeq && options.beforeSeq > 0 ? Math.floor(options.beforeSeq) : 0;
+  const tail = Boolean(options.tail && beforeSeq <= 0 && afterSeq <= 0);
+  if (tail) {
+    search.set("tail", "true");
+  }
+  search.set("limit", String(options.limit && options.limit > 0 ? Math.floor(options.limit) : 100));
   if (beforeSeq > 0) {
     search.set("before_seq", String(beforeSeq));
   } else if (afterSeq > 0) {
     search.set("after_seq", String(afterSeq));
   }
-  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
-  const endpoint = sessionApi === "v3"
-    ? `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/messages?${search.toString()}`
-    : `/v2/sessions/${encodeURIComponent(normalizedSessionId)}/messages?${search.toString()}`;
+  resolveSessionApiForSession(normalizedSessionId, options);
   const response = await requestJson<MessagesResponseWire>(
-    endpoint,
+    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/messages?${search.toString()}`,
     { signal },
   );
   const messages = Array.isArray(response.messages)
@@ -1136,14 +1265,6 @@ export async function fetchSessionMessages(
     hasMoreOlder: Boolean(response.has_more_older),
     hasMoreNewer: Boolean(response.has_more_newer),
   };
-  if (sessionApi === "v3" && options.queryClient) {
-    mergeDesktopV3DurableCachePatch(options.queryClient, {
-      sessionId: normalizedSessionId,
-      messages: result.messages,
-      appliedSeq: result.appliedSeq,
-      highWatermark: result.highWatermark,
-    });
-  }
   return result;
 }
 
@@ -1151,135 +1272,48 @@ export async function fetchSessionPreference(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<ResolvedSessionPreference> {
-  rejectV3SessionV2Subresource(sessionId, "session preference");
-  const response = await requestJson<SessionPreferenceWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/preference`,
-    { signal },
-  );
-  return {
-    preference: {
-      provider: String(response.preference?.provider ?? "").trim(),
-      model: String(response.preference?.model ?? "").trim(),
-      thinking: String(response.preference?.thinking ?? "").trim(),
-      serviceTier: String(response.preference?.service_tier ?? "").trim(),
-      contextMode: String(response.preference?.context_mode ?? "").trim(),
-      updatedAt:
-        typeof response.preference?.updated_at === "number"
-          ? response.preference.updated_at
-          : 0,
-    },
-    contextWindow:
-      typeof response.context_window === "number" ? response.context_window : 0,
-    maxOutputTokens:
-      typeof response.max_output_tokens === "number"
-        ? response.max_output_tokens
-        : 0,
-  };
+  void signal;
+  return rejectLegacyDesktopSessionPath(sessionId, "preference");
 }
 
 export async function fetchSessionMode(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  rejectV3SessionV2Subresource(sessionId, "session mode");
-  const response = await requestJson<{ mode?: string }>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/mode`,
-    { signal },
-  );
-  return String(response.mode ?? "").trim() || "auto";
+  void signal;
+  return rejectLegacyDesktopSessionPath(sessionId, "mode");
 }
 
 export async function updateSessionMode(
   sessionId: string,
   mode: string,
 ): Promise<string> {
-  rejectV3SessionV2Subresource(sessionId, "session mode");
-  const response = await requestJson<{ mode?: string }>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/mode`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ mode }),
-    },
-  );
-  return String(response.mode ?? "").trim() || "auto";
+  void mode;
+  return rejectLegacyDesktopSessionPath(sessionId, "mode update");
 }
 
 export async function fetchSessionCodexConfig(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<DesktopSessionCodexConfig> {
-  rejectV3SessionV2Subresource(sessionId, "session Codex config");
-  const response = await requestJson<SessionCodexConfigWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/codex`,
-    { signal },
-  );
-  return mapSessionCodexConfig(response);
+  void signal;
+  return rejectLegacyDesktopSessionPath(sessionId, "Codex config");
 }
 
 export async function updateSessionCodexConfig(
   sessionId: string,
   input: { serviceTier?: string; contextMode?: string },
 ): Promise<DesktopSessionCodexConfig> {
-  rejectV3SessionV2Subresource(sessionId, "session Codex config");
-  const response = await requestJson<SessionCodexConfigWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/codex`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        service_tier: input.serviceTier,
-        context_mode: input.contextMode,
-      }),
-    },
-  );
-  return mapSessionCodexConfig(response);
+  void input;
+  return rejectLegacyDesktopSessionPath(sessionId, "Codex config update");
 }
 
 export async function updateSessionPreference(
   sessionId: string,
   input: Partial<ResolvedSessionPreference["preference"]>,
 ): Promise<ResolvedSessionPreference> {
-  rejectV3SessionV2Subresource(sessionId, "session preference");
-  const response = await requestJson<SessionPreferenceWire>(
-    `/v2/sessions/${encodeURIComponent(sessionId)}/preference`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        provider: input.provider,
-        model: input.model,
-        thinking: input.thinking,
-        service_tier: input.serviceTier,
-        context_mode: input.contextMode,
-      }),
-    },
-  );
-  return {
-    preference: {
-      provider: String(response.preference?.provider ?? "").trim(),
-      model: String(response.preference?.model ?? "").trim(),
-      thinking: String(response.preference?.thinking ?? "").trim(),
-      serviceTier: String(response.preference?.service_tier ?? "").trim(),
-      contextMode: String(response.preference?.context_mode ?? "").trim(),
-      updatedAt:
-        typeof response.preference?.updated_at === "number"
-          ? response.preference.updated_at
-          : Date.now(),
-    },
-    contextWindow:
-      typeof response.context_window === "number" ? response.context_window : 0,
-    maxOutputTokens:
-      typeof response.max_output_tokens === "number"
-        ? response.max_output_tokens
-        : 0,
-  };
+  void input;
+  return rejectLegacyDesktopSessionPath(sessionId, "preference update");
 }
 
 export async function fetchDraftModelPreference(
@@ -1459,6 +1493,19 @@ export async function fetchAgentState(
   const response = await requestJson<AgentStateWire>("/v2/agents?limit=200", {
     signal,
   });
+  return mapAgentStateResponse(response);
+}
+
+export async function fetchAgentStateSummary(
+  signal?: AbortSignal,
+): Promise<AgentStateRecord> {
+  const response = await requestJson<AgentStateWire>("/v2/agents?limit=200&view=summary", {
+    signal,
+  });
+  return mapAgentStateResponse(response);
+}
+
+function mapAgentStateResponse(response: AgentStateWire): AgentStateRecord {
   return {
     profiles: Array.isArray(response.state?.profiles)
       ? response.state.profiles.map((profile) => ({
@@ -1468,6 +1515,15 @@ export async function fetchAgentState(
           provider: String(profile.provider ?? "").trim(),
           model: String(profile.model ?? "").trim(),
           thinking: String(profile.thinking ?? "").trim(),
+          modelMode: String(profile.model_mode ?? "").trim() === "split" ? "split" : "single",
+          planProvider: String(profile.plan_provider ?? "").trim(),
+          planModel: String(profile.plan_model ?? "").trim(),
+          planThinking: String(profile.plan_thinking ?? "").trim(),
+          planServiceTier: String(profile.plan_service_tier ?? "").trim(),
+          autoProvider: String(profile.auto_provider ?? "").trim(),
+          autoModel: String(profile.auto_model ?? "").trim(),
+          autoThinking: String(profile.auto_thinking ?? "").trim(),
+          autoServiceTier: String(profile.auto_service_tier ?? "").trim(),
           prompt: String(profile.prompt ?? ""),
           runtimeMode: (() => {
             const raw = String(profile.runtime_mode ?? "")
@@ -1477,6 +1533,11 @@ export async function fetchAgentState(
               ? raw
               : "";
           })() as "plan_auto" | "read" | "readwrite" | "",
+          defaultSessionMode: (() => {
+            const saved = String(profile.default_session_mode ?? "").trim().toLowerCase();
+            if (saved === "plan" || saved === "auto") return saved;
+            return String(profile.runtime_mode ?? "").trim().toLowerCase() === "plan_auto" ? "plan" : "auto";
+          })(),
           executionSetting: (() => {
             const raw = String(profile.execution_setting ?? "")
               .trim()
@@ -1614,6 +1675,15 @@ function mapAgentDefaultsState(
           provider: String(profile.provider ?? "").trim(),
           model: String(profile.model ?? "").trim(),
           thinking: String(profile.thinking ?? "").trim(),
+          modelMode: String(profile.model_mode ?? "").trim() === "split" ? "split" : "single",
+          planProvider: String(profile.plan_provider ?? "").trim(),
+          planModel: String(profile.plan_model ?? "").trim(),
+          planThinking: String(profile.plan_thinking ?? "").trim(),
+          planServiceTier: String(profile.plan_service_tier ?? "").trim(),
+          autoProvider: String(profile.auto_provider ?? "").trim(),
+          autoModel: String(profile.auto_model ?? "").trim(),
+          autoThinking: String(profile.auto_thinking ?? "").trim(),
+          autoServiceTier: String(profile.auto_service_tier ?? "").trim(),
           prompt: String(profile.prompt ?? ""),
           runtimeMode: (() => {
             const raw = String(profile.runtime_mode ?? "")
@@ -1623,6 +1693,11 @@ function mapAgentDefaultsState(
               ? raw
               : "";
           })() as "plan_auto" | "read" | "readwrite" | "",
+          defaultSessionMode: (() => {
+            const saved = String(profile.default_session_mode ?? "").trim().toLowerCase();
+            if (saved === "plan" || saved === "auto") return saved;
+            return String(profile.runtime_mode ?? "").trim().toLowerCase() === "plan_auto" ? "plan" : "auto";
+          })(),
           executionSetting: (() => {
             const raw = String(profile.execution_setting ?? "")
               .trim()
@@ -1704,78 +1779,67 @@ export async function activatePrimaryAgent(name: string): Promise<void> {
   });
 }
 
-const SESSION_CREATE_V2_FORBIDDEN_METADATA_KEYS = new Set([
+const SESSION_CREATE_FORBIDDEN_METADATA_KEYS = new Set([
   'workspace_name',
   'workspace_path',
   'host_workspace_path',
   'runtime_workspace_path',
-  'backend_url',
-  'child_backend_url',
-  'target_backend_url',
   'target_swarm_id',
   'next_hop_swarm_id',
-  'next_hop_backend_url',
   'local_workspace_binding_id',
   'owner_transport',
 ])
 
-const SESSION_CREATE_V2_FORBIDDEN_METADATA_PREFIXES = [
+const SESSION_CREATE_FORBIDDEN_METADATA_PREFIXES = [
   'swarm_route_',
-  'swarm_routed_',
-  'swarm_managed_',
-  'swarm_v2_',
-  'hosted_session',
-  'managed_host',
 ]
 
-const SESSION_CREATE_V2_FORBIDDEN_METADATA_PARTS = [
+const SESSION_CREATE_FORBIDDEN_METADATA_PARTS = [
   'workspace_name',
   'workspace_path',
   'path',
-  'backend_url',
   'swarm_id',
   'route',
   'routing',
-  'backend',
   'target',
 ]
 
-function isForbiddenSessionCreateV2MetadataKey(key: string): boolean {
+function isForbiddenSessionCreateMetadataKey(key: string): boolean {
   const normalized = key.trim().toLowerCase()
   if (!normalized) {
     return true
   }
-  if (SESSION_CREATE_V2_FORBIDDEN_METADATA_KEYS.has(normalized)) {
+  if (SESSION_CREATE_FORBIDDEN_METADATA_KEYS.has(normalized)) {
     return true
   }
-  if (SESSION_CREATE_V2_FORBIDDEN_METADATA_PREFIXES.some((prefix) => normalized.startsWith(prefix))) {
+  if (SESSION_CREATE_FORBIDDEN_METADATA_PREFIXES.some((prefix) => normalized.startsWith(prefix))) {
     return true
   }
-  return SESSION_CREATE_V2_FORBIDDEN_METADATA_PARTS.some((part) => normalized.includes(part))
+  return SESSION_CREATE_FORBIDDEN_METADATA_PARTS.some((part) => normalized.includes(part))
 }
 
-function sanitizeSessionCreateV2MetadataValue(value: unknown): unknown {
+function sanitizeSessionCreateMetadataValue(value: unknown): unknown {
   if (Array.isArray(value)) {
-    return value.map((child) => sanitizeSessionCreateV2MetadataValue(child))
+    return value.map((child) => sanitizeSessionCreateMetadataValue(child))
   }
   if (!value || typeof value !== 'object') {
     return value
   }
   const sanitized: Record<string, unknown> = {}
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (isForbiddenSessionCreateV2MetadataKey(key)) {
+    if (isForbiddenSessionCreateMetadataKey(key)) {
       continue
     }
-    sanitized[key] = sanitizeSessionCreateV2MetadataValue(child)
+    sanitized[key] = sanitizeSessionCreateMetadataValue(child)
   }
   return sanitized
 }
 
-export function sanitizeSessionCreateV2Metadata(metadata: Record<string, unknown> | null | undefined): Record<string, unknown> | undefined {
+export function sanitizeSessionCreateMetadata(metadata: Record<string, unknown> | null | undefined): Record<string, unknown> | undefined {
   if (!metadata || typeof metadata !== 'object') {
     return undefined
   }
-  const sanitized = sanitizeSessionCreateV2MetadataValue(metadata) as Record<string, unknown>
+  const sanitized = sanitizeSessionCreateMetadataValue(metadata) as Record<string, unknown>
   return Object.keys(sanitized).length > 0 ? sanitized : undefined
 }
 
@@ -1804,9 +1868,11 @@ function sessionCreatePreferenceBody(preferenceInput: ResolvedSessionPreference[
   return preference
 }
 
-function sessionCreateV2RequestBody(input: {
+function sessionCreateV3RequestBody(input: {
   target: { swarmId: string; workspaceBindingId: string };
   title?: string;
+  workspacePath: string;
+  workspaceName: string;
   mode: string;
   agentName?: string;
   metadata?: Record<string, unknown>;
@@ -1816,43 +1882,23 @@ function sessionCreateV2RequestBody(input: {
   worktreeBaseBranch?: string;
   worktreeBranchName?: string;
 }): Record<string, unknown> {
-  const worktreeMode = optionalString(input.worktreeMode) ?? "off"
-  const preference = sessionCreatePreferenceBody(input.preference)
-  return stripUndefinedFields({
-    swarm_id: input.target.swarmId,
-    workspace_binding_id: input.target.workspaceBindingId,
-    title: input.title ?? "",
-    mode: input.mode,
-    agent_name: input.agentName?.trim() ?? "",
-    worktree_mode: worktreeMode,
-    worktree_use_current_branch: worktreeMode === "on" ? input.worktreeUseCurrentBranch : undefined,
-    worktree_base_branch: worktreeMode === "on" ? optionalString(input.worktreeBaseBranch) : undefined,
-    worktree_branch_name: worktreeMode === "on" ? optionalString(input.worktreeBranchName) : undefined,
-    preference: Object.keys(preference).length > 0 ? preference : undefined,
-    metadata: sanitizeSessionCreateV2Metadata(input.metadata),
-  })
-}
-
-function sessionCreateV3RequestBody(input: {
-  title?: string;
-  workspacePath: string;
-  workspaceName: string;
-  mode: string;
-  agentName?: string;
-  metadata?: Record<string, unknown>;
-  preference: ResolvedSessionPreference["preference"];
-}): Record<string, unknown> {
   const preference = sessionCreatePreferenceBody(input.preference)
   const title = optionalString(input.title)
   return stripUndefinedFields({
     client_request_id: `desktop-v3-create:${crypto.randomUUID()}`,
+    swarm_id: input.target.swarmId,
+    workspace_binding_id: input.target.workspaceBindingId,
     title: title || undefined,
     workspace_path: input.workspacePath,
     workspace_name: input.workspaceName,
     mode: input.mode,
     agent_name: input.agentName?.trim() || undefined,
     preference: Object.keys(preference).length > 0 ? preference : undefined,
-    metadata: sanitizeSessionCreateV2Metadata(input.metadata),
+    metadata: sanitizeSessionCreateMetadata(input.metadata),
+    worktree_mode: optionalString(input.worktreeMode) || undefined,
+    worktree_use_current_branch: typeof input.worktreeUseCurrentBranch === "boolean" ? input.worktreeUseCurrentBranch : undefined,
+    worktree_base_branch: optionalString(input.worktreeBaseBranch) || undefined,
+    worktree_branch_name: optionalString(input.worktreeBranchName) || undefined,
   })
 }
 
@@ -1870,32 +1916,24 @@ export async function createSession(input: {
   worktreeBaseBranch?: string;
   worktreeBranchName?: string;
 }): Promise<DesktopSessionRecord> {
-  const target = getDesktopSessionCreateV2Target(input.route)
+  const target = getDesktopSessionCreateTarget(input.route)
   if (target.endpoint === null) {
     throw new Error(target.unsupportedReason)
   }
-  const body = target.sessionApi === "v3"
-    ? sessionCreateV3RequestBody({
-      title: input.title,
-      workspacePath: input.workspacePath,
-      workspaceName: input.workspaceName,
-      mode: input.mode,
-      agentName: input.agentName,
-      metadata: input.metadata,
-      preference: input.preference,
-    })
-    : sessionCreateV2RequestBody({
-      target: { swarmId: target.swarmId, workspaceBindingId: target.workspaceBindingId },
-      title: input.title,
-      mode: input.mode,
-      agentName: input.agentName,
-      metadata: input.metadata,
-      preference: input.preference,
-      worktreeMode: input.worktreeMode,
-      worktreeUseCurrentBranch: input.worktreeUseCurrentBranch,
-      worktreeBaseBranch: input.worktreeBaseBranch,
-      worktreeBranchName: input.worktreeBranchName,
-    })
+  const body = sessionCreateV3RequestBody({
+    target: { swarmId: target.swarmId, workspaceBindingId: target.workspaceBindingId },
+    title: input.title,
+    workspacePath: input.workspacePath,
+    workspaceName: input.workspaceName,
+    mode: input.mode,
+    agentName: input.agentName,
+    metadata: input.metadata,
+    preference: input.preference,
+    worktreeMode: input.worktreeMode,
+    worktreeUseCurrentBranch: input.worktreeUseCurrentBranch,
+    worktreeBaseBranch: input.worktreeBaseBranch,
+    worktreeBranchName: input.worktreeBranchName,
+  })
   const response = await requestJson<V3HydratedSessionResponseWire & { session_execution?: Record<string, unknown> }>(
     target.endpoint,
     {
@@ -1913,218 +1951,119 @@ export async function createSession(input: {
   return applySessionProjectionCursor(mapped, response.projection);
 }
 
+export async function compactSessionV3(
+  sessionId: string,
+  options: { note?: string | null; agentName?: string | null; instructions?: string | null; clientRequestId?: string | null } = {},
+): Promise<CompactSessionV3Result> {
+  const normalizedSessionId = sessionId.trim();
+  if (!normalizedSessionId) {
+    throw new Error("session id is required");
+  }
+  const clientRequestId = options.clientRequestId?.trim()
+    || `desktop-v3-compact:${normalizedSessionId}:${crypto.randomUUID()}`;
+  const response = await apiFetch(
+    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/compact`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        client_request_id: clientRequestId,
+        note: options.note?.trim() ?? "",
+        agent_name: options.agentName?.trim() ?? "",
+        instructions: options.instructions?.trim() ?? "",
+      }),
+    },
+  );
+  if (!response.ok) {
+    let payload: V3CompactResponseWire | null = null;
+    try {
+      payload = await response.clone().json() as V3CompactResponseWire;
+    } catch {
+      throw new Error(await readErrorMessage(response));
+    }
+    const mapped = mapV3CompactResponse(payload);
+    if (mapped.realtimeOutbox?.endpointCursor) return mapped;
+    throw new Error(mapped.error || await readErrorMessage(response));
+  }
+  return mapV3CompactResponse(await response.json() as V3CompactResponseWire);
+}
+
+export type SystemSidechatKind = "plan" | "ai";
+
+export async function ensureSystemSidechat(input: {
+  parentSessionId: string;
+  kind: SystemSidechatKind;
+  permissionId?: string;
+  planId?: string;
+  planRevision?: number;
+}): Promise<{ sessionId: string; replayed: boolean; originatingAgentName: string; provider: string; model: string; runtimeSwarmId: string }> {
+  const parentSessionId = input.parentSessionId.trim();
+  const permissionId = input.permissionId?.trim() ?? "";
+  const planId = input.planId?.trim() ?? "";
+  const planRevision = input.planRevision ?? 0;
+  if (!parentSessionId || (input.kind === "plan" && (!permissionId || !planId || planRevision <= 0))) {
+    throw new Error("Plan sidechat requires a parent session, permission, plan, and positive revision.");
+  }
+  const response = await requestJson<{
+    session_id?: string;
+    replayed?: boolean;
+    originating_agent_name?: string;
+    provider?: string;
+    model?: string;
+    runtime_swarm_id?: string;
+  }>(
+    `/v3/sessions/${encodeURIComponent(parentSessionId)}/sidechats/${input.kind}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input.kind === "plan" ? {
+        permission_id: permissionId,
+        plan_id: planId,
+        plan_revision: planRevision,
+      } : {}),
+    },
+  );
+  const sessionId = String(response.session_id ?? "").trim();
+  if (!sessionId) throw new Error(`${input.kind === "plan" ? "Plan" : "AI"} sidechat did not return a session id.`);
+  return {
+    sessionId,
+    replayed: response.replayed === true,
+    originatingAgentName: String(response.originating_agent_name ?? "").trim(),
+    provider: String(response.provider ?? "").trim(),
+    model: String(response.model ?? "").trim(),
+    runtimeSwarmId: String(response.runtime_swarm_id ?? "").trim(),
+  };
+}
+
 export async function sendSessionMessage(
   sessionId: string,
   role: "user" | "assistant" | "system" | "tool" | "reasoning",
   content: string,
   route?: DesktopChatRoute | null,
   options: SendSessionMessageOptions = {},
-): Promise<SendSessionMessageResult | unknown> {
+): Promise<SendSessionMessageResult> {
   const normalizedSessionId = sessionId.trim();
-  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
-  if (sessionApi === "v3") {
-    const clientRequestId = options.clientRequestId?.trim()
-      || `desktop-v3-message:${normalizedSessionId}:${crypto.randomUUID()}`;
-    const response = await requestJson<V3MessageCommitResponseWire>(
-      `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/messages`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          client_request_id: clientRequestId,
-          role,
-          content,
-        }),
-      },
-    );
-    return mapV3MessageCommitResponse(response);
-  }
-
-  const managedHost = isManagedHostDesktopChatRoute(route)
-  return requestJson(
-    managedHost
-      ? "/v1/swarm/managed-hosts/sessions/message"
-      : `/v2/sessions/${encodeURIComponent(normalizedSessionId)}/messages`,
+  void route;
+  resolveSessionApiForSession(normalizedSessionId, options);
+  const clientRequestId = options.clientRequestId?.trim()
+    || `desktop-v3-message:${normalizedSessionId}:${crypto.randomUUID()}`;
+  const response = await requestJson<V3MessageCommitResponseWire>(
+    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/messages`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(
-        managedHost
-          ? { target_swarm_id: route?.swarmId?.trim() ?? "", session_id: normalizedSessionId, role, content }
-          : { role, content },
-      ),
+      body: JSON.stringify({
+        client_request_id: clientRequestId,
+        role,
+        content,
+      }),
     },
   );
-}
-
-export interface DesktopBackgroundRunStartOptions {
-  sessionId: string;
-  route?: DesktopChatRoute | null;
-  stream?: boolean;
-  prompt: string;
-  agentName?: string;
-  instructions?: string;
-  compact?: boolean;
-  background?: boolean;
-  targetKind?: string;
-  targetName?: string;
-  toolScope?: {
-    preset?: string;
-    allow_tools?: string[];
-    deny_tools?: string[];
-    bash_prefixes?: string[];
-    inherit_policy?: boolean;
-  };
-  executionContext?: {
-    workspace_path?: string;
-    cwd?: string;
-    worktree_mode?: string;
-    worktree_root_path?: string;
-    worktree_branch?: string;
-    worktree_base_branch?: string;
-  };
-}
-
-export interface DesktopRunAccepted {
-  ok?: boolean;
-  session_id?: string;
-  run_id?: string;
-  status?: string;
-  background?: boolean;
-  target_kind?: string;
-  target_name?: string;
-  owner_transport?: string;
-}
-
-export async function startSessionRun(
-  options: DesktopBackgroundRunStartOptions,
-): Promise<DesktopRunAccepted> {
-  const sessionId = options.sessionId.trim();
-  rejectV3SessionV2Subresource(sessionId, "session run dispatch");
-  if (!sessionId) {
-    throw new Error("session id is required");
-  }
-  const prompt = options.prompt.trim();
-  if (!prompt && !options.compact) {
-    throw new Error("prompt is required");
-  }
-
-  const managedHost = isManagedHostDesktopChatRoute(options.route);
-  const primaryEndpoint = options.stream === false ? "run" : "run/stream";
-  const effectiveAgentName = managedHost
-    ? (options.agentName?.trim() ?? "")
-    : (options.targetName?.trim() || options.agentName?.trim() || "");
-  const nativePrimaryBody = {
-    type: "run.start",
-    prompt,
-    agent_name: effectiveAgentName,
-    instructions: options.instructions?.trim() ?? "",
-    compact: Boolean(options.compact),
-    background: Boolean(options.background),
-  };
-  const managedHostBody = {
-    ...nativePrimaryBody,
-    agent_name: options.agentName?.trim() ?? "",
-    target_swarm_id: options.route?.swarmId?.trim() ?? "",
-    session_id: sessionId,
-    target_kind: options.targetKind?.trim() ?? "",
-    target_name: options.targetName?.trim() ?? "",
-    tool_scope: options.toolScope,
-    execution_context: options.executionContext,
-  };
-  return requestJson<DesktopRunAccepted>(
-    managedHost
-      ? "/v1/swarm/managed-hosts/sessions/run"
-      : `/v2/sessions/${encodeURIComponent(sessionId)}/${primaryEndpoint}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(managedHost ? managedHostBody : nativePrimaryBody),
-    },
-  );
-}
-
-export async function openRunStream(
-  sessionId: string,
-  options: { sessionApi?: string | null; afterSeq?: number } = {},
-): Promise<WebSocket> {
-  const normalizedSessionId = sessionId.trim();
-  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  await ensureDesktopSession(true);
-  const url = new URL(
-    sessionApi === "v3"
-      ? `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/stream`
-      : `/v2/sessions/${encodeURIComponent(normalizedSessionId)}/run/stream`,
-    `${protocol}//${window.location.host}`,
-  );
-  if (sessionApi === "v3") {
-    url.searchParams.set("after_seq", String(Math.max(0, options.afterSeq ?? 0)));
-  }
-  return new WebSocket(url);
-}
-
-
-export async function stopSessionRun(
-  sessionId: string,
-  runId: string,
-  route?: DesktopChatRoute | null,
-  options: SessionDataRequestOptions = {},
-): Promise<void> {
-  const normalizedSessionId = sessionId.trim();
-  const sessionApi = resolveSessionApiForSession(normalizedSessionId, options);
-  if (sessionApi === "v3") {
-    const response = await apiFetch(
-      `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/run/stop`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ type: "run.stop", run_id: runId }),
-      },
-    );
-    if (!response.ok) {
-      throw new Error(await readErrorMessage(response));
-    }
-    return;
-  }
-  const managedHost = isManagedHostDesktopChatRoute(route);
-  const primaryTarget = isPrimaryDesktopChatRoute(route);
-  const localContainerTarget = isLocalContainerDesktopChatRoute(route);
-  if (!managedHost && !primaryTarget && !localContainerTarget) {
-    throw new Error("Unsupported desktop chat stop route.");
-  }
-  const targetSwarmId = route?.swarmId?.trim() ?? "";
-  const endpoint = managedHost
-    ? "/v1/swarm/managed-hosts/sessions/stop"
-    : primaryTarget
-      ? `/v2/sessions/${encodeURIComponent(sessionId)}/run/stop/primary`
-      : `/v2/sessions/${encodeURIComponent(sessionId)}/run/stop/local-container`;
-  const body = managedHost
-    ? { type: "run.stop", target_swarm_id: targetSwarmId, session_id: sessionId, run_id: runId }
-    : primaryTarget
-      ? { type: "run.stop", target_swarm_id: targetSwarmId, run_id: runId }
-      : { type: "run.stop", run_id: runId };
-  const response = await apiFetch(
-    endpoint,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    },
-  );
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response));
-  }
+  return mapV3MessageCommitResponse(response);
 }
 
 export async function resolveSessionPermission(
@@ -2139,7 +2078,7 @@ export async function resolveSessionPermission(
   reason: string,
   approvedArguments?: Record<string, unknown>,
   options: SessionDataRequestOptions = {},
-): Promise<DesktopPermissionRecord> {
+): Promise<DesktopPermissionRecord | null> {
   const sessionApi = resolveSessionApiForSession(sessionId, options);
   if (sessionApi !== "v3") {
     throw new Error("Desktop permission resolution requires explicit Sessions API v3 context");
@@ -2158,7 +2097,7 @@ export async function resolveSessionPermission(
       }),
     },
   );
-  return mapResolvedPermission(response.permission, response.saved_rule);
+  return mapResolvedPermission(response.permission, response.saved_rule, sessionId);
 }
 
 export async function resolveAllSessionPermissions(
@@ -2192,16 +2131,94 @@ export async function resolveAllSessionPermissions(
     },
   );
   return Array.isArray(response.resolved)
-    ? response.resolved.map((permission) => mapResolvedPermission(permission))
+    ? response.resolved
+      .map((permission) => mapResolvedPermission(permission, undefined, sessionId))
+      .filter((permission): permission is DesktopPermissionRecord => Boolean(permission))
     : [];
 }
 
-function modelOptionKey(
-  provider: string,
-  model: string,
-  contextMode = "",
-): string {
-  return `${provider}:${model}:${contextMode.trim().toLowerCase()}`;
+function normalizeModelPricing(value: unknown): ModelPricingRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as ModelPricingRecord;
+}
+
+function normalizeServiceTiers(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of value) {
+    const normalized = String(item ?? "").trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function normalizeThinkingMappings(value: unknown): ModelThinkingMappingRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+      const raw = item as ModelThinkingMappingWire;
+      const swarmSetting = String(raw.swarm_setting ?? "").trim().toLowerCase();
+      if (!swarmSetting) return null;
+      const out: ModelThinkingMappingRecord = { swarm_setting: swarmSetting };
+      const providerParameter = String(raw.provider_parameter ?? "").trim();
+      const providerValue = String(raw.provider_value ?? "").trim();
+      const effectiveProviderValue = String(raw.effective_provider_value ?? "").trim();
+      const behavior = String(raw.behavior ?? "").trim();
+      if (providerParameter) out.provider_parameter = providerParameter;
+      if (providerValue) out.provider_value = providerValue;
+      if (effectiveProviderValue) out.effective_provider_value = effectiveProviderValue;
+      if (behavior) out.behavior = behavior;
+      return out;
+    })
+    .filter((item): item is ModelThinkingMappingRecord => Boolean(item));
+}
+
+function normalizeServiceTierMappings(value: unknown): ModelServiceTierMappingRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+      const raw = item as ModelServiceTierMappingWire;
+      const tier = String(raw.tier ?? "").trim().toLowerCase();
+      if (!tier) return null;
+      const out: ModelServiceTierMappingRecord = { tier };
+      const swarmSetting = String(raw.swarm_setting ?? "").trim().toLowerCase();
+      const providerParameter = String(raw.provider_parameter ?? "").trim();
+      const providerValue = String(raw.provider_value ?? "").trim();
+      const betaHeader = String(raw.beta_header ?? "").trim();
+      const requestModelPath = String(raw.request_model_path ?? "").trim();
+      if (swarmSetting) out.swarm_setting = swarmSetting;
+      if (providerParameter) out.provider_parameter = providerParameter;
+      if (providerValue) out.provider_value = providerValue;
+      if (betaHeader) out.beta_header = betaHeader;
+      if (requestModelPath) out.request_model_path = requestModelPath;
+      return out;
+    })
+    .filter((item): item is ModelServiceTierMappingRecord => Boolean(item));
+}
+
+function normalizeContextModes(value: unknown): ModelContextModeRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+      const raw = item as ModelContextModeWire;
+      const mode = String(raw.mode ?? "").trim().toLowerCase();
+      if (!mode) return null;
+      const out: ModelContextModeRecord = { mode };
+      const label = String(raw.label ?? "").trim();
+      if (label) out.label = label;
+      if (typeof raw.context_window === "number") out.context_window = raw.context_window;
+      if (raw.default === true) out.default = true;
+      return out;
+    })
+    .filter((item): item is ModelContextModeRecord => Boolean(item));
 }
 
 export async function fetchModelOptions(
@@ -2265,6 +2282,15 @@ export async function fetchModelOptions(
         thinking: String(record.thinking ?? "").trim(),
         favorite: true,
         contextWindow: 0,
+        pricing: null,
+        serviceTiers: [],
+        defaultServiceTier: "",
+        serviceTierMappings: [],
+        contextModes: [],
+        thinkingOptions: [],
+        defaultThinking: "",
+        thinkingProviderParameter: "",
+        thinkingMappings: [],
       });
     }
   }
@@ -2290,6 +2316,15 @@ export async function fetchModelOptions(
             typeof record.context_window === "number"
               ? record.context_window
               : 0,
+          pricing: normalizeModelPricing(record.pricing),
+          serviceTiers: normalizeServiceTiers(record.service_tiers),
+          defaultServiceTier: String(record.default_service_tier ?? "").trim().toLowerCase(),
+          serviceTierMappings: normalizeServiceTierMappings(record.service_tier_mappings),
+          contextModes: normalizeContextModes(record.context_modes),
+          thinkingOptions: normalizeServiceTiers(record.thinking_options),
+          defaultThinking: String(record.default_thinking ?? "").trim().toLowerCase(),
+          thinkingProviderParameter: String(record.thinking_provider_parameter ?? "").trim(),
+          thinkingMappings: normalizeThinkingMappings(record.thinking_mappings),
         });
         continue;
       }
@@ -2299,24 +2334,41 @@ export async function fetchModelOptions(
           typeof record.context_window === "number"
             ? record.context_window
             : current.contextWindow,
+        pricing: normalizeModelPricing(record.pricing) ?? current.pricing,
+        serviceTiers: normalizeServiceTiers(record.service_tiers),
+        defaultServiceTier: String(record.default_service_tier ?? "").trim().toLowerCase(),
+        serviceTierMappings: normalizeServiceTierMappings(record.service_tier_mappings),
+        contextModes: normalizeContextModes(record.context_modes),
+        thinkingOptions: normalizeServiceTiers(record.thinking_options),
+        defaultThinking: String(record.default_thinking ?? "").trim().toLowerCase(),
+        thinkingProviderParameter: String(record.thinking_provider_parameter ?? "").trim(),
+        thinkingMappings: normalizeThinkingMappings(record.thinking_mappings),
       });
     }
   }
 
   for (const option of Array.from(options.values())) {
-    if (!supportsCodex1MMode(option.provider, option.model)) {
-      continue;
+    for (const mode of option.contextModes) {
+      if (mode.default) {
+        continue;
+      }
+      const contextMode = mode.mode.trim().toLowerCase();
+      if (!contextMode) {
+        continue;
+      }
+      const key = modelOptionKey(option.provider, option.model, contextMode);
+      if (options.has(key)) {
+        continue;
+      }
+      options.set(key, {
+        ...option,
+        key,
+        contextMode,
+        contextWindow: typeof mode.context_window === "number" && mode.context_window > 0
+          ? mode.context_window
+          : option.contextWindow,
+      });
     }
-    const contextMode = "1m";
-    const key = modelOptionKey(option.provider, option.model, contextMode);
-    if (options.has(key)) {
-      continue;
-    }
-    options.set(key, {
-      ...option,
-      key,
-      contextMode,
-    });
   }
 
   return sortModelOptions(Array.from(options.values()));

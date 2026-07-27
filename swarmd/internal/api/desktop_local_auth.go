@@ -82,11 +82,47 @@ func (s *Server) withDesktopLocalSession(next http.Handler) http.Handler {
 }
 
 func shouldUseDesktopLocalSessionAuth(r *http.Request) bool {
-	return isSameOriginBrowserRequest(r) && isLocalDesktopBrowserRequest(r)
+	return isAllowedDesktopRequestHost(r) && isSameOriginBrowserRequest(r) && isLocalDesktopBrowserRequest(r)
 }
 
 func shouldAllowDesktopLocalSessionBootstrapRequest(r *http.Request) bool {
-	return isSameOriginBrowserRequest(r) || isLocalTransportRequest(r)
+	return (isAllowedDesktopRequestHost(r) && isSameOriginBrowserRequest(r) && isLocalDesktopBrowserRequest(r)) || isLocalTransportRequest(r)
+}
+
+func isAllowedDesktopRequestHost(r *http.Request) bool {
+	host := strings.TrimSpace(requestHost(r))
+	if host == "" {
+		return false
+	}
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	}
+	host = strings.TrimSuffix(strings.TrimSpace(host), ".")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	for _, candidate := range detectLANAddresses() {
+		candidateIP := net.ParseIP(strings.TrimSpace(candidate))
+		if candidateIP != nil && candidateIP.Equal(ip) {
+			return true
+		}
+	}
+	for _, candidate := range detectTailscale().IPs {
+		candidateIP := net.ParseIP(strings.TrimSpace(candidate))
+		if candidateIP != nil && candidateIP.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func isLocalDesktopBrowserRequest(r *http.Request) bool {
@@ -203,11 +239,12 @@ func (s *Server) handleDesktopLocalSessionBootstrap(w http.ResponseWriter, r *ht
 	}
 	actor, _ := productActorFromRequest(r)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"token":      desktopLocalSessionTokenFromRequest(r),
-		"user_id":    actor.UserID,
-		"username":   actor.User.Username,
-		"expires_at": actor.TokenExpires,
+		"ok":               true,
+		"token":            desktopLocalSessionTokenFromRequest(r),
+		"user_id":          actor.UserID,
+		"account_scope_id": actor.AccountScopeID,
+		"username":         actor.User.Username,
+		"expires_at":       actor.TokenExpires,
 	})
 }
 
@@ -319,4 +356,11 @@ func isLocalTransportRequest(r *http.Request) bool {
 	}
 	enabled, _ := r.Context().Value(localTransportAuthEnabledKey).(bool)
 	return enabled
+}
+
+func isLocalAdministrativeRequest(r *http.Request) bool {
+	if isLocalTransportRequest(r) {
+		return true
+	}
+	return isAllowedDesktopRequestHost(r) && isSameOriginBrowserRequest(r) && isLocalDesktopBrowserRequest(r)
 }

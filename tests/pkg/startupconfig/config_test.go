@@ -13,7 +13,6 @@ func TestWriteAndLoad_OmitsLegacyModeAndPersistsExplicitState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(path)
 	cfg.SwarmName = "my-device"
-	cfg.SwarmRole = startupconfig.SwarmRoleManaged
 	cfg.DevMode = true
 	cfg.DevRoot = filepath.Clean(filepath.Join(t.TempDir(), "repo"))
 	cfg.Child = true
@@ -41,9 +40,6 @@ func TestWriteAndLoad_OmitsLegacyModeAndPersistsExplicitState(t *testing.T) {
 	if strings.Contains(text, "swarm"+"_mode") {
 		t.Fatalf("startup config should not include legacy mode key: %q", text)
 	}
-	if !strings.Contains(text, "swarm_role = managed") {
-		t.Fatalf("startup config missing swarm_role=managed: %q", text)
-	}
 	if !strings.Contains(text, "dev_mode = true") {
 		t.Fatalf("startup config missing dev_mode=true: %q", text)
 	}
@@ -54,9 +50,6 @@ func TestWriteAndLoad_OmitsLegacyModeAndPersistsExplicitState(t *testing.T) {
 	loaded, err := startupconfig.Load(path)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
-	}
-	if loaded.SwarmRole != startupconfig.SwarmRoleManaged {
-		t.Fatalf("loaded.SwarmRole = %q, want %q", loaded.SwarmRole, startupconfig.SwarmRoleManaged)
 	}
 	if !loaded.DevMode {
 		t.Fatal("loaded.DevMode = false, want true")
@@ -131,88 +124,7 @@ func TestResolvePath_RejectsForbiddenConfigurationDirectory(t *testing.T) {
 	}
 }
 
-func TestRemoteDeployBootstrapSecretPath_DefaultResolvedPathNotUnderHomeXDGOrWorkspace(t *testing.T) {
-	home := "/test-home/startupconfig-test-user"
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("CONFIGURATION_DIRECTORY", "")
-
-	configPath, err := startupconfig.ResolvePath()
-	if err != nil {
-		t.Fatalf("ResolvePath() error = %v", err)
-	}
-	secretPath := startupconfig.RemoteDeployBootstrapSecretPath(configPath)
-	if secretPath != "/etc/swarmd/remote-deploy-bootstrap.secret" {
-		t.Fatalf("RemoteDeployBootstrapSecretPath() = %q, want /etc/swarmd/remote-deploy-bootstrap.secret", secretPath)
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd() error = %v", err)
-	}
-	for _, forbidden := range []string{home, filepath.Join(home, ".config"), cwd} {
-		if strings.HasPrefix(secretPath, forbidden) {
-			t.Fatalf("remote deploy bootstrap secret %q under forbidden prefix %q", secretPath, forbidden)
-		}
-	}
-}
-
-func TestWriteAndLoad_RemoteDeploySecretsUseSeparateSecretFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "swarm.conf")
-	cfg := startupconfig.Default(path)
-	cfg.Child = true
-	cfg.RemoteDeploy.Enabled = true
-	cfg.RemoteDeploy.SessionID = "remote-1"
-	cfg.RemoteDeploy.SessionToken = "session-secret"
-	cfg.RemoteDeploy.InviteToken = "invite-secret"
-	cfg.RemoteDeploy.HostAPIBaseURL = "https://host.example"
-	cfg.RemoteDeploy.HostDesktopURL = "https://host.example"
-
-	if err := startupconfig.Write(cfg); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", path, err)
-	}
-	text := string(data)
-	if strings.Contains(text, "remote_deploy_session_token") || strings.Contains(text, "remote_deploy_invite_token") {
-		t.Fatalf("startup config should not include remote deploy bootstrap secrets: %q", text)
-	}
-
-	secretPath := startupconfig.RemoteDeployBootstrapSecretPath(path)
-	secretInfo, err := os.Stat(secretPath)
-	if err != nil {
-		t.Fatalf("Stat(%q) error = %v", secretPath, err)
-	}
-	if got := secretInfo.Mode().Perm(); got != 0o600 {
-		t.Fatalf("remote deploy bootstrap secret mode = %#o, want 0o600", got)
-	}
-	secretData, err := os.ReadFile(secretPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", secretPath, err)
-	}
-	secretText := string(secretData)
-	if !strings.Contains(secretText, "remote_deploy_session_token = session-secret") {
-		t.Fatalf("remote deploy bootstrap secret missing session token: %q", secretText)
-	}
-	if !strings.Contains(secretText, "remote_deploy_invite_token = invite-secret") {
-		t.Fatalf("remote deploy bootstrap secret missing invite token: %q", secretText)
-	}
-
-	loaded, err := startupconfig.Load(path)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if loaded.RemoteDeploy.SessionToken != cfg.RemoteDeploy.SessionToken {
-		t.Fatalf("loaded remote deploy session token = %q, want %q", loaded.RemoteDeploy.SessionToken, cfg.RemoteDeploy.SessionToken)
-	}
-	if loaded.RemoteDeploy.InviteToken != cfg.RemoteDeploy.InviteToken {
-		t.Fatalf("loaded remote deploy invite token = %q, want %q", loaded.RemoteDeploy.InviteToken, cfg.RemoteDeploy.InviteToken)
-	}
-}
-
-func TestLoad_ParsesSwarmRoleManagedAndIgnoresLegacyStartupMode(t *testing.T) {
+func TestLoad_IgnoresLegacyStartupMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "swarm.conf")
 	text := strings.Join([]string{
 		"dev_mode = false",
@@ -227,33 +139,9 @@ func TestLoad_ParsesSwarmRoleManagedAndIgnoresLegacyStartupMode(t *testing.T) {
 		"swarm_name = child-host",
 		"swarm" + "_mode = true",
 		"child = true",
-		"swarm_role = managed",
 		"mode = tailscale",
 		"tailscale_url = https://child.example.ts.net",
 		"peer_transport_port = 7791",
-		"parent_swarm_id = manager-1",
-		"pairing_state = paired",
-		"deploy_container_enabled = false",
-		"deploy_container_sync_enabled = false",
-		"deploy_container_sync_mode = ",
-		"deploy_container_sync_modules = ",
-		"deploy_container_sync_owner_swarm_id = ",
-		"deploy_container_sync_credential_url = ",
-		"deploy_container_sync_agent_url = ",
-		"deploy_container_deployment_id = ",
-		"deploy_container_host_api_base_url = ",
-		"deploy_container_host_desktop_url = ",
-		"deploy_container_local_transport_socket_path = ",
-		"deploy_container_bootstrap_secret = ",
-		"deploy_container_verification_code = ",
-		"remote_deploy_enabled = false",
-		"remote_deploy_session_id = ",
-		"remote_deploy_host_api_base_url = ",
-		"remote_deploy_host_desktop_url = ",
-		"remote_deploy_sync_enabled = false",
-		"remote_deploy_sync_mode = ",
-		"remote_deploy_sync_owner_swarm_id = ",
-		"remote_deploy_sync_credential_url = ",
 	}, "\n") + "\n"
 	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 		t.Fatalf("WriteFile(%q) error = %v", path, err)
@@ -262,9 +150,6 @@ func TestLoad_ParsesSwarmRoleManagedAndIgnoresLegacyStartupMode(t *testing.T) {
 	loaded, err := startupconfig.Load(path)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
-	}
-	if loaded.SwarmRole != startupconfig.SwarmRoleManaged {
-		t.Fatalf("loaded.SwarmRole = %q, want %q", loaded.SwarmRole, startupconfig.SwarmRoleManaged)
 	}
 	if !loaded.Child {
 		t.Fatal("loaded.Child = false, want true")
@@ -281,56 +166,70 @@ func TestLoad_ParsesSwarmRoleManagedAndIgnoresLegacyStartupMode(t *testing.T) {
 	}
 }
 
-func TestLoad_LegacyConfigWithoutSwarmRoleDefaultsEmpty(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "swarm.conf")
-	text := strings.Join([]string{
-		"dev_mode = false",
-		"dev_root = ",
-		"host = 127.0.0.1",
-		"port = 7781",
-		"advertise_host = ",
-		"advertise_port = 7781",
-		"desktop_port = 5555",
-		"bypass_permissions = false",
-		"retain_tool_output_history = false",
-		"swarm_name = child-host",
-		"swarm" + "_mode = false",
-		"child = true",
-		"mode = lan",
-		"tailscale_url = ",
-		"peer_transport_port = 7791",
-		"parent_swarm_id = ",
-		"pairing_state = ",
-	}, "\n") + "\n"
-	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
-		t.Fatalf("WriteFile(%q) error = %v", path, err)
-	}
-
-	loaded, err := startupconfig.Load(path)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if loaded.SwarmRole != "" {
-		t.Fatalf("loaded.SwarmRole = %q, want empty", loaded.SwarmRole)
-	}
-	migratedData, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", path, err)
-	}
-	if !strings.Contains(string(migratedData), "swarm_role = ") {
-		t.Fatalf("legacy config was not migrated with swarm_role key: %q", string(migratedData))
-	}
-}
-
-func TestDefault_SwarmRoleAndDevDefaults(t *testing.T) {
+func TestDefault_LaunchSafetyDefaults(t *testing.T) {
 	cfg := startupconfig.Default(filepath.Join(t.TempDir(), "swarm.conf"))
-	if cfg.SwarmRole != "" {
-		t.Fatalf("Default().SwarmRole = %q, want empty", cfg.SwarmRole)
+	if cfg.Host != startupconfig.DefaultHost {
+		t.Fatalf("Default().Host = %q, want %q", cfg.Host, startupconfig.DefaultHost)
+	}
+	if cfg.Host != "127.0.0.1" {
+		t.Fatalf("Default().Host = %q, want loopback", cfg.Host)
+	}
+	if cfg.BypassPermissions {
+		t.Fatal("Default().BypassPermissions = true, want prompts enabled")
+	}
+	if cfg.RetainToolOutputHistory {
+		t.Fatal("Default().RetainToolOutputHistory = true, want false")
+	}
+	if cfg.V3Diagnostics || cfg.ProviderAPIDiagnostics {
+		t.Fatal("diagnostics default enabled, want false")
 	}
 	if cfg.DevMode {
 		t.Fatal("Default().DevMode = true, want false")
 	}
 	if cfg.DevRoot != "" {
 		t.Fatalf("Default().DevRoot = %q, want empty", cfg.DevRoot)
+	}
+}
+
+func TestWrite_EnforcesPrivateModeOnExistingConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "swarm.conf")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := startupconfig.Write(startupconfig.Default(path)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode = %#o, want 0o600", got)
+	}
+}
+
+func TestWrite_RejectsNonLoopbackHost(t *testing.T) {
+	cfg := startupconfig.Default(filepath.Join(t.TempDir(), "swarm.conf"))
+	cfg.Host = "0.0.0.0"
+	if err := startupconfig.Write(cfg); err == nil || !strings.Contains(err.Error(), "unsupported non-loopback host") {
+		t.Fatalf("Write() error = %v, want unsupported non-loopback host", err)
+	}
+}
+
+func TestLoad_RejectsNonLoopbackHostWithoutMutatingConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "swarm.conf")
+	original := "host = 0.0.0.0\nport = 7781\ndesktop_port = 5555\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if _, err := startupconfig.Load(path); err == nil || !strings.Contains(err.Error(), "unsupported non-loopback host") {
+		t.Fatalf("Load() error = %v, want unsupported non-loopback host", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(data) != original {
+		t.Fatalf("invalid config was mutated:\n%s", data)
 	}
 }

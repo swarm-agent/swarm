@@ -5,20 +5,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	"swarm/packages/swarmd/internal/uisettings"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 func TestParseTaskCallArgumentsRequiresExplicitLaunchAssignment(t *testing.T) {
 	_, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"prompt":        "inspect the repo",
-		"subagent_type": "explorer",
+		"subagent_type": "finder",
 	}))
 	if err == nil || !strings.Contains(err.Error(), "requires meta_prompt or role assignment") {
 		t.Fatalf("expected missing assignment error, got %v", err)
@@ -46,7 +52,7 @@ func TestParseTaskCallArgumentsRequiresPerLaunchAgentAndAssignment(t *testing.T)
 			args: map[string]any{
 				"prompt": "inspect the repo",
 				"launches": []any{
-					map[string]any{"subagent_type": "explorer"},
+					map[string]any{"subagent_type": "finder"},
 				},
 			},
 			want: "task launches[0] requires meta_prompt or role assignment",
@@ -81,7 +87,7 @@ func TestParseTaskCallArgumentsRejectsLaunchTimeTrustFields(t *testing.T) {
 			name: "top level allow_bash",
 			args: map[string]any{
 				"prompt":        "inspect the repo",
-				"subagent_type": "explorer",
+				"subagent_type": "finder",
 				"meta_prompt":   "map the relevant files",
 				"allow_bash":    true,
 			},
@@ -92,7 +98,7 @@ func TestParseTaskCallArgumentsRejectsLaunchTimeTrustFields(t *testing.T) {
 				"prompt": "inspect the repo",
 				"launches": []any{
 					map[string]any{
-						"subagent_type":     "explorer",
+						"subagent_type":     "finder",
 						"meta_prompt":       "map the relevant files",
 						"execution_setting": "readwrite",
 					},
@@ -105,7 +111,7 @@ func TestParseTaskCallArgumentsRejectsLaunchTimeTrustFields(t *testing.T) {
 				"prompt": "inspect the repo",
 				"launches": []any{
 					map[string]any{
-						"subagent_type": "explorer",
+						"subagent_type": "finder",
 						"meta_prompt":   "map the relevant files",
 						"tool_contract": map[string]any{"preset": "all"},
 					},
@@ -118,7 +124,7 @@ func TestParseTaskCallArgumentsRejectsLaunchTimeTrustFields(t *testing.T) {
 				"prompt": "inspect the repo",
 				"launches": []any{
 					map[string]any{
-						"subagent_type": "explorer",
+						"subagent_type": "finder",
 						"meta_prompt":   "map the relevant files",
 						"tool_scope":    map[string]any{"allow_tools": []any{"bash"}},
 					},
@@ -141,8 +147,8 @@ func TestParseTaskCallArgumentsValidLaunches(t *testing.T) {
 		"description": "repo map",
 		"prompt":      "inspect the repo",
 		"launches": []any{
-			map[string]any{"subagent_type": "explorer", "meta_prompt": "map backend files"},
-			map[string]any{"agent": "parallel", "role": "map frontend files"},
+			map[string]any{"subagent_type": "finder", "meta_prompt": "map backend files"},
+			map[string]any{"agent": "coder", "role": "map frontend files", "deliverable": "frontend map", "concurrency_reason": "independent tree", "owned_scope": []any{"web/src/**"}, "dependency_evidence": "read-only mapping"},
 		},
 	}))
 	if err != nil {
@@ -151,22 +157,140 @@ func TestParseTaskCallArgumentsValidLaunches(t *testing.T) {
 	if len(parsed.Launches) != 2 {
 		t.Fatalf("launch count = %d, want 2", len(parsed.Launches))
 	}
-	if parsed.Launches[0].RequestedSubagentType != "explorer" || parsed.Launches[0].MetaPrompt != "map backend files" {
+	if parsed.Launches[0].RequestedSubagentType != "finder" || parsed.Launches[0].MetaPrompt != "map backend files" {
 		t.Fatalf("unexpected first launch: %#v", parsed.Launches[0])
 	}
-	if parsed.Launches[1].RequestedSubagentType != "parallel" || parsed.Launches[1].MetaPrompt != "map frontend files" {
+	if parsed.Launches[1].RequestedSubagentType != "coder" || parsed.Launches[1].MetaPrompt != "map frontend files" || parsed.Launches[1].Deliverable != "frontend map" || len(parsed.Launches[1].OwnedScope) != 1 {
 		t.Fatalf("unexpected second launch: %#v", parsed.Launches[1])
 	}
 }
 
-func TestTaskAssignmentLabelPreservesMoreTitleContext(t *testing.T) {
+func TestParseTaskCallArgumentsSupportsCompiledTaskAgentsAndAppliesCanonicalCoderScope(t *testing.T) {
+	tests := []struct {
+		name string
+		args map[string]any
+		want int
+	}{
+		{
+			name: "single Coder shorthand",
+			args: map[string]any{"prompt": "acknowledge", "agent": "coder", "role": "acknowledge"},
+			want: 1,
+		},
+		{
+			name: "two Coder wave",
+			args: map[string]any{
+				"prompt": "Ask two coders to acknowledge",
+				"launches": []any{
+					map[string]any{"agent": "coder", "role": "acknowledge one"},
+					map[string]any{"subagent_type": "coder", "meta_prompt": "acknowledge two"},
+				},
+			},
+			want: 2,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := parseTaskCallArguments(mustJSON(t, tc.args))
+			if err != nil {
+				t.Fatalf("parse Coder launch: %v", err)
+			}
+			if len(parsed.Launches) != tc.want {
+				t.Fatalf("launch count = %d, want %d", len(parsed.Launches), tc.want)
+			}
+			for i, launch := range parsed.Launches {
+				if !slices.Equal(launch.OwnedScope, []string{"."}) {
+					t.Fatalf("launch %d owned scope = %#v, want canonical whole-worktree scope", i, launch.OwnedScope)
+				}
+			}
+		})
+	}
+	for _, rejected := range []string{"clone", "system-clone", "reviewer"} {
+		_, err := parseTaskCallArguments(mustJSON(t, map[string]any{"prompt": "reject", "agent": rejected, "role": "reject"}))
+		if err == nil || !strings.Contains(err.Error(), "subagent_type must be coder, finder, or designer") {
+			t.Fatalf("target %q error = %v, want compiled task-agent rejection", rejected, err)
+		}
+	}
+}
+
+func TestParseTaskCallArgumentsRequiresDistinctConcreteDesignerScopes(t *testing.T) {
+	valid, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt": "create two variants",
+		"launches": []any{
+			map[string]any{"subagent_type": "designer", "meta_prompt": "create compact variant", "owned_scope": []any{"web/src/variants/compact.tsx"}},
+			map[string]any{"subagent_type": agentruntime.DesignerAgentID, "meta_prompt": "create spacious variant", "owned_scope": []any{"web/src/variants/spacious.tsx"}},
+		},
+	}))
+	if err != nil || len(valid.Launches) != 2 || valid.Launches[0].RequestedSubagentType != "designer" {
+		t.Fatalf("valid Designer wave = %#v err=%v", valid.Launches, err)
+	}
+	for _, args := range []map[string]any{
+		{"prompt": "missing target", "agent": "designer", "role": "create variant"},
+		{"prompt": "absolute target", "agent": "designer", "role": "create variant", "owned_scope": []any{"/outside/variant.tsx"}},
+		{"prompt": "glob target", "agent": "designer", "role": "create variant", "owned_scope": []any{"web/src/variants/**"}},
+		{"prompt": "unclean target", "agent": "designer", "role": "create variant", "owned_scope": []any{"web/src/variants/../variant.tsx"}},
+		{"prompt": "overlap", "launches": []any{
+			map[string]any{"agent": "designer", "role": "first", "owned_scope": []any{"web/src/variants"}},
+			map[string]any{"agent": "designer", "role": "second", "owned_scope": []any{"web/src/variants/second.tsx"}},
+		}},
+	} {
+		if _, err := parseTaskCallArguments(mustJSON(t, args)); err == nil {
+			t.Fatalf("Designer scope validation accepted %#v", args)
+		}
+	}
+}
+
+func TestParseTaskCallArgumentsPreservesCoderScopeAndRejectsInvalidScopeShape(t *testing.T) {
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt": "implement backend", "agent": "coder", "role": "implement backend", "owned_scope": []any{"swarmd/internal/run/**"},
+	}))
+	if err != nil {
+		t.Fatalf("parse scoped Coder launch: %v", err)
+	}
+	if !slices.Equal(parsed.Launches[0].OwnedScope, []string{"swarmd/internal/run/**"}) {
+		t.Fatalf("owned scope = %#v, want declared scope", parsed.Launches[0].OwnedScope)
+	}
+
+	_, err = parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt": "implement backend", "agent": "coder", "role": "implement backend", "owned_scope": "swarmd/internal/run/**",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "owned_scope must be an array of strings") {
+		t.Fatalf("invalid owned_scope error = %v", err)
+	}
+}
+
+func TestCanonicalWholeWorktreeScopeOverlapsDeclaredScope(t *testing.T) {
+	if !taskOwnedScopesOverlap([]string{"."}, []string{"web/src/**"}) {
+		t.Fatal("canonical whole-worktree scope must overlap a declared child scope")
+	}
+	if taskOwnedScopesOverlap([]string{"swarmd/internal/**"}, []string{"web/src/**"}) {
+		t.Fatal("disjoint declared scopes must remain non-overlapping")
+	}
+}
+
+func TestTaskAssignmentLabelKeepsCosmeticTitleToThreeWords(t *testing.T) {
 	label := taskAssignmentLabel("", "Write a quick poem about the sea with a bright moon and quiet tide", "", "memory")
-	want := "Write a quick poem about the sea with a bright moon and quiet tide"
+	want := "Write a quick"
 	if label != want {
 		t.Fatalf("label = %q, want %q", label, want)
 	}
-	if strings.Contains(label, "...") {
-		t.Fatalf("label should preserve 12-word title without ellipsis: %q", label)
+}
+
+func TestParseTaskCallArgumentsSeparatesTitleFromInstructiveAssignment(t *testing.T) {
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt":        "Return evidence and relevant filepaths.",
+		"subagent_type": "finder",
+		"title":         "Backend Security Audit",
+		"meta_prompt":   "Audit the backend authentication and authorization surfaces in depth without dropping scope or constraints.",
+	}))
+	if err != nil {
+		t.Fatalf("parse task title: %v", err)
+	}
+	launch := parsed.Launches[0]
+	if launch.AssignmentLabel != "Backend Security Audit" {
+		t.Fatalf("assignment label = %q", launch.AssignmentLabel)
+	}
+	if launch.MetaPrompt != "Audit the backend authentication and authorization surfaces in depth without dropping scope or constraints." {
+		t.Fatalf("meta prompt was shortened: %q", launch.MetaPrompt)
 	}
 }
 
@@ -184,7 +308,7 @@ func TestParseTaskCallArgumentsRejectsMalformedParameterMarkupBeforeLaunchValida
 		"description": "Test 2 — Valid multi-subagent launch",
 		"prompt":      "Execute your assigned meta_prompt/role. </怡parameter>",
 		"launches": []any{
-			map[string]any{"subagent_type": "explorer", "meta_prompt": "Map top-level directories."},
+			map[string]any{"subagent_type": "finder", "meta_prompt": "Map top-level directories."},
 		},
 	}))
 	if err == nil || !strings.Contains(err.Error(), "malformed XML markup in tool call") {
@@ -417,6 +541,227 @@ func TestBuildTaskLaunchPermissionPayloadIncludesResolvedToolSummary(t *testing.
 	}
 }
 
+type taskLaunchWorktreeStub struct {
+	allocations       int
+	allocation        worktreeruntime.Allocation
+	taskBase          worktreeruntime.TaskBase
+	config            worktreeruntime.Config
+	requestedBase     string
+	requestedBranch   string
+	requestedNameSeed string
+}
+
+func (s *taskLaunchWorktreeStub) AttachBranch(_, _, _ string) (string, error) { return "", nil }
+
+func (s *taskLaunchWorktreeStub) ResolveTaskBase(_ string) (worktreeruntime.TaskBase, error) {
+	if strings.TrimSpace(s.taskBase.BaseCommit) == "" {
+		return worktreeruntime.TaskBase{RepoRoot: "/repo", ParentBranch: "dev", BaseCommit: "base-commit"}, nil
+	}
+	return s.taskBase, nil
+}
+
+func (s *taskLaunchWorktreeStub) AllocateTaskWorkspace(_ string, _ worktreeruntime.TaskBase, _ string) (worktreeruntime.Allocation, error) {
+	s.allocations++
+	return s.allocation, nil
+}
+
+func (s *taskLaunchWorktreeStub) TaskCommitDescendsFrom(_, baseCommit, headCommit string) (bool, error) {
+	return strings.TrimSpace(baseCommit) != "" && strings.TrimSpace(headCommit) != "" && baseCommit != headCommit, nil
+}
+
+func (s *taskLaunchWorktreeStub) InspectTaskWorkspace(path string) (worktreeruntime.TaskWorkspaceState, error) {
+	return worktreeruntime.TaskWorkspaceState{WorkspacePath: path, BranchName: s.allocation.BranchName, HeadCommit: s.taskBase.BaseCommit, Clean: true}, nil
+}
+
+func (s *taskLaunchWorktreeStub) GetConfigForPrincipal(_ identity.Principal, workspacePath string) (worktreeruntime.Config, error) {
+	if strings.TrimSpace(s.config.WorkspacePath) == "" {
+		return worktreeruntime.Config{WorkspacePath: workspacePath, BranchName: "agent"}, nil
+	}
+	return s.config, nil
+}
+
+func (s *taskLaunchWorktreeStub) AllocateDetachedWorkspaceRequestedForPrincipal(_ identity.Principal, _, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error) {
+	s.allocations++
+	s.requestedNameSeed, s.requestedBase, s.requestedBranch = nameSeed, baseBranch, branchName
+	return s.allocation, nil
+}
+
+func TestDelegatedSubagentRunStartMetaKeepsPreparedProfileSnapshot(t *testing.T) {
+	prepared := pebblestore.AgentProfile{Name: "reviewer", Prompt: "prepared prompt", RuntimeMode: pebblestore.AgentRuntimeModeRead}
+	launch := taskLaunchPrepared{SubagentProfile: prepared}
+	meta := delegatedSubagentRunStartMeta(launch, "parent-session", identity.Principal{AccountScopeID: "account-a"}, nil)
+	launch.SubagentProfile.Prompt = "changed after preparation"
+	if meta.TrustedAgentProfile == nil || meta.TrustedAgentProfile.Prompt != "prepared prompt" {
+		t.Fatalf("trusted profile = %#v, want immutable prepared snapshot", meta.TrustedAgentProfile)
+	}
+	if !meta.AllowSubagent || meta.PermissionSessionID != "parent-session" || meta.Principal.AccountScopeID != "account-a" {
+		t.Fatalf("delegated run meta lost trusted context: %#v", meta)
+	}
+}
+
+func TestApprovedFinderInheritsParentWorktreeScopeWithoutAllocation(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	parent.WorktreeEnabled = true
+	parent.WorktreeRootPath = parent.WorkspacePath
+	parent.WorktreeBaseBranch = "dev"
+	parent.WorktreeBranch = "agent/parent"
+	temporaryRoot := t.TempDir()
+	parent.TemporaryWorkspaceRoots = []string{temporaryRoot}
+	stub := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{WorkspacePath: t.TempDir()}}
+	svc.SetWorktreeService(stub)
+	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "finder")
+	if err != nil || virtual {
+		t.Fatalf("resolve Finder profile: virtual=%t source=%q err=%v", virtual, source, err)
+	}
+	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex: 1, RequestedSubagent: "finder", MetaPrompt: "inspect parent", VirtualTarget: virtual,
+	}, "inspect", "", &profile, source, nil)
+	if err != nil {
+		t.Fatalf("prepare approved Finder: %v", err)
+	}
+	child := launch.ChildSession
+	if stub.allocations != 0 {
+		t.Fatalf("Finder allocated %d worktrees, want 0", stub.allocations)
+	}
+	if child.WorkspacePath != parent.WorkspacePath || child.WorktreeRootPath != parent.WorktreeRootPath || !child.WorktreeEnabled {
+		t.Fatalf("Finder worktree facts = %#v, want inherited from %#v", child, parent)
+	}
+	assertStringSliceContains(t, child.TemporaryWorkspaceRoots, temporaryRoot)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+	scope, err := svc.resolveRunWorkspaceScope(child, principal)
+	if err != nil {
+		t.Fatalf("resolve Finder scope: %v", err)
+	}
+	if _, needsExpansion, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": filepath.Join(parent.WorkspacePath, "README.md")})}); err != nil || needsExpansion {
+		t.Fatalf("parent worktree read expansion: needed=%t err=%v scope=%#v", needsExpansion, err, scope)
+	}
+}
+
+func TestDesignerResolvesUtilityModelAndExplicitAccountOverride(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+
+	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "designer")
+	if err != nil || virtual || source != "" {
+		t.Fatalf("resolve Designer default: virtual=%t source=%q err=%v", virtual, source, err)
+	}
+	if profile.Name != agentruntime.DesignerAgentID || profile.Provider != "codex" || profile.Model == "" || profile.Thinking == "" {
+		t.Fatalf("Designer utility default = %+v", profile)
+	}
+
+	settings, err := svc.uiSettings.GetForAccount(parent.AccountScopeID)
+	if err != nil {
+		t.Fatalf("read Designer settings: %v", err)
+	}
+	settings.Agents.Designer = uisettings.CompactAgentSettings{Provider: "codex", Model: profile.Model, Thinking: "medium", ServiceTier: "priority"}
+	if _, err := svc.uiSettings.SetForAccount(parent.AccountScopeID, settings); err != nil {
+		t.Fatalf("save Designer override: %v", err)
+	}
+	overridden, _, _, err := svc.resolveTaskLaunchProfile(parent, agentruntime.DesignerAgentID)
+	if err != nil {
+		t.Fatalf("resolve Designer override: %v", err)
+	}
+	if overridden.Model != profile.Model || overridden.Thinking != "medium" || overridden.AutoServiceTier != "priority" {
+		t.Fatalf("Designer explicit override = %+v, default=%+v", overridden, profile)
+	}
+}
+
+func TestApprovedDesignerInheritsParentCheckoutWithoutAllocation(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	parent.WorktreeEnabled = true
+	parent.WorktreeRootPath = parent.WorkspacePath
+	parent.WorktreeBaseBranch = "dev"
+	parent.WorktreeBranch = "agent/parent"
+	stub := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{WorkspacePath: t.TempDir()}}
+	svc.SetWorktreeService(stub)
+	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "designer")
+	if err != nil || virtual {
+		t.Fatalf("resolve Designer profile: virtual=%t source=%q err=%v", virtual, source, err)
+	}
+	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex: 1, RequestedSubagent: "designer", MetaPrompt: "create variant", VirtualTarget: virtual, OwnedScope: []string{"web/src/variants/compact.tsx"},
+	}, "design", "", &profile, source, nil)
+	if err != nil {
+		t.Fatalf("prepare approved Designer: %v", err)
+	}
+	child := launch.ChildSession
+	if stub.allocations != 0 {
+		t.Fatalf("Designer allocated %d worktrees, want 0", stub.allocations)
+	}
+	if child.WorkspacePath != parent.WorkspacePath || child.WorktreeRootPath != parent.WorktreeRootPath || child.WorktreeBranch != parent.WorktreeBranch || !child.WorktreeEnabled {
+		t.Fatalf("Designer checkout facts = %#v, want inherited from %#v", child, parent)
+	}
+	if got := mapString(child.Metadata, "shared_parent_checkout"); got != "" {
+		// Boolean metadata is asserted below without converting its type.
+		t.Fatalf("unexpected string shared checkout metadata %q", got)
+	}
+	if shared, _ := child.Metadata["shared_parent_checkout"].(bool); !shared {
+		t.Fatalf("Designer child metadata missing shared checkout: %#v", child.Metadata)
+	}
+	if scope, _ := child.Metadata["owned_scope"].([]string); !slices.Equal(scope, []string{"web/src/variants/compact.tsx"}) {
+		t.Fatalf("Designer child owned scope = %#v", child.Metadata["owned_scope"])
+	}
+}
+
+func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	parent.WorktreeEnabled = true
+	parent.WorktreeRootPath = parent.WorkspacePath
+	parent.WorktreeBaseBranch = "dev"
+	parent.TemporaryWorkspaceRoots = []string{t.TempDir()}
+	clonePath := t.TempDir()
+	stub := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{WorkspacePath: clonePath, RepoRoot: filepath.Dir(clonePath), BaseBranch: "dev", BranchName: "agent/clone", WorkspaceID: "clone-workspace"}}
+	svc.SetWorktreeService(stub)
+	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "coder")
+	if err != nil || !virtual {
+		t.Fatalf("resolve Coder profile: virtual=%t source=%q err=%v", virtual, source, err)
+	}
+	taskBase, err := stub.ResolveTaskBase(parent.WorkspacePath)
+	if err != nil {
+		t.Fatalf("resolve task base: %v", err)
+	}
+	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex: 1, RequestedSubagent: "coder", MetaPrompt: "implement", VirtualTarget: virtual, TaskBase: &taskBase,
+	}, "implement", "", &profile, source, nil)
+	if err != nil {
+		t.Fatalf("prepare approved Coder: %v", err)
+	}
+	child := launch.ChildSession
+	if stub.allocations != 1 || child.WorkspacePath != clonePath || child.WorktreeRootPath != clonePath || !child.WorktreeEnabled {
+		t.Fatalf("Coder isolation facts: allocations=%d child=%#v", stub.allocations, child)
+	}
+	if len(child.TemporaryWorkspaceRoots) != 0 {
+		t.Fatalf("Coder inherited temporary roots: %v", child.TemporaryWorkspaceRoots)
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+	scope, err := svc.resolveRunWorkspaceScope(child, principal)
+	if err != nil {
+		t.Fatalf("resolve Coder scope: %v", err)
+	}
+	if _, needsExpansion, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": parent.WorkspacePath})}); err != nil || !needsExpansion {
+		t.Fatalf("parent worktree read from Coder: needed=%t err=%v scope=%#v", needsExpansion, err, scope)
+	}
+}
+
 func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing.T) {
 	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
@@ -458,11 +803,16 @@ func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing
 		t.Fatalf("create account-scoped parent session: %v", err)
 	}
 
-	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModePlan, taskLaunchPrepared{
+	var captured []sessionruntime.SessionMutationInput
+	apply := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		captured = append(captured, input)
+		return svc.sessions.ApplySessionMutation(input)
+	}
+	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
 		LaunchIndex:       7,
 		RequestedSubagent: "purpose-review",
 		MetaPrompt:        "Map backend files",
-	}, "repo map", "")
+	}, "repo map", "", apply)
 	if err != nil {
 		t.Fatalf("prepare delegated launch: %v", err)
 	}
@@ -476,6 +826,15 @@ func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing
 	}
 	if strings.Contains(childID, "/") || strings.Contains(childID, ":") {
 		t.Fatalf("child session id %q is not a raw canonical session id", childID)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("captured create mutations = %d, want 1", len(captured))
+	}
+	if got := captured[0].Kind; got != sessionruntime.SessionMutationCreateSession {
+		t.Fatalf("captured mutation kind = %q, want create session", got)
+	}
+	if captured[0].Session == nil || captured[0].Session.ID != childID {
+		t.Fatalf("captured mutation session = %#v, want child %q", captured[0].Session, childID)
 	}
 	child, ok, err := svc.sessions.GetSession(childID)
 	if err != nil {
@@ -566,6 +925,548 @@ func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing
 	if got := strings.TrimSpace(metadataStringForTest(createdPayload.Session.Metadata, "lineage_kind")); got != "delegated_subagent" {
 		t.Fatalf("V3 session.created lineage_kind = %q, want delegated_subagent", got)
 	}
+	outbox, err := svc.sessions.ListRealtimeOutboxForSessionAfterEndpoint(childID, 0, 10)
+	if err != nil {
+		t.Fatalf("list child realtime outbox: %v", err)
+	}
+	if len(outbox) != 1 || outbox[0].Event.EventType != "session.created" || outbox[0].SessionID != childID || outbox[0].EndpointSeq == 0 {
+		t.Fatalf("child realtime outbox = %#v, want durable session.created outbox row", outbox)
+	}
+}
+
+func TestPrepareDelegatedSubagentLaunchUsesSplitProfilePlanSettingsInPlanMode(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	const accountScopeID = "account-split-plan"
+	const userID = "user-split-plan"
+	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
+		Name:                "split-reviewer",
+		Mode:                agentruntime.ModeSubagent,
+		Description:         "Split review specialist",
+		ModelMode:           "split",
+		PlanProvider:        "fireworks",
+		PlanModel:           "accounts/fireworks/models/glm-5p1",
+		PlanThinking:        "high",
+		PlanServiceTier:     "priority",
+		AutoProvider:        "static",
+		AutoModel:           "auto-review-model",
+		AutoThinking:        "low",
+		Prompt:              "Review according to mode.",
+		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+		ToolContract:        &pebblestore.AgentToolContract{Preset: "read_only"},
+		Enabled:             pebblestore.BoolPtr(true),
+	}); err != nil {
+		t.Fatalf("create account-scoped split reviewer: %v", err)
+	}
+	if _, _, _, err := svc.agents.SetActiveSubagentForAccount(accountScopeID, "purpose-split", "split-reviewer"); err != nil {
+		t.Fatalf("set account-scoped active split subagent: %v", err)
+	}
+	parent, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         userID,
+		AccountScopeID: accountScopeID,
+		Title:          "Parent",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModePlan,
+		Preference: &pebblestore.ModelPreference{
+			Provider: "codex",
+			Model:    "gpt-5.4",
+			Thinking: "medium",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create plan parent session: %v", err)
+	}
+
+	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModePlan, taskLaunchPrepared{
+		LaunchIndex:       1,
+		RequestedSubagent: "purpose-split",
+		MetaPrompt:        "Review backend files",
+	}, "split review", "", nil)
+	if err != nil {
+		t.Fatalf("prepare delegated launch: %v", err)
+	}
+
+	if launch.ChildMode != sessionruntime.ModePlan || launch.ChildSession.Mode != sessionruntime.ModePlan {
+		t.Fatalf("child mode = %q session mode = %q, want plan", launch.ChildMode, launch.ChildSession.Mode)
+	}
+	if got := launch.ChildSession.Preference.Provider; got != "fireworks" {
+		t.Fatalf("child provider = %q, want fireworks", got)
+	}
+	if got := launch.ChildSession.Preference.Model; got != "accounts/fireworks/models/glm-5p1" {
+		t.Fatalf("child model = %q, want accounts/fireworks/models/glm-5p1", got)
+	}
+	if got := launch.ChildSession.Preference.Thinking; got != "high" {
+		t.Fatalf("child thinking = %q, want high", got)
+	}
+	if got := launch.ChildSession.Preference.ServiceTier; got != "priority" {
+		t.Fatalf("child service tier = %q, want priority", got)
+	}
+	if launch.SubagentProvider != "fireworks" || launch.SubagentModel != "accounts/fireworks/models/glm-5p1" {
+		t.Fatalf("launch display preference = %q/%q, want plan profile settings", launch.SubagentProvider, launch.SubagentModel)
+	}
+	child, ok, err := svc.sessions.GetSession(launch.ChildSession.ID)
+	if err != nil {
+		t.Fatalf("load child session: %v", err)
+	}
+	if !ok {
+		t.Fatalf("child session %q was not persisted", launch.ChildSession.ID)
+	}
+	if child.Mode != sessionruntime.ModePlan {
+		t.Fatalf("persisted child mode = %q, want plan", child.Mode)
+	}
+	if child.Preference.Provider != "fireworks" || child.Preference.Model != "accounts/fireworks/models/glm-5p1" || child.Preference.ServiceTier != "priority" {
+		t.Fatalf("persisted child preference = %#v, want plan split profile settings", child.Preference)
+	}
+}
+
+func TestBuildTaskLaunchPermissionPayloadUsesSplitProfilePlanSettingsInPlanMode(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	const accountScopeID = "account-split-manifest"
+	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
+		Name:                "split-manifest-reviewer",
+		Mode:                agentruntime.ModeSubagent,
+		Description:         "Split manifest specialist",
+		ModelMode:           "split",
+		PlanProvider:        "fireworks",
+		PlanModel:           "accounts/fireworks/models/glm-5p1",
+		PlanThinking:        "high",
+		PlanServiceTier:     "priority",
+		AutoProvider:        "static",
+		AutoModel:           "auto-review-model",
+		AutoThinking:        "low",
+		Prompt:              "Review according to mode.",
+		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+		ToolContract:        &pebblestore.AgentToolContract{Preset: "read_only"},
+		Enabled:             pebblestore.BoolPtr(true),
+	}); err != nil {
+		t.Fatalf("create account-scoped split manifest reviewer: %v", err)
+	}
+	if _, _, _, err := svc.agents.SetActiveSubagentForAccount(accountScopeID, "purpose-split-manifest", "split-manifest-reviewer"); err != nil {
+		t.Fatalf("set account-scoped active split manifest subagent: %v", err)
+	}
+	parent, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         "user-split-manifest",
+		AccountScopeID: accountScopeID,
+		Title:          "Parent",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModePlan,
+		Preference: &pebblestore.ModelPreference{
+			Provider: "codex",
+			Model:    "gpt-5.4",
+			Thinking: "medium",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create manifest parent session: %v", err)
+	}
+
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parent.ID, sessionruntime.ModePlan, tool.Call{
+		Name: "task",
+		Arguments: mustJSON(t, map[string]any{
+			"description":   "repo map",
+			"prompt":        "inspect the repo",
+			"subagent_type": "purpose-split-manifest",
+			"meta_prompt":   "map backend files",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("build permission payload: %v", err)
+	}
+	if manifest.EffectiveChildMode != sessionruntime.ModePlan {
+		t.Fatalf("manifest child mode = %q, want plan", manifest.EffectiveChildMode)
+	}
+	if len(manifest.Launches) != 1 {
+		t.Fatalf("launch count = %d, want 1", len(manifest.Launches))
+	}
+	row := manifest.Launches[0]
+	if row.ChildMode != sessionruntime.ModePlan {
+		t.Fatalf("row child mode = %q, want plan", row.ChildMode)
+	}
+	if row.SubagentProvider != "fireworks" || row.SubagentModel != "accounts/fireworks/models/glm-5p1" {
+		t.Fatalf("row preference = %q/%q, want plan split profile settings", row.SubagentProvider, row.SubagentModel)
+	}
+}
+
+func TestPrepareDelegatedSubagentLaunchPreservesSupportedPriorityServiceTier(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	const accountScopeID = "account-priority"
+	const userID = "user-priority"
+	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
+		Name:                "priority-reviewer",
+		Mode:                agentruntime.ModeSubagent,
+		Description:         "Priority review specialist",
+		Provider:            "fireworks",
+		Model:               "accounts/fireworks/models/glm-5p1",
+		Prompt:              "Review quickly.",
+		RuntimeMode:         pebblestore.AgentRuntimeModeReadWrite,
+		ExecutionSetting:    pebblestore.AgentExecutionSettingReadWrite,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false),
+		ToolContract:        &pebblestore.AgentToolContract{Preset: "read_write"},
+		Enabled:             pebblestore.BoolPtr(true),
+	}); err != nil {
+		t.Fatalf("create account-scoped priority reviewer: %v", err)
+	}
+	if _, _, _, err := svc.agents.SetActiveSubagentForAccount(accountScopeID, "purpose-priority", "priority-reviewer"); err != nil {
+		t.Fatalf("set account-scoped active subagent: %v", err)
+	}
+	parent, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         userID,
+		AccountScopeID: accountScopeID,
+		Title:          "Parent",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
+		Preference: &pebblestore.ModelPreference{
+			Provider:    "codex",
+			Model:       "gpt-5.4",
+			Thinking:    "high",
+			ServiceTier: "priority",
+			ContextMode: "1m",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create account-scoped parent session: %v", err)
+	}
+
+	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex:       1,
+		RequestedSubagent: "purpose-priority",
+		MetaPrompt:        "Review backend files",
+	}, "priority review", "", nil)
+	if err != nil {
+		t.Fatalf("prepare delegated launch: %v", err)
+	}
+
+	if got := launch.ChildSession.Preference.ServiceTier; got != "priority" {
+		t.Fatalf("launch child service tier = %q, want priority", got)
+	}
+	if got := launch.ChildSession.Preference.ContextMode; got != "" {
+		t.Fatalf("launch child context mode = %q, want cleared for non-codex/gpt-5.4", got)
+	}
+	child, ok, err := svc.sessions.GetSession(launch.ChildSession.ID)
+	if err != nil {
+		t.Fatalf("load child session: %v", err)
+	}
+	if !ok {
+		t.Fatalf("child session %q was not persisted", launch.ChildSession.ID)
+	}
+	if got := child.Preference.ServiceTier; got != "priority" {
+		t.Fatalf("persisted child service tier = %q, want priority", got)
+	}
+	if got := child.Preference.ContextMode; got != "" {
+		t.Fatalf("persisted child context mode = %q, want cleared for non-codex/gpt-5.4", got)
+	}
+}
+
+func TestPrepareTargetedSubagentLaunchPreservesSupportedPriorityServiceTier(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	const accountScopeID = "account-targeted-priority"
+	const userID = "user-targeted-priority"
+	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
+		Name:                "targeted-priority-reviewer",
+		Mode:                agentruntime.ModeSubagent,
+		Description:         "Targeted priority review specialist",
+		Provider:            "fireworks",
+		Model:               "accounts/fireworks/models/glm-5p1",
+		Prompt:              "Review targeted work quickly.",
+		RuntimeMode:         pebblestore.AgentRuntimeModeReadWrite,
+		ExecutionSetting:    pebblestore.AgentExecutionSettingReadWrite,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false),
+		ToolContract:        &pebblestore.AgentToolContract{Preset: "read_write"},
+		Enabled:             pebblestore.BoolPtr(true),
+	}); err != nil {
+		t.Fatalf("create account-scoped targeted priority reviewer: %v", err)
+	}
+	parent, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         userID,
+		AccountScopeID: accountScopeID,
+		Title:          "Parent",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
+		Preference: &pebblestore.ModelPreference{
+			Provider:    "codex",
+			Model:       "gpt-5.4",
+			Thinking:    "high",
+			ServiceTier: "priority",
+			ContextMode: "1m",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create account-scoped parent session: %v", err)
+	}
+
+	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex:       1,
+		RequestedSubagent: "targeted-priority-reviewer",
+	}, "@targeted-priority-reviewer priority review", "targeted-priority-reviewer", nil)
+	if err != nil {
+		t.Fatalf("prepare targeted launch: %v", err)
+	}
+
+	if got := launch.ChildSession.Preference.ServiceTier; got != "priority" {
+		t.Fatalf("launch child service tier = %q, want priority", got)
+	}
+	if got := launch.ChildSession.Preference.ContextMode; got != "" {
+		t.Fatalf("launch child context mode = %q, want cleared for non-codex/gpt-5.4", got)
+	}
+	if got := metadataStringForTest(launch.ChildSession.Metadata, "launch_source"); got != "targeted_subagent" {
+		t.Fatalf("launch source = %q, want targeted_subagent", got)
+	}
+	if got := metadataStringForTest(launch.ChildSession.Metadata, "targeted_subagent"); got != "targeted-priority-reviewer" {
+		t.Fatalf("targeted_subagent metadata = %q, want targeted-priority-reviewer", got)
+	}
+	child, ok, err := svc.sessions.GetSession(launch.ChildSession.ID)
+	if err != nil {
+		t.Fatalf("load targeted child session: %v", err)
+	}
+	if !ok {
+		t.Fatalf("targeted child session %q was not persisted", launch.ChildSession.ID)
+	}
+	if got := child.Preference.ServiceTier; got != "priority" {
+		t.Fatalf("persisted targeted child service tier = %q, want priority", got)
+	}
+	if got := child.Preference.ContextMode; got != "" {
+		t.Fatalf("persisted targeted child context mode = %q, want cleared for non-codex/gpt-5.4", got)
+	}
+}
+
+func TestApplyAgentPreferenceOverridesSplitProfileKeepsInheritedPriorityServiceTier(t *testing.T) {
+	base := pebblestore.ModelPreference{
+		Provider:    "codex",
+		Model:       "gpt-5.4",
+		Thinking:    "high",
+		ServiceTier: "priority",
+		ContextMode: "1m",
+	}
+	profile := pebblestore.AgentProfile{
+		ModelMode:       "split",
+		AutoProvider:    "fireworks",
+		AutoModel:       "accounts/fireworks/models/glm-5p1",
+		AutoThinking:    "high",
+		PlanProvider:    "static",
+		PlanModel:       "plan-review-model",
+		PlanThinking:    "low",
+		PlanServiceTier: "",
+		AutoServiceTier: "",
+	}
+
+	got := applyAgentPreferenceOverridesForMode(base, profile, sessionruntime.ModeAuto)
+	if got.Provider != "fireworks" || got.Model != "accounts/fireworks/models/glm-5p1" {
+		t.Fatalf("preference provider/model = %q/%q, want fireworks/accounts/fireworks/models/glm-5p1", got.Provider, got.Model)
+	}
+	if got.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q, want inherited priority", got.ServiceTier)
+	}
+	if got.ContextMode != "" {
+		t.Fatalf("context mode = %q, want cleared for non-codex/gpt-5.4", got.ContextMode)
+	}
+}
+
+func TestApplyAgentPreferenceOverridesClearsUnsupportedServiceTierProviders(t *testing.T) {
+	base := pebblestore.ModelPreference{
+		Provider:    "codex",
+		Model:       "gpt-5.4",
+		Thinking:    "high",
+		ServiceTier: "priority",
+		ContextMode: "1m",
+	}
+	profile := pebblestore.AgentProfile{
+		Provider: "static",
+		Model:    "review-model",
+		Thinking: "low",
+	}
+
+	got := applyAgentPreferenceOverrides(base, profile)
+	if got.ServiceTier != "" {
+		t.Fatalf("service tier = %q, want cleared for unsupported provider", got.ServiceTier)
+	}
+	if got.ContextMode != "" {
+		t.Fatalf("context mode = %q, want cleared for non-codex/gpt-5.4", got.ContextMode)
+	}
+}
+
+func TestProviderManagedV3ToolRequiresPrimaryMutationCallback(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	_, _, err := svc.executeProviderManagedToolCall(context.Background(), providerToolInvokerConfig{
+		sessionID:         parentSessionID,
+		providerManagedV3: true,
+	}, tool.Call{Name: "task", CallID: "call-no-v3-mutation", Arguments: "{}"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "requires applySessionV3PrimaryMutation") {
+		t.Fatalf("expected missing V3 mutation callback error, got %v", err)
+	}
+}
+
+func TestTaskDelegationContextUsesLatestCompactAndActivePlan(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	if _, _, err := svc.sessions.SavePlan(parentSessionID, "plan-delegation", "Delegation Plan", "# Active plan\n- Keep this current plan", "approved", "approved", true); err != nil {
+		t.Fatalf("save active plan: %v", err)
+	}
+	messages := []struct {
+		role    string
+		content string
+	}{
+		{"user", "old pre-compact request"},
+		{"system", contextCompactionMarkerPrefix + " index=1 origin=manual\nold compact checkpoint"},
+		{"assistant", "old post-first compact answer"},
+		{"system", contextCompactionMarkerPrefix + " index=2 origin=manual\nlatest compact checkpoint"},
+		{"user", "tail after latest compact"},
+	}
+	for _, message := range messages {
+		if _, _, _, err := svc.sessions.AppendMessage(parentSessionID, message.role, message.content, nil); err != nil {
+			t.Fatalf("append %s message: %v", message.role, err)
+		}
+	}
+
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent session ok=%v err=%v", ok, err)
+	}
+	context, err := svc.loadTaskDelegationContext(parentSessionID)
+	if err != nil {
+		t.Fatalf("load delegation context: %v", err)
+	}
+	prompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
+		Description:      "delegated check",
+		Prompt:           "Do the work",
+		ParentSession:    parent,
+		ParentMessages:   context.ParentMessages,
+		ParentActivePlan: context.ActivePlan,
+	})
+
+	for _, want := range []string{"latest compact checkpoint", "tail after latest compact", "Active session plan:", "# Active plan", "Keep this current plan"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("delegated prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{"old pre-compact request", "old compact checkpoint", "old post-first compact answer"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("delegated prompt included stale context %q:\n%s", forbidden, prompt)
+		}
+	}
+}
+
+func TestTaskDelegationContextIncludesActivePlanWithoutCompact(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	if _, _, err := svc.sessions.SavePlan(parentSessionID, "plan-no-compact", "No Compact Plan", "# Still active\n- Include me", "approved", "approved", true); err != nil {
+		t.Fatalf("save active plan: %v", err)
+	}
+	if _, _, _, err := svc.sessions.AppendMessage(parentSessionID, "user", "visible recent parent message", nil); err != nil {
+		t.Fatalf("append parent message: %v", err)
+	}
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent session ok=%v err=%v", ok, err)
+	}
+	context, err := svc.loadTaskDelegationContext(parentSessionID)
+	if err != nil {
+		t.Fatalf("load delegation context: %v", err)
+	}
+	prompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
+		Description:      "delegated check",
+		Prompt:           "Do the work",
+		ParentSession:    parent,
+		ParentMessages:   context.ParentMessages,
+		ParentActivePlan: context.ActivePlan,
+	})
+	for _, want := range []string{"visible recent parent message", "Active session plan:", "# Still active", "Include me"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("delegated prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestAppendRunMessageUsesV3MutationCallbackWhenProvided(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	const accountScopeID = "account-cp2"
+	const userID = "user-cp2"
+	session, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         userID,
+		AccountScopeID: accountScopeID,
+		Title:          "Child",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
+		Metadata: map[string]any{
+			"parent_session_id": "parent-cp2",
+			"lineage_kind":      "delegated_subagent",
+		},
+		Preference: &pebblestore.ModelPreference{Provider: "static", Model: "review-model", Thinking: "low"},
+	})
+	if err != nil {
+		t.Fatalf("create child session: %v", err)
+	}
+	var captured []sessionruntime.SessionMutationInput
+	apply := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		captured = append(captured, input)
+		return svc.sessions.ApplySessionMutation(input)
+	}
+	message, _, legacyEvent, err := svc.appendRunMessage(runAppendMessageInput{
+		SessionID:            session.ID,
+		Role:                 "assistant",
+		Content:              "child response",
+		Metadata:             map[string]any{"source": messageMetadataSourceRunTurn},
+		RunID:                "run-cp2",
+		Step:                 2,
+		LogicalKey:           "assistant:2",
+		Principal:            identity.Principal{Type: identity.PrincipalTypeUser, UserID: userID, AccountScopeID: accountScopeID},
+		ApplySessionMutation: apply,
+	})
+	if err != nil {
+		t.Fatalf("append run message: %v", err)
+	}
+	if legacyEvent != nil {
+		t.Fatalf("appendRunMessage returned legacy event despite V3 callback: %#v", legacyEvent)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("captured mutations = %d, want 1", len(captured))
+	}
+	input := captured[0]
+	if input.Kind != sessionruntime.SessionMutationAppendMessage {
+		t.Fatalf("mutation kind = %q, want append message", input.Kind)
+	}
+	if input.ClientRequestID == "" || input.ClientRequestID != input.IdempotencyKey {
+		t.Fatalf("invalid idempotency fields: client=%q key=%q", input.ClientRequestID, input.IdempotencyKey)
+	}
+	if input.PayloadHash == "" || input.PayloadHash != input.RequestHash {
+		t.Fatalf("invalid payload hash fields: payload=%q request=%q", input.PayloadHash, input.RequestHash)
+	}
+	if input.Message == nil || input.Message.ID == "" || input.Message.Role != "assistant" || input.Message.Content != "child response" {
+		t.Fatalf("unexpected mutation message: %#v", input.Message)
+	}
+
+	hydrated, ok, err := svc.sessions.HydrateSessionSnapshot(session.ID, 500, 500)
+	if err != nil {
+		t.Fatalf("hydrate session: %v", err)
+	}
+	if !ok {
+		t.Fatalf("session %q not found through V3 hydration", session.ID)
+	}
+	if len(hydrated.Messages) != 1 || hydrated.Messages[0].ID != message.ID || hydrated.Messages[0].Content != "child response" {
+		t.Fatalf("hydrated V3 messages = %#v, want appended child response %q", hydrated.Messages, message.ID)
+	}
+	if len(hydrated.Events) != 1 || hydrated.Events[0].EventType != "session.message.appended" {
+		t.Fatalf("hydrated V3 events = %#v, want single message append event", hydrated.Events)
+	}
 }
 
 func metadataStringForTest(metadata map[string]any, key string) string {
@@ -588,6 +1489,179 @@ func stringSliceContains(values []string, want string) bool {
 	return false
 }
 
+func TestDesignerPermissionManifestUsesCompiledSharedCheckoutProfile(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
+		"prompt": "create variant", "subagent_type": "designer", "meta_prompt": "create compact variant", "owned_scope": []any{"web/src/variants/compact.tsx"},
+	})})
+	if err != nil {
+		t.Fatalf("build Designer manifest: %v", err)
+	}
+	if len(manifest.Launches) != 1 {
+		t.Fatalf("Designer manifest launches = %#v", manifest.Launches)
+	}
+	row := manifest.Launches[0]
+	if row.ParentCopy || row.ResolvedAgentName != agentruntime.DesignerAgentID || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
+		t.Fatalf("Designer compiled shared-checkout manifest = %#v", row)
+	}
+	if !slices.Equal(row.OwnedScope, []string{"web/src/variants/compact.tsx"}) {
+		t.Fatalf("Designer manifest scope = %#v", row.OwnedScope)
+	}
+	for _, name := range []string{"read", "search", "find", "list", "write", "edit"} {
+		if !stringSliceContains(row.ResolvedTools.AllowedTools, name) {
+			t.Fatalf("Designer allowed tools %v missing %q", row.ResolvedTools.AllowedTools, name)
+		}
+	}
+	for _, name := range []string{"bash", "git_status", "git_commit", "task", "manage_worktree", "plan_manage"} {
+		if !stringSliceContains(row.ResolvedTools.DisabledTools, name) {
+			t.Fatalf("Designer disabled tools %v missing %q", row.ResolvedTools.DisabledTools, name)
+		}
+	}
+}
+
+func TestCoderPermissionSnapshotsCurrentCaller(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: "swarm", Mode: agentruntime.ModePrimary, RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
+		AutoProvider: "codex", AutoModel: "swarm-auto-model", AutoThinking: "high", AutoServiceTier: "priority",
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true), Prompt: "trusted parent prompt",
+		ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}, Enabled: true,
+	})
+	metadata := cloneGenericMap(parent.Metadata)
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["agent_name"] = "swarm"
+	metadata["agent_profile"] = profile
+	if _, _, err := svc.sessions.UpdateMetadata(parentSessionID, metadata); err != nil {
+		t.Fatalf("update parent metadata: %v", err)
+	}
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
+		"prompt": "implement independent scope", "launches": []any{map[string]any{"subagent_type": "coder", "meta_prompt": "implement backend"}},
+	})})
+	if err != nil {
+		t.Fatalf("build Coder manifest: %v", err)
+	}
+	if len(manifest.Launches) != 1 || !manifest.Launches[0].ParentCopy || manifest.Launches[0].SourceAgentName != "swarm" {
+		t.Fatalf("Coder manifest = %#v", manifest.Launches)
+	}
+	if manifest.Launches[0].ProfileSnapshot == nil || manifest.Launches[0].ProfileSnapshot.Name != agentruntime.CoderAgentID || manifest.Launches[0].ProfileSnapshot.Prompt != agentruntime.CoderAgentPrompt() || manifest.Launches[0].InheritedRuntimeMode != pebblestore.AgentRuntimeModeReadWrite {
+		t.Fatalf("Coder snapshot = %#v", manifest.Launches[0])
+	}
+	if !slices.Equal(manifest.Launches[0].OwnedScope, []string{"."}) {
+		t.Fatalf("Coder manifest owned scope = %#v, want canonical whole-worktree scope", manifest.Launches[0].OwnedScope)
+	}
+	if manifest.Launches[0].ProfileSnapshot.Provider != "codex" || manifest.Launches[0].ProfileSnapshot.Model != "swarm-auto-model" || manifest.Launches[0].SubagentThinking != "high" || manifest.Launches[0].SubagentServiceTier != "priority" {
+		t.Fatalf("Coder did not inherit active Swarm auto preference and service tier: %#v", manifest.Launches[0])
+	}
+	coderTools := manifest.Launches[0].ProfileSnapshot.ToolContract.Tools
+	for _, name := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
+		if cfg, ok := coderTools[name]; !ok || cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Coder snapshot omitted enabled %s: %#v", name, coderTools)
+		}
+	}
+	if cfg := coderTools["bash"]; cfg.Enabled == nil || *cfg.Enabled {
+		t.Fatalf("Coder snapshot must disable generic bash: %#v", coderTools)
+	}
+	if manifest.ManifestHash == "" || manifest.ApprovedArguments == nil {
+		t.Fatalf("Coder manifest binding missing: %#v", manifest)
+	}
+}
+
+func TestCoderLaunchDoesNotRequirePersistedProfile(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	if _, ok, err := svc.agents.GetProfileForAccount("test-account", "coder"); err != nil || ok {
+		t.Fatalf("persisted Coder profile ok=%v err=%v, want absent", ok, err)
+	}
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: `{"prompt":"x","subagent_type":"coder","meta_prompt":"y"}`})
+	if err != nil {
+		t.Fatalf("build compiled Coder manifest: %v", err)
+	}
+	if len(manifest.Launches) != 1 || manifest.Launches[0].ProfileSnapshot == nil || manifest.Launches[0].ProfileSnapshot.Name != agentruntime.CoderAgentID || !manifest.Launches[0].ParentCopy {
+		t.Fatalf("compiled Coder manifest = %#v", manifest.Launches)
+	}
+}
+
+func TestApprovedFinderWaveManifestDigestSurvivesPermissionRoundTrip(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	launches := make([]any, 5)
+	for i := range launches {
+		launches[i] = map[string]any{
+			"subagent_type": "finder",
+			"meta_prompt":   fmt.Sprintf("Inspect scope %d", i+1),
+		}
+	}
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
+		"prompt":   "Inspect independent scopes.",
+		"launches": launches,
+	})})
+	if err != nil {
+		t.Fatalf("build Finder manifest: %v", err)
+	}
+	for i, row := range manifest.Launches {
+		if row.ParentCopy {
+			t.Fatalf("Finder manifest launch %d incorrectly classified as a parent copy: %#v", i, row)
+		}
+		if row.ProfileSnapshot == nil {
+			t.Fatalf("Finder manifest launch %d missing trusted profile snapshot", i)
+		}
+		if row.ResolvedTools == nil || !slices.Contains(row.ResolvedTools.AllowedTools, "read") || slices.Contains(row.ResolvedTools.AllowedTools, "write") {
+			t.Fatalf("Finder manifest launch %d resolved tools = %#v, want compiled read-only system contract", i, row.ResolvedTools)
+		}
+	}
+	raw, err := json.Marshal(manifest.ApprovedArguments)
+	if err != nil {
+		t.Fatalf("marshal approved arguments: %v", err)
+	}
+	var envelope struct {
+		ManifestHash string             `json:"manifest_hash"`
+		Manifest     taskLaunchManifest `json:"manifest"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("unmarshal approved arguments: %v", err)
+	}
+	digest, err := taskLaunchManifestDigest(envelope.Manifest)
+	if err != nil {
+		t.Fatalf("digest approved manifest: %v", err)
+	}
+	if digest != envelope.ManifestHash || digest != envelope.Manifest.ManifestHash {
+		t.Fatalf("approved manifest hash mismatch: digest=%q envelope=%q manifest=%q", digest, envelope.ManifestHash, envelope.Manifest.ManifestHash)
+	}
+}
+
+func TestPlanSidechatTaskTargetsFinderOnly(t *testing.T) {
+	parent := pebblestore.SessionSnapshot{Metadata: map[string]any{
+		"system_sidechat_kind": agentruntime.SystemSidechatKindPlan,
+		"lineage_kind":         "system_sidechat",
+		"agent_name":           agentruntime.PlanSidechatAgentID,
+	}}
+	if err := validatePlanSidechatTaskTargets(parent, []taskLaunchSpec{{RequestedSubagentType: "finder"}, {RequestedSubagentType: agentruntime.FinderAgentID}}); err != nil {
+		t.Fatalf("Finder targets rejected: %v", err)
+	}
+	for _, target := range []string{"clone", "reviewer"} {
+		err := validatePlanSidechatTaskTargets(parent, []taskLaunchSpec{{RequestedSubagentType: target}})
+		if err == nil || !strings.Contains(err.Error(), "only Finder") {
+			t.Fatalf("target %q error = %v, want Finder-only rejection", target, err)
+		}
+	}
+}
+
+func TestTaskRejectsClientSuppliedCloneTrustFields(t *testing.T) {
+	_, err := parseTaskCallArguments(`{"prompt":"x","subagent_type":"clone","meta_prompt":"y","runtime_mode":"readwrite"}`)
+	if err == nil || !strings.Contains(err.Error(), "cannot set launch-time trust") {
+		t.Fatalf("parse error = %v", err)
+	}
+}
+
 func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func()) {
 	t.Helper()
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "state.pebble"))
@@ -605,6 +1679,10 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 	if err := agents.EnsureDefaults(); err != nil {
 		cleanup()
 		t.Fatalf("ensure agent defaults: %v", err)
+	}
+	if err := agents.EnsureDefaultsForAccount("test-account"); err != nil {
+		cleanup()
+		t.Fatalf("ensure account agent defaults: %v", err)
 	}
 	if _, _, _, err := agents.Upsert(agentruntime.UpsertInput{
 		Name:                "reviewer",
@@ -646,10 +1724,11 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 
 	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
 	parent, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		Title:         "Parent",
-		WorkspacePath: t.TempDir(),
-		WorkspaceName: "workspace",
-		Mode:          sessionruntime.ModeAuto,
+		AccountScopeID: "test-account",
+		Title:          "Parent",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
 		Preference: &pebblestore.ModelPreference{
 			Provider: "parent-provider",
 			Model:    "parent-model",
@@ -660,7 +1739,19 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 		cleanup()
 		t.Fatalf("create parent session: %v", err)
 	}
-	return NewService(sessions, nil, nil, tool.NewRuntime(1), nil, agents, nil, events), parent.ID, cleanup
+	catalog := model.NewCatalogService(pebblestore.NewModelCatalogStore(store))
+	models := model.NewService(pebblestore.NewModelStore(store), events, catalog)
+	if err := models.EnsureBootDefaults(); err != nil {
+		cleanup()
+		t.Fatalf("ensure model defaults: %v", err)
+	}
+	if _, _, err := models.SetPreferenceForAccount("test-account", "test-user", "codex", "gpt-5.4", "high"); err != nil {
+		cleanup()
+		t.Fatalf("set account model preference: %v", err)
+	}
+	service := NewService(sessions, models, nil, tool.NewRuntime(1), nil, agents, nil, events)
+	service.SetUISettingsService(uisettings.NewService(pebblestore.NewUISettingsStore(store)))
+	return service, parent.ID, cleanup
 }
 
 func TestGateToolCallsRejectsMalformedXMLToolArgumentsWithoutPermissionService(t *testing.T) {
@@ -712,6 +1803,10 @@ func newTaskLaunchPermissionServiceWithPermissions(t *testing.T) (*Service, stri
 		cleanup()
 		t.Fatalf("ensure agent defaults: %v", err)
 	}
+	if err := agents.EnsureDefaultsForAccount("test-account"); err != nil {
+		cleanup()
+		t.Fatalf("ensure account agent defaults: %v", err)
+	}
 	if _, _, _, err := agents.Upsert(agentruntime.UpsertInput{
 		Name:             "reviewer",
 		Mode:             agentruntime.ModeSubagent,
@@ -726,10 +1821,11 @@ func newTaskLaunchPermissionServiceWithPermissions(t *testing.T) (*Service, stri
 	}
 	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
 	parent, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		Title:         "Parent",
-		WorkspacePath: t.TempDir(),
-		WorkspaceName: "workspace",
-		Mode:          sessionruntime.ModeAuto,
+		AccountScopeID: "test-account",
+		Title:          "Parent",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
 		Preference: &pebblestore.ModelPreference{
 			Provider: "parent-provider",
 			Model:    "parent-model",
@@ -743,4 +1839,57 @@ func newTaskLaunchPermissionServiceWithPermissions(t *testing.T) (*Service, stri
 	permissions := permission.NewService(pebblestore.NewPermissionStore(store), events, nil)
 	svc := NewService(sessions, nil, nil, tool.NewRuntime(1), permissions, agents, nil, events)
 	return svc, parent.ID, permissions, cleanup
+}
+
+func TestProviderAPIDiagnosticRecorderPersistsViaApplySessionMutation(t *testing.T) {
+	svc, sessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	session, ok, err := svc.sessions.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	if !ok {
+		t.Fatalf("session %q not found", sessionID)
+	}
+	t.Setenv(providerdiagnostics.EnvName, "1")
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: session.UserID, AccountScopeID: session.AccountScopeID}
+	apply := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		return svc.sessions.ApplySessionMutation(input)
+	}
+
+	ctx := svc.contextWithProviderAPIDiagnosticRecorder(context.Background(), sessionID, "run-diagnostic", principal, apply)
+	providerdiagnostics.LogWebsocketRequestContext(ctx, "codex", "responses.websocket", "wss://example.invalid/session", nil, []byte(`{"model":"gpt-5.5","service_tier":"priority"}`))
+
+	events, err := svc.sessions.ListSessionEvents(sessionID, 0, 20)
+	if err != nil {
+		t.Fatalf("list session events: %v", err)
+	}
+	var found bool
+	for _, event := range events {
+		if event.EventType != "session.diagnostic.provider.api.websocket_request" {
+			continue
+		}
+		found = true
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("unmarshal diagnostic payload: %v", err)
+		}
+		if got := strings.TrimSpace(mapString(payload, "run_id")); got != "run-diagnostic" {
+			t.Fatalf("diagnostic run_id = %q, want run-diagnostic", got)
+		}
+		if got := strings.TrimSpace(mapString(payload, "source")); got != "backend.provider.api" {
+			t.Fatalf("diagnostic source = %q, want backend.provider.api", got)
+		}
+		rawPayload, ok := payload["payload"].(map[string]any)
+		if !ok {
+			t.Fatalf("diagnostic payload = %#v, want object", payload["payload"])
+		}
+		if got := strings.TrimSpace(mapString(rawPayload, "body")); !strings.Contains(got, "service_tier") || !strings.Contains(got, "priority") {
+			t.Fatalf("diagnostic body = %q, want service_tier priority", got)
+		}
+	}
+	if !found {
+		t.Fatalf("missing provider api websocket_request diagnostic in events: %#v", events)
+	}
 }

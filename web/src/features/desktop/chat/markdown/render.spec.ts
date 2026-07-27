@@ -19,6 +19,14 @@ test('MarkdownRenderer auto-links bare assistant URLs', () => {
   assert.match(html, /<a[^>]*href="https:\/\/example\.com\/docs"[^>]*target="_blank"[\s\S]*>\s*<span>explicit links<\/span>\s*<\/a>/)
 })
 
+test('MarkdownRenderer keeps relative session links in the current Desktop window', () => {
+  const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content: '[session](/workspace-abc/session-1)' }))
+
+  assert.match(html, /href="\/workspace-abc\/session-1"/)
+  assert.doesNotMatch(html, /target="_blank"/)
+  assert.doesNotMatch(html, /rel="noreferrer"/)
+})
+
 test('MarkdownRenderer renders tagged copy blocks without swallowing markdown', () => {
   const content = [
     '## Before',
@@ -46,6 +54,57 @@ test('MarkdownRenderer leaves copy tags inside code fences literal', () => {
 
   assert.doesNotMatch(html, /Copy · literal/)
   assert.match(html, /&lt;copy label=&quot;literal&quot;&gt;not actionable&lt;\/copy&gt;/)
+})
+
+test('MarkdownRenderer ends YAML code fence before following recommendation markdown', () => {
+  const content = [
+    '```yaml',
+    'test_targets:',
+    ' ssh-testbench:',
+    '   description: Deploy current branch to my SSH testbench',
+    '   command: ./scripts/ssh-fast-test.sh testbench',
+    '   health_check: https://example.tailnet/health',
+    '   logs:',
+    '     - journalctl -u swarmd -n 200',
+    '```',
+    '',
+    'The hard part is not containers or Tailscale. The hard part is making the workflow feel safe and low-friction.',
+    '',
+    '## My recommendation',
+    '',
+    'Next product slice:',
+    '',
+    '**“One-click PR test pass using saved testbench profiles.”**',
+    '',
+    'Not:',
+    '- container platform',
+    '- managed hosts',
+    '- multiple runner scheduler',
+    '- remote execution framework',
+    '',
+    'Yet.',
+    '',
+    'Just:',
+    '- saved test targets',
+    '- permissioned command execution',
+    '- result capture',
+    '- AI-generated review verdict',
+    '- attach result to PR/session/plan',
+    '',
+    'That likely solves your immediate pain.',
+  ].join('\n')
+
+  const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content }))
+  const codeBlock = html.match(/<pre[\s\S]*?<code[^>]*>([\s\S]*?)<\/code><\/pre>/)?.[1] ?? ''
+
+  assert.match(codeBlock, /test_targets:/)
+  assert.match(codeBlock, /journalctl -u swarmd -n 200/)
+  assert.doesNotMatch(codeBlock, /The hard part/)
+  assert.doesNotMatch(codeBlock, /My recommendation/)
+  assert.match(html, /<h2[\s\S]*>\s*<span>My recommendation<\/span>\s*<\/h2>/)
+  assert.match(html, /<strong>\s*<span>“One-click PR test pass using saved testbench profiles\.”<\/span>\s*<\/strong>/)
+  assert.match(html, /<ul[\s\S]*container platform[\s\S]*remote execution framework[\s\S]*<\/ul>/)
+  assert.match(html, /<ul[\s\S]*saved test targets[\s\S]*attach result to PR\/session\/plan[\s\S]*<\/ul>/)
 })
 
 test('MarkdownRenderer leaves unclosed copy tags as markdown while streaming', () => {
@@ -108,4 +167,15 @@ test('MarkdownRenderer still supports underscore emphasis outside identifiers', 
 
   assert.match(html, /<em>\s*<span>intentional emphasis<\/span>\s*<\/em>/)
   assert.match(html, /words_with_underscores/)
+})
+
+
+test('MarkdownRenderer preserves exact needs-review identifier text', () => {
+  const content = 'Note: I also verified mark_needs_review renders intact as plain text with the markdown renderer.'
+
+  const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content }))
+
+  assert.match(html, /mark_needs_review/)
+  assert.doesNotMatch(html, /mark_neds_review/)
+  assert.doesNotMatch(html, /<em>/)
 })

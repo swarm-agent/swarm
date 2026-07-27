@@ -46,8 +46,13 @@ func structuredPlanDocumentText(doc map[string]any) string {
 	if len(info) > 0 {
 		lines = append(lines, "", "Plan info:")
 		appendPlanDocumentTextField(&lines, "Goal", mapStringArg(info, "goal"))
-		appendPlanDocumentTextField(&lines, "Scope", firstNonEmptyToolValue(mapStringArg(info, "scope"), mapStringArg(info, "context")))
+		appendPlanDocumentTextField(&lines, "Scope", mapStringArg(info, "scope"))
+		appendPlanDocumentTextField(&lines, "Context", mapStringArg(info, "context"))
 		appendPlanDocumentListField(&lines, "Decisions", mapAnyStringSlice(info, "decisions"))
+		appendPlanDocumentListField(&lines, "Success criteria", firstNonEmptyStringSlice(mapAnyStringSlice(info, "success_criteria"), mapAnyStringSlice(info, "successCriteria")))
+		appendPlanDocumentListField(&lines, "Constraints", mapAnyStringSlice(info, "constraints"))
+		appendPlanDocumentListField(&lines, "Assumptions", mapAnyStringSlice(info, "assumptions"))
+		appendPlanDocumentListField(&lines, "Open questions", firstNonEmptyStringSlice(mapAnyStringSlice(info, "open_questions"), mapAnyStringSlice(info, "openQuestions")))
 		appendPlanDocumentListField(&lines, "Files", firstNonEmptyStringSlice(mapAnyStringSlice(info, "relevant_files"), mapAnyStringSlice(info, "relevantFiles"), mapAnyStringSlice(info, "files")))
 		appendPlanDocumentTextField(&lines, "Validation", firstNonEmptyToolValue(mapStringArg(info, "validation_strategy"), mapStringArg(info, "validationStrategy"), mapStringArg(info, "validation"), strings.Join(mapAnyStringSlice(info, "validation"), "; ")))
 	}

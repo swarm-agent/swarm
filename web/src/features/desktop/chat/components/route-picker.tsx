@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, Container, Monitor, Server, Star } from 'lucide-react'
+import { Check, ChevronDown, Container, Monitor, Star } from 'lucide-react'
 import { isPrimaryDesktopChatRoute } from '../services/chat-routing'
 import type { DesktopChatRoute } from '../services/chat-routing'
 
@@ -19,21 +19,16 @@ const VIEWPORT_GUTTER = 8
 const MIN_DROPDOWN_WIDTH = 260
 const MAX_DROPDOWN_WIDTH = 360
 
-function routeKind(route: DesktopChatRoute): 'primary' | 'managed' | 'remote' | 'local' {
-  const targetKind = route.targetKind.trim().toLowerCase()
-  const targetRelationship = route.targetRelationship.trim().toLowerCase()
+function routeKind(route: DesktopChatRoute): 'primary' | 'target' {
   if (!route.swarmId || isPrimaryDesktopChatRoute(route)) {
     return 'primary'
   }
-  if (targetRelationship === 'managed') {
-    return 'managed'
-  }
-  return targetKind === 'remote' || targetKind === 'mirrored' ? 'remote' : 'local'
+  return 'target'
 }
 
 function RouteIcon({ route, className }: { route: DesktopChatRoute; className?: string }) {
   const kind = routeKind(route)
-  const Icon = kind === 'primary' || kind === 'managed' ? Monitor : kind === 'remote' ? Server : Container
+  const Icon = kind === 'primary' ? Monitor : Container
   return <Icon size={14} className={className} />
 }
 
@@ -42,14 +37,7 @@ export function routeCaption(route: DesktopChatRoute): string {
   if (kind === 'primary') {
     return 'Primary host'
   }
-  if (kind === 'managed') {
-    return 'Managed host'
-  }
-  if (kind === 'remote') {
-    const hostName = route.hostSwarmName.trim() || route.hostSwarmId.trim()
-    return hostName ? `Container on ${hostName}` : 'Container'
-  }
-  return 'Primary container'
+  return 'Swarm target'
 }
 
 interface RouteGroup {
@@ -58,47 +46,22 @@ interface RouteGroup {
   routes: DesktopChatRoute[]
 }
 
-function managedHostGroupKey(route: DesktopChatRoute): string {
-  return route.hostSwarmId.trim() || route.swarmId?.trim() || route.hostSwarmName.trim() || 'managed-host'
-}
-
 export function groupDesktopChatRoutes(routes: DesktopChatRoute[]): RouteGroup[] {
   const primary: DesktopChatRoute[] = []
-  const managedGroups: RouteGroup[] = []
-  const managedByHost = new Map<string, RouteGroup>()
-
-  function ensureManagedGroup(route: DesktopChatRoute): RouteGroup {
-    const hostKey = managedHostGroupKey(route)
-    let group = managedByHost.get(hostKey)
-    if (!group) {
-      group = {
-        key: `managed:${hostKey}`,
-        label: 'Managed host',
-        routes: [],
-      }
-      managedByHost.set(hostKey, group)
-      managedGroups.push(group)
-    }
-    return group
-  }
+  const targets: DesktopChatRoute[] = []
 
   for (const route of routes) {
     const kind = routeKind(route)
-    if (kind === 'primary' || kind === 'local') {
+    if (kind === 'primary') {
       primary.push(route)
       continue
     }
-    const group = ensureManagedGroup(route)
-    if (kind === 'managed') {
-      group.routes.unshift(route)
-      continue
-    }
-    group.routes.push(route)
+    targets.push(route)
   }
 
   return [
     { key: 'primary', label: 'Primary', routes: primary },
-    ...managedGroups,
+    { key: 'targets', label: 'Targets', routes: targets },
   ].filter((group) => group.routes.length > 0)
 }
 
@@ -155,8 +118,9 @@ export function RoutePicker({ currentRoute, routes, onSelect, defaultRouteId, on
     if (!open) {
       return
     }
-    function handleClickOutside(event: MouseEvent) {
-      const target = event.target as Node
+    function handlePointerDownOutside(event: PointerEvent) {
+      const target = event.target as Node | null
+      if (!target || !target.isConnected || !document.body.contains(target)) return
       if (triggerRef.current?.contains(target) || dropdownRef.current?.contains(target)) {
         return
       }
@@ -167,10 +131,10 @@ export function RoutePicker({ currentRoute, routes, onSelect, defaultRouteId, on
         setOpen(false)
       }
     }
-    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('pointerdown', handlePointerDownOutside)
     document.addEventListener('keydown', handleEscape)
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('pointerdown', handlePointerDownOutside)
       document.removeEventListener('keydown', handleEscape)
     }
   }, [open])

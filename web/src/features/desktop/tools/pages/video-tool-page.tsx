@@ -6,7 +6,6 @@ import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
 import { requestJson } from '../../../../app/api'
-import { useDesktopStore } from '../../state/use-desktop-store'
 import { createSession, fetchDraftModelPreference } from '../../chat/queries/chat-queries'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
 import { uiSettingsQueryOptions } from '../../../queries/query-options'
@@ -496,12 +495,6 @@ export function VideoToolPage() {
   const matchRoute = useMatchRoute()
   const workspaceVideoToolMatch = matchRoute({ to: '/$workspaceSlug/tools/video', fuzzy: false })
   const routeWorkspaceSlug = workspaceVideoToolMatch ? workspaceVideoToolMatch.workspaceSlug.trim() : ''
-  const activeSessionId = useDesktopStore((state) => state.activeSessionId)
-  const activeWorkspacePath = useDesktopStore((state) => state.activeWorkspacePath)
-  const setActiveSession = useDesktopStore((state) => state.setActiveSession)
-  const setActiveWorkspacePath = useDesktopStore((state) => state.setActiveWorkspacePath)
-  const upsertSession = useDesktopStore((state) => state.upsertSession)
-
   const [pickerOpen, setPickerOpen] = useState(false)
   const [browser, setBrowser] = useState<WorkspaceBrowseResult | null>(null)
   const [browserLoading, setBrowserLoading] = useState(false)
@@ -546,11 +539,8 @@ export function VideoToolPage() {
     if (routeWorkspaceSlug) {
       return resolveWorkspaceBySlug(workspaces, routeWorkspaceSlug)
     }
-    if (activeWorkspacePath) {
-      return workspaces.find((workspace) => workspace.path === activeWorkspacePath) ?? null
-    }
     return workspaces[0] ?? null
-  }, [activeWorkspacePath, routeWorkspaceSlug, workspaces])
+  }, [routeWorkspaceSlug, workspaces])
 
   const selectedWorkspacePath = selectedWorkspace?.path ?? ''
   const selectedWorkspaceName = selectedWorkspace?.workspaceName ?? ''
@@ -753,11 +743,6 @@ export function VideoToolPage() {
 
   const handleBackToWorkspace = useMemo(() => {
     if (routeWorkspaceSlug) {
-      if (activeSessionId) {
-        return () => {
-          void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: activeSessionId } })
-        }
-      }
       return () => {
         void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
       }
@@ -765,7 +750,7 @@ export function VideoToolPage() {
     return () => {
       void navigate({ to: '/' })
     }
-  }, [activeSessionId, navigate, routeWorkspaceSlug])
+  }, [navigate, routeWorkspaceSlug])
 
   const handleBackToTools = useCallback(() => {
     if (routeWorkspaceSlug) {
@@ -1050,9 +1035,6 @@ export function VideoToolPage() {
           launch_source: 'video_tool',
         },
       })
-      upsertSession(childSession)
-      setActiveSession(childSession.id)
-      setActiveWorkspacePath(childSession.workspacePath || selectedThread.workspacePath)
       void navigate({
         to: '/$workspaceSlug/$sessionId',
         params: { workspaceSlug: routeWorkspaceSlug, sessionId: childSession.id },
@@ -1062,7 +1044,7 @@ export function VideoToolPage() {
     } finally {
       setStartingChat(false)
     }
-  }, [navigate, routeWorkspaceSlug, selectedClips, selectedFolderPath, selectedThread, selectedWorkspaceName, setActiveSession, setActiveWorkspacePath, upsertSession])
+  }, [navigate, routeWorkspaceSlug, selectedClips, selectedFolderPath, selectedThread, selectedWorkspaceName])
   return (
     <div className="absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
       <div className="flex min-h-dvh flex-col px-5 pt-[calc(var(--app-safe-area-top)+24px)] pb-[calc(var(--app-safe-area-bottom)+24px)] lg:hidden">
@@ -1090,7 +1072,7 @@ export function VideoToolPage() {
 
         <main className="flex min-h-0 flex-1 overflow-hidden py-5">
             <SwarmToolSidebar
-              backLabel={routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Workspace') : 'Launcher'}
+              backLabel={routeWorkspaceSlug ? 'Workspace' : 'Launcher'}
               onBack={handleBackToWorkspace}
               darkModeEnabled={blackModeEnabled}
               onToggleDarkMode={() => setBlackModeEnabled((enabled) => !enabled)}
@@ -1158,7 +1140,7 @@ export function VideoToolPage() {
 
             <section className="flex min-w-0 flex-1 flex-col overflow-y-auto">
               <div className="mb-4 flex items-center justify-between gap-3 lg:hidden">
-                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)]" onClick={handleBackToWorkspace}><ArrowLeft size={15} />{routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Workspace') : 'Launcher'}</Button>
+                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)]" onClick={handleBackToWorkspace}><ArrowLeft size={15} />{routeWorkspaceSlug ? 'Workspace' : 'Launcher'}</Button>
                 <div className="flex items-center gap-2">
                   <Button variant="outline" style={darkOverrideButtonStyle} className={`h-8 w-8 rounded-xl px-0 ${blackModeEnabled ? 'border-[var(--video-tool-user-theme-accent)] bg-[var(--video-tool-user-theme-surface)] text-[var(--video-tool-user-theme-text)] hover:bg-[var(--video-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon size={14} aria-hidden="true" /></Button>
                   <Button variant="ghost" className="h-8 rounded-xl px-2 text-xs text-[var(--app-text-muted)]" onClick={handleOpenPicker} disabled={!selectedThread}><FolderOpen size={14} />Add folder</Button>

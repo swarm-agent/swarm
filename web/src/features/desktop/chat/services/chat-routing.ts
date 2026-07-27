@@ -89,10 +89,7 @@ export function buildDesktopChatRouteOptions(input: {
     }
     seen.add(id)
     const targetRelationship = topologyRoute.runtimeRelationship.trim().toLowerCase()
-    const runtimeKind = topologyRoute.runtimeKind.trim()
-    const targetKind = targetRelationship === 'managed'
-      ? 'host'
-      : runtimeKind
+    const targetKind = topologyRoute.runtimeKind.trim()
     const hostSwarmName = topologyRoute.hostSwarmName.trim()
     const label = topologyRoute.runtimeSwarmName.trim() || swarmId
     options.push({
@@ -154,11 +151,8 @@ function sessionMetadataString(metadata: Record<string, unknown> | null | undefi
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function inferV2TargetRelationship(metadata: Record<string, unknown> | null | undefined): string {
-  const executionClass = sessionMetadataString(metadata, 'swarm_v2_execution_class').toLowerCase()
-  if (executionClass === 'local_container') {
-    return 'child'
-  }
+function inferV3TargetRelationship(metadata: Record<string, unknown> | null | undefined): string {
+  const executionClass = sessionMetadataString(metadata, 'swarm_v3_execution_class').toLowerCase()
   if (executionClass === 'primary') {
     return 'self'
   }
@@ -167,34 +161,36 @@ function inferV2TargetRelationship(metadata: Record<string, unknown> | null | un
 
 export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecord | null | undefined): DesktopChatRoute | null {
   const metadata = session?.metadata
-  const metadataSwarmId = sessionMetadataString(metadata, 'swarm_v2_runtime_swarm_id')
-  const runtimeWorkspacePath = session?.runtimeWorkspacePath?.trim()
-    || sessionMetadataString(metadata, 'swarm_v2_runtime_workspace_path')
-  const workspaceBindingId = sessionMetadataString(metadata, 'swarm_v2_workspace_binding_id') || sessionMetadataString(metadata, 'local_workspace_binding_id')
-  const workspaceName = sessionMetadataString(metadata, 'swarm_v2_source_workspace_name') || session?.workspaceName?.trim() || ''
-  if (!metadataSwarmId || !workspaceBindingId) {
-    return null
+  const v3MetadataSwarmId = sessionMetadataString(metadata, 'swarm_v3_runtime_swarm_id')
+  if (v3MetadataSwarmId) {
+    const workspaceBindingId = sessionMetadataString(metadata, 'swarm_v3_workspace_binding_id')
+    const workspaceName = sessionMetadataString(metadata, 'swarm_v3_source_workspace_name') || session?.workspaceName?.trim() || ''
+    if (!workspaceBindingId) {
+      return null
+    }
+    const id = desktopChatRouteID(v3MetadataSwarmId, workspaceName, workspaceBindingId)
+    if (!id) {
+      return null
+    }
+    const label = v3MetadataSwarmId
+    return {
+      id,
+      label,
+      swarmId: v3MetadataSwarmId,
+      targetKind: sessionMetadataString(metadata, 'swarm_v3_runtime_kind') || 'host',
+      targetRelationship: inferV3TargetRelationship(metadata),
+      hostSwarmId: sessionMetadataString(metadata, 'swarm_v3_authority_host_swarm_id') || v3MetadataSwarmId,
+      hostSwarmName: '',
+      hostWorkspacePath: sessionMetadataString(metadata, 'swarm_v3_source_workspace_path') || session?.workspacePath?.trim() || '',
+      hostWorkspaceName: workspaceName,
+      runtimeWorkspacePath: session?.runtimeWorkspacePath?.trim() || sessionMetadataString(metadata, 'swarm_v3_runtime_workspace_path'),
+      workspaceBindingId,
+      workspaceName,
+      targetSwarmName: label,
+    }
   }
-  const id = desktopChatRouteID(metadataSwarmId, workspaceName, workspaceBindingId)
-  if (!id) {
-    return null
-  }
-  const label = metadataSwarmId
-  return {
-    id,
-    label,
-    swarmId: metadataSwarmId,
-    targetKind: sessionMetadataString(metadata, 'swarm_v2_runtime_kind'),
-    targetRelationship: inferV2TargetRelationship(metadata),
-    hostSwarmId: sessionMetadataString(metadata, 'swarm_v2_authority_host_swarm_id'),
-    hostSwarmName: '',
-    hostWorkspacePath: sessionMetadataString(metadata, 'swarm_v2_source_workspace_path') || session?.workspacePath?.trim() || '',
-    hostWorkspaceName: workspaceName,
-    runtimeWorkspacePath,
-    workspaceBindingId,
-    workspaceName,
-    targetSwarmName: label,
-  }
+
+  return null
 }
 
 export function resolveDesktopChatRouteFromSession(
@@ -207,15 +203,6 @@ export function resolveDesktopChatRouteFromSession(
   return matchedRoute ?? metadataRoute ?? fallback ?? routeOptions[0] ?? null
 }
 
-export function isManagedHostDesktopChatRoute(route: DesktopChatRoute | null | undefined): boolean {
-  const swarmId = route?.swarmId?.trim() ?? ''
-  if (!swarmId) {
-    return false
-  }
-  const relationship = route?.targetRelationship?.trim().toLowerCase() ?? ''
-  return relationship === 'managed'
-}
-
 export function isPrimaryDesktopChatRoute(route: DesktopChatRoute | null | undefined): boolean {
   const swarmId = route?.swarmId?.trim() ?? ''
   if (!swarmId) {
@@ -226,44 +213,24 @@ export function isPrimaryDesktopChatRoute(route: DesktopChatRoute | null | undef
   return relationship === 'self' && targetKind === 'host'
 }
 
-export function isLocalContainerDesktopChatRoute(route: DesktopChatRoute | null | undefined): boolean {
-  const swarmId = route?.swarmId?.trim() ?? ''
-  if (!swarmId) {
-    return false
-  }
-  const relationship = route?.targetRelationship?.trim().toLowerCase() ?? ''
-  return relationship === 'child' && isLocalContainerDesktopRouteKind(route?.targetKind)
-}
-
 export type DesktopSessionCreateTarget =
   | { sessionApi: 'v3'; endpoint: '/v3/sessions'; swarmId: string; workspaceBindingId: string }
-  | { sessionApi: 'v2'; endpoint: '/v2/sessions/local-containers'; swarmId: string; workspaceBindingId: string }
   | { sessionApi: null; endpoint: null; unsupportedReason: string }
 
-export type DesktopSessionCreateV2Target = DesktopSessionCreateTarget
+export type DesktopSessionStopTarget =
+  | { sessionApi: 'v3'; endpoint: '/v3/sessions/{session_id}/run/stop'; targetSwarmId: string }
+  | { sessionApi: null; endpoint: null; unsupportedReason: string }
 
 function normalizedRouteLabel(value: string | null | undefined): string {
   return value?.trim().toLowerCase() ?? ''
 }
 
-function isLocalContainerDesktopRouteKind(value: string | null | undefined): boolean {
-  const normalized = normalizedRouteLabel(value)
-  return normalized === 'container'
-    || normalized === 'local-container'
-    || normalized === 'local_container'
-    || normalized === 'mirrored_child'
-    || normalized === 'child'
-}
-
-export function getDesktopSessionCreateV2Target(route: DesktopChatRoute | null | undefined): DesktopSessionCreateV2Target {
+export function getDesktopSessionCreateTarget(route: DesktopChatRoute | null | undefined): DesktopSessionCreateTarget {
   const swarmId = route?.swarmId?.trim() ?? ''
   const workspaceBindingId = route?.workspaceBindingId?.trim() ?? ''
   const relationship = normalizedRouteLabel(route?.targetRelationship)
   const targetKind = normalizedRouteLabel(route?.targetKind)
 
-  if (relationship === 'managed') {
-    return { sessionApi: null, endpoint: null, unsupportedReason: 'Managed-host v2 session create is not implemented yet.' }
-  }
   if (!swarmId) {
     return { sessionApi: null, endpoint: null, unsupportedReason: 'Sessions API create requires a selected swarm_id.' }
   }
@@ -273,10 +240,21 @@ export function getDesktopSessionCreateV2Target(route: DesktopChatRoute | null |
   if (relationship === 'self' && targetKind === 'host') {
     return { sessionApi: 'v3', endpoint: '/v3/sessions', swarmId, workspaceBindingId }
   }
-  if (relationship === 'child' && isLocalContainerDesktopRouteKind(targetKind)) {
-    return { sessionApi: 'v2', endpoint: '/v2/sessions/local-containers', swarmId, workspaceBindingId }
+  return { sessionApi: null, endpoint: null, unsupportedReason: `Desktop sessions only support the primary self V3 target, got ${relationship || 'unknown'}/${targetKind || 'unknown'}.` }
+}
+
+export function getDesktopSessionStopTarget(route: DesktopChatRoute | null | undefined): DesktopSessionStopTarget {
+  const swarmId = route?.swarmId?.trim() ?? ''
+  const relationship = normalizedRouteLabel(route?.targetRelationship)
+  const targetKind = normalizedRouteLabel(route?.targetKind)
+
+  if (!swarmId) {
+    return { sessionApi: null, endpoint: null, unsupportedReason: 'Sessions API stop requires a selected primary swarm_id.' }
   }
-  return { sessionApi: null, endpoint: null, unsupportedReason: `Sessions API create does not support route target ${relationship || 'unknown'}/${targetKind || 'unknown'}.` }
+  if (relationship === 'self' && targetKind === 'host') {
+    return { sessionApi: 'v3', endpoint: '/v3/sessions/{session_id}/run/stop', targetSwarmId: swarmId }
+  }
+  return { sessionApi: null, endpoint: null, unsupportedReason: `Desktop stop only supports the primary self V3 target, got ${relationship || 'unknown'}/${targetKind || 'unknown'}.` }
 }
 
 export function withDesktopChatRoute(path: string, route: DesktopChatRoute | null | undefined): string {
@@ -306,29 +284,19 @@ export function applyDesktopChatRoute(url: URL, route: DesktopChatRoute | null |
   return url
 }
 
-function isFlowSessionMetadata(metadata: Record<string, unknown> | null | undefined): boolean {
-  if (!metadata || typeof metadata !== 'object') {
-    return false
-  }
-  const source = typeof metadata.source === 'string' ? metadata.source.trim().toLowerCase() : ''
-  const lineageKind = typeof metadata.lineage_kind === 'string' ? metadata.lineage_kind.trim().toLowerCase() : ''
-  const flowID = typeof metadata.flow_id === 'string' ? metadata.flow_id.trim() : ''
-  return source === 'flow' || lineageKind === 'flow' || flowID !== ''
-}
-
 export function applyDesktopChatRouteToSession(session: DesktopSessionRecord, route: DesktopChatRoute | null | undefined): DesktopSessionRecord {
   if (!route?.swarmId) {
     return session
   }
 
   const runtimeWorkspacePath = session.runtimeWorkspacePath || route.runtimeWorkspacePath || session.workspacePath
-  const routeIsHydratedFromRemote = Boolean(
+  const routeAlreadyUsesRuntimeWorkspace = Boolean(
     runtimeWorkspacePath
     && session.workspacePath
     && route.runtimeWorkspacePath.trim() === runtimeWorkspacePath.trim()
     && session.workspacePath.trim() === runtimeWorkspacePath.trim(),
   )
-  if (routeIsHydratedFromRemote) {
+  if (routeAlreadyUsesRuntimeWorkspace) {
     return {
       ...session,
       runtimeWorkspacePath,
@@ -337,12 +305,8 @@ export function applyDesktopChatRouteToSession(session: DesktopSessionRecord, ro
 
   return {
     ...session,
-    workspacePath: isFlowSessionMetadata(session.metadata)
-      ? (session.workspacePath || route.hostWorkspacePath)
-      : (route.hostWorkspacePath || session.workspacePath),
-    workspaceName: isFlowSessionMetadata(session.metadata)
-      ? (session.workspaceName || route.hostWorkspaceName)
-      : (route.hostWorkspaceName || session.workspaceName),
+    workspacePath: route.hostWorkspacePath || session.workspacePath,
+    workspaceName: route.hostWorkspaceName || session.workspaceName,
     runtimeWorkspacePath,
   }
 }

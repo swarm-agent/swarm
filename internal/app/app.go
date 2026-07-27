@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,6 +25,7 @@ import (
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 	"swarm-refactor/swarmtui/internal/ui"
+	"swarm-refactor/swarmtui/internal/ui/v3chat"
 	"swarm-refactor/swarmtui/internal/updatehandoff"
 )
 
@@ -37,6 +37,8 @@ const (
 	interruptVoiceReady        = "voice-ready"
 	interruptStreamReady       = "stream-ready"
 	interruptGitStatusReady    = "git-status-ready"
+	interruptNotificationReady = "notification-ready"
+	interruptV3Chat            = "v3-chat-ready"
 	interruptQuit              = "quit"
 	defaultDaemonURL           = "http://127.0.0.1:7781"
 	reloadInterval             = 3 * time.Second
@@ -45,51 +47,6 @@ const (
 	vaultExportFileExt         = ".swarmvault"
 	commitBackgroundAgentName  = "memory"
 	commitBackgroundLineageTag = "@memory"
-)
-
-var (
-	modelPresetsByProvider = map[string][]string{
-		"anthropic": {
-			"claude-opus-4-7",
-			"claude-opus-4-6",
-			"claude-opus-4-5",
-			"claude-sonnet-4-6",
-			"claude-sonnet-4-5",
-			"claude-haiku-4-5",
-		},
-		"codex": {
-			"gpt-5.5",
-			"gpt-5.4",
-			"gpt-5.4-mini",
-			"gpt-5.3-codex",
-			"gpt-5.3-codex-spark",
-			"gpt-5.2",
-			"gpt-5.1-codex-max",
-			"gpt-5.1-codex-mini",
-		},
-		// Copilot presets are intentionally hidden for now. The provider code stays
-		// in-tree, but we cannot fairly test or recommend it while the required paid
-		// Copilot plan is unavailable.
-		"fireworks": {
-			"accounts/fireworks/models/kimi-k2p6",
-			"accounts/fireworks/models/minimax-m2p7",
-			"accounts/fireworks/models/kimi-k2p5",
-		},
-		"google": {
-			"gemini-3.1-pro-preview",
-			"gemini-3-flash-preview",
-			"gemini-2.5-pro",
-			"gemini-2.5-flash",
-			"gemini-2.0-flash",
-		},
-		"openrouter": {
-			"openai/gpt-5.5",
-			"google/gemini-3-flash-preview",
-			"openai/gpt-5.2",
-			"openai/gpt-5.2-mini",
-		},
-	}
-	thinkingPresets = []string{"off", "low", "medium", "high", "xhigh"}
 )
 
 func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
@@ -102,39 +59,32 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 	items := []ui.CommandSuggestion{
 		{Command: "/add-dir", Hint: "Open linked-directory flow in the workspace manager"},
 		{Command: "/alerts", Hint: "Open alerts / notifications (c clears all, Enter opens session)"},
-		{Command: "/agents", Hint: "Open agents manager modal", QuickTips: []string{"/agents reset", "/agents restore", "/agents use <name>", "/agents prompt <name> <text>", "/agents delete <name>"}},
+		{Command: "/agents", Hint: "Open agent cards and model setup"},
+		{Command: "/profiles", Hint: "Quick-switch the saved model profile used by new sessions"},
 		{Command: "/notifications", Hint: "Alias for /alerts"},
 		{Command: "/auth", Hint: "Auth status or key setup", QuickTips: []string{"/auth status", "/auth key <provider> <api_key>"}},
-		{Command: "/codex", Hint: "Show Codex gpt-5.4/gpt-5.5 runtime settings (Fast on/off)", QuickTips: []string{"/codex status", "/codex fast", "/fast"}},
+		{Command: "/codex", Hint: "Show Codex account usage and reset credits", QuickTips: []string{"/codex", "/codex refresh"}},
 		{Command: "/commit", Hint: "Launch the memory agent in background to review diffs and commit changes", QuickTips: []string{"/commit [instructions]"}},
-		{Command: "/compact", Hint: "Compact current chat context via memory agent", QuickTips: []string{"/compact [threshold%] [notes]"}},
 		{Command: "/copy", Hint: "Copy chat snapshot or /copy N block to clipboard"},
-		{Command: "/fast", Hint: "Toggle Codex Fast for the current chat or home draft (gpt-5.4/gpt-5.5)", QuickTips: []string{"alias tip: /codex fast"}},
-		{Command: "/git", Hint: "Show authoritative Git status for the active workspace"},
 		{Command: "/header", Hint: "Toggle chat header visibility", QuickTips: []string{"/header toggle"}},
 		{Command: "/help", Hint: "Show command help"},
 		{Command: "/home", Hint: "Return to home without ending the chat session"},
 		{Command: "/keybinds", Hint: "Open keybindings modal", QuickTips: []string{"/keybinds list", "/keybinds reset [all]"}},
-		{Command: "/mcp", Hint: "MCP management is deferred until Swarm Sync integration", QuickTips: []string{"Exa search can use the built-in free Exa MCP server", "Use /auth key exa <api_key> for webfetch/deep fetch"}},
-		{Command: "/mode", Hint: "Set the default mode for new chats", QuickTips: []string{"/mode auto", "/mode plan", "/mode status"}},
-		{Command: "/models", Hint: "Open model manager modal (favorites + provider catalog)"},
+		{Command: "/mode", Hint: "Toggle Plan behavior for new chats", QuickTips: []string{"/mode plan", "/mode action", "/mode status"}},
 		{Command: "/mouse", Hint: "Toggle mouse click capture", QuickTips: []string{"/mouse toggle", "/mouse status"}},
-		{Command: "/new", Hint: "Create a new session (scaffold)"},
-		{Command: "/output", Hint: "Open the full bash output viewer"},
+		{Command: "/new", Hint: "Open a new session draft"},
 		{Command: "/permissions", Hint: "Show global permission policy", QuickTips: []string{"/permissions show", "/permissions allow tool <name>", "/permissions allow bash-prefix <command>", "/permissions deny phrase <text>"}},
-		{Command: "/plan", Hint: "Plan commands in chat", QuickTips: []string{"/plan exit", "/plan list", "/plan use <plan_id>", "/plan new [title]"}},
+		{Command: "/plan", Hint: "Show or close the existing session plan"},
 		{Command: "/quit", Hint: "Exit swarmtui"},
-		{Command: "/reload", Hint: "Reload home state from swarmd"},
-		{Command: "/rebuild", Hint: "Rebuild the active lane, then exit swarmtui"},
-		{Command: "/sessions", Hint: "Open recent sessions modal"},
-		{Command: "/swarm", Hint: "Show swarm dashboard, pairing state, and approvals", QuickTips: []string{"/swarm status", "/swarm pending", "/swarm approve <id>", "/swarm reject <id>", "/swarm role master", "/swarm set <name>"}},
+		{Command: "/rebuild", Hint: "Rebuild the current lane and exit swarmtui"},
+		{Command: "/sessions", Hint: "Open the card-style session manager (active conversations first)"},
+		{Command: "/task", Hint: "Queue a durable AI task for Swarm", QuickTips: []string{"/task <request>", "/task plan <request>"}},
 		{Command: "/update", Hint: updateHint, QuickTips: updateQuickTips},
 		{Command: "/themes", Hint: "Open theme modal with live preview", QuickTips: []string{"/themes list", "/themes set <id>", "/themes create <id> from <base>", "/themes edit <id> <slot> <#RRGGBB>", "/themes delete <id>"}},
 		{Command: "/thinking", Hint: "Use /thinking on, /thinking off, or /thinking status", QuickTips: []string{"/thinking on", "/thinking off", "/thinking status"}},
-		{Command: "/vault", Hint: "Vault status, export, or import guidance"},
-		{Command: "/voice", Hint: "Open voice modal (profiles + devices + STT/TTS + test)", QuickTips: []string{"/voice open", "/voice devices", "/voice device <id>", "/voice profile list", "/voice test 4"}},
 		{Command: "/workspace", Hint: "Open workspace manager", QuickTips: []string{"/workspaces", "/workspace save", "/workspace scan [query]"}},
-		{Command: "/worktrees", Hint: "Open worktrees menu for the active workspace", QuickTips: []string{"/wt", "/worktrees on", "/worktrees off", "/worktrees status", "/worktrees branch <name|current>"}},
+		{Command: "/worktrees new", Hint: "Create a new session in its own worktree"},
+		{Command: "/wt new", Hint: "Create a new worktree session (short alias)"},
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		return strings.ToLower(items[i].Command) < strings.ToLower(items[j].Command)
@@ -142,10 +92,33 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 	return items
 }
 
+func buildChatCommandSuggestions(devMode bool) []ui.CommandSuggestion {
+	items := append([]ui.CommandSuggestion(nil), buildHomeCommandSuggestions(devMode)...)
+	items = append(items,
+		ui.CommandSuggestion{
+			Command: archiveCommandUsage,
+			Hint:    "Archive this session and return home",
+		},
+		ui.CommandSuggestion{
+			Command: compactCommandUsage,
+			Hint:    "Compact current chat context",
+		},
+	)
+	sort.SliceStable(items, func(i, j int) bool {
+		return strings.ToLower(items[i].Command) < strings.ToLower(items[j].Command)
+	})
+	return items
+}
+
 type homeReloadResult struct {
-	model  model.HomeModel
-	err    error
-	silent bool
+	model            model.HomeModel
+	hydrated         *client.SessionV3Hydrated
+	sessionSnapshot  *client.SessionV3SyncSnapshot
+	sessionQuery     string
+	sessionOpenRoute string
+	sessionID        string
+	err              error
+	silent           bool
 }
 
 type gitStatusRefreshResult struct {
@@ -153,6 +126,18 @@ type gitStatusRefreshResult struct {
 	path       string
 	status     gitRepoStatus
 	ok         bool
+}
+
+type gitWatcherStartResult struct {
+	generation uint64
+	path       string
+	watcher    *repoGitWatcher
+	err        error
+}
+
+type notificationCountResult struct {
+	count int
+	err   error
 }
 
 type repoGitWatcher struct {
@@ -236,6 +221,7 @@ type App struct {
 	screen tcell.Screen
 	home   *ui.HomePage
 	chat   *ui.ChatPage
+	v3Chat *v3chat.Page
 	route  string
 
 	api                 *client.API
@@ -244,6 +230,7 @@ type App struct {
 	workspacePath       string
 	selectedChatRouteID string
 	homeModel           model.HomeModel
+	agentState          client.AgentState
 	updateStatus        client.UpdateStatus
 	config              AppConfig
 	themePreviewID      string
@@ -271,14 +258,26 @@ type App struct {
 	lastStreamRenderAt      time.Time
 	streamRenderWakePending atomic.Bool
 
-	gitStatusCh        chan gitStatusRefreshResult
-	gitWatcher         *repoGitWatcher
-	gitWatchGeneration atomic.Uint64
+	tuiSessionStore        *tuiSessionStore
+	tuiRealtime            *tuiRealtimeController
+	tuiRealtimeFrames      chan client.V3RealtimeFrame
+	tuiRealtimeStatuses    chan tuiRealtimeStatus
+	tuiRealtimeWorkset     tuiRealtimeWorksetState
+	tuiRealtimeClientID    string
+	tuiRealtimeScopeSerial atomic.Uint64
 
+	gitStatusCh            chan gitStatusRefreshResult
+	gitWatcherReady        chan gitWatcherStartResult
+	gitWatcher             *repoGitWatcher
+	gitWatcherStartingPath string
+	gitWatchGeneration     atomic.Uint64
+
+	notificationCountCh    chan notificationCountResult
 	swarmNotificationCount int
 
-	pendingChatRender  chan struct{}
-	pendingStreamReady chan struct{}
+	pendingChatRender   chan struct{}
+	pendingV3ChatRender chan struct{}
+	pendingStreamReady  chan struct{}
 
 	workspaceCandidates []workspaceCandidate
 	mouseHintShown      bool
@@ -290,8 +289,22 @@ type App struct {
 
 	devUpdateRequested     bool
 	releaseUpdateRequested bool
+	startupUpdateAnnounced bool
 
-	pendingLocalContainerUpdate *localContainerUpdateConfirmation
+	sessionWorksetPagination tuiSessionWorksetPagination
+}
+
+type tuiSessionWorksetPagination struct {
+	NextBeforeUpdatedAt *int64
+	NextBeforeSessionID string
+	HasMore             bool
+	LoadedAt            int64
+}
+
+type tuiRealtimeWorksetState struct {
+	ScopeKey       string
+	WorkspacePaths []string
+	CWDPath        string
 }
 
 func New() (*App, error) {
@@ -353,8 +366,15 @@ func New() (*App, error) {
 		voiceCaptureCh:      make(chan voiceCaptureEvent, 4),
 		streamEvents:        make(chan client.StreamEventEnvelope, 256),
 		gitStatusCh:         make(chan gitStatusRefreshResult, 8),
+		gitWatcherReady:     make(chan gitWatcherStartResult, 1),
+		notificationCountCh: make(chan notificationCountResult, 1),
 		pendingChatRender:   make(chan struct{}, 1),
+		pendingV3ChatRender: make(chan struct{}, 1),
 		pendingStreamReady:  make(chan struct{}, 1),
+		tuiSessionStore:     newTUISessionStore(),
+		tuiRealtimeFrames:   make(chan client.V3RealtimeFrame, 256),
+		tuiRealtimeStatuses: make(chan tuiRealtimeStatus, 32),
+		tuiRealtimeClientID: fmt.Sprintf("tui:%d", time.Now().UnixNano()),
 		workspaceCandidates: make([]workspaceCandidate, 0, 128),
 	}
 	app.keybinds.ApplyOverrides(cfg.Input.Keybinds)
@@ -373,49 +393,15 @@ func New() (*App, error) {
 	app.bootstrapTheme(themeID)
 	app.home.SetCommandSuggestions(buildHomeCommandSuggestions(cfg.Startup.DevMode))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-	defer cancel()
-	var (
-		next              model.HomeModel
-		loadErr           error
-		notificationCount int
-		hasNotifications  bool
-	)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		count, err := app.loadSwarmNotificationCount(ctx)
-		if err == nil {
-			notificationCount = count
-			hasNotifications = true
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		next, loadErr = app.refreshHomeModel(ctx)
-	}()
-	wg.Wait()
-	if hasNotifications {
-		app.setSwarmNotificationCount(notificationCount)
+	// The screen is ready now. Do not hold the first frame behind workspace,
+	// topology, notification, provider, agent, update, context, or Git status
+	// enrichment. Load those through the existing canonical refresh paths and
+	// surface any failures after Run has rendered the usable shell.
+	if cfgErr != nil {
+		app.home.SetStatus(fmt.Sprintf("settings warning: %v", cfgErr))
 	}
-	if loadErr != nil {
-		app.home.SetStatus(fmt.Sprintf("backend unavailable: %v", loadErr))
-		app.home.SetModel(app.homeModel)
-	} else {
-		app.syncActiveContextFromHomeModel(next)
-		app.applyHomeModel(next)
-		app.syncVaultUI()
-		if cfgErr != nil {
-			app.home.SetStatus(fmt.Sprintf("settings warning: %v", cfgErr))
-		}
-		app.announceStartupUpdate(next)
-	}
-	if loadErr != nil && cfgErr != nil {
-		app.home.SetStatus(fmt.Sprintf("backend unavailable: %v (settings warning: %v)", loadErr, cfgErr))
-	}
-	app.startSessionEventStream()
-	app.refreshGitRealtimeWatcher()
+	app.queueReload(false)
+	app.queueNotificationCount()
 	app.announceAppliedUpdate()
 	app.openStartupNetworkWarningModal()
 	return app, nil
@@ -426,6 +412,10 @@ func (a *App) Close() {
 		a.streamCancel()
 		a.streamCancel = nil
 	}
+	if a.tuiRealtime != nil {
+		a.tuiRealtime.Stop()
+	}
+	a.closeV3Chat()
 	a.stopGitRealtimeWatcher()
 	if a.voiceCapture.cancel != nil {
 		a.voiceCapture.cancel()
@@ -438,27 +428,15 @@ func (a *App) Close() {
 }
 
 func (a *App) Run() error {
-	stop := make(chan struct{})
-	tick := time.NewTicker(120 * time.Millisecond)
-	defer tick.Stop()
-	go func() {
-		for {
-			select {
-			case <-tick.C:
-				if a.screen != nil {
-					a.screen.PostEventWait(tcell.NewEventInterrupt(interruptTick))
-				}
-			case <-stop:
-				return
-			}
-		}
-	}()
-	defer close(stop)
-
 	dirty := true
 	for {
 		if dirty {
-			if a.route == "chat" && a.chat != nil {
+			if a.route == "v3chat" && a.v3Chat != nil {
+				a.v3Chat.Draw(a.screen)
+				if a.home != nil {
+					a.home.DrawChatOverlay(a.screen)
+				}
+			} else if a.route == "chat" && a.chat != nil {
 				a.chat.Draw(a.screen)
 				if a.home != nil {
 					a.home.DrawChatOverlay(a.screen)
@@ -493,8 +471,8 @@ func (a *App) Run() error {
 					dirty = true
 				}
 			case interruptChatAsync:
-				a.consumePendingChatRender()
-				if a.handleChatAsync() {
+				requestedRender := a.consumePendingChatRender()
+				if a.handleChatAsync() || requestedRender {
 					dirty = true
 				}
 			case interruptReloadReady:
@@ -514,6 +492,12 @@ func (a *App) Run() error {
 				if a.consumeGitStatusRefreshResults() {
 					dirty = true
 				}
+			case interruptNotificationReady:
+				a.consumeNotificationCountResult()
+				dirty = true
+			case interruptV3Chat:
+				a.consumeV3ChatRender()
+				dirty = true
 			case interruptQuit:
 				if a.devUpdateRequested {
 					return updatehandoff.ErrDevUpdateRequested
@@ -545,7 +529,7 @@ func (a *App) Run() error {
 			if a.quitRequested {
 				continue
 			}
-			if a.route == "chat" && a.home != nil && a.home.ChatOverlayVisible() {
+			if (a.route == "chat" || a.route == "v3chat") && a.home != nil && a.home.ChatOverlayVisible() {
 				if a.home.HandleChatOverlayMouse(e) {
 					a.consumeHomeOverlayActions()
 				}
@@ -561,6 +545,11 @@ func (a *App) Run() error {
 					a.home.SetStatus(message)
 				}
 				a.showToast(ui.ToastInfo, message)
+			}
+			if a.route == "v3chat" && a.v3Chat != nil {
+				a.v3Chat.HandleMouse(e)
+				dirty = true
+				continue
 			}
 			if a.route == "chat" && a.chat != nil {
 				a.chat.HandleMouse(e)
@@ -622,10 +611,16 @@ func (a *App) Run() error {
 					a.consumeHomeActions()
 					continue
 				}
+				if a.route == "v3chat" && a.v3Chat != nil {
+					if a.v3Chat.HandlePasteKey(e) {
+						dirty = true
+					}
+					continue
+				}
 				a.setPasteActive(false)
 				dirty = true
 			}
-			if a.route == "chat" && a.home != nil {
+			if (a.route == "chat" || a.route == "v3chat") && a.home != nil {
 				if a.home.HandleChatOverlayKey(e) {
 					a.consumeHomeOverlayActions()
 					a.consumeHomeActions()
@@ -637,11 +632,25 @@ func (a *App) Run() error {
 				dirty = true
 				continue
 			}
-			if a.route == "chat" && a.home != nil && a.home.ChatOverlayVisible() {
+			if (a.route == "chat" || a.route == "v3chat") && a.home != nil && a.home.ChatOverlayVisible() {
 				dirty = true
 				continue
 			}
 			if a.voiceInputLocked() {
+				dirty = true
+				continue
+			}
+			if a.route == "v3chat" && a.v3Chat != nil {
+				switch a.v3Chat.HandleKey(e) {
+				case v3chat.PageActionHome:
+					a.closeV3Chat()
+					a.route = "home"
+					a.home.SetStatus("home")
+				case v3chat.PageActionCommand:
+					a.handleV3ChatCommand()
+				case v3chat.PageActionOpenCurrentPlan:
+					a.showV3CurrentPlan()
+				}
 				dirty = true
 				continue
 			}
@@ -675,6 +684,9 @@ func (a *App) setPasteActive(active bool) {
 	}
 	if a.chat != nil {
 		a.chat.SetPasteActive(active)
+	}
+	if a.v3Chat != nil {
+		a.v3Chat.SetPasteActive(active)
 	}
 }
 
@@ -714,13 +726,26 @@ func (a *App) handleChatAsync() bool {
 	return changed
 }
 
-func (a *App) consumePendingChatRender() {
-	if a == nil {
+func (a *App) requestChatRender() {
+	if a == nil || a.screen == nil {
 		return
 	}
 	select {
-	case <-a.pendingChatRender:
+	case a.pendingChatRender <- struct{}{}:
+		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptChatAsync))
 	default:
+	}
+}
+
+func (a *App) consumePendingChatRender() bool {
+	if a == nil {
+		return false
+	}
+	select {
+	case <-a.pendingChatRender:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -754,6 +779,9 @@ func (a *App) consumeStreamReadyForRender(now time.Time, scheduleWake bool) bool
 	}
 	a.consumePendingStreamReady()
 	if a.consumeSessionStreamEvents() {
+		a.streamRenderPending = true
+	}
+	if a.consumeTUIRealtimeEvents() {
 		a.streamRenderPending = true
 	}
 	if !a.streamRenderPending {
@@ -824,7 +852,7 @@ func (a *App) runSessionEventStream(ctx context.Context) {
 		return
 	}
 	lastSeen := a.streamSeq.Load()
-	channels := []string{"swarm:*", "session:*", "ui:*", "workspace:*", "system:agent"}
+	channels := []string{"session:*", "ui:*", "workspace:*", "system:agent"}
 	for {
 		if ctx.Err() != nil {
 			return
@@ -885,10 +913,34 @@ func (a *App) consumeSessionStreamEvents() bool {
 func (a *App) applySessionStreamEvent(event client.StreamEventEnvelope) bool {
 	eventType := strings.ToLower(strings.TrimSpace(event.EventType))
 	switch eventType {
-	case "swarm.enrollment.pending", "swarm.enrollment.approved", "swarm.enrollment.rejected", "notification.created", "notification.updated":
+	case "notification.created", "notification.updated":
 		return a.applySwarmStreamEvent(event)
 	case "agent.profile.created", "agent.profile.updated", "agent.profile.deleted", "agent.active.updated", "agent.defaults.restored", "agent.defaults.reset", "agent.state.synced", "agent.custom_tool.created", "agent.custom_tool.updated", "agent.custom_tool.deleted", "agent.custom_tool.assigned", "agent.custom_tool.unassigned", "agent.active_subagent.updated", "agent.active_subagent.deleted":
 		return a.applyAgentStreamEvent(event)
+	case "session.created":
+		var session client.SessionSummary
+		if err := json.Unmarshal(event.Payload, &session); err != nil {
+			return false
+		}
+		if strings.TrimSpace(session.ID) == "" {
+			return false
+		}
+		session.SessionAPI = "v3"
+		a.upsertHomeSessionSummary(modelSessionSummaryFromClient(session))
+		return true
+	case "session.deleted", "session.closed":
+		sessionID := strings.TrimSpace(event.EntityID)
+		if sessionID == "" {
+			var payload struct {
+				ID        string `json:"id"`
+				SessionID string `json:"session_id"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				return false
+			}
+			sessionID = firstNonEmpty(strings.TrimSpace(payload.SessionID), strings.TrimSpace(payload.ID))
+		}
+		return a.removeHomeSessionSummary(sessionID)
 	case "session.title.updated":
 		var payload struct {
 			SessionID string `json:"session_id"`
@@ -1176,16 +1228,6 @@ func (a *App) applySwarmStreamEvent(event client.StreamEventEnvelope) bool {
 	}
 	eventType := strings.ToLower(strings.TrimSpace(event.EventType))
 	switch eventType {
-	case "swarm.enrollment.pending":
-		a.swarmNotificationCount++
-		a.setSwarmNotificationCount(a.swarmNotificationCount)
-		return true
-	case "swarm.enrollment.approved", "swarm.enrollment.rejected":
-		if a.swarmNotificationCount > 0 {
-			a.swarmNotificationCount--
-		}
-		a.setSwarmNotificationCount(a.swarmNotificationCount)
-		return true
 	case "notification.created", "notification.updated":
 		count, err := a.loadSwarmNotificationCount(context.Background())
 		if err != nil {
@@ -1220,17 +1262,26 @@ func (a *App) applyAgentStreamEvent(event client.StreamEventEnvelope) bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
 		hints := make([]string, 0, len(state.Profiles)+2)
-		hints = append(hints, a.homeModel.ModelProvider)
+		homeProvider, homeModelName, homeThinking, _, _ := a.home.ModelState()
+		hints = append(hints, homeProvider)
 		for _, profile := range state.Profiles {
 			hints = append(hints, profile.Provider)
 		}
+		settings, err := a.api.GetUISettings(ctx)
+		if err != nil {
+			return false
+		}
+		modalState := enrichSystemAgentModels(state, settings, a.homeModel)
 		resolvedModels := a.resolveProviderModelData(ctx, hints, 2000, 1200)
 		a.home.SetAgentsModalData(mapAgentsModalData(
-			state,
+			modalState,
 			resolvedModels,
-			strings.TrimSpace(a.homeModel.ModelProvider),
-			strings.TrimSpace(a.homeModel.ModelName),
-			strings.TrimSpace(a.homeModel.ThinkingLevel),
+			strings.TrimSpace(homeProvider),
+			strings.TrimSpace(homeModelName),
+			strings.TrimSpace(homeThinking),
+			a.homeModel.ModelProfiles,
+			a.homeModel.DefaultModelProfileID,
+			a.homeModel.ActiveModelProfile.ProfileID,
 		))
 		a.home.SetAgentsModalLoading(false)
 		changed = true
@@ -1252,20 +1303,26 @@ func decodeAgentStateFromStreamEvent(event client.StreamEventEnvelope) client.Ag
 }
 
 func (a *App) applyAgentStateToRuntime(state client.AgentState) bool {
+	a.agentState = state
 	activeAgent, executionSetting, exitPlanMode, runtimeKnown := activeAgentRuntime(state)
 	subagents := chatMentionSubagentNames(state)
+	next := a.currentHomeModel()
+	next.ActiveAgent = activeAgent
+	next.ActiveAgentExecutionSetting = executionSetting
+	next.ActiveAgentExitPlanMode = exitPlanMode
+	next.ActiveAgentRuntimeKnown = runtimeKnown
+	next.Subagents = append([]string(nil), subagents...)
+	next = applyActiveAgentModels(next, state)
 	changed := false
 	if strings.TrimSpace(a.homeModel.ActiveAgent) != strings.TrimSpace(activeAgent) ||
 		strings.TrimSpace(a.homeModel.ActiveAgentExecutionSetting) != strings.TrimSpace(executionSetting) ||
 		a.homeModel.ActiveAgentExitPlanMode != exitPlanMode ||
 		a.homeModel.ActiveAgentRuntimeKnown != runtimeKnown ||
-		!sameStringSet(a.homeModel.Subagents, subagents) {
-		next := a.homeModel
-		next.ActiveAgent = activeAgent
-		next.ActiveAgentExecutionSetting = executionSetting
-		next.ActiveAgentExitPlanMode = exitPlanMode
-		next.ActiveAgentRuntimeKnown = runtimeKnown
-		next.Subagents = append([]string(nil), subagents...)
+		!sameStringSet(a.homeModel.Subagents, subagents) ||
+		a.homeModel.PlanModelProvider != next.PlanModelProvider || a.homeModel.PlanModelName != next.PlanModelName ||
+		a.homeModel.PlanThinkingLevel != next.PlanThinkingLevel || a.homeModel.PlanServiceTier != next.PlanServiceTier ||
+		a.homeModel.AutoModelProvider != next.AutoModelProvider || a.homeModel.AutoModelName != next.AutoModelName ||
+		a.homeModel.AutoThinkingLevel != next.AutoThinkingLevel || a.homeModel.AutoServiceTier != next.AutoServiceTier {
 		a.homeModel = next
 		a.home.SetModel(next)
 		changed = true
@@ -1325,7 +1382,7 @@ func (a *App) applySharedChatRuntimeEvent(event client.StreamEventEnvelope) bool
 }
 
 func decodeSharedChatRuntimeEvent(event client.StreamEventEnvelope) (ui.ChatRunStreamEvent, bool) {
-	var raw client.SessionRunStreamEvent
+	var raw sharedChatRuntimeEventPayload
 	if err := json.Unmarshal(event.Payload, &raw); err != nil {
 		return ui.ChatRunStreamEvent{}, false
 	}
@@ -1752,6 +1809,20 @@ func (a *App) loadSessionSummary(ctx context.Context, sessionID string) (model.S
 
 func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 	keybinds := a.activeKeyBindings()
+	if a.route == "chat" && a.chat != nil && a.chat.PermissionModalVisible() {
+		return false
+	}
+	if a.route == "v3chat" && a.v3Chat != nil {
+		if a.v3Chat.PendingPermissionVisible() {
+			return false
+		}
+		if a.v3Chat.PlanModalVisible() && ev != nil && ev.Key() == tcell.KeyCtrlC {
+			return false
+		}
+	}
+	if a.home != nil && a.home.OnboardingVisible() {
+		return false
+	}
 	if keybinds.Match(ev, ui.KeybindGlobalOpenAgents) {
 		if a.route == "chat" && a.chat != nil && a.chat.PermissionModalVisible() {
 			return false
@@ -1760,6 +1831,10 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 			a.openAgentsModal()
 			return false
 		}
+		if a.route == "v3chat" && a.v3Chat != nil {
+			a.openAgentsModal()
+			return false
+		}
 		if a.route == "chat" {
 			a.route = "home"
 			a.chat = nil
@@ -1770,22 +1845,46 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 			return false
 		}
 	}
-	if keybinds.Match(ev, ui.KeybindGlobalOpenModels) {
-		if a.route == "chat" && a.chat != nil {
-			a.openModelsModal("")
-			return false
+	if keybinds.Match(ev, ui.KeybindHomeOpenSessions) {
+		if a.route == "chat" || a.route == "v3chat" {
+			a.handleSessionsCommand(nil)
+			return true
 		}
-		if a.route == "chat" {
-			a.route = "home"
-			a.chat = nil
-		}
-		if a.route == "home" {
-			a.home.SetPasteActive(a.pasteActive)
-			a.openModelsModal("")
-			return false
+		if a.route == "home" && a.home != nil {
+			if a.home.SessionsModalVisible() {
+				a.home.HideSessionsModal()
+				a.home.SetStatus("session manager closed")
+				return true
+			}
+			if a.home.AuthModalVisible() ||
+				a.home.VaultModalVisible() ||
+				a.home.WorkspaceModalVisible() ||
+				a.home.WorktreesModalVisible() ||
+				a.home.ModelsModalVisible() ||
+				a.home.AgentsModalVisible() ||
+				a.home.VoiceModalVisible() ||
+				a.home.ThemeModalVisible() ||
+				a.home.KeybindsModalVisible() {
+				return true
+			}
+			a.openHomeSessionsModal("")
+			return true
 		}
 	}
+	if keybinds.Match(ev, ui.KeybindGlobalWorkspaceSelect) {
+		if a.route == "home" && a.homeInteractionActive() {
+			return false
+		}
+		if a.workspaceCycleHotkeyBlocked() {
+			return true
+		}
+		a.showWorkspaceSelector()
+		return true
+	}
 	if keybinds.Match(ev, ui.KeybindGlobalWorkspacePrev) {
+		if a.route == "home" && a.homeInteractionActive() {
+			return false
+		}
 		if a.workspaceCycleHotkeyBlocked() {
 			return true
 		}
@@ -1800,6 +1899,9 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		if !keybinds.Match(ev, id) {
 			continue
 		}
+		if a.route == "home" && a.homeInteractionActive() {
+			return false
+		}
 		if a.workspaceCycleHotkeyBlocked() {
 			return true
 		}
@@ -1807,23 +1909,27 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		return true
 	}
 	if keybinds.Match(ev, ui.KeybindGlobalWorkspaceNext) {
+		if a.route == "home" && a.homeInteractionActive() {
+			return false
+		}
 		if a.workspaceCycleHotkeyBlocked() {
 			return true
 		}
 		a.cycleWorkspaceBy(1)
 		return true
 	}
+	if keybinds.Match(ev, ui.KeybindGlobalCycleProfiles) {
+		if a.homeInteractionActive() {
+			return false
+		}
+		if a.route != "home" && a.route != "v3chat" {
+			return false
+		}
+		a.cycleHomeModelProfile()
+		return true
+	}
 	if keybinds.Match(ev, ui.KeybindGlobalCycleThinking) {
-		if a.route == "home" &&
-			(a.home.AuthModalVisible() ||
-				a.home.VaultModalVisible() ||
-				a.home.WorkspaceModalVisible() ||
-				a.home.WorktreesModalVisible() ||
-				a.home.ModelsModalVisible() ||
-				a.home.AgentsModalVisible() ||
-				a.home.VoiceModalVisible() ||
-				a.home.ThemeModalVisible() ||
-				a.home.KeybindsModalVisible()) {
+		if a.route == "home" && a.homeInteractionActive() {
 			return true
 		}
 		a.cycleThinkingLevel()
@@ -1854,9 +1960,21 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 			a.chat = nil
 			return true
 		}
+		if a.route == "v3chat" {
+			a.closeV3Chat()
+			a.route = "home"
+			return true
+		}
 	}
 
 	if keybinds.Match(ev, ui.KeybindGlobalQuit) {
+		if a.route == "v3chat" && a.v3Chat != nil && a.v3Chat.ConsumeQuitScrollbackJump() {
+			return true
+		}
+		if a.route == "v3chat" && a.v3Chat != nil && strings.TrimSpace(a.v3Chat.InputValue()) != "" {
+			a.v3Chat.ClearInput()
+			return true
+		}
 		if a.route == "chat" && a.chat != nil && strings.TrimSpace(a.chat.InputValue()) != "" {
 			a.chat.ClearInput()
 			return true
@@ -1894,6 +2012,9 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 }
 
 func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
+	if a.home.OnboardingVisible() {
+		return false
+	}
 	if a.home.AlertsModalVisible() ||
 		a.home.SessionsModalVisible() ||
 		a.home.AuthModalVisible() ||
@@ -1907,10 +2028,6 @@ func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
 		a.home.KeybindsModalVisible() {
 		return false
 	}
-	if a.home.SessionsFocused() {
-		return false
-	}
-
 	if !a.activeKeyBindings().Match(ev, ui.KeybindHomePromptSubmit) {
 		return false
 	}
@@ -1943,6 +2060,13 @@ func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
 func (a *App) handleChatKey(ev *tcell.EventKey) bool {
 	if a.chat == nil {
 		return false
+	}
+	if ev != nil && ev.Key() == tcell.KeyCtrlP && strings.TrimSpace(a.chat.InputValue()) == "" {
+		a.handlePlanCommand(nil)
+		if status := strings.TrimSpace(a.home.Status()); status != "" {
+			a.chat.SetStatus(status)
+		}
+		return true
 	}
 	if !a.activeKeyBindings().Match(ev, ui.KeybindChatSubmit) {
 		return false
@@ -1985,6 +2109,15 @@ func (a *App) executeCommand(raw string) {
 	}
 	cmd := strings.ToLower(fields[0])
 	args := fields[1:]
+	if a.home != nil && a.home.OnboardingVisible() {
+		switch cmd {
+		case "auth", "quit", "exit", "help":
+		default:
+			a.home.ClearCommandOverlay()
+			a.home.SetStatus("Complete required onboarding before using other commands.")
+			return
+		}
+	}
 	if a.vault.Enabled && !a.vault.Unlocked {
 		switch cmd {
 		case "help", "quit", "exit", "vault":
@@ -2000,6 +2133,12 @@ func (a *App) executeCommand(raw string) {
 		a.showHelp()
 	case "home":
 		a.home.ClearCommandOverlay()
+		if a.route == "v3chat" && a.v3Chat != nil {
+			a.closeV3Chat()
+			a.route = "home"
+			a.home.SetStatus("home")
+			return
+		}
 		if a.route != "chat" || a.chat == nil {
 			a.home.SetStatus("/home is available in chat only")
 			return
@@ -2025,14 +2164,19 @@ func (a *App) executeCommand(raw string) {
 		a.handleNewCommand()
 	case "plan":
 		a.handlePlanCommand(args)
+	case "task":
+		a.handleTaskCommand(args)
+	case "archive":
+		a.handleArchiveCommand(args)
 	case "compact":
-		a.handleCompactCommand(args)
+		if (a.route == "chat" && a.chat != nil) || (a.route == "v3chat" && a.v3Chat != nil) {
+			a.handleCompactCommand(args)
+			break
+		}
+		a.home.ClearCommandOverlay()
+		a.home.SetStatus("unknown command: /compact")
 	case "commit":
 		a.handleCommitCommand(args)
-	case "fast":
-		a.handleCodexCommand([]string{"fast"})
-	case "git":
-		a.handleGitCommand(args)
 	case "codex":
 		a.handleCodexCommand(args)
 	case "workspace":
@@ -2041,8 +2185,6 @@ func (a *App) executeCommand(raw string) {
 		a.handleWorkspaceCommand(args)
 	case "add-dir":
 		a.handleAddDirectoryCommand(args)
-	case "mcp":
-		a.handleMCPCommand(args)
 	case "permissions":
 		a.handlePermissionsCommand(args)
 	case "output":
@@ -2051,8 +2193,8 @@ func (a *App) executeCommand(raw string) {
 		a.handleWorktreesCommand(args)
 	case "mode":
 		a.handleModeCommand(args)
-	case "models":
-		a.handleModelsCommand(args)
+	case "profiles":
+		a.openProfilesModal()
 	case "agents", "agent":
 		a.handleAgentsCommand(args)
 	case "auth":
@@ -2090,24 +2232,20 @@ func (a *App) executeCommand(raw string) {
 func (a *App) showHelp() {
 	keybinds := a.activeKeyBindings()
 	lines := []string{
-		"/sessions   (open recent sessions modal)",
-		"/new   (create and open a new session)",
+		fmt.Sprintf("/sessions   (open session manager; shortcut %s)", keybinds.Label(ui.KeybindHomeOpenSessions)),
+		"/new   (open a new session draft; create on first message)",
 		"/home   (return to home from chat)",
-		"/plan exit [title]   (open plan-exit approval modal in chat)",
-		"/plan list   (list saved plans for this session)",
-		"/plan use <plan_id>   (set active plan)",
-		"/plan new [title]   (create and activate a new plan draft)",
-		"/compact [threshold%] [notes]   (compact now + optionally set auto-compact threshold)",
+		"/plan   (show or close the existing session plan)",
+		"/task <request>   (queue a durable AI task in automatic mode)",
+		"/task plan <request>   (queue a durable AI task in plan mode)",
 		"/commit [instructions]   (launch memory agent in background to review diffs and commit)",
-		"/fast   (toggle Codex Fast for current chat or home draft; gpt-5.4/gpt-5.5)",
 		"/git   (show authoritative Git status for the active workspace)",
-		"/codex [status|fast]   (Codex gpt-5.4/gpt-5.5 runtime settings; Fast on-off)",
+		"/codex [refresh]   (Codex account usage and reset credits)",
 		"/workspace   (open workspace manager)",
 		"/workspaces   (alias for /workspace)",
 		"/workspace save [path|#n]   (open workspace setup)",
 		"/add-dir [path]   (open workspace linked-directory flow)",
 		"/workspace scan [query]",
-		"/mcp   (deferred: MCP management needs Swarm Sync; Exa search can use the built-in free Exa MCP server)",
 		"/output   (open full bash output viewer)",
 		"/permissions [on|off]   (toggle global permission prompts)",
 		"/permissions show   (show global permission policy)",
@@ -2121,17 +2259,14 @@ func (a *App) showHelp() {
 		"Permissions modal: b toggles global permissions (OFF requires confirmation)",
 		"/worktrees   (open worktrees menu)",
 		"/wt   (alias for /worktrees)",
-		"/worktrees [on|off|status|branch <name>]",
-		"/agents   (open agents manager modal)",
-		"/agents restore   (restore built-in agents without deleting custom ones)",
-		"/agents reset   (delete custom agents/tools and restore built-ins)",
-		"/agents use <primary-agent>",
-		"/agents prompt <name> <prompt text>",
-		"/agents delete <name>",
-		"/mode [auto|plan|status]   (default mode for new chats)",
-		"/models   (open model manager modal)",
+		"/worktrees new   (create a worktree session with title and editable branch)",
+		"/worktrees [new|open|off|status|branch <name>]",
+		"/agents   (open agent cards and model setup)",
+
+		"/mode [plan|action|status]   (Plan on/off for new chats)",
+		"/profiles   (quick-switch the saved model profile used by new sessions)",
 		fmt.Sprintf("%s   (open agents manager modal)", keybinds.Label(ui.KeybindGlobalOpenAgents)),
-		fmt.Sprintf("%s   (open model manager modal)", keybinds.Label(ui.KeybindGlobalOpenModels)),
+		fmt.Sprintf("%s   (open workspace selector)", keybinds.Label(ui.KeybindGlobalWorkspaceSelect)),
 		fmt.Sprintf("%s   (cycle workspace previous)", keybinds.Label(ui.KeybindGlobalWorkspacePrev)),
 		fmt.Sprintf("%s   (cycle workspace next)", keybinds.Label(ui.KeybindGlobalWorkspaceNext)),
 		fmt.Sprintf("%s   (activate workspace slot 1)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot1)),
@@ -2144,14 +2279,14 @@ func (a *App) showHelp() {
 		fmt.Sprintf("%s   (activate workspace slot 8)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot8)),
 		fmt.Sprintf("%s   (activate workspace slot 9)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot9)),
 		fmt.Sprintf("%s   (activate workspace slot 10)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot10)),
-		fmt.Sprintf("%s   (cycle thinking level)", keybinds.Label(ui.KeybindGlobalCycleThinking)),
+		fmt.Sprintf("%s   (cycle saved model profiles)", keybinds.Label(ui.KeybindGlobalCycleProfiles)),
 		"/themes   (open theme modal with live preview)",
 		"/themes [open|list|set|next|prev|status|create|edit|delete|slots]",
 		"/themes create <id> [from <theme>]",
 		"/themes edit <id> <slot> <#RRGGBB>",
 		"/themes delete <id>",
 		"/header [on|off|toggle|status]   (chat header visibility)",
-		"/swarm [status|pending|approve <id>|reject <id>|set <name>|<name>]   (show dashboard, review pending children, or change device identity)",
+		"/swarm [set <name>|name <name>|<name>]   (change primary swarm display name)",
 		updateHelpLine(a.startupDevMode()),
 		"/thinking [on|off|toggle|status]   (show or hide reasoning/thinking tags)",
 		"/mouse [on|off|toggle|status]   (mouse click capture)",
@@ -2211,12 +2346,22 @@ func (a *App) handleCopyCommand(args []string) {
 
 func (a *App) handleOutputCommand(args []string) {
 	a.home.ClearCommandOverlay()
-	if a.chat == nil {
-		a.home.SetStatus("/output is available in chat sessions only")
-		return
-	}
 	if len(args) > 0 {
 		a.home.SetStatus("usage: /output")
+		return
+	}
+	if a.route == "v3chat" && a.v3Chat != nil {
+		if !a.v3Chat.ToggleLatestBashOutput() {
+			a.home.SetStatus("no bash output available")
+			return
+		}
+		if status := strings.TrimSpace(a.v3Chat.Status()); status != "" {
+			a.home.SetStatus(status)
+		}
+		return
+	}
+	if a.chat == nil {
+		a.home.SetStatus("/output is available in chat sessions only")
 		return
 	}
 	if !a.chat.ToggleInlineBashOutputExpanded() {
@@ -2268,6 +2413,13 @@ func (a *App) handleSessionsCommand(args []string) {
 	if a.route == "chat" && a.chat != nil {
 		a.home.ClearCommandOverlay()
 		if err := a.openChatSessionsPalette(query); err != nil {
+			a.home.SetStatus(fmt.Sprintf("/sessions failed: %v", err))
+		}
+		return
+	}
+	if a.route == "v3chat" && a.v3Chat != nil {
+		a.home.ClearCommandOverlay()
+		if err := a.queueSessionManagerOpen(query, "v3chat"); err != nil {
 			a.home.SetStatus(fmt.Sprintf("/sessions failed: %v", err))
 		}
 		return
@@ -2362,8 +2514,26 @@ func (a *App) handleNewCommand() {
 
 func (a *App) handlePlanCommand(args []string) {
 	a.home.ClearCommandOverlay()
+	if len(args) != 0 {
+		a.home.SetStatus("usage: /plan")
+		return
+	}
+	if a.route == "v3chat" && a.v3Chat != nil {
+		if a.v3Chat.PlanModalVisible() {
+			a.v3Chat.ClosePlanModal()
+			a.v3Chat.SetStatus("current plan closed")
+			return
+		}
+		a.showV3CurrentPlan()
+		return
+	}
 	if a.route != "chat" || a.chat == nil {
-		a.home.SetStatus("plan commands are available in chat: /plan [show|exit|list|use|new]")
+		a.home.SetStatus("/plan is available in chat only")
+		return
+	}
+	if a.chat.CurrentPlanModalVisible() {
+		a.chat.CloseCurrentPlanModal()
+		a.home.SetStatus("current plan closed")
 		return
 	}
 	sessionID := strings.TrimSpace(a.chat.SessionID())
@@ -2371,209 +2541,141 @@ func (a *App) handlePlanCommand(args []string) {
 		a.home.SetStatus("session id is unavailable")
 		return
 	}
-	showCurrentPlan := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		plan, ok, err := a.api.GetActiveSessionPlan(ctx, sessionID)
-		if err != nil {
-			a.home.SetStatus(fmt.Sprintf("/plan failed: %v", err))
-			return
-		}
-		plans, activeID, listErr := a.api.ListSessionPlans(ctx, sessionID, 100)
-		if listErr != nil {
-			a.home.SetStatus(fmt.Sprintf("/plan failed: %v", listErr))
-			return
-		}
-		if !ok {
-			plan = client.SessionPlan{Title: "Current Plan", Status: "draft"}
-		}
-		uiRevisions := make([]ui.ChatSessionPlan, 0)
-		if strings.TrimSpace(plan.ID) != "" {
-			revisions, historyErr := a.api.ListSessionPlanHistory(ctx, sessionID, plan.ID, 100)
-			if historyErr != nil {
-				a.home.SetStatus(fmt.Sprintf("/plan history failed: %v", historyErr))
-			} else {
-				uiRevisions = make([]ui.ChatSessionPlan, 0, len(revisions))
-				for _, revision := range revisions {
-					uiRevisions = append(uiRevisions, ui.ChatSessionPlan{ID: strings.TrimSpace(revision.ID), Title: strings.TrimSpace(revision.Title), Plan: revision.Plan, Document: revision.Document, Status: strings.TrimSpace(revision.Status), ApprovalState: strings.TrimSpace(revision.ApprovalState), Active: revision.Active, CreatedAt: revision.CreatedAt, UpdatedAt: revision.UpdatedAt, PriorTitle: strings.TrimSpace(revision.PriorTitle), PriorPlan: revision.PriorPlan, DiffLines: append([]string(nil), revision.DiffLines...), UpdateSummary: strings.TrimSpace(revision.UpdateSummary), UpdateScope: strings.TrimSpace(revision.UpdateScope), UpdateKind: strings.TrimSpace(revision.UpdateKind), Version: revision.Version, ParentRevision: revision.ParentRevision, Checkpoint: revision.Checkpoint})
-				}
-			}
-		}
-		if len(uiRevisions) == 0 && len(plans) > 0 {
-			for _, candidate := range plans {
-				uiRevisions = append(uiRevisions, ui.ChatSessionPlan{ID: strings.TrimSpace(candidate.ID), Title: strings.TrimSpace(candidate.Title), Plan: candidate.Plan, Document: candidate.Document, Status: strings.TrimSpace(candidate.Status), ApprovalState: strings.TrimSpace(candidate.ApprovalState), Active: candidate.Active, CreatedAt: candidate.CreatedAt, UpdatedAt: candidate.UpdatedAt})
-			}
-		}
-		if !a.chat.OpenCurrentPlanModalWithPlans(ui.ChatSessionPlan{ID: strings.TrimSpace(plan.ID), Title: strings.TrimSpace(plan.Title), Plan: plan.Plan, Document: plan.Document, Status: strings.TrimSpace(plan.Status), ApprovalState: strings.TrimSpace(plan.ApprovalState), Active: ok, CreatedAt: plan.CreatedAt, UpdatedAt: plan.UpdatedAt, Version: plan.Version}, uiRevisions, activeID) {
-			a.home.SetStatus("current plan modal is unavailable while another modal is open")
-			return
-		}
-		if ok {
-			a.home.SetStatus(fmt.Sprintf("current plan: %s", emptyFallback(strings.TrimSpace(plan.Title), strings.TrimSpace(plan.ID))))
-		} else {
-			a.home.SetStatus("current plan: no active plan")
-		}
-	}
-	if len(args) == 0 || strings.EqualFold(args[0], "help") {
-		if len(args) == 0 {
-			showCurrentPlan()
-			return
-		}
-		a.home.SetStatus("usage: /plan [show|exit|list|use|new]")
-		a.chat.AppendSystemMessage("usage:\n/plan\n/plan show\n/plan exit [title]\n/plan list [limit]\n/plan use <plan_id>\n/plan new [title]")
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	plan, ok, err := a.api.GetActiveSessionPlan(ctx, sessionID)
+	if err != nil {
+		a.home.SetStatus(fmt.Sprintf("/plan failed: %v", err))
 		return
 	}
-
-	action := strings.ToLower(strings.TrimSpace(args[0]))
-	switch action {
-	case "show":
-		showCurrentPlan()
-	case "exit":
-		if a.chat.PermissionModalVisible() {
-			a.home.SetStatus("resolve pending permissions before exiting plan mode")
-			return
-		}
-		title := "Exit Plan Mode"
-		if len(args) > 1 {
-			title = strings.TrimSpace(strings.Join(args[1:], " "))
-		}
-		body := a.buildPlanExitModalBody(title)
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		if plan, ok, err := a.api.GetActiveSessionPlan(ctx, sessionID); err == nil && ok {
-			if documentText := ui.StructuredPlanDocumentTextFromValue(plan.Document); strings.TrimSpace(documentText) != "" {
-				body = strings.TrimSpace(body) + "\n\nStructured plan document:\n" + documentText
-			}
-		}
-		cancel()
-		if !a.chat.OpenExitPlanModeModal(title, body) {
-			a.home.SetStatus("exit plan modal is unavailable while pending permissions are open")
-			return
-		}
-		a.home.SetStatus("review plan approval and confirm")
-	case "list":
-		limit := 20
-		if len(args) > 1 {
-			if parsed, err := strconv.Atoi(strings.TrimSpace(args[1])); err == nil && parsed > 0 {
-				limit = parsed
-			}
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		plans, activeID, err := a.api.ListSessionPlans(ctx, sessionID, limit)
-		if err != nil {
-			a.home.SetStatus(fmt.Sprintf("/plan list failed: %v", err))
-			return
-		}
-		lines := []string{fmt.Sprintf("plans: %d (active: %s)", len(plans), emptyFallback(activeID, "none"))}
-		if len(plans) == 0 {
-			lines = append(lines, "No saved plans yet. Use /plan new [title].")
-		} else {
-			maxLines := len(plans)
-			if maxLines > 12 {
-				maxLines = 12
-			}
-			for i := 0; i < maxLines; i++ {
-				plan := plans[i]
-				activeMark := " "
-				if plan.Active {
-					activeMark = "*"
-				}
-				lines = append(lines, fmt.Sprintf("%s %s  %s", activeMark, plan.ID, clampText(plan.Title, 56)))
-			}
-			if len(plans) > maxLines {
-				lines = append(lines, fmt.Sprintf("... %d more", len(plans)-maxLines))
-			}
-		}
-		a.home.SetCommandOverlay(lines)
-		a.home.SetStatus("plan list loaded")
-	case "use":
-		if len(args) < 2 {
-			a.home.SetStatus("usage: /plan use <plan_id>")
-			return
-		}
-		planID := strings.TrimSpace(args[1])
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		plan, err := a.api.SetActiveSessionPlan(ctx, sessionID, planID)
-		if err != nil {
-			a.home.SetStatus(fmt.Sprintf("/plan use failed: %v", err))
-			return
-		}
-		a.home.SetStatus(fmt.Sprintf("active plan: %s", plan.ID))
-		a.chat.SetActivePlan(chatPlanLabel(plan))
-		a.chat.AppendSystemMessage(fmt.Sprintf("Active plan set to %s (%s).", plan.ID, emptyFallback(plan.Title, "untitled")))
-	case "new":
-		title := "New Plan"
-		if len(args) > 1 {
-			title = strings.TrimSpace(strings.Join(args[1:], " "))
-		}
-		activate := true
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		plan, err := a.api.SaveSessionPlan(ctx, sessionID, client.SessionPlanUpsertRequest{
-			Title:    title,
-			Plan:     "# " + title + "\n\n- [ ] next step\n",
-			Status:   "draft",
-			Activate: &activate,
-		})
-		if err != nil {
-			a.home.SetStatus(fmt.Sprintf("/plan new failed: %v", err))
-			return
-		}
-		a.home.SetStatus(fmt.Sprintf("created plan: %s", plan.ID))
-		a.chat.SetActivePlan(chatPlanLabel(plan))
-		a.chat.AppendSystemMessage(fmt.Sprintf("Created new active plan %s (%s).", plan.ID, emptyFallback(plan.Title, "untitled")))
-		showCurrentPlan()
-	default:
-		a.home.SetStatus("usage: /plan [show|exit|list|use|new]")
-		a.chat.AppendSystemMessage("usage:\n/plan\n/plan show\n/plan exit [title]\n/plan list [limit]\n/plan use <plan_id>\n/plan new [title]")
+	if !ok {
+		a.home.SetStatus("current plan: no active plan")
+		return
 	}
+	if !a.chat.OpenCurrentPlanModal(ui.ChatSessionPlan{
+		ID:            strings.TrimSpace(plan.ID),
+		Title:         strings.TrimSpace(plan.Title),
+		Plan:          plan.Plan,
+		Document:      plan.Document,
+		Status:        strings.TrimSpace(plan.Status),
+		ApprovalState: strings.TrimSpace(plan.ApprovalState),
+		Active:        true,
+		CreatedAt:     plan.CreatedAt,
+		UpdatedAt:     plan.UpdatedAt,
+		Version:       plan.Version,
+	}) {
+		a.home.SetStatus("current plan modal is unavailable while another modal is open")
+		return
+	}
+	a.home.SetStatus(fmt.Sprintf("current plan: %s · %s", emptyFallback(strings.TrimSpace(plan.Title), "untitled"), strings.TrimSpace(plan.ID)))
+}
+
+func (a *App) handleArchiveCommand(args []string) {
+	a.home.ClearCommandOverlay()
+	if len(args) != 0 {
+		a.home.SetStatus("usage: " + archiveCommandUsage)
+		return
+	}
+	if a.api == nil {
+		a.home.SetStatus("/archive failed: api client is not configured")
+		return
+	}
+	var sessionID string
+	v3Page, legacyPage := a.v3Chat, a.chat
+	switch {
+	case a.route == "v3chat" && v3Page != nil && v3Page.Runtime() != nil && v3Page.Runtime().Store() != nil:
+		state := v3Page.Runtime().Store().Snapshot()
+		if _, active := v3chat.SelectActiveRun(state); active {
+			a.home.SetStatus("/archive unavailable while a run is active")
+			return
+		}
+		sessionID = strings.TrimSpace(state.Session.ID)
+		v3Page.SetStatus("archiving session…")
+	case a.route == "chat" && legacyPage != nil:
+		if legacyPage.RunInProgress() {
+			a.home.SetStatus("/archive unavailable while a run is active")
+			return
+		}
+		sessionID = strings.TrimSpace(legacyPage.SessionID())
+		legacyPage.SetStatus("archiving session…")
+	default:
+		a.home.SetStatus("unknown command: " + archiveCommandUsage)
+		return
+	}
+	if sessionID == "" {
+		a.home.SetStatus("/archive failed: session id is unavailable")
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		if _, err := a.api.ArchiveSessionV3(ctx, sessionID); err != nil {
+			message := fmt.Sprintf("/archive failed: %v", err)
+			switch {
+			case a.route == "v3chat" && a.v3Chat == v3Page:
+				v3Page.SetStatus(message)
+				a.requestV3ChatRender()
+			case a.route == "chat" && a.chat == legacyPage:
+				legacyPage.SetStatus(message)
+				a.requestChatRender()
+			}
+			return
+		}
+		switch {
+		case a.route == "v3chat" && a.v3Chat == v3Page:
+			a.closeV3Chat()
+		case a.route == "chat" && a.chat == legacyPage:
+			a.chat = nil
+		default:
+			return
+		}
+		a.route = "home"
+		a.home.SetStatus("session archived")
+		a.requestV3ChatRender()
+	}()
 }
 
 func (a *App) handleCompactCommand(args []string) {
 	a.home.ClearCommandOverlay()
+	if len(args) != 0 {
+		a.home.SetStatus("usage: " + compactCommandUsage)
+		return
+	}
+	if a.route == "v3chat" && a.v3Chat != nil {
+		a.home.SetStatus("")
+		a.v3Chat.Compact()
+		return
+	}
 	if a.route != "chat" || a.chat == nil {
-		a.home.SetStatus("compact command is available in chat: /compact [threshold%] [notes]")
+		a.home.SetStatus("compact command is available in chat: " + compactCommandUsage)
 		return
 	}
-	options := parseCompactCommandArgs(args)
-	if options.HasThreshold {
-		if a.api == nil {
-			a.home.SetStatus("/compact failed: api client is not configured")
-			return
-		}
-		sessionID := strings.TrimSpace(a.chat.SessionID())
-		if sessionID == "" {
-			a.home.SetStatus("/compact failed: session id is unavailable")
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	if a.api == nil {
+		a.home.SetStatus("/compact failed: api client is not configured")
+		return
+	}
+	sessionID := strings.TrimSpace(a.chat.SessionID())
+	if sessionID == "" {
+		a.home.SetStatus("/compact failed: session id is unavailable")
+		return
+	}
+	if a.chat.RunInProgress() {
+		a.home.SetStatus("/compact ignored (run already active)")
+		return
+	}
+	a.chat.SetStatus("compacting context")
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		session, err := a.api.GetSession(ctx, sessionID)
+		_, err := a.api.CompactSessionV3(ctx, sessionID, client.SessionV3CompactOptions{})
 		if err != nil {
-			a.home.SetStatus(fmt.Sprintf("/compact failed: load session metadata: %v", err))
+			a.chat.SetStatus(fmt.Sprintf("/compact failed: %v", err))
+			a.requestChatRender()
 			return
 		}
-		metadata := cloneMetadataMap(session.Metadata)
-		if options.ThresholdPercent > 0 {
-			metadata[compactThresholdMetadataKey] = normalizeCompactThresholdPercent(options.ThresholdPercent)
-		} else {
-			delete(metadata, compactThresholdMetadataKey)
-		}
-		if _, err := a.api.UpdateSessionMetadata(ctx, sessionID, metadata); err != nil {
-			a.home.SetStatus(fmt.Sprintf("/compact failed: save threshold: %v", err))
-			return
-		}
-		if options.ThresholdPercent > 0 {
-			a.chat.AppendSystemMessage(fmt.Sprintf("Auto compact threshold set to %s remaining context.", formatCompactThresholdPercent(options.ThresholdPercent)))
-		} else {
-			a.chat.AppendSystemMessage("Auto compact threshold cleared for this session.")
-		}
-	}
-	if !a.chat.StartManualCompact(options.Note) {
-		a.home.SetStatus("/compact ignored (run already active or chat unavailable)")
-		return
-	}
+		a.chat.SetStatus("context compacted")
+		a.requestChatRender()
+	}()
 	a.home.SetStatus("compacting session context")
 }
 
@@ -2665,49 +2767,48 @@ func (a *App) handleCommitCommand(args []string) {
 	a.chat.ShowToast(ui.ToastSuccess, status)
 }
 
-func (a *App) buildPlanExitModalBody(title string) string {
-	mode := "plan"
-	if a.chat != nil {
-		mode = a.chat.SessionMode()
-	}
-	modelLabel := model.DisplayModelLabel(a.homeModel.ModelProvider, a.homeModel.ModelName, a.homeModel.ServiceTier, a.homeModel.ContextMode)
-	if modelLabel == "unset" {
-		modelLabel = "unset"
-	}
-	workspace := strings.TrimSpace(a.home.ActiveWorkspaceName())
-	if workspace == "" {
-		workspace = strings.TrimSpace(a.homeModel.CWD)
-	}
-	if workspace == "" {
-		workspace = "workspace"
-	}
-	title = strings.TrimSpace(title)
-	if title == "" {
-		title = "Exit Plan Mode"
-	}
+const tuiRetiredSessionAPIMessage = "TUI v1/v2 session APIs are retired; use a v3 session"
 
-	lines := []string{
-		fmt.Sprintf("Title: %s", title),
-		fmt.Sprintf("Current mode: %s", mode),
-		fmt.Sprintf("Workspace: %s", workspace),
-		fmt.Sprintf("Model: %s", modelLabel),
-		"",
-		"Confirming this request will switch this session to auto mode.",
-		"After the switch, normal auto-mode tool permission policy applies.",
-		"",
-		"Check before approve:",
-		"- implementation steps are complete and concrete",
-		"- risks and rollback notes are captured",
-		"- next execution tasks are explicit",
+func errTUIRetiredSessionAPI(operation string) error {
+	operation = strings.TrimSpace(operation)
+	if operation == "" {
+		return errors.New(tuiRetiredSessionAPIMessage)
 	}
-	return strings.Join(lines, "\n")
+	return fmt.Errorf("%s: %s", operation, tuiRetiredSessionAPIMessage)
+}
+
+func requireTUIV3SessionAPI(sessionAPI, operation string) error {
+	if strings.EqualFold(strings.TrimSpace(sessionAPI), "v3") {
+		return nil
+	}
+	label := strings.TrimSpace(sessionAPI)
+	if label == "" {
+		label = "legacy"
+	}
+	return fmt.Errorf("%s (session_api=%s)", errTUIRetiredSessionAPI(operation), label)
 }
 
 func (a *App) openChatSession(titleSeed, initialPrompt string) error {
+	return a.openChatSessionWithWorktree(titleSeed, initialPrompt, "")
+}
+
+func (a *App) openChatSessionWithWorktree(titleSeed, initialPrompt, worktreeBranchSuffix string) error {
 	if a.api == nil {
 		return errors.New("api client is not configured")
 	}
+	intent := a.home.SessionIntent()
+	intent.Title = strings.TrimSpace(titleSeed)
+	intent.InitialPrompt = strings.TrimSpace(initialPrompt)
+	route := a.selectedChatRouteForWorkspace(a.activeContextPath())
+	return a.openNewV3Chat(intent, route, worktreeBranchSuffix)
+}
 
+// openLegacyChatSessionWithWorktree is retained only for old app-shell callers
+// outside the new homepage/V3 page route. It is not used by production home.
+func (a *App) openLegacyChatSessionWithWorktree(titleSeed, initialPrompt, worktreeBranchSuffix string) error {
+	if a.api == nil {
+		return errors.New("api client is not configured")
+	}
 	workspacePath := strings.TrimSpace(a.activeContextPath())
 	if workspacePath == "" {
 		workspacePath = strings.TrimSpace(a.startupCWD)
@@ -2722,9 +2823,14 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 	}
 	workspaceName := a.contextDisplayNameForPath(workspacePath, activeWorkspaceName)
 	route := a.selectedChatRouteForWorkspace(workspacePath)
-	allowTUICWDPrimary := strings.TrimSpace(route.WorkspaceBindingID) == "" && strings.TrimSpace(route.ID) == "host" && route.TUIPrimaryCWD
-	if strings.TrimSpace(route.WorkspaceBindingID) == "" && !allowTUICWDPrimary {
+	knownWorkspacePath := strings.TrimSpace(a.activeWorkspacePath())
+	useV3Primary := knownWorkspacePath != "" && isPrimaryHostChatRoute(route) && strings.TrimSpace(route.WorkspaceBindingID) != ""
+	useV3Directory := knownWorkspacePath == ""
+	if !useV3Primary && !useV3Directory && strings.TrimSpace(route.WorkspaceBindingID) == "" {
 		return errors.New("workspace binding id is required")
+	}
+	if !useV3Primary && !useV3Directory {
+		return errTUIRetiredSessionAPI("create session for non-v3 TUI route")
 	}
 	createSwarmID := createSessionSwarmIDForRoute(route, a.homeModel.CurrentSwarmTarget)
 
@@ -2735,12 +2841,13 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
+	modelProvider, modelName, thinking, serviceTier, contextMode := a.home.ModelState()
 	preference := client.ModelPreference{
-		Provider:    strings.TrimSpace(a.homeModel.ModelProvider),
-		Model:       strings.TrimSpace(a.homeModel.ModelName),
-		Thinking:    strings.TrimSpace(a.homeModel.ThinkingLevel),
-		ServiceTier: strings.TrimSpace(a.homeModel.ServiceTier),
-		ContextMode: strings.TrimSpace(a.homeModel.ContextMode),
+		Provider:    strings.TrimSpace(modelProvider),
+		Model:       strings.TrimSpace(modelName),
+		Thinking:    strings.TrimSpace(thinking),
+		ServiceTier: strings.TrimSpace(serviceTier),
+		ContextMode: strings.TrimSpace(contextMode),
 	}
 	if strings.TrimSpace(preference.Provider) == "" || strings.TrimSpace(preference.Model) == "" || strings.TrimSpace(preference.Thinking) == "" {
 		return errors.New("new sessions require an explicit draft model selection")
@@ -2758,19 +2865,25 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 	var worktreeUseCurrentBranch *bool
 	worktreeBaseBranch := ""
 	worktreeBranchName := ""
-	if strings.TrimSpace(route.WorkspaceBindingID) != "" {
+	if useV3Primary {
 		settings, err := a.api.GetWorktreeSettings(ctx, workspacePath)
 		if err != nil {
 			return fmt.Errorf("get worktree settings: %w", err)
 		}
-		if settings.Enabled {
+		if settings.Enabled || strings.TrimSpace(worktreeBranchSuffix) != "" {
 			worktreeMode = "on"
 			useCurrentBranch := settings.UseCurrentBranch
+			if !settings.Enabled && strings.TrimSpace(worktreeBranchSuffix) != "" {
+				useCurrentBranch = true
+			}
 			worktreeUseCurrentBranch = &useCurrentBranch
 			if !useCurrentBranch {
 				worktreeBaseBranch = strings.TrimSpace(settings.BaseBranch)
 			}
 			worktreeBranchName = normalizeWorktreeBranchPrefix(settings.BranchName)
+			if suffix := strings.Trim(strings.TrimSpace(worktreeBranchSuffix), "/"); suffix != "" {
+				worktreeBranchName = strings.Trim(worktreeBranchName, "/") + "/" + suffix
+			}
 		}
 	}
 
@@ -2779,7 +2892,6 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		WorkspacePath:            workspacePath,
 		WorkspaceName:            workspaceName,
 		WorkspaceBindingID:       route.WorkspaceBindingID,
-		TUIPrimaryCWD:            allowTUICWDPrimary,
 		SwarmID:                  createSwarmID,
 		TargetKind:               route.TargetKind,
 		TargetRelationship:       route.TargetRelationship,
@@ -2792,22 +2904,19 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		WorktreeBaseBranch:       worktreeBaseBranch,
 		WorktreeBranchName:       worktreeBranchName,
 	}
-	session := client.SessionSummary{}
-	var activeRunIntent *client.SessionV3RunIntent
-	if allowTUICWDPrimary {
-		createdV3, err := a.api.CreateSessionV3WithOptions(ctx, createOptions)
-		if err != nil {
-			return err
-		}
-		session = createdV3.Session
-		activeRunIntent = cloneClientSessionV3RunIntent(createdV3.ActiveRunIntent)
+	var createdV3 client.SessionV3Hydrated
+	var err error
+	if useV3Directory {
+		createOptions.CWDPath = workspacePath
+		createdV3, err = a.api.CreateSessionV3TUIWithOptions(ctx, createOptions)
 	} else {
-		createdV2, err := a.api.CreateSessionWithOptions(ctx, createOptions)
-		if err != nil {
-			return err
-		}
-		session = createdV2
+		createdV3, err = a.api.CreateSessionV3WithOptions(ctx, createOptions)
 	}
+	if err != nil {
+		return err
+	}
+	session := createdV3.Session
+	activeRunIntent := cloneClientSessionV3RunIntent(createdV3.ActiveRunIntent)
 	warning := strings.TrimSpace(session.Warning)
 	created := model.SessionSummary{
 		ID:                         strings.TrimSpace(session.ID),
@@ -2816,7 +2925,6 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		Title:                      strings.TrimSpace(session.Title),
 		Mode:                       strings.TrimSpace(session.Mode),
 		Metadata:                   cloneMetadataMap(session.Metadata),
-		SessionExecution:           cloneSessionExecutionV2(session.SessionExecution),
 		Preference:                 session.Preference,
 		WorktreeEnabled:            session.WorktreeEnabled,
 		WorktreeRootPath:           strings.TrimSpace(session.WorktreeRootPath),
@@ -2853,7 +2961,7 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 }
 
 func (a *App) openExistingSession(summary model.SessionSummary) error {
-	return a.openSessionSummary(summary, "")
+	return a.openExistingV3Chat(summary)
 }
 
 func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt string) error {
@@ -2875,20 +2983,54 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 	serviceTier := ""
 	contextMode := ""
 	contextWindow := 0
+	var initialUsageSummary *ui.ChatUsageSummary
+	var hydratedSession *client.SessionV3Hydrated
+	workspaceScope := ""
+	cwdScope := ""
 	if a.api != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		if resolved, err := a.api.GetSessionPreference(ctx, sessionID); err == nil {
-			modelProvider = strings.TrimSpace(resolved.Preference.Provider)
-			modelName = strings.TrimSpace(resolved.Preference.Model)
-			thinkingLevel = strings.TrimSpace(resolved.Preference.Thinking)
-			serviceTier = strings.TrimSpace(resolved.Preference.ServiceTier)
-			contextMode = strings.TrimSpace(resolved.Preference.ContextMode)
-			contextWindow = resolved.ContextWindow
+		scopePath := strings.TrimSpace(summary.WorkspacePath)
+		if scopePath == "" {
+			scopePath = strings.TrimSpace(a.activeContextPath())
 		}
-		if mode, err := a.api.GetSessionMode(ctx, sessionID); err == nil {
-			summary.Mode = mode
+		if scopePath == "" {
+			scopePath = strings.TrimSpace(a.startupCWD)
 		}
+		if strings.TrimSpace(a.activeWorkspacePath()) != "" {
+			workspaceScope = scopePath
+		} else {
+			cwdScope = scopePath
+		}
+		hydrated, err := a.api.GetSessionV3TUI(ctx, sessionID, workspaceScope, cwdScope)
 		cancel()
+		if err != nil {
+			return fmt.Errorf("hydrate v3 session: %w", err)
+		}
+		if strings.TrimSpace(hydrated.Session.ID) != "" {
+			hydratedSession = &hydrated
+			summary = mergeHomeSessionSummary(summary, modelSessionSummaryFromClient(hydrated.Session))
+		}
+		if err := requireTUIV3SessionAPI(summary.SessionAPI, "open hydrated session"); err != nil {
+			return err
+		}
+		if len(hydrated.PendingPermissions) > 0 {
+			summary.PendingPermissionCount = len(hydrated.PendingPermissions)
+		}
+		if hydrated.ActiveRunIntent != nil {
+			summary.ActiveRunIntent = cloneClientSessionV3RunIntent(hydrated.ActiveRunIntent)
+			if lifecycle := v3RunIntentSessionLifecycle(summary.ID, hydrated.ActiveRunIntent); lifecycle != nil {
+				summary.Lifecycle = lifecycle
+			}
+		}
+		modelProvider = strings.TrimSpace(hydrated.Preference.Provider)
+		modelName = strings.TrimSpace(hydrated.Preference.Model)
+		thinkingLevel = strings.TrimSpace(hydrated.Preference.Thinking)
+		serviceTier = strings.TrimSpace(hydrated.Preference.ServiceTier)
+		contextMode = strings.TrimSpace(hydrated.Preference.ContextMode)
+		contextWindow = hydrated.ContextWindow
+		initialUsageSummary = convertClientUsageSummary(hydrated.UsageSummary)
+	} else if err := requireTUIV3SessionAPI(summary.SessionAPI, "open session"); err != nil {
+		return err
 	}
 	if modelProvider == "" && modelName == "" {
 		modelProvider = strings.TrimSpace(summary.Preference.Provider)
@@ -2896,6 +3038,9 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		thinkingLevel = strings.TrimSpace(summary.Preference.Thinking)
 		serviceTier = strings.TrimSpace(summary.Preference.ServiceTier)
 		contextMode = strings.TrimSpace(summary.Preference.ContextMode)
+	}
+	if hydratedTitle := strings.TrimSpace(summary.Title); hydratedTitle != "" {
+		title = hydratedTitle
 	}
 	openedSummary := model.SessionSummary{
 		ID:                         sessionID,
@@ -2905,8 +3050,9 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		Mode:                       strings.TrimSpace(summary.Mode),
 		Metadata:                   cloneMetadataMap(summary.Metadata),
 		PendingPermissionCount:     summary.PendingPermissionCount,
+		HasActivePlan:              summary.HasActivePlan,
+		ActivePlan:                 summary.ActivePlan,
 		Lifecycle:                  cloneClientSessionLifecycle(summary.Lifecycle),
-		SessionExecution:           cloneSessionExecutionV2(summary.SessionExecution),
 		SessionAPI:                 strings.TrimSpace(summary.SessionAPI),
 		LastEventSeq:               summary.LastEventSeq,
 		ProjectionHighWatermarkSeq: summary.ProjectionHighWatermarkSeq,
@@ -2923,7 +3069,27 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		WorktreeBranch:     strings.TrimSpace(summary.WorktreeBranch),
 		UpdatedAgo:         strings.TrimSpace(summary.UpdatedAgo),
 	}
-	a.upsertHomeSessionSummary(openedSummary)
+	if hydratedSession != nil {
+		if a.tuiSessionStore == nil {
+			a.tuiSessionStore = newTUISessionStore()
+		}
+		if strings.TrimSpace(a.tuiRealtimeWorkset.ScopeKey) == "" {
+			state, err := tuiRealtimeWorksetStateFromOptions(tuiSessionWorksetLoadOptions{WorkspacePaths: []string{workspaceScope}, CWDPath: cwdScope})
+			if err != nil {
+				return err
+			}
+			a.tuiRealtimeWorkset = state
+		}
+		a.tuiSessionStore.MergeHydrated(*hydratedSession)
+		a.applyTUISessionStoreToHome()
+		if a.tuiSessionStore.EndpointCursor() != "" {
+			if err := a.reconcileTUIRealtime(); err != nil {
+				return fmt.Errorf("reconcile v3 realtime session subscription: %w", err)
+			}
+		}
+	} else {
+		a.upsertHomeSessionSummary(openedSummary)
+	}
 	if merged, ok := a.sessionSummaryByID(sessionID); ok {
 		summary = merged
 	} else {
@@ -2945,6 +3111,7 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		serviceTier,
 		contextMode,
 		contextWindow,
+		initialUsageSummary,
 		summary.SessionAPI,
 		summary.Metadata,
 	)
@@ -2972,38 +3139,127 @@ func lineageAgentName(label string) string {
 	return candidate
 }
 
-func resolveSessionEffectiveAgent(summary model.SessionSummary, fallbackAgent, fallbackExecution string, fallbackExitPlanMode, fallbackRuntimeKnown bool) (string, string, bool, bool) {
-	metadata := summary.Metadata
-	resolved := consumeStringMetadata(metadata, "subagent")
-	if resolved == "" {
-		resolved = consumeStringMetadata(metadata, "requested_subagent")
+func agentProfileRuntime(profile client.AgentProfile) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(profile.RuntimeMode)) {
+	case "plan_auto":
+		return "", true
+	case "read":
+		return "read", false
+	case "readwrite":
+		return "readwrite", false
 	}
-	if resolved == "" {
-		resolved = lineageAgentName(consumeStringMetadata(metadata, "lineage_label"))
-	}
-	if resolved == "" {
-		targetKind := consumeStringMetadata(metadata, "target_kind")
-		targetName := consumeStringMetadata(metadata, "target_name")
-		if targetKind != "" && targetName != "" {
-			resolved = targetName
+
+	executionSetting := strings.ToLower(strings.TrimSpace(profile.ExecutionSetting))
+	if executionSetting == "read" || executionSetting == "readwrite" {
+		if profile.ExitPlanModeEnabled == nil || !*profile.ExitPlanModeEnabled {
+			return executionSetting, false
 		}
 	}
+	exitPlanMode := true
+	if profile.ExitPlanModeEnabled != nil {
+		exitPlanMode = *profile.ExitPlanModeEnabled
+	}
+	return executionSetting, exitPlanMode
+}
+
+func activeAgentProfile(state client.AgentState) (client.AgentProfile, bool) {
+	active := strings.TrimSpace(state.ActivePrimary)
+	if active == "" {
+		active = "swarm"
+	}
+	for _, profile := range state.Profiles {
+		if strings.EqualFold(strings.TrimSpace(profile.Name), active) {
+			return profile, true
+		}
+	}
+	return client.AgentProfile{}, false
+}
+
+func applyActiveAgentModels(next model.HomeModel, state client.AgentState) model.HomeModel {
+	if strings.EqualFold(strings.TrimSpace(next.ActiveModelProfile.Source), "saved") {
+		return next
+	}
+	next.PlanModelProvider, next.PlanModelName, next.PlanThinkingLevel, next.PlanServiceTier, next.PlanContextMode = "", "", "", "", ""
+	next.AutoModelProvider, next.AutoModelName, next.AutoThinkingLevel, next.AutoServiceTier, next.AutoContextMode = "", "", "", "", ""
+	profile, ok := activeAgentProfile(state)
+	if !ok || !strings.EqualFold(strings.TrimSpace(profile.RuntimeMode), "plan_auto") {
+		return next
+	}
+	if !strings.EqualFold(strings.TrimSpace(profile.ModelMode), "split") {
+		provider := strings.TrimSpace(profile.Provider)
+		modelName := strings.TrimSpace(profile.Model)
+		if provider == "" || modelName == "" {
+			return next
+		}
+		next.PlanModelProvider, next.AutoModelProvider = provider, provider
+		next.PlanModelName, next.AutoModelName = modelName, modelName
+		next.PlanThinkingLevel, next.AutoThinkingLevel = strings.TrimSpace(profile.Thinking), strings.TrimSpace(profile.Thinking)
+		next.PlanServiceTier, next.AutoServiceTier = next.ServiceTier, next.ServiceTier
+		next.PlanContextMode, next.AutoContextMode = next.ContextMode, next.ContextMode
+		return next
+	}
+	baseProvider := strings.TrimSpace(profile.Provider)
+	next.PlanModelProvider = emptyFallback(strings.TrimSpace(profile.PlanProvider), baseProvider)
+	next.PlanModelName = strings.TrimSpace(profile.PlanModel)
+	next.PlanThinkingLevel = strings.TrimSpace(profile.PlanThinking)
+	next.PlanServiceTier = strings.TrimSpace(profile.PlanServiceTier)
+	next.AutoModelProvider = emptyFallback(strings.TrimSpace(profile.AutoProvider), baseProvider)
+	next.AutoModelName = strings.TrimSpace(profile.AutoModel)
+	next.AutoThinkingLevel = strings.TrimSpace(profile.AutoThinking)
+	next.AutoServiceTier = strings.TrimSpace(profile.AutoServiceTier)
+	return next
+}
+
+func agentRuntimeForName(state client.AgentState, agent string) (string, bool, bool) {
+	agent = strings.TrimSpace(agent)
+	for _, profile := range state.Profiles {
+		if !strings.EqualFold(strings.TrimSpace(profile.Name), agent) {
+			continue
+		}
+		executionSetting, exitPlanMode := agentProfileRuntime(profile)
+		return executionSetting, exitPlanMode, true
+	}
+	return "", strings.EqualFold(agent, "swarm"), false
+}
+
+func genuineLineageAgent(summary model.SessionSummary) string {
+	metadata := summary.Metadata
+	isChild := strings.TrimSpace(consumeStringMetadata(metadata, "parent_session_id")) != ""
+	isBackground := metadataBool(metadata, "background") || strings.EqualFold(consumeStringMetadata(metadata, "launch_mode"), "background")
+	if !isChild && !isBackground {
+		return ""
+	}
+	for _, candidate := range []string{
+		consumeStringMetadata(metadata, "subagent"),
+		lineageAgentName(consumeStringMetadata(metadata, "lineage_label")),
+		consumeStringMetadata(metadata, "background_agent"),
+		consumeStringMetadata(metadata, "target_name"),
+	} {
+		if candidate = strings.TrimSpace(candidate); candidate != "" {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func resolveSessionEffectiveAgent(summary model.SessionSummary, policy client.SessionV3AgentModelPolicy, state client.AgentState, fallbackAgent, fallbackExecution string, fallbackExitPlanMode, fallbackRuntimeKnown bool) (string, string, bool, bool) {
+	resolved := strings.TrimSpace(policy.ResolvedAgent)
 	if resolved == "" {
-		resolved = consumeStringMetadata(metadata, "background_agent")
+		resolved = strings.TrimSpace(policy.AgentName)
 	}
 	if resolved == "" {
-		resolved = consumeStringMetadata(metadata, "requested_background_agent")
-	}
-	if resolved == "" {
-		resolved = consumeStringMetadata(metadata, "agent_name")
+		resolved = genuineLineageAgent(summary)
 	}
 	if resolved == "" {
 		resolved = emptyFallback(strings.TrimSpace(fallbackAgent), "swarm")
 	}
-	if strings.EqualFold(strings.TrimSpace(resolved), strings.TrimSpace(fallbackAgent)) {
-		return emptyFallback(strings.TrimSpace(fallbackAgent), "swarm"), strings.TrimSpace(fallbackExecution), fallbackExitPlanMode, fallbackRuntimeKnown
+	if execution, exitPlanMode, known := agentRuntimeForName(state, resolved); known {
+		return resolved, execution, exitPlanMode, true
 	}
-	return resolved, "", true, true
+	if strings.EqualFold(resolved, strings.TrimSpace(fallbackAgent)) {
+		return resolved, strings.TrimSpace(fallbackExecution), fallbackExitPlanMode, fallbackRuntimeKnown
+	}
+	return resolved, "", strings.EqualFold(resolved, "swarm"), false
 }
 
 func (a *App) currentChatAgentRuntime() (string, string, bool, bool) {
@@ -3015,7 +3271,13 @@ func (a *App) currentChatAgentRuntime() (string, string, bool, bool) {
 		return fallbackAgent, fallbackExecution, fallbackExitPlanMode, fallbackRuntimeKnown
 	}
 	if summary, ok := a.sessionSummaryByID(strings.TrimSpace(a.chat.SessionID())); ok {
-		return resolveSessionEffectiveAgent(summary, fallbackAgent, fallbackExecution, fallbackExitPlanMode, fallbackRuntimeKnown)
+		policy := client.SessionV3AgentModelPolicy{}
+		if a.tuiSessionStore != nil {
+			if snapshot, found := a.tuiSessionStore.ChatSnapshot(strings.TrimSpace(a.chat.SessionID())); found {
+				policy = snapshot.AgentModelPolicy
+			}
+		}
+		return resolveSessionEffectiveAgent(summary, policy, a.agentState, fallbackAgent, fallbackExecution, fallbackExitPlanMode, fallbackRuntimeKnown)
 	}
 	return fallbackAgent, fallbackExecution, fallbackExitPlanMode, fallbackRuntimeKnown
 }
@@ -3033,7 +3295,7 @@ func normalizeAppSessionMode(mode string) string {
 	}
 }
 
-func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName, sessionMode, worktreeBranch string, worktreeEnabled bool, worktreeRootPath, initialPrompt, modelProvider, modelName, thinkingLevel, serviceTier, contextMode string, contextWindow int, sessionAPI string, sessionMetadata map[string]any) error {
+func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName, sessionMode, worktreeBranch string, worktreeEnabled bool, worktreeRootPath, initialPrompt, modelProvider, modelName, thinkingLevel, serviceTier, contextMode string, contextWindow int, initialUsageSummary *ui.ChatUsageSummary, sessionAPI string, sessionMetadata map[string]any) error {
 	dir := a.home.ActiveDirectory()
 	chatWorkspace := strings.TrimSpace(workspaceName)
 	chatPath := strings.TrimSpace(workspacePath)
@@ -3068,25 +3330,31 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 		chatWorkspace = "directory"
 	}
 
+	chatBackend := newAPIChatBackend(a.api, sessionAPI, targetSwarmIDForV3Session(sessionMetadata, a.homeModel.CurrentSwarmTarget))
 	a.chat = ui.NewChatPage(ui.ChatPageOptions{
-		Backend:            newAPIChatBackend(a.api, sessionAPI),
-		SessionID:          strings.TrimSpace(sessionID),
-		SessionTitle:       strings.TrimSpace(sessionTitle),
-		InitialPrompt:      strings.TrimSpace(initialPrompt),
-		Presets:            a.home.ModelPresets(),
-		SessionTabs:        chatSessionTabsFromSummaries(a.homeModel.RecentSessions),
-		CommandSuggestions: buildHomeCommandSuggestions(a.startupDevMode()),
-		ShowHeader:         a.config.Chat.ShowHeader,
-		AuthConfigured:     a.homeModel.AuthConfigured,
-		ShowThinkingTags:   boolPtr(a.config.Chat.ThinkingTags),
-		ModelProvider:      modelProvider,
-		ModelName:          modelName,
-		AvailableModels:    a.chatAvailableModels(modelProvider),
-		ThinkingLevel:      thinkingLevel,
-		ServiceTier:        serviceTier,
-		ContextMode:        contextMode,
-		ContextWindow:      contextWindow,
-		SessionMode:        sessionMode,
+		Backend: chatBackend,
+		Send: func(ctx context.Context, sessionID string, req ui.ChatSendRequest) error {
+			_, err := a.sendTUIV3ChatMessage(ctx, sessionID, req)
+			return err
+		},
+		SessionID:           strings.TrimSpace(sessionID),
+		SessionTitle:        strings.TrimSpace(sessionTitle),
+		InitialPrompt:       strings.TrimSpace(initialPrompt),
+		Presets:             a.home.ModelPresets(),
+		SessionTabs:         chatSessionTabsFromSummaries(a.homeModel.RecentSessions),
+		CommandSuggestions:  buildChatCommandSuggestions(a.startupDevMode()),
+		ShowHeader:          a.config.Chat.ShowHeader,
+		AuthConfigured:      a.homeModel.AuthConfigured,
+		ShowThinkingTags:    boolPtr(a.config.Chat.ThinkingTags),
+		ModelProvider:       modelProvider,
+		ModelName:           modelName,
+		AvailableModels:     a.chatAvailableModels(modelProvider),
+		ThinkingLevel:       thinkingLevel,
+		ServiceTier:         serviceTier,
+		ContextMode:         contextMode,
+		ContextWindow:       contextWindow,
+		InitialUsageSummary: initialUsageSummary,
+		SessionMode:         sessionMode,
 		ToolStreamStyle: ui.ChatToolStreamStyle{
 			ShowAnchor:    boolPtr(a.config.Chat.ToolStream.ShowAnchor),
 			PulseFrames:   append([]string(nil), a.config.Chat.ToolStream.PulseFrames...),
@@ -3125,6 +3393,18 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 			}
 			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptChatAsync))
 		},
+		OnSessionModeChanged: func(mode, provider, modelName, thinking, serviceTier, contextMode string, contextWindow int) {
+			if a == nil || a.tuiSessionStore == nil {
+				return
+			}
+			a.tuiSessionStore.ApplyModePreference(strings.TrimSpace(sessionID), mode, client.ModelPreference{
+				Provider:    provider,
+				Model:       modelName,
+				Thinking:    thinking,
+				ServiceTier: serviceTier,
+				ContextMode: contextMode,
+			}, contextWindow)
+		},
 		RequestAsyncRender: func() {
 			if a == nil || a.screen == nil {
 				return
@@ -3137,7 +3417,13 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 		},
 	})
 	if summary, ok := a.sessionSummaryByID(strings.TrimSpace(sessionID)); ok {
-		resolvedAgent, resolvedExecution, resolvedExitPlanMode, resolvedRuntimeKnown := resolveSessionEffectiveAgent(summary,
+		policy := client.SessionV3AgentModelPolicy{}
+		if a.tuiSessionStore != nil {
+			if snapshot, found := a.tuiSessionStore.ChatSnapshot(strings.TrimSpace(sessionID)); found {
+				policy = snapshot.AgentModelPolicy
+			}
+		}
+		resolvedAgent, resolvedExecution, resolvedExitPlanMode, resolvedRuntimeKnown := resolveSessionEffectiveAgent(summary, policy, a.agentState,
 			emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
 			strings.TrimSpace(a.homeModel.ActiveAgentExecutionSetting),
 			a.homeModel.ActiveAgentExitPlanMode,
@@ -3184,6 +3470,189 @@ func chatTitleFromPrompt(prompt string) string {
 	return trimmed
 }
 
+func sessionSummaryActive(summary model.SessionSummary) bool {
+	if summary.PendingPermissionCount > 0 {
+		return true
+	}
+	if summary.ActiveRunIntent != nil {
+		status := strings.ToLower(strings.TrimSpace(summary.ActiveRunIntent.Status))
+		if strings.TrimSpace(summary.ActiveRunIntent.RunID) != "" && (status == "pending_executor" || status == "running") {
+			return true
+		}
+	}
+	return summary.Lifecycle != nil && summary.Lifecycle.Active
+}
+
+func sessionSummaryActiveStartedAt(summary model.SessionSummary) int64 {
+	if summary.ActiveRunIntent != nil {
+		if summary.ActiveRunIntent.StartedAt > 0 {
+			return summary.ActiveRunIntent.StartedAt
+		}
+		if summary.ActiveRunIntent.CreatedAt > 0 {
+			return summary.ActiveRunIntent.CreatedAt
+		}
+	}
+	if summary.Lifecycle != nil && summary.Lifecycle.StartedAt > 0 {
+		return summary.Lifecycle.StartedAt
+	}
+	if summary.CreatedAt > 0 {
+		return summary.CreatedAt
+	}
+	return summary.UpdatedAt
+}
+
+func sessionSummaryActivityLabel(summary model.SessionSummary) string {
+	if summary.PendingPermissionCount > 0 {
+		return "NEEDS APPROVAL"
+	}
+	if group := sessionSummarySidebarGroup(summary); group == "needs_review" {
+		return "REVIEW"
+	} else if group == "in_progress" {
+		if status := sessionSummaryPlanStatus(summary); status != "" {
+			return status
+		}
+	}
+	if sessionSummaryActive(summary) {
+		if summary.Lifecycle != nil {
+			if phase := strings.TrimSpace(summary.Lifecycle.Phase); phase != "" {
+				return strings.ToUpper(strings.ReplaceAll(phase, "_", " "))
+			}
+		}
+		return "ACTIVE"
+	}
+	return ""
+}
+
+func sessionSummarySidebarGroup(summary model.SessionSummary) string {
+	plan := summary.ActivePlan
+	if plan == nil || plan.Document == nil {
+		return "active_chats"
+	}
+	document := plan.Document
+	status := strings.ToLower(strings.TrimSpace(document.Status))
+	if document.ExecutionState != nil && strings.TrimSpace(document.ExecutionState.Status) != "" {
+		status = strings.ToLower(strings.TrimSpace(document.ExecutionState.Status))
+	}
+	checkpoint := sessionSummaryActiveCheckpoint(document)
+	checkpointStatus := ""
+	if checkpoint != nil {
+		checkpointStatus = strings.ToLower(strings.TrimSpace(checkpoint.Status))
+		if checkpointStatus == "needs_review" || (checkpoint.Review != nil && strings.EqualFold(strings.TrimSpace(checkpoint.Review.Status), "pending")) {
+			return "needs_review"
+		}
+	}
+	if status == "waiting_review" {
+		return "needs_review"
+	}
+	if sessionSummaryPlanComplete(document, status) {
+		return "active_chats"
+	}
+	return "in_progress"
+}
+
+func sessionSummaryPlanStatus(summary model.SessionSummary) string {
+	plan := summary.ActivePlan
+	if plan == nil || plan.Document == nil {
+		return ""
+	}
+	document := plan.Document
+	status := strings.ToLower(strings.TrimSpace(document.Status))
+	if document.ExecutionState != nil && strings.TrimSpace(document.ExecutionState.Status) != "" {
+		status = strings.ToLower(strings.TrimSpace(document.ExecutionState.Status))
+	}
+	checkpoint := sessionSummaryActiveCheckpoint(document)
+	checkpointStatus := ""
+	if checkpoint != nil {
+		checkpointStatus = strings.ToLower(strings.TrimSpace(checkpoint.Status))
+	}
+	switch {
+	case status == "waiting_review" || checkpointStatus == "needs_review":
+		return "REVIEW"
+	case status == "blocked" || status == "failed" || checkpointStatus == "blocked" || checkpointStatus == "failed":
+		return "BLOCKED"
+	case status == "queued" || status == "pending" || checkpointStatus == "pending":
+		return "QUEUED"
+	default:
+		return "RUNNING"
+	}
+}
+
+func sessionSummaryPlanProgress(summary model.SessionSummary) string {
+	if summary.ActivePlan == nil || summary.ActivePlan.Document == nil {
+		return ""
+	}
+	document := summary.ActivePlan.Document
+	checkpoints := append([]client.SessionPlanCheckpoint(nil), document.Checkpoints...)
+	sort.SliceStable(checkpoints, func(i, j int) bool {
+		leftOrder, rightOrder := checkpoints[i].Order, checkpoints[j].Order
+		if leftOrder <= 0 {
+			leftOrder = int(^uint(0) >> 1)
+		}
+		if rightOrder <= 0 {
+			rightOrder = int(^uint(0) >> 1)
+		}
+		if leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
+		return checkpoints[i].ID < checkpoints[j].ID
+	})
+	if len(checkpoints) == 0 {
+		return ""
+	}
+	activeID := strings.TrimSpace(document.ActiveCheckpointID)
+	if activeID == "" && document.ExecutionState != nil {
+		activeID = strings.TrimSpace(document.ExecutionState.LastCheckpointID)
+	}
+	activeIndex, completed := 0, 0
+	for index, checkpoint := range checkpoints {
+		if strings.EqualFold(strings.TrimSpace(checkpoint.Status), "completed") {
+			completed++
+		}
+		if checkpoint.ID == activeID || (activeID == "" && strings.EqualFold(strings.TrimSpace(checkpoint.Status), "in_progress")) {
+			activeIndex = index + 1
+			if activeID == "" {
+				activeID = checkpoint.ID
+			}
+		}
+	}
+	if activeIndex == 0 {
+		activeIndex = completed
+	}
+	return fmt.Sprintf("%d/%d", activeIndex, len(checkpoints))
+}
+
+func sessionSummaryActiveCheckpoint(document *client.SessionPlanDocument) *client.SessionPlanCheckpoint {
+	if document == nil {
+		return nil
+	}
+	activeID := strings.TrimSpace(document.ActiveCheckpointID)
+	if activeID == "" && document.ExecutionState != nil {
+		activeID = strings.TrimSpace(document.ExecutionState.LastCheckpointID)
+	}
+	for index := range document.Checkpoints {
+		checkpoint := &document.Checkpoints[index]
+		if checkpoint.ID == activeID || (activeID == "" && strings.EqualFold(strings.TrimSpace(checkpoint.Status), "in_progress")) {
+			return checkpoint
+		}
+	}
+	return nil
+}
+
+func sessionSummaryPlanComplete(document *client.SessionPlanDocument, normalizedStatus string) bool {
+	if normalizedStatus == "completed" {
+		return true
+	}
+	if document == nil || len(document.Checkpoints) == 0 {
+		return false
+	}
+	for _, checkpoint := range document.Checkpoints {
+		if !strings.EqualFold(strings.TrimSpace(checkpoint.Status), "completed") {
+			return false
+		}
+	}
+	return true
+}
+
 func chatSessionTabsFromSummaries(summaries []model.SessionSummary) []ui.ChatSessionTab {
 	tabs := make([]ui.ChatSessionTab, 0, len(summaries))
 	seen := make(map[string]struct{}, len(summaries))
@@ -3207,8 +3676,18 @@ func chatSessionTabsFromSummaries(summaries []model.SessionSummary) []ui.ChatSes
 			Title:           title,
 			WorkspaceName:   strings.TrimSpace(summary.WorkspaceName),
 			WorkspacePath:   strings.TrimSpace(summary.WorkspacePath),
+			WorktreeEnabled: summary.WorktreeEnabled,
+			WorktreeBranch:  strings.TrimSpace(summary.WorktreeBranch),
 			Mode:            strings.TrimSpace(summary.Mode),
+			CreatedAt:       summary.CreatedAt,
+			UpdatedAt:       summary.UpdatedAt,
+			ActiveStartedAt: sessionSummaryActiveStartedAt(summary),
 			UpdatedAgo:      strings.TrimSpace(summary.UpdatedAgo),
+			Active:          sessionSummaryActive(summary),
+			NeedsAttention:  summary.PendingPermissionCount > 0,
+			ActivityLabel:   sessionSummaryActivityLabel(summary),
+			Group:           sessionSummarySidebarGroup(summary),
+			ProgressLabel:   sessionSummaryPlanProgress(summary),
 			Provider:        strings.TrimSpace(summary.Preference.Provider),
 			ModelName:       strings.TrimSpace(summary.Preference.Model),
 			ServiceTier:     strings.TrimSpace(summary.Preference.ServiceTier),
@@ -3262,8 +3741,18 @@ func summariesBackgroundTabs(summaries []model.SessionSummary) []ui.ChatSessionT
 			Title:           title,
 			WorkspaceName:   strings.TrimSpace(summary.WorkspaceName),
 			WorkspacePath:   strings.TrimSpace(summary.WorkspacePath),
+			WorktreeEnabled: summary.WorktreeEnabled,
+			WorktreeBranch:  strings.TrimSpace(summary.WorktreeBranch),
 			Mode:            mode,
+			CreatedAt:       summary.CreatedAt,
+			UpdatedAt:       summary.UpdatedAt,
+			ActiveStartedAt: sessionSummaryActiveStartedAt(summary),
 			UpdatedAgo:      strings.TrimSpace(summary.UpdatedAgo),
+			Active:          sessionSummaryActive(summary),
+			NeedsAttention:  summary.PendingPermissionCount > 0,
+			ActivityLabel:   sessionSummaryActivityLabel(summary),
+			Group:           sessionSummarySidebarGroup(summary),
+			ProgressLabel:   sessionSummaryPlanProgress(summary),
 			Provider:        strings.TrimSpace(summary.Preference.Provider),
 			ModelName:       strings.TrimSpace(summary.Preference.Model),
 			ServiceTier:     strings.TrimSpace(summary.Preference.ServiceTier),
@@ -3425,8 +3914,12 @@ func (a *App) backgroundSessionSummaries() []model.BackgroundSessionSummary {
 	if a == nil {
 		return nil
 	}
+	return backgroundSessionSummariesForSessions(a.homeModel.RecentSessions, a.homeModel.BackgroundSessions)
+}
+
+func backgroundSessionSummariesForSessions(summaries []model.SessionSummary, existing []model.BackgroundSessionSummary) []model.BackgroundSessionSummary {
 	records := make([]model.BackgroundSessionSummary, 0)
-	for _, summary := range a.homeModel.RecentSessions {
+	for _, summary := range summaries {
 		metadata := summary.Metadata
 		if len(metadata) == 0 {
 			continue
@@ -3491,13 +3984,13 @@ func (a *App) backgroundSessionSummaries() []model.BackgroundSessionSummary {
 		}
 		records = append(records, record)
 	}
-	for _, record := range a.homeModel.BackgroundSessions {
+	for _, record := range existing {
 		if strings.TrimSpace(record.ChildSessionID) == "" {
 			continue
 		}
 		found := false
-		for _, existing := range records {
-			if strings.TrimSpace(existing.ChildSessionID) == strings.TrimSpace(record.ChildSessionID) {
+		for _, existingRecord := range records {
+			if strings.TrimSpace(existingRecord.ChildSessionID) == strings.TrimSpace(record.ChildSessionID) {
 				found = true
 				break
 			}
@@ -3548,9 +4041,10 @@ func computeSessionDepths(summaries []model.SessionSummary) map[string]int {
 			return 0
 		}
 		visiting[id] = true
-		parentID := strings.TrimSpace(ui.SessionLineageFromSummary(summary).ParentSessionID)
+		lineage := ui.SessionLineageFromSummary(summary)
+		parentID := strings.TrimSpace(lineage.ParentSessionID)
 		depth := 0
-		if parentID != "" {
+		if parentID != "" && !strings.EqualFold(strings.TrimSpace(lineage.LineageKind), "session_deploy") {
 			depth = walk(parentID) + 1
 		}
 		visiting[id] = false
@@ -3640,16 +4134,46 @@ func (a *App) upsertHomeSessionSummary(summary model.SessionSummary) {
 	}
 }
 
-func (a *App) commitSessionTitle(parentTitle, instructions string) string {
-	parentTitle = strings.TrimSpace(parentTitle)
-	instructions = strings.TrimSpace(instructions)
-	if parentTitle == "" {
-		parentTitle = "Session"
+func (a *App) removeHomeSessionSummary(sessionID string) bool {
+	if a == nil {
+		return false
 	}
-	if instructions == "" {
-		return fmt.Sprintf("Commit · %s", parentTitle)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false
 	}
-	return clampText(fmt.Sprintf("Commit · %s · %s", parentTitle, instructions), 80)
+	next := a.homeModel
+	changed := false
+	if len(next.RecentSessions) > 0 {
+		filtered := next.RecentSessions[:0]
+		for _, summary := range next.RecentSessions {
+			if strings.TrimSpace(summary.ID) == sessionID {
+				changed = true
+				continue
+			}
+			filtered = append(filtered, summary)
+		}
+		next.RecentSessions = filtered
+	}
+	if len(next.BackgroundSessions) > 0 {
+		filtered := next.BackgroundSessions[:0]
+		for _, summary := range next.BackgroundSessions {
+			if strings.TrimSpace(summary.ChildSessionID) == sessionID {
+				changed = true
+				continue
+			}
+			filtered = append(filtered, summary)
+		}
+		next.BackgroundSessions = filtered
+	}
+	if !changed {
+		return false
+	}
+	a.applyHomeModel(next)
+	if a.chat != nil {
+		a.chat.SetSessionTabs(chatSessionTabsFromSummaries(next.RecentSessions))
+	}
+	return true
 }
 
 func (a *App) commitRunInstructions(userInstructions string) string {
@@ -3665,18 +4189,6 @@ func (a *App) commitRunInstructions(userInstructions string) string {
 		instructions = append(instructions, "Additional user instructions: "+text)
 	}
 	return strings.Join(instructions, "\n")
-}
-
-func (a *App) commitLineageMetadata(parentSessionID string, parentSummary model.SessionSummary, instructions string) map[string]any {
-	metadata := map[string]any{
-		"parent_session_id":   strings.TrimSpace(parentSessionID),
-		"parent_title":        strings.TrimSpace(parentSummary.Title),
-		"commit_instructions": strings.TrimSpace(instructions),
-		"lineage_kind":        "background_agent",
-		"lineage_label":       commitBackgroundLineageTag,
-		"launch_source":       "commit",
-	}
-	return metadata
 }
 
 func firstNonEmpty(values ...string) string {
@@ -3772,59 +4284,15 @@ func (a *App) commitExecutionContext(summary model.SessionSummary) *client.RunEx
 }
 
 func (a *App) createBackgroundCommitSession(ctx context.Context, parentSessionID string, parentSummary model.SessionSummary, instructions string) (model.SessionSummary, error) {
-	execCtx := a.commitExecutionContext(parentSummary)
-	workspaceName := strings.TrimSpace(parentSummary.WorkspaceName)
-	if workspaceName == "" {
-		workspaceName = directoryNameForPath(parentSummary.WorkspacePath)
-	}
-	metadata := a.commitLineageMetadata(parentSessionID, parentSummary, instructions)
-	workspaceBindingID := firstNonEmpty(sessionExecutionWorkspaceBindingID(parentSummary), consumeStringMetadata(parentSummary.Metadata, "local_workspace_binding_id"))
-	swarmID := sessionExecutionRuntimeSwarmID(parentSummary)
+	workspaceBindingID := consumeStringMetadata(parentSummary.Metadata, "swarm_v3_workspace_binding_id")
+	swarmID := consumeStringMetadata(parentSummary.Metadata, "swarm_v3_runtime_swarm_id")
 	if workspaceBindingID == "" {
 		return model.SessionSummary{}, errors.New("workspace binding id is required")
 	}
 	if swarmID == "" {
 		return model.SessionSummary{}, errors.New("swarm id is required")
 	}
-	worktreeMode := strings.TrimSpace(execCtx.WorktreeMode)
-	if strings.EqualFold(worktreeMode, "inherit") {
-		worktreeMode = "off"
-	}
-	child, err := a.api.CreateSessionWithOptions(ctx, client.SessionCreateOptions{
-		Title:              a.commitSessionTitle(parentSummary.Title, instructions),
-		WorkspaceName:      workspaceName,
-		Mode:               "auto",
-		AgentName:          emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
-		WorkspaceBindingID: workspaceBindingID,
-		SwarmID:            swarmID,
-		ExecutionClass:     sessionExecutionClass(parentSummary),
-		TargetKind:         sessionExecutionRuntimeKind(parentSummary),
-		Metadata:           metadata,
-		Preference:         parentSummary.Preference,
-		WorktreeMode:       worktreeMode,
-	})
-	if err != nil {
-		return model.SessionSummary{}, err
-	}
-	metadata = mergeMetadataMaps(child.Metadata, metadata)
-	child.Metadata = metadata
-	return model.SessionSummary{
-		ID:                     strings.TrimSpace(child.ID),
-		WorkspacePath:          strings.TrimSpace(child.WorkspacePath),
-		WorkspaceName:          strings.TrimSpace(child.WorkspaceName),
-		Title:                  strings.TrimSpace(child.Title),
-		Mode:                   strings.TrimSpace(child.Mode),
-		Metadata:               metadata,
-		SessionExecution:       cloneSessionExecutionV2(child.SessionExecution),
-		Preference:             child.Preference,
-		WorktreeEnabled:        child.WorktreeEnabled,
-		WorktreeRootPath:       strings.TrimSpace(child.WorktreeRootPath),
-		WorktreeBaseBranch:     strings.TrimSpace(child.WorktreeBaseBranch),
-		WorktreeBranch:         strings.TrimSpace(child.WorktreeBranch),
-		UpdatedAgo:             formatAgo(child.UpdatedAt),
-		Lifecycle:              child.Lifecycle,
-		PendingPermissionCount: child.PendingPermissionCount,
-	}, nil
+	return model.SessionSummary{}, errTUIRetiredSessionAPI("create background commit session")
 }
 
 func (a *App) startBackgroundCommitRun(ctx context.Context, childSummary model.SessionSummary, instructions string) (client.BackgroundRunAccepted, error) {
@@ -3845,6 +4313,10 @@ func (a *App) consumeHomeOverlayActions() {
 	for {
 		processed := false
 
+		if action, ok := a.home.PopHomeAction(); ok {
+			a.handleHomeAction(action)
+			processed = true
+		}
 		if action, ok := a.home.PopAuthModalAction(); ok {
 			a.handleAuthModalAction(action)
 			processed = true
@@ -3855,10 +4327,6 @@ func (a *App) consumeHomeOverlayActions() {
 		}
 		if action, ok := a.home.PopWorktreesModalAction(); ok {
 			a.handleWorktreesModalAction(action)
-			processed = true
-		}
-		if action, ok := a.home.PopMCPModalAction(); ok {
-			a.handleMCPModalAction(action)
 			processed = true
 		}
 		if action, ok := a.home.PopModelsModalAction(); ok {
@@ -3927,20 +4395,12 @@ func (a *App) consumeHomeActions() {
 			a.handleVaultModalAction(action)
 			processed = true
 		}
-		if action, ok := a.home.PopSwarmModalAction(); ok {
-			a.handleSwarmModalAction(action)
-			processed = true
-		}
 		if action, ok := a.home.PopWorkspaceModalAction(); ok {
 			a.handleWorkspaceModalAction(action)
 			processed = true
 		}
 		if action, ok := a.home.PopWorktreesModalAction(); ok {
 			a.handleWorktreesModalAction(action)
-			processed = true
-		}
-		if action, ok := a.home.PopMCPModalAction(); ok {
-			a.handleMCPModalAction(action)
 			processed = true
 		}
 		if action, ok := a.home.PopModelsModalAction(); ok {
@@ -4005,40 +4465,17 @@ func v3RunIntentSessionLifecycle(sessionID string, intent *client.SessionV3RunIn
 	}
 }
 
-func cloneSessionExecutionV2(execution *client.SessionExecutionV2) *client.SessionExecutionV2 {
-	if execution == nil {
-		return nil
+func targetSwarmIDForV3Session(metadata map[string]any, target *model.SwarmTarget) string {
+	if value := consumeStringMetadata(metadata, "swarm_v3_runtime_swarm_id"); value != "" {
+		return value
 	}
-	copy := *execution
-	return &copy
-}
-
-func sessionExecutionRuntimeSwarmID(summary model.SessionSummary) string {
-	if summary.SessionExecution == nil {
-		return ""
+	if value := consumeStringMetadata(metadata, "swarm_v3_authority_host_swarm_id"); value != "" {
+		return value
 	}
-	return strings.TrimSpace(summary.SessionExecution.RuntimeSwarmID)
-}
-
-func sessionExecutionRuntimeKind(summary model.SessionSummary) string {
-	if summary.SessionExecution == nil {
-		return ""
+	if isPrimaryHostSwarmTarget(target) {
+		return strings.TrimSpace(target.SwarmID)
 	}
-	return strings.TrimSpace(summary.SessionExecution.RuntimeKind)
-}
-
-func sessionExecutionClass(summary model.SessionSummary) string {
-	if summary.SessionExecution == nil {
-		return ""
-	}
-	return strings.TrimSpace(summary.SessionExecution.ExecutionClass)
-}
-
-func sessionExecutionWorkspaceBindingID(summary model.SessionSummary) string {
-	if summary.SessionExecution == nil {
-		return ""
-	}
-	return strings.TrimSpace(summary.SessionExecution.WorkspaceBindingID)
+	return ""
 }
 
 func mergeClientModelPreference(current, incoming client.ModelPreference) client.ModelPreference {
@@ -4072,6 +4509,13 @@ func mergeHomeSessionSummary(current, incoming model.SessionSummary) model.Sessi
 		merged.Metadata = cloneMetadataMap(incoming.Metadata)
 	}
 	merged.PendingPermissionCount = incoming.PendingPermissionCount
+	merged.HasActivePlan = incoming.HasActivePlan
+	if incoming.ActivePlan != nil {
+		activePlan := *incoming.ActivePlan
+		merged.ActivePlan = &activePlan
+	} else if !incoming.HasActivePlan {
+		merged.ActivePlan = nil
+	}
 	merged.Preference = mergeClientModelPreference(merged.Preference, incoming.Preference)
 	merged.WorktreeEnabled = incoming.WorktreeEnabled
 	if value := strings.TrimSpace(incoming.WorktreeRootPath); value != "" || !merged.WorktreeEnabled {
@@ -4082,6 +4526,12 @@ func mergeHomeSessionSummary(current, incoming model.SessionSummary) model.Sessi
 	}
 	if value := strings.TrimSpace(incoming.WorktreeBranch); value != "" || !merged.WorktreeEnabled {
 		merged.WorktreeBranch = value
+	}
+	if incoming.CreatedAt > 0 {
+		merged.CreatedAt = incoming.CreatedAt
+	}
+	if incoming.UpdatedAt > 0 {
+		merged.UpdatedAt = incoming.UpdatedAt
 	}
 	if value := strings.TrimSpace(incoming.UpdatedAgo); value != "" {
 		merged.UpdatedAgo = value
@@ -4094,9 +4544,6 @@ func mergeHomeSessionSummary(current, incoming model.SessionSummary) model.Sessi
 		if lifecycle := v3RunIntentSessionLifecycle(merged.ID, incoming.ActiveRunIntent); lifecycle != nil {
 			merged.Lifecycle = lifecycle
 		}
-	}
-	if incoming.SessionExecution != nil {
-		merged.SessionExecution = cloneSessionExecutionV2(incoming.SessionExecution)
 	}
 	if value := strings.TrimSpace(incoming.SessionAPI); value != "" {
 		merged.SessionAPI = value
@@ -4124,17 +4571,69 @@ func modelSessionSummaryFromClient(record client.SessionSummary) model.SessionSu
 		Metadata:                   cloneMetadataMap(record.Metadata),
 		PendingPermissionCount:     record.PendingPermissionCount,
 		Lifecycle:                  cloneClientSessionLifecycle(record.Lifecycle),
-		SessionExecution:           cloneSessionExecutionV2(record.SessionExecution),
 		Preference:                 mergeClientModelPreference(client.ModelPreference{}, record.Preference),
 		WorktreeEnabled:            record.WorktreeEnabled,
 		WorktreeRootPath:           strings.TrimSpace(record.WorktreeRootPath),
 		WorktreeBaseBranch:         strings.TrimSpace(record.WorktreeBaseBranch),
 		WorktreeBranch:             strings.TrimSpace(record.WorktreeBranch),
+		CreatedAt:                  record.CreatedAt,
+		UpdatedAt:                  record.UpdatedAt,
 		UpdatedAgo:                 formatAgo(record.UpdatedAt),
 		SessionAPI:                 strings.TrimSpace(record.SessionAPI),
 		LastEventSeq:               record.LastEventSeq,
 		ProjectionHighWatermarkSeq: record.ProjectionHighWatermarkSeq,
 	}
+}
+
+func modelSessionSummariesFromTUIWorkset(workset client.SessionV3Workset) []model.SessionSummary {
+	clientSummaries := sessionSummariesFromTUIWorkset(workset)
+	modelSummaries := make([]model.SessionSummary, 0, len(clientSummaries))
+	for _, session := range clientSummaries {
+		summary := modelSessionSummaryFromClient(session)
+		metadata := cloneMetadataMap(summary.Metadata)
+		if preference, ok := workset.PreferencesBySession[session.ID]; ok {
+			summary.Preference = mergeClientModelPreference(summary.Preference, preference)
+		}
+		if permissions, ok := workset.PermissionsBySession[session.ID]; ok {
+			summary.PendingPermissionCount = len(permissions)
+			metadata = putSessionWorksetMetadata(metadata, "v3_pending_permissions", permissions)
+		}
+		if usage, ok := workset.UsageBySession[session.ID]; ok {
+			metadata = putSessionWorksetMetadata(metadata, "v3_usage_summary", usage)
+		}
+		if plans, ok := workset.PlansBySession[session.ID]; ok {
+			metadata = putSessionWorksetMetadata(metadata, "v3_plans", plans)
+		}
+		if revisions, ok := workset.PlanRevisionsBySession[session.ID]; ok {
+			metadata = putSessionWorksetMetadata(metadata, "v3_plan_revisions", revisions)
+		}
+		if policy, ok := workset.AgentModelPolicyBySession[session.ID]; ok {
+			metadata = putSessionWorksetMetadata(metadata, "v3_agent_model_policy", policy)
+		}
+		if intents := workset.RunIntentsBySession[session.ID]; len(intents) > 0 {
+			intent := intents[0]
+			summary.ActiveRunIntent = cloneClientSessionV3RunIntent(&intent)
+			metadata = putSessionWorksetMetadata(metadata, "v3_run_intents", intents)
+			if lifecycle := v3RunIntentSessionLifecycle(summary.ID, &intent); lifecycle != nil {
+				summary.Lifecycle = lifecycle
+			}
+		}
+		if projection, ok := workset.ProjectionsBySession[session.ID]; ok {
+			summary.LastEventSeq = projection.LastEventSeq
+			summary.ProjectionHighWatermarkSeq = projection.ProjectionHighWatermarkSeq
+		}
+		summary.Metadata = metadata
+		modelSummaries = append(modelSummaries, summary)
+	}
+	return applySessionDepths(modelSummaries)
+}
+
+func putSessionWorksetMetadata(metadata map[string]any, key string, value any) map[string]any {
+	if metadata == nil {
+		metadata = make(map[string]any, 1)
+	}
+	metadata[key] = value
+	return metadata
 }
 
 func chatSessionTabsWithExtras(summaries []model.SessionSummary, extras []client.SessionSummary) []ui.ChatSessionTab {
@@ -4211,20 +4710,126 @@ func (a *App) activeLocalWorkspaceBindingID() string {
 }
 
 func (a *App) listSessionsForActiveContext(ctx context.Context, limit int, workspacePath string) ([]client.SessionSummary, error) {
+	workset, err := a.loadTUISessionWorksetForPath(ctx, limit, workspacePath)
+	if err != nil {
+		return nil, err
+	}
+	return sessionSummariesFromTUIWorkset(workset), nil
+}
+
+func (a *App) loadTUISessionWorksetForPath(ctx context.Context, limit int, path string) (client.SessionV3Workset, error) {
+	path = normalizePath(strings.TrimSpace(path))
+	if path == "" {
+		return client.SessionV3Workset{}, errors.New("workspace path is required")
+	}
+	return a.loadTUISessionWorkset(ctx, tuiSessionWorksetLoadOptions{Limit: limit, WorkspacePaths: []string{path}})
+}
+
+type tuiSessionWorksetLoadOptions struct {
+	Limit           int
+	SessionIDs      []string
+	WorkspacePaths  []string
+	CWDPath         string
+	BeforeUpdatedAt *int64
+	BeforeSessionID string
+}
+
+func (a *App) loadTUISessionWorkset(ctx context.Context, opts tuiSessionWorksetLoadOptions) (client.SessionV3Workset, error) {
 	if a == nil || a.api == nil {
-		return nil, errors.New("api is unavailable")
+		return client.SessionV3Workset{}, errors.New("api is unavailable")
 	}
-	if bindingID := a.activeLocalWorkspaceBindingID(); bindingID != "" {
-		return a.api.ListSessionsForWorkspaceBinding(ctx, limit, bindingID)
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = homeRecentSessionLimit
 	}
-	return a.api.ListSessionsForExactCWD(ctx, limit, workspacePath)
+	state, err := tuiRealtimeWorksetStateFromOptions(opts)
+	if err != nil {
+		return client.SessionV3Workset{}, err
+	}
+	return a.api.GetSessionV3TUIWorkset(ctx, client.SessionV3TUIWorksetRequest{
+		SessionIDs: trimTUIRealtimeStrings(opts.SessionIDs),
+		Scope: client.SessionV3TUIWorksetScope{
+			WorkspacePaths: append([]string(nil), state.WorkspacePaths...),
+			CWDPath:        state.CWDPath,
+		},
+		Recent: client.SessionV3WorksetRecent{
+			Limit:           limit,
+			BeforeUpdatedAt: opts.BeforeUpdatedAt,
+			BeforeSessionID: strings.TrimSpace(opts.BeforeSessionID),
+		},
+		History: client.SessionV3WorksetHistory{
+			Mode:                  "tail",
+			MaxMessagesPerSession: 20,
+			MaxEventsPerSession:   50,
+			ManifestPolicy:        "manifest",
+			IncludeEvents:         true,
+		},
+	})
+}
+
+func canonicalUniquePaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		path = normalizePath(strings.TrimSpace(path))
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		out = append(out, path)
+	}
+	return out
+}
+
+func sessionSummariesFromTUIWorkset(workset client.SessionV3Workset) []client.SessionSummary {
+	out := make([]client.SessionSummary, 0, len(workset.SessionOrder))
+	seen := make(map[string]struct{}, len(workset.SessionsByID))
+	appendID := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		summary, ok := workset.SessionsByID[id]
+		if !ok {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, summary)
+	}
+	for _, id := range workset.SessionOrder {
+		appendID(id)
+	}
+	if len(seen) < len(workset.SessionsByID) {
+		ids := make([]string, 0, len(workset.SessionsByID)-len(seen))
+		for id := range workset.SessionsByID {
+			if _, ok := seen[id]; !ok {
+				ids = append(ids, id)
+			}
+		}
+		sort.SliceStable(ids, func(i, j int) bool {
+			left := workset.SessionsByID[ids[i]]
+			right := workset.SessionsByID[ids[j]]
+			if left.UpdatedAt == right.UpdatedAt {
+				return strings.TrimSpace(left.ID) < strings.TrimSpace(right.ID)
+			}
+			return left.UpdatedAt > right.UpdatedAt
+		})
+		for _, id := range ids {
+			appendID(id)
+		}
+	}
+	return out
 }
 
 const (
 	workspaceOverviewDesktopSessionLimit = 200
 	homeRecentSessionLimit               = 50
-	// Home only renders workspace names/directories on first paint.
-	homeWorkspaceOverviewSessionLimit = 1
 )
 
 func chatSessionPaletteItemsFromTabs(tabs []ui.ChatSessionTab) []ui.ChatSessionPaletteItem {
@@ -4252,8 +4857,18 @@ func chatSessionPaletteItemsFromTabs(tabs []ui.ChatSessionTab) []ui.ChatSessionP
 			Title:           title,
 			WorkspaceName:   strings.TrimSpace(tab.WorkspaceName),
 			WorkspacePath:   strings.TrimSpace(tab.WorkspacePath),
+			WorktreeEnabled: tab.WorktreeEnabled,
+			WorktreeBranch:  strings.TrimSpace(tab.WorktreeBranch),
 			Mode:            strings.TrimSpace(tab.Mode),
+			CreatedAt:       tab.CreatedAt,
+			UpdatedAt:       tab.UpdatedAt,
+			ActiveStartedAt: tab.ActiveStartedAt,
 			UpdatedAgo:      strings.TrimSpace(tab.UpdatedAgo),
+			Active:          tab.Active,
+			NeedsAttention:  tab.NeedsAttention,
+			ActivityLabel:   strings.TrimSpace(tab.ActivityLabel),
+			Group:           strings.TrimSpace(tab.Group),
+			ProgressLabel:   strings.TrimSpace(tab.ProgressLabel),
 			Provider:        strings.TrimSpace(tab.Provider),
 			ModelName:       strings.TrimSpace(tab.ModelName),
 			ServiceTier:     strings.TrimSpace(tab.ServiceTier),
@@ -4272,66 +4887,177 @@ func chatSessionPaletteItemsFromTabs(tabs []ui.ChatSessionTab) []ui.ChatSessionP
 	return items
 }
 
+func modelSessionSummariesFromV3SyncSnapshot(snapshot client.SessionV3SyncSnapshot) []model.SessionSummary {
+	ordered := make([]model.SessionSummary, 0, len(snapshot.SessionsByID))
+	seen := make(map[string]struct{}, len(snapshot.SessionsByID))
+	activeIDs := make(map[string]struct{}, len(snapshot.ActiveSessionIDs))
+	for _, id := range snapshot.ActiveSessionIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			activeIDs[id] = struct{}{}
+		}
+	}
+	appendSession := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		session, ok := snapshot.SessionsByID[id]
+		if !ok {
+			return
+		}
+		seen[id] = struct{}{}
+		if projection, ok := snapshot.ProjectionsBySession[id]; ok {
+			session.SessionAPI = "v3"
+			session.LastEventSeq = projection.LastEventSeq
+			session.ProjectionHighWatermarkSeq = projection.ProjectionHighWatermarkSeq
+		}
+		summary := modelSessionSummaryFromClient(session)
+		if permission, ok := snapshot.PermissionSummariesBySession[id]; ok {
+			summary.PendingPermissionCount = permission.PendingApprovalCount
+		}
+		if view, ok := snapshot.SessionViewsByID[id]; ok {
+			summary.HasActivePlan = view.HasActivePlan != nil && *view.HasActivePlan
+			if view.ActivePlan != nil {
+				activePlan := *view.ActivePlan
+				summary.ActivePlan = &activePlan
+				summary.HasActivePlan = true
+			}
+		}
+		if runState, ok := snapshot.CurrentRunStateBySession[id]; ok {
+			intent := client.SessionV3RunIntent{
+				SessionID:     id,
+				RunID:         strings.TrimSpace(runState.RunID),
+				Status:        strings.TrimSpace(runState.Status),
+				BlockedReason: strings.TrimSpace(runState.BlockedReason),
+				CreatedAt:     runState.CreatedAt,
+				StartedAt:     runState.StartedAt,
+				CompletedAt:   runState.CompletedAt,
+				DurationMS:    runState.DurationMS,
+				UpdatedAt:     runState.UpdatedAt,
+				EventSeq:      runState.EventSeq,
+			}
+			summary.ActiveRunIntent = &intent
+			summary.Lifecycle = &client.SessionLifecycleSnapshot{
+				SessionID: id,
+				RunID:     intent.RunID,
+				Active:    runState.Active,
+				Phase:     intent.Status,
+				StartedAt: intent.StartedAt,
+				EndedAt:   intent.CompletedAt,
+				UpdatedAt: intent.UpdatedAt,
+				Error:     intent.BlockedReason,
+			}
+		} else if _, active := activeIDs[id]; active {
+			summary.Lifecycle = &client.SessionLifecycleSnapshot{SessionID: id, Active: true, Phase: "active", UpdatedAt: summary.UpdatedAt}
+		}
+		ordered = append(ordered, summary)
+	}
+	for _, id := range snapshot.SessionOrder {
+		appendSession(id)
+	}
+	if len(seen) < len(snapshot.SessionsByID) {
+		ids := make([]string, 0, len(snapshot.SessionsByID)-len(seen))
+		for id := range snapshot.SessionsByID {
+			if _, ok := seen[id]; !ok {
+				ids = append(ids, id)
+			}
+		}
+		sort.SliceStable(ids, func(i, j int) bool {
+			left, right := snapshot.SessionsByID[ids[i]], snapshot.SessionsByID[ids[j]]
+			if left.UpdatedAt != right.UpdatedAt {
+				return left.UpdatedAt > right.UpdatedAt
+			}
+			return ids[i] < ids[j]
+		})
+		for _, id := range ids {
+			appendSession(id)
+		}
+	}
+	return applySessionDepths(ordered)
+}
+
+func (a *App) queueSessionManagerOpen(query, openRoute string) error {
+	if a == nil || a.api == nil {
+		return errors.New("api is unavailable")
+	}
+	if !a.reloading.CompareAndSwap(false, true) {
+		return errors.New("session data is already loading")
+	}
+	query = strings.TrimSpace(query)
+	openRoute = strings.TrimSpace(openRoute)
+	if a.home != nil {
+		a.home.SetStatus("loading V3 sessions...")
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		snapshot, err := a.api.GetSessionV3SyncBootstrap(ctx, client.SessionV3SyncBootstrapRequest{
+			Surface: "tui",
+			Selector: client.SessionV3SyncSelector{
+				Kind:      "recent",
+				Global:    true,
+				Recent:    client.SessionV3WorksetRecent{Limit: workspaceOverviewDesktopSessionLimit},
+				Attention: client.SessionV3SyncAttention{PendingPermissions: true},
+			},
+			History: client.SessionV3WorksetHistory{Mode: "none"},
+			Resources: client.SessionV3SyncResources{
+				CurrentRunState:     true,
+				PermissionSummaries: true,
+				ActivePlan:          true,
+			},
+			IncludeActive: true,
+		})
+		result := homeReloadResult{sessionQuery: query, sessionOpenRoute: openRoute, err: err}
+		if err == nil {
+			result.sessionSnapshot = &snapshot
+		}
+		select {
+		case a.reloadCh <- result:
+		default:
+		}
+		if a.screen != nil {
+			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptReloadReady))
+		}
+	}()
+	return nil
+}
+
+func (a *App) openLoadedHomeSessionsModal(query string) {
+	items := chatSessionPaletteItemsFromTabs(chatSessionTabsFromSummaries(a.homeModel.RecentSessions))
+	if !a.home.OpenSessionsModal(items, strings.TrimSpace(query)) {
+		a.home.SetStatus("session manager unavailable while another modal is open")
+		return
+	}
+	a.home.SetStatus("session manager")
+}
+
 func (a *App) openHomeSessionsModal(query string) {
 	a.home.ClearCommandOverlay()
-	if a.api == nil {
-		a.home.SetStatus("sessions modal failed: api unavailable")
+	if err := a.queueSessionManagerOpen(query, "home"); err != nil {
+		a.home.SetStatus(fmt.Sprintf("/sessions failed: %v", err))
+	}
+}
+
+func (a *App) openLoadedChatSessionsPalette(query string) {
+	if a.chat == nil {
 		return
 	}
-	workspacePath := strings.TrimSpace(a.activeContextPath())
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.startupCWD)
-	}
-	if workspacePath == "" {
-		a.home.SetStatus("sessions modal failed: workspace path is required")
+	a.chat.SetSessionTabs(chatSessionTabsFromSummaries(a.homeModel.RecentSessions))
+	if !a.chat.OpenSessionsPalette(a.chat.SessionPaletteItems(), strings.TrimSpace(query)) {
+		a.home.SetStatus("sessions palette unavailable while another modal is open")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	sessions, err := a.listSessionsForActiveContext(ctx, workspaceOverviewDesktopSessionLimit, workspacePath)
-	if err != nil {
-		a.home.SetStatus(fmt.Sprintf("sessions modal failed: %v", err))
-		return
-	}
-	items := chatSessionPaletteItemsFromTabs(scopedSessionTabsForPath(workspacePath, a.homeModel.RecentSessions, sessions))
-	if !a.home.OpenSessionsModal(items, strings.TrimSpace(query)) {
-		a.home.SetStatus("sessions modal unavailable while another modal is open")
-		return
-	}
-	a.home.SetStatus("sessions modal")
+	a.home.SetStatus("sessions palette")
 }
 
 func (a *App) openChatSessionsPalette(query string) error {
 	if a.chat == nil {
 		return errors.New("chat is unavailable")
 	}
-	if a.api == nil {
-		return errors.New("api is unavailable")
-	}
-	workspacePath := strings.TrimSpace(a.activeContextPath())
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.startupCWD)
-	}
-	if workspacePath == "" {
-		return errors.New("workspace path is required")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	sessions, err := a.listSessionsForActiveContext(ctx, workspaceOverviewDesktopSessionLimit, workspacePath)
-	if err != nil {
-		return err
-	}
-	tabs := scopedSessionTabsForPath(workspacePath, a.homeModel.RecentSessions, sessions)
-	a.chat.SetSessionTabs(tabs)
-	if query == "" {
-		query = strings.TrimSpace(a.chat.SessionID())
-	}
-	if !a.chat.OpenSessionsPalette(a.chat.SessionPaletteItems(), strings.TrimSpace(query)) {
-		a.home.SetStatus("sessions palette unavailable while another modal is open")
-		return nil
-	}
-	a.home.SetStatus("sessions palette")
-	return nil
+	return a.queueSessionManagerOpen(query, "chat")
 }
 
 func (a *App) consumeChatActions() {
@@ -4392,33 +5118,118 @@ func (a *App) handleChatAction(action ui.ChatAction) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		var plan client.SessionPlan
-		var err error
-		if action.Plan.RestoreRevision {
-			restored, saveErr := a.api.SaveSessionPlan(ctx, sessionID, client.SessionPlanUpsertRequest{
-				ID:            planID,
-				PlanID:        planID,
-				Title:         strings.TrimSpace(action.Plan.Title),
-				Plan:          action.Plan.Plan,
-				Document:      clientSessionPlanDocumentFromAny(action.Plan.Document),
-				Status:        strings.TrimSpace(action.Plan.Status),
-				ApprovalState: strings.TrimSpace(action.Plan.ApprovalState),
-			})
-			plan, err = restored, saveErr
-		} else {
-			plan, err = a.api.SetActiveSessionPlan(ctx, sessionID, planID)
-		}
+		plan, err := a.api.SetActiveSessionPlan(ctx, sessionID, planID)
 		if err != nil {
 			a.home.SetStatus(fmt.Sprintf("activate plan failed: %v", err))
 			return
 		}
 		a.chat.SetActivePlan(chatPlanLabel(plan))
 		a.home.SetStatus(fmt.Sprintf("active plan: %s", plan.ID))
-		if action.Plan.RestoreRevision {
-			a.chat.AppendSystemMessage(fmt.Sprintf("Restored revision as active plan %s (%s).", plan.ID, emptyFallback(plan.Title, "untitled")))
-		} else {
-			a.chat.AppendSystemMessage(fmt.Sprintf("Active plan set to %s (%s).", plan.ID, emptyFallback(plan.Title, "untitled")))
+		a.chat.AppendSystemMessage(fmt.Sprintf("Active plan set to %s (%s).", plan.ID, emptyFallback(plan.Title, "untitled")))
+	case ui.ChatActionRecoverPlan:
+		if a.api == nil || a.chat == nil {
+			a.home.SetStatus("plan recovery failed: API or chat is unavailable")
+			return
 		}
+		sessionID := strings.TrimSpace(a.chat.SessionID())
+		planID := strings.TrimSpace(action.Plan.ID)
+		if sessionID == "" || planID == "" {
+			a.home.SetStatus("plan recovery failed: session id or plan id is unavailable")
+			return
+		}
+		automatic := action.Recovery.ContinueAutomatically
+		req := client.SessionPlanRevisionRequest{PlanID: planID, Version: action.Plan.Version, RevisionVersion: action.Plan.Version, CheckpointID: strings.TrimSpace(action.Recovery.CheckpointID), ContinuationPolicy: strings.TrimSpace(action.Recovery.ContinuationPolicy), ContinueAutomatically: &automatic}
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		var result client.SessionPlanLifecycleResult
+		var err error
+		switch action.Recovery.Action {
+		case "restore_only":
+			result, err = a.api.RestoreSessionV3PlanRevision(ctx, sessionID, req)
+		case "fast_forward", "final_checkpoint":
+			req.Restart, req.Start, req.SkipPrior = true, true, true
+			result, err = a.api.JumpSessionV3PlanToCheckpoint(ctx, sessionID, req)
+		case "restart_selected":
+			req.Restart, req.Start = true, true
+			result, err = a.api.RestartSessionV3PlanFromRevision(ctx, sessionID, req)
+		default:
+			options := client.SessionPlanExecutionOptions{CheckpointID: req.CheckpointID, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically}
+			result, err = a.api.StartSessionV3PlanCheckpointed(ctx, sessionID, planID, options)
+		}
+		if err != nil {
+			a.home.SetStatus(fmt.Sprintf("plan recovery failed: %v", err))
+			return
+		}
+		if strings.TrimSpace(result.Plan.ID) != "" {
+			a.chat.SetActivePlan(chatPlanLabel(result.Plan))
+		}
+		a.home.SetStatus(fmt.Sprintf("plan recovery applied: %s", action.Recovery.Action))
+		a.chat.AppendSystemMessage(fmt.Sprintf("Plan recovery action %s applied through the V3 lifecycle.", action.Recovery.Action))
+	case ui.ChatActionPlanExecution:
+		if a.api == nil || a.chat == nil {
+			a.home.SetStatus("plan action failed: API or chat is unavailable")
+			return
+		}
+		sessionID, planID := strings.TrimSpace(a.chat.SessionID()), strings.TrimSpace(action.Plan.ID)
+		checkpointID := strings.TrimSpace(action.PlanExecution.CheckpointID)
+		if sessionID == "" || planID == "" {
+			a.home.SetStatus("plan action failed: session id or plan id is unavailable")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		var result client.SessionPlanLifecycleResult
+		var err error
+		switch action.PlanExecution.Operation {
+		case "stop":
+			result, err = a.api.StopSessionV3PlanRun(ctx, sessionID, client.SessionPlanCurrentRunRequest{PlanID: planID})
+		case "accept":
+			if checkpointID == "" {
+				err = errors.New("checkpoint id is unavailable")
+				break
+			}
+			result, err = a.api.AcceptSessionV3PlanCheckpoint(ctx, sessionID, checkpointID, client.SessionPlanCheckpointAcceptRequest{PlanID: planID, Result: "accepted"})
+		case "resolve":
+			if checkpointID == "" {
+				err = errors.New("checkpoint id is unavailable")
+				break
+			}
+			result, err = a.api.ResolveSessionV3BlockedCheckpoint(ctx, sessionID, checkpointID, client.SessionPlanCheckpointResolveRequest{PlanID: planID, Result: "resolved", StartNext: action.PlanExecution.StartNext, ContinueNext: action.PlanExecution.StartNext})
+		case "restart":
+			if checkpointID == "" {
+				err = errors.New("checkpoint id is unavailable")
+				break
+			}
+			result, err = a.api.RestartSessionV3PlanCheckpoint(ctx, sessionID, checkpointID, planID)
+		case "rewind":
+			if checkpointID == "" {
+				err = errors.New("checkpoint id is unavailable")
+				break
+			}
+			result, err = a.api.RewindSessionV3PlanCheckpoint(ctx, sessionID, checkpointID, planID)
+		case "toggle_policy":
+			if action.PlanExecution.Automatic {
+				result, err = a.api.ResumeSessionV3PlanCheckpointed(ctx, sessionID, client.SessionPlanCurrentRunRequest{PlanID: planID})
+			} else {
+				result, err = a.api.ResumeSessionV3PlanAutomatic(ctx, sessionID, client.SessionPlanCurrentRunRequest{PlanID: planID})
+			}
+		default:
+			err = fmt.Errorf("unsupported plan action %q", action.PlanExecution.Operation)
+		}
+		if err != nil {
+			a.home.SetStatus(fmt.Sprintf("plan action failed: %v", err))
+			a.chat.ShowToast(ui.ToastError, fmt.Sprintf("Plan action failed: %v", err))
+			return
+		}
+		if strings.TrimSpace(result.Plan.ID) != "" {
+			runID := ""
+			if result.RunIntent != nil {
+				runID = strings.TrimSpace(result.RunIntent.RunID)
+			}
+			a.chat.SetPlanExecutionState(chatSessionPlanFromClient(result.Plan), nil, runID, strings.TrimSpace(result.Transition))
+		}
+		a.home.SetStatus("plan action applied: " + strings.ReplaceAll(action.PlanExecution.Operation, "_", " "))
+		a.chat.ShowToast(ui.ToastSuccess, "Plan execution updated")
 	case ui.ChatActionSavePlan:
 		if a.api == nil {
 			a.home.SetStatus("save plan failed: api client is not configured")
@@ -4482,29 +5293,30 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		if err != nil {
 			a.home.SetStatus(fmt.Sprintf("open session failed: %v", err))
 		}
+	case ui.HomeActionOpenWorkspaceSelector:
+		a.showWorkspaceSelector()
 	case ui.HomeActionSelectWorkspace:
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		resolution, err := a.api.SelectWorkspace(ctx, strings.TrimSpace(action.WorkspacePath))
-		if err != nil {
-			a.home.SetStatus(fmt.Sprintf("activate workspace failed: %v", err))
-			return
-		}
-		a.activePath = strings.TrimSpace(resolution.ResolvedPath)
-		a.workspacePath = strings.TrimSpace(resolution.WorkspacePath)
-		a.syncActiveWorkspaceSelection(resolution)
-		a.home.SetStatus(fmt.Sprintf("workspace active: %s", displayPath(resolution.ResolvedPath)))
-		a.queueReload(false)
+		a.activateWorkspaceAtIndex(action.WorkspaceIndex)
 	case ui.HomeActionOpenAgentsModal:
 		a.openAgentsModal()
-	case ui.HomeActionOpenModelsModal:
-		a.openModelsModal("")
+	case ui.HomeActionOpenProfilesModal:
+		a.openProfilesModal()
+	case ui.HomeActionSelectModelProfile:
+		a.selectHomeModelProfile(action.ModelProfileID)
+	case ui.HomeActionRefreshCodexUsage:
+		a.refreshHomeCodexAccount()
+	case ui.HomeActionConsumeCodexReset:
+		a.consumeHomeCodexResetCredit(action.ResetCreditID, action.IdempotencyKey)
 	case ui.HomeActionCycleThinking:
 		a.cycleThinkingLevel()
 	case ui.HomeActionCycleRoute:
 		a.cycleChatRoute()
 	case ui.HomeActionClearAlerts:
 		a.clearAlertsFromModal()
+	case ui.HomeActionOpenAuthModal:
+		a.openAuthModal()
+	case ui.HomeActionSaveOnboarding:
+		a.saveOnboarding(action.Username, action.SwarmName)
 	}
 }
 
@@ -4833,8 +5645,6 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 			}
 		}
 		if action.MakeCurrent {
-			a.activePath = strings.TrimSpace(resolution.ResolvedPath)
-			a.workspacePath = strings.TrimSpace(resolution.WorkspacePath)
 			a.syncActiveWorkspaceSelection(resolution)
 		}
 		a.refreshWorkspaceModalData("")
@@ -4846,6 +5656,13 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 		a.home.SetWorkspaceModalStatus(status)
 		a.queueReload(false)
 	case ui.WorkspaceModalActionSelect:
+		selectorMode := a.home.WorkspaceModalIntent() == "select"
+		if a.workspaceSwitchRunActive() {
+			a.home.SetWorkspaceModalLoading(false)
+			a.home.SetWorkspaceModalError("workspace switching is unavailable while a run is active")
+			return
+		}
+		previousWorkspacePath := a.activeWorkspacePath()
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
 		resolution, err := a.api.SelectWorkspace(ctx, action.Path)
@@ -4854,12 +5671,20 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 			a.home.SetWorkspaceModalError(fmt.Sprintf("activate workspace failed: %v", err))
 			return
 		}
-		a.activePath = strings.TrimSpace(resolution.ResolvedPath)
-		a.workspacePath = strings.TrimSpace(resolution.WorkspacePath)
 		a.syncActiveWorkspaceSelection(resolution)
-		a.home.SetWorkspaceModalDirectory(a.activeContextPath())
-		a.refreshWorkspaceModalData("")
-		a.home.SetWorkspaceModalStatus(fmt.Sprintf("workspace active: %s", displayPath(resolution.ResolvedPath)))
+		if err := a.openV3ChatDraftAfterWorkspaceChange(previousWorkspacePath); err != nil {
+			a.home.SetWorkspaceModalLoading(false)
+			a.home.SetWorkspaceModalError(fmt.Sprintf("workspace switched, but new chat draft failed: %v", err))
+			return
+		}
+		if selectorMode {
+			a.home.HideWorkspaceModal()
+			a.home.SetStatus(fmt.Sprintf("workspace active: %s", displayPath(resolution.ResolvedPath)))
+		} else {
+			a.home.SetWorkspaceModalDirectory(a.activeContextPath())
+			a.refreshWorkspaceModalData("")
+			a.home.SetWorkspaceModalStatus(fmt.Sprintf("workspace active: %s", displayPath(resolution.ResolvedPath)))
+		}
 		a.queueReload(false)
 	case ui.WorkspaceModalActionMove:
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
@@ -4928,22 +5753,6 @@ func (a *App) handleWorktreesModalAction(action ui.WorktreesModalAction) {
 	switch action.Kind {
 	case ui.WorktreesModalActionRefresh:
 		a.refreshWorktreesModalData("Refreshing worktrees settings...")
-	case ui.WorktreesModalActionSetMode:
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		enabled := action.Enabled
-		useCurrentBranch := true
-		settings, err := a.api.UpdateWorktreeSettings(ctx, client.WorktreeSettingsUpdateRequest{WorkspacePath: a.activeContextPath(), Enabled: &enabled, UseCurrentBranch: &useCurrentBranch})
-		if err != nil {
-			a.home.SetWorktreesModalLoading(false)
-			a.home.SetWorktreesModalError(fmt.Sprintf("worktrees update failed: %v", err))
-			a.showToast(ui.ToastError, fmt.Sprintf("worktrees update failed: %v", err))
-			return
-		}
-		a.home.SetWorktreesModalData(mapWorktreesModalData(settings, a.currentWorktreeResolvedBranch()))
-		a.home.SetWorktreesModalLoading(false)
-		a.home.SetWorktreesModalStatus(a.worktreesStatusSummary(settings))
-		a.showToast(ui.ToastSuccess, a.worktreesStatusSummary(settings))
 	case ui.WorktreesModalActionSetCreatedBranch:
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
@@ -4962,6 +5771,21 @@ func (a *App) handleWorktreesModalAction(action ui.WorktreesModalAction) {
 		a.home.SetWorktreesModalLoading(false)
 		a.home.SetWorktreesModalStatus(a.worktreesStatusSummary(settings))
 		a.showToast(ui.ToastSuccess, a.worktreesStatusSummary(settings))
+	case ui.WorktreesModalActionCreateSession:
+		title := strings.TrimSpace(action.Title)
+		branch := strings.Trim(strings.TrimSpace(action.BranchName), "/")
+		if err := a.openChatSessionWithWorktree(title, "", branch); err != nil {
+			if a.home.WorktreesModalVisible() {
+				a.home.SetWorktreesModalLoading(false)
+				a.home.SetWorktreesModalError(fmt.Sprintf("create worktree session failed: %v", err))
+			} else if a.chat != nil {
+				a.chat.SetStatus(fmt.Sprintf("create worktree session failed: %v", err))
+			}
+			return
+		}
+		// The HomePage persists behind chat, so explicitly clear the accepted
+		// modal after navigation instead of leaving it open on the next home view.
+		a.home.HideWorktreesModal()
 	case ui.WorktreesModalActionSetBranchSource:
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
@@ -4986,85 +5810,6 @@ func (a *App) handleWorktreesModalAction(action ui.WorktreesModalAction) {
 	}
 }
 
-func (a *App) handleMCPModalAction(action ui.MCPModalAction) {
-	if !a.home.MCPModalVisible() {
-		return
-	}
-	switch action.Kind {
-	case ui.MCPModalActionRefresh:
-		a.refreshMCPModalData("Refreshing MCP servers...")
-	case ui.MCPModalActionSetEnabled:
-		id := strings.TrimSpace(action.ID)
-		if id == "" {
-			a.home.SetMCPModalLoading(false)
-			a.home.SetMCPModalError("MCP server id is required")
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		server, err := a.api.SetMCPServerEnabled(ctx, id, action.Enabled)
-		if err != nil {
-			a.home.SetMCPModalLoading(false)
-			a.home.SetMCPModalError(fmt.Sprintf("mcp toggle failed: %v", err))
-			return
-		}
-		state := "disabled"
-		if server.Enabled {
-			state = "enabled"
-		}
-		a.home.SetMCPModalStatus(fmt.Sprintf("MCP %s: %s", server.ID, state))
-		a.refreshMCPModalData("")
-	case ui.MCPModalActionDelete:
-		id := strings.TrimSpace(action.ID)
-		if id == "" {
-			a.home.SetMCPModalLoading(false)
-			a.home.SetMCPModalError("MCP server id is required")
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		if err := a.api.DeleteMCPServer(ctx, id); err != nil {
-			a.home.SetMCPModalLoading(false)
-			a.home.SetMCPModalError(fmt.Sprintf("mcp delete failed: %v", err))
-			return
-		}
-		a.home.SetMCPModalStatus(fmt.Sprintf("MCP server removed: %s", id))
-		a.refreshMCPModalData("")
-	case ui.MCPModalActionUpsert:
-		if action.Upsert == nil {
-			a.home.SetMCPModalLoading(false)
-			a.home.SetMCPModalError("mcp upsert payload is missing")
-			return
-		}
-		upsert := action.Upsert
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		server, err := a.api.UpsertMCPServer(ctx, client.MCPServerUpsertRequest{
-			ID:        strings.TrimSpace(upsert.ID),
-			Name:      strings.TrimSpace(upsert.Name),
-			Transport: strings.TrimSpace(upsert.Transport),
-			URL:       strings.TrimSpace(upsert.URL),
-			Command:   strings.TrimSpace(upsert.Command),
-			Args:      append([]string(nil), upsert.Args...),
-			Enabled:   upsert.Enabled,
-			Source:    strings.TrimSpace(upsert.Source),
-		})
-		if err != nil {
-			a.home.SetMCPModalLoading(false)
-			a.home.SetMCPModalError(fmt.Sprintf("mcp save failed: %v", err))
-			return
-		}
-		target := strings.TrimSpace(server.URL)
-		if target == "" {
-			target = strings.TrimSpace(server.Command)
-		}
-		a.home.SetMCPModalStatus(fmt.Sprintf("MCP server saved: %s (%s)", server.ID, emptyFallback(target, "configured")))
-		a.refreshMCPModalData("")
-	default:
-		a.home.SetMCPModalLoading(false)
-	}
-}
-
 func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 	if !a.home.AgentsModalVisible() {
 		return
@@ -5072,6 +5817,32 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 	switch action.Kind {
 	case ui.AgentsModalActionRefresh:
 		a.refreshAgentsModalData("Refreshing agent profiles...")
+	case ui.AgentsModalActionSetProfileDefault:
+		profileID := strings.TrimSpace(action.ModelProfileID)
+		if profileID == "" {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError("profile id is required")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		profile, err := a.api.SetDefaultModelProfile(ctx, profileID)
+		if err != nil {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError(fmt.Sprintf("set default profile failed: %v", err))
+			return
+		}
+		state, err := a.api.ListModelProfiles(ctx)
+		if err != nil {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError(fmt.Sprintf("default profile saved, but refresh failed: %v", err))
+			a.queueReload(false)
+			return
+		}
+		a.applyHomeModel(applyHomeModelProfiles(a.currentHomeModel(), state))
+		label := emptyFallback(strings.TrimSpace(profile.Name), profileID)
+		a.refreshAgentsModalData("account default profile: " + label)
+		a.queueReload(false)
 	case ui.AgentsModalActionSetUtilityAI:
 		input := action.UtilityAI
 		if input == nil || strings.TrimSpace(input.Provider) == "" || strings.TrimSpace(input.Model) == "" {
@@ -5152,6 +5923,45 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
+		if isCloneSystemAgentName(action.Upsert.Name) || isFinderSystemAgentName(action.Upsert.Name) || isDesignerSystemAgentName(action.Upsert.Name) {
+			label := "Finder"
+			settingsField := "finder"
+			if isCloneSystemAgentName(action.Upsert.Name) {
+				label = "Coder"
+				settingsField = "coder"
+			} else if isDesignerSystemAgentName(action.Upsert.Name) {
+				label = "Designer"
+				settingsField = "designer"
+			}
+			settings, err := a.api.GetUISettings(ctx)
+			if err != nil {
+				a.home.SetAgentsModalLoading(false)
+				a.home.SetAgentsModalError(fmt.Sprintf("load %s settings failed: %v", label, err))
+				return
+			}
+			selection := client.UICompactAgentSettings{
+				Provider:    strings.TrimSpace(action.Upsert.Provider),
+				Model:       strings.TrimSpace(action.Upsert.Model),
+				Thinking:    strings.TrimSpace(action.Upsert.Thinking),
+				ServiceTier: strings.TrimSpace(action.Upsert.ServiceTier),
+			}
+			if settingsField == "coder" {
+				settings.Agents.Coder = selection
+			} else if settingsField == "designer" {
+				settings.Agents.Designer = selection
+			} else {
+				settings.Agents.Finder = selection
+			}
+			if _, err := a.api.UpdateUISettings(ctx, settings); err != nil {
+				a.home.SetAgentsModalLoading(false)
+				a.home.SetAgentsModalError(fmt.Sprintf("save %s model failed: %v", label, err))
+				return
+			}
+			a.home.SetAgentsModalStatus(label + " single-model settings saved")
+			a.refreshAgentsModalData("")
+			a.queueReload(false)
+			return
+		}
 		req := client.AgentUpsertRequest{
 			Name:        action.Upsert.Name,
 			Mode:        action.Upsert.Mode,
@@ -5165,11 +5975,27 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 			strings.TrimSpace(action.Upsert.Provider) != "" ||
 			strings.TrimSpace(action.Upsert.Model) != "" ||
 			strings.TrimSpace(action.Upsert.Thinking) != "" ||
+			strings.TrimSpace(action.Upsert.DefaultSessionMode) != "" ||
+			strings.TrimSpace(action.Upsert.ModelMode) != "" ||
+			strings.TrimSpace(action.Upsert.PlanProvider) != "" ||
+			strings.TrimSpace(action.Upsert.PlanModel) != "" ||
+			strings.TrimSpace(action.Upsert.AutoProvider) != "" ||
+			strings.TrimSpace(action.Upsert.AutoModel) != "" ||
 			action.Upsert.Enabled == nil {
 			// Full editor submits must preserve explicit "inherit" clears for provider/model/thinking.
 			req.Provider = stringPtr(action.Upsert.Provider)
 			req.Model = stringPtr(action.Upsert.Model)
 			req.Thinking = stringPtr(action.Upsert.Thinking)
+			req.DefaultSessionMode = strings.TrimSpace(action.Upsert.DefaultSessionMode)
+			req.ModelMode = strings.TrimSpace(action.Upsert.ModelMode)
+			req.PlanProvider = stringPtr(action.Upsert.PlanProvider)
+			req.PlanModel = stringPtr(action.Upsert.PlanModel)
+			req.PlanThinking = stringPtr(action.Upsert.PlanThinking)
+			req.PlanServiceTier = stringPtr(action.Upsert.PlanServiceTier)
+			req.AutoProvider = stringPtr(action.Upsert.AutoProvider)
+			req.AutoModel = stringPtr(action.Upsert.AutoModel)
+			req.AutoThinking = stringPtr(action.Upsert.AutoThinking)
+			req.AutoServiceTier = stringPtr(action.Upsert.AutoServiceTier)
 		}
 		profile, _, err := a.api.UpsertAgent(ctx, req)
 		if err != nil {
@@ -5198,6 +6024,21 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 	default:
 		a.home.SetAgentsModalLoading(false)
 	}
+}
+
+func isCloneSystemAgentName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == "clone" || name == "coder" || name == "system-clone"
+}
+
+func isFinderSystemAgentName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == "finder" || name == "system-finder"
+}
+
+func isDesignerSystemAgentName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == "designer" || name == "system-designer"
 }
 
 func (a *App) handleThemeModalAction(action ui.ThemeModalAction) {
@@ -5659,8 +6500,9 @@ func (a *App) openWorkspaceModal() ([]client.WorkspaceEntry, error) {
 	a.home.HideSessionsModal()
 	a.home.HideAuthModal()
 	a.home.HideWorktreesModal()
-	a.home.HideMCPModal()
 	a.home.HideModelsModal()
+	a.home.HideProfilesModal()
+	a.home.HideCodexUsageModal()
 	a.home.HideAgentsModal()
 	a.home.HideVoiceModal()
 	a.home.HideThemeModal()
@@ -5670,41 +6512,30 @@ func (a *App) openWorkspaceModal() ([]client.WorkspaceEntry, error) {
 	return a.loadWorkspaceModalEntries("Loading workspace manager...")
 }
 
-func (a *App) openWorktreesModal() {
+func (a *App) openWorktreesModalWithCreate(create bool) {
 	a.home.ClearCommandOverlay()
 	a.home.HideSessionsModal()
 	a.home.HideAuthModal()
 	a.home.HideWorkspaceModal()
-	a.home.HideMCPModal()
 	a.home.HideModelsModal()
+	a.home.HideProfilesModal()
+	a.home.HideCodexUsageModal()
 	a.home.HideAgentsModal()
 	a.home.HideVoiceModal()
 	a.home.HideThemeModal()
 	a.home.HideKeybindsModal()
-	a.home.ShowWorktreesModal()
-	a.refreshWorktreesModalData("Loading worktrees settings...")
-}
-
-func (a *App) refreshMCPModalData(statusHint string) {
-	if !a.home.MCPModalVisible() {
-		return
+	if create {
+		a.home.ShowWorktreeCreateModal()
+	} else {
+		a.home.ShowWorktreesModal()
 	}
-	if strings.TrimSpace(statusHint) != "" {
-		a.home.SetMCPModalStatus(statusHint)
+	if a.api != nil {
+		statusHint := "Loading worktrees settings..."
+		if create {
+			statusHint = ""
+		}
+		a.refreshWorktreesModalData(statusHint)
 	}
-	a.home.SetMCPModalLoading(true)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	servers, err := a.api.ListMCPServers(ctx, 500)
-	if err != nil {
-		a.home.SetMCPModalLoading(false)
-		a.home.SetMCPModalError(fmt.Sprintf("mcp list failed: %v", err))
-		return
-	}
-	a.home.SetMCPModalData(mapMCPModalServers(servers))
-	a.home.SetMCPModalLoading(false)
-	a.home.SetMCPModalStatus(fmt.Sprintf("mcp servers loaded: %d", len(servers)))
 }
 
 func (a *App) refreshWorktreesModalData(statusHint string) {
@@ -5727,7 +6558,9 @@ func (a *App) refreshWorktreesModalData(statusHint string) {
 	}
 	a.home.SetWorktreesModalData(mapWorktreesModalData(settings, a.currentWorktreeResolvedBranch()))
 	a.home.SetWorktreesModalLoading(false)
-	a.home.SetWorktreesModalStatus(a.worktreesStatusSummary(settings))
+	if !a.home.WorktreeCreateModalVisible() {
+		a.home.SetWorktreesModalStatus(a.worktreesStatusSummary(settings))
+	}
 }
 
 func (a *App) refreshWorkspaceModalData(statusHint string) {
@@ -5772,13 +6605,40 @@ func (a *App) loadWorkspaceModalEntries(statusHint string) ([]client.WorkspaceEn
 	return entries, nil
 }
 
+func (a *App) saveOnboarding(username, swarmName string) {
+	username = strings.TrimSpace(username)
+	swarmName = strings.TrimSpace(swarmName)
+	if username == "" || swarmName == "" {
+		a.home.SetOnboardingError("Username and swarm name are required.")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	status, err := a.api.SaveOnboarding(ctx, client.SaveOnboardingInput{Username: username, SwarmName: swarmName})
+	if err != nil {
+		a.home.SetOnboardingError(fmt.Sprintf("onboarding save failed: %v", err))
+		return
+	}
+	if session, err := a.api.IssueLocalProductSession(ctx); err == nil && strings.TrimSpace(session.Token) != "" {
+		a.api.SetToken(session.Token)
+	}
+	a.home.SetOnboardingRequired(false, strings.TrimSpace(status.Identity.Username), strings.TrimSpace(status.Config.SwarmName))
+	a.home.ShowOnboardingLocked("Identity setup saved. Press Enter to add provider auth, or Esc/s to skip for now.")
+	a.home.SetStatus("Identity setup saved. Provider auth can be added in /auth; Needs auth remains until credentials are added.")
+	a.queueReload(false)
+	if !a.home.AuthModalVisible() {
+		a.openAuthModal()
+	}
+}
+
 func (a *App) openAuthModal() {
 	a.home.ClearCommandOverlay()
 	a.home.HideSessionsModal()
 	a.home.HideWorktreesModal()
 	a.home.HideWorkspaceModal()
-	a.home.HideMCPModal()
 	a.home.HideModelsModal()
+	a.home.HideProfilesModal()
+	a.home.HideCodexUsageModal()
 	a.home.HideAgentsModal()
 	a.home.HideVoiceModal()
 	a.home.HideThemeModal()
@@ -5787,14 +6647,30 @@ func (a *App) openAuthModal() {
 	a.refreshAuthModalData("Loading auth manager...")
 }
 
+func (a *App) openProfilesModal() {
+	a.home.ClearCommandOverlay()
+	a.home.HideSessionsModal()
+	a.home.HideAuthModal()
+	a.home.HideWorkspaceModal()
+	a.home.HideWorktreesModal()
+	a.home.HideModelsModal()
+	a.home.HideCodexUsageModal()
+	a.home.HideAgentsModal()
+	a.home.HideVoiceModal()
+	a.home.HideThemeModal()
+	a.home.HideKeybindsModal()
+	a.home.ShowProfilesModal()
+}
+
 func (a *App) openAgentsModal() {
 	a.home.ClearCommandOverlay()
 	a.home.HideSessionsModal()
 	a.home.HideAuthModal()
 	a.home.HideWorkspaceModal()
 	a.home.HideWorktreesModal()
-	a.home.HideMCPModal()
 	a.home.HideModelsModal()
+	a.home.HideProfilesModal()
+	a.home.HideCodexUsageModal()
 	a.home.HideVoiceModal()
 	a.home.HideThemeModal()
 	a.home.HideKeybindsModal()
@@ -5827,18 +6703,29 @@ func (a *App) refreshAgentsModalData(statusHint string) {
 		return
 	}
 	hints := make([]string, 0, len(state.Profiles)+2)
-	hints = append(hints, a.homeModel.ModelProvider)
+	homeProvider, homeModelName, homeThinking, _, _ := a.home.ModelState()
+	hints = append(hints, homeProvider)
 	for _, profile := range state.Profiles {
 		hints = append(hints, profile.Provider)
 	}
+	settings, err := a.api.GetUISettings(ctx)
+	if err != nil {
+		a.home.SetAgentsModalLoading(false)
+		a.home.SetAgentsModalError(fmt.Sprintf("system agent model settings failed: %v", err))
+		return
+	}
+	modalState := enrichSystemAgentModels(state, settings, a.homeModel)
 	resolvedModels := a.resolveProviderModelData(ctx, hints, 2000, 1200)
 
 	a.home.SetAgentsModalData(mapAgentsModalData(
-		state,
+		modalState,
 		resolvedModels,
-		strings.TrimSpace(a.homeModel.ModelProvider),
-		strings.TrimSpace(a.homeModel.ModelName),
-		strings.TrimSpace(a.homeModel.ThinkingLevel),
+		strings.TrimSpace(homeProvider),
+		strings.TrimSpace(homeModelName),
+		strings.TrimSpace(homeThinking),
+		a.homeModel.ModelProfiles,
+		a.homeModel.DefaultModelProfileID,
+		a.homeModel.ActiveModelProfile.ProfileID,
 	))
 	a.home.SetAgentsModalLoading(false)
 	status := fmt.Sprintf("agent profiles loaded: %d", len(state.Profiles))
@@ -5870,6 +6757,7 @@ func (a *App) refreshAuthModalData(statusHint string) {
 	}
 
 	modalProviders := mergeAuthModalProviders(providerStatuses, credentials)
+	modalProviders = filterOnboardingAuthMethods(modalProviders)
 	modalCredentials := mapAuthModalCredentials(credentials.Records)
 	agentProfiles := make([]ui.AgentModalProfile, 0)
 	if agentState, err := a.api.ListAgents(ctx, 500); err == nil {
@@ -5990,6 +6878,27 @@ func mergeAuthModalProviders(statuses []client.ProviderStatus, credentials clien
 	return out
 }
 
+func filterOnboardingAuthMethods(providers []ui.AuthModalProvider) []ui.AuthModalProvider {
+	for i := range providers {
+		providerID := strings.ToLower(strings.TrimSpace(providers[i].ID))
+		methods := providers[i].AuthMethods
+		if providerID == "codex" {
+			filtered := make([]ui.AuthModalAuthMethod, 0, len(methods))
+			for _, method := range methods {
+				methodID := strings.ToLower(strings.TrimSpace(method.ID))
+				credentialType := strings.ToLower(strings.TrimSpace(method.CredentialType))
+				label := strings.ToLower(strings.TrimSpace(method.Label))
+				if methodID == "api" || credentialType == "api" || strings.Contains(label, "api key") {
+					continue
+				}
+				filtered = append(filtered, method)
+			}
+			providers[i].AuthMethods = filtered
+		}
+	}
+	return providers
+}
+
 func mapAuthModalMethods(methods []client.AuthMethod) []ui.AuthModalAuthMethod {
 	if len(methods) == 0 {
 		return nil
@@ -6053,7 +6962,50 @@ func mapWorkspaceModalEntries(entries []client.WorkspaceEntry) []ui.WorkspaceMod
 	return out
 }
 
-func mapAgentsModalData(state client.AgentState, resolved providerModelResolverResult, defaultProvider, defaultModel, defaultThinking string) ui.AgentsModalData {
+func enrichSystemAgentModels(state client.AgentState, settings client.UISettings, home model.HomeModel) client.AgentState {
+	state.Profiles = append([]client.AgentProfile(nil), state.Profiles...)
+	for i := range state.Profiles {
+		profile := &state.Profiles[i]
+		switch {
+		case isFinderSystemAgentName(profile.Name):
+			override := settings.Agents.Finder
+			if strings.TrimSpace(override.Provider) != "" {
+				profile.Provider = strings.TrimSpace(override.Provider)
+			}
+			if strings.TrimSpace(override.Model) != "" {
+				profile.Model = strings.TrimSpace(override.Model)
+			}
+			if strings.TrimSpace(override.Thinking) != "" {
+				profile.Thinking = strings.TrimSpace(override.Thinking)
+			}
+			profile.AutoServiceTier = strings.TrimSpace(override.ServiceTier)
+			profile.ModelMode = "single"
+		case isDesignerSystemAgentName(profile.Name):
+			override := settings.Agents.Designer
+			if strings.TrimSpace(override.Provider) != "" {
+				profile.Provider = strings.TrimSpace(override.Provider)
+			}
+			if strings.TrimSpace(override.Model) != "" {
+				profile.Model = strings.TrimSpace(override.Model)
+			}
+			if strings.TrimSpace(override.Thinking) != "" {
+				profile.Thinking = strings.TrimSpace(override.Thinking)
+			}
+			profile.AutoServiceTier = strings.TrimSpace(override.ServiceTier)
+			profile.ModelMode = "single"
+		case isCloneSystemAgentName(profile.Name):
+			override := settings.Agents.Coder
+			profile.Provider = emptyFallback(strings.TrimSpace(override.Provider), strings.TrimSpace(home.ModelProvider))
+			profile.Model = emptyFallback(strings.TrimSpace(override.Model), strings.TrimSpace(home.ModelName))
+			profile.Thinking = emptyFallback(strings.TrimSpace(override.Thinking), strings.TrimSpace(home.ThinkingLevel))
+			profile.AutoServiceTier = emptyFallback(strings.TrimSpace(override.ServiceTier), strings.TrimSpace(home.ServiceTier))
+			profile.ModelMode = "single"
+		}
+	}
+	return state
+}
+
+func mapAgentsModalData(state client.AgentState, resolved providerModelResolverResult, defaultProvider, defaultModel, defaultThinking string, modelProfiles []client.ModelProfile, defaultModelProfileID, activeModelProfileID string) ui.AgentsModalData {
 	profiles := make([]ui.AgentModalProfile, 0, len(state.Profiles))
 	modelsByProvider := make(map[string][]string, len(resolved.ModelsByProvider)+8)
 	for providerID, models := range resolved.ModelsByProvider {
@@ -6063,15 +7015,13 @@ func mapAgentsModalData(state client.AgentState, resolved providerModelResolverR
 		}
 		modelsByProvider[providerID] = append([]string(nil), models...)
 	}
-	reasoningModels := make(map[string]bool, len(resolved.ReasoningByKey)+32)
-	for key, enabled := range resolved.ReasoningByKey {
+	modelCatalog := make(map[string]client.ModelCatalogRecord, len(resolved.CatalogByKey))
+	for key, record := range resolved.CatalogByKey {
 		key = strings.ToLower(strings.TrimSpace(key))
-		if key == "" {
-			continue
+		if key != "" {
+			modelCatalog[key] = record
 		}
-		reasoningModels[key] = enabled
 	}
-
 	providerSet := make(map[string]struct{}, len(resolved.ProviderIDs)+8)
 	for _, providerID := range resolved.ProviderIDs {
 		providerID = normalizeModelProviderID(providerID)
@@ -6083,29 +7033,45 @@ func mapAgentsModalData(state client.AgentState, resolved providerModelResolverR
 	for _, profile := range state.Profiles {
 		providerID := normalizeModelProviderID(profile.Provider)
 		modelID := strings.TrimSpace(profile.Model)
-		if providerID != "" {
-			providerSet[providerID] = struct{}{}
-			if modelID != "" && modelAllowedByProviderPreset(providerID, modelID) {
-				modelsByProvider[providerID] = append(modelsByProvider[providerID], modelID)
-				reasonKey := modelEntryKey(providerID, modelID)
-				if reasonKey != "" {
-					if _, ok := reasoningModels[reasonKey]; !ok {
-						reasoningModels[reasonKey] = true
-					}
-				}
+		configuredModels := [][2]string{
+			{providerID, modelID},
+			{normalizeModelProviderID(profile.PlanProvider), strings.TrimSpace(profile.PlanModel)},
+			{normalizeModelProviderID(profile.AutoProvider), strings.TrimSpace(profile.AutoModel)},
+		}
+		for _, configured := range configuredModels {
+			configuredProvider, configuredModel := configured[0], configured[1]
+			if configuredProvider == "" {
+				continue
 			}
+			providerSet[configuredProvider] = struct{}{}
+			if configuredModel == "" {
+				continue
+			}
+			modelsByProvider[configuredProvider] = append(modelsByProvider[configuredProvider], configuredModel)
 		}
 		profiles = append(profiles, ui.AgentModalProfile{
-			Name:             strings.TrimSpace(profile.Name),
-			Mode:             strings.TrimSpace(profile.Mode),
-			Description:      strings.TrimSpace(profile.Description),
-			Provider:         providerID,
-			Model:            modelID,
-			Thinking:         strings.TrimSpace(profile.Thinking),
-			Prompt:           strings.TrimSpace(profile.Prompt),
-			ExecutionSetting: strings.TrimSpace(profile.ExecutionSetting),
-			Enabled:          profile.Enabled,
-			UpdatedAt:        profile.UpdatedAt,
+			Name:               strings.TrimSpace(profile.Name),
+			Mode:               strings.TrimSpace(profile.Mode),
+			Description:        strings.TrimSpace(profile.Description),
+			Provider:           providerID,
+			Model:              modelID,
+			Thinking:           strings.TrimSpace(profile.Thinking),
+			ServiceTier:        strings.TrimSpace(profile.AutoServiceTier),
+			DefaultSessionMode: strings.TrimSpace(profile.DefaultSessionMode),
+			ModelMode:          strings.TrimSpace(profile.ModelMode),
+			PlanProvider:       normalizeModelProviderID(profile.PlanProvider),
+			PlanModel:          strings.TrimSpace(profile.PlanModel),
+			PlanThinking:       strings.TrimSpace(profile.PlanThinking),
+			PlanServiceTier:    strings.TrimSpace(profile.PlanServiceTier),
+			AutoProvider:       normalizeModelProviderID(profile.AutoProvider),
+			AutoModel:          strings.TrimSpace(profile.AutoModel),
+			AutoThinking:       strings.TrimSpace(profile.AutoThinking),
+			AutoServiceTier:    strings.TrimSpace(profile.AutoServiceTier),
+			Prompt:             strings.TrimSpace(profile.Prompt),
+			ExecutionSetting:   strings.TrimSpace(profile.ExecutionSetting),
+			Enabled:            profile.Enabled,
+			Protected:          profile.Protected,
+			UpdatedAt:          profile.UpdatedAt,
 		})
 	}
 
@@ -6114,21 +7080,6 @@ func mapAgentsModalData(state client.AgentState, resolved providerModelResolverR
 		providers = append(providers, providerID)
 	}
 	sort.Strings(providers)
-	for _, providerID := range providers {
-		for _, preset := range modelPresetListForProvider(providerID) {
-			modelID := strings.TrimSpace(preset)
-			if modelID == "" {
-				continue
-			}
-			modelsByProvider[providerID] = append(modelsByProvider[providerID], modelID)
-			reasonKey := modelEntryKey(providerID, modelID)
-			if reasonKey != "" {
-				if _, ok := reasoningModels[reasonKey]; !ok {
-					reasoningModels[reasonKey] = true
-				}
-			}
-		}
-	}
 	for providerID, models := range modelsByProvider {
 		modelsByProvider[providerID] = dedupeModelValues(models)
 		defaultModelForProvider := ""
@@ -6191,31 +7142,25 @@ func mapAgentsModalData(state client.AgentState, resolved providerModelResolverR
 			defaultModel = modelsByProvider[defaultProvider][0]
 		}
 	}
-	if defaultProvider != "" && defaultModel != "" {
-		reasonKey := modelEntryKey(defaultProvider, defaultModel)
-		if reasonKey != "" {
-			if _, ok := reasoningModels[reasonKey]; !ok {
-				reasoningModels[reasonKey] = true
-			}
-		}
-	}
-
 	defaultThinking = strings.ToLower(strings.TrimSpace(defaultThinking))
-	if defaultThinking == "" {
-		defaultThinking = "xhigh"
+	if record, ok := modelCatalog[modelEntryKey(defaultProvider, defaultModel)]; ok && defaultThinking == "" {
+		defaultThinking = strings.ToLower(strings.TrimSpace(record.DefaultThinking))
 	}
 
 	data := ui.AgentsModalData{
-		Profiles:         profiles,
-		ActivePrimary:    strings.TrimSpace(state.ActivePrimary),
-		ActiveSubagent:   activeSubagent,
-		Version:          state.Version,
-		Providers:        providers,
-		ModelsByProvider: modelsByProvider,
-		ReasoningModels:  reasoningModels,
-		DefaultProvider:  defaultProvider,
-		DefaultModel:     defaultModel,
-		DefaultThinking:  defaultThinking,
+		Profiles:              profiles,
+		ActivePrimary:         strings.TrimSpace(state.ActivePrimary),
+		ActiveSubagent:        activeSubagent,
+		Version:               state.Version,
+		Providers:             providers,
+		ModelsByProvider:      modelsByProvider,
+		ModelCatalog:          modelCatalog,
+		DefaultProvider:       defaultProvider,
+		DefaultModel:          defaultModel,
+		DefaultThinking:       defaultThinking,
+		ModelProfiles:         append([]client.ModelProfile(nil), modelProfiles...),
+		DefaultModelProfileID: strings.TrimSpace(defaultModelProfileID),
+		ActiveModelProfileID:  strings.TrimSpace(activeModelProfileID),
 	}
 	if state.ProviderDefaultsPreview != nil {
 		preview := state.ProviderDefaultsPreview
@@ -6244,13 +7189,15 @@ func hasModelValue(models []string, target string) bool {
 }
 
 func (a *App) handleWorkspaceCommand(args []string) {
-	if len(args) == 0 || strings.EqualFold(args[0], "open") || strings.EqualFold(args[0], "manage") || strings.EqualFold(args[0], "crud") {
-		a.showWorkspaceManager()
+	if len(args) == 0 {
+		a.showWorkspaceSelector()
 		return
 	}
 
 	sub := strings.ToLower(args[0])
 	switch sub {
+	case "open", "manage", "crud":
+		a.showWorkspaceManager()
 	case "save":
 		target := "."
 		allowPathEdit := false
@@ -6262,8 +7209,12 @@ func (a *App) handleWorkspaceCommand(args []string) {
 		a.openWorkspaceModalForSave(target, allowPathEdit)
 	case "select", "use":
 		if len(args) < 2 {
+			a.showWorkspaceSelector()
+			return
+		}
+		if a.workspaceSwitchRunActive() {
 			a.home.ClearCommandOverlay()
-			a.home.SetStatus("usage: /workspace select <name|#n>")
+			a.home.SetStatus("workspace switching is unavailable while a run is active")
 			return
 		}
 		target := strings.TrimSpace(strings.Join(args[1:], " "))
@@ -6281,18 +7232,21 @@ func (a *App) handleWorkspaceCommand(args []string) {
 			a.home.SetStatus(fmt.Sprintf("workspace switch failed: %v", err))
 			return
 		}
+		previousWorkspacePath := a.activeWorkspacePath()
 		a.home.ClearCommandOverlay()
 		a.home.SetStatus(fmt.Sprintf("workspace active: %s", resolution.ResolvedPath))
-		a.activePath = strings.TrimSpace(resolution.ResolvedPath)
-		a.workspacePath = strings.TrimSpace(resolution.WorkspacePath)
 		a.syncActiveWorkspaceSelection(resolution)
+		if err := a.openV3ChatDraftAfterWorkspaceChange(previousWorkspacePath); err != nil {
+			a.home.SetStatus(fmt.Sprintf("workspace switched, but new chat draft failed: %v", err))
+			return
+		}
 		a.queueReload(false)
 	case "tree", "find", "scan":
 		query := strings.TrimSpace(strings.Join(args[1:], " "))
 		a.scanWorkspaceTree(query)
 	default:
 		a.home.ClearCommandOverlay()
-		a.home.SetStatus("usage: /workspace [open|save|select|scan]")
+		a.home.SetStatus("usage: /workspace [select [name|#n]|manage|save|scan]")
 	}
 }
 
@@ -6307,158 +7261,17 @@ func (a *App) handleAddDirectoryCommand(args []string) {
 	a.openWorkspaceModalForAddDirectory(prefill)
 }
 
-func (a *App) handleMCPCommand(args []string) {
-	a.home.ClearCommandOverlay()
-	a.home.SetStatus("MCP management is deferred until Swarm Sync integration; Exa search can use the built-in free Exa MCP server")
-}
-
 func (a *App) handleWorktreesCommand(args []string) {
 	if a.home == nil {
 		return
 	}
-	if len(args) == 0 {
-		a.openWorktreesModal()
+	if len(args) == 1 && strings.EqualFold(strings.TrimSpace(args[0]), "new") {
+		a.openWorktreesModalWithCreate(true)
 		return
 	}
 
-	sub := strings.ToLower(strings.TrimSpace(args[0]))
-	switch sub {
-	case "open":
-		a.openWorktreesModal()
-	case "status":
-		a.home.ClearCommandOverlay()
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		settings, err := a.api.GetWorktreeSettings(ctx, a.activeContextPath())
-		if err != nil {
-			message := fmt.Sprintf("worktrees status failed: %v", err)
-			a.home.SetStatus(message)
-			a.showToast(ui.ToastError, message)
-			return
-		}
-		message := a.worktreesStatusSummary(settings)
-		if a.home.WorktreesModalVisible() {
-			a.home.SetWorktreesModalData(mapWorktreesModalData(settings, a.currentWorktreeResolvedBranch()))
-			a.home.SetWorktreesModalStatus(message)
-		}
-		a.home.SetStatus(message)
-		if !a.home.WorktreesModalVisible() {
-			a.showToast(ui.ToastInfo, message)
-		}
-	case "on", "enable":
-		a.home.ClearCommandOverlay()
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		enabled := true
-		useCurrentBranch := true
-		settings, err := a.api.UpdateWorktreeSettings(ctx, client.WorktreeSettingsUpdateRequest{WorkspacePath: a.activeContextPath(), Enabled: &enabled, UseCurrentBranch: &useCurrentBranch})
-		if err != nil {
-			message := fmt.Sprintf("worktrees enable failed: %v", err)
-			if a.home.WorktreesModalVisible() {
-				a.home.SetWorktreesModalError(message)
-			}
-			a.home.SetStatus(message)
-			a.showToast(ui.ToastError, message)
-			return
-		}
-		message := a.worktreesStatusSummary(settings)
-		if a.home.WorktreesModalVisible() {
-			a.home.SetWorktreesModalData(mapWorktreesModalData(settings, a.currentWorktreeResolvedBranch()))
-			a.home.SetWorktreesModalStatus(message)
-		}
-		a.home.SetStatus(message)
-		a.showToast(ui.ToastSuccess, message)
-	case "off", "disable":
-		a.home.ClearCommandOverlay()
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		enabled := false
-		useCurrentBranch := true
-		settings, err := a.api.UpdateWorktreeSettings(ctx, client.WorktreeSettingsUpdateRequest{WorkspacePath: a.activeContextPath(), Enabled: &enabled, UseCurrentBranch: &useCurrentBranch})
-		if err != nil {
-			message := fmt.Sprintf("worktrees disable failed: %v", err)
-			if a.home.WorktreesModalVisible() {
-				a.home.SetWorktreesModalError(message)
-			}
-			a.home.SetStatus(message)
-			a.showToast(ui.ToastError, message)
-			return
-		}
-		message := a.worktreesStatusSummary(settings)
-		if a.home.WorktreesModalVisible() {
-			a.home.SetWorktreesModalData(mapWorktreesModalData(settings, a.currentWorktreeResolvedBranch()))
-			a.home.SetWorktreesModalStatus(message)
-		}
-		a.home.SetStatus(message)
-		a.showToast(ui.ToastSuccess, message)
-	case "branch", "base":
-		a.home.ClearCommandOverlay()
-		if len(args) < 2 {
-			message := "usage: /worktrees branch <name|current>"
-			if a.home.WorktreesModalVisible() {
-				a.home.SetWorktreesModalStatus(message)
-			}
-			a.home.SetStatus(message)
-			return
-		}
-		targetBranch := strings.TrimSpace(strings.Join(args[1:], " "))
-		baseBranch, useCurrentBranch := normalizeWorktreeSettingsBranchInput(targetBranch)
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		settings, err := a.api.UpdateWorktreeSettings(ctx, client.WorktreeSettingsUpdateRequest{WorkspacePath: a.activeContextPath(), UseCurrentBranch: &useCurrentBranch, BaseBranch: baseBranch})
-		if err != nil {
-			message := fmt.Sprintf("worktrees branch-off source update failed: %v", err)
-			if a.home.WorktreesModalVisible() {
-				a.home.SetWorktreesModalError(message)
-			}
-			a.home.SetStatus(message)
-			a.showToast(ui.ToastError, message)
-			return
-		}
-		message := a.worktreesStatusSummary(settings)
-		if a.home.WorktreesModalVisible() {
-			a.home.SetWorktreesModalData(mapWorktreesModalData(settings, a.currentWorktreeResolvedBranch()))
-			a.home.SetWorktreesModalStatus(message)
-		}
-		a.home.SetStatus(message)
-		a.showToast(ui.ToastSuccess, message)
-	case "created-branch":
-		a.home.ClearCommandOverlay()
-		if len(args) < 2 {
-			message := "usage: /worktrees created-branch <prefix>"
-			if a.home.WorktreesModalVisible() {
-				a.home.SetWorktreesModalStatus(message)
-			}
-			a.home.SetStatus(message)
-			return
-		}
-		branchName := normalizeWorktreeBranchPrefix(strings.TrimSpace(strings.Join(args[1:], " ")))
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		settings, err := a.api.UpdateWorktreeSettings(ctx, client.WorktreeSettingsUpdateRequest{WorkspacePath: a.activeContextPath(), BranchName: stringPtr(branchName)})
-		if err != nil {
-			message := fmt.Sprintf("worktrees created branch update failed: %v", err)
-			if a.home.WorktreesModalVisible() {
-				a.home.SetWorktreesModalError(message)
-			}
-			a.home.SetStatus(message)
-			a.showToast(ui.ToastError, message)
-			return
-		}
-		message := a.worktreesStatusSummary(settings)
-		if a.home.WorktreesModalVisible() {
-			a.home.SetWorktreesModalData(mapWorktreesModalData(settings, a.currentWorktreeResolvedBranch()))
-			a.home.SetWorktreesModalStatus(message)
-		}
-		a.home.SetStatus(message)
-		a.showToast(ui.ToastSuccess, message)
-	default:
-		message := "usage: /worktrees [on|off|status|branch <name|current>|created-branch <prefix>]"
-		if a.home.WorktreesModalVisible() {
-			a.home.SetWorktreesModalStatus(message)
-		}
-		a.home.SetStatus(message)
-	}
+	a.home.ClearCommandOverlay()
+	a.home.SetStatus("usage: /worktrees new (alias: /wt new)")
 }
 
 func (a *App) scanWorkspaceTree(query string) {
@@ -6487,9 +7300,18 @@ func (a *App) scanWorkspaceTree(query string) {
 	a.home.SetStatus("use /workspace save #<n> to create one")
 }
 
+func (a *App) showWorkspaceSelector() {
+	a.home.SetWorkspaceModalIntent("select", "")
+	if _, err := a.openWorkspaceModal(); err != nil {
+		a.home.SetStatus(fmt.Sprintf("workspace selector failed: %v", err))
+	}
+}
+
 func (a *App) showWorkspaceManager() {
 	a.home.SetWorkspaceModalIntent("", "")
-	_, _ = a.openWorkspaceModal()
+	if _, err := a.openWorkspaceModal(); err != nil {
+		a.home.SetStatus(fmt.Sprintf("workspace manager failed: %v", err))
+	}
 }
 
 func (a *App) openWorkspaceModalForSave(target string, allowPathEdit bool) {
@@ -6516,123 +7338,12 @@ func (a *App) showAgentsManager() {
 }
 
 func (a *App) handleAgentsCommand(args []string) {
-	if len(args) == 0 || strings.EqualFold(args[0], "open") || strings.EqualFold(args[0], "manage") || strings.EqualFold(args[0], "crud") || strings.EqualFold(args[0], "list") {
+	if len(args) == 0 || strings.EqualFold(args[0], "open") {
 		a.showAgentsManager()
 		return
 	}
-
-	sub := strings.ToLower(strings.TrimSpace(args[0]))
-	switch sub {
-	case "default", "defaults", "restore":
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		result, err := a.api.RestoreAgentDefaults(ctx)
-		if err != nil {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus(fmt.Sprintf("restore defaults failed: %v", err))
-			return
-		}
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus(fmt.Sprintf("restored default agents: %d profiles", len(result.Profiles)))
-		a.queueReload(false)
-		if a.home.AgentsModalVisible() {
-			a.refreshAgentsModalData("")
-		}
-	case "reset":
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		result, err := a.api.ResetAgentDefaults(ctx)
-		if err != nil {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus(fmt.Sprintf("reset defaults failed: %v", err))
-			return
-		}
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus(fmt.Sprintf("reset agents to built-in defaults: %d profiles", len(result.Profiles)))
-		a.queueReload(false)
-		if a.home.AgentsModalVisible() {
-			a.refreshAgentsModalData("")
-		}
-	case "use":
-		if len(args) < 2 {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus("usage: /agents use <primary-agent>")
-			return
-		}
-		target := strings.TrimSpace(args[1])
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		active, _, err := a.api.ActivatePrimaryAgent(ctx, target)
-		if err != nil {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus(fmt.Sprintf("agent activate failed: %v", err))
-			return
-		}
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus(fmt.Sprintf("active primary agent: %s", emptyFallback(active, target)))
-		a.queueReload(false)
-		a.syncChatAgentRuntime()
-		if a.home.AgentsModalVisible() {
-			a.refreshAgentsModalData("")
-		}
-	case "prompt":
-		if len(args) < 3 {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus("usage: /agents prompt <name> <prompt>")
-			return
-		}
-		name := strings.TrimSpace(args[1])
-		prompt := strings.TrimSpace(strings.Join(args[2:], " "))
-		if prompt == "" {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus("usage: /agents prompt <name> <prompt>")
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		profile, _, err := a.api.UpsertAgent(ctx, client.AgentUpsertRequest{
-			Name:   name,
-			Prompt: prompt,
-		})
-		if err != nil {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus(fmt.Sprintf("agent prompt update failed: %v", err))
-			return
-		}
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus(fmt.Sprintf("agent prompt updated: %s", profile.Name))
-		a.queueReload(false)
-		if a.home.AgentsModalVisible() {
-			a.refreshAgentsModalData("")
-		}
-	case "delete", "remove":
-		if len(args) < 2 {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus("usage: /agents delete <name>")
-			return
-		}
-		target := strings.TrimSpace(args[1])
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		deleted, activePrimary, _, err := a.api.DeleteAgent(ctx, target)
-		if err != nil {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus(fmt.Sprintf("agent delete failed: %v", err))
-			return
-		}
-		a.home.ClearCommandOverlay()
-		if strings.TrimSpace(activePrimary) == "" {
-			activePrimary = "swarm"
-		}
-		a.home.SetStatus(fmt.Sprintf("agent deleted: %s (active primary: %s)", emptyFallback(deleted, target), activePrimary))
-		a.queueReload(false)
-		if a.home.AgentsModalVisible() {
-			a.refreshAgentsModalData("")
-		}
-	default:
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus("usage: /agents [open|restore|reset|use|prompt|delete]")
-	}
+	a.home.ClearCommandOverlay()
+	a.home.SetStatus("usage: /agents")
 }
 
 func (a *App) handleAuthCommand(args []string) {
@@ -7031,7 +7742,7 @@ func (a *App) queueReload(silent bool) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer cancel()
-		next, err := a.refreshHomeModel(ctx)
+		next, err := a.refreshHomeV3Model(ctx)
 		result := homeReloadResult{
 			model:  next,
 			err:    err,
@@ -7051,15 +7762,37 @@ func (a *App) consumeReloadResult() {
 	defer a.reloading.Store(false)
 	select {
 	case result := <-a.reloadCh:
+		if result.hydrated != nil {
+			a.applyTUISessionHydratedReload(*result.hydrated, result.sessionID)
+			return
+		}
+		if result.sessionSnapshot != nil {
+			a.homeModel.RecentSessions = modelSessionSummariesFromV3SyncSnapshot(*result.sessionSnapshot)
+			if a.home != nil {
+				a.home.SetModel(a.homeModel)
+			}
+			switch result.sessionOpenRoute {
+			case "chat":
+				a.openLoadedChatSessionsPalette(result.sessionQuery)
+			case "home", "v3chat":
+				a.openLoadedHomeSessionsModal(result.sessionQuery)
+			}
+			return
+		}
 		if result.err != nil {
 			if !result.silent {
-				a.home.SetStatus(fmt.Sprintf("reload failed: %v", result.err))
+				if result.sessionOpenRoute != "" {
+					a.home.SetStatus(fmt.Sprintf("sessions load failed: %v", result.err))
+				} else {
+					a.home.SetStatus(fmt.Sprintf("reload failed: %v", result.err))
+				}
 			}
 			return
 		}
 		a.syncActiveContextFromHomeModel(result.model)
 		a.applyHomeModel(result.model)
 		a.syncVaultUI()
+		a.announceStartupUpdate(result.model)
 	default:
 	}
 }
@@ -7071,6 +7804,17 @@ func (a *App) consumeGitStatusRefreshResults() bool {
 	changed := false
 	for {
 		select {
+		case result := <-a.gitWatcherReady:
+			if result.generation != a.gitWatchGeneration.Load() || !pathsEqual(result.path, a.gitWatcherStartingPath) {
+				discardRepoGitWatcher(result.watcher)
+				continue
+			}
+			a.gitWatcherStartingPath = ""
+			if result.err != nil || result.watcher == nil {
+				continue
+			}
+			a.gitWatcher = result.watcher
+			a.runGitRealtimeWatcher(result.watcher, result.generation, result.path)
 		case result := <-a.gitStatusCh:
 			if result.generation != a.gitWatchGeneration.Load() {
 				continue
@@ -7094,11 +7838,8 @@ func activeAgentRuntime(state client.AgentState) (string, string, bool, bool) {
 		if !strings.EqualFold(strings.TrimSpace(profile.Name), active) {
 			continue
 		}
-		exitPlanMode := true
-		if profile.ExitPlanModeEnabled != nil {
-			exitPlanMode = *profile.ExitPlanModeEnabled
-		}
-		return active, strings.TrimSpace(profile.ExecutionSetting), exitPlanMode, true
+		executionSetting, exitPlanMode := agentProfileRuntime(profile)
+		return active, executionSetting, exitPlanMode, true
 	}
 	return active, "", strings.EqualFold(active, "swarm"), false
 }
@@ -7144,15 +7885,33 @@ func (a *App) applyLoadedAppConfig(cfg AppConfig) {
 		a.chat.SetThinkingTagsVisible(a.config.Chat.ThinkingTags)
 		a.chat.SetSwarmName(a.config.Swarm.Name)
 	}
+	if a.v3Chat != nil {
+		a.v3Chat.SetHeaderVisible(a.config.Chat.ShowHeader)
+		a.v3Chat.SetThinkingTagsVisible(a.config.Chat.ThinkingTags)
+	}
 	a.setMouseCapture(a.config.Input.MouseEnabled)
 	a.mouseHintShown = false
 	a.syncConfiguredCustomThemes()
 	a.applyEffectiveTheme()
 }
 
+func (a *App) currentHomeModel() model.HomeModel {
+	if a == nil {
+		return model.HomeModel{}
+	}
+	next := a.homeModel
+	if a.home == nil {
+		return next
+	}
+	next.ModelProvider, next.ModelName, next.ThinkingLevel, next.ServiceTier, next.ContextMode = a.home.ModelState()
+	return next
+}
+
 func (a *App) applyHomeModel(next model.HomeModel) {
 	a.homeModel = next
 	a.home.SetModel(next)
+	route := a.selectedChatRouteForWorkspace(a.activeWorkspacePath())
+	a.home.SetSessionIntent(buildHomeSessionIntent(a.home, route))
 	a.home.SetSwarmNotificationCount(a.swarmNotificationCount)
 	if next.UpdateStatus != nil {
 		a.updateStatus = *next.UpdateStatus
@@ -7196,6 +7955,41 @@ func (a *App) setSwarmNotificationCount(count int) {
 	}
 }
 
+func (a *App) queueNotificationCount() {
+	if a == nil || a.api == nil || a.notificationCountCh == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		count, err := a.loadSwarmNotificationCount(ctx)
+		select {
+		case a.notificationCountCh <- notificationCountResult{count: count, err: err}:
+		default:
+		}
+		if a.screen != nil {
+			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptNotificationReady))
+		}
+	}()
+}
+
+func (a *App) consumeNotificationCountResult() {
+	if a == nil || a.notificationCountCh == nil {
+		return
+	}
+	select {
+	case result := <-a.notificationCountCh:
+		if result.err != nil {
+			if a.home != nil {
+				a.home.SetStatus(fmt.Sprintf("notification load failed: %v", result.err))
+			}
+			return
+		}
+		a.setSwarmNotificationCount(result.count)
+	default:
+	}
+}
+
 func (a *App) loadSwarmNotificationCount(ctx context.Context) (int, error) {
 	if a == nil || a.api == nil {
 		return 0, errors.New("api client unavailable")
@@ -7210,393 +8004,6 @@ func (a *App) loadSwarmNotificationCount(ctx context.Context) (int, error) {
 	return summary.UnreadCount, nil
 }
 
-func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
-	next := model.EmptyHome()
-	next.ServerURL = a.api.BaseURL()
-	contextPath := normalizePath(a.activeContextPath())
-	if contextPath == "" {
-		contextPath = normalizePath(a.startupCWD)
-	}
-	next.CWD = contextPath
-	if next.CWD == "" {
-		next.CWD = "."
-	}
-
-	errorsSeen := make([]string, 0, 8)
-
-	if strings.TrimSpace(a.api.Token()) == "" {
-		if err := a.api.EnsureLocalAuth(ctx); err != nil {
-			if errors.Is(err, client.ErrLocalIdentityBootstrapRequired) {
-				next.HintLine = "No product user exists yet. Complete onboarding before using protected actions."
-				next.TipLine = "Create username + swarm name, then type desktop to confirm local owner bootstrap."
-				return next, nil
-			}
-			errorsSeen = append(errorsSeen, "local auth bootstrap failed")
-		}
-	}
-
-	vaultStatus, vaultErr := a.api.GetVaultStatus(ctx)
-	if vaultErr == nil {
-		a.vault = vaultStatus
-		if vaultStatus.Enabled && !vaultStatus.Unlocked {
-			next.HintLine = "Vault is locked. Unlock it before using Swarm."
-			next.TipLine = "/vault"
-			return next, nil
-		}
-	} else {
-		errorsSeen = append(errorsSeen, "vault status unavailable")
-	}
-
-	var (
-		health           client.HealthStatus
-		healthErr        error
-		worktreeSettings client.WorktreeSettings
-		worktreeErr      error
-		overview         client.WorkspaceOverviewResponse
-		overviewErr      error
-		cwdResolve       client.WorkspaceCWDResolveResponse
-		cwdResolveErr    error
-		providerStatuses []client.ProviderStatus
-		providersErr     error
-		modelResolved    client.ModelResolved
-		modelErr         error
-		updateStatus     client.UpdateStatus
-		updateErr        error
-		agentState       client.AgentState
-		agentErr         error
-		contextReport    client.ContextReport
-		contextErr       error
-		sessions         []client.SessionSummary
-		sessionsErr      error
-	)
-	var refreshWG sync.WaitGroup
-	refreshWG.Add(9)
-	go func() {
-		defer refreshWG.Done()
-		health, healthErr = a.api.GetHealth(ctx)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		worktreeSettings, worktreeErr = a.api.GetWorktreeSettings(ctx, next.CWD)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		overview, overviewErr = a.api.WorkspaceOverview(ctx, next.CWD, nil, homeWorkspaceOverviewSessionLimit)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		cwdResolve, cwdResolveErr = a.api.WorkspaceCWDResolve(ctx, next.CWD)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		providerStatuses, providersErr = a.api.ListProviders(ctx)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		modelResolved, modelErr = a.api.GetModel(ctx)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		updateStatus, updateErr = a.api.GetUpdateStatus(ctx)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		agentState, agentErr = a.api.ListAgents(ctx, 200)
-	}()
-	go func() {
-		defer refreshWG.Done()
-		contextReport, contextErr = a.api.ContextSources(ctx, contextPath)
-	}()
-	refreshWG.Wait()
-
-	if healthErr == nil {
-		if mode := strings.TrimSpace(health.Mode); mode != "" {
-			next.ServerMode = mode
-		}
-		next.BypassPermissions = health.BypassPermissions
-	} else {
-		errorsSeen = append(errorsSeen, "daemon status unavailable")
-	}
-
-	if worktreeErr == nil {
-		next.WorktreesEnabled = worktreeSettings.Enabled
-	} else {
-		errorsSeen = append(errorsSeen, "worktrees settings unavailable")
-	}
-
-	activePath := normalizePath(strings.TrimSpace(next.CWD))
-	activeIsWorkspace := false
-	activeIsWorkspaceRoot := false
-	if overviewErr == nil {
-		next.CurrentSwarmTarget = modelSwarmTargetFromClient(overview.SwarmTarget)
-		selectedWorkspacePath := ""
-		if overview.CurrentWorkspace != nil {
-			selectedWorkspacePath = normalizePath(strings.TrimSpace(overview.CurrentWorkspace.WorkspacePath))
-			if selectedWorkspacePath == "" {
-				selectedWorkspacePath = normalizePath(strings.TrimSpace(overview.CurrentWorkspace.ResolvedPath))
-			}
-		}
-		seenDirectories := make(map[string]struct{}, len(overview.Workspaces)+len(overview.Directories))
-		for i, entry := range overview.Workspaces {
-			entryPath := normalizePath(entry.Path)
-			if entryPath == "" {
-				continue
-			}
-			name := strings.TrimSpace(entry.WorkspaceName)
-			if name == "" {
-				name = filepath.Base(entryPath)
-			}
-			if name == "" || name == "." || name == string(filepath.Separator) {
-				name = "workspace"
-			}
-			directories := append([]string(nil), entry.Directories...)
-			if len(directories) == 0 {
-				directories = []string{entryPath}
-			}
-			next.Workspaces = append(next.Workspaces, model.Workspace{
-				Name:                    name,
-				Path:                    entryPath,
-				WorkspaceID:             strings.TrimSpace(entry.WorkspaceID),
-				WorkspaceGeneration:     entry.WorkspaceGeneration,
-				LocalWorkspaceBindingID: strings.TrimSpace(entry.LocalWorkspaceBindingID),
-				Directories:             directories,
-				ReplicationLinks:        modelReplicationLinksFromClient(entry.ReplicationLinks),
-				TopologyRoutes:          modelTopologyRoutesFromClient(entry.TopologyRoutes),
-				ThemeID:                 strings.TrimSpace(entry.ThemeID),
-				Icon:                    workspaceIcon(i),
-			})
-			next.Directories = append(next.Directories, model.DirectoryItem{
-				Name:         name,
-				Path:         displayPath(entryPath),
-				ResolvedPath: entryPath,
-				Branch:       "-",
-				DirtyCount:   0,
-				AgentsToken:  "none",
-				IsWorkspace:  true,
-			})
-			seenDirectories[entryPath] = struct{}{}
-		}
-		preferredWorkspacePath := selectedWorkspacePath
-		if preferredWorkspacePath == "" {
-			preferredWorkspacePath = normalizePath(strings.TrimSpace(a.workspacePath))
-		}
-		// ChatRoutes are authoritative only after /v1/workspace/cwd/resolve below.
-		activeWorkspacePath := resolveWorkspaceSelectionPath(activePath, next.Workspaces, preferredWorkspacePath)
-		activeIsWorkspace = activeWorkspacePath != ""
-		activeIsWorkspaceRoot = activeWorkspacePath != "" && pathsEqual(activePath, activeWorkspacePath)
-		for i := range next.Workspaces {
-			next.Workspaces[i].Active = activeWorkspacePath != "" && pathsEqual(next.Workspaces[i].Path, activeWorkspacePath)
-		}
-		for _, entry := range overview.Directories {
-			entryPath := normalizePath(entry.Path)
-			if entryPath == "" {
-				continue
-			}
-			if _, exists := seenDirectories[entryPath]; exists {
-				continue
-			}
-			name := strings.TrimSpace(entry.Name)
-			if name == "" {
-				name = directoryNameForPath(entryPath)
-			}
-			next.Directories = append(next.Directories, model.DirectoryItem{
-				Name:         name,
-				Path:         displayPath(entryPath),
-				ResolvedPath: entryPath,
-				Branch:       "-",
-				DirtyCount:   0,
-				AgentsToken:  "none",
-				IsWorkspace:  false,
-			})
-			seenDirectories[entryPath] = struct{}{}
-		}
-	} else {
-		errorsSeen = append(errorsSeen, "workspace overview unavailable")
-	}
-	if cwdResolveErr == nil {
-		next = applyCWDResolverToHomeModel(next, cwdResolve)
-		preferredWorkspacePath := activePath
-		if cwdResolve.Workspace != nil && strings.TrimSpace(cwdResolve.Workspace.WorkspacePath) != "" {
-			preferredWorkspacePath = normalizePath(strings.TrimSpace(cwdResolve.Workspace.WorkspacePath))
-		}
-		if len(next.ChatRoutes) > 0 {
-			selectedRouteID := a.resolveSelectedChatRouteIDForWorkspace(preferredWorkspacePath, next.ChatRoutes)
-			a.selectedChatRouteID = selectedRouteID
-			next.SelectedChatRouteID = selectedRouteID
-		} else {
-			a.selectedChatRouteID = ""
-			next.SelectedChatRouteID = ""
-		}
-	} else {
-		errorsSeen = append(errorsSeen, "cwd route resolver unavailable")
-	}
-
-	if bindingID := localWorkspaceBindingIDForActiveWorkspace(next, activePath); bindingID != "" {
-		sessions, sessionsErr = a.api.ListSessionsForWorkspaceBinding(ctx, homeRecentSessionLimit, bindingID)
-	} else {
-		sessions, sessionsErr = a.api.ListSessionsForExactCWD(ctx, homeRecentSessionLimit, contextPath)
-	}
-
-	gitStatus, _ := gitStatusForPath(activePath)
-	if activeIsWorkspace {
-		matched := false
-		for i := range next.Directories {
-			if pathsEqual(next.Directories[i].ResolvedPath, activePath) {
-				next.Directories[i].IsWorkspace = activeIsWorkspaceRoot
-				applyGitStatusToDirectory(&next.Directories[i], gitStatus)
-				matched = true
-				break
-			}
-		}
-		if !matched && activePath != "" {
-			next.Directories = append([]model.DirectoryItem{
-				newDirectoryItemWithGitStatus(activePath, activeIsWorkspaceRoot, gitStatus),
-			}, next.Directories...)
-		}
-	} else {
-		next.Directories = append([]model.DirectoryItem{
-			newDirectoryItemWithGitStatus(activePath, false, gitStatus),
-		}, next.Directories...)
-	}
-
-	runnableProviders := 0
-	if providersErr == nil {
-		for _, status := range providerStatuses {
-			id := strings.ToLower(strings.TrimSpace(status.ID))
-			if id == "" {
-				continue
-			}
-			if status.Runnable {
-				runnableProviders++
-			}
-		}
-		next.AuthConfigured = runnableProviders > 0
-	} else {
-		errorsSeen = append(errorsSeen, "provider status unavailable")
-	}
-
-	if modelErr == nil {
-		next = applyHomeModelResolved(next, modelResolved)
-	} else {
-		errorsSeen = append(errorsSeen, "model preference unavailable")
-	}
-
-	if updateErr == nil {
-		next.UpdateStatus = &updateStatus
-		if current := strings.TrimSpace(updateStatus.CurrentVersion); current != "" {
-			next.Version = current
-		}
-		a.updateStatus = updateStatus
-	} else if strings.TrimSpace(buildinfo.DisplayVersion()) != "dev" {
-		errorsSeen = append(errorsSeen, "update status unavailable")
-	}
-
-	if providerID := strings.ToLower(strings.TrimSpace(next.ModelProvider)); providerID != "" {
-		credentials, credErr := a.api.ListAuthCredentials(ctx, providerID, "", 50)
-		if credErr == nil {
-			for _, record := range credentials.Records {
-				if record.Active {
-					next.AuthType = strings.TrimSpace(record.AuthType)
-					next.AuthLast4 = strings.TrimSpace(record.Last4)
-					break
-				}
-			}
-		}
-	}
-
-	if agentErr == nil {
-		next.ActiveAgent, next.ActiveAgentExecutionSetting, next.ActiveAgentExitPlanMode, next.ActiveAgentRuntimeKnown = activeAgentRuntime(agentState)
-		next.Subagents = chatMentionSubagentNames(agentState)
-	} else {
-		next.ActiveAgent = "swarm"
-		next.ActiveAgentExecutionSetting = ""
-		next.ActiveAgentExitPlanMode = true
-		next.ActiveAgentRuntimeKnown = true
-		errorsSeen = append(errorsSeen, "agent state unavailable")
-	}
-
-	if contextErr == nil {
-		next.RuleCount = len(contextReport.Rules)
-		next.SkillCount = len(contextReport.Skills)
-		agentsToken := contextAgentsToken(contextReport.Rules)
-		for i := range next.Directories {
-			if pathsEqual(next.Directories[i].ResolvedPath, contextPath) {
-				next.Directories[i].AgentsToken = agentsToken
-			}
-		}
-	} else {
-		errorsSeen = append(errorsSeen, "context scan unavailable")
-	}
-
-	// Home does not render usage summaries, so avoid one /usage request per
-	// session during startup and keep the initial recent-session slice small.
-	if sessionsErr == nil {
-		modelSessions := make([]model.SessionSummary, 0, len(sessions))
-		for _, session := range sessions {
-			modelSessions = append(modelSessions, modelSessionSummaryFromClient(session))
-		}
-		for _, session := range applySessionDepths(modelSessions) {
-			title := strings.TrimSpace(session.Title)
-			if title == "" {
-				title = session.ID
-			}
-			session.Title = title
-			next.RecentSessions = append(next.RecentSessions, session)
-		}
-	} else {
-		errorsSeen = append(errorsSeen, "session list unavailable")
-	}
-
-	next.QuickActions = homeQuickActions(next)
-
-	directoryMode := activeWorkspaceIndex(next.Workspaces) < 0
-	if directoryMode && !next.AuthConfigured {
-		next.HintLine = "Directory mode and auth is missing, run /auth"
-		next.TipLine = "/workspace  •  /auth"
-	} else if directoryMode {
-		next.HintLine = "Directory mode (no active workspace)"
-		next.TipLine = "/workspace"
-	} else if !next.AuthConfigured {
-		next.HintLine = "Auth is missing, run /auth"
-		next.TipLine = "/auth"
-	} else {
-		next.HintLine = "ctrl+down enters sessions • ctrl+up exits sessions"
-		next.TipLine = ""
-	}
-
-	next.HintLine = strings.TrimSpace(next.HintLine)
-
-	if len(errorsSeen) > 0 {
-		preview := strings.Join(errorsSeen, "; ")
-		if len(preview) > 96 {
-			preview = preview[:96] + "..."
-		}
-		if strings.TrimSpace(next.HintLine) == "" {
-			next.HintLine = fmt.Sprintf("degraded: %s", preview)
-		} else {
-			next.HintLine = fmt.Sprintf("%s • degraded: %s", next.HintLine, preview)
-		}
-	}
-
-	cycleLabel := "Shift+Tab"
-	if keybinds := a.activeKeyBindings(); keybinds != nil {
-		label := strings.TrimSpace(keybinds.Label(ui.KeybindChatCycleMode))
-		if label != "" {
-			cycleLabel = label
-		}
-	}
-	modeHint := fmt.Sprintf("%s changes mode", cycleLabel)
-	if next.HintLine == "" {
-		next.HintLine = modeHint
-	} else if !strings.Contains(strings.ToLower(next.HintLine), "changes mode") {
-		next.HintLine = next.HintLine + " • " + modeHint
-	}
-	if len(errorsSeen) > 0 && len(next.Workspaces) == 0 && strings.TrimSpace(next.ModelName) == "" && len(next.RecentSessions) == 0 {
-		return next, errors.New(strings.Join(errorsSeen, "; "))
-	}
-	return next, nil
-}
-
 func homeUpdateVersionHint(status *client.UpdateStatus) string {
 	if status == nil || !status.UpdateAvailable {
 		return ""
@@ -7605,13 +8012,14 @@ func homeUpdateVersionHint(status *client.UpdateStatus) string {
 }
 
 func (a *App) announceStartupUpdate(next model.HomeModel) {
-	if a == nil {
+	if a == nil || a.startupUpdateAnnounced {
 		return
 	}
 	status := next.UpdateStatus
 	if status == nil || !status.UpdateAvailable {
 		return
 	}
+	a.startupUpdateAnnounced = true
 	latest := strings.TrimSpace(status.LatestVersion)
 	current := strings.TrimSpace(next.Version)
 	if latest == "" {
@@ -7675,15 +8083,17 @@ func (a *App) syncActiveContextFromHomeModel(next model.HomeModel) {
 	if a == nil {
 		return
 	}
-	if next.CWD != "" {
-		a.activePath = normalizePath(strings.TrimSpace(next.CWD))
-	}
 	a.workspacePath = ""
 	for _, ws := range next.Workspaces {
 		if ws.Active {
 			a.workspacePath = normalizePath(strings.TrimSpace(ws.Path))
 			break
 		}
+	}
+	if a.workspacePath != "" {
+		a.activePath = a.workspacePath
+	} else if next.CWD != "" {
+		a.activePath = normalizePath(strings.TrimSpace(next.CWD))
 	}
 	a.refreshGitRealtimeWatcher()
 }
@@ -7751,6 +8161,9 @@ func (a *App) syncKnownWorkspaceSelectionForPath(path string) {
 	}
 	target := normalizePath(strings.TrimSpace(path))
 	if target != "" {
+		if !pathsEqual(a.activePath, target) {
+			a.markTUIRealtimeScopeStale("workspace scope changed")
+		}
 		a.activePath = target
 		a.homeModel.CWD = target
 	}
@@ -7820,7 +8233,7 @@ func buildChatRoutesForWorkspacesWithHostTarget(workspaces []model.Workspace, wo
 	hostBindingID := strings.TrimSpace(active.LocalWorkspaceBindingID)
 	if hostBindingID == "" {
 		for _, route := range active.TopologyRoutes {
-			if strings.TrimSpace(route.WorkspaceBindingID) == "" || strings.TrimSpace(route.ContainerID) != "" {
+			if strings.TrimSpace(route.WorkspaceBindingID) == "" {
 				continue
 			}
 			if hostSwarmID != "" && strings.EqualFold(strings.TrimSpace(route.RuntimeSwarmID), hostSwarmID) {
@@ -8032,25 +8445,14 @@ func (a *App) sessionRouteFromMetadata(workspacePath string, metadata map[string
 	if len(metadata) == 0 {
 		return model.ChatRoute{}, false
 	}
-	routeID := consumeStringMetadata(metadata, "swarm_route_id")
-	label := consumeStringMetadata(metadata, "swarm_route_label")
-	if routeID != "" || label != "" {
-		if routeID == "" {
-			routeID = "host"
-		}
-		if routeID == "host" {
-			return model.ChatRoute{ID: "host", Label: emptyFallback(label, "host"), TargetKind: "host", TargetRelationship: "self"}, true
-		}
+	hostWorkspacePath := firstNonEmpty(consumeStringMetadata(metadata, "swarm_v3_source_workspace_path"), workspacePath)
+	runtimeWorkspacePath := consumeStringMetadata(metadata, "swarm_v3_runtime_workspace_path")
+	workspaceBindingID := consumeStringMetadata(metadata, "swarm_v3_workspace_binding_id")
+	childSwarmID := consumeStringMetadata(metadata, "swarm_v3_runtime_swarm_id")
+	routeID := ""
+	if childSwarmID != "" && workspaceBindingID != "" {
+		routeID = "swarm:" + childSwarmID + ":binding:" + workspaceBindingID
 	}
-
-	if route, ok := a.v2SessionRouteFromMetadata(workspacePath, metadata); ok {
-		return route, true
-	}
-
-	hostWorkspacePath := consumeStringMetadata(metadata, "swarm_routed_host_workspace_path")
-	runtimeWorkspacePath := consumeStringMetadata(metadata, "swarm_routed_runtime_workspace_path")
-	workspaceBindingID := firstNonEmpty(consumeStringMetadata(metadata, "swarm_routed_workspace_binding_id"), consumeStringMetadata(metadata, "swarm_managed_host_workspace_binding_id"), consumeStringMetadata(metadata, "route_workspace_binding_id"))
-	childSwarmID := consumeStringMetadata(metadata, "swarm_routed_child_swarm_id")
 	if a == nil {
 		routes := buildChatRoutesForWorkspaces(nil, firstNonEmpty(hostWorkspacePath, workspacePath))
 		for _, route := range routes {
@@ -8065,9 +8467,6 @@ func (a *App) sessionRouteFromMetadata(workspacePath string, metadata map[string
 		routes = buildChatRoutesForHomeModel(a.homeModel, firstNonEmpty(hostWorkspacePath, workspacePath))
 	}
 	for _, route := range routes {
-		if routeID != "" && strings.TrimSpace(route.ID) == routeID {
-			return route, true
-		}
 		if workspaceBindingID != "" && strings.TrimSpace(route.WorkspaceBindingID) == workspaceBindingID {
 			return route, true
 		}
@@ -8077,70 +8476,10 @@ func (a *App) sessionRouteFromMetadata(workspacePath string, metadata map[string
 			}
 		}
 	}
-	if label != "" {
-		return model.ChatRoute{ID: routeID, Label: label, SwarmID: childSwarmID, HostWorkspacePath: hostWorkspacePath, RuntimeWorkspacePath: runtimeWorkspacePath}, true
-	}
-	if childSwarmID != "" {
-		return model.ChatRoute{ID: routeID, Label: childSwarmID, SwarmID: childSwarmID, HostWorkspacePath: hostWorkspacePath, RuntimeWorkspacePath: runtimeWorkspacePath}, true
-	}
-	if routeID != "" && !strings.EqualFold(routeID, "host") {
-		return model.ChatRoute{ID: routeID, Label: routeIDSwarmLabel(routeID)}, true
+	if routeID != "" {
+		return model.ChatRoute{ID: routeID, Label: childSwarmID, SwarmID: childSwarmID, WorkspaceBindingID: workspaceBindingID, HostWorkspacePath: hostWorkspacePath, RuntimeWorkspacePath: runtimeWorkspacePath}, true
 	}
 	return model.ChatRoute{}, false
-}
-
-func (a *App) v2SessionRouteFromMetadata(workspacePath string, metadata map[string]any) (model.ChatRoute, bool) {
-	executionClass := strings.ToLower(consumeStringMetadata(metadata, "swarm_v2_execution_class"))
-	runtimeSwarmID := consumeStringMetadata(metadata, "swarm_v2_runtime_swarm_id")
-	workspaceBindingID := firstNonEmpty(consumeStringMetadata(metadata, "swarm_v2_workspace_binding_id"), consumeStringMetadata(metadata, "local_workspace_binding_id"))
-	if executionClass == "" || runtimeSwarmID == "" || workspaceBindingID == "" {
-		return model.ChatRoute{}, false
-	}
-	targetKind := consumeStringMetadata(metadata, "swarm_v2_runtime_kind")
-	targetRelationship := ""
-	switch executionClass {
-	case "primary":
-		targetRelationship = "self"
-		if targetKind == "" {
-			targetKind = "host"
-		}
-	case "local_container":
-		targetRelationship = "child"
-		if targetKind == "" {
-			targetKind = "container"
-		}
-	default:
-		return model.ChatRoute{}, false
-	}
-	runtimeWorkspacePath := consumeStringMetadata(metadata, "swarm_v2_runtime_workspace_path")
-	hostWorkspacePath := firstNonEmpty(consumeStringMetadata(metadata, "swarm_v2_source_workspace_path"), workspacePath)
-	route := model.ChatRoute{
-		ID:                   "swarm:" + runtimeSwarmID + ":binding:" + workspaceBindingID,
-		Label:                runtimeSwarmID,
-		SwarmID:              runtimeSwarmID,
-		WorkspaceBindingID:   workspaceBindingID,
-		HostWorkspacePath:    hostWorkspacePath,
-		RuntimeWorkspacePath: runtimeWorkspacePath,
-		TargetKind:           targetKind,
-		TargetRelationship:   targetRelationship,
-	}
-	if a == nil {
-		return route, true
-	}
-	for _, candidate := range a.homeModel.ChatRoutes {
-		if strings.TrimSpace(candidate.WorkspaceBindingID) == workspaceBindingID && strings.TrimSpace(candidate.SwarmID) == runtimeSwarmID {
-			return candidate, true
-		}
-	}
-	return route, true
-}
-
-func routeIDSwarmLabel(routeID string) string {
-	parts := strings.SplitN(strings.TrimSpace(routeID), ":", 3)
-	if len(parts) >= 2 && strings.EqualFold(parts[0], "swarm") && strings.TrimSpace(parts[1]) != "" {
-		return strings.TrimSpace(parts[1])
-	}
-	return strings.TrimSpace(routeID)
 }
 
 func modelSwarmTargetFromClient(target *client.WorkspaceOverviewSwarmTarget) *model.SwarmTarget {
@@ -8156,15 +8495,9 @@ func modelSwarmTargetFromClient(target *client.WorkspaceOverviewSwarmTarget) *mo
 		Role:         strings.TrimSpace(target.Role),
 		Relationship: strings.TrimSpace(target.Relationship),
 		Kind:         strings.TrimSpace(target.Kind),
-		DeploymentID: strings.TrimSpace(target.DeploymentID),
-		AttachStatus: strings.TrimSpace(target.AttachStatus),
-		HostSwarmID:  strings.TrimSpace(target.HostSwarmID),
 		Online:       target.Online,
 		Selectable:   target.Selectable,
 		Current:      target.Current,
-		BackendURL:   strings.TrimSpace(target.BackendURL),
-		DesktopURL:   strings.TrimSpace(target.DesktopURL),
-		LastError:    strings.TrimSpace(target.LastError),
 	}
 }
 
@@ -8181,62 +8514,14 @@ func modelTopologyRoutesFromClient(routes []client.WorkspaceTopologyRoute) []mod
 		}
 		out = append(out, model.WorkspaceTopologyRoute{
 			RouteID:              strings.TrimSpace(route.RouteID),
-			RouteSource:          strings.TrimSpace(route.RouteSource),
 			WorkspaceBindingID:   strings.TrimSpace(route.WorkspaceBindingID),
 			RuntimeSwarmID:       runtimeSwarmID,
 			RuntimeSwarmName:     strings.TrimSpace(route.RuntimeSwarmName),
 			RuntimeKind:          strings.TrimSpace(route.RuntimeKind),
 			RuntimeRelationship:  strings.TrimSpace(route.RuntimeRelationship),
-			RuntimeBackendURL:    strings.TrimSpace(route.RuntimeBackendURL),
-			HostSwarmID:          strings.TrimSpace(route.HostSwarmID),
 			HostWorkspacePath:    strings.TrimSpace(route.HostWorkspacePath),
 			HostWorkspaceName:    strings.TrimSpace(route.HostWorkspaceName),
 			RuntimeWorkspacePath: runtimeWorkspacePath,
-			ContainerID:          strings.TrimSpace(route.ContainerID),
-			ReplicationMode:      strings.TrimSpace(route.ReplicationMode),
-			Writable:             route.Writable,
-			Sync: model.WorkspaceReplicationSync{
-				Enabled: route.Sync.Enabled,
-				Mode:    strings.TrimSpace(route.Sync.Mode),
-				Modules: append([]string(nil), route.Sync.Modules...),
-			},
-			CreatedAt: route.CreatedAt,
-			UpdatedAt: route.UpdatedAt,
-		})
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func modelReplicationLinksFromClient(links []client.WorkspaceReplicationLink) []model.WorkspaceReplicationLink {
-	if len(links) == 0 {
-		return nil
-	}
-	out := make([]model.WorkspaceReplicationLink, 0, len(links))
-	for _, link := range links {
-		id := strings.TrimSpace(link.ID)
-		targetSwarmID := strings.TrimSpace(link.TargetSwarmID)
-		targetWorkspacePath := strings.TrimSpace(link.TargetWorkspacePath)
-		if targetSwarmID == "" || targetWorkspacePath == "" {
-			continue
-		}
-		out = append(out, model.WorkspaceReplicationLink{
-			ID:                  id,
-			TargetKind:          strings.TrimSpace(link.TargetKind),
-			TargetSwarmID:       targetSwarmID,
-			TargetSwarmName:     strings.TrimSpace(link.TargetSwarmName),
-			TargetWorkspacePath: targetWorkspacePath,
-			ReplicationMode:     strings.TrimSpace(link.ReplicationMode),
-			Writable:            link.Writable,
-			Sync: model.WorkspaceReplicationSync{
-				Enabled: link.Sync.Enabled,
-				Mode:    strings.TrimSpace(link.Sync.Mode),
-				Modules: append([]string(nil), link.Sync.Modules...),
-			},
-			CreatedAt: link.CreatedAt,
-			UpdatedAt: link.UpdatedAt,
 		})
 	}
 	if len(out) == 0 {
@@ -8261,27 +8546,50 @@ func (a *App) refreshGitRealtimeWatcher() {
 		a.stopGitRealtimeWatcher()
 		return
 	}
-	if a.gitWatcher != nil && pathsEqual(a.gitWatcher.path, target) {
+	if (a.gitWatcher != nil && pathsEqual(a.gitWatcher.path, target)) || pathsEqual(a.gitWatcherStartingPath, target) {
 		return
 	}
 	a.stopGitRealtimeWatcher()
 	a.startGitRealtimeWatcher(target)
 }
 
+// startGitRealtimeWatcher keeps repository discovery and recursive watch
+// registration off the TUI event loop. Large worktrees can contain tens of
+// thousands of directories, so constructing the watcher synchronously would
+// freeze the first usable frame and every workspace switch.
 func (a *App) startGitRealtimeWatcher(path string) {
-	if a == nil {
+	if a == nil || a.gitWatcherReady == nil {
 		return
 	}
 	target := normalizePath(path)
 	if target == "" {
 		return
 	}
-	watcher, err := newRepoGitWatcher(target)
-	if err != nil {
+	generation := a.gitWatchGeneration.Add(1)
+	a.gitWatcherStartingPath = target
+	go func() {
+		watcher, err := newRepoGitWatcher(target)
+		if generation != a.gitWatchGeneration.Load() {
+			discardRepoGitWatcher(watcher)
+			return
+		}
+		result := gitWatcherStartResult{generation: generation, path: target, watcher: watcher, err: err}
+		select {
+		case a.gitWatcherReady <- result:
+		default:
+			discardRepoGitWatcher(watcher)
+			return
+		}
+		if a.screen != nil {
+			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptGitStatusReady))
+		}
+	}()
+}
+
+func (a *App) runGitRealtimeWatcher(watcher *repoGitWatcher, generation uint64, target string) {
+	if a == nil || watcher == nil {
 		return
 	}
-	generation := a.gitWatchGeneration.Add(1)
-	a.gitWatcher = watcher
 	go watcher.run(func() {
 		status, ok := gitStatusForPath(target)
 		result := gitStatusRefreshResult{generation: generation, path: target, status: status, ok: ok}
@@ -8303,8 +8611,19 @@ func (a *App) startGitRealtimeWatcher(path string) {
 	})
 }
 
+func discardRepoGitWatcher(watcher *repoGitWatcher) {
+	if watcher != nil && watcher.watcher != nil {
+		_ = watcher.watcher.Close()
+	}
+}
+
 func (a *App) stopGitRealtimeWatcher() {
-	if a == nil || a.gitWatcher == nil {
+	if a == nil {
+		return
+	}
+	a.gitWatchGeneration.Add(1)
+	a.gitWatcherStartingPath = ""
+	if a.gitWatcher == nil {
 		return
 	}
 	a.gitWatcher.stopWatching()
@@ -8350,8 +8669,12 @@ func (a *App) syncActiveWorkspaceSelection(resolution client.WorkspaceResolution
 		a.syncKnownWorkspaceSelectionForPath(resolvedPath)
 		return
 	}
+	previousWorkspacePath := a.workspacePath
 	a.workspacePath = workspacePath
 	if resolvedPath != "" {
+		if !pathsEqual(a.activePath, resolvedPath) || !pathsEqual(previousWorkspacePath, workspacePath) {
+			a.markTUIRealtimeScopeStale("workspace scope changed")
+		}
 		a.activePath = resolvedPath
 		a.homeModel.CWD = resolvedPath
 	}
@@ -8452,7 +8775,51 @@ func activeWorkspaceIndex(workspaces []model.Workspace) int {
 	return -1
 }
 
+func (a *App) homeInteractionActive() bool {
+	if a.home == nil {
+		return false
+	}
+	return a.home.OnboardingVisible() ||
+		a.home.AlertsModalVisible() ||
+		a.home.AuthModalVisible() ||
+		a.home.AuthDefaultsInfoVisible() ||
+		a.home.SessionsModalVisible() ||
+		a.home.VaultModalVisible() ||
+		a.home.WorkspaceModalVisible() ||
+		a.home.WorktreesModalVisible() ||
+		a.home.CodexUsageModalVisible() ||
+		a.home.ProfilesModalVisible() ||
+		a.home.ModelsModalVisible() ||
+		a.home.AgentsModalVisible() ||
+		a.home.VoiceModalVisible() ||
+		a.home.ThemeModalVisible() ||
+		a.home.KeybindsModalVisible()
+}
+
+func (a *App) workspaceSwitchRunActive() bool {
+	if a.route == "v3chat" && a.v3Chat != nil {
+		if runtime := a.v3Chat.Runtime(); runtime != nil && runtime.Store() != nil {
+			_, active := v3chat.SelectActiveRun(runtime.Store().Snapshot())
+			return active
+		}
+	}
+	return a.route == "chat" && a.chat != nil && a.chat.RunInProgress()
+}
+
 func (a *App) workspaceCycleHotkeyBlocked() bool {
+	if a.workspaceSwitchRunActive() {
+		message := "workspace switching is unavailable while a run is active"
+		if a.v3Chat != nil {
+			a.v3Chat.SetStatus(message)
+		}
+		if a.chat != nil {
+			a.chat.SetStatus(message)
+		}
+		return true
+	}
+	if a.route == "v3chat" && a.v3Chat != nil {
+		return a.homeInteractionActive()
+	}
 	if a.route != "home" {
 		if a.route == "chat" {
 			message := "To change workspace, do /new or go to the home screen (Ctrl+B)"
@@ -8464,16 +8831,7 @@ func (a *App) workspaceCycleHotkeyBlocked() bool {
 		}
 		return true
 	}
-	return a.home.AuthModalVisible() ||
-		a.home.AuthDefaultsInfoVisible() ||
-		a.home.SessionsModalVisible() ||
-		a.home.WorkspaceModalVisible() ||
-		a.home.WorktreesModalVisible() ||
-		a.home.ModelsModalVisible() ||
-		a.home.AgentsModalVisible() ||
-		a.home.VoiceModalVisible() ||
-		a.home.ThemeModalVisible() ||
-		a.home.KeybindsModalVisible()
+	return a.homeInteractionActive()
 }
 
 func (a *App) cycleWorkspaceBy(delta int) {
@@ -8516,6 +8874,7 @@ func (a *App) activateWorkspaceAtIndex(index int) {
 		a.home.SetStatus("selected workspace path is empty")
 		return
 	}
+	previousWorkspacePath := a.activeWorkspacePath()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	resolution, err := a.api.SelectWorkspace(ctx, target)
@@ -8523,9 +8882,11 @@ func (a *App) activateWorkspaceAtIndex(index int) {
 		a.home.SetStatus(fmt.Sprintf("workspace switch failed: %v", err))
 		return
 	}
-	a.activePath = strings.TrimSpace(resolution.ResolvedPath)
-	a.workspacePath = strings.TrimSpace(resolution.WorkspacePath)
 	a.syncActiveWorkspaceSelection(resolution)
+	if err := a.openV3ChatDraftAfterWorkspaceChange(previousWorkspacePath); err != nil {
+		a.home.SetStatus(fmt.Sprintf("workspace switched, but new chat draft failed: %v", err))
+		return
+	}
 	a.home.SetStatus(fmt.Sprintf("workspace active: %s", resolution.WorkspaceName))
 	a.queueReload(false)
 }
@@ -8802,18 +9163,14 @@ func clampText(value string, maxRunes int) string {
 
 func homeQuickActions(next model.HomeModel) []string {
 	if !next.AuthConfigured {
-		return []string{
-			"Agent: " + emptyFallback(next.ActiveAgent, "swarm"),
-			"Auth: missing",
-			"Run /auth",
-		}
+		return []string{"Auth: missing", "Run /auth"}
 	}
-	actions := []string{
-		"Agent: " + emptyFallback(next.ActiveAgent, "swarm"),
-		"Model: " + homeModelDisplayLabel(next),
-		"Thinking: " + emptyFallback(next.ThinkingLevel, "unset"),
+	profile := "Agent model default"
+	if strings.EqualFold(strings.TrimSpace(next.ActiveModelProfile.Source), "saved") {
+		profile = emptyFallback(strings.TrimSpace(next.ActiveModelProfile.Name), "Saved profile")
 	}
-	return actions
+	setup := strings.Join([]string{profile, homeModelDisplayLabel(next), emptyFallback(next.ThinkingLevel, "unset"), emptyFallback(next.ServiceTier, "default")}, " · ")
+	return []string{"Profile: " + setup}
 }
 
 func applyHomeModelResolved(next model.HomeModel, resolved client.ModelResolved) model.HomeModel {
@@ -8824,6 +9181,49 @@ func applyHomeModelResolved(next model.HomeModel, resolved client.ModelResolved)
 	next.ContextMode = strings.TrimSpace(resolved.Preference.ContextMode)
 	next.ContextWindow = resolved.ContextWindow
 	next.QuickActions = homeQuickActions(next)
+	return next
+}
+
+func applyHomeModelProfiles(next model.HomeModel, state client.ModelProfileState) model.HomeModel {
+	next.ModelProfiles = append([]client.ModelProfile(nil), state.Profiles...)
+	next.DefaultModelProfileID = strings.TrimSpace(state.DefaultProfileID)
+	next.ActiveModelProfile = model.ActiveModelProfile{Source: "agent-default"}
+	if next.DefaultModelProfileID == "" {
+		return next
+	}
+	for _, profile := range next.ModelProfiles {
+		if strings.TrimSpace(profile.ProfileID) != next.DefaultModelProfileID {
+			continue
+		}
+		next.ActiveModelProfile = model.ActiveModelProfile{
+			Source:    "saved",
+			ProfileID: strings.TrimSpace(profile.ProfileID),
+			Name:      strings.TrimSpace(profile.Name),
+			ModelMode: strings.TrimSpace(profile.ModelMode),
+		}
+		if strings.EqualFold(strings.TrimSpace(profile.ModelMode), "split") {
+			applySelection := func(selection *client.ModelProfileSelection) (string, string, string, string, string) {
+				if selection == nil {
+					return "", "", "", "", ""
+				}
+				return strings.TrimSpace(selection.Provider), strings.TrimSpace(selection.Model), strings.TrimSpace(selection.Thinking), strings.TrimSpace(selection.ServiceTier), strings.TrimSpace(selection.ContextMode)
+			}
+			next.PlanModelProvider, next.PlanModelName, next.PlanThinkingLevel, next.PlanServiceTier, next.PlanContextMode = applySelection(profile.Plan)
+			next.AutoModelProvider, next.AutoModelName, next.AutoThinkingLevel, next.AutoServiceTier, next.AutoContextMode = applySelection(profile.Auto)
+		} else if profile.Single != nil {
+			next.ModelProvider = strings.TrimSpace(profile.Single.Provider)
+			next.ModelName = strings.TrimSpace(profile.Single.Model)
+			next.ThinkingLevel = strings.TrimSpace(profile.Single.Thinking)
+			next.ServiceTier = strings.TrimSpace(profile.Single.ServiceTier)
+			next.ContextMode = strings.TrimSpace(profile.Single.ContextMode)
+			next.PlanModelProvider, next.AutoModelProvider = next.ModelProvider, next.ModelProvider
+			next.PlanModelName, next.AutoModelName = next.ModelName, next.ModelName
+			next.PlanThinkingLevel, next.AutoThinkingLevel = next.ThinkingLevel, next.ThinkingLevel
+			next.PlanServiceTier, next.AutoServiceTier = next.ServiceTier, next.ServiceTier
+			next.PlanContextMode, next.AutoContextMode = next.ContextMode, next.ContextMode
+		}
+		break
+	}
 	return next
 }
 
@@ -8924,27 +9324,6 @@ func (a *App) worktreesStatusSummary(settings client.WorktreeSettings) string {
 		createdBranch = "agent"
 	}
 	return fmt.Sprintf("worktrees %s • workspace=%s • created=%s/<id> • source=%s • resolved=%s", onOffLabel(settings.Enabled), scope, createdBranch, worktreeBranchLabel(settings.UseCurrentBranch, strings.TrimSpace(settings.BaseBranch)), resolved)
-}
-
-func mapMCPModalServers(servers []client.MCPServer) []ui.MCPModalServer {
-	out := make([]ui.MCPModalServer, 0, len(servers))
-	for _, server := range servers {
-		out = append(out, ui.MCPModalServer{
-			ID:          strings.TrimSpace(server.ID),
-			Name:        strings.TrimSpace(server.Name),
-			Transport:   strings.TrimSpace(server.Transport),
-			URL:         strings.TrimSpace(server.URL),
-			Command:     strings.TrimSpace(server.Command),
-			Args:        append([]string(nil), server.Args...),
-			Enabled:     server.Enabled,
-			Source:      strings.TrimSpace(server.Source),
-			EnvCount:    len(server.Env),
-			HeaderCount: len(server.Headers),
-			CreatedAt:   server.CreatedAt,
-			UpdatedAt:   server.UpdatedAt,
-		})
-	}
-	return out
 }
 
 func onOffLabel(enabled bool) string {
@@ -9168,6 +9547,10 @@ func (a *App) chatAvailableModelsFromResolved(resolved providerModelResolverResu
 			if record, ok := resolved.CatalogByKey[key]; ok {
 				entry.ContextMode = record.ContextMode
 				entry.Reasoning = record.Reasoning
+				entry.ThinkingOptions = append([]string(nil), record.ThinkingOptions...)
+				entry.DefaultThinking = strings.TrimSpace(record.DefaultThinking)
+				entry.ServiceTiers = append([]string(nil), record.ServiceTiers...)
+				entry.DefaultServiceTier = strings.TrimSpace(record.DefaultServiceTier)
 			}
 			if enabled, ok := resolved.ReasoningByKey[key]; ok {
 				entry.Reasoning = enabled

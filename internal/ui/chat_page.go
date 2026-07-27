@@ -81,8 +81,18 @@ type ChatSessionTab struct {
 	Title           string
 	WorkspaceName   string
 	WorkspacePath   string
+	WorktreeEnabled bool
+	WorktreeBranch  string
 	Mode            string
+	CreatedAt       int64
+	UpdatedAt       int64
+	ActiveStartedAt int64
 	UpdatedAgo      string
+	Active          bool
+	NeedsAttention  bool
+	ActivityLabel   string
+	Group           string
+	ProgressLabel   string
 	Provider        string
 	ModelName       string
 	ServiceTier     string
@@ -102,8 +112,18 @@ type ChatSessionPaletteItem struct {
 	Title           string
 	WorkspaceName   string
 	WorkspacePath   string
+	WorktreeEnabled bool
+	WorktreeBranch  string
 	Mode            string
+	CreatedAt       int64
+	UpdatedAt       int64
+	ActiveStartedAt int64
 	UpdatedAgo      string
+	Active          bool
+	NeedsAttention  bool
+	ActivityLabel   string
+	Group           string
+	ProgressLabel   string
 	Provider        string
 	ModelName       string
 	ServiceTier     string
@@ -119,33 +139,36 @@ type ChatSessionPaletteItem struct {
 }
 
 type ChatPageOptions struct {
-	Backend            ChatBackend
-	SessionID          string
-	SessionTitle       string
-	InitialPrompt      string
-	Presets            []string
-	SessionTabs        []ChatSessionTab
-	CommandSuggestions []CommandSuggestion
-	ShowHeader         bool
-	ShowThinkingTags   *bool
-	Meta               ChatSessionMeta
-	AuthConfigured     bool
-	ModelProvider      string
-	ModelName          string
-	AvailableModels    []ModelsModalEntry
-	ThinkingLevel      string
-	ServiceTier        string
-	ContextMode        string
-	ContextWindow      int
-	SessionMode        string
-	ToolStreamStyle    ChatToolStreamStyle
-	SwarmingTitle      string
-	SwarmingStatus     string
-	SwarmName          string
-	KeyBindings        *KeyBindings
-	OnAsyncEvent       func()
-	RequestAsyncRender func()
-	CopyText           func(string) error
+	Backend              ChatBackend
+	Send                 ChatSendFunc
+	SessionID            string
+	SessionTitle         string
+	InitialPrompt        string
+	Presets              []string
+	SessionTabs          []ChatSessionTab
+	CommandSuggestions   []CommandSuggestion
+	ShowHeader           bool
+	ShowThinkingTags     *bool
+	Meta                 ChatSessionMeta
+	AuthConfigured       bool
+	ModelProvider        string
+	ModelName            string
+	AvailableModels      []ModelsModalEntry
+	ThinkingLevel        string
+	ServiceTier          string
+	ContextMode          string
+	ContextWindow        int
+	InitialUsageSummary  *ChatUsageSummary
+	SessionMode          string
+	ToolStreamStyle      ChatToolStreamStyle
+	SwarmingTitle        string
+	SwarmingStatus       string
+	SwarmName            string
+	KeyBindings          *KeyBindings
+	OnAsyncEvent         func()
+	OnSessionModeChanged func(mode, modelProvider, modelName, thinkingLevel, serviceTier, contextMode string, contextWindow int)
+	RequestAsyncRender   func()
+	CopyText             func(string) error
 }
 
 type ChatToolStreamStyle struct {
@@ -158,6 +181,7 @@ type ChatToolStreamStyle struct {
 
 type chatMessageItem struct {
 	MessageID string
+	GlobalSeq uint64
 	Role      string
 	Text      string
 	CreatedAt int64
@@ -165,8 +189,16 @@ type chatMessageItem struct {
 	Metadata  map[string]any
 }
 
+type pendingLocalUserMessage struct {
+	Content                 string
+	CreatedAt               int64
+	AfterAuthoritativeSeq   uint64
+	AfterAuthoritativeCount int
+}
+
 type chatToolStreamEntry struct {
 	EntryKey           string
+	GlobalSeq          uint64
 	ToolName           string
 	CallID             string
 	Output             string
@@ -233,9 +265,8 @@ type chatUsageResult struct {
 }
 
 type chatRunResult struct {
-	RunID    int
-	Response ChatRunResponse
-	Err      error
+	RunID int
+	Err   error
 }
 
 type chatRunStreamResult struct {
@@ -264,14 +295,21 @@ type chatPermissionLoadResult struct {
 }
 
 type chatPermissionActionResult struct {
-	Action       string
-	Mode         string
-	Announce     bool
-	Permission   ChatPermissionRecord
-	Permissions  []ChatPermissionRecord
-	Pending      []ChatPermissionRecord
-	ResolvedMany []ChatPermissionRecord
-	Err          error
+	Action           string
+	Mode             string
+	Announce         bool
+	ModelProvider    string
+	ModelName        string
+	ThinkingLevel    string
+	ServiceTier      string
+	ContextMode      string
+	ContextWindow    int
+	PreferenceLoaded bool
+	Permission       ChatPermissionRecord
+	Permissions      []ChatPermissionRecord
+	Pending          []ChatPermissionRecord
+	ResolvedMany     []ChatPermissionRecord
+	Err              error
 }
 
 type ChatPage struct {
@@ -280,6 +318,7 @@ type ChatPage struct {
 	meta     ChatSessionMeta
 
 	backend ChatBackend
+	send    ChatSendFunc
 
 	sessionID          string
 	sessionTitle       string
@@ -298,9 +337,12 @@ type ChatPage struct {
 	commandPaletteIndex int
 	mentionPaletteIndex int
 
-	timeline       []chatMessageItem
-	toolStream     []chatToolStreamEntry
-	timelineScroll int
+	timeline                  []chatMessageItem
+	toolStream                []chatToolStreamEntry
+	timelineScroll            int
+	pendingLocalUserMessages  []pendingLocalUserMessage
+	authoritativeMessageSeq   uint64
+	authoritativeMessageCount int
 
 	timelineRenderGeneration uint64
 	timelineRenderCache      []chatTimelineCacheEntry
@@ -343,6 +385,7 @@ type ChatPage struct {
 	permissionResults          chan chatPermissionLoadResult
 	permissionActions          chan chatPermissionActionResult
 	onAsyncEvent               func()
+	onSessionModeChanged       func(mode, modelProvider, modelName, thinkingLevel, serviceTier, contextMode string, contextWindow int)
 	requestAsyncRenderFn       func()
 	copyTextFn                 func(string) error
 
@@ -368,6 +411,10 @@ type ChatPage struct {
 	reasoningStartedAt       time.Time
 	activeReasoningMessageID string
 	liveAssistant            string
+	liveAssistantRunID       string
+	liveAssistantStreamID    string
+	liveAssistantNextSeq     uint64
+	liveAssistantOffset      uint64
 	streamingRun             bool
 	streamedTools            map[string]struct{}
 	authConfigured           bool
@@ -418,6 +465,31 @@ type ChatPage struct {
 	skillChangeApproveRect Rect
 	skillChangeDenyRect    Rect
 
+	planPermission            string
+	planPermissionTitle       string
+	planPermissionSummary     string
+	planPermissionGoal        string
+	planPermissionDocument    map[string]any
+	planPermissionApproved    string
+	planPermissionScroll      int
+	planPermissionMaxScroll   int
+	planPermissionManual      bool
+	planPermissionApproveRect Rect
+	planPermissionDenyRect    Rect
+
+	manageSessionsPermission      string
+	manageSessionsAction          string
+	manageSessionsApproved        string
+	manageSessionsProposals       []chatManageSessionsProposal
+	manageSessionsSelected        []bool
+	manageSessionsFocus           int
+	manageSessionsScroll          int
+	manageSessionsMaxScroll       int
+	manageSessionsApproveRect     Rect
+	manageSessionsDenyRect        Rect
+	manageSessionsProposalRects   []Rect
+	manageSessionsProposalIndexes []int
+
 	planUpdatePermission   string
 	planUpdateTitle        string
 	planUpdatePlanID       string
@@ -447,35 +519,37 @@ type ChatPage struct {
 	planExitApprovedArgs string
 	planExitScroll       int
 	planExitSelection    int
+	planExitManualReview bool
 	planExitInput        string
 	planExitCancelRect   Rect
 	planExitConfirmRect  Rect
+	planExitReviewRect   Rect
 
-	manageFlowPermission  string
-	manageFlowTitle       string
-	manageFlowBody        string
-	manageFlowScroll      int
-	manageFlowSelection   int
-	manageFlowInput       string
-	manageFlowCancelRect  Rect
-	manageFlowConfirmRect Rect
-
-	planEditorVisible       bool
-	planEditorPlan          ChatSessionPlan
-	planEditorPlans         []ChatSessionPlan
-	planEditorActivePlanID  string
-	planEditorPlanSelection int
-	planEditorPlanScroll    int
-	planEditorRevisionFocus bool
-	planEditorInput         string
-	planEditorEditing       bool
-	planEditorConfirmSave   bool
-	planEditorSelection     int
-	planEditorScroll        int
-	planEditorInputScroll   int
-	planEditorCancelRect    Rect
-	planEditorCopyRect      Rect
-	planEditorSaveRect      Rect
+	planEditorVisible        bool
+	planEditorPlan           ChatSessionPlan
+	planEditorPlans          []ChatSessionPlan
+	planExecutionPlan        ChatSessionPlan
+	planExecutionRevisions   []ChatSessionPlan
+	planExecutionRunID       string
+	planExecutionRunStatus   string
+	planEditorActivePlanID   string
+	planEditorPlanSelection  int
+	planEditorPlanScroll     int
+	planEditorRevisionFocus  bool
+	planEditorRecoveryFocus  int
+	planEditorCheckpoint     int
+	planEditorManualReview   bool
+	planEditorRecoveryAction int
+	planEditorInput          string
+	planEditorEditing        bool
+	planEditorConfirmSave    bool
+	planEditorSelection      int
+	planEditorScroll         int
+	planEditorInputScroll    int
+	planEditorCancelRect     Rect
+	planEditorCopyRect       Rect
+	planEditorSaveRect       Rect
+	planEditorRecoveryRects  [4]Rect
 
 	manageTodosPermission  string
 	manageTodosScroll      int
@@ -522,7 +596,9 @@ type ChatPage struct {
 	sessionsPaletteQuery     string
 	sessionsPaletteSelection int
 	sessionsPaletteScroll    int
+	sessionsPaletteFilter    int
 	sessionsPaletteItems     []ChatSessionPaletteItem
+	sessionsPaletteExpanded  map[string]bool
 	bashOutput               chatBashOutputState
 	pendingChatAction        *ChatAction
 	statusLine               string
@@ -558,11 +634,13 @@ func NewChatPage(opts ChatPageOptions) *ChatPage {
 		keybinds:                opts.KeyBindings,
 		meta:                    meta,
 		backend:                 opts.Backend,
+		send:                    opts.Send,
 		sessionID:               strings.TrimSpace(opts.SessionID),
 		sessionTitle:            title,
 		presets:                 append([]string(nil), opts.Presets...),
 		sessionTabs:             normalizeChatSessionTabs(opts.SessionTabs, strings.TrimSpace(opts.SessionID), title),
-		sessionsPaletteItems:    normalizeChatSessionPaletteItems(opts.SessionTabs),
+		sessionsPaletteItems:    prepareSessionManagerItems(normalizeChatSessionPaletteItems(opts.SessionTabs)),
+		sessionsPaletteExpanded: make(map[string]bool),
 		runResults:              make(chan chatRunResult, 4),
 		runStream:               make(chan chatRunStreamResult, 2048),
 		runStops:                make(chan chatRunStopResult, 4),
@@ -582,6 +660,7 @@ func NewChatPage(opts ChatPageOptions) *ChatPage {
 		thinkingLevel:           strings.TrimSpace(opts.ThinkingLevel),
 		serviceTier:             strings.TrimSpace(opts.ServiceTier),
 		contextMode:             strings.TrimSpace(opts.ContextMode),
+		contextWindow:           opts.ContextWindow,
 		authConfigured:          opts.AuthConfigured,
 		streamedTools:           make(map[string]struct{}, 16),
 		sessionMode:             normalizeSessionMode(opts.SessionMode),
@@ -599,6 +678,7 @@ func NewChatPage(opts ChatPageOptions) *ChatPage {
 		toolSuccessSymbol:       toolStyle.SuccessSymbol,
 		toolErrorSymbol:         toolStyle.ErrorSymbol,
 		onAsyncEvent:            opts.OnAsyncEvent,
+		onSessionModeChanged:    opts.OnSessionModeChanged,
 		requestAsyncRenderFn:    opts.RequestAsyncRender,
 		copyTextFn:              opts.CopyText,
 	}
@@ -625,6 +705,7 @@ func NewChatPage(opts ChatPageOptions) *ChatPage {
 	}
 	p.setCommandSuggestions(opts.CommandSuggestions)
 	p.setMentionSubagents(meta.Subagents)
+	p.applyContextUsageSummary(opts.InitialUsageSummary)
 
 	if !p.authConfigured {
 		p.statusLine = "auth missing - run /auth"
@@ -802,6 +883,12 @@ func (p *ChatPage) HandleMouse(ev *tcell.EventMouse) {
 	if ev == nil {
 		return
 	}
+	if p.handlePlanPermissionModalMouse(ev) {
+		return
+	}
+	if p.handleManageSessionsPermissionModalMouse(ev) {
+		return
+	}
 	if p.handlePlanEditorModalMouse(ev) {
 		return
 	}
@@ -809,9 +896,6 @@ func (p *ChatPage) HandleMouse(ev *tcell.EventMouse) {
 		return
 	}
 	if p.handlePlanExitModalMouse(ev) {
-		return
-	}
-	if p.handleManageFlowModalMouse(ev) {
 		return
 	}
 	if p.handleManageTodosModalMouse(ev) {
@@ -880,7 +964,7 @@ func (p *ChatPage) HandleMouse(ev *tcell.EventMouse) {
 		p.cycleAssistantVariant(-1)
 		return
 	}
-	if p.permissionModalActive() {
+	if p.ordinaryPermissionComposerActive() {
 		if buttons&tcell.Button1 != 0 {
 			p.ensurePermissionSelection()
 			reason := p.permissionReason()
@@ -935,6 +1019,12 @@ func (p *ChatPage) HandleKey(ev *tcell.EventKey) {
 	if p.keybinds == nil {
 		p.keybinds = NewDefaultKeyBindings()
 	}
+	if p.handlePlanPermissionModalKey(ev) {
+		return
+	}
+	if p.handleManageSessionsPermissionModalKey(ev) {
+		return
+	}
 	if p.handlePlanEditorModalKey(ev) {
 		return
 	}
@@ -942,9 +1032,6 @@ func (p *ChatPage) HandleKey(ev *tcell.EventKey) {
 		return
 	}
 	if p.handlePlanExitModalKey(ev) {
-		return
-	}
-	if p.handleManageFlowModalKey(ev) {
 		return
 	}
 	if p.handleManageTodosModalKey(ev) {
@@ -972,6 +1059,9 @@ func (p *ChatPage) HandleKey(ev *tcell.EventKey) {
 		return
 	}
 	if p.handlePermissionModalKey(ev) {
+		return
+	}
+	if p.handlePlanExecutionKey(ev) {
 		return
 	}
 	if p.pasteActive {
@@ -1146,6 +1236,13 @@ func (p *ChatPage) HandleEscape() bool {
 		p.statusLine = "bash output closed"
 		return true
 	}
+	if p.planPermissionModalActive() {
+		return true
+	}
+	if p.manageSessionsPermissionModalActive() {
+		p.resolveManageSessionsPermissionModal(false)
+		return true
+	}
 	if p.planEditorModalActive() {
 		p.resolvePlanEditorModal(chatPlanEditorActionCancel)
 		return true
@@ -1188,7 +1285,7 @@ func (p *ChatPage) HandleEscape() bool {
 		p.statusLine = "sessions palette closed"
 		return true
 	}
-	if p.permissionModalActive() {
+	if p.ordinaryPermissionComposerActive() {
 		return false
 	}
 	if p.effectiveRunActive() {
@@ -1224,7 +1321,7 @@ func (p *ChatPage) abortAgenticLoop() {
 }
 
 func (p *ChatPage) handlePermissionModalKey(ev *tcell.EventKey) bool {
-	if ev == nil || !p.permissionModalActive() {
+	if ev == nil || !p.ordinaryPermissionComposerActive() {
 		return false
 	}
 	if p.keybinds == nil {
@@ -1297,7 +1394,7 @@ func (p *ChatPage) handlePermissionModalKey(ev *tcell.EventKey) bool {
 }
 
 func (p *ChatPage) shiftPermissionSelection(delta int) {
-	indexes := p.genericPermissionIndexes()
+	indexes := p.ordinaryPermissionIndexes()
 	if delta == 0 || len(indexes) == 0 {
 		return
 	}
@@ -1395,8 +1492,8 @@ func (p *ChatPage) permissionReason() string {
 	return strings.TrimSpace(p.permInput)
 }
 
-func (p *ChatPage) permissionModalActive() bool {
-	return !p.planUpdateModalActive() && !p.planExitModalActive() && !p.manageFlowModalActive() && !p.askUserModalActive() && !p.workspaceScopeModalActive() && !p.taskLaunchModalActive() && !p.agentChangeModalActive() && !p.skillChangeModalActive() && p.genericPermissionCount() > 0
+func (p *ChatPage) ordinaryPermissionComposerActive() bool {
+	return !p.planPermissionModalActive() && !p.manageSessionsPermissionModalActive() && !p.planUpdateModalActive() && !p.planExitModalActive() && !p.askUserModalActive() && !p.workspaceScopeModalActive() && !p.taskLaunchModalActive() && !p.agentChangeModalActive() && !p.skillChangeModalActive() && p.ordinaryPermissionCount() > 0
 }
 
 func (p *ChatPage) Draw(s tcell.Screen) {
@@ -1414,6 +1511,10 @@ func (p *ChatPage) Draw(s tcell.Screen) {
 
 	contentX := 0
 	mainW := w
+	planPanelW := p.planExecutionPanelWidth(w)
+	if planPanelW > 0 {
+		mainW = w - planPanelW
+	}
 
 	renderHeader := p.showHeader && w >= 56 && h >= 10
 	headerH := 0
@@ -1421,10 +1522,7 @@ func (p *ChatPage) Draw(s tcell.Screen) {
 		headerH = 1
 	}
 
-	footerH := 2
-	if w < 54 || h < 12 {
-		footerH = 1
-	}
+	footerH := responsiveFooterHeight(mainW, 2)
 	if footerH > h-1 {
 		footerH = maxInt(0, h-1)
 	}
@@ -1443,7 +1541,7 @@ func (p *ChatPage) Draw(s tcell.Screen) {
 		availableMainH = 1
 	}
 
-	permissionModal := p.permissionModalActive()
+	permissionModal := p.ordinaryPermissionComposerActive()
 	runIndicatorH := 0
 	if !permissionModal && availableMainH >= 6 && p.liveRunVisible() {
 		runIndicatorH = 1
@@ -1551,6 +1649,9 @@ func (p *ChatPage) Draw(s tcell.Screen) {
 		timelineTextRect.W -= timelineInset * 2
 	}
 	p.drawTimelineComponent(s, timelineTextRect)
+	if planPanelW > 0 {
+		p.drawPlanExecutionSidebar(s, Rect{X: mainW, Y: headerH, W: planPanelW, H: h - headerH - footerH})
+	}
 	p.drawBashOutputComponent(s, bashOutputRect)
 	p.drawPermissionPanel(s, permRect)
 	if permissionModal {
@@ -1562,14 +1663,16 @@ func (p *ChatPage) Draw(s tcell.Screen) {
 		p.drawMentionPalette(s, inputRect, headerH, footerRect.Y)
 	}
 	p.drawFooterBar(s, footerRect)
-	if p.planEditorModalActive() {
+	if p.planPermissionModalActive() {
+		p.drawPlanPermissionModal(s, Rect{X: 0, Y: 0, W: w, H: h})
+	} else if p.manageSessionsPermissionModalActive() {
+		p.drawManageSessionsPermissionModal(s, Rect{X: 0, Y: 0, W: w, H: h})
+	} else if p.planEditorModalActive() {
 		p.drawPlanEditorModal(s, Rect{X: 0, Y: 0, W: w, H: h})
 	} else if p.planUpdateModalActive() {
 		p.drawPlanUpdateModal(s, Rect{X: 0, Y: 0, W: w, H: h})
 	} else if p.planExitModalActive() {
 		p.drawPlanExitModal(s, Rect{X: 0, Y: 0, W: w, H: h})
-	} else if p.manageFlowModalActive() {
-		p.drawManageFlowModal(s, Rect{X: 0, Y: 0, W: w, H: h})
 	} else if p.manageTodosModalActive() {
 		p.drawManageTodosModal(s, Rect{X: 0, Y: 0, W: w, H: h})
 	} else if p.askUserModalActive() {
@@ -1610,34 +1713,21 @@ func (p *ChatPage) startRun(prompt string) {
 	p.startRunRequest(p.runRequestForPrompt(prompt), prompt, true, "running turn")
 }
 
-func (p *ChatPage) runRequestForPrompt(prompt string) ChatRunRequest {
+func (p *ChatPage) runRequestForPrompt(prompt string) ChatSendRequest {
 	if targetName, task, ok := parseTargetedSubagentPrompt(prompt, p.mentionSubagents); ok {
-		return ChatRunRequest{
+		return ChatSendRequest{
 			Prompt:     task,
 			TargetKind: "subagent",
 			TargetName: targetName,
 		}
 	}
-	return ChatRunRequest{
+	return ChatSendRequest{
 		Prompt:    strings.TrimSpace(prompt),
 		AgentName: strings.TrimSpace(p.meta.Agent),
 	}
 }
 
-func (p *ChatPage) startManualCompact(note string) bool {
-	note = strings.TrimSpace(note)
-	displayPrompt := "/compact"
-	if note != "" {
-		displayPrompt = displayPrompt + " " + note
-	}
-	return p.startRunRequest(ChatRunRequest{
-		Prompt:    note,
-		AgentName: strings.TrimSpace(p.meta.Agent),
-		Compact:   true,
-	}, displayPrompt, false, "compacting context")
-}
-
-func (p *ChatPage) startRunRequest(req ChatRunRequest, displayPrompt string, appendUserMessage bool, runningStatus string) bool {
+func (p *ChatPage) startRunRequest(req ChatSendRequest, displayPrompt string, appendUserMessage bool, runningStatus string) bool {
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	if req.AgentName == "" && strings.TrimSpace(req.TargetKind) == "" && strings.TrimSpace(req.TargetName) == "" {
 		req.AgentName = strings.TrimSpace(p.meta.Agent)
@@ -1646,19 +1736,16 @@ func (p *ChatPage) startRunRequest(req ChatRunRequest, displayPrompt string, app
 	if displayPrompt == "" {
 		displayPrompt = req.Prompt
 	}
-	if displayPrompt == "" && req.Compact {
-		displayPrompt = "/compact"
-	}
-	if req.Prompt == "" && !req.Compact {
+	if req.Prompt == "" {
 		return false
 	}
 	if p.effectiveRunActive() {
 		p.statusLine = "run already in progress"
 		return false
 	}
-	if p.backend == nil {
-		p.appendSystemMessage("Cannot run turn: backend is unavailable.")
-		p.statusLine = "run blocked"
+	if p.send == nil {
+		p.appendSystemMessage("Cannot send message: sender is unavailable.")
+		p.statusLine = "send blocked"
 		return false
 	}
 	if p.sessionID == "" {
@@ -1668,7 +1755,9 @@ func (p *ChatPage) startRunRequest(req ChatRunRequest, displayPrompt string, app
 	}
 
 	if appendUserMessage {
-		p.appendMessage("user", displayPrompt, time.Now().UnixMilli())
+		createdAt := time.Now().UnixMilli()
+		p.trackPendingLocalUserMessage(displayPrompt, createdAt)
+		p.appendMessage("user", displayPrompt, createdAt)
 		p.lastPrompt = displayPrompt
 	}
 	p.busy = true
@@ -1682,6 +1771,7 @@ func (p *ChatPage) startRunRequest(req ChatRunRequest, displayPrompt string, app
 	p.reasoningStartedAt = time.Time{}
 	p.activeReasoningMessageID = ""
 	p.liveAssistant = ""
+	p.resetLiveAssistantStream()
 	p.streamingRun = false
 	p.streamedTools = make(map[string]struct{}, 16)
 	p.runStarted = time.Time{}
@@ -1701,26 +1791,14 @@ func (p *ChatPage) startRunRequest(req ChatRunRequest, displayPrompt string, app
 	p.runCancel = cancel
 	go func() {
 		defer cancel()
-		resp, err := p.backend.RunTurnStream(runCtx, p.sessionID, ChatRunRequest{
+		err := p.send(runCtx, p.sessionID, ChatSendRequest{
 			Prompt:       req.Prompt,
 			AgentName:    req.AgentName,
 			Instructions: req.Instructions,
-			Compact:      req.Compact,
 			TargetKind:   req.TargetKind,
 			TargetName:   req.TargetName,
-		}, func(event ChatRunStreamEvent) {
-			queued := p.enqueueRunStreamEvent(chatRunStreamResult{RunID: runID, Event: event, AtUnix: time.Now().UnixMilli()})
-			if queued.queued {
-				eventType := strings.ToLower(strings.TrimSpace(event.Type))
-				switch eventType {
-				case "assistant.delta", "assistant.commentary", "message.updated", "reasoning.delta", "tool.delta":
-					p.requestAsyncRender()
-				default:
-					p.notifyAsyncEvent()
-				}
-			}
 		})
-		result := chatRunResult{RunID: runID, Response: resp, Err: err}
+		result := chatRunResult{RunID: runID, Err: err}
 		select {
 		case p.runResults <- result:
 			p.notifyAsyncEvent()
@@ -1792,6 +1870,11 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 	if eventType == "" {
 		return
 	}
+	if eventType == "session.mode.updated" {
+		p.applySessionMode(event.SessionMode, false)
+		return
+	}
+
 	p.streamingRun = true
 	p.maybeCompleteThinkingBeforeEvent(event, eventType, atUnix)
 
@@ -1829,7 +1912,8 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 		p.statusLine = fmt.Sprintf("thinking %s %s", p.spinnerFrame(), p.runElapsedLabel())
 	case "reasoning.delta":
 		p.startReasoningSegment(atUnix)
-		snapshot := canonicalThinkingText(event.Delta)
+		snapshot := mergeThinkingStream(p.liveThinking, event.Delta)
+		snapshot = canonicalThinkingText(snapshot)
 		if snapshot == "" {
 			return
 		}
@@ -1965,9 +2049,10 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 			if strings.TrimSpace(event.RunID) == strings.TrimSpace(p.ownedRunID) && strings.TrimSpace(p.ownedRunID) != "" {
 				return
 			}
-			p.appendStoredMessageWithMetadata(msg.ID, role, msg.Content, msg.Metadata, msg.CreatedAt)
+			p.appendStoredMessageWithMetadata(msg.ID, msg.GlobalSeq, role, msg.Content, msg.Metadata, msg.CreatedAt)
 		case "assistant":
-			if text := strings.TrimSpace(msg.Content); text != "" {
+			text := msg.Content
+			if strings.TrimSpace(text) != "" {
 				if isCommentaryMetadata(msg.Metadata) {
 					p.completeThinkingTimeline("done", msg.CreatedAt, "")
 					p.liveAssistant = mergeAssistantStream(p.liveAssistant, text)
@@ -1980,7 +2065,7 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 				}
 				p.completeThinkingTimeline("done", msg.CreatedAt, "")
 				p.liveAssistant = ""
-				p.appendStoredMessageWithMetadata(msg.ID, role, text, msg.Metadata, msg.CreatedAt)
+				p.appendStoredMessageWithMetadata(msg.ID, msg.GlobalSeq, role, text, msg.Metadata, msg.CreatedAt)
 			}
 		case "reasoning":
 			rawSummary := canonicalThinkingText(msg.Content)
@@ -1992,8 +2077,19 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 			if strings.TrimSpace(event.RunID) == strings.TrimSpace(p.ownedRunID) && strings.TrimSpace(p.ownedRunID) != "" && p.busy {
 				return
 			}
-			p.upsertStoredMessageWithMetadata(msg.ID, role, rawSummary, msg.Metadata, msg.CreatedAt)
+			p.upsertStoredMessageWithMetadata(msg.ID, msg.GlobalSeq, role, rawSummary, msg.Metadata, msg.CreatedAt)
 		case "tool":
+			if isSyntheticThinkingMetadata(msg.Metadata) {
+				entry := parseToolStreamEntry(msg.Content, msg.CreatedAt)
+				summary := firstNonEmptyStringUI(entry.Raw, entry.Output)
+				if normalized := normalizeThinkingSummary(summary); normalized != "" {
+					p.thinkingSummary = normalized
+					if strings.TrimSpace(event.RunID) != strings.TrimSpace(p.ownedRunID) || strings.TrimSpace(p.ownedRunID) == "" || !p.busy {
+						p.upsertStoredMessageWithMetadata(msg.ID, msg.GlobalSeq, "reasoning", canonicalThinkingText(summary), msg.Metadata, msg.CreatedAt)
+					}
+				}
+				return
+			}
 			entry := parseToolStreamEntry(msg.Content, msg.CreatedAt)
 			p.upsertToolStreamEntry(entry)
 			callKey := toolReplayDedupKey(entry)
@@ -2011,7 +2107,7 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 		switch role {
 		case "assistant":
 			if text := strings.TrimSpace(msg.Content); text != "" {
-				p.upsertStoredMessageWithMetadata(msg.ID, role, text, msg.Metadata, msg.CreatedAt)
+				p.upsertStoredMessageWithMetadata(msg.ID, msg.GlobalSeq, role, text, msg.Metadata, msg.CreatedAt)
 			}
 		case "reasoning":
 			rawSummary := canonicalThinkingText(msg.Content)
@@ -2023,9 +2119,9 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 			if strings.TrimSpace(event.RunID) == strings.TrimSpace(p.ownedRunID) && strings.TrimSpace(p.ownedRunID) != "" && p.busy {
 				return
 			}
-			p.upsertStoredMessageWithMetadata(msg.ID, role, rawSummary, msg.Metadata, msg.CreatedAt)
+			p.upsertStoredMessageWithMetadata(msg.ID, msg.GlobalSeq, role, rawSummary, msg.Metadata, msg.CreatedAt)
 		case "tool":
-			p.upsertStoredMessageWithMetadata(msg.ID, role, msg.Content, msg.Metadata, msg.CreatedAt)
+			p.upsertStoredMessageWithMetadata(msg.ID, msg.GlobalSeq, role, msg.Content, msg.Metadata, msg.CreatedAt)
 		}
 	case "turn.error":
 		msg := strings.TrimSpace(event.Error)
@@ -2057,12 +2153,14 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 		status := strings.ToLower(strings.TrimSpace(record.Status))
 		switch status {
 		case "approved":
-			if isExitPlanPermission(record) {
-				p.statusLine = "exit plan mode approved"
-				p.queueRefreshSessionMode()
-				p.SetAgentRuntime(p.meta.Agent, p.meta.AgentExecutionSetting, true, true)
-			} else if isPlanUpdatePermission(record) {
-				p.statusLine = "plan update approved"
+			if classifyChatPermission(record) == chatPermissionDestinationPlanModal {
+				p.statusLine = "plan approved"
+				if normalizePermissionToolName(record.ToolName) == "exit_plan_mode" {
+					p.queueRefreshSessionMode()
+					p.SetAgentRuntime(p.meta.Agent, p.meta.AgentExecutionSetting, true, true)
+				}
+			} else if classifyChatPermission(record) == chatPermissionDestinationManageSessionsModal {
+				p.statusLine = "session action approved"
 			} else if isManageTodosPermission(record) {
 				p.statusLine = "todo changes approved"
 			} else if isWorkspaceScopePermission(record) {
@@ -2118,9 +2216,80 @@ func (p *ChatPage) maybeCompleteThinkingBeforeEvent(event ChatRunStreamEvent, ev
 	}
 }
 
+func (p *ChatPage) applyLiveAssistantPatch(event ChatRunStreamEvent, atUnix int64) bool {
+	if p == nil || event.Delta == "" || strings.TrimSpace(event.RunID) == "" || strings.TrimSpace(event.StreamID) == "" {
+		return false
+	}
+	if strings.TrimSpace(event.StreamKind) != "assistant_text" || strings.TrimSpace(event.Operation) != "append" {
+		return false
+	}
+	runID := strings.TrimSpace(event.RunID)
+	streamID := strings.TrimSpace(event.StreamID)
+	if p.liveAssistantRunID != runID || p.liveAssistantStreamID != streamID {
+		if strings.TrimSpace(p.liveAssistant) != "" {
+			p.flushLiveAssistantToTimeline(atUnix)
+		}
+		if event.LiveSeqStart != 1 || event.OffsetStart != 0 {
+			return false
+		}
+		p.liveAssistant = ""
+		p.liveAssistantRunID = runID
+		p.liveAssistantStreamID = streamID
+		p.liveAssistantNextSeq = event.LiveSeqStart
+		p.liveAssistantOffset = event.OffsetStart
+	}
+	if event.LiveSeqEnd < event.LiveSeqStart || event.OffsetEnd-event.OffsetStart != uint64(len([]byte(event.Delta))) {
+		return false
+	}
+	if event.LiveSeqEnd < p.liveAssistantNextSeq || event.OffsetEnd <= p.liveAssistantOffset {
+		return false
+	}
+	if event.LiveSeqStart != p.liveAssistantNextSeq || event.OffsetStart != p.liveAssistantOffset {
+		return false
+	}
+	p.liveAssistant += event.Delta
+	p.liveAssistantNextSeq = event.LiveSeqEnd + 1
+	p.liveAssistantOffset = event.OffsetEnd
+	return true
+}
+
+func (p *ChatPage) resetLiveAssistantStream() {
+	if p == nil {
+		return
+	}
+	p.liveAssistantRunID = ""
+	p.liveAssistantStreamID = ""
+	p.liveAssistantNextSeq = 0
+	p.liveAssistantOffset = 0
+}
+
 func (p *ChatPage) ApplySharedStreamEvent(event ChatRunStreamEvent, atUnix int64) bool {
 	if p == nil {
 		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(event.Type), "assistant.live.delta") {
+		runID := strings.TrimSpace(event.RunID)
+		if runID == "" {
+			return false
+		}
+		if p.runCancel != nil && strings.TrimSpace(p.ownedRunID) == "" {
+			p.ownedRunID = runID
+		}
+		ownedRunID := strings.TrimSpace(p.ownedRunID)
+		lifecycleRunID := ""
+		if p.lifecycle != nil && p.lifecycle.Active {
+			lifecycleRunID = strings.TrimSpace(p.lifecycle.RunID)
+		}
+		if (ownedRunID == "" || ownedRunID != runID) && (lifecycleRunID == "" || lifecycleRunID != runID) {
+			return false
+		}
+		if !p.applyLiveAssistantPatch(event, atUnix) {
+			return false
+		}
+		p.streamingRun = true
+		p.completeThinkingTimeline("done", atUnix, "")
+		p.statusLine = fmt.Sprintf("streaming response %s %s", p.spinnerFrame(), p.runElapsedLabel())
+		return true
 	}
 	if p.shouldIgnoreSharedStreamEvent(event) {
 		return false
@@ -2211,7 +2380,7 @@ func (p *ChatPage) ApplySessionLifecycle(lifecycle ChatSessionLifecycle) {
 	}
 
 	switch strings.ToLower(lifecycle.Phase) {
-	case "errored":
+	case "errored", "blocked":
 		p.completeThinkingTimeline("error", time.Now().UnixMilli(), "")
 	default:
 		p.completeThinkingTimeline("done", time.Now().UnixMilli(), "")
@@ -2236,6 +2405,17 @@ func (p *ChatPage) ApplySessionLifecycle(lifecycle ChatSessionLifecycle) {
 			p.errorLine = lifecycle.Error
 		}
 		p.statusLine = "run failed"
+	case "blocked":
+		if lifecycle.Error != "" {
+			p.errorLine = lifecycle.Error
+		} else if lifecycle.StopReason != "" {
+			p.errorLine = lifecycle.StopReason
+		}
+		if lifecycle.StopReason != "" {
+			p.statusLine = lifecycle.StopReason
+		} else {
+			p.statusLine = "run blocked"
+		}
 	case "cancelled":
 		if lifecycle.StopReason != "" {
 			p.statusLine = lifecycle.StopReason
@@ -2439,8 +2619,10 @@ func (p *ChatPage) drainRunResults() bool {
 			if p.lifecycle == nil || !p.lifecycle.Active {
 				p.busy = false
 				p.runStarted = time.Time{}
+				p.streamingRun = false
 			}
-			p.applyRunSuccess(result.Response)
+			p.statusLine = "message sent"
+			p.errorLine = ""
 		default:
 			return changed
 		}
@@ -2518,6 +2700,15 @@ func (p *ChatPage) drainPermissionActions() bool {
 			switch result.Action {
 			case "mode.set":
 				p.applySessionMode(result.Mode, result.Announce)
+				if result.PreferenceLoaded {
+					p.SetModelState(result.ModelProvider, result.ModelName, result.ThinkingLevel, result.ServiceTier, result.ContextMode)
+					if result.ContextWindow > 0 {
+						p.SetContextWindow(result.ContextWindow)
+					}
+					if p.onSessionModeChanged != nil {
+						p.onSessionModeChanged(result.Mode, result.ModelProvider, result.ModelName, result.ThinkingLevel, result.ServiceTier, result.ContextMode, result.ContextWindow)
+					}
+				}
 			case "mode.refresh":
 				p.applySessionMode(result.Mode, false)
 			case "permission.resolve":
@@ -2527,10 +2718,10 @@ func (p *ChatPage) drainPermissionActions() bool {
 				status := strings.ToLower(strings.TrimSpace(result.Permission.Status))
 				switch status {
 				case "approved":
-					if isExitPlanPermission(result.Permission) {
-						p.statusLine = "exit plan mode approved -> mode " + p.sessionMode
-					} else if isPlanUpdatePermission(result.Permission) {
-						p.statusLine = "plan update approved"
+					if classifyChatPermission(result.Permission) == chatPermissionDestinationPlanModal {
+						p.statusLine = "plan approved"
+					} else if classifyChatPermission(result.Permission) == chatPermissionDestinationManageSessionsModal {
+						p.statusLine = "session action approved"
 					} else if isManageTodosPermission(result.Permission) {
 						p.statusLine = "todo changes approved"
 					} else if isAskUserPermission(result.Permission) {
@@ -2615,13 +2806,19 @@ func (p *ChatPage) queueSetMode(target string, announce bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
 		mode, err := p.backend.SetSessionMode(ctx, p.sessionID, next)
-		select {
-		case p.permissionActions <- chatPermissionActionResult{
+		result := chatPermissionActionResult{
 			Action:   "mode.set",
 			Mode:     mode,
 			Announce: announce,
 			Err:      err,
-		}:
+		}
+		if err == nil {
+			var preferenceErr error
+			result.ModelProvider, result.ModelName, result.ThinkingLevel, result.ServiceTier, result.ContextMode, result.ContextWindow, preferenceErr = p.backend.GetSessionPreference(ctx, p.sessionID)
+			result.PreferenceLoaded = preferenceErr == nil
+		}
+		select {
+		case p.permissionActions <- result:
 			p.notifyAsyncEvent()
 		default:
 		}
@@ -2683,7 +2880,7 @@ func (p *ChatPage) queueResolveAll(action, reason string) {
 	if p.backend == nil || strings.TrimSpace(p.sessionID) == "" {
 		return
 	}
-	indexes := p.genericPermissionIndexes()
+	indexes := p.ordinaryPermissionIndexes()
 	if len(indexes) == 0 {
 		p.statusLine = "no pending permissions"
 		return
@@ -2744,7 +2941,7 @@ func (p *ChatPage) queueResolveSelected(action, reason string) {
 	if p.backend == nil || strings.TrimSpace(p.sessionID) == "" {
 		return
 	}
-	if p.genericPermissionCount() == 0 {
+	if p.ordinaryPermissionCount() == 0 {
 		p.statusLine = "no pending permissions"
 		return
 	}
@@ -2852,107 +3049,6 @@ func (p *ChatPage) applyHistory(messages []ChatMessageRecord) {
 	p.rebuildToolLifecycleViews()
 }
 
-func (p *ChatPage) applyRunSuccess(resp ChatRunResponse) {
-	defer func() {
-		p.ownedRunID = ""
-	}()
-	p.applyContextUsageSummary(resp.UsageSummary)
-
-	if strings.TrimSpace(resp.Model) != "" {
-		p.modelName = strings.TrimSpace(resp.Model)
-	}
-	if strings.TrimSpace(resp.Thinking) != "" {
-		p.thinkingLevel = strings.TrimSpace(resp.Thinking)
-	}
-	summaryFromResp := ""
-	rawSummaryFromResp := ""
-	if p.showThinkingTags {
-		if p.isCodexModel() {
-			rawSummaryFromResp = strings.TrimSpace(p.liveThinking)
-			if rawSummaryFromResp == "" {
-				rawSummaryFromResp = canonicalThinkingText(resp.ReasoningSummary)
-			}
-			if rawSummaryFromResp == "" {
-				rawSummaryFromResp = canonicalThinkingText(p.thinkingSummary)
-			}
-		} else {
-			rawSummaryFromResp = canonicalThinkingText(resp.ReasoningSummary)
-		}
-		summaryFromResp = normalizeThinkingSummary(rawSummaryFromResp)
-		if summaryFromResp == "" {
-			summaryFromResp = defaultSummaryFromText(p.liveThinking)
-		}
-		if summaryFromResp != "" {
-			p.thinkingSummary = summaryFromResp
-		}
-	}
-
-	if !p.streamingRun {
-		for _, toolMessage := range resp.ToolMessages {
-			p.ingestMessageRecord(toolMessage)
-		}
-		for _, commentaryMessage := range resp.Commentary {
-			p.ingestMessageRecord(commentaryMessage)
-		}
-	}
-
-	if p.lifecycle != nil && !p.lifecycle.Active {
-		p.streamingRun = false
-	}
-
-	assistantText := strings.TrimSpace(resp.AssistantMessage.Content)
-	if assistantText == "" {
-		assistantText = strings.TrimSpace(p.liveAssistant)
-	}
-	if assistantText == "" && resp.NoAssistant {
-		status := strings.TrimSpace(resp.PrimaryRunStatus)
-		if status == "" {
-			status = "pending_executor"
-		}
-		if reason := strings.TrimSpace(resp.PrimaryBlockedReason); reason != "" {
-			p.statusLine = status + ": " + reason
-		} else {
-			p.statusLine = status + " - no executor attached"
-		}
-		p.errorLine = ""
-		p.liveAssistant = ""
-		p.liveThinking = ""
-		p.thinkingCompletedAt = time.Time{}
-		p.reasoningActive = false
-		p.reasoningStartedAt = time.Time{}
-		p.streamingRun = false
-		return
-	}
-	if assistantText == "" {
-		assistantText = "No assistant response text was returned."
-	}
-	createdAt := resp.AssistantMessage.CreatedAt
-	if createdAt <= 0 {
-		createdAt = time.Now().UnixMilli()
-	}
-	reasoningToPersist := ""
-	reasoningToPersist = rawSummaryFromResp
-	if summary := normalizeThinkingSummary(reasoningToPersist); summary != "" {
-		p.thinkingSummary = summary
-	}
-	p.completeThinkingTimeline("done", createdAt, reasoningToPersist)
-	p.reasoningActive = false
-	p.appendMessageWithMetadata("assistant", assistantText, resp.AssistantMessage.Metadata, createdAt)
-	p.liveAssistant = ""
-	p.liveThinking = ""
-	p.thinkingCompletedAt = time.Time{}
-	p.reasoningStartedAt = time.Time{}
-	p.activeReasoningMessageID = ""
-	p.streamingRun = false
-
-	duration := time.Duration(0)
-	if started := p.effectiveRunStarted(); !started.IsZero() {
-		duration = time.Since(started)
-	}
-	p.statusLine = fmt.Sprintf("turn complete in %s", formatDurationCompact(duration))
-	p.errorLine = ""
-}
-
 func (p *ChatPage) applyContextUsageSummary(summary *ChatUsageSummary) {
 	if summary == nil {
 		return
@@ -2999,20 +3095,28 @@ func (p *ChatPage) ingestMessageRecord(message ChatMessageRecord) {
 
 	switch role {
 	case "assistant", "user":
-		p.appendStoredMessageWithMetadata(message.ID, role, message.Content, message.Metadata, createdAt)
+		p.appendStoredMessageWithMetadata(message.ID, message.GlobalSeq, role, message.Content, message.Metadata, createdAt)
+		if role == "user" && message.GlobalSeq == 0 {
+			p.insertPendingLocalTimelineItem()
+		}
 	case "system":
 		if isToolDBDebugMessage(message.Content) {
 			return
 		}
-		p.appendStoredMessageWithMetadata(message.ID, role, message.Content, nil, createdAt)
+		p.appendStoredMessageWithMetadata(message.ID, message.GlobalSeq, role, message.Content, nil, createdAt)
 	case "reasoning":
 		if summary := canonicalThinkingText(message.Content); summary != "" {
 			p.thinkingSummary = normalizeThinkingSummary(summary)
-			p.upsertStoredMessageWithMetadata(message.ID, role, summary, message.Metadata, createdAt)
+			p.upsertStoredMessageWithMetadata(message.ID, message.GlobalSeq, role, summary, message.Metadata, createdAt)
 		}
 	case "tool":
 		entry := parseToolStreamEntry(message.Content, createdAt)
+		entry.GlobalSeq = message.GlobalSeq
 		if shouldSuppressHistoricalToolEntry(entry) {
+			return
+		}
+		if isV3ToolEventMessage(message) {
+			p.ingestV3ToolEventMessage(entry)
 			return
 		}
 		entry.EntryKey = historicalToolEntryKey(message, entry)
@@ -3024,19 +3128,48 @@ func (p *ChatPage) ingestMessageRecord(message ChatMessageRecord) {
 		if p.streamedTools == nil {
 			p.streamedTools = make(map[string]struct{}, 16)
 		}
-		callKey := toolReplayDedupKey(entry)
+		callKey := toolStreamEntryKey(entry)
 		if _, seen := p.streamedTools[callKey]; !seen {
 			p.appendToolMessage(entry, entry.CreatedAt)
 		}
 		p.streamedTools[callKey] = struct{}{}
 		return
 	default:
-		p.appendStoredMessageWithMetadata(message.ID, "system", message.Content, nil, createdAt)
+		p.appendStoredMessageWithMetadata(message.ID, message.GlobalSeq, "system", message.Content, nil, createdAt)
 	}
 }
 
 func isToolDBDebugMessage(content string) bool {
 	return false
+}
+
+func isV3ToolEventMessage(message ChatMessageRecord) bool {
+	value, _ := message.Metadata["v3_tool_event"].(bool)
+	return value
+}
+
+func (p *ChatPage) ingestV3ToolEventMessage(entry chatToolStreamEntry) {
+	if p == nil {
+		return
+	}
+	if p.streamedTools == nil {
+		p.streamedTools = make(map[string]struct{}, 16)
+	}
+	state := normalizedToolState(entry)
+	entry.State = state
+	p.upsertToolStreamEntry(entry)
+	entry = p.latestToolStreamEntryForEntry(entry)
+	if isBashToolName(entry.ToolName) {
+		if isTerminalToolState(state) {
+			p.finishInlineBashOutput(entry)
+		} else {
+			p.maybeStartInlineBashOutput(entry)
+		}
+	}
+	p.upsertManagedToolTimelineMessage(entry, toolTimelineCreatedAt(entry))
+	if isTerminalToolState(state) {
+		p.streamedTools[toolReplayDedupKey(entry)] = struct{}{}
+	}
 }
 
 func (p *ChatPage) SetHeaderVisible(show bool) {
@@ -3048,10 +3181,10 @@ func (p *ChatPage) appendMessage(role, text string, createdAt int64) {
 }
 
 func (p *ChatPage) appendMessageWithMetadata(role, text string, metadata map[string]any, createdAt int64) {
-	p.appendStoredMessageWithMetadata("", role, text, metadata, createdAt)
+	p.appendStoredMessageWithMetadata("", 0, role, text, metadata, createdAt)
 }
 
-func (p *ChatPage) upsertStoredMessageWithMetadata(messageID, role, text string, metadata map[string]any, createdAt int64) {
+func (p *ChatPage) upsertStoredMessageWithMetadata(messageID string, globalSeq uint64, role, text string, metadata map[string]any, createdAt int64) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
@@ -3066,8 +3199,12 @@ func (p *ChatPage) upsertStoredMessageWithMetadata(messageID, role, text string,
 			if role == "" {
 				role = "system"
 			}
+			if globalSeq == 0 {
+				globalSeq = p.timeline[i].GlobalSeq
+			}
 			p.timeline[i] = chatMessageItem{
 				MessageID: messageID,
+				GlobalSeq: globalSeq,
 				Role:      role,
 				Text:      text,
 				CreatedAt: createdAt,
@@ -3077,10 +3214,10 @@ func (p *ChatPage) upsertStoredMessageWithMetadata(messageID, role, text string,
 			return
 		}
 	}
-	p.appendStoredMessageWithMetadata(messageID, role, text, metadata, createdAt)
+	p.appendStoredMessageWithMetadata(messageID, globalSeq, role, text, metadata, createdAt)
 }
 
-func (p *ChatPage) appendStoredMessageWithMetadata(messageID, role, text string, metadata map[string]any, createdAt int64) {
+func (p *ChatPage) appendStoredMessageWithMetadata(messageID string, globalSeq uint64, role, text string, metadata map[string]any, createdAt int64) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
@@ -3096,6 +3233,7 @@ func (p *ChatPage) appendStoredMessageWithMetadata(messageID, role, text string,
 
 	p.timeline = append(p.timeline, chatMessageItem{
 		MessageID: messageID,
+		GlobalSeq: globalSeq,
 		Role:      role,
 		Text:      text,
 		CreatedAt: createdAt,
@@ -3123,6 +3261,48 @@ func (p *ChatPage) hasTimelineMessageID(messageID string) bool {
 	return false
 }
 
+func (p *ChatPage) insertPendingLocalTimelineItem() {
+	if p == nil || len(p.timeline) == 0 {
+		return
+	}
+	pendingIndex := len(p.timeline) - 1
+	pending := p.timeline[pendingIndex]
+	afterSeq := metadataUint64(pending.Metadata, chatPendingAfterAuthoritativeSeqMetadataKey)
+	if afterSeq == 0 {
+		return
+	}
+	for i, item := range p.timeline[:pendingIndex] {
+		if item.GlobalSeq > afterSeq {
+			copy(p.timeline[i+1:pendingIndex+1], p.timeline[i:pendingIndex])
+			p.timeline[i] = pending
+			return
+		}
+	}
+}
+
+func metadataUint64(metadata map[string]any, key string) uint64 {
+	value := metadata[key]
+	switch typed := value.(type) {
+	case uint64:
+		return typed
+	case uint:
+		return uint64(typed)
+	case int:
+		if typed > 0 {
+			return uint64(typed)
+		}
+	case int64:
+		if typed > 0 {
+			return uint64(typed)
+		}
+	case float64:
+		if typed > 0 {
+			return uint64(typed)
+		}
+	}
+	return 0
+}
+
 func cloneMetadataMap(metadata map[string]any) map[string]any {
 	if len(metadata) == 0 {
 		return nil
@@ -3140,6 +3320,21 @@ func isCommentaryMetadata(metadata map[string]any) bool {
 	}
 	value, _ := metadata["phase"].(string)
 	return strings.EqualFold(strings.TrimSpace(value), "commentary")
+}
+
+func isSyntheticThinkingMetadata(metadata map[string]any) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	if value, _ := metadata["synthetic_tool"].(bool); value {
+		return true
+	}
+	return metadataStringEquals(metadata, "timeline_kind", "thinking") || metadataStringEquals(metadata, "segment_kind", "reasoning")
+}
+
+func metadataStringEquals(metadata map[string]any, key, want string) bool {
+	value, _ := metadata[key].(string)
+	return strings.EqualFold(strings.TrimSpace(value), want)
 }
 
 func reasoningTimelineMetadata(runID int, segment int, startedAt int64, durationMS int64) map[string]any {
@@ -3212,6 +3407,30 @@ func toolTimelinePayload(message chatMessageItem) (map[string]any, bool) {
 	return payload, true
 }
 
+func (p *ChatPage) retainPlanTimelineDocument(payload map[string]any) {
+	if p == nil {
+		return
+	}
+	document := planManageDocument(payload)
+	if len(document) == 0 {
+		return
+	}
+	planID := firstNonEmptyToolValue(jsonString(payload, "plan_id"), jsonString(document, "id"))
+	if planID == "" {
+		return
+	}
+	title := firstNonEmptyToolValue(jsonString(payload, "title"), jsonString(document, "title"), jsonString(jsonObject(document, "info"), "goal"), "Plan")
+	if strings.TrimSpace(p.planExecutionPlan.ID) == planID && p.planExecutionPlan.Document != nil {
+		return
+	}
+	p.planExecutionPlan = ChatSessionPlan{
+		ID:       planID,
+		Title:    title,
+		Document: cloneGenericJSONMap(document),
+		Status:   firstNonEmptyToolValue(jsonString(document, "status"), jsonString(payload, "status")),
+	}
+}
+
 func toolTimelineMessageToolName(message chatMessageItem) string {
 	if len(message.Metadata) == 0 {
 		return ""
@@ -3279,6 +3498,7 @@ func (p *ChatPage) upsertManagedToolTimelineMessage(entry chatToolStreamEntry, c
 		state = "pending"
 	}
 	message := chatMessageItem{
+		GlobalSeq: entry.GlobalSeq,
 		Role:      "tool",
 		Text:      text,
 		CreatedAt: createdAt,
@@ -3344,6 +3564,13 @@ func (p *ChatPage) upsertManagedToolTimelineMessage(entry chatToolStreamEntry, c
 	}
 	p.ensureTimelineRenderCacheLen()
 	p.bumpTimelineRenderGeneration()
+}
+
+func toolTimelineCreatedAt(entry chatToolStreamEntry) int64 {
+	if entry.StartedAt > 0 {
+		return entry.StartedAt
+	}
+	return entry.CreatedAt
 }
 
 func toolTimelineMessageDurationMS(message chatMessageItem) int64 {
@@ -3634,8 +3861,13 @@ func (p *ChatPage) flushLiveAssistantToTimeline(atUnix int64) {
 	if createdAt <= 0 {
 		createdAt = time.Now().UnixMilli()
 	}
-	p.appendMessage("assistant", text, createdAt)
+	metadata := map[string]any{}
+	if runID := strings.TrimSpace(p.liveAssistantRunID); runID != "" {
+		metadata["run_id"] = runID
+	}
+	p.appendMessageWithMetadata("assistant", text, metadata, createdAt)
 	p.liveAssistant = ""
+	p.resetLiveAssistantStream()
 }
 
 func (p *ChatPage) appendToolMessage(entry chatToolStreamEntry, createdAt int64) {
@@ -3807,6 +4039,9 @@ func (p *ChatPage) upsertToolStreamEntry(entry chatToolStreamEntry) {
 				}
 			}
 			p.toolStream[i].CreatedAt = entry.CreatedAt
+			if entry.GlobalSeq > 0 && (p.toolStream[i].GlobalSeq == 0 || entry.GlobalSeq < p.toolStream[i].GlobalSeq) {
+				p.toolStream[i].GlobalSeq = entry.GlobalSeq
+			}
 			p.toolStream[i].EntryKey = targetEntryKey
 
 			switch state {
@@ -3881,6 +4116,9 @@ func (p *ChatPage) upsertToolStreamEntry(entry chatToolStreamEntry) {
 				}
 			}
 			p.toolStream[i].CreatedAt = entry.CreatedAt
+			if entry.GlobalSeq > 0 && (p.toolStream[i].GlobalSeq == 0 || entry.GlobalSeq < p.toolStream[i].GlobalSeq) {
+				p.toolStream[i].GlobalSeq = entry.GlobalSeq
+			}
 
 			switch state {
 			case "running":
@@ -4675,13 +4913,42 @@ func (p *ChatPage) friendlyRunError(err error) string {
 		return "Context compaction canceled."
 	case strings.Contains(lower, "resolved model provider is empty"):
 		return "No active model is configured. Open /models, set a provider/model, then retry."
-	case strings.Contains(lower, "auth") || strings.Contains(lower, "unauthorized"):
-		return "Auth is missing or invalid. Run /auth, then retry."
+	case isAuthenticationRunError(lower):
+		return "Auth is missing or invalid. Run /auth, then retry. Details: " + text
 	case strings.Contains(lower, "unsupported provider") || strings.Contains(lower, "not runnable yet"):
 		return "Selected provider is not runnable yet. Open /models, choose a supported model, then retry."
 	default:
 		return "Run failed: " + text
 	}
+}
+
+func isAuthenticationRunError(lower string) bool {
+	lower = strings.TrimSpace(lower)
+	if lower == "" {
+		return false
+	}
+	if strings.Contains(lower, "unauthorized") || strings.Contains(lower, "401") {
+		return true
+	}
+	for _, phrase := range []string{
+		"auth not configured",
+		"auth is not configured",
+		"auth missing",
+		"missing auth",
+		"missing api key",
+		"api key is not configured",
+		"api key is required",
+		"oauth record is incomplete",
+		"oauth login failed",
+		"request unauthorized",
+		"token is missing",
+		"refresh token is missing",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func isCancelledRunError(err error) bool {
@@ -4860,8 +5127,18 @@ func normalizeChatSessionTabs(tabs []ChatSessionTab, currentID, currentTitle str
 			Title:           title,
 			WorkspaceName:   strings.TrimSpace(tab.WorkspaceName),
 			WorkspacePath:   strings.TrimSpace(tab.WorkspacePath),
+			WorktreeEnabled: tab.WorktreeEnabled,
+			WorktreeBranch:  strings.TrimSpace(tab.WorktreeBranch),
 			Mode:            strings.TrimSpace(tab.Mode),
+			CreatedAt:       tab.CreatedAt,
+			UpdatedAt:       tab.UpdatedAt,
+			ActiveStartedAt: tab.ActiveStartedAt,
 			UpdatedAgo:      strings.TrimSpace(tab.UpdatedAgo),
+			Active:          tab.Active,
+			NeedsAttention:  tab.NeedsAttention,
+			ActivityLabel:   strings.TrimSpace(tab.ActivityLabel),
+			Group:           strings.TrimSpace(tab.Group),
+			ProgressLabel:   strings.TrimSpace(tab.ProgressLabel),
 			Provider:        strings.TrimSpace(tab.Provider),
 			ModelName:       strings.TrimSpace(tab.ModelName),
 			ServiceTier:     strings.TrimSpace(tab.ServiceTier),
@@ -5147,42 +5424,44 @@ func (p *ChatPage) rebuildToolLifecycleViews() {
 		p.upsertToolStreamEntry(entry)
 	}
 	sort.SliceStable(p.toolStream, func(i, j int) bool {
-		if p.toolStream[i].CreatedAt == p.toolStream[j].CreatedAt {
-			return toolStreamEntryKey(p.toolStream[i]) < toolStreamEntryKey(p.toolStream[j])
+		left := chatMessageItem{GlobalSeq: p.toolStream[i].GlobalSeq, CreatedAt: toolTimelineCreatedAt(p.toolStream[i])}
+		right := chatMessageItem{GlobalSeq: p.toolStream[j].GlobalSeq, CreatedAt: toolTimelineCreatedAt(p.toolStream[j])}
+		if timelineItemBefore(left, right) {
+			return true
 		}
-		return p.toolStream[i].CreatedAt < p.toolStream[j].CreatedAt
+		if timelineItemBefore(right, left) {
+			return false
+		}
+		return toolStreamEntryKey(p.toolStream[i]) < toolStreamEntryKey(p.toolStream[j])
 	})
 	if len(p.toolStream) > chatMaxToolEntries {
 		drop := len(p.toolStream) - chatMaxToolEntries
 		p.toolStream = append([]chatToolStreamEntry(nil), p.toolStream[drop:]...)
 	}
 
-	nextTimeline := make([]chatMessageItem, 0, len(p.timeline)+len(p.toolStream))
+	messages := make([]chatMessageItem, 0, len(p.timeline))
 	for _, item := range p.timeline {
 		if strings.EqualFold(strings.TrimSpace(item.Role), "tool") {
 			continue
 		}
-		nextTimeline = append(nextTimeline, item)
+		messages = append(messages, item)
 	}
+	tools := make([]chatMessageItem, 0, len(p.toolStream))
 	for _, entry := range p.toolStream {
 		text := formatUnifiedToolEntry(entry)
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
-		nextTimeline = append(nextTimeline, chatMessageItem{
+		tools = append(tools, chatMessageItem{
+			GlobalSeq: entry.GlobalSeq,
 			Role:      "tool",
 			Text:      text,
-			CreatedAt: entry.CreatedAt,
+			CreatedAt: toolTimelineCreatedAt(entry),
 			ToolState: normalizedToolState(entry),
 			Metadata:  toolTimelineMetadata(entry),
 		})
 	}
-	sort.SliceStable(nextTimeline, func(i, j int) bool {
-		if nextTimeline[i].CreatedAt == nextTimeline[j].CreatedAt {
-			return timelineSortOrder(nextTimeline[i].Role) < timelineSortOrder(nextTimeline[j].Role)
-		}
-		return nextTimeline[i].CreatedAt < nextTimeline[j].CreatedAt
-	})
+	nextTimeline := mergeToolTimelineMessages(messages, tools)
 	if len(nextTimeline) > chatMaxTimelineMessages {
 		drop := len(nextTimeline) - chatMaxTimelineMessages
 		nextTimeline = append([]chatMessageItem(nil), nextTimeline[drop:]...)
@@ -5191,21 +5470,27 @@ func (p *ChatPage) rebuildToolLifecycleViews() {
 	p.resetTimelineRenderCache()
 }
 
-func timelineSortOrder(role string) int {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "user":
-		return 0
-	case "assistant":
-		return 1
-	case "reasoning":
-		return 2
-	case "tool":
-		return 3
-	case "system":
-		return 4
-	default:
-		return 5
+func mergeToolTimelineMessages(messages, tools []chatMessageItem) []chatMessageItem {
+	if len(tools) == 0 {
+		return messages
 	}
+	out := make([]chatMessageItem, 0, len(messages)+len(tools))
+	toolIndex := 0
+	for _, message := range messages {
+		for toolIndex < len(tools) && timelineItemBefore(tools[toolIndex], message) {
+			out = append(out, tools[toolIndex])
+			toolIndex++
+		}
+		out = append(out, message)
+	}
+	return append(out, tools[toolIndex:]...)
+}
+
+func timelineItemBefore(left, right chatMessageItem) bool {
+	if left.GlobalSeq > 0 && right.GlobalSeq > 0 {
+		return left.GlobalSeq < right.GlobalSeq
+	}
+	return left.CreatedAt < right.CreatedAt
 }
 
 func (p *ChatPage) ensurePermissionSelection() {
@@ -5221,7 +5506,7 @@ func (p *ChatPage) ensurePermissionSelection() {
 	if p.permSelected >= len(p.pendingPerms) {
 		p.permSelected = len(p.pendingPerms) - 1
 	}
-	indexes := p.genericPermissionIndexes()
+	indexes := p.ordinaryPermissionIndexes()
 	if len(indexes) == 0 {
 		p.askUserOption = 0
 		p.syncPermissionDetailTarget()
@@ -5234,24 +5519,17 @@ func (p *ChatPage) ensurePermissionSelection() {
 	p.syncPermissionDetailTarget()
 }
 
-func (p *ChatPage) genericPermissionCount() int {
-	count := 0
-	for i := range p.pendingPerms {
-		if isPlanUpdatePermission(p.pendingPerms[i]) || isExitPlanPermission(p.pendingPerms[i]) || isManageFlowPermission(p.pendingPerms[i]) || isManageTodosPermission(p.pendingPerms[i]) || isAskUserPermission(p.pendingPerms[i]) || isWorkspaceScopePermission(p.pendingPerms[i]) || isTaskLaunchPermission(p.pendingPerms[i]) || isThemeChangePermission(p.pendingPerms[i]) || isAgentChangePermission(p.pendingPerms[i]) || isSkillChangePermission(p.pendingPerms[i]) {
-			continue
-		}
-		count++
-	}
-	return count
+func (p *ChatPage) ordinaryPermissionCount() int {
+	return len(p.ordinaryPermissionIndexes())
 }
 
-func (p *ChatPage) genericPermissionIndexes() []int {
+func (p *ChatPage) ordinaryPermissionIndexes() []int {
 	if len(p.pendingPerms) == 0 {
 		return nil
 	}
 	indexes := make([]int, 0, len(p.pendingPerms))
 	for i := range p.pendingPerms {
-		if isPlanUpdatePermission(p.pendingPerms[i]) || isExitPlanPermission(p.pendingPerms[i]) || isManageFlowPermission(p.pendingPerms[i]) || isManageTodosPermission(p.pendingPerms[i]) || isAskUserPermission(p.pendingPerms[i]) || isWorkspaceScopePermission(p.pendingPerms[i]) || isTaskLaunchPermission(p.pendingPerms[i]) || isThemeChangePermission(p.pendingPerms[i]) || isSkillChangePermission(p.pendingPerms[i]) {
+		if classifyChatPermission(p.pendingPerms[i]) != chatPermissionDestinationOrdinaryInline {
 			continue
 		}
 		indexes = append(indexes, i)
@@ -5269,6 +5547,23 @@ func indexOfInt(items []int, target int) int {
 }
 
 func (p *ChatPage) syncSpecialPermissionModals() {
+	if strings.TrimSpace(p.planPermission) != "" {
+		if record, ok := p.pendingPermissionByID(p.planPermission); !ok {
+			p.closePlanPermissionModal()
+		} else if strings.TrimSpace(p.planPermissionApproved) == "" && canonicalPermissionApprovedArguments(record) != "" {
+			manual, scroll := p.planPermissionManual, p.planPermissionScroll
+			p.OpenPlanPermissionModal(record)
+			p.planPermissionManual = manual
+			p.planPermissionScroll = scroll
+		}
+	}
+	if strings.TrimSpace(p.manageSessionsPermission) != "" {
+		if record, ok := p.pendingPermissionByID(p.manageSessionsPermission); !ok {
+			p.closeManageSessionsPermissionModal()
+		} else if strings.TrimSpace(p.manageSessionsApproved) == "" && canonicalPermissionApprovedArguments(record) != "" {
+			p.OpenManageSessionsPermissionModal(record)
+		}
+	}
 	if strings.TrimSpace(p.planUpdatePermission) != "" {
 		if _, ok := p.pendingPermissionByID(p.planUpdatePermission); !ok {
 			p.closePlanUpdateModal()
@@ -5314,6 +5609,12 @@ func (p *ChatPage) syncSpecialPermissionModals() {
 			p.closeThemeChangeModal()
 		}
 	}
+	if p.planPermissionModalActive() {
+		return
+	}
+	if p.manageSessionsPermissionModalActive() {
+		return
+	}
 	if p.planEditorModalActive() {
 		return
 	}
@@ -5321,9 +5622,6 @@ func (p *ChatPage) syncSpecialPermissionModals() {
 		return
 	}
 	if p.planExitModalActive() {
-		return
-	}
-	if p.manageFlowModalActive() {
 		return
 	}
 	if p.manageTodosModalActive() {
@@ -5354,93 +5652,77 @@ func (p *ChatPage) syncSpecialPermissionModals() {
 	if len(p.pendingPerms) == 0 {
 		return
 	}
-	selected := ChatPermissionRecord{}
-	found := false
 	for i := range p.pendingPerms {
-		if !isPlanUpdatePermission(p.pendingPerms[i]) {
+		if classifyChatPermission(p.pendingPerms[i]) != chatPermissionDestinationPlanModal {
 			continue
 		}
-		p.OpenPlanUpdatePermissionModal(p.pendingPerms[i])
+		p.OpenPlanPermissionModal(p.pendingPerms[i])
 		return
 	}
 	for i := range p.pendingPerms {
-		if !isExitPlanPermission(p.pendingPerms[i]) {
+		record := p.pendingPerms[i]
+		if classifyChatPermission(record) != chatPermissionDestinationManageSessionsModal {
 			continue
 		}
-		p.permSelected = i
-		selected = p.pendingPerms[i]
-		found = true
-		break
-	}
-	if !found {
-		for i := range p.pendingPerms {
-			record := p.pendingPerms[i]
-			if !isManageFlowPermission(record) {
-				continue
-			}
-			p.OpenManageFlowPermissionModal(record)
-			return
-		}
-		for i := range p.pendingPerms {
-			record := p.pendingPerms[i]
-			if !isManageTodosPermission(record) {
-				continue
-			}
-			p.OpenManageTodosPermissionModal(record)
-			return
-		}
-		for i := range p.pendingPerms {
-			record := p.pendingPerms[i]
-			if !isAskUserPermission(record) {
-				continue
-			}
-			p.OpenAskUserPermissionModal(record)
-			return
-		}
-		for i := range p.pendingPerms {
-			record := p.pendingPerms[i]
-			if !isWorkspaceScopePermission(record) {
-				continue
-			}
-			p.OpenWorkspaceScopePermissionModal(record)
-			return
-		}
-		for i := range p.pendingPerms {
-			record := p.pendingPerms[i]
-			if !isTaskLaunchPermission(record) {
-				continue
-			}
-			p.OpenTaskLaunchPermissionModal(record)
-			return
-		}
-		for i := range p.pendingPerms {
-			record := p.pendingPerms[i]
-			if !isThemeChangePermission(record) {
-				continue
-			}
-			p.OpenThemeChangePermissionModal(record)
-			return
-		}
-		for i := range p.pendingPerms {
-			record := p.pendingPerms[i]
-			if !isAgentChangePermission(record) {
-				continue
-			}
-			p.OpenAgentChangePermissionModal(record)
-			return
-		}
-		for i := range p.pendingPerms {
-			record := p.pendingPerms[i]
-			if !isSkillChangePermission(record) {
-				continue
-			}
-			p.OpenSkillChangePermissionModal(record)
-			return
-		}
+		p.OpenManageSessionsPermissionModal(record)
 		return
 	}
-	title, body, planID, documentText, approvedArguments := exitPlanPermissionPayload(selected)
-	p.OpenExitPlanModePermissionModal(selected.ID, planID, title, body, documentText, approvedArguments)
+	for i := range p.pendingPerms {
+		record := p.pendingPerms[i]
+		if !isManageTodosPermission(record) {
+			continue
+		}
+		p.OpenManageTodosPermissionModal(record)
+		return
+	}
+	for i := range p.pendingPerms {
+		record := p.pendingPerms[i]
+		if !isAskUserPermission(record) {
+			continue
+		}
+		p.OpenAskUserPermissionModal(record)
+		return
+	}
+	for i := range p.pendingPerms {
+		record := p.pendingPerms[i]
+		if !isWorkspaceScopePermission(record) {
+			continue
+		}
+		p.OpenWorkspaceScopePermissionModal(record)
+		return
+	}
+	for i := range p.pendingPerms {
+		record := p.pendingPerms[i]
+		if !isTaskLaunchPermission(record) {
+			continue
+		}
+		p.OpenTaskLaunchPermissionModal(record)
+		return
+	}
+	for i := range p.pendingPerms {
+		record := p.pendingPerms[i]
+		if !isThemeChangePermission(record) {
+			continue
+		}
+		p.OpenThemeChangePermissionModal(record)
+		return
+	}
+	for i := range p.pendingPerms {
+		record := p.pendingPerms[i]
+		if !isAgentChangePermission(record) {
+			continue
+		}
+		p.OpenAgentChangePermissionModal(record)
+		return
+	}
+	for i := range p.pendingPerms {
+		record := p.pendingPerms[i]
+		if !isSkillChangePermission(record) {
+			continue
+		}
+		p.OpenSkillChangePermissionModal(record)
+		return
+	}
 }
 
 func (p *ChatPage) pendingPermissionByID(permissionID string) (ChatPermissionRecord, bool) {

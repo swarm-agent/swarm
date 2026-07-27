@@ -1,162 +1,155 @@
 import assert from 'node:assert/strict'
-import { afterEach, test } from 'node:test'
+import test from 'node:test'
 
-import { DesktopRunStreamController, type RunStreamEventMessage } from './run-stream-controller'
+import { DesktopSessionV3Runtime } from '../session-v3/runtime'
+import {
+  SESSION_V3_REALTIME_PROTOCOL,
+  SESSION_V3_REALTIME_PROTOCOL_VERSION,
+  SESSION_V3_REALTIME_RESUME_KIND,
+  type SessionV3RealtimeFrameWire,
+  type SessionV3RealtimeResumeWire,
+  type SessionV3ReconnectSnapshot,
+} from '../session-v3/types'
 
-const originalFetch = globalThis.fetch
-const originalWindow = globalThis.window
-const originalWebSocket = globalThis.WebSocket
+class MockRealtimeSocket extends EventTarget {
+  static readonly CONNECTING = 0
+  static readonly OPEN = 1
+  static readonly CLOSING = 2
+  static readonly CLOSED = 3
 
-type Listener = (event: { data?: string }) => void
+  readyState = MockRealtimeSocket.CONNECTING
+  sent: string[] = []
+  closed = false
 
-class FakeWebSocket {
-  static CONNECTING = 0
-  static OPEN = 1
-  static CLOSING = 2
-  static CLOSED = 3
-
-  static instances: FakeWebSocket[] = []
-
-  readyState = FakeWebSocket.OPEN
-  readonly listeners = new Map<string, Listener[]>()
-
-  constructor(_input: string | URL) {
-    FakeWebSocket.instances.push(this)
+  send(raw: string): void {
+    this.sent.push(raw)
   }
 
-  addEventListener(type: string, callback: EventListenerOrEventListenerObject) {
-    const listener: Listener = (event) => {
-      if (typeof callback === 'function') {
-        callback(event as Event)
-      } else {
-        callback.handleEvent(event as Event)
-      }
-    }
-    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener])
+  close(): void {
+    if (this.readyState === MockRealtimeSocket.CLOSED) return
+    this.closed = true
+    this.readyState = MockRealtimeSocket.CLOSED
+    this.dispatchEvent(new Event('close'))
   }
 
-  send(_payload: string) {}
-
-  close() {
-    if (this.readyState === FakeWebSocket.CLOSED) {
-      return
-    }
-    this.readyState = FakeWebSocket.CLOSED
-    this.emit('close', {})
+  open(): void {
+    this.readyState = MockRealtimeSocket.OPEN
+    this.dispatchEvent(new Event('open'))
   }
 
-  emit(type: string, event: { data?: string }) {
-    for (const listener of this.listeners.get(type) ?? []) {
-      listener(event)
-    }
-  }
-
-  emitFrame(payload: RunStreamEventMessage) {
-    this.emit('message', { data: JSON.stringify(payload) })
+  message(frame: SessionV3RealtimeFrameWire): void {
+    const event = new Event('message') as MessageEvent
+    Object.defineProperty(event, 'data', { value: JSON.stringify(frame) })
+    this.dispatchEvent(event)
   }
 }
 
-function installBrowserStubs() {
-  FakeWebSocket.instances = []
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    const url = String(input)
-    if (url === '/v1/auth/desktop/session') {
-      return new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }
-    throw new Error(`unexpected fetch: ${url}`)
-  }) as typeof fetch
-  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
-  globalThis.window = {
-    location: { protocol: 'http:', host: '127.0.0.1:7777' },
-    addEventListener() {},
-    removeEventListener() {},
-    setTimeout: ((callback: TimerHandler, timeout?: number) => setTimeout(callback, timeout)) as typeof window.setTimeout,
-    clearTimeout: ((timer?: number) => clearTimeout(timer)) as typeof window.clearTimeout,
-  } as unknown as Window & typeof globalThis
-}
-
-function makeController(sessionApi: string | null = 'v3') {
-  const frames: RunStreamEventMessage[] = []
-  const controller = new DesktopRunStreamController({
-    getResumeRequest: () => ({
-      sessionId: 'session-v3',
-      runId: 'run-v3',
-      lastSeq: 0,
-      sessionApi,
-      afterSeq: 0,
-    }),
-    onFrame: (_sessionId, payload) => frames.push(payload),
-    onReconnectPending() {},
-    onResumeFailure(_sessionId, message) {
-      throw new Error(message)
-    },
-  })
-  return { controller, frames }
-}
-
-afterEach(() => {
-  globalThis.fetch = originalFetch
-  globalThis.WebSocket = originalWebSocket
-  if (originalWindow) {
-    globalThis.window = originalWindow
-  } else {
-    Reflect.deleteProperty(globalThis, 'window')
+function installTransportGlobals(): void {
+  const target = globalThis as typeof globalThis & { window?: unknown; WebSocket?: unknown }
+  target.window ??= {
+    setTimeout: globalThis.setTimeout.bind(globalThis),
+    clearTimeout: globalThis.clearTimeout.bind(globalThis),
+    location: { protocol: 'http:', host: 'localhost' },
   }
-})
+  target.WebSocket ??= MockRealtimeSocket
+}
 
-test('Desktop V3 run stream ignores turn.completed without a durable terminal run intent', async () => {
-  installBrowserStubs()
-  const { controller, frames } = makeController('v3')
-
-  await controller.ensure('session-v3', 'run-v3')
-  const socket = FakeWebSocket.instances[0]
-  assert.ok(socket)
-
-  socket.emitFrame({ type: 'turn.completed', run_id: 'run-v3', status: 'completed' })
-
-  assert.equal(controller.activeSessionCount(), 1)
-  assert.equal(socket.readyState, FakeWebSocket.OPEN)
-  assert.equal(frames.length, 1)
-
-  controller.closeAll()
-})
-
-test('Desktop V3 run stream closes only on terminal run intent for the active run', async () => {
-  installBrowserStubs()
-  const { controller } = makeController('v3')
-
-  await controller.ensure('session-v3', 'run-v3')
-  const socket = FakeWebSocket.instances[0]
-  assert.ok(socket)
-
-  socket.emitFrame({
-    type: 'event',
-    session_id: 'session-v3',
-    event: {
-      session_id: 'session-v3',
-      seq: 2,
-      event_type: 'session.assistant.completed',
-      payload: {
+function makeResume(endpointCursor: string): SessionV3RealtimeResumeWire {
+  return {
+    protocol: SESSION_V3_REALTIME_PROTOCOL,
+    protocol_version: SESSION_V3_REALTIME_PROTOCOL_VERSION,
+    kind: SESSION_V3_REALTIME_RESUME_KIND,
+    endpoint_cursor: endpointCursor,
+    subscriptions: [
+      {
         session_id: 'session-v3',
-        run_id: 'run-other',
-        run_intent: { session_id: 'session-v3', run_id: 'run-other', status: 'completed' },
+        subscription_id: 'session-subscription-v3',
+        endpoint_cursor: endpointCursor,
+      },
+    ],
+    worksets: [
+      {
+        workset_id: 'desktop-workset',
+        subscription_id: 'desktop-workset-subscription',
+        selector: { kind: 'global', global: true },
+        auto_subscribe_sessions: true,
+      },
+    ],
+  }
+}
+
+function makeReconnectSnapshot(endpointCursor: string): SessionV3ReconnectSnapshot {
+  return {
+    snapshot: {
+      rev: 1,
+      snapshotEndpointCursor: endpointCursor,
+    },
+    endpointCursor,
+    clientId: 'client-1',
+    surface: 'desktop',
+    worksetId: 'desktop-workset',
+    subscriptions: [
+      {
+        protocol: SESSION_V3_REALTIME_PROTOCOL,
+        protocol_version: SESSION_V3_REALTIME_PROTOCOL_VERSION,
+        kind: 'subscribe.session',
+        session_id: 'session-v3',
+        subscription_id: 'session-subscription-v3',
+        endpoint_cursor: endpointCursor,
+      },
+    ],
+    worksets: makeResume(endpointCursor).worksets ?? [],
+    realtimeResume: makeResume(endpointCursor),
+    diagnosticsBySession: {},
+    wire: { ok: true, rev: 1, snapshot_endpoint_cursor: endpointCursor },
+  }
+}
+
+function parseResume(socket: MockRealtimeSocket): SessionV3RealtimeResumeWire {
+  const raw = socket.sent[socket.sent.length - 1]
+  assert.ok(raw)
+  return JSON.parse(raw) as SessionV3RealtimeResumeWire
+}
+
+test('Desktop V3 runtime keeps the one realtime socket open after assistant completion', async () => {
+  installTransportGlobals()
+  const sockets: MockRealtimeSocket[] = []
+  const runtime = new DesktopSessionV3Runtime({
+    wantedSessionIds: ['session-v3'],
+    api: {
+      reconnectSessionV3: async () => makeReconnectSnapshot('cursor-1'),
+    },
+    transportOptions: {
+      livenessTimeoutMs: 60_000,
+      openSocket: () => {
+        const socket = new MockRealtimeSocket()
+        sockets.push(socket)
+        return socket as unknown as WebSocket
       },
     },
   })
 
-  assert.equal(controller.activeSessionCount(), 1)
-  assert.equal(socket.readyState, FakeWebSocket.OPEN)
+  await runtime.boot()
+  assert.equal(sockets.length, 1)
+  sockets[0].open()
+  assert.equal(parseResume(sockets[0]).endpoint_cursor, 'cursor-1')
 
-  socket.emitFrame({
+  sockets[0].message({
+    protocol: SESSION_V3_REALTIME_PROTOCOL,
+    protocol_version: SESSION_V3_REALTIME_PROTOCOL_VERSION,
+    kind: 'event',
     type: 'event',
     session_id: 'session-v3',
+    endpoint_cursor: 'cursor-2',
+    last_seq: 2,
+    high_watermark_seq: 2,
+    event_type: 'session.assistant.completed',
     event: {
+      id: 'v3evt_session-v3_00000000000000000002',
       session_id: 'session-v3',
-      seq: 3,
+      seq: 2,
       event_type: 'session.assistant.completed',
+      ts_unix_ms: 2,
       payload: {
         session_id: 'session-v3',
         run_id: 'run-v3',
@@ -165,6 +158,10 @@ test('Desktop V3 run stream closes only on terminal run intent for the active ru
     },
   })
 
-  assert.equal(controller.activeSessionCount(), 0)
-  assert.equal(socket.readyState, FakeWebSocket.CLOSED)
+  assert.equal(sockets.length, 1)
+  assert.equal(sockets[0].closed, false)
+  assert.equal(runtime.diagnostics().socketState, 'open')
+  assert.equal(runtime.diagnostics().sessionSubscriptionCount, 1)
+  assert.equal(runtime.getState().endpointCursor, 'cursor-2')
+  runtime.shutdown()
 })

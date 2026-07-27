@@ -70,30 +70,59 @@ func parseToolStreamEntry(content string, createdAt int64) chatToolStreamEntry {
 
 func parseToolHistoryStreamEntry(raw string, createdAt int64) (chatToolStreamEntry, bool) {
 	payload := parseToolJSON(raw)
-	if payload == nil || !strings.EqualFold(strings.TrimSpace(jsonString(payload, "path_id")), "run.tool-history.v2") {
+	if payload == nil {
+		return chatToolStreamEntry{}, false
+	}
+	pathID := strings.TrimSpace(jsonString(payload, "path_id"))
+	eventType := strings.ToLower(strings.TrimSpace(jsonString(payload, "type")))
+	toolNameKey := "tool"
+	switch {
+	case strings.EqualFold(pathID, "run.tool-history.v2"):
+	case strings.EqualFold(pathID, "run.v3.provider-tool-result.v1"):
+		toolNameKey = "tool_name"
+	case isV3ToolLifecycleEventType(eventType):
+		toolNameKey = "tool_name"
+	default:
 		return chatToolStreamEntry{}, false
 	}
 
-	toolName := strings.TrimSpace(jsonString(payload, "tool"))
+	toolName := strings.TrimSpace(jsonString(payload, toolNameKey))
 	if toolName == "" {
 		toolName = "tool"
 	}
 	output := strings.TrimSpace(jsonString(payload, "completed_output"))
-	rawOutput := strings.TrimSpace(jsonString(payload, "output"))
+	rawOutput := strings.TrimSpace(jsonString(payload, "raw_output"))
+	if rawOutput == "" {
+		rawOutput = strings.TrimSpace(jsonString(payload, "output"))
+	}
 	if output == "" {
-		output = rawOutput
+		output = strings.TrimSpace(jsonString(payload, "output"))
 	}
 	if rawOutput == "" {
 		rawOutput = output
 	}
+	state := strings.TrimSpace(jsonString(payload, "status"))
+	if state == "" {
+		switch eventType {
+		case "session.tool.started":
+			state = "running"
+		case "session.tool.delta":
+			state = "running"
+		case "session.tool.failed", "session.tool.cancelled", "session.tool.canceled":
+			state = "error"
+		default:
+			state = "done"
+		}
+	}
 	entry := chatToolStreamEntry{
+		EntryKey:   strings.TrimSpace(jsonString(payload, "tool_instance_id")),
 		ToolName:   toolName,
 		CallID:     strings.TrimSpace(jsonString(payload, "call_id")),
 		Output:     output,
 		Raw:        rawOutput,
 		Error:      strings.TrimSpace(jsonString(payload, "error")),
 		CreatedAt:  createdAt,
-		State:      "done",
+		State:      state,
 		DurationMS: int64(jsonInt(payload, "duration_ms")),
 	}
 	if args := strings.TrimSpace(jsonString(payload, "arguments")); args != "" {
@@ -113,6 +142,15 @@ func parseToolHistoryStreamEntry(raw string, createdAt int64) (chatToolStreamEnt
 	}
 	entry.State = normalizedToolState(entry)
 	return entry, true
+}
+
+func isV3ToolLifecycleEventType(eventType string) bool {
+	switch strings.ToLower(strings.TrimSpace(eventType)) {
+	case "session.tool.started", "session.tool.delta", "session.tool.completed", "session.tool.failed", "session.tool.cancelled", "session.tool.canceled":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseDelimitedField(raw string, key string, nextKeys ...string) string {
@@ -501,11 +539,8 @@ func isManageTodosPayload(entry chatToolStreamEntry, payload map[string]any) boo
 }
 
 func formatPlanManageToolEntry(entry chatToolStreamEntry, maxRunes int) string {
-	payload := parseToolJSON(strings.TrimSpace(entry.Output))
+	payload := planManageToolPayload(entry)
 	if payload == nil {
-		payload = parseToolJSON(strings.TrimSpace(entry.Raw))
-	}
-	if payload == nil || !isPlanManagePayload(entry, payload) {
 		return ""
 	}
 
@@ -514,16 +549,78 @@ func formatPlanManageToolEntry(entry chatToolStreamEntry, maxRunes int) string {
 		headline = "plan"
 	}
 	lines := []string{headline}
-	for _, line := range structuredPlanManagePreviewLines(payload, maxInt(maxRunes, 160), 6) {
-		if strings.EqualFold(strings.TrimSpace(line), strings.TrimSpace(headline)) {
-			continue
-		}
-		lines = append(lines, line)
+	if summary := planManageCardSummary(payload); summary != "" && !strings.EqualFold(summary, strings.TrimSpace(headline)) {
+		lines = append(lines, summary)
 	}
 	if errText := strings.TrimSpace(entry.Error); errText != "" && len(lines) == 1 {
 		lines = append(lines, clampEllipsis("error: "+errText, maxRunes))
 	}
 	return clampEllipsis(strings.Join(lines, "\n"), maxInt(maxRunes, 640))
+}
+
+func planManageToolPayload(entry chatToolStreamEntry) map[string]any {
+	preferred := preferredStructuredToolText("plan_manage", strings.TrimSpace(entry.Output), strings.TrimSpace(entry.Raw))
+	payload := parseToolJSON(preferred)
+	if payload == nil && preferred != strings.TrimSpace(entry.Raw) {
+		payload = parseToolJSON(strings.TrimSpace(entry.Raw))
+	}
+	if payload == nil || !isPlanManagePayload(entry, payload) {
+		return nil
+	}
+	return payload
+}
+
+func planManageDocument(payload map[string]any) map[string]any {
+	plan := jsonObject(payload, "plan")
+	if document := jsonObject(plan, "document"); len(document) > 0 {
+		return document
+	}
+	if document := jsonObject(payload, "document"); len(document) > 0 {
+		return document
+	}
+	return nil
+}
+
+func planManageCardSummary(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	plan := jsonObject(payload, "plan")
+	document := planManageDocument(payload)
+	info := jsonObject(document, "info")
+	title := firstNonEmptyToolValue(
+		jsonString(plan, "title"),
+		jsonString(document, "title"),
+		jsonString(info, "goal"),
+		jsonString(payload, "title"),
+	)
+	checkpoints := jsonObjectSlice(document, "checkpoints")
+	status := firstNonEmptyToolValue(
+		jsonString(document, "status"),
+		jsonString(plan, "status"),
+		jsonString(payload, "status"),
+	)
+	parts := make([]string, 0, 4)
+	if title != "" {
+		parts = append(parts, title)
+	}
+	if update := firstNonEmptyToolValue(
+		jsonString(plan, "update_summary"),
+		jsonString(plan, "updateSummary"),
+		jsonString(payload, "update_summary"),
+	); update != "" {
+		parts = append(parts, "update: "+update)
+	}
+	if len(checkpoints) > 0 {
+		parts = append(parts, toolCountLabel(len(checkpoints), "checkpoint", "checkpoints"))
+	}
+	if status != "" && !strings.EqualFold(status, "ok") {
+		parts = append(parts, quietPlanStatus(status))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "  ·  ")
 }
 
 func isPlanManagePayload(entry chatToolStreamEntry, payload map[string]any) bool {
@@ -537,7 +634,8 @@ func isPlanManagePayload(entry chatToolStreamEntry, payload map[string]any) bool
 	if strings.EqualFold(strings.TrimSpace(jsonString(payload, "tool")), "plan_manage") {
 		return true
 	}
-	return strings.EqualFold(strings.TrimSpace(jsonString(payload, "path_id")), "tool.plan-manage.v3")
+	pathID := strings.ToLower(strings.TrimSpace(jsonString(payload, "path_id")))
+	return pathID == "tool.plan-manage.v3" || pathID == "tool.plan-new-request.v1"
 }
 
 func structuredWebSearchTimelineLines(payload map[string]any, maxRunes, maxLines int) []string {
@@ -987,7 +1085,7 @@ func normalizedToolState(entry chatToolStreamEntry) string {
 	switch state {
 	case "waiting_approval", "queued", "pending":
 		return "pending"
-	case "running":
+	case "started", "running":
 		return "running"
 	case "failed", "cancelled", "canceled", "skipped", "error":
 		return "error"

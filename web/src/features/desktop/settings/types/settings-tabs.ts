@@ -1,4 +1,4 @@
-export const SETTINGS_TABS = ['account', 'agents', 'auth', 'permissions', 'swarm', 'themes', 'vault', 'worktrees'] as const
+export const SETTINGS_TABS = ['account', 'auth', 'permissions', 'notifications', 'themes', 'shortcuts', 'vault', 'worktrees'] as const
 
 export type SettingsTabID = (typeof SETTINGS_TABS)[number]
 
@@ -7,5 +7,5 @@ export function isSettingsTabID(value: unknown): value is SettingsTabID {
 }
 
 export function normalizeSettingsTabID(value: unknown): SettingsTabID {
-  return isSettingsTabID(value) ? value : 'account'
+  return value === 'agents' ? 'account' : isSettingsTabID(value) ? value : 'account'
 }

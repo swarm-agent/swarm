@@ -12,9 +12,10 @@ import (
 )
 
 type PermissionPolicy struct {
-	Version   int              `json:"version"`
-	Rules     []PermissionRule `json:"rules,omitempty"`
-	UpdatedAt int64            `json:"updated_at,omitempty"`
+	Version     int              `json:"version"`
+	BashProfile string           `json:"bash_profile"`
+	Rules       []PermissionRule `json:"rules,omitempty"`
+	UpdatedAt   int64            `json:"updated_at,omitempty"`
 }
 
 type PermissionRule struct {
@@ -28,13 +29,25 @@ type PermissionRule struct {
 }
 
 type PermissionExplain struct {
-	Decision    string          `json:"decision"`
-	Source      string          `json:"source"`
-	Reason      string          `json:"reason"`
-	ToolName    string          `json:"tool_name,omitempty"`
-	Command     string          `json:"command,omitempty"`
-	Rule        *PermissionRule `json:"rule,omitempty"`
-	RulePreview string          `json:"rule_preview,omitempty"`
+	Decision        string                `json:"decision"`
+	Source          string                `json:"source"`
+	Reason          string                `json:"reason"`
+	ToolName        string                `json:"tool_name,omitempty"`
+	Command         string                `json:"command,omitempty"`
+	Rule            *PermissionRule       `json:"rule,omitempty"`
+	RulePreview     string                `json:"rule_preview,omitempty"`
+	BashEffect      *PermissionBashEffect `json:"bash_effect,omitempty"`
+	BashProfile     string                `json:"bash_profile,omitempty"`
+	ProfileDecision string                `json:"profile_decision,omitempty"`
+	ProfileReason   string                `json:"profile_reason,omitempty"`
+}
+
+type PermissionBashEffect struct {
+	Category string `json:"category"`
+	Critical bool   `json:"critical"`
+	Valid    bool   `json:"valid"`
+	Promoted bool   `json:"promoted,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 func (c *API) GetPermissionPolicy(ctx context.Context) (PermissionPolicy, error) {
@@ -94,6 +107,18 @@ func (c *API) RemovePermissionRule(ctx context.Context, ruleID string) (bool, er
 		return false, err
 	}
 	return payload.Removed, nil
+}
+
+func (c *API) SetBashApprovalProfile(ctx context.Context, profile string) (string, error) {
+	var resp struct {
+		OK          bool   `json:"ok"`
+		BashProfile string `json:"bash_profile"`
+	}
+	payload := map[string]string{"bash_profile": strings.TrimSpace(profile)}
+	if err := c.postJSON(ctx, "/v1/permissions/bash-profile", payload, &resp, true); err != nil {
+		return "", err
+	}
+	return resp.BashProfile, nil
 }
 
 func (c *API) SetBypassPermissions(ctx context.Context, enabled bool) (bool, error) {

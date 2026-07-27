@@ -1,0 +1,310 @@
+package pebblestore
+
+import (
+	"fmt"
+	"testing"
+)
+
+func TestSearchV3SessionsRecentPaginationMergesActiveAndArchived(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	workspace := t.TempDir()
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "recent-active-old", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: workspace, Title: "Active old", CreatedAt: 1000, UpdatedAt: 1000})
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "recent-active-new", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: workspace, Title: "Active new", CreatedAt: 3000, UpdatedAt: 3000})
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "recent-archived-newest", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: workspace, Title: "Archived newest", CreatedAt: 4000, UpdatedAt: 4000})
+	if err := sessions.ArchiveSession("recent-archived-newest"); err != nil {
+		t.Fatalf("archive newest: %v", err)
+	}
+
+	result, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, ArchivedMode: "include", Limit: 1})
+	if err != nil {
+		t.Fatalf("search mixed recent: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].ID != "recent-archived-newest" || !result.Items[0].Archived || !result.Pagination.HasMore {
+		t.Fatalf("mixed recent first page = %+v pagination=%+v", result.Items, result.Pagination)
+	}
+	result, err = sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, ArchivedMode: "include", BeforeUpdatedAt: result.Pagination.NextBeforeUpdatedAt, BeforeSessionID: result.Pagination.NextBeforeSessionID, Limit: 1})
+	if err != nil {
+		t.Fatalf("search mixed recent page 2: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].ID != "recent-active-new" || result.Items[0].Archived {
+		t.Fatalf("mixed recent second page = %+v", result.Items)
+	}
+}
+
+func TestSearchV3SessionsRecentPaginationAndFilters(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	workspaceA := t.TempDir()
+	workspaceB := t.TempDir()
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "recent-old", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: workspaceA, Title: "Old", CreatedAt: 1000, UpdatedAt: 1000})
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "recent-mid", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: workspaceA, Title: "Mid", CreatedAt: 2000, UpdatedAt: 2000})
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "recent-other-workspace", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: workspaceB, Title: "Other", CreatedAt: 2500, UpdatedAt: 2500})
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "recent-new", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: workspaceA, Title: "New", CreatedAt: 3000, UpdatedAt: 3000})
+
+	from := int64(1500)
+	result, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", WorkspacePath: workspaceA, FromUpdatedAt: &from, Limit: 1})
+	if err != nil {
+		t.Fatalf("search recent: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].ID != "recent-new" || result.Items[0].MessageCount != 0 {
+		t.Fatalf("first page = %+v", result.Items)
+	}
+	if !result.Pagination.HasMore || result.Pagination.NextCursor == "" {
+		t.Fatalf("pagination = %+v", result.Pagination)
+	}
+	result, err = sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", WorkspacePath: workspaceA, FromUpdatedAt: &from, BeforeUpdatedAt: result.Pagination.NextBeforeUpdatedAt, BeforeSessionID: result.Pagination.NextBeforeSessionID, Limit: 1})
+	if err != nil {
+		t.Fatalf("search recent page 2: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].ID != "recent-mid" || result.Pagination.HasMore {
+		t.Fatalf("second page = %+v pagination=%+v", result.Items, result.Pagination)
+	}
+}
+
+func TestSearchV3SessionsQueryMessageCountAndArchived(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	workspaceA := t.TempDir()
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "query-active", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: workspaceA, Title: "Active Project", CreatedAt: 1000, UpdatedAt: 1000})
+	appendSearchTestMessage(t, sessions, "query-active", "user-1", "acct-1", "needle in a message", 2000)
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "query-archived", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: workspaceA, Title: "Archived Needle", CreatedAt: 1500, UpdatedAt: 1500})
+	appendSearchTestMessage(t, sessions, "query-archived", "user-1", "acct-1", "archived needle body", 2500)
+	if err := sessions.ArchiveSession("query-archived"); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+
+	result, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "needle", Limit: 50})
+	if err != nil {
+		t.Fatalf("query active: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].ID != "query-active" || result.Items[0].MessageCount != 1 || len(result.Items[0].Snippets) == 0 || result.Items[0].Archived {
+		t.Fatalf("active query result = %+v", result.Items)
+	}
+
+	result, err = sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "needle", ArchivedMode: "only", Limit: 50})
+	if err != nil {
+		t.Fatalf("query archived: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].ID != "query-archived" || result.Items[0].MessageCount != 1 || !result.Items[0].Archived {
+		t.Fatalf("archived query result = %+v", result.Items)
+	}
+}
+
+func TestSearchV3SessionsExcludesNavigationHiddenMarkersAndSummary(t *testing.T) {
+	markers := []map[string]any{
+		{"navigation_hidden": true},
+		{"system_session": true},
+		{"system_sidechat": true},
+		{"lineage_kind": "system_sidechat"},
+	}
+	for name, options := range map[string]V3SessionSearchOptions{
+		"recent":   {AccountScopeID: "acct-1", UserID: "user-1", Global: true, Limit: 50},
+		"query":    {AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "sharedneedle", Limit: 50},
+		"archived": {AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "sharedneedle", ArchivedMode: "only", Limit: 50},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := openV3SessionEventTestStore(t)
+			sessions := NewSessionStore(store)
+			createSearchTestSession(t, sessions, SessionSnapshot{ID: "visible", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: t.TempDir(), Title: "sharedneedle visible", CreatedAt: 1000, UpdatedAt: 1000})
+			for i, marker := range markers {
+				id := fmt.Sprintf("hidden-%d", i)
+				createSearchTestSession(t, sessions, SessionSnapshot{ID: id, UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: t.TempDir(), Title: "sharedneedle hidden", Metadata: marker, CreatedAt: int64(2000 + i), UpdatedAt: int64(2000 + i)})
+				if name == "archived" {
+					if err := sessions.ArchiveSession(id); err != nil {
+						t.Fatalf("archive %s: %v", id, err)
+					}
+				}
+			}
+			if name == "archived" {
+				if err := sessions.ArchiveSession("visible"); err != nil {
+					t.Fatalf("archive visible: %v", err)
+				}
+			}
+			result, err := sessions.SearchV3Sessions(options)
+			if err != nil {
+				t.Fatalf("search: %v", err)
+			}
+			if len(result.Items) != 1 || result.Items[0].ID != "visible" {
+				t.Fatalf("items = %+v", result.Items)
+			}
+			if result.Summary.RawSessionCount != 1 {
+				t.Fatalf("summary = %+v", result.Summary)
+			}
+		})
+	}
+}
+
+func TestArchiveSessionTransitionsExistingSearchRecordsWithoutReadingMessages(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	workspace := t.TempDir()
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "transition-archive", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: workspace, Title: "Title Token", CreatedAt: 1000, UpdatedAt: 1000})
+	appendSearchTestMessage(t, sessions, "transition-archive", "user-1", "acct-1", "retained message needle", 2000)
+
+	var before v3SessionSearchSessionMeta
+	if ok, err := store.GetJSON(keyV3SessionSearchMeta("transition-archive"), &before); err != nil || !ok {
+		t.Fatalf("load search metadata before archive ok=%v err=%v", ok, err)
+	}
+	if err := store.db.Delete([]byte(KeyV3SessionMessage("transition-archive", 2)), nil); err != nil {
+		t.Fatalf("delete message row sentinel: %v", err)
+	}
+	if err := sessions.ArchiveSession("transition-archive"); err != nil {
+		t.Fatalf("archive without message row: %v", err)
+	}
+
+	var after v3SessionSearchSessionMeta
+	if ok, err := store.GetJSON(keyV3SessionSearchMeta("transition-archive"), &after); err != nil || !ok {
+		t.Fatalf("load search metadata after archive ok=%v err=%v", ok, err)
+	}
+	if after.Version != before.Version || len(after.MetadataTokens) != len(before.MetadataTokens) {
+		t.Fatalf("archive rewrote stable search metadata: before=%+v after=%+v", before, after)
+	}
+	result, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "needle", ArchivedMode: "only", Limit: 10})
+	if err != nil {
+		t.Fatalf("search archived message token: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].ID != "transition-archive" || len(result.Items[0].Snippets) == 0 || result.Items[0].Snippets[0].Text != "retained message needle" {
+		t.Fatalf("archived search did not retain message snippet: %+v", result.Items)
+	}
+}
+
+func TestSessionSearchTelemetryIdentifiesAcceptanceAmplificationSubsteps(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "telemetry-rekey", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: t.TempDir(), Title: "Telemetry", CreatedAt: 1000, UpdatedAt: 1000})
+	appendSearchTestMessage(t, sessions, "telemetry-rekey", "user-1", "acct-1", "alpha beta gamma", 2000)
+
+	before := SnapshotV3PlanAcceptanceTelemetry()
+	session, ok, err := sessions.GetSession("telemetry-rekey")
+	if err != nil || !ok {
+		t.Fatalf("get session: ok=%v err=%v", ok, err)
+	}
+	session.Mode = "auto"
+	session.UpdatedAt++
+	if err := sessions.UpdateSession(session); err != nil {
+		t.Fatalf("update session: %v", err)
+	}
+	metrics := DeltaV3PlanAcceptanceTelemetry(SnapshotV3PlanAcceptanceTelemetry(), before)
+	if metrics.MessageRowsScanned != 0 || metrics.SearchFullRebuilds != 0 || metrics.SearchAllTokenRekeys != 0 || metrics.SearchPostingsSet != 0 {
+		t.Fatalf("mode-only update touched search content: %+v", metrics)
+	}
+
+	before = SnapshotV3PlanAcceptanceTelemetry()
+	appendSearchTestMessage(t, sessions, "telemetry-rekey", "user-1", "acct-1", "delta epsilon", 3000)
+	metrics = DeltaV3PlanAcceptanceTelemetry(SnapshotV3PlanAcceptanceTelemetry(), before)
+	if metrics.MessageRowsScanned != 0 || metrics.SearchFullRebuilds != 0 || metrics.SearchAllTokenRekeys != 0 {
+		t.Fatalf("incremental append was history-dependent: %+v", metrics)
+	}
+	if metrics.SearchPostingsRead != 0 || metrics.SearchPostingsDeleted != 0 || metrics.SearchPostingsSet != 2 {
+		t.Fatalf("incremental append posting operations = %+v, want exactly the two new tokens", metrics)
+	}
+
+	if err := ValidateV3PlanAcceptanceFixedPath(V3PlanAcceptanceTelemetry{PebbleCommits: 2}, 2); err != nil {
+		t.Fatalf("bounded fixed-path threshold rejected valid metrics: %v", err)
+	}
+	if err := ValidateV3PlanAcceptanceFixedPath(V3PlanAcceptanceTelemetry{MessageRowsScanned: 1, PebbleCommits: 2}, 2); err == nil {
+		t.Fatal("fixed-path threshold accepted a historical message scan")
+	}
+}
+
+func TestSessionSearchToolMessageUsesExplicitBoundedIndexContent(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "bounded-tool-search", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: t.TempDir(), Title: "Search", CreatedAt: 1000, UpdatedAt: 1000})
+	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		Kind:            V3SessionMutationAppendMessage,
+		SessionID:       "bounded-tool-search",
+		UserID:          "user-1",
+		AccountScopeID:  "acct-1",
+		ClientRequestID: "bounded-tool-message",
+		PayloadHash:     "bounded-tool-message-hash",
+		NowUnixMs:       2000,
+		Message: &MessageSnapshot{
+			Role:     "tool",
+			Content:  `{"output":"durable-only-needle"}`,
+			Metadata: map[string]any{"search_index_content": `{"summary":"bounded-index-needle"}`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("append bounded tool message: %v", err)
+	}
+	bounded, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "bounded-index-needle", Limit: 10})
+	if err != nil || len(bounded.Items) != 1 || bounded.Items[0].ID != "bounded-tool-search" {
+		t.Fatalf("bounded index search items=%+v err=%v", bounded.Items, err)
+	}
+	durableOnly, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "durable-only-needle", Limit: 10})
+	if err != nil {
+		t.Fatalf("search durable-only content: %v", err)
+	}
+	if len(durableOnly.Items) != 0 {
+		t.Fatalf("full durable tool output leaked into search postings: %+v", durableOnly.Items)
+	}
+	messages, err := sessions.ListV3SessionMessages("bounded-tool-search", 0, 10)
+	if err != nil || len(messages) != 1 || messages[0].Content != `{"output":"durable-only-needle"}` {
+		t.Fatalf("durable tool message changed: messages=%+v err=%v", messages, err)
+	}
+}
+
+func TestSearchV3SessionsTokensAcrossMessagesAndCenteredSnippet(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	workspace := t.TempDir()
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "cross-message", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: workspace, Title: "Search", CreatedAt: 1000, UpdatedAt: 1000})
+	appendSearchTestMessage(t, sessions, "cross-message", "user-1", "acct-1", "alpha appears here", 2000)
+	appendSearchTestMessage(t, sessions, "cross-message", "user-1", "acct-1", string(make([]byte, 300))+" omega appears late", 3000)
+	result, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "alpha omega", Limit: 10})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].ID != "cross-message" {
+		t.Fatalf("items = %+v", result.Items)
+	}
+	found := false
+	for _, snippet := range result.Items[0].Snippets {
+		if snippet.GlobalSeq > 0 && len(snippet.Text) <= v3SessionSearchSnippetMaxRunes && snippet.MessageID != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing bounded anchored snippet: %+v", result.Items[0].Snippets)
+	}
+}
+
+func TestNormalizeV3SessionSearchOptionsBoundsQueryVariants(t *testing.T) {
+	options := normalizeV3SessionSearchOptions(V3SessionSearchOptions{Query: "one", Queries: []string{"ONE", "two", "three", "four", "five", "six", "seven", "eight", "nine"}})
+	if len(options.Queries) != v3SessionSearchMaxQueries {
+		t.Fatalf("queries = %#v", options.Queries)
+	}
+	if options.Queries[0] != "one" {
+		t.Fatalf("first query = %q", options.Queries[0])
+	}
+}
+
+func BenchmarkSearchV3SessionsLongMessage(b *testing.B) {
+	store := openV3SessionEventTestStore(b)
+	sessions := NewSessionStore(store)
+	createSearchTestSession(b, sessions, SessionSnapshot{ID: "benchmark-search", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: b.TempDir(), Title: "Benchmark", CreatedAt: 1000, UpdatedAt: 1000})
+	appendSearchTestMessage(b, sessions, "benchmark-search", "user-1", "acct-1", string(make([]byte, 4000))+" distantneedle", 2000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "distantneedle", Limit: 10}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func createSearchTestSession(t testing.TB, sessions *SessionStore, session SessionSnapshot) {
+	t.Helper()
+	if err := sessions.CreateSession(session); err != nil {
+		t.Fatalf("create session %s: %v", session.ID, err)
+	}
+}
+
+func appendSearchTestMessage(t testing.TB, sessions *SessionStore, sessionID, userID, accountScopeID, content string, now int64) {
+	t.Helper()
+	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{Kind: V3SessionMutationAppendMessage, SessionID: sessionID, UserID: userID, AccountScopeID: accountScopeID, ClientRequestID: sessionID + content, PayloadHash: "hash-" + sessionID + content, NowUnixMs: now, Message: &MessageSnapshot{Role: "user", Content: content}})
+	if err != nil {
+		t.Fatalf("append message %s: %v", sessionID, err)
+	}
+}

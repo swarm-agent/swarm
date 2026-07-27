@@ -5,6 +5,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 )
 
@@ -48,34 +49,27 @@ func (p *HomePage) AcceptCommandPaletteEnter() bool {
 }
 
 func (p *HomePage) SetModel(next model.HomeModel) {
+	draftUsername := ""
+	draftSwarmName := ""
+	if p.onboarding.Visible {
+		draftUsername = strings.TrimSpace(p.model.OnboardingUsername)
+		draftSwarmName = strings.TrimSpace(p.model.OnboardingSwarmName)
+	}
+	if next.OnboardingRequired {
+		if strings.TrimSpace(next.OnboardingUsername) == "" {
+			next.OnboardingUsername = draftUsername
+		}
+		if strings.TrimSpace(next.OnboardingSwarmName) == "" {
+			next.OnboardingSwarmName = draftSwarmName
+		}
+	}
 	p.model = next
 	p.sessionMode = normalizeHomeSessionMode(p.sessionMode)
-	total := len(p.model.RecentSessions)
-	if total == 0 {
-		p.selectedIndex = 0
-		p.recentPage = 0
-		p.sessionsFocused = false
-		p.pendingHomeAction = nil
-	} else {
-		selectedID := ""
-		if p.selectedIndex >= 0 && p.selectedIndex < len(p.model.RecentSessions) {
-			selectedID = strings.TrimSpace(p.model.RecentSessions[p.selectedIndex].ID)
-		}
-		if selectedID != "" {
-			for idx := range next.RecentSessions {
-				if strings.TrimSpace(next.RecentSessions[idx].ID) == selectedID {
-					p.selectedIndex = idx
-					selectedID = ""
-					break
-				}
-			}
-		}
-		if p.selectedIndex >= total {
-			p.selectedIndex = total - 1
-		}
-		if p.selectedIndex < 0 {
-			p.selectedIndex = 0
-		}
+	p.applySessionModeModel()
+	if next.OnboardingRequired {
+		p.ShowOnboardingLocked("Complete required identity setup before using Swarm.")
+	} else if p.onboarding.Visible && !p.identityOnboardingComplete() {
+		p.onboarding = onboardingState{}
 	}
 }
 
@@ -109,10 +103,106 @@ func nextHomeSessionMode(current string) string {
 
 func (p *HomePage) SetSessionMode(mode string) {
 	p.sessionMode = normalizeHomeSessionMode(mode)
+	p.applySessionModeModel()
+}
+
+func (p *HomePage) applySessionModeModel() {
+	if p == nil || !p.model.ActiveAgentExitPlanMode {
+		return
+	}
+	var provider, modelName, thinking, serviceTier, contextMode string
+	if normalizeHomeSessionMode(p.sessionMode) == "auto" {
+		provider, modelName = p.model.AutoModelProvider, p.model.AutoModelName
+		thinking, serviceTier, contextMode = p.model.AutoThinkingLevel, p.model.AutoServiceTier, p.model.AutoContextMode
+	} else {
+		provider, modelName = p.model.PlanModelProvider, p.model.PlanModelName
+		thinking, serviceTier, contextMode = p.model.PlanThinkingLevel, p.model.PlanServiceTier, p.model.PlanContextMode
+	}
+	if strings.TrimSpace(provider) == "" || strings.TrimSpace(modelName) == "" {
+		return
+	}
+	p.model.ModelProvider = strings.TrimSpace(provider)
+	p.model.ModelName = strings.TrimSpace(modelName)
+	p.model.ThinkingLevel = strings.TrimSpace(thinking)
+	p.model.ServiceTier = strings.TrimSpace(serviceTier)
+	p.model.ContextMode = strings.TrimSpace(contextMode)
+	p.model.QuickActions = homeProfileQuickActions(p.model)
+}
+
+func homeProfileQuickActions(m model.HomeModel) []string {
+	if !m.AuthConfigured {
+		return []string{"Auth: missing", "Run /auth"}
+	}
+	profile := "Agent model default"
+	if strings.EqualFold(strings.TrimSpace(m.ActiveModelProfile.Source), "saved") {
+		profile = emptyValue(strings.TrimSpace(m.ActiveModelProfile.Name), "Saved profile")
+	} else if strings.EqualFold(strings.TrimSpace(m.ActiveModelProfile.Source), "temporary") {
+		profile = "Temporary/customized"
+	}
+	modelLabel := model.DisplayModelLabel(m.ModelProvider, m.ModelName, m.ServiceTier, m.ContextMode)
+	setup := strings.Join([]string{profile, modelLabel, emptyValue(m.ThinkingLevel, "unset"), emptyValue(m.ServiceTier, "default")}, " · ")
+	return []string{"Profile: " + setup}
 }
 
 func (p *HomePage) SessionMode() string {
 	return normalizeHomeSessionMode(p.sessionMode)
+}
+
+func (p *HomePage) ModelState() (provider, modelName, thinking, serviceTier, contextMode string) {
+	if p == nil {
+		return "", "", "", "", ""
+	}
+	return effectiveHomeModelState(p.model, p.sessionMode)
+}
+
+func effectiveHomeModelState(m model.HomeModel, sessionMode string) (provider, modelName, thinking, serviceTier, contextMode string) {
+	provider, modelName = m.ModelProvider, m.ModelName
+	thinking, serviceTier, contextMode = m.ThinkingLevel, m.ServiceTier, m.ContextMode
+	if !m.ActiveAgentExitPlanMode {
+		return
+	}
+	if normalizeHomeSessionMode(sessionMode) == "auto" {
+		if strings.TrimSpace(m.AutoModelProvider) != "" && strings.TrimSpace(m.AutoModelName) != "" {
+			return m.AutoModelProvider, m.AutoModelName, m.AutoThinkingLevel, m.AutoServiceTier, m.AutoContextMode
+		}
+		return
+	}
+	if strings.TrimSpace(m.PlanModelProvider) != "" && strings.TrimSpace(m.PlanModelName) != "" {
+		return m.PlanModelProvider, m.PlanModelName, m.PlanThinkingLevel, m.PlanServiceTier, m.PlanContextMode
+	}
+	return
+}
+
+func (p *HomePage) ModelProfiles() []client.ModelProfile {
+	if p == nil {
+		return nil
+	}
+	return append([]client.ModelProfile(nil), p.model.ModelProfiles...)
+}
+
+func (p *HomePage) ActiveModelProfile() model.ActiveModelProfile {
+	if p == nil {
+		return model.ActiveModelProfile{}
+	}
+	return p.model.ActiveModelProfile
+}
+
+func (p *HomePage) ProfileLabel() string {
+	if p == nil {
+		return "Agent model default"
+	}
+	profile := p.model.ActiveModelProfile
+	switch strings.ToLower(strings.TrimSpace(profile.Source)) {
+	case "saved":
+		if name := strings.TrimSpace(profile.Name); name != "" {
+			return name
+		}
+		return "Saved profile"
+	case "temporary":
+		return "Temporary/customized"
+	default:
+		return "Agent model default"
+	}
 }
 
 func homeDisplayedMode(m model.HomeModel, sessionMode string) string {
@@ -132,9 +222,35 @@ func homeDisplayedMode(m model.HomeModel, sessionMode string) string {
 
 func currentDisplayedHomeSessionMode(page *HomePage) string {
 	if page == nil {
+		return "on"
+	}
+	if normalizeHomeSessionMode(page.sessionMode) == "plan" {
+		return "on"
+	}
+	return "off"
+}
+
+func homeAgentModeCapability(m model.HomeModel, sessionMode string) string {
+	if !m.ActiveAgentRuntimeKnown {
+		return normalizeHomeSessionMode(sessionMode)
+	}
+	if m.ActiveAgentExitPlanMode {
+		return "Plan on/off"
+	}
+	return homeDisplayedMode(m, sessionMode)
+}
+
+func currentHomeAgentModeCapability(page *HomePage) string {
+	if page == nil {
 		return "plan"
 	}
-	return homeDisplayedMode(page.model, page.sessionMode)
+	return homeAgentModeCapability(page.model, page.sessionMode)
+}
+
+func (p *HomePage) CanCycleSessionMode() bool {
+	return p != nil && p.model.ActiveAgentExitPlanMode &&
+		strings.TrimSpace(p.model.PlanModelProvider) != "" && strings.TrimSpace(p.model.PlanModelName) != "" &&
+		strings.TrimSpace(p.model.AutoModelProvider) != "" && strings.TrimSpace(p.model.AutoModelName) != ""
 }
 
 func (p *HomePage) SetVoiceInputState(state VoiceInputState) {
@@ -190,10 +306,6 @@ func (p *HomePage) ActiveDirectory() model.DirectoryItem {
 
 func (p *HomePage) ActivePlanName() string {
 	return p.activePlanName()
-}
-
-func (p *HomePage) SessionsFocused() bool {
-	return p.sessionsFocused
 }
 
 func (p *HomePage) SetKeyBindings(keybinds *KeyBindings) {

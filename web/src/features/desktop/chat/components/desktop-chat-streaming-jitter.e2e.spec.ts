@@ -75,15 +75,30 @@ function activeLifecycle(): Record<string, unknown> {
 function sessionWire(lifecycle: Record<string, unknown> | null = activeLifecycle()): Record<string, unknown> {
   return {
     id: SESSION_ID,
+    session_api: 'v3',
     title: 'Streaming jitter regression',
     workspace_path: WORKSPACE_PATH,
     workspace_name: WORKSPACE_NAME,
     mode: 'auto',
     metadata: {},
+    last_event_seq: 1,
+    projection_high_watermark_seq: 1,
     message_count: 1,
     created_at: 1,
     updated_at: 1,
     lifecycle,
+    preference: { provider: 'mock', model: 'streaming-jitter', thinking: '', updated_at: 0 },
+  }
+}
+
+function v3WorksetSnapshot(messages: Record<string, unknown>[], lifecycle: Record<string, unknown> | null = activeLifecycle()): Record<string, unknown> {
+  return {
+    rev: 1,
+    snapshot_endpoint_cursor: 'cursor-streaming-jitter-1',
+    sessions_by_id: { [SESSION_ID]: sessionWire(lifecycle) },
+    session_order: [SESSION_ID],
+    messages_by_session: { [SESSION_ID]: messages },
+    run_intents_by_session: lifecycle ? { [SESSION_ID]: [{ session_id: SESSION_ID, run_id: RUN_ID, status: 'running', created_at: 1, updated_at: 1, event_seq: 1 }] } : {},
   }
 }
 
@@ -96,7 +111,7 @@ async function startMockBackend(): Promise<{ server: Server; port: number; setMe
     const path = url.pathname
 
     if (path === '/v1/auth/desktop/session') {
-      writeJson(res, 200, { ok: true })
+      writeJson(res, 200, { ok: true, user_id: 'user-playwright', account_scope_id: 'acct-playwright' })
       return
     }
     if (path === '/v1/vault') {
@@ -174,28 +189,29 @@ async function startMockBackend(): Promise<{ server: Server; port: number; setMe
       })
       return
     }
-    if (path === `/v1/sessions/${SESSION_ID}`) {
-      writeJson(res, 200, { session: sessionWire() })
+    if (path === '/v3/sessions:workset') {
+      writeJson(res, 200, v3WorksetSnapshot(sessionMessages))
       return
     }
-    if (path === `/v1/sessions/${SESSION_ID}/messages`) {
-      writeJson(res, 200, { messages: sessionMessages })
+    if (path === `/v3/sessions/${SESSION_ID}/preference`) {
+      writeJson(res, 200, { preference: { provider: 'mock', model: 'streaming-jitter', thinking: '', updated_at: 0 }, context_window: 128000, max_output_tokens: 4096 })
       return
     }
-    if (path === `/v1/sessions/${SESSION_ID}/preference`) {
+    if (path === `/v3/sessions/${SESSION_ID}`) {
       writeJson(res, 200, {
-        preference: { provider: 'mock', model: 'streaming-jitter', thinking: '', service_tier: '', context_mode: '' },
+        session: sessionWire(),
+        projection: { session_id: SESSION_ID, last_event_seq: 1, projection_high_watermark_seq: 1, updated_at: Date.now() },
+        messages: sessionMessages,
+        events: [],
+        pending_permissions: [],
+        usage_summary: null,
+        preference: { provider: 'mock', model: 'streaming-jitter', thinking: '', updated_at: 0 },
         context_window: 128000,
         max_output_tokens: 4096,
+        has_active_plan: false,
+        active_plan: null,
+        plan_revisions: [],
       })
-      return
-    }
-    if (path === `/v1/sessions/${SESSION_ID}/permissions`) {
-      writeJson(res, 200, { permissions: [] })
-      return
-    }
-    if (path === `/v1/sessions/${SESSION_ID}/usage`) {
-      writeJson(res, 200, { usage_summary: null })
       return
     }
     if (path === '/v1/notifications') {
@@ -323,9 +339,55 @@ async function installBrowserStreamControls(page: Page): Promise<void> {
     window.WebSocket = MockWebSocket;
     window.__emitRunFrame = (payload) => {
       const sockets = window.__mockSockets || [];
-      const socket = sockets.find((entry) => entry.url.includes('/v1/sessions/' + sessionId + '/run/stream')) || sockets.at(-1);
-      if (!socket) throw new Error('run stream socket was not opened');
-      socket.__emit(payload);
+      if (sockets.length === 0) throw new Error('desktop realtime socket was not opened');
+      const type = String(payload.type || '');
+      if (type === 'run.accepted') return;
+      if (type === 'turn.completed') return;
+      const seq = Number(payload.seq || Date.now());
+      const eventType = type === 'assistant.delta'
+        ? 'session.assistant.delta'
+        : type === 'message.stored'
+          ? 'session.assistant.completed'
+          : type === 'session.lifecycle.updated'
+            ? 'session.run_intent.recorded'
+            : type;
+      const body = type === 'session.lifecycle.updated'
+        ? { session_id: sessionId, run_id: payload.run_id, status: payload.lifecycle?.active ? 'running' : 'completed' }
+        : { session_id: sessionId, ...payload };
+      for (const socket of sockets) {
+        if (socket.readyState !== MockWebSocket.OPEN) continue;
+        if (socket.url.endsWith('/ws')) {
+          socket.__emit({
+            type: 'event',
+            event: {
+              global_seq: seq,
+              stream: 'session:' + sessionId,
+              event_type: eventType,
+              entity_id: sessionId,
+              ts_unix_ms: Date.now(),
+              payload: body,
+            },
+          });
+        } else if (socket.url.includes('/v3/realtime/stream')) {
+          socket.__emit({
+            protocol: 'v3.realtime',
+            kind: 'event',
+            ok: true,
+            session_id: sessionId,
+            endpoint_cursor: 'cursor-' + seq,
+            last_seq: seq,
+            high_watermark_seq: seq,
+            event: {
+              id: 'v3evt_' + sessionId + '_' + String(seq).padStart(20, '0'),
+              session_id: sessionId,
+              seq,
+              event_type: eventType,
+              ts_unix_ms: Date.now(),
+              payload: body,
+            },
+          });
+        }
+      }
     };
     window.__sampleChatFrame = (label) => {
       const scroller = document.querySelector('[data-testid="desktop-chat-scroller"]');
@@ -386,6 +448,8 @@ test('desktop streaming markdown finalizes without a last-frame position jitter'
     await installBrowserStreamControls(page)
     await page.goto(`http://127.0.0.1:${app.port}/${WORKSPACE_SLUG}/${SESSION_ID}`)
     await page.getByTestId('desktop-chat-scroller').waitFor({ state: 'visible', timeout: 15_000 })
+    await page.waitForFunction(() => (window as any).__mockSockets?.some((socket: { readyState?: number; url?: string }) => String(socket.url || '').includes('/v3/realtime/stream') && socket.readyState === WebSocket.OPEN))
+    await page.waitForTimeout(250)
 
     await page.evaluate(({ runId, sessionId }) => {
       ;(window as any).__emitRunFrame({ type: 'run.accepted', run_id: runId, seq: 1, status: 'running' })
@@ -401,6 +465,54 @@ test('desktop streaming markdown finalizes without a last-frame position jitter'
         await sampleAnimationFrames(page, 'streaming', 1)
       }
     }
+
+    await page.evaluate(({ runId }) => {
+      const output = Array.from({ length: 80 }, (_, index) => `tool row ${index}: ${'x'.repeat(80)}`).join('\n')
+      ;(window as any).__emitRunFrame({
+        type: 'session.tool.started', run_id: runId, seq: 300,
+        call_id: 'call-growing-card', tool_instance_id: 'tool-growing-card', tool_name: 'search', status: 'running', output,
+      })
+    }, { runId: RUN_ID })
+    await page.waitForFunction(() => {
+      const scroller = document.querySelector('[data-testid="desktop-chat-scroller"]') as HTMLElement | null
+      return Boolean(scroller && Math.abs(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight) <= 2)
+    })
+
+    await page.evaluate(() => {
+      const scroller = document.querySelector('[data-testid="desktop-chat-scroller"]') as HTMLElement
+      scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, bubbles: true }))
+      scroller.scrollTop = Math.max(0, scroller.scrollTop - 400)
+    })
+    await page.getByRole('button', { name: 'Jump to latest message' }).waitFor({ state: 'visible' })
+    const releasedScrollTop = await page.getByTestId('desktop-chat-scroller').evaluate((node) => node.scrollTop)
+
+    await page.evaluate(({ runId }) => {
+      const output = Array.from({ length: 160 }, (_, index) => `expanded tool row ${index}: ${'y'.repeat(80)}`).join('\n')
+      ;(window as any).__emitRunFrame({
+        type: 'session.tool.delta', run_id: runId, seq: 301,
+        call_id: 'call-growing-card', tool_instance_id: 'tool-growing-card', tool_name: 'search', status: 'running', output,
+      })
+    }, { runId: RUN_ID })
+    await page.waitForTimeout(100)
+    const releasedAfterGrowth = await page.getByTestId('desktop-chat-scroller').evaluate((node) => node.scrollTop)
+    assert.ok(Math.abs(releasedAfterGrowth - releasedScrollTop) <= 2, 'tool-card growth moved a released reader viewport')
+
+    await page.getByRole('button', { name: 'Jump to latest message' }).click()
+    await page.waitForFunction(() => {
+      const scroller = document.querySelector('[data-testid="desktop-chat-scroller"]') as HTMLElement | null
+      return Boolean(scroller && Math.abs(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight) <= 2)
+    })
+    await page.evaluate(({ runId }) => {
+      const output = Array.from({ length: 220 }, (_, index) => `reattached tool row ${index}: ${'z'.repeat(80)}`).join('\n')
+      ;(window as any).__emitRunFrame({
+        type: 'session.tool.delta', run_id: runId, seq: 302,
+        call_id: 'call-growing-card', tool_instance_id: 'tool-growing-card', tool_name: 'search', status: 'running', output,
+      })
+    }, { runId: RUN_ID })
+    await page.waitForFunction(() => {
+      const scroller = document.querySelector('[data-testid="desktop-chat-scroller"]') as HTMLElement | null
+      return Boolean(scroller && Math.abs(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight) <= 2)
+    })
 
     await waitForSample(page)
     await page.waitForFunction(() => {

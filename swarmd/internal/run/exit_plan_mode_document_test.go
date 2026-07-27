@@ -26,9 +26,10 @@ func TestExecuteExitPlanModePersistsStructuredDocument(t *testing.T) {
 	}
 
 	args := map[string]any{
-		"plan_id": "plan-exit",
-		"title":   "Exit Structured Plan",
-		"plan":    "# Display only",
+		"plan_id":                "plan-exit",
+		"title":                  "Exit Structured Plan",
+		"plan":                   "# Display only",
+		"continue_automatically": true,
 		"document": pebblestore.SessionPlanDocument{
 			Info: pebblestore.SessionPlanInfo{
 				Goal:               "ship structured exit plan",
@@ -40,7 +41,7 @@ func TestExecuteExitPlanModePersistsStructuredDocument(t *testing.T) {
 			},
 			Checkpoints: []pebblestore.SessionPlanCheckpoint{
 				{ID: "cp-2", Title: "Second", Status: "pending", Objective: "preserve requested order"},
-				{ID: "cp-1", Title: "First", Status: "done", Objective: "preserve stable id"},
+				{ID: "cp-1", Title: "First", Status: sessionruntime.PlanCheckpointStatusCompleted, Objective: "preserve stable id"},
 			},
 			ActiveCheckpointID: "cp-2",
 		},
@@ -60,9 +61,17 @@ func TestExecuteExitPlanModePersistsStructuredDocument(t *testing.T) {
 		Title          string                           `json:"title"`
 		Plan           string                           `json:"plan"`
 		ModeChanged    bool                             `json:"mode_changed"`
+		NextAction     string                           `json:"next_action"`
+		CheckpointID   string                           `json:"checkpoint_id"`
 		Version        int                              `json:"version"`
 		ParentRevision int                              `json:"parent_revision"`
 		Document       *pebblestore.SessionPlanDocument `json:"document"`
+		RunRequest     struct {
+			PlanCheckpointContext struct {
+				PlanID       string `json:"plan_id"`
+				CheckpointID string `json:"checkpoint_id"`
+			} `json:"plan_checkpoint_context"`
+		} `json:"run_request"`
 	}
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("decode payload: %v raw=%s", err, raw)
@@ -72,6 +81,9 @@ func TestExecuteExitPlanModePersistsStructuredDocument(t *testing.T) {
 	}
 	if payload.PlanID != "plan-exit" || payload.Title != "Exit Structured Plan" || payload.Plan != "# Display only" {
 		t.Fatalf("exit payload identity/body = %#v", payload)
+	}
+	if payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "cp-2" || payload.RunRequest.PlanCheckpointContext.PlanID != "plan-exit" || payload.RunRequest.PlanCheckpointContext.CheckpointID != "cp-2" || payload.Document.ExecutionPolicy.Mode != sessionruntime.PlanExecutionPolicyModeAutomatic || payload.Document.ExecutionPolicy.Shape != sessionruntime.PlanExecutionShapeCheckpointed {
+		t.Fatalf("exit payload run request = next %q checkpoint %q request %#v raw=%s", payload.NextAction, payload.CheckpointID, payload.RunRequest.PlanCheckpointContext, raw)
 	}
 	if payload.Version != initial.Version+1 || payload.ParentRevision != initial.Version {
 		t.Fatalf("payload revision = version %d parent %d, want %d/%d", payload.Version, payload.ParentRevision, initial.Version+1, initial.Version)
@@ -105,6 +117,49 @@ func TestExecuteExitPlanModePersistsStructuredDocument(t *testing.T) {
 	}
 }
 
+func TestExecuteExitPlanModeFailsBeforeMutationWhenAutoPolicyCannotResolve(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	runSvc.model = nil
+	mutationCalls := 0
+	apply := func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		mutationCalls++
+		return sessionruntime.SessionMutationResult{}, nil
+	}
+	args := mustMarshalPlanToolTestArgs(t, map[string]any{
+		"title": "Fail closed",
+		"document": pebblestore.SessionPlanDocument{
+			Title:       "Fail closed",
+			Info:        pebblestore.SessionPlanInfo{Goal: "do not half-transition"},
+			Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Only", Status: "pending", Tasks: []string{"work"}, AcceptanceCriteria: []string{"done"}}},
+		},
+	})
+	profile := pebblestore.AgentProfile{Name: "custom", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ModelMode: "split", AutoProvider: "codex", AutoModel: "action-model"}
+	if _, err := runSvc.executeExitPlanModeTool(sessionID, sessionruntime.ModePlan, profile, args, "", apply); err == nil {
+		t.Fatal("exit_plan_mode unexpectedly succeeded without model policy resolver")
+	}
+	if mutationCalls != 0 {
+		t.Fatalf("mutation calls = %d, want zero", mutationCalls)
+	}
+	stored, ok, err := sessionSvc.GetSession(sessionID)
+	if err != nil || !ok || stored.Mode != sessionruntime.ModePlan {
+		t.Fatalf("session after failed exit: ok=%t err=%v session=%+v", ok, err, stored)
+	}
+	if _, ok, err := sessionSvc.GetActivePlan(sessionID); err != nil || ok {
+		t.Fatalf("plan persisted during failed exit: ok=%t err=%v", ok, err)
+	}
+}
+
+func mustMarshalPlanToolTestArgs(t *testing.T, value any) string {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
 func TestExitPlanModePermissionPayloadIncludesStructuredDocument(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()
@@ -119,11 +174,14 @@ func TestExitPlanModePermissionPayloadIncludesStructuredDocument(t *testing.T) {
 	}
 
 	args := map[string]any{
-		"plan_id": "plan-exit",
-		"title":   "Exit Structured Plan",
+		"plan_id":                "plan-exit",
+		"title":                  "Exit Structured Plan",
+		"execution_granularity":  "checkpointed",
+		"continuation_policy":    "automatic",
+		"continue_automatically": true,
 		"document": pebblestore.SessionPlanDocument{
 			Info:               pebblestore.SessionPlanInfo{Goal: "approval sees structured goal"},
-			Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Initial", Status: "done"}, {ID: "cp-2", Title: "Next", Status: "pending"}},
+			Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Initial", Status: sessionruntime.PlanCheckpointStatusCompleted}, {ID: "cp-2", Title: "Next", Status: "pending"}},
 			ActiveCheckpointID: "cp-2",
 		},
 	}
@@ -142,6 +200,9 @@ func TestExitPlanModePermissionPayloadIncludesStructuredDocument(t *testing.T) {
 	if document.ID != "plan-exit" || document.Title != "Exit Structured Plan" || document.Info.Goal != "approval sees structured goal" || len(document.Checkpoints) != 2 || document.Checkpoints[1].ID != "cp-2" || document.ActiveCheckpointID != "cp-2" {
 		t.Fatalf("permission document = %#v", document)
 	}
+	if permissionPayload["execution_granularity"] != sessionruntime.PlanAcceptanceGranularityCheckpointed || permissionPayload["continuation_policy"] != sessionruntime.PlanAcceptanceContinuationAutomatic || permissionPayload["continue_automatically"] != true {
+		t.Fatalf("permission execution recommendation = %#v", permissionPayload)
+	}
 	approved, ok := permissionPayload["approved_arguments"].(map[string]any)
 	if !ok {
 		t.Fatalf("approved arguments missing: %#v", permissionPayload["approved_arguments"])
@@ -156,6 +217,9 @@ func TestExitPlanModePermissionPayloadIncludesStructuredDocument(t *testing.T) {
 	}
 	if decodedApprovedDoc.ID != "plan-exit" || decodedApprovedDoc.Title != "Exit Structured Plan" || decodedApprovedDoc.Info.Goal != document.Info.Goal {
 		t.Fatalf("approved structured document missing: %#v", approved["document"])
+	}
+	if approved["execution_granularity"] != sessionruntime.PlanAcceptanceGranularityCheckpointed || approved["continuation_policy"] != sessionruntime.PlanAcceptanceContinuationAutomatic || approved["continue_automatically"] != true {
+		t.Fatalf("approved execution recommendation missing: %#v", approved)
 	}
 	if _, ok := permissionPayload["prior_document"]; !ok {
 		t.Fatalf("permission payload missing prior_document: %#v", permissionPayload)
@@ -173,6 +237,9 @@ func assertExitPlanDocument(t *testing.T, document *pebblestore.SessionPlanDocum
 	if document.Info.Goal != "ship structured exit plan" || document.Info.Context == "" || len(document.Info.Decisions) != 1 || document.Info.RelevantFiles[0] != "swarmd/internal/run/service_tools.go" || document.Info.SuccessCriteria[0] != "structured info fields persist" {
 		t.Fatalf("document info = %#v", document.Info)
 	}
+	if document.ExecutionPolicy.Mode != sessionruntime.PlanExecutionPolicyModeAutomatic || document.ExecutionPolicy.Shape != sessionruntime.PlanExecutionShapeCheckpointed || document.ExecutionState != nil {
+		t.Fatalf("document execution policy/state = %#v/%#v", document.ExecutionPolicy, document.ExecutionState)
+	}
 	if document.ActiveCheckpointID != "cp-2" {
 		t.Fatalf("active checkpoint = %q", document.ActiveCheckpointID)
 	}
@@ -182,7 +249,7 @@ func assertExitPlanDocument(t *testing.T, document *pebblestore.SessionPlanDocum
 	if document.Checkpoints[0].ID != "cp-2" || document.Checkpoints[0].Order != 1 || document.Checkpoints[0].Status != "pending" || document.Checkpoints[0].Objective != "preserve requested order" {
 		t.Fatalf("checkpoint[0] = %#v", document.Checkpoints[0])
 	}
-	if document.Checkpoints[1].ID != "cp-1" || document.Checkpoints[1].Order != 2 || document.Checkpoints[1].Status != "done" || document.Checkpoints[1].Objective != "preserve stable id" {
+	if document.Checkpoints[1].ID != "cp-1" || document.Checkpoints[1].Order != 2 || document.Checkpoints[1].Status != sessionruntime.PlanCheckpointStatusPending || document.Checkpoints[1].Objective != "preserve stable id" {
 		t.Fatalf("checkpoint[1] = %#v", document.Checkpoints[1])
 	}
 }

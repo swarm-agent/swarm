@@ -9,11 +9,6 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-const (
-	DefaultExaServerID  = "exa-public"
-	DefaultExaServerURL = "https://mcp.exa.ai/mcp"
-)
-
 type Server struct {
 	ID        string            `json:"id"`
 	Name      string            `json:"name"`
@@ -42,11 +37,6 @@ type UpsertInput struct {
 	Source    string
 }
 
-type ExaRuntimeConfig struct {
-	Enabled bool
-	URL     string
-}
-
 type Service struct {
 	store  *pebblestore.MCPStore
 	events *pebblestore.EventLog
@@ -58,9 +48,7 @@ func NewService(store *pebblestore.MCPStore, events *pebblestore.EventLog) *Serv
 
 func (s *Service) EnsureDefaults() error {
 	// Generic MCP server management is deferred until it can be integrated
-	// with Swarm Sync. Do not persist a default MCP server record here; Exa
-	// search resolves the built-in public MCP endpoint directly when no user
-	// override exists.
+	// with Swarm Sync. No provider-specific default servers are installed.
 	return nil
 }
 
@@ -216,17 +204,6 @@ func (s *Service) SetEnabled(id string, enabled bool) (Server, *pebblestore.Even
 		return Server{}, nil, err
 	}
 	return server, event, nil
-}
-
-func (s *Service) ResolveExaRuntimeConfig() (ExaRuntimeConfig, error) {
-	// Generic MCP management is deferred, so Exa fallback must not depend on
-	// persisted MCP records. Old local records may exist from earlier builds;
-	// ignore them so free users always get the hosted Exa bridge when no API key
-	// is configured.
-	return ExaRuntimeConfig{
-		Enabled: true,
-		URL:     DefaultExaServerURL,
-	}, nil
 }
 
 func (s *Service) appendEvent(eventType string, payload any) (*pebblestore.EventEnvelope, error) {

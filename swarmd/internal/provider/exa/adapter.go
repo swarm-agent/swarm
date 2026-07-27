@@ -12,20 +12,19 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 type Adapter struct {
-	authStore          *pebblestore.AuthStore
-	mcpEnabledResolver func(context.Context) (bool, error)
-	httpClient         *http.Client
+	authStore  *pebblestore.AuthStore
+	httpClient *http.Client
 }
 
-func NewAdapter(authStore *pebblestore.AuthStore, mcpEnabledResolver func(context.Context) (bool, error)) *Adapter {
+func NewAdapter(authStore *pebblestore.AuthStore) *Adapter {
 	return &Adapter{
-		authStore:          authStore,
-		mcpEnabledResolver: mcpEnabledResolver,
+		authStore: authStore,
 		httpClient: &http.Client{
 			Timeout: 6 * time.Second,
 		},
@@ -72,24 +71,10 @@ func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 			AuthMethods: exaAuthMethods(),
 		}, nil
 	}
-	if a.mcpEnabledResolver != nil {
-		enabled, err := a.mcpEnabledResolver(ctx)
-		if err != nil {
-			return provideriface.Status{}, err
-		}
-		if enabled {
-			return provideriface.Status{
-				ID:          "exa",
-				Ready:       true,
-				RunReason:   "search-only provider (no model runner)",
-				AuthMethods: exaAuthMethods(),
-			}, nil
-		}
-	}
 	return provideriface.Status{
 		ID:          "exa",
 		Ready:       false,
-		Reason:      "missing exa api key (or enable exa mcp server)",
+		Reason:      "missing active Exa API key; add one in Settings > Providers or run /auth key exa <api_key>",
 		RunReason:   "search-only provider (no model runner)",
 		AuthMethods: exaAuthMethods(),
 	}, nil
@@ -145,8 +130,10 @@ func (a *Adapter) VerifyCredential(ctx context.Context, credential provideriface
 	if client == nil {
 		client = &http.Client{Timeout: 6 * time.Second}
 	}
+	providerdiagnostics.LogRequest("exa", "verify.search", req, body)
 	resp, err := client.Do(req)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "exa", "verify.search", err)
 		return provideriface.AuthVerification{
 			Connected: false,
 			Method:    "api",
@@ -155,7 +142,9 @@ func (a *Adapter) VerifyCredential(ctx context.Context, credential provideriface
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
+	providerdiagnostics.LogResponse("exa", "verify.search", resp, raw)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "exa", "verify.search", err)
 		return provideriface.AuthVerification{
 			Connected: false,
 			Method:    "api",
@@ -180,25 +169,20 @@ func (a *Adapter) VerifyCredential(ctx context.Context, credential provideriface
 }
 
 func exaVerifyErrorMessage(raw []byte) string {
-	body := strings.TrimSpace(string(raw))
-	if body == "" {
+	if len(bytes.TrimSpace(raw)) == 0 {
 		return ""
 	}
 	var payload struct {
 		Message string `json:"message"`
 		Error   string `json:"error"`
 	}
-	if err := json.Unmarshal(raw, &payload); err == nil {
-		msg := strings.TrimSpace(payload.Message)
-		if msg != "" {
-			return msg
-		}
-		msg = strings.TrimSpace(payload.Error)
-		if msg != "" {
-			return msg
-		}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return "upstream returned a non-JSON error"
 	}
-	return body
+	if strings.TrimSpace(payload.Message) != "" || strings.TrimSpace(payload.Error) != "" {
+		return "upstream rejected the verification request"
+	}
+	return "upstream returned an unexpected error"
 }
 
 func exaAuthMethods() []provideriface.AuthMethod {
@@ -207,7 +191,7 @@ func exaAuthMethods() []provideriface.AuthMethod {
 			ID:             "api",
 			Label:          "API key",
 			CredentialType: "api",
-			Description:    "Use an Exa API key.",
+			Description:    "Adding and activating an Exa API key opts in to Exa-hosted web search and page retrieval. Queries and selected URLs are sent to Exa, results return to the agent/model context, and your browser profile is not used.",
 		},
 	}
 }

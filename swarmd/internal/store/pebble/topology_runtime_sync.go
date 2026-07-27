@@ -1,15 +1,8 @@
 package pebblestore
 
-import (
-	"errors"
-	"strings"
-)
+import "strings"
 
-const (
-	topologyRuntimeSourceLocalNode   = "swarm_local_node"
-	topologyRuntimeSourceTrustedPeer = "swarm_trusted_peer"
-	topologyRuntimeSourceNode        = "swarm_node"
-)
+const topologyRuntimeSourceLocalNode = "swarm_local_node"
 
 func syncTopologyRuntimeFromLocalNode(topology *TopologyStore, record SwarmLocalNodeRecord) error {
 	if topology == nil {
@@ -27,51 +20,6 @@ func syncTopologyRuntimeFromLocalNode(topology *TopologyStore, record SwarmLocal
 		UpdatedAt:       record.UpdatedAt,
 	}
 	return UpsertTopologyRuntimeRecord(topology, incoming)
-}
-
-func syncTopologyRuntimeFromTrustedPeer(topology *TopologyStore, record SwarmTrustedPeerRecord) error {
-	if topology == nil {
-		return nil
-	}
-	incoming := TopologyRuntimeRecord{
-		SwarmID:         strings.TrimSpace(record.SwarmID),
-		Name:            firstNonEmpty(record.Name, record.SwarmID),
-		Role:            strings.ToLower(strings.TrimSpace(record.Role)),
-		Relationship:    strings.ToLower(strings.TrimSpace(record.Relationship)),
-		Transport:       strings.ToLower(strings.TrimSpace(record.TransportMode)),
-		ObservedSources: []string{topologyRuntimeSourceTrustedPeer},
-		CreatedAt:       record.CreatedAt,
-		UpdatedAt:       record.UpdatedAt,
-	}
-	return UpsertTopologyRuntimeRecord(topology, incoming)
-}
-
-func syncTopologyRuntimeFromNode(topology *TopologyStore, record SwarmNodeRecord) error {
-	if topology == nil {
-		return nil
-	}
-	incoming := TopologyRuntimeRecord{
-		SwarmID:         strings.TrimSpace(record.SwarmID),
-		Name:            firstNonEmpty(record.Name, record.SwarmID),
-		Role:            strings.ToLower(strings.TrimSpace(record.Role)),
-		Relationship:    topologyRelationshipFromSwarmNodeRole(record.Role),
-		BackendURL:      strings.TrimSpace(record.BackendURL),
-		DesktopURL:      strings.TrimSpace(record.DesktopURL),
-		Status:          strings.ToLower(strings.TrimSpace(record.Status)),
-		Transport:       strings.ToLower(strings.TrimSpace(record.Transport)),
-		ObservedSources: []string{topologyRuntimeSourceNode},
-		CreatedAt:       record.CreatedAt,
-		UpdatedAt:       record.UpdatedAt,
-	}
-	return UpsertTopologyRuntimeRecord(topology, incoming)
-}
-
-func removeTopologyRuntimeTrustedPeer(topology *TopologyStore, swarmID string) error {
-	return removeTopologyRuntimeObservedSource(topology, swarmID, topologyRuntimeSourceTrustedPeer)
-}
-
-func removeTopologyRuntimeNodeObservation(topology *TopologyStore, swarmID string) error {
-	return removeTopologyRuntimeObservedSource(topology, swarmID, topologyRuntimeSourceNode)
 }
 
 func UpsertTopologyRuntimeRecord(topology *TopologyStore, incoming TopologyRuntimeRecord) error {
@@ -96,7 +44,7 @@ func UpsertTopologyRuntimeRecord(topology *TopologyStore, incoming TopologyRunti
 		if _, err := enforceTopologyRuntimeAccount(incoming.AccountScopeID, incoming); err != nil {
 			return err
 		}
-		if err := ensureTopologyRuntimePlacementForRuntime(topology, incoming.AccountScopeID, incoming); err != nil {
+		if err := ensureTopologyLocalSelfPlacementForRuntime(topology, incoming.AccountScopeID, incoming); err != nil {
 			return err
 		}
 		_, err = topology.PutRuntimeForAccount(incoming.AccountScopeID, incoming)
@@ -131,46 +79,34 @@ func UpsertTopologyRuntimeRecordForAccount(topology *TopologyStore, accountScope
 	if _, err := enforceTopologyRuntimeAccount(accountScopeID, incoming); err != nil {
 		return err
 	}
-	if err := ensureTopologyRuntimePlacementForRuntime(topology, accountScopeID, incoming); err != nil {
+	if err := ensureTopologyLocalSelfPlacementForRuntime(topology, accountScopeID, incoming); err != nil {
 		return err
 	}
 	_, err = topology.PutRuntimeForAccount(accountScopeID, incoming)
 	return err
 }
 
-func ensureTopologyRuntimePlacementForRuntime(topology *TopologyStore, accountScopeID string, runtime TopologyRuntimeRecord) error {
+func ensureTopologyLocalSelfPlacementForRuntime(topology *TopologyStore, accountScopeID string, runtime TopologyRuntimeRecord) error {
 	if topology == nil {
 		return nil
 	}
 	runtime = normalizeTopologyRuntimeRecord(runtime)
-	if runtime.SwarmID == "" {
+	if runtime.SwarmID == "" || !strings.EqualFold(runtime.Relationship, "self") {
 		return nil
 	}
 	accountScopeID = strings.TrimSpace(firstNonEmpty(accountScopeID, runtime.AccountScopeID))
 	if accountScopeID == "" {
 		return nil
 	}
-
-	authorityHostSwarmID := strings.TrimSpace(runtime.OwnerHostSwarmID)
-	authorityContainerID := strings.TrimSpace(runtime.OwnerHostContainerID)
-	placement := TopologyRuntimePlacementRecord{
+	if _, ok, err := topology.GetRuntimePlacementForAccount(accountScopeID, runtime.SwarmID); err != nil || ok {
+		return err
+	}
+	_, err := topology.PutRuntimePlacementForAccount(accountScopeID, TopologyRuntimePlacementRecord{
 		RuntimeSwarmID:       runtime.SwarmID,
 		AccountScopeID:       accountScopeID,
-		AuthorityHostSwarmID: authorityHostSwarmID,
-		AuthorityContainerID: authorityContainerID,
-	}
-	if authorityHostSwarmID == "" && authorityContainerID == "" {
-		placement.RuntimeKind = TopologyRuntimeKindHost
-		placement.AuthorityHostSwarmID = runtime.SwarmID
-	} else if authorityHostSwarmID != "" && authorityContainerID != "" {
-		placement.RuntimeKind = TopologyRuntimeKindContainer
-	} else {
-		if authorityHostSwarmID != "" {
-			return errors.New("topology container runtime placement authority container id is required")
-		}
-		return errors.New("topology container runtime placement authority host swarm id is required")
-	}
-	_, err := topology.PutRuntimePlacementForAccount(accountScopeID, placement)
+		AuthorityHostSwarmID: runtime.SwarmID,
+		RuntimeKind:          TopologyRuntimeKindHost,
+	})
 	return err
 }
 
@@ -182,7 +118,6 @@ func mergeTopologyRuntimeRecord(existing, incoming TopologyRuntimeRecord) Topolo
 	incoming.Name = firstNonEmpty(incoming.Name, existing.Name, incoming.SwarmID)
 	incoming.Role = firstNonEmpty(incoming.Role, existing.Role)
 	incoming.Relationship = mergeTopologyRuntimeRelationship(existing.Relationship, incoming.Relationship)
-	incoming.BackendURL = firstNonEmpty(incoming.BackendURL, existing.BackendURL)
 	incoming.DesktopURL = firstNonEmpty(incoming.DesktopURL, existing.DesktopURL)
 	incoming.Status = firstNonEmpty(incoming.Status, existing.Status)
 	incoming.Transport = firstNonEmpty(incoming.Transport, existing.Transport)
@@ -197,6 +132,35 @@ func mergeTopologyRuntimeRecord(existing, incoming TopologyRuntimeRecord) Topolo
 		incoming.UpdatedAt = existing.UpdatedAt
 	}
 	return incoming
+}
+
+func RemoveTopologyRuntimeObservedSource(topology *TopologyStore, swarmID, source string) error {
+	return removeTopologyRuntimeObservedSource(topology, swarmID, source)
+}
+
+func RemoveTopologyRuntimeObservedSourceForAccount(topology *TopologyStore, accountScopeID, swarmID, source string) error {
+	accountScopeID, err := requireTopologyAccountScopeID(accountScopeID)
+	if err != nil {
+		return err
+	}
+	if topology == nil {
+		return nil
+	}
+	swarmID = strings.TrimSpace(swarmID)
+	source = strings.TrimSpace(source)
+	if swarmID == "" || source == "" {
+		return nil
+	}
+	record, ok, err := topology.GetRuntimeForAccount(accountScopeID, swarmID)
+	if err != nil || !ok {
+		return err
+	}
+	record.ObservedSources = removeTopologyObservedSource(record.ObservedSources, source)
+	if len(record.ObservedSources) == 0 {
+		return topology.DeleteRuntimeForAccount(accountScopeID, swarmID)
+	}
+	_, err = topology.PutRuntimeForAccount(accountScopeID, record)
+	return err
 }
 
 func removeTopologyRuntimeObservedSource(topology *TopologyStore, swarmID, source string) error {
@@ -215,19 +179,6 @@ func removeTopologyRuntimeObservedSource(topology *TopologyStore, swarmID, sourc
 	record.ObservedSources = removeTopologyObservedSource(record.ObservedSources, source)
 	if len(record.ObservedSources) == 0 {
 		return topology.DeleteRuntime(swarmID)
-	}
-	switch source {
-	case topologyRuntimeSourceNode:
-		record.BackendURL = ""
-		record.DesktopURL = ""
-		record.Status = ""
-	case topologyRuntimeSourceTrustedPeer:
-		if strings.EqualFold(strings.TrimSpace(record.Relationship), "self") {
-			break
-		}
-		if !topologyObservedSourcePresent(record.ObservedSources, topologyRuntimeSourceNode) {
-			record.Relationship = ""
-		}
 	}
 	_, err = topology.PutRuntime(record)
 	return err
@@ -269,15 +220,6 @@ func mergeTopologyRuntimeRelationship(existing, incoming string) string {
 		return incoming
 	}
 	return existing
-}
-
-func topologyRelationshipFromSwarmNodeRole(role string) string {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "managed", "manager", "child", "self":
-		return strings.ToLower(strings.TrimSpace(role))
-	default:
-		return ""
-	}
 }
 
 func topologyTransportFromSwarmTransports(transports []SwarmTransportRecord) string {

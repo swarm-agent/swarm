@@ -93,7 +93,78 @@ swarm_daemon_ports_root() {
 }
 
 swarm_current_owner_spec() {
-  printf "%s:%s\n" "$(id -u)" "$(id -g)"
+  local uid="${SUDO_UID:-$(id -u)}"
+  local gid="${SUDO_GID:-$(id -g)}"
+  if [[ ! "${uid}" =~ ^[0-9]+$ || ! "${gid}" =~ ^[0-9]+$ || "${uid}" == "0" || "${gid}" == "0" ]]; then
+    echo "Swarm requires a trusted non-root service owner; refusing uid=${uid} gid=${gid}." >&2
+    return 1
+  fi
+  if command -v getent >/dev/null 2>&1; then
+    getent passwd "${uid}" >/dev/null || { echo "unknown service uid: ${uid}" >&2; return 1; }
+    getent group "${gid}" >/dev/null || { echo "unknown service gid: ${gid}" >&2; return 1; }
+  fi
+  printf "%s:%s\n" "${uid}" "${gid}"
+}
+
+swarm_file_owner_spec() {
+  local path="${1:-}"
+  local owner=""
+  if owner="$(stat -c '%u:%g' -- "${path}" 2>/dev/null)"; then
+    :
+  elif owner="$(stat -f '%u:%g' -- "${path}" 2>/dev/null)"; then
+    :
+  else
+    echo "unable to inspect owner/group for ${path}" >&2
+    return 1
+  fi
+  if [[ ! "${owner}" =~ ^[0-9]+:[0-9]+$ ]]; then
+    echo "invalid owner/group metadata for ${path}: ${owner}" >&2
+    return 1
+  fi
+  printf '%s\n' "${owner}"
+}
+
+swarm_require_safe_target() {
+  local kind="${1:-file}"
+  local path="${2:-}"
+  if [[ -L "${path}" ]]; then
+    if [[ "${kind}" != "directory" ]] || ! swarm_is_canonical_runtime_directory_symlink "${path}"; then
+      echo "refusing symlink ${kind} target: ${path}" >&2
+      return 1
+    fi
+    return 0
+  fi
+  if [[ -e "${path}" ]]; then
+    case "${kind}" in
+      directory) [[ -d "${path}" ]] ;;
+      file) [[ -f "${path}" ]] ;;
+      *) return 1 ;;
+    esac || { echo "refusing non-${kind} target: ${path}" >&2; return 1; }
+  fi
+}
+
+swarm_is_canonical_runtime_directory_symlink() {
+  local path="${1:-}"
+  local install_root current_link versions_dir leaf leaf_target current_target version
+  install_root="$(swarm_lane_install_root)"
+  current_link="${install_root}/current"
+  versions_dir="${install_root}/versions"
+  leaf="${path##*/}"
+  case "${leaf}" in
+    bin|libexec|lib|share) ;;
+    *) return 1 ;;
+  esac
+  [[ "${path}" == "${install_root}/${leaf}" ]] || return 1
+  [[ -d "${install_root}" && ! -L "${install_root}" ]] || return 1
+  [[ -d "${versions_dir}" && ! -L "${versions_dir}" ]] || return 1
+  [[ -L "${current_link}" ]] || return 1
+  leaf_target="$(readlink -- "${path}")" || return 1
+  [[ "${leaf_target}" == "${current_link}/${leaf}" ]] || return 1
+  current_target="$(readlink -- "${current_link}")" || return 1
+  version="${current_target##*/}"
+  [[ -n "${version}" && "${current_target}" == "${versions_dir}/${version}" ]] || return 1
+  [[ -d "${current_target}" && ! -L "${current_target}" ]] || return 1
+  [[ -d "${current_target}/${leaf}" && ! -L "${current_target}/${leaf}" && -d "${path}" ]]
 }
 
 swarm_run_privileged() {
@@ -103,7 +174,7 @@ swarm_run_privileged() {
   fi
   if ! command -v sudo >/dev/null 2>&1; then
     echo "Swarm uses system locations under /usr/local, /etc, /var, and /run." >&2
-    echo "Install sudo or create/chown those Swarm directories before running this command." >&2
+    echo "Install sudo before running this command, or create/chown those Swarm directories." >&2
     return 1
   fi
   sudo "$@"
@@ -120,6 +191,7 @@ swarm_provision_owned_dir() {
   local mode="${1:-0755}"
   local path="${2:-}"
   local owner
+  swarm_require_safe_target directory "${path}" || return 1
   if mkdir -p "${path}" 2>/dev/null && chmod "${mode}" "${path}" 2>/dev/null && swarm_dir_writable "${path}"; then
     return 0
   fi
@@ -130,6 +202,7 @@ swarm_provision_owned_dir() {
 swarm_provision_system_dir() {
   local mode="${1:-0755}"
   local path="${2:-}"
+  swarm_require_safe_target directory "${path}" || return 1
   if mkdir -p "${path}" 2>/dev/null && [[ -d "${path}" ]]; then
     return 0
   fi
@@ -140,7 +213,8 @@ swarm_provision_tmpfiles_config() {
   local owner tmp_path target_path
   owner="$(swarm_current_owner_spec)"
   target_path="/etc"/tmpfiles.d/swarmd.conf
-  tmp_path="$(mktemp "${TMPDIR:-/tmp}/swarmd-tmpfiles.XXXXXX")"
+  swarm_require_safe_target file "${target_path}" || return 1
+  tmp_path="$(mktemp -t swarmd-tmpfiles.XXXXXX)"
   cat >"${tmp_path}" <<EOF
 d /run/swarmd 0700 ${owner%:*} ${owner#*:} -
 d /run/swarmd/dev 0700 ${owner%:*} ${owner#*:} -
@@ -166,8 +240,9 @@ swarm_provision_systemd_service_unit() {
   fi
   local target_path tmp_path swarm_bin data_root cache_root runtime_root config_root log_root owner
   target_path="/etc"/systemd/system/swarm.service
-  tmp_path="$(mktemp "${TMPDIR:-/tmp}/swarmd-service.XXXXXX")"
-  swarm_bin="$(swarm_lane_bin_dir main)/swarm"
+  swarm_require_safe_target file "${target_path}" || return 1
+  tmp_path="$(mktemp -t swarmd-service.XXXXXX)"
+  swarm_bin="/usr/local/bin/swarm"
   owner="$(swarm_current_owner_spec)"
   data_root="$(swarm_daemon_data_root main)"
   cache_root="/var/cache/swarmd"
@@ -184,7 +259,7 @@ Wants=network-online.target
 Type=simple
 User=${owner%:*}
 Group=${owner#*:}
-ExecStart=${swarm_bin} server run
+ExecStart=${swarm_bin} main server run
 Restart=on-failure
 RestartSec=2
 StateDirectory=swarmd
@@ -213,11 +288,7 @@ EOF
     return 1
   fi
   rm -f "${tmp_path}"
-  if [[ "$(id -u)" == "0" ]]; then
-    swarm_run_privileged systemctl daemon-reload
-  else
-    swarm_run_privileged systemctl daemon-reload >/dev/null 2>&1 || true
-  fi
+  swarm_run_privileged systemctl daemon-reload
 }
 
 swarm_provision_system_paths() {
@@ -253,15 +324,19 @@ swarm_startup_config_path() {
 }
 
 swarm_startup_config_ensure() {
-  local config_path
+  local config_path owner tmp_path
   config_path="$(swarm_startup_config_path)"
+  swarm_require_safe_target file "${config_path}" || return 1
   if [[ -f "${config_path}" ]]; then
+    # Preserve the configured service owner/group; only converge the private mode.
+    swarm_run_privileged chmod 0600 "${config_path}"
     return 0
   fi
 
+  owner="$(swarm_current_owner_spec)" || return 1
   swarm_provision_system_paths "$(swarm_lane_default)"
-  mkdir -p "$(dirname -- "${config_path}")"
-  cat >"${config_path}" <<'EOF'
+  tmp_path="$(mktemp -t swarm-conf.XXXXXX)"
+  cat >"${tmp_path}" <<'EOF'
 dev_mode = false
 dev_root =
 host = 127.0.0.1
@@ -271,43 +346,28 @@ advertise_port = 7781
 desktop_port = 5555
 bypass_permissions = false
 retain_tool_output_history = false
+v3_diagnostics = false
+provider_api_diagnostics = false
+# Metadata-only bounded diagnostics for multi-hour daemon/Desktop captures.
+# Requires a daemon restart. Adds profiling, CPU, and private local disk overhead;
+# see docs/long-session-diagnostics.md and disable it after the capture.
+long_session_diagnostics = false
 swarm_name =
 desktop_onboarding_complete = true
 child = false
 mode = lan
 tailscale_url =
 peer_transport_port = 7791
-parent_swarm_id =
-pairing_state =
-deploy_container_enabled = false
-deploy_container_host_driven = false
-deploy_container_sync_enabled = false
-deploy_container_sync_mode =
-deploy_container_sync_modules =
-deploy_container_sync_owner_swarm_id =
-deploy_container_sync_credential_url =
-deploy_container_sync_agent_url =
-deploy_container_deployment_id =
-deploy_container_host_api_base_url =
-deploy_container_host_desktop_url =
-deploy_container_local_transport_socket_path =
-deploy_container_bootstrap_secret =
-deploy_container_verification_code =
-remote_deploy_enabled = false
-remote_deploy_session_id =
-remote_deploy_host_api_base_url =
-remote_deploy_host_desktop_url =
-remote_deploy_sync_enabled = false
-remote_deploy_sync_mode =
-remote_deploy_sync_owner_swarm_id =
-remote_deploy_sync_credential_url =
 EOF
+  swarm_run_privileged install -o "${owner%:*}" -g "${owner#*:}" -m 0600 "${tmp_path}" "${config_path}"
+  rm -f "${tmp_path}"
 }
 
 swarm_startup_config_remove_obsolete_keys() {
   local config_path tmp_path
   config_path="$(swarm_startup_config_path)"
-  tmp_path="$(mktemp "${TMPDIR:-/tmp}/swarm-conf.XXXXXX")"
+  swarm_require_safe_target file "${config_path}" || return 1
+  tmp_path="$(mktemp -t swarm-conf.XXXXXX)"
   awk '
     function trim(s) {
       sub(/^[[:space:]]+/, "", s)
@@ -321,14 +381,23 @@ swarm_startup_config_remove_obsolete_keys() {
         next
       }
       raw_key = trim(substr($0, 1, split_pos - 1))
-      if (raw_key == "startup" "_mode" || raw_key == "swarm" "_mode" || raw_key == "deploy_container_sync_skill_url" || raw_key == "deploy_container_sync_permission_url") {
+      if (raw_key == "startup" "_mode" ||
+          raw_key == "swarm" "_mode" ||
+          raw_key == "swarm_role" ||
+          raw_key == "parent_swarm_id" ||
+          raw_key == "pairing_state" ||
+          raw_key ~ /^managed[_-]?hosts?/ ||
+          raw_key ~ /^remote[_-]?deploy/ ||
+          raw_key ~ ("^deploy_" "container_")) {
         next
       }
       print
     }
   ' "${config_path}" >"${tmp_path}"
   if ! cmp -s "${config_path}" "${tmp_path}"; then
-    cat "${tmp_path}" >"${config_path}"
+    local owner
+    owner="$(swarm_file_owner_spec "${config_path}")" || return 1
+    swarm_run_privileged install -o "${owner%:*}" -g "${owner#*:}" -m 0600 "${tmp_path}" "${config_path}"
   fi
   rm -f "${tmp_path}"
 }
@@ -404,10 +473,7 @@ swarm_startup_config_migrate_legacy() {
   esac
   child_value="$(swarm_startup_config_raw_value child 2>/dev/null || true)"
   if [[ -z "${child_value}" ]]; then
-    case "$(swarm_startup_config_raw_value swarm_role 2>/dev/null || true)" in
-      child) child_value="true" ;;
-      *) child_value="false" ;;
-    esac
+    child_value="false"
   fi
   network_mode_value="$(swarm_startup_config_raw_value mode 2>/dev/null || true)"
   if [[ "${network_mode_value}" != "lan" && "${network_mode_value}" != "tailscale" ]]; then
@@ -483,6 +549,33 @@ retain_tool_output_history = false
 EOF
   fi
 
+  if ! swarm_startup_config_has_key v3_diagnostics; then
+    cat >>"${config_path}" <<'EOF'
+
+# Persist verbose V3 diagnostic events, including provider request/error diagnostics.
+# Enable temporarily while debugging failed sessions; diagnostics may contain request context.
+v3_diagnostics = false
+EOF
+  fi
+
+  if ! swarm_startup_config_has_key provider_api_diagnostics; then
+    cat >>"${config_path}" <<'EOF'
+
+# Log sanitized outbound provider API request and response payloads to daemon logs and durable session diagnostics.
+# This is separate from v3_diagnostics and omits/redacts API keys and auth headers.
+provider_api_diagnostics = false
+EOF
+  fi
+
+  if ! swarm_startup_config_has_key long_session_diagnostics; then
+    cat >>"${config_path}" <<'EOF'
+
+# Record bounded metadata-only diagnostics for investigating long-session memory and lag.
+# Artifacts are private local files under the canonical logs root; changing this requires a restart.
+long_session_diagnostics = false
+EOF
+  fi
+
   if ! swarm_startup_config_has_key swarm_name; then
     cat >>"${config_path}" <<'EOF'
 
@@ -547,143 +640,6 @@ peer_transport_port = 7791
 EOF
   fi
 
-  if ! swarm_startup_config_has_key parent_swarm_id; then
-    cat >>"${config_path}" <<'EOF'
-
-# Parent swarm ID for child bootstrap/attach flows.
-parent_swarm_id =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key pairing_state; then
-    cat >>"${config_path}" <<'EOF'
-
-# Persisted local pairing state.
-pairing_state =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key managed_host_sync_mode; then
-    cat >>"${config_path}" <<'EOF'
-
-# Managed Host Link Mode sync. Active whenever swarm_role = managed and pairing_state = paired.
-# To stop management sync, unlink/detach this Managed Host from its Manager.
-managed_host_sync_mode = managed
-managed_host_sync_modules =
-managed_host_sync_owner_swarm_id =
-managed_host_sync_host_api_base_url =
-managed_host_sync_credential_url =
-managed_host_sync_agent_url =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_enabled; then
-    cat >>"${config_path}" <<'EOF'
-
-# Deploy/container child attach bootstrap payload.
-deploy_container_enabled = false
-deploy_container_host_driven = false
-deploy_container_sync_enabled = false
-deploy_container_sync_mode =
-deploy_container_sync_modules =
-deploy_container_sync_owner_swarm_id =
-deploy_container_sync_credential_url =
-deploy_container_sync_agent_url =
-deploy_container_deployment_id =
-deploy_container_host_api_base_url =
-deploy_container_host_desktop_url =
-deploy_container_local_transport_socket_path =
-deploy_container_bootstrap_secret =
-deploy_container_verification_code =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_host_driven; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_host_driven = false
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_sync_enabled; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_sync_enabled = false
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_sync_mode; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_sync_mode =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_sync_modules; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_sync_modules =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_sync_owner_swarm_id; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_sync_owner_swarm_id =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_sync_credential_url; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_sync_credential_url =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_sync_agent_url; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_sync_agent_url =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_local_transport_socket_path; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_local_transport_socket_path =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key remote_deploy_enabled; then
-    cat >>"${config_path}" <<'EOF'
-
-# Remote deploy child bootstrap payload.
-remote_deploy_enabled = false
-remote_deploy_session_id =
-remote_deploy_host_api_base_url =
-remote_deploy_host_desktop_url =
-remote_deploy_sync_enabled = false
-remote_deploy_sync_mode =
-remote_deploy_sync_owner_swarm_id =
-remote_deploy_sync_credential_url =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key remote_deploy_sync_enabled; then
-    cat >>"${config_path}" <<'EOF'
-remote_deploy_sync_enabled = false
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key remote_deploy_sync_mode; then
-    cat >>"${config_path}" <<'EOF'
-remote_deploy_sync_mode =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key remote_deploy_sync_owner_swarm_id; then
-    cat >>"${config_path}" <<'EOF'
-remote_deploy_sync_owner_swarm_id =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key remote_deploy_sync_credential_url; then
-    cat >>"${config_path}" <<'EOF'
-remote_deploy_sync_credential_url =
-EOF
-  fi
 }
 
 swarm_startup_config_validate() {
@@ -713,6 +669,9 @@ swarm_startup_config_validate() {
       valid["desktop_port"] = 1
       valid["bypass_permissions"] = 1
       valid["retain_tool_output_history"] = 1
+      valid["v3_diagnostics"] = 1
+      valid["provider_api_diagnostics"] = 1
+      valid["long_session_diagnostics"] = 1
       valid["swarm_name"] = 1
       valid["desktop_onboarding_complete"] = 1
       valid["child"] = 1
@@ -720,65 +679,10 @@ swarm_startup_config_validate() {
       valid["tailscale_url"] = 1
       valid["local_transport_port"] = 1
       valid["peer_transport_port"] = 1
-      valid["parent_swarm_id"] = 1
-      valid["pairing_state"] = 1
-      valid["managed_host_sync_mode"] = 1
-      valid["managed_host_sync_modules"] = 1
-      valid["managed_host_sync_owner_swarm_id"] = 1
-      valid["managed_host_sync_host_api_base_url"] = 1
-      valid["managed_host_sync_credential_url"] = 1
-      valid["managed_host_sync_agent_url"] = 1
-      valid["deploy_container_enabled"] = 1
-      valid["deploy_container_host_driven"] = 1
-      valid["deploy_container_sync_enabled"] = 1
-      valid["deploy_container_sync_mode"] = 1
-      valid["deploy_container_sync_modules"] = 1
-      valid["deploy_container_sync_owner_swarm_id"] = 1
-      valid["deploy_container_sync_credential_url"] = 1
-      valid["deploy_container_sync_agent_url"] = 1
-      valid["deploy_container_deployment_id"] = 1
-      valid["deploy_container_host_api_base_url"] = 1
-      valid["deploy_container_host_desktop_url"] = 1
-      valid["deploy_container_local_transport_socket_path"] = 1
-      valid["deploy_container_bootstrap_secret"] = 1
-      valid["deploy_container_verification_code"] = 1
-      valid["remote_deploy_enabled"] = 1
-      valid["remote_deploy_session_id"] = 1
-      valid["remote_deploy_host_api_base_url"] = 1
-      valid["remote_deploy_host_desktop_url"] = 1
-      valid["remote_deploy_sync_enabled"] = 1
-      valid["remote_deploy_sync_mode"] = 1
-      valid["remote_deploy_sync_owner_swarm_id"] = 1
-      valid["remote_deploy_sync_credential_url"] = 1
       allow_empty["swarm_name"] = 1
       allow_empty["dev_root"] = 1
       allow_empty["advertise_host"] = 1
       allow_empty["tailscale_url"] = 1
-      allow_empty["parent_swarm_id"] = 1
-      allow_empty["pairing_state"] = 1
-      allow_empty["managed_host_sync_mode"] = 1
-      allow_empty["managed_host_sync_modules"] = 1
-      allow_empty["managed_host_sync_owner_swarm_id"] = 1
-      allow_empty["managed_host_sync_host_api_base_url"] = 1
-      allow_empty["managed_host_sync_credential_url"] = 1
-      allow_empty["managed_host_sync_agent_url"] = 1
-      allow_empty["deploy_container_sync_mode"] = 1
-      allow_empty["deploy_container_sync_modules"] = 1
-      allow_empty["deploy_container_sync_owner_swarm_id"] = 1
-      allow_empty["deploy_container_sync_credential_url"] = 1
-      allow_empty["deploy_container_sync_agent_url"] = 1
-      allow_empty["deploy_container_deployment_id"] = 1
-      allow_empty["deploy_container_host_api_base_url"] = 1
-      allow_empty["deploy_container_host_desktop_url"] = 1
-      allow_empty["deploy_container_local_transport_socket_path"] = 1
-      allow_empty["deploy_container_bootstrap_secret"] = 1
-      allow_empty["deploy_container_verification_code"] = 1
-      allow_empty["remote_deploy_session_id"] = 1
-      allow_empty["remote_deploy_host_api_base_url"] = 1
-      allow_empty["remote_deploy_host_desktop_url"] = 1
-      allow_empty["remote_deploy_sync_mode"] = 1
-      allow_empty["remote_deploy_sync_owner_swarm_id"] = 1
-      allow_empty["remote_deploy_sync_credential_url"] = 1
     }
     /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
     {
@@ -791,7 +695,16 @@ swarm_startup_config_validate() {
       if (raw_key == "") {
         fail(sprintf("invalid startup config %s: line %d: key must be non-empty", config_path, NR))
       }
-      if (raw_key == "webauth_enabled" || raw_key == "swarm_role" || raw_key == "swarm_id" || raw_key == "swarm" "_mode" || raw_key == "advertise_mode" || raw_key == "advertise_addr" || raw_key == "onboarding_state" || raw_key == "network_mode" || raw_key == "tailscale_transport_port" || raw_key == "deploy_container_sync_skill_url" || raw_key == "deploy_container_sync_permission_url") {
+      if (raw_key == "webauth_enabled" ||
+          raw_key == "swarm_role" ||
+          raw_key == "swarm_id" ||
+          raw_key == "swarm" "_mode" ||
+          raw_key == "advertise_mode" ||
+          raw_key == "advertise_addr" ||
+          raw_key == "onboarding_state" ||
+          raw_key == "network_mode" ||
+          raw_key == "tailscale_transport_port" ||
+          raw_key ~ ("^deploy_" "container_")) {
         next
       }
       if (raw_key == "mode" && raw_value != "lan" && raw_value != "tailscale") {
@@ -840,6 +753,15 @@ swarm_startup_config_validate() {
       if (!("retain_tool_output_history" in seen)) {
         fail(sprintf("invalid startup config %s: missing retain_tool_output_history", config_path))
       }
+      if (!("v3_diagnostics" in seen)) {
+        fail(sprintf("invalid startup config %s: missing v3_diagnostics", config_path))
+      }
+      if (!("provider_api_diagnostics" in seen)) {
+        fail(sprintf("invalid startup config %s: missing provider_api_diagnostics", config_path))
+      }
+      if (!("long_session_diagnostics" in seen)) {
+        fail(sprintf("invalid startup config %s: missing long_session_diagnostics", config_path))
+      }
       if (!("swarm_name" in seen)) {
         fail(sprintf("invalid startup config %s: missing swarm_name", config_path))
       }
@@ -857,93 +779,6 @@ swarm_startup_config_validate() {
       }
       if (!("peer_transport_port" in seen)) {
         fail(sprintf("invalid startup config %s: missing peer_transport_port", config_path))
-      }
-      if (!("parent_swarm_id" in seen)) {
-        fail(sprintf("invalid startup config %s: missing parent_swarm_id", config_path))
-      }
-      if (!("pairing_state" in seen)) {
-        fail(sprintf("invalid startup config %s: missing pairing_state", config_path))
-      }
-      if (!("managed_host_sync_mode" in seen)) {
-        fail(sprintf("invalid startup config %s: missing managed_host_sync_mode", config_path))
-      }
-      if (!("managed_host_sync_modules" in seen)) {
-        fail(sprintf("invalid startup config %s: missing managed_host_sync_modules", config_path))
-      }
-      if (!("managed_host_sync_owner_swarm_id" in seen)) {
-        fail(sprintf("invalid startup config %s: missing managed_host_sync_owner_swarm_id", config_path))
-      }
-      if (!("managed_host_sync_host_api_base_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing managed_host_sync_host_api_base_url", config_path))
-      }
-      if (!("managed_host_sync_credential_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing managed_host_sync_credential_url", config_path))
-      }
-      if (!("managed_host_sync_agent_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing managed_host_sync_agent_url", config_path))
-      }
-      if (!("deploy_container_enabled" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_enabled", config_path))
-      }
-      if (!("deploy_container_sync_enabled" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_sync_enabled", config_path))
-      }
-      if (!("deploy_container_sync_mode" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_sync_mode", config_path))
-      }
-      if (!("deploy_container_sync_modules" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_sync_modules", config_path))
-      }
-      if (!("deploy_container_sync_owner_swarm_id" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_sync_owner_swarm_id", config_path))
-      }
-      if (!("deploy_container_sync_credential_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_sync_credential_url", config_path))
-      }
-      if (!("deploy_container_sync_agent_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_sync_agent_url", config_path))
-      }
-      if (!("deploy_container_deployment_id" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_deployment_id", config_path))
-      }
-      if (!("deploy_container_host_api_base_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_host_api_base_url", config_path))
-      }
-      if (!("deploy_container_host_desktop_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_host_desktop_url", config_path))
-      }
-      if (!("deploy_container_local_transport_socket_path" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_local_transport_socket_path", config_path))
-      }
-      if (!("deploy_container_bootstrap_secret" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_bootstrap_secret", config_path))
-      }
-      if (!("deploy_container_verification_code" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_verification_code", config_path))
-      }
-      if (!("remote_deploy_enabled" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_enabled", config_path))
-      }
-      if (!("remote_deploy_session_id" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_session_id", config_path))
-      }
-      if (!("remote_deploy_host_api_base_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_host_api_base_url", config_path))
-      }
-      if (!("remote_deploy_host_desktop_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_host_desktop_url", config_path))
-      }
-      if (!("remote_deploy_sync_enabled" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_sync_enabled", config_path))
-      }
-      if (!("remote_deploy_sync_mode" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_sync_mode", config_path))
-      }
-      if (!("remote_deploy_sync_owner_swarm_id" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_sync_owner_swarm_id", config_path))
-      }
-      if (!("remote_deploy_sync_credential_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_sync_credential_url", config_path))
       }
       if (values["dev_mode"] != "true" && values["dev_mode"] != "false") {
         fail(sprintf("invalid startup config %s: dev_mode must be true or false", config_path))
@@ -975,6 +810,15 @@ swarm_startup_config_validate() {
       if (values["retain_tool_output_history"] != "true" && values["retain_tool_output_history"] != "false") {
         fail(sprintf("invalid startup config %s: retain_tool_output_history must be true or false", config_path))
       }
+      if (values["v3_diagnostics"] != "true" && values["v3_diagnostics"] != "false") {
+        fail(sprintf("invalid startup config %s: v3_diagnostics must be true or false", config_path))
+      }
+      if (values["provider_api_diagnostics"] != "true" && values["provider_api_diagnostics"] != "false") {
+        fail(sprintf("invalid startup config %s: provider_api_diagnostics must be true or false", config_path))
+      }
+      if (values["long_session_diagnostics"] != "true" && values["long_session_diagnostics"] != "false") {
+        fail(sprintf("invalid startup config %s: long_session_diagnostics must be true or false", config_path))
+      }
       if (values["desktop_onboarding_complete"] != "true" && values["desktop_onboarding_complete"] != "false") {
         fail(sprintf("invalid startup config %s: desktop_onboarding_complete must be true or false", config_path))
       }
@@ -983,31 +827,6 @@ swarm_startup_config_validate() {
       }
       if (values["mode"] != "lan" && values["mode"] != "tailscale") {
         fail(sprintf("invalid startup config %s: mode must be lan or tailscale", config_path))
-      }
-      if (values["pairing_state"] != "" &&
-          values["pairing_state"] != "unpaired" &&
-          values["pairing_state"] != "bootstrap_configured" &&
-          values["pairing_state"] != "pending_approval" &&
-          values["pairing_state"] != "paired" &&
-          values["pairing_state"] != "rejected") {
-        fail(sprintf("invalid startup config %s: pairing_state must be empty or a known state", config_path))
-      }
-      if (values["deploy_container_enabled"] != "true" && values["deploy_container_enabled"] != "false") {
-        fail(sprintf("invalid startup config %s: deploy_container_enabled must be true or false", config_path))
-      }
-      if ("deploy_container_host_driven" in seen &&
-          values["deploy_container_host_driven"] != "true" &&
-          values["deploy_container_host_driven"] != "false") {
-        fail(sprintf("invalid startup config %s: deploy_container_host_driven must be true or false", config_path))
-      }
-      if (values["deploy_container_sync_enabled"] != "true" && values["deploy_container_sync_enabled"] != "false") {
-        fail(sprintf("invalid startup config %s: deploy_container_sync_enabled must be true or false", config_path))
-      }
-      if (values["remote_deploy_enabled"] != "true" && values["remote_deploy_enabled"] != "false") {
-        fail(sprintf("invalid startup config %s: remote_deploy_enabled must be true or false", config_path))
-      }
-      if (values["remote_deploy_sync_enabled"] != "true" && values["remote_deploy_sync_enabled"] != "false") {
-        fail(sprintf("invalid startup config %s: remote_deploy_sync_enabled must be true or false", config_path))
       }
       port_num = values["port"] + 0
       if (port_num < 1 || port_num > 65535) {
@@ -1090,6 +909,26 @@ swarm_startup_bypass_permissions() {
   local value
   value="$(swarm_startup_config_value bypass_permissions)" || return 1
   printf "%s\n" "${value}"
+}
+
+swarm_startup_v3_diagnostics() {
+  local value
+  value="$(swarm_startup_config_value v3_diagnostics)" || return 1
+  if [[ "${value}" == "true" ]]; then
+    printf "1\n"
+  else
+    printf "0\n"
+  fi
+}
+
+swarm_startup_provider_api_diagnostics() {
+  local value
+  value="$(swarm_startup_config_value provider_api_diagnostics)" || return 1
+  if [[ "${value}" == "true" ]]; then
+    printf "1\n"
+  else
+    printf "0\n"
+  fi
 }
 
 swarm_startup_dev_mode() {
@@ -1200,6 +1039,8 @@ swarm_lane_export_profile() {
   local dev_mode
   local dev_root
   local bypass_permissions
+  local v3_diagnostics
+  local provider_api_diagnostics
   local desktop_port
 
   local daemon_config_root
@@ -1216,6 +1057,8 @@ swarm_lane_export_profile() {
   dev_mode="$(swarm_startup_dev_mode)" || return 1
   dev_root="$(swarm_startup_dev_root)" || return 1
   bypass_permissions="$(swarm_startup_bypass_permissions)" || return 1
+  v3_diagnostics="$(swarm_startup_v3_diagnostics)" || return 1
+  provider_api_diagnostics="$(swarm_startup_provider_api_diagnostics)" || return 1
   desktop_port="$(swarm_lane_desktop_port "${lane}")" || return 1
 
   export SWARM_LANE="${lane}"
@@ -1226,6 +1069,8 @@ swarm_lane_export_profile() {
   export SWARM_DEV_MODE="${dev_mode}"
   export SWARM_DEV_ROOT="${dev_root}"
   export SWARM_BYPASS_PERMISSIONS="${bypass_permissions}"
+  export SWARM_V3_DIAGNOSTICS="${v3_diagnostics}"
+  export SWARM_PROVIDER_API_DIAGNOSTICS="${provider_api_diagnostics}"
 
   export SWARMD_LISTEN="${listen}"
   export SWARMD_URL="http://${listen}"

@@ -9,44 +9,16 @@ import (
 	"swarm-refactor/swarmtui/internal/client"
 )
 
-type WorkspaceReplicationSync struct {
-	Enabled bool
-	Mode    string
-	Modules []string
-}
-
-type WorkspaceReplicationLink struct {
-	ID                  string
-	TargetKind          string
-	TargetSwarmID       string
-	TargetSwarmName     string
-	TargetWorkspacePath string
-	ReplicationMode     string
-	Writable            bool
-	Sync                WorkspaceReplicationSync
-	CreatedAt           int64
-	UpdatedAt           int64
-}
-
 type WorkspaceTopologyRoute struct {
 	RouteID              string
-	RouteSource          string
 	WorkspaceBindingID   string
 	RuntimeSwarmID       string
 	RuntimeSwarmName     string
 	RuntimeKind          string
 	RuntimeRelationship  string
-	RuntimeBackendURL    string
-	HostSwarmID          string
 	HostWorkspacePath    string
 	HostWorkspaceName    string
 	RuntimeWorkspacePath string
-	ContainerID          string
-	ReplicationMode      string
-	Writable             bool
-	Sync                 WorkspaceReplicationSync
-	CreatedAt            int64
-	UpdatedAt            int64
 }
 
 type Workspace struct {
@@ -56,7 +28,6 @@ type Workspace struct {
 	WorkspaceGeneration     int64
 	LocalWorkspaceBindingID string
 	Directories             []string
-	ReplicationLinks        []WorkspaceReplicationLink
 	TopologyRoutes          []WorkspaceTopologyRoute
 	ThemeID                 string
 	Icon                    string
@@ -91,12 +62,15 @@ type SessionSummary struct {
 	PendingPermissionCount     int
 	Lifecycle                  *client.SessionLifecycleSnapshot
 	ActiveRunIntent            *client.SessionV3RunIntent
-	SessionExecution           *client.SessionExecutionV2
 	Preference                 client.ModelPreference
 	WorktreeEnabled            bool
 	WorktreeRootPath           string
 	WorktreeBaseBranch         string
 	WorktreeBranch             string
+	HasActivePlan              bool
+	ActivePlan                 *client.SessionPlan
+	CreatedAt                  int64
+	UpdatedAt                  int64
 	UpdatedAgo                 string
 	Depth                      int
 	SessionAPI                 string
@@ -147,15 +121,16 @@ type SwarmTarget struct {
 	Role         string
 	Relationship string
 	Kind         string
-	DeploymentID string
-	AttachStatus string
-	HostSwarmID  string
 	Online       bool
 	Selectable   bool
 	Current      bool
-	BackendURL   string
-	DesktopURL   string
-	LastError    string
+}
+
+type ActiveModelProfile struct {
+	Source    string
+	ProfileID string
+	Name      string
+	ModelMode string
 }
 
 type HomeModel struct {
@@ -175,6 +150,19 @@ type HomeModel struct {
 	ThinkingLevel               string
 	ServiceTier                 string
 	ContextMode                 string
+	PlanModelProvider           string
+	PlanModelName               string
+	PlanThinkingLevel           string
+	PlanServiceTier             string
+	PlanContextMode             string
+	AutoModelProvider           string
+	AutoModelName               string
+	AutoThinkingLevel           string
+	AutoServiceTier             string
+	AutoContextMode             string
+	ModelProfiles               []client.ModelProfile
+	DefaultModelProfileID       string
+	ActiveModelProfile          ActiveModelProfile
 	ActiveAgent                 string
 	ActiveAgentExecutionSetting string
 	ActiveAgentExitPlanMode     bool
@@ -193,6 +181,9 @@ type HomeModel struct {
 	QuickActions                []string
 	HintLine                    string
 	TipLine                     string
+	OnboardingRequired          bool
+	OnboardingUsername          string
+	OnboardingSwarmName         string
 	RecentSessions              []SessionSummary
 	BackgroundSessions          []BackgroundSessionSummary
 }
@@ -221,23 +212,29 @@ func MockHome() HomeModel {
 	playgroundPath := filepath.Join(root, "playground")
 
 	return HomeModel{
-		Title:                       "Swarm",
-		Version:                     buildinfo.DisplayVersion(),
-		UpdateStatus:                &client.UpdateStatus{CurrentVersion: buildinfo.DisplayVersion(), LatestVersion: "v0.2.0", UpdateAvailable: true, CheckedAtUnixMS: 1735689600000},
-		ActivePlan:                  "Core Platform",
-		ServerURL:                   "http://127.0.0.1:7781",
-		ServerMode:                  "local",
-		CWD:                         ".",
-		ModelProvider:               "codex",
-		ModelName:                   "gpt-5.4",
-		ThinkingLevel:               "xhigh",
-		ServiceTier:                 "",
-		ContextMode:                 "",
+		Title:         "Swarm",
+		Version:       buildinfo.DisplayVersion(),
+		UpdateStatus:  &client.UpdateStatus{CurrentVersion: buildinfo.DisplayVersion(), LatestVersion: "v0.2.0", UpdateAvailable: true, CheckedAtUnixMS: 1735689600000},
+		ActivePlan:    "Core Platform",
+		ServerURL:     "http://127.0.0.1:7781",
+		ServerMode:    "local",
+		CWD:           ".",
+		ModelProvider: "codex",
+		ModelName:     "gpt-5.4",
+		ThinkingLevel: "xhigh",
+		ServiceTier:   "",
+		ContextMode:   "",
+		ModelProfiles: []client.ModelProfile{{
+			ProfileID: "recommended", Name: "Recommended", ModelMode: "single", IsDefault: true,
+			Single: &client.ModelProfileSelection{Provider: "codex", Model: "gpt-5.4", Thinking: "xhigh"},
+		}},
+		DefaultModelProfileID:       "recommended",
+		ActiveModelProfile:          ActiveModelProfile{Source: "saved", ProfileID: "recommended", Name: "Recommended", ModelMode: "single"},
 		ActiveAgent:                 "swarm",
 		ActiveAgentExecutionSetting: "",
 		ActiveAgentExitPlanMode:     true,
 		ActiveAgentRuntimeKnown:     true,
-		Subagents:                   []string{"clone", "explorer", "memory"},
+		Subagents:                   []string{"clone", "finder", "memory"},
 		ContextWindow:               200000,
 		CurrentSwarmTarget:          &SwarmTarget{SwarmID: "mock-swarm", Name: "Mock Swarm", Role: "master", Relationship: "self", Kind: "local", Online: true, Selectable: true, Current: true},
 		Workspaces: []Workspace{
@@ -257,7 +254,7 @@ func MockHome() HomeModel {
 			{Name: "playground", Path: displayPath(playgroundPath), ResolvedPath: playgroundPath, Branch: "tui/control-plane", DirtyCount: 7, StagedCount: 2, ModifiedCount: 3, UntrackedCount: 1, ConflictCount: 1, AheadCount: 3, BehindCount: 1, Upstream: "origin/tui/control-plane", HasGit: true, AgentsToken: "agents", IsWorkspace: true},
 		},
 		PromptHint:   "",
-		QuickActions: []string{"Agent: swarm", "Model: gpt-5.4", "Thinking: xhigh"},
+		QuickActions: []string{"Profile: Recommended · gpt-5.4 · xhigh · default"},
 		HintLine:     "Type /help for commands",
 		TipLine:      "/workspace  •  /models  •  /auth",
 		RecentSessions: []SessionSummary{

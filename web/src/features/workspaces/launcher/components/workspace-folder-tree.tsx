@@ -14,6 +14,10 @@ interface WorkspaceFolderTreeProps {
   workspaces: WorkspaceEntry[]
   selectingPath: string | null
   savingPath: string | null
+  useFolderLabel?: string
+  showTemporaryAction?: boolean
+  openCreatedFolder?: boolean
+  showPathInWorkspaceAction?: boolean
   onBrowsePath: (path: string) => void
   onOpenWorkspace: (path: string) => void
   onUseFolderTemporarily: (path: string) => void
@@ -47,6 +51,10 @@ export function WorkspaceFolderTree({
   workspaces,
   selectingPath,
   savingPath,
+  useFolderLabel = 'Use as temp',
+  showTemporaryAction = true,
+  openCreatedFolder = false,
+  showPathInWorkspaceAction = false,
   onBrowsePath,
   onOpenWorkspace,
   onUseFolderTemporarily,
@@ -56,6 +64,7 @@ export function WorkspaceFolderTree({
   const [search, setSearch] = useState('')
   const [createdFolderPath, setCreatedFolderPath] = useState<string | null>(null)
   const [createMessage, setCreateMessage] = useState<string | null>(null)
+  const [createError, setCreateError] = useState<string | null>(null)
 
   const savedPaths = useMemo(() => new Set(workspaces.map((workspace) => workspace.path)), [workspaces])
   const searchValue = search.trim().toLowerCase()
@@ -71,6 +80,7 @@ export function WorkspaceFolderTree({
   const currentSaved = currentPath ? savedPaths.has(currentPath) : false
   const createdMessageText = createMessage ? `Created “${createMessage}”` : null
   const currentBusy = Boolean(currentPath && (savingPath === currentPath || selectingPath === currentPath))
+  const createBusy = Boolean(currentPath && savingPath === currentPath)
 
   const createFolder = async () => {
     if (!currentPath) {
@@ -80,13 +90,21 @@ export function WorkspaceFolderTree({
     if (!name) {
       return
     }
-    const createdPath = await onCreateFolder(currentPath, name)
-    if (createdPath) {
-      setCreatedFolderPath(createdPath)
-      setCreateMessage(name)
-      window.setTimeout(() => {
-        setCreateMessage((current) => (current === name ? null : current))
-      }, 3500)
+    setCreateError(null)
+    try {
+      const createdPath = await onCreateFolder(currentPath, name)
+      if (createdPath) {
+        setCreatedFolderPath(createdPath)
+        setCreateMessage(name)
+        if (openCreatedFolder) {
+          onBrowsePath(createdPath)
+        }
+        window.setTimeout(() => {
+          setCreateMessage((current) => (current === name ? null : current))
+        }, 3500)
+      }
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Failed to create folder here')
     }
   }
 
@@ -104,6 +122,14 @@ export function WorkspaceFolderTree({
     })
   }
 
+  const workspaceActionLabel = currentBusy
+    ? 'Working…'
+    : currentSaved
+      ? 'Open workspace'
+      : showPathInWorkspaceAction && currentPath
+        ? `Add ${currentPathLabel} as workspace`
+        : 'Add as workspace'
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-3 py-4 sm:px-4">
@@ -112,7 +138,7 @@ export function WorkspaceFolderTree({
             <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--app-text)]">Explorer</h2>
             <p className="mt-1 truncate text-xs text-[var(--app-text-muted)]">Navigate folders and add workspaces.</p>
           </div>
-          <span className="rounded-full bg-[var(--app-surface-subtle)] px-2 py-0.5 text-[11px] text-[var(--app-text-subtle)]">{browser?.entries.length ?? 0}</span>
+          <span className="flex size-7 shrink-0 items-center justify-center rounded-lg border border-[color-mix(in_oklab,var(--app-border)_52%,transparent)] bg-[var(--app-surface-subtle)] text-[11px] font-medium tabular-nums text-[var(--app-text-subtle)]">{browser?.entries.length ?? 0}</span>
         </div>
 
         <div className="overflow-hidden rounded-lg border border-[color-mix(in_oklab,var(--app-border)_38%,transparent)] bg-[color-mix(in_oklab,var(--app-bg)_34%,transparent)] shadow-sm shadow-black/5">
@@ -155,21 +181,33 @@ export function WorkspaceFolderTree({
           </div>
         ) : null}
 
+        {createError ? (
+          <WorkspaceStatus kind="error" title="Could not create folder" message={createError} actionLabel="Try again" onAction={() => void createFolder()} />
+        ) : null}
+
         {browserError ? (
-          <WorkspaceStatus kind="error" title="Could not load explorer" message={browserError} />
+          <WorkspaceStatus
+            kind="error"
+            title="Could not load explorer"
+            message={`${browserError} Use Home, Up, or the path field below to try another location.`}
+            actionLabel="Retry"
+            onAction={() => onBrowsePath(currentPath || browser?.homePath || '')}
+          />
         ) : browserLoading && !browser ? (
-          <div className="px-1 text-sm text-[var(--app-text-muted)]">Loading explorer…</div>
-        ) : !browser ? null : (
+          <WorkspaceStatus kind="empty" title="Loading explorer" message="Reading folders on this computer…" />
+        ) : !browser ? (
+          <WorkspaceStatus kind="empty" title="Choose a folder" message="Use the path field below or Home to start browsing." />
+        ) : (
           <div className="flex min-h-0 flex-1 flex-col border-t border-[color-mix(in_oklab,var(--app-border)_34%,transparent)] pt-2">
             <button
               type="button"
               onClick={() => void createFolder()}
-              disabled={browserLoading || !currentPath}
+              disabled={browserLoading || createBusy || !currentPath}
               className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50"
               title="Create a folder here"
             >
-              <FolderPlus size={14} className="shrink-0" />
-              <span className="truncate">New folder</span>
+              {createBusy ? <RefreshCw size={14} className="shrink-0 animate-spin" /> : <FolderPlus size={14} className="shrink-0" />}
+              <span className="truncate">{createBusy ? 'Creating folder…' : 'New folder'}</span>
             </button>
 
             <div className="mt-2 flex items-center justify-between px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">
@@ -266,18 +304,21 @@ export function WorkspaceFolderTree({
           className="h-9 min-h-0 w-full rounded-md text-sm"
           disabled={!currentPath || currentBusy}
           onClick={() => (currentSaved ? onOpenWorkspace(currentPath) : addCurrentFolder())}
+          title={currentPath ? workspaceActionLabel : undefined}
         >
           {currentBusy ? <RefreshCw size={14} className="animate-spin" /> : currentSaved ? <Folder size={15} /> : <Plus size={15} />}
-          {currentBusy ? 'Working…' : currentSaved ? 'Open workspace' : 'Add as workspace'}
+          <span className="min-w-0 truncate">{workspaceActionLabel}</span>
         </Button>
-        <button
-          type="button"
-          className="mt-2 flex h-7 w-full items-center justify-center rounded-md px-3 text-xs text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={!currentPath || selectingPath === currentPath}
-          onClick={() => onUseFolderTemporarily(currentPath)}
-        >
-          Use as temp
-        </button>
+        {showTemporaryAction ? (
+          <button
+            type="button"
+            className="mt-2 flex h-7 w-full items-center justify-center rounded-md px-3 text-xs text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={!currentPath || selectingPath === currentPath}
+            onClick={() => onUseFolderTemporarily(currentPath)}
+          >
+            {useFolderLabel}
+          </button>
+        ) : null}
       </div>
     </div>
   )

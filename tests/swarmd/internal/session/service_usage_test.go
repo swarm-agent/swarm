@@ -9,7 +9,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestRecordTurnUsageAggregatesAndReplacesByRunID(t *testing.T) {
+func TestRecordTurnUsageCodexKeepsLatestSnapshotAndReplacesByRunID(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-usage.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -78,20 +78,20 @@ func TestRecordTurnUsageAggregatesAndReplacesByRunID(t *testing.T) {
 	if summary2.TurnCount != 2 {
 		t.Fatalf("summary turn count = %d, want 2", summary2.TurnCount)
 	}
-	if summary2.InputTokens != 180 {
-		t.Fatalf("summary input tokens = %d, want 180", summary2.InputTokens)
+	if summary2.InputTokens != 80 {
+		t.Fatalf("summary input tokens = %d, want latest codex snapshot input 80", summary2.InputTokens)
 	}
-	if summary2.OutputTokens != 60 {
-		t.Fatalf("summary output tokens = %d, want 60", summary2.OutputTokens)
+	if summary2.OutputTokens != 40 {
+		t.Fatalf("summary output tokens = %d, want latest codex snapshot output 40", summary2.OutputTokens)
 	}
-	if summary2.ThinkingTokens != 15 {
-		t.Fatalf("summary thinking tokens = %d, want 15", summary2.ThinkingTokens)
+	if summary2.ThinkingTokens != 5 {
+		t.Fatalf("summary thinking tokens = %d, want latest codex snapshot thinking 5", summary2.ThinkingTokens)
 	}
-	if summary2.CacheReadTokens != 80 {
-		t.Fatalf("summary cache read tokens = %d, want 80", summary2.CacheReadTokens)
+	if summary2.CacheReadTokens != 30 {
+		t.Fatalf("summary cache read tokens = %d, want latest codex snapshot cache read 30", summary2.CacheReadTokens)
 	}
-	if summary2.TotalTokens != 240 {
-		t.Fatalf("summary total tokens = %d, want 240", summary2.TotalTokens)
+	if summary2.TotalTokens != 120 {
+		t.Fatalf("summary total tokens = %d, want latest codex snapshot total 120", summary2.TotalTokens)
 	}
 
 	_, summary3, _, err := svc.RecordTurnUsage(session.ID, pebblestore.SessionTurnUsageSnapshot{
@@ -114,26 +114,26 @@ func TestRecordTurnUsageAggregatesAndReplacesByRunID(t *testing.T) {
 	if summary3.TurnCount != 2 {
 		t.Fatalf("summary turn count = %d, want 2 after replacement", summary3.TurnCount)
 	}
-	if summary3.InputTokens != 160 {
-		t.Fatalf("summary input tokens = %d, want 160", summary3.InputTokens)
+	if summary3.InputTokens != 60 {
+		t.Fatalf("summary input tokens = %d, want replacement codex snapshot input 60", summary3.InputTokens)
 	}
-	if summary3.OutputTokens != 30 {
-		t.Fatalf("summary output tokens = %d, want 30", summary3.OutputTokens)
+	if summary3.OutputTokens != 10 {
+		t.Fatalf("summary output tokens = %d, want replacement codex snapshot output 10", summary3.OutputTokens)
 	}
-	if summary3.ThinkingTokens != 13 {
-		t.Fatalf("summary thinking tokens = %d, want 13", summary3.ThinkingTokens)
+	if summary3.ThinkingTokens != 3 {
+		t.Fatalf("summary thinking tokens = %d, want replacement codex snapshot thinking 3", summary3.ThinkingTokens)
 	}
-	if summary3.CacheReadTokens != 60 {
-		t.Fatalf("summary cache read tokens = %d, want 60", summary3.CacheReadTokens)
+	if summary3.CacheReadTokens != 10 {
+		t.Fatalf("summary cache read tokens = %d, want replacement codex snapshot cache read 10", summary3.CacheReadTokens)
 	}
-	if summary3.CacheWriteTokens != 7 {
-		t.Fatalf("summary cache write tokens = %d, want 7", summary3.CacheWriteTokens)
+	if summary3.CacheWriteTokens != 2 {
+		t.Fatalf("summary cache write tokens = %d, want replacement codex snapshot cache write 2", summary3.CacheWriteTokens)
 	}
-	if summary3.TotalTokens != 190 {
-		t.Fatalf("summary total tokens = %d, want 190", summary3.TotalTokens)
+	if summary3.TotalTokens != 70 {
+		t.Fatalf("summary total tokens = %d, want replacement codex snapshot total 70", summary3.TotalTokens)
 	}
-	if summary3.RemainingTokens != 399810 {
-		t.Fatalf("summary remaining tokens = %d, want 399810", summary3.RemainingTokens)
+	if summary3.RemainingTokens != 399930 {
+		t.Fatalf("summary remaining tokens = %d, want 399930", summary3.RemainingTokens)
 	}
 
 	storedSummary, ok, err := svc.GetUsageSummary(session.ID)
@@ -143,8 +143,8 @@ func TestRecordTurnUsageAggregatesAndReplacesByRunID(t *testing.T) {
 	if !ok {
 		t.Fatal("expected usage summary to exist")
 	}
-	if storedSummary.TotalTokens != 190 {
-		t.Fatalf("stored summary total tokens = %d, want 190", storedSummary.TotalTokens)
+	if storedSummary.TotalTokens != 70 {
+		t.Fatalf("stored summary total tokens = %d, want replacement codex snapshot total 70", storedSummary.TotalTokens)
 	}
 
 	turns, err := svc.ListTurnUsage(session.ID, 10)
@@ -159,6 +159,115 @@ func TestRecordTurnUsageAggregatesAndReplacesByRunID(t *testing.T) {
 	}
 	if turns[0].TotalTokens != 70 {
 		t.Fatalf("latest run total tokens = %d, want 70", turns[0].TotalTokens)
+	}
+}
+
+func TestRecordTurnUsageFireworksAccumulatesAcrossRunsAndReplacesByRunID(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-usage-fireworks-accumulate.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+
+	svc := NewService(pebblestore.NewSessionStore(store), events)
+	session, _, err := svc.CreateSession("Fireworks Usage Session", t.TempDir(), "workspace")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	turn1, summary1, _, err := svc.RecordTurnUsage(session.ID, pebblestore.SessionTurnUsageSnapshot{
+		RunID:            "run_fireworks_1",
+		Provider:         "fireworks",
+		Model:            "accounts/fireworks/models/glm-4.5",
+		Source:           "fireworks_api_usage",
+		ContextWindow:    1000,
+		InputTokens:      100,
+		OutputTokens:     20,
+		CacheReadTokens:  40,
+		CacheWriteTokens: 5,
+		TotalTokens:      120,
+		EstimatedCostUSD: 0.25,
+	})
+	if err != nil {
+		t.Fatalf("record fireworks run 1 usage: %v", err)
+	}
+	if turn1.TotalTokens != 120 {
+		t.Fatalf("turn 1 total tokens = %d, want 120", turn1.TotalTokens)
+	}
+	if summary1.TotalTokens != 120 || summary1.InputTokens != 100 || summary1.OutputTokens != 20 || summary1.CacheReadTokens != 40 || summary1.RemainingTokens != 880 {
+		t.Fatalf("summary 1 should reflect first fireworks usage only, got %+v", summary1)
+	}
+
+	_, summary2, _, err := svc.RecordTurnUsage(session.ID, pebblestore.SessionTurnUsageSnapshot{
+		RunID:            "run_fireworks_2",
+		Provider:         "fireworks",
+		Model:            "accounts/fireworks/models/glm-4.5",
+		Source:           "fireworks_api_usage",
+		ContextWindow:    1000,
+		InputTokens:      80,
+		OutputTokens:     30,
+		CacheReadTokens:  10,
+		CacheWriteTokens: 2,
+		TotalTokens:      110,
+		EstimatedCostUSD: 0.10,
+	})
+	if err != nil {
+		t.Fatalf("record fireworks run 2 usage: %v", err)
+	}
+	if summary2.TurnCount != 2 || summary2.TotalTokens != 230 || summary2.InputTokens != 180 || summary2.OutputTokens != 50 || summary2.CacheReadTokens != 50 || summary2.CacheWriteTokens != 7 || summary2.RemainingTokens != 770 {
+		t.Fatalf("summary 2 should accumulate fireworks usage across runs, got %+v", summary2)
+	}
+	if summary2.EstimatedCostUSD != 0.35 {
+		t.Fatalf("summary 2 cost = %v, want 0.35", summary2.EstimatedCostUSD)
+	}
+
+	_, summary3, _, err := svc.RecordTurnUsage(session.ID, pebblestore.SessionTurnUsageSnapshot{
+		RunID:            "run_fireworks_2",
+		Provider:         "fireworks",
+		Model:            "accounts/fireworks/models/glm-4.5",
+		Source:           "fireworks_api_usage",
+		ContextWindow:    1000,
+		InputTokens:      70,
+		OutputTokens:     10,
+		CacheReadTokens:  5,
+		CacheWriteTokens: 1,
+		TotalTokens:      80,
+		EstimatedCostUSD: 0.05,
+	})
+	if err != nil {
+		t.Fatalf("replace fireworks run 2 usage: %v", err)
+	}
+	if summary3.TurnCount != 2 || summary3.TotalTokens != 200 || summary3.InputTokens != 170 || summary3.OutputTokens != 30 || summary3.CacheReadTokens != 45 || summary3.CacheWriteTokens != 6 || summary3.RemainingTokens != 800 {
+		t.Fatalf("summary 3 should replace existing fireworks run usage inside accumulated totals, got %+v", summary3)
+	}
+	if summary3.EstimatedCostUSD != 0.30 {
+		t.Fatalf("summary 3 cost = %v, want 0.30", summary3.EstimatedCostUSD)
+	}
+
+	storedSummary, ok, err := svc.GetUsageSummary(session.ID)
+	if err != nil {
+		t.Fatalf("get usage summary: %v", err)
+	}
+	if !ok || storedSummary.TotalTokens != 200 || storedSummary.RemainingTokens != 800 {
+		t.Fatalf("stored fireworks summary = %+v ok=%v", storedSummary, ok)
+	}
+	turns, err := svc.ListTurnUsage(session.ID, 10)
+	if err != nil {
+		t.Fatalf("list turn usage: %v", err)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("turn usage records = %d, want precise records for 2 runs", len(turns))
+	}
+	for _, turn := range turns {
+		if turn.RunID == "run_fireworks_2" && turn.TotalTokens != 80 {
+			t.Fatalf("replacement turn record = %+v, want latest run_fireworks_2 total 80", turn)
+		}
 	}
 }
 

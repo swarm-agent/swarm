@@ -6,8 +6,7 @@ export function appendLiveAssistantSegment(
   createdAt: number,
   seq: number,
 ): DesktopLiveAssistantSegment[] {
-  const trimmed = content.trim()
-  if (!trimmed) {
+  if (!content.trim()) {
     return segments
   }
   const safeCreatedAt = createdAt > 0 ? createdAt : Date.now()
@@ -16,7 +15,7 @@ export function appendLiveAssistantSegment(
     ...segments,
     {
       id: `live-assistant:${safeCreatedAt}:${safeSeq}:${segments.length}`,
-      content: trimmed,
+      content,
       createdAt: safeCreatedAt,
       seq: safeSeq,
     },

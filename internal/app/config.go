@@ -28,7 +28,6 @@ type AppConfig struct {
 	UI       UIConfig
 	Swarming SwarmingConfig
 	Swarm    SwarmConfig
-	Updates  UpdateConfig
 	Startup  StartupConfig
 }
 
@@ -43,6 +42,7 @@ type StartupConfig struct {
 type ChatConfig struct {
 	ShowHeader             bool
 	ThinkingTags           bool
+	ShowCompactButton      bool
 	DefaultNewSessionMode  string
 	DefaultWorkspaceRoutes map[string]string
 	ToolStream             ChatToolStreamConfig
@@ -77,13 +77,8 @@ type SwarmingConfig struct {
 // - SwarmConfig stores the user-editable machine name used by /swarm and desktop identity UI.
 // This separation is intentional so future AI edits do not conflate run-state copy with machine identity.
 type SwarmConfig struct {
-	Name             string
-	Role             string
-	RemoteSSHTargets []string
-}
-
-type UpdateConfig struct {
-	LocalContainerWarningDismissed bool
+	Name string
+	Role string
 }
 
 type CustomThemeConfig struct {
@@ -97,6 +92,7 @@ func defaultAppConfig() AppConfig {
 		Chat: ChatConfig{
 			ShowHeader:            true,
 			ThinkingTags:          true,
+			ShowCompactButton:     false,
 			DefaultNewSessionMode: "auto",
 			ToolStream: ChatToolStreamConfig{
 				ShowAnchor:    true,
@@ -240,9 +236,22 @@ func saveHeaderSetting(api *client.API, enabled bool) error {
 }
 
 func saveThinkingTagsSetting(api *client.API, enabled bool) error {
-	return updateUISettings(api, func(settings *client.UISettings) {
-		settings.Chat.ThinkingTags = enabled
-	})
+	if api == nil {
+		return fmt.Errorf("ui settings client not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), uiSettingsRequestLimit)
+	defer cancel()
+	if strings.TrimSpace(api.Token()) == "" {
+		if err := api.EnsureLocalAuth(ctx); err != nil {
+			return fmt.Errorf("bootstrap ui settings auth: %w", err)
+		}
+	}
+	if _, err := api.PatchUISettings(ctx, client.UISettingsPatch{
+		Chat: &client.UIChatSettingsPatch{ThinkingTags: boolPtr(enabled)},
+	}); err != nil {
+		return fmt.Errorf("persist ui settings: %w", err)
+	}
+	return nil
 }
 
 func saveDefaultNewSessionModeSetting(api *client.API, mode string) error {
@@ -254,12 +263,6 @@ func saveDefaultNewSessionModeSetting(api *client.API, mode string) error {
 func saveSwarmNameSetting(api *client.API, name string) error {
 	return updateUISettings(api, func(settings *client.UISettings) {
 		settings.Swarm.Name = emptyFallback(strings.TrimSpace(name), defaultSwarmName)
-	})
-}
-
-func saveUpdateWarningDismissedSetting(api *client.API, dismissed bool) error {
-	return updateUISettings(api, func(settings *client.UISettings) {
-		settings.Updates.LocalContainerWarningDismissed = dismissed
 	})
 }
 
@@ -290,6 +293,7 @@ func appConfigFromUISettings(settings client.UISettings) AppConfig {
 
 	cfg.Chat.ShowHeader = settings.Chat.ShowHeader
 	cfg.Chat.ThinkingTags = settings.Chat.ThinkingTags
+	cfg.Chat.ShowCompactButton = settings.Chat.ShowCompactButton
 	cfg.Chat.DefaultNewSessionMode = emptyFallback(strings.TrimSpace(settings.Chat.DefaultNewSessionMode), "auto")
 	cfg.Chat.DefaultWorkspaceRoutes = sanitizeConfigStringMap(settings.Chat.DefaultWorkspaceRoutes)
 	cfg.Chat.ToolStream.ShowAnchor = settings.Chat.ToolStream.ShowAnchor
@@ -303,9 +307,7 @@ func appConfigFromUISettings(settings client.UISettings) AppConfig {
 	cfg.Swarming.Title = emptyFallback(strings.TrimSpace(settings.Swarming.Title), defaultSwarmingTitle)
 	cfg.Swarming.Status = emptyFallback(strings.TrimSpace(settings.Swarming.Status), defaultSwarmingStatus)
 	cfg.Swarm.Name = emptyFallback(strings.TrimSpace(settings.Swarm.Name), defaultSwarmName)
-	cfg.Swarm.RemoteSSHTargets = append([]string(nil), settings.Swarm.RemoteSSHTargets...)
 	cfg.Swarm.Role = bootstrapRoleMaster
-	cfg.Updates.LocalContainerWarningDismissed = settings.Updates.LocalContainerWarningDismissed
 	return cfg
 }
 
@@ -326,6 +328,7 @@ func uiSettingsFromAppConfig(cfg AppConfig) client.UISettings {
 		Chat: client.UIChatSettings{
 			ShowHeader:             cfg.Chat.ShowHeader,
 			ThinkingTags:           cfg.Chat.ThinkingTags,
+			ShowCompactButton:      cfg.Chat.ShowCompactButton,
 			DefaultNewSessionMode:  emptyFallback(strings.TrimSpace(cfg.Chat.DefaultNewSessionMode), "auto"),
 			DefaultWorkspaceRoutes: sanitizeConfigStringMap(cfg.Chat.DefaultWorkspaceRoutes),
 			ToolStream: client.UIChatToolStreamSettings{
@@ -341,11 +344,7 @@ func uiSettingsFromAppConfig(cfg AppConfig) client.UISettings {
 			Status: emptyFallback(strings.TrimSpace(cfg.Swarming.Status), defaultSwarmingStatus),
 		},
 		Swarm: client.UISwarmSettings{
-			Name:             emptyFallback(strings.TrimSpace(cfg.Swarm.Name), defaultSwarmName),
-			RemoteSSHTargets: append([]string(nil), cfg.Swarm.RemoteSSHTargets...),
-		},
-		Updates: client.UIUpdateSettings{
-			LocalContainerWarningDismissed: cfg.Updates.LocalContainerWarningDismissed,
+			Name: emptyFallback(strings.TrimSpace(cfg.Swarm.Name), defaultSwarmName),
 		},
 	}
 	for _, item := range cfg.UI.CustomThemes {

@@ -9,9 +9,6 @@ import (
 	"sort"
 	"strings"
 
-	"swarm-refactor/swarmtui/pkg/startupconfig"
-
-	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -19,11 +16,9 @@ import (
 var errAccountOwnedWorkspaceRequired = errors.New("account-owned workspace path is required")
 
 type Service struct {
-	store                      *pebblestore.WorkspaceStore
-	events                     *pebblestore.EventLog
-	publish                    func(pebblestore.EventEnvelope)
-	startupConfigPath          string
-	startupConfigForWorkspaces *startupconfig.FileConfig
+	store   *pebblestore.WorkspaceStore
+	events  *pebblestore.EventLog
+	publish func(pebblestore.EventEnvelope)
 }
 
 type Resolution struct {
@@ -36,46 +31,37 @@ type Resolution struct {
 	WorkspacePath           string `json:"workspace_path"`
 	WorkspaceName           string `json:"workspace_name"`
 	ThemeID                 string `json:"theme_id,omitempty"`
-	ManagedDataPath         string `json:"managed_data_path,omitempty"`
-	ManagedCachePath        string `json:"managed_cache_path,omitempty"`
-	ManagedStatePath        string `json:"managed_state_path,omitempty"`
-	ManagedWorkspaceBucket  string `json:"managed_workspace_bucket,omitempty"`
 }
 
 type Entry struct {
-	Path                    string                                 `json:"path"`
-	WorkspaceID             string                                 `json:"workspace_id,omitempty"`
-	WorkspaceGeneration     int64                                  `json:"workspace_generation,omitempty"`
-	State                   string                                 `json:"state,omitempty"`
-	LocalWorkspaceBindingID string                                 `json:"local_workspace_binding_id,omitempty"`
-	WorkspaceName           string                                 `json:"workspace_name"`
-	ThemeID                 string                                 `json:"theme_id,omitempty"`
-	Directories             []string                               `json:"directories"`
-	IsGitRepo               bool                                   `json:"is_git_repo"`
-	ReplicationLinks        []pebblestore.WorkspaceReplicationLink `json:"replication_links,omitempty"`
-	SortIndex               int                                    `json:"sort_index"`
-	AddedAt                 int64                                  `json:"added_at"`
-	UpdatedAt               int64                                  `json:"updated_at"`
-	LastSelectedAt          int64                                  `json:"last_selected_at"`
-	Active                  bool                                   `json:"active"`
-	WorktreeEnabled         bool                                   `json:"worktree_enabled"`
+	Path                    string   `json:"path"`
+	WorkspaceID             string   `json:"workspace_id,omitempty"`
+	WorkspaceGeneration     int64    `json:"workspace_generation,omitempty"`
+	State                   string   `json:"state,omitempty"`
+	LocalWorkspaceBindingID string   `json:"local_workspace_binding_id,omitempty"`
+	WorkspaceName           string   `json:"workspace_name"`
+	ThemeID                 string   `json:"theme_id,omitempty"`
+	Directories             []string `json:"directories"`
+	IsGitRepo               bool     `json:"is_git_repo"`
+	SortIndex               int      `json:"sort_index"`
+	AddedAt                 int64    `json:"added_at"`
+	UpdatedAt               int64    `json:"updated_at"`
+	LastSelectedAt          int64    `json:"last_selected_at"`
+	Active                  bool     `json:"active"`
+	WorktreeEnabled         bool     `json:"worktree_enabled"`
 }
 
 type Scope struct {
-	RequestedPath          string   `json:"requested_path"`
-	ResolvedPath           string   `json:"resolved_path"`
-	WorkspaceID            string   `json:"workspace_id,omitempty"`
-	WorkspaceGeneration    int64    `json:"workspace_generation,omitempty"`
-	WorkspaceState         string   `json:"workspace_state,omitempty"`
-	WorkspacePath          string   `json:"workspace_path"`
-	WorkspaceName          string   `json:"workspace_name"`
-	ThemeID                string   `json:"theme_id,omitempty"`
-	Directories            []string `json:"directories"`
-	Matched                bool     `json:"matched"`
-	ManagedDataPath        string   `json:"managed_data_path,omitempty"`
-	ManagedCachePath       string   `json:"managed_cache_path,omitempty"`
-	ManagedStatePath       string   `json:"managed_state_path,omitempty"`
-	ManagedWorkspaceBucket string   `json:"managed_workspace_bucket,omitempty"`
+	RequestedPath       string   `json:"requested_path"`
+	ResolvedPath        string   `json:"resolved_path"`
+	WorkspaceID         string   `json:"workspace_id,omitempty"`
+	WorkspaceGeneration int64    `json:"workspace_generation,omitempty"`
+	WorkspaceState      string   `json:"workspace_state,omitempty"`
+	WorkspacePath       string   `json:"workspace_path"`
+	WorkspaceName       string   `json:"workspace_name"`
+	ThemeID             string   `json:"theme_id,omitempty"`
+	Directories         []string `json:"directories"`
+	Matched             bool     `json:"matched"`
 }
 
 type BrowseEntry struct {
@@ -107,21 +93,6 @@ func NewService(store *pebblestore.WorkspaceStore) *Service {
 	return &Service{store: store}
 }
 
-func (s *Service) SetStartupConfigPath(path string) {
-	if s == nil {
-		return
-	}
-	s.startupConfigPath = strings.TrimSpace(path)
-	s.startupConfigForWorkspaces = nil
-}
-
-func (s *Service) SetStartupConfigForTesting(cfg startupconfig.FileConfig) {
-	if s == nil {
-		return
-	}
-	s.startupConfigForWorkspaces = &cfg
-}
-
 func (s *Service) GetByWorkspaceIDForPrincipal(principal identity.Principal, workspaceID string) (pebblestore.WorkspaceEntry, bool, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return pebblestore.WorkspaceEntry{}, false, err
@@ -130,36 +101,6 @@ func (s *Service) GetByWorkspaceIDForPrincipal(principal identity.Principal, wor
 		return pebblestore.WorkspaceEntry{}, false, fmt.Errorf("workspace service is not configured")
 	}
 	return s.store.GetByWorkspaceIDForAccount(principal.AccountScopeID, workspaceID)
-}
-
-func (s *Service) explicitChildContainerRuntime() bool {
-	if s == nil {
-		return false
-	}
-	if s.startupConfigForWorkspaces != nil {
-		return startupConfigIsExplicitChildContainerRuntime(*s.startupConfigForWorkspaces)
-	}
-	path := strings.TrimSpace(s.startupConfigPath)
-	if path == "" {
-		resolved, err := startupconfig.ResolvePath()
-		if err != nil {
-			return false
-		}
-		path = resolved
-	}
-	cfg, err := startupconfig.Load(path)
-	if err != nil {
-		return false
-	}
-	s.startupConfigForWorkspaces = &cfg
-	return startupConfigIsExplicitChildContainerRuntime(cfg)
-}
-
-func startupConfigIsExplicitChildContainerRuntime(cfg startupconfig.FileConfig) bool {
-	if !cfg.Child {
-		return false
-	}
-	return cfg.DeployContainer.Enabled || cfg.RemoteDeploy.Enabled
 }
 
 func (s *Service) SetEventPublisher(events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) {
@@ -542,7 +483,6 @@ func (s *Service) ListKnown(limit int) ([]Entry, error) {
 			ThemeID:             normalizeWorkspaceThemeID(entry.ThemeID),
 			Directories:         append([]string(nil), entry.Directories...),
 			IsGitRepo:           isGitRepo,
-			ReplicationLinks:    append([]pebblestore.WorkspaceReplicationLink(nil), entry.ReplicationLinks...),
 			SortIndex:           entry.SortIndex,
 			AddedAt:             entry.AddedAt,
 			UpdatedAt:           entry.UpdatedAt,
@@ -556,9 +496,6 @@ func (s *Service) ListKnown(limit int) ([]Entry, error) {
 
 func (s *Service) ListKnownForPrincipal(principal identity.Principal, limit int) ([]Entry, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return nil, err
-	}
-	if err := s.ensureRemoteChildWorkspaceEntriesForPrincipal(principal); err != nil {
 		return nil, err
 	}
 	entries, err := s.store.ListForAccount(principal.AccountScopeID, limit)
@@ -585,7 +522,6 @@ func (s *Service) ListKnownForPrincipal(principal identity.Principal, limit int)
 			ThemeID:             normalizeWorkspaceThemeID(entry.ThemeID),
 			Directories:         append([]string(nil), entry.Directories...),
 			IsGitRepo:           isGitRepo,
-			ReplicationLinks:    append([]pebblestore.WorkspaceReplicationLink(nil), entry.ReplicationLinks...),
 			SortIndex:           entry.SortIndex,
 			AddedAt:             entry.AddedAt,
 			UpdatedAt:           entry.UpdatedAt,
@@ -659,14 +595,24 @@ func (s *Service) ScopeForPathForPrincipal(principal identity.Principal, path st
 	bestIsPrimary := false
 	for i, entry := range entries {
 		primaryPath := strings.TrimSpace(entry.Path)
-		for _, root := range entry.Directories {
+		roots := entry.Directories
+		if len(roots) == 0 {
+			roots = []string{entry.Path}
+		}
+		for _, root := range roots {
 			if !pathWithinRoot(root, resolved) {
 				continue
 			}
-			trimmedRoot := strings.TrimSpace(root)
-			isPrimary := trimmedRoot != "" && trimmedRoot == primaryPath
-			if len(trimmedRoot) > len(bestRoot) || (len(trimmedRoot) == len(bestRoot) && isPrimary && !bestIsPrimary) {
-				bestRoot = trimmedRoot
+			canonicalRoot, err := revalidateStoredDirectory(root)
+			if err != nil {
+				return Scope{}, err
+			}
+			if !pathWithinRoot(canonicalRoot, resolved) {
+				continue
+			}
+			isPrimary := canonicalRoot == primaryPath
+			if len(canonicalRoot) > len(bestRoot) || (len(canonicalRoot) == len(bestRoot) && isPrimary && !bestIsPrimary) {
+				bestRoot = canonicalRoot
 				bestIndex = i
 				bestIsPrimary = isPrimary
 			}
@@ -822,14 +768,17 @@ func (s *Service) CreateFolderForPrincipal(principal identity.Principal, parentP
 	if filepath.Dir(target) != parent {
 		return CreateFolderResult{}, fmt.Errorf("folder name must stay inside the current folder")
 	}
-	if err := os.Mkdir(target, 0o755); err != nil {
-		result := CreateFolderResult{
-			Path:                   target,
-			Name:                   folderName,
-			ParentPath:             parent,
-			RequiresSudo:           isPermissionError(err),
-			PermissionErrorMessage: permissionErrorMessage(err),
+	root, err := os.OpenRoot(parent)
+	if err != nil {
+		result := createFolderErrorResult(target, folderName, parent, err)
+		if result.RequiresSudo {
+			return result, fmt.Errorf("opening %q requires sudo or read permission", parent)
 		}
+		return result, fmt.Errorf("open folder root %q: %w", parent, err)
+	}
+	defer root.Close()
+	if err := root.Mkdir(folderName, 0o755); err != nil {
+		result := createFolderErrorResult(target, folderName, parent, err)
 		if result.RequiresSudo {
 			return result, fmt.Errorf("creating %q requires sudo or write permission for %q", folderName, parent)
 		}
@@ -888,10 +837,41 @@ func resolvePath(input string) (string, error) {
 	}
 
 	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		resolved = abs
+	if err == nil {
+		return resolved, nil
 	}
-	return resolved, nil
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("resolve canonical path for %q: %w", abs, err)
+	}
+
+	// Paths used for prospective files may not exist yet. Resolve the deepest
+	// existing ancestor, but never treat a dangling symlink as lexical authority.
+	cursor := abs
+	missing := make([]string, 0, 4)
+	for {
+		if _, lstatErr := os.Lstat(cursor); lstatErr == nil {
+			return "", fmt.Errorf("resolve canonical path for %q: %w", abs, err)
+		} else if !errors.Is(lstatErr, os.ErrNotExist) {
+			return "", fmt.Errorf("inspect path %q while resolving %q: %w", cursor, abs, lstatErr)
+		}
+		parent := filepath.Dir(cursor)
+		if parent == cursor {
+			return "", fmt.Errorf("resolve canonical path for %q: %w", abs, err)
+		}
+		missing = append(missing, filepath.Base(cursor))
+		cursor = parent
+		ancestor, ancestorErr := filepath.EvalSymlinks(cursor)
+		if ancestorErr != nil {
+			if errors.Is(ancestorErr, os.ErrNotExist) {
+				continue
+			}
+			return "", fmt.Errorf("resolve canonical ancestor %q for %q: %w", cursor, abs, ancestorErr)
+		}
+		for i := len(missing) - 1; i >= 0; i-- {
+			ancestor = filepath.Join(ancestor, missing[i])
+		}
+		return ancestor, nil
+	}
 }
 
 func resolveBrowsePath(input string) (string, error) {
@@ -910,20 +890,11 @@ func (s *Service) resolveBrowsePath(input string) (string, error) {
 	return resolvePath(target)
 }
 
-func resolveBrowseHomePath() (string, error) {
-	return resolveBrowseHomePathForExplicitChildContainer(false)
-}
-
 func (s *Service) resolveBrowseHomePath() (string, error) {
-	return resolveBrowseHomePathForExplicitChildContainer(s.explicitChildContainerRuntime())
+	return resolveBrowseHomePath()
 }
 
-func resolveBrowseHomePathForExplicitChildContainer(explicitChildContainer bool) (string, error) {
-	if explicitChildContainer {
-		if workspaceRoot, ok := remoteChildWorkspaceRoot(); ok {
-			return workspaceRoot, nil
-		}
-	}
+func resolveBrowseHomePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
@@ -932,28 +903,6 @@ func resolveBrowseHomePathForExplicitChildContainer(explicitChildContainer bool)
 		return "", fmt.Errorf("home directory is unavailable")
 	}
 	return resolvePath(home)
-}
-
-var remoteChildWorkspaceRootPath = "/workspaces"
-
-func remoteChildWorkspaceRoot() (string, bool) {
-	workspaceRoot := strings.TrimSpace(remoteChildWorkspaceRootPath)
-	if workspaceRoot == "" {
-		return "", false
-	}
-	info, err := os.Stat(workspaceRoot)
-	if err != nil || !info.IsDir() {
-		return "", false
-	}
-	resolved, err := resolvePath(workspaceRoot)
-	if err != nil {
-		return "", false
-	}
-	return resolved, true
-}
-
-func (s *Service) ensureRemoteChildWorkspaceEntries() error {
-	return identity.ErrPrincipalRequired
 }
 
 // legacyScopeForPath deliberately consults only pre-account global workspace
@@ -973,14 +922,24 @@ func (s *Service) legacyScopeForPath(path string) (Scope, error) {
 	bestIsPrimary := false
 	for i, entry := range entries {
 		primaryPath := strings.TrimSpace(entry.Path)
-		for _, root := range entry.Directories {
+		roots := entry.Directories
+		if len(roots) == 0 {
+			roots = []string{entry.Path}
+		}
+		for _, root := range roots {
 			if !pathWithinRoot(root, resolved) {
 				continue
 			}
-			trimmedRoot := strings.TrimSpace(root)
-			isPrimary := trimmedRoot != "" && trimmedRoot == primaryPath
-			if len(trimmedRoot) > len(bestRoot) || (len(trimmedRoot) == len(bestRoot) && isPrimary && !bestIsPrimary) {
-				bestRoot = trimmedRoot
+			canonicalRoot, err := revalidateStoredDirectory(root)
+			if err != nil {
+				return Scope{}, err
+			}
+			if !pathWithinRoot(canonicalRoot, resolved) {
+				continue
+			}
+			isPrimary := canonicalRoot == primaryPath
+			if len(canonicalRoot) > len(bestRoot) || (len(canonicalRoot) == len(bestRoot) && isPrimary && !bestIsPrimary) {
+				bestRoot = canonicalRoot
 				bestIndex = i
 				bestIsPrimary = isPrimary
 			}
@@ -1001,51 +960,6 @@ func (s *Service) legacyScopeForPath(path string) (Scope, error) {
 	return scopeForEntry(path, resolved, entry, name, directories, true), nil
 }
 
-func (s *Service) ensureRemoteChildWorkspaceEntriesForPrincipal(principal identity.Principal) error {
-	if err := requirePrincipal(principal); err != nil {
-		return err
-	}
-	if s == nil || s.store == nil {
-		return nil
-	}
-	if !s.explicitChildContainerRuntime() {
-		return nil
-	}
-	workspaceRoot, ok := remoteChildWorkspaceRoot()
-	if !ok {
-		return nil
-	}
-	entries, err := s.store.ListForAccount(principal.AccountScopeID, 100000)
-	if err != nil {
-		return err
-	}
-	known := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		path := filepath.Clean(strings.TrimSpace(entry.Path))
-		if path != "" && path != "." {
-			known[path] = struct{}{}
-		}
-	}
-	dirs, err := os.ReadDir(workspaceRoot)
-	if err != nil {
-		return err
-	}
-	for _, dir := range dirs {
-		name := strings.TrimSpace(dir.Name())
-		if name == "" || strings.HasPrefix(name, ".") || !dir.IsDir() {
-			continue
-		}
-		workspacePath := filepath.Join(workspaceRoot, name)
-		if _, ok := known[filepath.Clean(workspacePath)]; ok {
-			continue
-		}
-		if _, err := s.AddForPrincipal(principal, workspacePath, defaultWorkspaceName(workspacePath), "", false); err != nil {
-			return fmt.Errorf("register mounted remote child workspace %q: %w", workspacePath, err)
-		}
-	}
-	return nil
-}
-
 func requirePrincipal(principal identity.Principal) error {
 	if !principal.Valid() {
 		return identity.ErrPrincipalRequired
@@ -1059,6 +973,28 @@ func filesystemRootPath(path string) string {
 		return volume + string(filepath.Separator)
 	}
 	return string(filepath.Separator)
+}
+
+func revalidateStoredDirectory(path string) (string, error) {
+	stored := strings.TrimSpace(path)
+	if stored == "" {
+		return "", fmt.Errorf("stored workspace directory is empty")
+	}
+	abs, err := filepath.Abs(stored)
+	if err != nil {
+		return "", fmt.Errorf("resolve stored workspace directory %q: %w", stored, err)
+	}
+	canonical, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("revalidate stored workspace directory %q: %w", stored, err)
+	}
+	if canonical != filepath.Clean(abs) {
+		return "", fmt.Errorf("stored workspace directory %q no longer resolves to its saved identity %q", stored, canonical)
+	}
+	if err := ensureWorkspaceDirectory(canonical); err != nil {
+		return "", err
+	}
+	return canonical, nil
 }
 
 func ensureWorkspaceDirectory(path string) error {
@@ -1087,6 +1023,16 @@ func sanitizeCreateFolderName(name string) (string, error) {
 		return "", fmt.Errorf("folder name must be a single folder name")
 	}
 	return name, nil
+}
+
+func createFolderErrorResult(target, name, parent string, err error) CreateFolderResult {
+	return CreateFolderResult{
+		Path:                   target,
+		Name:                   name,
+		ParentPath:             parent,
+		RequiresSudo:           isPermissionError(err),
+		PermissionErrorMessage: permissionErrorMessage(err),
+	}
 }
 
 func isPermissionError(err error) bool {
@@ -1145,18 +1091,14 @@ func pathWithinRoot(root, target string) bool {
 
 func resolutionFromScope(requestedPath string, scope Scope) Resolution {
 	return Resolution{
-		RequestedPath:          requestedPath,
-		ResolvedPath:           scope.ResolvedPath,
-		WorkspaceID:            scope.WorkspaceID,
-		WorkspaceGeneration:    scope.WorkspaceGeneration,
-		WorkspaceState:         scope.WorkspaceState,
-		WorkspacePath:          scope.WorkspacePath,
-		WorkspaceName:          scope.WorkspaceName,
-		ThemeID:                scope.ThemeID,
-		ManagedDataPath:        scope.ManagedDataPath,
-		ManagedCachePath:       scope.ManagedCachePath,
-		ManagedStatePath:       scope.ManagedStatePath,
-		ManagedWorkspaceBucket: scope.ManagedWorkspaceBucket,
+		RequestedPath:       requestedPath,
+		ResolvedPath:        scope.ResolvedPath,
+		WorkspaceID:         scope.WorkspaceID,
+		WorkspaceGeneration: scope.WorkspaceGeneration,
+		WorkspaceState:      scope.WorkspaceState,
+		WorkspacePath:       scope.WorkspacePath,
+		WorkspaceName:       scope.WorkspaceName,
+		ThemeID:             scope.ThemeID,
 	}
 }
 
@@ -1165,20 +1107,15 @@ func resolutionForEntry(requestedPath, resolvedPath string, entry pebblestore.Wo
 }
 
 func resolutionForWorkspace(requestedPath, resolvedPath, workspacePath, workspaceID string, workspaceGeneration int64, workspaceState, workspaceName, themeID string) Resolution {
-	managed := managedStorageForWorkspace(workspacePath)
 	return Resolution{
-		RequestedPath:          requestedPath,
-		ResolvedPath:           resolvedPath,
-		WorkspaceID:            workspaceID,
-		WorkspaceGeneration:    workspaceGeneration,
-		WorkspaceState:         workspaceState,
-		WorkspacePath:          workspacePath,
-		WorkspaceName:          workspaceName,
-		ThemeID:                themeID,
-		ManagedDataPath:        managed.dataPath,
-		ManagedCachePath:       managed.cachePath,
-		ManagedStatePath:       managed.statePath,
-		ManagedWorkspaceBucket: managed.bucket,
+		RequestedPath:       requestedPath,
+		ResolvedPath:        resolvedPath,
+		WorkspaceID:         workspaceID,
+		WorkspaceGeneration: workspaceGeneration,
+		WorkspaceState:      workspaceState,
+		WorkspacePath:       workspacePath,
+		WorkspaceName:       workspaceName,
+		ThemeID:             themeID,
 	}
 }
 
@@ -1187,57 +1124,16 @@ func scopeForEntry(requestedPath, resolvedPath string, entry pebblestore.Workspa
 }
 
 func scopeForWorkspace(requestedPath, resolvedPath, workspacePath, workspaceID string, workspaceGeneration int64, workspaceState, workspaceName, themeID string, directories []string, matched bool) Scope {
-	managed := managedStorageForWorkspace(workspacePath)
 	return Scope{
-		RequestedPath:          requestedPath,
-		ResolvedPath:           resolvedPath,
-		WorkspaceID:            workspaceID,
-		WorkspaceGeneration:    workspaceGeneration,
-		WorkspaceState:         workspaceState,
-		WorkspacePath:          workspacePath,
-		WorkspaceName:          workspaceName,
-		ThemeID:                themeID,
-		Directories:            directories,
-		Matched:                matched,
-		ManagedDataPath:        managed.dataPath,
-		ManagedCachePath:       managed.cachePath,
-		ManagedStatePath:       managed.statePath,
-		ManagedWorkspaceBucket: managed.bucket,
-	}
-}
-
-type managedWorkspaceStorage struct {
-	dataPath  string
-	cachePath string
-	statePath string
-	bucket    string
-}
-
-func managedStorageForWorkspace(workspacePath string) managedWorkspaceStorage {
-	workspacePath = strings.TrimSpace(workspacePath)
-	if workspacePath == "" {
-		return managedWorkspaceStorage{}
-	}
-	bucket, err := appstorage.WorkspaceBucketName(workspacePath)
-	if err != nil {
-		return managedWorkspaceStorage{}
-	}
-	dataPath, err := appstorage.WorkspaceDataDir(workspacePath)
-	if err != nil {
-		return managedWorkspaceStorage{}
-	}
-	cachePath, err := appstorage.WorkspaceCacheDir(workspacePath)
-	if err != nil {
-		return managedWorkspaceStorage{}
-	}
-	statePath, err := appstorage.WorkspaceStateDir(workspacePath)
-	if err != nil {
-		return managedWorkspaceStorage{}
-	}
-	return managedWorkspaceStorage{
-		dataPath:  dataPath,
-		cachePath: cachePath,
-		statePath: statePath,
-		bucket:    bucket,
+		RequestedPath:       requestedPath,
+		ResolvedPath:        resolvedPath,
+		WorkspaceID:         workspaceID,
+		WorkspaceGeneration: workspaceGeneration,
+		WorkspaceState:      workspaceState,
+		WorkspacePath:       workspacePath,
+		WorkspaceName:       workspaceName,
+		ThemeID:             themeID,
+		Directories:         directories,
+		Matched:             matched,
 	}
 }

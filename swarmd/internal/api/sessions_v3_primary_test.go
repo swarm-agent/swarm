@@ -6,11 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +25,7 @@ import (
 	gorillaws "github.com/gorilla/websocket"
 
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/identity"
 	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -31,28 +36,459 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	"swarm/packages/swarmd/internal/tool"
+	topologyruntime "swarm/packages/swarmd/internal/topology"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
+
+func TestSessionV3DeployExecutorJobCarriesParentRunLinkage(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account"}
+	job := sessionV3DeployExecutorJob(principal, " session-1 ", " run-1 ", " parent-session ")
+	if job.Principal != principal || job.SessionID != "session-1" || job.RunID != "run-1" || job.ParentSessionID != "parent-session" {
+		t.Fatalf("deploy executor job = %#v", job)
+	}
+	intent := sessionV3RunIntentForJob(job, sessionruntime.RunIntentRunning, 1234)
+	if intent.RunSessionID != "session-1" || intent.ParentSessionID != "parent-session" {
+		t.Fatalf("deploy run ownership = %#v", intent)
+	}
+}
+
+func TestSessionsV3SystemSidechatIdentityIsStableAcrossProposalRevisions(t *testing.T) {
+	first, firstHash := sessionsV3SystemSidechatID("parent-session", "plan")
+	second, secondHash := sessionsV3SystemSidechatID("parent-session", "plan")
+	ai, _ := sessionsV3SystemSidechatID("parent-session", "ai")
+	otherParent, _ := sessionsV3SystemSidechatID("other-parent", "plan")
+	if first != second || firstHash != secondHash {
+		t.Fatalf("stable Plan identity changed: %q/%q vs %q/%q", first, firstHash, second, secondHash)
+	}
+	if first == ai || first == otherParent {
+		t.Fatalf("sidechat identity collision: plan=%q ai=%q other=%q", first, ai, otherParent)
+	}
+}
+
+func TestSessionsV3SidechatRevisionParsing(t *testing.T) {
+	for _, test := range []struct {
+		value any
+		want  int64
+	}{{float64(7), 7}, {json.Number("8"), 8}, {"9", 9}, {nil, 0}} {
+		if got := sessionsV3SidechatInt64(test.value); got != test.want {
+			t.Fatalf("sessionsV3SidechatInt64(%v) = %d, want %d", test.value, got, test.want)
+		}
+	}
+}
+
+func TestSessionsV3SystemSidechatMetadataTagsPlanChatAsSystemHidden(t *testing.T) {
+	profile := pebblestore.AgentProfile{Name: "Plan", Mode: "subagent", RuntimeMode: "readwrite"}
+	metadata := sessionsV3SystemSidechatMetadata(" parent-session ", " PLAN ", profile)
+
+	if metadata["system_session"] != true || metadata["system_sidechat"] != true || metadata["navigation_hidden"] != true {
+		t.Fatalf("system sidechat visibility metadata = %+v", metadata)
+	}
+	if metadata["lineage_kind"] != "system_sidechat" || metadata["presentation_kind"] != "system_sidechat" || metadata["system_sidechat_kind"] != "plan" || metadata["system_agent_id"] != profile.Name {
+		t.Fatalf("system sidechat identity metadata = %+v", metadata)
+	}
+	if metadata["parent_session_id"] != "parent-session" {
+		t.Fatalf("parent_session_id = %v, want parent-session", metadata["parent_session_id"])
+	}
+}
+
+func TestSessionsV3SystemSidechatsExecuteFromRegistryAfterStoreReopen(t *testing.T) {
+	t.Setenv("SWARM_API_NO_AUTH", "1")
+	storePath := filepath.Join(t.TempDir(), "system-sidechats-reopen.pebble")
+	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, storePath)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{
+		Name: "swarm", Mode: agentruntime.ModePrimary, Enabled: pebblestore.BoolPtr(true),
+		Provider: "test-provider", Model: "single-model", Thinking: "medium", ModelMode: "split",
+		PlanProvider: "test-provider", PlanModel: "plan-model", PlanThinking: "high",
+		AutoProvider: "test-provider", AutoModel: "auto-model", AutoThinking: "low",
+		Prompt: "Swarm test primary prompt", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+			"read": {Enabled: pebblestore.BoolPtr(true)}, "write": {Enabled: pebblestore.BoolPtr(true)},
+		}},
+	}); err != nil {
+		t.Fatalf("configure parent agent: %v", err)
+	}
+	parentPreference := pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "xhigh", ServiceTier: "priority", ContextMode: "full"}
+	parent := createSessionsV3PrimaryTestSessionWithPreference(t, server, "system-sidechat-parent", "system sidechat parent", parentPreference)
+	planArgs := mustSessionsV3TestJSON(t, map[string]any{
+		"plan_id": "plan-sidechat-regression", "proposal_revision": 3,
+		"document": map[string]any{"info": map[string]any{"goal": "Prove Plan sidechat execution"}, "checkpoints": []any{}},
+	})
+	pending, err := server.perm.CreatePending(permission.CreateInput{
+		SessionID: parent.ID, RunID: "run-plan-proposal", CallID: "call-exit-plan", ToolName: "exit_plan_mode",
+		ToolArguments: planArgs, ToolCallArguments: planArgs, Requirement: "tool", Mode: sessionruntime.ModePlan,
+	})
+	if err != nil {
+		t.Fatalf("create pending plan permission: %v", err)
+	}
+	createSidechat := func(kind, body string) string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+parent.ID+"/sidechats/"+kind, bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("create %s sidechat status=%d body=%s", kind, rec.Code, rec.Body.String())
+		}
+		var response struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || strings.TrimSpace(response.SessionID) == "" {
+			t.Fatalf("decode %s sidechat response id=%q err=%v body=%s", kind, response.SessionID, err, rec.Body.String())
+		}
+		return response.SessionID
+	}
+	planID := createSidechat("plan", fmt.Sprintf(`{"permission_id":%q,"plan_id":"client-stale","plan_revision":1}`, pending.ID))
+	aiID := createSidechat("ai", `{}`)
+	for _, reserved := range []string{agentruntime.PlanSidechatAgentID, agentruntime.AISidechatAgentID} {
+		if _, ok, err := server.agents.GetProfileForAccount(testPrincipal().AccountScopeID, reserved); err != nil || ok {
+			t.Fatalf("reserved system agent row %q exists=%t err=%v", reserved, ok, err)
+		}
+	}
+	if err := closeStore(); err != nil {
+		t.Fatalf("close initial store: %v", err)
+	}
+
+	restarted, sessions, closeRestarted := newSessionsV3PrimaryAPITestServer(t, storePath)
+	defer func() { _ = closeRestarted() }()
+	runner := &sessionsV3RecordingProviderRunner{id: "codex", text: "system sidechat response"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	restarted.providers = providers
+	exec := newSessionV3Executor(restarted)
+	exec.startDelay = 0
+	restarted.v3SessionExecutor = exec
+	for _, test := range []struct {
+		kind, sessionID, agentID, model string
+		wantEditPendingPlan             bool
+	}{
+		{kind: "plan", sessionID: planID, agentID: agentruntime.PlanSidechatAgentID, model: parentPreference.Model, wantEditPendingPlan: true},
+		{kind: "ai", sessionID: aiID, agentID: agentruntime.AISidechatAgentID, model: "auto-model"},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
+			stored, ok, err := sessions.GetSession(test.sessionID)
+			if err != nil || !ok {
+				t.Fatalf("reopen %s sidechat exists=%t err=%v", test.kind, ok, err)
+			}
+			if stored.Metadata["system_agent_id"] != test.agentID || stored.Metadata["system_sidechat_kind"] != test.kind {
+				t.Fatalf("reopened %s metadata=%+v", test.kind, stored.Metadata)
+			}
+			before := runner.callCount
+			postSessionsV3PrimaryTestMessage(t, restarted, test.sessionID, "system-sidechat-message-"+test.kind, "run "+test.kind+" sidechat")
+			waitForSessionsV3MessageCount(t, sessions, test.sessionID, 2)
+			if runner.callCount != before+1 {
+				t.Fatalf("%s provider calls=%d want=%d", test.kind, runner.callCount, before+1)
+			}
+			request := runner.requests[len(runner.requests)-1]
+			if request.Model != test.model || !strings.Contains(request.Instructions, "- name: "+test.agentID) {
+				t.Fatalf("%s request model=%q instructions=%q", test.kind, request.Model, request.Instructions)
+			}
+			if test.kind == "plan" && (request.Thinking != parentPreference.Thinking || request.ServiceTier != parentPreference.ServiceTier || request.ContextMode != parentPreference.ContextMode) {
+				t.Fatalf("Plan request did not preserve parent model setup: request=%+v parent=%+v", request, parentPreference)
+			}
+			tools := sessionsV3ProviderRequestToolNames(request.Tools)
+			if tools["edit_pending_plan"] != test.wantEditPendingPlan {
+				t.Fatalf("%s edit_pending_plan=%t tools=%v", test.kind, tools["edit_pending_plan"], tools)
+			}
+			if tools["exit_plan_mode"] || tools["plan_manage"] {
+				t.Fatalf("%s received forbidden lifecycle tools: %v", test.kind, tools)
+			}
+		})
+	}
+}
+
+func TestSessionsV3SystemSidechatArchiveBypassesMutationLock(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	principal := testPrincipal()
+	now := time.Now().UnixMilli()
+	sidechat := pebblestore.SessionSnapshot{
+		ID:             "system-sidechat-archive",
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
+		WorkspacePath:  "/workspace/system-sidechat-archive",
+		Title:          "AI",
+		Mode:           sessionruntime.ModeAuto,
+		Metadata:       map[string]any{"system_sidechat": true, "lineage_kind": "system_sidechat"},
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID: sidechat.ID, UserID: sidechat.UserID, AccountScopeID: sidechat.AccountScopeID,
+		ClientRequestID: "system-sidechat-archive-create", IdempotencyKey: "system-sidechat-archive-create",
+		PayloadHash: "system-sidechat-archive-create", RequestHash: "system-sidechat-archive-create",
+		Kind: sessionruntime.SessionMutationCreateSession, Session: &sidechat, NowUnixMs: now,
+	}); err != nil {
+		t.Fatalf("create system sidechat: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+sidechat.ID+"/archive", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("archive status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"archived":true`) {
+		t.Fatalf("archive response missing archived result: %s", rec.Body.String())
+	}
+
+	locked := httptest.NewRecorder()
+	if !server.rejectSystemSidechatMutation(locked, sidechat) {
+		t.Fatal("system sidechat mutation lock unexpectedly disabled")
+	}
+	if strings.Contains(locked.Body.String(), "archive") {
+		t.Fatalf("mutation lock still claims archive is locked: %s", locked.Body.String())
+	}
+}
 
 func TestSessionsV3PrimaryHandlersDoNotUseRuntimeDispatchOrRoutes(t *testing.T) {
 	body, err := os.ReadFile("sessions_v3_primary.go")
 	if err != nil {
 		t.Fatalf("read sessions_v3_primary.go: %v", err)
 	}
-	for _, required := range []string{"ApplySessionMutation", "SessionMutationCreateSession", "SessionMutationAppendMessage", "RunIntentDispatchBlocked", "ReplaySessionEvents", "HydrateSessionSnapshot"} {
+	for _, required := range []string{"ApplySessionMutation", "SessionMutationCreateSession", "SessionMutationAppendMessage", "RunIntentDispatchBlocked", "ReplaySessionEvents", "HydrateSessionSnapshot", "sessionV3CreateResultResponse"} {
 		if !strings.Contains(string(body), required) {
 			t.Fatalf("sessions_v3_primary.go missing required V3 primary storage symbol %q", required)
 		}
 	}
-	for _, forbidden := range []string{"proxyRoutedSessionRequest", "dispatchRuntime", "RuntimeSession", "routedSessionTarget", "SessionRoute", "CreateSessionWithOptions", "AppendMessage("} {
+	for _, forbidden := range []string{"proxyRoutedSessionRequest", "dispatchRuntime", "RuntimeSession", "routedSessionTarget", "isManagedHostMirroredSession", "managedHostTargetForSessionRequest", "SessionRoute", "sessionRoutes", "routeStore", "proxyRequestToSwarmTarget", "handleManagedHost", "CreateSessionWithOptions", "AppendMessage("} {
 		if strings.Contains(string(body), forbidden) {
 			t.Fatalf("sessions_v3_primary.go contains forbidden runtime/route/legacy write symbol %q", forbidden)
 		}
+	}
+	preflightSource := sourceBetweenForTest(t, string(body), "func (s *Server) preflightSessionsV3PlanFreshRun", "func (s *Server) handleSessionV3PrimaryPlanByID")
+	for _, scoped := range []struct {
+		name   string
+		source string
+	}{
+		{name: "plan fresh-run preflight", source: preflightSource},
+	} {
+		for _, forbidden := range []string{"routed", "routeStore", "sessionRoutes", "SessionRoute", "proxy", "managedHost", "managed", "legacy", "repair", "container", "RuntimeSession", "dispatchRuntime"} {
+			if strings.Contains(scoped.source, forbidden) {
+				t.Fatalf("%s source contains forbidden routed/proxy/legacy symbol %q", scoped.name, forbidden)
+			}
+		}
+	}
+}
+
+func TestSessionsV3PrimaryRunStreamControlIsPrimaryOnly(t *testing.T) {
+	primaryBody, err := os.ReadFile("sessions_v3_primary.go")
+	if err != nil {
+		t.Fatalf("read sessions_v3_primary.go: %v", err)
+	}
+	if !strings.Contains(string(primaryBody), "handleSessionV3PrimaryRunStreamControl") {
+		t.Fatalf("sessions_v3_primary.go does not dispatch V3 run stream to primary-only handler")
+	}
+	if strings.Contains(string(primaryBody), "handleRunStreamControl(w, r, sessionID, principal)") {
+		t.Fatalf("sessions_v3_primary.go dispatches V3 run stream through shared routed handler")
+	}
+
+	runStreamBody, err := os.ReadFile("run_stream_ws.go")
+	if err != nil {
+		t.Fatalf("read run_stream_ws.go: %v", err)
+	}
+	handler := sourceBetweenForTest(t, string(runStreamBody), "func (s *Server) handleSessionV3PrimaryRunStreamControl", "func (s *Server) handleRunStreamControl")
+	for _, required := range []string{"s.runner == nil", "s.runStreams == nil", "s.isShuttingDown()", "startRunStreamExecution"} {
+		if !strings.Contains(handler, required) {
+			t.Fatalf("V3 primary run stream handler missing primary readiness/run symbol %q", required)
+		}
+	}
+	for _, forbidden := range []string{"isManagedHostMirroredSession", "handleManagedHostSessionRunStreamControl", "routedSessionTargetOrFailClosed", "proxyRequestToSwarmTarget", "SessionRoute", "managedHost"} {
+		if strings.Contains(handler, forbidden) {
+			t.Fatalf("V3 primary run stream handler contains forbidden route/proxy/managed symbol %q", forbidden)
+		}
+	}
+}
+
+func TestSessionsV3PrimaryCreateResponseIsMinimalMutationResult(t *testing.T) {
+	body, err := os.ReadFile("sessions_v3_primary.go")
+	if err != nil {
+		t.Fatalf("read sessions_v3_primary.go: %v", err)
+	}
+	createHandler := sourceBetweenForTest(t, string(body), "func (s *Server) handleSessionsV3PrimaryCreate", "func (s *Server) handleSessionsV3PrimaryList")
+	for _, forbidden := range []string{"hydrateSessionsV3Primary", "HydrateSessionSnapshot", `"messages"`, `"events"`, "BuildSessionWorkset", "sessionsV3WorksetResponseForResult"} {
+		if strings.Contains(createHandler, forbidden) {
+			t.Fatalf("create handler contains forbidden snapshot/hydrate response symbol %q", forbidden)
+		}
+	}
+	if !strings.Contains(createHandler, "sessionV3CreateResultResponse") {
+		t.Fatalf("create handler does not use minimal create response helper")
+	}
+	createResponse := sourceBetweenForTest(t, string(body), "func sessionV3CreateResultResponse", "func sessionsV3HydratedResponse")
+	for _, required := range []string{`"ok"`, `"session_id"`, `"session"`, `"projection"`, `"mutation"`, `"realtime_outbox"`} {
+		if !strings.Contains(createResponse, required) {
+			t.Fatalf("create response helper missing %s", required)
+		}
+	}
+	for _, forbidden := range []string{`"messages"`, `"events"`, `"messages_by_session"`, `"events_by_session"`, `"sessions_by_id"`, `"projections_by_session"`, `"workset_id"`, `"worksets"`, `"subscriptions"`} {
+		if strings.Contains(createResponse, forbidden) {
+			t.Fatalf("create response helper contains forbidden snapshot/workset field %s", forbidden)
+		}
+	}
+}
+
+func TestSessionsV3PrimaryRegularSessionPersistsCurrentBranch(t *testing.T) {
+	workspacePath := filepath.Join(t.TempDir(), "repo")
+	if output, err := exec.Command("git", "init", "-b", "dev", workspacePath).CombinedOutput(); err != nil {
+		t.Fatalf("init git workspace: %v: %s", err, output)
+	}
+	server, sessions, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-v3-regular-branch", workspacePath)
+
+	body := `{"session_id":"v3-regular-branch","client_request_id":"v3-regular-branch","swarm_id":"host-swarm-id","workspace_binding_id":"binding-v3-regular-branch","title":"v3 regular","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	stored, ok, err := sessions.GetSession("v3-regular-branch")
+	if err != nil || !ok {
+		t.Fatalf("get stored session ok=%t err=%v", ok, err)
+	}
+	if stored.WorktreeBranch != "dev" || stored.WorktreeEnabled || stored.WorktreeRootPath != "" || stored.WorktreeBaseBranch != "" {
+		t.Fatalf("regular session branch facts = %+v", stored)
+	}
+}
+
+func TestSessionsV3PrimaryWorktreeOnRequiresExplicitBranch(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV3PrimaryAuthority(t, server, "/host/swarm-go")
+
+	body := `{"client_request_id":"v3-wt-missing-branch","swarm_id":"host-swarm-id","workspace_binding_id":"binding-v3-primary-host-swarm-go","title":"v3 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "worktree_branch_name is required") {
+		t.Fatalf("body missing branch requirement: %s", rec.Body.String())
+	}
+}
+
+func TestSessionsV3PrimaryWorktreeOnCreatesRequestedBranchSession(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV3PrimaryAuthority(t, server, "/host/swarm-go")
+	fake := &fakeWorktreeService{allocation: worktreeruntime.Allocation{WorkspacePath: "/data/swarm/worktrees/swarm-go/ws_v3wtcreate", RepoRoot: "/host/swarm-go", BaseBranch: "main", BranchName: "agent/v3-requested", WorkspaceID: "ws_v3wtcreate"}}
+	server.SetWorktreeService(fake)
+
+	body := `{"session_id":"v3-wt-create","client_request_id":"v3-wt-create","swarm_id":"host-swarm-id","workspace_binding_id":"binding-v3-primary-host-swarm-go","title":"v3 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_base_branch":"dev","worktree_branch_name":"agent/v3-requested","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if fake.lastWorkspace != "/host/swarm-go" || fake.lastNameSeed != "v3-wt-create" || fake.lastBaseBranch != "dev" || fake.lastBranchName != "agent/v3-requested" {
+		t.Fatalf("allocation request workspace=%q seed=%q base=%q branch=%q", fake.lastWorkspace, fake.lastNameSeed, fake.lastBaseBranch, fake.lastBranchName)
+	}
+	if !payload.Session.WorktreeEnabled || payload.Session.WorkspacePath != "/host/swarm-go/.swarm/worktrees/agent-v3-requested" || payload.Session.WorktreeRootPath != payload.Session.WorkspacePath || payload.Session.WorktreeBaseBranch != "dev" || payload.Session.WorktreeBranch != "agent/v3-requested" {
+		t.Fatalf("session worktree facts = %+v", payload.Session)
+	}
+	if payload.Session.Metadata["workspace_id"] != "agent-v3-requested" {
+		t.Fatalf("workspace_id metadata = %v, want agent-v3-requested", payload.Session.Metadata["workspace_id"])
+	}
+}
+
+func TestSessionsV3PrimaryWorktreeCreateReplayDoesNotReallocate(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV3PrimaryAuthority(t, server, "/host/swarm-go")
+	fake := &fakeWorktreeService{allocation: worktreeruntime.Allocation{WorkspacePath: "/data/swarm/worktrees/swarm-go/ws_v3wtreplay", RepoRoot: "/host/swarm-go", BaseBranch: "main", BranchName: "agent/v3-replay", WorkspaceID: "ws_v3wtreplay"}}
+	server.SetWorktreeService(fake)
+	body := `{"session_id":"v3-wt-replay","client_request_id":"v3-wt-replay","swarm_id":"host-swarm-id","workspace_binding_id":"binding-v3-primary-host-swarm-go","title":"v3 wt","mode":"auto","agent_name":"swarm","worktree_mode":"on","worktree_branch_name":"agent/v3-replay","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v3/sessions", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("attempt %d status = %d, want %d, body=%s", i+1, rec.Code, http.StatusOK, rec.Body.String())
+		}
+	}
+	if fake.lastNameSeed != "v3-wt-replay" || fake.lastBranchName != "agent/v3-replay" {
+		t.Fatalf("unexpected allocation tracking seed=%q branch=%q", fake.lastNameSeed, fake.lastBranchName)
 	}
 }
 
 func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "mode-pref-create", "mode preference", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "medium"})
+	now := time.Now().UnixMilli()
+	turnUsage := pebblestore.SessionTurnUsageSnapshot{
+		SessionID:     created.ID,
+		RunID:         "run-session-usage",
+		Provider:      "codex",
+		Model:         "gpt-5.4",
+		Source:        "codex_api_usage",
+		ContextWindow: 1000,
+		InputTokens:   200,
+		OutputTokens:  50,
+		TotalTokens:   250,
+	}
+	payloadHash, err := sessionV3UsagePayloadHash(created.ID, turnUsage.RunID, turnUsage)
+	if err != nil {
+		t.Fatalf("hash usage payload: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "session-usage-record",
+		IdempotencyKey:  "session-usage-record",
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordUsage,
+		EventType:       "run.usage.updated",
+		TurnUsage:       &turnUsage,
+		NowUnixMs:       now,
+	}); err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
+
+	usageReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.ID+"/usage", nil)
+	usageRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(usageRec, withTestPrincipal(usageReq))
+	if usageRec.Code != http.StatusOK {
+		t.Fatalf("usage get status = %d, want %d, body=%s", usageRec.Code, http.StatusOK, usageRec.Body.String())
+	}
+	var usagePayload struct {
+		SessionID         string                          `json:"session_id"`
+		HasUsageSummary   bool                            `json:"has_usage_summary"`
+		UsageSummary      pebblestore.SessionUsageSummary `json:"usage_summary"`
+		UnexpectedSession map[string]any                  `json:"session"`
+	}
+	if err := json.Unmarshal(usageRec.Body.Bytes(), &usagePayload); err != nil {
+		t.Fatalf("decode usage get response: %v", err)
+	}
+	if usagePayload.SessionID != created.ID || !usagePayload.HasUsageSummary || usagePayload.UsageSummary.RemainingTokens != 750 || usagePayload.UnexpectedSession != nil {
+		t.Fatalf("usage get payload = %+v", usagePayload)
+	}
+
+	prefGetReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.ID+"/preference", nil)
+	prefGetRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(prefGetRec, withTestPrincipal(prefGetReq))
+	if prefGetRec.Code != http.StatusOK {
+		t.Fatalf("preference get status = %d, want %d, body=%s", prefGetRec.Code, http.StatusOK, prefGetRec.Body.String())
+	}
+	var prefGetPayload struct {
+		SessionID         string                      `json:"session_id"`
+		Preference        pebblestore.ModelPreference `json:"preference"`
+		ContextWindow     int                         `json:"context_window"`
+		MaxOutputTokens   int                         `json:"max_output_tokens"`
+		UnexpectedSession map[string]any              `json:"session"`
+	}
+	if err := json.Unmarshal(prefGetRec.Body.Bytes(), &prefGetPayload); err != nil {
+		t.Fatalf("decode preference get response: %v", err)
+	}
+	if prefGetPayload.SessionID != created.ID || prefGetPayload.Preference.Model != "gpt-5.4" || prefGetPayload.UnexpectedSession != nil {
+		t.Fatalf("preference get payload = %+v", prefGetPayload)
+	}
 
 	modeReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/mode", bytes.NewBufferString(`{"mode":"plan"}`))
 	modeReq.Header.Set("Content-Type", "application/json")
@@ -62,18 +498,26 @@ func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
 		t.Fatalf("mode status = %d, want %d, body=%s", modeRec.Code, http.StatusOK, modeRec.Body.String())
 	}
 	var modePayload struct {
-		Session  pebblestore.SessionSnapshot          `json:"session"`
-		Events   []sessionruntime.SessionEvent        `json:"events"`
-		Mutation sessionruntime.SessionMutationResult `json:"mutation"`
+		OK             bool                                 `json:"ok"`
+		SessionID      string                               `json:"session_id"`
+		Mode           string                               `json:"mode"`
+		Mutation       sessionruntime.SessionMutationResult `json:"mutation"`
+		RealtimeOutbox *pebblestore.V3RealtimeOutboxRecord  `json:"realtime_outbox"`
 	}
 	if err := json.Unmarshal(modeRec.Body.Bytes(), &modePayload); err != nil {
 		t.Fatalf("decode mode response: %v", err)
 	}
-	if modePayload.Session.Mode != "plan" || modePayload.Mutation.Event.EventType != "session.mode.updated" {
+	if !modePayload.OK || modePayload.SessionID != created.ID || modePayload.Mode != "plan" || modePayload.Mutation.Event.EventType != "session.mode.updated" || modePayload.RealtimeOutbox == nil {
 		t.Fatalf("mode payload = %+v", modePayload)
 	}
-	if len(modePayload.Events) != 2 || modePayload.Events[1].EventType != "session.mode.updated" {
-		t.Fatalf("mode events = %+v", modePayload.Events)
+	var modeRaw map[string]json.RawMessage
+	if err := json.Unmarshal(modeRec.Body.Bytes(), &modeRaw); err != nil {
+		t.Fatalf("decode raw mode response: %v", err)
+	}
+	for _, forbidden := range []string{"session", "projection", "messages", "events", "messages_by_session", "events_by_session", "sessions_by_id", "projections_by_session", "workset_id", "worksets", "subscriptions", "realtime"} {
+		if _, ok := modeRaw[forbidden]; ok {
+			t.Fatalf("mode response includes forbidden snapshot/reconnect field %q: %s", forbidden, modeRec.Body.String())
+		}
 	}
 	var modeEventPayload map[string]any
 	if err := json.Unmarshal(modePayload.Mutation.Event.Payload, &modeEventPayload); err != nil {
@@ -91,21 +535,25 @@ func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
 		t.Fatalf("preference status = %d, want %d, body=%s", prefRec.Code, http.StatusOK, prefRec.Body.String())
 	}
 	var prefPayload struct {
-		Session         pebblestore.SessionSnapshot          `json:"session"`
-		Preference      pebblestore.ModelPreference          `json:"preference"`
-		Events          []sessionruntime.SessionEvent        `json:"events"`
-		ContextWindow   int                                  `json:"context_window"`
-		MaxOutputTokens int                                  `json:"max_output_tokens"`
-		Mutation        sessionruntime.SessionMutationResult `json:"mutation"`
+		OK                      bool                                 `json:"ok"`
+		SessionID               string                               `json:"session_id"`
+		Preference              pebblestore.ModelPreference          `json:"preference"`
+		ContextWindow           int                                  `json:"context_window"`
+		MaxOutputTokens         int                                  `json:"max_output_tokens"`
+		Mutation                sessionruntime.SessionMutationResult `json:"mutation"`
+		RealtimeOutbox          any                                  `json:"realtime_outbox"`
+		UnexpectedSession       map[string]any                       `json:"session"`
+		UnexpectedEvents        []sessionruntime.SessionEvent        `json:"events"`
+		UnexpectedMessages      []pebblestore.MessageSnapshot        `json:"messages"`
+		UnexpectedWorksetID     string                               `json:"workset_id"`
+		UnexpectedWorksets      map[string]any                       `json:"worksets"`
+		UnexpectedSubscriptions map[string]any                       `json:"subscriptions"`
 	}
 	if err := json.Unmarshal(prefRec.Body.Bytes(), &prefPayload); err != nil {
 		t.Fatalf("decode preference response: %v", err)
 	}
-	if prefPayload.Session.Preference.Thinking != "high" || prefPayload.Preference.Thinking != "high" || prefPayload.Mutation.Event.EventType != "session.preference.updated" {
+	if !prefPayload.OK || prefPayload.SessionID != created.ID || prefPayload.Preference.Thinking != "high" || prefPayload.Mutation.Event.EventType != "session.preference.updated" || prefPayload.UnexpectedSession != nil || prefPayload.UnexpectedEvents != nil || prefPayload.UnexpectedMessages != nil || prefPayload.UnexpectedWorksetID != "" || prefPayload.UnexpectedWorksets != nil || prefPayload.UnexpectedSubscriptions != nil {
 		t.Fatalf("preference payload = %+v", prefPayload)
-	}
-	if len(prefPayload.Events) != 3 || prefPayload.Events[2].EventType != "session.preference.updated" {
-		t.Fatalf("preference events = %+v", prefPayload.Events)
 	}
 	var prefEventPayload struct {
 		Preference pebblestore.ModelPreference `json:"preference"`
@@ -119,9 +567,10 @@ func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
 }
 
 func TestSessionsV3PrimaryCreateListHydrateUsesPrimaryStoreOnly(t *testing.T) {
-	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 
-	body := `{"client_request_id":"create-v3-1","workspace_path":"/workspace/v3","workspace_name":"v3","title":"V3 Primary","mode":"auto","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"},"metadata":{"purpose":"cp3"}}`
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/v3")
+	body := `{"client_request_id":"create-v3-1","workspace_path":"/workspace/v3","workspace_name":"v3","swarm_id":"host-swarm-id","workspace_binding_id":"` + bindingID + `","target_kind":"host","target_relationship":"self","title":"V3 Primary","mode":"auto","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"},"metadata":{"purpose":"cp3"}}`
 	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(body))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
@@ -131,18 +580,23 @@ func TestSessionsV3PrimaryCreateListHydrateUsesPrimaryStoreOnly(t *testing.T) {
 	}
 
 	var createPayload struct {
-		OK         bool                                 `json:"ok"`
-		Session    pebblestore.SessionSnapshot          `json:"session"`
-		Projection sessionruntime.SessionProjection     `json:"projection"`
-		Events     []sessionruntime.SessionEvent        `json:"events"`
-		Messages   []pebblestore.MessageSnapshot        `json:"messages"`
-		Mutation   sessionruntime.SessionMutationResult `json:"mutation"`
+		OK             bool                                 `json:"ok"`
+		SessionID      string                               `json:"session_id"`
+		Session        pebblestore.SessionSnapshot          `json:"session"`
+		Projection     sessionruntime.SessionProjection     `json:"projection"`
+		Messages       json.RawMessage                      `json:"messages"`
+		Events         json.RawMessage                      `json:"events"`
+		RealtimeOutbox *pebblestore.V3RealtimeOutboxRecord  `json:"realtime_outbox"`
+		Mutation       sessionruntime.SessionMutationResult `json:"mutation"`
 	}
 	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
 		t.Fatalf("decode create response: %v", err)
 	}
-	if !createPayload.OK || strings.TrimSpace(createPayload.Session.ID) == "" {
+	if !createPayload.OK || strings.TrimSpace(createPayload.SessionID) == "" || strings.TrimSpace(createPayload.Session.ID) == "" {
 		t.Fatalf("create payload = %+v", createPayload)
+	}
+	if createPayload.SessionID != createPayload.Session.ID {
+		t.Fatalf("session_id = %q, session.id = %q", createPayload.SessionID, createPayload.Session.ID)
 	}
 	if createPayload.Session.AccountScopeID != testPrincipal().AccountScopeID || createPayload.Session.UserID != testPrincipal().UserID {
 		t.Fatalf("session principal = %+v", createPayload.Session)
@@ -154,22 +608,18 @@ func TestSessionsV3PrimaryCreateListHydrateUsesPrimaryStoreOnly(t *testing.T) {
 		t.Fatalf("server-owned agent metadata = %+v", createPayload.Session.Metadata)
 	}
 	if createPayload.Projection.LastEventSeq != 1 || len(createPayload.Events) != 0 || len(createPayload.Messages) != 0 {
-		t.Fatalf("projection/events/messages = %+v %+v %+v", createPayload.Projection, createPayload.Events, createPayload.Messages)
+		t.Fatalf("create response must not include hydrate messages/events: projection=%+v events=%s messages=%s", createPayload.Projection, createPayload.Events, createPayload.Messages)
 	}
-	if createPayload.Mutation.FirstSeq != 1 || createPayload.Mutation.LastSeq != 1 || createPayload.Mutation.ResponseStatus != pebblestore.V3SessionMutationStatusCompleted || createPayload.Mutation.Event.EventType != "session.created" {
+	if createPayload.RealtimeOutbox == nil || createPayload.RealtimeOutbox.EndpointSeq == 0 {
+		t.Fatalf("create response missing realtime_outbox: %+v", createPayload.RealtimeOutbox)
+	}
+	if createPayload.Mutation.FirstSeq != 1 || createPayload.Mutation.LastSeq != 1 || createPayload.Mutation.ResponseStatus != pebblestore.V3SessionMutationStatusCompleted || createPayload.Mutation.Event.EventType != "session.created" || createPayload.Mutation.Session != nil {
 		t.Fatalf("mutation result = %+v", createPayload.Mutation)
 	}
 	if _, ok, err := sessionSvc.GetSessionProjection(createPayload.Session.ID); err != nil || !ok {
 		t.Fatalf("stored projection ok=%t err=%v", ok, err)
 	}
-	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
-		t.Fatalf("routes = %+v err=%v, want none", routes, err)
-	}
-	if _, ok, err := server.topology.GetSessionRouteForAccount(testPrincipal().AccountScopeID, createPayload.Session.ID); err != nil {
-		t.Fatalf("get topology route: %v", err)
-	} else if ok {
-		t.Fatalf("unexpected topology session route for V3 primary session")
-	}
+	assertNoRetiredSessionRouteMetadata(t, sessionSvc, createPayload.Session.ID)
 
 	hydrateReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+createPayload.Session.ID, nil)
 	hydrateRec := httptest.NewRecorder()
@@ -210,12 +660,52 @@ func TestSessionsV3PrimaryCreateListHydrateUsesPrimaryStoreOnly(t *testing.T) {
 	}
 }
 
+func TestSessionsV3PrimaryListAndHydrateRejectCrossUserSessions(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	owner := testPrincipal()
+	foreign := owner
+	foreign.UserID = "user-2"
+	owned := pebblestore.SessionSnapshot{ID: "owned-session", UserID: owner.UserID, AccountScopeID: owner.AccountScopeID, WorkspacePath: "/workspace/owned", WorkspaceName: "owned", Title: "Owned", CreatedAt: 1, UpdatedAt: 1}
+	crossUser := pebblestore.SessionSnapshot{ID: "cross-user-session", UserID: foreign.UserID, AccountScopeID: owner.AccountScopeID, WorkspacePath: "/workspace/foreign", WorkspaceName: "foreign", Title: "Foreign", CreatedAt: 2, UpdatedAt: 2}
+	for _, session := range []pebblestore.SessionSnapshot{owned, crossUser} {
+		if err := sessionSvc.CreateSession(session); err != nil {
+			t.Fatalf("create session %q: %v", session.ID, err)
+		}
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v3/sessions?limit=10", nil)
+	listRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(listRec, withTestPrincipal(listReq))
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listed struct {
+		Sessions []struct {
+			Session pebblestore.SessionSnapshot `json:"session"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(listed.Sessions) != 1 || listed.Sessions[0].Session.ID != owned.ID {
+		t.Fatalf("cross-user list result = %+v", listed.Sessions)
+	}
+
+	hydrateReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+crossUser.ID, nil)
+	hydrateRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(hydrateRec, withTestPrincipal(hydrateReq))
+	if hydrateRec.Code != http.StatusNotFound {
+		t.Fatalf("cross-user hydrate status = %d, want %d, body=%s", hydrateRec.Code, http.StatusNotFound, hydrateRec.Body.String())
+	}
+}
+
 func TestSessionsV3PrimaryHydratesAfterStoreRestart(t *testing.T) {
 	t.Setenv("SWARM_API_NO_AUTH", "1")
 	storePath := filepath.Join(t.TempDir(), "sessions-v3-primary.pebble")
 	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, storePath)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"restart-create","workspace_path":"/workspace/restart","title":"Restarted V3","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/restart")
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"restart-create","workspace_path":"/workspace/restart","swarm_id":"host-swarm-id","workspace_binding_id":"`+bindingID+`","target_kind":"host","target_relationship":"self","title":"Restarted V3","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
@@ -262,7 +752,7 @@ func TestSessionsV3PrimaryCreateRejectsProtectedAuthorityMetadata(t *testing.T) 
 		{name: "agent spoof", body: `{"client_request_id":"protected-agent-metadata","workspace_path":"/workspace/v3","agent_name":"swarm","metadata":{"agent_name":"spoof"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
+			server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 			req := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(tc.body))
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
@@ -273,19 +763,15 @@ func TestSessionsV3PrimaryCreateRejectsProtectedAuthorityMetadata(t *testing.T) 
 			if !strings.Contains(rec.Body.String(), "reserved") {
 				t.Fatalf("body = %s, want reserved metadata error", rec.Body.String())
 			}
-			if sessions, err := sessionSvc.ListSessionsForAccount(testPrincipal().AccountScopeID, 10); err != nil || len(sessions) != 0 {
-				t.Fatalf("sessions = %+v err=%v, want none", sessions, err)
-			}
-			if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
-				t.Fatalf("routes = %+v err=%v, want none", routes, err)
-			}
+			assertNoSessionsForAccount(t, sessionSvc)
 		})
 	}
 }
 
 func TestSessionsV3PrimaryMessagesCommitUserMessageAndPendingExecutorIntent(t *testing.T) {
-	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-create","workspace_path":"/workspace/cp4","title":"CP4","agent_name":"swarm"}`))
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/cp4")
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-create","workspace_path":"/workspace/cp4","swarm_id":"host-swarm-id","workspace_binding_id":"`+bindingID+`","target_kind":"host","target_relationship":"self","title":"CP4","agent_name":"swarm"}`))
 	create.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
@@ -307,33 +793,37 @@ func TestSessionsV3PrimaryMessagesCommitUserMessageAndPendingExecutorIntent(t *t
 		t.Fatalf("message status = %d, want %d, body=%s", messageRec.Code, http.StatusOK, messageRec.Body.String())
 	}
 	var payload struct {
-		OK         bool                                 `json:"ok"`
-		Session    pebblestore.SessionSnapshot          `json:"session"`
-		Projection sessionruntime.SessionProjection     `json:"projection"`
-		Message    *pebblestore.MessageSnapshot         `json:"message"`
-		RunIntent  *sessionruntime.SessionRunIntent     `json:"run_intent"`
-		Messages   []pebblestore.MessageSnapshot        `json:"messages"`
-		Events     []sessionruntime.SessionEvent        `json:"events"`
-		Mutation   sessionruntime.SessionMutationResult `json:"mutation"`
+		OK             bool                                 `json:"ok"`
+		SessionID      string                               `json:"session_id"`
+		Session        *pebblestore.SessionSnapshot         `json:"session"`
+		Projection     *sessionruntime.SessionProjection    `json:"projection"`
+		Message        *pebblestore.MessageSnapshot         `json:"message"`
+		RunIntent      *sessionruntime.SessionRunIntent     `json:"run_intent"`
+		Messages       []pebblestore.MessageSnapshot        `json:"messages"`
+		Events         []sessionruntime.SessionEvent        `json:"events"`
+		Previous       any                                  `json:"previous"`
+		RealtimeOutbox *sessionruntime.RealtimeOutboxRecord `json:"realtime_outbox"`
+		Mutation       sessionruntime.SessionMutationResult `json:"mutation"`
 	}
 	if err := json.Unmarshal(messageRec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode message response: %v", err)
 	}
-	if !payload.OK || payload.Message == nil || payload.Message.Content != "hello cp4" || payload.Message.Role != "user" {
+	if !payload.OK || payload.SessionID != created.Session.ID || payload.Message == nil || payload.Message.Content != "hello cp4" || payload.Message.Role != "user" {
 		t.Fatalf("message payload = %+v", payload)
 	}
-	if payload.Session.MessageCount != 1 || payload.Projection.LastEventSeq != 2 || len(payload.Events) != 0 || len(payload.Messages) != 1 {
-		t.Fatalf("session/projection/events/messages = %+v %+v %+v %+v", payload.Session, payload.Projection, payload.Events, payload.Messages)
+	if payload.Session != nil || payload.Projection != nil || payload.Previous != nil || len(payload.Events) != 0 || len(payload.Messages) != 0 {
+		t.Fatalf("message response hydrated unexpectedly: session=%+v projection=%+v previous=%+v events=%+v messages=%+v", payload.Session, payload.Projection, payload.Previous, payload.Events, payload.Messages)
 	}
 	if payload.RunIntent == nil || payload.RunIntent.Status != sessionruntime.RunIntentPendingExecutor || payload.RunIntent.BlockedReason != "" || payload.RunIntent.EventSeq != 2 {
 		t.Fatalf("run intent = %+v", payload.RunIntent)
 	}
-	if payload.Mutation.FirstSeq != 2 || payload.Mutation.Message == nil || payload.Mutation.RunIntent == nil || payload.Mutation.Event.EventType != "session.message.appended" {
+	if payload.RealtimeOutbox == nil || payload.RealtimeOutbox.SessionID != created.Session.ID || payload.RealtimeOutbox.EndpointSeq == 0 {
+		t.Fatalf("realtime outbox = %+v", payload.RealtimeOutbox)
+	}
+	if payload.Mutation.FirstSeq != 2 || payload.Mutation.Message == nil || payload.Mutation.RunIntent == nil || payload.Mutation.Session != nil || payload.Mutation.Event.EventType != "session.message.appended" {
 		t.Fatalf("mutation = %+v", payload.Mutation)
 	}
-	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
-		t.Fatalf("routes = %+v err=%v, want none", routes, err)
-	}
+	assertNoRetiredSessionRouteMetadata(t, sessionSvc, created.Session.ID)
 	messages, err := sessionSvc.ListSessionMessages(created.Session.ID, 0, 10)
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
@@ -360,8 +850,9 @@ func TestSessionsV3PrimaryMessagesCommitUserMessageAndPendingExecutorIntent(t *t
 }
 
 func TestSessionsV3PrimaryMessageWithInvalidDispatchAuthorityStillCommitsAndBlocks(t *testing.T) {
-	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-invalid-authority-create","workspace_path":"/workspace/cp4","title":"CP4","agent_name":"swarm"}`))
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/cp4")
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-invalid-authority-create","workspace_path":"/workspace/cp4","swarm_id":"host-swarm-id","workspace_binding_id":"`+bindingID+`","target_kind":"host","target_relationship":"self","title":"CP4","agent_name":"swarm"}`))
 	create.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
@@ -402,13 +893,12 @@ func TestSessionsV3PrimaryMessageWithInvalidDispatchAuthorityStillCommitsAndBloc
 	if len(messages) != 1 || messages[0].Content != "durable despite invalid authority" {
 		t.Fatalf("messages = %+v", messages)
 	}
-	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
-		t.Fatalf("routes = %+v err=%v, want none", routes, err)
-	}
+	assertNoRetiredSessionRouteMetadata(t, sessionSvc, created.Session.ID)
 }
 
 func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutBlockingMessage(t *testing.T) {
-	baseAuthority := `"runtime_swarm_id":"host-swarm-id","runtime_kind":"host","workspace_binding_id":"binding-primary-v2","authority_host_swarm_id":"host-swarm-id","placement_generation":1,"binding_generation":1,"source_workspace_path":"/workspace/cp8","runtime_workspace_path":"/workspace/cp8"`
+	const bindingID = "binding-v3-primary-workspace-cp8"
+	baseAuthority := `"runtime_swarm_id":"host-swarm-id","runtime_kind":"host","workspace_binding_id":"` + bindingID + `","authority_host_swarm_id":"host-swarm-id","placement_generation":1,"binding_generation":1,"source_workspace_path":"/workspace/cp8","runtime_workspace_path":"/workspace/cp8"`
 	tests := []struct {
 		name       string
 		authority  string
@@ -425,7 +915,7 @@ func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutB
 			name:      "stale binding generation",
 			authority: baseAuthority,
 			mutate: func(t *testing.T, server *Server) {
-				mutateSessionsV2WorkspaceBinding(t, server, "binding-primary-v2", func(binding *pebblestore.TopologyWorkspaceBindingRecord) {
+				mutateSessionsV3WorkspaceBinding(t, server, bindingID, func(binding *pebblestore.TopologyWorkspaceBindingRecord) {
 					binding.BindingGeneration = 2
 				})
 			},
@@ -453,7 +943,7 @@ func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutB
 		},
 		{
 			name:      "missing executor runtime",
-			authority: `"workspace_binding_id":"binding-primary-v2"`,
+			authority: `"workspace_binding_id":"` + bindingID + `"`,
 			want:      "missing executor runtime",
 		},
 	}
@@ -464,8 +954,10 @@ func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutB
 			if wantStatus == "" {
 				wantStatus = sessionruntime.RunIntentDispatchBlocked
 			}
-			server, sessionSvc, _, routeStore, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
-			seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/workspace/cp8")
+			server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+			if got := seedSessionsV3PrimaryAuthority(t, server, "/workspace/cp8"); got != bindingID {
+				t.Fatalf("seed binding id = %q, want %q", got, bindingID)
+			}
 			if tt.mutate != nil {
 				tt.mutate(t, server)
 			}
@@ -498,9 +990,7 @@ func TestSessionsV3PrimaryDispatchAuthorityRecordsSpecificBlockedReasonsWithoutB
 			if len(messages) != 1 || messages[0].Content != "cp8 durable" {
 				t.Fatalf("messages = %+v", messages)
 			}
-			if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
-				t.Fatalf("routes = %+v err=%v, want none", routes, err)
-			}
+			assertNoRetiredSessionRouteMetadata(t, sessionSvc, created.ID)
 		})
 	}
 }
@@ -509,7 +999,7 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 	server, sessionSvc, closeStore := newSessionsV3PrimaryAPITestServer(t, filepath.Join(t.TempDir(), "agent-switch.pebble"))
 	defer func() { _ = closeStore() }()
 	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{
-		Name:                "explorer",
+		Name:                "finder",
 		Mode:                agentruntime.ModeSubagent,
 		Provider:            "test-provider",
 		Model:               "test-model",
@@ -520,13 +1010,13 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 			"search": {Enabled: pebblestore.BoolPtr(true)},
 		}},
 		Enabled: pebblestore.BoolPtr(true),
-		Prompt:  "Explorer switched prompt",
+		Prompt:  "Finder switched prompt",
 	}); err != nil {
-		t.Fatalf("create explorer agent: %v", err)
+		t.Fatalf("create finder agent: %v", err)
 	}
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "agent-switch-create", "agent switch", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
 
-	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/agent", bytes.NewBufferString(`{"agent_name":"explorer"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/agent", bytes.NewBufferString(`{"agent_name":"finder"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
@@ -534,49 +1024,60 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 		t.Fatalf("agent switch status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	var payload struct {
-		Session pebblestore.SessionSnapshot `json:"session"`
+		OK               bool                       `json:"ok"`
+		SessionID        string                     `json:"session_id"`
+		Agent            map[string]any             `json:"agent"`
+		AgentModelPolicy sessionsV3AgentModelPolicy `json:"agent_model_policy"`
+		Mutation         struct {
+			Session        any `json:"session"`
+			RealtimeOutbox any `json:"realtime_outbox"`
+		} `json:"mutation"`
+		RealtimeOutbox map[string]any `json:"realtime_outbox"`
+		Session        any            `json:"session"`
+		Projection     any            `json:"projection"`
+		Messages       any            `json:"messages"`
+		Events         any            `json:"events"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if payload.Session.Metadata["agent_name"] != "explorer" || payload.Session.Metadata["resolved_agent_name"] != "explorer" || payload.Session.Metadata["agent_mode"] != agentruntime.ModeSubagent || payload.Session.Metadata["runtime_mode"] != pebblestore.AgentRuntimeModeRead {
-		t.Fatalf("switched metadata = %+v", payload.Session.Metadata)
+	if !payload.OK || payload.SessionID != created.ID || payload.Agent["agent_name"] != "finder" || payload.Agent["resolved_agent_name"] != "finder" || payload.Agent["agent_mode"] != agentruntime.ModeSubagent || payload.Agent["runtime_mode"] != pebblestore.AgentRuntimeModeRead {
+		t.Fatalf("agent mutation payload = %+v", payload)
 	}
-	var hydratePolicy struct {
-		Preference       pebblestore.ModelPreference `json:"preference"`
-		AgentModelPolicy sessionsV3AgentModelPolicy  `json:"agent_model_policy"`
+	if payload.Session != nil || payload.Projection != nil || payload.Messages != nil || payload.Events != nil {
+		t.Fatalf("agent mutation returned hydrated graph fields: %s", rec.Body.String())
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &hydratePolicy); err != nil {
-		t.Fatalf("decode model policy: %v", err)
+	if payload.Mutation.Session != nil {
+		t.Fatalf("agent mutation result leaked full session: %s", rec.Body.String())
 	}
-	if !hydratePolicy.AgentModelPolicy.Locked || hydratePolicy.AgentModelPolicy.Source != "agent_preset" || hydratePolicy.AgentModelPolicy.Preference.Model != "test-model" || hydratePolicy.AgentModelPolicy.Preference.Thinking != "high" {
-		t.Fatalf("agent model policy = %+v", hydratePolicy.AgentModelPolicy)
+	if payload.RealtimeOutbox == nil {
+		t.Fatalf("agent mutation missing realtime_outbox: %s", rec.Body.String())
 	}
-	if hydratePolicy.Preference.Model != "test-model" || hydratePolicy.Preference.Thinking != "high" {
-		t.Fatalf("hydrated effective preference = %+v", hydratePolicy.Preference)
+	if !payload.AgentModelPolicy.Locked || payload.AgentModelPolicy.Source != "agent_preset" || payload.AgentModelPolicy.Preference.Model != "test-model" || payload.AgentModelPolicy.Preference.Thinking != "high" {
+		t.Fatalf("agent model policy = %+v", payload.AgentModelPolicy)
 	}
 	prefReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/preference", bytes.NewBufferString(`{"provider":"codex","model":"gpt-5.4","thinking":"medium"}`))
 	prefReq.Header.Set("Content-Type", "application/json")
 	prefRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(prefRec, withTestPrincipal(prefReq))
-	if prefRec.Code != http.StatusBadRequest || !strings.Contains(prefRec.Body.String(), "Default") {
+	if prefRec.Code != http.StatusBadRequest || !strings.Contains(prefRec.Body.String(), "Agent model is set in agent settings") {
 		t.Fatalf("locked preference status = %d body=%s", prefRec.Code, prefRec.Body.String())
-	}
-	if _, ok := payload.Session.Metadata["subagent"]; ok {
-		t.Fatalf("agent switch left client-side subagent override in metadata: %+v", payload.Session.Metadata)
-	}
-	profile, err := sessionV3AgentProfileFromMetadata(payload.Session.Metadata)
-	if err != nil {
-		t.Fatalf("switched profile missing: %v", err)
-	}
-	if profile.Name != "explorer" || profile.Mode != agentruntime.ModeSubagent || profile.ToolContract == nil || profile.ToolContract.Tools["search"].Enabled == nil || !*profile.ToolContract.Tools["search"].Enabled {
-		t.Fatalf("switched profile = %+v", profile)
 	}
 	stored, ok, err := sessionSvc.GetSession(created.ID)
 	if err != nil || !ok {
 		t.Fatalf("get switched session ok=%v err=%v", ok, err)
 	}
-	if stored.Metadata["agent_name"] != "explorer" {
+	if _, ok := stored.Metadata["subagent"]; ok {
+		t.Fatalf("agent switch left client-side subagent override in metadata: %+v", stored.Metadata)
+	}
+	profile, err := sessionV3AgentProfileFromMetadata(stored.Metadata)
+	if err != nil {
+		t.Fatalf("switched profile missing: %v", err)
+	}
+	if profile.Name != "finder" || profile.Mode != agentruntime.ModeSubagent || profile.ToolContract == nil || profile.ToolContract.Tools["search"].Enabled == nil || !*profile.ToolContract.Tools["search"].Enabled {
+		t.Fatalf("switched profile = %+v", profile)
+	}
+	if stored.Metadata["agent_name"] != "finder" {
 		t.Fatalf("stored switched metadata = %+v", stored.Metadata)
 	}
 	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
@@ -598,7 +1099,7 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 	if err != nil {
 		t.Fatalf("resolve switched runtime: %v", err)
 	}
-	if resolved.AgentProfile.Name != "explorer" || !strings.Contains(resolved.Instructions, "- name: explorer") || !strings.Contains(resolved.Instructions, "Explorer switched prompt") {
+	if resolved.AgentProfile.Name != "finder" || !strings.Contains(resolved.Instructions, "- name: finder") || !strings.Contains(resolved.Instructions, "Finder switched prompt") {
 		t.Fatalf("resolved switched instructions/profile = %+v instructions=%s", resolved.AgentProfile, resolved.Instructions)
 	}
 	toolNames := sessionsV3ProviderRequestToolNames(resolved.Tools)
@@ -607,7 +1108,33 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 	}
 }
 
-func TestSessionsV3ExecutorUsesStoredAgentProfileSnapshotOnly(t *testing.T) {
+func TestSessionsV3ExecutorBackfillsCurrentAccountAgentToolContract(t *testing.T) {
+	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, filepath.Join(t.TempDir(), "account-tool-backfill.pebble"))
+	defer func() { _ = closeStore() }()
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "account-tool-backfill-create", "account tool backfill", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	profile, ok, err := server.agents.GetProfileForAccount(testPrincipal().AccountScopeID, "swarm")
+	if err != nil || !ok {
+		t.Fatalf("GetProfileForAccount(swarm) ok=%v err=%v", ok, err)
+	}
+	delete(profile.ToolContract.Tools, "manage_sessions")
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{
+		Name: profile.Name, Mode: profile.Mode, Enabled: pebblestore.BoolPtr(profile.Enabled), Prompt: profile.Prompt, ToolContract: profile.ToolContract,
+	}); err != nil {
+		t.Fatalf("store legacy swarm profile: %v", err)
+	}
+	runner := installSessionsV3TestProvider(server, "backfilled provider response")
+	server.v3SessionExecutor = newSessionV3Executor(server)
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "account-tool-backfill-message", "use backfilled contract")
+	waitForSessionsV3MessageCount(t, server.sessions, created.ID, 2)
+	if runner.callCount != 1 {
+		t.Fatalf("provider call count = %d, want 1", runner.callCount)
+	}
+	if !sessionsV3ProviderRequestToolNames(runner.lastRequest.Tools)["manage-sessions"] {
+		t.Fatalf("provider tools = %v, want backfilled manage-sessions", sessionsV3ProviderRequestToolNames(runner.lastRequest.Tools))
+	}
+}
+
+func TestSessionsV3ExecutorUsesCurrentAgentToolContractWithStoredProfileSnapshot(t *testing.T) {
 	server, sessionSvc, closeStore := newSessionsV3PrimaryAPITestServer(t, filepath.Join(t.TempDir(), "stored-profile.pebble"))
 	defer func() { _ = closeStore() }()
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "stored-profile-create", "stored profile", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
@@ -624,7 +1151,7 @@ func TestSessionsV3ExecutorUsesStoredAgentProfileSnapshotOnly(t *testing.T) {
 		Enabled: pebblestore.BoolPtr(true),
 		Prompt:  "MUTATED PROMPT THAT MUST NOT BE USED",
 		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
-			"search": {Enabled: pebblestore.BoolPtr(true)},
+			"manage_sessions": {Enabled: pebblestore.BoolPtr(true)},
 		}},
 	}); err != nil {
 		t.Fatalf("mutate saved agent after session create: %v", err)
@@ -643,11 +1170,11 @@ func TestSessionsV3ExecutorUsesStoredAgentProfileSnapshotOnly(t *testing.T) {
 		t.Fatalf("provider instructions used re-resolved mutated agent profile; instructions=%q", runner.lastRequest.Instructions)
 	}
 	toolNames := sessionsV3ProviderRequestToolNames(runner.lastRequest.Tools)
-	if !toolNames["read"] {
-		t.Fatalf("provider tools = %v, want stored read tool", toolNames)
+	if !toolNames["manage-sessions"] {
+		t.Fatalf("provider tools = %v, want current saved manage_sessions tool", toolNames)
 	}
-	if toolNames["search"] {
-		t.Fatalf("provider tools = %v, used mutated saved profile instead of stored snapshot", toolNames)
+	if toolNames["read"] {
+		t.Fatalf("provider tools = %v, retained stale stored read tool", toolNames)
 	}
 }
 
@@ -716,6 +1243,39 @@ func TestSessionsV3ExecutorRejectsDuplicateEnqueueRun(t *testing.T) {
 	if exec.EnqueueRun(job) {
 		t.Fatalf("duplicate enqueue returned true while original run was still queued/in-flight")
 	}
+	server.CancelInFlightRuns()
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("executor did not drain after cancellation")
+	}
+}
+
+func TestSessionsV3ExecutorRunsDifferentSessionsConcurrently(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 500 * time.Millisecond
+	server.v3SessionExecutor = exec
+
+	if !exec.EnqueueRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: "session-concurrent-a", RunID: "run-concurrent-a"}) {
+		t.Fatalf("first enqueue returned false")
+	}
+	if !exec.EnqueueRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: "session-concurrent-b", RunID: "run-concurrent-b"}) {
+		t.Fatalf("second enqueue returned false")
+	}
+
+	deadline := time.After(2 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if server.ActiveRunCount() >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("active runs = %d, want at least 2 concurrent runs", server.ActiveRunCount())
+		case <-tick.C:
+		}
+	}
+
 	server.CancelInFlightRuns()
 	if !server.WaitForInFlightRuns(2 * time.Second) {
 		t.Fatalf("executor did not drain after cancellation")
@@ -896,7 +1456,7 @@ func TestSessionsV3PrimaryRunStopCancelsActiveExecutorAndSuppressesLateOutput(t 
 		t.Fatalf("provider was not entered")
 	}
 	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentRunning)
-	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/run/stop", bytes.NewBufferString(fmt.Sprintf(`{"type":"run.stop","run_id":%q,"reason":"stop from test"}`, intent.RunID)))
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/run/stop", bytes.NewBufferString(fmt.Sprintf(`{"type":"run.stop","run_id":%q,"target_swarm_id":"host-swarm-id","reason":"stop from test"}`, intent.RunID)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
@@ -913,6 +1473,13 @@ func TestSessionsV3PrimaryRunStopCancelsActiveExecutorAndSuppressesLateOutput(t 
 	if cancelled.RunID != intent.RunID || cancelled.BlockedReason != "stop from test" {
 		t.Fatalf("cancelled intent = %+v", cancelled)
 	}
+	if active, ok, err := sessionSvc.GetSessionActiveRunIntent(created.ID); err != nil || ok {
+		t.Fatalf("active run after cancellation = %+v ok=%v err=%v, want inactive", active, ok, err)
+	}
+	if state, ok, err := sessionSvc.GetSessionRunState(created.ID); err != nil || !ok || state.Active || state.Status != sessionruntime.RunIntentCancelled || state.RunID != intent.RunID {
+		t.Fatalf("canonical run state after cancellation = %+v ok=%v err=%v", state, ok, err)
+	}
+	assertSessionsV3CancelledRunEvent(t, sessionSvc, created.ID, intent.RunID, "stop from test")
 	close(releaseLate)
 	if !server.WaitForInFlightRuns(2 * time.Second) {
 		t.Fatalf("executor did not drain after active cancel")
@@ -947,7 +1514,7 @@ func TestSessionsV3PrimaryRunStopCancelsBeforeExecutorStart(t *testing.T) {
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "queued-cancel-create", "queued cancel", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "queued-cancel-message", "cancel before start")
 	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentPendingExecutor)
-	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/run/stop", bytes.NewBufferString(fmt.Sprintf(`{"type":"run.stop","run_id":%q}`, intent.RunID)))
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/run/stop", bytes.NewBufferString(fmt.Sprintf(`{"type":"run.stop","run_id":%q,"target_swarm_id":"host-swarm-id"}`, intent.RunID)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
@@ -964,6 +1531,7 @@ func TestSessionsV3PrimaryRunStopCancelsBeforeExecutorStart(t *testing.T) {
 	if cancelled.RunID != intent.RunID || cancelled.BlockedReason != sessionV3RunStopDefaultReason {
 		t.Fatalf("cancelled intent = %+v", cancelled)
 	}
+	assertSessionsV3CancelledRunEvent(t, sessionSvc, created.ID, intent.RunID, sessionV3RunStopDefaultReason)
 	if !server.WaitForInFlightRuns(2 * time.Second) {
 		t.Fatalf("executor did not drain after queued cancel")
 	}
@@ -976,6 +1544,46 @@ func TestSessionsV3PrimaryRunStopCancelsBeforeExecutorStart(t *testing.T) {
 	}
 	if len(messages) != 1 || messages[0].Role != "user" {
 		t.Fatalf("messages after queued cancel = %+v", messages)
+	}
+}
+
+func TestSessionsV3PrimaryRunStopRequiresPrimaryTarget(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{text: "should not run"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 500 * time.Millisecond
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "target-stop-create", "target stop", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "target-stop-message", "validate stop target")
+	intent := waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentPendingExecutor)
+
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "missing target", body: fmt.Sprintf(`{"type":"run.stop","run_id":%q}`, intent.RunID), want: "target_swarm_id is required"},
+		{name: "wrong target", body: fmt.Sprintf(`{"type":"run.stop","run_id":%q,"target_swarm_id":"child-swarm"}`, intent.RunID), want: "child-swarm"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/run/stop", bytes.NewBufferString(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), tc.want) {
+				t.Fatalf("stop status/body = %d %s, want 400 containing %q", rec.Code, rec.Body.String(), tc.want)
+			}
+		})
+	}
+	current, ok, err := sessionSvc.GetSessionRunIntent(created.ID, intent.RunID)
+	if err != nil || !ok {
+		t.Fatalf("get run intent after rejected stop ok=%v err=%v", ok, err)
+	}
+	if current.Status != sessionruntime.RunIntentPendingExecutor {
+		t.Fatalf("run status after rejected stop = %q, want pending_executor", current.Status)
 	}
 }
 
@@ -1012,6 +1620,335 @@ func TestSessionsV3PrimaryPostReturnsBeforeModelCompletion(t *testing.T) {
 	if len(listed) != 2 || listed[0].Role != "user" || listed[1].Role != "assistant" {
 		t.Fatalf("GET /messages after completion = %+v", listed)
 	}
+}
+
+func TestV3PrimaryAssistantTenThousandDeltasEndToEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stress timing is calibrated for unix CI")
+	}
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server.v3LivePatchEnabled = true
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "primary-10k-create", "primary 10k", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+
+	liveSub := server.v3LiveHub.subscribe()
+	defer server.v3LiveHub.unsubscribe(liveSub)
+	server.v3LiveHub.replaceSessions(liveSub, testPrincipal().AccountScopeID, []string{created.ID})
+
+	const deltaCount = 10000
+	expected := sessionsV3PrimaryStressExpectedText(deltaCount)
+	allDeltasEmitted := make(chan struct{})
+	runner := installSessionsV3TestProvider(server, expected)
+	runner.handler = func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		for i := 0; i < deltaCount; i++ {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: sessionsV3PrimaryStressChunk(i)})
+		}
+		close(allDeltasEmitted)
+		return provideriface.Response{Text: expected, StopReason: "stop"}, nil
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	writer := newSessionsV3BlockingDurableProgressWriter(sessionV3ExecutorDurableProgressWriter{exec: exec})
+	exec.durableProgressWriterForTest = writer
+	server.v3SessionExecutor = exec
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "primary-10k-message", "stream ten thousand")
+	select {
+	case <-writer.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("durable writer was not entered")
+	}
+	select {
+	case <-allDeltasEmitted:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("provider callbacks did not finish while durable writer was blocked")
+	}
+
+	patches := liveSub.drain(16, 64<<10)
+	if len(patches) != 1 {
+		t.Fatalf("live patches before release = %d, want one coalesced patch", len(patches))
+	}
+	patch := patches[0]
+	if patch.Text != expected || patch.LiveSeqStart != 1 || patch.LiveSeqEnd != deltaCount || patch.OffsetStart != 0 || patch.OffsetEnd != uint64(len([]byte(expected))) {
+		t.Fatalf("live patch before release = seq %d-%d offsets %d-%d text bytes %d", patch.LiveSeqStart, patch.LiveSeqEnd, patch.OffsetStart, patch.OffsetEnd, len([]byte(patch.Text)))
+	}
+
+	close(writer.release)
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	var assistantMessages []pebblestore.MessageSnapshot
+	for _, message := range messages {
+		if message.Role == "assistant" {
+			assistantMessages = append(assistantMessages, message)
+		}
+	}
+	if len(assistantMessages) != 1 || assistantMessages[0].Content != expected {
+		t.Fatalf("assistant messages = %+v", assistantMessages)
+	}
+	metadataOffset, ok := sessionV3NumericMetadataUint64ForTest(assistantMessages[0].Metadata, "stream_offset_end")
+	if !ok || metadataOffset != uint64(len([]byte(expected))) {
+		t.Fatalf("assistant stream_offset_end metadata = %+v, want %d", assistantMessages[0].Metadata, len([]byte(expected)))
+	}
+	writer.mu.Lock()
+	assistantCalls := append([]sessionV3AssistantProgress(nil), writer.assistantCalls...)
+	writer.mu.Unlock()
+	if len(assistantCalls) == 0 {
+		t.Fatalf("durable writer recorded no assistant checkpoints")
+	}
+	var offset uint64
+	for index, call := range assistantCalls {
+		if call.OffsetStart != offset || call.OffsetEnd <= call.OffsetStart {
+			t.Fatalf("assistant checkpoint %d offsets %d-%d after %d", index, call.OffsetStart, call.OffsetEnd, offset)
+		}
+		offset = call.OffsetEnd
+	}
+	if offset != uint64(len([]byte(expected))) {
+		t.Fatalf("durable checkpoint final offset = %d, want %d", offset, len([]byte(expected)))
+	}
+}
+
+func TestV3PrimaryAssistantSlowBrowserDoesNotSlowProvider(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server.v3LivePatchEnabled = true
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "primary-slow-browser-create", "primary slow browser", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+
+	slowSub := server.v3LiveHub.subscribe()
+	defer server.v3LiveHub.unsubscribe(slowSub)
+	fastSub := server.v3LiveHub.subscribe()
+	defer server.v3LiveHub.unsubscribe(fastSub)
+	server.v3LiveHub.replaceSessions(slowSub, testPrincipal().AccountScopeID, []string{created.ID})
+	server.v3LiveHub.replaceSessions(fastSub, testPrincipal().AccountScopeID, []string{created.ID})
+
+	const deltaCount = 70000
+	expected := strings.Repeat("x", deltaCount)
+	allDeltasEmitted := make(chan struct{})
+	fastDone := make(chan string, 1)
+	stopFast := make(chan struct{})
+	go func() {
+		var builder strings.Builder
+		for {
+			for _, patch := range fastSub.drain(16, 64<<10) {
+				builder.WriteString(patch.Text)
+			}
+			if builder.Len() >= len(expected) {
+				fastDone <- builder.String()
+				return
+			}
+			select {
+			case <-fastSub.notify:
+			case <-stopFast:
+				fastDone <- builder.String()
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}()
+	defer close(stopFast)
+
+	runner := installSessionsV3TestProvider(server, expected)
+	runner.handler = func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		for i := 0; i < deltaCount; i++ {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "x"})
+		}
+		close(allDeltasEmitted)
+		return provideriface.Response{Text: expected, StopReason: "stop"}, nil
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	writer := newSessionsV3BlockingDurableProgressWriter(sessionV3ExecutorDurableProgressWriter{exec: exec})
+	exec.durableProgressWriterForTest = writer
+	server.v3SessionExecutor = exec
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "primary-slow-browser-message", "stream past slow browser")
+	select {
+	case <-writer.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("durable writer was not entered")
+	}
+	select {
+	case <-allDeltasEmitted:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("provider callbacks did not finish before slow-browser handling")
+	}
+	select {
+	case slow := <-slowSub.slow:
+		if strings.TrimSpace(slow.Reason) == "" {
+			t.Fatalf("slow subscriber reason is empty")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("slow subscriber did not overflow locally")
+	}
+	select {
+	case got := <-fastDone:
+		if got != expected {
+			t.Fatalf("fast subscriber text len=%d want=%d", len(got), len(expected))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("fast subscriber did not continue while slow subscriber overflowed")
+	}
+
+	close(writer.release)
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 2 || messages[1].Role != "assistant" || messages[1].Content != expected {
+		t.Fatalf("canonical messages = %+v", messages)
+	}
+}
+
+func TestV3PrimaryAssistantLiveWebSocketContinuesWhileDurableBlocked(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server.v3LivePatchEnabled = true
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "primary-live-ws-create", "primary live websocket", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	hello := readV3RealtimeFrameIncludingHello(t, conn)
+	if !containsV3RealtimeCapability(hello.Capabilities, V3RealtimeCapabilityLivePatchV1) {
+		t.Fatalf("hello capabilities = %+v, want live_patch_v1", hello.Capabilities)
+	}
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, 1), Capabilities: []string{V3RealtimeCapabilityLivePatchV1}, Subscriptions: []V3RealtimeSubscriptionRequest{{SessionID: created.ID, SubscriptionID: "sub-primary-live-ws"}}})
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.ID, 0)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.ID, 1)
+
+	const deltaCount = 10000
+	expected := sessionsV3PrimaryStressExpectedText(deltaCount)
+	allDeltasEmitted := make(chan struct{})
+	runner := installSessionsV3TestProvider(server, expected)
+	runner.handler = func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		for i := 0; i < deltaCount; i++ {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: sessionsV3PrimaryStressChunk(i)})
+		}
+		close(allDeltasEmitted)
+		return provideriface.Response{Text: expected, StopReason: "stop"}, nil
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	writer := newSessionsV3BlockingDurableProgressWriter(sessionV3ExecutorDurableProgressWriter{exec: exec})
+	exec.durableProgressWriterForTest = writer
+	server.v3SessionExecutor = exec
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "primary-live-ws-message", "stream over websocket")
+	select {
+	case <-writer.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("durable writer was not entered")
+	}
+	select {
+	case <-allDeltasEmitted:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("provider callbacks did not finish while durable writer was blocked")
+	}
+	var liveText strings.Builder
+	var liveSeqEnd uint64
+	var liveOffsetEnd uint64
+	for liveText.Len() < len([]byte(expected)) {
+		live := readV3RealtimeLiveFrameSkippingDurableForTest(t, conn)
+		if live.Live.LiveSeqStart != liveSeqEnd+1 || live.Live.OffsetStart != liveOffsetEnd {
+			t.Fatalf("websocket live gap: got seq %d-%d offset %d-%d after seq=%d offset=%d", live.Live.LiveSeqStart, live.Live.LiveSeqEnd, live.Live.OffsetStart, live.Live.OffsetEnd, liveSeqEnd, liveOffsetEnd)
+		}
+		liveText.WriteString(live.Live.Text)
+		liveSeqEnd = live.Live.LiveSeqEnd
+		liveOffsetEnd = live.Live.OffsetEnd
+	}
+	if liveText.String() != expected || liveSeqEnd != deltaCount || liveOffsetEnd != uint64(len([]byte(expected))) {
+		t.Fatalf("websocket live stream seq=%d offset=%d text bytes=%d", liveSeqEnd, liveOffsetEnd, liveText.Len())
+	}
+	close(writer.release)
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 2 || messages[1].Role != "assistant" || messages[1].Content != expected {
+		t.Fatalf("canonical messages = %+v", messages)
+	}
+}
+
+func sessionsV3PrimaryStressChunk(i int) string {
+	if i%1000 == 0 {
+		return "🌍"
+	}
+	return "x"
+}
+
+func sessionsV3PrimaryStressExpectedText(deltaCount int) string {
+	var builder strings.Builder
+	for i := 0; i < deltaCount; i++ {
+		builder.WriteString(sessionsV3PrimaryStressChunk(i))
+	}
+	return builder.String()
+}
+
+func sessionV3NumericMetadataUint64ForTest(metadata map[string]any, key string) (uint64, bool) {
+	value, ok := metadata[key]
+	if !ok {
+		return 0, false
+	}
+	switch typed := value.(type) {
+	case uint64:
+		return typed, true
+	case int:
+		if typed < 0 {
+			return 0, false
+		}
+		return uint64(typed), true
+	case int64:
+		if typed < 0 {
+			return 0, false
+		}
+		return uint64(typed), true
+	case float64:
+		if typed < 0 || typed != float64(uint64(typed)) {
+			return 0, false
+		}
+		return uint64(typed), true
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err != nil || parsed < 0 {
+			return 0, false
+		}
+		return uint64(parsed), true
+	default:
+		return 0, false
+	}
+}
+
+func readV3RealtimeLiveFrameSkippingDurableForTest(t *testing.T, conn *gorillaws.Conn) V3RealtimeLiveMessage {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+			t.Fatalf("set read deadline: %v", err)
+		}
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			continue
+		}
+		var base struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(raw, &base); err != nil {
+			t.Fatalf("decode realtime frame %s: %v", string(raw), err)
+		}
+		if base.Kind != V3RealtimeKindLivePatch {
+			continue
+		}
+		var frame V3RealtimeLiveMessage
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			t.Fatalf("decode live frame %s: %v", string(raw), err)
+		}
+		if err := ValidateV3RealtimeLiveMessage(frame); err != nil {
+			t.Fatalf("invalid live frame %s: %v", string(raw), err)
+		}
+		return frame
+	}
+	t.Fatalf("timed out waiting for live.patch frame")
+	return V3RealtimeLiveMessage{}
 }
 
 func TestSessionsV3ExecutorEnabledByNormalServerStartup(t *testing.T) {
@@ -1072,6 +2009,70 @@ func waitForSessionsV3RunIntentStatus(t *testing.T, sessionSvc *sessionruntime.S
 	return sessionruntime.SessionRunIntent{}
 }
 
+func waitForSessionsV3SpecificRunIntentStatus(t *testing.T, sessionSvc *sessionruntime.Service, sessionID, runID, want string) sessionruntime.SessionRunIntent {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		intents, err := sessionSvc.Store().ListV3SessionRunIntents(sessionID, 0, 20)
+		if err != nil {
+			t.Fatalf("list run intents: %v", err)
+		}
+		for _, intent := range intents {
+			if intent.RunID == runID && intent.Status == want {
+				return intent
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	intents, _ := sessionSvc.Store().ListV3SessionRunIntents(sessionID, 0, 20)
+	t.Fatalf("run intent %q status %q not found: %+v", runID, want, intents)
+	return sessionruntime.SessionRunIntent{}
+}
+
+func currentSessionsV3RunIntentStatus(t *testing.T, sessionSvc *sessionruntime.Service, sessionID string) string {
+	t.Helper()
+	intents, err := sessionSvc.Store().ListV3SessionRunIntents(sessionID, 0, 10)
+	if err != nil {
+		t.Fatalf("list run intents: %v", err)
+	}
+	if len(intents) == 0 {
+		t.Fatalf("no run intents for session %q", sessionID)
+	}
+	return intents[0].Status
+}
+
+func assertSessionsV3CancelledRunEvent(t *testing.T, sessionSvc *sessionruntime.Service, sessionID, runID, reason string) {
+	t.Helper()
+	events, err := sessionSvc.ListSessionEvents(sessionID, 0, 50)
+	if err != nil {
+		t.Fatalf("list cancellation events: %v", err)
+	}
+	for _, event := range events {
+		if event.EventType != "session.run.cancelled" {
+			continue
+		}
+		var payload struct {
+			RunID     string `json:"run_id"`
+			Status    string `json:"status"`
+			Error     string `json:"error"`
+			RunIntent struct {
+				RunID         string `json:"run_id"`
+				Status        string `json:"status"`
+				BlockedReason string `json:"blocked_reason"`
+				EventSeq      uint64 `json:"event_seq"`
+			} `json:"run_intent"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode cancellation payload: %v payload=%s", err, string(event.Payload))
+		}
+		if payload.RunID == runID && payload.Status == sessionruntime.RunIntentCancelled && payload.RunIntent.RunID == runID && payload.RunIntent.Status == sessionruntime.RunIntentCancelled && payload.RunIntent.BlockedReason == reason && payload.RunIntent.EventSeq == event.Seq {
+			return
+		}
+		t.Fatalf("unexpected cancellation payload: event=%+v payload=%+v want_run=%q want_reason=%q", event, payload, runID, reason)
+	}
+	t.Fatalf("session.run.cancelled event for run %q not found in %+v", runID, events)
+}
+
 func waitForSessionsV3Title(t *testing.T, sessionSvc *sessionruntime.Service, sessionID, want string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -1100,7 +2101,8 @@ func sessionsV3EventsContainType(events []sessionruntime.SessionEvent, eventType
 
 func TestSessionsV3PrimaryMessageIsIdempotent(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-idempotent-create","workspace_path":"/workspace/cp4","title":"CP4","agent_name":"swarm"}`))
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/cp4")
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-idempotent-create","workspace_path":"/workspace/cp4","swarm_id":"host-swarm-id","workspace_binding_id":"`+bindingID+`","target_kind":"host","target_relationship":"self","title":"CP4","agent_name":"swarm"}`))
 	create.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
@@ -1150,7 +2152,8 @@ func TestSessionsV3PrimaryMessageIsIdempotent(t *testing.T) {
 
 func TestSessionsV3PrimaryConcurrentDistinctMessagesAllocateContiguousSeq(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-concurrent-create","workspace_path":"/workspace/cp4","title":"CP4","agent_name":"swarm"}`))
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/cp4")
+	create := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp4-concurrent-create","workspace_path":"/workspace/cp4","swarm_id":"host-swarm-id","workspace_binding_id":"`+bindingID+`","target_kind":"host","target_relationship":"self","title":"CP4","agent_name":"swarm"}`))
 	create.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(create))
@@ -1171,7 +2174,7 @@ func TestSessionsV3PrimaryConcurrentDistinctMessagesAllocateContiguousSeq(t *tes
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			body := fmt.Sprintf(`{"client_request_id":"cp4-concurrent-%02d","role":"user","content":"message %02d"}`, i, i)
+			body := fmt.Sprintf(`{"client_request_id":"cp4-concurrent-%02d","role":"user","content":"message %02d","dispatch_authority":{"runtime_swarm_id":"missing-runtime"}}`, i, i)
 			req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.Session.ID+"/messages", bytes.NewBufferString(body))
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
@@ -1220,7 +2223,8 @@ func TestSessionsV3PrimaryEventsReplayCursorAndRestart(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "sessions-v3-events.pebble")
 	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, storePath)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp5-create","workspace_path":"/workspace/cp5","title":"CP5","agent_name":"swarm"}`))
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/cp5")
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(`{"client_request_id":"cp5-create","workspace_path":"/workspace/cp5","swarm_id":"host-swarm-id","workspace_binding_id":"`+bindingID+`","target_kind":"host","target_relationship":"self","title":"CP5","agent_name":"swarm"}`))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
@@ -1234,7 +2238,7 @@ func TestSessionsV3PrimaryEventsReplayCursorAndRestart(t *testing.T) {
 		t.Fatalf("decode create response: %v", err)
 	}
 	for i := 0; i < 2; i++ {
-		body := fmt.Sprintf(`{"client_request_id":"cp5-message-%d","role":"user","content":"cp5 message %d"}`, i, i)
+		body := fmt.Sprintf(`{"client_request_id":"cp5-message-%d","role":"user","content":"cp5 message %d","dispatch_authority":{"runtime_swarm_id":"missing-runtime"}}`, i, i)
 		messageReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.Session.ID+"/messages", bytes.NewBufferString(body))
 		messageReq.Header.Set("Content-Type", "application/json")
 		messageRec := httptest.NewRecorder()
@@ -1283,7 +2287,8 @@ func TestSessionsV3PrimaryEventsReplayCursorAndRestart(t *testing.T) {
 
 func TestSessionsV3PrimaryCreateIsIdempotent(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	body := `{"client_request_id":"same-create","workspace_path":"/workspace/v3","title":"V3 Idempotent","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/v3")
+	body := `{"client_request_id":"same-create","workspace_path":"/workspace/v3","swarm_id":"host-swarm-id","workspace_binding_id":"` + bindingID + `","target_kind":"host","target_relationship":"self","title":"V3 Idempotent","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
 
 	post := func() (int, string) {
 		req := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(body))
@@ -1329,8 +2334,8 @@ func TestSessionsV3PrimaryStreamReplaysDurableEventsAfterRestart(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "sessions-v3-stream.pebble")
 	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, storePath)
 	created := createSessionsV3PrimaryTestSession(t, server, "cp6-create", "CP6")
-	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp6-message-0", "cp6 message 0")
-	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp6-message-1", "cp6 message 1")
+	appendSessionsV3PrimaryTestUserMessage(t, server, created.ID, "cp6-message-0", "cp6 message 0")
+	appendSessionsV3PrimaryTestUserMessage(t, server, created.ID, "cp6-message-1", "cp6 message 1")
 	if err := closeStore(); err != nil {
 		t.Fatalf("close first store: %v", err)
 	}
@@ -1342,18 +2347,18 @@ func TestSessionsV3PrimaryStreamReplaysDurableEventsAfterRestart(t *testing.T) {
 	}))
 	defer httpServer.Close()
 
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || !started.OK || started.HighWatermarkSeq != 3 {
 		t.Fatalf("replay started = %+v", started)
 	}
-	first := readSessionsV3PrimaryStreamFrame(t, conn)
-	second := readSessionsV3PrimaryStreamFrame(t, conn)
+	first := retiredReadRouteFrame(t, conn)
+	second := retiredReadRouteFrame(t, conn)
 	if first.Type != "event" || first.Event == nil || first.Event.Seq != 2 || second.Event == nil || second.Event.Seq != 3 {
 		t.Fatalf("stream replay events first=%+v second=%+v", first, second)
 	}
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if complete.Type != "replay.complete" || complete.LastSeq != 3 || complete.NextSeq != 3 {
 		t.Fatalf("replay complete = %+v", complete)
 	}
@@ -1367,16 +2372,16 @@ func TestSessionsV3PrimaryStreamTransitionsFromReplayToLiveEvents(t *testing.T) 
 	}))
 	defer httpServer.Close()
 
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
 		t.Fatalf("initial frames started=%+v complete=%+v", started, complete)
 	}
 
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp6-live-message", "cp6 live message")
-	live := readSessionsV3PrimaryStreamFrame(t, conn)
+	live := retiredReadRouteFrame(t, conn)
 	if live.Type != "event" || live.Event == nil || live.Event.Seq != 2 || live.Event.EventType != "session.message.appended" {
 		t.Fatalf("live event = %+v", live)
 	}
@@ -1390,10 +2395,10 @@ func TestSessionsV3PrimaryParentStreamDeliversLiveChildEvents(t *testing.T) {
 	}))
 	defer httpServer.Close()
 
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, parent.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, parent.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
 		t.Fatalf("initial parent stream frames started=%+v complete=%+v", started, complete)
 	}
@@ -1415,7 +2420,7 @@ func TestSessionsV3PrimaryParentStreamDeliversLiveChildEvents(t *testing.T) {
 	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: child.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: "cp9-child-live-create", IdempotencyKey: "cp9-child-live-create", PayloadHash: "hash-cp9-child-live-create", Kind: sessionruntime.SessionMutationCreateSession, Session: &child, NowUnixMs: time.Now().UnixMilli()}); err != nil {
 		t.Fatalf("create child session mutation: %v", err)
 	}
-	created := readSessionsV3PrimaryStreamFrame(t, conn)
+	created := retiredReadRouteFrame(t, conn)
 	if created.Type != "event" || created.Relation != "child" || created.ParentSessionID != parent.ID || created.SessionID != child.ID || created.LineageKind != "delegated_subagent" || created.Event == nil || created.Event.SessionID != child.ID || created.Event.Seq != 1 || created.Event.EventType != "session.created" || created.AfterSeq != 1 || created.LastSeq != 1 {
 		t.Fatalf("child created frame = %+v", created)
 	}
@@ -1424,7 +2429,7 @@ func TestSessionsV3PrimaryParentStreamDeliversLiveChildEvents(t *testing.T) {
 	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: child.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: "cp9-child-live-message", IdempotencyKey: "cp9-child-live-message", PayloadHash: "hash-cp9-child-live-message", Kind: sessionruntime.SessionMutationAppendMessage, Message: &message, NowUnixMs: time.Now().UnixMilli()}); err != nil {
 		t.Fatalf("append child message mutation: %v", err)
 	}
-	progress := readSessionsV3PrimaryStreamFrame(t, conn)
+	progress := retiredReadRouteFrame(t, conn)
 	if progress.Type != "event" || progress.Relation != "child" || progress.ParentSessionID != parent.ID || progress.SessionID != child.ID || progress.Event == nil || progress.Event.SessionID != child.ID || progress.Event.Seq != 2 || progress.Event.EventType != "session.message.appended" || progress.AfterSeq != 1 || progress.LastSeq != 1 {
 		t.Fatalf("child progress frame = %+v", progress)
 	}
@@ -1459,12 +2464,12 @@ func TestSessionsV3PrimaryParentStreamReplaysKnownChildEvents(t *testing.T) {
 	}))
 	defer httpServer.Close()
 
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, parent.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, parent.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	childCreated := readSessionsV3PrimaryStreamFrame(t, conn)
-	childProgress := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
+	childCreated := retiredReadRouteFrame(t, conn)
+	childProgress := retiredReadRouteFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || started.HighWatermarkSeq != 1 {
 		t.Fatalf("replay started = %+v", started)
 	}
@@ -1476,71 +2481,6 @@ func TestSessionsV3PrimaryParentStreamReplaysKnownChildEvents(t *testing.T) {
 	}
 	if complete.Type != "replay.complete" || complete.LastSeq != 1 {
 		t.Fatalf("replay complete = %+v", complete)
-	}
-}
-
-func TestSessionsV3PrimaryParentStreamChildGapDoesNotPoisonParentCursor(t *testing.T) {
-	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	parent := createSessionsV3PrimaryTestSession(t, server, "cp9-parent-child-gap-create", "CP9 parent child gap")
-	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		server.Handler().ServeHTTP(w, withTestPrincipal(r))
-	}))
-	defer httpServer.Close()
-
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, parent.ID, "after_seq=1")
-	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
-	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
-		t.Fatalf("initial parent stream frames started=%+v complete=%+v", started, complete)
-	}
-
-	principal := testPrincipal()
-	childID := "cp9-child-gap"
-	server.v3SessionStreams.registerLineage(sessionV3StreamLineage{ChildSessionID: childID, ParentSessionID: parent.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, LineageKind: "delegated_subagent"})
-	server.publishCommittedSessionV3Event(sessionruntime.SessionEvent{SessionID: childID, Seq: 2, EventType: "session.message.appended"})
-	childGap := readSessionsV3PrimaryStreamFrame(t, conn)
-	if childGap.Type != "cursor.error" || childGap.Relation != "child" || childGap.SessionID != childID || childGap.ParentSessionID != parent.ID || !strings.Contains(childGap.Error, "child refetch required") {
-		t.Fatalf("child gap frame = %+v", childGap)
-	}
-
-	postSessionsV3PrimaryTestMessage(t, server, parent.ID, "cp9-parent-after-child-gap-message", "parent still streams")
-	parentEvent := readSessionsV3PrimaryStreamFrame(t, conn)
-	if parentEvent.Type != "event" || parentEvent.Relation != "self" || parentEvent.SessionID != parent.ID || parentEvent.Event == nil || parentEvent.Event.Seq != 2 || parentEvent.Event.EventType != "session.message.appended" {
-		t.Fatalf("parent event after child gap = %+v", parentEvent)
-	}
-}
-
-func TestSessionsV3PrimaryStreamHubRoutesChildEventsOnlyToMatchingParentScope(t *testing.T) {
-	hub := newSessionV3StreamHub()
-	const parentID = "cp9-parent-scope"
-	const childID = "cp9-child-scope"
-	allowed := hub.subscribeScoped(parentID, "user-a", "account-a")
-	denied := hub.subscribeScoped(parentID, "user-b", "account-b")
-	unrelated := hub.subscribeScoped("cp9-unrelated-parent", "user-a", "account-a")
-	defer hub.unsubscribe(allowed)
-	defer hub.unsubscribe(denied)
-	defer hub.unsubscribe(unrelated)
-	hub.registerLineage(sessionV3StreamLineage{ChildSessionID: childID, ParentSessionID: parentID, UserID: "user-a", AccountScopeID: "account-a", LineageKind: "delegated_subagent"})
-
-	hub.publish(sessionruntime.SessionEvent{SessionID: childID, Seq: 1, EventType: "session.message.appended"})
-	select {
-	case routed := <-allowed.send:
-		if routed.Relation != "child" || routed.ParentSessionID != parentID || routed.Event.SessionID != childID {
-			t.Fatalf("allowed routed event = %+v", routed)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("matching parent subscriber did not receive child event")
-	}
-	select {
-	case routed := <-denied.send:
-		t.Fatalf("cross-account subscriber received child event: %+v", routed)
-	default:
-	}
-	select {
-	case routed := <-unrelated.send:
-		t.Fatalf("unrelated parent subscriber received child event: %+v", routed)
-	default:
 	}
 }
 
@@ -1556,10 +2496,10 @@ func TestSessionsV3PrimaryStreamPublishesExecutorCommittedEventsAndReplaysThem(t
 	}))
 	defer httpServer.Close()
 
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
 		t.Fatalf("initial frames started=%+v complete=%+v", started, complete)
 	}
@@ -1567,7 +2507,7 @@ func TestSessionsV3PrimaryStreamPublishesExecutorCommittedEventsAndReplaysThem(t
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp4-outbox-message", "stream committed assistant")
 	wantLive := []string{"session.message.appended", "session.assistant.started", "session.assistant.delta", "session.assistant.completed"}
 	for i, wantType := range wantLive {
-		frame := readSessionsV3PrimaryStreamFrame(t, conn)
+		frame := retiredReadRouteFrame(t, conn)
 		wantSeq := uint64(i + 2)
 		if frame.Type != "event" || frame.Event == nil || frame.Event.Seq != wantSeq || frame.Event.EventType != wantType {
 			t.Fatalf("live frame %d = %+v, want seq=%d type=%s", i, frame, wantSeq, wantType)
@@ -1582,26 +2522,104 @@ func TestSessionsV3PrimaryStreamPublishesExecutorCommittedEventsAndReplaysThem(t
 		t.Fatalf("messages after executor completion = %+v", messages)
 	}
 
-	replay := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=2")
+	replay := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=2")
 	defer replay.Close()
-	replayStarted := readSessionsV3PrimaryStreamFrame(t, replay)
+	replayStarted := retiredReadRouteFrame(t, replay)
 	if replayStarted.Type != "replay.started" || replayStarted.HighWatermarkSeq != 5 {
 		t.Fatalf("replay started = %+v", replayStarted)
 	}
 	for i, wantType := range []string{"session.assistant.started", "session.assistant.delta", "session.assistant.completed"} {
-		frame := readSessionsV3PrimaryStreamFrame(t, replay)
+		frame := retiredReadRouteFrame(t, replay)
 		wantSeq := uint64(i + 3)
 		if frame.Type != "event" || frame.Event == nil || frame.Event.Seq != wantSeq || frame.Event.EventType != wantType {
 			t.Fatalf("replay frame %d = %+v, want seq=%d type=%s", i, frame, wantSeq, wantType)
 		}
 	}
-	replayComplete := readSessionsV3PrimaryStreamFrame(t, replay)
+	replayComplete := retiredReadRouteFrame(t, replay)
 	if replayComplete.Type != "replay.complete" || replayComplete.LastSeq != 5 {
 		t.Fatalf("replay complete = %+v", replayComplete)
 	}
 }
 
-func TestSessionsV3PrimaryLiveStreamPublishesProviderToolProgressAndCommittedCompletion(t *testing.T) {
+func TestSessionsV3PrimaryStreamCarriesProviderReasoningEventsAndMessage(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := installSessionsV3TestProvider(server, "final answer after reasoning")
+	runner.handler = func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if onEvent != nil {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-1", Delta: "Inspecting"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-1", Delta: "Inspecting files"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "final answer after reasoning"})
+		}
+		return provideriface.Response{Text: "final answer after reasoning", StopReason: "stop"}, nil
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	exec.deltaFlushMaxDelay = time.Hour
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "reasoning-create", "reasoning stream", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
+	defer conn.Close()
+	_ = retiredReadRouteFrame(t, conn)
+	_ = retiredReadRouteFrame(t, conn)
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "reasoning-message", "think then answer")
+	seen := map[string]int{}
+	var reasoningDeltaPayload struct {
+		RunID        string `json:"run_id"`
+		Delta        string `json:"delta"`
+		ReasoningKey string `json:"reasoning_key"`
+	}
+	for {
+		frame := retiredReadRouteFrame(t, conn)
+		if frame.Type != "event" || frame.Event == nil {
+			continue
+		}
+		seen[frame.Event.EventType]++
+		if frame.Event.EventType == "session.reasoning.delta" {
+			var payload struct {
+				RunID        string `json:"run_id"`
+				Delta        string `json:"delta"`
+				ReasoningKey string `json:"reasoning_key"`
+			}
+			if err := json.Unmarshal(frame.Event.Payload, &payload); err != nil {
+				t.Fatalf("decode reasoning delta payload: %v", err)
+			}
+			reasoningDeltaPayload = payload
+		}
+		if frame.Event.EventType == "session.assistant.completed" {
+			break
+		}
+	}
+	for _, want := range []string{"session.reasoning.started", "session.reasoning.delta", "session.reasoning.completed"} {
+		if seen[want] == 0 {
+			t.Fatalf("missing %s in live stream; seen=%v", want, seen)
+		}
+	}
+	for _, unwanted := range []string{"session.tool.started", "session.tool.delta", "session.tool.completed"} {
+		if seen[unwanted] != 0 {
+			t.Fatalf("unexpected synthetic reasoning tool event %s in live stream; seen=%v", unwanted, seen)
+		}
+	}
+	if reasoningDeltaPayload.RunID == "" || reasoningDeltaPayload.Delta != "Inspecting files" || reasoningDeltaPayload.ReasoningKey != "summary-1" {
+		t.Fatalf("unexpected reasoning delta payload: %+v", reasoningDeltaPayload)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages after reasoning run: %v", err)
+	}
+	for i := range messages {
+		if messages[i].Role == "tool" && messages[i].Metadata["timeline_kind"] == "thinking" {
+			t.Fatalf("unexpected synthetic thinking tool message: %+v; all messages=%+v", messages[i], messages)
+		}
+	}
+}
+
+func TestSessionsV3PrimaryLiveStreamPublishesToolExecutionProgressAndCommittedCompletion(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()
 	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{
@@ -1626,10 +2644,10 @@ func TestSessionsV3PrimaryLiveStreamPublishesProviderToolProgressAndCommittedCom
 	}))
 	defer httpServer.Close()
 
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
 		t.Fatalf("initial stream frames started=%+v complete=%+v", started, complete)
 	}
@@ -1638,7 +2656,7 @@ func TestSessionsV3PrimaryLiveStreamPublishesProviderToolProgressAndCommittedCom
 	want := []string{"session.tool.started", "session.tool.delta", "session.tool.completed", "session.assistant.completed"}
 	seen := make([]string, 0, len(want))
 	for len(seen) < len(want) {
-		frame := readSessionsV3PrimaryStreamFrame(t, conn)
+		frame := retiredReadRouteFrame(t, conn)
 		if frame.Type != "event" || frame.Event == nil {
 			t.Fatalf("live stream frame = %+v, want event", frame)
 		}
@@ -1668,7 +2686,7 @@ func TestSessionsV3PrimaryLiveStreamPublishesPermissionEventsBeforeProviderToolS
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()
 	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{
-		{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-permission-ask", Name: "ask-user", Arguments: `{"question":"Continue?","options":["yes","no"]}`}}},
+		{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-permission-ask", Name: "ask-user", Arguments: `{"question":"Which sessions?","options":["All 8 listed sessions","Only active sessions"]}`}}},
 		{Text: "final answer after permission approval"},
 	}}
 	providers := registry.New()
@@ -1688,13 +2706,15 @@ func TestSessionsV3PrimaryLiveStreamPublishesPermissionEventsBeforeProviderToolS
 	}))
 	defer httpServer.Close()
 
-	created := createSessionsV3PrimaryHTTPTestSession(t, httpServer.URL, "permission-stream-create", "permission stream", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	created := createSessionsV3PrimaryHTTPTestSession(t, server, httpServer.URL, "permission-stream-create", "permission stream", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	conn := dialV3RealtimeStream(t, httpServer.URL)
 	defer conn.Close()
-	replayStarted := readSessionsV3PrimaryStreamFrame(t, conn)
-	replayComplete := readSessionsV3PrimaryStreamFrame(t, conn)
-	if replayStarted.Type != "replay.started" || replayComplete.Type != "replay.complete" {
-		t.Fatalf("initial stream replay frames = %+v %+v", replayStarted, replayComplete)
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: created.ID, SubscriptionID: "sub-permission-stream", EndpointCursor: signedV3RealtimeCursorForTest(t, server, 0)})
+	for {
+		frame := readV3RealtimeFrame(t, conn)
+		if frame.Kind == V3RealtimeKindReplayDone {
+			break
+		}
 	}
 
 	postSessionsV3PrimaryHTTPTestMessage(t, httpServer.URL, created.ID, "permission-stream-message", "ask before continuing")
@@ -1702,8 +2722,8 @@ func TestSessionsV3PrimaryLiveStreamPublishesPermissionEventsBeforeProviderToolS
 	var permissionID string
 	seen := make([]string, 0, 8)
 	for permissionID == "" {
-		frame := readSessionsV3PrimaryStreamFrame(t, conn)
-		if frame.Type != "event" || frame.Event == nil {
+		frame := readV3RealtimeFrame(t, conn)
+		if frame.Kind != V3RealtimeKindEvent || frame.Event == nil {
 			continue
 		}
 		eventType := strings.TrimSpace(frame.Event.EventType)
@@ -1735,7 +2755,8 @@ func TestSessionsV3PrimaryLiveStreamPublishesPermissionEventsBeforeProviderToolS
 		permissionID = payload.Permission.ID
 	}
 
-	resolvePayload := []byte(`{"action":"allow_once","reason":"ok","approved_arguments":"yes"}`)
+	const selectedAnswer = "All 8 listed sessions"
+	resolvePayload := []byte(`{"action":"allow_once","reason":"All 8 listed sessions"}`)
 	resp, err := http.Post(httpServer.URL+"/v3/sessions/"+created.ID+"/permissions/"+permissionID+"/resolve", "application/json", bytes.NewReader(resolvePayload))
 	if err != nil {
 		t.Fatalf("resolve permission over HTTP: %v", err)
@@ -1748,12 +2769,12 @@ func TestSessionsV3PrimaryLiveStreamPublishesPermissionEventsBeforeProviderToolS
 	wantSuffix := []string{"permission.updated", "session.tool.started", "session.tool.completed", "session.assistant.completed"}
 	seenSuffix := make([]string, 0, len(wantSuffix))
 	for len(seenSuffix) < len(wantSuffix) {
-		frame := readSessionsV3PrimaryStreamFrame(t, conn)
-		if frame.Type != "event" || frame.Event == nil {
+		frame := readV3RealtimeFrame(t, conn)
+		if frame.Kind != V3RealtimeKindEvent || frame.Event == nil {
 			continue
 		}
 		eventType := strings.TrimSpace(frame.Event.EventType)
-		if eventType == "session.message.appended" || eventType == "session.assistant.started" || eventType == "session.assistant.delta" {
+		if eventType == "session.message.appended" || eventType == "session.assistant.started" || eventType == "session.assistant.delta" || eventType == "session.output.streaming" || eventType == "permission.summary.updated" {
 			continue
 		}
 		seenSuffix = append(seenSuffix, eventType)
@@ -1777,6 +2798,9 @@ func TestSessionsV3PrimaryLiveStreamPublishesPermissionEventsBeforeProviderToolS
 	if runner.callCount != 2 {
 		t.Fatalf("provider call count = %d, want tool request plus final", runner.callCount)
 	}
+	if len(runner.requests) != 2 || !strings.Contains(fmt.Sprint(runner.requests[1].Input), selectedAnswer) || !strings.Contains(fmt.Sprint(runner.requests[1].Input), `"status":"answered"`) {
+		t.Fatalf("provider continuation input did not contain captured ask-user answer: %+v", runner.requests)
+	}
 }
 
 func TestSessionsV3PrimaryStreamDoesNotRepublishReplayedMutations(t *testing.T) {
@@ -1787,16 +2811,16 @@ func TestSessionsV3PrimaryStreamDoesNotRepublishReplayedMutations(t *testing.T) 
 	}))
 	defer httpServer.Close()
 
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || complete.Type != "replay.complete" || complete.LastSeq != 1 {
 		t.Fatalf("initial frames started=%+v complete=%+v", started, complete)
 	}
 
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "cp4-no-republish-message", "publish once")
-	live := readSessionsV3PrimaryStreamFrame(t, conn)
+	live := retiredReadRouteFrame(t, conn)
 	if live.Type != "event" || live.Event == nil || live.Event.Seq != 2 || live.Event.EventType != "session.message.appended" {
 		t.Fatalf("live event = %+v", live)
 	}
@@ -1814,72 +2838,18 @@ func TestSessionsV3PrimaryStreamCursorErrors(t *testing.T) {
 	}))
 	defer httpServer.Close()
 
-	ahead := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=2")
-	aheadFrame := readSessionsV3PrimaryStreamFrame(t, ahead)
+	ahead := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=2")
+	aheadFrame := retiredReadRouteFrame(t, ahead)
 	_ = ahead.Close()
 	if aheadFrame.Type != "cursor.error" || aheadFrame.OK || !strings.Contains(aheadFrame.Error, "refetch required") {
 		t.Fatalf("ahead cursor frame = %+v", aheadFrame)
 	}
 
-	malformed := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=not-a-number")
-	malformedFrame := readSessionsV3PrimaryStreamFrame(t, malformed)
+	malformed := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=not-a-number")
+	malformedFrame := retiredReadRouteFrame(t, malformed)
 	_ = malformed.Close()
 	if malformedFrame.Type != "error" || !strings.Contains(malformedFrame.Error, "after_seq") {
 		t.Fatalf("malformed cursor frame = %+v", malformedFrame)
-	}
-}
-
-func TestSessionsV3PrimaryStreamHubMarksSlowConsumerAndOtherSubscribersContinue(t *testing.T) {
-	hub := newSessionV3StreamHub()
-	const sessionID = "v3_test_slow_consumer"
-	slow := hub.subscribe(sessionID)
-	fast := hub.subscribe(sessionID)
-	if slow == nil || fast == nil {
-		t.Fatalf("subscribers were not created")
-	}
-	defer hub.unsubscribe(slow)
-	defer hub.unsubscribe(fast)
-
-	const eventCount = sessionV3StreamSubscriberBufSize + 2
-	for i := 0; i < eventCount; i++ {
-		hub.publish(sessionruntime.SessionEvent{SessionID: sessionID, Seq: uint64(i + 1), EventType: "session.message.appended"})
-		select {
-		case routed := <-fast.send:
-			if routed.Event.Seq != uint64(i+1) {
-				t.Fatalf("fast event %d seq = %d", i, routed.Event.Seq)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("fast subscriber did not receive event %d after slow subscriber was removed", i+1)
-		}
-	}
-
-	select {
-	case notice := <-slow.slow:
-		if notice.NextSeq == 0 || !strings.Contains(notice.Reason, "slow_consumer") {
-			t.Fatalf("slow consumer notice = %+v", notice)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("slow consumer was not marked when subscriber queue filled")
-	}
-
-	drainedSlow := 0
-	for {
-		select {
-		case <-slow.send:
-			drainedSlow++
-		default:
-			goto drained
-		}
-	}
-drained:
-	if drainedSlow != sessionV3StreamSubscriberBufSize {
-		t.Fatalf("slow subscriber buffered events = %d, want %d", drainedSlow, sessionV3StreamSubscriberBufSize)
-	}
-	hub.publish(sessionruntime.SessionEvent{SessionID: sessionID, Seq: eventCount + 1, EventType: "session.message.appended"})
-	select {
-	case event := <-slow.send:
-		t.Fatalf("slow subscriber received event after slow-consumer removal: %+v", event)
-	default:
 	}
 }
 
@@ -1909,11 +2879,11 @@ func TestSessionsV3PrimaryStandalonePathsWorkWithDispatchServicesDisabled(t *tes
 		server.Handler().ServeHTTP(w, withTestPrincipal(r))
 	}))
 	defer httpServer.Close()
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	started := readSessionsV3PrimaryStreamFrame(t, conn)
-	event := readSessionsV3PrimaryStreamFrame(t, conn)
-	complete := readSessionsV3PrimaryStreamFrame(t, conn)
+	started := retiredReadRouteFrame(t, conn)
+	event := retiredReadRouteFrame(t, conn)
+	complete := retiredReadRouteFrame(t, conn)
 	if started.Type != "replay.started" || event.Type != "event" || event.Event == nil || event.Event.Seq != 2 || complete.Type != "replay.complete" {
 		t.Fatalf("stream frames started=%+v event=%+v complete=%+v", started, event, complete)
 	}
@@ -1976,11 +2946,11 @@ func TestSessionsV3PrimaryStreamCapturesRealProviderMultiToolLoopContinuity(t *t
 	}))
 	defer httpServer.Close()
 
-	created := createSessionsV3PrimaryHTTPTestSession(t, httpServer.URL, "stream-trace-create", "stream trace", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	created := createSessionsV3PrimaryHTTPTestSession(t, server, httpServer.URL, "stream-trace-create", "stream trace", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	replayStarted := readSessionsV3PrimaryStreamFrame(t, conn)
-	replayComplete := readSessionsV3PrimaryStreamFrame(t, conn)
+	replayStarted := retiredReadRouteFrame(t, conn)
+	replayComplete := retiredReadRouteFrame(t, conn)
 	if replayStarted.Type != "replay.started" || replayComplete.Type != "replay.complete" {
 		t.Fatalf("initial stream replay frames = %+v %+v", replayStarted, replayComplete)
 	}
@@ -1989,7 +2959,7 @@ func TestSessionsV3PrimaryStreamCapturesRealProviderMultiToolLoopContinuity(t *t
 
 	var captured []sessionsV3RawStreamFrame
 	for {
-		capture := readSessionsV3PrimaryStreamRawFrame(t, conn, 3*time.Second)
+		capture := retiredReadRouteRawFrame(t, conn, 3*time.Second)
 		captured = append(captured, capture)
 		if capture.Frame.Type == "event" && capture.Frame.Event != nil && capture.Frame.Event.EventType == "session.assistant.completed" {
 			break
@@ -2068,6 +3038,73 @@ func TestSessionsV3PrimaryStreamCapturesRealProviderMultiToolLoopContinuity(t *t
 	sessionsV3AssertStreamStillOpenAfterCompletion(t, conn)
 }
 
+func TestSessionsV3PrimaryToolFailurePersistsDurableTerminalEvent(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{
+		{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-read-missing", Name: "read", Arguments: `{"path":"missing.txt"}`}}},
+		{Text: "final answer after failed tool"},
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	server.runner = runSvc
+	server.SetBypassPermissions(true)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert read-enabled swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "tool-failure-create", "tool failure", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	snapshotCursor := hydrateV3RealtimeSnapshotEndpointCursor(t, server, created.ID)
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "tool-failure-message", "read a missing file then answer")
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+
+	conn := dialV3RealtimeStreamWithQuery(t, httpServer.URL, "endpoint_cursor="+snapshotCursor+"&sessions="+created.ID)
+	defer conn.Close()
+	startedReplay := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, startedReplay, V3RealtimeKindReplayStart, created.ID, 0)
+	seen := make(map[string]int)
+	for {
+		frame := readV3RealtimeFrame(t, conn)
+		if frame.Kind == V3RealtimeKindReplayDone {
+			break
+		}
+		if frame.Kind != V3RealtimeKindEvent || frame.Event == nil {
+			continue
+		}
+		eventType := strings.TrimSpace(frame.Event.EventType)
+		seen[eventType]++
+		if eventType == "session.tool.failed" {
+			var payload map[string]any
+			if err := json.Unmarshal(frame.Event.Payload, &payload); err != nil {
+				t.Fatalf("decode failed tool payload: %v", err)
+			}
+			if payload["run_id"] == "" || payload["tool_name"] != "read" || payload["call_id"] != "call-read-missing" || payload["step_id"] != "step-1" || payload["tool_instance_id"] != "step-1:call-read-missing" || payload["status"] != "failed" || payload["recorded_at"] == nil || strings.TrimSpace(fmt.Sprint(payload["error"])) == "" {
+				t.Fatalf("failed tool payload = %+v", payload)
+			}
+		}
+	}
+	if seen["session.tool.started"] != 1 || seen["session.tool.failed"] != 1 || seen["session.tool.completed"] != 0 {
+		t.Fatalf("tool lifecycle counts = %+v, want one started and one failed terminal only", seen)
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 80)
+	if err != nil {
+		t.Fatalf("list events after failed tool: %v", err)
+	}
+	sessionsV3AssertToolIdentity(t, events, "session.tool.started")
+	sessionsV3AssertToolIdentity(t, events, "session.tool.failed")
+}
+
 func TestSessionsV3PrimaryStreamDisambiguatesReusedProviderToolCallIDs(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()
@@ -2100,11 +3137,11 @@ func TestSessionsV3PrimaryStreamDisambiguatesReusedProviderToolCallIDs(t *testin
 	}))
 	defer httpServer.Close()
 
-	created := createSessionsV3PrimaryHTTPTestSession(t, httpServer.URL, "stream-reused-call-create", "stream reused call IDs", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	created := createSessionsV3PrimaryHTTPTestSession(t, server, httpServer.URL, "stream-reused-call-create", "stream reused call IDs", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	conn := retiredDialRoute(t, httpServer.URL, created.ID, "after_seq=1")
 	defer conn.Close()
-	startedReplay := readSessionsV3PrimaryStreamFrame(t, conn)
-	completedReplay := readSessionsV3PrimaryStreamFrame(t, conn)
+	startedReplay := retiredReadRouteFrame(t, conn)
+	completedReplay := retiredReadRouteFrame(t, conn)
 	if startedReplay.Type != "replay.started" || completedReplay.Type != "replay.complete" || completedReplay.LastSeq != 1 {
 		t.Fatalf("initial stream replay frames = %+v %+v", startedReplay, completedReplay)
 	}
@@ -2123,7 +3160,7 @@ func TestSessionsV3PrimaryStreamDisambiguatesReusedProviderToolCallIDs(t *testin
 	var startedTools []toolIdentity
 	var completedTools []toolIdentity
 	for {
-		frame := readSessionsV3PrimaryStreamFrame(t, conn)
+		frame := retiredReadRouteFrame(t, conn)
 		if frame.Type != "event" || frame.Event == nil {
 			continue
 		}
@@ -2197,19 +3234,277 @@ func TestSessionsV3PrimaryStreamDisambiguatesReusedProviderToolCallIDs(t *testin
 	}
 }
 
-func TestSessionsV3PrimaryStreamHandlerDoesNotUseV2RunStreamOrRuntime(t *testing.T) {
-	body, err := os.ReadFile("sessions_v3_stream_ws.go")
-	if err != nil {
-		t.Fatalf("read sessions_v3_stream_ws.go: %v", err)
+func TestSessionsV3PrimaryPlanModeStartCheckpointPreflightIsPrimaryOnlyAndAtomic(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server.v3SessionExecutor = newSessionV3Executor(server)
+	created := createSessionsV3PrimaryTestSession(t, server, "plan-mode-primary-preflight-create", "plan mode primary preflight")
+
+	stored, ok, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get created session: ok=%v err=%v", ok, err)
 	}
-	for _, required := range []string{"ReplaySessionEvents", "GetSessionProjection", "handleSessionV3PrimaryStream", "sessionV3StreamHub"} {
-		if !strings.Contains(string(body), required) {
-			t.Fatalf("sessions_v3_stream_ws.go missing required V3 stream symbol %q", required)
+	stored.Metadata = map[string]any{
+		"owner_transport":                "retired_routed_session_peer",
+		"retired_host_workspace_path":    "/host/workspace",
+		"retired_runtime_workspace_path": "/runtime/workspace",
+		"retired_child_swarm_id":         "missing-child",
+		"retired_workspace_binding_id":   "binding-missing-route",
+	}
+	if err := sessionSvc.Store().UpdateSession(stored); err != nil {
+		t.Fatalf("store routed-looking v3 primary session metadata: %v", err)
+	}
+	assertNoRetiredSessionRouteMetadata(t, sessionSvc, created.ID)
+
+	initialDoc := &pebblestore.SessionPlanDocument{
+		ID:     "plan-primary-preflight",
+		Title:  "Plan primary preflight",
+		Status: "approved",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode:  sessionruntime.PlanExecutionPolicyModeAutomatic,
+			Shape: sessionruntime.PlanExecutionShapeCheckpointed,
+		},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID:     "cp-1",
+			Title:  "Checkpoint 1",
+			Status: sessionruntime.PlanCheckpointStatusPending,
+			Order:  1,
+		}},
+	}
+	if _, _, err := sessionSvc.SavePlanWithMetadata(created.ID, initialDoc.ID, initialDoc.Title, "# Plan", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: initialDoc}); err != nil {
+		t.Fatalf("save initial plan: %v", err)
+	}
+
+	legacyReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/plans/execution", bytes.NewBufferString(`{"action":"start_checkpoint","checkpoint_id":"cp-1"}`))
+	legacyReq.Header.Set("Content-Type", "application/json")
+	legacyRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(legacyRec, withTestPrincipal(legacyReq))
+	if legacyRec.Code != http.StatusBadRequest {
+		t.Fatalf("legacy plan execution status=%d want=%d body=%s", legacyRec.Code, http.StatusBadRequest, legacyRec.Body.String())
+	}
+	if !strings.Contains(legacyRec.Body.String(), "unknown sessions v3 path") {
+		t.Fatalf("legacy plan execution body = %s, want unknown path", legacyRec.Body.String())
+	}
+
+	server.runStreams = nil
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/plan-mode/checkpoints/cp-1/start", bytes.NewBufferString(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("plan-mode checkpoint start status=%d want=%d body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "run stream manager not configured") {
+		t.Fatalf("plan-mode checkpoint start body = %s, want primary run stream manager error", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "route") || strings.Contains(rec.Body.String(), "managed") {
+		t.Fatalf("plan-mode checkpoint start preflight returned non-primary routing error: %s", rec.Body.String())
+	}
+
+	planAfterFailure, ok, err := sessionSvc.GetPlan(created.ID, initialDoc.ID)
+	if err != nil || !ok || planAfterFailure.Document == nil {
+		t.Fatalf("get plan after failed preflight: ok=%v err=%v plan=%+v", ok, err, planAfterFailure)
+	}
+	checkpoint := planAfterFailure.Document.Checkpoints[0]
+	if checkpoint.Status != sessionruntime.PlanCheckpointStatusPending || checkpoint.AttemptID != "" || len(checkpoint.Attempts) != 0 {
+		t.Fatalf("failed preflight saved partial checkpoint advancement: %+v", checkpoint)
+	}
+
+	server.runStreams = newRunControlAllocator()
+	req = httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/plan-mode/checkpoints/cp-1/start", bytes.NewBufferString(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("plan-mode checkpoint start with primary runner status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	planAfterSuccess, ok, err := sessionSvc.GetPlan(created.ID, initialDoc.ID)
+	if err != nil || !ok || planAfterSuccess.Document == nil {
+		t.Fatalf("get plan after successful preflight: ok=%v err=%v plan=%+v", ok, err, planAfterSuccess)
+	}
+	checkpoint = planAfterSuccess.Document.Checkpoints[0]
+	if checkpoint.Status != sessionruntime.PlanCheckpointStatusInProgress || checkpoint.AttemptID == "" || len(checkpoint.Attempts) != 1 {
+		t.Fatalf("successful primary preflight did not save checkpoint start: %+v", checkpoint)
+	}
+	assertNoRetiredSessionRouteMetadata(t, sessionSvc, created.ID)
+}
+
+func TestSessionsV3PrimaryNextMessageUsesActiveFollowupCheckpointFreshContext(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{text: "checkpoint answer"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "followup-fresh-create", "followup fresh", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	doc := &pebblestore.SessionPlanDocument{
+		ID:                 "plan-followup-fresh",
+		Title:              "Plan followup fresh",
+		Status:             "approved",
+		ActiveCheckpointID: "cp-2",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode:  sessionruntime.PlanExecutionPolicyModeAutomatic,
+			Shape: sessionruntime.PlanExecutionShapeCheckpointed,
+		},
+		ExecutionState: &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateIdle, LastCheckpointID: "cp-1"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Done", Status: sessionruntime.PlanCheckpointStatusCompleted, Order: 1, Result: "done"},
+			{ID: "cp-2", Title: "Follow-up", Status: sessionruntime.PlanCheckpointStatusPending, Objective: "Use checkpoint context", Tasks: []string{"Use checkpoint context"}, Order: 2},
+		},
+	}
+	if _, _, err := sessionSvc.SavePlanWithMetadata(created.ID, doc.ID, doc.Title, "# Plan", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: doc}); err != nil {
+		t.Fatalf("save approved follow-up plan: %v", err)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "followup-fresh-message", "continue from the follow-up")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("server did not drain")
+	}
+
+	runner.mu.Lock()
+	request := runner.lastRequest
+	runner.mu.Unlock()
+	if len(request.Input) == 0 {
+		t.Fatalf("provider input is empty")
+	}
+	inputRaw, err := json.Marshal(request.Input)
+	if err != nil {
+		t.Fatalf("marshal provider input: %v", err)
+	}
+	input := string(inputRaw)
+	if strings.Contains(input, "continue from the follow-up") {
+		t.Fatalf("provider input used raw parent transcript instead of checkpoint fresh context: %s", input)
+	}
+	for _, required := range []string{"Deterministic checkpoint execution context", "Execute exactly one checkpoint: cp-2", "Use checkpoint context"} {
+		if !strings.Contains(input, required) {
+			t.Fatalf("provider input missing checkpoint fresh-context marker %q: %s", required, input)
 		}
 	}
-	for _, forbidden := range []string{"runStreamManager", "handleRunStream", "proxyManagedHostRunStream", "dispatchRemoteRuntime", "routedSessionTarget", "gorillaws"} {
+}
+
+func TestSessionsV3PrimaryNextMessageWithoutActiveCheckpointSplitUsesTranscriptContext(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{text: "normal answer"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "completed-checkpoint-create", "completed checkpoint", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	doc := &pebblestore.SessionPlanDocument{
+		ID:                 "plan-completed-checkpoint",
+		Title:              "Plan completed checkpoint",
+		Status:             "approved",
+		ActiveCheckpointID: "cp-1",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode:  sessionruntime.PlanExecutionPolicyModeAutomatic,
+			Shape: sessionruntime.PlanExecutionShapeCheckpointed,
+		},
+		ExecutionState: &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateCompleted, LastCheckpointID: "cp-1"},
+		Checkpoints:    []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Done", Status: sessionruntime.PlanCheckpointStatusCompleted, Order: 1}},
+	}
+	if _, _, err := sessionSvc.SavePlanWithMetadata(created.ID, doc.ID, doc.Title, "# Plan", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: doc}); err != nil {
+		t.Fatalf("save completed plan: %v", err)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "completed-checkpoint-message", "normal transcript message")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("server did not drain")
+	}
+
+	runner.mu.Lock()
+	request := runner.lastRequest
+	runner.mu.Unlock()
+	if len(request.Input) == 0 {
+		t.Fatalf("provider input is empty")
+	}
+	inputRaw, err := json.Marshal(request.Input)
+	if err != nil {
+		t.Fatalf("marshal provider input: %v", err)
+	}
+	input := string(inputRaw)
+	if !strings.Contains(input, "normal transcript message") {
+		t.Fatalf("provider input did not use normal transcript context: %s", input)
+	}
+	if strings.Contains(input, "Deterministic checkpoint execution context") || strings.Contains(input, "Execute exactly one checkpoint") {
+		t.Fatalf("normal transcript context unexpectedly used checkpoint fresh context: %s", input)
+	}
+}
+
+func TestSessionsV3PrimaryStreamHandlerDoesNotUseV2RunStreamOrRuntime(t *testing.T) {
+	body, err := os.ReadFile("retired per-session stream implementation")
+	if err != nil {
+		t.Fatalf("read retired per-session stream implementation: %v", err)
+	}
+	for _, required := range []string{"ListRealtimeOutboxAfter", "ListRealtimeOutboxForSessionAfterSeq", "retiredRouteRoute", "v3RealtimeOutbox"} {
+		if !strings.Contains(string(body), required) {
+			t.Fatalf("retired per-session stream implementation missing required outbox-backed V3 stream symbol %q", required)
+		}
+	}
+	for _, forbidden := range []string{"ReplaySessionEvents", "sessionV3StreamHub", "runControlAllocator", "handleRunStream", "proxyManagedHostRunStream", "dispatchRemoteRuntime", "routedSessionTarget", "gorillaws"} {
 		if strings.Contains(string(body), forbidden) {
-			t.Fatalf("sessions_v3_stream_ws.go contains forbidden runtime/v2 stream symbol %q", forbidden)
+			t.Fatalf("retired per-session stream implementation contains forbidden runtime/v2 stream symbol %q", forbidden)
+		}
+	}
+}
+
+func TestSessionsV3PrimaryStreamRejectsDesktopSurfaceBeforeWebsocketUpgrade(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "desktop-stream-reject-create", "desktop stream reject")
+	req := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.ID+"/stream?surface=desktop&endpoint_cursor=cursor-1", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusGone {
+		t.Fatalf("desktop stream status=%d want=%d body=%s", rec.Code, http.StatusGone, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "/v3/realtime/stream") || strings.Contains(rec.Body.String(), "replay.started") {
+		t.Fatalf("desktop stream rejection body did not point at native realtime path: %s", rec.Body.String())
+	}
+}
+
+func TestSessionsV3PrimaryStreamRejectsLegacyResumeInputsInStrictMode(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "strict-stream-reject-create", "strict stream reject")
+	for _, query := range []string{"v3_strict=true&after_seq=1", "v3_strict=true&afterSeq=1", "v3_strict=true&afterRev=1", "v3_strict=true&lastEventSeq=1"} {
+		req := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.ID+"/stream?"+query, nil)
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("strict stream %q status=%d want=%d body=%s", query, rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "endpoint_cursor") || !strings.Contains(rec.Body.String(), "after_seq") {
+			t.Fatalf("strict stream %q rejection body missing cursor guidance: %s", query, rec.Body.String())
+		}
+	}
+}
+
+func TestSessionsV3PrimaryStreamDesktopV3StaticGuards(t *testing.T) {
+	body := readSourceFileForTest(t, "retired per-session stream implementation")
+	handler := sourceBetweenForTest(t, body, "func (s *Server) retiredRouteRoute", "func retiredRouteDesktopSurface")
+	for _, required := range []string{"retiredRouteDesktopSurface(r)", "retiredRouteStrictMode(r)", "requireSessionV3Access", "transportws.Accept"} {
+		if !strings.Contains(handler, required) {
+			t.Fatalf("retiredRouteRoute missing required Desktop V3 guard/access symbol %q", required)
+		}
+	}
+	if strings.Index(handler, "retiredRouteDesktopSurface(r)") > strings.Index(handler, "transportws.Accept") {
+		t.Fatalf("Desktop V3 stream surface check must happen before websocket upgrade")
+	}
+	for _, forbidden := range []string{"hydrateSessionsV3Primary", "BuildSessionWorkset", "sessionsV3WorksetRequest", "sessionsV3WorksetOptionsFromRequest", "sessionsV3WorksetResponseForResult"} {
+		if strings.Contains(handler, forbidden) {
+			t.Fatalf("retiredRouteRoute contains forbidden hydrate/workset dependency %q", forbidden)
+		}
+	}
+
+	desktopGuard := readSourceFileForTest(t, "../../../web/src/features/desktop/state/desktop-v3-transport-guard.spec.ts")
+	for _, required := range []string{"per-session V3 stream endpoint", "/v3/realtime/stream", "after_seq/afterSeq/afterRev"} {
+		if !strings.Contains(desktopGuard, required) {
+			t.Fatalf("Desktop V3 transport static guard missing %q", required)
 		}
 	}
 }
@@ -2222,6 +3517,95 @@ func installSessionsV3TestProvider(server *Server, text string) *sessionsV3Recor
 	return runner
 }
 
+func seedSessionsV3PrimaryAuthority(t *testing.T, server *Server, workspacePath string) string {
+	t.Helper()
+	if server == nil || server.topology == nil || server.swarmStore == nil {
+		t.Fatal("server topology and swarm store are required")
+	}
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		t.Fatal("workspace path is required")
+	}
+	now := time.Now().UnixMilli()
+	if _, err := server.swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("put local node: %v", err)
+	}
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{SwarmID: "host-swarm-id", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "host-swarm", Role: "master", Relationship: "self", Status: "online", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("upsert local runtime: %v", err)
+	}
+	if _, err := server.topology.EnsureLocalSelfPlacementForPrincipal(testPrincipal().AccountScopeID, testPrincipal().UserID); err != nil {
+		t.Fatalf("ensure self placement: %v", err)
+	}
+	bindingID := "binding-v3-primary-" + strings.NewReplacer("/", "-", " ", "-", "_", "-").Replace(strings.Trim(workspacePath, "/"))
+	if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                       bindingID,
+		UserID:                          testPrincipal().UserID,
+		AccountScopeID:                  testPrincipal().AccountScopeID,
+		SourceWorkspaceID:               "workspace-v3-" + bindingID,
+		SourceWorkspaceGeneration:       1,
+		SourceWorkspacePath:             workspacePath,
+		SourceWorkspaceName:             filepath.Base(workspacePath),
+		DestinationRuntimeSwarmID:       "host-swarm-id",
+		DestinationAuthorityHostSwarmID: "host-swarm-id",
+		DestinationHostSwarmID:          "host-swarm-id",
+		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindHost,
+		DestinationWorkspacePath:        workspacePath,
+		PlacementGeneration:             1,
+		BindingGeneration:               1,
+		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
+		AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
+		MaterializationKind:             pebblestore.TopologyWorkspaceBindingMaterializationSource,
+		AttestedByHostSwarmID:           "host-swarm-id",
+		Writable:                        true,
+	}); err != nil {
+		t.Fatalf("upsert v3 binding: %v", err)
+	}
+	return bindingID
+}
+
+func assertNoSessionsForAccount(t *testing.T, sessionSvc *sessionruntime.Service) {
+	t.Helper()
+	sessions, err := sessionSvc.ListSessionsForAccount(testPrincipal().AccountScopeID, 10)
+	if err != nil || len(sessions) != 0 {
+		t.Fatalf("sessions = %+v err=%v, want none", sessions, err)
+	}
+}
+
+func assertNoRetiredSessionRouteMetadata(t *testing.T, sessionSvc *sessionruntime.Service, sessionID string) {
+	t.Helper()
+	session, ok, err := sessionSvc.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("get session %q: %v", sessionID, err)
+	}
+	if !ok {
+		t.Fatalf("session %q not found", sessionID)
+	}
+	for key := range session.Metadata {
+		parts := strings.Split(strings.ToLower(strings.TrimSpace(key)), "_")
+		if len(parts) > 1 && parts[0] == "swarm" && parts[1] == "routed" {
+			t.Fatalf("session %q contains retired route metadata %q", sessionID, key)
+		}
+	}
+}
+
+func mutateSessionsV3WorkspaceBinding(t *testing.T, server *Server, bindingID string, mutate func(*pebblestore.TopologyWorkspaceBindingRecord)) {
+	t.Helper()
+	if server == nil || server.topology == nil {
+		t.Fatal("server topology is required")
+	}
+	binding, ok, err := server.topology.GetWorkspaceBindingForAccount(testPrincipal().AccountScopeID, bindingID)
+	if err != nil {
+		t.Fatalf("get workspace binding %q: %v", bindingID, err)
+	}
+	if !ok {
+		t.Fatalf("workspace binding %q not found", bindingID)
+	}
+	mutate(&binding)
+	if _, err := server.topology.UpsertWorkspaceBinding(binding); err != nil {
+		t.Fatalf("upsert workspace binding %q: %v", bindingID, err)
+	}
+}
+
 func createSessionsV3PrimaryTestSession(t *testing.T, server *Server, clientRequestID, title string) pebblestore.SessionSnapshot {
 	t.Helper()
 	return createSessionsV3PrimaryTestSessionWithWorkspace(t, server, clientRequestID, title, "/workspace/cp6")
@@ -2229,7 +3613,8 @@ func createSessionsV3PrimaryTestSession(t *testing.T, server *Server, clientRequ
 
 func createSessionsV3PrimaryTestSessionWithWorkspace(t *testing.T, server *Server, clientRequestID, title, workspacePath string) pebblestore.SessionSnapshot {
 	t.Helper()
-	body := fmt.Sprintf(`{"client_request_id":%q,"workspace_path":%q,"title":%q,"agent_name":"swarm"}`, clientRequestID, workspacePath, title)
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, workspacePath)
+	body := fmt.Sprintf(`{"client_request_id":%q,"workspace_path":%q,"swarm_id":"host-swarm-id","workspace_binding_id":%q,"target_kind":"host","target_relationship":"self","title":%q,"agent_name":"swarm"}`, clientRequestID, workspacePath, bindingID, title)
 	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -2261,10 +3646,38 @@ func postSessionsV3PrimaryTestMessage(t *testing.T, server *Server, sessionID, c
 	}
 }
 
-func appendSessionsV3PrimaryTestSystemMessage(t *testing.T, server *Server, sessionID, clientRequestID, content string) {
+func appendSessionsV3PrimaryTestUserMessage(t *testing.T, server *Server, sessionID, clientRequestID, content string) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	message := pebblestore.MessageSnapshot{ID: "test-user-" + clientRequestID, Role: "user", Content: content, CreatedAt: now}
+	payloadHash, err := sessionV3ExecutorPayloadHash(sessionID, "test-user", sessionruntime.RunIntentRunning, "", "session.message.appended", clientRequestID+":"+content)
+	if err != nil {
+		t.Fatalf("hash user message payload: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		EventType:       "session.message.appended",
+		Message:         &message,
+		NowUnixMs:       now,
+	}); err != nil {
+		t.Fatalf("append user message: %v", err)
+	}
+}
+
+func appendSessionsV3PrimaryTestSystemMessage(t *testing.T, server *Server, sessionID, clientRequestID, content string, metadata ...map[string]any) {
 	t.Helper()
 	now := time.Now().UnixMilli()
 	message := pebblestore.MessageSnapshot{ID: "test-system-" + clientRequestID, Role: "system", Content: content, CreatedAt: now}
+	if len(metadata) > 0 {
+		message.Metadata = metadata[0]
+	}
 	payloadHash, err := sessionV3ExecutorPayloadHash(sessionID, "test-system", sessionruntime.RunIntentRunning, "", "session.message.appended", clientRequestID+":"+content)
 	if err != nil {
 		t.Fatalf("hash system message payload: %v", err)
@@ -2307,7 +3720,7 @@ func getSessionsV3PrimaryTestMessages(t *testing.T, server *Server, sessionID st
 	return payload.Messages
 }
 
-func dialSessionsV3PrimaryStream(t *testing.T, baseURL, sessionID, rawQuery string) *gorillaws.Conn {
+func retiredDialSessionsV3PrimaryStream(t *testing.T, baseURL, sessionID, rawQuery string) *gorillaws.Conn {
 	t.Helper()
 	wsURL := "ws" + strings.TrimPrefix(baseURL, "http") + "/v3/sessions/" + sessionID + "/stream"
 	if rawQuery != "" {
@@ -2323,7 +3736,7 @@ func dialSessionsV3PrimaryStream(t *testing.T, baseURL, sessionID, rawQuery stri
 	return conn
 }
 
-func readSessionsV3PrimaryStreamFrame(t *testing.T, conn *gorillaws.Conn) sessionV3StreamFrame {
+func retiredReadRouteFrame(t *testing.T, conn *gorillaws.Conn) sessionV3StreamFrame {
 	t.Helper()
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
@@ -2360,7 +3773,7 @@ type sessionsV3RawStreamFrame struct {
 	Frame sessionV3StreamFrame
 }
 
-func readSessionsV3PrimaryStreamRawFrame(t *testing.T, conn *gorillaws.Conn, timeout time.Duration) sessionsV3RawStreamFrame {
+func retiredReadRouteRawFrame(t *testing.T, conn *gorillaws.Conn, timeout time.Duration) sessionsV3RawStreamFrame {
 	t.Helper()
 	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
@@ -2392,14 +3805,19 @@ func sessionsV3AssertStreamStillOpenAfterCompletion(t *testing.T, conn *gorillaw
 	t.Fatalf("stream closed or errored immediately after assistant completion: %v", err)
 }
 
-func createSessionsV3PrimaryHTTPTestSession(t *testing.T, baseURL, clientRequestID, title, workspacePath string, pref pebblestore.ModelPreference) pebblestore.SessionSnapshot {
+func createSessionsV3PrimaryHTTPTestSession(t *testing.T, server *Server, baseURL, clientRequestID, title, workspacePath string, pref pebblestore.ModelPreference) pebblestore.SessionSnapshot {
 	t.Helper()
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, workspacePath)
 	payload := map[string]any{
-		"client_request_id": clientRequestID,
-		"workspace_path":    workspacePath,
-		"title":             title,
-		"agent_name":        "swarm",
-		"preference":        pref,
+		"client_request_id":    clientRequestID,
+		"workspace_path":       workspacePath,
+		"swarm_id":             "host-swarm-id",
+		"workspace_binding_id": bindingID,
+		"target_kind":          "host",
+		"target_relationship":  "self",
+		"title":                title,
+		"agent_name":           "swarm",
+		"preference":           pref,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -2411,14 +3829,19 @@ func createSessionsV3PrimaryHTTPTestSession(t *testing.T, baseURL, clientRequest
 	}
 	defer resp.Body.Close()
 	var created struct {
-		OK      bool                          `json:"ok"`
-		Session pebblestore.SessionSnapshot   `json:"session"`
-		Events  []sessionruntime.SessionEvent `json:"events"`
+		OK        bool                        `json:"ok"`
+		SessionID string                      `json:"session_id"`
+		Session   pebblestore.SessionSnapshot `json:"session"`
+		Mutation  struct {
+			Event struct {
+				EventType string `json:"event_type"`
+			} `json:"event"`
+		} `json:"mutation"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
 		t.Fatalf("decode HTTP create response: %v", err)
 	}
-	if resp.StatusCode != http.StatusOK || !created.OK || strings.TrimSpace(created.Session.ID) == "" || len(created.Events) != 1 || created.Events[0].EventType != "session.created" {
+	if resp.StatusCode != http.StatusOK || !created.OK || strings.TrimSpace(created.SessionID) == "" || created.Session.ID != created.SessionID || created.Mutation.Event.EventType != "session.created" {
 		t.Fatalf("HTTP create response status=%d payload=%+v", resp.StatusCode, created)
 	}
 	return created.Session
@@ -2584,6 +4007,10 @@ func newSessionsV3PrimaryAPITestServer(t *testing.T, storePath string) (*Server,
 	permissionSvc.SetSessionResolver(sessionSvc)
 	runSvc := runruntime.NewService(sessionSvc, modelSvc, providers, tool.NewRuntime(1), permissionSvc, agentSvc, nil, nil)
 	server := NewServer(nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, providers, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
+	topologyStore := pebblestore.NewTopologyStore(store)
+	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
+	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore))
+	server.SetSwarmStore(swarmStore)
 	server.v3SessionExecutor = nil
 	closeStore := func() error {
 		server.CancelInFlightRuns()
@@ -2684,6 +4111,162 @@ func TestSessionsV3ExecutorCoalescesProviderDeltas(t *testing.T) {
 	}
 }
 
+func TestSessionsV3ExecutorCoalescesProviderReasoningDeltas(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := installSessionsV3TestProvider(server, "final answer after coalesced reasoning")
+	runner.handler = func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if onEvent != nil {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-1", Delta: "Inspecting"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-1", Delta: "Inspecting files"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-1", Delta: "Inspecting files carefully"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "final answer after coalesced reasoning"})
+		}
+		return provideriface.Response{Text: "final answer after coalesced reasoning", StopReason: "stop"}, nil
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	exec.reasoningDeltaFlushMaxBytes = 1024
+	exec.reasoningDeltaFlushMaxDelay = time.Hour
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "coalesced-reasoning-create", "coalesced reasoning", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "coalesced-reasoning-message", "coalesce reasoning deltas")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var reasoningDeltas []sessionruntime.SessionEvent
+	for _, event := range events {
+		if event.EventType == "session.reasoning.delta" {
+			reasoningDeltas = append(reasoningDeltas, event)
+		}
+	}
+	if len(reasoningDeltas) != 1 {
+		t.Fatalf("reasoning delta events = %d, want one coalesced event events=%+v", len(reasoningDeltas), events)
+	}
+	var payload struct {
+		Delta     string `json:"delta"`
+		DeltaMode string `json:"delta_mode"`
+	}
+	if err := json.Unmarshal(reasoningDeltas[0].Payload, &payload); err != nil {
+		t.Fatalf("decode reasoning delta payload: %v", err)
+	}
+	if payload.Delta != "Inspecting files carefully" || payload.DeltaMode != "replace" {
+		t.Fatalf("reasoning delta payload = %+v, want initial replacement", payload)
+	}
+}
+
+func TestSessionV3MergeReasoningSnapshotOrChunkKeepsLatestSnapshot(t *testing.T) {
+	if got := sessionV3MergeReasoningSnapshotOrChunk("thinking through files", "thinking"); got != "thinking through files" {
+		t.Fatalf("shorter stale reasoning snapshot regressed state to %q", got)
+	}
+	if got := sessionV3MergeReasoningSnapshotOrChunk("thinking", "thinking through files"); got != "thinking through files" {
+		t.Fatalf("longer reasoning snapshot = %q, want latest snapshot", got)
+	}
+	if got := sessionV3MergeReasoningSnapshotOrChunk("old draft", "replacement draft"); got != "replacement draft" {
+		t.Fatalf("non-prefix reasoning snapshot = %q, want replacement", got)
+	}
+}
+
+func TestSessionsV3ExecutorReasoningSnapshotSizeFlushUsesIncrementalChange(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	baseSnapshot := strings.Repeat("a", 16)
+	finalSnapshot := baseSnapshot + "bcd"
+	runner := installSessionsV3TestProvider(server, "final answer after long reasoning snapshot")
+	runner.handler = func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if onEvent != nil {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-long", Delta: baseSnapshot})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-long", Delta: baseSnapshot + "b"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-long", Delta: baseSnapshot + "bc"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-long", Delta: finalSnapshot})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "final answer after long reasoning snapshot"})
+		}
+		return provideriface.Response{Text: "final answer after long reasoning snapshot", StopReason: "stop"}, nil
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	exec.reasoningDeltaFlushMaxBytes = len(baseSnapshot)
+	exec.reasoningDeltaFlushMaxDelay = time.Hour
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "long-reasoning-snapshot-create", "long reasoning snapshot", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "long-reasoning-snapshot-message", "coalesce long reasoning snapshots")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 50)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var got []string
+	for _, event := range events {
+		if event.EventType != "session.reasoning.delta" {
+			continue
+		}
+		var payload struct {
+			Delta     string `json:"delta"`
+			DeltaMode string `json:"delta_mode"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode reasoning delta payload: %v", err)
+		}
+		got = append(got, payload.DeltaMode+":"+payload.Delta)
+	}
+	if len(got) != 2 || got[0] != "replace:"+baseSnapshot || got[1] != "append:bcd" {
+		t.Fatalf("reasoning deltas = %#v, want replacement then bounded suffix", got)
+	}
+}
+
+func TestSessionsV3ExecutorReasoningSnapshotNewlineFlushUsesIncrementalChange(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	firstSnapshot := "line one\nline two"
+	finalSnapshot := firstSnapshot + " plus final detail"
+	runner := installSessionsV3TestProvider(server, "final answer after newline reasoning snapshot")
+	runner.handler = func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if onEvent != nil {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-newline", Delta: firstSnapshot})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-newline", Delta: firstSnapshot + " plus"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-newline", Delta: finalSnapshot})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "final answer after newline reasoning snapshot"})
+		}
+		return provideriface.Response{Text: "final answer after newline reasoning snapshot", StopReason: "stop"}, nil
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	exec.reasoningDeltaFlushMaxBytes = 1024
+	exec.reasoningDeltaFlushMaxDelay = time.Hour
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "newline-reasoning-snapshot-create", "newline reasoning snapshot", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "newline-reasoning-snapshot-message", "coalesce newline reasoning snapshots")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 50)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var got []string
+	for _, event := range events {
+		if event.EventType != "session.reasoning.delta" {
+			continue
+		}
+		var payload struct {
+			Delta string `json:"delta"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode reasoning delta payload: %v", err)
+		}
+		got = append(got, payload.Delta)
+	}
+	if len(got) != 1 || got[0] != finalSnapshot {
+		t.Fatalf("reasoning snapshot deltas = %#v, want [%q]", got, finalSnapshot)
+	}
+}
+
 func TestSessionsV3ExecutorFlushesProviderDeltaAtSizeBoundary(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{deltas: []string{"ab", "cd", "ef"}, text: "abcdef"}
@@ -2717,8 +4300,8 @@ func TestSessionsV3ExecutorFlushesProviderDeltaAtSizeBoundary(t *testing.T) {
 		}
 		got = append(got, payload.Delta)
 	}
-	if strings.Join(got, "|") != "abcd|ef" {
-		t.Fatalf("coalesced deltas = %#v, want [abcd ef]", got)
+	if strings.Join(got, "|") != "abcdef" {
+		t.Fatalf("coalesced deltas = %#v, want one sink aggregate", got)
 	}
 }
 
@@ -2795,6 +4378,62 @@ func TestSessionsV3ExecutorRecordsFailurePayload(t *testing.T) {
 	}
 }
 
+func TestSessionsV3AssistantCompletedCarriesRunIdentity(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := installSessionsV3TestProvider(server, "assistant final with run identity")
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "assistant-run-identity-create", "run identity", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "assistant-run-identity-message", "complete with run identity")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+
+	if runner.callCount != 1 {
+		t.Fatalf("provider call count = %d, want 1", runner.callCount)
+	}
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+
+	var completed *sessionruntime.SessionEvent
+	for _, event := range events {
+		if event.EventType == "session.assistant.completed" {
+			copy := event
+			completed = &copy
+		}
+	}
+	if completed == nil {
+		t.Fatalf("missing session.assistant.completed event: %+v", events)
+	}
+
+	var payload struct {
+		RunID     string `json:"run_id"`
+		RunIntent struct {
+			RunID string `json:"run_id"`
+		} `json:"run_intent"`
+		Message struct {
+			ID      string `json:"id"`
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(completed.Payload, &payload); err != nil {
+		t.Fatalf("decode assistant completed payload: %v", err)
+	}
+	if strings.TrimSpace(payload.RunID) == "" {
+		t.Fatalf("assistant completed payload missing run_id: %s", string(completed.Payload))
+	}
+	if payload.RunIntent.RunID != payload.RunID {
+		t.Fatalf("assistant completed run_intent.run_id = %q, want payload.run_id %q payload=%s", payload.RunIntent.RunID, payload.RunID, string(completed.Payload))
+	}
+	if payload.Message.ID == "" || payload.Message.Role != "assistant" || payload.Message.Content != "assistant final with run identity" {
+		t.Fatalf("assistant completed payload missing committed assistant message: %+v payload=%s", payload.Message, string(completed.Payload))
+	}
+}
+
 func TestSessionsV3ExecutorUsesProviderFromCommittedHistory(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{
@@ -2851,6 +4490,847 @@ func TestSessionsV3ExecutorUsesProviderFromCommittedHistory(t *testing.T) {
 	}
 	if !strings.Contains(runner.lastRequest.Instructions, "Active agent profile:") || !strings.Contains(runner.lastRequest.Instructions, "- name: swarm") {
 		t.Fatalf("provider instructions = %q", runner.lastRequest.Instructions)
+	}
+}
+
+func TestSessionsV3ProviderInputSuppressesCodexNativeReplayAcrossFreshBoundary(t *testing.T) {
+	message := pebblestore.MessageSnapshot{
+		Role:    "assistant",
+		Content: "visible assistant answer",
+		Metadata: map[string]any{
+			"provider":               "codex",
+			"provider_output_format": "responses_api",
+			"provider_output_items": []any{
+				map[string]any{"type": "reasoning", "id": "rs_native_hidden", "encrypted_content": "encrypted-hidden-context"},
+				map[string]any{"type": "message", "id": "msg_native_visible", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "visible assistant answer"}}},
+			},
+		},
+	}
+
+	replayed := sessionsV3ProviderInputWithOptions([]pebblestore.MessageSnapshot{message}, sessionsV3ProviderInputOptions{})
+	if !sessionsV3ProviderInputHasTopLevelType(replayed, "reasoning") || fmt.Sprint(replayed) == "" || !strings.Contains(fmt.Sprint(replayed), "encrypted-hidden-context") {
+		t.Fatalf("native replay fixture did not include encrypted reasoning: %+v", replayed)
+	}
+
+	fresh := sessionsV3ProviderInputWithOptions([]pebblestore.MessageSnapshot{message}, sessionsV3ProviderInputOptions{SuppressNativeReplay: true})
+	if sessionsV3ProviderInputHasTopLevelType(fresh, "reasoning") || strings.Contains(fmt.Sprint(fresh), "encrypted-hidden-context") {
+		t.Fatalf("fresh-boundary provider input replayed native hidden reasoning: %+v", fresh)
+	}
+	if !sessionsV3ProviderInputContainsContentText(fresh, "visible assistant answer") {
+		t.Fatalf("fresh-boundary provider input lost visible assistant content: %+v", fresh)
+	}
+}
+
+func TestSessionsV3ExecutorReplaysCodexNativeOutputItems(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	firstOutput := []any{
+		map[string]any{
+			"type":              "reasoning",
+			"id":                "rs_codex_native_1",
+			"output_index":      float64(0),
+			"content":           []any{},
+			"summary":           []any{},
+			"encrypted_content": "encrypted-reasoning",
+		},
+		map[string]any{
+			"type":         "message",
+			"id":           "msg_codex_native_1",
+			"output_index": float64(1),
+			"phase":        "final_answer",
+			"role":         "assistant",
+			"status":       "completed",
+			"content": []any{
+				map[string]any{
+					"type":        "output_text",
+					"text":        "first answer",
+					"annotations": []any{},
+					"logprobs":    []any{},
+				},
+			},
+		},
+	}
+	runner := &sessionsV3RecordingProviderRunner{
+		id: "codex",
+		responses: []provideriface.Response{
+			{
+				ID:         "resp_codex_native_1",
+				Model:      "gpt-5.5",
+				Text:       "first answer",
+				StopReason: "stop",
+				Raw: map[string]any{
+					"response": map[string]any{
+						"id":     "resp_codex_native_1",
+						"output": firstOutput,
+					},
+				},
+			},
+			{
+				ID:         "resp_codex_native_2",
+				Model:      "gpt-5.5",
+				Text:       "second answer",
+				StopReason: "stop",
+				Raw: map[string]any{
+					"response": map[string]any{
+						"id": "resp_codex_native_2",
+						"output": []any{
+							map[string]any{
+								"type": "message",
+								"id":   "msg_codex_native_2",
+								"role": "assistant",
+								"content": []any{
+									map[string]any{"type": "output_text", "text": "second answer"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "codex-native-create", "codex native", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.5", Thinking: "high"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "codex-native-message-1", "first question")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 2 || messages[1].Metadata["provider_output_format"] != "responses_api" {
+		t.Fatalf("assistant metadata missing native output marker: %+v", messages)
+	}
+	if items := messages[1].Metadata["provider_output_items"]; len(cloneSessionsV3ProviderItemSlice(items)) != 2 {
+		t.Fatalf("assistant metadata native output = %#v, want two items", items)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "codex-native-message-2", "second question")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 4)
+
+	runner.mu.Lock()
+	requests := append([]provideriface.Request(nil), runner.requests...)
+	runner.mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("provider request count = %d, want 2", len(requests))
+	}
+	secondInput := requests[1].Input
+	if len(secondInput) != 4 {
+		t.Fatalf("second provider input length = %d, want 4: %#v", len(secondInput), secondInput)
+	}
+	if secondInput[1]["type"] != "reasoning" || secondInput[1]["id"] != "rs_codex_native_1" || secondInput[1]["encrypted_content"] != "encrypted-reasoning" {
+		t.Fatalf("second provider input[1] = %#v, want persisted Codex reasoning item", secondInput[1])
+	}
+	if _, ok := secondInput[1]["output_index"]; ok {
+		t.Fatalf("second provider input[1] includes response-only output_index: %#v", secondInput[1])
+	}
+	if summary := cloneSessionsV3ProviderItemSlice(secondInput[1]["summary"]); len(summary) != 0 {
+		t.Fatalf("second provider input[1] summary = %#v, want empty array", secondInput[1]["summary"])
+	}
+	if content, ok := secondInput[1]["content"]; !ok || content != nil {
+		t.Fatalf("second provider input[1] content = %#v, want explicit null", content)
+	}
+	if secondInput[2]["type"] != "message" || secondInput[2]["id"] != "msg_codex_native_1" {
+		t.Fatalf("second provider input[2] = %#v, want persisted Codex native output item", secondInput[2])
+	}
+	if _, ok := secondInput[2]["output_index"]; ok {
+		t.Fatalf("second provider input[2] includes response-only output_index: %#v", secondInput[2])
+	}
+	if _, ok := secondInput[2]["phase"]; ok {
+		t.Fatalf("second provider input[2] includes Swarm-only phase: %#v", secondInput[2])
+	}
+	content := cloneSessionsV3ProviderItemSlice(secondInput[2]["content"])
+	if len(content) != 1 {
+		t.Fatalf("native output content = %#v, want one item", secondInput[2]["content"])
+	}
+	contentItem, ok := content[0].(map[string]any)
+	if !ok || contentItem["text"] != "first answer" {
+		t.Fatalf("native output content[0] = %#v, want first answer", content[0])
+	}
+	if _, ok := contentItem["logprobs"]; ok {
+		t.Fatalf("native output content[0] includes response-only logprobs: %#v", contentItem)
+	}
+	if _, ok := contentItem["annotations"]; ok {
+		t.Fatalf("native output content[0] includes response-only annotations: %#v", contentItem)
+	}
+	if secondInput[3]["role"] != "user" {
+		t.Fatalf("second provider input[3] = %#v, want follow-up user message", secondInput[3])
+	}
+}
+
+func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{
+		id:   "codex",
+		text: "codex answer",
+		response: provideriface.Response{
+			ID:         "resp_codex_usage_1",
+			Model:      "gpt-5.5",
+			StopReason: "stop",
+			Usage: provideriface.TokenUsage{
+				InputTokens:     180000,
+				OutputTokens:    10,
+				TotalTokens:     180010,
+				CacheReadTokens: 11776,
+				Source:          "codex_api_usage",
+				Transport:       "websocket",
+				ConnectedViaWS:  pebblestore.BoolPtr(true),
+				APIUsageRawPath: "response.usage",
+			},
+		},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	workspace := t.TempDir()
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, workspace)
+	createBody := fmt.Sprintf(`{"client_request_id":"codex-usage-create","workspace_path":%q,"swarm_id":"host-swarm-id","workspace_binding_id":%q,"target_kind":"host","target_relationship":"self","title":"codex usage","mode":"auto","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.5","thinking":"high"}}`, workspace, bindingID)
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewBufferString(createBody))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+	var createdResp struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createdResp); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	created := createdResp.Session
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "codex-usage-message", "check usage")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+
+	summary, ok, err := sessionSvc.GetUsageSummary(created.ID)
+	if err != nil {
+		t.Fatalf("get usage summary: %v", err)
+	}
+	if !ok {
+		t.Fatal("usage summary missing")
+	}
+	if summary.Provider != "codex" || summary.Model != "gpt-5.5" || summary.Source != "codex_api_usage" {
+		t.Fatalf("usage summary identity = %+v", summary)
+	}
+	if summary.InputTokens != 180000 || summary.OutputTokens != 10 || summary.TotalTokens != 180010 || summary.CacheReadTokens != 11776 {
+		t.Fatalf("usage summary tokens = %+v", summary)
+	}
+	if summary.ContextWindow > 0 && summary.RemainingTokens != int64(summary.ContextWindow)-summary.TotalTokens {
+		t.Fatalf("usage summary remaining should use latest normalized provider usage: %+v", summary)
+	}
+	_, usageSummary2, _, err := sessionSvc.RecordTurnUsage(created.ID, pebblestore.SessionTurnUsageSnapshot{
+		RunID:           "codex-usage-second-response",
+		Provider:        "codex",
+		Model:           "gpt-5.5",
+		Source:          "codex_api_usage",
+		Transport:       "websocket",
+		ContextWindow:   summary.ContextWindow,
+		InputTokens:     116011,
+		OutputTokens:    272,
+		TotalTokens:     116283,
+		CacheReadTokens: 115200,
+	})
+	if err != nil {
+		t.Fatalf("record second usage: %v", err)
+	}
+	if usageSummary2.TotalTokens != 116283 {
+		t.Fatalf("usage summary should keep latest provider snapshot, got %+v", usageSummary2)
+	}
+	if usageSummary2.ContextWindow > 0 && usageSummary2.RemainingTokens != int64(usageSummary2.ContextWindow)-116283 {
+		t.Fatalf("remaining tokens should use latest provider snapshot, got %+v", usageSummary2)
+	}
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var usageEvent *sessionruntime.SessionEvent
+	for i := range events {
+		if events[i].EventType == "run.usage.updated" {
+			usageEvent = &events[i]
+			break
+		}
+	}
+	if usageEvent == nil {
+		t.Fatalf("run.usage.updated event missing: %+v", events)
+	}
+	var payload struct {
+		TurnUsage    pebblestore.SessionTurnUsageSnapshot `json:"turn_usage"`
+		UsageSummary pebblestore.SessionUsageSummary      `json:"usage_summary"`
+	}
+	if err := json.Unmarshal(usageEvent.Payload, &payload); err != nil {
+		t.Fatalf("decode usage event payload: %v", err)
+	}
+	if payload.TurnUsage.InputTokens != 180000 || payload.UsageSummary.TotalTokens != 180010 {
+		t.Fatalf("usage event payload = %+v", payload)
+	}
+
+	hydrated, ok, err := server.hydrateSessionsV3PrimaryWithLimits(testPrincipal(), created.ID, 10, 100)
+	if err != nil || !ok {
+		t.Fatalf("hydrate session ok=%v err=%v", ok, err)
+	}
+	if hydrated.UsageSummary == nil || hydrated.UsageSummary.TotalTokens != usageSummary2.TotalTokens || hydrated.UsageSummary.RemainingTokens != usageSummary2.RemainingTokens {
+		t.Fatalf("hydrated usage summary = %+v", hydrated.UsageSummary)
+	}
+}
+
+func TestSessionsV3ProviderToolLoopRecordsCodexUsagePerProviderStep(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{
+		id: "codex",
+		responses: []provideriface.Response{
+			{
+				ID:          "resp_codex_usage_step_1",
+				Model:       "gpt-5.5",
+				RestartTurn: true,
+				Usage: provideriface.TokenUsage{
+					InputTokens:     100,
+					TotalTokens:     100,
+					Source:          "codex_api_usage",
+					Transport:       "websocket",
+					ConnectedViaWS:  pebblestore.BoolPtr(true),
+					APIUsageRawPath: "response.usage",
+				},
+			},
+			{
+				ID:         "resp_codex_usage_step_2",
+				Model:      "gpt-5.5",
+				Text:       "done",
+				StopReason: "stop",
+				Usage: provideriface.TokenUsage{
+					InputTokens:     200,
+					OutputTokens:    5,
+					TotalTokens:     205,
+					Source:          "codex_api_usage",
+					Transport:       "websocket",
+					ConnectedViaWS:  pebblestore.BoolPtr(true),
+					APIUsageRawPath: "response.usage",
+				},
+			},
+		},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "codex-step-usage-create", "codex step usage", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.5", Thinking: "high"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "codex-step-usage-message", "check usage cadence")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want 2", runner.callCount)
+	}
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var payloads []struct {
+		TurnUsage    pebblestore.SessionTurnUsageSnapshot `json:"turn_usage"`
+		UsageSummary pebblestore.SessionUsageSummary      `json:"usage_summary"`
+	}
+	for _, event := range events {
+		if event.EventType != "run.usage.updated" {
+			continue
+		}
+		var payload struct {
+			TurnUsage    pebblestore.SessionTurnUsageSnapshot `json:"turn_usage"`
+			UsageSummary pebblestore.SessionUsageSummary      `json:"usage_summary"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode usage payload: %v", err)
+		}
+		payloads = append(payloads, payload)
+	}
+	if len(payloads) != 2 {
+		t.Fatalf("usage event count = %d, want 2 events=%+v", len(payloads), events)
+	}
+	if payloads[0].TurnUsage.Steps != 1 || payloads[0].TurnUsage.TotalTokens != 100 || payloads[0].UsageSummary.TotalTokens != 100 {
+		t.Fatalf("first usage payload = %+v", payloads[0])
+	}
+	if payloads[1].TurnUsage.Steps != 2 || payloads[1].TurnUsage.TotalTokens != 205 || payloads[1].UsageSummary.TotalTokens != 205 {
+		t.Fatalf("second usage payload = %+v", payloads[1])
+	}
+}
+
+func TestSessionsV3ProviderUsageAccountingE2E(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+
+	codexRunner := &sessionsV3RecordingProviderRunner{
+		id: "codex",
+		responses: []provideriface.Response{
+			{
+				ID:          "resp_codex_usage_step_1",
+				Model:       "gpt-5.5",
+				RestartTurn: true,
+				Usage: provideriface.TokenUsage{
+					InputTokens:     100,
+					TotalTokens:     100,
+					Source:          "codex_api_usage",
+					Transport:       "websocket",
+					ConnectedViaWS:  pebblestore.BoolPtr(true),
+					APIUsageRawPath: "response.usage",
+				},
+			},
+			{
+				ID:         "resp_codex_usage_step_2",
+				Model:      "gpt-5.5",
+				Text:       "codex done",
+				StopReason: "stop",
+				Usage: provideriface.TokenUsage{
+					InputTokens:     200,
+					OutputTokens:    5,
+					TotalTokens:     205,
+					Source:          "codex_api_usage",
+					Transport:       "websocket",
+					ConnectedViaWS:  pebblestore.BoolPtr(true),
+					APIUsageRawPath: "response.usage",
+				},
+			},
+		},
+	}
+	fireworksRunner := &sessionsV3RecordingProviderRunner{
+		id: "fireworks",
+		responses: []provideriface.Response{
+			{
+				ID:          "resp_fireworks_usage_step_1",
+				Model:       "accounts/fireworks/models/glm-5p2",
+				RestartTurn: true,
+				Usage: provideriface.TokenUsage{
+					InputTokens:     1000,
+					OutputTokens:    20,
+					CacheReadTokens: 30,
+					TotalTokens:     1020,
+					Source:          "fireworks_api_usage",
+					APIUsageRawPath: "usage",
+				},
+			},
+			{
+				ID:         "resp_fireworks_usage_step_2",
+				Model:      "accounts/fireworks/models/glm-5p2",
+				Text:       "fireworks done",
+				StopReason: "stop",
+				Usage: provideriface.TokenUsage{
+					InputTokens:     800,
+					OutputTokens:    30,
+					CacheReadTokens: 10,
+					TotalTokens:     830,
+					Source:          "fireworks_api_usage",
+					APIUsageRawPath: "usage",
+				},
+			},
+		},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(codexRunner)
+	providers.RegisterRunner(fireworksRunner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+	testCases := []sessionsV3UsageAccountingCase{
+		{
+			name:            "codex",
+			provider:        "codex",
+			model:           "gpt-5.5",
+			createID:        "codex-usage-accounting-create",
+			messageID:       "codex-usage-accounting-message",
+			runner:          codexRunner,
+			expectedContent: "codex done",
+			expectedTurns: []sessionsV3UsageExpectation{
+				{clientRequestID: "codex-usage-accounting-message", provider: "codex", model: "gpt-5.5", step: 1, inputTokens: 100, totalTokens: 100, summaryTotalTokens: 100, summaryInputTokens: 100},
+				{clientRequestID: "codex-usage-accounting-message", provider: "codex", model: "gpt-5.5", step: 2, inputTokens: 200, outputTokens: 5, totalTokens: 205, summaryTotalTokens: 205, summaryInputTokens: 200, summaryOutputTokens: 5},
+			},
+		},
+		{
+			name:            "fireworks",
+			provider:        "fireworks",
+			model:           "accounts/fireworks/models/glm-5p2",
+			createID:        "fireworks-usage-accounting-create",
+			messageID:       "fireworks-usage-accounting-message",
+			runner:          fireworksRunner,
+			expectedContent: "fireworks done",
+			expectedTurns: []sessionsV3UsageExpectation{
+				{clientRequestID: "fireworks-usage-accounting-message", provider: "fireworks", model: "accounts/fireworks/models/glm-5p2", step: 1, inputTokens: 1000, outputTokens: 20, cacheReadTokens: 30, totalTokens: 1020, summaryTotalTokens: 1020, summaryInputTokens: 1000, summaryOutputTokens: 20, summaryCacheReadTokens: 30},
+				{clientRequestID: "fireworks-usage-accounting-message", provider: "fireworks", model: "accounts/fireworks/models/glm-5p2", step: 2, inputTokens: 800, outputTokens: 30, cacheReadTokens: 10, totalTokens: 830, summaryTotalTokens: 1850, summaryInputTokens: 1800, summaryOutputTokens: 50, summaryCacheReadTokens: 40},
+			},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			created := createSessionsV3PrimaryTestSessionWithPreference(t, server, tc.createID, tc.name+" usage accounting", pebblestore.ModelPreference{Provider: tc.provider, Model: tc.model, Thinking: "high"})
+			postSessionsV3PrimaryTestMessage(t, server, created.ID, tc.messageID, "check "+tc.name+" usage cadence")
+			waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+			if tc.runner.callCount != len(tc.expectedTurns) {
+				t.Fatalf("provider call count = %d, want %d", tc.runner.callCount, len(tc.expectedTurns))
+			}
+			sessionsV3AssertUsageAccounting(t, sessionSvc, created.ID, tc.expectedTurns)
+			messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+			if err != nil {
+				t.Fatalf("list messages: %v", err)
+			}
+			if len(messages) < 2 || messages[1].Content != tc.expectedContent {
+				t.Fatalf("assistant content = %+v, want %q", messages, tc.expectedContent)
+			}
+		})
+	}
+}
+
+func TestSessionsV3ProviderUsageAccountingTransitionE2E(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	codexRunner := &sessionsV3RecordingProviderRunner{
+		id: "codex",
+		response: provideriface.Response{
+			ID:         "resp_codex_transition_usage",
+			Model:      "gpt-5.5",
+			Text:       "codex transition answer",
+			StopReason: "stop",
+			Usage: provideriface.TokenUsage{
+				InputTokens:     500,
+				OutputTokens:    10,
+				TotalTokens:     510,
+				Source:          "codex_api_usage",
+				Transport:       "websocket",
+				ConnectedViaWS:  pebblestore.BoolPtr(true),
+				APIUsageRawPath: "response.usage",
+			},
+		},
+	}
+	fireworksRunner := &sessionsV3RecordingProviderRunner{
+		id: "fireworks",
+		response: provideriface.Response{
+			ID:         "resp_fireworks_transition_usage",
+			Model:      "accounts/fireworks/models/glm-5p2",
+			Text:       "fireworks transition answer",
+			StopReason: "stop",
+			Usage: provideriface.TokenUsage{
+				InputTokens:     600,
+				OutputTokens:    20,
+				CacheReadTokens: 40,
+				TotalTokens:     620,
+				Source:          "fireworks_api_usage",
+				APIUsageRawPath: "usage",
+			},
+		},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(codexRunner)
+	providers.RegisterRunner(fireworksRunner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "usage-transition-create", "usage transition", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.5", Thinking: "high"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "usage-transition-codex-message", "first use codex")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	sessionsV3AssertUsageAccounting(t, sessionSvc, created.ID, []sessionsV3UsageExpectation{{clientRequestID: "usage-transition-codex-message", provider: "codex", model: "gpt-5.5", step: 1, inputTokens: 500, outputTokens: 10, totalTokens: 510, summaryTotalTokens: 510, summaryInputTokens: 500, summaryOutputTokens: 10}})
+
+	prefReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/preference", bytes.NewBufferString(`{"provider":"fireworks","model":"accounts/fireworks/models/glm-5p2","thinking":"high"}`))
+	prefReq.Header.Set("Content-Type", "application/json")
+	prefRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(prefRec, withTestPrincipal(prefReq))
+	if prefRec.Code != http.StatusOK {
+		t.Fatalf("preference status = %d, want %d, body=%s", prefRec.Code, http.StatusOK, prefRec.Body.String())
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "usage-transition-fireworks-message", "now use fireworks")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 4)
+	if codexRunner.callCount != 1 || fireworksRunner.callCount != 1 {
+		t.Fatalf("provider call counts codex=%d fireworks=%d, want 1 each", codexRunner.callCount, fireworksRunner.callCount)
+	}
+	expected := []sessionsV3UsageExpectation{
+		{clientRequestID: "usage-transition-codex-message", provider: "codex", model: "gpt-5.5", step: 1, inputTokens: 500, outputTokens: 10, totalTokens: 510, summaryTotalTokens: 510, summaryInputTokens: 500, summaryOutputTokens: 10},
+		{clientRequestID: "usage-transition-fireworks-message", provider: "fireworks", model: "accounts/fireworks/models/glm-5p2", step: 1, inputTokens: 600, outputTokens: 20, cacheReadTokens: 40, totalTokens: 620, summaryTotalTokens: 1130, summaryInputTokens: 1100, summaryOutputTokens: 30, summaryCacheReadTokens: 40},
+	}
+	sessionsV3AssertUsageAccounting(t, sessionSvc, created.ID, expected)
+	summary, ok, err := sessionSvc.GetUsageSummary(created.ID)
+	if err != nil {
+		t.Fatalf("get usage summary: %v", err)
+	}
+	if !ok || summary.Provider != "fireworks" || summary.Model != "accounts/fireworks/models/glm-5p2" || summary.TotalTokens != 1130 || summary.InputTokens != 1100 || summary.OutputTokens != 30 || summary.CacheReadTokens != 40 || summary.TurnCount != 2 {
+		t.Fatalf("transition summary = %+v", summary)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) < 4 || messages[1].Content != "codex transition answer" || messages[3].Content != "fireworks transition answer" {
+		t.Fatalf("transition messages = %+v", messages)
+	}
+}
+
+type sessionsV3UsageAccountingCase struct {
+	name            string
+	provider        string
+	model           string
+	createID        string
+	messageID       string
+	runner          *sessionsV3RecordingProviderRunner
+	expectedContent string
+	expectedTurns   []sessionsV3UsageExpectation
+}
+
+type sessionsV3UsageExpectation struct {
+	clientRequestID        string
+	provider               string
+	model                  string
+	step                   int
+	inputTokens            int64
+	outputTokens           int64
+	cacheReadTokens        int64
+	totalTokens            int64
+	summaryInputTokens     int64
+	summaryOutputTokens    int64
+	summaryCacheReadTokens int64
+	summaryTotalTokens     int64
+}
+
+func sessionsV3AssertUsageAccounting(t *testing.T, sessionSvc *sessionruntime.Service, sessionID string, expected []sessionsV3UsageExpectation) {
+	t.Helper()
+	turns, err := sessionSvc.ListTurnUsage(sessionID, 20)
+	if err != nil {
+		t.Fatalf("list turn usage: %v", err)
+	}
+	if len(turns) != len(expected) {
+		t.Fatalf("turn usage count = %d, want %d: %+v", len(turns), len(expected), turns)
+	}
+	runIDs := make(map[string]bool, len(turns))
+	for _, turn := range turns {
+		runIDs[turn.RunID] = true
+	}
+	events, err := sessionSvc.ListSessionEvents(sessionID, 0, 200)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	payloads := make(map[string]struct {
+		TurnUsage    pebblestore.SessionTurnUsageSnapshot `json:"turn_usage"`
+		UsageSummary pebblestore.SessionUsageSummary      `json:"usage_summary"`
+	}, len(expected))
+	for _, event := range events {
+		if event.EventType != "run.usage.updated" {
+			continue
+		}
+		var payload struct {
+			TurnUsage    pebblestore.SessionTurnUsageSnapshot `json:"turn_usage"`
+			UsageSummary pebblestore.SessionUsageSummary      `json:"usage_summary"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode usage payload: %v", err)
+		}
+		payloads[payload.TurnUsage.RunID] = payload
+	}
+	if len(payloads) != len(expected) {
+		t.Fatalf("usage event count = %d, want %d events=%+v", len(payloads), len(expected), events)
+	}
+	for index, want := range expected {
+		baseRunID := stableSessionsV3PrimaryRunID(sessionID, want.clientRequestID)
+		wantRunID := sessionV3ProviderUsageRunID(baseRunID, want.step)
+		if !runIDs[wantRunID] {
+			t.Fatalf("missing turn usage run_id %q in %+v", wantRunID, turns)
+		}
+		payload, ok := payloads[wantRunID]
+		if !ok {
+			t.Fatalf("missing usage event run_id %q in %+v", wantRunID, payloads)
+		}
+		got := payload.TurnUsage
+		if got.Provider != want.provider || got.Model != want.model || got.Steps != want.step || got.InputTokens != want.inputTokens || got.OutputTokens != want.outputTokens || got.CacheReadTokens != want.cacheReadTokens || got.TotalTokens != want.totalTokens {
+			t.Fatalf("turn usage[%d] = %+v, want %+v", index, got, want)
+		}
+		if payload.UsageSummary.InputTokens != want.summaryInputTokens || payload.UsageSummary.OutputTokens != want.summaryOutputTokens || payload.UsageSummary.CacheReadTokens != want.summaryCacheReadTokens || payload.UsageSummary.TotalTokens != want.summaryTotalTokens {
+			t.Fatalf("usage summary[%d] = %+v, want summary input=%d output=%d cache_read=%d total=%d", index, payload.UsageSummary, want.summaryInputTokens, want.summaryOutputTokens, want.summaryCacheReadTokens, want.summaryTotalTokens)
+		}
+	}
+}
+
+func TestSessionsV3ExecutorContinuesAfterOverflowCompaction(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	const userContent = "continue original task after overflow"
+	const compactSummary = "overflow compact summary preserving the original task: continue original task after overflow"
+	const continuationAnswer = "real continuation answer after compact"
+	var runner *sessionsV3RecordingProviderRunner
+	runner = &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		runner.mu.Lock()
+		callCount := runner.callCount
+		runner.mu.Unlock()
+		switch strings.TrimSpace(req.Model) {
+		case "memory-model":
+			if !sessionsV3ProviderInputContainsContentText(req.Input, userContent) {
+				t.Fatalf("memory compact request did not include original user content: %+v", req.Input)
+			}
+			if !strings.Contains(req.Instructions, "memory compact agent") {
+				t.Fatalf("compact did not use memory agent instructions: %q", req.Instructions)
+			}
+			return provideriface.Response{Text: compactSummary, Model: "memory-model", StopReason: "stop"}, nil
+		case "test-model":
+			if callCount == 1 {
+				return provideriface.Response{}, errors.New("provider context overflow: context_length_exceeded")
+			}
+			if !sessionsV3ProviderInputContainsContentText(req.Input, compactSummary) {
+				t.Fatalf("continuation request missing compact summary: %+v", req.Input)
+			}
+			if !sessionsV3ProviderInputContainsContentText(req.Input, userContent) {
+				t.Fatalf("continuation request missing original prompt: %+v", req.Input)
+			}
+			return provideriface.Response{Text: continuationAnswer, Model: "test-model", StopReason: "stop"}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected model %q", req.Model)
+		}
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	server.runner = runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "memory-model", Thinking: "medium", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory compact prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
+		t.Fatalf("upsert memory agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "overflow-compact-create", "overflow compact", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "overflow-compact-message", userContent)
+	runID := stableSessionsV3PrimaryRunID(created.ID, "overflow-compact-message")
+	waitForSessionsV3SpecificRunIntentStatus(t, sessionSvc, created.ID, runID, sessionruntime.RunIntentCompleted)
+	intent, ok, err := sessionSvc.GetSessionRunIntent(created.ID, runID)
+	if err != nil || !ok {
+		t.Fatalf("get completed overflow run intent: ok=%v err=%v", ok, err)
+	}
+	activeEpoch, ok, err := sessionSvc.GetActiveExecutionEpoch(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get overflow continuation epoch: ok=%v err=%v", ok, err)
+	}
+	if intent.EpochID != activeEpoch.EpochID || activeEpoch.Boundary.Reason != "context_compaction_overflow" || activeEpoch.Boundary.RunID != runID+"-overflow-compact" {
+		t.Fatalf("overflow continuation scope intent=%+v epoch=%+v", intent, activeEpoch)
+	}
+
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	var sawOverflowCheckpoint bool
+	var assistantContent string
+	for _, msg := range messages {
+		if msg.Role == "system" && strings.Contains(msg.Content, "[context-compact]") {
+			if !strings.Contains(msg.Content, "origin=overflow") || !strings.Contains(msg.Content, compactSummary) {
+				t.Fatalf("overflow compact checkpoint invalid: %s", msg.Content)
+			}
+			sawOverflowCheckpoint = true
+		}
+		if msg.Role == "assistant" {
+			assistantContent = msg.Content
+		}
+	}
+	if !sawOverflowCheckpoint {
+		t.Fatalf("overflow compact checkpoint missing from messages: %+v", messages)
+	}
+	if assistantContent != continuationAnswer {
+		t.Fatalf("assistant content = %q, want continuation answer %q", assistantContent, continuationAnswer)
+	}
+	if strings.Contains(assistantContent, "Context overflow compact complete") {
+		t.Fatalf("compact acknowledgement leaked as final response: %q", assistantContent)
+	}
+	if runner.callCount != 3 {
+		t.Fatalf("provider call count = %d, want overflow attempt, compact, continuation", runner.callCount)
+	}
+	runner.mu.Lock()
+	requests := append([]provideriface.Request(nil), runner.requests...)
+	runner.mu.Unlock()
+	if len(requests) != 3 {
+		t.Fatalf("provider requests = %d, want overflow attempt, compact, continuation", len(requests))
+	}
+	continuation := requests[2]
+	if !continuation.StartNewChain || continuation.AllowContinuation || continuation.ReuseTransport || !continuation.ResetTransport || continuation.NativeContinuationAllowed || !continuation.ForceFreshProviderContext {
+		t.Fatalf("overflow continuation lifecycle = start_new=%t allow=%t reuse_transport=%t reset_transport=%t native=%t fresh=%t, want a fresh provider chain on a new transport", continuation.StartNewChain, continuation.AllowContinuation, continuation.ReuseTransport, continuation.ResetTransport, continuation.NativeContinuationAllowed, continuation.ForceFreshProviderContext)
+	}
+}
+
+func TestSessionsV3CompactEndpointRunsManualCompactAndResetsUsage(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	const userContent = "v3 compact must hydrate this primary transcript"
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if !sessionsV3ProviderInputContainsContentText(req.Input, userContent) {
+			t.Fatalf("memory compact request did not include v3 transcript content: %+v", req.Input)
+		}
+		if !strings.Contains(req.Instructions, "memory compact agent") {
+			t.Fatalf("compact did not use memory agent instructions: %q", req.Instructions)
+		}
+		return provideriface.Response{Text: "compact summary", Model: "test-model", StopReason: "stop", Usage: provideriface.TokenUsage{InputTokens: 5, OutputTokens: 2, TotalTokens: 7, Source: "test_usage"}}, nil
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	server.runner = runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "test-model", Thinking: "medium", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory compact prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
+		t.Fatalf("upsert memory agent: %v", err)
+	}
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "compact-create", "compact", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	now := time.Now().UnixMilli()
+	message := pebblestore.MessageSnapshot{ID: "test-user-compact-v3-message", SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Role: "user", Content: userContent, CreatedAt: now}
+	payloadHash, err := sessionV3ExecutorPayloadHash(created.ID, "compact-fixture", sessionruntime.RunIntentRunning, "", "session.message.appended", "compact-v3-message:"+userContent)
+	if err != nil {
+		t.Fatalf("hash compact fixture message payload: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: "compact-v3-message", IdempotencyKey: "compact-v3-message", PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationAppendMessage, EventType: "session.message.appended", Message: &message, NowUnixMs: now}); err != nil {
+		t.Fatalf("append compact fixture message: %v", err)
+	}
+	_, _, _, err = sessionSvc.RecordTurnUsage(created.ID, pebblestore.SessionTurnUsageSnapshot{RunID: "before-compact", Provider: "test-provider", Model: "test-model", Source: "test_usage", ContextWindow: 1000, TotalTokens: 900})
+	if err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/compact", bytes.NewBufferString(`{"client_request_id":"compact-now","note":"keep constraints"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("compact status = %d, want %d, body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	var resp struct {
+		RunIntent *pebblestore.V3SessionRunIntent `json:"run_intent"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode compact response: %v", err)
+	}
+	if resp.RunIntent == nil || strings.TrimSpace(resp.RunIntent.RunID) == "" {
+		t.Fatalf("compact response missing run intent: %s", rec.Body.String())
+	}
+	waitForSessionsV3SpecificRunIntentStatus(t, sessionSvc, created.ID, resp.RunIntent.RunID, sessionruntime.RunIntentCompleted)
+	usageSummary, ok, err := sessionSvc.GetUsageSummary(created.ID)
+	if err != nil {
+		t.Fatalf("get usage summary: %v", err)
+	}
+	if !ok || usageSummary.ContextWindow != 1000 || usageSummary.RemainingTokens != 1000 || usageSummary.Source != "context_compaction_reset" {
+		t.Fatalf("compact usage summary = %+v", usageSummary)
+	}
+	if runner.callCount == 0 {
+		t.Fatalf("compact did not invoke memory provider")
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	var sawManualCheckpoint bool
+	for _, msg := range messages {
+		if msg.Role == "system" && strings.Contains(msg.Content, "[context-compact]") {
+			if !strings.Contains(msg.Content, "origin=manual") {
+				t.Fatalf("compact checkpoint missing manual origin: %s", msg.Content)
+			}
+			sawManualCheckpoint = true
+		}
+	}
+	if !sawManualCheckpoint {
+		t.Fatalf("manual compact checkpoint missing from messages: %+v", messages)
 	}
 }
 
@@ -3025,6 +5505,21 @@ func TestSessionsV3ExecutorCarriesFullContinuationHistoryAcrossMultipleToolSteps
 	if len(runner.requests) != 3 || len(runner.requests[2].Input) != 5 {
 		t.Fatalf("final continuation input = %+v, want full user plus two structured function_call/function_call_output pairs", runner.requests)
 	}
+	firstRequest := runner.requests[0]
+	if !firstRequest.StartNewChain || firstRequest.AllowContinuation || firstRequest.NativeContinuationAllowed || !firstRequest.ForceFreshProviderContext {
+		t.Fatalf("initial epoch request lifecycle = start_new=%t allow=%t native=%t fresh=%t, want one fresh chain start", firstRequest.StartNewChain, firstRequest.AllowContinuation, firstRequest.NativeContinuationAllowed, firstRequest.ForceFreshProviderContext)
+	}
+	if firstRequest.Instructions == "" || firstRequest.ProviderCacheKey == "" {
+		t.Fatalf("initial epoch request missing stable instructions/cache key")
+	}
+	for i, req := range runner.requests[1:] {
+		if req.StartNewChain || !req.AllowContinuation || !req.NativeContinuationAllowed || req.ForceFreshProviderContext {
+			t.Fatalf("continuation request %d lifecycle = start_new=%t allow=%t native=%t fresh=%t, want same-epoch continuation", i+2, req.StartNewChain, req.AllowContinuation, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+		}
+		if req.Instructions != firstRequest.Instructions || req.ProviderCacheKey != firstRequest.ProviderCacheKey {
+			t.Fatalf("continuation request %d changed cacheable properties: instructions_equal=%t cache_key=%q want=%q", i+2, req.Instructions == firstRequest.Instructions, req.ProviderCacheKey, firstRequest.ProviderCacheKey)
+		}
+	}
 	finalInput := runner.requests[2].Input
 	if !sessionsV3ProviderInputHasTopLevelType(finalInput, "function_call") || !sessionsV3ProviderInputHasTopLevelType(finalInput, "function_call_output") || sessionsV3ProviderInputContainsContentText(finalInput, "[tool result]") {
 		t.Fatalf("final continuation input = %+v, want structured tool reinjection without stringified tool result text", finalInput)
@@ -3187,6 +5682,7 @@ func TestSessionsV3ExecutorCompletesAfterPreToolDeltaAndThreeToolCalls(t *testin
 		t.Fatalf("list events: %v", err)
 	}
 	var deltaText []string
+	var deltaIndexes []int
 	for _, event := range events {
 		if event.EventType == "session.run.failed" {
 			t.Fatalf("unexpected run failure event after final assistant text: %+v", event)
@@ -3202,9 +5698,13 @@ func TestSessionsV3ExecutorCompletesAfterPreToolDeltaAndThreeToolCalls(t *testin
 			t.Fatalf("decode delta payload: %v", err)
 		}
 		deltaText = append(deltaText, payload.Delta)
+		deltaIndexes = append(deltaIndexes, payload.DeltaIndex)
 	}
 	if len(deltaText) != 2 || strings.TrimSpace(deltaText[0]) != "First message" || strings.TrimSpace(deltaText[1]) != "I've finished testing" {
 		t.Fatalf("assistant deltas = %+v, want pre-tool and final streaming deltas", deltaText)
+	}
+	if len(deltaIndexes) != 2 || deltaIndexes[0] != 1 || deltaIndexes[1] != 2 {
+		t.Fatalf("assistant delta indexes = %+v, want monotonic across provider steps", deltaIndexes)
 	}
 }
 
@@ -3315,61 +5815,84 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	workspace := t.TempDir()
 	runner := &sessionsV3RecordingProviderRunner{}
 	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
-		switch runner.callCount {
-		case 1:
-			if req.ToolInvoker == nil {
-				return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
-			}
-			if !strings.Contains(req.Instructions, "Current session mode: plan.") {
-				return provideriface.Response{}, fmt.Errorf("initial instructions did not use plan mode:\n%s", req.Instructions)
-			}
-			document := map[string]any{"info": map[string]any{"goal": "continue in auto"}, "checkpoints": []map[string]any{{"id": "cp-1", "title": "continue", "status": "pending"}}}
-			args := mustSessionsV3TestJSON(t, map[string]any{"title": "Plan: continue", "document": document})
-			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-exit-plan", Name: "exit_plan_mode", Arguments: args})
-			if err != nil {
-				return provideriface.Response{}, err
-			}
-			if !result.RestartTurn {
-				return provideriface.Response{}, fmt.Errorf("exit_plan_mode result did not request turn restart: %+v", result)
-			}
-			return provideriface.Response{RestartTurn: true}, nil
-		case 2:
-			if !strings.Contains(req.Instructions, "Current session mode: auto.") {
-				return provideriface.Response{}, fmt.Errorf("continuation instructions did not refresh to auto mode:\n%s", req.Instructions)
-			}
-			if len(req.Input) != 3 || !sessionsV3ProviderInputHasTopLevelType(req.Input, "function_call") || !sessionsV3ProviderInputHasTopLevelType(req.Input, "function_call_output") {
-				return provideriface.Response{}, fmt.Errorf("exit_plan_mode continuation input = %+v, want user plus structured tool call/output", req.Input)
-			}
-			if req.ToolInvoker == nil {
-				return provideriface.Response{}, fmt.Errorf("missing refreshed provider-managed tool invoker")
-			}
-			writeArgs := mustSessionsV3TestJSON(t, map[string]any{"path": "after-exit.txt", "content": "auto write allowed"})
-			writeResult, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-write-after-exit", Name: "write", Arguments: writeArgs})
-			if err != nil {
-				return provideriface.Response{}, err
-			}
-			if writeResult.Error != "" {
-				return provideriface.Response{}, fmt.Errorf("write after exit_plan_mode was not authorized with refreshed auto mode: %+v", writeResult)
-			}
-			return provideriface.Response{Text: "continued in auto"}, nil
-		default:
-			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		if runner.callCount != 1 {
+			return provideriface.Response{}, fmt.Errorf("plan provider called after exit_plan_mode restart with model=%q thinking=%q", req.Model, req.Thinking)
 		}
+		if req.Model != "plan-model" || req.Thinking != "low" {
+			return provideriface.Response{}, fmt.Errorf("initial provider request model=%q thinking=%q, want plan-model/low", req.Model, req.Thinking)
+		}
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
+		}
+		if !strings.Contains(req.Instructions, "Current session mode: plan.") {
+			return provideriface.Response{}, fmt.Errorf("initial instructions did not use plan mode:\n%s", req.Instructions)
+		}
+		document := map[string]any{"info": map[string]any{"goal": "continue in auto"}, "checkpoints": []map[string]any{{"id": "cp-1", "title": "continue", "status": "pending"}}}
+		args := mustSessionsV3TestJSON(t, map[string]any{"title": "Plan: continue", "document": document})
+		return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-exit-plan", Name: "exit_plan_mode", Arguments: args}}}, nil
+	}
+	autoRunner := &sessionsV3RecordingProviderRunner{id: "auto-provider"}
+	autoRunner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if strings.TrimSpace(req.Model) != "auto-model" || strings.TrimSpace(req.Thinking) != "high" {
+			return provideriface.Response{}, fmt.Errorf("checkpoint continuation model=%q thinking=%q, want auto-model/high", req.Model, req.Thinking)
+		}
+		if !strings.Contains(req.Instructions, "Current session mode: auto.") {
+			return provideriface.Response{}, fmt.Errorf("checkpoint continuation instructions did not refresh to auto mode:\n%s", req.Instructions)
+		}
+		if req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+			return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint lineage flags = boundary %q native %t fresh %t, want checkpoint fresh context", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+		}
+		if !sessionsV3ProviderInputContainsContentText(req.Input, "[checkpoint-run] Deterministic checkpoint execution context.") || !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: cp-1.") {
+			return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint input = %+v, want fresh checkpoint context", req.Input)
+		}
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, fmt.Errorf("missing refreshed provider-managed tool invoker")
+		}
+		completeArgs := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "checkpoint complete", "result": "done"})
+		completeResult, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-checkpoint", Name: "plan_manage", Arguments: completeArgs})
+		if err != nil {
+			return provideriface.Response{}, err
+		}
+		if completeResult.Error != "" {
+			return provideriface.Response{}, fmt.Errorf("complete checkpoint after exit_plan_mode failed: %+v", completeResult)
+		}
+		return provideriface.Response{RestartTurn: completeResult.RestartTurn}, nil
 	}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
+	providers.RegisterRunner(autoRunner)
 	server.providers = providers
 	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
 	server.runner = runSvc
 	server.SetBypassPermissions(true)
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"exit_plan_mode": {Enabled: pebblestore.BoolPtr(true)}, "write": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ModelMode: "split", PlanProvider: "test-provider", PlanModel: "plan-model", PlanThinking: "low", AutoProvider: "auto-provider", AutoModel: "auto-model", AutoThinking: "high", ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"exit_plan_mode": {Enabled: pebblestore.BoolPtr(true)}, "write": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
 		t.Fatalf("upsert exit-plan swarm agent: %v", err)
 	}
 	exec := newSessionV3Executor(server)
 	exec.startDelay = 0
 	server.v3SessionExecutor = exec
 
-	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-exit-plan-restart-create", "provider exit plan restart", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-exit-plan-restart-create", "provider exit plan restart", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "plan-model", Thinking: "low"})
+	settingsBody := `{"client_request_id":"provider-exit-plan-restart-mode","mode":"plan"}`
+	settingsReq := httptest.NewRequest(http.MethodPatch, "/v3/sessions/"+created.ID+"/settings", bytes.NewBufferString(settingsBody))
+	settingsReq.Header.Set("Content-Type", "application/json")
+	settingsRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(settingsRec, withTestPrincipal(settingsReq))
+	if settingsRec.Code != http.StatusOK {
+		t.Fatalf("set session plan mode status=%d want=%d body=%s", settingsRec.Code, http.StatusOK, settingsRec.Body.String())
+	}
+	updated, ok, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get session after plan mode update: ok=%t err=%v", ok, err)
+	}
+	created = updated
+	profile, err := sessionV3AgentProfileFromMetadata(created.Metadata)
+	if err != nil {
+		t.Fatalf("decode stored agent profile after plan mode update: %v", err)
+	}
+	if profile.ModelMode != "split" || profile.PlanModel != "plan-model" || profile.AutoProvider != "auto-provider" || profile.AutoModel != "auto-model" {
+		t.Fatalf("stored agent profile after plan mode update = %+v", profile)
+	}
 	if created.Mode != sessionruntime.ModePlan {
 		t.Fatalf("created session mode = %q, want plan", created.Mode)
 	}
@@ -3383,31 +5906,999 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	if stored.Mode != sessionruntime.ModeAuto {
 		t.Fatalf("session mode after exit_plan_mode = %q, want auto", stored.Mode)
 	}
+	if stored.Preference.Provider != "auto-provider" || stored.Preference.Model != "auto-model" || stored.Preference.Thinking != "high" {
+		t.Fatalf("durable session preference after exit_plan_mode = %+v", stored.Preference)
+	}
+	hydrated, hydratedOK, hydrateErr := server.hydrateSessionsV3PrimaryWithLimits(testPrincipal(), created.ID, 20, 40)
+	if hydrateErr != nil || !hydratedOK {
+		t.Fatalf("hydrate after exit_plan_mode: ok=%t err=%v", hydratedOK, hydrateErr)
+	}
+	if hydrated.Session.Mode != sessionruntime.ModeAuto || hydrated.Preference != stored.Preference || hydrated.AgentModelPolicy.Preference != stored.Preference || hydrated.AgentModelPolicy.Source != "agent_auto_preset" || !hydrated.AgentModelPolicy.Locked {
+		t.Fatalf("hydrated auto policy disagrees with durable session: hydrated=%+v policy=%+v stored=%+v", hydrated.Preference, hydrated.AgentModelPolicy, stored.Preference)
+	}
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 5)
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != 4 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "tool" || messages[3].Role != "assistant" || messages[3].Content != "continued in auto" {
+	if len(messages) < 5 || messages[0].Role != "user" || messages[1].Role != "system" || messages[2].Role != "tool" || messages[3].Role != "tool" || messages[4].Role != "system" {
 		t.Fatalf("messages after exit plan restart = %+v", messages)
 	}
-	if !strings.Contains(messages[2].Content, "auto write allowed") {
-		t.Fatalf("post-exit write tool message = %+v", messages[2])
+	if !strings.Contains(messages[1].Content, "Plan accepted, starting Checkpoint 1") || !strings.Contains(messages[1].Content, "Context: Starting the next checkpoint with fresh context.") {
+		t.Fatalf("exit-plan lifecycle start message content = %q", messages[1].Content)
+	}
+	if !strings.Contains(messages[2].Content, "run_checkpoint_with_fresh_context") {
+		t.Fatalf("exit-plan tool message did not request checkpoint run = %+v", messages[2])
+	}
+	if !strings.Contains(messages[3].Content, "complete_checkpoint") {
+		t.Fatalf("checkpoint completion tool message = %+v", messages[3])
+	}
+	if messages[4].Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || messages[4].Metadata["kind"] != "plan_execution_break" || messages[4].Metadata["action"] != "complete_checkpoint" || messages[4].Metadata["next_action"] != "await_review" {
+		t.Fatalf("checkpoint lifecycle message metadata = %+v", messages[4])
+	}
+	if !strings.Contains(messages[4].Content, "All checkpoints complete; review required") || !strings.Contains(messages[4].Content, "Next: all checkpoints are complete; waiting for user review.") {
+		t.Fatalf("checkpoint lifecycle message content = %q", messages[4].Content)
 	}
 	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 40)
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
 	seenModeEvent := false
+	seenAutoPreference := false
+	seenAutoPolicy := false
 	for _, event := range events {
 		if event.EventType == "session.mode.updated" {
 			seenModeEvent = true
+			var payload map[string]any
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatalf("decode session.mode.updated payload: %v payload=%s", err, event.Payload)
+			}
+			preference, _ := payload["preference"].(map[string]any)
+			if preference["model"] == "auto-model" && preference["thinking"] == "high" {
+				seenAutoPreference = true
+			}
+			policy, _ := payload["agent_model_policy"].(map[string]any)
+			if policy["source"] == "agent_auto_preset" && payload["swarm_conf_v3_diagnostics_enabled"] == false {
+				seenAutoPolicy = true
+			}
 		}
 	}
 	if !seenModeEvent {
 		t.Fatalf("missing canonical session.mode.updated event after exit_plan_mode: %+v", events)
 	}
+	if !seenAutoPreference || !seenAutoPolicy {
+		t.Fatalf("session.mode.updated payload did not include auto model preference/policy: seenPreference=%t seenPolicy=%t events=%+v", seenAutoPreference, seenAutoPolicy, events)
+	}
+	if runner.callCount != 1 {
+		t.Fatalf("plan provider call count = %d, want exit plan only", runner.callCount)
+	}
+	if autoRunner.callCount != 1 {
+		t.Fatalf("auto provider call count = %d, want checkpoint continuation after provider switch", autoRunner.callCount)
+	}
+	if autoRunner.lastRequest.Model != "auto-model" || autoRunner.lastRequest.Thinking != "high" {
+		t.Fatalf("auto provider request model=%q thinking=%q, want auto-model/high", autoRunner.lastRequest.Model, autoRunner.lastRequest.Thinking)
+	}
+	activePlan, ok, err := sessionSvc.GetActivePlan(created.ID)
+	if err != nil || !ok || activePlan.Document == nil {
+		t.Fatalf("get active plan after checkpoint run: ok=%t err=%v plan=%#v", ok, err, activePlan)
+	}
+	if activePlan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateWaitingReview || activePlan.Document.Checkpoints[0].Review == nil || activePlan.Document.Checkpoints[0].Review.Status != sessionruntime.PlanCheckpointReviewStatusPending {
+		t.Fatalf("active plan after checkpoint run = %#v", activePlan.Document)
+	}
+	assertSessionsV3PlanSavedOutboxState(t, sessionSvc, created.ID, sessionruntime.PlanExecutionStateWaitingReview)
+}
+
+func TestSessionsV3ExecutorFinalizesReviewCheckpointAfterProviderManagedPlanComplete(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		switch runner.callCount {
+		case 1:
+			if req.ToolInvoker == nil {
+				return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
+			}
+			args := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "cp-1 complete", "result": "done", "changed_files": []string{"swarmd/internal/run/plan_lifecycle_message.go"}, "validation": []string{"not run; not requested"}})
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-review-checkpoint", Name: "plan_manage", Arguments: args})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("terminal review checkpoint did not request finalization restart: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		}
+	}
+	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-review-finalize-create", "provider review finalize", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	saveSessionsV3ActivePlanForFinalizationTest(t, sessionSvc, created.ID, sessionruntime.PlanExecutionPolicyModeReviewEachCheckpoint, []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-1", Title: "Review", Status: sessionruntime.PlanCheckpointStatusInProgress},
+		{ID: "cp-2", Title: "Next", Status: sessionruntime.PlanCheckpointStatusPending},
+	})
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-review-finalize-message", "complete review checkpoint")
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 4 || messages[1].Role != "tool" || messages[2].Role != "system" || messages[3].Role != "system" {
+		t.Fatalf("messages after review lifecycle completion = %+v", messages)
+	}
+	lifecycleMessage := messages[2]
+	if lifecycleMessage.Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || lifecycleMessage.Metadata["action"] != "complete_checkpoint" || lifecycleMessage.Metadata["next_action"] != "await_review" {
+		t.Fatalf("review lifecycle message metadata = %+v", lifecycleMessage.Metadata)
+	}
+	if strings.Contains(lifecycleMessage.Content, "All checkpoints complete") || strings.Contains(lifecycleMessage.Content, "Context: Starting the next checkpoint") || !strings.Contains(lifecycleMessage.Content, "Checkpoint complete") || !strings.Contains(lifecycleMessage.Content, "Next: waiting for checkpoint review") {
+		t.Fatalf("review lifecycle message content = %q", lifecycleMessage.Content)
+	}
+	for _, leaked := range []string{"cp-1 complete", "Result: done", "Changed files:", "Validation:"} {
+		if strings.Contains(lifecycleMessage.Content, leaked) {
+			t.Fatalf("review lifecycle message leaked handoff detail %q: %q", leaked, lifecycleMessage.Content)
+		}
+	}
+	handoffMessage := messages[3]
+	if handoffMessage.Metadata["source"] != runruntime.PlanExecutionCheckpointHandoffMessageSource || handoffMessage.Metadata["kind"] != "plan_checkpoint_handoff" || handoffMessage.Metadata["action"] != "complete_checkpoint" || handoffMessage.Metadata["checkpoint_id"] != "cp-1" || handoffMessage.Metadata["next_checkpoint_id"] != "cp-2" || handoffMessage.Metadata["next_action"] != "await_review" || handoffMessage.Metadata["fresh_context"] != false || handoffMessage.Metadata["review_required"] != true {
+		t.Fatalf("review checkpoint handoff metadata = %+v", handoffMessage.Metadata)
+	}
+	for _, want := range []string{"Checkpoint handoff", "Completed: Checkpoint 1 — Review", "Review: Review this checkpoint before starting Checkpoint 2 — Next.", "Report: cp-1 complete", "Result: done", "Changed files:\n- swarmd/internal/run/plan_lifecycle_message.go", "Validation:\n- not run; not requested"} {
+		if !strings.Contains(handoffMessage.Content, want) {
+			t.Fatalf("review checkpoint handoff missing %q: %q", want, handoffMessage.Content)
+		}
+	}
+	activePlan, ok, err := sessionSvc.GetActivePlan(created.ID)
+	if err != nil || !ok || activePlan.Document == nil {
+		t.Fatalf("get active plan: ok=%t err=%v plan=%#v", ok, err, activePlan)
+	}
+	if activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateWaitingReview || activePlan.Document.Checkpoints[0].Review == nil || activePlan.Document.Checkpoints[0].Review.Status != sessionruntime.PlanCheckpointReviewStatusPending {
+		t.Fatalf("review plan state = %#v", activePlan.Document)
+	}
+	assertSessionsV3PlanSavedOutboxState(t, sessionSvc, created.ID, sessionruntime.PlanExecutionStateWaitingReview)
+	assertSessionsV3NoMessageAppendedActivePlanPayload(t, sessionSvc, created.ID)
+	if runner.callCount != 1 {
+		t.Fatalf("provider call count = %d, want only terminal tool turn", runner.callCount)
+	}
+}
+
+func assertSessionsV3PlanSavedOutboxState(t *testing.T, sessionSvc *sessionruntime.Service, sessionID, wantExecutionStatus string) {
+	t.Helper()
+	rows, err := sessionSvc.ListRealtimeOutboxForSessionAfterSeq(sessionID, 0, 100)
+	if err != nil {
+		t.Fatalf("list realtime outbox for %s: %v", sessionID, err)
+	}
+	for i := len(rows) - 1; i >= 0; i-- {
+		row := rows[i]
+		if row.Event.EventType != "session.plan.saved" {
+			continue
+		}
+		var payload struct {
+			HasActivePlan bool `json:"has_active_plan"`
+			ActivePlan    *struct {
+				Document *struct {
+					ExecutionState *struct {
+						Status string `json:"status"`
+					} `json:"execution_state"`
+				} `json:"document"`
+			} `json:"active_plan"`
+		}
+		if err := json.Unmarshal(row.Event.Payload, &payload); err != nil {
+			t.Fatalf("decode session.plan.saved outbox payload: %v", err)
+		}
+		if !payload.HasActivePlan || payload.ActivePlan == nil || payload.ActivePlan.Document == nil || payload.ActivePlan.Document.ExecutionState == nil {
+			t.Fatalf("session.plan.saved outbox missing active_plan document state: %+v", row)
+		}
+		if payload.ActivePlan.Document.ExecutionState.Status != wantExecutionStatus {
+			t.Fatalf("session.plan.saved execution status = %q, want %q", payload.ActivePlan.Document.ExecutionState.Status, wantExecutionStatus)
+		}
+		return
+	}
+	t.Fatalf("missing session.plan.saved realtime outbox row for %s: %+v", sessionID, rows)
+}
+
+func assertSessionsV3NoMessageAppendedActivePlanPayload(t *testing.T, sessionSvc *sessionruntime.Service, sessionID string) {
+	t.Helper()
+	rows, err := sessionSvc.ListRealtimeOutboxForSessionAfterSeq(sessionID, 0, 100)
+	if err != nil {
+		t.Fatalf("list realtime outbox for %s: %v", sessionID, err)
+	}
+	for _, row := range rows {
+		if row.Event.EventType != "session.message.appended" {
+			continue
+		}
+		var payload struct {
+			HasActivePlan bool             `json:"has_active_plan"`
+			ActivePlan    *json.RawMessage `json:"active_plan"`
+		}
+		if err := json.Unmarshal(row.Event.Payload, &payload); err != nil {
+			t.Fatalf("decode session.message.appended outbox payload: %v", err)
+		}
+		if payload.HasActivePlan || payload.ActivePlan != nil {
+			t.Fatalf("session.message.appended outbox carried active_plan side payload: %+v", row)
+		}
+	}
+}
+
+func TestSessionsV3ProviderBaseRequestCheckpointCategoriesUseFreshCodexBoundary(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	providers := registry.New()
+	providers.RegisterRunner(&sessionsV3RecordingProviderRunner{id: "codex"})
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	server.v3SessionExecutor = exec
+	workspace := t.TempDir()
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-checkpoint-categories-create", "provider checkpoint categories", workspace, pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.3-codex", Thinking: "medium"})
+	appendSessionsV3PrimaryTestSystemMessage(t, server, created.ID, "provider-checkpoint-categories-old-lineage", "previous codex response", map[string]any{
+		"provider_lineage_id": "cache:old-codex-lineage",
+		"context_branch_id":   "old-context-branch",
+		"boundary_reason":     "session_turn",
+		"provider":            "codex",
+		"model":               "gpt-5.3-codex",
+		"run_id":              "old-run",
+	})
+	resolved := sessionV3ResolvedRuntime{
+		Session: created,
+		AgentProfile: pebblestore.AgentProfile{
+			Name:                "swarm",
+			Mode:                string(agentruntime.ModePrimary),
+			RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
+			ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+			ExecutionSetting:    "auto",
+		},
+		Preference:   pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.3-codex", Thinking: "medium"},
+		Scope:        tool.WorkspaceScope{PrimaryPath: workspace},
+		Instructions: "Swarm prompt",
+		ToolChoice:   "none",
+	}
+	input := []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "checkpoint payload"}}}}
+
+	cases := []struct {
+		name  string
+		job   sessionV3ExecutorJob
+		scope sessionV3ProviderCheckpointScope
+	}{
+		{name: "start_session_checkpoint", job: sessionV3ExecutorJob{SessionID: created.ID, PlanID: "plan-start", CheckpointID: "cp-start", AttemptID: "cp-start:attempt-1", RunID: "run-start", ParentSessionID: created.ID}},
+		{name: "request_followup_checkpoint", job: sessionV3ExecutorJob{SessionID: created.ID, PlanID: "plan-followup", CheckpointID: "cp-followup", AttemptID: "cp-followup:attempt-1", RunID: "run-followup", ParentSessionID: created.ID}},
+		{name: "approved_plan_checkpoint_start", job: sessionV3ExecutorJob{SessionID: created.ID, PlanID: "plan-approved", CheckpointID: "cp-approved", AttemptID: "cp-approved:attempt-1", RunID: "run-approved", ParentSessionID: created.ID}},
+		{name: "automatic_continuation", job: sessionV3ExecutorJob{SessionID: created.ID, PlanID: "plan-auto", CheckpointID: "cp-auto", AttemptID: "cp-auto:attempt-1", RunID: "run-auto", ParentSessionID: created.ID}},
+		{name: "review_finalization", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-review"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-review", CheckpointID: "cp-review", AttemptID: "cp-review:attempt-1", ParentSessionID: created.ID, FreshContext: true}},
+		{name: "restart_retry", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-retry"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-retry", CheckpointID: "cp-retry", AttemptID: "cp-retry:attempt-2", ParentSessionID: created.ID, FreshContext: true}},
+		{name: "terminal_completed", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-completed"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-completed", CheckpointID: "cp-completed", AttemptID: "cp-completed:attempt-1", ParentSessionID: created.ID, FreshContext: true}},
+		{name: "terminal_needs_review", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-review-needed"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-review-needed", CheckpointID: "cp-review-needed", AttemptID: "cp-review-needed:attempt-1", ParentSessionID: created.ID, FreshContext: true}},
+		{name: "terminal_blocked", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-blocked"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-blocked", CheckpointID: "cp-blocked", AttemptID: "cp-blocked:attempt-1", ParentSessionID: created.ID, FreshContext: true}},
+		{name: "terminal_failed", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-failed"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-failed", CheckpointID: "cp-failed", AttemptID: "cp-failed:attempt-1", ParentSessionID: created.ID, FreshContext: true}},
+	}
+	var firstAffinity string
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := exec.sessionV3ProviderBaseRequestWithCheckpointScope(tc.job, resolved, input, tc.scope)
+			if err != nil {
+				t.Fatalf("base request: %v", err)
+			}
+			if req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+				t.Fatalf("lineage flags = boundary %q native %t fresh %t, want checkpoint fresh context", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+			}
+			if req.PreviousProviderLineageID == req.ProviderLineageID {
+				t.Fatalf("checkpoint request reused previous provider lineage %q", req.ProviderLineageID)
+			}
+			if req.ProviderCacheKey == "" || req.SessionAffinityKey == "" || req.ProviderCacheKey == req.SessionAffinityKey {
+				t.Fatalf("provider keys = cache %q affinity %q, want separate non-empty keys", req.ProviderCacheKey, req.SessionAffinityKey)
+			}
+			if len(req.Input) != 1 || !sessionsV3ProviderInputContainsContentText(req.Input, "checkpoint payload") {
+				t.Fatalf("checkpoint request input = %+v, want bounded supplied payload", req.Input)
+			}
+			if firstAffinity == "" {
+				firstAffinity = req.SessionAffinityKey
+			} else if req.SessionAffinityKey != firstAffinity {
+				t.Fatalf("same durable epoch produced different affinity keys: first=%q %s=%q", firstAffinity, tc.name, req.SessionAffinityKey)
+			}
+		})
+	}
+}
+
+func TestSessionsV3ProviderPostCheckpointFollowupUsesNativeContinuation(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	providers := registry.New()
+	providers.RegisterRunner(&sessionsV3RecordingProviderRunner{id: "codex"})
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	server.v3SessionExecutor = exec
+	workspace := t.TempDir()
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-post-checkpoint-followup-create", "provider post checkpoint followup", workspace, pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.3-codex", Thinking: "medium"})
+	resolved := sessionV3ResolvedRuntime{
+		Session:      created,
+		AgentProfile: pebblestore.AgentProfile{Name: "swarm", Mode: string(agentruntime.ModePrimary), RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ExecutionSetting: "auto"},
+		Preference:   pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.3-codex", Thinking: "medium"},
+		Scope:        tool.WorkspaceScope{PrimaryPath: workspace},
+		Instructions: "Swarm prompt",
+		ToolChoice:   "none",
+	}
+	epoch, ok, err := sessionSvc.GetActiveExecutionEpoch(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get active execution epoch: ok=%t err=%v", ok, err)
+	}
+	configurationHash := provideriface.ShortProviderLineageKey("codex", "gpt-5.3-codex", resolved.Instructions, sessionV3ProviderToolsLineageHash(resolved.Tools), strings.TrimSpace(created.Mode), strings.TrimSpace(resolved.AgentProfile.Name), strings.TrimSpace(resolved.AgentProfile.Mode), strings.TrimSpace(resolved.AgentProfile.RuntimeMode), strings.TrimSpace(resolved.AgentProfile.ExecutionSetting), strings.TrimSpace(resolved.Preference.Thinking), strings.TrimSpace(resolved.Preference.ServiceTier), strings.TrimSpace(resolved.Preference.ContextMode))
+	previousLineageID := provideriface.ShortProviderLineageKey(created.ID, epoch.EpochID, configurationHash)
+	if err := sessionSvc.PutExecutionProviderLifecycleState(pebblestore.ExecutionProviderLifecycleState{
+		SessionID:                     created.ID,
+		EpochID:                       epoch.EpochID,
+		Provider:                      "codex",
+		Model:                         "gpt-5.3-codex",
+		ConfigurationHash:             configurationHash,
+		ProviderLineageID:             previousLineageID,
+		ContextBranchID:               provideriface.ShortProviderLineageKey("epoch", created.ID, epoch.EpochID),
+		ProviderCacheKey:              sessionV3ProviderScopedKey("cache", epoch.EpochID+"-"+previousLineageID),
+		SessionAffinityKey:            sessionV3ProviderScopedKey("affinity", epoch.EpochID+"-"+previousLineageID),
+		BoundaryReason:                "checkpoint_fresh_context",
+		ProviderLineageStartMessageID: "provider-post-checkpoint-followup-lineage",
+		ProviderLineageStartRunID:     "run-finalize",
+		UpdatedAt:                     time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("put provider lifecycle state: %v", err)
+	}
+	req, err := exec.sessionV3ProviderBaseRequest(sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-followup", EpochID: epoch.EpochID}, resolved, []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "normal follow-up"}}}})
+	if err != nil {
+		t.Fatalf("base request: %v", err)
+	}
+	if req.BoundaryReason != "session_turn" || !req.NativeContinuationAllowed || req.ForceFreshProviderContext {
+		t.Fatalf("post-checkpoint follow-up flags = boundary %q native %t fresh %t, want same-lineage session_turn", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+	}
+	if req.ProviderLineageID != previousLineageID || req.ContextBranchID != provideriface.ShortProviderLineageKey("epoch", created.ID, epoch.EpochID) {
+		t.Fatalf("post-checkpoint follow-up lineage = %q branch %q, want continued epoch lineage %q", req.ProviderLineageID, req.ContextBranchID, previousLineageID)
+	}
+}
+
+func TestSessionsV3ProviderManagedPlanManageTerminalOutcomesUsePlanSavedOutbox(t *testing.T) {
+	cases := []struct {
+		name       string
+		action     string
+		wantStatus string
+	}{
+		{name: "complete", action: "complete_checkpoint", wantStatus: sessionruntime.PlanExecutionStateCompleted},
+		{name: "review", action: "mark_needs_review", wantStatus: sessionruntime.PlanExecutionStateWaitingReview},
+		{name: "blocked", action: "mark_blocked", wantStatus: sessionruntime.PlanExecutionStateBlocked},
+		{name: "failed", action: "mark_failed", wantStatus: sessionruntime.PlanExecutionStateFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+			runner := &sessionsV3RecordingProviderRunner{}
+			runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+				if req.ToolInvoker == nil {
+					return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
+				}
+				args := mustSessionsV3TestJSON(t, map[string]any{"action": tc.action, "checkpoint_id": "cp-1", "report": tc.action + " report", "result": "done"})
+				result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-" + tc.name, Name: "plan_manage", Arguments: args})
+				if err != nil {
+					return provideriface.Response{}, err
+				}
+				if result.Error != "" {
+					return provideriface.Response{}, fmt.Errorf("plan_manage %s failed: %+v", tc.action, result)
+				}
+				return provideriface.Response{Text: tc.action + " done"}, nil
+			}
+			setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+			created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-plan-saved-"+tc.name, "provider plan saved "+tc.name, t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+			saveSessionsV3ActivePlanForFinalizationTest(t, sessionSvc, created.ID, sessionruntime.PlanExecutionPolicyModeAutomatic, []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Only", Status: sessionruntime.PlanCheckpointStatusInProgress}})
+
+			postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-plan-saved-message-"+tc.name, "run "+tc.action)
+			waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+
+			assertSessionsV3PlanSavedOutboxState(t, sessionSvc, created.ID, tc.wantStatus)
+			assertSessionsV3NoMessageAppendedActivePlanPayload(t, sessionSvc, created.ID)
+		})
+	}
+}
+
+func TestSessionsV3ExecutorUserContinuationResumesBlockedCheckpointBeforeAdvancing(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, errors.New("missing provider-managed tool invoker")
+		}
+		switch runner.callCount {
+		case 1:
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-resolve-block", Name: "plan_manage", Arguments: `{"action":"resolve_blocked_checkpoint","checkpoint_id":"cp-1","start_next":true,"result":"dependency resolved","notes":"user confirmed continuation"}`})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if result.Error != "" || !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("resolve blocked checkpoint did not hand off to the next run: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: true}, nil
+		case 2:
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-resumed-cp-1", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"cp-1","report":"dependency confirmed and remaining checkpoint work finished","result":"done"}`})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if result.Error != "" || !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("complete resumed checkpoint failed: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: true}, nil
+		case 3:
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-cp-2", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"later checkpoint completed only after resumed cp-1 finished","result":"done","handoff_overview":"The blocked checkpoint resumed and explicitly completed before the later checkpoint ran.","recommendation":{"decision":"ship","action":"review the completed flow","reason":"Checkpoint ordering and explicit completion were preserved.","action_state":"ready"}}`})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if result.Error != "" {
+				return provideriface.Response{}, fmt.Errorf("complete next checkpoint failed: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		}
+	}
+	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-blocked-continue-create", "provider blocked continue", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	_, _, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-blocked-continue", "Plan: blocked continue", "## Plan: blocked continue", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Title:              "Plan: blocked continue",
+		Info:               pebblestore.SessionPlanInfo{Goal: "Continue after a resolved blocker"},
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateBlocked, LastCheckpointID: "cp-1", LastAttemptID: "cp-1:attempt-1", LastOutcome: sessionruntime.PlanCheckpointStatusBlocked, ParentSessionID: created.ID},
+		ActiveCheckpointID: "cp-1",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Wait for dependency", Objective: "Confirm the dependency and finish the remaining integration work", Tasks: []string{"Confirm dependency", "Finish integration"}, Status: sessionruntime.PlanCheckpointStatusBlocked, Order: 1, AcceptanceCriteria: []string{"Dependency is confirmed resolved", "Remaining integration work is finished"}, Report: "Progress before block: preparation complete; integration still pending.", AttemptID: "cp-1:attempt-1", RunID: "blocked-run", SessionID: created.ID, Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "cp-1:attempt-1", CheckpointID: "cp-1", Status: sessionruntime.PlanCheckpointStatusBlocked, Outcome: sessionruntime.PlanCheckpointStatusBlocked, RunID: "blocked-run", SessionID: created.ID, ParentSessionID: created.ID}}},
+			{ID: "cp-2", Title: "Finish automatically", Objective: "Complete after continuation", Status: sessionruntime.PlanCheckpointStatusPending, Order: 2, AcceptanceCriteria: []string{"Final checkpoint completes"}},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("save blocked continuation plan: %v", err)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-blocked-continue-message", "The dependency is resolved; continue")
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		active, ok, getErr := sessionSvc.GetActivePlan(created.ID)
+		if getErr != nil {
+			t.Fatalf("get blocked continuation plan: %v", getErr)
+		}
+		if ok && active.Document != nil && active.Document.ExecutionState != nil && active.Document.ExecutionState.Status == sessionruntime.PlanExecutionStateWaitingReview {
+			if active.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || active.Document.Checkpoints[1].Status != sessionruntime.PlanCheckpointStatusCompleted {
+				t.Fatalf("resolved continuation checkpoint states = %+v", active.Document.Checkpoints)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("blocked continuation did not reach final review: %+v", active.Document)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if runner.callCount != 3 {
+		t.Fatalf("provider calls = %d, want resolver turn, resumed cp-1 run, then automatic cp-2 run", runner.callCount)
+	}
+	intents, err := sessionSvc.ListSessionRunIntents(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list blocked continuation run intents: %v", err)
+	}
+	if len(intents) != 3 || intents[0].CheckpointID != "" || intents[1].CheckpointID != "cp-1" || intents[2].CheckpointID != "cp-2" {
+		t.Fatalf("blocked continuation run intents = %+v", intents)
+	}
+	if len(runner.requests) != 3 || !strings.Contains(fmt.Sprint(runner.requests[1].Input), "integration still pending") || !strings.Contains(fmt.Sprint(runner.requests[1].Input), "user confirmed continuation") {
+		t.Fatalf("resumed checkpoint did not receive preserved progress and resolution context: %+v", runner.requests)
+	}
+}
+
+func TestSessionsV3ExecutorAutomaticCheckpointsUseDistinctEpochsAndRuns(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		checkpointID := fmt.Sprintf("cp-%d", runner.callCount)
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker for %s", checkpointID)
+		}
+		args := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": checkpointID, "report": checkpointID + " complete", "result": "done"})
+		result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-" + checkpointID, Name: "plan_manage", Arguments: args})
+		if err != nil {
+			return provideriface.Response{}, err
+		}
+		if !result.RestartTurn {
+			return provideriface.Response{}, fmt.Errorf("%s completion did not request a fresh checkpoint run", checkpointID)
+		}
+		return provideriface.Response{RestartTurn: result.RestartTurn}, nil
+	}
+	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-auto-epochs-create", "provider auto epochs", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	_, _, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-auto-epochs", "Plan: automatic epochs", "## Plan: automatic epochs", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:  &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateIdle},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "First", Status: sessionruntime.PlanCheckpointStatusPending},
+			{ID: "cp-2", Title: "Second", Status: sessionruntime.PlanCheckpointStatusPending},
+		},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save automatic epoch plan: %v", err)
+	}
+	startInput, err := server.sessionsV3PlanModeRunInput(created.ID, "plan-auto-epochs", "cp-1")
+	if err != nil {
+		t.Fatalf("build plan run input: %v", err)
+	}
+	startResult, err := server.planLifecycle.StartCheckpoint(startInput)
+	if err != nil {
+		t.Fatalf("start first checkpoint: %v", err)
+	}
+	if _, _, err := server.startSessionsV3PlanModeRun(testPrincipal(), created.ID, "start_checkpoint", startResult, false); err != nil {
+		t.Fatalf("enqueue first checkpoint: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		active, ok, err := sessionSvc.GetActivePlan(created.ID)
+		if err != nil {
+			t.Fatalf("get active plan: %v", err)
+		}
+		if ok && active.Document != nil && active.Document.ExecutionState != nil && active.Document.ExecutionState.Status == sessionruntime.PlanExecutionStateWaitingReview {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("automatic checkpoints did not reach final review: %#v", active.Document)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if runner.callCount != 2 || len(runner.requests) != 2 {
+		t.Fatalf("provider calls = %d requests = %d, want one per checkpoint", runner.callCount, len(runner.requests))
+	}
+	intents, err := sessionSvc.ListSessionRunIntents(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list run intents: %v", err)
+	}
+	if len(intents) != 2 {
+		t.Fatalf("run intents = %+v, want two distinct checkpoint runs", intents)
+	}
+	if intents[0].RunID == intents[1].RunID || intents[0].EpochID == intents[1].EpochID || intents[0].CheckpointID == intents[1].CheckpointID {
+		t.Fatalf("checkpoint boundaries were reused: %+v", intents)
+	}
+	for i, req := range runner.requests {
+		if req.ExecutionEpochID == "" || req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+			t.Fatalf("request %d did not start a fresh checkpoint provider context: %+v", i+1, req)
+		}
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list automatic checkpoint messages: %v", err)
+	}
+	if len(messages) != 5 || messages[0].Role != "tool" || messages[1].Role != "system" || messages[2].Role != "tool" || messages[3].Role != "system" || messages[4].Role != "system" {
+		t.Fatalf("automatic checkpoint message order = %+v", messages)
+	}
+	if messages[1].Metadata["source"] != runruntime.PlanExecutionCheckpointHandoffMessageSource || messages[1].Metadata["kind"] != "plan_checkpoint_handoff" || messages[1].Metadata["checkpoint_id"] != "cp-1" || messages[1].Metadata["next_checkpoint_id"] != "cp-2" || messages[1].Metadata["next_action"] != "run_checkpoint_with_fresh_context" || messages[1].Metadata["fresh_context"] != true {
+		t.Fatalf("automatic checkpoint handoff metadata = %+v", messages[1].Metadata)
+	}
+	if !strings.Contains(messages[1].Content, "Completed: Checkpoint 1 — First") || !strings.Contains(messages[1].Content, "Next: Checkpoint 2 — Second") || !strings.Contains(messages[1].Content, "Report: cp-1 complete") || !strings.Contains(messages[1].Content, "Context: Starting the next checkpoint with fresh context.") {
+		t.Fatalf("automatic checkpoint handoff content = %q", messages[1].Content)
+	}
+	if messages[3].Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || messages[4].Metadata["source"] != runruntime.PlanExecutionFinalHandoffMessageSource {
+		t.Fatalf("automatic checkpoint terminal message semantics changed: %+v", messages)
+	}
+	assertSessionsV3NoMessageAppendedActivePlanPayload(t, sessionSvc, created.ID)
+}
+
+func TestSessionsV3ExecutorProviderManagedStartCheckpointDefersToAutomaticRun(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, errors.New("missing provider-managed tool invoker")
+		}
+		switch runner.callCount {
+		case 1:
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-start-cp-1", Name: "plan_manage", Arguments: `{"action":"start_checkpoint","checkpoint_id":"cp-1"}`})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if result.Error != "" || !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("checkpoint start did not request a fresh run: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: true}, nil
+		case 2:
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-cp-1", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"cp-1","report":"implemented","result":"done"}`})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if result.Error != "" || !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("checkpoint completion did not terminate the checkpoint run: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: true}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		}
+	}
+	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-managed-start-create", "provider managed start", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	_, _, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-provider-managed-start", "Provider-managed start", "## Provider-managed start", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Title: "Provider-managed start",
+		Info:  pebblestore.SessionPlanInfo{Goal: "Run the pending checkpoint with fresh provider context."},
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode:  sessionruntime.PlanExecutionPolicyModeAutomatic,
+			Shape: sessionruntime.PlanExecutionShapeCheckpointed,
+		},
+		ExecutionState: &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateIdle},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID:                 "cp-1",
+			Title:              "Implement",
+			Objective:          "Implement the requested change.",
+			AcceptanceCriteria: []string{"The requested change is implemented."},
+			Order:              1,
+			Status:             sessionruntime.PlanCheckpointStatusPending,
+		}},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save provider-managed start plan: %v", err)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-managed-start-message", "continue")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		active, ok, getErr := sessionSvc.GetActivePlan(created.ID)
+		if getErr != nil {
+			t.Fatalf("get active plan: %v", getErr)
+		}
+		if ok && active.Document != nil && active.Document.ExecutionState != nil && active.Document.ExecutionState.Status == sessionruntime.PlanExecutionStateWaitingReview {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("provider-managed checkpoint start did not complete: calls=%d plan=%+v", runner.callCount, active.Document)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if runner.callCount != 2 {
-		t.Fatalf("provider call count = %d, want exit plan plus refreshed continuation", runner.callCount)
+		t.Fatalf("provider calls = %d, want initiating turn plus fresh checkpoint run", runner.callCount)
+	}
+	intents, err := sessionSvc.ListSessionRunIntents(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list run intents: %v", err)
+	}
+	if len(intents) != 2 || intents[0].RunID == intents[1].RunID {
+		t.Fatalf("run intents = %+v, want distinct initiating and checkpoint runs", intents)
+	}
+}
+
+func TestSessionsV3ExecutorFinalReviewFollowupStartsFreshCheckpointExactlyOnce(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, errors.New("missing provider-managed tool invoker")
+		}
+		switch runner.callCount {
+		case 1:
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-final-review-followup", Name: "plan_manage", Arguments: `{"action":"request_followup_checkpoint","change_request":"investigate launch readiness","checkpoint_title":"Launch readiness","tasks":["Investigate launch readiness"],"acceptance_criteria":["A launch-readiness answer is appended"]}`})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if result.Error != "" || !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("final-review follow-up did not request a fresh checkpoint run: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
+		case 2:
+			if req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+				return provideriface.Response{}, fmt.Errorf("follow-up checkpoint lineage flags = boundary %q native %t fresh %t", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+			}
+			if !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: followup-1.") {
+				return provideriface.Response{}, fmt.Errorf("follow-up checkpoint input = %+v", req.Input)
+			}
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-final-review-followup", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"followup-1","report":"launch readiness investigated","result":"done"}`})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if result.Error != "" || !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("follow-up checkpoint completion failed: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		}
+	}
+	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-final-review-followup-create", "provider final-review follow-up", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	_, _, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-final-review-followup", "Plan: Final Review Follow-up", "## Plan: Final Review Follow-up", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Info:               pebblestore.SessionPlanInfo{Goal: "Complete the original work and preserve independent follow-ups."},
+		ExecutionOrigin:    sessionruntime.PlanExecutionOriginAutoSession,
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed, FollowupCheckpointPolicy: sessionruntime.PlanFollowupCheckpointPolicyAutoStart},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateWaitingReview, LastCheckpointID: "cp-1", LastAttemptID: "cp-1:attempt-1", ParentSessionID: created.ID, CurrentSessionID: created.ID},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Original", Objective: "Complete the original work.", AcceptanceCriteria: []string{"The original work is complete."}, Status: sessionruntime.PlanCheckpointStatusCompleted}},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save final-review follow-up plan: %v", err)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-final-review-followup-message", "investigate launch readiness")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		active, ok, getErr := sessionSvc.GetActivePlan(created.ID)
+		if getErr != nil {
+			t.Fatalf("get final-review follow-up plan: %v", getErr)
+		}
+		if ok && active.Document != nil && len(active.Document.Checkpoints) == 2 && active.Document.Checkpoints[1].Status == sessionruntime.PlanCheckpointStatusCompleted && active.Document.ExecutionState != nil && active.Document.ExecutionState.Status == sessionruntime.PlanExecutionStateWaitingReview {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("final-review follow-up did not complete: calls=%d plan=%+v", runner.callCount, active.Document)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if runner.callCount != 2 {
+		t.Fatalf("provider calls = %d, want parent turn plus one follow-up checkpoint run", runner.callCount)
+	}
+	intents, err := sessionSvc.ListSessionRunIntents(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list final-review follow-up run intents: %v", err)
+	}
+	if len(intents) != 2 || intents[0].RunID == intents[1].RunID || intents[0].CheckpointID == intents[1].CheckpointID {
+		t.Fatalf("final-review follow-up run intents = %+v, want distinct parent and checkpoint runs", intents)
+	}
+	for _, intent := range intents {
+		if intent.Status != sessionruntime.RunIntentCompleted {
+			t.Fatalf("final-review follow-up run did not complete: %+v", intents)
+		}
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list final-review follow-up messages: %v", err)
+	}
+	for _, message := range messages {
+		if message.Role == "system" && strings.Contains(message.Content, "checkpoint status \"pending\"") {
+			t.Fatalf("duplicate checkpoint-start failure was appended: %+v", message)
+		}
+	}
+}
+
+func TestSessionsV3PlanModeRunInputSkipsDurableRunIDCollision(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "plan-run-id-collision-create", "plan run id collision", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	oldRunID := sessionsV3PlanModeRunID(created.ID, "plan-1", "followup-2", "followup-2:attempt-1")
+	payloadHash, err := sessionV3ExecutorPayloadHash(created.ID, oldRunID, sessionruntime.RunIntentPendingExecutor, "", "session.assistant.queued", "")
+	if err != nil {
+		t.Fatalf("payload hash: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "plan-run-id-collision",
+		IdempotencyKey:  "plan-run-id-collision",
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       "session.assistant.queued",
+		RunIntent:       &pebblestore.V3SessionRunIntent{RunID: oldRunID, Status: sessionruntime.RunIntentPendingExecutor},
+		NowUnixMs:       time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("record colliding run intent: %v", err)
+	}
+
+	input, err := server.sessionsV3PlanModeRunInput(created.ID, "plan-1", "followup-2")
+	if err != nil {
+		t.Fatalf("build collision-free run input: %v", err)
+	}
+	if input.AttemptID != "followup-2:attempt-2" || input.RunID == oldRunID {
+		t.Fatalf("run input reused durable identity: %#v", input)
+	}
+}
+
+func TestSessionsV3WaitingReviewFollowupReturnsCanonicalDurableTriggerMessage(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "waiting-review-followup-create", "waiting review followup")
+	_, _, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-waiting-review", "Plan: waiting review", "## Plan", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:  &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateWaitingReview, LastCheckpointID: "cp-1", LastAttemptID: "cp-1:attempt-1", ParentSessionID: created.ID, CurrentSessionID: created.ID},
+		Checkpoints:     []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Final", Status: sessionruntime.PlanCheckpointStatusCompleted}},
+	}})
+	if err != nil {
+		t.Fatalf("save waiting-review plan: %v", err)
+	}
+
+	req := sessionsV3MessageRequest{ClientRequestID: "waiting-review-followup-message", MessageID: "canonical-followup-message", RunID: "waiting-review-followup-run", Role: "user", Content: "continue after final handoff"}
+	result, job, err := server.acceptSessionsV3Message(testPrincipal(), created.ID, req)
+	if err != nil {
+		t.Fatalf("accept waiting-review followup: %v", err)
+	}
+	if job == nil {
+		t.Fatal("waiting-review followup did not enqueue a parent turn")
+	}
+	if job.PlanID != "" || job.CheckpointID != "" || job.AttemptID != "" || job.ParentSessionID != "" {
+		t.Fatalf("post-checkpoint user turn retained completed checkpoint ownership: %#v", job)
+	}
+	if result.RunIntent == nil || result.RunIntent.PlanID != "plan-waiting-review" || result.RunIntent.CheckpointID != "cp-1" || result.RunIntent.AttemptID != "cp-1:attempt-1" {
+		t.Fatalf("durable boundary intent lost completed checkpoint audit metadata: %#v", result.RunIntent)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list durable messages: %v", err)
+	}
+	if len(messages) != 1 || result.Message == nil {
+		t.Fatalf("followup result/message count = %#v/%d", result.Message, len(messages))
+	}
+	persisted := messages[0]
+	if !reflect.DeepEqual(*result.Message, persisted) || result.Message.ID != req.MessageID || result.Message.SessionID != created.ID || result.Message.CreatedAt == 0 || result.Message.GlobalSeq == 0 || result.Message.GlobalSeq != result.Event.Seq {
+		t.Fatalf("response message is not canonical durable trigger: response=%#v persisted=%#v event=%#v", result.Message, persisted, result.Event)
+	}
+
+	replayed, _, err := server.acceptSessionsV3Message(testPrincipal(), created.ID, req)
+	if err != nil {
+		t.Fatalf("replay waiting-review followup: %v", err)
+	}
+	if !replayed.Replayed || replayed.Message == nil || !reflect.DeepEqual(*replayed.Message, persisted) || replayed.Message.GlobalSeq != replayed.Event.Seq {
+		t.Fatalf("replay did not return canonical durable trigger: replay=%#v persisted=%#v", replayed, persisted)
+	}
+}
+
+func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		switch runner.callCount {
+		case 1:
+			if req.ToolInvoker == nil {
+				return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
+			}
+			args := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "## Summary\n- last checkpoint complete", "result": "done", "validation": []string{"- targeted final lifecycle regression"}})
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-final-checkpoint", Name: "plan_manage", Arguments: args})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("terminal plan completion did not request executor stop restart: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		}
+	}
+	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-auto-finalize-create", "provider auto finalize", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	saveSessionsV3ActivePlanForFinalizationTest(t, sessionSvc, created.ID, sessionruntime.PlanExecutionPolicyModeAutomatic, []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-1", Title: "Final", Status: sessionruntime.PlanCheckpointStatusInProgress},
+	})
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-auto-finalize-message", "complete final checkpoint")
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 4 || messages[1].Role != "tool" || messages[2].Role != "system" || messages[3].Role != "system" {
+		t.Fatalf("messages after automatic finalization = %+v", messages)
+	}
+	if messages[2].Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || messages[2].Metadata["kind"] != "plan_execution_break" || messages[2].Metadata["action"] != "complete_checkpoint" || messages[2].Metadata["next_action"] != "await_review" {
+		t.Fatalf("final lifecycle message metadata = %+v", messages[2].Metadata)
+	}
+	if messages[3].Metadata["source"] != runruntime.PlanExecutionFinalHandoffMessageSource || messages[3].Metadata["kind"] != "plan_final_checkpoint_handoff" || messages[3].Metadata["action"] != "complete_checkpoint" || messages[3].Metadata["next_action"] != "await_review" {
+		t.Fatalf("final handoff message metadata = %+v", messages[3].Metadata)
+	}
+	if strings.Contains(messages[2].Content, "Review and approve this plan") || strings.Contains(messages[2].Content, "Context: Starting the next checkpoint") || !strings.Contains(messages[2].Content, "All checkpoints complete; review required") || strings.Contains(messages[2].Content, "Final checkpoint handoff") || strings.Contains(messages[2].Content, "Report:") || strings.Contains(messages[2].Content, "Result: done") || strings.Contains(messages[2].Content, "Validation:") {
+		t.Fatalf("final lifecycle message content = %q", messages[2].Content)
+	}
+	if !strings.Contains(messages[3].Content, "Final checkpoint handoff") || !strings.Contains(messages[3].Content, "Report:\n## Summary\n- last checkpoint complete") || !strings.Contains(messages[3].Content, "Result: done") || !strings.Contains(messages[3].Content, "Validation:\n- targeted final lifecycle regression") || strings.Contains(messages[3].Content, "Markdown is supported in this handoff") {
+		t.Fatalf("final handoff message content = %q", messages[3].Content)
+	}
+	activePlan, ok, err := sessionSvc.GetActivePlan(created.ID)
+	if err != nil || !ok || activePlan.Document == nil {
+		t.Fatalf("get active plan: ok=%t err=%v plan=%#v", ok, err, activePlan)
+	}
+	if activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateWaitingReview || activePlan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || activePlan.Document.Checkpoints[0].Review == nil || activePlan.Document.Checkpoints[0].Review.Status != sessionruntime.PlanCheckpointReviewStatusPending {
+		t.Fatalf("completed plan state = %#v", activePlan.Document)
+	}
+	if runner.callCount != 1 {
+		t.Fatalf("provider call count = %d, want only terminal tool turn", runner.callCount)
+	}
+}
+
+func TestSessionsV3MessagesForProviderLineageDoesNotInferBoundaryFromTranscript(t *testing.T) {
+	messages := []pebblestore.MessageSnapshot{
+		{Role: "user", Content: "old raw transcript before compact"},
+		{Role: "system", Content: "[context-compact] origin=overflow index=1\nold summary"},
+		{Role: "assistant", Content: "checkpoint raw tool transcript", Metadata: map[string]any{"provider_lineage_id": "same-lineage"}},
+		{Role: "tool", Content: "large hidden tool result from checkpoint"},
+		{Role: "system", Content: "[context-compact] origin=plan_fresh_context index=2\nbounded checkpoint summary"},
+		{Role: "user", Content: "normal follow-up after checkpoint"},
+	}
+
+	bounded := sessionsV3MessagesForProviderLineage(messages, "same-lineage", true)
+	if len(bounded) != len(messages) {
+		t.Fatalf("provider lineage helper inferred a boundary from transcript text or metadata: got %d messages, want %d: %+v", len(bounded), len(messages), bounded)
+	}
+	for i := range messages {
+		if bounded[i].Content != messages[i].Content {
+			t.Fatalf("provider lineage helper changed explicitly supplied epoch message %d: got %q want %q", i, bounded[i].Content, messages[i].Content)
+		}
+	}
+	input := sessionsV3ProviderInputForLineage(messages, "same-lineage", true)
+	for _, want := range []string{"old raw transcript before compact", "checkpoint raw tool transcript", "bounded checkpoint summary", "normal follow-up after checkpoint"} {
+		if !sessionsV3ProviderInputContainsContentText(input, want) {
+			t.Fatalf("explicit epoch input dropped %q after interpreting transcript markers as authority: %+v", want, input)
+		}
+	}
+}
+
+func TestSessionsV3ExecutorFollowUpAfterAutomaticCheckpointUsesFreshContextBoundary(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	const oldPrompt = "old raw transcript before automatic checkpoint"
+	const checkpointReport = "automatic checkpoint report retained in boundary"
+	const followUp = "normal follow-up after automatic checkpoint"
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		switch runner.callCount {
+		case 1:
+			if req.ToolInvoker == nil {
+				return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
+			}
+			args := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": checkpointReport, "result": "done", "validation": []string{"focused regression fixture"}})
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-auto-checkpoint", Name: "plan_manage", Arguments: args})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("terminal plan completion did not request executor stop restart: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
+		case 2:
+			if req.BoundaryReason != "epoch_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+				return provideriface.Response{}, fmt.Errorf("post-checkpoint follow-up lineage flags = boundary %q native %t fresh %t, want a fresh provider chain in the new post-checkpoint epoch", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+			}
+			if sessionsV3ProviderInputContainsContentText(req.Input, oldPrompt) {
+				return provideriface.Response{}, fmt.Errorf("follow-up provider input leaked old raw transcript: %+v", req.Input)
+			}
+			for _, want := range []string{"[context-compact]", "origin=plan_fresh_context", checkpointReport, followUp} {
+				if !sessionsV3ProviderInputContainsContentText(req.Input, want) {
+					return provideriface.Response{}, fmt.Errorf("follow-up provider input missing %q: %+v", want, req.Input)
+				}
+			}
+			return provideriface.Response{Text: "follow-up answered from fresh boundary"}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		}
+	}
+	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-auto-follow-up-create", "provider auto follow-up", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	saveSessionsV3ActivePlanForFinalizationTest(t, sessionSvc, created.ID, sessionruntime.PlanExecutionPolicyModeAutomatic, []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Final", Status: sessionruntime.PlanCheckpointStatusInProgress}})
+
+	appendSessionsV3PrimaryTestSystemMessage(t, server, created.ID, "compact-before-auto-checkpoint", "[context-compact] origin=overflow index=1\nold compact summary")
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-auto-follow-up-checkpoint", oldPrompt)
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-auto-follow-up-normal", followUp)
+	waitForSessionsV3SpecificRunIntentStatus(t, sessionSvc, created.ID, stableSessionsV3PrimaryRunID(created.ID, "provider-auto-follow-up-normal"), sessionruntime.RunIntentCompleted)
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want checkpoint tool turn and follow-up", runner.callCount)
+	}
+	if sessionsV3ProviderInputContainsContentText(runner.requests[1].Input, oldPrompt) {
+		t.Fatalf("follow-up request leaked old raw transcript: %+v", runner.requests[1].Input)
+	}
+}
+
+func setupSessionsV3ProviderManagedPlanTest(t *testing.T, server *Server, sessionSvc *sessionruntime.Service, runner *sessionsV3RecordingProviderRunner) {
+	t.Helper()
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	server.runner = runSvc
+	server.SetBypassPermissions(true)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"plan_manage": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert plan-managed swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+}
+
+func saveSessionsV3ActivePlanForFinalizationTest(t *testing.T, sessionSvc *sessionruntime.Service, sessionID string, mode string, checkpoints []pebblestore.SessionPlanCheckpoint) {
+	t.Helper()
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-finalize", "Plan: finalize", "## Plan: finalize", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: mode, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateInProgress, ActiveAttemptID: "cp-1:attempt-1", ParentSessionID: sessionID, CurrentSessionID: sessionID, CurrentRunID: "run-finalize"},
+		Checkpoints:        checkpoints,
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save active plan: %v", err)
 	}
 }
 
@@ -3461,6 +6952,21 @@ func TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn(t *testing.T
 	}
 	if runner.callCount != 2 {
 		t.Fatalf("provider call count = %d, want restart plus continuation", runner.callCount)
+	}
+	if len(runner.requests) != 2 {
+		t.Fatalf("recorded provider requests = %d, want 2", len(runner.requests))
+	}
+	if runner.requests[1].ProviderLineageID == "" || runner.requests[1].ProviderCacheKey == "" || runner.requests[1].SessionAffinityKey == "" {
+		t.Fatalf("restart-after-tool request missing provider lineage keys: %+v", runner.requests[1])
+	}
+	if runner.requests[1].BoundaryReason != "restart_after_tool" {
+		t.Fatalf("restart-after-tool boundary reason = %q, want restart_after_tool", runner.requests[1].BoundaryReason)
+	}
+	if runner.requests[1].NativeContinuationAllowed || !runner.requests[1].ForceFreshProviderContext {
+		t.Fatalf("restart-after-tool did not force a fresh provider context: %+v", runner.requests[1])
+	}
+	if sessionsV3ProviderInputHasTopLevelType(runner.requests[1].Input, "reasoning") || strings.Contains(fmt.Sprint(runner.requests[1].Input), "encrypted-reasoning") {
+		t.Fatalf("restart-after-tool fresh input replayed native encrypted reasoning: %+v", runner.requests[1].Input)
 	}
 }
 
@@ -3543,6 +7049,256 @@ func TestSessionsV3RuntimeInstructionsUseLegacyWorkspaceAndRuleContext(t *testin
 	}
 }
 
+func TestSessionsV3CompactEndpointSlicesRepeatedCompactionFromLatestCheckpoint(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	const (
+		oldRaw  = "session 0 raw transcript must be dropped before compact two"
+		newRaw  = "session 1 new slice must be retained before compact two"
+		summary = "summary one carries original request"
+	)
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		switch req.SessionID {
+		default:
+		}
+		if strings.Contains(req.Instructions, "Master harness prompt") {
+			// Memory compaction has its own instructions; this assertion belongs to the main-agent test below.
+			t.Fatalf("memory compact unexpectedly used main-agent instructions: %q", req.Instructions)
+		}
+		if !strings.Contains(req.Instructions, "memory compact agent") {
+			t.Fatalf("compact did not use memory agent instructions: %q", req.Instructions)
+		}
+		if !strings.Contains(fmt.Sprint(req.Input), oldRaw) && !strings.Contains(fmt.Sprint(req.Input), summary) {
+			t.Fatalf("compact request missing prior context/checkpoint: %+v", req.Input)
+		}
+		if strings.Contains(fmt.Sprint(req.Input), newRaw) {
+			if strings.Contains(fmt.Sprint(req.Input), oldRaw) {
+				t.Fatalf("second compact oversent pre-checkpoint transcript: %+v", req.Input)
+			}
+			if !strings.Contains(fmt.Sprint(req.Input), summary) {
+				t.Fatalf("second compact missing previous checkpoint summary: %+v", req.Input)
+			}
+			return provideriface.Response{Text: "summary two", Model: "test-model", StopReason: "stop"}, nil
+		}
+		if !strings.Contains(fmt.Sprint(req.Input), oldRaw) {
+			t.Fatalf("first compact missing original raw transcript: %+v", req.Input)
+		}
+		return provideriface.Response{Text: summary, Model: "test-model", StopReason: "stop"}, nil
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	server.runner = runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, server.discovery, nil)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "test-model", Thinking: "medium", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory compact prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
+		t.Fatalf("upsert memory agent: %v", err)
+	}
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "compact-slice-create", "compact slice", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	appendSessionsV3PrimaryTestUserMessage(t, server, created.ID, "compact-slice-old", oldRaw)
+	postSessionsV3CompactTestRequest(t, server, created.ID, "compact-slice-one")
+	appendSessionsV3PrimaryTestUserMessage(t, server, created.ID, "compact-slice-new", newRaw)
+	postSessionsV3CompactTestRequest(t, server, created.ID, "compact-slice-two")
+	if runner.callCount != 2 {
+		t.Fatalf("compact provider call count = %d, want 2", runner.callCount)
+	}
+}
+
+func TestSessionsV3ProviderInputAfterCompactUsesCheckpointAndRuntimePayload(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	primary := t.TempDir()
+	if err := os.WriteFile(filepath.Join(primary, "AGENTS.md"), []byte("# Primary compact rule\nPost compact rule payload."), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+	server.discovery = discovery.NewService()
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		inputText := fmt.Sprint(req.Input)
+		for _, want := range []string{"[context-compact]", "summary one carries original request", "new user after compact"} {
+			if !strings.Contains(inputText, want) {
+				t.Fatalf("provider input missing %q: %+v", want, req.Input)
+			}
+		}
+		if strings.Contains(inputText, "old raw before compact") {
+			t.Fatalf("provider input retained pre-compact raw transcript: %+v", req.Input)
+		}
+		for _, want := range []string{"Master harness prompt (applies to every agent run):", "Workspace scope:", "Loaded instruction sources:", "Post compact rule payload."} {
+			if !strings.Contains(req.Instructions, want) {
+				t.Fatalf("runtime instructions missing %q:\n%s", want, req.Instructions)
+			}
+		}
+		return provideriface.Response{Text: "post compact answer", Model: "test-model", StopReason: "stop"}, nil
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	server.runner = runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, server.discovery, nil)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "compact-runtime-create", "compact runtime", primary, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	appendSessionsV3PrimaryTestUserMessage(t, server, created.ID, "compact-runtime-old", "old raw before compact")
+	appendSessionsV3PrimaryTestSystemMessage(t, server, created.ID, "compact-runtime-checkpoint", "[context-compact] index=2 origin=manual\n\nCompacted recap:\nsummary one carries original request")
+	appendSessionsV3PrimaryTestUserMessage(t, server, created.ID, "compact-runtime-new", "new user after compact")
+	runID := "compact-runtime-run"
+	payloadHash, err := sessionV3ExecutorPayloadHash(created.ID, runID, sessionruntime.RunIntentPendingExecutor, "", "session.message.appended", "compact-runtime-run")
+	if err != nil {
+		t.Fatalf("hash pending run: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "compact-runtime-run",
+		IdempotencyKey:  "compact-runtime-run",
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       "session.message.appended",
+		RunIntent:       &pebblestore.V3SessionRunIntent{RunID: runID, Status: sessionruntime.RunIntentPendingExecutor},
+		NowUnixMs:       time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("record pending run: %v", err)
+	}
+	if _, err := exec.assistantResponse(context.Background(), sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: created.ID, RunID: runID}); err != nil {
+		t.Fatalf("assistant response: %v", err)
+	}
+	if runner.callCount != 1 {
+		t.Fatalf("provider call count = %d, want 1", runner.callCount)
+	}
+}
+
+func postSessionsV3CompactTestRequest(t *testing.T, server *Server, sessionID, clientRequestID string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+sessionID+"/compact", bytes.NewBufferString(fmt.Sprintf(`{"client_request_id":%q}`, clientRequestID)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("compact status = %d, want %d, body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	var resp struct {
+		RunIntent *pebblestore.V3SessionRunIntent `json:"run_intent"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode compact response: %v", err)
+	}
+	if resp.RunIntent == nil || strings.TrimSpace(resp.RunIntent.RunID) == "" {
+		t.Fatalf("compact response missing run intent: %s", rec.Body.String())
+	}
+	waitForSessionsV3SpecificRunIntentStatus(t, server.sessions, sessionID, resp.RunIntent.RunID, sessionruntime.RunIntentCompleted)
+}
+
+func TestSessionsV3ProviderLineageMetadataPersistsAcrossModelHandoffLegacyTranscriptIgnored(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{text: "assistant answer"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "lineage-meta-create", "lineage metadata", pebblestore.ModelPreference{Provider: "test-provider", Model: "model-a", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "lineage-meta-message-1", "first turn")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	appendSessionsV3PrimaryTestUserMessage(t, server, created.ID, "lineage-meta-old-huge", "OLD-HUGE-TRANSCRIPT-"+strings.Repeat("x", 4000))
+	appendSessionsV3PrimaryTestSystemMessage(t, server, created.ID, "lineage-meta-summary", "[context-compact] index=2 origin=test\n\nCompacted recap:\nFirst turn summary.")
+	prefReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/preference", bytes.NewBufferString(`{"provider":"test-provider","model":"model-b","thinking":"medium"}`))
+	prefReq.Header.Set("Content-Type", "application/json")
+	prefRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(prefRec, withTestPrincipal(prefReq))
+	if prefRec.Code != http.StatusOK {
+		t.Fatalf("preference status = %d, want %d, body=%s", prefRec.Code, http.StatusOK, prefRec.Body.String())
+	}
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "lineage-meta-message-2", "second turn")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 6)
+
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	var firstAssistant, summary, secondAssistant *pebblestore.MessageSnapshot
+	for i := range messages {
+		message := &messages[i]
+		if strings.EqualFold(message.Role, "system") && strings.HasPrefix(strings.TrimSpace(message.Content), "[context-compact]") {
+			summary = message
+		}
+		if !strings.EqualFold(message.Role, "assistant") {
+			continue
+		}
+		if firstAssistant == nil {
+			firstAssistant = message
+		} else {
+			secondAssistant = message
+		}
+	}
+	if firstAssistant == nil || summary == nil || secondAssistant == nil {
+		t.Fatalf("expected first assistant, summary, second assistant in messages: %+v", messages)
+	}
+	firstLineage := sessionV3MetadataString(firstAssistant.Metadata, "provider_lineage_id")
+	secondLineage := sessionV3MetadataString(secondAssistant.Metadata, "provider_lineage_id")
+	if firstLineage == "" || secondLineage == "" || firstLineage == secondLineage {
+		t.Fatalf("lineage IDs first=%q second=%q", firstLineage, secondLineage)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "previous_provider_lineage_id"); got != firstLineage {
+		t.Fatalf("previous lineage = %q, want %q metadata=%+v", got, firstLineage, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "previous_provider"); got != "test-provider" {
+		t.Fatalf("previous provider = %q metadata=%+v", got, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "previous_model"); got != "model-a" {
+		t.Fatalf("previous model = %q metadata=%+v", got, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "new_provider"); got != "test-provider" {
+		t.Fatalf("new provider = %q metadata=%+v", got, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "new_model"); got != "model-b" {
+		t.Fatalf("new model = %q metadata=%+v", got, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "handoff_summary_message_id"); got != "" {
+		t.Fatalf("transcript-derived handoff summary id must be empty, got %q metadata=%+v", got, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "provider_lineage_start_message_id"); got == "" {
+		t.Fatal("durable lifecycle state did not retain the prior lineage start message")
+	}
+	if runner.lastRequest.SessionID != created.ID {
+		t.Fatalf("durable session changed across provider handoff: got %q want %q", runner.lastRequest.SessionID, created.ID)
+	}
+	if runner.lastRequest.ProviderLineageID != secondLineage || runner.lastRequest.PreviousProviderLineageID != firstLineage {
+		t.Fatalf("request lineage first=%q second=%q request=%+v", firstLineage, secondLineage, runner.lastRequest)
+	}
+	if runner.lastRequest.BoundaryReason != "provider_model_runtime_handoff" || runner.lastRequest.NativeContinuationAllowed || !runner.lastRequest.ForceFreshProviderContext {
+		t.Fatalf("handoff request boundary flags = %+v", runner.lastRequest)
+	}
+	if runner.lastRequest.ProviderCacheKey == created.ID || runner.lastRequest.SessionAffinityKey == created.ID || !strings.Contains(runner.lastRequest.ProviderCacheKey, secondLineage) || !strings.Contains(runner.lastRequest.SessionAffinityKey, secondLineage) {
+		t.Fatalf("handoff request reused durable session/cache identity: cache=%q affinity=%q session=%q lineage=%q", runner.lastRequest.ProviderCacheKey, runner.lastRequest.SessionAffinityKey, created.ID, secondLineage)
+	}
+	for _, want := range []string{"[provider-handoff]", "No compacted summary is available", "second turn"} {
+		if !sessionsV3ProviderInputContainsContentText(runner.lastRequest.Input, want) {
+			t.Fatalf("handoff input missing %q: %+v", want, runner.lastRequest.Input)
+		}
+	}
+	for _, forbidden := range []string{"OLD-HUGE-TRANSCRIPT", "first turn"} {
+		if sessionsV3ProviderInputContainsContentText(runner.lastRequest.Input, forbidden) {
+			t.Fatalf("handoff input replayed forbidden transcript %q: %+v", forbidden, runner.lastRequest.Input)
+		}
+	}
+
+	diagnostic := sessionV3ProviderRequestDiagnostic(runner.lastRequest)
+	for _, forbidden := range []string{"provider_cache_key", "session_affinity_key", "instructions", "input", "tools", "workspace_path"} {
+		if _, ok := diagnostic[forbidden]; ok {
+			t.Fatalf("diagnostic includes unsafe payload field %q: %+v", forbidden, diagnostic)
+		}
+	}
+	if diagnostic["provider_cache_key_present"] != true || diagnostic["session_affinity_key_present"] != true || diagnostic["boundary_reason"] == "" {
+		t.Fatalf("diagnostic missing auditable lineage shape: %+v", diagnostic)
+	}
+	if diagnostic["provider_cache_key_hash"] == "" || diagnostic["session_affinity_key_hash"] == "" || diagnostic["cache_affinity_decoupled"] != true {
+		t.Fatalf("diagnostic missing safe decoupled cache/affinity evidence: %+v", diagnostic)
+	}
+}
+
 func TestSessionsV3ProviderToolPersistenceUsesApplySessionMutationOnly(t *testing.T) {
 	body, err := os.ReadFile("../run/provider_tool_invoker.go")
 	if err != nil {
@@ -3592,11 +7348,16 @@ func TestSessionsV3ExecutorFailsClosedWhenProviderReturnsToolCalls(t *testing.T)
 
 func TestSessionsV3ExecutorUpdatesDefaultTitleWithMemoryAgentAfterFirstRun(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{{Text: "assistant answer"}, {Text: "Memory Agent Session Title Flow"}}}
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if strings.Contains(req.Instructions, "You generate deterministic session titles") {
+			return provideriface.Response{Text: "Brief Greeting Exchange Recorded", StopReason: "stop"}, nil
+		}
+		return provideriface.Response{Text: "assistant answer", StopReason: "stop"}, nil
+	}}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
 	server.providers = providers
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt"}); err != nil {
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
 		t.Fatalf("upsert memory agent: %v", err)
 	}
 	exec := newSessionV3Executor(server)
@@ -3606,7 +7367,7 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleWithMemoryAgentAfterFirstRun(t *te
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "title-update-create", "New Session", pebblestore.ModelPreference{Provider: "test-provider", Model: "chat-model", Thinking: "medium"})
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "title-update-message", "please title this first turn")
 	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
-	waitForSessionsV3Title(t, sessionSvc, created.ID, "Memory Agent Session Title Flow")
+	waitForSessionsV3Title(t, sessionSvc, created.ID, "Brief Greeting Exchange Recorded")
 	if !server.WaitForInFlightRuns(2 * time.Second) {
 		t.Fatalf("server did not drain v3 title generation")
 	}
@@ -3615,17 +7376,17 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleWithMemoryAgentAfterFirstRun(t *te
 	if err != nil || !ok {
 		t.Fatalf("load titled session ok=%v err=%v", ok, err)
 	}
-	if stored.Title != "Memory Agent Session Title Flow" {
+	if stored.Title != "Brief Greeting Exchange Recorded" {
 		t.Fatalf("session title = %q", stored.Title)
 	}
 	if runner.callCount != 2 {
-		t.Fatalf("provider call count = %d, want assistant + memory title", runner.callCount)
+		t.Fatalf("provider call count = %d, want memory title + assistant", runner.callCount)
 	}
-	if !strings.Contains(runner.requests[1].Instructions, "Memory title prompt") || !strings.Contains(runner.requests[1].Instructions, "You generate deterministic session titles") {
-		t.Fatalf("memory title instructions = %q", runner.requests[1].Instructions)
+	if !strings.Contains(runner.requests[0].Instructions, "Memory title prompt") || !strings.Contains(runner.requests[0].Instructions, "You generate deterministic session titles") {
+		t.Fatalf("memory title instructions = %q", runner.requests[0].Instructions)
 	}
-	if runner.requests[1].Model != "title-model" || runner.requests[1].Thinking != "low" || runner.requests[1].ToolChoice != "none" {
-		t.Fatalf("memory title request = %+v", runner.requests[1])
+	if runner.requests[0].Model != "title-model" || runner.requests[0].Thinking != "low" || runner.requests[0].ToolChoice != "none" {
+		t.Fatalf("memory title request = %+v", runner.requests[0])
 	}
 	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 80)
 	if err != nil {
@@ -3650,25 +7411,186 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleWithMemoryAgentAfterFirstRun(t *te
 	if err := json.Unmarshal(titleEvent.Payload, &payload); err != nil {
 		t.Fatalf("decode title event payload: %v", err)
 	}
-	if payload.SessionID != created.ID || payload.Title != "Memory Agent Session Title Flow" || payload.Stage != "final" || payload.Session.Title != "Memory Agent Session Title Flow" {
+	if payload.SessionID != created.ID || payload.Title != "Brief Greeting Exchange Recorded" || payload.Stage != "final" || payload.Session.Title != "Brief Greeting Exchange Recorded" {
 		t.Fatalf("title event payload = %+v", payload)
 	}
 	replay, err := sessionSvc.ReplaySessionEvents(created.ID, 0, 80)
 	if err != nil {
 		t.Fatalf("replay events: %v", err)
 	}
-	if replay.Session == nil || replay.Session.Title != "Memory Agent Session Title Flow" {
+	if replay.Session == nil || replay.Session.Title != "Brief Greeting Exchange Recorded" {
 		t.Fatalf("replayed session = %+v", replay.Session)
+	}
+}
+
+func TestSessionsV3ExecutorStartsTitleBeforeAssistantCompletes(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	assistantStarted := make(chan struct{})
+	allowAssistant := make(chan struct{})
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if strings.Contains(req.Instructions, "You generate deterministic session titles") {
+			return provideriface.Response{Text: "Immediate First Message Async Title", StopReason: "stop"}, nil
+		}
+		close(assistantStarted)
+		select {
+		case <-allowAssistant:
+			return provideriface.Response{Text: "assistant answer", StopReason: "stop"}, nil
+		case <-ctx.Done():
+			return provideriface.Response{}, ctx.Err()
+		}
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
+		t.Fatalf("upsert memory agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "title-immediate-create", "New Session", pebblestore.ModelPreference{Provider: "test-provider", Model: "chat-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "title-immediate-message", "title immediately before assistant completes")
+	select {
+	case <-assistantStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("assistant provider call did not start")
+	}
+	waitForSessionsV3Title(t, sessionSvc, created.ID, "Immediate First Message Async Title")
+	if status := currentSessionsV3RunIntentStatus(t, sessionSvc, created.ID); status != sessionruntime.RunIntentRunning {
+		t.Fatalf("run status after title = %q, want still running", status)
+	}
+	close(allowAssistant)
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("server did not drain v3 run")
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 80)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if !sessionsV3EventsContainType(events, "session.title.updated") {
+		t.Fatalf("missing session.title.updated event: %+v", events)
+	}
+}
+
+func TestSessionsV3ExecutorStartsTitleFromCommittedMutationHook(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if strings.Contains(req.Instructions, "You generate deterministic session titles") {
+			return provideriface.Response{Text: "Committed Mutation Hook Title Flow", StopReason: "stop"}, nil
+		}
+		return provideriface.Response{Text: "assistant answer", StopReason: "stop"}, nil
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
+		t.Fatalf("upsert memory agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "title-hook-create", "New Session", pebblestore.ModelPreference{Provider: "test-provider", Model: "chat-model", Thinking: "medium"})
+	now := time.Now().UnixMilli()
+	runID := "run-title-hook"
+	message := pebblestore.MessageSnapshot{ID: "msg-title-hook", Role: "user", Content: "title this hook committed v3 run", CreatedAt: now}
+	intent := pebblestore.V3SessionRunIntent{RunID: runID, Status: sessionruntime.RunIntentPendingExecutor, UpdatedAt: now}
+	payloadHash, err := sessionsV3MessagePayloadHash(created.ID, sessionsV3MessageRequest{ClientRequestID: "title-hook-message", Role: "user", Content: message.Content}, message, intent.Status, intent.BlockedReason)
+	if err != nil {
+		t.Fatalf("hash message payload: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "title-hook-message",
+		IdempotencyKey:  "title-hook-message",
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		EventType:       "session.message.appended",
+		Message:         &message,
+		RunIntent:       &intent,
+		NowUnixMs:       now,
+	}); err != nil {
+		t.Fatalf("apply message mutation: %v", err)
+	}
+
+	waitForSessionsV3Title(t, sessionSvc, created.ID, "Committed Mutation Hook Title Flow")
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("server did not drain v3 title hook run")
+	}
+	if runner.callCount != 1 {
+		t.Fatalf("provider call count = %d, want title", runner.callCount)
+	}
+}
+
+func TestSessionsV3ExecutorUpdatesTUITitleAfterFirstRun(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if strings.Contains(req.Instructions, "You generate deterministic session titles") {
+			return provideriface.Response{Text: "TUI V3 Async Title Flow", StopReason: "stop"}, nil
+		}
+		return provideriface.Response{Text: "assistant answer", StopReason: "stop"}, nil
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
+		t.Fatalf("upsert memory agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	workspace := t.TempDir()
+	seedSessionsV3PrimaryAuthority(t, server, workspace)
+	createBody := mustSessionsV3TestJSON(t, map[string]any{
+		"client_request_id": "title-tui-create",
+		"cwd_path":          workspace,
+		"title":             "New Session",
+		"mode":              sessionruntime.ModeAuto,
+		"agent_name":        "swarm",
+		"preference":        pebblestore.ModelPreference{Provider: "test-provider", Model: "chat-model", Thinking: "medium"},
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/tui/sessions", bytes.NewBufferString(createBody))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("tui create status = %d, want %d, body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+	var created struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode tui create response: %v", err)
+	}
+	postSessionsV3PrimaryTestMessage(t, server, created.Session.ID, "title-tui-message", "please title this tui started run")
+
+	waitForSessionsV3Title(t, sessionSvc, created.Session.ID, "TUI V3 Async Title Flow")
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("server did not drain v3 tui title run")
+	}
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want title + assistant", runner.callCount)
 	}
 }
 
 func TestSessionsV3ExecutorUpdatesDefaultTitleWithSystemPreludeAfterFirstRun(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{{Text: "assistant answer"}, {Text: "System Prelude Session Title Flow"}}}
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if strings.Contains(req.Instructions, "You generate deterministic session titles") {
+			return provideriface.Response{Text: "System Prelude Session Title Flow", StopReason: "stop"}, nil
+		}
+		return provideriface.Response{Text: "assistant answer", StopReason: "stop"}, nil
+	}}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
 	server.providers = providers
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt"}); err != nil {
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
 		t.Fatalf("upsert memory agent: %v", err)
 	}
 	exec := newSessionV3Executor(server)
@@ -3701,10 +7623,16 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleAfterToolShapedFirstRun(t *testing
 	if err := os.WriteFile(filepath.Join(workspace, "facts.txt"), []byte("title tool fact"), 0o644); err != nil {
 		t.Fatalf("write workspace fact file: %v", err)
 	}
-	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{
-		{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-read-title-facts", Name: "read", Arguments: `{"path":"facts.txt"}`}}},
-		{Text: "assistant answer after title tool"},
-		{Text: "Tool Assisted Session Title Flow"},
+	var assistantCalls int
+	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if strings.Contains(req.Instructions, "You generate deterministic session titles") {
+			return provideriface.Response{Text: "Tool Assisted Session Title Flow", StopReason: "stop"}, nil
+		}
+		assistantCalls++
+		if assistantCalls == 1 {
+			return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-read-title-facts", Name: "read", Arguments: `{"path":"facts.txt"}`}}}, nil
+		}
+		return provideriface.Response{Text: "assistant answer after title tool", StopReason: "stop"}, nil
 	}}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
@@ -3715,7 +7643,7 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleAfterToolShapedFirstRun(t *testing
 	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
 		t.Fatalf("upsert tool-enabled swarm agent: %v", err)
 	}
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt"}); err != nil {
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "title-model", Thinking: "low", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory title prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
 		t.Fatalf("upsert memory agent: %v", err)
 	}
 	exec := newSessionV3Executor(server)
@@ -3731,7 +7659,7 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleAfterToolShapedFirstRun(t *testing
 		t.Fatalf("server did not drain v3 title generation")
 	}
 	if runner.callCount != 3 {
-		t.Fatalf("provider call count = %d, want tool request + continuation + memory title", runner.callCount)
+		t.Fatalf("provider call count = %d, want memory title + tool request + continuation", runner.callCount)
 	}
 	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 80)
 	if err != nil {
@@ -3786,13 +7714,19 @@ func mustSessionsV3TestJSON(t *testing.T, value any) string {
 
 func createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t *testing.T, server *Server, clientRequestID, title, workspacePath string, pref pebblestore.ModelPreference) pebblestore.SessionSnapshot {
 	t.Helper()
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, workspacePath)
 	payload := map[string]any{
-		"client_request_id": clientRequestID,
-		"workspace_path":    workspacePath,
-		"title":             title,
-		"mode":              sessionruntime.ModeAuto,
-		"agent_name":        "swarm",
-		"preference":        pref,
+		"client_request_id":    clientRequestID,
+		"workspace_path":       workspacePath,
+		"workspace_name":       filepath.Base(workspacePath),
+		"swarm_id":             "host-swarm-id",
+		"workspace_binding_id": bindingID,
+		"target_kind":          "host",
+		"target_relationship":  "self",
+		"title":                title,
+		"mode":                 sessionruntime.ModeAuto,
+		"agent_name":           "swarm",
+		"preference":           pref,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -3825,7 +7759,39 @@ func sessionsV3ProviderRequestToolNames(tools []provideriface.ToolDefinition) ma
 	return out
 }
 
+type sessionsV3UndeclaredLifecycleRunner struct {
+	id string
+}
+
+func (r sessionsV3UndeclaredLifecycleRunner) ID() string { return r.id }
+func (r sessionsV3UndeclaredLifecycleRunner) CreateResponse(context.Context, provideriface.Request) (provideriface.Response, error) {
+	return provideriface.Response{}, nil
+}
+func (r sessionsV3UndeclaredLifecycleRunner) CreateResponseStreaming(context.Context, provideriface.Request, func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	return provideriface.Response{}, nil
+}
+
+func TestSessionsV3ProviderBaseRequestFailsClosedWithoutLifecycleCapability(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	providers := registry.New()
+	providers.RegisterRunner(sessionsV3UndeclaredLifecycleRunner{id: "unknown-provider"})
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	workspace := t.TempDir()
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-lifecycle-fail-closed-create", "provider lifecycle fail closed", workspace, pebblestore.ModelPreference{Provider: "unknown-provider", Model: "test-model", Thinking: "medium"})
+	_, err := exec.sessionV3ProviderBaseRequest(sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-unknown"}, sessionV3ResolvedRuntime{
+		Session: created, Preference: pebblestore.ModelPreference{Provider: "unknown-provider", Model: "test-model", Thinking: "medium"},
+		AgentProfile: pebblestore.AgentProfile{Name: "swarm", Mode: string(agentruntime.ModePrimary), RuntimeMode: pebblestore.AgentRuntimeModePlanAuto},
+		Scope:        tool.WorkspaceScope{PrimaryPath: workspace}, Instructions: "Swarm prompt", ToolChoice: "none",
+	}, []map[string]any{{"role": "user", "content": "epoch input"}})
+	if err == nil || !strings.Contains(err.Error(), "no declared execution epoch lifecycle capability") {
+		t.Fatalf("base request error = %v, want fail-closed lifecycle capability error", err)
+	}
+}
+
 type sessionsV3RecordingProviderRunner struct {
+	mu            sync.Mutex
+	id            string
 	text          string
 	deltas        []string
 	err           error
@@ -3838,35 +7804,50 @@ type sessionsV3RecordingProviderRunner struct {
 	requests      []provideriface.Request
 }
 
-func (r *sessionsV3RecordingProviderRunner) ID() string { return "test-provider" }
+func (r *sessionsV3RecordingProviderRunner) ID() string {
+	if strings.TrimSpace(r.id) != "" {
+		return strings.TrimSpace(r.id)
+	}
+	return "test-provider"
+}
+func (r *sessionsV3RecordingProviderRunner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
+	return provideriface.ExecutionEpochLifecycleCapabilities{ContextMode: provideriface.ExecutionEpochContextResponsesChain, TransportReusable: true}
+}
 func (r *sessionsV3RecordingProviderRunner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	return r.CreateResponseStreaming(ctx, req, nil)
 }
 func (r *sessionsV3RecordingProviderRunner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	r.mu.Lock()
 	r.callCount++
+	callCount := r.callCount
 	r.lastRequest = req
 	r.requests = append(r.requests, req)
-	if r.handler != nil {
-		return r.handler(ctx, req, onEvent)
-	}
-	if r.err != nil {
-		return provideriface.Response{}, r.err
-	}
+	handler := r.handler
+	err := r.err
 	response := r.response
-	if len(r.responses) >= r.callCount {
-		response = r.responses[r.callCount-1]
+	if len(r.responses) >= callCount {
+		response = r.responses[callCount-1]
+	}
+	functionCalls := append([]provideriface.FunctionCall(nil), r.functionCalls...)
+	deltas := append([]string(nil), r.deltas...)
+	text := r.text
+	r.mu.Unlock()
+	if handler != nil {
+		return handler(ctx, req, onEvent)
+	}
+	if err != nil {
+		return provideriface.Response{}, err
 	}
 	if response.Text == "" {
-		response.Text = r.text
+		response.Text = text
 	}
-	if len(r.functionCalls) > 0 {
-		response.FunctionCalls = append([]provideriface.FunctionCall(nil), r.functionCalls...)
+	if len(functionCalls) > 0 {
+		response.FunctionCalls = functionCalls
 	}
 	if response.StopReason == "" && strings.TrimSpace(response.Text) != "" && len(response.FunctionCalls) == 0 && !response.RestartTurn {
 		response.StopReason = "stop"
 	}
 	if onEvent != nil {
-		deltas := r.deltas
 		if len(deltas) == 0 {
 			deltas = []string{response.Text}
 		}
@@ -3875,6 +7856,172 @@ func (r *sessionsV3RecordingProviderRunner) CreateResponseStreaming(ctx context.
 		}
 	}
 	return response, nil
+}
+
+func TestSessionV3ProviderContinuationResetsTransportAfterPermissionWait(t *testing.T) {
+	runner := &sessionsV3RecordingProviderRunner{id: "codex"}
+	base := provideriface.Request{
+		ExecutionEpochID:          "epoch-a",
+		ProviderLineageID:         "lineage-a",
+		StartNewChain:             true,
+		AllowContinuation:         false,
+		ReuseTransport:            true,
+		ResetTransport:            false,
+		NativeContinuationAllowed: false,
+		ForceFreshProviderContext: true,
+	}
+
+	ordinary := sessionV3ProviderContinuationRequest(base, runner, false)
+	if ordinary.StartNewChain || !ordinary.AllowContinuation || ordinary.ResetTransport || !ordinary.NativeContinuationAllowed || ordinary.ForceFreshProviderContext {
+		t.Fatalf("ordinary continuation lifecycle = %+v", ordinary)
+	}
+
+	afterPermission := sessionV3ProviderContinuationRequest(base, runner, true)
+	if afterPermission.StartNewChain || !afterPermission.AllowContinuation || !afterPermission.ResetTransport || !afterPermission.NativeContinuationAllowed || afterPermission.ForceFreshProviderContext {
+		t.Fatalf("post-permission continuation lifecycle = %+v", afterPermission)
+	}
+}
+
+func TestSessionsV3PrimaryPermissionResolvePublishesImmediateV3Update(t *testing.T) {
+	server, sessionSvc, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "permission-immediate-create", "permission immediate", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	runID := "run-permission-immediate"
+	now := time.Now().UnixMilli()
+	pendingIntent := pebblestore.V3SessionRunIntent{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, RunID: runID, Status: sessionruntime.RunIntentPendingExecutor, UpdatedAt: now}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: "permission-immediate-pending", IdempotencyKey: "permission-immediate-pending", PayloadHash: "permission-immediate-pending-hash", RequestHash: "permission-immediate-pending-hash", Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.assistant.queued", RunIntent: &pendingIntent, NowUnixMs: now}); err != nil {
+		t.Fatalf("record pending intent: %v", err)
+	}
+	runningIntent := pendingIntent
+	runningIntent.Status = sessionruntime.RunIntentRunning
+	runningIntent.UpdatedAt = now + 1
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: "permission-immediate-running", IdempotencyKey: "permission-immediate-running", PayloadHash: "permission-immediate-running-hash", RequestHash: "permission-immediate-running-hash", Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.assistant.started", RunIntent: &runningIntent, NowUnixMs: now + 1}); err != nil {
+		t.Fatalf("record running intent: %v", err)
+	}
+
+	callArgs := `{"command":"printf immediate\\n","timeout_ms":1000}`
+	pending, err := permissionSvc.CreatePending(permission.CreateInput{SessionID: created.ID, RunID: runID, Step: 3, CallID: "call-immediate-permission", ToolName: "bash", ToolArguments: callArgs, ToolCallArguments: callArgs, Requirement: "tool", Mode: sessionruntime.ModeAuto})
+	if err != nil {
+		t.Fatalf("create pending permission: %v", err)
+	}
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, withTestPrincipal(r))
+	}))
+	defer httpServer.Close()
+
+	resolvePayload := []byte(`{"action":"allow_once","reason":"ok"}`)
+	resp, err := http.Post(httpServer.URL+"/v3/sessions/"+created.ID+"/permissions/"+pending.ID+"/resolve", "application/json", bytes.NewReader(resolvePayload))
+	if err != nil {
+		t.Fatalf("resolve permission over HTTP: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("resolve status = %d body=%s", resp.StatusCode, string(body))
+	}
+	var payload struct {
+		Published bool                                 `json:"published"`
+		Mutation  sessionruntime.SessionMutationResult `json:"mutation"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode resolve response: %v", err)
+	}
+	if !payload.Published || payload.Mutation.Event.EventType != "permission.updated" || payload.Mutation.Replayed {
+		t.Fatalf("resolve response mutation = published:%t mutation:%+v", payload.Published, payload.Mutation)
+	}
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list session events: %v", err)
+	}
+	var update *sessionruntime.SessionEvent
+	for _, event := range events {
+		if event.EventType == "permission.updated" {
+			copy := event
+			update = &copy
+		}
+	}
+	if update == nil {
+		t.Fatalf("missing immediate permission.updated event: %+v", events)
+	}
+	var updatePayload struct {
+		RunID          string                       `json:"run_id"`
+		Step           int                          `json:"step"`
+		ToolName       string                       `json:"tool_name"`
+		CallID         string                       `json:"call_id"`
+		ToolInstanceID string                       `json:"tool_instance_id"`
+		Arguments      string                       `json:"arguments"`
+		Permission     pebblestore.PermissionRecord `json:"permission"`
+	}
+	if err := json.Unmarshal(update.Payload, &updatePayload); err != nil {
+		t.Fatalf("decode permission.updated payload: %v", err)
+	}
+	if updatePayload.RunID != runID || updatePayload.Step != 3 || updatePayload.ToolName != "bash" || updatePayload.CallID != "call-immediate-permission" || updatePayload.ToolInstanceID != "step-3:call-immediate-permission" || updatePayload.Arguments != callArgs || updatePayload.Permission.ID != pending.ID || updatePayload.Permission.Status != pebblestore.PermissionStatusApproved {
+		t.Fatalf("permission.updated payload = %+v", updatePayload)
+	}
+}
+
+func TestSessionsV3PrimaryPermissionUpdatedDuplicateExecutorAndHTTPReplays(t *testing.T) {
+	server, sessionSvc, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "permission-duplicate-create", "permission duplicate", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	runID := "run-permission-duplicate"
+	now := time.Now().UnixMilli()
+	pendingIntent := pebblestore.V3SessionRunIntent{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, RunID: runID, Status: sessionruntime.RunIntentPendingExecutor, UpdatedAt: now}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: "permission-duplicate-pending", IdempotencyKey: "permission-duplicate-pending", PayloadHash: "permission-duplicate-pending-hash", RequestHash: "permission-duplicate-pending-hash", Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.assistant.queued", RunIntent: &pendingIntent, NowUnixMs: now}); err != nil {
+		t.Fatalf("record pending intent: %v", err)
+	}
+	runningIntent := pendingIntent
+	runningIntent.Status = sessionruntime.RunIntentRunning
+	runningIntent.UpdatedAt = now + 1
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: "permission-duplicate-running", IdempotencyKey: "permission-duplicate-running", PayloadHash: "permission-duplicate-running-hash", RequestHash: "permission-duplicate-running-hash", Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.assistant.started", RunIntent: &runningIntent, NowUnixMs: now + 1}); err != nil {
+		t.Fatalf("record running intent: %v", err)
+	}
+
+	callArgs := `{"command":"printf duplicate\\n","timeout_ms":1000}`
+	pending, err := permissionSvc.CreatePending(permission.CreateInput{SessionID: created.ID, RunID: runID, Step: 2, CallID: "call-duplicate-permission", ToolName: "bash", ToolArguments: callArgs, ToolCallArguments: callArgs, Requirement: "tool", Mode: sessionruntime.ModeAuto})
+	if err != nil {
+		t.Fatalf("create pending permission: %v", err)
+	}
+	resolved, _, err := permissionSvc.ResolveWithPolicyAndArguments(created.ID, pending.ID, "allow_once", "ok", "")
+	if err != nil {
+		t.Fatalf("resolve permission directly: %v", err)
+	}
+
+	exec := &sessionV3Executor{server: server}
+	if err := exec.recordProviderToolEvent(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: created.ID, RunID: runID}, runruntime.StreamEvent{Type: runruntime.StreamEventPermissionUpdate, SessionID: created.ID, Step: 2, ToolName: "bash", CallID: "call-duplicate-permission", Arguments: callArgs, Permission: &resolved}, "permission.updated", 0); err != nil {
+		t.Fatalf("record executor permission.updated: %v", err)
+	}
+
+	mutation, published, err := server.publishSessionV3PermissionUpdatedFromRecord(testPrincipal(), created.ID, resolved)
+	if err != nil {
+		t.Fatalf("duplicate HTTP permission.updated should replay, got error: %v", err)
+	}
+	if published || !mutation.Replayed || mutation.Event.EventType != "permission.updated" {
+		t.Fatalf("duplicate publish = published:%t mutation:%+v, want replayed permission.updated", published, mutation)
+	}
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list session events: %v", err)
+	}
+	updates := 0
+	for _, event := range events {
+		if event.EventType == "permission.updated" {
+			updates++
+			var payload map[string]any
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatalf("decode permission.updated payload: %v", err)
+			}
+			if _, ok := payload["recorded_at"]; ok {
+				t.Fatalf("permission.updated payload should be idempotency-stable and omit recorded_at: %+v", payload)
+			}
+		}
+	}
+	if updates != 1 {
+		t.Fatalf("permission.updated event count = %d, want 1; events=%+v", updates, events)
+	}
 }
 
 func TestSessionsV3PrimaryAlwaysAllowPersistsInPermissionsPolicyView(t *testing.T) {

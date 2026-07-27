@@ -20,17 +20,14 @@ function route(overrides: Partial<WorkspaceOverviewTopologyRoute> = {}): Workspa
     workspaceBindingId: 'binding-1',
     runtimeSwarmId: 'target-swarm',
     runtimeSwarmName: 'Target Name',
-    runtimeKind: 'host',
-    runtimeRelationship: 'managed',
+    runtimeKind: 'container',
+    runtimeRelationship: 'child',
     authorityHostSwarmId: 'host-swarm',
     hostSwarmId: 'host-swarm',
     hostWorkspacePath: '/source',
     hostWorkspaceName: 'Source',
     runtimeWorkspacePath: '/workspace',
-    containerId: '',
-    replicationMode: 'bundle',
     writable: true,
-    sync: { enabled: false, mode: '', modules: [] },
     createdAt: 0,
     updatedAt: 0,
     ...overrides,
@@ -40,7 +37,7 @@ function route(overrides: Partial<WorkspaceOverviewTopologyRoute> = {}): Workspa
 function target(overrides: Partial<SwarmTarget> = {}): SwarmTarget {
   return {
     swarm_id: 'target-swarm',
-    name: 'Managed Laptop',
+    name: 'Worker target',
     role: '',
     relationship: '',
     kind: 'host',
@@ -51,10 +48,13 @@ function target(overrides: Partial<SwarmTarget> = {}): SwarmTarget {
   }
 }
 
-function testManagedHostTopologyRouteIsVisibleFromTopologyBinding(): void {
-  const managedRoute = route({ runtimeSwarmName: 'Laptop' })
-  assertEqual(workspaceRouteTargetType(managedRoute, null), 'Managed Host', 'topology workspace bindings should be labeled as Managed Host')
-  assertEqual(workspaceRoutePlacementLabel(managedRoute, null), 'Laptop (Managed Host)', 'topology placement label should lead with the route name')
+function testFormerContainerTargetTopologyRouteIsVisibleAsGenericTarget(): void {
+  const targetRoute = route({ runtimeSwarmName: 'Worker' })
+  const formerContainerTarget = target({ kind: 'container', relationship: 'child' })
+  const links = workspacePlacementLinks([targetRoute], [formerContainerTarget])
+  assertEqual(String(links.length), '1', 'former container-shaped topology bindings must remain visible')
+  assertEqual(links[0]?.targetType ?? '', 'Target', 'former container-shaped targets should use the generic target label')
+  assertEqual(workspaceRoutePlacementLabel(targetRoute, formerContainerTarget), 'Worker target (Target)', 'topology placement label should use the resolved generic target')
 }
 
 function testRuntimePathCanProvideVisibleRouteName(): void {
@@ -67,22 +67,22 @@ function testNonTopologyRoutesAreRemovedFromVisibleLinks(): void {
   assertEqual(String(links.length), '0', 'non-topology routes must not render as visible placement links')
 }
 
-function testManagedRelationshipMapsToManagedHost(): void {
-  const managedTarget = target({ kind: 'host', relationship: 'managed', role: 'managed' })
-  assertEqual(workspaceRouteTargetType(route(), managedTarget), 'Managed Host', 'managed relationship should map to Managed Host')
+function testSelfHostMapsToHost(): void {
+  const selfTarget = target({ kind: 'host', relationship: 'self', role: 'self' })
+  assertEqual(workspaceRouteTargetType(route({ runtimeRelationship: 'self' }), selfTarget), 'Host', 'self host target should map to Host')
 }
 
 function testTopologyRoutesRenderWithoutTargetRecord(): void {
   const links = workspacePlacementLinks([route({ runtimeRelationship: '', runtimeKind: '' })], [])
   assertEqual(String(links.length), '1', 'topology workspace bindings should render even when the target list is unavailable')
-  assertEqual(links[0]?.targetType ?? '', 'Managed Host', 'target-less topology workspace binding should still be a Managed Host route')
+  assertEqual(links[0]?.targetType ?? '', 'Target', 'target-less topology workspace binding should remain a generic target route')
 }
 
 function main(): void {
-  testManagedHostTopologyRouteIsVisibleFromTopologyBinding()
+  testFormerContainerTargetTopologyRouteIsVisibleAsGenericTarget()
   testRuntimePathCanProvideVisibleRouteName()
   testNonTopologyRoutesAreRemovedFromVisibleLinks()
-  testManagedRelationshipMapsToManagedHost()
+  testSelfHostMapsToHost()
   testTopologyRoutesRenderWithoutTargetRecord()
   console.log('workspace-placement tests passed')
 }

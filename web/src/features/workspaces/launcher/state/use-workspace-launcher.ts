@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { debugLog, createDebugTimer } from '../../../../lib/debug-log'
 import { applyWorkspaceTheme, setWorkspaceThemeCustomOptions } from '../services/workspace-theme'
-import { normalizeGlobalThemeSettings, type UISettingsWire } from '../../../desktop/settings/swarm/types/swarm-settings'
+import { DEFAULT_GLOBAL_THEME_ID, normalizeGlobalThemeSettings, type UISettingsWire } from '../../../desktop/settings/swarm/types/swarm-settings'
 import { linkWorkspaceDirectory } from '../mutations/link-workspace-directory'
 import { unlinkWorkspaceDirectory } from '../mutations/unlink-workspace-directory'
 import { moveWorkspace } from '../mutations/move-workspace'
@@ -12,12 +11,10 @@ import { deleteWorkspace as deleteWorkspaceAPI } from '../mutations/delete-works
 import { selectWorkspace } from '../mutations/select-workspace'
 import { setWorkspaceTheme as setWorkspaceThemeAPI } from '../mutations/set-workspace-theme'
 import { setWorkspaceWorktrees } from '../mutations/set-workspace-worktrees'
-import { removeWorkspaceManagedLink as removeWorkspaceManagedLinkAPI, upsertWorkspaceManagedLink as upsertWorkspaceManagedLinkAPI } from '../mutations/manage-workspace-managed-link'
 import { sortDiscoveredWorkspaces, dedupeDiscoveredAgainstWorkspaces } from '../services/discovery-ordering'
 import { syncWorkspaceOverviewWorktreeState } from '../services/workspace-overview-cache'
 import { browseWorkspacePath } from '../queries/browse-workspace-path'
 import { uiSettingsQueryKey, uiSettingsQueryOptions, workspaceOverviewQueryKey, workspaceOverviewQueryOptions } from '../../../queries/query-options'
-import { useDesktopStore } from '../../../desktop/state/use-desktop-store'
 import type {
   WorkspaceBrowseResult,
   WorkspaceDiscoverEntry,
@@ -33,15 +30,6 @@ interface SaveWorkspaceInput {
   makeCurrent: boolean
   linkedDirectory?: string
   linkedDirectories?: string[]
-}
-
-interface UpsertWorkspaceManagedLinkInput {
-  workspacePath: string
-  targetSwarmID: string
-  destinationRoot?: string
-  destinationPath?: string
-  workspaceName?: string
-  provision?: boolean
 }
 
 interface UseWorkspaceLauncherOptions {
@@ -68,23 +56,15 @@ interface UseWorkspaceLauncherState {
   useFolderTemporarily: (path: string) => Promise<WorkspaceResolution>
   deleteWorkspace: (path: string) => Promise<void>
   unlinkWorkspaceDirectory: (workspacePath: string, directoryPath: string) => Promise<void>
-  upsertWorkspaceManagedLink: (input: UpsertWorkspaceManagedLinkInput) => Promise<void>
-  removeWorkspaceManagedLink: (workspacePath: string, bindingID: string) => Promise<void>
   setWorktreeEnabled: (path: string, enabled: boolean) => Promise<void>
   saveWorkspace: (input: SaveWorkspaceInput) => Promise<void>
   createFolder: (parentPath: string, name: string) => Promise<string>
   setWorkspaceTheme: (path: string, themeId: string) => Promise<void>
   moveWorkspaceToIndex: (path: string, targetIndex: number) => Promise<void>
+  swapWorkspacePositions: (sourcePath: string, targetPath: string) => Promise<void>
   setDraggingWorkspacePath: (path: string | null) => void
   refresh: (roots?: string[]) => Promise<void>
   browsePath: (path: string) => Promise<void>
-}
-
-const VAULT_LOCKED_ERROR_PREFIX = 'vault is locked'
-
-function isVaultLockedError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
-  return message.trim().toLowerCase().includes(VAULT_LOCKED_ERROR_PREFIX)
 }
 
 function sortWorkspaces<T extends WorkspaceEntry>(workspaces: T[]): T[] {
@@ -155,21 +135,11 @@ function topologyRouteArraysEqual(left: WorkspaceOverviewTopologyRoute[], right:
       || leftRoute.hostWorkspacePath !== rightRoute.hostWorkspacePath
       || leftRoute.hostWorkspaceName !== rightRoute.hostWorkspaceName
       || leftRoute.runtimeWorkspacePath !== rightRoute.runtimeWorkspacePath
-      || leftRoute.containerId !== rightRoute.containerId
-      || leftRoute.replicationMode !== rightRoute.replicationMode
       || leftRoute.writable !== rightRoute.writable
-      || leftRoute.sync.enabled !== rightRoute.sync.enabled
-      || leftRoute.sync.mode !== rightRoute.sync.mode
-      || leftRoute.sync.modules.length !== rightRoute.sync.modules.length
       || leftRoute.createdAt !== rightRoute.createdAt
       || leftRoute.updatedAt !== rightRoute.updatedAt
     ) {
       return false
-    }
-    for (let moduleIndex = 0; moduleIndex < leftRoute.sync.modules.length; moduleIndex += 1) {
-      if (leftRoute.sync.modules[moduleIndex] !== rightRoute.sync.modules[moduleIndex]) {
-        return false
-      }
     }
   }
   return true
@@ -250,7 +220,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
   const applyDocumentTheme = options.applyDocumentTheme ?? true
   const autoRefresh = options.autoRefresh ?? true
   const browseDuringRefresh = options.browseDuringRefresh ?? true
-  const refreshVaultStatus = useDesktopStore((state) => state.refreshVaultStatus)
   const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([])
   const [discovered, setDiscovered] = useState<WorkspaceDiscoverEntry[]>([])
   const [currentWorkspacePath, setCurrentWorkspacePath] = useState<string | null>(null)
@@ -264,7 +233,7 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
   const [browserError, setBrowserError] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [globalThemeId, setGlobalThemeId] = useState('crimson')
+  const [globalThemeId, setGlobalThemeId] = useState(DEFAULT_GLOBAL_THEME_ID)
 
   const applyCurrentResolution = useCallback((resolution: WorkspaceResolution | null) => {
     const nextPath = resolution?.resolvedPath?.trim() || null
@@ -301,7 +270,7 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       })
       .catch(() => {
         if (!cancelled) {
-          setGlobalThemeId('crimson')
+          setGlobalThemeId(DEFAULT_GLOBAL_THEME_ID)
         }
       })
 
@@ -311,15 +280,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
   }, [queryClient])
 
   const refresh = useCallback(async (roots: string[] = []) => {
-    const finish = createDebugTimer('workspace-launcher', 'refresh', {
-      roots,
-      browserPresent: Boolean(browser),
-    })
-    debugLog('workspace-launcher', 'refresh:enter', {
-      roots,
-      browserPresent: Boolean(browser),
-      globalThemeId,
-    })
     setRefreshing(true)
     setLoadError(null)
 
@@ -327,11 +287,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       const overview = await queryClient.fetchQuery({
         ...workspaceOverviewQueryOptions(roots, 25),
         staleTime: 0,
-      })
-      debugLog('workspace-launcher', 'refresh:overview-ready', {
-        workspaceCount: overview.workspaces.length,
-        discoveredCount: overview.discovered.length,
-        currentWorkspacePath: overview.currentWorkspace?.resolvedPath?.trim() || null,
       })
       const sorted = sortWorkspaces(overview.workspaces)
       const knownPaths = new Set(sorted.map((workspace) => workspace.path))
@@ -344,44 +299,24 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       }
       if (browseDuringRefresh) {
         if (roots.length > 0) {
-          debugLog('workspace-launcher', 'refresh:browse-root', { root: roots[0] })
           await browsePath(roots[0])
         } else if (!browser) {
-          debugLog('workspace-launcher', 'refresh:browse-empty-root')
           await browsePath('')
         }
       }
-      finish({ ok: true, workspaceCount: sorted.length })
     } catch (err) {
-      debugLog('workspace-launcher', 'refresh:error', {
-        message: err instanceof Error ? err.message : String(err),
-      })
-      if (isVaultLockedError(err)) {
-        try {
-          await refreshVaultStatus()
-          const { vault } = useDesktopStore.getState()
-          if (vault.enabled && !vault.unlocked) {
-            finish({ ok: false, stopped: 'vault-locked' })
-            return
-          }
-        } catch {
-          // Fall back to the launcher error below when vault status refresh fails.
-        }
-      }
       setLoadError(err instanceof Error ? err.message : 'Failed to load workspaces')
-      finish({ ok: false })
     } finally {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [applyDocumentTheme, browser, browseDuringRefresh, browsePath, globalThemeId, queryClient, refreshVaultStatus])
+  }, [applyDocumentTheme, browser, browseDuringRefresh, browsePath, globalThemeId, queryClient])
 
   useEffect(() => {
     if (!autoRefresh) {
       setLoading(false)
       return
     }
-    debugLog('workspace-launcher', 'effect:initial-refresh')
     void refresh()
   }, [autoRefresh, refresh])
 
@@ -417,19 +352,30 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       setGlobalThemeId(normalizeGlobalThemeSettings(settings).activeId)
     }
 
+    const scheduleCacheSync = (sync: () => void) => {
+      const setTimeoutFn = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout
+      setTimeoutFn(sync, 0)
+    }
+
     syncFromOverviewCache()
     syncFromUISettingsCache()
     return queryClient.getQueryCache().subscribe((event) => {
-      const queryKey = event?.query?.queryKey
+      // React Query also emits observer option/result notifications while hooks are
+      // rendering. Updating launcher state from those notifications can recurse
+      // through React's setOptions path and trigger error #185 in production.
+      if (event.type !== 'updated') {
+        return
+      }
+      const queryKey = event.query.queryKey
       if (!Array.isArray(queryKey)) {
         return
       }
       if (isDefaultWorkspaceOverviewKey(queryKey)) {
-        syncFromOverviewCache()
+        scheduleCacheSync(syncFromOverviewCache)
         return
       }
       if (queryKey.length === 1 && queryKey[0] === settingsKey[0]) {
-        syncFromUISettingsCache()
+        scheduleCacheSync(syncFromUISettingsCache)
       }
     })
   }, [queryClient])
@@ -472,7 +418,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       }
       applyCurrentResolution(resolution)
       setCurrentWorkspacePath(browserResult.resolvedPath)
-      useDesktopStore.getState().setActiveWorkspacePath(browserResult.resolvedPath)
       return resolution
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to open folder')
@@ -542,7 +487,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
         if (applyDocumentTheme) {
           applyWorkspaceTheme(globalThemeId)
         }
-        useDesktopStore.getState().setActiveWorkspacePath(null)
       }
       await refresh()
       await browsePath(deleted.resolvedPath)
@@ -567,46 +511,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       await refresh()
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to remove linked folder')
-      throw err
-    } finally {
-      setSavingPath(null)
-    }
-  }, [refresh])
-
-  const upsertWorkspaceManagedLink = useCallback(async (input: UpsertWorkspaceManagedLinkInput) => {
-    const trimmedWorkspacePath = input.workspacePath.trim()
-    if (trimmedWorkspacePath === '' || input.targetSwarmID.trim() === '') {
-      return
-    }
-    setSavingPath(trimmedWorkspacePath)
-    setActionError(null)
-    try {
-      await upsertWorkspaceManagedLinkAPI({
-        ...input,
-        workspacePath: trimmedWorkspacePath,
-      })
-      await refresh()
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to save managed host link')
-      throw err
-    } finally {
-      setSavingPath(null)
-    }
-  }, [refresh])
-
-  const removeWorkspaceManagedLink = useCallback(async (workspacePath: string, bindingID: string) => {
-    const trimmedWorkspacePath = workspacePath.trim()
-    const trimmedBindingID = bindingID.trim()
-    if (trimmedWorkspacePath === '' || trimmedBindingID === '') {
-      return
-    }
-    setSavingPath(trimmedWorkspacePath)
-    setActionError(null)
-    try {
-      await removeWorkspaceManagedLinkAPI({ workspacePath: trimmedWorkspacePath, bindingID: trimmedBindingID })
-      await refresh()
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to remove managed host link')
       throw err
     } finally {
       setSavingPath(null)
@@ -710,6 +614,44 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     }
   }, [refresh, workspaces])
 
+  const swapWorkspacePositions = useCallback(async (sourcePath: string, targetPath: string) => {
+    const trimmedSourcePath = sourcePath.trim()
+    const trimmedTargetPath = targetPath.trim()
+    if (trimmedSourcePath === '' || trimmedTargetPath === '' || trimmedSourcePath === trimmedTargetPath) {
+      return
+    }
+
+    const sourceIndex = workspaces.findIndex((workspace) => workspace.path === trimmedSourcePath)
+    const targetIndex = workspaces.findIndex((workspace) => workspace.path === trimmedTargetPath)
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
+      return
+    }
+
+    setSavingPath(trimmedSourcePath)
+    setActionError(null)
+    try {
+      await moveWorkspace(trimmedSourcePath, targetIndex - sourceIndex)
+      if (sourceIndex < targetIndex) {
+        const targetDelta = sourceIndex - (targetIndex - 1)
+        if (targetDelta !== 0) {
+          await moveWorkspace(trimmedTargetPath, targetDelta)
+        }
+      } else {
+        const targetDelta = sourceIndex - (targetIndex + 1)
+        if (targetDelta !== 0) {
+          await moveWorkspace(trimmedTargetPath, targetDelta)
+        }
+      }
+      await refresh()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to swap workspaces')
+      throw err
+    } finally {
+      setSavingPath(null)
+      setDraggingWorkspacePath(null)
+    }
+  }, [refresh, workspaces])
+
   const decoratedWorkspaces = useMemo(() => workspaces, [workspaces])
 
   return {
@@ -730,13 +672,12 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     useFolderTemporarily,
     deleteWorkspace,
     unlinkWorkspaceDirectory: removeWorkspaceDirectory,
-    upsertWorkspaceManagedLink,
-    removeWorkspaceManagedLink,
     setWorktreeEnabled: updateWorkspaceWorktreeEnabled,
     saveWorkspace: persistWorkspace,
     createFolder,
     setWorkspaceTheme: updateWorkspaceTheme,
     moveWorkspaceToIndex,
+    swapWorkspacePositions,
     setDraggingWorkspacePath,
     refresh,
     browsePath,

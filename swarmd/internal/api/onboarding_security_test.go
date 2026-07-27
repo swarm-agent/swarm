@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
-	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
 
 func TestOnboardingRedactsSensitiveMetadataWithoutAuth(t *testing.T) {
@@ -111,119 +110,5 @@ func TestOnboardingAllowsSensitiveMetadataWithDesktopSession(t *testing.T) {
 	}
 	if status.Config.PeerTransportPort != 7791 {
 		t.Fatalf("expected peer_transport_port to remain visible, got %d", status.Config.PeerTransportPort)
-	}
-}
-
-func TestSwarmDiscoveryRedactsSensitiveMetadataFromLANPeerWithoutAuth(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "discovery-swarm-1", Name: "Discovery Swarm"}}}
-	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.Child = false
-		cfg.SwarmName = "Discovery Swarm"
-		cfg.TailscaleURL = "https://example.tailnet.ts.net"
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "http://192.168.1.20/v1/swarm/discovery", nil)
-	req.RemoteAddr = "192.168.1.20:7777"
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("discovery status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	var status swarmDiscoveryResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
-		t.Fatalf("decode discovery response: %v", err)
-	}
-	if !status.OK {
-		t.Fatalf("expected ok discovery response, got %+v", status)
-	}
-	if status.SwarmID != "" || status.Name != "" || status.Role != "" || status.Endpoint != "" || status.TransportMode != "" || len(status.RendezvousTransports) != 0 {
-		t.Fatalf("expected discovery metadata to be redacted, got %+v", status)
-	}
-}
-
-func TestSwarmDiscoveryAllowsIdentityFromTailnetPeer(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "discovery-swarm-1", Name: "Discovery Swarm"}}}
-	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.Child = false
-		cfg.SwarmName = "Discovery Swarm"
-		cfg.TailscaleURL = "https://example.tailnet.ts.net"
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "https://example.tailnet.ts.net/v1/swarm/discovery", nil)
-	req.RemoteAddr = "100.116.139.106:7777"
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("discovery status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	var status swarmDiscoveryResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
-		t.Fatalf("decode discovery response: %v", err)
-	}
-	if status.SwarmID != "discovery-swarm-1" {
-		t.Fatalf("expected swarm identity to be visible to tailnet peer, got %+v", status)
-	}
-	if status.Name != "Discovery Swarm" || status.Role != bootstrapRoleMaster || status.Endpoint != "https://example.tailnet.ts.net" || status.TransportMode != startupconfig.NetworkModeTailscale {
-		t.Fatalf("expected discovery metadata to be visible to tailnet peer, got %+v", status)
-	}
-	if len(status.RendezvousTransports) == 0 {
-		t.Fatalf("expected rendezvous transports to be visible to tailnet peer, got %+v", status)
-	}
-}
-
-func TestSwarmDiscoveryAllowsSensitiveMetadataWithDesktopSession(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.Child = false
-		cfg.SwarmName = "Discovery Swarm"
-		cfg.TailscaleURL = "https://example.tailnet.ts.net"
-	})
-
-	token, expiresAt, err := server.desktopLocalSessions.Ensure(time.Now())
-	if err != nil {
-		t.Fatalf("ensure desktop local session: %v", err)
-	}
-	cookie := buildDesktopLocalSessionCookie(token, expiresAt, false)
-
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:5555/v1/swarm/discovery", nil)
-	req.RemoteAddr = "127.0.0.1:43210"
-	req.Header.Set("Origin", "http://127.0.0.1:5555")
-	req.Header.Set("Referer", "http://127.0.0.1:5555/app")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.AddCookie(cookie)
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("discovery status with session = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	var status swarmDiscoveryResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
-		t.Fatalf("decode discovery response: %v", err)
-	}
-	if status.SwarmID == "" {
-		t.Fatalf("expected swarm_id to remain visible, got %+v", status)
-	}
-	if status.Name != "Discovery Swarm" {
-		t.Fatalf("expected name to remain visible, got %q", status.Name)
-	}
-	if status.Role != bootstrapRoleMaster {
-		t.Fatalf("expected role to remain visible, got %q", status.Role)
-	}
-	if status.Endpoint != "https://example.tailnet.ts.net" {
-		t.Fatalf("expected endpoint to remain visible, got %q", status.Endpoint)
-	}
-	if status.TransportMode != startupconfig.NetworkModeTailscale {
-		t.Fatalf("expected transport mode to remain visible, got %q", status.TransportMode)
-	}
-	if len(status.RendezvousTransports) == 0 {
-		t.Fatalf("expected rendezvous transports to remain visible, got %+v", status)
 	}
 }

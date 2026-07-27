@@ -24,6 +24,7 @@ function makeSession(id: string): DesktopSessionRecord {
       status: 'idle',
       step: 0,
       toolName: null,
+    sidebarToolName: null,
       toolCallId: null,
       toolArguments: null,
       toolOutput: '',

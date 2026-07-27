@@ -1,134 +1,52 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-async function assertLegacyHelperUsesV2(action: () => Promise<unknown>, expectedPath: string): Promise<void> {
+type FetchCall = { input: RequestInfo | URL; init?: RequestInit }
+
+async function withMockFetch(run: (calls: FetchCall[]) => Promise<void>): Promise<void> {
   const originalFetch = globalThis.fetch
-  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
+  const calls: FetchCall[] = []
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push({ input, init })
-    return new Response(JSON.stringify(legacyResponseForPath(String(input))), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })
+    const url = String(input)
+    if (url.endsWith('/preference')) {
+      return jsonResponse({ ok: true, preference: { model: 'gpt-5.4' } })
+    }
+    if (url.includes('/permissions/perm-1/resolve')) {
+      return jsonResponse({
+        ok: true,
+        permission: {
+          id: 'perm-1',
+          session_id: 'session-raw',
+          status: 'resolved',
+          created_at: 1,
+          updated_at: 2,
+        },
+      })
+    }
+    if (url.endsWith('/permissions/resolve_all')) {
+      return jsonResponse({ ok: true, resolved: [] })
+    }
+    if (url.endsWith('/run/stop')) {
+      return jsonResponse({ ok: true, session_id: 'session-raw', run_id: 'run-1', status: 'cancel_requested' })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
   }) as typeof fetch
   try {
-    await action()
+    await run(calls)
   } finally {
     globalThis.fetch = originalFetch
   }
-  assert.equal(String(calls[0]?.input ?? ''), expectedPath)
 }
 
-function legacyResponseForPath(path: string): unknown {
-  if (path.includes('/permissions?status=pending') || path.endsWith('/usage')) {
-    throw new Error(`removed legacy Desktop V3 subresource helper requested: ${path}`)
-  }
-  if (path.endsWith('/preference')) {
-    return { ok: true, preference: { model: 'gpt-5.4' } }
-  }
-  if (path.endsWith('/mode')) {
-    return { ok: true, mode: 'plan' }
-  }
-  if (path.endsWith('/metadata')) {
-    return { ok: true, session: { id: 'session-raw' }, metadata: {} }
-  }
-  if (path.endsWith('/codex')) {
-    return { ok: true }
-  }
-  if (path.endsWith('/run/stream')) {
-    return { ok: true, run_id: 'run-1' }
-  }
-  if (path.includes('/permissions/perm-1/resolve')) {
-    return { ok: true, permission: { id: 'perm-1', status: 'resolved' } }
-  }
-  if (path.endsWith('/plans/active')) {
-    return { ok: true, has_active: false, active_plan: null }
-  }
-  if (path.includes('/plans/plan-1/history')) {
-    return { ok: true, revisions: [] }
-  }
-  if (path.includes('/plans/plan-1')) {
-    return { ok: true, plan: { id: 'plan-1' } }
-  }
-  if (path.includes('/plans?limit=100')) {
-    return { ok: true, active_plan_id: '', plans: [] }
-  }
-  if (path.endsWith('/plans')) {
-    return { ok: true, plan: { id: 'plan-1' } }
-  }
-  if (path.endsWith('/permissions/resolve_all')) {
-    return { ok: true, resolved: [] }
-  }
-  return { ok: true }
+function jsonResponse(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
 }
 
-const primaryRoute = {
-  id: 'primary',
-  label: 'Primary',
-  swarmId: 'primary-swarm',
-  targetKind: 'host',
-  targetRelationship: 'self',
-  hostSwarmId: 'primary-swarm',
-  hostSwarmName: 'primary',
-  hostWorkspacePath: '/repo',
-  hostWorkspaceName: 'repo',
-  runtimeWorkspacePath: '/repo',
-}
-
-test('legacy lifecycle helpers do not infer V3 from session ID shape', async () => {
-  const {
-    fetchSessionPreference,
-    updateSessionPreference,
-    fetchSessionMode,
-    updateSessionMode,
-    fetchSessionCodexConfig,
-    updateSessionCodexConfig,
-  } = await import('./chat-queries')
-
-  await assertLegacyHelperUsesV2(() => fetchSessionPreference('session-raw'), '/v2/sessions/session-raw/preference')
-  await assertLegacyHelperUsesV2(() => updateSessionPreference('session-raw', { model: 'gpt-5.4' }), '/v2/sessions/session-raw/preference')
-  await assertLegacyHelperUsesV2(() => fetchSessionMode('session-raw'), '/v2/sessions/session-raw/mode')
-  await assertLegacyHelperUsesV2(() => updateSessionMode('session-raw', 'plan'), '/v2/sessions/session-raw/mode')
-  await assertLegacyHelperUsesV2(() => fetchSessionCodexConfig('session-raw'), '/v2/sessions/session-raw/codex')
-  await assertLegacyHelperUsesV2(() => updateSessionCodexConfig('session-raw', { serviceTier: 'flex' }), '/v2/sessions/session-raw/codex')
-})
-
-test('legacy run helper does not infer V3 from session ID shape', async () => {
-  const { startSessionRun } = await import('./chat-queries')
-
-  await assertLegacyHelperUsesV2(() => startSessionRun({ sessionId: 'session-raw', prompt: 'run', route: primaryRoute }), '/v2/sessions/session-raw/run/stream')
-})
-
-
-test('Desktop permission resolution requires explicit V3 context and cannot fall back to V2', async () => {
-  const { resolveSessionPermission, resolveAllSessionPermissions } = await import('./chat-queries')
-  const originalFetch = globalThis.fetch
-  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    calls.push({ input, init })
-    return new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })
-  }) as typeof fetch
-
-  try {
-    await assert.rejects(
-      () => resolveSessionPermission('session-raw', 'perm-1', 'approve', 'ok'),
-      /requires explicit Sessions API v3 context/,
-    )
-    await assert.rejects(
-      () => resolveAllSessionPermissions('session-raw', 'approve', 'ok'),
-      /requires explicit Sessions API v3 context/,
-    )
-  } finally {
-    globalThis.fetch = originalFetch
-  }
-
-  assert.deepEqual(calls, [])
-})
-
-test('Desktop V3 removed standalone permission, usage, metadata, and plan subresource helper exports', async () => {
+test('Desktop V3 removed standalone permission, usage, metadata, and plan subresource helper exports from legacy chat queries', async () => {
   const queries = await import('./chat-queries')
   assert.equal('fetchSessionPendingPermissions' in queries, false)
   assert.equal('fetchSessionUsageSummary' in queries, false)
@@ -142,27 +60,61 @@ test('Desktop V3 removed standalone permission, usage, metadata, and plan subres
   assert.equal('fetchSessionPlanHistory' in queries, false)
 })
 
+test('Desktop V3 preference APIs use explicit Sessions API v3 helpers, not legacy lifecycle helpers', async () => {
+  await withMockFetch(async (calls) => {
+    const { fetchSessionV3Preference, updateSessionV3Preference } = await import('../../session-v3/api')
 
-test('explicit V3 stop helper calls Sessions API v3 cancel endpoint, not V2 stop', async () => {
-  const originalFetch = globalThis.fetch
-  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    calls.push({ input, init })
-    return new Response(JSON.stringify({ ok: true, session_id: 'session-raw', run_id: 'run-1', status: 'cancel_requested' }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
+    await fetchSessionV3Preference('session-raw')
+    await updateSessionV3Preference('session-raw', { provider: '', model: 'gpt-5.4', thinking: undefined })
+
+    assert.deepEqual(calls.map((call) => String(call.input)), [
+      '/v3/sessions/session-raw/preference',
+      '/v3/sessions/session-raw/preference',
+    ])
+    assert.equal(calls[1]?.init?.method, 'POST')
+    assert.deepEqual(JSON.parse(String(calls[1]?.init?.body ?? '{}')), {
+      model: 'gpt-5.4',
     })
-  }) as typeof fetch
+    await assert.rejects(
+      () => updateSessionV3Preference('session-raw', { provider: '', model: '', thinking: '' }),
+      /non-empty preference change/,
+    )
+  })
+})
 
-  try {
-    const { stopSessionRun } = await import('./chat-queries')
-    await stopSessionRun('session-raw', 'run-1', primaryRoute, { sessionApi: 'v3' })
-  } finally {
-    globalThis.fetch = originalFetch
-  }
+test('Desktop V3 permission resolution uses explicit Sessions API v3 helpers and cannot fall back to V2', async () => {
+  await withMockFetch(async (calls) => {
+    const { resolveSessionV3Permission, resolveAllSessionV3Permissions } = await import('../../session-v3/api')
 
-  assert.equal(calls.length, 1)
-  assert.equal(String(calls[0].input), '/v3/sessions/session-raw/run/stop')
-  assert.equal(calls[0].init?.method, 'POST')
-  assert.deepEqual(JSON.parse(String(calls[0].init?.body ?? '{}')), { type: 'run.stop', run_id: 'run-1' })
+    await resolveSessionV3Permission('session-raw', 'perm-1', { action: 'approve', reason: 'ok' })
+    await resolveAllSessionV3Permissions('session-raw', { action: 'approve', reason: 'ok' })
+
+    assert.deepEqual(calls.map((call) => String(call.input)), [
+      '/v3/sessions/session-raw/permissions/perm-1/resolve',
+      '/v3/sessions/session-raw/permissions/resolve_all',
+    ])
+    assert.equal(calls[0]?.init?.method, 'POST')
+    assert.equal(calls[1]?.init?.method, 'POST')
+  })
+})
+
+test('Desktop V3 stop uses explicit Sessions API v3 mutation helper, not V2 stop or per-session streams', async () => {
+  await withMockFetch(async (calls) => {
+    const { stopSessionV3Run } = await import('../../session-v3/api')
+
+    await assert.rejects(
+      () => stopSessionV3Run('session-raw', { runId: 'run-1', targetSwarmId: '' }),
+      /Desktop V3 stop requires target_swarm_id/,
+    )
+    await stopSessionV3Run('session-raw', { runId: 'run-1', targetSwarmId: ' primary-swarm ' })
+
+    assert.equal(calls.length, 1)
+    assert.equal(String(calls[0].input), '/v3/sessions/session-raw/run/stop')
+    assert.equal(calls[0].init?.method, 'POST')
+    assert.deepEqual(JSON.parse(String(calls[0].init?.body ?? '{}')), {
+      type: 'run.stop',
+      run_id: 'run-1',
+      target_swarm_id: 'primary-swarm',
+    })
+  })
 })

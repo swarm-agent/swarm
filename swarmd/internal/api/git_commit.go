@@ -7,14 +7,14 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/identity"
 )
 
-const workspaceGitCommitTimeout = 30 * time.Second
+const workspaceGitCommitTimeout = 5 * time.Minute
 
 type workspaceGitCommitRequest struct {
 	WorkspacePath string `json:"workspace_path,omitempty"`
@@ -53,34 +53,6 @@ func (s *Server) handleGitCommit(w http.ResponseWriter, r *http.Request) {
 	s.writeGitCommitResponse(w, r, req, principal)
 }
 
-func (s *Server) handleManagedHostWorkspaceGitCommit(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
-		return
-	}
-	var req workspaceGitCommitRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	targetSwarmID := strings.TrimSpace(r.URL.Query().Get("swarm_id"))
-	if targetSwarmID == "" {
-		writeError(w, http.StatusBadRequest, errors.New("swarm_id is required"))
-		return
-	}
-	target, _, _, status, err := s.resolveManagedHostSessionTarget(requestWithSwarmTargetQuery(r, targetSwarmID), targetSwarmID)
-	if err != nil {
-		writeError(w, status, err)
-		return
-	}
-	var peerResp workspaceGitCommitResponse
-	if err := s.postPeerJSONToSwarmTarget(r.Context(), *target, peerManagedHostWorkspaceGitCommitPath, req, &peerResp); err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, peerResp)
-}
-
 func (s *Server) writeGitCommitResponse(w http.ResponseWriter, r *http.Request, req workspaceGitCommitRequest, principal identity.Principal) {
 	if sessionID := strings.TrimSpace(r.URL.Query().Get("session_id")); sessionID != "" {
 		if err := s.enforceSessionBindingWriteAccess(principal, sessionID, "git commit"); err != nil {
@@ -88,7 +60,7 @@ func (s *Server) writeGitCommitResponse(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 	}
-	workspacePath, err := s.resolveGitCommitWorkspacePath(req, principal)
+	workspacePath, err := s.resolveGitCommitWorkspacePath(req, principal, strings.TrimSpace(r.URL.Query().Get("session_id")))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -99,6 +71,9 @@ func (s *Server) writeGitCommitResponse(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	result, err := runWorkspaceGitCommit(r.Context(), workspacePath, message, req.All)
+	if result.OK && s.gitRealtime != nil {
+		s.gitRealtime.signal(workspacePath)
+	}
 	status := http.StatusOK
 	if err != nil {
 		status = http.StatusBadRequest
@@ -106,7 +81,12 @@ func (s *Server) writeGitCommitResponse(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, status, result)
 }
 
-func (s *Server) resolveGitCommitWorkspacePath(req workspaceGitCommitRequest, principal identity.Principal) (string, error) {
+func (s *Server) resolveGitCommitWorkspacePath(req workspaceGitCommitRequest, principal identity.Principal, sessionID string) (string, error) {
+	if worktreePath, ok, err := s.resolveSessionGitWorkspacePath(principal, sessionID); err != nil {
+		return "", err
+	} else if ok {
+		return worktreePath, nil
+	}
 	workspacePath := strings.TrimSpace(req.WorkspacePath)
 	if workspacePath == "" {
 		workspacePath = strings.TrimSpace(req.CWD)
@@ -141,43 +121,42 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 	}
 
 	argv := []string{"commit", "-m", message}
-	if all {
-		argv = append(argv, "--all")
-	}
 	ctx, cancel := context.WithTimeout(parent, workspaceGitCommitTimeout)
 	defer cancel()
 
-	secretCheckOutput, secretCheckErr := runWorkspaceGitSecretCheck(ctx, workspacePath)
-	if secretCheckErr != nil {
-		combined := strings.TrimSpace(secretCheckOutput)
-		response := workspaceGitCommitResponse{
-			OK:            false,
-			WorkspacePath: workspacePath,
-			CWD:           workspacePath,
-			Argv:          []string{"scripts/check-secrets.sh"},
-			ExitCode:      workspaceGitCommandExitCode(secretCheckErr),
-			TimedOut:      errors.Is(ctx.Err(), context.DeadlineExceeded),
-			Output:        combined,
-			Summary:       "secret check failed before git commit",
+	combinedParts := []string{}
+	if all {
+		stageArgv := []string{"add", "--all"}
+		stageCmd := exec.CommandContext(ctx, "git", stageArgv...)
+		stageCmd.Dir = workspacePath
+		stageCmd.Env = gitenv.FilterIdentityOverrides(os.Environ())
+		stageOutput, stageErr := stageCmd.CombinedOutput()
+		if strings.TrimSpace(string(stageOutput)) != "" {
+			combinedParts = append(combinedParts, strings.TrimSpace(string(stageOutput)))
 		}
-		if combined != "" {
-			response.Error = fmt.Sprintf("secret check failed before git commit: %s", combined)
-		} else {
-			response.Error = fmt.Sprintf("secret check failed before git commit: %v", secretCheckErr)
+		if stageErr != nil {
+			combined := strings.Join(combinedParts, "\n")
+			response := workspaceGitCommitResponse{
+				OK: false, WorkspacePath: workspacePath, CWD: workspacePath,
+				Argv: append([]string{"git"}, stageArgv...), ExitCode: workspaceGitCommandExitCode(stageErr),
+				TimedOut: errors.Is(ctx.Err(), context.DeadlineExceeded), Output: combined,
+				Summary: workspaceGitCommitSummary(stageArgv, workspaceGitCommandExitCode(stageErr), errors.Is(ctx.Err(), context.DeadlineExceeded)),
+			}
+			if combined != "" {
+				response.Error = fmt.Sprintf("git staging failed: %s", combined)
+			} else {
+				response.Error = fmt.Sprintf("git staging failed: %v", stageErr)
+			}
+			return response, errors.New(response.Error)
 		}
-		return response, errors.New(response.Error)
 	}
 
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = workspacePath
-	cmd.Env = filteredWorkspaceGitCommitEnv(os.Environ())
+	cmd.Env = gitenv.FilterIdentityOverrides(os.Environ())
 	output, err := cmd.CombinedOutput()
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	exitCode := workspaceGitCommandExitCode(err)
-	combinedParts := []string{}
-	if strings.TrimSpace(secretCheckOutput) != "" {
-		combinedParts = append(combinedParts, strings.TrimSpace(secretCheckOutput))
-	}
 	if strings.TrimSpace(string(output)) != "" {
 		combinedParts = append(combinedParts, strings.TrimSpace(string(output)))
 	}
@@ -203,29 +182,6 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 	return response, nil
 }
 
-func runWorkspaceGitSecretCheck(parent context.Context, workspacePath string) (string, error) {
-	rootCmd := exec.CommandContext(parent, "git", "rev-parse", "--show-toplevel")
-	rootCmd.Dir = workspacePath
-	rootCmd.Env = filteredWorkspaceGitCommitEnv(os.Environ())
-	rootOutput, err := rootCmd.CombinedOutput()
-	if err != nil {
-		return string(rootOutput), err
-	}
-	repoRoot := strings.TrimSpace(string(rootOutput))
-	if repoRoot == "" {
-		return "", errors.New("git rev-parse returned an empty repository root")
-	}
-	secretCheckScript := filepath.Join(repoRoot, "scripts", "check-secrets.sh")
-	if _, err := os.Stat(secretCheckScript); err != nil {
-		return "", err
-	}
-	cmd := exec.CommandContext(parent, "bash", secretCheckScript)
-	cmd.Dir = repoRoot
-	cmd.Env = filteredWorkspaceGitCommitEnv(os.Environ())
-	output, err := cmd.CombinedOutput()
-	return string(output), err
-}
-
 func workspaceGitCommandExitCode(err error) int {
 	if err == nil {
 		return 0
@@ -235,32 +191,6 @@ func workspaceGitCommandExitCode(err error) int {
 		return exitErr.ExitCode()
 	}
 	return -1
-}
-
-func filteredWorkspaceGitCommitEnv(base []string) []string {
-	if len(base) == 0 {
-		return nil
-	}
-	blocked := map[string]struct{}{
-		"GIT_AUTHOR_NAME":     {},
-		"GIT_AUTHOR_EMAIL":    {},
-		"GIT_AUTHOR_DATE":     {},
-		"GIT_COMMITTER_NAME":  {},
-		"GIT_COMMITTER_EMAIL": {},
-		"GIT_COMMITTER_DATE":  {},
-	}
-	out := make([]string, 0, len(base))
-	for _, entry := range base {
-		key := entry
-		if idx := strings.Index(entry, "="); idx >= 0 {
-			key = entry[:idx]
-		}
-		if _, deny := blocked[key]; deny {
-			continue
-		}
-		out = append(out, entry)
-	}
-	return out
 }
 
 func workspaceGitCommitSummary(argv []string, exitCode int, timedOut bool) string {

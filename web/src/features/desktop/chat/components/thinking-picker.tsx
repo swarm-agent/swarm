@@ -74,8 +74,9 @@ export function ThinkingPicker({
 
   useEffect(() => {
     if (!open) return
-    function handleClickOutside(event: MouseEvent) {
-      const target = event.target as Node
+    function handlePointerDownOutside(event: PointerEvent) {
+      const target = event.target as Node | null
+      if (!target || !target.isConnected || !document.body.contains(target)) return
       if (
         triggerRef.current?.contains(target) ||
         dropdownRef.current?.contains(target)
@@ -89,10 +90,10 @@ export function ThinkingPicker({
         setOpen(false)
       }
     }
-    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('pointerdown', handlePointerDownOutside)
     document.addEventListener('keydown', handleEscape)
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('pointerdown', handlePointerDownOutside)
       document.removeEventListener('keydown', handleEscape)
     }
   }, [open])

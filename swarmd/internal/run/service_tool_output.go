@@ -1,8 +1,10 @@
 package run
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"swarm/packages/swarmd/internal/gitstatus"
@@ -51,7 +53,20 @@ func formatToolHistory(call tool.Call, result tool.Result) string {
 }
 
 func liveStreamRawOutput(call tool.Call, result tool.Result) string {
-	return strings.TrimSpace(result.Output)
+	output := strings.TrimSpace(result.Output)
+	if canonicalToolName(firstNonEmptyString(result.Name, call.Name)) != "bash" {
+		return output
+	}
+	payload := decodeToolPayload(output)
+	if payload == nil {
+		return output
+	}
+	for _, key := range []string{"output", "stdout", "stderr"} {
+		if value := mapString(payload, key); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func formatToolHistoryWithMetadata(call tool.Call, metadata map[string]any, result tool.Result) string {
@@ -209,6 +224,9 @@ func buildV3ProviderManagedToolResultRecord(call tool.Call, metadata map[string]
 
 func formatV3ProviderManagedToolResultRecord(call tool.Call, metadata map[string]any, result tool.Result) (string, error) {
 	record := buildV3ProviderManagedToolResultRecord(call, metadata, result)
+	if compact, ok := compactWebToolCompletionOutput(call, result); ok {
+		record.CompletedOutput = compact
+	}
 	encoded, err := json.Marshal(record)
 	if err != nil {
 		return "", err
@@ -309,6 +327,46 @@ func buildToolHistoryInput(content string) ([]map[string]any, bool) {
 	}, true
 }
 
+func compactWebToolCompletionOutput(call tool.Call, result tool.Result) (string, bool) {
+	name := canonicalToolName(firstNonEmptyString(result.Name, call.Name))
+	if name != "websearch" && name != "webfetch" {
+		return "", false
+	}
+	payload := decodeToolPayload(strings.TrimSpace(result.Output))
+	if payload == nil {
+		return "", false
+	}
+	compact := map[string]any{
+		"path_id":                mapString(payload, "path_id"),
+		"summary":                mapString(payload, "summary"),
+		"result_details_omitted": true,
+		"original_bytes":         len(strings.TrimSpace(result.Output)),
+	}
+	var fields []string
+	if name == "websearch" {
+		fields = []string{"query", "queries", "query_count", "num_results", "requested_search_type", "resolved_search_types", "total_results", "failed_queries", "truncated_queries", "details_truncated", "parallel_query_fanout"}
+	} else {
+		fields = []string{"url", "urls", "count", "success_count", "status_count", "timed_out", "truncated_urls", "details_truncated"}
+	}
+	for _, field := range fields {
+		if value, ok := payload[field]; ok {
+			compact[field] = value
+		}
+	}
+	encoded, err := json.Marshal(compact)
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
+}
+
+func formatProviderManagedToolCompletedOutput(call tool.Call, result tool.Result) string {
+	if compact, ok := compactWebToolCompletionOutput(call, result); ok {
+		return compact
+	}
+	return formatToolCompletedOutput(call, result)
+}
+
 func formatToolCompletedOutput(call tool.Call, result tool.Result) string {
 	name := strings.TrimSpace(result.Name)
 	if name == "" {
@@ -320,9 +378,22 @@ func formatToolCompletedOutput(call tool.Call, result tool.Result) string {
 	return summarizeToolOutput(name, result.Output, maxToolPreviewChars, 2)
 }
 
+// PrepareToolOutputForModel converts a stored tool result into the bounded payload
+// that is safe to replay to a provider on a future turn. Full raw tool output may
+// be stored for UI/debug history, but provider input must always go through this
+// path so large logs are not re-ingested on every subsequent user message.
+func PrepareToolOutputForModel(call tool.Call, result tool.Result) string {
+	return prepareToolOutputForModel(call, result)
+}
+
 func prepareToolOutputForModel(call tool.Call, result tool.Result) string {
 	output := strings.TrimSpace(result.Output)
 	errorText := strings.TrimSpace(result.Error)
+	if errorText == "" && len(output) > maxToolInputBytes {
+		if compact, ok := prepareLargeReadToolOutputForModel(call, result, output); ok {
+			return compact
+		}
+	}
 	if errorText == "" && (output == "" || len(output) <= maxToolInputBytes) {
 		return output
 	}
@@ -388,6 +459,128 @@ func prepareToolOutputForModel(call tool.Call, result tool.Result) string {
 		}
 	}
 	return string(encoded)
+}
+
+type readToolModelSource struct {
+	Path               string          `json:"path"`
+	Bytes              int             `json:"bytes"`
+	LineStart          int             `json:"line_start"`
+	MaxLines           int             `json:"max_lines"`
+	Count              int             `json:"count"`
+	NextLineStart      int             `json:"next_line_start"`
+	EOF                bool            `json:"eof"`
+	Truncated          bool            `json:"truncated"`
+	LineTextTruncated  bool            `json:"line_text_truncated"`
+	BinarySuppressed   bool            `json:"binary_suppressed"`
+	Lines              json.RawMessage `json:"lines"`
+	PathID             string          `json:"path_id"`
+	Summary            string          `json:"summary"`
+	DetailsTruncated   bool            `json:"details_truncated"`
+	Safety             json.RawMessage `json:"safety"`
+	PromptInjectionTag string          `json:"prompt_injection_tag"`
+}
+
+type readToolModelLine struct {
+	Line int    `json:"line"`
+	Text string `json:"text"`
+}
+
+// prepareLargeReadToolOutputForModel keeps read pagination and safety metadata
+// explicit while retaining only a bounded, line-addressable prefix for the
+// provider. The full result remains in durable tool history and realtime data.
+func prepareLargeReadToolOutputForModel(call tool.Call, result tool.Result, output string) (string, bool) {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		name = strings.TrimSpace(result.Name)
+	}
+	if !strings.EqualFold(name, "read") {
+		return "", false
+	}
+
+	var source readToolModelSource
+	if err := json.Unmarshal([]byte(output), &source); err != nil || source.Count < 0 || len(source.Lines) == 0 {
+		return "", false
+	}
+	lines, retainedContentBytes, retainedTextTruncated := boundedReadToolModelLines(source.Lines, maxToolInputPreview)
+	retainedStart, retainedEnd := 0, 0
+	if len(lines) > 0 {
+		retainedStart = lines[0].Line
+		retainedEnd = lines[len(lines)-1].Line
+	}
+	allReturnedLinesRetained := len(lines) == source.Count && !retainedTextTruncated
+	payload := map[string]any{
+		"path_id":                      "run.tool-output.read.v1",
+		"tool_path_id":                 source.PathID,
+		"tool":                         "read",
+		"call_id":                      strings.TrimSpace(result.CallID),
+		"truncated_for_model":          !allReturnedLinesRetained,
+		"original_bytes":               len(output),
+		"returned_content_bytes":       source.Bytes,
+		"retained_content_bytes":       retainedContentBytes,
+		"path":                         source.Path,
+		"line_start":                   source.LineStart,
+		"max_lines":                    source.MaxLines,
+		"returned_line_count":          source.Count,
+		"next_line_start":              source.NextLineStart,
+		"eof":                          source.EOF,
+		"read_truncated":               source.Truncated,
+		"line_text_truncated":          source.LineTextTruncated,
+		"binary_suppressed":            source.BinarySuppressed,
+		"retained_line_start":          retainedStart,
+		"retained_line_end":            retainedEnd,
+		"retained_line_count":          len(lines),
+		"all_returned_lines_retained":  allReturnedLinesRetained,
+		"retained_line_text_truncated": retainedTextTruncated,
+		"lines":                        lines,
+		"summary":                      source.Summary,
+		"details_truncated":            source.DetailsTruncated,
+		"prompt_injection_tag":         source.PromptInjectionTag,
+		"hint":                         "Continue with line_start=next_line_start, or rerun with a narrower line range when omitted lines are needed.",
+	}
+	if len(source.Safety) > 0 && string(source.Safety) != "null" {
+		payload["safety"] = source.Safety
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
+}
+
+func boundedReadToolModelLines(raw json.RawMessage, maxContentRunes int) ([]readToolModelLine, int, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('[') {
+		return nil, 0, false
+	}
+	if maxContentRunes <= 0 {
+		return nil, 0, true
+	}
+	lines := make([]readToolModelLine, 0, 16)
+	retainedBytes := 0
+	retainedRunes := 0
+	textTruncated := false
+	for decoder.More() {
+		var line readToolModelLine
+		if err := decoder.Decode(&line); err != nil {
+			return nil, 0, false
+		}
+		remaining := maxContentRunes - retainedRunes
+		if remaining <= 0 {
+			break
+		}
+		original := line.Text
+		line.Text = truncateRunes(line.Text, remaining)
+		if line.Text != original {
+			textTruncated = true
+		}
+		lines = append(lines, line)
+		retainedBytes += len(line.Text)
+		retainedRunes += len([]rune(line.Text))
+		if retainedRunes >= maxContentRunes {
+			break
+		}
+	}
+	return lines, retainedBytes, textTruncated
 }
 
 func toolHistoryStructuredPayload(name, output, arguments string) (string, bool) {
@@ -990,11 +1183,15 @@ func mapBool(payload map[string]any, key string) bool {
 	if !ok {
 		return false
 	}
-	typed, ok := value.(bool)
-	if !ok {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(typed))
+		return err == nil && parsed
+	default:
 		return false
 	}
-	return typed
 }
 
 func mapInt(payload map[string]any, key string) int {
@@ -1005,15 +1202,52 @@ func mapInt(payload map[string]any, key string) int {
 	switch typed := value.(type) {
 	case int:
 		return typed
+	case int8:
+		return int(typed)
+	case int16:
+		return int(typed)
+	case int32:
+		return int(typed)
 	case int64:
+		return int(typed)
+	case uint:
+		return int(typed)
+	case uint8:
+		return int(typed)
+	case uint16:
+		return int(typed)
+	case uint32:
+		return int(typed)
+	case uint64:
 		return int(typed)
 	case float64:
 		return int(typed)
 	case float32:
 		return int(typed)
-	default:
-		return 0
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err == nil {
+			return int(parsed)
+		}
+		floatValue, err := typed.Float64()
+		if err == nil {
+			return int(floatValue)
+		}
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return 0
+		}
+		parsed, err := strconv.Atoi(trimmed)
+		if err == nil {
+			return parsed
+		}
+		floatValue, err := strconv.ParseFloat(trimmed, 64)
+		if err == nil {
+			return int(floatValue)
+		}
 	}
+	return 0
 }
 
 func cloneGenericMap(input map[string]any) map[string]any {

@@ -279,7 +279,7 @@ func assertSessionsV3LoadBenchmarkHydrateResponse(tb testing.TB, resp sessionsV3
 	if resp.AppliedSeq != resp.Projection.LastEventSeq || resp.HighWatermark != resp.Projection.ProjectionHighWatermarkSeq {
 		tb.Fatalf("hydrate durable cursors applied=%d high=%d projection=%+v", resp.AppliedSeq, resp.HighWatermark, resp.Projection)
 	}
-	if len(resp.Messages) > 0 && resp.Messages[0].GlobalSeq <= 10 {
+	if resp.Session.MessageCount > sessionsV3PrimaryDefaultMessageTailLimit && len(resp.Messages) > 0 && resp.Messages[0].GlobalSeq <= 10 {
 		tb.Fatalf("hydrate returned oldest history instead of latest tail: first message seq=%d", resp.Messages[0].GlobalSeq)
 	}
 }

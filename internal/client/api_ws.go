@@ -26,21 +26,18 @@ const (
 	wsOpcodePing  = 0x9
 	wsOpcodePong  = 0xA
 
-	wsMaxFrameLength  = 1 << 20
-	wsReadPollTimeout = 500 * time.Millisecond
+	wsMaxFrameLength = 1 << 20
 )
 
 type StreamEventEnvelope struct {
-	GlobalSeq     uint64             `json:"global_seq"`
-	Stream        string             `json:"stream"`
-	EventType     string             `json:"event_type"`
-	EntityID      string             `json:"entity_id"`
-	Payload       json.RawMessage    `json:"payload"`
-	TsUnixMs      int64              `json:"ts_unix_ms"`
-	Pairing       SwarmPairingState  `json:"pairing"`
-	TrustedPeers  []SwarmTrustedPeer `json:"trusted_peers"`
-	CausationID   string             `json:"causation_id,omitempty"`
-	CorrelationID string             `json:"correlation_id,omitempty"`
+	GlobalSeq     uint64          `json:"global_seq"`
+	Stream        string          `json:"stream"`
+	EventType     string          `json:"event_type"`
+	EntityID      string          `json:"entity_id"`
+	Payload       json.RawMessage `json:"payload"`
+	TsUnixMs      int64           `json:"ts_unix_ms"`
+	CausationID   string          `json:"causation_id,omitempty"`
+	CorrelationID string          `json:"correlation_id,omitempty"`
 }
 
 type wsOutboundMessage struct {
@@ -63,6 +60,10 @@ type wsClientConn struct {
 }
 
 func (c *API) StreamEvents(ctx context.Context, lastSeen uint64, channels []string, onEvent func(StreamEventEnvelope)) error {
+	return c.StreamEventsWithReady(ctx, lastSeen, channels, nil, onEvent)
+}
+
+func (c *API) StreamEventsWithReady(ctx context.Context, lastSeen uint64, channels []string, onReady func(), onEvent func(StreamEventEnvelope)) error {
 	if c == nil {
 		return errors.New("api client is not configured")
 	}
@@ -123,7 +124,15 @@ func (c *API) StreamEvents(ctx context.Context, lastSeen uint64, channels []stri
 		if err := json.Unmarshal(raw, &message); err != nil {
 			continue
 		}
-		if strings.ToLower(strings.TrimSpace(message.Type)) != "event" || message.Event == nil {
+		messageType := strings.ToLower(strings.TrimSpace(message.Type))
+		if messageType == "subscribed" {
+			if onReady != nil {
+				onReady()
+				onReady = nil
+			}
+			continue
+		}
+		if messageType != "event" || message.Event == nil {
 			continue
 		}
 		if onEvent != nil {
@@ -170,10 +179,16 @@ func dialDaemonWS(ctx context.Context, baseURL, token, socketPath, wsPath, clien
 	if strings.TrimSpace(wsPath) == "" && strings.TrimSpace(parsed.Path) != "" {
 		path = normalizeDaemonWSPath(parsed.Path)
 	}
+	rawQuery := ""
+	if idx := strings.Index(path, "?"); idx >= 0 {
+		rawQuery = path[idx+1:]
+		path = path[:idx]
+	}
 	wsURL := &url.URL{
-		Scheme: wsScheme,
-		Host:   host,
-		Path:   path,
+		Scheme:   wsScheme,
+		Host:     host,
+		Path:     path,
+		RawQuery: rawQuery,
 	}
 	if clientID = strings.TrimSpace(clientID); clientID != "" {
 		q := wsURL.Query()
@@ -306,24 +321,28 @@ func (c *wsClientConn) Close() error {
 }
 
 func (c *wsClientConn) ReadText(ctx context.Context) ([]byte, error) {
+	if c == nil || c.conn == nil {
+		return nil, io.EOF
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Cancellation closes the connection to unblock the in-flight read. This
+	// avoids recurring read deadlines while preserving immediate shutdown.
+	readDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = c.conn.Close()
+		case <-readDone:
+		}
+	}()
+	defer close(readDone)
 	for {
-		if c == nil || c.conn == nil {
-			return nil, io.EOF
-		}
-		deadline := time.Now().Add(wsReadPollTimeout)
-		if ctx != nil {
-			if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-				deadline = d
-			}
-		}
-		_ = c.conn.SetReadDeadline(deadline)
 		opcode, payload, err := c.readFrame()
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				if ctx != nil && ctx.Err() != nil {
-					return nil, ctx.Err()
-				}
-				continue
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
 			}
 			return nil, err
 		}

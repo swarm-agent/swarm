@@ -21,6 +21,7 @@ type Config struct {
 	PeerTransportPort       int
 	BypassPermissions       bool
 	RetainToolOutputHistory bool
+	LongSessionDiagnostics  bool
 	DataDir                 string
 	DBPath                  string
 	LockPath                string
@@ -70,6 +71,7 @@ func Parse(args []string) (Config, error) {
 		PeerTransportPort:       startupCfg.PeerTransportPort,
 		BypassPermissions:       startupCfg.BypassPermissions,
 		RetainToolOutputHistory: startupCfg.RetainToolOutputHistory,
+		LongSessionDiagnostics:  startupCfg.LongSessionDiagnostics,
 	}
 	fs.StringVar(&cfg.ListenAddr, "listen", defaultListenAddr, "HTTP listen address")
 	fs.IntVar(&cfg.DesktopPort, "desktop-port", startupCfg.DesktopPort, "desktop HTTP listen port (0 disables desktop listener)")
@@ -89,6 +91,9 @@ func Parse(args []string) (Config, error) {
 
 	if cfg.DesktopPort < 0 || cfg.DesktopPort > 65535 {
 		return Config{}, fmt.Errorf("invalid desktop port %d (expected 0-65535)", cfg.DesktopPort)
+	}
+	if err := validateLoopbackListenAddr(cfg.ListenAddr); err != nil {
+		return Config{}, err
 	}
 
 	if strings.TrimSpace(cfg.StartupCWD) == "" {
@@ -249,9 +254,23 @@ func startupConfigFromRuntime(path, listenAddr string, desktopPort int, bypassPe
 	return cfg, nil
 }
 
+func validateLoopbackListenAddr(listenAddr string) error {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(listenAddr))
+	if err != nil {
+		return fmt.Errorf("invalid listen address %q: %w", listenAddr, err)
+	}
+	if !startupconfig.IsLoopbackHost(host) {
+		return fmt.Errorf("unsupported non-loopback --listen %q: authenticated API/desktop exposure is not configured; keep --listen=%s:%d and use an SSH tunnel or Tailscale forwarding", listenAddr, startupconfig.DefaultHost, startupconfig.DefaultPort)
+	}
+	return nil
+}
+
 func validateStartupConfig(cfg startupconfig.FileConfig) error {
 	if strings.TrimSpace(cfg.Host) == "" {
 		return errors.New("host must not be empty")
+	}
+	if !startupconfig.IsLoopbackHost(cfg.Host) {
+		return fmt.Errorf("unsupported non-loopback host %q: authenticated API/desktop exposure is not configured; keep host=%s and use an SSH tunnel or Tailscale forwarding", cfg.Host, startupconfig.DefaultHost)
 	}
 	if cfg.Port < 1 || cfg.Port > 65535 {
 		return fmt.Errorf("invalid port %d (expected 1-65535)", cfg.Port)

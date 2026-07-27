@@ -2,11 +2,11 @@ package pebblestore
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,19 +34,18 @@ const (
 var ErrVaultLocked = errors.New(vaultUnlockRequiredMessage)
 
 type VaultMetadata struct {
-	Version           int    `json:"version"`
-	KDF               string `json:"kdf,omitempty"`
-	SaltBase64        string `json:"salt_base64,omitempty"`
-	MemoryKiB         uint32 `json:"memory_kib,omitempty"`
-	TimeCost          uint32 `json:"time_cost,omitempty"`
-	Parallelism       uint8  `json:"parallelism,omitempty"`
-	WrappedDEK        string `json:"wrapped_dek,omitempty"`
-	ManagedWrappedDEK string `json:"managed_wrapped_dek,omitempty"`
-	LocalWrappedDEK   string `json:"local_wrapped_dek,omitempty"`
-	UpdatedAt         int64  `json:"updated_at"`
-	Enabled           bool   `json:"enabled"`
-	StorageMode       string `json:"storage_mode"`
-	UnlockWarning     string `json:"unlock_warning,omitempty"`
+	Version         int    `json:"version"`
+	KDF             string `json:"kdf,omitempty"`
+	SaltBase64      string `json:"salt_base64,omitempty"`
+	MemoryKiB       uint32 `json:"memory_kib,omitempty"`
+	TimeCost        uint32 `json:"time_cost,omitempty"`
+	Parallelism     uint8  `json:"parallelism,omitempty"`
+	WrappedDEK      string `json:"wrapped_dek,omitempty"`
+	LocalWrappedDEK string `json:"local_wrapped_dek,omitempty"`
+	UpdatedAt       int64  `json:"updated_at"`
+	Enabled         bool   `json:"enabled"`
+	StorageMode     string `json:"storage_mode"`
+	UnlockWarning   string `json:"unlock_warning,omitempty"`
 }
 
 type VaultStatus struct {
@@ -89,12 +88,7 @@ func (s *AuthStore) VaultStatusForAccount(accountScopeID string) (VaultStatus, e
 }
 
 func (s *AuthStore) EnableVault(password string) (VaultStatus, error) {
-	return s.enableVaultWithManagedKey(password, "")
-}
-
-func (s *AuthStore) enableVaultWithManagedKey(password, managedKey string) (VaultStatus, error) {
 	password = strings.TrimSpace(password)
-	managedKey = strings.TrimSpace(managedKey)
 	if password == "" {
 		return VaultStatus{}, errors.New(vaultPasswordRequiredMessage)
 	}
@@ -118,29 +112,19 @@ func (s *AuthStore) enableVaultWithManagedKey(password, managedKey string) (Vaul
 	if err != nil {
 		return VaultStatus{}, err
 	}
-	managedWrappedDEK := ""
-	if managedKey != "" {
-		wrapped, err := encryptVaultBlob(managedVaultKEK(managedKey), dek)
-		if err != nil {
-			return VaultStatus{}, err
-		}
-		managedWrappedDEK = base64.StdEncoding.EncodeToString(wrapped)
-	}
-
 	now := time.Now().UnixMilli()
 	nextMeta := &VaultMetadata{
-		Version:           vaultVersion,
-		KDF:               "argon2id",
-		SaltBase64:        base64.StdEncoding.EncodeToString(salt),
-		MemoryKiB:         vaultArgon2MemoryKiB,
-		TimeCost:          vaultArgon2Time,
-		Parallelism:       vaultArgon2Parallelism,
-		WrappedDEK:        base64.StdEncoding.EncodeToString(wrappedDEK),
-		ManagedWrappedDEK: managedWrappedDEK,
-		UpdatedAt:         now,
-		Enabled:           true,
-		StorageMode:       storageModePebbleVault,
-		UnlockWarning:     vaultEnableWarning,
+		Version:       vaultVersion,
+		KDF:           "argon2id",
+		SaltBase64:    base64.StdEncoding.EncodeToString(salt),
+		MemoryKiB:     vaultArgon2MemoryKiB,
+		TimeCost:      vaultArgon2Time,
+		Parallelism:   vaultArgon2Parallelism,
+		WrappedDEK:    base64.StdEncoding.EncodeToString(wrappedDEK),
+		UpdatedAt:     now,
+		Enabled:       true,
+		StorageMode:   storageModePebbleVault,
+		UnlockWarning: vaultEnableWarning,
 	}
 
 	batch := s.secretStore.NewBatch()
@@ -192,113 +176,6 @@ func (s *AuthStore) UnlockVault(password string) (VaultStatus, error) {
 	}
 	s.cacheVaultState(meta, dek, nil)
 	return vaultStatusFromState(meta, true), nil
-}
-
-func (s *AuthStore) ConfigureManagedVaultAccess(password, managedKey string) (VaultStatus, error) {
-	password = strings.TrimSpace(password)
-	managedKey = strings.TrimSpace(managedKey)
-	if managedKey == "" {
-		return VaultStatus{}, errors.New("managed vault key is required")
-	}
-
-	meta, _, err := s.snapshotVaultState()
-	if err != nil {
-		return VaultStatus{}, err
-	}
-	if meta == nil || !meta.Enabled {
-		return s.enableVaultWithManagedKey(password, managedKey)
-	}
-
-	dek, err := s.readableDEK()
-	if err != nil {
-		return VaultStatus{}, err
-	}
-	nextMeta := *meta
-	if password != "" {
-		salt, err := randomBytes(16)
-		if err != nil {
-			return VaultStatus{}, err
-		}
-		kek := deriveVaultKey(password, salt)
-		wrappedDEK, err := encryptVaultBlob(kek, dek)
-		if err != nil {
-			return VaultStatus{}, err
-		}
-		nextMeta.KDF = "argon2id"
-		nextMeta.SaltBase64 = base64.StdEncoding.EncodeToString(salt)
-		nextMeta.MemoryKiB = vaultArgon2MemoryKiB
-		nextMeta.TimeCost = vaultArgon2Time
-		nextMeta.Parallelism = vaultArgon2Parallelism
-		nextMeta.WrappedDEK = base64.StdEncoding.EncodeToString(wrappedDEK)
-	}
-	managedWrappedDEK, err := encryptVaultBlob(managedVaultKEK(managedKey), dek)
-	if err != nil {
-		return VaultStatus{}, err
-	}
-	nextMeta.ManagedWrappedDEK = base64.StdEncoding.EncodeToString(managedWrappedDEK)
-	nextMeta.UpdatedAt = time.Now().UnixMilli()
-	nextMeta.Enabled = true
-	nextMeta.StorageMode = storageModePebbleVault
-	if err := s.persistVaultMetadata(&nextMeta); err != nil {
-		return VaultStatus{}, err
-	}
-	s.cacheVaultState(&nextMeta, dek, nil)
-	return vaultStatusFromState(&nextMeta, true), nil
-}
-
-func (s *AuthStore) ConfigureManagedVaultAccessForAccount(accountScopeID, password, managedKey string) (VaultStatus, error) {
-	accountScopeID, err := requireAccountScopeID(accountScopeID)
-	if err != nil {
-		return VaultStatus{}, err
-	}
-	password = strings.TrimSpace(password)
-	managedKey = strings.TrimSpace(managedKey)
-	if managedKey == "" {
-		return VaultStatus{}, errors.New("managed vault key is required")
-	}
-
-	meta, _, err := s.snapshotVaultStateForAccount(accountScopeID)
-	if err != nil {
-		return VaultStatus{}, err
-	}
-	if meta == nil || !meta.Enabled {
-		return s.enableVaultWithManagedKeyForAccount(accountScopeID, password, managedKey)
-	}
-
-	dek, err := s.readableDEKForAccount(accountScopeID)
-	if err != nil {
-		return VaultStatus{}, err
-	}
-	nextMeta := *meta
-	if password != "" {
-		salt, err := randomBytes(16)
-		if err != nil {
-			return VaultStatus{}, err
-		}
-		wrappedDEK, err := encryptVaultBlob(deriveVaultKey(password, salt), dek)
-		if err != nil {
-			return VaultStatus{}, err
-		}
-		nextMeta.KDF = "argon2id"
-		nextMeta.SaltBase64 = base64.StdEncoding.EncodeToString(salt)
-		nextMeta.MemoryKiB = vaultArgon2MemoryKiB
-		nextMeta.TimeCost = vaultArgon2Time
-		nextMeta.Parallelism = vaultArgon2Parallelism
-		nextMeta.WrappedDEK = base64.StdEncoding.EncodeToString(wrappedDEK)
-	}
-	managedWrappedDEK, err := encryptVaultBlob(managedVaultKEK(managedKey), dek)
-	if err != nil {
-		return VaultStatus{}, err
-	}
-	nextMeta.ManagedWrappedDEK = base64.StdEncoding.EncodeToString(managedWrappedDEK)
-	nextMeta.UpdatedAt = time.Now().UnixMilli()
-	nextMeta.Enabled = true
-	nextMeta.StorageMode = storageModePebbleVault
-	if err := s.resealCredentialsForAccount(accountScopeID, &nextMeta, dek, storageModePebbleVault); err != nil {
-		return VaultStatus{}, err
-	}
-	s.cacheVaultStateForAccount(accountScopeID, &nextMeta, dek)
-	return vaultStatusFromState(&nextMeta, true), nil
 }
 
 func (s *AuthStore) LockVault() (VaultStatus, error) {
@@ -378,16 +255,11 @@ func (s *AuthStore) DisableVault(password string) (VaultStatus, error) {
 }
 
 func (s *AuthStore) EnableVaultForAccount(accountScopeID, password string) (VaultStatus, error) {
-	return s.enableVaultWithManagedKeyForAccount(accountScopeID, password, "")
-}
-
-func (s *AuthStore) enableVaultWithManagedKeyForAccount(accountScopeID, password, managedKey string) (VaultStatus, error) {
 	accountScopeID, err := requireAccountScopeID(accountScopeID)
 	if err != nil {
 		return VaultStatus{}, err
 	}
 	password = strings.TrimSpace(password)
-	managedKey = strings.TrimSpace(managedKey)
 	if password == "" {
 		return VaultStatus{}, errors.New(vaultPasswordRequiredMessage)
 	}
@@ -411,27 +283,18 @@ func (s *AuthStore) enableVaultWithManagedKeyForAccount(accountScopeID, password
 	if err != nil {
 		return VaultStatus{}, err
 	}
-	managedWrappedDEK := ""
-	if managedKey != "" {
-		wrapped, err := encryptVaultBlob(managedVaultKEK(managedKey), dek)
-		if err != nil {
-			return VaultStatus{}, err
-		}
-		managedWrappedDEK = base64.StdEncoding.EncodeToString(wrapped)
-	}
 	nextMeta := &VaultMetadata{
-		Version:           vaultVersion,
-		KDF:               "argon2id",
-		SaltBase64:        base64.StdEncoding.EncodeToString(salt),
-		MemoryKiB:         vaultArgon2MemoryKiB,
-		TimeCost:          vaultArgon2Time,
-		Parallelism:       vaultArgon2Parallelism,
-		WrappedDEK:        base64.StdEncoding.EncodeToString(wrappedDEK),
-		ManagedWrappedDEK: managedWrappedDEK,
-		UpdatedAt:         time.Now().UnixMilli(),
-		Enabled:           true,
-		StorageMode:       storageModePebbleVault,
-		UnlockWarning:     vaultEnableWarning,
+		Version:       vaultVersion,
+		KDF:           "argon2id",
+		SaltBase64:    base64.StdEncoding.EncodeToString(salt),
+		MemoryKiB:     vaultArgon2MemoryKiB,
+		TimeCost:      vaultArgon2Time,
+		Parallelism:   vaultArgon2Parallelism,
+		WrappedDEK:    base64.StdEncoding.EncodeToString(wrappedDEK),
+		UpdatedAt:     time.Now().UnixMilli(),
+		Enabled:       true,
+		StorageMode:   storageModePebbleVault,
+		UnlockWarning: vaultEnableWarning,
 	}
 	if err := s.resealCredentialsForAccount(accountScopeID, nextMeta, dek, storageModePebbleVault); err != nil {
 		return VaultStatus{}, err
@@ -518,25 +381,32 @@ func (s *AuthStore) encodeStoredCredential(record AuthCredentialRecord) ([]byte,
 	return encodeSealedCredential(dek, record, mode)
 }
 
-func (s *AuthStore) decodeStoredCredentialForAccount(accountScopeID string, payload []byte) (AuthCredentialRecord, error) {
+// decodeStoredCredentialForAccount reports legacy plaintext without writing it.
+// Callers reseal only after binding provider/id from the authoritative Pebble key.
+func (s *AuthStore) decodeStoredCredentialForAccount(accountScopeID string, payload []byte) (AuthCredentialRecord, bool, error) {
 	accountScopeID, err := requireAccountScopeID(accountScopeID)
 	if err != nil {
-		return AuthCredentialRecord{}, err
+		return AuthCredentialRecord{}, false, err
 	}
 	if !isSealedCredentialPayload(payload) {
 		var record AuthCredentialRecord
 		if err := json.Unmarshal(payload, &record); err != nil {
-			return AuthCredentialRecord{}, err
+			return AuthCredentialRecord{}, false, fmt.Errorf("decode legacy unsealed credential: %w", err)
 		}
+		record = normalizeCredentialRecord(record)
 		record.AccountScopeID = accountScopeID
-		return record, nil
+		if record.Provider == "" || record.ID == "" {
+			return AuthCredentialRecord{}, false, errors.New("legacy unsealed credential is missing provider or id")
+		}
+		return record, true, nil
 	}
 
 	dek, err := s.readableDEKForAccount(accountScopeID)
 	if err != nil {
-		return AuthCredentialRecord{}, err
+		return AuthCredentialRecord{}, false, err
 	}
-	return decodeSealedCredential(dek, payload)
+	record, err := decodeSealedCredential(dek, payload)
+	return record, false, err
 }
 
 func (s *AuthStore) snapshotVaultState() (*VaultMetadata, bool, error) {
@@ -957,9 +827,6 @@ func unlockVaultDEK(password string, meta *VaultMetadata) ([]byte, error) {
 	if dek, err := unlockVaultDEKWithPassword(password, meta); err == nil {
 		return dek, nil
 	}
-	if dek, err := unlockVaultDEKWithManagedKey(password, meta); err == nil {
-		return dek, nil
-	}
 	return nil, errors.New("invalid vault password")
 }
 
@@ -981,29 +848,6 @@ func unlockVaultDEKWithPassword(password string, meta *VaultMetadata) ([]byte, e
 		return nil, err
 	}
 	return dek, nil
-}
-
-func unlockVaultDEKWithManagedKey(managedKey string, meta *VaultMetadata) ([]byte, error) {
-	if meta == nil || !meta.Enabled {
-		return nil, nil
-	}
-	if strings.TrimSpace(meta.ManagedWrappedDEK) == "" {
-		return nil, errors.New("managed vault key wrapper is missing")
-	}
-	wrappedDEK, err := base64.StdEncoding.DecodeString(meta.ManagedWrappedDEK)
-	if err != nil {
-		return nil, fmt.Errorf("decode managed wrapped key: %w", err)
-	}
-	dek, err := decryptVaultBlob(managedVaultKEK(managedKey), wrappedDEK)
-	if err != nil {
-		return nil, err
-	}
-	return dek, nil
-}
-
-func managedVaultKEK(managedKey string) []byte {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(managedKey)))
-	return append([]byte(nil), sum[:]...)
 }
 
 func unlockLocalDEK(localRootKey []byte, meta *VaultMetadata) ([]byte, error) {
@@ -1159,9 +1003,16 @@ func (s *AuthStore) loadOrCreateLocalRootKey() ([]byte, error) {
 	}
 	if _, err := file.Write(payload); err != nil {
 		_ = file.Close()
+		_ = os.Remove(path)
 		return nil, fmt.Errorf("write local secret key: %w", err)
 	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return nil, fmt.Errorf("sync local secret key: %w", err)
+	}
 	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
 		return nil, fmt.Errorf("close local secret key: %w", err)
 	}
 	s.mu.Lock()
@@ -1171,7 +1022,34 @@ func (s *AuthStore) loadOrCreateLocalRootKey() ([]byte, error) {
 }
 
 func (s *AuthStore) readLocalRootKey(path string) ([]byte, error) {
-	payload, err := os.ReadFile(path)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, errors.New("local secret key must be a regular file, not a symlink")
+	}
+	if info.Mode().Perm() != 0o600 {
+		return nil, fmt.Errorf("local secret key mode = %04o, want 0600", info.Mode().Perm())
+	}
+	if !localRootKeyOwnedByCurrentUser(info) {
+		return nil, errors.New("local secret key is not owned by the service user")
+	}
+	// Lstat plus SameFile closes substitution races after open. Platforms with
+	// O_NOFOLLOW additionally reject the symlink at the open boundary.
+	file, err := openLocalRootKey(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, errors.New("local secret key changed while opening")
+	}
+	payload, err := io.ReadAll(file)
 	if err != nil {
 		return nil, err
 	}

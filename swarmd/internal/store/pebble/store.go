@@ -1,19 +1,24 @@
 package pebblestore
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/cockroachdb/pebble"
 )
 
 type Store struct {
-	db   *pebble.DB
-	path string
+	db               *pebble.DB
+	path             string
+	sessionMutations *sessionMutationCoordinator
+	modelProfilesMu  sync.Mutex
+	swarmProfilesMu  sync.Mutex
 }
 
 func Open(path string) (*Store, error) {
@@ -25,14 +30,42 @@ func OpenReadOnly(path string) (*Store, error) {
 }
 
 func openWithOptions(path string, opts *pebble.Options) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("create db parent directory: %w", err)
+	if err := secureDirectory(filepath.Dir(path)); err != nil {
+		return nil, fmt.Errorf("secure db parent directory: %w", err)
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("pebble db path %q is not a directory", path)
+		}
+		if err := os.Chmod(path, 0o700); err != nil {
+			return nil, fmt.Errorf("secure pebble db directory: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect pebble db directory: %w", err)
 	}
 	db, err := pebble.Open(path, opts)
 	if err != nil {
 		return nil, fmt.Errorf("open pebble db: %w", err)
 	}
-	return &Store{db: db, path: path}, nil
+	if err := os.Chmod(path, 0o700); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("secure pebble db directory: %w", err)
+	}
+	return &Store{db: db, path: path, sessionMutations: newSessionMutationCoordinator()}, nil
+}
+
+func secureDirectory(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("path %q is not a directory", path)
+	}
+	return os.Chmod(path, 0o700)
 }
 
 func (s *Store) Close() error {
@@ -133,6 +166,7 @@ func getJSONFromReader(reader pebble.Reader, key string, out any) (bool, error) 
 }
 
 type scanRangeOptions struct {
+	Context    context.Context
 	Prefix     string
 	StartKey   string
 	LowerBound string
@@ -148,6 +182,9 @@ func iteratePrefixFromReader(reader pebble.Reader, prefix string, limit int, vis
 }
 
 func scanRangeFromReader(reader pebble.Reader, opts scanRangeOptions, visit func(key string, value []byte) (bool, error)) error {
+	if err := contextError(opts.Context); err != nil {
+		return err
+	}
 	prefix := strings.TrimSpace(opts.Prefix)
 	lower := strings.TrimSpace(opts.LowerBound)
 	upper := strings.TrimSpace(opts.UpperBound)
@@ -194,6 +231,9 @@ func scanRangeFromReader(reader pebble.Reader, opts scanRangeOptions, visit func
 
 	count := 0
 	for ; valid; count++ {
+		if err := contextError(opts.Context); err != nil {
+			return err
+		}
 		if count >= limit {
 			break
 		}
@@ -216,4 +256,16 @@ func scanRangeFromReader(reader pebble.Reader, opts scanRangeOptions, visit func
 		return fmt.Errorf("scan range %q..%q: %w", lower, upper, err)
 	}
 	return nil
+}
+
+func contextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
 }

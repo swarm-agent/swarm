@@ -7,32 +7,50 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/cockroachdb/pebble"
 
 	"swarm/packages/swarmd/internal/privacy"
 )
 
+const (
+	SessionModelProfileSourceSaved     = "saved"
+	SessionModelProfileSourceTemporary = "temporary"
+)
+
+type SessionModelProfileSnapshot struct {
+	Source         string                 `json:"source"`
+	SavedProfileID string                 `json:"saved_profile_id,omitempty"`
+	Name           string                 `json:"name,omitempty"`
+	ModelMode      string                 `json:"model_mode"`
+	Single         *ModelProfileSelection `json:"single,omitempty"`
+	Plan           *ModelProfileSelection `json:"plan,omitempty"`
+	Auto           *ModelProfileSelection `json:"auto,omitempty"`
+	AppliedAt      int64                  `json:"applied_at"`
+}
+
 type SessionSnapshot struct {
-	ID                      string                    `json:"id"`
-	UserID                  string                    `json:"user_id,omitempty"`
-	AccountScopeID          string                    `json:"account_scope_id,omitempty"`
-	WorkspacePath           string                    `json:"workspace_path"`
-	WorkspaceName           string                    `json:"workspace_name"`
-	TemporaryWorkspaceRoots []string                  `json:"temporary_workspace_roots,omitempty"`
-	Title                   string                    `json:"title"`
-	Mode                    string                    `json:"mode"`
-	Preference              ModelPreference           `json:"preference,omitempty"`
-	WorktreeEnabled         bool                      `json:"worktree_enabled,omitempty"`
-	WorktreeRootPath        string                    `json:"worktree_root_path,omitempty"`
-	WorktreeBaseBranch      string                    `json:"worktree_base_branch,omitempty"`
-	WorktreeBranch          string                    `json:"worktree_branch,omitempty"`
-	Metadata                map[string]any            `json:"metadata,omitempty"`
-	CreatedAt               int64                     `json:"created_at"`
-	UpdatedAt               int64                     `json:"updated_at"`
-	MessageCount            int                       `json:"message_count"`
-	LastMessageAt           int64                     `json:"last_message_at"`
-	Lifecycle               *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	ID                      string                       `json:"id"`
+	UserID                  string                       `json:"user_id,omitempty"`
+	AccountScopeID          string                       `json:"account_scope_id,omitempty"`
+	WorkspacePath           string                       `json:"workspace_path"`
+	WorkspaceName           string                       `json:"workspace_name"`
+	TemporaryWorkspaceRoots []string                     `json:"temporary_workspace_roots,omitempty"`
+	Title                   string                       `json:"title"`
+	Mode                    string                       `json:"mode"`
+	Preference              ModelPreference              `json:"preference,omitempty"`
+	ModelProfile            *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
+	WorktreeEnabled         bool                         `json:"worktree_enabled,omitempty"`
+	WorktreeRootPath        string                       `json:"worktree_root_path,omitempty"`
+	WorktreeBaseBranch      string                       `json:"worktree_base_branch,omitempty"`
+	WorktreeBranch          string                       `json:"worktree_branch,omitempty"`
+	Metadata                map[string]any               `json:"metadata,omitempty"`
+	CreatedAt               int64                        `json:"created_at"`
+	UpdatedAt               int64                        `json:"updated_at"`
+	MessageCount            int                          `json:"message_count"`
+	LastMessageAt           int64                        `json:"last_message_at"`
+	Lifecycle               *SessionLifecycleSnapshot    `json:"lifecycle,omitempty"`
 }
 
 type SessionLifecycleSnapshot struct {
@@ -51,29 +69,19 @@ type SessionLifecycleSnapshot struct {
 	OwnerTransport string `json:"owner_transport,omitempty"`
 }
 
-type SessionExecutionV2Record struct {
-	SessionID                 string `json:"session_id"`
-	UserID                    string `json:"user_id,omitempty"`
-	AccountScopeID            string `json:"account_scope_id,omitempty"`
-	ExecutionClass            string `json:"execution_class"`
-	RuntimeSwarmID            string `json:"runtime_swarm_id"`
-	RuntimeKind               string `json:"runtime_kind"`
-	AuthorityHostSwarmID      string `json:"authority_host_swarm_id"`
-	AuthorityContainerID      string `json:"authority_container_id,omitempty"`
-	WorkspaceBindingID        string `json:"workspace_binding_id"`
-	SourceWorkspaceID         string `json:"source_workspace_id"`
-	SourceWorkspaceGeneration int64  `json:"source_workspace_generation"`
-	SourceWorkspaceName       string `json:"source_workspace_name,omitempty"`
-	SourceWorkspacePath       string `json:"source_workspace_path"`
-	RuntimeWorkspacePath      string `json:"runtime_workspace_path"`
-	WorktreeEnabled           bool   `json:"worktree_enabled,omitempty"`
-	WorktreeRootPath          string `json:"worktree_root_path,omitempty"`
-	WorktreeBaseBranch        string `json:"worktree_base_branch,omitempty"`
-	WorktreeBranch            string `json:"worktree_branch,omitempty"`
-	PlacementGeneration       int    `json:"placement_generation"`
-	BindingGeneration         int    `json:"binding_generation"`
-	CreatedAt                 int64  `json:"created_at"`
-	UpdatedAt                 int64  `json:"updated_at"`
+type V3SessionTombstone struct {
+	SessionID      string          `json:"session_id"`
+	UserID         string          `json:"user_id,omitempty"`
+	AccountScopeID string          `json:"account_scope_id,omitempty"`
+	WorkspacePath  string          `json:"workspace_path,omitempty"`
+	Kind           string          `json:"kind"`
+	Deleted        bool            `json:"deleted,omitempty"`
+	Archived       bool            `json:"archived,omitempty"`
+	Hidden         bool            `json:"hidden,omitempty"`
+	EndpointSeq    uint64          `json:"endpoint_seq"`
+	EventSeq       uint64          `json:"event_seq"`
+	UpdatedAt      int64           `json:"updated_at"`
+	Session        SessionSnapshot `json:"session,omitempty"`
 }
 
 type MessageSnapshot struct {
@@ -98,40 +106,73 @@ type SessionCodexConfig struct {
 }
 
 type SessionPlanSnapshot struct {
-	ID             string               `json:"id"`
-	SessionID      string               `json:"session_id"`
-	UserID         string               `json:"user_id,omitempty"`
-	AccountScopeID string               `json:"account_scope_id,omitempty"`
-	Title          string               `json:"title"`
-	Plan           string               `json:"plan"`
-	Document       *SessionPlanDocument `json:"document,omitempty"`
-	Status         string               `json:"status"`
-	ApprovalState  string               `json:"approval_state"`
-	Active         bool                 `json:"active"`
-	CreatedAt      int64                `json:"created_at"`
-	UpdatedAt      int64                `json:"updated_at"`
-	PriorTitle     string               `json:"prior_title,omitempty"`
-	PriorPlan      string               `json:"prior_plan,omitempty"`
-	DiffLines      []string             `json:"diff_lines,omitempty"`
-	UpdateSummary  string               `json:"update_summary,omitempty"`
-	UpdateScope    string               `json:"update_scope,omitempty"`
-	UpdateKind     string               `json:"update_kind,omitempty"`
-	Version        int                  `json:"version,omitempty"`
-	ParentRevision int                  `json:"parent_revision,omitempty"`
-	Checkpoint     bool                 `json:"checkpoint,omitempty"`
+	ID                  string               `json:"id"`
+	SessionID           string               `json:"session_id"`
+	UserID              string               `json:"user_id,omitempty"`
+	AccountScopeID      string               `json:"account_scope_id,omitempty"`
+	Title               string               `json:"title"`
+	Plan                string               `json:"plan"`
+	Document            *SessionPlanDocument `json:"document,omitempty"`
+	Status              string               `json:"status"`
+	ApprovalState       string               `json:"approval_state"`
+	Active              bool                 `json:"active"`
+	CreatedAt           int64                `json:"created_at"`
+	UpdatedAt           int64                `json:"updated_at"`
+	PriorTitle          string               `json:"prior_title,omitempty"`
+	PriorPlan           string               `json:"prior_plan,omitempty"`
+	DiffLines           []string             `json:"diff_lines,omitempty"`
+	UpdateSummary       string               `json:"update_summary,omitempty"`
+	UpdateScope         string               `json:"update_scope,omitempty"`
+	UpdateKind          string               `json:"update_kind,omitempty"`
+	RevisionKind        string               `json:"revision_kind,omitempty"`
+	RestoredFromVersion int                  `json:"restored_from_version,omitempty"`
+	Version             int                  `json:"version,omitempty"`
+	ParentRevision      int                  `json:"parent_revision,omitempty"`
+	Checkpoint          bool                 `json:"checkpoint,omitempty"`
 }
 
 type SessionPlanDocument struct {
-	ID                 string                  `json:"id"`
-	Title              string                  `json:"title"`
-	Status             string                  `json:"status,omitempty"`
-	SchemaVersion      string                  `json:"schema_version,omitempty"`
-	RevisionID         string                  `json:"revision_id,omitempty"`
-	Info               SessionPlanInfo         `json:"info,omitempty"`
-	Checkpoints        []SessionPlanCheckpoint `json:"checkpoints,omitempty"`
-	ActiveCheckpointID string                  `json:"active_checkpoint_id,omitempty"`
-	RenderedText       string                  `json:"rendered_text,omitempty"`
-	DisplayText        string                  `json:"display_text,omitempty"`
+	ID              string                     `json:"id"`
+	Title           string                     `json:"title"`
+	Status          string                     `json:"status,omitempty"`
+	SchemaVersion   string                     `json:"schema_version,omitempty"`
+	RevisionID      string                     `json:"revision_id,omitempty"`
+	Info            SessionPlanInfo            `json:"info,omitempty"`
+	ExecutionPolicy SessionPlanExecutionPolicy `json:"execution_policy,omitempty"`
+	// ExecutionOrigin distinguishes lightweight auto-session work from approved
+	// full-plan execution without relying on conversation history.
+	ExecutionOrigin     string                         `json:"execution_origin,omitempty"`
+	ExecutionState      *SessionPlanExecutionState     `json:"execution_state,omitempty"`
+	Artifacts           []SessionPlanArtifactReference `json:"artifacts,omitempty"`
+	Checkpoints         []SessionPlanCheckpoint        `json:"checkpoints,omitempty"`
+	OriginalCheckpoints []SessionPlanCheckpoint        `json:"original_checkpoints,omitempty"`
+	ActiveCheckpointID  string                         `json:"active_checkpoint_id,omitempty"`
+	RenderedText        string                         `json:"rendered_text,omitempty"`
+	DisplayText         string                         `json:"display_text,omitempty"`
+}
+
+// SessionPlanExecutionPolicy is plan-level policy. It is intentionally stored
+// with the plan document so checkpoint execution can be resumed without reading
+// chat history.
+type SessionPlanExecutionPolicy struct {
+	Mode                     string `json:"mode,omitempty"`
+	Shape                    string `json:"shape,omitempty"`
+	FollowupCheckpointPolicy string `json:"followup_checkpoint_policy,omitempty"`
+}
+
+// SessionPlanExecutionState stores the active execution linkage for the plan.
+type SessionPlanExecutionState struct {
+	Status           string `json:"status,omitempty"`
+	ActiveAttemptID  string `json:"active_attempt_id,omitempty"`
+	ParentSessionID  string `json:"parent_session_id,omitempty"`
+	CurrentSessionID string `json:"current_session_id,omitempty"`
+	CurrentRunID     string `json:"current_run_id,omitempty"`
+	LastCheckpointID string `json:"last_checkpoint_id,omitempty"`
+	LastAttemptID    string `json:"last_attempt_id,omitempty"`
+	LastOutcome      string `json:"last_outcome,omitempty"`
+	StartedAt        int64  `json:"started_at,omitempty"`
+	UpdatedAt        int64  `json:"updated_at,omitempty"`
+	CompletedAt      int64  `json:"completed_at,omitempty"`
 }
 
 type SessionPlanInfo struct {
@@ -147,19 +188,127 @@ type SessionPlanInfo struct {
 	ValidationStrategy string   `json:"validation_strategy,omitempty"`
 }
 
+// SessionPlanArtifactReference identifies a portable workspace artifact that a
+// checkpoint may selectively read or must deliver to the user. Contents are
+// never embedded in the durable plan document.
+type SessionPlanArtifactReference struct {
+	Path        string `json:"path"`
+	Role        string `json:"role,omitempty"`
+	Description string `json:"description,omitempty"`
+	MediaType   string `json:"media_type,omitempty"`
+}
+
 type SessionPlanCheckpoint struct {
-	ID                 string   `json:"id"`
-	Title              string   `json:"title,omitempty"`
-	Status             string   `json:"status,omitempty"`
-	Objective          string   `json:"objective,omitempty"`
-	Tasks              []string `json:"tasks,omitempty"`
-	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
-	Notes              string   `json:"notes,omitempty"`
-	Report             string   `json:"report,omitempty"`
-	Result             string   `json:"result,omitempty"`
-	ChangedFiles       []string `json:"changed_files,omitempty"`
-	Validation         []string `json:"validation,omitempty"`
-	Order              int      `json:"order,omitempty"`
+	ID        string `json:"id"`
+	Title     string `json:"title,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Objective string `json:"objective,omitempty"`
+	// Tasks is accepted as legacy compatibility input. Subtasks is the canonical
+	// durable execution checklist once a document is normalized or mutated.
+	Tasks              []string                             `json:"tasks,omitempty"`
+	Subtasks           []SessionPlanSubtask                 `json:"subtasks,omitempty"`
+	ActiveSubtaskID    string                               `json:"active_subtask_id,omitempty"`
+	AcceptanceCriteria []string                             `json:"acceptance_criteria,omitempty"`
+	Artifacts          []SessionPlanArtifactReference       `json:"artifacts,omitempty"`
+	SourceMessageID    string                               `json:"source_message_id,omitempty"`
+	Notes              string                               `json:"notes,omitempty"`
+	Report             string                               `json:"report,omitempty"`
+	Result             string                               `json:"result,omitempty"`
+	ChangedFiles       []string                             `json:"changed_files,omitempty"`
+	Validation         []string                             `json:"validation,omitempty"`
+	AttemptID          string                               `json:"attempt_id,omitempty"`
+	RunID              string                               `json:"run_id,omitempty"`
+	SessionID          string                               `json:"session_id,omitempty"`
+	StartedAt          int64                                `json:"started_at,omitempty"`
+	CompletedAt        int64                                `json:"completed_at,omitempty"`
+	Review             *SessionPlanCheckpointReview         `json:"review,omitempty"`
+	Recommendation     *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	Handoff            *SessionPlanCheckpointHandoff        `json:"handoff,omitempty"`
+	Attempts           []SessionPlanCheckpointAttempt       `json:"attempts,omitempty"`
+	Order              int                                  `json:"order,omitempty"`
+}
+
+type SessionPlanSubtask struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Status      string `json:"status,omitempty"`
+	Notes       string `json:"notes,omitempty"`
+	Result      string `json:"result,omitempty"`
+	StartedAt   int64  `json:"started_at,omitempty"`
+	CompletedAt int64  `json:"completed_at,omitempty"`
+	Order       int    `json:"order,omitempty"`
+}
+
+type SessionPlanCheckpointAttempt struct {
+	ID              string   `json:"id"`
+	CheckpointID    string   `json:"checkpoint_id,omitempty"`
+	Status          string   `json:"status,omitempty"`
+	Outcome         string   `json:"outcome,omitempty"`
+	RunID           string   `json:"run_id,omitempty"`
+	SessionID       string   `json:"session_id,omitempty"`
+	ParentSessionID string   `json:"parent_session_id,omitempty"`
+	StartedAt       int64    `json:"started_at,omitempty"`
+	CompletedAt     int64    `json:"completed_at,omitempty"`
+	Report          string   `json:"report,omitempty"`
+	Result          string   `json:"result,omitempty"`
+	ChangedFiles    []string `json:"changed_files,omitempty"`
+	Validation      []string `json:"validation,omitempty"`
+}
+
+type SessionPlanCheckpointReview struct {
+	Status       string `json:"status,omitempty"`
+	ReviewerID   string `json:"reviewer_id,omitempty"`
+	ReviewerType string `json:"reviewer_type,omitempty"`
+	Result       string `json:"result,omitempty"`
+	Notes        string `json:"notes,omitempty"`
+	ReviewedAt   int64  `json:"reviewed_at,omitempty"`
+}
+
+// SessionPlanCheckpointRecommendation is the single explicit final-review
+// recommendation emitted by a checkpoint terminal handoff.
+type SessionPlanCheckpointRecommendation struct {
+	Decision    string `json:"decision,omitempty"`
+	Action      string `json:"action,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	ActionState string `json:"action_state,omitempty"`
+}
+
+// SessionPlanCheckpointHandoff stores only the concise author-authored fields.
+// Full terminal evidence remains canonical on SessionPlanCheckpoint and is
+// joined into PlanFinalHandoff only when a lifecycle message is projected.
+type SessionPlanCheckpointHandoff struct {
+	Title            string                            `json:"title,omitempty"`
+	Overview         string                            `json:"overview"`
+	ImpactBullets    []string                          `json:"impact_bullets,omitempty"`
+	SuggestedPrompts []PlanFinalHandoffSuggestedPrompt `json:"suggested_prompts,omitempty"`
+}
+
+// PlanFinalHandoffSuggestedPrompt is inert chat input. Clients may send Prompt
+// through the ordinary V3 user-message path; it is never a direct operation.
+type PlanFinalHandoffSuggestedPrompt struct {
+	Label  string `json:"label"`
+	Prompt string `json:"prompt"`
+}
+
+// PlanFinalHandoff is the versioned client projection persisted in lifecycle
+// message metadata. Details is a lossless copy of the checkpoint evidence.
+type PlanFinalHandoff struct {
+	SchemaVersion    int                                  `json:"schema_version"`
+	Title            string                               `json:"title"`
+	Overview         string                               `json:"overview"`
+	ImpactBullets    []string                             `json:"impact_bullets,omitempty"`
+	Recommendation   *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	SuggestedPrompts []PlanFinalHandoffSuggestedPrompt    `json:"suggested_prompts,omitempty"`
+	Details          PlanFinalHandoffDetails              `json:"details"`
+}
+
+// PlanFinalHandoffDetails keeps the complete terminal evidence available to
+// clients without expanding it in the default handoff presentation.
+type PlanFinalHandoffDetails struct {
+	Report       string   `json:"report,omitempty"`
+	Result       string   `json:"result,omitempty"`
+	ChangedFiles []string `json:"changed_files,omitempty"`
+	Validation   []string `json:"validation,omitempty"`
 }
 
 type SessionPlanActive struct {
@@ -180,6 +329,9 @@ func NewSessionStore(store *Store) *SessionStore {
 
 func (s *SessionStore) CreateSession(session SessionSnapshot) error {
 	session = normalizeSessionOwnership(session)
+	if err := validateCanonicalSessionID(session.ID); err != nil {
+		return err
+	}
 	payload, err := json.Marshal(session)
 	if err != nil {
 		return fmt.Errorf("marshal session %q: %w", session.ID, err)
@@ -193,6 +345,15 @@ func (s *SessionStore) CreateSession(session SessionSnapshot) error {
 		if err := batch.Set([]byte(KeySessionByAccount(session.AccountScopeID, session.ID)), []byte(session.ID), nil); err != nil {
 			return err
 		}
+	}
+	if err := replaceSessionRecentIndexInBatch(batch, nil, &session); err != nil {
+		return err
+	}
+	if err := replaceSessionReviewAutoArchiveDueInBatch(batch, nil, &session); err != nil {
+		return err
+	}
+	if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, nil); err != nil {
+		return err
 	}
 	return batch.Commit(pebble.Sync)
 }
@@ -206,59 +367,6 @@ func (s *SessionStore) CreateSessionForAccount(session SessionSnapshot, userID, 
 	return s.CreateSession(session)
 }
 
-func (s *SessionStore) CreateSessionWithExecutionV2(session SessionSnapshot, execution SessionExecutionV2Record) error {
-	if s == nil || s.store == nil {
-		return errors.New("session store is not configured")
-	}
-	session = normalizeSessionOwnership(session)
-	execution.SessionID = strings.TrimSpace(firstNonEmpty(execution.SessionID, session.ID))
-	execution.UserID = strings.TrimSpace(firstNonEmpty(execution.UserID, session.UserID))
-	execution.AccountScopeID = strings.TrimSpace(firstNonEmpty(execution.AccountScopeID, session.AccountScopeID))
-	if strings.TrimSpace(session.ID) == "" || execution.SessionID == "" || execution.SessionID != strings.TrimSpace(session.ID) {
-		return errors.New("session execution v2 session id must match session")
-	}
-	if execution.AccountScopeID == "" {
-		return errors.New("session execution v2 account scope id is required")
-	}
-	payload, err := json.Marshal(session)
-	if err != nil {
-		return fmt.Errorf("marshal session %q: %w", session.ID, err)
-	}
-	execPayload, err := json.Marshal(execution)
-	if err != nil {
-		return fmt.Errorf("marshal session execution v2 %q: %w", session.ID, err)
-	}
-	batch := s.store.NewBatch()
-	defer batch.Close()
-	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
-		return err
-	}
-	if session.AccountScopeID != "" {
-		if err := batch.Set([]byte(KeySessionByAccount(session.AccountScopeID, session.ID)), []byte(session.ID), nil); err != nil {
-			return err
-		}
-	}
-	if err := batch.Set([]byte(KeySessionExecutionV2(session.ID)), execPayload, nil); err != nil {
-		return err
-	}
-	if err := batch.Set([]byte(KeySessionExecutionV2ByAccount(execution.AccountScopeID, session.ID)), []byte(session.ID), nil); err != nil {
-		return err
-	}
-	return batch.Commit(pebble.Sync)
-}
-
-func (s *SessionStore) GetSessionExecutionV2(sessionID string) (SessionExecutionV2Record, bool, error) {
-	var execution SessionExecutionV2Record
-	if s == nil || s.store == nil {
-		return SessionExecutionV2Record{}, false, errors.New("session store is not configured")
-	}
-	ok, err := s.store.GetJSON(KeySessionExecutionV2(strings.TrimSpace(sessionID)), &execution)
-	if err != nil || !ok {
-		return SessionExecutionV2Record{}, ok, err
-	}
-	return execution, true, nil
-}
-
 func (s *SessionStore) UpdateSessionForAccount(session SessionSnapshot, userID, accountScopeID string) error {
 	session.UserID = strings.TrimSpace(userID)
 	session.AccountScopeID = strings.TrimSpace(accountScopeID)
@@ -270,17 +378,24 @@ func (s *SessionStore) UpdateSessionForAccount(session SessionSnapshot, userID, 
 
 func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
 	session = normalizeSessionOwnership(session)
+	if err := validateCanonicalSessionID(session.ID); err != nil {
+		return err
+	}
 	payload, err := json.Marshal(session)
 	if err != nil {
 		return fmt.Errorf("marshal session %q: %w", session.ID, err)
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	var previous *SessionSnapshot
 	if existing, ok, err := s.GetSession(session.ID); err != nil {
 		return err
-	} else if ok && existing.AccountScopeID != "" && existing.AccountScopeID != session.AccountScopeID {
-		if err := batch.Delete([]byte(KeySessionByAccount(existing.AccountScopeID, session.ID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
-			return err
+	} else if ok {
+		previous = &existing
+		if existing.AccountScopeID != "" && existing.AccountScopeID != session.AccountScopeID {
+			if err := batch.Delete([]byte(KeySessionByAccount(existing.AccountScopeID, session.ID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+				return err
+			}
 		}
 	}
 	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
@@ -291,46 +406,596 @@ func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
 			return err
 		}
 	}
+	if err := replaceSessionRecentIndexInBatch(batch, previous, &session); err != nil {
+		return err
+	}
+	if err := replaceSessionReviewAutoArchiveDueInBatch(batch, previous, &session); err != nil {
+		return err
+	}
+	if previous == nil || v3SessionSearchMetadataChanged(*previous, session) {
+		if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, nil); err != nil {
+			return err
+		}
+	}
 	return batch.Commit(pebble.Sync)
 }
 
 func (s *SessionStore) DeleteSession(sessionID string) error {
+	return s.DeleteSessions([]string{sessionID})
+}
+
+func (s *SessionStore) DeleteSessions(sessionIDs []string) error {
+	return s.tombstoneSessions(sessionIDs, "deleted")
+}
+
+func (s *SessionStore) ArchiveSession(sessionID string) error {
+	return s.tombstoneSession(sessionID, "archived")
+}
+
+func (s *SessionStore) ArchiveSessions(sessionIDs []string) error {
+	return s.tombstoneSessions(sessionIDs, "archived")
+}
+
+// ReactivateArchivedSessions restores a complete archived-session batch in one
+// durable commit. Callers must preflight tombstone versions while holding their
+// service mutation lock; this store method repeats the expected-version check
+// under the per-session mutation locks immediately before writing.
+func (s *SessionStore) ReactivateArchivedSessions(sessionIDs []string, expectedUpdatedAt map[string]int64) error {
 	if s == nil || s.store == nil {
 		return errors.New("session store is not configured")
 	}
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return errors.New("session id is required")
+	normalizedIDs := make([]string, 0, len(sessionIDs))
+	seen := make(map[string]struct{}, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" {
+			return errors.New("session id is required")
+		}
+		if _, exists := seen[sessionID]; exists {
+			continue
+		}
+		seen[sessionID] = struct{}{}
+		normalizedIDs = append(normalizedIDs, sessionID)
 	}
-	var existing SessionSnapshot
-	if loaded, ok, err := s.GetSession(sessionID); err != nil {
+	if len(normalizedIDs) == 0 {
+		return errors.New("at least one session id is required")
+	}
+	if len(expectedUpdatedAt) == 0 {
+		return errors.New("expected tombstone versions are required")
+	}
+	unlockSessions := s.store.sessionMutations.lockSessions(normalizedIDs...)
+	defer unlockSessions()
+	s.store.sessionMutations.libraryRepairMu.RLock()
+	defer s.store.sessionMutations.libraryRepairMu.RUnlock()
+
+	tombstones := make([]V3SessionTombstone, 0, len(normalizedIDs))
+	for _, sessionID := range normalizedIDs {
+		if _, active, err := s.GetSession(sessionID); err != nil {
+			return err
+		} else if active {
+			return fmt.Errorf("session %q is not archived", sessionID)
+		}
+		tombstone, ok, err := s.GetV3SessionTombstone(sessionID)
+		if err != nil {
+			return err
+		}
+		expected, hasExpected := expectedUpdatedAt[sessionID]
+		if !ok || !tombstone.Archived || tombstone.Deleted || tombstone.Session.ID == "" {
+			return fmt.Errorf("session %q is not an archived, restorable session", sessionID)
+		}
+		if !hasExpected || expected == 0 || tombstone.UpdatedAt != expected {
+			return fmt.Errorf("session %q changed after unarchive preview", sessionID)
+		}
+		tombstones = append(tombstones, tombstone)
+	}
+
+	reservedOutbox, err := s.store.sessionMutations.reserveOutbox(s.store, len(tombstones))
+	if err != nil {
 		return err
-	} else if ok {
-		existing = loaded
+	}
+	reservationCommitted := false
+	defer func() {
+		if !reservationCommitted {
+			s.store.sessionMutations.abandonOutbox(reservedOutbox)
+		}
+	}()
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	for i, tombstone := range tombstones {
+		session := normalizeSessionForReactivation(normalizeSessionOwnership(tombstone.Session))
+		currentSeq, err := s.readV3SessionSequence(session.ID)
+		if err != nil {
+			return err
+		}
+		seq, endpointSeq, now := currentSeq+1, reservedOutbox[i], time.Now().UnixMilli()
+		payload, err := json.Marshal(v3SessionEventReplayPayload{SessionID: session.ID, Seq: seq, Kind: V3SessionMutationReactivateSession, Session: &session})
+		if err != nil {
+			return err
+		}
+		event := V3SessionEvent{ID: fmt.Sprintf("v3evt_%s_%020d", session.ID, seq), SessionID: session.ID, Seq: seq, EventType: "session.reactivated", Payload: payload, TsUnixMs: now}
+		projection := V3SessionProjection{SessionID: session.ID, LastEventSeq: seq, ProjectionHighWatermarkSeq: seq, UpdatedAt: now}
+		eventPayload, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		projectionPayload, err := json.Marshal(projection)
+		if err != nil {
+			return err
+		}
+		outbox := V3RealtimeOutboxRecord{EndpointSeq: endpointSeq, EndpointCursor: V3RealtimeOutboxCursor(endpointSeq), SessionID: session.ID, UserID: session.UserID, AccountScopeID: session.AccountScopeID, Membership: newV3RealtimeOutboxMembershipFromSession(session, now), Event: event, Projection: projection, CreatedAt: now}
+		outboxPayload, err := json.Marshal(outbox)
+		if err != nil {
+			return err
+		}
+		outboxRef, err := marshalV3RealtimeOutboxReference(outbox)
+		if err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3SessionSequence(session.ID)), uint64ToBytes(seq), nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3SessionEvent(session.ID, seq)), eventPayload, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3SessionProjection(session.ID)), projectionPayload, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), outboxPayload, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(session.ID, endpointSeq)), outboxRef, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionSeq(session.ID, seq)), outboxRef, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(session.AccountScopeID, session.UserID, endpointSeq)), outboxRef, nil); err != nil {
+			return err
+		}
+		if err := s.setSessionInBatch(batch, session); err != nil {
+			return err
+		}
+		if session.Lifecycle != nil {
+			lifecyclePayload, err := json.Marshal(session.Lifecycle)
+			if err != nil {
+				return err
+			}
+			if err := batch.Set([]byte(KeySessionLifecycle(session.ID)), lifecyclePayload, nil); err != nil {
+				return err
+			}
+			if session.AccountScopeID != "" {
+				if err := batch.Set([]byte(KeySessionLifecycleByAccount(session.AccountScopeID, session.ID)), []byte(session.ID), nil); err != nil {
+					return err
+				}
+			}
+		}
+		if err := removeV3SessionTombstoneInBatch(batch, tombstone); err != nil {
+			return err
+		}
+		if err := s.transitionV3SessionSearchLifecycleInBatch(batch, s.store.db, session, false); err != nil {
+			return err
+		}
+		if err := s.updateV3SessionLibraryMetricInBatch(batch, session, nil, false, false); err != nil {
+			return err
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	reservationCommitted = true
+	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
+		return err
+	}
+	v3SuccessfulBatchOperations.Add(1)
+	return nil
+}
+
+func (s *SessionStore) tombstoneSession(sessionID, kind string) error {
+	return s.tombstoneSessions([]string{sessionID}, kind)
+}
+
+func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error {
+	if s == nil || s.store == nil {
+		return errors.New("session store is not configured")
+	}
+	kind = strings.TrimSpace(strings.ToLower(kind))
+	if kind != "deleted" && kind != "archived" {
+		return fmt.Errorf("unsupported session tombstone kind %q", kind)
+	}
+	normalizedIDs := make([]string, 0, len(sessionIDs))
+	seen := make(map[string]struct{}, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" {
+			return errors.New("session id is required")
+		}
+		if _, exists := seen[sessionID]; exists {
+			continue
+		}
+		seen[sessionID] = struct{}{}
+		normalizedIDs = append(normalizedIDs, sessionID)
+	}
+	if len(normalizedIDs) == 0 {
+		return errors.New("at least one session id is required")
+	}
+	unlockSessions := s.store.sessionMutations.lockSessions(normalizedIDs...)
+	defer unlockSessions()
+	s.store.sessionMutations.libraryRepairMu.RLock()
+	defer s.store.sessionMutations.libraryRepairMu.RUnlock()
+
+	existingByID := make(map[string]SessionSnapshot, len(normalizedIDs))
+	for _, sessionID := range normalizedIDs {
+		if loaded, ok, err := s.GetSession(sessionID); err != nil {
+			return err
+		} else if ok {
+			existingByID[sessionID] = loaded
+		} else if tombstone, tombstoneOK, tombstoneErr := s.GetV3SessionTombstone(sessionID); tombstoneErr != nil {
+			return tombstoneErr
+		} else if tombstoneOK && tombstone.Archived && !tombstone.Deleted {
+			existingByID[sessionID] = tombstone.Session
+		}
+	}
+
+	writeCount := 0
+	for _, sessionID := range normalizedIDs {
+		if existingByID[sessionID].ID != "" {
+			writeCount++
+		}
+	}
+	var reservedOutbox []uint64
+	reservationCommitted := false
+	if writeCount > 0 {
+		var err error
+		reservedOutbox, err = s.store.sessionMutations.reserveOutbox(s.store, writeCount)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if !reservationCommitted {
+				s.store.sessionMutations.abandonOutbox(reservedOutbox)
+			}
+		}()
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	if err := batch.Delete([]byte(KeySession(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
-		return err
-	}
-	if existing.AccountScopeID != "" {
-		if err := batch.Delete([]byte(KeySessionByAccount(existing.AccountScopeID, sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+	outboxIndex := 0
+	for _, sessionID := range normalizedIDs {
+		existing := existingByID[sessionID]
+		if existing.ID != "" {
+			if kind == "deleted" {
+				if err := s.purgeSessionContentInBatch(batch, existing); err != nil {
+					return err
+				}
+				if previousTombstone, ok, tombstoneErr := s.GetV3SessionTombstone(sessionID); tombstoneErr != nil {
+					return tombstoneErr
+				} else if ok {
+					if err := removeV3SessionTombstoneInBatch(batch, previousTombstone); err != nil {
+						return err
+					}
+				}
+			}
+			currentSeq, err := s.readV3SessionSequence(sessionID)
+			if err != nil {
+				return err
+			}
+			seq := currentSeq + 1
+			endpointSeq := reservedOutbox[outboxIndex]
+			outboxIndex++
+			now := time.Now().UnixMilli()
+			tombstone := V3SessionTombstone{
+				SessionID:      existing.ID,
+				UserID:         existing.UserID,
+				AccountScopeID: existing.AccountScopeID,
+				WorkspacePath:  existing.WorkspacePath,
+				Kind:           kind,
+				Deleted:        kind == "deleted",
+				Archived:       kind == "archived",
+				EndpointSeq:    endpointSeq,
+				EventSeq:       seq,
+				UpdatedAt:      now,
+			}
+			// Archived sessions remain restorable. Deleted sessions retain only
+			// routing and ordering fields needed for scoped replay and membership.
+			if kind == "archived" {
+				tombstone.Session = existing
+			}
+			mutationKind := V3SessionMutationDeleteSession
+			eventType := "session.deleted"
+			if kind == "archived" {
+				mutationKind = V3SessionMutationArchiveSession
+				eventType = "session.archived"
+			}
+			var replaySession *SessionSnapshot
+			if kind == "archived" {
+				replaySession = &existing
+			}
+			payload, err := json.Marshal(v3SessionEventReplayPayload{SessionID: sessionID, Seq: seq, Kind: mutationKind, Session: replaySession, Tombstone: &tombstone})
+			if err != nil {
+				return fmt.Errorf("marshal v3 session %s payload %q: %w", kind, sessionID, err)
+			}
+			event := V3SessionEvent{ID: fmt.Sprintf("v3evt_%s_%020d", sessionID, seq), SessionID: sessionID, Seq: seq, EventType: eventType, Payload: payload, TsUnixMs: now}
+			projection := V3SessionProjection{SessionID: sessionID, LastEventSeq: seq, ProjectionHighWatermarkSeq: seq, UpdatedAt: now}
+			eventPayload, err := json.Marshal(event)
+			if err != nil {
+				return fmt.Errorf("marshal v3 session %s event %q: %w", kind, sessionID, err)
+			}
+			projectionPayload, err := json.Marshal(projection)
+			if err != nil {
+				return fmt.Errorf("marshal v3 session %s projection %q: %w", kind, sessionID, err)
+			}
+			realtimeOutbox := V3RealtimeOutboxRecord{EndpointSeq: endpointSeq, EndpointCursor: V3RealtimeOutboxCursor(endpointSeq), SessionID: sessionID, UserID: existing.UserID, AccountScopeID: existing.AccountScopeID, Membership: newV3RealtimeOutboxMembershipFromTombstone(tombstone, now), Event: event, Projection: projection, CreatedAt: now}
+			realtimeOutboxPayload, err := json.Marshal(realtimeOutbox)
+			if err != nil {
+				return fmt.Errorf("marshal v3 session %s outbox %q: %w", kind, sessionID, err)
+			}
+			realtimeOutboxReferencePayload, err := marshalV3RealtimeOutboxReference(realtimeOutbox)
+			if err != nil {
+				return fmt.Errorf("marshal v3 session %s outbox reference %q: %w", kind, sessionID, err)
+			}
+			if err := batch.Set([]byte(KeyV3SessionSequence(sessionID)), uint64ToBytes(seq), nil); err != nil {
+				return err
+			}
+			if err := batch.Set([]byte(KeyV3SessionEvent(sessionID, seq)), eventPayload, nil); err != nil {
+				return err
+			}
+			if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), realtimeOutboxPayload, nil); err != nil {
+				return err
+			}
+			if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(sessionID, endpointSeq)), realtimeOutboxReferencePayload, nil); err != nil {
+				return err
+			}
+			if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionSeq(sessionID, seq)), realtimeOutboxReferencePayload, nil); err != nil {
+				return err
+			}
+			if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(existing.AccountScopeID, existing.UserID, endpointSeq)), realtimeOutboxReferencePayload, nil); err != nil {
+				return err
+			}
+			if err := batch.Set([]byte(KeyV3SessionProjection(sessionID)), projectionPayload, nil); err != nil {
+				return err
+			}
+			if err := setV3SessionTombstoneInBatch(batch, tombstone); err != nil {
+				return err
+			}
+			if kind == "archived" {
+				if err := s.transitionV3SessionSearchLifecycleInBatch(batch, s.store.db, existing, true); err != nil {
+					return err
+				}
+				if err := s.updateV3SessionLibraryMetricInBatch(batch, existing, nil, true, false); err != nil {
+					return err
+				}
+			} else {
+				if err := removeV3SessionSearchIndexInBatch(batch, s.store.db, sessionID); err != nil {
+					return err
+				}
+				if err := s.updateV3SessionLibraryMetricInBatch(batch, existing, nil, false, true); err != nil {
+					return err
+				}
+			}
+		}
+		if err := batch.Delete([]byte(KeySession(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 			return err
 		}
-		if err := batch.Delete([]byte(KeySessionLifecycleByAccount(existing.AccountScopeID, sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+		if existing.AccountScopeID != "" {
+			if err := batch.Delete([]byte(KeySessionByAccount(existing.AccountScopeID, sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+				return err
+			}
+			if err := batch.Delete([]byte(KeySessionLifecycleByAccount(existing.AccountScopeID, sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+				return err
+			}
+			if kind == "deleted" {
+				if err := batch.Delete([]byte(KeySessionPlanActiveByAccount(existing.AccountScopeID, sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+					return err
+				}
+			}
+		}
+		if err := batch.Delete([]byte(KeySessionLifecycle(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 			return err
 		}
-		if err := batch.Delete([]byte(KeySessionPlanActiveByAccount(existing.AccountScopeID, sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+		if kind == "deleted" {
+			if err := batch.Delete([]byte(KeySessionPlanActive(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+				return err
+			}
+		}
+		if existing.ID != "" {
+			if err := replaceSessionRecentIndexInBatch(batch, &existing, nil); err != nil {
+				return err
+			}
+			if err := replaceSessionReviewAutoArchiveDueInBatch(batch, &existing, nil); err != nil {
+				return err
+			}
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	reservationCommitted = true
+	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
+		return err
+	}
+	v3SuccessfulBatchOperations.Add(1)
+	return nil
+}
+
+func deletePrefixInBatch(batch *pebble.Batch, prefix string) error {
+	if strings.TrimSpace(prefix) == "" {
+		return nil
+	}
+	return batch.DeleteRange([]byte(prefix), []byte(prefix+"\xff"), nil)
+}
+
+// purgeSessionContentInBatch removes reclaimable session-owned data while the
+// caller retains and replaces the minimal tombstone/event/projection/outbox
+// records needed for durable V3 removal replay.
+func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session SessionSnapshot) error {
+	for _, prefix := range []string{
+		MessagePrefix(session.ID), MessageByAccountPrefix(session.AccountScopeID, session.ID),
+		SessionPlanPrefix(session.ID), SessionPlanRevisionPrefix(session.ID, ""), SessionPlanByAccountPrefix(session.AccountScopeID, session.ID),
+		SessionTurnUsagePrefix(session.ID), SessionTurnUsageByAccountPrefix(session.AccountScopeID, session.ID),
+		PermissionPrefix(session.ID), PermissionPendingPrefix(session.ID), RunWaitPrefix(session.ID), RunPermissionPrefix(session.ID, ""),
+		V3SessionEventPrefix(session.ID), V3SessionMessagePrefix(session.ID), V3SessionRunIntentPrefix(session.ID),
+		ExecutionEpochPrefix(session.ID), ExecutionEpochOrdinalPrefix(session.ID), ExecutionEpochBoundaryPrefix(session.ID), ExecutionProviderLifecycleStatePrefix(session.ID),
+		V3SessionIdempotencyPrefix(session.AccountScopeID, session.ID), V3RealtimeOutboxBySessionEndpointPrefix(session.ID), V3RealtimeOutboxBySessionSeqPrefix(session.ID),
+	} {
+		if err := deletePrefixInBatch(batch, prefix); err != nil {
 			return err
 		}
 	}
-	if err := batch.Delete([]byte(KeySessionLifecycle(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+	for _, key := range []string{
+		KeySessionUsageSummary(session.ID), KeySessionUsageSummaryByAccount(session.AccountScopeID, session.ID),
+		KeyV3SessionSequence(session.ID), KeyV3SessionProjection(session.ID), KeyV3SessionRunIntentActive(session.ID), KeyExecutionEpochActive(session.ID), KeyExecutionEpochLatest(session.ID),
+	} {
+		if err := batch.Delete([]byte(key), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return err
+		}
+	}
+	return nil
+}
+
+func normalizeV3SessionTombstone(tombstone V3SessionTombstone) V3SessionTombstone {
+	tombstone.SessionID = strings.TrimSpace(tombstone.SessionID)
+	tombstone.UserID = strings.TrimSpace(tombstone.UserID)
+	tombstone.AccountScopeID = strings.TrimSpace(tombstone.AccountScopeID)
+	tombstone.WorkspacePath = strings.TrimSpace(tombstone.WorkspacePath)
+	tombstone.Kind = strings.TrimSpace(strings.ToLower(tombstone.Kind))
+	if tombstone.Kind == "" {
+		switch {
+		case tombstone.Deleted:
+			tombstone.Kind = "deleted"
+		case tombstone.Archived:
+			tombstone.Kind = "archived"
+		case tombstone.Hidden:
+			tombstone.Kind = "hidden"
+		default:
+			tombstone.Kind = "changed"
+		}
+	}
+	tombstone.Session = normalizeSessionOwnership(tombstone.Session)
+	if tombstone.Session.ID != "" {
+		if tombstone.UserID == "" {
+			tombstone.UserID = tombstone.Session.UserID
+		}
+		if tombstone.AccountScopeID == "" {
+			tombstone.AccountScopeID = tombstone.Session.AccountScopeID
+		}
+		if tombstone.WorkspacePath == "" {
+			tombstone.WorkspacePath = tombstone.Session.WorkspacePath
+		}
+	}
+	return tombstone
+}
+
+func setV3SessionTombstoneInBatch(batch *pebble.Batch, tombstone V3SessionTombstone) error {
+	tombstone = normalizeV3SessionTombstone(tombstone)
+	if tombstone.SessionID == "" {
+		return errors.New("session tombstone session id is required")
+	}
+	payload, err := json.Marshal(tombstone)
+	if err != nil {
+		return fmt.Errorf("marshal v3 session tombstone %q: %w", tombstone.SessionID, err)
+	}
+	if err := batch.Set([]byte(KeyV3SessionTombstone(tombstone.SessionID)), payload, nil); err != nil {
 		return err
 	}
-	if err := batch.Delete([]byte(KeySessionPlanActive(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+	if tombstone.AccountScopeID != "" {
+		if err := batch.Set([]byte(KeyV3SessionTombstoneByAccount(tombstone.AccountScopeID, tombstone.SessionID)), payload, nil); err != nil {
+			return err
+		}
+	}
+	if tombstone.AccountScopeID != "" && tombstone.UserID != "" {
+		if err := batch.Set([]byte(KeyV3SessionTombstoneByAccountUser(tombstone.AccountScopeID, tombstone.UserID, tombstone.UpdatedAt, tombstone.SessionID)), payload, nil); err != nil {
+			return err
+		}
+		if tombstone.WorkspacePath != "" {
+			workspacePath := tombstone.WorkspacePath
+			if normalized, err := normalizeSessionPath(workspacePath); err == nil {
+				workspacePath = normalized
+			}
+			if err := batch.Set([]byte(KeyV3SessionTombstoneByAccountUserWorkspace(tombstone.AccountScopeID, tombstone.UserID, workspacePath, tombstone.UpdatedAt, tombstone.SessionID)), payload, nil); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func removeV3SessionTombstoneInBatch(batch *pebble.Batch, tombstone V3SessionTombstone) error {
+	tombstone = normalizeV3SessionTombstone(tombstone)
+	if tombstone.SessionID == "" {
+		return nil
+	}
+	deleteKey := func(key string) error {
+		if strings.TrimSpace(key) == "" {
+			return nil
+		}
+		if err := batch.Delete([]byte(key), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return err
+		}
+		return nil
+	}
+	if err := deleteKey(KeyV3SessionTombstone(tombstone.SessionID)); err != nil {
 		return err
 	}
-	return batch.Commit(pebble.Sync)
+	if tombstone.AccountScopeID != "" {
+		if err := deleteKey(KeyV3SessionTombstoneByAccount(tombstone.AccountScopeID, tombstone.SessionID)); err != nil {
+			return err
+		}
+	}
+	if tombstone.AccountScopeID != "" && tombstone.UserID != "" {
+		if err := deleteKey(KeyV3SessionTombstoneByAccountUser(tombstone.AccountScopeID, tombstone.UserID, tombstone.UpdatedAt, tombstone.SessionID)); err != nil {
+			return err
+		}
+		if tombstone.WorkspacePath != "" {
+			workspacePath := tombstone.WorkspacePath
+			if normalized, err := normalizeSessionPath(workspacePath); err == nil {
+				workspacePath = normalized
+			}
+			if err := deleteKey(KeyV3SessionTombstoneByAccountUserWorkspace(tombstone.AccountScopeID, tombstone.UserID, workspacePath, tombstone.UpdatedAt, tombstone.SessionID)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *SessionStore) GetV3SessionTombstone(sessionID string) (V3SessionTombstone, bool, error) {
+	return getV3SessionTombstoneFromReader(s.store.db, sessionID)
+}
+
+func getV3SessionTombstoneFromReader(reader pebble.Reader, sessionID string) (V3SessionTombstone, bool, error) {
+	var tombstone V3SessionTombstone
+	ok, err := getJSONFromReader(reader, KeyV3SessionTombstone(strings.TrimSpace(sessionID)), &tombstone)
+	if err != nil || !ok {
+		return V3SessionTombstone{}, ok, err
+	}
+	return normalizeV3SessionTombstone(tombstone), true, nil
+}
+
+func (s *SessionStore) ListV3SessionTombstonesForAccount(accountScopeID string, limit int) ([]V3SessionTombstone, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if limit <= 0 {
+		limit = 500
+	}
+	prefix := V3SessionTombstonePrefix()
+	if accountScopeID != "" {
+		prefix = V3SessionTombstoneByAccountPrefix(accountScopeID)
+	}
+	out := make([]V3SessionTombstone, 0)
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, Limit: limit}, func(_ string, value []byte) (bool, error) {
+		var tombstone V3SessionTombstone
+		if err := json.Unmarshal(value, &tombstone); err != nil {
+			return false, err
+		}
+		tombstone = normalizeV3SessionTombstone(tombstone)
+		if accountScopeID != "" && tombstone.AccountScopeID != accountScopeID {
+			return true, nil
+		}
+		out = append(out, tombstone)
+		return len(out) < limit, nil
+	})
+	return out, err
 }
 
 func (s *SessionStore) GetSession(sessionID string) (SessionSnapshot, bool, error) {
@@ -367,6 +1032,20 @@ func (s *SessionStore) ListSessionsForAccount(accountScopeID string, limit int) 
 		return nil, errors.New("account scope id is required")
 	}
 	return s.listSessionsForAccount(accountScopeID, limit, nil)
+}
+
+func (s *SessionStore) ListSessionsForAccountUser(accountScopeID, userID string, limit int) ([]SessionSnapshot, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope id is required")
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, errors.New("user id is required")
+	}
+	return s.listSessionsForAccount(accountScopeID, limit, func(session SessionSnapshot) bool {
+		return strings.TrimSpace(session.UserID) == userID
+	})
 }
 
 func (s *SessionStore) ListSessionsForPath(path string, limit int) ([]SessionSnapshot, error) {
@@ -466,21 +1145,16 @@ func (s *SessionStore) ListSessionsForAccountWorkspaceBindings(accountScopeID, s
 		if !ok || strings.TrimSpace(session.AccountScopeID) != accountScopeID {
 			return nil
 		}
-		include := false
-		if execution, executionOK, err := s.GetSessionExecutionV2(sessionID); err != nil {
-			return err
-		} else if executionOK && strings.TrimSpace(execution.AccountScopeID) == accountScopeID {
-			if sourceWorkspaceID != "" && strings.TrimSpace(execution.SourceWorkspaceID) == sourceWorkspaceID {
-				include = true
+		include := sourceWorkspaceID != "" && strings.TrimSpace(sessionMetadataString(session.Metadata, "swarm_v3_source_workspace_id")) == sourceWorkspaceID
+		if !include && len(bindingSet) > 0 {
+			bindingID := strings.TrimSpace(sessionMetadataString(session.Metadata, "swarm_v3_workspace_binding_id"))
+			if bindingID == "" {
+				bindingID = strings.TrimSpace(sessionMetadataString(session.Metadata, "local_workspace_binding_id"))
 			}
-			if !include && len(bindingSet) > 0 {
-				if _, ok := bindingSet[strings.TrimSpace(execution.WorkspaceBindingID)]; ok {
-					include = true
-				}
-			}
+			_, include = bindingSet[bindingID]
 		}
 		if !include && normalizedFallbackScope != "" {
-			include = pathInScope(session.WorkspacePath, normalizedFallbackScope)
+			include = sessionMatchesWorkspaceScope(session, normalizedFallbackScope)
 		}
 		if !include {
 			return nil
@@ -535,14 +1209,10 @@ func (s *SessionStore) ListTopSessionsByWorkspace(workspacePaths []string, perWo
 			return nil
 		}
 		session = normalizeSessionOwnership(session)
-		normalizedWorkspacePath, err := normalizeSessionPath(session.WorkspacePath)
-		if err != nil {
-			return nil
-		}
 		matchedWorkspacePath := ""
 		for _, candidate := range order {
-			// Worktree sessions live under child paths; group them under the nearest workspace root.
-			if !normalizedPathInScope(normalizedWorkspacePath, candidate) {
+			// Worktree sessions are physically rooted outside the source workspace; group them by binding/source identity when present.
+			if !sessionMatchesWorkspaceScope(session, candidate) {
 				continue
 			}
 			if len(candidate) > len(matchedWorkspacePath) {
@@ -1072,6 +1742,20 @@ func (s *SessionStore) GetPlan(sessionID, planID string) (SessionPlanSnapshot, b
 	return plan, true, nil
 }
 
+func (s *SessionStore) GetPlanRevision(sessionID, planID string, version int) (SessionPlanSnapshot, bool, error) {
+	var plan SessionPlanSnapshot
+	ok, err := s.store.GetJSON(KeySessionPlanRevision(sessionID, planID, version), &plan)
+	if err != nil {
+		return SessionPlanSnapshot{}, false, err
+	}
+	if !ok {
+		return SessionPlanSnapshot{}, false, nil
+	}
+	plan.UserID = strings.TrimSpace(plan.UserID)
+	plan.AccountScopeID = strings.TrimSpace(plan.AccountScopeID)
+	return plan, true, nil
+}
+
 func (s *SessionStore) ListPlans(sessionID string, limit int) ([]SessionPlanSnapshot, error) {
 	if limit <= 0 {
 		limit = 200
@@ -1228,7 +1912,6 @@ func normalizeSessionOwnership(session SessionSnapshot) SessionSnapshot {
 	} else {
 		session.WorktreeRootPath = ""
 		session.WorktreeBaseBranch = ""
-		session.WorktreeBranch = ""
 	}
 	return session
 }

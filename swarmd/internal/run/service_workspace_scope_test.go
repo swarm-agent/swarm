@@ -60,6 +60,28 @@ func TestRunWorkspaceScopeInjectsAccountScopedLinkedAgentsInstructions(t *testin
 	}
 }
 
+func TestRunWorkspaceScopeIncludesFullAgentsInstructions(t *testing.T) {
+	primary := t.TempDir()
+	const tailRule = "tail_runtime_rule_after_four_kilobytes: must_load"
+	largeRule := "# Large rule\n" + strings.Repeat("padding instruction line to exceed prior runtime prompt cap\n", 100) + tailRule
+	if len(largeRule) <= 4000 {
+		t.Fatalf("test rule length = %d, want over prior 4000-byte cap", len(largeRule))
+	}
+	writeTestFile(t, filepath.Join(primary, "AGENTS.md"), largeRule)
+
+	runSvc := NewService(nil, nil, nil, nil, nil, nil, discovery.NewService(), nil)
+	instructions := runSvc.composeInstructionsForScope(tool.WorkspaceScope{
+		PrimaryPath: primary,
+		Roots:       []string{primary},
+	}, pebblestore.AgentProfile{}, "")
+	if !strings.Contains(instructions, tailRule) {
+		t.Fatalf("instructions missing AGENTS.md content beyond prior 4000-byte cap")
+	}
+	if strings.Contains(instructions, "...[truncated]") {
+		t.Fatalf("instructions unexpectedly truncated AGENTS.md content")
+	}
+}
+
 func TestRunWorkspaceScopeIgnoresLegacyOnlyEntriesForPrincipalBackedRun(t *testing.T) {
 	primary := t.TempDir()
 	linked := t.TempDir()
@@ -171,6 +193,33 @@ func TestPersistentWorkspaceScopeApprovalAddsAccountScopedDirectory(t *testing.T
 	}
 	assertStringSliceContains(t, workspaceCtx.OriginWorkspaceRoots, linked)
 	assertStringSliceContains(t, workspaceCtx.WorkspaceRoots, linked)
+}
+
+func TestResolveRunWorkspaceScopeRejectsTemporaryRootChangedToSymlink(t *testing.T) {
+	primary := t.TempDir()
+	temporaryParent := t.TempDir()
+	temporaryRoot := filepath.Join(temporaryParent, "approved")
+	if err := os.Mkdir(temporaryRoot, 0o755); err != nil {
+		t.Fatalf("create temporary root: %v", err)
+	}
+	if err := os.Remove(temporaryRoot); err != nil {
+		t.Fatalf("remove temporary root: %v", err)
+	}
+	if err := os.Symlink(t.TempDir(), temporaryRoot); err != nil {
+		t.Fatalf("replace temporary root with symlink: %v", err)
+	}
+
+	runSvc := NewService(nil, nil, nil, nil, nil, nil, discovery.NewService(), nil)
+	_, err := runSvc.resolveRunWorkspaceScope(pebblestore.SessionSnapshot{
+		ID:                      "session-stale-temporary-root",
+		UserID:                  "user-1",
+		AccountScopeID:          "account-1",
+		WorkspacePath:           primary,
+		TemporaryWorkspaceRoots: []string{temporaryRoot},
+	}, testRunPrincipal())
+	if err == nil || !strings.Contains(err.Error(), "temporary workspace root must not be a symlink") {
+		t.Fatalf("resolve stale temporary root error = %v, want symlink rejection", err)
+	}
 }
 
 func newTestRunWorkspaceService(t *testing.T) (*workspaceruntime.Service, func()) {

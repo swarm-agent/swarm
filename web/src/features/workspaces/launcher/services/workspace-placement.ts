@@ -49,25 +49,15 @@ export function workspaceRouteTargetType(route: WorkspaceOverviewTopologyRoute, 
   const relationship = normalizeTargetValue(target?.relationship || route.runtimeRelationship)
   const role = normalizeTargetValue(target?.role)
   const kind = workspaceRouteKind(route, target)
-  if (relationship === 'managed' || role === 'managed' || kind === 'host') {
-    return 'Managed Host'
+  if (relationship === 'self' || role === 'self' || kind === 'host' || kind === 'self') {
+    return 'Host'
   }
-  if (target?.deployment_id?.trim() || route.containerId.trim() || kind === 'local' || kind === 'container') {
-    return 'Container'
-  }
-  return 'Managed Host'
+  return 'Target'
 }
 
 export function workspaceRoutePlacementLabel(route: WorkspaceOverviewTopologyRoute, target: SwarmTarget | null): string {
   const type = workspaceRouteTargetType(route, target)
   return type ? `${workspaceRouteTargetName(route, target)} (${type})` : ''
-}
-
-export function workspaceRouteModeLabel(route: WorkspaceOverviewTopologyRoute): string {
-  const mode = route.replicationMode.trim() || route.sync.mode.trim() || 'linked'
-  const modules = route.sync.modules.length > 0 ? route.sync.modules.join(', ') : ''
-  const sync = route.sync.enabled ? `sync ${route.sync.mode.trim() || modules || 'enabled'}` : 'manual sync'
-  return `${route.writable ? 'writable' : 'read-only'} · ${mode} · ${sync}`
 }
 
 export function workspaceRouteHoverTitle(route: WorkspaceOverviewTopologyRoute, target: SwarmTarget | null): string {
@@ -76,7 +66,6 @@ export function workspaceRouteHoverTitle(route: WorkspaceOverviewTopologyRoute, 
     route.workspaceBindingId.trim() ? `Binding ID: ${route.workspaceBindingId.trim()}` : '',
     route.runtimeSwarmId.trim() ? `Runtime swarm ID: ${route.runtimeSwarmId.trim()}` : '',
     workspaceRouteDisplayPath(route) ? `Runtime path: ${workspaceRouteDisplayPath(route)}` : '',
-    workspaceRouteModeLabel(route),
   ].filter(Boolean)
   return parts.join('\n')
 }

@@ -32,6 +32,10 @@ func (p *ChatPage) openPlanEditorModalWithPlans(plan ChatSessionPlan, revisions 
 	p.planEditorPlanSelection = 0
 	p.planEditorPlanScroll = 0
 	p.planEditorRevisionFocus = false
+	p.planEditorRecoveryFocus = 0
+	p.planEditorCheckpoint = planEditorInitialCheckpoint(items[0])
+	p.planEditorManualReview = false
+	p.planEditorRecoveryAction = 0
 	p.planEditorInput = planEditorDisplayText(items[0])
 	p.planEditorEditing = false
 	p.planEditorConfirmSave = false
@@ -41,6 +45,7 @@ func (p *ChatPage) openPlanEditorModalWithPlans(plan ChatSessionPlan, revisions 
 	p.planEditorCancelRect = Rect{}
 	p.planEditorCopyRect = Rect{}
 	p.planEditorSaveRect = Rect{}
+	p.planEditorRecoveryRects = [4]Rect{}
 	if title := strings.TrimSpace(items[0].Title); title != "" {
 		p.statusLine = fmt.Sprintf("current plan: %s", title)
 	} else {
@@ -143,22 +148,6 @@ func (p *ChatPage) loadSelectedPlanEditorPlan() {
 	p.statusLine = fmt.Sprintf("viewing %s", planEditorRevisionLabel(plan, p.planEditorPlanSelection))
 }
 
-func (p *ChatPage) activateSelectedPlanEditorPlan() {
-	if p == nil || len(p.planEditorPlans) == 0 {
-		return
-	}
-	p.loadSelectedPlanEditorPlan()
-	plan := p.planEditorPlan
-	if strings.TrimSpace(plan.ID) == "" {
-		p.statusLine = "selected revision has no plan id"
-		return
-	}
-	plan.RestoreRevision = p.planEditorPlanSelection > 0
-	p.pendingChatAction = &ChatAction{Kind: ChatActionActivatePlan, Plan: plan}
-	p.closePlanEditorModal()
-	p.statusLine = fmt.Sprintf("activating %s...", planEditorRevisionLabel(plan, p.planEditorPlanSelection))
-}
-
 func (p *ChatPage) planEditorModalActive() bool {
 	return p.planEditorVisible
 }
@@ -171,6 +160,10 @@ func (p *ChatPage) closePlanEditorModal() {
 	p.planEditorPlanSelection = 0
 	p.planEditorPlanScroll = 0
 	p.planEditorRevisionFocus = false
+	p.planEditorRecoveryFocus = 0
+	p.planEditorCheckpoint = 0
+	p.planEditorManualReview = false
+	p.planEditorRecoveryAction = 0
 	p.planEditorInput = ""
 	p.planEditorEditing = false
 	p.planEditorConfirmSave = false
@@ -180,6 +173,7 @@ func (p *ChatPage) closePlanEditorModal() {
 	p.planEditorCancelRect = Rect{}
 	p.planEditorCopyRect = Rect{}
 	p.planEditorSaveRect = Rect{}
+	p.planEditorRecoveryRects = [4]Rect{}
 }
 
 func (p *ChatPage) handlePlanEditorModalMouse(ev *tcell.EventMouse) bool {
@@ -196,6 +190,16 @@ func (p *ChatPage) handlePlanEditorModalMouse(ev *tcell.EventMouse) bool {
 		case p.planEditorCopyRect.Contains(x, y):
 			p.resolvePlanEditorModal(chatPlanEditorActionCopy)
 			return true
+		default:
+			for i, rect := range p.planEditorRecoveryRects {
+				if rect.Contains(x, y) {
+					p.planEditorRecoveryFocus = i + 1
+					if i == 2 {
+						p.planEditorManualReview = !p.planEditorManualReview
+					}
+					return true
+				}
+			}
 		}
 	}
 	switch {
@@ -223,6 +227,13 @@ func (p *ChatPage) handlePlanEditorModalKey(ev *tcell.EventKey) bool {
 		p.resolvePlanEditorModal(chatPlanEditorActionCancel)
 		return true
 	case p.keybinds.Match(ev, KeybindPlanExitToggle), p.keybinds.Match(ev, KeybindPlanExitToggleRight), p.keybinds.Match(ev, KeybindPlanExitToggleLeft):
+		if p.planEditorRecoveryFocus > 0 {
+			p.planEditorRecoveryFocus++
+			if p.planEditorRecoveryFocus > 4 {
+				p.planEditorRecoveryFocus = 1
+			}
+			return true
+		}
 		p.planEditorRevisionFocus = false
 		if p.planEditorSelection == chatPlanEditorSelectCancel {
 			p.planEditorSelection = chatPlanEditorSelectCopy
@@ -231,14 +242,18 @@ func (p *ChatPage) handlePlanEditorModalKey(ev *tcell.EventKey) bool {
 		}
 		return true
 	case p.keybinds.Match(ev, KeybindPlanExitMoveUp), p.keybinds.Match(ev, KeybindPlanExitMoveUpAlt):
-		if p.planEditorRevisionFocus {
+		if p.planEditorRecoveryFocus > 0 {
+			p.shiftPlanEditorRecovery(-1)
+		} else if p.planEditorRevisionFocus {
 			p.selectPlanEditorPlan(-1)
 		} else {
 			p.shiftPlanEditorScroll(-1)
 		}
 		return true
 	case p.keybinds.Match(ev, KeybindPlanExitMoveDown), p.keybinds.Match(ev, KeybindPlanExitMoveDownAlt):
-		if p.planEditorRevisionFocus {
+		if p.planEditorRecoveryFocus > 0 {
+			p.shiftPlanEditorRecovery(1)
+		} else if p.planEditorRevisionFocus {
 			p.selectPlanEditorPlan(1)
 		} else {
 			p.shiftPlanEditorScroll(1)
@@ -259,8 +274,15 @@ func (p *ChatPage) handlePlanEditorModalKey(ev *tcell.EventKey) bool {
 		p.planEditorInputScroll = 1 << 30
 		return true
 	case p.keybinds.Match(ev, KeybindPlanExitConfirm):
+		if p.planEditorRecoveryFocus > 0 {
+			p.queuePlanEditorRecovery()
+			return true
+		}
 		if p.planEditorRevisionFocus {
-			p.activateSelectedPlanEditorPlan()
+			p.loadSelectedPlanEditorPlan()
+			p.planEditorRevisionFocus = false
+			p.planEditorRecoveryFocus = 1
+			p.statusLine = "recovery: choose checkpoint, snapshot, review behavior, and action"
 			return true
 		}
 		if p.planEditorSelection == chatPlanEditorSelectCancel {
@@ -276,11 +298,116 @@ func (p *ChatPage) handlePlanEditorModalKey(ev *tcell.EventKey) bool {
 			return true
 		case "r":
 			p.planEditorRevisionFocus = true
-			p.statusLine = "revision selector focused (↑/↓ preview, Enter activate)"
+			p.planEditorRecoveryFocus = 0
+			p.statusLine = "recovery snapshot focused (↑/↓ preview, Enter choose recovery settings)"
 			return true
 		}
 	}
 	return true
+}
+
+func planEditorCheckpoints(plan ChatSessionPlan) []map[string]any {
+	doc := structuredPlanDocumentMap(plan.Document)
+	return mapAnyObjectSlice(doc, "checkpoints")
+}
+
+func planEditorInitialCheckpoint(plan ChatSessionPlan) int {
+	checkpoints := planEditorCheckpoints(plan)
+	doc := structuredPlanDocumentMap(plan.Document)
+	activeID := firstNonEmptyToolValue(mapStringArg(doc, "active_checkpoint_id"), mapStringArg(doc, "activeCheckpointId"))
+	for i, checkpoint := range checkpoints {
+		if mapStringArg(checkpoint, "id") == activeID {
+			return i
+		}
+	}
+	return 0
+}
+
+func (p *ChatPage) shiftPlanEditorRecovery(delta int) {
+	switch p.planEditorRecoveryFocus {
+	case 1:
+		checkpoints := planEditorCheckpoints(p.planEditorPlan)
+		if len(checkpoints) > 0 {
+			p.planEditorCheckpoint = (p.planEditorCheckpoint + delta + len(checkpoints)) % len(checkpoints)
+		}
+	case 2:
+		p.selectPlanEditorPlan(delta)
+		p.planEditorCheckpoint = planEditorInitialCheckpoint(p.planEditorPlan)
+	case 3:
+		p.planEditorManualReview = !p.planEditorManualReview
+	case 4:
+		if p.planEditorPlanSelection > 0 {
+			p.planEditorRecoveryAction = (p.planEditorRecoveryAction + delta + 4) % 4
+		}
+	}
+}
+
+func (p *ChatPage) selectedPlanEditorCheckpointID(final bool) string {
+	checkpoints := planEditorCheckpoints(p.planEditorPlan)
+	if len(checkpoints) == 0 {
+		return ""
+	}
+	idx := p.planEditorCheckpoint
+	if final {
+		idx = len(checkpoints) - 1
+	}
+	if idx < 0 || idx >= len(checkpoints) {
+		idx = 0
+	}
+	return mapStringArg(checkpoints[idx], "id")
+}
+
+func (p *ChatPage) queuePlanEditorRecovery() {
+	plan := p.selectedPlanEditorPlan()
+	if strings.TrimSpace(plan.ID) == "" {
+		p.statusLine = "recovery unavailable: plan id is missing"
+		return
+	}
+	action := "start_selected"
+	if p.planEditorPlanSelection > 0 {
+		actions := []string{"restart_selected", "fast_forward", "final_checkpoint", "restore_only"}
+		action = actions[p.planEditorRecoveryAction]
+	}
+	checkpointID := p.selectedPlanEditorCheckpointID(action == "final_checkpoint")
+	if action != "restore_only" && checkpointID == "" {
+		p.statusLine = "recovery unavailable: checkpoint id is missing"
+		return
+	}
+	policy := "automatic"
+	if p.planEditorManualReview {
+		policy = "review_each_checkpoint"
+	}
+	p.pendingChatAction = &ChatAction{Kind: ChatActionRecoverPlan, Plan: plan, Recovery: ChatPlanRecovery{Action: action, CheckpointID: checkpointID, ExecutionGranularity: "checkpointed", ContinuationPolicy: policy, ContinueAutomatically: !p.planEditorManualReview}}
+	p.closePlanEditorModal()
+	p.statusLine = "applying plan recovery action..."
+}
+
+func (p *ChatPage) drawPlanEditorRecoverySummary(s tcell.Screen, rect Rect, onPanel func(tcell.Style) tcell.Style) {
+	if rect.W <= 0 || rect.H <= 0 {
+		return
+	}
+	checkpointID := p.selectedPlanEditorCheckpointID(false)
+	snapshot := planEditorRevisionLabel(p.planEditorPlan, p.planEditorPlanSelection)
+	review := "Off (automatic)"
+	if p.planEditorManualReview {
+		review = "On (pause after each checkpoint)"
+	}
+	action := "Start selected checkpoint"
+	if p.planEditorPlanSelection > 0 {
+		action = []string{"Restore + restart selected", "Restore + fast-forward", "Restore + final checkpoint", "Restore only"}[p.planEditorRecoveryAction]
+	}
+	rows := []string{"1 Checkpoint: " + firstNonEmptyToolValue(checkpointID, "none"), "2 Snapshot: " + snapshot, "3 Pause for review: " + review, "4 Action: " + action}
+	p.planEditorRecoveryRects = [4]Rect{}
+	for i, row := range rows {
+		style := onPanel(p.theme.TextMuted)
+		field := i + 1
+		if p.planEditorRecoveryFocus == field {
+			style = onPanel(p.theme.Warning.Bold(true))
+			row = "› " + row
+		}
+		DrawText(s, rect.X, rect.Y+i, rect.W, style, clampEllipsis(row, rect.W))
+		p.planEditorRecoveryRects[i] = Rect{X: rect.X, Y: rect.Y + i, W: rect.W, H: 1}
+	}
 }
 
 func (p *ChatPage) drawPlanEditorModal(s tcell.Screen, screen Rect) {
@@ -323,27 +450,41 @@ func (p *ChatPage) drawPlanEditorModal(s tcell.Screen, screen Rect) {
 	DrawTextRight(s, modal.X+modal.W-2, modal.Y+1, revisionW, revisionStyle, clampEllipsis(revisionText, revisionW))
 
 	header := "Current Plan"
-	if title := strings.TrimSpace(p.planEditorPlan.Title); title != "" {
+	title := strings.TrimSpace(p.planEditorPlan.Title)
+	planID := strings.TrimSpace(p.planEditorPlan.ID)
+	switch {
+	case title != "" && planID != "":
+		header = title + "  ·  " + planID
+	case title != "":
 		header = title
+	case planID != "":
+		header = planID
 	}
 	titleW := modal.W - 5 - revisionW
 	if titleW < 12 {
 		titleW = modal.W - 4
 	}
 	DrawText(s, modal.X+2, modal.Y+1, titleW, onPanel(p.theme.Warning.Bold(true)), clampEllipsis(header, titleW))
-	subtitle := "Ask the AI to update plans; TUI direct editing is disabled for now."
+	subtitle := "Structured plan • display only in TUI • press R for recovery controls"
 	if len(p.planEditorPlans) > 1 {
-		subtitle = "Press r for revisions, ↑/↓ preview, Enter activate. Ask the AI to update plans."
+		subtitle = "Structured plan • R recovery • select current or saved snapshot"
 	}
 	DrawText(s, modal.X+2, modal.Y+2, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(subtitle, modal.W-4))
 
-	bodyRect := Rect{X: modal.X + 2, Y: modal.Y + 4, W: modal.W - 4, H: modal.H - 7}
+	bodyTop := modal.Y + 4
+	if p.planEditorRecoveryFocus > 0 {
+		p.drawPlanEditorRecoverySummary(s, Rect{X: modal.X + 2, Y: bodyTop, W: modal.W - 4, H: 4}, onPanel)
+		bodyTop += 5
+	}
+	bodyRect := Rect{X: modal.X + 2, Y: bodyTop, W: modal.W - 4, H: modal.Y + modal.H - 3 - bodyTop}
 	maxScroll := p.drawPlanEditorDocument(s, bodyRect, onPanel)
 
 	helpY := modal.Y + modal.H - 3
-	helpText := "↑/↓ scroll • R revisions • Tab buttons • C copy • Esc close"
+	helpText := "↑/↓ scroll • R recovery • A activate only • C copy • Esc close"
 	if p.planEditorRevisionFocus {
-		helpText = "Revisions focused • ↑/↓ preview • Enter activate • Tab buttons • Esc close"
+		helpText = "Snapshots focused • ↑/↓ preview • Enter recovery • A activate only"
+	} else if p.planEditorRecoveryFocus > 0 {
+		helpText = "Recovery • Tab field • ↑/↓ change • Enter confirm • Esc close"
 	}
 	helpWidth := modal.W - 4
 	if maxScroll > 0 {
@@ -362,6 +503,7 @@ func (p *ChatPage) drawPlanEditorModal(s tcell.Screen, screen Rect) {
 	styles := []tcell.Style{p.theme.TextMuted, p.theme.Accent}
 	rects := []*Rect{&p.planEditorCancelRect, &p.planEditorCopyRect}
 	p.planEditorSaveRect = Rect{}
+	p.planEditorRecoveryRects = [4]Rect{}
 	selection := p.planEditorSelection
 	if selection < 0 || selection >= len(styles) || p.planEditorRevisionFocus {
 		selection = -1
@@ -436,8 +578,13 @@ func (p *ChatPage) planEditorDetailLines(doc map[string]any, width int) []planEd
 	}
 	info, _ := doc["info"].(map[string]any)
 	appendPlanEditorField(&lines, width, "Goal", mapStringArg(info, "goal"), p.theme.Text)
-	appendPlanEditorField(&lines, width, "Scope", firstNonEmptyToolValue(mapStringArg(info, "scope"), mapStringArg(info, "context")), p.theme.Text)
+	appendPlanEditorField(&lines, width, "Scope", mapStringArg(info, "scope"), p.theme.Text)
+	appendPlanEditorField(&lines, width, "Context", mapStringArg(info, "context"), p.theme.Text)
 	appendPlanEditorList(&lines, width, "Decisions", mapAnyStringSlice(info, "decisions"), p.theme.Text)
+	appendPlanEditorList(&lines, width, "Success criteria", firstNonEmptyStringSlice(mapAnyStringSlice(info, "success_criteria"), mapAnyStringSlice(info, "successCriteria")), p.theme.Text)
+	appendPlanEditorList(&lines, width, "Constraints", mapAnyStringSlice(info, "constraints"), p.theme.Text)
+	appendPlanEditorList(&lines, width, "Assumptions", mapAnyStringSlice(info, "assumptions"), p.theme.Text)
+	appendPlanEditorList(&lines, width, "Open questions", firstNonEmptyStringSlice(mapAnyStringSlice(info, "open_questions"), mapAnyStringSlice(info, "openQuestions")), p.theme.Text)
 	appendPlanEditorList(&lines, width, "Files", firstNonEmptyStringSlice(mapAnyStringSlice(info, "relevant_files"), mapAnyStringSlice(info, "relevantFiles"), mapAnyStringSlice(info, "files")), p.theme.Text)
 	appendPlanEditorField(&lines, width, "Validation", firstNonEmptyToolValue(mapStringArg(info, "validation_strategy"), mapStringArg(info, "validationStrategy"), mapStringArg(info, "validation"), strings.Join(mapAnyStringSlice(info, "validation"), "; ")), p.theme.Text)
 	if len(lines) == 1 {

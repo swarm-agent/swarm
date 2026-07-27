@@ -137,3 +137,64 @@ func TestChatFooterUsesLocalSwarmNameForHostRoute(t *testing.T) {
 		t.Fatalf("chat primary footer token = %q, want local swarm name", tokens[0].Text)
 	}
 }
+
+func TestHomeFooterUsesUnifiedModelProfileAction(t *testing.T) {
+	home := NewHomePage(model.HomeModel{
+		ServerMode:    "local",
+		ActiveAgent:   "swarm",
+		ModelProvider: "anthropic",
+		ModelName:     "claude",
+		ChatRoutes:    []model.ChatRoute{{ID: "host", Label: "host"}},
+	})
+	home.SetSwarmName("Local Desk")
+
+	tokens := home.homeFooterTokens()
+	if len(tokens) != 3 {
+		t.Fatalf("home footer token count = %d, want route, plan, and unified model profile", len(tokens))
+	}
+	if tokens[2].Action != "open-profiles-modal" {
+		t.Fatalf("home model profile action = %q, want open-profiles-modal", tokens[2].Action)
+	}
+	if got, want := tokens[2].Text, "[claude]"; got != want {
+		t.Fatalf("home model profile unit = %q, want %q", got, want)
+	}
+	for _, token := range tokens {
+		if token.Action == "open-agents-modal" {
+			t.Fatalf("home footer retained redundant agent action: %#v", tokens)
+		}
+	}
+}
+
+func TestHomeFooterModelProfileUsesConciseOptionValues(t *testing.T) {
+	got := footerProfileUnit(FooterState{
+		ProfileLabel: "Recommended",
+		ModelLabel:   "gpt-5.4",
+		Thinking:     "high",
+		ServiceTier:  "fast",
+	})
+	if want := "[Recommended · gpt-5.4 · high · fast]"; got != want {
+		t.Fatalf("footerProfileUnit() = %q, want %q", got, want)
+	}
+	for _, unwanted := range []string{"Action", "Plan", "thinking", "tier"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("footerProfileUnit() retained obsolete label %q: %q", unwanted, got)
+		}
+	}
+}
+
+func TestFooterStateKeepsPageSpecificRightFacts(t *testing.T) {
+	home := NewHomePage(model.HomeModel{WorktreesEnabled: true, Version: "1.2.3"})
+	homeState := home.homeFooterState()
+	if got := strings.Join(homeState.RightFacts, "|"); strings.Contains(got, "wt on") || !strings.Contains(got, "v 1.2.3") {
+		t.Fatalf("home footer right facts = %#v, want version without obsolete worktree mode", homeState.RightFacts)
+	}
+
+	chat := NewChatPage(ChatPageOptions{SessionID: "session-test", AuthConfigured: true, Meta: ChatSessionMeta{WorktreeEnabled: true}})
+	chat.contextUsageSet = true
+	chat.contextWindow = 1000
+	chat.contextRemain = 250
+	chatState := chat.chatFooterState()
+	if got := strings.Join(chatState.RightFacts, "|"); strings.Contains(got, "wt on") || !strings.Contains(got, "25% left") {
+		t.Fatalf("chat footer right facts = %#v, want context without obsolete worktree mode", chatState.RightFacts)
+	}
+}

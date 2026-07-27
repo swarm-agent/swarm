@@ -163,7 +163,7 @@ func TestStartDetachedUpdateCommandDevPassesGoEnvToSystemdRun(t *testing.T) {
 		assertStringInSlice(t, cfg.Env, "GO_BIN="+goBin)
 		assertStringInSlice(t, cfg.Env, "GOFMT_BIN="+filepath.Join(filepath.Dir(goBin), "gofmt"))
 		assertStringInSlice(t, cfg.Env, "GOROOT=/tmp/test-goroot")
-		assertStringInSlice(t, cfg.Env, "GOTOOLCHAIN=local")
+		assertStringInSlice(t, cfg.Env, "GOTOOLCHAIN=auto")
 		return updateHelperLaunchCommand{CommandPath: "/bin/sleep", Args: []string{"60"}, Env: os.Environ()}, nil
 	}
 
@@ -244,10 +244,9 @@ func makeUpdateDevRoot(t *testing.T) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "repo")
 	files := []string{
-		filepath.Join(root, "scripts", "rebuild-container.sh"),
-		filepath.Join(root, "deploy", "container-mvp", "Containerfile.base"),
-		filepath.Join(root, "deploy", "container-mvp", "Containerfile"),
-		filepath.Join(root, "deploy", "container-mvp", "entrypoint.sh"),
+		filepath.Join(root, "go.mod"),
+		filepath.Join(root, "cmd", "swarmtui", "main.go"),
+		filepath.Join(root, "swarmd", "go.mod"),
 	}
 	for _, path := range files {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

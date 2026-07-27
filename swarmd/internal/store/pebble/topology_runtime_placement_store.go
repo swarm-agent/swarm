@@ -11,7 +11,10 @@ import (
 )
 
 const (
-	TopologyRuntimeKindHost      = "host"
+	TopologyRuntimeKindHost = "host"
+
+	// TopologyRuntimeKindContainer remains part of protected V3 and generic topology data.
+	// Runtime placement validation treats it like every other non-empty kind.
 	TopologyRuntimeKindContainer = "container"
 
 	TopologyRuntimePlacementStateActive = "active"
@@ -151,9 +154,6 @@ func (s *TopologyStore) PutRuntimePlacementForAccount(accountScopeID string, rec
 	if err := validateTopologyRuntimePlacement(record); err != nil {
 		return TopologyRuntimePlacementRecord{}, err
 	}
-	if err := s.validateRuntimePlacementAuthorityForAccount(accountScopeID, record); err != nil {
-		return TopologyRuntimePlacementRecord{}, err
-	}
 	record.CreatedAt, record.UpdatedAt = nextTopologyWriteTimestamps(record.CreatedAt)
 	if err := s.store.PutJSON(KeyTopologyRuntimePlacementForAccount(accountScopeID, record.RuntimeSwarmID), record); err != nil {
 		return TopologyRuntimePlacementRecord{}, err
@@ -252,36 +252,6 @@ func enforceTopologyRuntimePlacementAccount(accountScopeID string, record Topolo
 	return record, nil
 }
 
-func (s *TopologyStore) validateRuntimePlacementAuthorityForAccount(accountScopeID string, record TopologyRuntimePlacementRecord) error {
-	if strings.ToLower(strings.TrimSpace(record.RuntimeKind)) != TopologyRuntimeKindContainer {
-		return nil
-	}
-	authorityHostSwarmID := strings.TrimSpace(record.AuthorityHostSwarmID)
-	if authorityHostSwarmID == "" {
-		return nil
-	}
-	authority, ok, err := s.getRuntimePlacementForAccountRaw(accountScopeID, authorityHostSwarmID)
-	if err != nil || !ok {
-		return err
-	}
-	if err := validateTopologyRuntimePlacement(authority); err != nil {
-		return err
-	}
-	if strings.ToLower(strings.TrimSpace(authority.RuntimeKind)) == TopologyRuntimeKindContainer {
-		return errors.New("topology container runtime placement authority host swarm id must reference a host runtime")
-	}
-	if strings.TrimSpace(record.AuthorityContainerID) != "" {
-		hostContainer, ok, err := s.GetHostContainerForAccount(accountScopeID, record.AuthorityContainerID)
-		if err != nil {
-			return err
-		}
-		if ok && strings.TrimSpace(hostContainer.HostSwarmID) != "" && !strings.EqualFold(strings.TrimSpace(hostContainer.HostSwarmID), authorityHostSwarmID) {
-			return errors.New("topology container runtime placement authority container id must belong to authority host swarm id")
-		}
-	}
-	return nil
-}
-
 func validateTopologyRuntimePlacement(record TopologyRuntimePlacementRecord) error {
 	if strings.TrimSpace(record.PlacementID) == "" {
 		return errors.New("topology runtime placement id is required")
@@ -299,26 +269,8 @@ func validateTopologyRuntimePlacement(record TopologyRuntimePlacementRecord) err
 	if state == "" {
 		return errors.New("topology runtime placement state is required")
 	}
-	switch strings.ToLower(strings.TrimSpace(record.RuntimeKind)) {
-	case TopologyRuntimeKindHost:
-		if strings.TrimSpace(record.AuthorityHostSwarmID) != strings.TrimSpace(record.RuntimeSwarmID) {
-			return errors.New("topology host runtime placement authority host swarm id must equal runtime swarm id")
-		}
-		if strings.TrimSpace(record.AuthorityContainerID) != "" {
-			return errors.New("topology host runtime placement authority container id must be empty")
-		}
-	case TopologyRuntimeKindContainer:
-		if strings.TrimSpace(record.AuthorityHostSwarmID) == "" {
-			return errors.New("topology container runtime placement authority host swarm id is required")
-		}
-		if strings.TrimSpace(record.AuthorityContainerID) == "" {
-			return errors.New("topology container runtime placement authority container id is required")
-		}
-		if strings.TrimSpace(record.AuthorityHostSwarmID) == strings.TrimSpace(record.RuntimeSwarmID) {
-			return errors.New("topology container runtime placement authority host swarm id must not equal runtime swarm id")
-		}
-	default:
-		return errors.New("topology runtime placement runtime kind must be host or container")
+	if strings.TrimSpace(record.RuntimeKind) == "" {
+		return errors.New("topology runtime placement runtime kind is required")
 	}
 	return nil
 }

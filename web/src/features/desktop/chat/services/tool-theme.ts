@@ -14,6 +14,7 @@ import {
   ClipboardList,
   LogOut,
   Sparkles,
+  Brain,
   Wrench,
   type LucideIcon,
 } from 'lucide-react'
@@ -47,6 +48,7 @@ const TOOL_THEME_MAP: Record<string, ToolThemeEntry> = {
   exit_plan_mode: { icon: LogOut, label: 'plan', color: 'var(--app-primary)' },
   'skill-use': { icon: Sparkles, label: 'skill', color: 'var(--app-accent)' },
   skill_use: { icon: Sparkles, label: 'skill', color: 'var(--app-accent)' },
+  thinking: { icon: Brain, label: 'THINKING', color: 'var(--app-primary)' },
 }
 
 const DEFAULT_ENTRY: ToolThemeEntry = { icon: Wrench, label: 'tool', color: 'var(--app-text-muted)' }

@@ -14,6 +14,9 @@ func TestRunWorkspaceGitCommitCreatesCommitWithExactMessage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatalf("write changed file: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
 
 	result, err := runWorkspaceGitCommit(context.Background(), repo, "feat: exact manual commit", true)
 	if err != nil {
@@ -22,13 +25,33 @@ func TestRunWorkspaceGitCommitCreatesCommitWithExactMessage(t *testing.T) {
 	if !result.OK || result.ExitCode != 0 {
 		t.Fatalf("result = %+v, want ok exit 0", result)
 	}
-	if !strings.Contains(result.Output, "[test-secret-check] PASS") {
-		t.Fatalf("commit output missing secret-check evidence: %q", result.Output)
-	}
-
 	got := strings.TrimSpace(runGitCommitTestCommand(t, repo, "log", "-1", "--pretty=%s"))
 	if got != "feat: exact manual commit" {
 		t.Fatalf("commit subject = %q, want exact message", got)
+	}
+	committed := runGitCommitTestCommand(t, repo, "show", "--pretty=", "--name-only", "HEAD")
+	if !strings.Contains(committed, "note.txt") || !strings.Contains(committed, "untracked.txt") {
+		t.Fatalf("committed files = %q, want modified and untracked files", committed)
+	}
+}
+
+func TestRunWorkspaceGitCommitUsesConfiguredIdentityAndIgnoresEnvironmentOverrides(t *testing.T) {
+	repo := initGitCommitTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatalf("write changed file: %v", err)
+	}
+	t.Setenv("GIT_AUTHOR_NAME", "Injected Author")
+	t.Setenv("GIT_AUTHOR_EMAIL", "injected-author@example.invalid")
+	t.Setenv("GIT_COMMITTER_NAME", "Injected Committer")
+	t.Setenv("GIT_COMMITTER_EMAIL", "injected-committer@example.invalid")
+
+	result, err := runWorkspaceGitCommit(context.Background(), repo, "test: preserve configured identity", true)
+	if err != nil {
+		t.Fatalf("runWorkspaceGitCommit error: %v output=%s", err, result.Output)
+	}
+	got := strings.TrimSpace(runGitCommitTestCommand(t, repo, "log", "-1", "--format=%an|%ae|%cn|%ce"))
+	if got != "Swarm Test|swarm-test@example.invalid|Swarm Test|swarm-test@example.invalid" {
+		t.Fatalf("commit identity = %q, want repository-configured identity", got)
 	}
 }
 
@@ -42,30 +65,25 @@ func TestRunWorkspaceGitCommitRequiresMessage(t *testing.T) {
 	}
 }
 
-func TestRunWorkspaceGitCommitBlocksWhenSecretCheckFails(t *testing.T) {
+func TestRunWorkspaceGitCommitDoesNotRunRepositoryWidePrecommitGate(t *testing.T) {
 	repo := initGitCommitTestRepo(t)
-	privateTailnetURL := "https://device." + "tail" + "123456" + ".ts.net\n"
-	if err := os.WriteFile(filepath.Join(repo, "leak.txt"), []byte(privateTailnetURL), 0o644); err != nil {
-		t.Fatalf("write leak file: %v", err)
+	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatalf("write changed file: %v", err)
 	}
 
-	before := strings.TrimSpace(runGitCommitTestCommand(t, repo, "rev-parse", "HEAD"))
-	result, err := runWorkspaceGitCommit(context.Background(), repo, "bad: leak", true)
-	if err == nil {
-		t.Fatal("expected secret-check failure")
+	result, err := runWorkspaceGitCommit(context.Background(), repo, "feat: bypass unrelated gate", true)
+	if err != nil {
+		t.Fatalf("runWorkspaceGitCommit error: %v output=%s", err, result.Output)
 	}
-	if result.OK {
-		t.Fatalf("secret-check failure result OK = true")
+	if !result.OK || result.ExitCode != 0 {
+		t.Fatalf("result = %+v, want ok exit 0", result)
 	}
-	if result.Argv[0] != "scripts/check-secrets.sh" {
-		t.Fatalf("failure argv = %#v, want scripts/check-secrets.sh", result.Argv)
+	if _, err := os.Stat(filepath.Join(repo, ".precommit-ran")); !os.IsNotExist(err) {
+		t.Fatalf("repository-wide precommit gate ran during workspace commit: err=%v", err)
 	}
-	if !strings.Contains(result.Output, "possible private Tailscale tailnet URL found") {
-		t.Fatalf("failure output missing private tailnet diagnostic: %q", result.Output)
-	}
-	after := strings.TrimSpace(runGitCommitTestCommand(t, repo, "rev-parse", "HEAD"))
-	if after != before {
-		t.Fatalf("commit advanced despite secret-check failure: before=%s after=%s", before, after)
+	got := strings.TrimSpace(runGitCommitTestCommand(t, repo, "log", "-1", "--pretty=%s"))
+	if got != "feat: bypass unrelated gate" {
+		t.Fatalf("commit subject = %q, want exact message", got)
 	}
 }
 
@@ -79,7 +97,7 @@ func initGitCommitTestRepo(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("initial\n"), 0o644); err != nil {
 		t.Fatalf("write initial file: %v", err)
 	}
-	runGitCommitTestCommand(t, repo, "add", "note.txt", "scripts/check-secrets.sh")
+	runGitCommitTestCommand(t, repo, "add", "note.txt", "scripts/check-precommit.sh")
 	runGitCommitTestCommand(t, repo, "commit", "-m", "chore: initial")
 	return repo
 }
@@ -92,15 +110,11 @@ func writeGitCommitTestSecretCheck(t *testing.T, repo string) {
 	}
 	script := `#!/usr/bin/env bash
 set -euo pipefail
-hits="$(grep -R -n -E --exclude-dir=.git --exclude='check-secrets.sh' 'tail[0-9a-z]{6,}\.ts\.net' . || true)"
-if [ -n "$hits" ]; then
-  echo '[secret-check] FAIL: possible private Tailscale tailnet URL found:'
-  echo "$hits"
-  exit 1
-fi
-echo '[test-secret-check] PASS'
+printf ran > .precommit-ran
+echo 'unrelated repository-wide failure' >&2
+exit 1
 `
-	if err := os.WriteFile(filepath.Join(scriptDir, "check-secrets.sh"), []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(scriptDir, "check-precommit.sh"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write secret check script: %v", err)
 	}
 }

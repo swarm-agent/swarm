@@ -1,6 +1,13 @@
 package provideriface
 
-import "context"
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"strings"
+	"time"
+)
 
 type ToolDefinition struct {
 	Type        string         `json:"type"`
@@ -10,19 +17,124 @@ type ToolDefinition struct {
 }
 
 type Request struct {
-	SessionID         string
-	Model             string
-	Thinking          string
-	Instructions      string
-	Input             []map[string]any
-	Tools             []ToolDefinition
-	ToolChoice        string
-	ServiceTier       string
-	ContextMode       string
-	ContextWindow     int
-	ParallelToolCalls bool
-	WorkspacePath     string
-	ToolInvoker       ToolInvoker
+	// SessionID is the stable durable Swarm session identity used for
+	// diagnostics/storage. Providers must not treat it as a cache/session
+	// affinity key; use ProviderCacheKey/SessionAffinityKey instead.
+	SessionID                 string
+	ProviderLineageID         string
+	ExecutionEpochID          string
+	ProviderConfigurationHash string
+	ContextBranchID           string
+	ProviderCacheKey          string
+	SessionAffinityKey        string
+	// TransportAffinityKey identifies a compatible reusable transport and must
+	// not be coupled to an execution epoch or provider continuation chain.
+	TransportAffinityKey          string
+	BoundaryReason                string
+	PreviousProviderLineageID     string
+	PreviousProviderID            string
+	PreviousModel                 string
+	NewProviderID                 string
+	NewModel                      string
+	HandoffSummaryMessageID       string
+	HandoffSummaryGlobalSeq       uint64
+	ProviderLineageStartMessageID string
+	ProviderLineageStartRunID     string
+	ProviderLineageStartGlobalSeq uint64
+	// Provider chain lifecycle is independent from transport lifecycle. A new
+	// chain clears provider continuation state, but may reuse a compatible healthy
+	// transport. ResetTransport always wins over ReuseTransport.
+	StartNewChain     bool
+	AllowContinuation bool
+	ReuseTransport    bool
+	ResetTransport    bool
+	// NativeContinuationAllowed and ForceFreshProviderContext are retained as
+	// inputs for callers not yet migrated to the explicit lifecycle policy.
+	NativeContinuationAllowed bool
+	ForceFreshProviderContext bool
+	Model                     string
+	Thinking                  string
+	Instructions              string
+	Input                     []map[string]any
+	Tools                     []ToolDefinition
+	ToolChoice                string
+	ServiceTier               string
+	ContextMode               string
+	ContextWindow             int
+	ModelCatalog              any
+	ParallelToolCalls         bool
+	WorkspacePath             string
+	ToolInvoker               ToolInvoker
+}
+
+func (r Request) EffectiveProviderCacheKey() string {
+	return strings.TrimSpace(firstNonEmpty(r.ProviderCacheKey, r.ProviderLineageID))
+}
+
+func (r Request) EffectiveSessionAffinityKey() string {
+	return strings.TrimSpace(firstNonEmpty(r.SessionAffinityKey, r.ProviderCacheKey, r.ProviderLineageID))
+}
+
+// WithRuntimeContext adds request-scoped, backend-authoritative model and time
+// context after stable lineage/cache keys have been resolved.
+func (r Request) WithRuntimeContext(providerID string, now time.Time) Request {
+	currentProvider := strings.TrimSpace(firstNonEmpty(r.NewProviderID, providerID))
+	currentModel := strings.TrimSpace(firstNonEmpty(r.NewModel, r.Model))
+	previousProvider := strings.TrimSpace(r.PreviousProviderID)
+	previousModel := strings.TrimSpace(r.PreviousModel)
+	identityChanged := strings.TrimSpace(r.PreviousProviderLineageID) != "" &&
+		previousProvider != "" && previousModel != "" &&
+		(!strings.EqualFold(previousProvider, currentProvider) || previousModel != currentModel)
+
+	contextBlock := RuntimeContextInstructions(currentProvider, currentModel, previousProvider, previousModel, identityChanged, now)
+	r.Instructions = strings.TrimSpace(strings.TrimSpace(r.Instructions) + "\n\n" + contextBlock)
+	return r
+}
+
+// RuntimeContextInstructions formats the canonical dynamic context supplied to
+// conversational provider requests. Callers must not include its timestamp in
+// lineage or provider-cache identity.
+func RuntimeContextInstructions(currentProvider, currentModel, previousProvider, previousModel string, identityChanged bool, now time.Time) string {
+	currentProvider = strings.TrimSpace(currentProvider)
+	currentModel = strings.TrimSpace(currentModel)
+	previousProvider = strings.TrimSpace(previousProvider)
+	previousModel = strings.TrimSpace(previousModel)
+	var b strings.Builder
+	b.WriteString("[request-runtime-context]\n")
+	b.WriteString("Backend-authoritative context for this provider request; do not infer or claim a different identity or time.\n")
+	fmt.Fprintf(&b, "- current_utc_time: %s\n", now.UTC().Format(time.RFC3339))
+	fmt.Fprintf(&b, "- current_provider: %s\n", currentProvider)
+	fmt.Fprintf(&b, "- current_model: %s", currentModel)
+	if identityChanged {
+		b.WriteString("\n- provider_model_change: The resolved provider/model changed for this request.\n")
+		fmt.Fprintf(&b, "- previous_provider: %s\n", previousProvider)
+		fmt.Fprintf(&b, "- previous_model: %s", previousModel)
+	}
+	return b.String()
+}
+
+func ShortProviderLineageKey(parts ...string) string {
+	cleaned := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			cleaned = append(cleaned, part)
+		}
+	}
+	if len(cleaned) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join(cleaned, "\x00")))
+	return hex.EncodeToString(sum[:16])
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 type ToolInvocation struct {
@@ -33,13 +145,14 @@ type ToolInvocation struct {
 }
 
 type ToolExecutionResult struct {
-	CallID       string
-	Name         string
-	Output       string
-	Error        string
-	DurationMS   int64
-	TextForModel string
-	RestartTurn  bool
+	CallID           string
+	Name             string
+	Output           string
+	Error            string
+	DurationMS       int64
+	PermissionWaitMS int64
+	TextForModel     string
+	RestartTurn      bool
 }
 
 type ToolInvoker interface {
@@ -68,6 +181,8 @@ type TokenUsage struct {
 	TotalTokens      int64            `json:"total_tokens,omitempty"`
 	CacheReadTokens  int64            `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int64            `json:"cache_write_tokens,omitempty"`
+	ServiceTier      string           `json:"service_tier,omitempty"`
+	EstimatedCostUSD float64          `json:"estimated_cost_usd,omitempty"`
 	Source           string           `json:"source,omitempty"`
 	Transport        string           `json:"transport,omitempty"`
 	ConnectedViaWS   *bool            `json:"connected_via_websocket,omitempty"`
@@ -97,21 +212,86 @@ type AssistantMessage struct {
 
 type StreamEventType string
 
+// StreamEventDeltaMode makes the provider adapter's text operation explicit.
+// Reasoning summary events must set append for raw chunks or replace for full snapshots.
+type StreamEventDeltaMode string
+
 const (
+	StreamEventDeltaModeAppend  StreamEventDeltaMode = "append"
+	StreamEventDeltaModeReplace StreamEventDeltaMode = "replace"
+
 	StreamEventOutputTextDelta       StreamEventType = "response.output_text.delta"
 	StreamEventReasoningSummaryDelta StreamEventType = "response.reasoning_summary_text.delta"
 	StreamEventAssistantCommentary   StreamEventType = "response.assistant_commentary.delta"
+
+	// Tool-call construction events describe provider/model output while a tool call
+	// is being assembled. They are intentionally separate from Swarm runtime tool
+	// execution events such as tool.started/tool.delta/tool.completed.
+	StreamEventToolCallStarted           StreamEventType = "response.tool_call.started"
+	StreamEventToolCallArgumentsDelta    StreamEventType = "response.tool_call.arguments.delta"
+	StreamEventToolCallArgumentsSnapshot StreamEventType = "response.tool_call.arguments.snapshot"
+	StreamEventToolCallCompleted         StreamEventType = "response.tool_call.completed"
 )
 
 type StreamEvent struct {
 	Type         StreamEventType
 	Delta        string
+	DeltaMode    StreamEventDeltaMode
 	Phase        AssistantPhase
 	ReasoningKey string
+
+	// Tool-call construction identity/content. Providers should populate the
+	// stable fields as soon as they are known; ToolCallIndex may be present before
+	// a provider call ID exists. ArgumentsDelta is append-only when available,
+	// while ArgumentsSnapshot is a replacement snapshot for providers that stream
+	// full argument states instead of byte deltas. Arguments is the final argument
+	// string for StreamEventToolCallCompleted.
+	ToolCallID        string
+	ToolCallIndex     *int
+	ToolName          string
+	Arguments         string
+	ArgumentsDelta    string
+	ArgumentsSnapshot string
+	Metadata          map[string]any
 }
 
 type Runner interface {
 	ID() string
 	CreateResponse(ctx context.Context, req Request) (Response, error)
 	CreateResponseStreaming(ctx context.Context, req Request, onEvent func(StreamEvent)) (Response, error)
+}
+
+type ExecutionEpochContextMode string
+
+const (
+	// ExecutionEpochContextStatelessFullInput sends the complete, explicitly
+	// selected epoch input on every request and carries no provider continuation
+	// object between calls.
+	ExecutionEpochContextStatelessFullInput ExecutionEpochContextMode = "stateless_full_input"
+	// ExecutionEpochContextResponsesChain permits provider-native continuation
+	// only inside one execution epoch. A new epoch always starts a new chain.
+	ExecutionEpochContextResponsesChain ExecutionEpochContextMode = "responses_chain"
+)
+
+type ExecutionEpochLifecycleCapabilities struct {
+	ContextMode                ExecutionEpochContextMode
+	EpochScopedCacheKey        bool
+	EpochScopedSessionAffinity bool
+	TransportReusable          bool
+}
+
+func (c ExecutionEpochLifecycleCapabilities) Valid() bool {
+	switch c.ContextMode {
+	case ExecutionEpochContextStatelessFullInput, ExecutionEpochContextResponsesChain:
+		return true
+	default:
+		return false
+	}
+}
+
+// ExecutionEpochLifecycleRunner requires every conversational runner to declare
+// how provider context, caches, affinity, and transport behave at epoch
+// boundaries. Callers must fail closed when the declaration is absent or invalid.
+type ExecutionEpochLifecycleRunner interface {
+	ExecutionEpochLifecycle() ExecutionEpochLifecycleCapabilities
 }

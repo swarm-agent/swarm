@@ -8,6 +8,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -39,27 +40,39 @@ type RunExecutionContext struct {
 	WorktreeBaseBranch string `json:"worktree_base_branch,omitempty"`
 }
 
+type RunPlanCheckpointContext struct {
+	PlanID          string `json:"plan_id,omitempty"`
+	CheckpointID    string `json:"checkpoint_id,omitempty"`
+	AttemptID       string `json:"attempt_id,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+}
+
 type RunRequest struct {
-	Prompt           string               `json:"prompt,omitempty"`
-	AgentName        string               `json:"agent_name,omitempty"`
-	Instructions     string               `json:"instructions,omitempty"`
-	Compact          bool                 `json:"compact,omitempty"`
-	TargetKind       string               `json:"target_kind,omitempty"`
-	TargetName       string               `json:"target_name,omitempty"`
-	Background       bool                 `json:"background,omitempty"`
-	ToolScope        *RunToolScope        `json:"tool_scope,omitempty"`
-	ExecutionContext *RunExecutionContext `json:"execution_context,omitempty"`
+	Prompt                string                    `json:"prompt,omitempty"`
+	AgentName             string                    `json:"agent_name,omitempty"`
+	Instructions          string                    `json:"instructions,omitempty"`
+	Compact               bool                      `json:"compact,omitempty"`
+	CompactOrigin         string                    `json:"compact_origin,omitempty"`
+	TargetKind            string                    `json:"target_kind,omitempty"`
+	TargetName            string                    `json:"target_name,omitempty"`
+	Background            bool                      `json:"background,omitempty"`
+	ToolScope             *RunToolScope             `json:"tool_scope,omitempty"`
+	ExecutionContext      *RunExecutionContext      `json:"execution_context,omitempty"`
+	PlanCheckpointContext *RunPlanCheckpointContext `json:"plan_checkpoint_context,omitempty"`
 }
 
 type RunStartMeta struct {
-	AllowSubagent       bool
-	DisabledTools       map[string]bool
-	PermissionSessionID string
-	RunID               string
-	OwnerTransport      string
-	CompiledPolicy      *permission.Policy
-	IntegrationFlow     bool
-	Principal           identity.Principal
+	AllowSubagent bool
+	DisabledTools map[string]bool
+	// TrustedAgentProfile is an internal-only immutable run profile snapshot. It is
+	// deliberately absent from RunRequest so clients and models cannot supply it.
+	TrustedAgentProfile  *pebblestore.AgentProfile
+	PermissionSessionID  string
+	RunID                string
+	OwnerTransport       string
+	CompiledPolicy       *permission.Policy
+	Principal            identity.Principal
+	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 }
 
 func (r RunRequest) Normalized() RunRequest {
@@ -68,6 +81,10 @@ func (r RunRequest) Normalized() RunRequest {
 	r.Instructions = strings.TrimSpace(r.Instructions)
 	r.TargetKind = strings.TrimSpace(r.TargetKind)
 	r.TargetName = strings.TrimSpace(r.TargetName)
+	if r.PlanCheckpointContext != nil {
+		ctx := normalizeRunPlanCheckpointContext(*r.PlanCheckpointContext)
+		r.PlanCheckpointContext = &ctx
+	}
 	if r.ToolScope != nil {
 		scope := normalizeRunToolScope(*r.ToolScope)
 		if isRunToolScopeZero(scope) {
@@ -90,23 +107,26 @@ func (r RunRequest) Normalized() RunRequest {
 func NewRunOptions(request RunRequest, meta RunStartMeta) RunOptions {
 	request = request.Normalized()
 	return RunOptions{
-		Prompt:              request.Prompt,
-		AgentName:           request.AgentName,
-		Instructions:        request.Instructions,
-		Compact:             request.Compact,
-		AllowSubagent:       meta.AllowSubagent,
-		DisabledTools:       cloneDisabledTools(meta.DisabledTools),
-		PermissionSessionID: strings.TrimSpace(meta.PermissionSessionID),
-		RunID:               strings.TrimSpace(meta.RunID),
-		TargetKind:          request.TargetKind,
-		TargetName:          request.TargetName,
-		Background:          request.Background,
-		OwnerTransport:      strings.TrimSpace(meta.OwnerTransport),
-		ToolScope:           request.ToolScope,
-		CompiledPolicy:      meta.CompiledPolicy,
-		ExecutionContext:    request.ExecutionContext,
-		IntegrationFlow:     meta.IntegrationFlow,
-		Principal:           meta.Principal,
+		Prompt:                request.Prompt,
+		AgentName:             request.AgentName,
+		Instructions:          request.Instructions,
+		Compact:               request.Compact,
+		CompactOrigin:         request.CompactOrigin,
+		AllowSubagent:         meta.AllowSubagent,
+		DisabledTools:         cloneDisabledTools(meta.DisabledTools),
+		TrustedAgentProfile:   meta.TrustedAgentProfile,
+		PermissionSessionID:   strings.TrimSpace(meta.PermissionSessionID),
+		RunID:                 strings.TrimSpace(meta.RunID),
+		TargetKind:            request.TargetKind,
+		TargetName:            request.TargetName,
+		Background:            request.Background,
+		OwnerTransport:        strings.TrimSpace(meta.OwnerTransport),
+		ToolScope:             request.ToolScope,
+		CompiledPolicy:        meta.CompiledPolicy,
+		ExecutionContext:      request.ExecutionContext,
+		PlanCheckpointContext: request.PlanCheckpointContext,
+		Principal:             meta.Principal,
+		ApplySessionMutation:  meta.ApplySessionMutation,
 	}
 }
 
@@ -221,6 +241,14 @@ func isRunToolScopeZero(scope RunToolScope) bool {
 
 func isRunExecutionContextZero(ctx RunExecutionContext) bool {
 	return strings.TrimSpace(ctx.WorkspacePath) == "" && strings.TrimSpace(ctx.CWD) == "" && strings.TrimSpace(ctx.WorktreeMode) == "" && strings.TrimSpace(ctx.WorktreeRootPath) == "" && strings.TrimSpace(ctx.WorktreeBranch) == "" && strings.TrimSpace(ctx.WorktreeBaseBranch) == ""
+}
+
+func normalizeRunPlanCheckpointContext(ctx RunPlanCheckpointContext) RunPlanCheckpointContext {
+	ctx.PlanID = strings.TrimSpace(ctx.PlanID)
+	ctx.CheckpointID = strings.TrimSpace(ctx.CheckpointID)
+	ctx.AttemptID = strings.TrimSpace(ctx.AttemptID)
+	ctx.ParentSessionID = strings.TrimSpace(ctx.ParentSessionID)
+	return ctx
 }
 
 func (s *Service) resolveRunTarget(options RunOptions) (targetKind, targetName, agentName string, err error) {
@@ -539,10 +567,14 @@ func (s *Service) resolveExecutionRoots(session pebblestore.SessionSnapshot, wor
 	if workspacePath == "" {
 		return nil, errors.New("workspace path is required")
 	}
-	if worktreeEnabled {
-		return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots([]string{workspacePath}, temporaryRoots)), nil
+	validatedRoots, err := mergeValidatedTemporaryWorkspaceRoots(nil, temporaryRoots)
+	if err != nil {
+		return nil, err
 	}
-	principal, err := principalForRunWorkspaceScope(session, principal)
+	if worktreeEnabled {
+		return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots([]string{workspacePath}, validatedRoots)), nil
+	}
+	principal, err = principalForRunWorkspaceScope(session, principal)
 	if err != nil {
 		return nil, err
 	}
@@ -551,9 +583,9 @@ func (s *Service) resolveExecutionRoots(session pebblestore.SessionSnapshot, wor
 		if err != nil {
 			return nil, fmt.Errorf("resolve account-scoped execution roots: %w", err)
 		}
-		return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots(resolved.Directories, temporaryRoots)), nil
+		return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots(resolved.Directories, validatedRoots)), nil
 	}
-	return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots([]string{workspacePath}, temporaryRoots)), nil
+	return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots([]string{workspacePath}, validatedRoots)), nil
 }
 
 func normalizeExecutionRoots(primary string, roots []string) []string {
@@ -652,10 +684,8 @@ func buildBackgroundRunMetadata(existing map[string]any, targetKind, targetName 
 	metadata["launch_mode"] = "background"
 	metadata["background"] = true
 	metadata["title_locked"] = true
-	if !metadataMarksFlowRun(metadata) {
-		metadata["target_kind"] = strings.TrimSpace(targetKind)
-		metadata["target_name"] = strings.TrimSpace(targetName)
-	}
+	metadata["target_kind"] = strings.TrimSpace(targetKind)
+	metadata["target_name"] = strings.TrimSpace(targetName)
 	metadata["execution_context"] = map[string]any{
 		"workspace_path":       strings.TrimSpace(ctx.WorkspacePath),
 		"cwd":                  strings.TrimSpace(ctx.CWD),
@@ -665,28 +695,4 @@ func buildBackgroundRunMetadata(existing map[string]any, targetKind, targetName 
 		"worktree_base_branch": strings.TrimSpace(ctx.WorktreeBaseBranch),
 	}
 	return metadata
-}
-
-func metadataMarksFlowRun(metadata map[string]any) bool {
-	if len(metadata) == 0 {
-		return false
-	}
-	return strings.EqualFold(metadataText(metadata, "source"), "flow") ||
-		strings.EqualFold(metadataText(metadata, "lineage_kind"), "flow") ||
-		strings.EqualFold(metadataText(metadata, "owner_transport"), "flow_scheduler") ||
-		metadataText(metadata, "flow_id") != ""
-}
-
-func metadataText(metadata map[string]any, key string) string {
-	if len(metadata) == 0 {
-		return ""
-	}
-	value, ok := metadata[key]
-	if !ok || value == nil {
-		return ""
-	}
-	if text, ok := value.(string); ok {
-		return strings.TrimSpace(text)
-	}
-	return strings.TrimSpace(fmt.Sprint(value))
 }

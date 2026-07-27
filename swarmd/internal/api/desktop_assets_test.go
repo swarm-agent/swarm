@@ -90,8 +90,8 @@ func TestServeDesktopAssetSetsServiceWorkerScopeHeaders(t *testing.T) {
 
 	resp := rec.Result()
 	defer resp.Body.Close()
-	if got := resp.Header.Get("Cache-Control"); got != desktopDocumentCacheControl {
-		t.Fatalf("Cache-Control = %q, want %q", got, desktopDocumentCacheControl)
+	if got := resp.Header.Get("Cache-Control"); got != desktopServiceWorkerCacheControl {
+		t.Fatalf("Cache-Control = %q, want %q", got, desktopServiceWorkerCacheControl)
 	}
 	if got := resp.Header.Get("Service-Worker-Allowed"); got != "/" {
 		t.Fatalf("Service-Worker-Allowed = %q, want /", got)
@@ -134,7 +134,7 @@ func TestShouldServeDesktopAssetLeavesAPIRoutesToAPIHandler(t *testing.T) {
 		{name: "app route", path: "/swarm-go/settings", want: true},
 		{name: "v1 api", path: "/v1/auth/desktop/session", want: false},
 		{name: "v2 api", path: "/v2/agents", want: false},
-		{name: "v3 api", path: "/v3/flows", want: false},
+		{name: "v3 api", path: "/v3/sessions", want: false},
 		{name: "websocket", path: "/ws", want: false},
 		{name: "health", path: "/healthz", want: false},
 	}

@@ -58,22 +58,11 @@ func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 }
 
 func recordReady(record pebblestore.CodexAuthRecord) bool {
-	switch record.Type {
-	case pebblestore.CodexAuthTypeOAuth:
-		return record.AccessToken != "" && record.RefreshToken != ""
-	default:
-		return record.APIKey != ""
-	}
+	return record.Type == pebblestore.CodexAuthTypeOAuth && record.AccessToken != "" && record.RefreshToken != ""
 }
 
 func codexAuthMethods() []provideriface.AuthMethod {
 	return []provideriface.AuthMethod{
-		{
-			ID:             "api",
-			Label:          "API key",
-			CredentialType: "api",
-			Description:    "Use a Codex API key.",
-		},
 		{
 			ID:             "oauth",
 			Label:          "OAuth token pair",

@@ -302,4 +302,4 @@ Do not update the plan to claim Section C is converted until all Section C commi
 - Exact canonical identity key prefix helpers must align with Section A identity records once implemented.
 - Exact `WorkspaceID` validation APIs depend on Section B workspace conversion.
 - Exact credential readiness APIs depend on Section A Auth/Vault conversion.
-- Deployment sync/apply routes for agents/model defaults are outside this section but must be blocked or converted before any release claim that Section C state is fully safe across managed hosts.
+- Any remaining deployment sync/apply routes for agents/model defaults are outside this section and must not become an alternate authority for identity-scoped state.

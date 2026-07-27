@@ -105,6 +105,38 @@ func TestApplyGitStatusRefreshUpdatesHomeAndChat(t *testing.T) {
 	}
 }
 
+func TestStartGitRealtimeWatcherBuildsOffCallerAndInstallsOnReady(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "tracked.txt"), "hello\n")
+	runGit(t, repo, "add", "tracked.txt")
+	runGit(t, repo, "commit", "-m", "init")
+
+	a := &App{
+		activePath:      repo,
+		gitStatusCh:     make(chan gitStatusRefreshResult, 8),
+		gitWatcherReady: make(chan gitWatcherStartResult, 1),
+	}
+	a.startGitRealtimeWatcher(repo)
+	if a.gitWatcher != nil {
+		t.Fatal("watcher was installed synchronously")
+	}
+
+	select {
+	case result := <-a.gitWatcherReady:
+		a.gitWatcherReady <- result
+	case <-time.After(3 * time.Second):
+		t.Fatal("watcher construction did not finish")
+	}
+	if a.gitWatcher != nil {
+		t.Fatal("watcher was installed before the ready result was consumed")
+	}
+	_ = a.consumeGitStatusRefreshResults()
+	if a.gitWatcher == nil {
+		t.Fatal("watcher was not installed after consuming the ready result")
+	}
+	defer a.stopGitRealtimeWatcher()
+}
+
 func TestRepoGitWatcherEmitsOnHeadChange(t *testing.T) {
 	repo := initGitRepo(t)
 	writeFile(t, filepath.Join(repo, "tracked.txt"), "hello\n")

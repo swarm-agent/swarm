@@ -1,4 +1,5 @@
 import type { DesktopPermissionRecord } from '../../types/realtime'
+import { safeString } from './desktop-permission-normalization'
 
 export interface AskUserOption {
   value: string
@@ -26,6 +27,7 @@ export interface ExitPlanPayload {
   body: string
   planId: string
   document: unknown
+  approvedArguments: Record<string, unknown>
 }
 
 export interface PlanUpdatePayload {
@@ -39,9 +41,42 @@ export interface PlanUpdatePayload {
   updateScope: string
   updateKind: string
   checkpoint: boolean
+  action: string
+  changeRequest: string
+  checkpointTitle: string
+  tasks: string[]
+  acceptanceCriteria: string[]
+  notes: string
+  followupCheckpointPolicy: string
+  policyEffective: string
+  approvalRequired: boolean
+  runQueued: boolean
   document: unknown
   priorDocument: unknown
+  revision: number
+  currentRevision: number
+  baseRevision: number
+  planAmendmentDelta: PlanAmendmentDelta | null
   approvedArguments: Record<string, unknown>
+}
+
+export interface PlanAmendmentDeltaItem {
+  id: string
+  title: string
+  status: string
+}
+
+export interface PlanAmendmentDelta {
+  reason: string
+  baseRevision: number
+  currentRevision: number
+  overrideStale: boolean
+  replaceFromCheckpointId: string
+  preservedCheckpoints: PlanAmendmentDeltaItem[]
+  replacedCheckpoints: PlanAmendmentDeltaItem[]
+  replacementCheckpoints: PlanAmendmentDeltaItem[]
+  nextCheckpoint: PlanAmendmentDeltaItem | null
+  bullets: string[]
 }
 
 export type PlanUpdateDiffRowKind = 'added' | 'removed' | 'context' | 'gap'
@@ -129,6 +164,8 @@ export interface TaskLaunchPayload {
   resolvedAgentError: string
   disabledTools: string[]
   resolvedTools: TaskLaunchResolvedTools
+  automaticBudgetUsed: number
+  automaticBudgetRemaining: number
   launches: TaskLaunchRow[]
 }
 
@@ -143,6 +180,13 @@ export interface TaskLaunchRow {
   subagentModel: string
   childTitlePreview: string
   childMode: string
+  sourceAgentName: string
+  sourceProfileMode: string
+  inheritedRuntimeMode: string
+  deliverable: string
+  ownedScope: string[]
+  dependencyEvidence: string
+  isolation: string
   allowBash: boolean
   reportMaxChars: number
   disabledTools: string[]
@@ -152,37 +196,6 @@ export interface TaskLaunchRow {
 export interface AgentChangeField {
   label: string
   value: string
-}
-
-export interface ManageImagePayload {
-  title: string
-  subtitle: string
-  summary: string
-  action: string
-  prompt: string
-  count: number
-  provider: string
-  model: string
-  size: string
-  threadId: string
-  purpose: string
-  hostExecution: string
-  transcriptPolicy: string
-  approvedArguments: Record<string, unknown>
-}
-
-export interface ManageFlowPayload {
-  title: string
-  subtitle: string
-  summary: string
-  action: string
-  flowId: string
-  flowName: string
-  isDelete: boolean
-  content: Record<string, unknown>
-  before: Record<string, unknown>
-  after: Record<string, unknown>
-  approvedArguments: Record<string, unknown>
 }
 
 export interface AgentToolInventoryTool {
@@ -231,7 +244,65 @@ export interface AgentChangePayload {
   changes: AgentChangeField[]
 }
 
-export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'manage-todos' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change' | 'manage-image' | 'manage-flow'
+export interface SessionArchivePermissionItem {
+  title: string
+  workspaceName: string
+  state: string
+  updatedAt: number
+}
+
+export interface SessionArchivePermissionPayload {
+  action: 'archive' | 'unarchive'
+  sessions: SessionArchivePermissionItem[]
+  approvedArguments: Record<string, unknown>
+}
+
+export interface SessionCommitPermissionItem {
+  message: string
+  repository: string
+  files: string[]
+}
+
+export interface SessionCommitPermissionPayload {
+  action: 'commit'
+  commits: SessionCommitPermissionItem[]
+  approvedArguments: Record<string, unknown>
+}
+
+export interface SessionDeployProposal {
+  id: string
+  title: string
+  prompt: string
+  mode: 'plan' | 'auto'
+  agentName: string
+  agentMode: 'primary' | 'subagent'
+  workspacePath: string
+  workspaceName: string
+  managedWorktree: boolean
+  worktreeBaseBranch: string
+  worktreeBranch: string
+  selected: boolean
+  manifest: Record<string, unknown>
+}
+
+export interface SessionDeployWorkspace {
+  id: string
+  generation: number
+  path: string
+  name: string
+}
+
+export interface SessionDeployPermissionPayload {
+  action: 'deploy'
+  manifestVersion: number
+  manifestDigest: string
+  proposals: SessionDeployProposal[]
+  allowedAgents: Array<{ name: string; mode: 'primary' | 'subagent' }>
+  allowedWorkspaces: SessionDeployWorkspace[]
+  approvedArguments: Record<string, unknown>
+}
+
+export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-amendment-request' | 'plan-new-request' | 'manage-todos' | 'session-commit' | 'session-archive' | 'session-unarchive' | 'session-deploy' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change'
 
 function decodePermissionArguments(raw: string): Record<string, unknown> | null {
   const trimmed = raw.trim()
@@ -416,8 +487,8 @@ function parseAskUserQuestions(args: Record<string, unknown>): AskUserQuestion[]
   return questions
 }
 
-export function normalizePermissionToolName(raw: string): string {
-  let name = raw.trim().toLowerCase()
+export function normalizePermissionToolName(raw: unknown): string {
+  let name = safeString(raw).toLowerCase()
   const dot = name.lastIndexOf('.')
   if (dot >= 0 && dot + 1 < name.length) {
     name = name.slice(dot + 1)
@@ -432,20 +503,16 @@ export function normalizePermissionToolName(raw: string): string {
       return 'manage_todos'
     case 'planmanage':
       return 'plan_manage'
-    case 'manageimage':
-      return 'manage_image'
-    case 'manageflow':
-      return 'manage_flow'
     default:
       return name
   }
 }
 
-export function normalizePermissionSessionMode(raw: string): 'plan' | 'auto' | 'yolo' {
-  switch (raw.trim().toLowerCase()) {
+export function normalizePermissionSessionMode(raw: unknown): 'plan' | 'auto' | 'yolo' {
+  switch (safeString(raw).toLowerCase()) {
     case 'auto':
     case 'yolo':
-      return raw.trim().toLowerCase() as 'auto' | 'yolo'
+      return safeString(raw).toLowerCase() as 'auto' | 'yolo'
     default:
       return 'plan'
   }
@@ -455,7 +522,7 @@ export function permissionRequiresApproval(
   permission: Pick<DesktopPermissionRecord, 'toolName' | 'mode' | 'requirement'>,
   fallbackMode = 'plan',
 ): boolean {
-  if (permission.requirement.trim().toLowerCase() === 'workspace_scope') {
+  if (safeString(permission.requirement).toLowerCase() === 'workspace_scope') {
     return true
   }
   const toolName = normalizePermissionToolName(permission.toolName)
@@ -471,7 +538,9 @@ export function permissionRequiresApproval(
     case 'skill_use':
       return false
     case 'plan_manage':
-      return permission.requirement.trim().toLowerCase() === 'plan_update'
+      return ['plan_update', 'plan_followup_request', 'plan_amendment_request', 'plan_new_request'].includes(
+        safeString(permission.requirement).toLowerCase(),
+      )
     case 'task':
       return true
     case 'ask_user':
@@ -498,36 +567,53 @@ export function countApprovalRequiredPermissions(
 }
 
 export function permissionKind(permission: DesktopPermissionRecord): DesktopPermissionKind {
-  const requirement = permission.requirement.trim().toLowerCase()
+  const requirement = safeString(permission.requirement).toLowerCase()
   if (requirement === 'workspace_scope') {
     return 'workspace-scope'
-  }
-  if (requirement === 'flow_change') {
-    return 'manage-flow'
   }
   switch (normalizePermissionToolName(permission.toolName)) {
     case 'exit_plan_mode':
       return 'exit-plan'
     case 'plan_manage':
-      if (permission.requirement.trim().toLowerCase() === 'plan_update') {
-        return 'plan-update'
+      switch (safeString(permission.requirement).toLowerCase()) {
+        case 'plan_followup_request':
+          return 'plan-followup-request'
+        case 'plan_amendment_request':
+          return 'plan-amendment-request'
+        case 'plan_new_request':
+          return 'plan-new-request'
+        case 'plan_update':
+          // Legacy generic plan updates are non-lifecycle/draft-only; active plan lifecycle
+          // changes must arrive as plan_followup_request, plan_amendment_request, or plan_new_request.
+          return 'plan-update'
+        default:
+          return 'generic'
       }
-      return 'generic'
     case 'manage_todos':
       return 'manage-todos'
-    case 'manage_image':
-      return 'manage-image'
-    case 'manage_flow':
-      return 'manage-flow'
+    case 'manage_sessions':
+      if (requirement === 'session_commit') {
+        return 'session-commit'
+      }
+      if (requirement === 'session_archive') {
+        return 'session-archive'
+      }
+      if (requirement === 'session_unarchive') {
+        return 'session-unarchive'
+      }
+      if (requirement === 'session_deploy') {
+        return 'session-deploy'
+      }
+      return 'generic'
     case 'ask_user':
       return 'ask-user'
     case 'task':
-      if (permission.requirement.trim().toLowerCase() === 'task_launch') {
+      if (safeString(permission.requirement).toLowerCase() === 'task_launch') {
         return 'task-launch'
       }
       return 'generic'
     case 'manage_agent':
-      if (permission.requirement.trim().toLowerCase() === 'agent_change') {
+      if (safeString(permission.requirement).toLowerCase() === 'agent_change') {
         return 'agent-change'
       }
       return 'generic'
@@ -536,7 +622,19 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
   }
 }
 
-export function permissionDisplayToolName(raw: string): string {
+const PLAN_PROPOSAL_PERMISSION_KINDS: ReadonlySet<DesktopPermissionKind> = new Set([
+  'exit-plan',
+  'plan-update',
+  'plan-followup-request',
+  'plan-amendment-request',
+  'plan-new-request',
+])
+
+export function isPlanProposalPermission(permission: DesktopPermissionRecord): boolean {
+  return PLAN_PROPOSAL_PERMISSION_KINDS.has(permissionKind(permission))
+}
+
+export function permissionDisplayToolName(raw: unknown): string {
   const normalized = normalizePermissionToolName(raw)
   if (!normalized) {
     return 'tool'
@@ -550,23 +648,141 @@ export function permissionDisplayToolName(raw: string): string {
       return 'manage_todos'
     case 'plan_manage':
       return 'plan'
-    case 'manage_image':
-      return 'manage-image'
-    case 'manage_flow':
-      return 'manage-flow'
     default:
       return normalized
   }
 }
 
-export function permissionRequirementLabel(raw: string): string {
-  switch (raw.trim().toLowerCase()) {
+export function permissionRequirementLabel(raw: unknown): string {
+  const value = safeString(raw)
+  switch (value.toLowerCase()) {
     case '':
       return 'permission'
     case 'workspace_scope':
       return 'workspace access'
     default:
-      return raw.trim()
+      return value
+  }
+}
+
+export function parseSessionCommitPermission(permission: DesktopPermissionRecord): SessionCommitPermissionPayload {
+  const payload = decodePermissionArguments(permission.toolArguments) ?? {}
+  const manifest = mapObjectArg(payload, 'manifest')
+  const rawCommits = Array.isArray(manifest.commits) ? manifest.commits : []
+  const commits = rawCommits.flatMap((entry): SessionCommitPermissionItem[] => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
+    const commit = entry as Record<string, unknown>
+    const rawFiles = Array.isArray(commit.files) ? commit.files : []
+    const files = rawFiles.flatMap((file): string[] => {
+      if (typeof file === 'string') return file.trim() ? [file.trim()] : []
+      if (!file || typeof file !== 'object' || Array.isArray(file)) return []
+      const path = mapStringArg(file as Record<string, unknown>, 'path')
+      return path ? [path] : []
+    })
+    return [{
+      message: mapStringArg(commit, 'message'),
+      repository: mapStringArg(commit, 'repository'),
+      files,
+    }]
+  })
+  return {
+    action: 'commit',
+    commits,
+    approvedArguments: mapObjectArg(payload, 'approved_arguments'),
+  }
+}
+
+export function parseSessionArchivePermission(permission: DesktopPermissionRecord): SessionArchivePermissionPayload {
+  const payload = decodePermissionArguments(permission.toolArguments) ?? {}
+  const rawSessions = Array.isArray(payload.sessions) ? payload.sessions : []
+  const sessions = rawSessions.flatMap((entry): SessionArchivePermissionItem[] => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return []
+    }
+    const session = entry as Record<string, unknown>
+    const updatedAt = typeof session.updated_at === 'number' && Number.isFinite(session.updated_at)
+      ? session.updated_at
+      : 0
+    return [{
+      title: safeString(session.title) || 'Untitled session',
+      workspaceName: safeString(session.workspace_name) || 'Unknown workspace',
+      state: safeString(session.state) || 'unknown',
+      updatedAt,
+    }]
+  })
+
+  return {
+    action: mapStringArg(payload, 'action').toLowerCase() === 'unarchive' ? 'unarchive' : 'archive',
+    sessions,
+    approvedArguments: mapObjectArg(payload, 'approved_arguments'),
+  }
+}
+
+export function parseSessionDeployPermission(permission: DesktopPermissionRecord): SessionDeployPermissionPayload {
+  const payload = decodePermissionArguments(permission.toolArguments) ?? {}
+  const approvedArguments = mapObjectArg(payload, 'approved_arguments')
+  const rawProposals = Array.isArray(payload.proposals) ? payload.proposals : []
+  const proposals = rawProposals.flatMap((entry): SessionDeployProposal[] => {
+    const proposal = asRecord(entry)
+    if (!proposal) return []
+    const id = mapStringArg(proposal, 'id')
+    const prompt = mapStringArg(proposal, 'prompt')
+    const agentName = mapStringArg(proposal, 'agent_name')
+    const agentMode = mapStringArg(proposal, 'agent_mode').toLowerCase()
+    const mode = mapStringArg(proposal, 'mode').toLowerCase()
+    if (!id || !prompt || !agentName || !['primary', 'subagent'].includes(agentMode) || !['plan', 'auto'].includes(mode)) return []
+    return [{
+      id,
+      title: mapStringArg(proposal, 'title'),
+      prompt,
+      mode: mode as 'plan' | 'auto',
+      agentName,
+      agentMode: agentMode as 'primary' | 'subagent',
+      workspacePath: mapStringArg(proposal, 'workspace_path'),
+      workspaceName: mapStringArg(proposal, 'workspace_name'),
+      managedWorktree: mapBoolArg(proposal, 'managed_worktree'),
+      worktreeBaseBranch: mapStringArg(proposal, 'worktree_base_branch'),
+      worktreeBranch: mapStringArg(proposal, 'worktree_branch'),
+      selected: mapBoolArg(proposal, 'selected'),
+      manifest: { ...proposal },
+    }]
+  }).slice(0, 8)
+  const allowedAgentsByName = new Map<string, { name: string; mode: 'primary' | 'subagent' }>()
+  proposals.forEach((proposal) => {
+    allowedAgentsByName.set(proposal.agentName.toLowerCase(), { name: proposal.agentName, mode: proposal.agentMode })
+  })
+  const rawAllowedAgents = Array.isArray(payload.allowed_agents) ? payload.allowed_agents : []
+  rawAllowedAgents.forEach((entry) => {
+    const agent = asRecord(entry)
+    if (!agent) return
+    const name = mapStringArg(agent, 'name')
+    const mode = mapStringArg(agent, 'mode').toLowerCase()
+    if (name && (mode === 'primary' || mode === 'subagent')) {
+      allowedAgentsByName.set(name.toLowerCase(), { name, mode })
+    }
+  })
+  const rawAllowedWorkspaces = Array.isArray(payload.allowed_workspaces) ? payload.allowed_workspaces : []
+  const allowedWorkspaces = rawAllowedWorkspaces.flatMap((entry): SessionDeployWorkspace[] => {
+    const workspace = asRecord(entry)
+    if (!workspace) return []
+    const id = mapStringArg(workspace, 'id')
+    const path = mapStringArg(workspace, 'path')
+    if (!id || !path) return []
+    return [{
+      id,
+      generation: mapNumberArg(workspace, 'generation'),
+      path,
+      name: mapStringArg(workspace, 'name'),
+    }]
+  })
+  return {
+    action: 'deploy',
+    manifestVersion: mapNumberArg(payload, 'manifest_version'),
+    manifestDigest: mapStringArg(payload, 'manifest_digest'),
+    proposals,
+    allowedAgents: [...allowedAgentsByName.values()],
+    allowedWorkspaces,
+    approvedArguments,
   }
 }
 
@@ -580,6 +796,7 @@ export function parseExitPlanPermission(permission: DesktopPermissionRecord): Ex
         : 'Review and approve this plan to switch the session from plan mode to auto mode. Once approved, execution continues; this is not a handoff to another agent.',
     planId: payload ? mapStringArg(payload, 'plan_id') || mapStringArg(payload, 'planID') : '',
     document: payload?.document ?? null,
+    approvedArguments: payload ? mapObjectArg(payload, 'approved_arguments') : {},
   }
 }
 
@@ -597,9 +814,63 @@ export function parsePlanUpdatePermission(permission: DesktopPermissionRecord): 
     updateScope: mapStringArg(payload, 'update_scope') || mapStringArg(payload, 'scope'),
     updateKind: mapStringArg(payload, 'update_kind') || mapStringArg(payload, 'kind'),
     checkpoint: mapBoolArg(payload, 'checkpoint'),
+    action: mapStringArg(payload, 'action'),
+    changeRequest: mapStringArg(payload, 'change_request'),
+    checkpointTitle: mapStringArg(payload, 'checkpoint_title'),
+    tasks: mapStringArrayArg(payload, 'tasks'),
+    acceptanceCriteria: mapStringArrayArg(payload, 'acceptance_criteria'),
+    notes: mapStringArg(payload, 'notes') || mapStringArg(payload, 'handoff_notes') || mapStringArg(payload, 'context'),
+    followupCheckpointPolicy: mapStringArg(payload, 'followup_checkpoint_policy'),
+    policyEffective: mapStringArg(payload, 'policy_effective'),
+    approvalRequired: mapBoolArg(payload, 'approval_required'),
+    runQueued: mapBoolArg(payload, 'run_queued'),
     document: payload.document ?? null,
     priorDocument: payload.prior_document ?? null,
+    revision: mapNumberArg(payload, 'revision'),
+    currentRevision: mapNumberArg(payload, 'current_revision'),
+    baseRevision: mapNumberArg(payload, 'base_revision'),
+    planAmendmentDelta: parsePlanAmendmentDelta(payload.plan_amendment_delta),
     approvedArguments: mapObjectArg(payload, 'approved_arguments'),
+  }
+}
+
+function parsePlanAmendmentDelta(value: unknown): PlanAmendmentDelta | null {
+  const record = asRecord(value)
+  if (!record) {
+    return null
+  }
+  return {
+    reason: mapStringArg(record, 'reason'),
+    baseRevision: mapNumberArg(record, 'base_revision'),
+    currentRevision: mapNumberArg(record, 'current_revision'),
+    overrideStale: mapBoolArg(record, 'override_stale'),
+    replaceFromCheckpointId: mapStringArg(record, 'replace_from_checkpoint_id'),
+    preservedCheckpoints: parsePlanAmendmentDeltaItems(record.preserved_checkpoints),
+    replacedCheckpoints: parsePlanAmendmentDeltaItems(record.replaced_checkpoints),
+    replacementCheckpoints: parsePlanAmendmentDeltaItems(record.replacement_checkpoints),
+    nextCheckpoint: parsePlanAmendmentDeltaItem(record.next_checkpoint),
+    bullets: mapStringArrayArg(record, 'bullets'),
+  }
+}
+
+function parsePlanAmendmentDeltaItems(value: unknown): PlanAmendmentDeltaItem[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value
+    .map((entry) => parsePlanAmendmentDeltaItem(entry))
+    .filter((entry): entry is PlanAmendmentDeltaItem => entry !== null)
+}
+
+function parsePlanAmendmentDeltaItem(value: unknown): PlanAmendmentDeltaItem | null {
+  const record = asRecord(value)
+  if (!record) {
+    return null
+  }
+  return {
+    id: mapStringArg(record, 'id'),
+    title: mapStringArg(record, 'title'),
+    status: mapStringArg(record, 'status'),
   }
 }
 
@@ -800,83 +1071,6 @@ export function parseManageTodosPermission(permission: DesktopPermissionRecord):
   }
 }
 
-export function parseManageFlowPermission(permission: DesktopPermissionRecord): ManageFlowPayload {
-  const payload = decodePermissionArguments(permission.toolArguments) ?? {}
-  const action = firstNonEmptyString(mapStringArg(payload, 'action'), mapStringArg(mapObjectArg(payload, 'change'), 'operation'), 'create').toLowerCase()
-  const approvedArguments = mapObjectArg(payload, 'approved_arguments')
-  const change = mapObjectArg(payload, 'change')
-  const before = asRecord(normalizePermissionPayloadValue(change.before)) ?? {}
-  const after = asRecord(normalizePermissionPayloadValue(change.after)) ?? mapObjectArg(payload, 'flow')
-  const approvedContent = mapObjectArg(approvedArguments, 'content')
-  const content = Object.keys(approvedContent).length > 0 ? approvedContent : after
-  const flowId = firstNonEmptyString(
-    mapStringArg(approvedArguments, 'flow_id'),
-    mapStringArg(approvedArguments, 'id'),
-    mapStringArg(payload, 'flow_id'),
-    mapStringArg(payload, 'id'),
-    mapStringArg(content, 'flow_id'),
-    mapStringArg(after, 'flow_id'),
-    mapStringArg(before, 'flow_id'),
-  )
-  const flowName = firstNonEmptyString(
-    mapStringArg(content, 'name'),
-    mapStringArg(after, 'name'),
-    mapStringArg(before, 'name'),
-    mapStringArg(payload, 'name'),
-    flowId,
-  )
-  const summary = firstNonEmptyString(mapStringArg(change, 'approval_summary'), mapStringArg(payload, 'approval_summary'), mapStringArg(payload, 'summary'))
-  const actionLabel = capitalizeLabel(action || 'change')
-  return {
-    title: action === 'delete' ? 'Delete Flow' : `${actionLabel} Flow`,
-    subtitle: flowName ? `${flowName}${flowId && flowId !== flowName ? ` · ${flowId}` : ''}` : 'Review this manage-flow change before applying it',
-    summary: summary || `${actionLabel} flow ${flowName || flowId || '(new flow)'}`,
-    action,
-    flowId,
-    flowName,
-    isDelete: action === 'delete',
-    content,
-    before,
-    after,
-    approvedArguments,
-  }
-}
-
-export function parseManageImagePermission(permission: DesktopPermissionRecord): ManageImagePayload {
-  const payload = decodePermissionArguments(permission.toolArguments) ?? {}
-  const action = mapStringArg(payload, 'action') || 'generate'
-  const count = Math.max(1, mapNumberArg(payload, 'count') || 1)
-  const provider = mapStringArg(payload, 'provider') || 'default'
-  const model = mapStringArg(payload, 'model') || 'default'
-  const prompt = mapStringArg(payload, 'prompt')
-  const threadId = mapStringArg(payload, 'thread_id')
-  const size = mapStringArg(payload, 'size') || mapStringArg(payload, 'aspect_ratio') || mapStringArg(payload, 'image_size')
-  const purpose = mapStringArg(payload, 'purpose') || mapStringArg(payload, 'title')
-  const approvedArguments = mapObjectArg(payload, 'approved_arguments')
-  const title = action.trim().toLowerCase() === 'inspect' ? 'Inspect Image Models' : 'Approve Image Generation'
-  const threadSummary = threadId ? `append to image session ${threadId}` : 'create a new image session'
-  const summary = mapStringArg(payload, 'approval_summary')
-    || (action.trim().toLowerCase() === 'inspect'
-      ? 'Inspect available image generation providers and models.'
-      : `Generate ${count} image${count === 1 ? '' : 's'} with ${provider}/${model} and ${threadSummary}.`)
-  return {
-    title,
-    subtitle: action.trim().toLowerCase() === 'inspect' ? 'Provider/model discovery only' : 'Provider calls run on the workspace-owning host daemon',
-    summary,
-    action,
-    prompt,
-    count,
-    provider,
-    model,
-    size,
-    threadId,
-    purpose,
-    hostExecution: mapStringArg(payload, 'host_execution'),
-    transcriptPolicy: mapStringArg(payload, 'transcript_policy'),
-    approvedArguments,
-  }
-}
-
 export function parseTaskLaunchPermission(permission: DesktopPermissionRecord): TaskLaunchPayload {
   const payload = decodePermissionArguments(permission.toolArguments) ?? {}
   const launches = parseTaskLaunchRows(payload)
@@ -908,6 +1102,8 @@ export function parseTaskLaunchPermission(permission: DesktopPermissionRecord): 
     resolvedAgentError: mapStringArg(payload, 'resolved_agent_error'),
     disabledTools: mapStringArrayArg(payload, 'disabled_tools'),
     resolvedTools: parseTaskLaunchResolvedTools(payload.resolved_tools),
+    automaticBudgetUsed: mapNumberArg(payload, 'automatic_budget_used'),
+    automaticBudgetRemaining: mapNumberArg(payload, 'automatic_budget_remaining'),
     launches,
   }
 }
@@ -1364,6 +1560,13 @@ function parseTaskLaunchRows(payload: Record<string, unknown>): TaskLaunchRow[] 
         subagentModel: mapStringArg(record, 'subagent_model'),
         childTitlePreview: firstNonEmptyString(mapStringArg(record, 'child_title_preview'), assignmentLabel),
         childMode: firstNonEmptyString(mapStringArg(record, 'effective_child_mode'), mapStringArg(record, 'child_mode'), mapStringArg(record, 'mode')),
+        sourceAgentName: mapStringArg(record, 'source_agent_name'),
+        sourceProfileMode: mapStringArg(record, 'source_profile_mode'),
+        inheritedRuntimeMode: mapStringArg(record, 'inherited_runtime_mode'),
+        deliverable: mapStringArg(record, 'deliverable'),
+        ownedScope: mapStringArrayArg(record, 'owned_scope'),
+        dependencyEvidence: mapStringArg(record, 'dependency_evidence'),
+        isolation: firstNonEmptyString(mapStringArg(record, 'isolation'), mapStringArg(record, 'worktree_isolation')),
         allowBash: mapBoolArg(record, 'allow_bash'),
         reportMaxChars: mapNumberArg(record, 'report_max_chars'),
         disabledTools: mapStringArrayArg(record, 'disabled_tools'),
@@ -1712,6 +1915,8 @@ function permissionPreferredArgumentKeys(toolName: string): string[] {
       return ['description', 'prompt', 'subagent_type', 'max_steps']
     case 'task_launch':
       return ['goal', 'description', 'prompt', 'launch_count', 'launches']
+    case 'manage_sessions':
+      return ['action', 'sessions']
     default:
       return []
   }
@@ -1915,9 +2120,12 @@ function buildPermissionArgumentsMarkdown(permission: DesktopPermissionRecord): 
     }
   }
 
-  const fields = orderedPermissionArguments(permission.toolName, normalized).map(([key, value]) => (
-    permissionArgumentBlockMarkdown(permission.toolName, key, value)
-  ))
+  const hiddenKeys = normalizePermissionToolName(permission.toolName) === 'manage_sessions'
+    ? new Set(['approved_arguments'])
+    : new Set<string>()
+  const fields = orderedPermissionArguments(permission.toolName, normalized)
+    .filter(([key]) => !hiddenKeys.has(key.trim().toLowerCase()))
+    .map(([key, value]) => permissionArgumentBlockMarkdown(permission.toolName, key, value))
 
   if (fields.length === 0) {
     return ['```json', '{}', '```'].join('\n')
@@ -1930,8 +2138,9 @@ export function buildGenericPermissionMarkdown(permission: DesktopPermissionReco
   const sections: string[] = []
   const bashPrefix = bashSavedRulePrefix(permission.savedRule)
 
-  if (permission.reason.trim()) {
-    sections.push(permission.reason.trim())
+  const reason = safeString(permission.reason)
+  if (reason) {
+    sections.push(reason)
   }
 
   if (bashPrefix) {
@@ -1942,7 +2151,7 @@ export function buildGenericPermissionMarkdown(permission: DesktopPermissionReco
     ].join('\n'))
   }
 
-  if (permission.toolArguments.trim()) {
+  if (safeString(permission.toolArguments)) {
     sections.push(buildPermissionArgumentsMarkdown(permission))
   }
 

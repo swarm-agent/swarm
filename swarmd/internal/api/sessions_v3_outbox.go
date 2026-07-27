@@ -2,19 +2,24 @@ package api
 
 import (
 	"errors"
-	"fmt"
+	"log"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 )
 
 // applySessionV3PrimaryMutation is the only server-side V3 mutation entrypoint.
-// The store commits through ApplySessionMutation first; only the committed,
-// non-replayed event returned by that call is then offered to the canonical
-// global websocket stream and the V3-specific compatibility stream hubs.
+// The store commits through ApplySessionMutation first; the committed,
+// non-replayed durable realtime outbox row returned by that call is the accepted
+// delivery truth. Post-commit in-memory/global wakeups are accelerators only:
+// failures there must not make an already committed durable mutation fail.
 func (s *Server) applySessionV3PrimaryMutation(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
 	if s == nil || s.sessions == nil {
 		return sessionruntime.SessionMutationResult{}, errors.New("sessions v3 service is not configured")
+	}
+	if strings.TrimSpace(input.EpochID) == "" && input.RunIntent != nil {
+		input.EpochID = strings.TrimSpace(input.RunIntent.EpochID)
 	}
 	s.recordV3StoreInputDiagnostic(input)
 	result, err := s.sessions.ApplySessionMutation(input)
@@ -22,7 +27,7 @@ func (s *Server) applySessionV3PrimaryMutation(input sessionruntime.SessionMutat
 		s.recordV3StoreResultDiagnostic(input, result, err)
 		return result, err
 	}
-	if err := s.publishCommittedSessionV3MutationResult(result); err != nil {
+	if err := s.publishCommittedSessionV3MutationInputResult(input, result); err != nil {
 		s.recordV3StoreResultDiagnostic(input, result, err)
 		return result, err
 	}
@@ -31,61 +36,85 @@ func (s *Server) applySessionV3PrimaryMutation(input sessionruntime.SessionMutat
 }
 
 func (s *Server) publishCommittedSessionV3MutationResult(result sessionruntime.SessionMutationResult) error {
+	return s.publishCommittedSessionV3MutationInputResult(sessionruntime.SessionMutationInput{}, result)
+}
+
+func (s *Server) publishCommittedSessionV3MutationInputResult(input sessionruntime.SessionMutationInput, result sessionruntime.SessionMutationResult) error {
 	if result.Replayed || result.Event.Seq == 0 {
 		return nil
 	}
-	if err := s.publishCommittedSessionV3GlobalEvent(result.Event); err != nil {
-		return err
+	if len(result.RealtimeOutboxes) > 0 {
+		for _, outbox := range result.RealtimeOutboxes {
+			if sessionV3IsDiagnosticEventType(outbox.Event.EventType) {
+				continue
+			}
+			if err := s.publishCommittedV3RealtimeOutbox(outbox); err != nil {
+				log.Printf("warning: v3 realtime outbox wake failed after durable commit session=%q endpoint_seq=%d: %v", result.SessionID, outbox.EndpointSeq, err)
+			}
+		}
+	} else {
+		if result.RealtimeOutbox == nil || result.RealtimeOutbox.EndpointSeq == 0 {
+			return errors.New("committed v3 session mutation is missing durable realtime outbox record")
+		}
+		if sessionV3IsDiagnosticEventType(result.Event.EventType) {
+			return nil
+		}
+		if err := s.publishCommittedV3RealtimeOutbox(*result.RealtimeOutbox); err != nil {
+			log.Printf("warning: v3 realtime outbox wake failed after durable commit session=%q endpoint_seq=%d: %v", result.SessionID, result.RealtimeOutbox.EndpointSeq, err)
+		}
 	}
-	s.registerSessionV3StreamLineageFromResult(result)
-	s.publishCommittedSessionV3Event(result.Event)
-	if result.RealtimeOutbox != nil {
-		s.publishCommittedV3RealtimeOutbox(*result.RealtimeOutbox)
-	}
+	s.maybeStartCommittedSessionV3TitleFlow(input, result)
 	return nil
 }
 
-func (s *Server) publishCommittedSessionV3GlobalEvent(event sessionruntime.SessionEvent) error {
+func (s *Server) maybeStartCommittedSessionV3TitleFlow(input sessionruntime.SessionMutationInput, result sessionruntime.SessionMutationResult) {
+	if s == nil || s.v3SessionExecutor == nil || result.Replayed || result.Message == nil || result.RunIntent == nil {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(result.Message.Role), "user") {
+		return
+	}
+	status := strings.TrimSpace(result.RunIntent.Status)
+	if status != sessionruntime.RunIntentPendingExecutor && status != sessionruntime.RunIntentRunning {
+		return
+	}
+	sessionID := firstNonEmpty(strings.TrimSpace(result.SessionID), strings.TrimSpace(input.SessionID), strings.TrimSpace(result.Message.SessionID), strings.TrimSpace(result.RunIntent.SessionID))
+	runID := strings.TrimSpace(result.RunIntent.RunID)
+	if sessionID == "" || runID == "" {
+		return
+	}
+	principal := identity.Principal{
+		Type:           identity.PrincipalTypeUser,
+		UserID:         firstNonEmpty(strings.TrimSpace(input.UserID), strings.TrimSpace(result.Message.UserID), strings.TrimSpace(result.RunIntent.UserID)),
+		AccountScopeID: firstNonEmpty(strings.TrimSpace(input.AccountScopeID), strings.TrimSpace(result.Message.AccountScopeID), strings.TrimSpace(result.RunIntent.AccountScopeID)),
+	}
+	if result.Session != nil {
+		principal.UserID = firstNonEmpty(principal.UserID, strings.TrimSpace(result.Session.UserID))
+		principal.AccountScopeID = firstNonEmpty(principal.AccountScopeID, strings.TrimSpace(result.Session.AccountScopeID))
+	}
+	s.v3SessionExecutor.maybeStartSessionV3TitleFlow(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID}, result)
+}
+
+var publishCommittedV3RealtimeOutboxWake = func(hub *v3RealtimeOutboxHub, record sessionruntime.RealtimeOutboxRecord) error {
+	hub.publish(record)
+	return nil
+}
+
+// PublishCommittedV3RealtimeOutbox wakes V3 realtime consumers for an already
+// committed durable outbox record.
+func (s *Server) PublishCommittedV3RealtimeOutbox(record sessionruntime.RealtimeOutboxRecord) error {
+	return s.publishCommittedV3RealtimeOutbox(record)
+}
+
+func (s *Server) publishCommittedV3RealtimeOutbox(record sessionruntime.RealtimeOutboxRecord) error {
 	if s == nil {
 		return errors.New("server is not configured")
 	}
-	if event.Seq == 0 {
+	if record.EndpointSeq == 0 {
 		return nil
-	}
-	sessionID := strings.TrimSpace(event.SessionID)
-	if sessionID == "" {
-		return errors.New("committed v3 session event is missing session_id")
-	}
-	eventType := strings.TrimSpace(event.EventType)
-	if eventType == "" {
-		return errors.New("committed v3 session event is missing event_type")
-	}
-	if s.events == nil {
-		return errors.New("global event log is not configured for v3 session events")
-	}
-	appended, err := s.events.AppendWithSourceSeq("session:"+sessionID, eventType, sessionID, event.Payload, "v3", event.Seq, event.CausationID, event.CorrelationID)
-	if err != nil {
-		return fmt.Errorf("append committed v3 session event to global stream: %w", err)
-	}
-	if s.hub != nil {
-		s.hub.Publish(appended)
-	}
-	return nil
-}
-
-func (s *Server) publishCommittedSessionV3Event(event sessionruntime.SessionEvent) {
-	if s == nil || s.v3SessionStreams == nil || event.Seq == 0 {
-		return
-	}
-	s.v3SessionStreams.publish(event)
-}
-
-func (s *Server) publishCommittedV3RealtimeOutbox(record sessionruntime.RealtimeOutboxRecord) {
-	if s == nil || record.EndpointSeq == 0 {
-		return
 	}
 	if s.v3RealtimeOutbox == nil {
 		s.v3RealtimeOutbox = newV3RealtimeOutboxHub()
 	}
-	s.v3RealtimeOutbox.publish(record)
+	return publishCommittedV3RealtimeOutboxWake(s.v3RealtimeOutbox, record)
 }

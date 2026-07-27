@@ -50,6 +50,30 @@ func TestOnboardingGetReportsUnbootstrappedIdentityWithoutCreatingRecords(t *tes
 	}
 }
 
+func TestOnboardingPostRequiresLocalBootstrapContextWithoutAttachToken(t *testing.T) {
+	server, identityStore := newOnboardingIdentityTestServer(t, false)
+
+	rec := httptest.NewRecorder()
+	req := newJSONSameOriginDesktopRequest(t, map[string]any{"username": "Alice", "swarm_name": "Device One"})
+	req.Host = "swarm.example.test"
+	req.URL.Scheme = "https"
+	req.URL.Host = req.Host
+	req.RemoteAddr = "192.0.2.10:43210"
+	req.Header.Set("Origin", "https://swarm.example.test")
+	req.Header.Set("Referer", "https://swarm.example.test/onboarding")
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("remote unauthenticated onboarding status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	counts, err := identityStore.IdentityCounts()
+	if err != nil {
+		t.Fatalf("identity counts: %v", err)
+	}
+	if counts != (pebblestore.IdentityCounts{}) {
+		t.Fatalf("rejected onboarding created identity counts=%+v", counts)
+	}
+}
+
 func TestOnboardingPostRequiresUsernameAndSwarmNameBeforeBootstrap(t *testing.T) {
 	server, identityStore := newOnboardingIdentityTestServer(t, false)
 
@@ -141,7 +165,7 @@ func TestOnboardingPostBootstrapsPrimarySelfPlacement(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("primary placement ok=%v err=%v", ok, err)
 	}
-	if placement.RuntimeSwarmID != "onboarding-primary-test" || placement.AuthorityHostSwarmID != "onboarding-primary-test" || placement.RuntimeKind != pebblestore.TopologyRuntimeKindHost || placement.AuthorityContainerID != "" || placement.State != pebblestore.TopologyRuntimePlacementStateActive {
+	if placement.RuntimeSwarmID != "onboarding-primary-test" || placement.AuthorityHostSwarmID != "onboarding-primary-test" || placement.RuntimeKind != pebblestore.TopologyRuntimeKindHost || placement.State != pebblestore.TopologyRuntimePlacementStateActive {
 		t.Fatalf("primary placement = %+v", placement)
 	}
 }
@@ -162,7 +186,7 @@ func TestOnboardingRepairsPrimaryWorkspaceSelfBinding(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newJSONSameOriginDesktopRequest(t, map[string]any{"swarm_name": "Primary Laptop"}))
+	server.Handler().ServeHTTP(rec, newAuthenticatedJSONSameOriginDesktopRequest(t, server, map[string]any{"swarm_name": "Primary Laptop"}))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("onboarding update status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -177,7 +201,7 @@ func TestOnboardingRepairsPrimaryWorkspaceSelfBinding(t *testing.T) {
 	if binding.SourceWorkspaceID != entry.WorkspaceID || binding.SourceWorkspaceGeneration != entry.WorkspaceGeneration || binding.SourceWorkspacePath != entry.Path {
 		t.Fatalf("binding source = %+v entry=%+v", binding, entry)
 	}
-	if binding.DestinationRuntimeSwarmID != "onboarding-primary-test" || binding.DestinationAuthorityHostSwarmID != "onboarding-primary-test" || binding.DestinationRuntimeKind != pebblestore.TopologyRuntimeKindHost || binding.DestinationContainerID != "" || binding.DestinationWorkspacePath != entry.Path {
+	if binding.DestinationRuntimeSwarmID != "onboarding-primary-test" || binding.DestinationAuthorityHostSwarmID != "onboarding-primary-test" || binding.DestinationRuntimeKind != pebblestore.TopologyRuntimeKindHost || binding.DestinationWorkspacePath != entry.Path {
 		t.Fatalf("binding destination = %+v", binding)
 	}
 }
@@ -225,13 +249,13 @@ func TestOnboardingPostRejectsRebootstrapAndSwarmNameUpdateDoesNotMutateUsername
 	server, identityStore := newOnboardingIdentityTestServer(t, true)
 
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newJSONSameOriginDesktopRequest(t, map[string]any{"username": "bob", "swarm_name": "New Device"}))
+	server.Handler().ServeHTTP(rec, newAuthenticatedJSONSameOriginDesktopRequest(t, server, map[string]any{"username": "bob", "swarm_name": "New Device"}))
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), identity.ErrBootstrapExists.Error()) {
 		t.Fatalf("rebootstrap status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newJSONSameOriginDesktopRequest(t, map[string]any{"swarm_name": "Renamed Device"}))
+	server.Handler().ServeHTTP(rec, newAuthenticatedJSONSameOriginDesktopRequest(t, server, map[string]any{"swarm_name": "Renamed Device"}))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("swarm name update status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -292,7 +316,7 @@ func newOnboardingPrimaryTopologyTestServer(t *testing.T) (*Server, *identity.Se
 		t.Fatalf("put local node: %v", err)
 	}
 	topologyStore := pebblestore.NewTopologyStore(store)
-	topologySvc := topologyruntime.NewService(topologyStore, swarmStore, nil, nil, nil, nil, nil, pebblestore.NewWorkspaceStore(store))
+	topologySvc := topologyruntime.NewService(topologyStore, swarmStore)
 	swarmSvc := swarmruntime.NewService(swarmStore, eventLog, nil)
 	server := NewServer(authSvc, agentSvc, nil, nil, nil, workspaceSvc, nil, securitySvc, nil, nil, notificationSvc, eventLog, hub)
 	server.SetIdentityService(identitySvc)
@@ -378,5 +402,18 @@ func newJSONSameOriginDesktopRequest(t *testing.T, payload map[string]any) *http
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	req.ContentLength = int64(len(body))
 	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
+func newAuthenticatedJSONSameOriginDesktopRequest(t *testing.T, server *Server, payload map[string]any) *http.Request {
+	t.Helper()
+	req := newJSONSameOriginDesktopRequest(t, payload)
+	bootstrapReq := newSameOriginDesktopRequest(http.MethodGet, "/v1/auth/desktop/session")
+	bootstrapRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(bootstrapRec, bootstrapReq)
+	if bootstrapRec.Code != http.StatusOK {
+		t.Fatalf("desktop session bootstrap status=%d body=%s", bootstrapRec.Code, bootstrapRec.Body.String())
+	}
+	req.AddCookie(sessionCookieFromRecorder(t, bootstrapRec))
 	return req
 }

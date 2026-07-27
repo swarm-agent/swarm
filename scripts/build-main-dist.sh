@@ -83,6 +83,7 @@ swarm_require_go "${ROOT_DIR}"
 require_cmd git
 require_cmd tar
 require_cmd awk
+require_cmd sha256sum
 
 OUTPUT_DIR="$(cd "$(dirname -- "${OUTPUT_DIR}")" && pwd)/$(basename -- "${OUTPUT_DIR}")"
 PLATFORM_DIR="${OUTPUT_DIR}/linux-amd64"
@@ -91,7 +92,7 @@ SWARMD_ARTIFACT_DIR="${PLATFORM_DIR}/swarmd"
 WEB_ARTIFACT_DIR="${OUTPUT_DIR}/web"
 RELEASE_STAGE_DIR="${OUTPUT_DIR}/release-stage"
 
-rm -rf "${PLATFORM_DIR}" "${WEB_ARTIFACT_DIR}" "${RELEASE_STAGE_DIR}" "${OUTPUT_DIR}/build-info.txt" "${OUTPUT_DIR}"/swarm-*.tar.gz
+rm -rf "${PLATFORM_DIR}" "${WEB_ARTIFACT_DIR}" "${RELEASE_STAGE_DIR}" "${OUTPUT_DIR}/build-info.txt" "${OUTPUT_DIR}"/swarm-*.tar.gz "${OUTPUT_DIR}"/swarm-*.tar.gz.sha256
 mkdir -p "${ROOT_ARTIFACT_DIR}" "${SWARMD_ARTIFACT_DIR}"
 
 git_sha="$(git -C "${ROOT_DIR}" rev-parse HEAD 2>/dev/null || printf 'unknown')"
@@ -172,6 +173,11 @@ chmod 755 "${RELEASE_STAGE_DIR}/${archive_basename}/install.sh"
   cd "${RELEASE_STAGE_DIR}"
   tar -czf "${archive_path}" "${archive_basename}"
 )
+(
+  cd "${OUTPUT_DIR}"
+  sha256sum "$(basename -- "${archive_path}")" > "$(basename -- "${archive_path}").sha256"
+)
 
 echo "built artifact tree at ${OUTPUT_DIR}"
 echo "built release archive at ${archive_path}"
+echo "built release checksum at ${archive_path}.sha256"

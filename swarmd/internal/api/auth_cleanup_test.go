@@ -62,11 +62,13 @@ func TestCredentialDeleteCleanupClearsSessionPreferencesForDeletedProvider(t *te
 	}
 
 	session, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		SessionID:     "session-codex",
-		Title:         "Codex Session",
-		WorkspacePath: "/tmp/workspace",
-		WorkspaceName: "workspace",
-		Mode:          sessionruntime.ModeAuto,
+		SessionID:      "session-codex",
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		Title:          "Codex Session",
+		WorkspacePath:  filepath.Join(t.TempDir(), "workspace"),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
 		Preference: &pebblestore.ModelPreference{
 			Provider: "codex",
 			Model:    "gpt-5.4",
@@ -75,6 +77,23 @@ func TestCredentialDeleteCleanupClearsSessionPreferencesForDeletedProvider(t *te
 	})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
+	}
+	otherSession, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:      "session-other-account",
+		UserID:         "user-other",
+		AccountScopeID: "acct-other",
+		Title:          "Other Account Codex Session",
+		WorkspacePath:  filepath.Join(t.TempDir(), "other-workspace"),
+		WorkspaceName:  "other-workspace",
+		Mode:           sessionruntime.ModeAuto,
+		Preference: &pebblestore.ModelPreference{
+			Provider: "codex",
+			Model:    "gpt-5.4",
+			Thinking: "high",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create other account session: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/credentials/delete", strings.NewReader(`{"provider":"codex","id":"cred-1"}`))
@@ -107,6 +126,13 @@ func TestCredentialDeleteCleanupClearsSessionPreferencesForDeletedProvider(t *te
 	}
 	if pref.Provider != "" || pref.Model != "" || pref.Thinking != "" {
 		t.Fatalf("session preference not cleared: %#v", pref)
+	}
+	otherPref, err := sessionSvc.GetSessionPreference(otherSession.ID)
+	if err != nil {
+		t.Fatalf("GetSessionPreference(other) error = %v", err)
+	}
+	if otherPref.Provider != "codex" || otherPref.Model != "gpt-5.4" || otherPref.Thinking != "high" {
+		t.Fatalf("other account session preference was cleared: %#v", otherPref)
 	}
 
 	_ = ctx

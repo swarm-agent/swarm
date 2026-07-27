@@ -357,16 +357,16 @@ func TestAgentsModalSetUtilityAIAction(t *testing.T) {
 		},
 		UtilityProvider:       "codex",
 		UtilityModel:          "gpt-5.4",
-		UtilityAgents:         []string{"explorer", "memory", "parallel"},
+		UtilityAgents:         []string{"finder", "memory", "parallel"},
 		CustomUtilityAgents:   []string{"memory"},
-		UtilityBaselineAgents: []string{"explorer", "parallel"},
+		UtilityBaselineAgents: []string{"finder", "parallel"},
 	})
 
 	p.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'R', tcell.ModShift))
 	if p.agentsModal.Editor == nil || p.agentsModal.Editor.Mode != "utility-ai" {
 		t.Fatalf("expected Utility AI editor, got %#v", p.agentsModal.Editor)
 	}
-	if got := strings.ToLower(p.agentsModal.Status); !strings.Contains(got, "explorer, parallel") || !strings.Contains(got, "overrides for memory") || !strings.Contains(got, "clear overrides") {
+	if got := strings.ToLower(p.agentsModal.Status); !strings.Contains(got, "finder, parallel") || !strings.Contains(got, "overrides for memory") || !strings.Contains(got, "clear overrides") {
 		t.Fatalf("status = %q, want baseline targets and clear-overrides guidance", p.agentsModal.Status)
 	}
 	p.submitAgentsModalEditor()

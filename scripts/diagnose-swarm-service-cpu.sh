@@ -23,7 +23,6 @@ Options:
   --stress-sleep <seconds>     Delay between endpoint batches per worker. Default: 0.25
   --stress-workers <count>     Concurrent API stress workers. Default: 1
   --curl-max-time <seconds>    Per-request curl max time. Default: 8
-  --include-remote-refresh     Include /v1/deploy/remote/session?refresh=true in the loop
   --no-stress                  Only sample/profile; do not issue API requests
   --no-git-realtime           Do not POST /v1/workspace/git/realtime at startup
   --perf                      Run non-sudo perf record against the swarmd child process
@@ -41,8 +40,6 @@ Artifacts include:
 Notes:
   - The workload is intentionally state-light: it uses local desktop/session
     cookies and GET requests, plus one git realtime POST unless disabled.
-  - --include-remote-refresh may trigger remote health checks and should be used
-    only when reproducing the remote deploy retry storm.
 EOF
 }
 
@@ -124,7 +121,6 @@ STRESS_WORKERS="${SWARM_CPU_TEST_STRESS_WORKERS:-1}"
 CURL_MAX_TIME="${SWARM_CPU_TEST_CURL_MAX_TIME:-8}"
 STRESS_ENABLED="true"
 GIT_REALTIME_ENABLED="true"
-INCLUDE_REMOTE_REFRESH="false"
 PERF_MODE="${SWARM_CPU_TEST_PERF:-auto}"
 PERF_DURATION="${SWARM_CPU_TEST_PERF_DURATION:-}"
 PERF_FREQ="${SWARM_CPU_TEST_PERF_FREQUENCY:-99}"
@@ -170,10 +166,6 @@ while [[ $# -gt 0 ]]; do
     --curl-max-time)
       CURL_MAX_TIME="${2:-}"
       shift 2
-      ;;
-    --include-remote-refresh)
-      INCLUDE_REMOTE_REFRESH="true"
-      shift
       ;;
     --no-stress)
       STRESS_ENABLED="false"
@@ -326,7 +318,6 @@ stress_enabled=${STRESS_ENABLED}
 stress_sleep_seconds=${STRESS_SLEEP}
 stress_workers=${STRESS_WORKERS}
 git_realtime_enabled=${GIT_REALTIME_ENABLED}
-include_remote_refresh=${INCLUDE_REMOTE_REFRESH}
 perf_mode=${PERF_MODE}
 perf_duration_seconds=${PERF_DURATION}
 perf_frequency_hz=${PERF_FREQ}
@@ -450,10 +441,6 @@ stress_worker() {
     api_request GET "/v1/workspace/current" "workspace_current:w${worker_id}"
     api_request GET "/v1/workspace/git/status?workspace_path=${WORKSPACE_QUERY}&recent_limit=8" "git_status:w${worker_id}"
     api_request GET "/v1/swarm/targets" "swarm_targets:w${worker_id}"
-    api_request GET "/v1/deploy/remote/session" "remote_sessions_cached:w${worker_id}"
-    if [[ "${INCLUDE_REMOTE_REFRESH}" == "true" ]]; then
-      api_request GET "/v1/deploy/remote/session?refresh=true" "remote_sessions_refresh:w${worker_id}"
-    fi
     sleep "${STRESS_SLEEP}"
   done
 }

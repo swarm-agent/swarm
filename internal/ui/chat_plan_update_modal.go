@@ -17,7 +17,7 @@ const (
 )
 
 func isPlanUpdatePermission(record ChatPermissionRecord) bool {
-	return strings.EqualFold(strings.TrimSpace(record.Requirement), "plan_update")
+	return normalizePermissionToolName(record.ToolName) == "plan_manage" && strings.EqualFold(strings.TrimSpace(record.Requirement), "plan_update")
 }
 
 func (p *ChatPage) planUpdateModalActive() bool {

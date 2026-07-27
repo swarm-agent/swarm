@@ -21,7 +21,7 @@ func main() {
 func run(args []string) error {
 	artifactRoot := ""
 	applyRelease := false
-	installService := true
+	installService := false
 	lane := "main"
 	plan := client.UpdateApplyPlan{}
 	parentPID := 0
@@ -143,8 +143,10 @@ func run(args []string) error {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `Usage:
-  swarmsetup [--service|--no-service]
-  swarmsetup --artifact-root /path/to/dist [--service|--no-service]
+  swarmsetup [--no-service]
+  swarmsetup --service
+  swarmsetup --artifact-root /path/to/dist [--no-service]
+  swarmsetup --artifact-root /path/to/dist --service
   swarmsetup --apply-release --lane main --target-version <tag> --asset-name <name> --asset-url <url> --sha256 <digest> [--parent-pid <pid>] [--relaunch-arg <arg>...]
 `)
 }

@@ -900,7 +900,7 @@ func TestExecuteControlPlaneToolTaskDelegatesToSubagent(t *testing.T) {
 	if _, _, _, err := sessionSvc.AppendMessage(parentSession.ID, "user", "check the repo layout", map[string]any{"source": "run_turn"}); err != nil {
 		t.Fatalf("append parent user message: %v", err)
 	}
-	if _, _, _, err := sessionSvc.AppendMessage(parentSession.ID, "assistant", "I think explorer should inspect the main runtime files.", nil); err != nil {
+	if _, _, _, err := sessionSvc.AppendMessage(parentSession.ID, "assistant", "I think finder should inspect the main runtime files.", nil); err != nil {
 		t.Fatalf("append parent assistant message: %v", err)
 	}
 
@@ -916,7 +916,7 @@ func TestExecuteControlPlaneToolTaskDelegatesToSubagent(t *testing.T) {
 	handled, result, err := svc.executeControlPlaneTool(context.Background(), parentSession.ID, sessionruntime.ModePlan, pebblestore.AgentProfile{}, 1, tool.Call{
 		CallID:    "task_1",
 		Name:      "task",
-		Arguments: `{"description":"Inspect repo","prompt":"Find the key files and summarize.","subagent_type":"explorer"}`,
+		Arguments: `{"description":"Inspect repo","prompt":"Find the key files and summarize.","subagent_type":"finder"}`,
 	}, "", nil)
 	if err != nil {
 		t.Fatalf("execute task control-plane tool: %v", err)
@@ -935,8 +935,8 @@ func TestExecuteControlPlaneToolTaskDelegatesToSubagent(t *testing.T) {
 	if got := strings.TrimSpace(mapString(payload, "status")); got != "ok" {
 		t.Fatalf("status = %q, want ok", got)
 	}
-	if got := strings.TrimSpace(mapString(payload, "subagent")); got != "explorer" {
-		t.Fatalf("subagent = %q, want explorer", got)
+	if got := strings.TrimSpace(mapString(payload, "subagent")); got != "finder" {
+		t.Fatalf("subagent = %q, want finder", got)
 	}
 	if got := strings.TrimSpace(mapString(payload, "session_id")); got == "" {
 		t.Fatalf("expected delegated session_id in task payload")
@@ -954,8 +954,8 @@ func TestExecuteControlPlaneToolTaskDelegatesToSubagent(t *testing.T) {
 		if gotKind := strings.TrimSpace(mapString(childSession.Metadata, "lineage_kind")); gotKind != "delegated_subagent" {
 			t.Fatalf("child lineage_kind = %q, want delegated_subagent", gotKind)
 		}
-		if gotLabel := strings.TrimSpace(mapString(childSession.Metadata, "lineage_label")); gotLabel != "@explorer" {
-			t.Fatalf("child lineage_label = %q, want @explorer", gotLabel)
+		if gotLabel := strings.TrimSpace(mapString(childSession.Metadata, "lineage_label")); gotLabel != "@finder" {
+			t.Fatalf("child lineage_label = %q, want @finder", gotLabel)
 		}
 		if gotSource := strings.TrimSpace(mapString(childSession.Metadata, "launch_source")); gotSource != "task" {
 			t.Fatalf("child launch_source = %q, want task", gotSource)
@@ -970,7 +970,7 @@ func TestExecuteControlPlaneToolTaskDelegatesToSubagent(t *testing.T) {
 		t.Fatalf("marshal provider input: %v", err)
 	}
 	inputText := string(inputJSON)
-	for _, expected := range []string{"Recent visible parent transcript:", "- user: check the repo layout", "- assistant: I think explorer should inspect the main runtime files."} {
+	for _, expected := range []string{"Recent visible parent transcript:", "- user: check the repo layout", "- assistant: I think finder should inspect the main runtime files."} {
 		if !strings.Contains(inputText, expected) {
 			t.Fatalf("expected %q in delegated provider input: %s", expected, inputText)
 		}
@@ -1046,7 +1046,7 @@ func TestExecuteControlPlaneToolTaskEmitsStreamingDeltas(t *testing.T) {
 		handled, _, err := svc.executeControlPlaneTool(runCtx, parentSession.ID, sessionruntime.ModePlan, pebblestore.AgentProfile{}, 1, tool.Call{
 			CallID:    "task_stream_1",
 			Name:      "task",
-			Arguments: `{"description":"Read file","prompt":"Read README and summarize.","subagent_type":"explorer"}`,
+			Arguments: `{"description":"Read file","prompt":"Read README and summarize.","subagent_type":"finder"}`,
 		}, "", emit)
 		outcomeCh <- taskRunOutcome{handled: handled, err: err}
 	}()
@@ -1169,7 +1169,7 @@ func TestExecuteControlPlaneToolTaskPermissionsRemainParentScopedForChildSession
 		handled, _, err := svc.executeControlPlaneTool(runCtx, parentSession.ID, sessionruntime.ModePlan, pebblestore.AgentProfile{}, 1, tool.Call{
 			CallID:    "task_scope_1",
 			Name:      "task",
-			Arguments: `{"description":"Scope check","prompt":"Run one bash and summarize.","subagent_type":"explorer"}`,
+			Arguments: `{"description":"Scope check","prompt":"Run one bash and summarize.","subagent_type":"finder"}`,
 		}, "", nil)
 		outcomeCh <- taskRunOutcome{handled: handled, err: err}
 	}()
@@ -1431,6 +1431,111 @@ func TestRunTurnStreamingEmitsUsageUpdatedForCodex(t *testing.T) {
 	}
 	if got := result.UsageSummary.TotalTokens; got != 180 {
 		t.Fatalf("run result usage summary total = %d, want 180", got)
+	}
+}
+
+func TestRunTurnStreamingEmitsAccumulatedUsageUpdatedForFireworks(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "usage-updated-fireworks.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write README fixture: %v", err)
+	}
+
+	modelSvc := model.NewService(pebblestore.NewModelStore(store), events, nil)
+	if _, _, err := modelSvc.SetGlobalPreference("fireworks", "accounts/fireworks/models/glm-4.5", "high"); err != nil {
+		t.Fatalf("set global preference: %v", err)
+	}
+	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	session, _, err := sessionSvc.CreateSession("usage-stream-fireworks", workspace, "workspace")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	runner := &scriptedRunner{
+		id: "fireworks",
+		responses: []provideriface.Response{
+			{
+				FunctionCalls: []provideriface.FunctionCall{{
+					CallID:    "fireworks_call_1",
+					Name:      "read",
+					Arguments: `{"path":"README.md","line_start":1,"max_lines":5}`,
+				}},
+				Usage: provideriface.TokenUsage{
+					Source:          "fireworks_api_usage",
+					InputTokens:     100,
+					OutputTokens:    20,
+					CacheReadTokens: 30,
+					TotalTokens:     120,
+					APIUsageRawPath: "usage",
+				},
+			},
+			{
+				Text: "done",
+				Usage: provideriface.TokenUsage{
+					Source:          "fireworks_api_usage",
+					InputTokens:     80,
+					OutputTokens:    30,
+					CacheReadTokens: 10,
+					TotalTokens:     110,
+					APIUsageRawPath: "usage",
+				},
+			},
+		},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+
+	svc := NewService(sessionSvc, modelSvc, providers, tool.NewRuntime(2), nil, nil, nil, 4)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	usageEvents := make([]StreamEvent, 0, 4)
+	var mu sync.Mutex
+	result, err := svc.RunTurnStreaming(ctx, session.ID, RunOptions{Prompt: "run with fireworks usage"}, func(event StreamEvent) {
+		if strings.TrimSpace(event.Type) != StreamEventUsageUpdated {
+			return
+		}
+		mu.Lock()
+		usageEvents = append(usageEvents, event)
+		mu.Unlock()
+	})
+	if err != nil {
+		t.Fatalf("run turn streaming: %v", err)
+	}
+
+	mu.Lock()
+	captured := append([]StreamEvent(nil), usageEvents...)
+	mu.Unlock()
+	if len(captured) != 2 {
+		t.Fatalf("usage.updated events = %d, want 2", len(captured))
+	}
+	if captured[0].TurnUsage == nil || captured[0].UsageSummary == nil || captured[0].TurnUsage.TotalTokens != 120 || captured[0].UsageSummary.TotalTokens != 120 {
+		t.Fatalf("first fireworks usage event = %+v", captured[0])
+	}
+	if captured[1].TurnUsage == nil || captured[1].UsageSummary == nil || captured[1].TurnUsage.TotalTokens != 230 || captured[1].UsageSummary.TotalTokens != 230 || captured[1].UsageSummary.CacheReadTokens != 40 {
+		t.Fatalf("second fireworks usage event should expose accumulated turn and summary totals, got %+v", captured[1])
+	}
+	if result.TurnUsage == nil || result.UsageSummary == nil || result.TurnUsage.TotalTokens != 230 || result.UsageSummary.TotalTokens != 230 {
+		t.Fatalf("run result should expose accumulated fireworks usage, turn=%+v summary=%+v", result.TurnUsage, result.UsageSummary)
+	}
+
+	storedSummary, ok, err := sessionSvc.GetUsageSummary(session.ID)
+	if err != nil {
+		t.Fatalf("get stored summary: %v", err)
+	}
+	if !ok || storedSummary.TotalTokens != 230 || storedSummary.RemainingTokens < 0 {
+		t.Fatalf("stored fireworks summary = %+v ok=%v", storedSummary, ok)
 	}
 }
 
@@ -2113,7 +2218,7 @@ func TestExecuteControlPlaneToolTaskIgnoresDelegatedMaxSteps(t *testing.T) {
 	handled, result, err := svc.executeControlPlaneTool(context.Background(), parentSession.ID, sessionruntime.ModePlan, pebblestore.AgentProfile{}, 1, tool.Call{
 		CallID:    "task_max_steps",
 		Name:      "task",
-		Arguments: `{"description":"Enforce step cap","prompt":"Loop with reasoning only.","subagent_type":"explorer","max_steps":2}`,
+		Arguments: `{"description":"Enforce step cap","prompt":"Loop with reasoning only.","subagent_type":"finder","max_steps":2}`,
 	}, "", nil)
 	if err != nil {
 		t.Fatalf("execute task control-plane tool: %v", err)
@@ -2192,14 +2297,23 @@ func TestRunTurnPersistsFailureMessageOnRunnerError(t *testing.T) {
 }
 
 func TestLiveStreamRawOutputPreservesBashForOutputViewer(t *testing.T) {
-	result := tool.Result{Output: strings.Repeat("x", 2048)}
-	got := liveStreamRawOutput(tool.Call{Name: "bash"}, result)
-	if got != result.Output {
-		t.Fatalf("bash raw output should remain unchanged for /output viewer, got length %d want %d", len(got), len(result.Output))
+	plainResult := tool.Result{Output: strings.Repeat("x", 2048)}
+	got := liveStreamRawOutput(tool.Call{Name: "bash"}, plainResult)
+	if got != plainResult.Output {
+		t.Fatalf("plain bash output should remain unchanged for /output viewer, got length %d want %d", len(got), len(plainResult.Output))
 	}
 
-	nonBash := liveStreamRawOutput(tool.Call{Name: "grep"}, result)
-	if nonBash != result.Output {
+	structuredResult := tool.Result{Output: `{"command":"printf '1\\n2\\n'","exit_code":0,"output":"1\n2\n","path_id":"tool.bash.v3"}`}
+	got = liveStreamRawOutput(tool.Call{Name: "bash"}, structuredResult)
+	if got != "1\n2" {
+		t.Fatalf("structured bash result should expose command output, got %q", got)
+	}
+	if strings.Contains(got, `"path_id"`) || strings.Contains(got, `"command"`) {
+		t.Fatalf("structured bash transport envelope leaked into viewer output: %q", got)
+	}
+
+	nonBash := liveStreamRawOutput(tool.Call{Name: "grep"}, structuredResult)
+	if nonBash != structuredResult.Output {
 		t.Fatalf("non-bash raw output should remain unchanged")
 	}
 }
@@ -2823,7 +2937,7 @@ func TestRunTurnWithOptions_TargetedSubagentPersistsParentAssistant(t *testing.T
 	result, err := svc.RunTurnWithOptions(context.Background(), parentSession.ID, RunOptions{
 		Prompt:     "inspect src",
 		TargetKind: RunTargetKindSubagent,
-		TargetName: "explorer",
+		TargetName: "finder",
 		RunID:      "run-targeted-subagent",
 	})
 	if err != nil {
@@ -2832,8 +2946,8 @@ func TestRunTurnWithOptions_TargetedSubagentPersistsParentAssistant(t *testing.T
 	if got := strings.TrimSpace(result.TargetKind); got != RunTargetKindSubagent {
 		t.Fatalf("TargetKind = %q, want %q", got, RunTargetKindSubagent)
 	}
-	if got := strings.TrimSpace(result.TargetName); got != "explorer" {
-		t.Fatalf("TargetName = %q, want explorer", got)
+	if got := strings.TrimSpace(result.TargetName); got != "finder" {
+		t.Fatalf("TargetName = %q, want finder", got)
 	}
 	if got := strings.TrimSpace(result.UserMessage.Content); got != "inspect src" {
 		t.Fatalf("UserMessage.Content = %q, want inspect src", got)
@@ -2847,8 +2961,8 @@ func TestRunTurnWithOptions_TargetedSubagentPersistsParentAssistant(t *testing.T
 	if got := strings.TrimSpace(mapString(result.AssistantMessage.Metadata, "source")); got != "targeted_subagent" {
 		t.Fatalf("assistant metadata source = %q, want targeted_subagent", got)
 	}
-	if got := strings.TrimSpace(mapString(result.AssistantMessage.Metadata, "subagent")); got != "explorer" {
-		t.Fatalf("assistant metadata subagent = %q, want explorer", got)
+	if got := strings.TrimSpace(mapString(result.AssistantMessage.Metadata, "subagent")); got != "finder" {
+		t.Fatalf("assistant metadata subagent = %q, want finder", got)
 	}
 	childID := strings.TrimSpace(mapString(result.AssistantMessage.Metadata, "child_session_id"))
 	if childID == "" {
@@ -2867,8 +2981,8 @@ func TestRunTurnWithOptions_TargetedSubagentPersistsParentAssistant(t *testing.T
 	if got := strings.TrimSpace(mapString(childSession.Metadata, "launch_source")); got != "targeted_subagent" {
 		t.Fatalf("launch_source = %q, want targeted_subagent", got)
 	}
-	if got := strings.TrimSpace(mapString(childSession.Metadata, "targeted_subagent")); got != "explorer" {
-		t.Fatalf("targeted_subagent = %q, want explorer", got)
+	if got := strings.TrimSpace(mapString(childSession.Metadata, "targeted_subagent")); got != "finder" {
+		t.Fatalf("targeted_subagent = %q, want finder", got)
 	}
 
 	requests := runner.requestsSnapshot()
@@ -2907,7 +3021,7 @@ func TestRunTurnWithOptions_TargetedSubagentPersistsParentAssistant(t *testing.T
 		t.Fatalf("marshal provider input: %v", err)
 	}
 	inputText := string(inputJSON)
-	for _, expected := range []string{"Parent session context:", "\"custom\":\"value\"", "- requested subagent: @explorer", "Recent visible parent transcript:", "- user: check the subagent flow", "- assistant: I found the delegation prompt builder."} {
+	for _, expected := range []string{"Parent session context:", "\"custom\":\"value\"", "- requested subagent: @finder", "Recent visible parent transcript:", "- user: check the subagent flow", "- assistant: I found the delegation prompt builder."} {
 		if !strings.Contains(inputText, expected) {
 			t.Fatalf("expected %q in delegated provider input: %s", expected, inputText)
 		}
@@ -2964,7 +3078,7 @@ func TestRunTurnStreamingWithOptions_TargetedSubagentEmitsTaskProgress(t *testin
 	result, err := svc.RunTurnStreamingWithOptions(context.Background(), parentSession.ID, RunOptions{
 		Prompt:     "inspect src",
 		TargetKind: RunTargetKindSubagent,
-		TargetName: "explorer",
+		TargetName: "finder",
 		RunID:      "run-targeted-subagent-stream",
 	}, func(event StreamEvent) {
 		seen = append(seen, event)

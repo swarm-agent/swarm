@@ -5,6 +5,7 @@ import type { ChatMessageRecord } from '../types/chat'
 import {
   appendPendingUserMessage,
   createPendingUserMessage,
+  dedupeAndTrimMessages,
   isPendingUserMessage,
   mergeMessageIntoCache,
   removePendingUserMessage,
@@ -44,6 +45,21 @@ test('mergeMessageIntoCache replaces matching pending user message with authorit
   const messages = mergeMessageIntoCache([pending], authoritative)
 
   assert.deepEqual(messages, [authoritative])
+})
+
+test('mergeMessageIntoCache matches pending and canonical user messages by client request id', () => {
+  const pending = createPendingUserMessage('session-a', 'same text', 3)
+  const authoritative = message({
+    id: 'msg_00004',
+    sessionId: 'session-a',
+    globalSeq: 4,
+    role: 'user',
+    content: 'edited text',
+    createdAt: 1234,
+    metadata: { client_request_id: pending.metadata?.client_request_id },
+  })
+
+  assert.deepEqual(mergeMessageIntoCache([pending], authoritative), [authoritative])
 })
 
 test('mergeMessageIntoCache isolates identical pending messages by session id', () => {
@@ -128,6 +144,50 @@ test('mergeMessageIntoCache replaces canonical tool message updates by id', () =
   const messages = mergeMessageIntoCache([started], completed)
 
   assert.deepEqual(messages, [completed])
+})
+
+test('dedupeAndTrimMessages keeps the newest 200 sorted messages after replacing duplicates', () => {
+  const messages = Array.from({ length: 205 }, (_, index) => message({
+    id: `msg_${index + 1}`,
+    sessionId: 'session-a',
+    globalSeq: index + 1,
+    role: 'assistant',
+    content: `message ${index + 1}`,
+  }))
+  const updatedDuplicate = message({
+    id: 'msg_150',
+    sessionId: 'session-a',
+    globalSeq: 150,
+    role: 'assistant',
+    content: 'updated duplicate',
+    createdAt: 9999,
+  })
+
+  const trimmed = dedupeAndTrimMessages([messages[10]!, ...messages, updatedDuplicate])
+
+  assert.equal(trimmed.length, 200)
+  assert.equal(trimmed[0]?.id, 'msg_6')
+  assert.equal(trimmed[trimmed.length - 1]?.id, 'msg_205')
+  assert.equal(trimmed.find((entry) => entry.id === 'msg_150')?.content, 'updated duplicate')
+  assert.equal(trimmed.filter((entry) => entry.id === 'msg_150').length, 1)
+  assert.deepEqual(trimmed.map((entry) => entry.globalSeq), [...trimmed.map((entry) => entry.globalSeq)].sort((left, right) => left - right))
+})
+
+test('mergeMessageIntoCache caps hot cache and preserves newer streamed messages', () => {
+  const current = Array.from({ length: 200 }, (_, index) => message({
+    id: `msg_${index + 1}`,
+    sessionId: 'session-a',
+    globalSeq: index + 1,
+    role: 'assistant',
+    content: `message ${index + 1}`,
+  }))
+  const streamed = message({ id: 'msg_201', sessionId: 'session-a', globalSeq: 201, role: 'assistant', content: 'streamed' })
+
+  const trimmed = mergeMessageIntoCache(current, streamed)
+
+  assert.equal(trimmed.length, 200)
+  assert.equal(trimmed[0]?.id, 'msg_2')
+  assert.equal(trimmed[trimmed.length - 1]?.id, 'msg_201')
 })
 
 test('removePendingUserMessage removes only the failed optimistic message', () => {

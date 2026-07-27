@@ -1,7 +1,6 @@
 package permission
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,12 +9,6 @@ import (
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
-
-type ManagedPolicyState struct {
-	Policy            Policy `json:"policy"`
-	BypassPermissions bool   `json:"bypass_permissions"`
-	ExportedAt        int64  `json:"exported_at,omitempty"`
-}
 
 func (s *Service) CurrentPolicy() (Policy, error) {
 	return s.CurrentPolicyForAccount("")
@@ -27,79 +20,11 @@ func (s *Service) CurrentPolicyForAccount(accountScopeID string) (Policy, error)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	state, err := s.loadPermissionStateLocked(accountScopeID)
+	state, err := s.refreshPermissionStatePolicyLocked(accountScopeID)
 	if err != nil {
 		return Policy{}, err
 	}
 	return state.Policy, nil
-}
-
-func (s *Service) ExportPolicyState() (ManagedPolicyState, error) {
-	return s.ExportPolicyStateForAccount("")
-}
-
-func (s *Service) ExportPolicyStateForAccount(accountScopeID string) (ManagedPolicyState, error) {
-	if s == nil {
-		return ManagedPolicyState{Policy: DefaultPolicy(), ExportedAt: time.Now().UnixMilli()}, nil
-	}
-	s.mu.Lock()
-	state, err := s.loadPermissionStateLocked(accountScopeID)
-	s.mu.Unlock()
-	if err != nil {
-		return ManagedPolicyState{}, err
-	}
-	return ManagedPolicyState{
-		Policy:            NormalizePolicy(state.Policy),
-		BypassPermissions: state.BypassPermissions,
-		ExportedAt:        time.Now().UnixMilli(),
-	}, nil
-}
-
-func (s *Service) ApplyManagedPolicyState(state ManagedPolicyState) (ManagedPolicyState, error) {
-	return s.ApplyManagedPolicyStateForAccount("", state)
-}
-
-func (s *Service) ApplyManagedPolicyStateForAccount(accountScopeID string, state ManagedPolicyState) (ManagedPolicyState, error) {
-	if s == nil {
-		return ManagedPolicyState{}, errors.New("permission service is not configured")
-	}
-	if strings.TrimSpace(accountScopeID) == "" {
-		return ManagedPolicyState{}, errors.New("account scope ID is required")
-	}
-	policy := NormalizePolicy(state.Policy)
-	now := time.Now().UnixMilli()
-	if policy.UpdatedAt <= 0 {
-		policy.UpdatedAt = now
-	}
-	s.mu.Lock()
-	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
-		s.mu.Unlock()
-		return ManagedPolicyState{}, err
-	}
-	s.bypassPermissions = state.BypassPermissions
-	s.permissionStateCache[permissionStateCacheKey(accountScopeID)] = permissionStateCacheEntry{
-		AccountScopeID:    strings.TrimSpace(accountScopeID),
-		Policy:            NormalizePolicy(policy),
-		BypassPermissions: state.BypassPermissions,
-		LoadedAt:          now,
-		PolicyUpdatedAt:   policy.UpdatedAt,
-		BypassUpdatedAt:   now,
-	}
-	for cachedAccountScopeID, cached := range s.permissionStateCache {
-		if cachedAccountScopeID == permissionStateCacheKey(accountScopeID) {
-			continue
-		}
-		cached.BypassPermissions = state.BypassPermissions
-		cached.BypassUpdatedAt = now
-		cached.LoadedAt = now
-		s.permissionStateCache[cachedAccountScopeID] = cached
-	}
-	s.mu.Unlock()
-	return ManagedPolicyState{
-		Policy:            policy,
-		BypassPermissions: state.BypassPermissions,
-		ExportedAt:        time.Now().UnixMilli(),
-	}, nil
 }
 
 func (s *Service) ExplainTool(mode, toolName, toolArguments string, overlay *Policy) (PolicyExplain, error) {
@@ -114,14 +39,127 @@ func (s *Service) ExplainToolForAccount(accountScopeID, mode, toolName, toolArgu
 	policy := state.Policy
 	if overlay != nil {
 		policy = NormalizePolicy(Policy{
-			Version: 1,
-			Rules:   append(append([]PolicyRule(nil), overlay.Rules...), policy.Rules...),
+			Version:        1,
+			BashProfile:    policy.BashProfile,
+			Subagents:      policy.Subagents,
+			SessionDeploy:  policy.SessionDeploy,
+			PlanAcceptance: policy.PlanAcceptance,
+			Rules:          append(append([]PolicyRule(nil), overlay.Rules...), policy.Rules...),
 		})
 	}
 	if state.BypassPermissions {
 		mode = policyModeWithBypass(strings.TrimSpace(mode), true)
 	}
 	return ExplainPolicy(mode, toolName, toolArguments, policy), nil
+}
+
+func (s *Service) UpdateBashApprovalProfileForAccount(accountScopeID string, profile BashApprovalProfile) (Policy, error) {
+	if s == nil {
+		return Policy{}, errors.New("permission service is not configured")
+	}
+	profile = BashApprovalProfile(strings.TrimSpace(strings.ToLower(string(profile))))
+	if err := ValidateBashApprovalProfile(profile); err != nil {
+		return Policy{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.loadPermissionStateLocked(accountScopeID)
+	if err != nil {
+		return Policy{}, err
+	}
+	policy := state.Policy
+	policy.BashProfile = profile
+	now := time.Now().UnixMilli()
+	policy.UpdatedAt = now
+	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
+		return Policy{}, err
+	}
+	s.cachePermissionStateLocked(accountScopeID, policy, state.BypassPermissions, now, state.BypassUpdatedAt)
+	return NormalizePolicy(policy), nil
+}
+
+func (s *Service) UpdateCapabilityPoliciesForAccount(accountScopeID string, sessionDeploy SessionDeployPolicy, planAcceptance PlanAcceptancePolicy) (Policy, error) {
+	if s == nil {
+		return Policy{}, errors.New("permission service is not configured")
+	}
+	if err := ValidateSessionDeployPolicy(sessionDeploy); err != nil {
+		return Policy{}, err
+	}
+	if err := ValidatePlanAcceptancePolicy(planAcceptance); err != nil {
+		return Policy{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.loadPermissionStateLocked(accountScopeID)
+	if err != nil {
+		return Policy{}, err
+	}
+	policy := state.Policy
+	policy.SessionDeploy = sessionDeploy
+	policy.PlanAcceptance = planAcceptance
+	now := time.Now().UnixMilli()
+	policy.UpdatedAt = now
+	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
+		return Policy{}, err
+	}
+	s.cachePermissionStateLocked(accountScopeID, policy, state.BypassPermissions, now, state.BypassUpdatedAt)
+	return NormalizePolicy(policy), nil
+}
+
+func (s *Service) CurrentSubagentPolicyForAccount(accountScopeID string) (map[string]any, error) {
+	policy, err := s.CurrentPolicyForAccount(accountScopeID)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(policy.Subagents)
+	if err != nil {
+		return nil, err
+	}
+	var result map[string]any
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *Service) UpdateSubagentPolicyMapForAccount(accountScopeID string, input map[string]any) (map[string]any, error) {
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	var subagents SubagentPolicy
+	if err := json.Unmarshal(encoded, &subagents); err != nil {
+		return nil, err
+	}
+	_, err = s.UpdateSubagentPolicyForAccount(accountScopeID, subagents)
+	if err != nil {
+		return nil, err
+	}
+	return s.CurrentSubagentPolicyForAccount(accountScopeID)
+}
+
+func (s *Service) UpdateSubagentPolicyForAccount(accountScopeID string, subagents SubagentPolicy) (Policy, error) {
+	if s == nil {
+		return Policy{}, errors.New("permission service is not configured")
+	}
+	if err := ValidateSubagentPolicy(subagents); err != nil {
+		return Policy{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.loadPermissionStateLocked(accountScopeID)
+	if err != nil {
+		return Policy{}, err
+	}
+	policy := state.Policy
+	policy.Subagents = subagents
+	now := time.Now().UnixMilli()
+	policy.UpdatedAt = now
+	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
+		return Policy{}, err
+	}
+	s.cachePermissionStateLocked(accountScopeID, policy, state.BypassPermissions, now, state.BypassUpdatedAt)
+	return NormalizePolicy(policy), nil
 }
 
 func (s *Service) UpsertRule(rule PolicyRule) (PolicyRule, error) {
@@ -263,31 +301,39 @@ func (s *Service) ResolveWithPolicy(sessionID, permissionID, action, reason stri
 }
 
 func (s *Service) ResolveWithPolicyAndArguments(sessionID, permissionID, action, reason, approvedArguments string) (pebblestore.PermissionRecord, *PolicyRule, error) {
-	if descriptor, hosted, err := s.hostedDescriptorForSession(sessionID); err != nil {
-		return pebblestore.PermissionRecord{}, nil, err
-	} else if hosted {
-		result, err := s.hosted.Resolve(context.Background(), descriptor, ResolveInput{
-			SessionID:         sessionID,
-			PermissionID:      permissionID,
-			Action:            action,
-			Reason:            reason,
-			ApprovedArguments: approvedArguments,
-		})
-		if err != nil {
-			return pebblestore.PermissionRecord{}, nil, err
-		}
-		if err := s.storeMirroredPermission(result.Record); err != nil {
-			return pebblestore.PermissionRecord{}, nil, err
-		}
-		return result.Record, result.SavedRule, nil
-	}
-
 	action, err := normalizeResolveAction(action)
 	if err != nil {
 		return pebblestore.PermissionRecord{}, nil, err
 	}
 
 	var savedRule *PolicyRule
+	if action == ActionAllowAlways {
+		pending, lookupErr := s.lookupPermission(sessionID, permissionID)
+		if lookupErr != nil {
+			return pebblestore.PermissionRecord{}, nil, lookupErr
+		}
+		requirement := authorizationRequirement(pending.Mode, pending.ToolName, pending.ToolArguments)
+		if requirement == "session_deploy" || requirement == "plan_acceptance" || IsPlanAcceptanceLifecycleRequirement(requirement) {
+			accountScopeID, scopeErr := s.accountScopeIDForSession(sessionID)
+			if scopeErr != nil {
+				return pebblestore.PermissionRecord{}, nil, scopeErr
+			}
+			policy, policyErr := s.CurrentPolicyForAccount(accountScopeID)
+			if policyErr != nil {
+				return pebblestore.PermissionRecord{}, nil, policyErr
+			}
+			if requirement == "session_deploy" {
+				policy.SessionDeploy.Mode = CapabilityModeAlwaysAllow
+			} else {
+				policy.PlanAcceptance.Mode = CapabilityModeAlwaysAllow
+			}
+			if _, policyErr = s.UpdateCapabilityPoliciesForAccount(accountScopeID, policy.SessionDeploy, policy.PlanAcceptance); policyErr != nil {
+				return pebblestore.PermissionRecord{}, nil, policyErr
+			}
+			record, resolveErr := s.ResolveWithArguments(sessionID, permissionID, action, reason, approvedArguments)
+			return record, nil, resolveErr
+		}
+	}
 	if actionIsPersistent(action) {
 		decision := PolicyDecisionAllow
 		if actionIsDeny(action) {
@@ -377,7 +423,7 @@ func (s *Service) accountScopeIDForSession(sessionID string) (string, error) {
 
 func allowRuleSupported(toolName string) bool {
 	switch normalizePolicyToolName(toolName) {
-	case "exit_plan_mode", "ask_user":
+	case "exit_plan_mode", "plan_acceptance", "session_deploy", "ask_user":
 		return false
 	default:
 		return true

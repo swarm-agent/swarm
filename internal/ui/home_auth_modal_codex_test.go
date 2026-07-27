@@ -40,7 +40,7 @@ func TestCodexAuthLoginDefaultsToOneEnterBrowserFlowInternal(t *testing.T) {
 	}
 }
 
-func TestCodexAuthLoginCanChooseAPIKeyInternal(t *testing.T) {
+func TestCodexAuthLoginDoesNotExposeAPIKeyInternal(t *testing.T) {
 	p := NewHomePage(model.EmptyHome())
 	p.SetAuthModalData([]AuthModalProvider{{ID: "codex", Ready: false}}, nil)
 	p.ShowAuthModal()
@@ -50,24 +50,12 @@ func TestCodexAuthLoginCanChooseAPIKeyInternal(t *testing.T) {
 	p.handleAuthModalEditorKey(tcell.NewEventKey(tcell.KeyRune, '3', tcell.ModNone))
 	p.handleAuthModalEditorKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 
-	if p.authModal.Editor == nil || p.authModal.Editor.Mode != "api" {
-		t.Fatalf("expected api editor, got %#v", p.authModal.Editor)
+	if p.authModal.Editor == nil || p.authModal.Editor.Mode != "codex_browser_pending" {
+		t.Fatalf("expected codex browser pending editor, got %#v", p.authModal.Editor)
 	}
-	provider := ""
-	selectedKey := ""
-	for i, field := range p.authModal.Editor.Fields {
-		if field.Key == "provider" {
-			provider = field.Value
-		}
-		if i == p.authModal.Editor.Selected {
-			selectedKey = field.Key
-		}
-	}
-	if provider != "codex" {
-		t.Fatalf("provider field = %q, want codex", provider)
-	}
-	if selectedKey != "api_key" {
-		t.Fatalf("selected field = %q, want api_key", selectedKey)
+	action, ok := p.PopAuthModalAction()
+	if !ok || action.Login == nil || action.Login.Provider != "codex" {
+		t.Fatalf("expected codex OAuth login action, got ok=%v action=%#v", ok, action)
 	}
 }
 

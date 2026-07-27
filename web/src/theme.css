@@ -15,56 +15,66 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: #111111;
-  color: #f5f5f0;
+  background: #1E1418;
+  color: #BBB2B6;
 
-  --app-bg: #141413;
-  --app-bg-alt: #181716;
-  --app-bg-inset: #111111;
-  --app-surface: #1d1b19;
-  --app-surface-subtle: #25221f;
-  --app-surface-elevated: #2a2724;
-  --app-surface-hover: #312d2a;
-  --app-surface-active: #3a3531;
-  --app-border: #3b3733;
-  --app-border-strong: #4a453f;
-  --app-border-accent: #6b5b4d;
-  --app-primary: #d97706;
-  --app-primary-hover: #f59e0b;
-  --app-primary-active: #b45309;
-  --app-primary-text: #111111;
-  --app-accent: #8b5cf6;
-  --app-focus-ring: color-mix(in oklab, var(--app-primary) 35%, white);
-  --app-text: #f5f5f0;
-  --app-text-muted: #a8a29a;
-  --app-text-subtle: #7f7a73;
-  --app-text-inverse: #0f172a;
-  --app-text-accent: #d6d0c4;
-  --app-success: #86efac;
-  --app-success-bg: rgba(34, 197, 94, 0.12);
-  --app-success-border: rgba(34, 197, 94, 0.28);
-  --app-warning: #fbbf24;
-  --app-warning-bg: rgba(245, 158, 11, 0.12);
-  --app-warning-border: rgba(245, 158, 11, 0.28);
-  --app-danger: #fca5a5;
-  --app-danger-bg: rgba(239, 68, 68, 0.14);
-  --app-danger-border: rgba(239, 68, 68, 0.32);
-  --app-info: #93c5fd;
-  --app-info-bg: rgba(59, 130, 246, 0.14);
-  --app-info-border: rgba(59, 130, 246, 0.32);
-  --app-code-bg: var(--app-bg-inset);
-  --app-code-text: var(--app-text);
-  --app-code-keyword: #fbbf24;
-  --app-code-string: #86efac;
-  --app-code-number: #93c5fd;
-  --app-code-comment: var(--app-text-subtle);
-  --app-code-function: var(--app-primary);
-  --app-code-type: #c4b5fd;
-  --app-code-operator: var(--app-text-muted);
-  --app-code-path: var(--app-text-accent);
-  --button-soft-bg: rgba(255, 255, 255, 0.04);
-  --button-soft-bg-hover: rgba(255, 255, 255, 0.08);
-  --button-soft-border: rgba(255, 255, 255, 0.08);
+  --app-bg: #1E1418;
+  --app-bg-alt: #22161b;
+  --app-bg-panel: #24181c;
+  --app-bg-inset: #30272a;
+  --app-bg-overlay: rgb(30 20 24 / 0.86);
+  --app-surface: #26191E;
+  --app-surface-subtle: #20151a;
+  --app-surface-elevated: #35292e;
+  --app-surface-hover: #3e3237;
+  --app-surface-active: #4b4044;
+  --app-border: #5E3841;
+  --app-border-muted: #482b33;
+  --app-border-strong: #914b57;
+  --app-border-accent: #b05764;
+  --app-primary: #E36A7A;
+  --app-primary-hover: #e98895;
+  --app-primary-active: #ec9aa5;
+  --app-primary-text: #F8FAFC;
+  --app-accent: #E36A7A;
+  --app-selection: #48282f;
+  --app-selection-bg: #48282f;
+  --app-focus-ring: #e7828f;
+  --app-text: #BBB2B6;
+  --app-text-muted: #B9A8AD;
+  --app-text-subtle: #8e7f83;
+  --app-text-inverse: #F8FAFC;
+  --app-text-accent: #E36A7A;
+  --app-success: #4ADE80;
+  --app-success-bg: #26382b;
+  --app-success-border: #548e62;
+  --app-warning: #E4B15A;
+  --app-warning-bg: #423024;
+  --app-warning-border: #a6794f;
+  --app-danger: #FF6B6B;
+  --app-danger-bg: #472427;
+  --app-danger-border: #bb5659;
+  --app-info: #e67b8a;
+  --app-info-bg: #42272d;
+  --app-info-border: #a25a66;
+  --app-shadow-color: rgb(255 255 255 / 0.42);
+  --app-backdrop: rgb(30 20 24 / 0.74);
+  --app-code-bg: #30272a;
+  --app-code-text: #BBB2B6;
+  --app-code-keyword: #e38170;
+  --app-code-string: #E4B15A;
+  --app-code-number: #e49f62;
+  --app-code-comment: #9a8a8f;
+  --app-code-function: #E36A7A;
+  --app-code-type: #e98b97;
+  --app-code-operator: #c399a1;
+  --app-code-path: #d97b88;
+  --button-soft-bg: #20151a;
+  --button-soft-bg-hover: #3e3237;
+  --button-soft-background: #20151a;
+  --button-soft-background-hover: #3e3237;
+  --button-soft-border: #5E3841;
+  --button-soft-border-hover: #914b57;
   --button-soft-text: var(--app-text);
 }
 
@@ -95,6 +105,60 @@ body {
   position: fixed;
   inset: 0;
   isolation: isolate;
+}
+
+.scrollbar-hidden {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hidden::-webkit-scrollbar {
+  display: none;
+}
+
+.task-card-container {
+  container-name: task-card;
+  container-type: inline-size;
+}
+
+.task-card-narrow-only {
+  display: none;
+}
+
+@container task-card (max-width: 23rem) {
+  .task-card-container > [data-task-card-header],
+  .task-card-column-header,
+  .task-card-wide-only,
+  .task-card-child-context {
+    display: none;
+  }
+
+  .task-card-narrow-only {
+    display: flex;
+  }
+
+  .task-card-swarm-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    padding: 0;
+  }
+
+  .task-card-container [data-task-child-row] {
+    border-width: 0;
+    border-top-width: 1px;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .task-card-container [data-task-child-row]:first-child {
+    border-top-width: 0;
+  }
+}
+
+@container task-card (max-width: 12rem) {
+  .task-card-narrow-detail {
+    display: none;
+  }
 }
 
 a {

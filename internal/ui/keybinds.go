@@ -25,11 +25,12 @@ const (
 	KeybindGlobalReloadHome      KeybindID = "global.reload_home"
 	KeybindGlobalToggleMouse     KeybindID = "global.toggle_mouse"
 	KeybindGlobalOpenAgents      KeybindID = "global.open_agents"
-	KeybindGlobalOpenModels      KeybindID = "global.open_models"
+	KeybindGlobalCycleProfiles   KeybindID = "global.cycle_profiles"
 	KeybindGlobalCycleThinking   KeybindID = "global.cycle_thinking"
 	KeybindGlobalCycleRoute      KeybindID = "global.cycle_route"
 	KeybindGlobalVoiceInput      KeybindID = "global.voice_input"
 	KeybindGlobalShowBackground  KeybindID = "global.show_background"
+	KeybindGlobalWorkspaceSelect KeybindID = "global.workspace_select"
 	KeybindGlobalWorkspacePrev   KeybindID = "global.workspace_prev"
 	KeybindGlobalWorkspaceNext   KeybindID = "global.workspace_next"
 	KeybindGlobalWorkspaceSlot1  KeybindID = "global.workspace_slot_1"
@@ -43,13 +44,7 @@ const (
 	KeybindGlobalWorkspaceSlot9  KeybindID = "global.workspace_slot_9"
 	KeybindGlobalWorkspaceSlot10 KeybindID = "global.workspace_slot_10"
 
-	KeybindHomeSessionsEnterMode   KeybindID = "home.sessions.enter_mode"
-	KeybindHomeSessionsExitMode    KeybindID = "home.sessions.exit_mode"
-	KeybindHomeSessionsMoveUp      KeybindID = "home.sessions.move_up"
-	KeybindHomeSessionsMoveDown    KeybindID = "home.sessions.move_down"
-	KeybindHomeSessionsMoveUpAlt   KeybindID = "home.sessions.move_up_alt"
-	KeybindHomeSessionsMoveDownAlt KeybindID = "home.sessions.move_down_alt"
-	KeybindHomeSessionsOpen        KeybindID = "home.sessions.open"
+	KeybindHomeOpenSessions        KeybindID = "home.open_sessions"
 	KeybindHomePaletteMoveUp       KeybindID = "home.palette.move_up"
 	KeybindHomePaletteMoveDown     KeybindID = "home.palette.move_down"
 	KeybindHomePromptBackspace     KeybindID = "home.prompt.backspace"
@@ -213,11 +208,12 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindGlobalReloadHome, Group: "Global", Action: "Reload home", Default: "ctrl+r", Editable: true},
 	{ID: KeybindGlobalToggleMouse, Group: "Global", Action: "Toggle mouse capture", Default: "f8", Editable: true},
 	{ID: KeybindGlobalOpenAgents, Group: "Global", Action: "Open agents modal", Default: "ctrl+a", Aliases: []string{"alt+a"}, Editable: true},
-	{ID: KeybindGlobalOpenModels, Group: "Global", Action: "Open models modal", Default: "ctrl+m", Aliases: []string{"alt+m", "ctrl+enter"}, Editable: true},
-	{ID: KeybindGlobalCycleThinking, Group: "Global", Action: "Cycle thinking", Default: "ctrl+t", Editable: true},
+	{ID: KeybindGlobalCycleProfiles, Group: "Global", Action: "Cycle saved model profiles", Default: "ctrl+t", Editable: true},
+	{ID: KeybindGlobalCycleThinking, Group: "Global", Action: "Cycle thinking", Default: "", Editable: true},
 	{ID: KeybindGlobalCycleRoute, Group: "Global", Action: "Cycle chat route", Default: "alt+r", Editable: true},
 	{ID: KeybindGlobalVoiceInput, Group: "Global", Action: "Voice input capture", Default: "f9", Editable: true},
 	{ID: KeybindGlobalShowBackground, Group: "Global", Action: "Go home", Default: "ctrl+b", Editable: true},
+	{ID: KeybindGlobalWorkspaceSelect, Group: "Global", Action: "Open workspace selector (/workspace select)", Default: "alt+w", Editable: true},
 	{ID: KeybindGlobalWorkspacePrev, Group: "Global", Action: "Cycle workspace previous", Default: "", Editable: true},
 	{ID: KeybindGlobalWorkspaceNext, Group: "Global", Action: "Cycle workspace next", Default: "", Editable: true},
 	{ID: KeybindGlobalWorkspaceSlot1, Group: "Global", Action: "Activate workspace slot 1", Default: "alt+1", Editable: true},
@@ -231,13 +227,7 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindGlobalWorkspaceSlot9, Group: "Global", Action: "Activate workspace slot 9", Default: "alt+9", Editable: true},
 	{ID: KeybindGlobalWorkspaceSlot10, Group: "Global", Action: "Activate workspace slot 10", Default: "alt+0", Editable: true},
 
-	{ID: KeybindHomeSessionsEnterMode, Group: "Home", Action: "Sessions mode on", Default: "ctrl+down", Editable: true},
-	{ID: KeybindHomeSessionsExitMode, Group: "Home", Action: "Sessions mode off", Default: "ctrl+up", Editable: true},
-	{ID: KeybindHomeSessionsMoveUp, Group: "Home", Action: "Sessions move up", Default: "up", Editable: true},
-	{ID: KeybindHomeSessionsMoveDown, Group: "Home", Action: "Sessions move down", Default: "down", Editable: true},
-	{ID: KeybindHomeSessionsMoveUpAlt, Group: "Home", Action: "Sessions move up (alt)", Default: "alt+k", Editable: true},
-	{ID: KeybindHomeSessionsMoveDownAlt, Group: "Home", Action: "Sessions move down (alt)", Default: "alt+j", Editable: true},
-	{ID: KeybindHomeSessionsOpen, Group: "Home", Action: "Open selected session", Default: "enter", Editable: true},
+	{ID: KeybindHomeOpenSessions, Group: "Home", Action: "Open session manager (/sessions)", Default: "ctrl+x", Editable: true},
 	{ID: KeybindHomePaletteMoveUp, Group: "Home", Action: "Command palette up", Default: "up", Editable: true},
 	{ID: KeybindHomePaletteMoveDown, Group: "Home", Action: "Command palette down", Default: "down", Editable: true},
 	{ID: KeybindHomePromptBackspace, Group: "Home", Action: "Prompt backspace", Default: "backspace", Editable: true},
@@ -354,7 +344,7 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindChatUserVariantNext, Group: "Chat", Action: "User diff variant next", Default: "f5", Editable: true},
 	{ID: KeybindChatAssistantVariantPrev, Group: "Chat", Action: "Assistant diff variant previous", Default: "f6", Editable: true},
 	{ID: KeybindChatAssistantVariantNext, Group: "Chat", Action: "Assistant diff variant next", Default: "f7", Editable: true},
-	{ID: KeybindChatCycleMode, Group: "Chat", Action: "Cycle mode", Default: "shift+tab", Editable: true},
+	{ID: KeybindChatCycleMode, Group: "Chat", Action: "Toggle Plan on/off", Default: "shift+tab", Editable: true},
 	{ID: KeybindChatComplete, Group: "Chat", Action: "Complete command/preset", Default: "tab", Editable: true},
 	{ID: KeybindChatInsertNewline, Group: "Chat", Action: "Insert input newline", Default: "ctrl+j", Editable: true},
 	{ID: KeybindChatSubmit, Group: "Chat", Action: "Submit input", Default: "enter", Editable: true},

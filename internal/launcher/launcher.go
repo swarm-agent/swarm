@@ -24,7 +24,6 @@ import (
 	"syscall"
 	"time"
 
-	"swarm-refactor/swarmtui/pkg/devmode"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm-refactor/swarmtui/pkg/storagecontract"
 )
@@ -359,12 +358,6 @@ func rejectLegacyStartupConfig(targetPath string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat legacy startup config %q: %w", legacyPath, err)
 	}
-	legacySecret := startupconfig.RemoteDeployBootstrapSecretPath(legacyPath)
-	if _, err := os.Stat(legacySecret); err == nil {
-		return legacyStorageError("startup secret", legacySecret, startupconfig.RemoteDeployBootstrapSecretPath(targetPath))
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("stat legacy startup secret %q: %w", legacySecret, err)
-	}
 	return nil
 }
 
@@ -404,30 +397,32 @@ func xdgBinHome() (string, error) {
 
 func (p Profile) EnvMap() map[string]string {
 	env := map[string]string{
-		"SWARM_LANE":               p.Lane,
-		"SWARM_LANE_PORT":          strconv.Itoa(p.LanePort),
-		"SWARM_STATE_HOME":         p.SwarmState,
-		"SWARM_CONFIG_HOME":        p.ConfigHome,
-		"SWARM_STARTUP_CONFIG":     p.Startup.Path,
-		"SWARM_BYPASS_PERMISSIONS": boolString(p.Bypass),
-		"SWARMD_LISTEN":            p.Listen,
-		"SWARMD_URL":               p.URL,
-		"SWARM_DESKTOP_PORT":       strconv.Itoa(p.DesktopPort),
-		"STATE_ROOT":               p.StateRoot,
-		"DATA_DIR":                 p.DataDir,
-		"DB_PATH":                  p.DBPath,
-		"LOCK_PATH":                p.LockPath,
-		"PID_FILE":                 p.PIDFile,
-		"LOG_FILE":                 p.LogFile,
-		"SWARM_BIN_DIR":            p.BinDir,
-		"SWARM_TOOL_BIN_DIR":       p.ToolBinDir,
-		"LD_LIBRARY_PATH":          prependPathEntry(os.Getenv("LD_LIBRARY_PATH"), p.LibDir),
-		"SWARM_WEB_DIR":            p.WebDir,
-		"SWARM_WEB_DIST_DIR":       p.WebDistDir,
-		"SWARM_PORTS_DIR":          p.PortsDir,
-		"SWARM_PORT_RECORD":        p.PortRecord,
-		"LISTEN":                   p.Listen,
-		"ADDR":                     p.URL,
+		"SWARM_LANE":                     p.Lane,
+		"SWARM_LANE_PORT":                strconv.Itoa(p.LanePort),
+		"SWARM_STATE_HOME":               p.SwarmState,
+		"SWARM_CONFIG_HOME":              p.ConfigHome,
+		"SWARM_STARTUP_CONFIG":           p.Startup.Path,
+		"SWARM_BYPASS_PERMISSIONS":       boolString(p.Bypass),
+		"SWARM_V3_DIAGNOSTICS":           diagnosticsEnvValue(p.Startup.V3Diagnostics),
+		"SWARM_PROVIDER_API_DIAGNOSTICS": diagnosticsEnvValue(p.Startup.ProviderAPIDiagnostics),
+		"SWARMD_LISTEN":                  p.Listen,
+		"SWARMD_URL":                     p.URL,
+		"SWARM_DESKTOP_PORT":             strconv.Itoa(p.DesktopPort),
+		"STATE_ROOT":                     p.StateRoot,
+		"DATA_DIR":                       p.DataDir,
+		"DB_PATH":                        p.DBPath,
+		"LOCK_PATH":                      p.LockPath,
+		"PID_FILE":                       p.PIDFile,
+		"LOG_FILE":                       p.LogFile,
+		"SWARM_BIN_DIR":                  p.BinDir,
+		"SWARM_TOOL_BIN_DIR":             p.ToolBinDir,
+		"LD_LIBRARY_PATH":                prependPathEntry(os.Getenv("LD_LIBRARY_PATH"), p.LibDir),
+		"SWARM_WEB_DIR":                  p.WebDir,
+		"SWARM_WEB_DIST_DIR":             p.WebDistDir,
+		"SWARM_PORTS_DIR":                p.PortsDir,
+		"SWARM_PORT_RECORD":              p.PortRecord,
+		"LISTEN":                         p.Listen,
+		"ADDR":                           p.URL,
 	}
 	if strings.TrimSpace(p.Root) != "" {
 		if toolchainEnv, err := DevToolchainEnv(p.Root); err == nil {
@@ -487,7 +482,7 @@ func DevToolchainEnv(root string) (map[string]string, error) {
 		env["GOROOT"] = goRoot
 	}
 	if strings.TrimSpace(os.Getenv("GOTOOLCHAIN")) == "" {
-		env["GOTOOLCHAIN"] = "local"
+		env["GOTOOLCHAIN"] = "auto"
 	}
 	return env, nil
 }
@@ -554,6 +549,13 @@ func boolString(v bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+func diagnosticsEnvValue(enabled bool) string {
+	if enabled {
+		return "1"
+	}
+	return "0"
 }
 
 func FindGoBin(root string) (string, error) {
@@ -687,135 +689,6 @@ func BuildSwarmdBinaries(profile Profile) error {
 	return nil
 }
 
-func SyncDevContainerImages(profile Profile, reason string, skipLocalArtifactRebuild bool) error {
-	return SyncDevContainerImagesWithFingerprint(profile, reason, skipLocalArtifactRebuild, "")
-}
-
-func SyncDevContainerImagesWithFingerprint(profile Profile, reason string, skipLocalArtifactRebuild bool, fingerprint string) error {
-	startupCfg, err := syncDevModeStartupConfig(profile)
-	if err != nil {
-		return err
-	}
-	if !startupCfg.DevMode {
-		return nil
-	}
-	devRoot, err := devmode.ResolveRoot(startupCfg.DevRoot)
-	if err != nil {
-		return fmt.Errorf("resolve dev container build root: %w", err)
-	}
-	if err := devmode.SyncStagedContainerBinaries(devRoot, profile.BinDir); err != nil {
-		return fmt.Errorf("stage dev container image binaries: %w", err)
-	}
-	stagedFingerprint, err := devmode.ContainerImageFingerprint(devRoot)
-	if err != nil {
-		return fmt.Errorf("compute dev container image fingerprint: %w", err)
-	}
-	fingerprint = strings.TrimSpace(fingerprint)
-	if fingerprint != "" && fingerprint != stagedFingerprint {
-		fmt.Fprintf(os.Stderr, "dev container fingerprint changed after staging current binaries; using %s instead of %s\n", stagedFingerprint, fingerprint)
-	}
-	fingerprint = stagedFingerprint
-	runtimes := availableDevContainerBuildRuntimes()
-	if len(runtimes) == 0 {
-		return errors.New("dev_mode is enabled but no local container runtime is available to build the canonical child image")
-	}
-	for _, runtimeName := range runtimes {
-		if err := rebuildDevContainerImage(devRoot, runtimeName, fingerprint, reason, skipLocalArtifactRebuild); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func syncDevModeStartupConfig(profile Profile) (startupconfig.FileConfig, error) {
-	cfg := profile.Startup
-	if !cfg.DevMode {
-		return cfg, nil
-	}
-	if strings.TrimSpace(profile.Root) == "" {
-		return startupconfig.FileConfig{}, errors.New("dev_mode requires a source checkout; run rebuild from the repo root so the dev child image can be tracked")
-	}
-	devRoot, err := devmode.ResolveRoot(profile.Root)
-	if err != nil {
-		return startupconfig.FileConfig{}, err
-	}
-	if cfg.DevRoot == devRoot {
-		return cfg, nil
-	}
-	cfg.DevRoot = devRoot
-	if err := startupconfig.Write(cfg); err != nil {
-		return startupconfig.FileConfig{}, fmt.Errorf("record dev_root in startup config: %w", err)
-	}
-	return cfg, nil
-}
-
-func availableDevContainerBuildRuntimes() []string {
-	preferredRuntime := strings.TrimSpace(os.Getenv("BUILD_RUNTIME"))
-	candidates := []string{"podman", "docker"}
-	if preferredRuntime != "" {
-		candidates = append([]string{preferredRuntime}, candidates...)
-	}
-	out := make([]string, 0, 2)
-	seen := map[string]struct{}{}
-	for _, runtimeName := range candidates {
-		runtimeName = strings.ToLower(strings.TrimSpace(runtimeName))
-		if runtimeName == "" || (runtimeName != "podman" && runtimeName != "docker") {
-			continue
-		}
-		if _, ok := seen[runtimeName]; ok {
-			continue
-		}
-		seen[runtimeName] = struct{}{}
-		if _, err := exec.LookPath(runtimeName); err != nil {
-			continue
-		}
-		if !runtimeAvailable(runtimeName) {
-			continue
-		}
-		out = append(out, runtimeName)
-	}
-	return out
-}
-
-func runtimeAvailable(runtimeName string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	args := []string{"info", "--format", "{{.ServerVersion}}"}
-	if runtimeName == "podman" {
-		args = []string{"info", "--format", "{{.Version.Version}}"}
-	}
-	cmd := exec.CommandContext(ctx, runtimeName, args...)
-	if err := cmd.Run(); err != nil {
-		return false
-	}
-	return true
-}
-
-func rebuildDevContainerImage(devRoot, runtimeName, fingerprint, reason string, skipLocalArtifactRebuild bool) error {
-	scriptPath, err := devmode.RebuildScriptPath(devRoot)
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command("bash", scriptPath, "--image-only")
-	cmd.Dir = devRoot
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(),
-		"BUILD_RUNTIME="+runtimeName,
-		"IMAGE_NAME="+devmode.DefaultContainerImageRef,
-		"SWARM_REBUILD_REASON="+strings.TrimSpace(reason),
-		"SWARM_CONTAINER_DEV_FINGERPRINT="+strings.TrimSpace(fingerprint),
-		"SWARM_BIN_DIR="+filepath.Join(devRoot, ".bin", "main"),
-	)
-	if skipLocalArtifactRebuild {
-		cmd.Env = append(cmd.Env, "SWARM_SKIP_LOCAL_ARTIFACT_REBUILD=1")
-	}
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("rebuild dev child image for %s: %w", runtimeName, err)
-	}
-	return nil
-}
-
 func runGoBuild(projectRoot, workDir, goBin, outPath, pkg string) error {
 	return runGoBuildWithArgs(projectRoot, workDir, goBin, outPath, pkg)
 }
@@ -864,7 +737,7 @@ func runGoBuildWithArgs(projectRoot, workDir, goBin, outPath, pkg string, extraA
 		"GOMODCACHE="+goModCache,
 		"GOPATH="+goPath,
 		"GO_BIN="+goBin,
-		"GOTOOLCHAIN="+envValueOrDefault("GOTOOLCHAIN", "local"),
+		"GOTOOLCHAIN="+envValueOrDefault("GOTOOLCHAIN", "auto"),
 		"PATH="+prependPathEntry(os.Getenv("PATH"), filepath.Dir(goBin)),
 	)
 	if goRoot := ResolveGoRoot(goBin); goRoot != "" {
@@ -1069,6 +942,13 @@ func ClearPortFile(profile Profile) {
 	_ = os.Remove(profile.PortRecord)
 }
 
+func writePIDFile(profile Profile, pid int) error {
+	if pid <= 0 {
+		return errors.New("daemon pid must be positive")
+	}
+	return writePrivateFile(profile.PIDFile, []byte(strconv.Itoa(pid)+"\n"))
+}
+
 func ReadPIDFile(profile Profile) string {
 	data, err := os.ReadFile(profile.PIDFile)
 	if err != nil {
@@ -1170,7 +1050,7 @@ func StartBackend(profile Profile, opts StartBackendOptions) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	if err := os.WriteFile(profile.PIDFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644); err != nil {
+	if err := writePIDFile(profile, cmd.Process.Pid); err != nil {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 		return err
@@ -1229,7 +1109,7 @@ func RunBackend(profile Profile, opts StartBackendOptions) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	if err := os.WriteFile(profile.PIDFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644); err != nil {
+	if err := writePIDFile(profile, cmd.Process.Pid); err != nil {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 		_ = os.Remove(profile.PIDFile)
@@ -1403,35 +1283,61 @@ func waitForHealthDown(profile Profile, timeout time.Duration) bool {
 }
 
 func backendStopCandidatePIDs(profile Profile) ([]int, error) {
-	seen := map[int]struct{}{}
-	pids := []int{}
-	addPID := func(pid int) {
-		if pid <= 0 {
-			return
-		}
-		if _, ok := seen[pid]; ok {
-			return
-		}
-		if !processRunning(strconv.Itoa(pid)) {
-			return
-		}
-		seen[pid] = struct{}{}
-		pids = append(pids, pid)
-	}
 	if pid, ok, err := readLockPID(profile.LockPath); err != nil {
 		return nil, err
-	} else if ok {
-		addPID(pid)
-	}
-	pidText := strings.TrimSpace(ReadPIDFile(profile))
-	if pidText != "" {
-		pid, err := strconv.Atoi(pidText)
+	} else if ok && processRunning(strconv.Itoa(pid)) {
+		verified, err := verifiedSwarmDaemonPID(pid)
 		if err != nil {
 			return nil, err
 		}
-		addPID(pid)
+		if !verified {
+			return nil, fmt.Errorf("refusing to signal unverified process %d from daemon lock", pid)
+		}
+		return []int{pid}, nil
 	}
-	return pids, nil
+	pidText := strings.TrimSpace(ReadPIDFile(profile))
+	if pidText == "" || !processRunning(pidText) {
+		return nil, nil
+	}
+	pid, err := strconv.Atoi(pidText)
+	if err != nil || pid <= 0 {
+		return nil, fmt.Errorf("invalid daemon pid metadata %q", pidText)
+	}
+	verified, err := verifiedSwarmDaemonPID(pid)
+	if err != nil {
+		return nil, err
+	}
+	if !verified {
+		return nil, fmt.Errorf("refusing to signal unverified process %d from pid metadata", pid)
+	}
+	return []int{pid}, nil
+}
+
+func verifiedSwarmDaemonPID(pid int) (bool, error) {
+	if pid <= 0 {
+		return false, nil
+	}
+	if runtime.GOOS == "linux" {
+		executable, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe"))
+		if err == nil {
+			return filepath.Base(strings.TrimSuffix(executable, " (deleted)")) == "swarmd", nil
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if !errors.Is(err, os.ErrPermission) {
+			return false, fmt.Errorf("verify daemon process %d: %w", pid, err)
+		}
+	}
+	psPath, err := exec.LookPath("ps")
+	if err != nil {
+		return false, fmt.Errorf("verify daemon process %d: ps is unavailable", pid)
+	}
+	output, err := exec.Command(psPath, "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if err != nil {
+		return false, nil
+	}
+	return filepath.Base(strings.TrimSpace(string(output))) == "swarmd", nil
 }
 
 func signalPID(pid int, signal syscall.Signal) error {
@@ -1640,10 +1546,6 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	if err := preflightDevUpdateForUpdate(profile); err != nil {
 		return err
 	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Checking managed host dev sync requirements.", "")
-	if err := runManagedDevHostUpdatePhaseForUpdate(profile); err != nil {
-		return err
-	}
 	restartPlan, err := resolveUpdateRestartPlan(profile)
 	if err != nil {
 		return err
@@ -1678,22 +1580,6 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	} else {
 		_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Desktop web assets are current.", "")
 	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Staging dev container image binaries.", "")
-	if err := devmode.SyncStagedContainerBinaries(profile.Root, profile.BinDir); err != nil {
-		return fmt.Errorf("stage dev container image binaries: %w", err)
-	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Preparing dev container image fingerprint.", "")
-	fingerprint, err := devmode.ContainerImageFingerprint(profile.Root)
-	if err != nil {
-		return err
-	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding/syncing dev container image.", "")
-	if err := syncDevContainerImagesWithFingerprintForUpdate(profile, envOrString("SWARM_REBUILD_REASON", "swarmtui-update-dev"), true, fingerprint); err != nil {
-		return err
-	}
-	if err := writeLocalContainerUpdateRebuildStatusForUpdate(profile, "dev", "", devmode.DefaultContainerImageRef, fingerprint); err != nil {
-		return err
-	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Installing Swarm launchers.", "")
 	if _, err := installLaunchersForUpdate(profile.Root); err != nil {
 		return err
@@ -1705,7 +1591,6 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 		}
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Restarting Swarm backend.", "")
-	markManagedDevHostPhase(profile, managedDevPhaseReconnect, updateJobStatusCompleted, "Primary backend restarted; managed hosts should reconnect after their remote rebuilds.", "")
 	if restartPlan.managerKind == lifecycleKindSystemd && restartPlan.blockedErr == nil && restartPlan.systemdScope != "" && restartPlan.systemdUnit != "" {
 		if err := restartSystemdServiceForUpdate(restartPlan.systemdScope, restartPlan.systemdUnit, restartPlan.systemdActive); err != nil {
 			return err
@@ -1713,15 +1598,7 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	} else if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
 		return err
 	}
-	markManagedDevHostPhase(profile, managedDevPhaseVerify, updateJobStatusCompleted, "Primary restart completed; verify managed host session routing from the desktop.", "")
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Updating local and remote container images.", "")
-	if err := runDevLocalContainerUpdateJobAfterRestartForUpdate(profile); err != nil {
-		return err
-	}
-	if err := runDevRemoteDeployUpdateJobAfterRestartForUpdate(profile); err != nil {
-		return err
-	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusCompleted, "Dev rebuild completed. Local and remote container image updates completed.", "")
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusCompleted, "Dev rebuild completed.", "")
 	jobTerminalStatusWritten = true
 	fmt.Fprintln(os.Stdout, "Local dev rebuild completed. Restarting Swarm...")
 	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
@@ -2034,9 +1911,6 @@ func Rebuild(profile Profile, includeWeb, restartSystemd bool) error {
 			return err
 		}
 	}
-	if err := SyncDevContainerImages(profile, envOrString("SWARM_REBUILD_REASON", "swarmtui-rebuild"), true); err != nil {
-		return err
-	}
 	if _, err := InstallLaunchers(profile.Root); err != nil {
 		return err
 	}
@@ -2171,6 +2045,15 @@ func runSystemdServiceCommands(scope systemdServiceScope, unit string, commands 
 			return err
 		}
 		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Stdin = os.Stdin
+		if filepath.Base(args[0]) == "sudo" {
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("%s: %w", strings.Join(args[1:], " "), err)
+			}
+			continue
+		}
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			trimmed := strings.TrimSpace(string(output))
@@ -2214,7 +2097,7 @@ func systemctlManageArgs(scope systemdServiceScope, args ...string) ([]string, e
 		if err != nil {
 			return nil, errors.New("sudo not found; cannot manage systemd system service")
 		}
-		return append([]string{sudoPath, "-n", systemctlPath}, args...), nil
+		return append([]string{sudoPath, systemctlPath}, args...), nil
 	default:
 		return nil, fmt.Errorf("unknown systemd service scope %q", scope)
 	}
