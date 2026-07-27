@@ -31,7 +31,7 @@
     "playwright": "1.59.1",
     "tsx": "4.22.4",
     "typescript": "5.9.3",
-    "vite": "8.0.16"
+    "vite": "8.1.5"
   },
   "packageManager": "pnpm@11.13.1"
 }
