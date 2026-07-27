@@ -7,10 +7,7 @@ import { readFileSync } from "node:fs";
 
 import { DesktopPlanExecutionSidebar } from "./desktop-plan-execution-sidebar";
 import type { DesktopPlanExecutionSidebarActionInput } from "./desktop-plan-execution-sidebar";
-import {
-  DesktopPlanModal,
-  type DesktopPlanRecoveryInput,
-} from "./desktop-plan-modal";
+import { DesktopPlanModal } from "./desktop-plan-modal";
 import type {
   DesktopSessionPlanRecord,
   DesktopSessionPlanRevisionRecord,
@@ -178,15 +175,9 @@ function renderPlanModal(
     <DesktopPlanModal
       open
       plan={planRecord()}
-      revisions={[]}
-      historyLoading={false}
-      saving={false}
-      executing={false}
       error={null}
       onOpenChange={() => undefined}
       onCopy={async () => true}
-      onRestoreRevision={async () => undefined}
-      onApproveStart={async () => undefined}
       {...props}
     />,
   );
@@ -390,6 +381,10 @@ test("checkpoint sidebar bounds overflow while prioritizing active work and pres
   assert.doesNotMatch(markup, /\[x\] Persist task changes/);
   assert.doesNotMatch(markup, /\[ \] Render sidebar state/);
   assert.match(markup, /Open full plan/);
+  assert.match(
+    markup,
+    /You can ask Swarm to remake a plan at any time, just pause and ask\./,
+  );
 });
 
 test("pending-only overflow always exposes a keyboard-accessible chevron disclosure", () => {
@@ -945,7 +940,7 @@ test("non-final review action dispatches checkpoint acceptance to start the next
   ]);
 });
 
-test("plan modal keeps recovery hidden until opened and shows the full active checkpoint under the title", () => {
+test("plan modal removes recovery and shows the full active checkpoint under the title", () => {
   const base = planRecord();
   base.document.checkpoints[0].title =
     "Build UI with a very long active checkpoint title that should wrap instead of truncating underneath the plan title";
@@ -956,7 +951,6 @@ test("plan modal keeps recovery hidden until opened and shows the full active ch
   const activeTitleIndex = markup.indexOf(
     "Build UI with a very long active checkpoint title that should wrap instead of truncating underneath the plan title",
   );
-  const recoveryButtonIndex = markup.indexOf(">Recovery</button>");
   const copyIndex = markup.indexOf(">Copy</button>");
   const documentIndex = markup.indexOf("Plan details");
   assert(titleIndex >= 0, "expected modal title");
@@ -968,20 +962,13 @@ test("plan modal keeps recovery hidden until opened and shows the full active ch
     activeTitleIndex > activeIndex,
     "expected active checkpoint title under modal title",
   );
-  assert(
-    recoveryButtonIndex > titleIndex,
-    "expected recovery entry in the header controls",
-  );
-  assert(
-    copyIndex > recoveryButtonIndex,
-    "expected recovery entry directly left of copy",
-  );
+  assert(copyIndex > titleIndex, "expected copy entry in the header controls");
   assert(
     documentIndex > copyIndex,
     "expected plan details after header controls",
   );
   assert.match(markup, /whitespace-normal break-words/);
-  assert.doesNotMatch(markup, /Recovery mode/);
+  assert.doesNotMatch(markup, /Recovery/);
   assert.doesNotMatch(markup, /Checkpoint by checkpoint · Automatic/);
   assert.doesNotMatch(markup, /Active: /);
   assert.doesNotMatch(markup, /Plan revision/);
@@ -993,7 +980,7 @@ test("plan modal keeps recovery hidden until opened and shows the full active ch
   assert.doesNotMatch(markup, /<textarea/);
 });
 
-test("plan modal removes top-level approval cards in favor of recovery confirmation", () => {
+test("plan modal removes top-level approval and recovery controls", () => {
   const markup = renderPlanModal();
 
   assert.doesNotMatch(markup, /Approve &amp; Start|Approve & Start/);
@@ -1005,6 +992,5 @@ test("plan modal removes top-level approval cards in favor of recovery confirmat
   assert.doesNotMatch(markup, /Execution style/);
   assert.doesNotMatch(markup, /Single run is disabled/);
   assert.doesNotMatch(markup, /Run through as one execution/);
-  assert.match(markup, />Recovery<\/button>/);
-  assert.doesNotMatch(markup, /Recovery mode/);
+  assert.doesNotMatch(markup, /Recovery/);
 });

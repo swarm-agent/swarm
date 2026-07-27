@@ -644,6 +644,9 @@ function ActiveCheckpointSection({
       >
         Open full plan
       </Button>
+      <p className="mt-2 px-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
+        You can ask Swarm to remake a plan at any time, just pause and ask.
+      </p>
     </section>
   );
 }
