@@ -27,7 +27,7 @@ interface SubagentPolicy {
   require_write_isolation: boolean
 }
 
-export type BashApprovalProfile = 'current_rules' | 'allow_every_read' | 'allow_safe_reads' | 'only_critical_prompts'
+export type BashApprovalProfile = 'current_rules' | 'allow_every_read' | 'only_critical_prompts'
 
 interface PermissionPolicy {
   version: number
@@ -58,11 +58,10 @@ interface PermissionResetResponse {
   policy?: PermissionPolicy
 }
 
-export const BASH_APPROVAL_PROFILES: ReadonlyArray<{ value: BashApprovalProfile; label: string; description: string; recommended?: boolean }> = [
-  { value: 'current_rules', label: 'Current rules', description: 'Use saved permission rules and the existing default Bash behavior.' },
-  { value: 'allow_every_read', label: 'Allow every read', description: 'Auto-approve every read, including reads marked critical.' },
-  { value: 'allow_safe_reads', label: 'Allow safe reads', description: 'Auto-approve routine reads; prompt for critical reads and protected changes.', recommended: true },
-  { value: 'only_critical_prompts', label: 'Only critical prompts', description: 'Auto-approve noncritical reads, writes, and updates; prompt for critical operations and every delete.' },
+export const BASH_APPROVAL_PROFILES: ReadonlyArray<{ value: BashApprovalProfile; label: string; description: string }> = [
+  { value: 'current_rules', label: 'Default', description: 'Asks every permission and follows your saved permission rules.' },
+  { value: 'allow_every_read', label: 'Allow every read', description: 'Auto-approve every command the AI designates as a read, including critical reads.' },
+  { value: 'only_critical_prompts', label: 'Only critical prompts', description: 'Auto-approve commands the AI designates as noncritical; prompt for critical operations and every delete.' },
 ]
 
 export function normalizeBashApprovalProfile(value: unknown): BashApprovalProfile {
@@ -437,12 +436,12 @@ export function PermissionsSettingsPage() {
                   className={cn('flex min-h-24 items-start gap-3 rounded-xl border bg-[var(--app-bg-alt)] p-4 text-left transition-colors disabled:cursor-not-allowed', selected ? 'border-[var(--app-primary)] ring-1 ring-[var(--app-primary)]' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)]')}
                 >
                   <span aria-hidden="true" className={cn('mt-0.5 size-4 shrink-0 rounded-full border-2', selected ? 'border-[var(--app-primary)] bg-[radial-gradient(circle,var(--app-primary)_0_42%,transparent_48%)]' : 'border-[var(--app-border-strong)]')} />
-                  <span className="min-w-0"><span className="flex flex-wrap items-center gap-2 text-sm font-medium text-[var(--app-text)]">{option.label}{option.recommended ? <span className="rounded-full bg-[color-mix(in_oklab,var(--app-primary)_14%,transparent)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--app-primary)]">Recommended</span> : null}</span><span className="mt-1 block text-xs leading-5 text-[var(--app-text-muted)]">{option.description}</span></span>
+                  <span className="min-w-0"><span className="text-sm font-medium text-[var(--app-text)]">{option.label}</span><span className="mt-1 block text-xs leading-5 text-[var(--app-text-muted)]">{option.description}</span></span>
                 </button>
               )
             })}
           </div>
-          <div className="mt-3 rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs leading-5 text-[var(--app-warning)]">Saved rules stay active in every profile. Deny rules override profile auto-approvals. Profile safety prompts still win over existing Allow rules. Allow every read intentionally does not stop critical reads.</div>
+          <div className="mt-3 rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs leading-5 text-[var(--app-warning)]">Every profile still respects your saved permission rules for all permission types. Deny rules override profile auto-approvals. Profile safety prompts still win over existing Allow rules. The AI designates command types and criticality, so auto-approval profiles are less safe than Default. Allow every read intentionally does not stop critical reads.</div>
           {bypassPermissions ? <div className="mt-2 text-xs text-[var(--app-text-muted)]">Permissions are OFF. This profile is preserved and will apply when permissions are turned back ON.</div> : null}
         </section>
 

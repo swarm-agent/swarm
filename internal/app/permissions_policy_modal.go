@@ -32,7 +32,7 @@ type permissionsPolicyModalState struct {
 	TurnOff     ui.Rect
 	Remove      ui.Rect
 	Close       ui.Rect
-	Profiles    [4]ui.Rect
+	Profiles    [3]ui.Rect
 }
 
 func (a *App) permissionsPolicyModalActive() bool {
@@ -47,7 +47,7 @@ func (a *App) openPermissionsPolicyModal(policy client.PermissionPolicy) {
 	if len(policy.Rules) == 0 {
 		selected = -1
 	}
-	status := "Press 1-4 to choose a Bash approval profile. Press a to add a trusted prefix."
+	status := "Press 1-3 to choose a Bash approval profile. Press a to add a trusted prefix."
 	if a.homeModel.BypassPermissions {
 		status = "Permissions are OFF. Press o to turn permissions ON again."
 	}
@@ -84,7 +84,7 @@ func (a *App) handlePermissionsPolicyModalKey(ev *tcell.EventKey) bool {
 
 	if ev.Key() == tcell.KeyRune {
 		switch unicode.ToLower(ev.Rune()) {
-		case '1', '2', '3', '4':
+		case '1', '2', '3':
 			a.setPermissionsBashProfile(int(ev.Rune() - '1'))
 			return true
 		case 'a', 'i':
@@ -471,7 +471,7 @@ func (a *App) drawPermissionsPolicyModal() {
 		messageStyle = theme.Error
 	}
 	if message == "" {
-		message = "1-4 Bash profile · ↑/↓ rule · a add · r remove · o permissions · Esc close"
+		message = "1-3 Bash profile · ↑/↓ rule · a add · r remove · o permissions · Esc close"
 	}
 	ui.DrawText(a.screen, modal.X+2, messageY, modal.W-4, messageStyle, permissionsModalClamp(message, modal.W-4))
 
@@ -501,13 +501,12 @@ var permissionsBashProfiles = []struct {
 	Label       string
 	Description string
 }{
-	{Value: "current_rules", Label: "Current rules", Description: "Granular rules and existing defaults."},
+	{Value: "current_rules", Label: "Default", Description: "Saved rules and existing default behavior."},
 	{Value: "allow_every_read", Label: "Allow every read", Description: "All reads, including critical reads."},
-	{Value: "allow_safe_reads", Label: "Allow safe reads [Recommended]", Description: "Routine reads; critical reads prompt."},
 	{Value: "only_critical_prompts", Label: "Only critical prompts", Description: "Noncritical read/write/update auto-approved."},
 }
 
-func permissionsProfileAt(rects [4]ui.Rect, x, y int) int {
+func permissionsProfileAt(rects [3]ui.Rect, x, y int) int {
 	for i, rect := range rects {
 		if rect.Contains(x, y) {
 			return i
@@ -555,7 +554,7 @@ func (a *App) setPermissionsBashProfile(index int) {
 func (a *App) drawPermissionsBashProfiles(theme ui.Theme, y, width int) {
 	m := &a.permissionsPolicyModal
 	x := m.Rect.X + 2
-	ui.DrawText(a.screen, x, y, width, theme.TextMuted.Bold(true), "Bash approvals · choose one (keys 1-4)")
+	ui.DrawText(a.screen, x, y, width, theme.TextMuted.Bold(true), "Bash approvals · choose one (keys 1-3)")
 	for i, profile := range permissionsBashProfiles {
 		rowY := y + 1 + i
 		selected := strings.TrimSpace(m.Policy.BashProfile) == profile.Value
@@ -573,7 +572,7 @@ func (a *App) drawPermissionsBashProfiles(theme ui.Theme, y, width int) {
 		ui.DrawText(a.screen, x, rowY, width, style, permissionsModalClamp(label, width))
 	}
 	warning := "Metadata and heuristics can misclassify. Allow every read intentionally does not stop critical reads."
-	ui.DrawText(a.screen, x, y+5, width, theme.Warning, permissionsModalClamp(warning, width))
+	ui.DrawText(a.screen, x, y+4, width, theme.Warning, permissionsModalClamp(warning, width))
 }
 
 func (a *App) drawPermissionsPolicyRules(theme ui.Theme, panel ui.Rect) {

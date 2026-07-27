@@ -63,4 +63,7 @@ func TestPermissionsBashProfileAPIRoundTripsAndDefaultsPerAccount(t *testing.T) 
 	if rec := call(http.MethodPut, "account-a", `{"bash_profile":"invalid"}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid profile status = %d body=%s", rec.Code, rec.Body.String())
 	}
+	if rec := call(http.MethodPut, "account-a", `{"bash_profile":"allow_safe_reads"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("legacy safe-reads profile status = %d body=%s", rec.Code, rec.Body.String())
+	}
 }

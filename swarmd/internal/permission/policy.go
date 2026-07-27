@@ -59,7 +59,6 @@ const (
 
 	BashApprovalProfileCurrentRules        BashApprovalProfile = "current_rules"
 	BashApprovalProfileAllowEveryRead      BashApprovalProfile = "allow_every_read"
-	BashApprovalProfileAllowSafeReads      BashApprovalProfile = "allow_safe_reads"
 	BashApprovalProfileOnlyCriticalPrompts BashApprovalProfile = "only_critical_prompts"
 
 	BashEffectRead   BashEffectCategory = "read"
@@ -116,7 +115,7 @@ func DefaultBashApprovalProfile() BashApprovalProfile {
 
 func ValidateBashApprovalProfile(profile BashApprovalProfile) error {
 	switch profile {
-	case BashApprovalProfileCurrentRules, BashApprovalProfileAllowEveryRead, BashApprovalProfileAllowSafeReads, BashApprovalProfileOnlyCriticalPrompts:
+	case BashApprovalProfileCurrentRules, BashApprovalProfileAllowEveryRead, BashApprovalProfileOnlyCriticalPrompts:
 		return nil
 	default:
 		return fmt.Errorf("unsupported bash approval profile %q", profile)
@@ -596,7 +595,7 @@ func explainBashProfile(ctx policyEvalContext, profile BashApprovalProfile) (Pol
 		return bashProfileExplain(ctx, PolicyDecisionAsk, "critical bash operation requires approval"), true
 	}
 	switch profile {
-	case BashApprovalProfileAllowEveryRead, BashApprovalProfileAllowSafeReads:
+	case BashApprovalProfileAllowEveryRead:
 		if assessment.Category == BashEffectRead {
 			return bashProfileExplain(ctx, PolicyDecisionAllow, "bash read is auto-approved by the selected profile"), true
 		}

@@ -10,18 +10,19 @@ import (
 	"swarm-refactor/swarmtui/internal/ui"
 )
 
-func TestPermissionsBashProfilesExposeFourRadioChoices(t *testing.T) {
-	if len(permissionsBashProfiles) != 4 {
-		t.Fatalf("bash profile count = %d, want 4", len(permissionsBashProfiles))
+func TestPermissionsBashProfilesExposeThreeRadioChoices(t *testing.T) {
+	if len(permissionsBashProfiles) != 3 {
+		t.Fatalf("bash profile count = %d, want 3", len(permissionsBashProfiles))
 	}
-	want := []string{"current_rules", "allow_every_read", "allow_safe_reads", "only_critical_prompts"}
-	for index, value := range want {
-		if permissionsBashProfiles[index].Value != value {
-			t.Fatalf("profile %d = %q, want %q", index, permissionsBashProfiles[index].Value, value)
+	wantValues := []string{"current_rules", "allow_every_read", "only_critical_prompts"}
+	wantLabels := []string{"Default", "Allow every read", "Only critical prompts"}
+	for index := range wantValues {
+		if permissionsBashProfiles[index].Value != wantValues[index] {
+			t.Fatalf("profile %d value = %q, want %q", index, permissionsBashProfiles[index].Value, wantValues[index])
 		}
-	}
-	if !strings.Contains(permissionsBashProfiles[2].Label, "Recommended") {
-		t.Fatalf("safe reads label = %q, want recommendation", permissionsBashProfiles[2].Label)
+		if permissionsBashProfiles[index].Label != wantLabels[index] {
+			t.Fatalf("profile %d label = %q, want %q", index, permissionsBashProfiles[index].Label, wantLabels[index])
+		}
 	}
 }
 
@@ -30,20 +31,20 @@ func TestPermissionsBashProfileSelectionIsPreservedAndDisabledWhileOff(t *testin
 	a.homeModel.BypassPermissions = true
 	a.openPermissionsPolicyModal(client.PermissionPolicy{
 		Version:     1,
-		BashProfile: "allow_safe_reads",
+		BashProfile: "only_critical_prompts",
 		Rules:       []client.PermissionRule{{ID: "rule-1", Kind: "bash_prefix", Decision: "allow", Pattern: "git"}},
 	})
 
-	if got := a.permissionsPolicyModal.Policy.BashProfile; got != "allow_safe_reads" {
+	if got := a.permissionsPolicyModal.Policy.BashProfile; got != "only_critical_prompts" {
 		t.Fatalf("preserved profile = %q", got)
 	}
 	if !strings.Contains(a.permissionsPolicyModal.Status, "Permissions are OFF") {
 		t.Fatalf("off-state status = %q", a.permissionsPolicyModal.Status)
 	}
-	if !a.handlePermissionsPolicyModalKey(tcell.NewEventKey(tcell.KeyRune, '4', tcell.ModNone)) {
+	if !a.handlePermissionsPolicyModalKey(tcell.NewEventKey(tcell.KeyRune, '3', tcell.ModNone)) {
 		t.Fatal("profile key was not handled")
 	}
-	if got := a.permissionsPolicyModal.Policy.BashProfile; got != "allow_safe_reads" {
+	if got := a.permissionsPolicyModal.Policy.BashProfile; got != "only_critical_prompts" {
 		t.Fatalf("disabled selection changed profile to %q", got)
 	}
 	if len(a.permissionsPolicyModal.Policy.Rules) != 1 {

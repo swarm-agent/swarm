@@ -53,13 +53,6 @@ func TestBashApprovalProfileMatrix(t *testing.T) {
 		{"allow every read critical write", BashApprovalProfileAllowEveryRead, "write", true, PolicyDecisionAsk},
 		{"allow every read critical update", BashApprovalProfileAllowEveryRead, "update", true, PolicyDecisionAsk},
 		{"allow every read delete", BashApprovalProfileAllowEveryRead, "delete", true, PolicyDecisionAsk},
-		{"allow safe reads safe read", BashApprovalProfileAllowSafeReads, "read", false, PolicyDecisionAllow},
-		{"allow safe reads critical read", BashApprovalProfileAllowSafeReads, "read", true, PolicyDecisionAsk},
-		{"allow safe reads write fallback", BashApprovalProfileAllowSafeReads, "write", false, PolicyDecisionAsk},
-		{"allow safe reads update fallback", BashApprovalProfileAllowSafeReads, "update", false, PolicyDecisionAsk},
-		{"allow safe reads critical write", BashApprovalProfileAllowSafeReads, "write", true, PolicyDecisionAsk},
-		{"allow safe reads critical update", BashApprovalProfileAllowSafeReads, "update", true, PolicyDecisionAsk},
-		{"allow safe reads delete", BashApprovalProfileAllowSafeReads, "delete", true, PolicyDecisionAsk},
 		{"only critical safe read", BashApprovalProfileOnlyCriticalPrompts, "read", false, PolicyDecisionAllow},
 		{"only critical critical read", BashApprovalProfileOnlyCriticalPrompts, "read", true, PolicyDecisionAsk},
 		{"only critical safe write", BashApprovalProfileOnlyCriticalPrompts, "write", false, PolicyDecisionAllow},
@@ -141,18 +134,14 @@ func TestBashMisdeclaredOutputRedirectUsesEffectiveWritePolicy(t *testing.T) {
 		t.Fatalf("noncritical redirect reason = %q, want actionable redirect evidence", got.BashEffect.Reason)
 	}
 
-	for _, profile := range []BashApprovalProfile{BashApprovalProfileAllowEveryRead, BashApprovalProfileAllowSafeReads} {
-		t.Run(string(profile), func(t *testing.T) {
-			readOnly := DefaultPolicy()
-			readOnly.BashProfile = profile
-			got := ExplainPolicy("auto", "bash", arguments, readOnly)
-			if got.Decision != PolicyDecisionAsk {
-				t.Fatalf("redirect under %s = %+v, want prompt", profile, got)
-			}
-			if got.BashEffect == nil || !got.BashEffect.Valid || got.BashEffect.Category != BashEffectWrite {
-				t.Fatalf("redirect effect under %s = %+v, want effective write", profile, got.BashEffect)
-			}
-		})
+	readOnly := DefaultPolicy()
+	readOnly.BashProfile = BashApprovalProfileAllowEveryRead
+	got = ExplainPolicy("auto", "bash", arguments, readOnly)
+	if got.Decision != PolicyDecisionAsk {
+		t.Fatalf("redirect under %s = %+v, want prompt", readOnly.BashProfile, got)
+	}
+	if got.BashEffect == nil || !got.BashEffect.Valid || got.BashEffect.Category != BashEffectWrite {
+		t.Fatalf("redirect effect under %s = %+v, want effective write", readOnly.BashProfile, got.BashEffect)
 	}
 }
 
@@ -187,9 +176,9 @@ func TestBashEffectBackendPromotion(t *testing.T) {
 	}
 }
 
-func TestRoutineBashReadsRemainNoncritical(t *testing.T) {
+func TestAllowEveryReadApprovesRoutineBashReads(t *testing.T) {
 	policy := DefaultPolicy()
-	policy.BashProfile = BashApprovalProfileAllowSafeReads
+	policy.BashProfile = BashApprovalProfileAllowEveryRead
 	for _, command := range []string{"cat README.md", "ls -la", "grep -R TODO src", "git status --short", "tail -n 50 app.log"} {
 		t.Run(command, func(t *testing.T) {
 			got := ExplainPolicy("auto", "bash", bashEffectArguments(t, command, "read", false), policy)
@@ -200,9 +189,9 @@ func TestRoutineBashReadsRemainNoncritical(t *testing.T) {
 	}
 }
 
-func TestAllowSafeReadsAcceptsReadOnlySystemctlInspection(t *testing.T) {
+func TestAllowEveryReadAcceptsReadOnlySystemctlInspection(t *testing.T) {
 	policy := DefaultPolicy()
-	policy.BashProfile = BashApprovalProfileAllowSafeReads
+	policy.BashProfile = BashApprovalProfileAllowEveryRead
 	command := `systemctl is-active prometheus-node-exporter.service 2>/dev/null || true; systemctl is-enabled prometheus-node-exporter.service 2>/dev/null || true; dpkg-query -W -f='${Status} ${Version}\n' prometheus-node-exporter 2>/dev/null || true; ss -ltn '( sport = :9100 )'`
 
 	got := ExplainPolicy("auto", "bash", bashEffectArguments(t, command, "read", false), policy)
@@ -216,7 +205,7 @@ func TestAllowSafeReadsAcceptsReadOnlySystemctlInspection(t *testing.T) {
 
 func TestMutatingSystemctlCommandsContradictReadMetadata(t *testing.T) {
 	policy := DefaultPolicy()
-	policy.BashProfile = BashApprovalProfileAllowSafeReads
+	policy.BashProfile = BashApprovalProfileAllowEveryRead
 	for _, command := range []string{
 		"systemctl start prometheus-node-exporter.service",
 		"sudo systemctl restart prometheus-node-exporter.service",
@@ -238,7 +227,7 @@ func TestMutatingSystemctlCommandsContradictReadMetadata(t *testing.T) {
 
 func TestEnumeratedCriticalBashReadsArePromoted(t *testing.T) {
 	policy := DefaultPolicy()
-	policy.BashProfile = BashApprovalProfileAllowSafeReads
+	policy.BashProfile = BashApprovalProfileOnlyCriticalPrompts
 	for _, command := range []string{"cat .env", "cat /etc/shadow", "pg_dump production", "curl https://example.test/private"} {
 		t.Run(command, func(t *testing.T) {
 			got := ExplainPolicy("auto", "bash", bashEffectArguments(t, command, "read", false), policy)
@@ -255,6 +244,9 @@ func TestNormalizePolicyDefaultsAndValidatesBashProfile(t *testing.T) {
 	}
 	if got := NormalizePolicy(Policy{BashProfile: "bogus"}).BashProfile; got != BashApprovalProfileCurrentRules {
 		t.Fatalf("invalid bash profile = %q, want current rules", got)
+	}
+	if got := NormalizePolicy(Policy{BashProfile: "allow_safe_reads"}).BashProfile; got != BashApprovalProfileCurrentRules {
+		t.Fatalf("legacy safe-reads profile = %q, want current rules", got)
 	}
 }
 
@@ -273,7 +265,7 @@ func TestBashProfilePreservesHardRuntimeRestrictionsAndBypassIsolation(t *testin
 func TestBashProfileGranularRulePrecedence(t *testing.T) {
 	t.Run("deny overrides profile auto approval", func(t *testing.T) {
 		policy := DefaultPolicy()
-		policy.BashProfile = BashApprovalProfileAllowSafeReads
+		policy.BashProfile = BashApprovalProfileAllowEveryRead
 		policy.Rules = []PolicyRule{{Kind: PolicyRuleKindBashPrefix, Decision: PolicyDecisionDeny, Pattern: "cat"}}
 		got := ExplainPolicy("auto", "bash", bashEffectArguments(t, "cat README.md", "read", false), policy)
 		if got.Decision != PolicyDecisionDeny || got.Source != "rule" {
@@ -293,7 +285,7 @@ func TestBashProfileGranularRulePrecedence(t *testing.T) {
 
 	t.Run("profile auto approval precedes ask rule", func(t *testing.T) {
 		policy := DefaultPolicy()
-		policy.BashProfile = BashApprovalProfileAllowSafeReads
+		policy.BashProfile = BashApprovalProfileAllowEveryRead
 		policy.Rules = []PolicyRule{{Kind: PolicyRuleKindBashPrefix, Decision: PolicyDecisionAsk, Pattern: "cat"}}
 		got := ExplainPolicy("auto", "bash", bashEffectArguments(t, "cat README.md", "read", false), policy)
 		if got.Decision != PolicyDecisionAllow || got.Source != "bash_profile" {
@@ -304,7 +296,7 @@ func TestBashProfileGranularRulePrecedence(t *testing.T) {
 	for _, decision := range []PolicyDecision{PolicyDecisionAllow, PolicyDecisionAsk} {
 		t.Run("fallback "+string(decision)+" rule applies", func(t *testing.T) {
 			policy := DefaultPolicy()
-			policy.BashProfile = BashApprovalProfileAllowSafeReads
+			policy.BashProfile = BashApprovalProfileAllowEveryRead
 			policy.Rules = []PolicyRule{{Kind: PolicyRuleKindBashPrefix, Decision: decision, Pattern: "touch"}}
 			got := ExplainPolicy("auto", "bash", bashEffectArguments(t, "touch generated.txt", "write", false), policy)
 			if got.Decision != decision || got.Source != "rule" {
@@ -419,11 +411,11 @@ func TestUpdateBashApprovalProfilePersistsPerAccountAndPreservesCapabilities(t *
 	if err != nil {
 		t.Fatalf("current policy: %v", err)
 	}
-	updated, err := svc.UpdateBashApprovalProfileForAccount("account-profile", BashApprovalProfileAllowSafeReads)
+	updated, err := svc.UpdateBashApprovalProfileForAccount("account-profile", BashApprovalProfileAllowEveryRead)
 	if err != nil {
 		t.Fatalf("update bash profile: %v", err)
 	}
-	if updated.BashProfile != BashApprovalProfileAllowSafeReads {
+	if updated.BashProfile != BashApprovalProfileAllowEveryRead {
 		t.Fatalf("updated profile = %q", updated.BashProfile)
 	}
 	if !reflect.DeepEqual(updated.Subagents, before.Subagents) || !reflect.DeepEqual(updated.SessionDeploy, before.SessionDeploy) || !reflect.DeepEqual(updated.PlanAcceptance, before.PlanAcceptance) {
@@ -433,7 +425,7 @@ func TestUpdateBashApprovalProfilePersistsPerAccountAndPreservesCapabilities(t *
 	if err != nil {
 		t.Fatalf("reload policy: %v", err)
 	}
-	if reloaded.BashProfile != BashApprovalProfileAllowSafeReads {
+	if reloaded.BashProfile != BashApprovalProfileAllowEveryRead {
 		t.Fatalf("reloaded profile = %q", reloaded.BashProfile)
 	}
 	other, err := svc.CurrentPolicyForAccount("other-account")
@@ -445,6 +437,9 @@ func TestUpdateBashApprovalProfilePersistsPerAccountAndPreservesCapabilities(t *
 	}
 	if _, err := svc.UpdateBashApprovalProfileForAccount("account-profile", "invalid"); err == nil {
 		t.Fatal("invalid profile update succeeded")
+	}
+	if _, err := svc.UpdateBashApprovalProfileForAccount("account-profile", "allow_safe_reads"); err == nil {
+		t.Fatal("legacy safe-reads profile update succeeded")
 	}
 }
 

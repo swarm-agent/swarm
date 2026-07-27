@@ -6,22 +6,21 @@ import { normalizeCapabilityPolicies } from '../../../permissions/services/capab
 
 const settingsSource = readFileSync(new URL('./permissions-settings-page.tsx', import.meta.url), 'utf8')
 
-test('Bash approvals expose exactly four mutually exclusive profiles with safe reads recommended', () => {
+test('Bash approvals expose Default and the two explicit auto-approval profiles', () => {
   assert.deepEqual(BASH_APPROVAL_PROFILES.map((profile) => profile.label), [
-    'Current rules',
+    'Default',
     'Allow every read',
-    'Allow safe reads',
     'Only critical prompts',
   ])
-  assert.equal(BASH_APPROVAL_PROFILES.filter((profile) => profile.recommended).at(0)?.value, 'allow_safe_reads')
   assert.equal(normalizeBashApprovalProfile('only_critical_prompts'), 'only_critical_prompts')
+  assert.equal(normalizeBashApprovalProfile('allow_safe_reads'), 'current_rules')
   assert.equal(normalizeBashApprovalProfile('unknown'), 'current_rules')
   assert.deepEqual(BASH_APPROVAL_PROFILES.map((profile) => profile.description), [
-    'Use saved permission rules and the existing default Bash behavior.',
-    'Auto-approve every read, including reads marked critical.',
-    'Auto-approve routine reads; prompt for critical reads and protected changes.',
-    'Auto-approve noncritical reads, writes, and updates; prompt for critical operations and every delete.',
+    'Asks every permission and follows your saved permission rules.',
+    'Auto-approve every command the AI designates as a read, including critical reads.',
+    'Auto-approve commands the AI designates as noncritical; prompt for critical operations and every delete.',
   ])
+  assert.doesNotMatch(settingsSource, /Recommended/)
 })
 
 test('Bash approvals render immediately below global permissions as disabled radio cards while OFF', () => {
@@ -35,11 +34,12 @@ test('Bash approvals render immediately below global permissions as disabled rad
   assert.match(settingsSource, /This profile is preserved and will apply when permissions are turned back ON/)
 })
 
-test('Bash profile guidance explains saved-rule precedence', () => {
-  assert.match(settingsSource, /Saved rules stay active in every profile/)
+test('Bash profile guidance explains saved-rule precedence and AI-designated safety', () => {
+  assert.match(settingsSource, /Every profile still respects your saved permission rules for all permission types/)
   assert.match(settingsSource, /Deny rules override profile auto-approvals/)
   assert.doesNotMatch(settingsSource, /Allow and Ask rules apply when the profile leaves an operation undecided/)
   assert.match(settingsSource, /Profile safety prompts still win over existing Allow rules/)
+  assert.match(settingsSource, /The AI designates command types and criticality, so auto-approval profiles are less safe than Default/)
   assert.match(settingsSource, /Allow every read intentionally does not stop critical reads/)
 })
 
