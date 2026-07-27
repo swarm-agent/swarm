@@ -6,8 +6,8 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 
 - `dev` is the day-to-day integration branch.
 - `main` is the protected release/build branch.
-- Pull requests and pushes to `main` run `.github/workflows/build-main.yml`, which builds and verifies a release candidate but cannot tag or publish it.
-- Stable publication is intentionally absent during Phase 1. A later reviewed phase must add a separate protected publication/deployment path that consumes this exact verified candidate without rebuilding it.
+- Pull requests and pushes to `main` run `.github/workflows/build-main.yml`, which builds, signs, attests, and verifies a release candidate.
+- On a protected `main` push, the same workflow pauses at the `stable-release` Environment, re-verifies that run's exact evidence set without rebuilding it, then creates the stable tag and GitHub Release after the required human approval.
 - Record the exact `origin/main`, `origin/dev`, promotion range, and selected release tag in the promotion PR or release record instead of maintaining a stale fixed snapshot here.
 
 ## Push and key model
@@ -41,7 +41,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 - The preferred public release version is a stable semver tag such as `v0.x.y` on the promoted `main` commit.
 - Phase 1 candidate versions are event-derived (`pr-*`, `main-*`, or `dispatch-*`) and are not stable release tags.
 - Building `release-candidate-<version>` does **not** publish it. The candidate build and hermetic archive/install smoke complete before evidence upload.
-- Creating a Git tag or GitHub release is publication and is unavailable in the Phase 1 workflow. A later reviewed phase must restore publication behind the approved Environment and policy gates.
+- Creating a Git tag or GitHub release is publication. The protected `main` push workflow performs it only after successful candidate verification and explicit `stable-release` Environment approval.
 - The `release-candidate-<version>` workflow artifact is the evidence bundle: it contains the candidate archive, exact `.sha256` file, keyless Sigstore bundle, GitHub provenance bundle, `build-info.txt`, and `smoke-evidence.txt`. The build job verifies checksum, signer identity, provenance, source SHA/ref, workflow identity/SHA, issuer, event, and hosted-runner status before upload.
 - Candidate evidence is per SHA and workflow run. Never treat an older artifact, checksum, smoke transcript, or fixed branch snapshot in documentation as evidence for a newer commit.
 - `dist/build-info.txt` carries release metadata (`version`, `commit`, `actor`, `ref`, `built_at`) but is not itself the tag authority.
@@ -119,8 +119,8 @@ For the first stable release, there is no older public stable version from which
 - [ ] Run the final end-to-end launch review and checked-in vulnerability scans; agents may independently inspect evidence, but the release owner must verify and synthesize the results
 - [ ] Confirm the exact reviewed `main` SHA has passing PR/main builds, checksum and hermetic smoke evidence, supported-Linux lifecycle evidence, all three onboarding paths, and update/rollback evidence
 - [ ] Make the final go/no-go decision; if any gate failed, leave the `stable-release` Environment deployment unapproved and replace the candidate through a new reviewed PR
-- [ ] Do not publish from the Phase 1 workflow; publication remains unavailable until a later reviewed phase adds the protected `stable-release` path
-- [ ] After that later phase is implemented, verify the GitHub release name/tag and that it includes the archive, checksum, Sigstore bundle, and provenance bundle
+- [ ] Review Swarm's technical evidence recommendation, then explicitly approve the waiting `stable-release` Environment job; leave it unapproved for any no-go decision
+- [ ] Verify the GitHub release name/tag and that it includes the archive, checksum, Sigstore bundle, provenance bundle, build metadata, and smoke evidence
 - [ ] Verify live update discovery against the published metadata; for releases after the first, retain proof that the previous public stable updates successfully to this version
 - [ ] Record the released `main` SHA and `build-info.txt` metadata, then update this checklist baseline
 

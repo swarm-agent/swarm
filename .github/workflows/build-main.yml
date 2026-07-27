@@ -69,7 +69,7 @@ jobs:
               version="pr-${PR_NUMBER}-${short_sha}"
               ;;
             push)
-              version="main-${short_sha}"
+              version="$(./scripts/resolve-release-version.sh)"
               ;;
             workflow_dispatch)
               version="dispatch-${short_sha}"
@@ -144,3 +144,102 @@ jobs:
             dist/smoke-evidence.txt
           if-no-files-found: error
           retention-days: 14
+
+  publish-stable-release:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: build-candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: stable-release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out immutable release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Download this run's verified candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate-${{ needs.build-candidate.outputs.version }}
+          path: release-evidence
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.2
+
+      - name: Reverify and publish the exact stable evidence set
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build-candidate.outputs.version }}
+          EXPECTED_WORKFLOW_IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
+          EXPECTED_WORKFLOW_REF: ${{ github.workflow_ref }}
+          EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "refusing non-stable release version: ${VERSION}" >&2
+            exit 1
+          }
+
+          archive="release-evidence/swarm-${VERSION}-linux-amd64.tar.gz"
+          checksum="${archive}.sha256"
+          signature="${archive}.sigstore.json"
+          provenance="${archive}.provenance.sigstore.json"
+          build_info="release-evidence/build-info.txt"
+          smoke_evidence="release-evidence/smoke-evidence.txt"
+
+          for required in "${archive}" "${checksum}" "${signature}" "${provenance}" "${build_info}" "${smoke_evidence}"; do
+            [[ -f "${required}" ]] || {
+              echo "required release asset missing: ${required}" >&2
+              exit 1
+            }
+          done
+          [[ "$(awk -F= '$1 == "version" { print $2 }' "${build_info}")" == "${VERSION}" ]] || {
+            echo "build metadata version does not match release version" >&2
+            exit 1
+          }
+          [[ "$(awk -F= '$1 == "commit" { print $2 }' "${build_info}")" == "${GITHUB_SHA}" ]] || {
+            echo "build metadata commit does not match immutable release source" >&2
+            exit 1
+          }
+
+          ./scripts/verify-release-evidence.sh \
+            "${archive}" \
+            "${checksum}" \
+            "${signature}" \
+            "${provenance}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --source-sha "${GITHUB_SHA}" \
+            --source-ref "${GITHUB_REF}" \
+            --workflow-ref "${EXPECTED_WORKFLOW_REF}" \
+            --workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
+            --workflow-identity "${EXPECTED_WORKFLOW_IDENTITY}" \
+            --workflow-name "${GITHUB_WORKFLOW}" \
+            --event-name "${GITHUB_EVENT_NAME}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "release tag already exists: ${VERSION}" >&2
+            exit 1
+          fi
+          if gh release view "${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "GitHub Release already exists: ${VERSION}" >&2
+            exit 1
+          fi
+
+          gh release create "${VERSION}" \
+            "${archive}" \
+            "${checksum}" \
+            "${signature}" \
+            "${provenance}" \
+            "${build_info}" \
+            "${smoke_evidence}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "Swarm ${VERSION}" \
+            --notes "Protected stable release for ${GITHUB_SHA}. The attached archive, checksum, Sigstore signature bundle, provenance bundle, build metadata, and smoke evidence were built once and independently verified in this workflow run."
