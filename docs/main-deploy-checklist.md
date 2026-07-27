@@ -7,7 +7,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 - `dev` is the day-to-day integration branch.
 - `main` is the protected release/build branch.
 - Pull requests and pushes to `main` run `.github/workflows/build-main.yml`, which builds and verifies a release candidate but cannot tag or publish it.
-- Stable publication is a separate manual workflow dispatch from `main` with `publish=true` and an explicit stable `release_version`. That dispatch builds the exact versioned candidate first; the `publish-stable` job then waits at the protected `stable-release` GitHub Environment until the post-PR evidence and final go/no-go review are complete.
+- Stable publication is intentionally absent during Phase 1. A later reviewed phase must add a separate protected publication/deployment path that consumes this exact verified candidate without rebuilding it.
 - Record the exact `origin/main`, `origin/dev`, promotion range, and selected release tag in the promotion PR or release record instead of maintaining a stale fixed snapshot here.
 
 ## Push and key model
@@ -39,10 +39,10 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 ## Canonical version reference
 
 - The preferred public release version is a stable semver tag such as `v0.x.y` on the promoted `main` commit.
-- The operator selects an explicit proposed stable semver version when manually dispatching the protected workflow from `main`. The workflow rejects missing or malformed versions and existing tags.
-- Selecting that version and building `release-candidate-<version>` does **not** publish it. The candidate build and hermetic archive/install smoke complete first, and the environment-protected publication job must remain unapproved until the post-PR supported-Linux evidence passes.
-- Creating the Git tag and GitHub release is publication. Those public objects are created only by the final approved `publish-stable` job.
-- The `release-candidate-<version>` workflow artifact is the evidence bundle: it contains the candidate archive, exact `.sha256` file, `build-info.txt`, and `smoke-evidence.txt`. The build job's `Smoke release archive and artifact-root install` log is the full command transcript.
+- Phase 1 candidate versions are event-derived (`pr-*`, `main-*`, or `dispatch-*`) and are not stable release tags.
+- Building `release-candidate-<version>` does **not** publish it. The candidate build and hermetic archive/install smoke complete before evidence upload.
+- Creating a Git tag or GitHub release is publication and is unavailable in the Phase 1 workflow. A later reviewed phase must restore publication behind the approved Environment and policy gates.
+- The `release-candidate-<version>` workflow artifact is the evidence bundle: it contains the candidate archive, exact `.sha256` file, keyless Sigstore bundle, GitHub provenance bundle, `build-info.txt`, and `smoke-evidence.txt`. The build job verifies checksum, signer identity, provenance, source SHA/ref, workflow identity/SHA, issuer, event, and hosted-runner status before upload.
 - Candidate evidence is per SHA and workflow run. Never treat an older artifact, checksum, smoke transcript, or fixed branch snapshot in documentation as evidence for a newer commit.
 - `dist/build-info.txt` carries release metadata (`version`, `commit`, `actor`, `ref`, `built_at`) but is not itself the tag authority.
 
@@ -89,10 +89,11 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 ### 6. Prepare the exact versioned candidate without publishing
 
 - [ ] Confirm the proposed stable tag is correct for the reviewed `main` commit
-- [ ] Manually dispatch the workflow from that `main` SHA with `publish=true` and the proposed `release_version`; do **not** approve the `stable-release` Environment yet
-- [ ] Download `release-candidate-<version>` and verify it contains the full Swarm runtime archive, exact `.sha256` checksum, `build-info.txt`, and `smoke-evidence.txt`
+- [ ] Manually dispatch the non-publishing workflow from the reviewed `main` SHA
+- [ ] Download `release-candidate-dispatch-<short-sha>` and verify it contains the full Swarm runtime archive, exact `.sha256` checksum, `.sigstore.json` signature bundle, `.provenance.sigstore.json` provenance bundle, `build-info.txt`, and `smoke-evidence.txt`
+- [ ] Independently run `scripts/verify-release-evidence.sh` with the recorded repository, source SHA/ref, workflow ref/SHA/identity, workflow name, and event; alter the artifact, bundles, identity, issuer expectation, and SHA expectations one at a time and confirm every changed case fails
 - [ ] Review `smoke-evidence.txt` and the `Smoke release archive and artifact-root install` job log; confirm checksum, archive contents, disposable artifact-root install, and host-system-path isolation passed
-- [ ] Confirm no stable tag or GitHub release exists yet and record the candidate artifact, workflow run, checksum, and `build-info.txt` locations
+- [ ] Confirm no stable tag or GitHub release exists and record the candidate artifact, workflow run, checksum, signature, provenance, and `build-info.txt` locations
 
 ### 7. Run post-PR supported-Linux lifecycle and onboarding tests
 
@@ -118,8 +119,8 @@ For the first stable release, there is no older public stable version from which
 - [ ] Run the final end-to-end launch review and checked-in vulnerability scans; agents may independently inspect evidence, but the release owner must verify and synthesize the results
 - [ ] Confirm the exact reviewed `main` SHA has passing PR/main builds, checksum and hermetic smoke evidence, supported-Linux lifecycle evidence, all three onboarding paths, and update/rollback evidence
 - [ ] Make the final go/no-go decision; if any gate failed, leave the `stable-release` Environment deployment unapproved and replace the candidate through a new reviewed PR
-- [ ] Only after a go decision, approve the `stable-release` Environment deployment so the workflow creates the stable tag and GitHub release
-- [ ] Verify the GitHub release name/tag and that it includes `swarm-<version>-linux-amd64.tar.gz` and `swarm-<version>-linux-amd64.tar.gz.sha256`
+- [ ] Do not publish from the Phase 1 workflow; publication remains unavailable until a later reviewed phase adds the protected `stable-release` path
+- [ ] After that later phase is implemented, verify the GitHub release name/tag and that it includes the archive, checksum, Sigstore bundle, and provenance bundle
 - [ ] Verify live update discovery against the published metadata; for releases after the first, retain proof that the previous public stable updates successfully to this version
 - [ ] Record the released `main` SHA and `build-info.txt` metadata, then update this checklist baseline
 
