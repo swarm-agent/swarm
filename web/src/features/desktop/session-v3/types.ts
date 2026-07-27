@@ -174,6 +174,16 @@ export interface SessionV3SessionWire {
   git_committed_deletions?: number
 }
 
+export interface SessionV3MediaReferenceWire {
+  asset_id: string
+  modality: string
+  mime_type: string
+  file_type?: string
+  size: number
+  digest_sha256: string
+  contract_hash: string
+}
+
 export interface SessionV3MessageWire {
   id?: string
   session_id?: string
@@ -182,6 +192,7 @@ export interface SessionV3MessageWire {
   content?: string
   created_at?: number
   metadata?: SessionV3JsonRecord
+  media?: SessionV3MediaReferenceWire[]
 }
 
 export interface SessionV3ProjectionWire {
@@ -460,6 +471,7 @@ export interface SessionV3MessageCommitRequestWire {
   role: SessionV3MessageRole
   content: string
   metadata?: SessionV3JsonRecord
+  media?: SessionV3MediaReferenceWire[]
 }
 
 export interface SessionV3MessageCommitResponseWire extends SessionV3MutationResponseWire {}

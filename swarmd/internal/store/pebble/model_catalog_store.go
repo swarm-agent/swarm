@@ -40,6 +40,40 @@ type ModelCatalogContextMode struct {
 	Default       bool   `json:"default,omitempty"`
 }
 
+const (
+	ModelCatalogMediaStateUnknown     = "unknown"
+	ModelCatalogMediaStateSupported   = "supported"
+	ModelCatalogMediaStateUnsupported = "unsupported"
+
+	ModelCatalogMediaSemanticsNative            = "native"
+	ModelCatalogMediaSemanticsClientProcessed   = "client_processed"
+	ModelCatalogMediaSemanticsProviderProcessed = "provider_processed"
+)
+
+// ModelCatalogMediaDirection preserves an explicit tri-state rather than
+// reducing catalog media facts to a broad boolean. Semantics identifies where
+// an admitted input is interpreted; exact types remain attached to the fact.
+type ModelCatalogMediaDirection struct {
+	Modality   string   `json:"modality"`
+	State      string   `json:"state"`
+	Semantics  string   `json:"semantics,omitempty"`
+	MIMETypes  []string `json:"mime_types,omitempty"`
+	FileTypes  []string `json:"file_types,omitempty"`
+	Types      []string `json:"types,omitempty"`
+	Processing string   `json:"processing,omitempty"`
+}
+
+// ModelCatalogMediaCapabilities is populated only for explicitly enabled
+// provider surfaces. Empty Media on a record means unknown/no capability.
+type ModelCatalogMediaCapabilities struct {
+	State             string                       `json:"state"`
+	ProviderSurface   string                       `json:"provider_surface"`
+	CredentialSurface string                       `json:"credential_surface"`
+	Inputs            []ModelCatalogMediaDirection `json:"inputs,omitempty"`
+	Outputs           []ModelCatalogMediaDirection `json:"outputs,omitempty"`
+	SourceIDs         []string                     `json:"source_ids,omitempty"`
+}
+
 type ModelCatalogRecord struct {
 	Provider                  string                           `json:"provider"`
 	ProviderDisplayName       string                           `json:"provider_display_name,omitempty"`
@@ -58,6 +92,7 @@ type ModelCatalogRecord struct {
 	ServiceTierMappings       []ModelCatalogServiceTierMapping `json:"service_tier_mappings,omitempty"`
 	Recommendations           []ModelCatalogRecommendation     `json:"recommendations,omitempty"`
 	ContextModes              []ModelCatalogContextMode        `json:"context_modes,omitempty"`
+	Media                     *ModelCatalogMediaCapabilities   `json:"media,omitempty"`
 	Source                    string                           `json:"source"`
 	SourceSnapshotID          string                           `json:"source_snapshot_id,omitempty"`
 	SourceSnapshotVersion     string                           `json:"source_snapshot_version,omitempty"`

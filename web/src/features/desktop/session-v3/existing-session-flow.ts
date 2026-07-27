@@ -22,11 +22,12 @@ export function createDesktopV3ExistingMessageOperation(input: {
   sessionId: string
   prompt: string
   metadata?: Record<string, unknown>
+  media?: DesktopV3AppendMessageRequest['media']
 }): DesktopV3ExistingMessageOperation {
   const sessionId = input.sessionId.trim()
   const content = input.prompt.trim()
   if (!sessionId) throw new Error('Existing Desktop V3 message requires sessionId')
-  if (!content) throw new Error('Existing Desktop V3 message requires prompt')
+  if (!content && !(input.media?.length)) throw new Error('Existing Desktop V3 message requires prompt or media')
 
   const operationId = crypto.randomUUID()
   return {
@@ -41,6 +42,7 @@ export function createDesktopV3ExistingMessageOperation(input: {
       role: 'user',
       content,
       metadata: input.metadata,
+      media: input.media,
     },
   }
 }
@@ -78,7 +80,7 @@ export function loadDesktopV3ExistingMessageOperation(
     if (!value.request?.message_id?.trim()) return null
     if (!value.request?.run_id?.trim()) return null
     if (value.request.role !== 'user') return null
-    if (!value.request.content?.trim()) return null
+    if (!value.request.content?.trim() && !(value.request.media?.length)) return null
     return value
   } catch {
     return null
@@ -140,8 +142,8 @@ export async function continueDesktopV3Conversation(
   if (operation.request.role !== 'user') {
     throw new Error('Existing Desktop V3 conversation only accepts user messages')
   }
-  if (!operation.request.content.trim()) {
-    throw new Error('Existing Desktop V3 conversation requires prompt')
+  if (!operation.request.content.trim() && !(operation.request.media?.length)) {
+    throw new Error('Existing Desktop V3 conversation requires prompt or media')
   }
 
   const state = flowDeps.getSnapshot()
@@ -161,6 +163,7 @@ export async function continueDesktopV3Conversation(
       sessionId,
       content: operation.request.content,
       metadata: operation.request.metadata,
+      media: operation.request.media,
       runId: operation.request.run_id,
       createdAt: operation.createdAt,
     },

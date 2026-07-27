@@ -907,6 +907,8 @@ type sessionV3ResolvedRuntime struct {
 	Preference    pebblestore.ModelPreference
 	ContextWindow int
 	ModelCatalog  any
+	CatalogMeta   *pebblestore.ModelCatalogMeta
+	MediaContract provideriface.SessionMediaContract
 	Scope         tool.WorkspaceScope
 	Instructions  string
 	Tools         []provideriface.ToolDefinition
@@ -1281,7 +1283,7 @@ func (e *sessionV3Executor) generateSessionV3CompactTitle(session pebblestore.Se
 	}
 	preference := resolvedCompact.Preference
 	contextWindow := resolvedCompact.ContextWindow
-	catalogRecord, err := e.sessionV3ModelCatalogRecord(preference)
+	catalogRecord, _, err := e.sessionV3ModelCatalogRecord(preference)
 	if err != nil {
 		return "", err
 	}
@@ -1466,7 +1468,10 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		if err != nil {
 			return sessionV3AssistantResponse{}, err
 		}
-		input = sessionsV3ProviderInput(messages)
+		input, err = e.sessionsV3ProviderInput(resolved, messages)
+		if err != nil {
+			return sessionV3AssistantResponse{}, err
+		}
 	}
 	if len(input) == 0 {
 		return sessionV3AssistantResponse{}, errors.New("v3 provider input is empty")
@@ -1506,7 +1511,10 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		}
 		baseReq.Input = handoffInput
 	} else {
-		input = sessionsV3ProviderInputForLineage(messages, baseReq.ProviderLineageID, baseReq.NativeContinuationAllowed && !baseReq.ForceFreshProviderContext)
+		input, err = e.sessionsV3ProviderInputForLineage(resolved, messages, baseReq.ProviderLineageID, baseReq.NativeContinuationAllowed && !baseReq.ForceFreshProviderContext)
+		if err != nil {
+			return sessionV3AssistantResponse{}, err
+		}
 		if len(input) == 0 {
 			return sessionV3AssistantResponse{}, errors.New("v3 provider input is empty")
 		}
@@ -1689,6 +1697,8 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 		strings.TrimSpace(pref.Thinking),
 		strings.TrimSpace(pref.ServiceTier),
 		strings.TrimSpace(pref.ContextMode),
+		strings.TrimSpace(resolved.MediaContract.Hash),
+		strings.TrimSpace(resolved.MediaContract.SnapshotID),
 	)
 	previousState, previousOK, err := e.server.sessions.GetExecutionProviderLifecycleState(job.SessionID, epochID)
 	if err != nil {
@@ -1756,6 +1766,7 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 		ContextMode:                   strings.TrimSpace(pref.ContextMode),
 		ContextWindow:                 resolved.ContextWindow,
 		ModelCatalog:                  resolved.ModelCatalog,
+		MediaContract:                 resolved.MediaContract,
 		ParallelToolCalls:             true,
 		WorkspacePath:                 strings.TrimSpace(resolved.Scope.PrimaryPath),
 	}
@@ -2693,6 +2704,9 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 		ProviderManagedV3:    true,
 		AgentProfile:         resolved.AgentProfile,
 		ToolProgression:      toolProgression,
+		ProviderID:           resolved.Preference.Provider,
+		Model:                resolved.Preference.Model,
+		MediaContract:        resolved.MediaContract,
 	})
 	if invoker == nil {
 		return nil, errors.New("provider-managed tool invoker is not configured")
@@ -3236,7 +3250,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if strings.TrimSpace(pref.Provider) == "" || strings.TrimSpace(pref.Model) == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 provider/model is empty")
 	}
-	catalogRecord, err := e.sessionV3ModelCatalogRecord(pref)
+	catalogRecord, catalogMeta, err := e.sessionV3ModelCatalogRecord(pref)
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
@@ -3255,11 +3269,25 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
+	providerID := strings.ToLower(strings.TrimSpace(pref.Provider))
+	providerRunner, _ := e.server.providers.GetRunner(providerID)
+	var catalog *pebblestore.ModelCatalogRecord
+	if record, ok := catalogRecord.(pebblestore.ModelCatalogRecord); ok {
+		catalog = &record
+	}
+	mediaContract := runruntime.CompileSessionMediaContract(runruntime.SessionMediaContractInput{
+		ProviderID: providerID, Model: pref.Model, Catalog: catalog, CatalogMeta: catalogMeta,
+		Adapter:         runruntime.ResolveMediaAdapterDeclaration(identity.ContextWithPrincipal(context.Background(), job.Principal), providerID, providerRunner),
+		AgentAuthorized: runruntime.AgentProfileAuthorizesMedia(agentProfile), ExecutionMode: session.Mode,
+		WorkspaceScope: scope.PrimaryPath, SessionScope: session.ID,
+	})
+	instructions = runruntime.AppendSessionMediaInstructions(instructions, mediaContract)
+	tools = runruntime.MaterializeSessionMediaTool(tools, mediaContract)
 	toolChoice := "none"
 	if len(tools) > 0 {
 		toolChoice = "auto"
 	}
-	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: contextWindow, ModelCatalog: catalogRecord, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice}, nil
+	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: contextWindow, ModelCatalog: catalogRecord, CatalogMeta: catalogMeta, MediaContract: mediaContract, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice}, nil
 }
 
 func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScopeID string, metadata map[string]any, snapshot pebblestore.AgentProfile) (pebblestore.AgentProfile, error) {
@@ -3338,21 +3366,21 @@ func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScop
 	return snapshot, nil
 }
 
-func (e *sessionV3Executor) sessionV3ModelCatalogRecord(pref pebblestore.ModelPreference) (any, error) {
+func (e *sessionV3Executor) sessionV3ModelCatalogRecord(pref pebblestore.ModelPreference) (any, *pebblestore.ModelCatalogMeta, error) {
 	if e == nil || e.server == nil || e.server.model == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	lookup, err := e.server.model.GetCatalog(pref.Provider, pref.Model)
 	if err != nil {
 		if strings.Contains(err.Error(), "model catalog is not configured") {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	if !lookup.Found {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return lookup.Record, nil
+	return lookup.Record, lookup.Meta, nil
 }
 
 func (e *sessionV3Executor) resolveSessionV3WorkspaceScope(session pebblestore.SessionSnapshot, principal identity.Principal) (tool.WorkspaceScope, error) {
@@ -3515,6 +3543,68 @@ func (e *sessionV3Executor) resolveSessionV3ProviderPreference(pref pebblestore.
 		resolvedPref.Model = pref.Model
 	}
 	return resolvedPref, resolved.ContextWindow, nil
+}
+
+func (e *sessionV3Executor) sessionsV3ProviderInput(resolved sessionV3ResolvedRuntime, messages []pebblestore.MessageSnapshot) ([]map[string]any, error) {
+	return e.sessionsV3ProviderInputWithMedia(resolved, messages, sessionsV3ProviderInputOptions{})
+}
+
+func (e *sessionV3Executor) sessionsV3ProviderInputForLineage(resolved sessionV3ResolvedRuntime, messages []pebblestore.MessageSnapshot, lineageID string, nativeReplayAllowed bool) ([]map[string]any, error) {
+	return e.sessionsV3ProviderInputWithMedia(resolved, messages, sessionsV3ProviderInputOptions{LineageID: lineageID, Bounded: true, SuppressNativeReplay: !nativeReplayAllowed})
+}
+
+func (e *sessionV3Executor) sessionsV3ProviderInputWithMedia(resolved sessionV3ResolvedRuntime, messages []pebblestore.MessageSnapshot, options sessionsV3ProviderInputOptions) ([]map[string]any, error) {
+	input := sessionsV3ProviderInputWithOptions(messages, options)
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return input, nil
+	}
+	mediaInput := make([]map[string]any, 0, len(messages))
+	for _, message := range sessionsV3MessagesForProviderLineage(messages, options.LineageID, options.Bounded) {
+		if len(message.Media) == 0 {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(message.Role), "user") {
+			return nil, errors.New("durable media reference is attached to a non-user message")
+		}
+		content := make([]map[string]any, 0, len(message.Media)+1)
+		if text := strings.TrimSpace(message.Content); text != "" {
+			content = append(content, map[string]any{"type": "input_text", "text": text})
+		}
+		for _, reference := range message.Media {
+			if reference.ContractHash != resolved.MediaContract.Hash || !runruntime.SessionMediaContractAllows(resolved.MediaContract, reference.Modality, reference.MIMEType, reference.FileType) {
+				return nil, fmt.Errorf("media asset %q is stale or denied by the current run contract", reference.AssetID)
+			}
+			asset, bytes, err := e.server.sessions.ReadSessionMediaAsset(resolved.Session.AccountScopeID, resolved.Session.ID, reference.AssetID)
+			if err != nil {
+				return nil, err
+			}
+			if asset.DigestSHA256 != reference.DigestSHA256 || asset.Size != reference.Size {
+				return nil, fmt.Errorf("media asset %q does not match its durable reference", reference.AssetID)
+			}
+			content = append(content, map[string]any{
+				"type":  "session_media",
+				"media": provideriface.SessionMediaPayload{AssetID: asset.ID, Modality: asset.Modality, MIMEType: asset.DetectedMIMEType, FileType: asset.FileType, DigestSHA256: asset.DigestSHA256, Size: asset.Size, Bytes: bytes},
+			})
+		}
+		mediaInput = append(mediaInput, map[string]any{"role": "user", "content": content})
+	}
+	if len(mediaInput) == 0 {
+		return input, nil
+	}
+	// Replace text-only forms for media-bearing user messages while preserving
+	// durable order for all other messages.
+	out := make([]map[string]any, 0, len(input)+len(mediaInput))
+	mediaIndex := 0
+	for _, message := range sessionsV3MessagesForProviderLineage(messages, options.LineageID, options.Bounded) {
+		if len(message.Media) > 0 {
+			out = append(out, mediaInput[mediaIndex])
+			mediaIndex++
+			continue
+		}
+		converted := sessionsV3ProviderInputWithOptions([]pebblestore.MessageSnapshot{message}, options)
+		out = append(out, converted...)
+	}
+	return out, nil
 }
 
 func sessionsV3ProviderInput(messages []pebblestore.MessageSnapshot) []map[string]any {

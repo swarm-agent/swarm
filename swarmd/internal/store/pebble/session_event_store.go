@@ -694,6 +694,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	mediaAssets, err := s.prepareV3MessageMediaAssets(input, message, messageProvided)
+	if err != nil {
+		return V3SessionMutationResult{}, err
+	}
 	turnUsage, usageSummary, usageProvided, err := s.prepareV3UsageForMutation(input, now)
 	if err != nil {
 		return V3SessionMutationResult{}, err
@@ -885,6 +889,16 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		}
 		if err := batch.Set([]byte(KeyV3SessionMessage(message.SessionID, seq)), messagePayload, nil); err != nil {
 			return V3SessionMutationResult{}, err
+		}
+		for _, asset := range mediaAssets {
+			asset.ReferenceCount++
+			assetPayload, err := json.Marshal(asset)
+			if err != nil {
+				return V3SessionMutationResult{}, fmt.Errorf("marshal referenced media asset %q: %w", asset.ID, err)
+			}
+			if err := batch.Set([]byte(KeySessionMediaAsset(asset.AccountScopeID, asset.SessionID, asset.ID)), assetPayload, nil); err != nil {
+				return V3SessionMutationResult{}, err
+			}
 		}
 	}
 	if lifecycleProvided {
@@ -2428,8 +2442,8 @@ func (s *SessionStore) prepareV3MessageForMutation(input V3SessionMutationInput,
 	if strings.TrimSpace(message.Role) == "" {
 		return MessageSnapshot{}, false, errors.New("message role is required")
 	}
-	if strings.TrimSpace(message.Content) == "" {
-		return MessageSnapshot{}, false, errors.New("message content is required")
+	if strings.TrimSpace(message.Content) == "" && len(message.Media) == 0 {
+		return MessageSnapshot{}, false, errors.New("message content or media is required")
 	}
 	message.GlobalSeq = seq
 	if strings.TrimSpace(message.ID) == "" {
@@ -2439,6 +2453,41 @@ func (s *SessionStore) prepareV3MessageForMutation(input V3SessionMutationInput,
 		message.CreatedAt = now
 	}
 	return message, true, nil
+}
+
+func (s *SessionStore) prepareV3MessageMediaAssets(input V3SessionMutationInput, message MessageSnapshot, provided bool) ([]SessionMediaAsset, error) {
+	if !provided || len(message.Media) == 0 {
+		return nil, nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(message.Role), "user") {
+		return nil, errors.New("media references are allowed only on user messages")
+	}
+	if len(message.Media) > SessionMediaDefaultMaxCount {
+		return nil, errors.New("message media reference count limit exceeded")
+	}
+	seen := make(map[string]struct{}, len(message.Media))
+	assets := make([]SessionMediaAsset, 0, len(message.Media))
+	for index, reference := range message.Media {
+		if reference.AssetID == "" || reference.ContractHash == "" || reference.Modality == "" || reference.MIMEType == "" {
+			return nil, fmt.Errorf("media reference %d is incomplete", index)
+		}
+		if _, duplicate := seen[reference.AssetID]; duplicate {
+			return nil, fmt.Errorf("media asset %q is referenced more than once", reference.AssetID)
+		}
+		seen[reference.AssetID] = struct{}{}
+		asset, ok, err := s.GetSessionMediaAsset(input.AccountScopeID, input.SessionID, reference.AssetID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, fmt.Errorf("media asset %q not found in message scope", reference.AssetID)
+		}
+		if asset.ContractHash != reference.ContractHash || asset.Modality != reference.Modality || asset.DetectedMIMEType != reference.MIMEType || asset.FileType != reference.FileType || asset.Size != reference.Size || asset.DigestSHA256 != reference.DigestSHA256 {
+			return nil, fmt.Errorf("media reference %q does not match immutable asset metadata", reference.AssetID)
+		}
+		assets = append(assets, asset)
+	}
+	return assets, nil
 }
 
 func prepareV3LifecycleForMutation(input V3SessionMutationInput, seq uint64, now int64) (SessionLifecycleSnapshot, bool) {

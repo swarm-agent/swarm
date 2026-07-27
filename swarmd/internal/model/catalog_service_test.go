@@ -160,6 +160,104 @@ func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 	}
 }
 
+func TestDecodeSwarmSnapshotRecordsPreservesPilotMediaAndDeniesOthers(t *testing.T) {
+	records, _, err := decodeSwarmSnapshotRecords(pinnedSwarmSnapshotJSON, 1000, 2000, catalogSourcePinned, "etag-media")
+	if err != nil {
+		t.Fatalf("decode embedded snapshot media: %v", err)
+	}
+	byProviderModel := make(map[string]pebblestore.ModelCatalogRecord, len(records))
+	for _, record := range records {
+		byProviderModel[record.Provider+"/"+record.Model] = record
+	}
+
+	openai := byProviderModel["openai/gpt-4.1"]
+	if openai.Media == nil || openai.Media.ProviderSurface != "responses_api" || openai.Media.CredentialSurface != "openai_api_key" {
+		t.Fatalf("OpenAI media surface not preserved: %+v", openai.Media)
+	}
+	assertMediaDirection(t, openai.Media.Inputs, "image", pebblestore.ModelCatalogMediaStateSupported, pebblestore.ModelCatalogMediaSemanticsNative, []string{"image/gif", "image/jpeg", "image/png", "image/webp"}, nil)
+	assertMediaDirection(t, openai.Media.Inputs, "file", pebblestore.ModelCatalogMediaStateSupported, pebblestore.ModelCatalogMediaSemanticsProviderProcessed, nil, []string{"pdf", "presentation", "rich_document", "spreadsheet", "text_and_code"})
+	assertMediaDirection(t, openai.Media.Outputs, "image", pebblestore.ModelCatalogMediaStateUnsupported, pebblestore.ModelCatalogMediaSemanticsNative, nil, nil)
+
+	codex := byProviderModel["codex/gpt-5.4"]
+	if codex.Media == nil || codex.Media.ProviderSurface != "chatgpt_codex" || codex.Media.CredentialSurface != "codex_oauth" {
+		t.Fatalf("Codex media surface not preserved: %+v", codex.Media)
+	}
+	assertMediaDirection(t, codex.Media.Inputs, "image", pebblestore.ModelCatalogMediaStateSupported, pebblestore.ModelCatalogMediaSemanticsNative, nil, nil)
+	assertMediaDirection(t, codex.Media.Inputs, "file", pebblestore.ModelCatalogMediaStateSupported, pebblestore.ModelCatalogMediaSemanticsClientProcessed, nil, []string{"document", "pdf", "presentation", "spreadsheet"})
+
+	for _, record := range records {
+		if record.Provider != "openai" && record.Provider != "codex" && record.Media != nil {
+			t.Fatalf("non-pilot provider %q unexpectedly has media capability: %+v", record.Provider, record.Media)
+		}
+	}
+}
+
+func TestDecodeSwarmSnapshotRecordsRejectsContradictoryPilotMedia(t *testing.T) {
+	payload := []byte(`{
+		"snapshot_id":"snapshot-contradictory",
+		"snapshot_version":"v-contradictory",
+		"generated_at":"2026-07-27T00:00:00Z",
+		"definitions":{"openai":{"multimodal":{"input_modalities":["text","image"],"unsupported_native_modalities":["image_input"]}}},
+		"models":[{
+			"provider_id":"openai",
+			"model_id":"gpt-test",
+			"capabilities":{"supports_text_input":true,"supports_text_output":true,"supports_image_input":true},
+			"limits":{"context_window_tokens":1000},
+			"provider_specific":{"openai":{"multimodal":{"api_surface":"responses_api","image":{"input":true,"supported_input_media_types":["image/png"]}}}}
+		}]
+	}`)
+	if _, _, err := decodeSwarmSnapshotRecords(payload, 1000, 2000, catalogSourceLive, ""); err == nil {
+		t.Fatalf("expected contradictory OpenAI media data to fail hydration")
+	}
+}
+
+func TestCatalogPilotMediaRoundTripsWithMatchingProvenanceAndAliases(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "catalog.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	catalog := NewCatalogService(pebblestore.NewModelCatalogStore(store))
+	if _, err := catalog.replaceSnapshotLocked(pinnedSwarmSnapshotJSON, catalogSourceLive, "test://snapshot", "test://version", "etag-live", "version-etag", "test"); err != nil {
+		t.Fatalf("replace snapshot: %v", err)
+	}
+
+	for _, lookupCase := range []struct {
+		provider, model, wantSurface, wantCredential string
+	}{
+		{"openai-api", "gpt-4.1", "responses_api", "openai_api_key"},
+		{"codex-oauth", "gpt-5.4", "chatgpt_codex", "codex_oauth"},
+	} {
+		lookup, err := catalog.Get(lookupCase.provider, lookupCase.model)
+		if err != nil {
+			t.Fatalf("lookup %s: %v", lookupCase.provider, err)
+		}
+		if !lookup.Found || lookup.Meta == nil || lookup.Record.Media == nil {
+			t.Fatalf("lookup %s missing persisted media/meta: %+v", lookupCase.provider, lookup)
+		}
+		if lookup.Record.Media.ProviderSurface != lookupCase.wantSurface || lookup.Record.Media.CredentialSurface != lookupCase.wantCredential {
+			t.Fatalf("lookup %s surface = %+v", lookupCase.provider, lookup.Record.Media)
+		}
+		if lookup.Meta.SnapshotID != lookup.Record.SourceSnapshotID || lookup.Meta.SnapshotVersion != lookup.Record.SourceSnapshotVersion || lookup.Meta.Source != catalogSourceLive {
+			t.Fatalf("lookup %s provenance mismatch: record=%+v meta=%+v", lookupCase.provider, lookup.Record, lookup.Meta)
+		}
+	}
+}
+
+func assertMediaDirection(t *testing.T, values []pebblestore.ModelCatalogMediaDirection, modality, state, semantics string, mimeTypes, fileTypes []string) {
+	t.Helper()
+	for _, value := range values {
+		if value.Modality != modality {
+			continue
+		}
+		if value.State != state || value.Semantics != semantics || !stringSlicesEqual(value.MIMETypes, mimeTypes) || !stringSlicesEqual(value.FileTypes, fileTypes) {
+			t.Fatalf("media %s = %+v, want state=%q semantics=%q MIME=%#v files=%#v", modality, value, state, semantics, mimeTypes, fileTypes)
+		}
+		return
+	}
+	t.Fatalf("media direction %q missing from %+v", modality, values)
+}
+
 func TestCatalogGetListPreserveSnapshotFireworksFastRecord(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "catalog.pebble"))
 	if err != nil {
@@ -454,6 +552,63 @@ func TestRefreshUsesSnapshotVersionAndSkipsUnchangedSnapshot(t *testing.T) {
 	}
 	if versionRequests != 2 || snapshotRequests != 1 {
 		t.Fatalf("versionRequests=%d snapshotRequests=%d, want 2/1", versionRequests, snapshotRequests)
+	}
+}
+
+func TestRefreshFailureRetainsPilotMediaAndMarksCacheFallback(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "catalog.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	catalog := NewCatalogService(pebblestore.NewModelCatalogStore(store))
+	if _, err := catalog.replaceSnapshotLocked(pinnedSwarmSnapshotJSON, catalogSourceLive, "test://cached", "test://version", "cached-etag", "", "test"); err != nil {
+		t.Fatalf("seed valid live snapshot: %v", err)
+	}
+	catalog.versionURL = "http://127.0.0.1:1/unavailable"
+	catalog.client = &http.Client{}
+
+	result, err := catalog.Refresh(context.Background())
+	if err == nil {
+		t.Fatalf("expected refresh failure")
+	}
+	if !result.UsedCache || !result.UsingCacheFallback {
+		t.Fatalf("refresh failure did not report cache fallback: %+v", result)
+	}
+	lookup, err := catalog.Get("codex", "gpt-5.4")
+	if err != nil {
+		t.Fatalf("lookup cached Codex media: %v", err)
+	}
+	if !lookup.Found || lookup.Meta == nil || !lookup.Meta.UsingCacheFallback || lookup.Record.Media == nil || lookup.Record.Media.ProviderSurface != "chatgpt_codex" {
+		t.Fatalf("cached Codex media/provenance not retained: %+v", lookup)
+	}
+}
+
+func TestDecodeSwarmSnapshotRecordsUnknownFieldsDoNotBroadenPilotMedia(t *testing.T) {
+	payload := []byte(`{
+		"snapshot_id":"snapshot-unknown",
+		"snapshot_version":"v-unknown",
+		"generated_at":"2026-07-27T00:00:00Z",
+		"definitions":{"openai":{"multimodal":{"future_modality":["hologram"]}}},
+		"models":[{
+			"provider_id":"openai",
+			"model_id":"gpt-unknown",
+			"capabilities":{"supports_text_input":true,"supports_text_output":true},
+			"limits":{"context_window_tokens":1000},
+			"provider_specific":{"openai":{"multimodal":{"api_surface":"responses_api","future_detail":{"input":true}}}}
+		}]
+	}`)
+	records, _, err := decodeSwarmSnapshotRecords(payload, 1000, 2000, catalogSourceLive, "")
+	if err != nil {
+		t.Fatalf("unknown additive media fields should decode without broadening: %v", err)
+	}
+	if len(records) != 1 || records[0].Media == nil {
+		t.Fatalf("expected one explicit unknown media record: %+v", records)
+	}
+	for _, input := range records[0].Media.Inputs {
+		if input.Modality != "text" && input.State == pebblestore.ModelCatalogMediaStateSupported {
+			t.Fatalf("unknown field broadened media capability: %+v", records[0].Media)
+		}
 	}
 }
 

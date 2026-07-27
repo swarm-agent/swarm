@@ -1139,10 +1139,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	}
 	serviceTier := resolvedServiceTierForProvider(providerID, resolvedPreference.Preference.ServiceTier)
 	var catalogRecord *pebblestore.ModelCatalogRecord
-	if lookup, err := modelCatalogLookup(s.model, providerID, resolvedPreference.Preference.Model); err != nil {
+	var catalogMeta *pebblestore.ModelCatalogMeta
+	if lookup, meta, err := modelCatalogLookupWithMeta(s.model, providerID, resolvedPreference.Preference.Model); err != nil {
 		return RunResult{}, err
 	} else if lookup != nil {
 		catalogRecord = lookup
+		catalogMeta = meta
 	}
 	if s.providers == nil {
 		return RunResult{}, errors.New("provider registry is not configured")
@@ -1642,6 +1644,13 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			emit(StreamEvent{Type: StreamEventSessionWarning, Step: step, Warning: modeWarning})
 		}
 		stepInstructions := composeModeAwareInstructions(baseInstructions, executionMode, s.permissions != nil && s.permissions.BypassPermissions(), agentProfile)
+		mediaContract := CompileSessionMediaContract(SessionMediaContractInput{
+			ProviderID: providerID, Model: resolvedPreference.Preference.Model, Catalog: catalogRecord, CatalogMeta: catalogMeta,
+			Adapter: ResolveMediaAdapterDeclaration(runnerCtx, providerID, providerRunner), AgentAuthorized: AgentProfileAuthorizesMedia(agentProfile) && !effectiveDisabledTools[mediaInspectToolName],
+			ExecutionMode: executionMode, WorkspaceScope: workspaceCtx.WorkspacePath, SessionScope: sessionID,
+		})
+		stepInstructions = AppendSessionMediaInstructions(stepInstructions, mediaContract)
+		stepToolDefinitions := MaterializeSessionMediaTool(toolDefinitions, mediaContract)
 		runStateInstructions, stateErr := s.durableRunStateInstructions(sessionID, executionMode, runID, options)
 		if stateErr != nil {
 			return RunResult{}, stateErr
@@ -1810,7 +1819,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			providerID,
 			resolvedPreference.Preference.Model,
 			stepInstructions,
-			providerToolsLineageHash(toolDefinitions),
+			providerToolsLineageHash(stepToolDefinitions),
 			executionMode,
 			strings.TrimSpace(agentProfile.Name),
 			strings.TrimSpace(agentProfile.Mode),
@@ -1818,6 +1827,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			strings.TrimSpace(agentProfile.ExecutionSetting),
 			serviceTier,
 			resolvedPreference.Preference.ContextMode,
+			mediaContract.Hash,
+			mediaContract.SnapshotID,
 		)
 		boundaryReason := "session_turn"
 		nativeContinuationAllowed := true
@@ -1840,12 +1851,13 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			Thinking:                  resolvedPreference.Preference.Thinking,
 			Instructions:              stepInstructions,
 			Input:                     input,
-			Tools:                     toolDefinitions,
+			Tools:                     stepToolDefinitions,
 			ToolChoice:                "auto",
 			ServiceTier:               serviceTier,
 			ContextMode:               resolvedPreference.Preference.ContextMode,
 			ContextWindow:             resolvedPreference.ContextWindow,
 			ModelCatalog:              catalogRecordValue(catalogRecord),
+			MediaContract:             mediaContract,
 			ParallelToolCalls:         true,
 			WorkspacePath:             workspaceCtx.WorkspacePath,
 			ToolInvoker: s.newProviderToolInvoker(providerToolInvokerConfig{
@@ -1866,6 +1878,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				applySessionMutation: options.ApplySessionMutation,
 				providerManagedV3:    options.ApplySessionMutation != nil,
 				terminalPlanState:    terminalPlanState,
+				providerID:           providerID,
+				model:                resolvedPreference.Preference.Model,
+				mediaContract:        mediaContract,
 			}),
 		}
 		runRequestDebugEvent("provider_request", map[string]any{
@@ -1878,7 +1893,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			"background":          options.Background,
 			"execution_mode":      executionMode,
 			"parallel_tool_calls": stepRequest.ParallelToolCalls,
-			"tool_count":          len(toolDefinitions),
+			"tool_count":          len(stepToolDefinitions),
 			"input_item_count":    len(input),
 			"instruction_runes":   len([]rune(stepInstructions)),
 		})

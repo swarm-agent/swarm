@@ -77,6 +77,41 @@ export interface SessionSnapshot {
   current_execution_epoch?: V3ExecutionEpoch | null
 }
 
+export interface DesktopV3MediaReference {
+  asset_id: string
+  modality: string
+  mime_type: string
+  file_type?: string
+  size: number
+  digest_sha256: string
+  contract_hash: string
+}
+
+export interface DesktopV3MediaCapabilityEntry {
+  modality: string
+  mime_types?: string[]
+  file_types?: string[]
+  max_bytes: number
+  max_count: number
+  provenance?: string[]
+}
+
+export interface DesktopV3MediaCapability {
+  status: 'available' | 'unavailable' | string
+  contract_version: number
+  contract_token?: string
+  provider?: string
+  model?: string
+  provider_surface?: string
+  credential_surface?: string
+  adapter_id?: string
+  snapshot_id?: string
+  snapshot_version?: string
+  snapshot_source?: string
+  denial_reasons?: string[]
+  capabilities: DesktopV3MediaCapabilityEntry[]
+}
+
 export interface MessageSnapshot {
   id: string
   session_id: string
@@ -86,6 +121,7 @@ export interface MessageSnapshot {
   role: string
   content: string
   metadata?: Record<string, unknown>
+  media?: DesktopV3MediaReference[]
   created_at: number
   execution_epoch?: V3ExecutionEpochRef
   /** Canonical cache-boundary normalization; renderers must not reparse content. */
@@ -198,6 +234,7 @@ export interface DesktopV3AgenticSettings {
 
 export interface DesktopV3SessionView {
   agentic_settings?: DesktopV3AgenticSettings
+  media_capability?: DesktopV3MediaCapability
   current_execution_epoch?: V3ExecutionEpoch | null
   pending_permissions?: unknown[]
   usage_summary?: unknown
@@ -703,6 +740,7 @@ export interface PendingUserMessage {
   role: 'user'
   content: string
   metadata?: Record<string, unknown>
+  media?: DesktopV3MediaReference[]
   runId?: string
   createdAt: number
   timelineSeq?: number

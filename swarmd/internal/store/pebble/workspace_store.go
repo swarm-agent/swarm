@@ -312,13 +312,6 @@ func (s *WorkspaceStore) AddDirectoryForAccount(accountScopeID, path, directory 
 			return WorkspaceEntry{}, fmt.Errorf("directory %q is already linked to workspace %q", directory, path)
 		}
 	}
-	owner, ownerOK, err := s.findLinkedDirectoryOwnerForAccount(accountScopeID, directory)
-	if err != nil {
-		return WorkspaceEntry{}, err
-	}
-	if ownerOK && owner.Path != entry.Path {
-		return WorkspaceEntry{}, fmt.Errorf("directory %q already belongs to workspace %q", directory, owner.Path)
-	}
 	entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
 	entry.Directories = append(entry.Directories, directory)
 	entry.Directories = normalizeWorkspaceDirectories(entry.Path, entry.Directories)
@@ -647,25 +640,6 @@ func (s *WorkspaceStore) listAllForAccount(accountScopeID string) ([]WorkspaceEn
 	}
 	sortWorkspaceEntries(out)
 	return out, nil
-}
-
-func (s *WorkspaceStore) findLinkedDirectoryOwnerForAccount(accountScopeID, directory string) (WorkspaceEntry, bool, error) {
-	entries, err := s.listAllForAccount(accountScopeID)
-	if err != nil {
-		return WorkspaceEntry{}, false, err
-	}
-	for _, entry := range entries {
-		for _, existing := range entry.Directories {
-			if existing != directory {
-				continue
-			}
-			if existing == strings.TrimSpace(entry.Path) {
-				continue
-			}
-			return entry, true, nil
-		}
-	}
-	return WorkspaceEntry{}, false, nil
 }
 
 func sortWorkspaceEntries(out []WorkspaceEntry) {

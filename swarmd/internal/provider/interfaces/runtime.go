@@ -16,6 +16,86 @@ type ToolDefinition struct {
 	Parameters  map[string]any `json:"parameters"`
 }
 
+const (
+	MediaCapabilityStateAllowed = "allowed"
+	MediaCapabilityStateDenied  = "denied"
+
+	MediaAdapterIDOpenAIResponsesV1     = "openai-responses-v1"
+	MediaProviderSurfaceOpenAIResponses = "responses_api"
+	MediaCredentialSurfaceOpenAIAPIKey  = "openai_api_key"
+	MediaAdapterIDCodexChatGPTV1        = "codex-chatgpt-v1"
+	MediaProviderSurfaceCodexChatGPT    = "chatgpt_codex"
+	MediaCredentialSurfaceCodexOAuth    = "codex_oauth"
+)
+
+// MediaAdapterCapability is an adapter's exact, implemented admission ceiling.
+// It is intentionally independent from model-catalog claims.
+type MediaAdapterCapability struct {
+	Modality     string   `json:"modality"`
+	Semantics    string   `json:"semantics"`
+	MIMETypes    []string `json:"mime_types,omitempty"`
+	FileTypes    []string `json:"file_types,omitempty"`
+	ContentTypes []string `json:"content_types,omitempty"`
+	MaxBytes     int64    `json:"max_bytes"`
+	MaxCount     int      `json:"max_count"`
+}
+
+type MediaAdapterDeclaration struct {
+	AdapterID             string                   `json:"adapter_id"`
+	ProviderID            string                   `json:"provider_id"`
+	ProviderSurface       string                   `json:"provider_surface"`
+	CredentialSurface     string                   `json:"credential_surface"`
+	CredentialFingerprint string                   `json:"credential_fingerprint,omitempty"`
+	Inputs                []MediaAdapterCapability `json:"inputs,omitempty"`
+}
+
+type MediaContractCapability struct {
+	Modality     string   `json:"modality"`
+	State        string   `json:"state"`
+	Reason       string   `json:"reason"`
+	Semantics    string   `json:"semantics,omitempty"`
+	MIMETypes    []string `json:"mime_types,omitempty"`
+	FileTypes    []string `json:"file_types,omitempty"`
+	ContentTypes []string `json:"content_types,omitempty"`
+	MaxBytes     int64    `json:"max_bytes,omitempty"`
+	MaxCount     int      `json:"max_count,omitempty"`
+	Provenance   []string `json:"provenance,omitempty"`
+}
+
+// SessionMediaContract is the sole normalized result consumed by media schema,
+// prompts, execution admission, capability projection, and provider lineage.
+type SessionMediaContract struct {
+	Version               int                       `json:"version"`
+	ProviderID            string                    `json:"provider_id"`
+	Model                 string                    `json:"model"`
+	ProviderSurface       string                    `json:"provider_surface,omitempty"`
+	CredentialSurface     string                    `json:"credential_surface,omitempty"`
+	CredentialFingerprint string                    `json:"credential_fingerprint,omitempty"`
+	AdapterID             string                    `json:"adapter_id,omitempty"`
+	SnapshotID            string                    `json:"snapshot_id,omitempty"`
+	SnapshotVersion       string                    `json:"snapshot_version,omitempty"`
+	SnapshotSource        string                    `json:"snapshot_source,omitempty"`
+	ExecutionMode         string                    `json:"execution_mode,omitempty"`
+	WorkspaceScope        string                    `json:"workspace_scope,omitempty"`
+	SessionScope          string                    `json:"session_scope,omitempty"`
+	Capabilities          []MediaContractCapability `json:"capabilities,omitempty"`
+	DenialReasons         []string                  `json:"denial_reasons,omitempty"`
+	Hash                  string                    `json:"hash"`
+}
+
+// SessionMediaPayload carries authorized immutable bytes inside the daemon.
+// Bytes are deliberately excluded from JSON so request diagnostics, exports,
+// and realtime serialization cannot disclose asset contents.
+type SessionMediaPayload struct {
+	AssetID      string `json:"asset_id"`
+	Modality     string `json:"modality"`
+	MIMEType     string `json:"mime_type"`
+	FileType     string `json:"file_type,omitempty"`
+	DigestSHA256 string `json:"digest_sha256"`
+	Size         int64  `json:"size"`
+	Bytes        []byte `json:"-"`
+}
+
 type Request struct {
 	// SessionID is the stable durable Swarm session identity used for
 	// diagnostics/storage. Providers must not treat it as a cache/session
@@ -62,6 +142,7 @@ type Request struct {
 	ContextMode               string
 	ContextWindow             int
 	ModelCatalog              any
+	MediaContract             SessionMediaContract
 	ParallelToolCalls         bool
 	WorkspacePath             string
 	ToolInvoker               ToolInvoker
@@ -294,4 +375,10 @@ func (c ExecutionEpochLifecycleCapabilities) Valid() bool {
 // boundaries. Callers must fail closed when the declaration is absent or invalid.
 type ExecutionEpochLifecycleRunner interface {
 	ExecutionEpochLifecycle() ExecutionEpochLifecycleCapabilities
+}
+
+// MediaCapabilityRunner declares only media admission implemented by the exact
+// provider/credential surface selected for this request.
+type MediaCapabilityRunner interface {
+	MediaCapabilityDeclaration(context.Context) (MediaAdapterDeclaration, error)
 }

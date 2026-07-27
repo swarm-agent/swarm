@@ -81,14 +81,15 @@ type sessionsV3ModelProfileApplyRequest struct {
 }
 
 type sessionsV3MessageRequest struct {
-	ClientRequestID   string         `json:"client_request_id,omitempty"`
-	IdempotencyKey    string         `json:"idempotency_key,omitempty"`
-	MessageID         string         `json:"message_id,omitempty"`
-	RunID             string         `json:"run_id,omitempty"`
-	Role              string         `json:"role"`
-	Content           string         `json:"content"`
-	Metadata          map[string]any `json:"metadata,omitempty"`
-	DispatchAuthority map[string]any `json:"dispatch_authority,omitempty"`
+	ClientRequestID   string                              `json:"client_request_id,omitempty"`
+	IdempotencyKey    string                              `json:"idempotency_key,omitempty"`
+	MessageID         string                              `json:"message_id,omitempty"`
+	RunID             string                              `json:"run_id,omitempty"`
+	Role              string                              `json:"role"`
+	Content           string                              `json:"content"`
+	Metadata          map[string]any                      `json:"metadata,omitempty"`
+	Media             []pebblestore.SessionMediaReference `json:"media,omitempty"`
+	DispatchAuthority map[string]any                      `json:"dispatch_authority,omitempty"`
 }
 
 type sessionsV3StopRequest struct {
@@ -295,6 +296,10 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryArchive(w, r, principal, sessionID)
 	case "messages":
 		s.handleSessionV3PrimaryMessages(w, r, principal, sessionID)
+	case "media":
+		s.handleSessionV3MediaUpload(w, r, principal, sessionID)
+	case "media-capability":
+		s.handleSessionV3MediaCapability(w, r, principal, sessionID)
 	case "events":
 		s.handleSessionV3PrimaryEvents(w, r, principal, sessionID)
 	case "run/stop":
@@ -1226,12 +1231,15 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
-	message := pebblestore.MessageSnapshot{ID: strings.TrimSpace(req.MessageID), Role: strings.TrimSpace(req.Role), Content: req.Content, Metadata: cloneSessionsV3Metadata(req.Metadata)}
+	message := pebblestore.MessageSnapshot{ID: strings.TrimSpace(req.MessageID), Role: strings.TrimSpace(req.Role), Content: req.Content, Metadata: cloneSessionsV3Metadata(req.Metadata), Media: append([]pebblestore.SessionMediaReference(nil), req.Media...)}
 	if message.Role == "" {
 		return sessionruntime.SessionMutationResult{}, nil, errors.New("message role is required")
 	}
-	if message.Content == "" {
-		return sessionruntime.SessionMutationResult{}, nil, errors.New("message content is required")
+	if message.Content == "" && len(message.Media) == 0 {
+		return sessionruntime.SessionMutationResult{}, nil, errors.New("message content or media is required")
+	}
+	if err := s.validateSessionsV3MessageMedia(principal, session, message.Media); err != nil {
+		return sessionruntime.SessionMutationResult{}, nil, err
 	}
 	now := time.Now().UnixMilli()
 	runStatus, blockedReason := s.sessionsV3PrimaryRunIntentStatus(principal, session, req)
@@ -3479,17 +3487,18 @@ func mergeSessionsV3PreferenceUpdate(current pebblestore.ModelPreference, req se
 
 func sessionsV3MessagePayloadHash(sessionID string, req sessionsV3MessageRequest, message pebblestore.MessageSnapshot, runStatus, blockedReason string) (string, error) {
 	canonical := struct {
-		Operation         string         `json:"operation"`
-		SessionID         string         `json:"session_id"`
-		MessageID         string         `json:"message_id,omitempty"`
-		RunID             string         `json:"run_id,omitempty"`
-		Role              string         `json:"role"`
-		Content           string         `json:"content"`
-		Metadata          map[string]any `json:"metadata,omitempty"`
-		RunStatus         string         `json:"run_status"`
-		BlockedReason     string         `json:"blocked_reason"`
-		AuthorityStatus   string         `json:"authority_status"`
-		DispatchAuthority map[string]any `json:"dispatch_authority,omitempty"`
+		Operation         string                              `json:"operation"`
+		SessionID         string                              `json:"session_id"`
+		MessageID         string                              `json:"message_id,omitempty"`
+		RunID             string                              `json:"run_id,omitempty"`
+		Role              string                              `json:"role"`
+		Content           string                              `json:"content"`
+		Metadata          map[string]any                      `json:"metadata,omitempty"`
+		Media             []pebblestore.SessionMediaReference `json:"media,omitempty"`
+		RunStatus         string                              `json:"run_status"`
+		BlockedReason     string                              `json:"blocked_reason"`
+		AuthorityStatus   string                              `json:"authority_status"`
+		DispatchAuthority map[string]any                      `json:"dispatch_authority,omitempty"`
 	}{
 		Operation:         sessionruntime.SessionMutationAppendMessage,
 		SessionID:         strings.TrimSpace(sessionID),
@@ -3498,6 +3507,7 @@ func sessionsV3MessagePayloadHash(sessionID string, req sessionsV3MessageRequest
 		Role:              strings.TrimSpace(message.Role),
 		Content:           message.Content,
 		Metadata:          cloneSessionsV3Metadata(message.Metadata),
+		Media:             append([]pebblestore.SessionMediaReference(nil), message.Media...),
 		RunStatus:         runStatus,
 		BlockedReason:     blockedReason,
 		AuthorityStatus:   sessionsV3PrimaryAuthorityStatus(req),

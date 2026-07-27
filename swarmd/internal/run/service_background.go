@@ -428,22 +428,17 @@ func (s *Service) knownRunToolNamesForAccount(accountScopeID string) map[string]
 		"plan_manage":    {},
 		"task":           {},
 	}
-	if s == nil || s.tools == nil {
-		if customTools := s.customAgentToolNameSetForAccount(accountScopeID); len(customTools) > 0 {
-			for name := range customTools {
-				known[name] = struct{}{}
-			}
-		}
-		return known
-	}
-	for _, definition := range s.tools.Definitions() {
+	for _, definition := range s.listAgentToolDefinitionsForAccount(accountScopeID) {
 		name := canonicalToolName(definition.Name)
 		if name == "" {
 			continue
 		}
 		known[name] = struct{}{}
 	}
-	if customTools := s.customAgentToolNameSetForAccount(accountScopeID); len(customTools) > 0 {
+	if s == nil || s.tools == nil {
+		// listAgentToolDefinitionsForAccount requires the built-in runtime, but
+		// preserve custom inventory reporting for partially configured services.
+		customTools := s.customAgentToolNameSetForAccount(accountScopeID)
 		for name := range customTools {
 			known[name] = struct{}{}
 		}

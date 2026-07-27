@@ -195,6 +195,67 @@ func TestPersistentWorkspaceScopeApprovalAddsAccountScopedDirectory(t *testing.T
 	assertStringSliceContains(t, workspaceCtx.WorkspaceRoots, linked)
 }
 
+func TestPersistentWorkspaceScopeApprovalAllowsDirectorySharedByWorkspaces(t *testing.T) {
+	left := t.TempDir()
+	right := t.TempDir()
+	shared := t.TempDir()
+	principal := testRunPrincipal()
+
+	workspaceSvc, workspaceStore, rawStore, cleanup := newTestRunWorkspaceServiceWithRawStore(t)
+	defer cleanup()
+	if _, err := workspaceSvc.AddForPrincipal(principal, left, "left", "", false); err != nil {
+		t.Fatalf("save left workspace: %v", err)
+	}
+	if _, err := workspaceSvc.AddForPrincipal(principal, right, "right", "", true); err != nil {
+		t.Fatalf("save right workspace: %v", err)
+	}
+	if _, err := workspaceSvc.AddDirectoryForPrincipal(principal, left, shared); err != nil {
+		t.Fatalf("link shared directory to left workspace: %v", err)
+	}
+
+	sessionID := "session-shared-persistent-add-dir"
+	if err := pebblestore.NewSessionStore(rawStore).CreateSessionForAccount(pebblestore.SessionSnapshot{
+		ID:            sessionID,
+		WorkspacePath: right,
+		WorkspaceName: "right",
+		Title:         "Shared persistent add-dir",
+	}, principal.UserID, principal.AccountScopeID); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(rawStore), nil)
+	runSvc := NewService(sessionSvc, nil, nil, nil, nil, nil, discovery.NewService(), nil)
+	runSvc.SetWorkspaceService(workspaceSvc)
+	workspaceCtx := runWorkspaceContext{
+		WorkspacePath:        right,
+		WorkspaceRoots:       []string{right},
+		OriginWorkspacePath:  right,
+		OriginWorkspaceRoots: []string{right},
+	}
+
+	changed, err := runSvc.applyPersistentWorkspaceScopeAccess(
+		sessionID,
+		right,
+		"right",
+		principal,
+		tool.ScopeExpansionRequest{DirectoryPath: shared},
+		&workspaceCtx,
+	)
+	if err != nil {
+		t.Fatalf("apply shared persistent workspace scope access: %v", err)
+	}
+	if !changed {
+		t.Fatalf("shared persistent add-dir did not report a workspace scope change")
+	}
+	for _, workspacePath := range []string{left, right} {
+		entry, ok, err := workspaceStore.GetForAccount(principal.AccountScopeID, workspacePath)
+		if err != nil || !ok {
+			t.Fatalf("workspace %q missing after shared add-dir: ok=%t err=%v", workspacePath, ok, err)
+		}
+		assertStringSliceContains(t, entry.Directories, shared)
+	}
+	assertStringSliceContains(t, workspaceCtx.OriginWorkspaceRoots, shared)
+}
+
 func TestResolveRunWorkspaceScopeRejectsTemporaryRootChangedToSymlink(t *testing.T) {
 	primary := t.TempDir()
 	temporaryParent := t.TempDir()

@@ -82,6 +82,9 @@ type ProviderManagedToolInvokerConfig struct {
 	ProviderManagedV3    bool
 	AgentProfile         pebblestore.AgentProfile
 	ToolProgression      *ToolProgressionState
+	ProviderID           string
+	Model                string
+	MediaContract        provideriface.SessionMediaContract
 }
 
 type terminalPlanToolState struct {
@@ -126,6 +129,9 @@ type providerToolInvokerConfig struct {
 	agentProfile         pebblestore.AgentProfile
 	toolProgression      *ToolProgressionState
 	terminalPlanState    *terminalPlanToolState
+	providerID           string
+	model                string
+	mediaContract        provideriface.SessionMediaContract
 }
 
 func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerConfig {
@@ -147,6 +153,9 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		agentProfile:         config.AgentProfile,
 		toolProgression:      config.ToolProgression,
 		terminalPlanState:    &terminalPlanToolState{},
+		providerID:           strings.ToLower(strings.TrimSpace(config.ProviderID)),
+		model:                strings.TrimSpace(config.Model),
+		mediaContract:        config.MediaContract,
 	}
 }
 
@@ -388,7 +397,10 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		handled := false
 		var controlResult tool.Result
 		var controlErr error
-		if guardErr := s.rejectProviderManagedCheckpointRunFollowup(config, call); guardErr != nil {
+		if canonicalToolName(call.Name) == mediaInspectToolName {
+			handled = true
+			controlResult, controlErr = s.executeProviderManagedMediaInspect(ctx, config, call, principal)
+		} else if guardErr := s.rejectProviderManagedCheckpointRunFollowup(config, call); guardErr != nil {
 			handled = true
 			controlErr = guardErr
 			controlResult = tool.Result{CallID: call.CallID, Name: call.Name}
@@ -549,6 +561,75 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	}
 
 	return result, permissionWaitMS, nil
+}
+
+func (s *Service) executeProviderManagedMediaInspect(ctx context.Context, config providerToolInvokerConfig, call tool.Call, principal identity.Principal) (tool.Result, error) {
+	result := tool.Result{CallID: call.CallID, Name: mediaInspectToolName}
+	if s == nil || s.sessions == nil || s.providers == nil || s.model == nil {
+		return result, errors.New("media inspection runtime is not configured")
+	}
+	args, err := decodeMediaInspectArguments(call.Arguments)
+	if err != nil {
+		return result, err
+	}
+	if !principal.Valid() {
+		principal = config.principal
+	}
+	session, ok, err := s.sessions.GetSession(strings.TrimSpace(config.sessionID))
+	if err != nil {
+		return result, err
+	}
+	if !ok {
+		return result, fmt.Errorf("session %q not found", strings.TrimSpace(config.sessionID))
+	}
+	if !principal.Valid() || session.AccountScopeID != principal.AccountScopeID || session.UserID != principal.UserID {
+		return result, errors.New("media asset ownership does not match the authenticated session principal")
+	}
+	providerID := strings.ToLower(strings.TrimSpace(config.providerID))
+	modelID := strings.TrimSpace(config.model)
+	if providerID == "" || modelID == "" {
+		return result, errors.New("media inspection run provider/model is unresolved")
+	}
+	runner, ok := s.providers.GetRunner(providerID)
+	if !ok || runner == nil {
+		return result, fmt.Errorf("provider %q is not runnable", providerID)
+	}
+	catalog, meta, err := modelCatalogLookupWithMeta(s.model, providerID, modelID)
+	if err != nil {
+		return result, err
+	}
+	currentContract := CompileSessionMediaContract(SessionMediaContractInput{
+		ProviderID: providerID, Model: modelID, Catalog: catalog, CatalogMeta: meta,
+		Adapter:         ResolveMediaAdapterDeclaration(ctx, providerID, runner),
+		AgentAuthorized: AgentProfileAuthorizesMedia(config.agentProfile), ExecutionMode: config.sessionMode,
+		WorkspaceScope: config.workspacePath, SessionScope: config.sessionID,
+	})
+	if currentContract.Hash != config.mediaContract.Hash {
+		return result, errors.New("media_inspect call is stale or forged for the current run contract")
+	}
+	capability, err := validateMediaInspectInvocation(currentContract, args)
+	if err != nil {
+		return result, err
+	}
+	asset, payload, err := s.sessions.ReadSessionMediaAsset(principal.AccountScopeID, config.sessionID, args.AssetID)
+	if err != nil {
+		return result, err
+	}
+	if asset.ContractHash != currentContract.Hash || asset.ProviderID != providerID || asset.Model != modelID {
+		return result, errors.New("media asset admission contract does not match the current run")
+	}
+	if asset.DigestSHA256 != args.DigestSHA256 || asset.Modality != args.Modality || asset.DetectedMIMEType != args.MIMEType || asset.FileType != args.FileType {
+		return result, errors.New("media asset metadata does not match the requested immutable reference")
+	}
+	if int64(len(payload)) != asset.Size || capability.MaxBytes > 0 && asset.Size > capability.MaxBytes {
+		return result, errors.New("media asset exceeds the current run limit or failed its size check")
+	}
+	output, err := mediaInspectResult(asset, capability, currentContract)
+	if err != nil {
+		return result, err
+	}
+	result.Output = output
+	return result, nil
 }
 
 func (s *Service) rejectProviderManagedCheckpointRunFollowup(config providerToolInvokerConfig, call tool.Call) error {

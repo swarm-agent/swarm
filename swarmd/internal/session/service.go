@@ -110,6 +110,34 @@ func (s *Service) BeginExecutionEpoch(input pebblestore.BeginExecutionEpochInput
 	return s.store.BeginExecutionEpoch(input)
 }
 
+func (s *Service) PutSessionMediaAsset(input pebblestore.PutSessionMediaAssetInput) (pebblestore.SessionMediaAsset, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.SessionMediaAsset{}, false, errors.New("session service is not configured")
+	}
+	return s.store.PutSessionMediaAsset(input)
+}
+
+func (s *Service) GetSessionMediaAsset(accountScopeID, sessionID, assetID string) (pebblestore.SessionMediaAsset, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.SessionMediaAsset{}, false, errors.New("session service is not configured")
+	}
+	return s.store.GetSessionMediaAsset(accountScopeID, sessionID, assetID)
+}
+
+func (s *Service) ReadSessionMediaAsset(accountScopeID, sessionID, assetID string) (pebblestore.SessionMediaAsset, []byte, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.SessionMediaAsset{}, nil, errors.New("session service is not configured")
+	}
+	return s.store.ReadSessionMediaAsset(accountScopeID, sessionID, assetID)
+}
+
+func (s *Service) DeleteUnreferencedSessionMediaAsset(accountScopeID, sessionID, assetID string) (bool, error) {
+	if s == nil || s.store == nil {
+		return false, errors.New("session service is not configured")
+	}
+	return s.store.DeleteUnreferencedSessionMediaAsset(accountScopeID, sessionID, assetID)
+}
+
 func (s *Service) GetExecutionEpoch(sessionID, epochID string) (pebblestore.ExecutionEpoch, bool, error) {
 	if s == nil || s.store == nil {
 		return pebblestore.ExecutionEpoch{}, false, errors.New("session service is not configured")

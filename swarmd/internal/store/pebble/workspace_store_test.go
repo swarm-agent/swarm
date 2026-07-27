@@ -136,6 +136,49 @@ func TestWorkspaceStoreStableWorkspaceIDAndGeneration(t *testing.T) {
 	}
 }
 
+func TestWorkspaceStoreAllowsDirectoryLinkedToMultipleWorkspaces(t *testing.T) {
+	workspaces := newTestWorkspaceStore(t)
+	const (
+		leftPath   = "/tmp/ws-left"
+		rightPath  = "/tmp/ws-right"
+		sharedPath = "/tmp/shared"
+	)
+
+	if _, err := workspaces.AddForAccount("account-a", leftPath, "Left"); err != nil {
+		t.Fatalf("add left workspace: %v", err)
+	}
+	if _, err := workspaces.AddForAccount("account-a", rightPath, "Right"); err != nil {
+		t.Fatalf("add right workspace: %v", err)
+	}
+	left, err := workspaces.AddDirectoryForAccount("account-a", leftPath, sharedPath)
+	if err != nil {
+		t.Fatalf("link shared directory to left workspace: %v", err)
+	}
+	right, err := workspaces.AddDirectoryForAccount("account-a", rightPath, sharedPath)
+	if err != nil {
+		t.Fatalf("link shared directory to right workspace: %v", err)
+	}
+	for _, entry := range []WorkspaceEntry{left, right} {
+		linked := false
+		for _, directory := range entry.Directories {
+			if directory == sharedPath {
+				linked = true
+				break
+			}
+		}
+		if !linked {
+			t.Fatalf("workspace %q directories = %v, want shared directory %q", entry.Path, entry.Directories, sharedPath)
+		}
+	}
+
+	if _, err := workspaces.AddDirectoryForAccount("account-a", leftPath, sharedPath); err == nil {
+		t.Fatalf("duplicate link to the same workspace unexpectedly succeeded")
+	}
+	if _, err := workspaces.AddDirectoryForAccount("account-b", leftPath, sharedPath); err == nil {
+		t.Fatalf("cross-account link without an account-b workspace unexpectedly succeeded")
+	}
+}
+
 func TestWorkspaceStoreDuplicateNamesHaveDifferentWorkspaceIDs(t *testing.T) {
 	workspaces := newTestWorkspaceStore(t)
 

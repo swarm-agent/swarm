@@ -96,6 +96,11 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 		maxOutputTokens = agentModelPolicy.MaxOutputTokens
 	}
 
+	mediaCapability := sessionsV3MediaCapability{Status: "unavailable", Capabilities: []sessionsV3MediaCapabilityEntry{}}
+	if contract, contractErr := s.sessionsV3MediaContract(principal, session); contractErr == nil {
+		mediaCapability = projectSessionsV3MediaCapability(contract)
+	}
+
 	var currentExecutionEpoch *sessionsV3ExecutionEpochView
 	if epoch, ok, err := s.sessions.GetActiveExecutionEpoch(session.ID); err != nil {
 		return sessionsV3SessionView{}, err
@@ -134,6 +139,7 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 			MaxOutputTokens:     maxOutputTokens,
 			ProjectionSeq:       projection.LastEventSeq,
 		},
+		MediaCapability:       mediaCapability,
 		CurrentExecutionEpoch: currentExecutionEpoch,
 		PendingPermissions:    pendingPermissions,
 		UsageSummary:          usageSummary,
