@@ -63,7 +63,14 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 	)
 	var wg sync.WaitGroup
 	wg.Add(7)
-	go func() { defer wg.Done(); workspaceData = a.bootstrapHomeWorkspace(ctx) }()
+	go func() {
+		defer wg.Done()
+		preferLaunchWorkspace := a.claimInitialHomeWorkspaceBootstrap()
+		workspaceData = a.bootstrapHomeWorkspace(ctx, preferLaunchWorkspace)
+		if preferLaunchWorkspace && workspaceData.currentErr != nil {
+			a.homeWorkspaceBootstrapped.Store(false)
+		}
+	}()
 	go func() { defer wg.Done(); health, healthErr = a.api.GetHealth(ctx) }()
 	go func() { defer wg.Done(); providers, providersErr = a.api.ListProviders(ctx) }()
 	go func() { defer wg.Done(); resolved, resolvedErr = a.api.GetModel(ctx) }()

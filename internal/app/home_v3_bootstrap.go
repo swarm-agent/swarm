@@ -14,6 +14,12 @@ import (
 
 const homeBootstrapWorkspaceLimit = 200
 
+// claimInitialHomeWorkspaceBootstrap keeps launch-CWD precedence limited to the
+// first successful home bootstrap; later refreshes follow explicit selection.
+func (a *App) claimInitialHomeWorkspaceBootstrap() bool {
+	return a != nil && a.homeWorkspaceBootstrapped.CompareAndSwap(false, true)
+}
+
 type homeBootstrapData struct {
 	current         client.WorkspaceResolution
 	hasCurrent      bool
@@ -29,7 +35,7 @@ type homeBootstrapData struct {
 
 // bootstrapHomeWorkspace loads bounded workspace identity without touching any
 // session list, history, transcript, workset, or realtime endpoint.
-func (a *App) bootstrapHomeWorkspace(ctx context.Context) homeBootstrapData {
+func (a *App) bootstrapHomeWorkspace(ctx context.Context, preferLaunchWorkspace bool) homeBootstrapData {
 	var data homeBootstrapData
 	if a == nil || a.api == nil {
 		data.currentErr = fmt.Errorf("workspace client unavailable")
@@ -64,7 +70,7 @@ func (a *App) bootstrapHomeWorkspace(ctx context.Context) homeBootstrapData {
 		}()
 	}
 	launchPath := normalizePath(a.startupCWD)
-	if launchPath != "" && (selectedPath == "" || !pathsEqual(launchPath, selectedPath)) {
+	if preferLaunchWorkspace && launchPath != "" && (selectedPath == "" || !pathsEqual(launchPath, selectedPath)) {
 		data.launchChecked = true
 		resolveWG.Add(1)
 		go func() {

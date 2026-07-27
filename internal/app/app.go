@@ -237,12 +237,13 @@ type App struct {
 	settingsLabel       string
 	keybinds            *ui.KeyBindings
 
-	lastReloadAt time.Time
-	reloadCh     chan homeReloadResult
-	reloading    atomic.Bool
-	authLoginCh  chan authLoginResult
-	authLogging  atomic.Bool
-	codexPending *codexCodeLoginState
+	lastReloadAt              time.Time
+	reloadCh                  chan homeReloadResult
+	reloading                 atomic.Bool
+	homeWorkspaceBootstrapped atomic.Bool
+	authLoginCh               chan authLoginResult
+	authLogging               atomic.Bool
+	codexPending              *codexCodeLoginState
 
 	voiceCaptureSeq        int64
 	voiceCapture           activeVoiceCapture

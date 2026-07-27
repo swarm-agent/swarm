@@ -31,6 +31,38 @@ func TestApplyHomeWorkspaceBootstrapSelectsRegisteredLaunchCWD(t *testing.T) {
 	}
 }
 
+func TestClaimInitialHomeWorkspaceBootstrapIsOneShot(t *testing.T) {
+	app := &App{}
+	if !app.claimInitialHomeWorkspaceBootstrap() {
+		t.Fatal("initial bootstrap did not claim launch-workspace preference")
+	}
+	if app.claimInitialHomeWorkspaceBootstrap() {
+		t.Fatal("later refresh reclaimed launch-workspace preference")
+	}
+}
+
+func TestApplyHomeWorkspaceBootstrapKeepsCurrentWorkspaceAfterLaunchBootstrap(t *testing.T) {
+	next, selected, warnings := applyHomeWorkspaceBootstrap(model.EmptyHome(), homeBootstrapData{
+		current:    client.WorkspaceResolution{WorkspacePath: "/manual", ResolvedPath: "/manual", WorkspaceName: "Manual"},
+		hasCurrent: true,
+		workspaces: []client.WorkspaceEntry{
+			{Path: "/launch", WorkspaceName: "Launch"},
+			{Path: "/manual", WorkspaceName: "Manual"},
+		},
+		selectedResolve: client.WorkspaceCWDResolveResponse{ResolvedPath: "/manual", Workspace: &client.WorkspaceResolution{WorkspacePath: "/manual", ResolvedPath: "/manual"}},
+	}, "/launch")
+
+	if selected != "/manual" {
+		t.Fatalf("selected path = %q, want /manual", selected)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	if len(next.Workspaces) != 2 || next.Workspaces[0].Active || !next.Workspaces[1].Active {
+		t.Fatalf("workspace selection = %#v", next.Workspaces)
+	}
+}
+
 func TestApplyHomeWorkspaceBootstrapGuidesUnregisteredLaunchCWD(t *testing.T) {
 	_, selected, warnings := applyHomeWorkspaceBootstrap(model.EmptyHome(), homeBootstrapData{
 		current:         client.WorkspaceResolution{WorkspacePath: "/default", ResolvedPath: "/default", WorkspaceName: "Default"},
