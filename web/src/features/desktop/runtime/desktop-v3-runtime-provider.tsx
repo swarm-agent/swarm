@@ -85,14 +85,21 @@ async function startDesktopV3RuntimeHydration(
   runtime: RetainedDesktopV3Runtime,
   isCancelled: () => boolean,
 ): Promise<void> {
+  // Attach the rejection handler before waiting for bootstrap. The provider may
+  // unmount while bootstrap is pending, and releasing its lease then cancels
+  // realtime startup. That expected cancellation must not become an unhandled
+  // promise rejection during refresh or a Strict Mode remount.
+  const realtimeReady = runtime.realtimeLease.ready.catch((error: unknown) => {
+    if (isCancelled()) return
+    console.error('[desktop-v3] realtime startup failed after bootstrap render', error)
+  })
+
   await runtime.bootstrapReady
   if (isCancelled()) return
 
   // Snapshot rendering must not wait for the websocket. Realtime readiness only
   // closes the snapshot-to-live gap after the bounded hydrated bootstrap renders.
-  void runtime.realtimeLease.ready.catch((error: unknown) => {
-    console.error('[desktop-v3] realtime startup failed after bootstrap render', error)
-  })
+  void realtimeReady
 }
 
 function normalizePreferredSessionId(sessionId: string | null | undefined): string | null | undefined {
