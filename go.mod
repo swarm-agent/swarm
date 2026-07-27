@@ -5,7 +5,7 @@ go 1.25.12
 require (
 	github.com/alecthomas/chroma/v2 v2.24.1
 	github.com/fsnotify/fsnotify v1.10.1
-	github.com/gdamore/tcell/v2 v2.13.9
+	github.com/gdamore/tcell/v2 v2.13.10
 	github.com/github/copilot-sdk/go v0.3.0
 	github.com/google/uuid v1.6.0
 	github.com/rivo/uniseg v0.4.7
