@@ -9,7 +9,7 @@ require (
 	github.com/github/copilot-sdk/go v0.3.0
 	github.com/google/uuid v1.6.0
 	github.com/rivo/uniseg v0.4.7
-	github.com/yuin/goldmark v1.8.2
+	github.com/yuin/goldmark v1.8.4
 	golang.org/x/term v0.42.0
 )
 
