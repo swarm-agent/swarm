@@ -10,7 +10,7 @@
     "test": "node --import tsx --test --test-timeout=30000 --test-force-exit ./src/**/*.spec.ts"
   },
   "dependencies": {
-    "@tailwindcss/oxide-linux-x64-gnu": "4.2.2",
+    "@tailwindcss/oxide-linux-x64-gnu": "4.3.3",
     "@tanstack/react-query": "5.90.21",
     "@tanstack/react-router": "1.166.3",
     "@tanstack/react-virtual": "3.13.23",
