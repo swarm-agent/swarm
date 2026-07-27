@@ -10,7 +10,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -41,9 +40,6 @@ func Accept(w http.ResponseWriter, r *http.Request) (*Conn, error) {
 	}
 	if r.Header.Get("Sec-WebSocket-Version") != "13" {
 		return nil, errors.New("unsupported websocket version")
-	}
-	if err := validateBrowserOrigin(r); err != nil {
-		return nil, err
 	}
 	key := strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key"))
 	if key == "" {
@@ -208,25 +204,6 @@ func (c *Conn) writeFrame(opcode byte, payload []byte) error {
 		}
 	}
 	return c.writer.Flush()
-}
-
-func validateBrowserOrigin(r *http.Request) error {
-	rawOrigin := strings.TrimSpace(r.Header.Get("Origin"))
-	if rawOrigin == "" {
-		return nil
-	}
-	origin, err := url.Parse(rawOrigin)
-	if err != nil || origin.Scheme == "" || origin.Host == "" || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" {
-		return errors.New("invalid websocket origin")
-	}
-	requestScheme := "http"
-	if r.TLS != nil {
-		requestScheme = "https"
-	}
-	if !strings.EqualFold(origin.Scheme, requestScheme) || !strings.EqualFold(origin.Host, strings.TrimSpace(r.Host)) {
-		return errors.New("websocket origin does not match request host")
-	}
-	return nil
 }
 
 func isWebsocketUpgrade(r *http.Request) bool {
