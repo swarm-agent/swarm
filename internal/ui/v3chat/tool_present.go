@@ -535,10 +535,8 @@ func presentPlanManageTool(tool ToolTimelineItem, arguments, output map[string]a
 	if title != "" {
 		lines = append(lines, toolPresentationLine{Text: title, Tone: "label"})
 	}
-	if goal := toolString(info, "goal"); goal != "" && !strings.EqualFold(goal, title) {
-		lines = append(lines, toolPresentationLine{Text: goal})
-	} else if update := firstNonEmptyToolRaw(toolString(plan, "update_summary"), toolString(payload, "update_summary")); update != "" && !strings.EqualFold(update, title) {
-		lines = append(lines, toolPresentationLine{Text: update, Tone: "muted"})
+	if summaryLine := planToolSummaryLine(payload, plan, document, action, title); summaryLine != "" {
+		lines = append(lines, toolPresentationLine{Text: summaryLine, Tone: "muted"})
 	}
 	checkpoints := toolObjectSlice(document, "checkpoints")
 	if len(checkpoints) > 0 {
@@ -554,6 +552,69 @@ func presentPlanManageTool(tool ToolTimelineItem, arguments, output map[string]a
 		}
 	}
 	return toolPresentation{Summary: appendToolFacts(summary, facts), Lines: lines, Kind: "plan"}
+}
+
+func planToolSummaryLine(payload, plan, document map[string]any, action, title string) string {
+	update := firstNonEmptyToolRaw(toolString(plan, "update_summary"), toolString(payload, "update_summary"))
+	if update != "" && !strings.EqualFold(update, title) {
+		return clampToolRunes(strings.Join(strings.Fields(update), " "), 180)
+	}
+
+	action = strings.ToLower(strings.TrimSpace(action))
+	if strings.Contains(action, "checkpoint") || strings.Contains(action, "subtask") {
+		checkpointID := firstNonEmptyToolRaw(toolString(payload, "checkpoint_id"), toolString(plan, "update_scope"), toolString(payload, "update_scope"))
+		checkpoint := planCheckpointByID(document, checkpointID)
+		checkpointTitle := toolString(checkpoint, "title")
+		if checkpointTitle == "" && len(toolObjectSlice(document, "checkpoints")) == 1 {
+			checkpointTitle = toolString(toolObjectSlice(document, "checkpoints")[0], "title")
+		}
+		if checkpointTitle != "" && !strings.EqualFold(checkpointTitle, title) {
+			return checkpointTitle
+		}
+		return planLifecycleActionSummary(action)
+	}
+
+	goal := toolString(toolObject(document, "info"), "goal")
+	if goal != "" && !strings.EqualFold(goal, title) {
+		return clampToolRunes(strings.Join(strings.Fields(goal), " "), 180)
+	}
+	return ""
+}
+
+func planLifecycleActionSummary(action string) string {
+	switch action {
+	case "complete_checkpoint", "checkpoint_outcome":
+		return "Checkpoint completed"
+	case "mark_needs_review":
+		return "Checkpoint ready for review"
+	case "mark_blocked":
+		return "Checkpoint blocked"
+	case "mark_failed":
+		return "Checkpoint failed"
+	case "start_checkpoint", "start_session_checkpoint":
+		return "Checkpoint started"
+	case "continue_checkpoint", "resolve_blocked_checkpoint":
+		return "Checkpoint resumed"
+	case "restart_checkpoint":
+		return "Checkpoint restarted"
+	case "complete_subtask":
+		return "Checkpoint task completed"
+	default:
+		return "Checkpoint status updated"
+	}
+}
+
+func planCheckpointByID(document map[string]any, checkpointID string) map[string]any {
+	checkpointID = strings.TrimSpace(checkpointID)
+	if checkpointID == "" {
+		return nil
+	}
+	for _, checkpoint := range toolObjectSlice(document, "checkpoints") {
+		if strings.EqualFold(toolString(checkpoint, "id"), checkpointID) {
+			return checkpoint
+		}
+	}
+	return nil
 }
 
 func planToolPayload(tool ToolTimelineItem, arguments, output map[string]any) map[string]any {
