@@ -133,7 +133,9 @@ export async function updateSessionV3Preference(
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) throw new Error('Desktop V3 preference update requires session_id')
 
-  const body: Record<string, string> = {}
+  const body: Record<string, string> = {
+    client_request_id: `desktop-preference:${crypto.randomUUID()}`,
+  }
   const provider = input.provider?.trim()
   const model = input.model?.trim()
   const thinking = input.thinking?.trim()
@@ -142,7 +144,7 @@ export async function updateSessionV3Preference(
   if (thinking) body.thinking = thinking
   if (input.serviceTier !== undefined) body.service_tier = input.serviceTier.trim()
   if (input.contextMode !== undefined) body.context_mode = input.contextMode.trim()
-  if (Object.keys(body).length === 0) {
+  if (Object.keys(body).length === 1) {
     throw new Error('Desktop V3 preference update requires a non-empty preference change')
   }
 
@@ -222,7 +224,10 @@ export async function updateSessionV3Mode(sessionId: string, mode: DesktopSessio
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: normalizedMode }),
+      body: JSON.stringify({
+        client_request_id: `desktop-mode:${crypto.randomUUID()}`,
+        mode: normalizedMode,
+      }),
     },
   )
   return response
@@ -236,7 +241,10 @@ export async function updateSessionV3Agent(sessionId: string, agentName: string)
   return requestJson<SessionV3AgentMutationResponseWire>(`/v3/sessions/${encodeURIComponent(normalizedSessionId)}/agent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent_name: normalizedAgent }),
+    body: JSON.stringify({
+      client_request_id: `desktop-agent:${crypto.randomUUID()}`,
+      agent_name: normalizedAgent,
+    }),
   })
 }
 

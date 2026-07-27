@@ -12,6 +12,15 @@ async function withMockFetch(run: (calls: FetchCall[]) => Promise<void>): Promis
     if (url.endsWith('/preference')) {
       return jsonResponse({ ok: true, preference: { model: 'gpt-5.4' } })
     }
+    if (url.endsWith('/model-profile')) {
+      return jsonResponse({ ok: true, model_profile: { source: 'agent_default' } })
+    }
+    if (url.endsWith('/mode')) {
+      return jsonResponse({ ok: true, mode: 'auto' })
+    }
+    if (url.endsWith('/agent')) {
+      return jsonResponse({ ok: true, agent: { name: 'swarm' } })
+    }
     if (url.includes('/permissions/perm-1/resolve')) {
       return jsonResponse({
         ok: true,
@@ -72,13 +81,38 @@ test('Desktop V3 preference APIs use explicit Sessions API v3 helpers, not legac
       '/v3/sessions/session-raw/preference',
     ])
     assert.equal(calls[1]?.init?.method, 'POST')
-    assert.deepEqual(JSON.parse(String(calls[1]?.init?.body ?? '{}')), {
-      model: 'gpt-5.4',
-    })
+    const preferenceBody = JSON.parse(String(calls[1]?.init?.body ?? '{}'))
+    assert.equal(preferenceBody.model, 'gpt-5.4')
+    assert.match(preferenceBody.client_request_id, /^desktop-preference:/)
     await assert.rejects(
       () => updateSessionV3Preference('session-raw', { provider: '', model: '', thinking: '' }),
       /non-empty preference change/,
     )
+  })
+})
+
+test('Desktop V3 session model settings mutations supply durable client request IDs', async () => {
+  await withMockFetch(async (calls) => {
+    const { updateSessionV3Agent, updateSessionV3Mode, updateSessionV3ModelProfile } = await import('../../session-v3/api')
+
+    await updateSessionV3ModelProfile('session-raw', { kind: 'agent-default' })
+    await updateSessionV3Mode('session-raw', 'auto')
+    await updateSessionV3Agent('session-raw', 'swarm')
+
+    assert.deepEqual(calls.map((call) => String(call.input)), [
+      '/v3/sessions/session-raw/model-profile',
+      '/v3/sessions/session-raw/mode',
+      '/v3/sessions/session-raw/agent',
+    ])
+    const modelProfileBody = JSON.parse(String(calls[0]?.init?.body ?? '{}'))
+    const modeBody = JSON.parse(String(calls[1]?.init?.body ?? '{}'))
+    const agentBody = JSON.parse(String(calls[2]?.init?.body ?? '{}'))
+    assert.match(modelProfileBody.client_request_id, /^desktop-model-profile:/)
+    assert.deepEqual(modelProfileBody.choice, { use_agent_default: true })
+    assert.match(modeBody.client_request_id, /^desktop-mode:/)
+    assert.equal(modeBody.mode, 'auto')
+    assert.match(agentBody.client_request_id, /^desktop-agent:/)
+    assert.equal(agentBody.agent_name, 'swarm')
   })
 })
 
