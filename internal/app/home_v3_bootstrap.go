@@ -87,9 +87,20 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 
 	selectedPath := ""
 	selectedName := ""
+	selectedResolve := data.selectedResolve
+	selectedErr := data.selectedErr
 	if data.currentErr == nil && data.hasCurrent {
 		selectedPath = firstNonEmpty(normalizePath(data.current.WorkspacePath), normalizePath(data.current.ResolvedPath))
 		selectedName = strings.TrimSpace(data.current.WorkspaceName)
+	}
+	if data.launchChecked && data.launchErr == nil && data.launchResolve.Workspace != nil {
+		selectedPath = firstNonEmpty(
+			normalizePath(data.launchResolve.Workspace.WorkspacePath),
+			normalizePath(data.launchResolve.Workspace.ResolvedPath),
+		)
+		selectedName = strings.TrimSpace(data.launchResolve.Workspace.WorkspaceName)
+		selectedResolve = data.launchResolve
+		selectedErr = nil
 	}
 	for i, entry := range data.workspaces {
 		path := normalizePath(entry.Path)
@@ -143,9 +154,9 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 		}}, next.Directories...)
 	}
 
-	if data.selectedErr == nil && selectedPath != "" {
-		next = applyCWDResolverToHomeModel(next, data.selectedResolve)
-	} else if data.selectedErr != nil {
+	if selectedErr == nil && selectedPath != "" {
+		next = applyCWDResolverToHomeModel(next, selectedResolve)
+	} else if selectedErr != nil {
 		warnings = append(warnings, "workspace route unavailable")
 	}
 	if selectedPath != "" && len(next.ChatRoutes) == 0 {

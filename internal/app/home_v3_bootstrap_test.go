@@ -7,7 +7,7 @@ import (
 	"swarm-refactor/swarmtui/internal/model"
 )
 
-func TestApplyHomeWorkspaceBootstrapKeepsConfiguredDefaultOverLaunchCWD(t *testing.T) {
+func TestApplyHomeWorkspaceBootstrapSelectsRegisteredLaunchCWD(t *testing.T) {
 	next, selected, warnings := applyHomeWorkspaceBootstrap(model.EmptyHome(), homeBootstrapData{
 		current:    client.WorkspaceResolution{WorkspacePath: "/default", ResolvedPath: "/default", WorkspaceName: "Default"},
 		hasCurrent: true,
@@ -20,13 +20,13 @@ func TestApplyHomeWorkspaceBootstrapKeepsConfiguredDefaultOverLaunchCWD(t *testi
 		launchResolve:   client.WorkspaceCWDResolveResponse{ResolvedPath: "/launch", Workspace: &client.WorkspaceResolution{WorkspacePath: "/launch", ResolvedPath: "/launch"}},
 	}, "/launch")
 
-	if selected != "/default" {
-		t.Fatalf("selected path = %q, want /default", selected)
+	if selected != "/launch" {
+		t.Fatalf("selected path = %q, want /launch", selected)
 	}
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %#v, want none", warnings)
 	}
-	if len(next.Workspaces) != 2 || !next.Workspaces[0].Active || next.Workspaces[1].Active {
+	if len(next.Workspaces) != 2 || next.Workspaces[0].Active || !next.Workspaces[1].Active {
 		t.Fatalf("workspace selection = %#v", next.Workspaces)
 	}
 }
