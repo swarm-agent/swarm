@@ -126,7 +126,7 @@ body {
 }
 
 @container task-card (max-width: 23rem) {
-  .task-card-container > [data-task-card-header],
+  .task-card-container:not([data-task-swarm-mode]) > [data-task-card-header],
   .task-card-column-header,
   .task-card-wide-only,
   .task-card-child-context {
@@ -137,7 +137,7 @@ body {
     display: flex;
   }
 
-  .task-card-swarm-grid {
+  .task-card-container:not([data-task-swarm-mode]) .task-card-swarm-grid {
     grid-template-columns: minmax(0, 1fr);
     gap: 0;
     padding: 0;

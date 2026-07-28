@@ -1,6 +1,6 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TASK_ELAPSED_TICK_MS, ToolMessageView, bashCopyText, indexBashOutput, taskActivityLabel } from "./chat-markdown";
+import { TASK_ELAPSED_TICK_MS, ToolMessageView, bashCopyText, indexBashOutput, taskActivityLabel, taskSwarmLayout } from "./chat-markdown";
 import { buildStructuredToolMessage } from "../services/tool-message";
 
 function assert(condition: boolean, message: string): void {
@@ -156,6 +156,16 @@ function testPlanManageSubtaskUsesCanonicalUpdatedMetadata(): void {
   assert(!markup.includes("Unrelated task") && !markup.includes("Stale active checkpoint"), "unaffected stale metadata must not render");
 }
 
+function testTaskSwarmLayoutProgressivelyCompacts(): void {
+  const five = taskSwarmLayout(5, 420, 720);
+  const twenty = taskSwarmLayout(20, 420, 720);
+  const hundred = taskSwarmLayout(100, 420, 720);
+  assert(five.density === "detailed", `five rows should remain detailed, got ${five.density}`);
+  assert(twenty.density === "compact", `twenty rows should compact, got ${twenty.density}`);
+  assert(hundred.density === "signal", `one hundred rows should use signal density, got ${hundred.density}`);
+  assert(hundred.columns > twenty.columns, "extreme density should add columns instead of scrolling");
+}
+
 function testTaskSwarmUsesCompactPreview(): void {
   const longAssignment = "Coordinate an extremely detailed research and implementation assignment that would normally push the desktop task header sideways";
   const message = buildStructuredToolMessage({
@@ -179,12 +189,13 @@ function testTaskSwarmUsesCompactPreview(): void {
   assert(Boolean(message), "expected structured task swarm message");
 
   const markup = renderToolMarkup(message!);
-  assert(markup.includes("Subagent stream"), "expected one consistent subagent stream header");
-  assert((markup.match(/Subagent stream/g) ?? []).length === 1, "subagent stream heading should render once");
-  assert(markup.includes("@finder"), "expected compact row agent label");
+  assert(markup.includes("SWARM MODE"), "expected the post-five swarm mode label");
+  assert((markup.match(/SWARM MODE/g) ?? []).length === 1, "swarm mode heading should render once");
+  assert(markup.includes("12 AI"), "expected the visible swarm population count");
+  assert(markup.includes("finder"), "expected compact row model or agent label");
   assert(markup.includes("search"), "expected compact row current tool");
   assert(markup.includes("RUN"), "expected compact row status");
-  assert(!markup.includes("Swarm mode"), "swarm mode should not introduce a second heading");
+  assert(!markup.includes("Subagent stream"), "swarm mode should replace the regular stream heading");
   assert(!markup.includes("Current"), "swarm mode should not render detailed current column header");
   assert(!markup.includes("child child-session"), "swarm mode should not render child session ids");
   assert(!markup.includes(`task ${longAssignment}`), "swarm mode should suppress long task header summary");
@@ -657,6 +668,7 @@ function main(): void {
   testPlanManageUsesMinimalTransitionView();
   testPlanManageFollowupUsesCanonicalCheckpointMetadata();
   testPlanManageSubtaskUsesCanonicalUpdatedMetadata();
+  testTaskSwarmLayoutProgressivelyCompacts();
   testTaskSwarmUsesCompactPreview();
   testTaskRunningTimerUsesStartTimestamp();
   testTaskTerminalTimerUsesFinalElapsed();

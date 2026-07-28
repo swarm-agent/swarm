@@ -38,9 +38,19 @@ test('task cards switch to a titleless vertical subagent list from their own wid
   assert.match(source, /Subagent \{rowNumber\}/)
   assert.match(theme, /container-name: task-card/)
   assert.match(theme, /@container task-card \(max-width: 23rem\)/)
-  assert.match(theme, /\.task-card-container > \[data-task-card-header\]/)
-  assert.match(theme, /\.task-card-swarm-grid[\s\S]*grid-template-columns: minmax\(0, 1fr\)/)
+  assert.match(theme, /\.task-card-container:not\(\[data-task-swarm-mode\]\) > \[data-task-card-header\]/)
+  assert.match(theme, /\.task-card-container:not\(\[data-task-swarm-mode\]\) \.task-card-swarm-grid[\s\S]*grid-template-columns: minmax\(0, 1fr\)/)
   assert.match(theme, /@container task-card \(max-width: 12rem\)[\s\S]*\.task-card-narrow-detail/)
+})
+
+test('task swarms remove internal scrolling and measure adaptive density after five agents', async () => {
+  const source = await readFile(sourceURL, 'utf8')
+  assert.match(source, /const TASK_SWARM_THRESHOLD = 5/)
+  assert.match(source, /data-task-swarm-mode/)
+  assert.match(source, /new ResizeObserver\(measure\)/)
+  assert.match(source, /taskSwarmLayout\(rows\.length, availableHeight/)
+  assert.match(source, /className="task-card-swarm-grid grid min-w-0 overflow-hidden p-2"/)
+  assert.doesNotMatch(source, /className=\{cn\(TOOL_RESULT_BODY_CLASS, "task-card-swarm-grid/)
 })
 
 test('plan and subagent sidebars expose compact and ultra-thin critical actions', async () => {
