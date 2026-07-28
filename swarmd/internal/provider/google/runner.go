@@ -33,7 +33,10 @@ const (
 	maxStreamOutputBytes       = 4 << 20
 	maxStreamToolArgumentBytes = 1 << 20
 	maxInlineRequestBytes      = 20 << 20
+	maxInlineImageBytes        = 14 << 20
 )
+
+var googleInlineImageMIMETypes = []string{"image/heic", "image/heif", "image/jpeg", "image/png", "image/webp"}
 
 var googleAPIKeyQueryPattern = regexp.MustCompile(`(?i)([?&]key=)[^&#\s]+`)
 
@@ -165,12 +168,12 @@ func (r *Runner) MediaCapabilityDeclaration(ctx context.Context) (provideriface.
 		CredentialFingerprint: auth.Fingerprint,
 		Inputs: []provideriface.MediaAdapterCapability{{
 			Modality: "image", Semantics: pebblestore.ModelCatalogMediaSemanticsNative,
-			MIMETypes: []string{"image/heic", "image/heif", "image/jpeg", "image/png", "image/webp"},
+			MIMETypes: append([]string(nil), googleInlineImageMIMETypes...),
 			// Keep one immutable asset below the documented 20 MB total request limit
 			// after base64 expansion; buildGoogleRequest enforces the exact payload total.
 			// The shared durable message ceiling is intentionally narrower than Google's
 			// documented 3,600-file model ceiling.
-			ContentTypes: []string{"inline_data"}, MaxBytes: 14 << 20, MaxCount: pebblestore.SessionMediaDefaultMaxCount,
+			ContentTypes: []string{"inline_data"}, MaxBytes: maxInlineImageBytes, MaxCount: pebblestore.SessionMediaDefaultMaxCount,
 		}},
 	}, nil
 }
@@ -195,7 +198,7 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	if err := validateGoogleMediaSurface(req.MediaContract); err != nil {
+	if err := validateGoogleMediaSurface(req.MediaContract, auth.Fingerprint); err != nil {
 		return provideriface.Response{}, err
 	}
 
@@ -255,7 +258,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	if err := validateGoogleMediaSurface(req.MediaContract); err != nil {
+	if err := validateGoogleMediaSurface(req.MediaContract, auth.Fingerprint); err != nil {
 		return provideriface.Response{}, err
 	}
 
@@ -632,11 +635,12 @@ func buildGoogleContents(req provideriface.Request) ([]googleContent, error) {
 		}
 
 		role, _ := stringField(item, "role")
+		sourceRole := strings.ToLower(strings.TrimSpace(role))
 		googleRole := "user"
-		if strings.EqualFold(strings.TrimSpace(role), "assistant") {
+		if sourceRole == "assistant" {
 			googleRole = "model"
 		}
-		parts, err := googleMessageParts(req, item["content"], googleRole, mediaCounts)
+		parts, err := googleMessageParts(req, item["content"], sourceRole, mediaCounts)
 		if err != nil {
 			return nil, err
 		}
@@ -648,7 +652,7 @@ func buildGoogleContents(req provideriface.Request) ([]googleContent, error) {
 	return contents, nil
 }
 
-func googleMessageParts(req provideriface.Request, content any, role string, mediaCounts map[string]int) ([]googlePart, error) {
+func googleMessageParts(req provideriface.Request, content any, sourceRole string, mediaCounts map[string]int) ([]googlePart, error) {
 	if text, ok := content.(string); ok {
 		text = strings.TrimSpace(text)
 		if text == "" {
@@ -672,8 +676,8 @@ func googleMessageParts(req provideriface.Request, content any, role string, med
 				parts = append(parts, googlePart{Text: text})
 			}
 		case "session_media":
-			if role != "user" {
-				return nil, errors.New("google media input is only valid in user messages")
+			if sourceRole != "user" {
+				return nil, errors.New("google media input is only valid in explicit user messages")
 			}
 			payload, ok := part["media"].(provideriface.SessionMediaPayload)
 			if !ok {
@@ -713,7 +717,7 @@ func googleInputContentMaps(value any) ([]map[string]any, bool) {
 
 func validateGoogleMediaPayload(req provideriface.Request, payload provideriface.SessionMediaPayload, counts map[string]int) error {
 	contract := req.MediaContract
-	if contract.Hash == "" || req.ProviderConfigurationHash == "" ||
+	if contract.Hash == "" || req.ProviderConfigurationHash == "" || strings.TrimSpace(contract.CredentialFingerprint) == "" ||
 		!strings.EqualFold(strings.TrimSpace(contract.ProviderID), "google") ||
 		contract.ProviderSurface != provideriface.MediaProviderSurfaceGoogleGenerateContent ||
 		contract.CredentialSurface != provideriface.MediaCredentialSurfaceGoogleAPIKey ||
@@ -730,6 +734,12 @@ func validateGoogleMediaPayload(req provideriface.Request, payload provideriface
 	if !strings.EqualFold(strings.TrimSpace(payload.Modality), "image") {
 		return errors.New("google media payload modality is not implemented")
 	}
+	if !googleStringAllowed(googleInlineImageMIMETypes, payload.MIMEType) {
+		return errors.New("google image MIME type is not implemented")
+	}
+	if payload.Size > maxInlineImageBytes {
+		return errors.New("google image payload exceeds the adapter byte limit")
+	}
 	for _, capability := range contract.Capabilities {
 		if capability.State != provideriface.MediaCapabilityStateAllowed || !strings.EqualFold(capability.Modality, payload.Modality) {
 			continue
@@ -737,11 +747,12 @@ func validateGoogleMediaPayload(req provideriface.Request, payload provideriface
 		if !strings.EqualFold(capability.Semantics, pebblestore.ModelCatalogMediaSemanticsNative) ||
 			!googleStringAllowed(capability.ContentTypes, "inline_data") ||
 			!googleStringAllowed(capability.MIMETypes, payload.MIMEType) ||
-			strings.TrimSpace(payload.FileType) != "" || capability.MaxBytes <= 0 || payload.Size > capability.MaxBytes {
+			strings.TrimSpace(payload.FileType) != "" || capability.MaxBytes <= 0 || capability.MaxBytes > maxInlineImageBytes || payload.Size > capability.MaxBytes ||
+			capability.MaxCount <= 0 || capability.MaxCount > pebblestore.SessionMediaDefaultMaxCount {
 			break
 		}
 		counts[capability.Modality]++
-		if capability.MaxCount <= 0 || counts[capability.Modality] > capability.MaxCount {
+		if counts[capability.Modality] > capability.MaxCount {
 			return errors.New("google media payload exceeds the active contract count limit")
 		}
 		return nil
@@ -759,12 +770,15 @@ func googleStringAllowed(values []string, expected string) bool {
 	return false
 }
 
-func validateGoogleMediaSurface(contract provideriface.SessionMediaContract) error {
+func validateGoogleMediaSurface(contract provideriface.SessionMediaContract, activeCredentialFingerprint string) error {
 	if strings.TrimSpace(contract.Hash) == "" {
 		return nil
 	}
 	if !strings.EqualFold(strings.TrimSpace(contract.ProviderID), "google") || contract.ProviderSurface != provideriface.MediaProviderSurfaceGoogleGenerateContent || contract.CredentialSurface != provideriface.MediaCredentialSurfaceGoogleAPIKey || contract.AdapterID != provideriface.MediaAdapterIDGoogleGenerateContentV1 {
 		return errors.New("media contract does not match the active Google API-key generateContent surface")
+	}
+	if strings.TrimSpace(contract.CredentialFingerprint) == "" || strings.TrimSpace(activeCredentialFingerprint) == "" || contract.CredentialFingerprint != activeCredentialFingerprint {
+		return errors.New("media contract does not match the active Google API-key credential")
 	}
 	return nil
 }

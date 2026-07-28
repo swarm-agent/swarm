@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -147,7 +148,7 @@ func (s *SessionStore) PutSessionMediaAsset(input PutSessionMediaAssetInput) (Se
 	if int64(len(payload)) > input.MaxBytes {
 		return SessionMediaAsset{}, false, fmt.Errorf("media asset exceeds %d byte limit", input.MaxBytes)
 	}
-	detected := normalizeSessionMediaMIME(http.DetectContentType(payload))
+	detected := detectSessionMediaMIME(payload)
 	if detected != input.DeclaredMIMEType {
 		return SessionMediaAsset{}, false, fmt.Errorf("declared MIME type %q does not match detected MIME type %q", input.DeclaredMIMEType, detected)
 	}
@@ -204,6 +205,21 @@ func (s *SessionStore) PutSessionMediaAsset(input PutSessionMediaAssetInput) (Se
 		return SessionMediaAsset{}, false, err
 	}
 	return asset, false, nil
+}
+
+func detectSessionMediaMIME(payload []byte) string {
+	detected := normalizeSessionMediaMIME(http.DetectContentType(payload))
+	if detected != "application/octet-stream" || len(payload) < 12 || !bytes.Equal(payload[4:8], []byte("ftyp")) {
+		return detected
+	}
+	switch string(payload[8:12]) {
+	case "heic", "heix", "hevc", "hevx", "heim":
+		return "image/heic"
+	case "mif1", "msf1":
+		return "image/heif"
+	default:
+		return detected
+	}
 }
 
 func (s *SessionStore) GetSessionMediaAsset(accountScopeID, sessionID, assetID string) (SessionMediaAsset, bool, error) {

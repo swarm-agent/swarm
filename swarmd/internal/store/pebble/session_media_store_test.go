@@ -30,6 +30,25 @@ func putTestMedia(t *testing.T, sessions *SessionStore, account, session string)
 	return asset
 }
 
+func TestDetectSessionMediaMIMERecognizesHEIFBrands(t *testing.T) {
+	for _, test := range []struct {
+		brand string
+		want  string
+	}{
+		{brand: "heic", want: "image/heic"},
+		{brand: "heix", want: "image/heic"},
+		{brand: "mif1", want: "image/heif"},
+		{brand: "msf1", want: "image/heif"},
+	} {
+		payload := append([]byte{0, 0, 0, 24}, []byte("ftyp")...)
+		payload = append(payload, []byte(test.brand)...)
+		payload = append(payload, make([]byte, 12)...)
+		if got := detectSessionMediaMIME(payload); got != test.want {
+			t.Fatalf("brand %q MIME = %q, want %q", test.brand, got, test.want)
+		}
+	}
+}
+
 func TestSessionMediaAssetProviderAllowlistIsExplicit(t *testing.T) {
 	for _, providerID := range []string{"openai", "codex", "google", "anthropic", "fireworks", "openrouter"} {
 		if !sessionMediaAssetProviderEnabled(providerID) {
