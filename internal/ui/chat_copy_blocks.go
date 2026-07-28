@@ -2,195 +2,23 @@ package ui
 
 import (
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
+
+	"swarm-refactor/swarmtui/internal/copyblock"
 )
 
-type chatCopyBlock struct {
-	Label   string
-	Content string
-}
+type chatCopyBlock = copyblock.Block
+type chatCopySegment = copyblock.Segment
 
-type chatCopySegment struct {
-	Text string
-	Copy *chatCopyBlock
-}
+func splitChatCopySegments(text string) []chatCopySegment { return copyblock.Split(text) }
 
-var (
-	chatCopyOpenTagPattern = regexp.MustCompile(`(?is)<copy(?:\s+[^>]*)?>`)
-	chatCopyAttrPattern    = regexp.MustCompile(`(?is)\b(?:label|title|name)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))`)
-)
+func normalizeChatCopyContent(content string) string { return copyblock.Normalize(content) }
 
-func splitChatCopySegments(text string) []chatCopySegment {
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	if text == "" {
-		return nil
-	}
-	if !chatMayContainCopyOpenTag(text) {
-		return []chatCopySegment{{Text: text}}
-	}
+func chatCopyCommandPreview(content string) string { return copyblock.CommandPreview(content) }
 
-	protectedRanges := chatCopyMarkdownProtectedRanges(text)
-	segments := make([]chatCopySegment, 0, 4)
-	cursor := 0
-	for cursor < len(text) {
-		loc := nextChatCopyOpenTag(text, cursor, protectedRanges)
-		if loc == nil {
-			segments = appendCopyTextSegment(segments, text[cursor:])
-			break
-		}
-		if loc[0] > cursor {
-			segments = appendCopyTextSegment(segments, text[cursor:loc[0]])
-		}
-
-		openTag := text[loc[0]:loc[1]]
-		afterOpen := text[loc[1]:]
-		lowerAfterOpen := strings.ToLower(afterOpen)
-		closeIdx := strings.Index(lowerAfterOpen, "</copy>")
-		if closeIdx < 0 {
-			segments = appendCopyTextSegment(segments, text[loc[0]:])
-			break
-		}
-
-		segments = append(segments, chatCopySegment{Copy: &chatCopyBlock{
-			Label:   chatCopyTagLabel(openTag),
-			Content: normalizeChatCopyContent(afterOpen[:closeIdx]),
-		}})
-		cursor = loc[1] + closeIdx + len("</copy>")
-	}
-	return segments
-}
-
-func chatMayContainCopyOpenTag(text string) bool {
-	lower := strings.ToLower(text)
-	return strings.Contains(lower, "<copy>") || strings.Contains(lower, "<copy ") || strings.Contains(lower, "<copy\t") || strings.Contains(lower, "<copy\n")
-}
-
-type chatCopyByteRange struct {
-	Start int
-	End   int
-}
-
-func nextChatCopyOpenTag(text string, start int, protectedRanges []chatCopyByteRange) []int {
-	for start < len(text) {
-		loc := chatCopyOpenTagPattern.FindStringIndex(text[start:])
-		if loc == nil {
-			return nil
-		}
-		loc[0] += start
-		loc[1] += start
-		if protected, end := chatCopyIndexProtected(loc[0], protectedRanges); protected {
-			start = maxInt(end, loc[1])
-			continue
-		}
-		return loc
-	}
-	return nil
-}
-
-func chatCopyIndexProtected(index int, protectedRanges []chatCopyByteRange) (bool, int) {
-	for _, protected := range protectedRanges {
-		if index < protected.Start {
-			return false, 0
-		}
-		if index >= protected.Start && index < protected.End {
-			return true, protected.End
-		}
-	}
-	return false, 0
-}
-
-func chatCopyMarkdownProtectedRanges(text string) []chatCopyByteRange {
-	if text == "" {
-		return nil
-	}
-	ranges := make([]chatCopyByteRange, 0, 2)
-	fence := markdownFenceState{}
-	fenceStart := 0
-	lineStart := 0
-	for lineStart < len(text) {
-		lineEnd := strings.IndexByte(text[lineStart:], '\n')
-		nextLineStart := len(text)
-		if lineEnd >= 0 {
-			lineEnd += lineStart
-			nextLineStart = lineEnd + 1
-		} else {
-			lineEnd = len(text)
-		}
-		line := text[lineStart:lineEnd]
-		trimmed := strings.TrimSpace(strings.TrimRight(line, "\t \r"))
-		fenceLine, ok := parseMarkdownFenceLine(trimmed)
-		if ok {
-			if !fence.active() {
-				if fenceLine.Count >= 3 {
-					fence = markdownFenceState{Active: true, Marker: fenceLine.Marker, Count: fenceLine.Count}
-					fenceStart = lineStart
-				}
-			} else if fence.canClose(fenceLine) {
-				ranges = append(ranges, chatCopyByteRange{Start: fenceStart, End: nextLineStart})
-				fence = markdownFenceState{}
-			}
-		}
-		lineStart = nextLineStart
-	}
-	if fence.active() {
-		ranges = append(ranges, chatCopyByteRange{Start: fenceStart, End: len(text)})
-	}
-	return ranges
-}
-
-func appendCopyTextSegment(segments []chatCopySegment, text string) []chatCopySegment {
-	if text == "" {
-		return segments
-	}
-	return append(segments, chatCopySegment{Text: text})
-}
-
-func chatCopyTagLabel(openTag string) string {
-	match := chatCopyAttrPattern.FindStringSubmatch(openTag)
-	if len(match) == 0 {
-		return ""
-	}
-	for _, candidate := range match[2:] {
-		candidate = strings.TrimSpace(candidate)
-		if candidate != "" {
-			return candidate
-		}
-	}
-	return ""
-}
-
-func normalizeChatCopyContent(content string) string {
-	content = strings.ReplaceAll(content, "\r\n", "\n")
-	content = strings.ReplaceAll(content, "\r", "\n")
-	content = strings.Trim(content, "\n")
-	return content
-}
-
-func chatCopyCommandPreview(content string) string {
-	content = normalizeChatCopyContent(content)
-	content = strings.ReplaceAll(content, "\t", " ")
-	fields := strings.Fields(content)
-	if len(fields) == 0 {
-		return "(empty copy block)"
-	}
-	return strings.Join(fields, " ")
-}
-
-func countChatCopyBlocks(text string) int {
-	count := 0
-	for _, segment := range splitChatCopySegments(text) {
-		if segment.Copy != nil {
-			count++
-		}
-	}
-	return count
-}
+func countChatCopyBlocks(text string) int { return copyblock.Count(text) }
 
 func chatCopyBlockMessageMatch(left, right chatMessageItem) bool {
 	leftID := strings.TrimSpace(left.MessageID)
@@ -398,26 +226,4 @@ func pluralizeCopyLine(count int) string {
 		return "line"
 	}
 	return "lines"
-}
-
-func ParseCopyBlockIndexArg(args []string) (int, bool) {
-	if len(args) != 1 {
-		return 0, false
-	}
-	index, err := strconv.Atoi(strings.TrimSpace(args[0]))
-	if err != nil || index <= 0 {
-		return 0, false
-	}
-	return index, true
-}
-
-func CopyBlockPreviewStatus(index int, text string) string {
-	first := strings.TrimSpace(strings.Split(normalizeChatCopyContent(text), "\n")[0])
-	if first == "" {
-		return fmt.Sprintf("copied /copy %d", index)
-	}
-	if utf8.RuneCountInString(first) > 48 {
-		first = clampEllipsis(first, 48)
-	}
-	return fmt.Sprintf("copied /copy %d: %s", index, first)
 }

@@ -72,7 +72,9 @@ func (p *Page) commandPaletteMatchesLocked() []CommandSuggestion {
 	if !p.commandPaletteActiveLocked() {
 		return nil
 	}
-	return commandPaletteMatches(p.commandSuggestions, commandQuery(string(p.input)))
+	suggestions := append([]CommandSuggestion(nil), p.commandSuggestions...)
+	suggestions = append(suggestions, p.copyBlockCommandSuggestionsLocked()...)
+	return commandPaletteMatches(suggestions, commandQuery(string(p.input)))
 }
 
 func commandPaletteMatches(suggestions []CommandSuggestion, query string) []CommandSuggestion {
