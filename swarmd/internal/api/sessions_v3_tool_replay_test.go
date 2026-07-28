@@ -33,6 +33,22 @@ func TestSessionsV3ProviderToolRecordInputItemsBoundsReplayedOutput(t *testing.T
 	}
 }
 
+func TestSessionsV3ProviderToolMediaInputItemsCarriesAuthorizedPayload(t *testing.T) {
+	payload := provideriface.SessionMediaPayload{AssetID: "asset", Modality: "image", MIMEType: "image/png", Size: 3, Bytes: []byte("png")}
+	items := sessionsV3ProviderToolMediaInputItems([]provideriface.ToolExecutionResult{{Name: "media_inspect", Media: &payload}})
+	if len(items) != 1 {
+		t.Fatalf("media input items = %#v", items)
+	}
+	content, ok := items[0]["content"].([]map[string]any)
+	if !ok || len(content) != 2 || content[1]["type"] != "session_media" {
+		t.Fatalf("media input content = %#v", items[0]["content"])
+	}
+	got, ok := content[1]["media"].(provideriface.SessionMediaPayload)
+	if !ok || got.AssetID != payload.AssetID || string(got.Bytes) != "png" {
+		t.Fatalf("media input payload = %#v", content[1]["media"])
+	}
+}
+
 func TestSessionsV3ProviderToolResultInputItemsBoundsFallbackOutput(t *testing.T) {
 	rawOutput := strings.Repeat("B", 120*1024)
 	items := sessionsV3ProviderToolResultInputItems(

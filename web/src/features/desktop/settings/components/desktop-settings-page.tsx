@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMatchRoute, useNavigate, useSearch } from '@tanstack/react-router'
-import { Bell, GitBranch, Home, Keyboard, Key, Palette, Shield, UserRound, type LucideIcon } from 'lucide-react'
+import { Bell, GitBranch, Home, Keyboard, Key, Network, Palette, Shield, UserRound, type LucideIcon } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Select } from '../../../../components/ui/select'
 import { AccountSettingsPage } from '../account/components/account-settings-page'
@@ -11,6 +11,7 @@ import { ThemesSettingsPage } from '../themes/components/themes-settings-page'
 import { ShortcutsSettingsPage } from '../shortcuts/components/shortcuts-settings-page'
 import { VaultSettingsPage } from '../vault/components/vault-settings-page'
 import { WorktreeSettingsPage } from '../worktrees/components/worktree-settings-page'
+import { TailscaleSettingsPage } from '../tailscale/components/tailscale-settings-page'
 import { cn } from '../../../../lib/cn'
 import { normalizeSettingsTabID, type SettingsTabID } from '../types/settings-tabs'
 
@@ -18,6 +19,7 @@ const settingsTabs: Array<{ id: SettingsTabID; label: string; icon: LucideIcon }
   { id: 'account', label: 'Account', icon: UserRound },
   { id: 'auth', label: 'Auth', icon: Key },
   { id: 'permissions', label: 'Permissions', icon: Shield },
+  { id: 'tailscale', label: 'Tailscale', icon: Network },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'themes', label: 'Themes', icon: Palette },
   { id: 'shortcuts', label: 'Shortcuts', icon: Keyboard },
@@ -158,6 +160,7 @@ export function DesktopSettingsPage() {
             {activeTab === 'account' ? <AccountSettingsPage /> : null}
             {activeTab === 'auth' ? <AuthSettingsPage /> : null}
             {activeTab === 'permissions' ? <PermissionsSettingsPage /> : null}
+            {activeTab === 'tailscale' ? <TailscaleSettingsPage /> : null}
             {activeTab === 'notifications' ? <NotificationsSettingsPage /> : null}
             {activeTab === 'themes' ? <ThemesSettingsPage /> : null}
             {activeTab === 'shortcuts' ? <ShortcutsSettingsPage /> : null}

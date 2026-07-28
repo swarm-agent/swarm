@@ -278,6 +278,7 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 		Preset: "custom",
 		Tools: map[string]pebblestore.AgentToolConfig{
 			"read":            {Enabled: pebblestore.BoolPtr(true)},
+			"media_inspect":   {Enabled: pebblestore.BoolPtr(true)},
 			"search":          {Enabled: pebblestore.BoolPtr(true)},
 			"list":            {Enabled: pebblestore.BoolPtr(true)},
 			"write":           {Enabled: pebblestore.BoolPtr(true)},
@@ -370,7 +371,7 @@ Use only the locked read and research tools. Provide precise findings with path/
 
 func FinderAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
-		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
+		"read": {Enabled: pebblestore.BoolPtr(true)}, "media_inspect": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)},
 		"task": {Enabled: pebblestore.BoolPtr(false)},
 	}}
@@ -384,7 +385,7 @@ Finish successful work with one scoped commit and a clean worktree. If permissio
 
 func CoderAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
-		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
+		"read": {Enabled: pebblestore.BoolPtr(true)}, "media_inspect": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"write": {Enabled: pebblestore.BoolPtr(true)}, "edit": {Enabled: pebblestore.BoolPtr(true)},
 		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)}, "webdownload": {Enabled: pebblestore.BoolPtr(true)},
 		"git_status": {Enabled: pebblestore.BoolPtr(true)}, "git_diff": {Enabled: pebblestore.BoolPtr(true)},
@@ -404,7 +405,7 @@ Use only the locked workspace discovery and file-editing tools. Do not run comma
 
 func DesignerAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
-		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
+		"read": {Enabled: pebblestore.BoolPtr(true)}, "media_inspect": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"write": {Enabled: pebblestore.BoolPtr(true)}, "edit": {Enabled: pebblestore.BoolPtr(true)},
 		"bash": {Enabled: pebblestore.BoolPtr(false)}, "git_status": {Enabled: pebblestore.BoolPtr(false)}, "git_diff": {Enabled: pebblestore.BoolPtr(false)}, "git_add": {Enabled: pebblestore.BoolPtr(false)}, "git_commit": {Enabled: pebblestore.BoolPtr(false)},
 		"task": {Enabled: pebblestore.BoolPtr(false)}, "skill_use": {Enabled: pebblestore.BoolPtr(false)}, "manage_skill": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)}, "manage_theme": {Enabled: pebblestore.BoolPtr(false)},
@@ -586,12 +587,17 @@ func CoderAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.Age
 }
 
 func DesignerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
-	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: DesignerAgentID, Mode: ModeSubagent, Description: "Compiled reusable UI and design implementation subagent",
 		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
 		Prompt: DesignerAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, DefaultSessionMode: pebblestore.AgentDefaultSessionModeAuto, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
-		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: DesignerAgentToolContract(), Enabled: true, Protected: true,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: DesignerAgentToolContract(), Enabled: true,
 	})
+	// AgentProfile normalization only preserves the legacy persisted memory agent's
+	// protection bit. Designer is compiled rather than persisted, so restore its
+	// immutable identity marker after normalizing the rest of the profile.
+	profile.Protected = true
+	return profile
 }
 
 func AISidechatAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {

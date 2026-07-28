@@ -2,6 +2,9 @@ package anthropic
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +23,12 @@ import (
 const (
 	promptCachingBeta = anthropicapi.AnthropicBetaPromptCaching2024_07_31
 	usageSource       = "anthropic_api_usage"
+
+	anthropicMediaAdapterID         = provideriface.MediaAdapterIDAnthropicMessagesV1
+	anthropicMediaProviderSurface   = provideriface.MediaProviderSurfaceAnthropicMessages
+	anthropicMediaCredentialSurface = provideriface.MediaCredentialSurfaceAnthropicAPIKey
+	anthropicImageMaxBytes          = int64(7_864_320) // Largest raw payload whose padded base64 is at most 10 MiB.
+	anthropicImageMaxCount          = 100              // Safe ceiling across 200k-context API models.
 )
 
 type Runner struct {
@@ -37,6 +46,33 @@ func (r *Runner) ID() string {
 func (r *Runner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
 	return provideriface.ExecutionEpochLifecycleCapabilities{
 		ContextMode: provideriface.ExecutionEpochContextStatelessFullInput,
+	}
+}
+
+func (r *Runner) MediaCapabilityDeclaration(ctx context.Context) (provideriface.MediaAdapterDeclaration, error) {
+	record, err := r.anthropicAuthRecord(ctx)
+	if err != nil {
+		return provideriface.MediaAdapterDeclaration{}, err
+	}
+	return anthropicMediaDeclaration(record), nil
+}
+
+func anthropicMediaDeclaration(record pebblestore.AuthCredentialRecord) provideriface.MediaAdapterDeclaration {
+	fingerprint := sha256.Sum256([]byte(strings.Join([]string{record.AccountScopeID, record.Provider, record.ID, record.Type}, "\x00")))
+	return provideriface.MediaAdapterDeclaration{
+		AdapterID:             anthropicMediaAdapterID,
+		ProviderID:            "anthropic",
+		ProviderSurface:       anthropicMediaProviderSurface,
+		CredentialSurface:     anthropicMediaCredentialSurface,
+		CredentialFingerprint: hex.EncodeToString(fingerprint[:16]),
+		Inputs: []provideriface.MediaAdapterCapability{{
+			Modality:     "image",
+			Semantics:    pebblestore.ModelCatalogMediaSemanticsNative,
+			MIMETypes:    []string{"image/gif", "image/jpeg", "image/png", "image/webp"},
+			ContentTypes: []string{"image"},
+			MaxBytes:     anthropicImageMaxBytes,
+			MaxCount:     anthropicImageMaxCount,
+		}},
 	}
 }
 
@@ -194,22 +230,15 @@ func anthropicReasoningKey(index int64) string {
 }
 
 func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (anthropicapi.Client, string, anthropicapi.MessageNewParams, []option.RequestOption, error) {
-	principal, principalOK := identity.PrincipalFromContext(ctx)
-	if !principalOK {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, identity.ErrPrincipalRequired
-	}
-	record, ok, err := r.authStore.GetActiveCredentialForAccount(principal.AccountScopeID, "anthropic")
+	record, err := r.anthropicAuthRecord(ctx)
 	if err != nil {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, fmt.Errorf("read anthropic auth: %w", err)
-	}
-	if !ok || strings.TrimSpace(record.APIKey) == "" {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, errors.New("anthropic auth is not configured")
+		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, err
 	}
 	modelName := strings.TrimSpace(req.Model)
 	if modelName == "" {
 		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, errors.New("model is required")
 	}
-	messages, err := buildAnthropicMessages(req.Input)
+	messages, err := buildAnthropicMessages(req.Input, req.MediaContract)
 	if err != nil {
 		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, err
 	}
@@ -246,6 +275,26 @@ func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (a
 	}
 	client := anthropicapi.NewClient(anthropicClientOptions(strings.TrimSpace(record.APIKey))...)
 	return client, modelName, params, requestOptions, nil
+}
+
+func (r *Runner) anthropicAuthRecord(ctx context.Context) (pebblestore.AuthCredentialRecord, error) {
+	principal, principalOK := identity.PrincipalFromContext(ctx)
+	if !principalOK || !principal.Valid() {
+		return pebblestore.AuthCredentialRecord{}, identity.ErrPrincipalRequired
+	}
+	if r == nil || r.authStore == nil {
+		return pebblestore.AuthCredentialRecord{}, errors.New("anthropic runner auth store is not configured")
+	}
+	record, ok, err := r.authStore.GetActiveCredentialForAccount(principal.AccountScopeID, "anthropic")
+	if err != nil {
+		return pebblestore.AuthCredentialRecord{}, fmt.Errorf("read anthropic auth: %w", err)
+	}
+	if !ok || strings.TrimSpace(record.APIKey) == "" {
+		return pebblestore.AuthCredentialRecord{}, errors.New("anthropic auth is not configured")
+	}
+	record.Provider = "anthropic"
+	record.Type = pebblestore.AuthTypeAPI
+	return record, nil
 }
 
 func anthropicClientOptions(apiKey string) []option.RequestOption {
@@ -365,8 +414,9 @@ func sanitizeAnthropicToolSchema(parameters map[string]any) (anthropicapi.ToolIn
 	return anthropicapi.ToolInputSchemaParam{ExtraFields: fullSchema}, nil
 }
 
-func buildAnthropicMessages(input []map[string]any) ([]anthropicapi.MessageParam, error) {
+func buildAnthropicMessages(input []map[string]any, mediaContract provideriface.SessionMediaContract) ([]anthropicapi.MessageParam, error) {
 	messages := make([]anthropicapi.MessageParam, 0, len(input))
+	mediaCount := 0
 	for i := 0; i < len(input); i++ {
 		item := input[i]
 		if typeName, ok := stringField(item, "type"); ok {
@@ -422,7 +472,7 @@ func buildAnthropicMessages(input []map[string]any) ([]anthropicapi.MessageParam
 			continue
 		}
 		role, _ := stringField(item, "role")
-		blocks, err := buildAnthropicContentBlocks(item["content"])
+		blocks, err := buildAnthropicContentBlocks(item["content"], strings.TrimSpace(role), mediaContract, &mediaCount)
 		if err != nil {
 			return nil, err
 		}
@@ -438,7 +488,7 @@ func buildAnthropicMessages(input []map[string]any) ([]anthropicapi.MessageParam
 	return messages, nil
 }
 
-func buildAnthropicContentBlocks(content any) ([]anthropicapi.ContentBlockParamUnion, error) {
+func buildAnthropicContentBlocks(content any, role string, mediaContract provideriface.SessionMediaContract, mediaCount *int) ([]anthropicapi.ContentBlockParamUnion, error) {
 	switch typed := content.(type) {
 	case string:
 		text := strings.TrimSpace(typed)
@@ -447,7 +497,7 @@ func buildAnthropicContentBlocks(content any) ([]anthropicapi.ContentBlockParamU
 		}
 		return []anthropicapi.ContentBlockParamUnion{{OfText: &anthropicapi.TextBlockParam{Text: text}}}, nil
 	case []map[string]any:
-		return buildAnthropicContentBlocksFromMaps(typed)
+		return buildAnthropicContentBlocksFromMaps(typed, role, mediaContract, mediaCount)
 	case []any:
 		items := make([]map[string]any, 0, len(typed))
 		for _, item := range typed {
@@ -457,13 +507,13 @@ func buildAnthropicContentBlocks(content any) ([]anthropicapi.ContentBlockParamU
 			}
 			items = append(items, mapped)
 		}
-		return buildAnthropicContentBlocksFromMaps(items)
+		return buildAnthropicContentBlocksFromMaps(items, role, mediaContract, mediaCount)
 	default:
 		return nil, nil
 	}
 }
 
-func buildAnthropicContentBlocksFromMaps(items []map[string]any) ([]anthropicapi.ContentBlockParamUnion, error) {
+func buildAnthropicContentBlocksFromMaps(items []map[string]any, role string, mediaContract provideriface.SessionMediaContract, mediaCount *int) ([]anthropicapi.ContentBlockParamUnion, error) {
 	blocks := make([]anthropicapi.ContentBlockParamUnion, 0, len(items))
 	for _, item := range items {
 		itemType, _ := stringField(item, "type")
@@ -475,6 +525,25 @@ func buildAnthropicContentBlocksFromMaps(items []map[string]any) ([]anthropicapi
 				continue
 			}
 			blocks = append(blocks, anthropicapi.ContentBlockParamUnion{OfText: &anthropicapi.TextBlockParam{Text: text}})
+		case "image", "input_image", "input_file", "file", "audio", "input_audio", "video", "input_video":
+			return nil, errors.New("raw provider media content is not accepted; authorized session media is required")
+		case "session_media":
+			if !strings.EqualFold(strings.TrimSpace(role), "user") {
+				return nil, errors.New("anthropic image input is only valid in explicit user message content")
+			}
+			payload, ok := item["media"].(provideriface.SessionMediaPayload)
+			if !ok {
+				return nil, errors.New("anthropic session media payload is malformed")
+			}
+			if mediaCount == nil {
+				return nil, errors.New("anthropic media count is not configured")
+			}
+			*mediaCount = *mediaCount + 1
+			image, err := anthropicImageBlock(mediaContract, payload, *mediaCount)
+			if err != nil {
+				return nil, err
+			}
+			blocks = append(blocks, image)
 		default:
 			if text, _ := stringField(item, "text"); strings.TrimSpace(text) != "" {
 				blocks = append(blocks, anthropicapi.ContentBlockParamUnion{OfText: &anthropicapi.TextBlockParam{Text: strings.TrimSpace(text)}})
@@ -482,6 +551,53 @@ func buildAnthropicContentBlocksFromMaps(items []map[string]any) ([]anthropicapi
 		}
 	}
 	return blocks, nil
+}
+
+func anthropicImageBlock(contract provideriface.SessionMediaContract, payload provideriface.SessionMediaPayload, count int) (anthropicapi.ContentBlockParamUnion, error) {
+	if _, err := validateAnthropicImagePayload(contract, payload, count); err != nil {
+		return anthropicapi.ContentBlockParamUnion{}, err
+	}
+	data := base64.StdEncoding.EncodeToString(payload.Bytes)
+	return anthropicapi.NewImageBlockBase64(strings.ToLower(strings.TrimSpace(payload.MIMEType)), data), nil
+}
+
+func validateAnthropicImagePayload(contract provideriface.SessionMediaContract, payload provideriface.SessionMediaPayload, count int) (provideriface.MediaContractCapability, error) {
+	if strings.TrimSpace(contract.Hash) == "" || !strings.EqualFold(strings.TrimSpace(contract.ProviderID), "anthropic") || contract.ProviderSurface != anthropicMediaProviderSurface || contract.CredentialSurface != anthropicMediaCredentialSurface || contract.AdapterID != anthropicMediaAdapterID {
+		return provideriface.MediaContractCapability{}, errors.New("media contract does not match the active Anthropic API-key Messages surface")
+	}
+	if !strings.EqualFold(strings.TrimSpace(payload.Modality), "image") || strings.TrimSpace(payload.FileType) != "" {
+		return provideriface.MediaContractCapability{}, errors.New("anthropic media payload is not a native image input")
+	}
+	mimeType := strings.ToLower(strings.TrimSpace(payload.MIMEType))
+	if !containsFold([]string{"image/gif", "image/jpeg", "image/png", "image/webp"}, mimeType) {
+		return provideriface.MediaContractCapability{}, errors.New("anthropic image MIME type is unsupported")
+	}
+	if strings.TrimSpace(payload.AssetID) == "" || len(payload.Bytes) == 0 || payload.Size <= 0 || payload.Size != int64(len(payload.Bytes)) || payload.Size > anthropicImageMaxBytes {
+		return provideriface.MediaContractCapability{}, errors.New("anthropic image payload identity or size is invalid")
+	}
+	digest := sha256.Sum256(payload.Bytes)
+	if !strings.EqualFold(strings.TrimSpace(payload.DigestSHA256), hex.EncodeToString(digest[:])) {
+		return provideriface.MediaContractCapability{}, errors.New("anthropic image payload digest is invalid")
+	}
+	for _, capability := range contract.Capabilities {
+		if !strings.EqualFold(strings.TrimSpace(capability.Modality), "image") {
+			continue
+		}
+		if capability.State != provideriface.MediaCapabilityStateAllowed || capability.Semantics != pebblestore.ModelCatalogMediaSemanticsNative || !containsFold(capability.MIMETypes, mimeType) || !containsFold(capability.ContentTypes, "image") || capability.MaxBytes <= 0 || payload.Size > capability.MaxBytes || capability.MaxCount <= 0 || count > capability.MaxCount || count > anthropicImageMaxCount {
+			return provideriface.MediaContractCapability{}, errors.New("anthropic image payload is outside the authorized media capability")
+		}
+		return capability, nil
+	}
+	return provideriface.MediaContractCapability{}, errors.New("anthropic image capability is absent")
+}
+
+func containsFold(values []string, target string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(target)) {
+			return true
+		}
+	}
+	return false
 }
 
 func anthropicThinkingConfig(catalog any, level string) (*anthropicapi.ThinkingConfigParamUnion, anthropicapi.OutputConfigEffort) {

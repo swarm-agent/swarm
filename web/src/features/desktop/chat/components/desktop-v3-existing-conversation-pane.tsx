@@ -37,6 +37,7 @@ import {
 } from "../../state/desktop-v3-cache-selectors";
 import type {
   DesktopV3CacheState,
+  DesktopV3MediaReference,
   LiveRunOverlay,
   MessageSnapshot,
   PendingUserMessage,
@@ -120,6 +121,7 @@ import {
   updateSessionV3ModelProfile,
   stopSessionV3Run,
 } from "../../session-v3/api";
+import { getDesktopV3MediaCapability, uploadDesktopV3MediaAsset } from "../../session-v3/write-api";
 import {
   clearDesktopV3ExistingMessageOperation,
   continueDesktopV3Conversation,
@@ -1418,7 +1420,7 @@ type DesktopV3ExistingConversationComposerProps = Omit<
   hasStoredOperation: boolean;
   canSubmitWithoutDraft: boolean;
   controllerRef: MutableRefObject<DesktopV3ExistingComposerController | null>;
-  onSubmit: (draft: string) => void | Promise<void>;
+  onSubmit: (draft: string, attachments: DesktopV3MediaReference[]) => void | Promise<void>;
 };
 
 export function DesktopV3ExistingConversationComposer({
@@ -1504,6 +1506,9 @@ export function DesktopV3ExistingConversationPane({
     (state: DesktopV3CacheState) =>
       selectDesktopPlanExecutionView(state, normalizedSessionId),
     [normalizedSessionId],
+  );
+  const sessionMediaCapability = useDesktopV3CacheSelector(
+    (state) => state.sessionViewsById[normalizedSessionId]?.media_capability ?? null,
   );
   const rawCachedPreference = useDesktopV3CacheSelector(
     (state) => state.preferencesBySession[normalizedSessionId],
@@ -1687,6 +1692,13 @@ export function DesktopV3ExistingConversationPane({
     displayedPreference.provider,
     authCredentialsQuery.data,
   );
+  const mediaCapabilityQuery = useQuery({
+    queryKey: ['desktop-v3-media-capability', normalizedSessionId, selectedAgent, displayedPreference.provider, displayedPreference.model, authCredentialsQuery.dataUpdatedAt],
+    queryFn: () => getDesktopV3MediaCapability(normalizedSessionId),
+    enabled: Boolean(normalizedSessionId),
+    staleTime: 0,
+  });
+  const mediaCapability = mediaCapabilityQuery.data ?? sessionMediaCapability;
   const cachedUsage = useMemo(
     () => normalizeUsageSummary(rawCachedUsage),
     [rawCachedUsage],
@@ -2327,7 +2339,7 @@ export function DesktopV3ExistingConversationPane({
     oldestLoadedSeq,
   ]);
 
-  async function handleSubmit(submittedDraft: string) {
+  async function handleSubmit(submittedDraft: string, attachments: DesktopV3MediaReference[]) {
     if (!normalizedSessionId || sending || compacting) return;
 
     setSending(true);
@@ -2344,6 +2356,7 @@ export function DesktopV3ExistingConversationPane({
           sessionId: normalizedSessionId,
           prompt: submittedDraft,
           metadata,
+          media: attachments,
         });
       operationRef.current = operation;
       composerControllerRef.current?.setDraft("");
@@ -2549,7 +2562,7 @@ export function DesktopV3ExistingConversationPane({
   const submitRef = useRef(handleSubmit);
   submitRef.current = handleSubmit;
   const stableSubmit = useCallback(
-    (submittedDraft: string) => submitRef.current(submittedDraft),
+    (submittedDraft: string, attachments: DesktopV3MediaReference[]) => submitRef.current(submittedDraft, attachments),
     [],
   );
 
@@ -2613,7 +2626,7 @@ export function DesktopV3ExistingConversationPane({
     onDownloadConversation: () => { void handleTranscriptExport('download'); },
   } : null, [handleTranscriptExport, sessionActions, transcriptAction]);
 
-  const stableSuggestedPrompt = stableSubmit;
+  const stableSuggestedPrompt = useCallback((prompt: string) => stableSubmit(prompt, []), [stableSubmit]);
 
   const hasOpenPlan = Boolean(onOpenPlan);
   const stableOpenPlan = useMemo(
@@ -2823,6 +2836,26 @@ export function DesktopV3ExistingConversationPane({
             busy={sending || compacting}
             canStop={Boolean(currentRun)}
             error={sendError}
+            mediaCapability={mediaCapability}
+            onUploadAttachment={async (file, signal) => {
+              const capability = await getDesktopV3MediaCapability(normalizedSessionId);
+              const fileType = file.name.includes('.') ? file.name.split('.').pop()?.toLowerCase() : undefined;
+              const browserMIME = file.type.trim().toLowerCase();
+              const inferredMIME = fileType ? ({ gif: 'image/gif', jpeg: 'image/jpeg', jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp' } as Record<string, string>)[fileType] : undefined;
+              const mimeType = browserMIME || inferredMIME || '';
+              const admitted = capability.status === 'available' && capability.contract_token
+                ? capability.capabilities.find((candidate) => {
+                    const acceptsMIME = mimeType !== '' && (candidate.mime_types ?? []).some((value) => value.toLowerCase() === mimeType);
+                    const acceptsFileType = Boolean(fileType && (candidate.file_types ?? []).some((value) => value.replace(/^\./, '').toLowerCase() === fileType));
+                    return acceptsMIME || acceptsFileType;
+                  })
+                : null;
+              if (!admitted || !capability.contract_token) throw new Error('This file type is not supported by the current model and credential.');
+              if (admitted.max_bytes > 0 && file.size > admitted.max_bytes) throw new Error(`This attachment exceeds the ${Math.ceil(admitted.max_bytes / (1024 * 1024))} MB limit.`);
+              const declaredMIME = mimeType || (fileType ? (admitted.mime_types ?? []).find((value) => value.toLowerCase().endsWith(`/${fileType === 'jpg' ? 'jpeg' : fileType}`)) : undefined);
+              if (!declaredMIME) throw new Error('The browser could not determine a supported media type for this attachment.');
+              return uploadDesktopV3MediaAsset({ sessionId: normalizedSessionId, file, mimeType: declaredMIME, modality: admitted.modality, fileType, contractToken: capability.contract_token, signal });
+            }}
             onSubmit={stableSubmit}
             onStop={handleStop}
             onCompact={handleCompact}
@@ -3562,7 +3595,7 @@ function DesktopV3CommittedMessage({
     );
   }
   if (role === "user") {
-    return <DesktopV3UserMessage content={message.content} />;
+    return <DesktopV3UserMessage content={message.content} media={message.media} />;
   }
   if (role === "reasoning") {
     return (
@@ -3598,15 +3631,18 @@ function DesktopV3CommittedMessage({
 
 function DesktopV3UserMessage({
   content,
+  media,
   pendingLabel,
 }: {
   content: string;
+  media?: DesktopV3MediaReference[];
   pendingLabel?: string;
 }) {
   return (
     <div className="flex justify-end">
       <div className="max-w-[70%] rounded-xl bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)] shadow-sm">
-        <div className="whitespace-pre-wrap break-words">{content}</div>
+        {content ? <div className="whitespace-pre-wrap break-words">{content}</div> : null}
+        {media?.length ? <div className="mt-2 flex flex-wrap gap-1.5">{media.map((item, index) => <span key={`${item.asset_id}:${index}`} className="rounded-md border border-white/25 px-2 py-1 text-xs">{item.file_type?.toUpperCase() || item.mime_type} · {Math.ceil(item.size / 1024)} KB</span>)}</div> : null}
         {pendingLabel ? (
           <div className="mt-1 text-right text-[10px] uppercase tracking-[0.12em] opacity-70">
             {pendingLabel}
@@ -3625,6 +3661,7 @@ function DesktopV3PendingUserMessage({
   return (
     <DesktopV3UserMessage
       content={message.content}
+      media={message.media}
       pendingLabel={
         message.status === "failed" ? message.error || "failed" : undefined
       }

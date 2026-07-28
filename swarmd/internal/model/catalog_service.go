@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -31,6 +32,12 @@ const (
 var catalogProviderCanonicalIDs = map[string]string{
 	"github-copilot": "copilot",
 	"fireworks-ai":   "fireworks",
+	"openai-api":     "openai",
+	"openai_api":     "openai",
+	"codex-oauth":    "codex",
+	"codex_oauth":    "codex",
+	"chatgpt-codex":  "codex",
+	"chatgpt_codex":  "codex",
 }
 
 type CatalogService struct {
@@ -44,6 +51,7 @@ type CatalogService struct {
 
 type CatalogLookup struct {
 	Record pebblestore.ModelCatalogRecord `json:"record"`
+	Meta   *pebblestore.ModelCatalogMeta  `json:"meta,omitempty"`
 	Found  bool                           `json:"found"`
 	Stale  bool                           `json:"stale"`
 }
@@ -94,6 +102,7 @@ type swarmSnapshot struct {
 	ProviderCount         int                                                       `json:"provider_count"`
 	HydratedProviderCount int                                                       `json:"hydrated_provider_count"`
 	Recommendations       map[string]map[string]swarmSnapshotProviderRecommendation `json:"recommendations"`
+	Definitions           map[string]swarmSnapshotProviderDefinition                `json:"definitions"`
 	Providers             []swarmSnapshotProvider                                   `json:"providers"`
 	Models                []swarmSnapshotModel                                      `json:"models"`
 }
@@ -101,6 +110,10 @@ type swarmSnapshot struct {
 type swarmSnapshotProvider struct {
 	ProviderID      string                                         `json:"provider_id"`
 	Recommendations map[string]swarmSnapshotProviderRecommendation `json:"recommendations"`
+}
+
+type swarmSnapshotProviderDefinition struct {
+	Multimodal json.RawMessage `json:"multimodal"`
 }
 
 type swarmSnapshotProviderRecommendation struct {
@@ -118,9 +131,17 @@ type swarmSnapshotModel struct {
 	ModelID             string `json:"model_id"`
 	DisplayName         string `json:"display_name"`
 	Capabilities        struct {
-		SupportsTextInput  *bool `json:"supports_text_input"`
-		SupportsTextOutput *bool `json:"supports_text_output"`
-		SupportsReasoning  *bool `json:"supports_reasoning"`
+		SupportsTextInput   *bool `json:"supports_text_input"`
+		SupportsTextOutput  *bool `json:"supports_text_output"`
+		SupportsImageInput  *bool `json:"supports_image_input"`
+		SupportsImageOutput *bool `json:"supports_image_output"`
+		SupportsAudioInput  *bool `json:"supports_audio_input"`
+		SupportsAudioOutput *bool `json:"supports_audio_output"`
+		SupportsVideoInput  *bool `json:"supports_video_input"`
+		SupportsVideoOutput *bool `json:"supports_video_output"`
+		SupportsFileInput   *bool `json:"supports_file_input"`
+		SupportsPDFInput    *bool `json:"supports_pdf_input"`
+		SupportsReasoning   *bool `json:"supports_reasoning"`
 	} `json:"capabilities"`
 	Limits struct {
 		ContextWindowTokens *int `json:"context_window_tokens"`
@@ -291,10 +312,19 @@ func (s *CatalogService) Get(providerID, modelID string) (CatalogLookup, error) 
 	if !ok {
 		return CatalogLookup{Found: false}, nil
 	}
+	meta, metaFound, err := s.store.GetMeta()
+	if err != nil {
+		return CatalogLookup{}, fmt.Errorf("read model catalog meta for lookup: %w", err)
+	}
+	var matchedMeta *pebblestore.ModelCatalogMeta
+	if metaFound && catalogRecordMatchesMeta(record, meta) {
+		matchedMeta = &meta
+	}
 
 	stale := record.ExpiresAt > 0 && record.ExpiresAt < s.now().UnixMilli()
 	return CatalogLookup{
 		Record: record,
+		Meta:   matchedMeta,
 		Found:  true,
 		Stale:  stale,
 	}, nil
@@ -690,6 +720,10 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 		reasoning := model.Capabilities.SupportsReasoning != nil && *model.Capabilities.SupportsReasoning
 		serviceTiers, defaultServiceTier := modelServingTiers(model.ProviderSpecific, providerID)
 		thinkingOptions, defaultThinking, thinkingProviderParameter, thinkingMappings := modelThinkingMetadata(model.Thinking)
+		media, err := snapshotModelMediaCapabilities(snapshot, providerID, model)
+		if err != nil {
+			return nil, swarmSnapshotVersion{}, fmt.Errorf("Swarm model snapshot media record %q/%q: %w", providerID, modelID, err)
+		}
 		recommendations := modelRecommendations(model.Swarm.Recommendations)
 		recommendations = appendProviderRecommendations(recommendations, providerID, modelID, model.CatalogID, snapshot.providerRecommendations(providerID))
 		record := pebblestore.ModelCatalogRecord{
@@ -710,6 +744,7 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 			ServiceTierMappings:       modelServiceTierMappings(model.ProviderSpecific, providerID),
 			Recommendations:           recommendations,
 			ContextModes:              modelContextModes(model.ProviderSpecific, providerID, contextWindow),
+			Media:                     media,
 			Source:                    source,
 			SourceSnapshotID:          snapshot.SnapshotID,
 			SourceSnapshotVersion:     snapshot.SnapshotVersion,
@@ -724,6 +759,317 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 		records = append(records, record)
 	}
 	return records, version, nil
+}
+
+type swarmSnapshotMultimodal struct {
+	APISurface                  string                      `json:"api_surface"`
+	InputModalities             []string                    `json:"input_modalities"`
+	OutputModalities            []string                    `json:"output_modalities"`
+	ModelNativeInputModalities  []string                    `json:"model_native_input_modalities"`
+	ModelNativeOutputModalities []string                    `json:"model_native_output_modalities"`
+	ClientAttachmentInputTypes  []string                    `json:"client_attachment_input_types"`
+	ImageInputMediaTypes        []string                    `json:"image_input_media_types"`
+	FileInputTypes              []string                    `json:"file_input_types"`
+	FileInputCategories         []string                    `json:"file_input_categories"`
+	InputContentItemTypes       []string                    `json:"input_content_item_types"`
+	OutputContentTypes          []string                    `json:"output_content_types"`
+	UnsupportedModalities       []string                    `json:"unsupported_modalities"`
+	UnsupportedDirectModalities []string                    `json:"unsupported_direct_modalities"`
+	UnsupportedNativeModalities []string                    `json:"unsupported_native_modalities"`
+	SourceIDs                   []string                    `json:"source_ids"`
+	Text                        swarmSnapshotModalityDetail `json:"text"`
+	Image                       swarmSnapshotModalityDetail `json:"image"`
+	File                        swarmSnapshotModalityDetail `json:"file"`
+	PDF                         swarmSnapshotModalityDetail `json:"pdf"`
+	Audio                       swarmSnapshotModalityDetail `json:"audio"`
+	Video                       swarmSnapshotModalityDetail `json:"video"`
+}
+
+type swarmSnapshotModalityDetail struct {
+	Input                    *bool    `json:"input"`
+	Output                   *bool    `json:"output"`
+	SupportedInputMediaTypes []string `json:"supported_input_media_types"`
+	AcceptedMediaTypes       []string `json:"accepted_media_types"`
+	SupportedInputTypes      []string `json:"supported_input_types"`
+	SupportedInputCategories []string `json:"supported_input_categories"`
+	MediaType                string   `json:"media_type"`
+	Processing               string   `json:"processing"`
+}
+
+func catalogMediaProviderEnabled(providerID string) bool {
+	switch canonicalCatalogProviderID(providerID) {
+	case "openai", "codex", "google", "anthropic", "fireworks", "openrouter":
+		return true
+	default:
+		return false
+	}
+}
+
+func catalogMediaSurfaceAliasMatches(providerID, catalogSurface, runtimeSurface string) bool {
+	catalogSurface = strings.ToLower(strings.TrimSpace(catalogSurface))
+	if strings.EqualFold(catalogSurface, strings.TrimSpace(runtimeSurface)) {
+		return true
+	}
+	switch canonicalCatalogProviderID(providerID) {
+	case "google":
+		return catalogSurface == "generate_content"
+	case "anthropic":
+		return catalogSurface == "messages"
+	case "fireworks", "openrouter":
+		return catalogSurface == "chat_completions"
+	default:
+		return false
+	}
+}
+
+func snapshotModelMediaCapabilities(snapshot swarmSnapshot, providerID string, model swarmSnapshotModel) (*pebblestore.ModelCatalogMediaCapabilities, error) {
+	providerID = canonicalCatalogProviderID(providerID)
+	if !catalogMediaProviderEnabled(providerID) {
+		return nil, nil
+	}
+
+	providerRaw := snapshotProviderDefinitionMultimodal(snapshot, providerID)
+	modelRaw, err := snapshotProviderMultimodalRaw(model.ProviderSpecific, providerID)
+	if err != nil {
+		return nil, err
+	}
+	providerFacts, providerPresent, err := decodeSnapshotMultimodal(providerRaw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid provider multimodal definition: %w", err)
+	}
+	modelFacts, modelPresent, err := decodeSnapshotMultimodal(modelRaw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid model multimodal definition: %w", err)
+	}
+
+	surface := ""
+	credentialSurface := ""
+	switch providerID {
+	case "openai":
+		surface = provideriface.MediaProviderSurfaceOpenAIResponses
+		credentialSurface = provideriface.MediaCredentialSurfaceOpenAIAPIKey
+	case "codex":
+		surface = provideriface.MediaProviderSurfaceCodexChatGPT
+		credentialSurface = provideriface.MediaCredentialSurfaceCodexOAuth
+	case "google":
+		surface = provideriface.MediaProviderSurfaceGoogleGenerateContent
+		credentialSurface = provideriface.MediaCredentialSurfaceGoogleAPIKey
+	case "anthropic":
+		surface = provideriface.MediaProviderSurfaceAnthropicMessages
+		credentialSurface = provideriface.MediaCredentialSurfaceAnthropicAPIKey
+	case "fireworks":
+		surface = provideriface.MediaProviderSurfaceFireworksChatCompletions
+		credentialSurface = provideriface.MediaCredentialSurfaceFireworksAPIKey
+	case "openrouter":
+		surface = provideriface.MediaProviderSurfaceOpenRouterChatCompletions
+		credentialSurface = provideriface.MediaCredentialSurfaceOpenRouterAPIKey
+	}
+	if modelPresent && strings.TrimSpace(modelFacts.APISurface) != "" && !catalogMediaSurfaceAliasMatches(providerID, modelFacts.APISurface, surface) {
+		return nil, fmt.Errorf("provider surface %q contradicts %q", modelFacts.APISurface, surface)
+	}
+
+	media := &pebblestore.ModelCatalogMediaCapabilities{
+		State:             pebblestore.ModelCatalogMediaStateUnknown,
+		ProviderSurface:   surface,
+		CredentialSurface: credentialSurface,
+		SourceIDs:         normalizeCatalogStringList(firstNonEmptyStringList(modelFacts.SourceIDs, providerFacts.SourceIDs)),
+	}
+	if !providerPresent && !modelPresent && !snapshotCapabilitiesHaveMediaFacts(model) {
+		return media, nil
+	}
+
+	inputModalities := firstNonEmptyStringList(modelFacts.ModelNativeInputModalities, modelFacts.InputModalities, providerFacts.ModelNativeInputModalities, providerFacts.InputModalities)
+	outputModalities := firstNonEmptyStringList(modelFacts.ModelNativeOutputModalities, modelFacts.OutputModalities, providerFacts.ModelNativeOutputModalities, providerFacts.OutputModalities)
+	unsupported := firstNonEmptyStringList(modelFacts.UnsupportedDirectModalities, modelFacts.UnsupportedNativeModalities, modelFacts.UnsupportedModalities, providerFacts.UnsupportedDirectModalities, providerFacts.UnsupportedNativeModalities, providerFacts.UnsupportedModalities)
+
+	inputSemantics := pebblestore.ModelCatalogMediaSemanticsNative
+	fileSemantics := pebblestore.ModelCatalogMediaSemanticsProviderProcessed
+	fileTypes := firstNonEmptyStringList(modelFacts.File.SupportedInputTypes, modelFacts.File.SupportedInputCategories, modelFacts.ClientAttachmentInputTypes, providerFacts.FileInputTypes, providerFacts.FileInputCategories, providerFacts.ClientAttachmentInputTypes)
+	if providerID == "codex" {
+		fileSemantics = pebblestore.ModelCatalogMediaSemanticsClientProcessed
+	}
+	imageMIMETypes := firstNonEmptyStringList(
+		modelFacts.Image.SupportedInputMediaTypes,
+		modelFacts.Image.AcceptedMediaTypes,
+		providerFacts.Image.SupportedInputMediaTypes,
+		providerFacts.Image.AcceptedMediaTypes,
+		providerFacts.ImageInputMediaTypes,
+	)
+	if providerID == "google" && len(imageMIMETypes) == 0 && (boolPtrValue(model.Capabilities.SupportsImageInput) || boolPtrValue(modelFacts.Image.Input)) {
+		// Google's current snapshot nests the exact generateContent MIME contract
+		// deeper than the legacy structural decoder. Apply it only after this exact
+		// model has independently affirmed image input.
+		imageMIMETypes = []string{"image/heic", "image/heif", "image/jpeg", "image/png", "image/webp"}
+	}
+
+	inputFacts := []struct {
+		modality   string
+		capability *bool
+		detail     swarmSnapshotModalityDetail
+		semantics  string
+		mimeTypes  []string
+		fileTypes  []string
+	}{
+		{"text", model.Capabilities.SupportsTextInput, modelFacts.Text, inputSemantics, nil, nil},
+		{"image", model.Capabilities.SupportsImageInput, modelFacts.Image, inputSemantics, imageMIMETypes, nil},
+		{"file", model.Capabilities.SupportsFileInput, modelFacts.File, fileSemantics, nil, fileTypes},
+		{"pdf", model.Capabilities.SupportsPDFInput, modelFacts.PDF, fileSemantics, []string{"application/pdf"}, []string{"pdf"}},
+		{"audio", model.Capabilities.SupportsAudioInput, modelFacts.Audio, inputSemantics, nil, nil},
+		{"video", model.Capabilities.SupportsVideoInput, modelFacts.Video, inputSemantics, nil, nil},
+	}
+	for _, fact := range inputFacts {
+		// Newly reviewed conversational surfaces intentionally hydrate image input
+		// only. OpenAI/Codex retain their previously reviewed file/PDF vocabulary.
+		if providerID != "openai" && providerID != "codex" && fact.modality != "image" {
+			continue
+		}
+		state, err := reconcileSnapshotMediaState("input", fact.modality, fact.capability, fact.detail.Input, inputModalities, unsupported)
+		if err != nil {
+			return nil, err
+		}
+		media.Inputs = append(media.Inputs, pebblestore.ModelCatalogMediaDirection{
+			Modality: fact.modality, State: state, Semantics: fact.semantics,
+			MIMETypes: normalizeCatalogStringList(fact.mimeTypes), FileTypes: normalizeCatalogStringList(fact.fileTypes),
+			Types: normalizeCatalogStringList(modelFacts.InputContentItemTypes), Processing: strings.TrimSpace(fact.detail.Processing),
+		})
+	}
+	outputFacts := []struct {
+		modality   string
+		capability *bool
+		detail     *bool
+	}{
+		{"text", model.Capabilities.SupportsTextOutput, modelFacts.Text.Output},
+		{"image", model.Capabilities.SupportsImageOutput, modelFacts.Image.Output},
+		{"audio", model.Capabilities.SupportsAudioOutput, modelFacts.Audio.Output},
+		{"video", model.Capabilities.SupportsVideoOutput, modelFacts.Video.Output},
+	}
+	for _, fact := range outputFacts {
+		if providerID != "openai" && providerID != "codex" {
+			continue
+		}
+		state, err := reconcileSnapshotMediaState("output", fact.modality, fact.capability, fact.detail, outputModalities, unsupported)
+		if err != nil {
+			return nil, err
+		}
+		media.Outputs = append(media.Outputs, pebblestore.ModelCatalogMediaDirection{
+			Modality: fact.modality, State: state, Semantics: pebblestore.ModelCatalogMediaSemanticsNative,
+			Types: normalizeCatalogStringList(modelFacts.OutputContentTypes),
+		})
+	}
+
+	for _, direction := range media.Inputs {
+		if direction.State != pebblestore.ModelCatalogMediaStateSupported {
+			continue
+		}
+		if direction.Modality == "file" && len(direction.FileTypes) == 0 {
+			return nil, fmt.Errorf("supported file input is missing exact file types")
+		}
+	}
+	media.State = pebblestore.ModelCatalogMediaStateSupported
+	return media, nil
+}
+
+func snapshotProviderDefinitionMultimodal(snapshot swarmSnapshot, providerID string) json.RawMessage {
+	for key, definition := range snapshot.Definitions {
+		if canonicalCatalogProviderID(key) == providerID {
+			return definition.Multimodal
+		}
+	}
+	return nil
+}
+
+func snapshotProviderMultimodalRaw(providerSpecificRaw json.RawMessage, providerID string) (json.RawMessage, error) {
+	if len(bytes.TrimSpace(providerSpecificRaw)) == 0 {
+		return nil, nil
+	}
+	var providers map[string]json.RawMessage
+	if err := json.Unmarshal(providerSpecificRaw, &providers); err != nil {
+		return nil, fmt.Errorf("decode provider_specific: %w", err)
+	}
+	for key, raw := range providers {
+		if canonicalCatalogProviderID(key) != providerID {
+			continue
+		}
+		var provider struct {
+			Multimodal json.RawMessage `json:"multimodal"`
+		}
+		if err := json.Unmarshal(raw, &provider); err != nil {
+			return nil, fmt.Errorf("decode %s provider-specific facts: %w", providerID, err)
+		}
+		return provider.Multimodal, nil
+	}
+	return nil, nil
+}
+
+func decodeSnapshotMultimodal(raw json.RawMessage) (swarmSnapshotMultimodal, bool, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return swarmSnapshotMultimodal{}, false, nil
+	}
+	var decoded swarmSnapshotMultimodal
+	if err := json.Unmarshal(trimmed, &decoded); err != nil {
+		return swarmSnapshotMultimodal{}, false, err
+	}
+	return decoded, true, nil
+}
+
+func snapshotCapabilitiesHaveMediaFacts(model swarmSnapshotModel) bool {
+	return model.Capabilities.SupportsTextInput != nil || model.Capabilities.SupportsTextOutput != nil ||
+		model.Capabilities.SupportsImageInput != nil || model.Capabilities.SupportsImageOutput != nil ||
+		model.Capabilities.SupportsAudioInput != nil || model.Capabilities.SupportsAudioOutput != nil ||
+		model.Capabilities.SupportsVideoInput != nil || model.Capabilities.SupportsVideoOutput != nil ||
+		model.Capabilities.SupportsFileInput != nil || model.Capabilities.SupportsPDFInput != nil
+}
+
+func reconcileSnapshotMediaState(direction, modality string, capability, detail *bool, admitted, unsupported []string) (string, error) {
+	listed := stringInSlice(admitted, modality)
+	denied := stringInSlice(unsupported, modality) || stringInSlice(unsupported, modality+"_"+direction)
+	if listed && denied {
+		return "", fmt.Errorf("%s %s is both admitted and unsupported", modality, direction)
+	}
+	if capability != nil && detail != nil && *capability != *detail {
+		return "", fmt.Errorf("%s %s capability contradicts model multimodal detail", modality, direction)
+	}
+	if capability != nil && denied && *capability {
+		return "", fmt.Errorf("%s %s capability contradicts unsupported modality", modality, direction)
+	}
+	if detail != nil && denied && *detail {
+		return "", fmt.Errorf("%s %s detail contradicts unsupported modality", modality, direction)
+	}
+	if capability != nil {
+		if *capability {
+			return pebblestore.ModelCatalogMediaStateSupported, nil
+		}
+		return pebblestore.ModelCatalogMediaStateUnsupported, nil
+	}
+	if detail != nil {
+		if *detail {
+			return pebblestore.ModelCatalogMediaStateSupported, nil
+		}
+		return pebblestore.ModelCatalogMediaStateUnsupported, nil
+	}
+	if listed {
+		return pebblestore.ModelCatalogMediaStateSupported, nil
+	}
+	if denied {
+		return pebblestore.ModelCatalogMediaStateUnsupported, nil
+	}
+	return pebblestore.ModelCatalogMediaStateUnknown, nil
+}
+
+func firstNonEmptyStringList(values ...[]string) []string {
+	for _, value := range values {
+		if len(value) > 0 {
+			return value
+		}
+	}
+	return nil
+}
+
+func catalogRecordMatchesMeta(record pebblestore.ModelCatalogRecord, meta pebblestore.ModelCatalogMeta) bool {
+	return strings.TrimSpace(record.SourceSnapshotID) != "" && strings.TrimSpace(record.SourceSnapshotVersion) != "" &&
+		strings.TrimSpace(record.SourceSnapshotID) == strings.TrimSpace(meta.SnapshotID) &&
+		strings.TrimSpace(record.SourceSnapshotVersion) == strings.TrimSpace(meta.SnapshotVersion)
 }
 
 func modelDefaultContextWindow(providerSpecificRaw json.RawMessage, providerID string, fallback int) int {

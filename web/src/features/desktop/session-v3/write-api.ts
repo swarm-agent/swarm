@@ -1,8 +1,10 @@
-import { requestJson } from '../../../app/api'
+import { apiFetch, readErrorMessage, requestJson } from '../../../app/api'
 import type { ModelProfileChoice, ModelProfileSelectionRecord } from '../chat/types/chat'
 import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
 
 import type {
+  DesktopV3MediaCapability,
+  DesktopV3MediaReference,
   MessageMutationConflictResponse,
   SessionCreateMutationResponse,
   SessionMessageMutationResponse,
@@ -88,10 +90,67 @@ export interface DesktopV3AppendMessageRequest {
   role: 'user'
   content: string
   metadata?: Record<string, unknown>
+  media?: DesktopV3MediaReference[]
   plan_checkpoint_context?: {
     plan_id: string
     checkpoint_id: string
     attempt_id?: string
+  }
+}
+
+export interface DesktopV3MediaAssetWire {
+  id: string
+  modality: string
+  detected_mime_type: string
+  file_type?: string
+  size: number
+  digest_sha256: string
+  contract_hash: string
+}
+
+export async function getDesktopV3MediaCapability(sessionId: string): Promise<DesktopV3MediaCapability> {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) throw new Error('Desktop V3 media capability requires session_id')
+  const response = await requestJson<{ media_capability: DesktopV3MediaCapability }>(
+    `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/media-capability`,
+    { method: 'GET' },
+  )
+  return response.media_capability
+}
+
+export async function uploadDesktopV3MediaAsset(input: {
+  sessionId: string
+  file: File
+  mimeType: string
+  modality: string
+  fileType?: string
+  contractToken: string
+  signal?: AbortSignal
+}): Promise<DesktopV3MediaReference> {
+  const sessionId = input.sessionId.trim()
+  if (!sessionId || !input.contractToken.trim()) throw new Error('Desktop V3 media upload requires session and current capability')
+  const response = await apiFetch(`/v3/sessions/${encodeURIComponent(sessionId)}/media`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': input.mimeType.trim().toLowerCase(),
+      'X-Swarm-Media-Modality': input.modality,
+      'X-Swarm-Media-File-Type': input.fileType?.trim() ?? '',
+      'X-Swarm-Media-Contract': input.contractToken,
+    },
+    body: input.file,
+    signal: input.signal,
+  })
+  if (!response.ok) throw new Error(await readErrorMessage(response))
+  const payload = await response.json() as { asset: DesktopV3MediaAssetWire }
+  const asset = payload.asset
+  return {
+    asset_id: asset.id,
+    modality: asset.modality,
+    mime_type: asset.detected_mime_type,
+    file_type: asset.file_type,
+    size: asset.size,
+    digest_sha256: asset.digest_sha256,
+    contract_hash: asset.contract_hash,
   }
 }
 

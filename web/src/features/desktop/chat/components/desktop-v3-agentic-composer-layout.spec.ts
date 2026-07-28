@@ -74,6 +74,28 @@ test('Desktop V3 composer warnings and errors can be dismissed without a refresh
   assert.equal((source.match(/min-h-11 min-w-11 shrink-0 touch-manipulation/g) ?? []).length, 2)
 })
 
+test('Desktop V3 composer exposes only backend-projected media and preserves durable references', async () => {
+  const composer = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
+  const pane = await readFile(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8')
+  const api = await readFile(new URL('../../session-v3/write-api.ts', import.meta.url), 'utf8')
+
+  assert.match(composer, /mediaCapability\?\.status === 'available'/)
+  assert.match(composer, /accept=\{effectiveMediaCapability\.capabilities\.flatMap/)
+  assert.match(composer, /onPaste=\{\(event\)/)
+  assert.match(composer, /event\.dataTransfer\.files/)
+  assert.match(composer, /attachment capability changed/i)
+  assert.match(composer, /attachments,\s*onSubmit/)
+  assert.match(pane, /getDesktopV3MediaCapability\(normalizedSessionId\)/)
+  assert.match(pane, /const inferredMIME = fileType \? \(\{ gif:/)
+  assert.match(pane, /const acceptsMIME = mimeType !== ''/)
+  assert.match(pane, /const declaredMIME = mimeType \|\|/)
+  assert.match(pane, /mimeType: declaredMIME/)
+  assert.match(pane, /media=\{message\.media\}/)
+  assert.match(api, /'Content-Type': input\.mimeType/)
+  assert.match(api, /X-Swarm-Media-Contract/)
+  assert.match(api, /media\?: DesktopV3MediaReference\[\]/)
+})
+
 test('Desktop V3 composer keeps the canonical joined plan and model control beside the plus menu', async () => {
   const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
   const control = await readFile(new URL('./composer-plan-model-control.tsx', import.meta.url), 'utf8')

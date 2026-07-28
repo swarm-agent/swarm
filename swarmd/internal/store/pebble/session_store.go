@@ -85,15 +85,16 @@ type V3SessionTombstone struct {
 }
 
 type MessageSnapshot struct {
-	ID             string         `json:"id"`
-	SessionID      string         `json:"session_id"`
-	UserID         string         `json:"user_id,omitempty"`
-	AccountScopeID string         `json:"account_scope_id,omitempty"`
-	GlobalSeq      uint64         `json:"global_seq"`
-	Role           string         `json:"role"`
-	Content        string         `json:"content"`
-	Metadata       map[string]any `json:"metadata,omitempty"`
-	CreatedAt      int64          `json:"created_at"`
+	ID             string                  `json:"id"`
+	SessionID      string                  `json:"session_id"`
+	UserID         string                  `json:"user_id,omitempty"`
+	AccountScopeID string                  `json:"account_scope_id,omitempty"`
+	GlobalSeq      uint64                  `json:"global_seq"`
+	Role           string                  `json:"role"`
+	Content        string                  `json:"content"`
+	Metadata       map[string]any          `json:"metadata,omitempty"`
+	Media          []SessionMediaReference `json:"media,omitempty"`
+	CreatedAt      int64                   `json:"created_at"`
 }
 
 type SessionCodexConfig struct {
@@ -835,6 +836,7 @@ func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session S
 		V3SessionEventPrefix(session.ID), V3SessionMessagePrefix(session.ID), V3SessionRunIntentPrefix(session.ID),
 		ExecutionEpochPrefix(session.ID), ExecutionEpochOrdinalPrefix(session.ID), ExecutionEpochBoundaryPrefix(session.ID), ExecutionProviderLifecycleStatePrefix(session.ID),
 		V3SessionIdempotencyPrefix(session.AccountScopeID, session.ID), V3RealtimeOutboxBySessionEndpointPrefix(session.ID), V3RealtimeOutboxBySessionSeqPrefix(session.ID),
+		SessionMediaAssetPrefix(session.AccountScopeID, session.ID), SessionMediaBlobPrefix(session.AccountScopeID, session.ID),
 	} {
 		if err := deletePrefixInBatch(batch, prefix); err != nil {
 			return err
@@ -1922,6 +1924,7 @@ func sanitizeMessageSnapshot(message MessageSnapshot) MessageSnapshot {
 	message.AccountScopeID = strings.TrimSpace(message.AccountScopeID)
 	message.Content = privacy.SanitizeText(message.Content)
 	message.Metadata = sanitizeMessageMetadata(message.Metadata)
+	message.Media = normalizeSessionMediaReferences(message.Media)
 	return message
 }
 

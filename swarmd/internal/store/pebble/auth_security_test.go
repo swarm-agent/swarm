@@ -119,7 +119,7 @@ func TestCredentialUpdatePathsDoNotReenterCredentialLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.UpdateCredentialConnectionForAccount(record.AccountScopeID, record.Provider, record.ID, &AuthCredentialConnectionRecord{Status: "connected"}); err != nil {
+	if _, err := auth.UpdateCredentialConnectionForAccount(record.AccountScopeID, record.Provider, record.ID, &AuthCredentialConnectionRecord{Connected: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := auth.SetActiveCredentialForAccount(record.AccountScopeID, record.Provider, record.ID); err != nil {

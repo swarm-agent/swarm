@@ -14,6 +14,12 @@ import (
 
 const homeBootstrapWorkspaceLimit = 200
 
+// claimInitialHomeWorkspaceBootstrap keeps launch-CWD precedence limited to the
+// first successful home bootstrap; later refreshes follow explicit selection.
+func (a *App) claimInitialHomeWorkspaceBootstrap() bool {
+	return a != nil && a.homeWorkspaceBootstrapped.CompareAndSwap(false, true)
+}
+
 type homeBootstrapData struct {
 	current         client.WorkspaceResolution
 	hasCurrent      bool
@@ -29,7 +35,7 @@ type homeBootstrapData struct {
 
 // bootstrapHomeWorkspace loads bounded workspace identity without touching any
 // session list, history, transcript, workset, or realtime endpoint.
-func (a *App) bootstrapHomeWorkspace(ctx context.Context) homeBootstrapData {
+func (a *App) bootstrapHomeWorkspace(ctx context.Context, preferLaunchWorkspace bool) homeBootstrapData {
 	var data homeBootstrapData
 	if a == nil || a.api == nil {
 		data.currentErr = fmt.Errorf("workspace client unavailable")
@@ -64,7 +70,7 @@ func (a *App) bootstrapHomeWorkspace(ctx context.Context) homeBootstrapData {
 		}()
 	}
 	launchPath := normalizePath(a.startupCWD)
-	if launchPath != "" && (selectedPath == "" || !pathsEqual(launchPath, selectedPath)) {
+	if preferLaunchWorkspace && launchPath != "" && (selectedPath == "" || !pathsEqual(launchPath, selectedPath)) {
 		data.launchChecked = true
 		resolveWG.Add(1)
 		go func() {
@@ -87,9 +93,20 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 
 	selectedPath := ""
 	selectedName := ""
+	selectedResolve := data.selectedResolve
+	selectedErr := data.selectedErr
 	if data.currentErr == nil && data.hasCurrent {
 		selectedPath = firstNonEmpty(normalizePath(data.current.WorkspacePath), normalizePath(data.current.ResolvedPath))
 		selectedName = strings.TrimSpace(data.current.WorkspaceName)
+	}
+	if data.launchChecked && data.launchErr == nil && data.launchResolve.Workspace != nil {
+		selectedPath = firstNonEmpty(
+			normalizePath(data.launchResolve.Workspace.WorkspacePath),
+			normalizePath(data.launchResolve.Workspace.ResolvedPath),
+		)
+		selectedName = strings.TrimSpace(data.launchResolve.Workspace.WorkspaceName)
+		selectedResolve = data.launchResolve
+		selectedErr = nil
 	}
 	for i, entry := range data.workspaces {
 		path := normalizePath(entry.Path)
@@ -143,9 +160,9 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 		}}, next.Directories...)
 	}
 
-	if data.selectedErr == nil && selectedPath != "" {
-		next = applyCWDResolverToHomeModel(next, data.selectedResolve)
-	} else if data.selectedErr != nil {
+	if selectedErr == nil && selectedPath != "" {
+		next = applyCWDResolverToHomeModel(next, selectedResolve)
+	} else if selectedErr != nil {
 		warnings = append(warnings, "workspace route unavailable")
 	}
 	if selectedPath != "" && len(next.ChatRoutes) == 0 {

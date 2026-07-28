@@ -1,11 +1,16 @@
 package google
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -15,7 +20,7 @@ func TestGoogleExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
 	if lifecycle.ContextMode != provideriface.ExecutionEpochContextStatelessFullInput || !lifecycle.Valid() {
 		t.Fatalf("lifecycle = %+v, want valid stateless full-input mode", lifecycle)
 	}
-	payload := buildGoogleRequest(provideriface.Request{
+	payload, err := buildGoogleRequest(provideriface.Request{
 		Instructions: "current instructions",
 		Input: []map[string]any{
 			{"role": "user", "content": "epoch user"},
@@ -23,6 +28,9 @@ func TestGoogleExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
 			{"role": "user", "content": "epoch follow-up"},
 		},
 	})
+	if err != nil {
+		t.Fatalf("build payload: %v", err)
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
@@ -37,6 +45,172 @@ func TestGoogleExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("payload contains stateful continuation field %q: %s", forbidden, body)
 		}
+	}
+}
+
+func TestBuildGoogleRequestEncodesImmutableImageInlineData(t *testing.T) {
+	body := []byte("image-bytes")
+	digest := sha256.Sum256(body)
+	payload := provideriface.SessionMediaPayload{AssetID: "asset-1", Modality: "image", MIMEType: "image/png", DigestSHA256: hex.EncodeToString(digest[:]), Size: int64(len(body)), Bytes: body}
+	contract := provideriface.SessionMediaContract{
+		ProviderID: "google", ProviderSurface: provideriface.MediaProviderSurfaceGoogleGenerateContent,
+		CredentialSurface: provideriface.MediaCredentialSurfaceGoogleAPIKey, CredentialFingerprint: "credential", AdapterID: provideriface.MediaAdapterIDGoogleGenerateContentV1, Hash: "contract",
+		Capabilities: []provideriface.MediaContractCapability{{Modality: "image", State: provideriface.MediaCapabilityStateAllowed, Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}, ContentTypes: []string{"inline_data"}, MaxBytes: 1024, MaxCount: 1}},
+	}
+	request, err := buildGoogleRequest(provideriface.Request{ProviderConfigurationHash: "configuration", MediaContract: contract, Input: []map[string]any{{
+		"role": "user", "content": []map[string]any{{"type": "session_media", "media": payload}, {"type": "input_text", "text": "describe"}},
+	}}})
+	if err != nil {
+		t.Fatalf("build Google image request: %v", err)
+	}
+	encoded, _ := json.Marshal(request)
+	want := `{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"image/png","data":"aW1hZ2UtYnl0ZXM="}},{"text":"describe"}]}]}`
+	if string(encoded) != want {
+		t.Fatalf("Google request = %s, want %s", encoded, want)
+	}
+}
+
+func TestBuildGoogleRequestEnforcesTotalInlineRequestLimit(t *testing.T) {
+	_, err := buildGoogleRequest(provideriface.Request{Input: []map[string]any{{"role": "user", "content": strings.Repeat("x", maxInlineRequestBytes)}}})
+	if err == nil || !strings.Contains(err.Error(), "20 MB") {
+		t.Fatalf("oversize Google request error = %v", err)
+	}
+}
+
+func TestBuildGoogleRequestRejectsForgedAndUnsupportedMedia(t *testing.T) {
+	body := []byte("image-bytes")
+	digest := sha256.Sum256(body)
+	basePayload := provideriface.SessionMediaPayload{AssetID: "asset-1", Modality: "image", MIMEType: "image/png", DigestSHA256: hex.EncodeToString(digest[:]), Size: int64(len(body)), Bytes: body}
+	baseContract := provideriface.SessionMediaContract{
+		ProviderID: "google", ProviderSurface: provideriface.MediaProviderSurfaceGoogleGenerateContent,
+		CredentialSurface: provideriface.MediaCredentialSurfaceGoogleAPIKey, CredentialFingerprint: "credential", AdapterID: provideriface.MediaAdapterIDGoogleGenerateContentV1, Hash: "contract",
+		Capabilities: []provideriface.MediaContractCapability{{Modality: "image", State: provideriface.MediaCapabilityStateAllowed, Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}, ContentTypes: []string{"inline_data"}, MaxBytes: 1024, MaxCount: 1}},
+	}
+	for _, test := range []struct {
+		name string
+		mutate func(*provideriface.SessionMediaPayload, *provideriface.SessionMediaContract)
+	}{
+		{"forged digest", func(payload *provideriface.SessionMediaPayload, _ *provideriface.SessionMediaContract) { payload.DigestSHA256 = strings.Repeat("0", 64) }},
+		{"unsupported MIME", func(payload *provideriface.SessionMediaPayload, _ *provideriface.SessionMediaContract) { payload.MIMEType = "image/svg+xml" }},
+		{"file semantics", func(payload *provideriface.SessionMediaPayload, _ *provideriface.SessionMediaContract) { payload.FileType = "png" }},
+		{"audio modality", func(payload *provideriface.SessionMediaPayload, _ *provideriface.SessionMediaContract) { payload.Modality = "audio" }},
+		{"cross surface", func(_ *provideriface.SessionMediaPayload, contract *provideriface.SessionMediaContract) { contract.ProviderID = "openai" }},
+		{"missing credential fingerprint", func(_ *provideriface.SessionMediaPayload, contract *provideriface.SessionMediaContract) { contract.CredentialFingerprint = "" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			payload := basePayload
+			contract := baseContract
+			test.mutate(&payload, &contract)
+			_, err := buildGoogleRequest(provideriface.Request{ProviderConfigurationHash: "configuration", MediaContract: contract, Input: []map[string]any{{"role": "user", "content": []map[string]any{{"type": "session_media", "media": payload}}}}})
+			if err == nil {
+				t.Fatal("forged or unsupported media was accepted")
+			}
+		})
+	}
+}
+
+func TestBuildGoogleRequestRejectsBypassMediaRepresentations(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		part map[string]any
+	}{
+		{name: "image URL", part: map[string]any{"type": "image_url", "url": "https://example.invalid/image.png"}},
+		{name: "input image", part: map[string]any{"type": "input_image", "image_url": "data:image/png;base64,AAAA"}},
+		{name: "local path", part: map[string]any{"type": "file", "path": "image.png"}},
+		{name: "audio", part: map[string]any{"type": "input_audio", "data": "AAAA"}},
+		{name: "video", part: map[string]any{"type": "video", "url": "https://example.invalid/video.mp4"}},
+		{name: "malformed session media", part: map[string]any{"type": "session_media", "media": map[string]any{"url": "https://example.invalid/image.png"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := buildGoogleRequest(provideriface.Request{Input: []map[string]any{{"role": "user", "content": []map[string]any{test.part}}}})
+			if err == nil {
+				t.Fatal("bypass media representation was accepted")
+			}
+		})
+	}
+}
+
+func TestBuildGoogleRequestRejectsInflatedContractLimits(t *testing.T) {
+	body := []byte("image-bytes")
+	digest := sha256.Sum256(body)
+	payload := provideriface.SessionMediaPayload{AssetID: "asset-1", Modality: "image", MIMEType: "image/png", DigestSHA256: hex.EncodeToString(digest[:]), Size: int64(len(body)), Bytes: body}
+	for _, test := range []struct {
+		name     string
+		maxBytes int64
+		maxCount int
+	}{
+		{name: "max bytes", maxBytes: maxInlineImageBytes + 1, maxCount: 1},
+		{name: "max count", maxBytes: 1024, maxCount: pebblestore.SessionMediaDefaultMaxCount + 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			contract := provideriface.SessionMediaContract{
+				ProviderID: "google", ProviderSurface: provideriface.MediaProviderSurfaceGoogleGenerateContent,
+				CredentialSurface: provideriface.MediaCredentialSurfaceGoogleAPIKey, CredentialFingerprint: "credential", AdapterID: provideriface.MediaAdapterIDGoogleGenerateContentV1, Hash: "contract",
+				Capabilities: []provideriface.MediaContractCapability{{Modality: "image", State: provideriface.MediaCapabilityStateAllowed, Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}, ContentTypes: []string{"inline_data"}, MaxBytes: test.maxBytes, MaxCount: test.maxCount}},
+			}
+			_, err := buildGoogleRequest(provideriface.Request{ProviderConfigurationHash: "configuration", MediaContract: contract, Input: []map[string]any{{"role": "user", "content": []map[string]any{{"type": "session_media", "media": payload}}}}})
+			if err == nil {
+				t.Fatal("inflated contract capability was accepted")
+			}
+		})
+	}
+}
+
+func TestBuildGoogleRequestRejectsMediaOutsideExplicitUserRole(t *testing.T) {
+	body := []byte("image-bytes")
+	digest := sha256.Sum256(body)
+	payload := provideriface.SessionMediaPayload{AssetID: "asset-1", Modality: "image", MIMEType: "image/png", DigestSHA256: hex.EncodeToString(digest[:]), Size: int64(len(body)), Bytes: body}
+	contract := provideriface.SessionMediaContract{
+		ProviderID: "google", ProviderSurface: provideriface.MediaProviderSurfaceGoogleGenerateContent,
+		CredentialSurface: provideriface.MediaCredentialSurfaceGoogleAPIKey, CredentialFingerprint: "credential", AdapterID: provideriface.MediaAdapterIDGoogleGenerateContentV1, Hash: "contract",
+		Capabilities: []provideriface.MediaContractCapability{{Modality: "image", State: provideriface.MediaCapabilityStateAllowed, Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}, ContentTypes: []string{"inline_data"}, MaxBytes: 1024, MaxCount: 1}},
+	}
+	for _, role := range []string{"", "system", "tool", "assistant"} {
+		t.Run("role_"+role, func(t *testing.T) {
+			_, err := buildGoogleRequest(provideriface.Request{ProviderConfigurationHash: "configuration", MediaContract: contract, Input: []map[string]any{{"role": role, "content": []map[string]any{{"type": "session_media", "media": payload}}}}})
+			if err == nil || !strings.Contains(err.Error(), "explicit user") {
+				t.Fatalf("role %q media error = %v", role, err)
+			}
+		})
+	}
+}
+
+func TestValidateGoogleMediaSurfaceRejectsCredentialMismatch(t *testing.T) {
+	contract := provideriface.SessionMediaContract{
+		ProviderID: "google", ProviderSurface: provideriface.MediaProviderSurfaceGoogleGenerateContent,
+		CredentialSurface: provideriface.MediaCredentialSurfaceGoogleAPIKey, CredentialFingerprint: "credential-a", AdapterID: provideriface.MediaAdapterIDGoogleGenerateContentV1, Hash: "contract",
+	}
+	if err := validateGoogleMediaSurface(contract, "credential-a"); err != nil {
+		t.Fatalf("matching credential surface: %v", err)
+	}
+	for _, active := range []string{"", "credential-b"} {
+		if err := validateGoogleMediaSurface(contract, active); err == nil {
+			t.Fatalf("active credential %q was accepted", active)
+		}
+	}
+}
+
+func TestGoogleMediaDeclarationUsesDocumentedInlineImageCeiling(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "google-media.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	authStore := pebblestore.NewAuthStore(store)
+	if _, err := authStore.UpsertCredential(pebblestore.AuthCredentialInput{AccountScopeID: "account-1", ID: "credential-1", Provider: "google", Type: pebblestore.AuthTypeAPI, APIKey: "test-key", SetActive: true}); err != nil {
+		t.Fatalf("seed Google credential: %v", err)
+	}
+	ctx := identity.ContextWithPrincipal(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1"})
+	declaration, err := NewRunner(authStore).MediaCapabilityDeclaration(ctx)
+	if err != nil {
+		t.Fatalf("media declaration: %v", err)
+	}
+	if declaration.AdapterID != provideriface.MediaAdapterIDGoogleGenerateContentV1 || declaration.ProviderSurface != provideriface.MediaProviderSurfaceGoogleGenerateContent || declaration.CredentialSurface != provideriface.MediaCredentialSurfaceGoogleAPIKey || declaration.CredentialFingerprint == "" || len(declaration.Inputs) != 1 {
+		t.Fatalf("Google media declaration = %+v", declaration)
+	}
+	capability := declaration.Inputs[0]
+	if capability.Modality != "image" || capability.Semantics != pebblestore.ModelCatalogMediaSemanticsNative || len(capability.FileTypes) != 0 || capability.MaxBytes != 14<<20 || capability.MaxCount != pebblestore.SessionMediaDefaultMaxCount || !reflect.DeepEqual(capability.ContentTypes, []string{"inline_data"}) || !reflect.DeepEqual(capability.MIMETypes, []string{"image/heic", "image/heif", "image/jpeg", "image/png", "image/webp"}) {
+		t.Fatalf("Google inline image capability = %+v", capability)
 	}
 }
 
@@ -74,13 +248,16 @@ func TestGoogleThinkingConfigUsesCatalogBudgetMapping(t *testing.T) {
 }
 
 func TestBuildGoogleContentsPreservesThoughtSignatureMetadata(t *testing.T) {
-	contents := buildGoogleContents([]map[string]any{{
+	contents, err := buildGoogleContents(provideriface.Request{Input: []map[string]any{{
 		"type":      "function_call",
 		"call_id":   "call_weather",
 		"name":      "weather",
 		"arguments": `{"city":"Paris"}`,
 		"metadata":  map[string]any{"google": map[string]any{"thought_signature": "sig-123"}},
-	}})
+	}}})
+	if err != nil {
+		t.Fatalf("build contents: %v", err)
+	}
 	if len(contents) != 1 || len(contents[0].Parts) != 1 {
 		t.Fatalf("contents = %+v, want one function call part", contents)
 	}

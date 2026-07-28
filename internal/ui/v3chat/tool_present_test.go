@@ -69,6 +69,34 @@ func TestToolPresentationPlanManageUsesStructuredCardSummaryWithoutJSON(t *testi
 	}
 }
 
+func TestToolPresentationPlanLifecycleUpdateDoesNotRepeatPlanGoal(t *testing.T) {
+	goal := "Your AI Command Center Terminal, desktop, mobile. One durable AI server."
+	payload := `{"tool":"plan_manage","action":"complete_checkpoint","checkpoint_id":"cp-1","status":"ok","plan":{"title":"Fix Header Astro parse error","status":"approved","update_kind":"complete_checkpoint","update_scope":"cp-1","document":{"title":"Fix Header Astro parse error","status":"approved","info":{"goal":"` + goal + `"},"checkpoints":[{"id":"cp-1","title":"Fix Header Astro parse error","status":"completed"}]}}}`
+	presentation := buildToolPresentation(ToolTimelineItem{Name: "plan_manage", Output: payload})
+	if presentation.Summary != "plan complete checkpoint · 1 checkpoint · approved" {
+		t.Fatalf("plan presentation summary = %q", presentation.Summary)
+	}
+	joined := presentationText(presentation)
+	if strings.Contains(joined, goal) {
+		t.Fatalf("lifecycle card repeated the full plan goal:\n%s", joined)
+	}
+	if !strings.Contains(joined, "Checkpoint completed") {
+		t.Fatalf("lifecycle card missing update-specific summary:\n%s", joined)
+	}
+}
+
+func TestToolPresentationPlanLifecycleUpdatePrefersUpdateSummary(t *testing.T) {
+	payload := `{"tool":"plan_manage","action":"mark_blocked","checkpoint_id":"cp-2","status":"ok","plan":{"title":"Release plan","update_summary":"Waiting for deployment credentials","update_kind":"mark_blocked","update_scope":"cp-2","document":{"title":"Release plan","info":{"goal":"Ship the release across all supported platforms."},"checkpoints":[{"id":"cp-1","title":"Build","status":"completed"},{"id":"cp-2","title":"Deploy","status":"blocked"}]}}}`
+	presentation := buildToolPresentation(ToolTimelineItem{Name: "plan_manage", Output: payload})
+	joined := presentationText(presentation)
+	if !strings.Contains(joined, "Waiting for deployment credentials") {
+		t.Fatalf("lifecycle card missing persisted update summary:\n%s", joined)
+	}
+	if strings.Contains(joined, "Ship the release across all supported platforms.") {
+		t.Fatalf("lifecycle card repeated the plan goal:\n%s", joined)
+	}
+}
+
 func TestToolPresentationPlanManageUnwrapsDurableHistoryEnvelope(t *testing.T) {
 	planPayload := `{"tool":"plan_manage","action":"save","plan":{"title":"Envelope plan","document":{"title":"Envelope plan","info":{"goal":"Keep the complete document"},"checkpoints":[{"id":"cp-1","title":"One"}]}}}`
 	envelope, err := json.Marshal(map[string]any{"path_id": "run.tool-history.v2", "tool": "plan_manage", "completed_output": planPayload})

@@ -2,6 +2,8 @@ package codex
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 
@@ -30,9 +32,41 @@ func (r *Runner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycle
 	}
 }
 
+func (r *Runner) MediaCapabilityDeclaration(ctx context.Context) (provideriface.MediaAdapterDeclaration, error) {
+	if r == nil || r.client == nil {
+		return provideriface.MediaAdapterDeclaration{}, errors.New("codex runner client is not configured")
+	}
+	record, err := r.client.ensureAuth(ctx)
+	if err != nil {
+		return provideriface.MediaAdapterDeclaration{}, err
+	}
+	if record.Type != pebblestore.CodexAuthTypeOAuth || !strings.EqualFold(strings.TrimSpace(record.Provider), "codex") {
+		return provideriface.MediaAdapterDeclaration{}, errors.New("codex media requires the codex OAuth credential surface")
+	}
+	fingerprint := sha256.Sum256([]byte(strings.Join([]string{record.AccountScopeID, record.Provider, record.ID, record.Type, record.AccountID}, "\x00")))
+	return provideriface.MediaAdapterDeclaration{
+		AdapterID:             provideriface.MediaAdapterIDCodexChatGPTV1,
+		ProviderID:            "codex",
+		ProviderSurface:       provideriface.MediaProviderSurfaceCodexChatGPT,
+		CredentialSurface:     provideriface.MediaCredentialSurfaceCodexOAuth,
+		CredentialFingerprint: hex.EncodeToString(fingerprint[:16]),
+		Inputs: []provideriface.MediaAdapterCapability{
+			// The OAuth client surface currently implements only model-native image
+			// input. This provider-surface vocabulary is the transport ceiling shared
+			// by every image-capable Codex model; model catalog facts may only narrow it.
+			// Catalog-declared client-processed documents stay fail-closed until a
+			// bounded document conversion pipeline exists.
+			{Modality: "image", Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/gif", "image/jpeg", "image/png", "image/webp"}, ContentTypes: []string{"input_image"}, MaxBytes: 20 << 20, MaxCount: 20},
+		},
+	}, nil
+}
+
 func (r *Runner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
-	if r.client == nil {
+	if r == nil || r.client == nil {
 		return provideriface.Response{}, errors.New("codex runner client is not configured")
+	}
+	if err := validateRunnerMediaSurface(req.MediaContract, "codex", provideriface.MediaProviderSurfaceCodexChatGPT, provideriface.MediaCredentialSurfaceCodexOAuth, provideriface.MediaAdapterIDCodexChatGPTV1); err != nil {
+		return provideriface.Response{}, err
 	}
 	out, err := r.client.CreateResponse(ctx, ToRequest(req))
 	if err != nil {
@@ -42,14 +76,27 @@ func (r *Runner) CreateResponse(ctx context.Context, req provideriface.Request) 
 }
 
 func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
-	if r.client == nil {
+	if r == nil || r.client == nil {
 		return provideriface.Response{}, errors.New("codex runner client is not configured")
+	}
+	if err := validateRunnerMediaSurface(req.MediaContract, "codex", provideriface.MediaProviderSurfaceCodexChatGPT, provideriface.MediaCredentialSurfaceCodexOAuth, provideriface.MediaAdapterIDCodexChatGPTV1); err != nil {
+		return provideriface.Response{}, err
 	}
 	out, err := r.client.CreateResponseStreaming(ctx, ToRequest(req), ToProviderStreamEventCallback(onEvent))
 	if err != nil {
 		return provideriface.Response{}, err
 	}
 	return FromResponse(out), nil
+}
+
+func validateRunnerMediaSurface(contract provideriface.SessionMediaContract, providerID, providerSurface, credentialSurface, adapterID string) error {
+	if strings.TrimSpace(contract.Hash) == "" {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(contract.ProviderID), providerID) || contract.ProviderSurface != providerSurface || contract.CredentialSurface != credentialSurface || contract.AdapterID != adapterID {
+		return errors.New("media contract does not match the active provider transport surface")
+	}
+	return nil
 }
 
 func ToProviderStreamEventCallback(onEvent func(provideriface.StreamEvent)) func(StreamEvent) {
@@ -133,6 +180,7 @@ func ToRequest(req provideriface.Request) Request {
 		SessionID:                     req.SessionID,
 		ProviderLineageID:             req.ProviderLineageID,
 		ContextBranchID:               req.ContextBranchID,
+		ProviderConfigurationHash:     req.ProviderConfigurationHash,
 		ProviderCacheKey:              req.EffectiveProviderCacheKey(),
 		SessionAffinityKey:            req.EffectiveSessionAffinityKey(),
 		TransportAffinityKey:          req.TransportAffinityKey,
@@ -163,6 +211,7 @@ func ToRequest(req provideriface.Request) Request {
 		ServiceTier:                   serviceTier,
 		ContextMode:                   NormalizeContextMode(req.ContextMode),
 		ContextWindow:                 req.ContextWindow,
+		MediaContract:                 req.MediaContract,
 		ParallelToolCalls:             req.ParallelToolCalls,
 	}
 }

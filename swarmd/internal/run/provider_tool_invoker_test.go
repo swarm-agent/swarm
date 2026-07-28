@@ -130,6 +130,22 @@ func TestStoreProviderManagedWebResultV3BoundsSessionSearchIndexContent(t *testi
 	}
 }
 
+func TestResolveProviderMediaWorkspacePathAllowsContainedFileAndRejectsEscape(t *testing.T) {
+	root := t.TempDir()
+	imagePath := filepath.Join(root, "image.png")
+	if err := os.WriteFile(imagePath, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspaceCtx := runWorkspaceContext{WorkspacePath: root, WorkspaceRoots: []string{root}}
+	resolved, err := resolveProviderMediaWorkspacePath(workspaceCtx, "image.png")
+	if err != nil || resolved != imagePath {
+		t.Fatalf("resolved path = %q err=%v", resolved, err)
+	}
+	if _, err := resolveProviderMediaWorkspacePath(workspaceCtx, filepath.Join("..", "outside.png")); err == nil {
+		t.Fatal("workspace media path escape was accepted")
+	}
+}
+
 func TestStoreProviderManagedToolResultV3PassesClientEffectsToSessionMutation(t *testing.T) {
 	workspace := t.TempDir()
 	svc, sessionID, _, cleanup := newProviderManagedV3PermissionTestService(t, workspace)

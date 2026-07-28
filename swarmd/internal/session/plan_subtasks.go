@@ -49,6 +49,9 @@ func addPlanCheckpointSubtask(doc *pebblestore.SessionPlanDocument, op PlanDocum
 	if err != nil {
 		return err
 	}
+	if err := ensurePlanCheckpointAllowsSubtaskResume(checkpoint); err != nil {
+		return err
+	}
 	if op.Subtask == nil {
 		return errors.New("add_subtask requires subtask")
 	}
@@ -81,6 +84,9 @@ func updatePlanCheckpointSubtask(doc *pebblestore.SessionPlanDocument, op PlanDo
 	if err != nil {
 		return err
 	}
+	if err := ensurePlanCheckpointAllowsSubtaskResume(checkpoint); err != nil {
+		return err
+	}
 	id := strings.TrimSpace(firstNonBlank(op.SubtaskID, subtaskID(op.Subtask)))
 	idx := findPlanSubtaskIndex(checkpoint, id)
 	if idx < 0 {
@@ -100,6 +106,9 @@ func updatePlanCheckpointSubtask(doc *pebblestore.SessionPlanDocument, op PlanDo
 func focusPlanCheckpointSubtask(doc *pebblestore.SessionPlanDocument, op PlanDocumentPatchOperation) error {
 	checkpoint, err := planSubtaskCheckpoint(doc, op)
 	if err != nil {
+		return err
+	}
+	if err := ensurePlanCheckpointAllowsSubtaskResume(checkpoint); err != nil {
 		return err
 	}
 	id := strings.TrimSpace(firstNonBlank(op.SubtaskID, subtaskID(op.Subtask)))
@@ -244,6 +253,18 @@ func reorderPlanCheckpointSubtasks(doc *pebblestore.SessionPlanDocument, op Plan
 	}
 	checkpoint.Subtasks = reordered
 	return nil
+}
+
+func ensurePlanCheckpointAllowsSubtaskResume(checkpoint *pebblestore.SessionPlanCheckpoint) error {
+	if checkpoint == nil {
+		return errors.New("subtask operation requires a checkpoint")
+	}
+	switch strings.TrimSpace(checkpoint.Status) {
+	case PlanCheckpointStatusBlocked, PlanCheckpointStatusFailed:
+		return fmt.Errorf("cannot resume %s checkpoint %q with a subtask; use the canonical checkpoint recovery path", checkpoint.Status, checkpoint.ID)
+	default:
+		return nil
+	}
 }
 
 func resumeCheckpointForSubtask(doc *pebblestore.SessionPlanDocument, checkpoint *pebblestore.SessionPlanCheckpoint, op PlanDocumentPatchOperation) {

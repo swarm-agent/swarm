@@ -2320,6 +2320,7 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 
 	rows := make([]renderRow, 0, len(items)*3+len(state.Pending)*2)
 	boundedPermissionID, boundedPermissionMaxScroll := "", 0
+	copyBlockBaseIndex := 0
 	for _, item := range items {
 		switch item.kind {
 		case "permission":
@@ -2353,7 +2354,8 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 		case "tool":
 			rows = append(rows, p.renderToolRows(item.tool, width, styles)...)
 		case "live":
-			rows = append(rows, p.renderAssistantRows(item.live.Text, width, styles)...)
+			rows = append(rows, p.renderCopyAwareAssistantRows(item.live.Text, copyBlockBaseIndex, width, styles)...)
+			copyBlockBaseIndex += copyBlockCount(item.live.Text)
 		case "reasoning":
 			rows = append(rows, p.renderReasoningRows(item.reasoning, showThinkingTags, width, styles)...)
 		case "message":
@@ -2369,7 +2371,8 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 				rows = append(rows, p.renderUserRows("message:"+message.ID, message.Content, width, styles)...)
 				continue
 			}
-			rows = append(rows, p.renderAssistantRows(message.Content, width, styles)...)
+			rows = append(rows, p.renderCopyAwareAssistantRows(message.Content, copyBlockBaseIndex, width, styles)...)
+			copyBlockBaseIndex += copyBlockCount(message.Content)
 			rows = append(rows, renderRow{text: "", style: styles.Text})
 		}
 	}

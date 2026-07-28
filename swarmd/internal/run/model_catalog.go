@@ -9,22 +9,27 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func modelCatalogLookup(modelSvc *model.Service, providerID, modelID string) (*pebblestore.ModelCatalogRecord, error) {
+func modelCatalogLookupWithMeta(modelSvc *model.Service, providerID, modelID string) (*pebblestore.ModelCatalogRecord, *pebblestore.ModelCatalogMeta, error) {
 	if modelSvc == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	lookup, err := modelSvc.GetCatalog(providerID, modelID)
 	if err != nil {
 		if strings.Contains(err.Error(), "model catalog is not configured") {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	if !lookup.Found {
-		return nil, nil
+		return nil, nil, nil
 	}
 	record := lookup.Record
-	return &record, nil
+	return &record, lookup.Meta, nil
+}
+
+func modelCatalogLookup(modelSvc *model.Service, providerID, modelID string) (*pebblestore.ModelCatalogRecord, error) {
+	record, _, err := modelCatalogLookupWithMeta(modelSvc, providerID, modelID)
+	return record, err
 }
 
 func catalogRecordValue(record *pebblestore.ModelCatalogRecord) any {

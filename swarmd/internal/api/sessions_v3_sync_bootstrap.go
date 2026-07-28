@@ -556,6 +556,7 @@ type sessionsV3ExecutionEpochView struct {
 
 type sessionsV3SessionView struct {
 	AgenticSettings       sessionsV3AgenticSettings        `json:"agentic_settings"`
+	MediaCapability       sessionsV3MediaCapability        `json:"media_capability"`
 	CurrentExecutionEpoch *sessionsV3ExecutionEpochView    `json:"current_execution_epoch,omitempty"`
 	PendingPermissions    []pebblestore.PermissionRecord   `json:"pending_permissions"`
 	UsageSummary          *pebblestore.SessionUsageSummary `json:"usage_summary,omitempty"`

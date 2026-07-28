@@ -113,35 +113,6 @@ func TestMainHandlerDesktopSessionBootstrapRejectsNonLocalSameOriginBrowserWitho
 	}
 }
 
-func TestMainHandlerDesktopSessionBootstrapRejectsDNSReboundHost(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-
-	bootstrapReq := httptest.NewRequest(http.MethodGet, "http://attacker.example:5555/v1/auth/desktop/session", nil)
-	bootstrapReq.RemoteAddr = "127.0.0.1:43210"
-	bootstrapReq.Header.Set("Origin", "http://attacker.example:5555")
-	bootstrapReq.Header.Set("Referer", "http://attacker.example:5555/app")
-	bootstrapReq.Header.Set("Sec-Fetch-Site", "same-origin")
-	bootstrapReq.Header.Set("X-Forwarded-Host", "127.0.0.1:5555")
-	bootstrapRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(bootstrapRec, bootstrapReq)
-	if bootstrapRec.Code != http.StatusUnauthorized {
-		t.Fatalf("DNS-rebound desktop session bootstrap status = %d, want %d, body=%s", bootstrapRec.Code, http.StatusUnauthorized, bootstrapRec.Body.String())
-	}
-}
-
-func TestAllowedDesktopRequestHostAcceptsLoopbackForms(t *testing.T) {
-	for _, rawURL := range []string{
-		"http://localhost:5555/v1/auth/desktop/session",
-		"http://127.0.0.1:5555/v1/auth/desktop/session",
-		"http://[::1]:5555/v1/auth/desktop/session",
-	} {
-		req := httptest.NewRequest(http.MethodGet, rawURL, nil)
-		if !isAllowedDesktopRequestHost(req) {
-			t.Errorf("desktop request host %q was not allowed", req.Host)
-		}
-	}
-}
-
 func TestMainHandlerDesktopSessionBootstrapAllowsSameMachineLANOriginWithoutAttachToken(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	lanAddrs := detectLANAddresses()

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -228,6 +229,7 @@ type Request struct {
 	SessionID                     string
 	ProviderLineageID             string
 	ContextBranchID               string
+	ProviderConfigurationHash     string
 	ProviderCacheKey              string
 	SessionAffinityKey            string
 	TransportAffinityKey          string
@@ -258,6 +260,7 @@ type Request struct {
 	ServiceTier                   string
 	ContextMode                   string
 	ContextWindow                 int
+	MediaContract                 provideriface.SessionMediaContract
 	ParallelToolCalls             bool
 }
 
@@ -811,8 +814,12 @@ func buildCodexRequestBody(req Request, input []map[string]any) (map[string]any,
 	if len(input) == 0 {
 		return nil, errors.New("input messages are required")
 	}
+	normalizedInput, err := materializeSessionMediaInput(req, input)
+	if err != nil {
+		return nil, err
+	}
 	body := cloneMapAny(properties)
-	body["input"] = sanitizeCodexRequestInput(input)
+	body["input"] = sanitizeCodexRequestInput(normalizedInput)
 	return body, nil
 }
 
@@ -885,6 +892,139 @@ func normalizeCodexRequestTools(tools []ToolDefinition) []ToolDefinition {
 		out = append(out, tool)
 	}
 	return out
+}
+
+func materializeSessionMediaInput(req Request, input []map[string]any) ([]map[string]any, error) {
+	if len(input) == 0 {
+		return nil, nil
+	}
+	out := make([]map[string]any, 0, len(input))
+	mediaCounts := map[string]int{}
+	for _, item := range input {
+		cloned := cloneMapAny(item)
+		content, ok := inputContentMaps(cloned["content"])
+		if !ok {
+			out = append(out, cloned)
+			continue
+		}
+		materialized := make([]map[string]any, 0, len(content))
+		for _, part := range content {
+			if !strings.EqualFold(strings.TrimSpace(asString(part["type"])), "session_media") {
+				materialized = append(materialized, cloneMapAny(part))
+				continue
+			}
+			payload, ok := part["media"].(provideriface.SessionMediaPayload)
+			if !ok {
+				return nil, errors.New("provider media input is malformed")
+			}
+			capability, err := validateProviderMediaPayload(req, payload, mediaCounts)
+			if err != nil {
+				return nil, err
+			}
+			transport, err := providerMediaContentItem(req.MediaContract, capability, payload)
+			if err != nil {
+				return nil, err
+			}
+			materialized = append(materialized, transport)
+		}
+		cloned["content"] = materialized
+		out = append(out, cloned)
+	}
+	return out, nil
+}
+
+func inputContentMaps(value any) ([]map[string]any, bool) {
+	switch typed := value.(type) {
+	case []map[string]any:
+		return typed, true
+	case []any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			mapped, ok := item.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, mapped)
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func validateProviderMediaPayload(req Request, payload provideriface.SessionMediaPayload, counts map[string]int) (provideriface.MediaContractCapability, error) {
+	contract := req.MediaContract
+	providerID := strings.ToLower(strings.TrimSpace(contract.ProviderID))
+	if contract.Hash == "" || req.ProviderConfigurationHash == "" || (providerID != "openai" && providerID != "codex") {
+		return provideriface.MediaContractCapability{}, errors.New("provider media contract is unavailable or outside the pilot")
+	}
+	if providerID == "openai" {
+		if contract.ProviderSurface != provideriface.MediaProviderSurfaceOpenAIResponses || contract.CredentialSurface != provideriface.MediaCredentialSurfaceOpenAIAPIKey || contract.AdapterID != provideriface.MediaAdapterIDOpenAIResponsesV1 {
+			return provideriface.MediaContractCapability{}, errors.New("OpenAI media payload does not match the active API-key Responses surface")
+		}
+	} else if contract.ProviderSurface != provideriface.MediaProviderSurfaceCodexChatGPT || contract.CredentialSurface != provideriface.MediaCredentialSurfaceCodexOAuth || contract.AdapterID != provideriface.MediaAdapterIDCodexChatGPTV1 {
+		return provideriface.MediaContractCapability{}, errors.New("Codex media payload does not match the active OAuth client surface")
+	}
+	if len(payload.Bytes) == 0 || payload.Size <= 0 || int64(len(payload.Bytes)) != payload.Size || strings.TrimSpace(payload.AssetID) == "" || strings.TrimSpace(payload.DigestSHA256) == "" {
+		return provideriface.MediaContractCapability{}, errors.New("provider media payload failed immutable size or identity validation")
+	}
+	digest := sha256.Sum256(payload.Bytes)
+	if !strings.EqualFold(hex.EncodeToString(digest[:]), strings.TrimSpace(payload.DigestSHA256)) {
+		return provideriface.MediaContractCapability{}, errors.New("provider media payload failed immutable digest validation")
+	}
+	for _, capability := range contract.Capabilities {
+		if capability.State != provideriface.MediaCapabilityStateAllowed || !strings.EqualFold(capability.Modality, payload.Modality) {
+			continue
+		}
+		if !mediaStringAllowed(capability.MIMETypes, payload.MIMEType) || len(capability.FileTypes) > 0 && !mediaStringAllowed(capability.FileTypes, payload.FileType) || capability.MaxBytes <= 0 || payload.Size > capability.MaxBytes {
+			break
+		}
+		counts[capability.Modality]++
+		if capability.MaxCount <= 0 || counts[capability.Modality] > capability.MaxCount {
+			return provideriface.MediaContractCapability{}, errors.New("provider media payload exceeds the current contract count limit")
+		}
+		return capability, nil
+	}
+	return provideriface.MediaContractCapability{}, errors.New("provider media payload is denied by the active contract")
+}
+
+func mediaStringAllowed(allowed []string, value string) bool {
+	value = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(value), "."))
+	if len(allowed) == 0 {
+		return value == ""
+	}
+	for _, candidate := range allowed {
+		if strings.EqualFold(strings.TrimPrefix(strings.TrimSpace(candidate), "."), value) {
+			return true
+		}
+	}
+	return false
+}
+
+func providerMediaContentItem(contract provideriface.SessionMediaContract, capability provideriface.MediaContractCapability, payload provideriface.SessionMediaPayload) (map[string]any, error) {
+	contentType := ""
+	for _, candidate := range capability.ContentTypes {
+		if candidate == "input_image" || candidate == "input_file" {
+			contentType = candidate
+			break
+		}
+	}
+	encoded := base64.StdEncoding.EncodeToString(payload.Bytes)
+	switch contentType {
+	case "input_image":
+		return map[string]any{"type": "input_image", "image_url": "data:" + payload.MIMEType + ";base64," + encoded}, nil
+	case "input_file":
+		if contract.ProviderID != "openai" || capability.Semantics != pebblestore.ModelCatalogMediaSemanticsProviderProcessed {
+			return nil, errors.New("client-processed Codex file attachments are not implemented")
+		}
+		extension := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(payload.FileType)), ".")
+		if extension == "" || strings.ContainsAny(extension, `/\\`) {
+			extension = "bin"
+		}
+		return map[string]any{"type": "input_file", "filename": "asset." + extension, "file_data": "data:" + payload.MIMEType + ";base64," + encoded}, nil
+	default:
+		return nil, errors.New("provider media contract has no implemented content type")
+	}
 }
 
 func sanitizeCodexRequestInput(input []map[string]any) []map[string]any {

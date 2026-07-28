@@ -1,5 +1,6 @@
 export type DesktopShortcutActionID =
   | 'quick-actions'
+  | 'workspace-picker'
   | 'new-session'
   | 'settings'
   | 'search-chats'
@@ -23,6 +24,14 @@ export const DESKTOP_SHORTCUTS: DesktopShortcutDefinition[] = [
     description: 'Show Desktop shortcut actions and run the supported ones from one modal.',
     keys: ['⌘/Ctrl', 'Alt', 'K'],
     availability: 'Available anywhere in Desktop unless another modal or text field owns the shortcut.',
+    group: 'Navigation',
+  },
+  {
+    id: 'workspace-picker',
+    label: 'Switch workspace',
+    description: 'Open the workspace picker, then press a displayed number to switch.',
+    keys: ['Alt', 'W'],
+    availability: 'Requires at least one workspace.',
     group: 'Navigation',
   },
   {
@@ -77,4 +86,14 @@ export const DESKTOP_SHORTCUTS: DesktopShortcutDefinition[] = [
 
 export function formatDesktopShortcutKeys(keys: string[]): string {
   return keys.join(' ')
+}
+
+export function resolveWorkspaceShortcutIndex(key: string, workspaceCount: number): number | null {
+  const normalizedKey = key.trim()
+  const index = normalizedKey === '0'
+    ? 9
+    : /^[1-9]$/.test(normalizedKey)
+      ? Number(normalizedKey) - 1
+      : -1
+  return index >= 0 && index < workspaceCount ? index : null
 }

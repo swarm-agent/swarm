@@ -2,16 +2,17 @@ import { buildDesktopSlashPaletteState, type DesktopSlashCommand } from './slash
 
 export type DesktopComposerSubmitResult = 'submitted' | 'stopped' | 'task-queued' | 'task-queue-failed'
 
-export interface SubmitDesktopComposerInput {
+export interface SubmitDesktopComposerInput<TAttachment = never> {
   draft: string
   canStop: boolean
   clear: () => void
-  onSubmit: (draft: string) => void | Promise<void>
+  attachments?: TAttachment[]
+  onSubmit: (draft: string, attachments: TAttachment[]) => void | Promise<void>
   onStop?: () => void | Promise<void>
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
 }
 
-export async function submitDesktopComposer(input: SubmitDesktopComposerInput): Promise<DesktopComposerSubmitResult> {
+export async function submitDesktopComposer<TAttachment>(input: SubmitDesktopComposerInput<TAttachment>): Promise<DesktopComposerSubmitResult> {
   const submittedPalette = buildDesktopSlashPaletteState(input.draft)
   const taskCommand = submittedPalette.exactMatch?.action.kind === 'queue-ai-task'
     ? submittedPalette.exactMatch
@@ -34,6 +35,6 @@ export async function submitDesktopComposer(input: SubmitDesktopComposerInput): 
   }
 
   input.clear()
-  void input.onSubmit(input.draft)
+  void input.onSubmit(input.draft, input.attachments ?? [])
   return 'submitted'
 }

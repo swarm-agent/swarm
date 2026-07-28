@@ -23,7 +23,7 @@ type SubagentReservationRequest struct {
 	CallID         string
 	ManifestHash   string
 	LaunchCount    int
-	Depth          int
+	Delegated      bool
 }
 
 type SubagentReservationResult struct {
@@ -62,7 +62,7 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 	}
 	// Reservation limits must be authoritative at call time. Reload the
 	// account policy so an edit made after this run started immediately applies
-	// to both the automatic launch budget and active-child concurrency ceiling.
+	// to both the automatic wave budget and active-child concurrency ceiling.
 	state, err := s.refreshPermissionStatePolicyLocked(request.AccountScopeID)
 	if err != nil {
 		return SubagentReservationResult{}, err
@@ -70,10 +70,8 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 	policy := NormalizePolicy(state.Policy).Subagents
 	decision := SubagentReservationApprove
 	reason := "wave is within the bounded automatic delegation allowance"
-	if request.Depth > policy.MaxDepth {
-		decision, reason = SubagentReservationDeny, "nested subagent delegation exceeds maximum depth"
-	} else if request.LaunchCount > policy.AbsoluteWaveMaximum {
-		decision, reason = SubagentReservationDeny, fmt.Sprintf("subagent wave exceeds absolute maximum of %d", policy.AbsoluteWaveMaximum)
+	if request.Delegated {
+		decision, reason = SubagentReservationDeny, "task delegation is parent-only; child sessions cannot delegate"
 	} else if request.LaunchCount > policy.ActiveChildLimit {
 		decision, reason = SubagentReservationDeny, fmt.Sprintf("subagent wave exceeds active child limit of %d", policy.ActiveChildLimit)
 	} else if policy.Mode == SubagentModeDirect {
@@ -85,24 +83,24 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 	if err != nil {
 		return SubagentReservationResult{}, err
 	}
-	total, active := 0, 0
+	automaticWaves, activeChildren := 0, 0
 	for _, reservation := range reservations {
 		if reservation.Status == "denied" {
 			continue
 		}
-		// Completed and failed children still consume the run's unified launch
-		// allowance; only their active concurrency is released.
-		total += reservation.LaunchCount
-		active += reservation.ActiveCount
+		// Each accepted task call consumes exactly one automatic wave, regardless
+		// of how many children it launches. Completion releases only concurrency.
+		automaticWaves++
+		activeChildren += reservation.ActiveCount
 	}
-	if decision == SubagentReservationApprove && active+request.LaunchCount > policy.ActiveChildLimit {
+	if decision != SubagentReservationDeny && activeChildren+request.LaunchCount > policy.ActiveChildLimit {
 		decision, reason = SubagentReservationDeny, "active child concurrency limit would be exceeded"
 	}
-	if decision == SubagentReservationApprove && total+request.LaunchCount > policy.AutomaticLaunchesPerParentRun {
+	if decision == SubagentReservationApprove && automaticWaves >= policy.AutomaticLaunchesPerParentRun {
 		if policy.OverBudgetAction == SubagentOverBudgetDeny {
-			decision, reason = SubagentReservationDeny, "automatic delegation budget is exhausted"
+			decision, reason = SubagentReservationDeny, "automatic wave budget is exhausted"
 		} else {
-			decision, reason = SubagentReservationAsk, "exact wave requires approval because it exceeds the automatic run budget"
+			decision, reason = SubagentReservationAsk, "wave requires approval because the automatic wave budget is exhausted"
 		}
 	}
 	status := string(decision)

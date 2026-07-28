@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -82,6 +85,9 @@ type ProviderManagedToolInvokerConfig struct {
 	ProviderManagedV3    bool
 	AgentProfile         pebblestore.AgentProfile
 	ToolProgression      *ToolProgressionState
+	ProviderID           string
+	Model                string
+	MediaContract        provideriface.SessionMediaContract
 }
 
 type terminalPlanToolState struct {
@@ -126,6 +132,9 @@ type providerToolInvokerConfig struct {
 	agentProfile         pebblestore.AgentProfile
 	toolProgression      *ToolProgressionState
 	terminalPlanState    *terminalPlanToolState
+	providerID           string
+	model                string
+	mediaContract        provideriface.SessionMediaContract
 }
 
 func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerConfig {
@@ -147,6 +156,9 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		agentProfile:         config.AgentProfile,
 		toolProgression:      config.ToolProgression,
 		terminalPlanState:    &terminalPlanToolState{},
+		providerID:           strings.ToLower(strings.TrimSpace(config.ProviderID)),
+		model:                strings.TrimSpace(config.Model),
+		mediaContract:        config.MediaContract,
 	}
 }
 
@@ -206,6 +218,7 @@ func (i *providerToolInvoker) ExecuteTool(ctx context.Context, invocation provid
 		DurationMS:       result.DurationMS,
 		PermissionWaitMS: permissionWaitMS,
 		TextForModel:     prepareToolOutputForModel(call, result),
+		Media:            providerMediaPayloadFromToolResult(result),
 		RestartTurn:      restartTurn,
 	}, nil
 }
@@ -388,7 +401,10 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		handled := false
 		var controlResult tool.Result
 		var controlErr error
-		if guardErr := s.rejectProviderManagedCheckpointRunFollowup(config, call); guardErr != nil {
+		if canonicalToolName(call.Name) == mediaInspectToolName {
+			handled = true
+			controlResult, controlErr = s.executeProviderManagedMediaInspect(ctx, config, call, principal)
+		} else if guardErr := s.rejectProviderManagedCheckpointRunFollowup(config, call); guardErr != nil {
 			handled = true
 			controlErr = guardErr
 			controlResult = tool.Result{CallID: call.CallID, Name: call.Name}
@@ -549,6 +565,168 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	}
 
 	return result, permissionWaitMS, nil
+}
+
+func providerMediaPayloadFromToolResult(result tool.Result) *provideriface.SessionMediaPayload {
+	if result.Media == nil {
+		return nil
+	}
+	return &provideriface.SessionMediaPayload{
+		AssetID: result.Media.AssetID, Modality: result.Media.Modality, MIMEType: result.Media.MIMEType,
+		FileType: result.Media.FileType, DigestSHA256: result.Media.DigestSHA256, Size: result.Media.Size,
+		Bytes: append([]byte(nil), result.Media.Bytes...),
+	}
+}
+
+func (s *Service) executeProviderManagedMediaInspect(ctx context.Context, config providerToolInvokerConfig, call tool.Call, principal identity.Principal) (tool.Result, error) {
+	result := tool.Result{CallID: call.CallID, Name: mediaInspectToolName}
+	if s == nil || s.sessions == nil || s.providers == nil || s.model == nil {
+		return result, errors.New("media inspection runtime is not configured")
+	}
+	args, err := decodeMediaInspectArguments(call.Arguments)
+	if err != nil {
+		return result, err
+	}
+	if !principal.Valid() {
+		principal = config.principal
+	}
+	session, ok, err := s.sessions.GetSession(strings.TrimSpace(config.sessionID))
+	if err != nil {
+		return result, err
+	}
+	if !ok {
+		return result, fmt.Errorf("session %q not found", strings.TrimSpace(config.sessionID))
+	}
+	if !principal.Valid() || session.AccountScopeID != principal.AccountScopeID || session.UserID != principal.UserID {
+		return result, errors.New("media asset ownership does not match the authenticated session principal")
+	}
+	providerID := strings.ToLower(strings.TrimSpace(config.providerID))
+	modelID := strings.TrimSpace(config.model)
+	if providerID == "" || modelID == "" {
+		return result, errors.New("media inspection run provider/model is unresolved")
+	}
+	runner, ok := s.providers.GetRunner(providerID)
+	if !ok || runner == nil {
+		return result, fmt.Errorf("provider %q is not runnable", providerID)
+	}
+	catalog, meta, err := modelCatalogLookupWithMeta(s.model, providerID, modelID)
+	if err != nil {
+		return result, err
+	}
+	currentContract := CompileSessionMediaContract(SessionMediaContractInput{
+		ProviderID: providerID, Model: modelID, Catalog: catalog, CatalogMeta: meta,
+		Adapter:         ResolveMediaAdapterDeclaration(ctx, providerID, runner),
+		AgentAuthorized: AgentProfileAuthorizesMedia(config.agentProfile), ExecutionMode: config.sessionMode,
+		WorkspaceScope: config.workspacePath, SessionScope: config.sessionID,
+	})
+	if currentContract.Hash != config.mediaContract.Hash {
+		return result, errors.New("media_inspect call is stale or forged for the current run contract")
+	}
+	var asset pebblestore.SessionMediaAsset
+	var payload []byte
+	if args.AssetID != "" {
+		asset, payload, err = s.sessions.ReadSessionMediaAsset(principal.AccountScopeID, config.sessionID, args.AssetID)
+		if err != nil {
+			return result, err
+		}
+		if asset.ContractHash != currentContract.Hash || asset.ProviderID != providerID || asset.Model != modelID {
+			return result, errors.New("media asset admission contract does not match the current run")
+		}
+	} else {
+		workspaceCtx, err := s.providerManagedWorkspaceContext(config, principal)
+		if err != nil {
+			return result, err
+		}
+		path, err := resolveProviderMediaWorkspacePath(workspaceCtx, args.Path)
+		if err != nil {
+			return result, err
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return result, fmt.Errorf("stat media path: %w", err)
+		}
+		if info.Size() <= 0 || info.Size() > pebblestore.SessionMediaDefaultMaxBytes {
+			return result, fmt.Errorf("media path must be between 1 and %d bytes", pebblestore.SessionMediaDefaultMaxBytes)
+		}
+		payload, err = os.ReadFile(path)
+		if err != nil {
+			return result, fmt.Errorf("read media path: %w", err)
+		}
+		if len(payload) == 0 {
+			return result, errors.New("media path is empty")
+		}
+		mimeType := strings.ToLower(strings.TrimSpace(http.DetectContentType(payload)))
+		fileType := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
+		capability, err := validateMediaInspectInvocation(currentContract, "image", mimeType, fileType)
+		if err != nil {
+			return result, err
+		}
+		maxBytes := capability.MaxBytes
+		if maxBytes <= 0 || maxBytes > pebblestore.SessionMediaDefaultMaxBytes {
+			maxBytes = pebblestore.SessionMediaDefaultMaxBytes
+		}
+		if int64(len(payload)) > maxBytes {
+			return result, fmt.Errorf("media path exceeds %d byte limit", maxBytes)
+		}
+		digest := sha256.Sum256(payload)
+		asset = pebblestore.SessionMediaAsset{
+			ID: "workspace_" + hex.EncodeToString(digest[:]), Modality: "image", DetectedMIMEType: mimeType,
+			FileType: fileType, Size: int64(len(payload)), DigestSHA256: hex.EncodeToString(digest[:]),
+			ContractHash: currentContract.Hash, ProviderID: providerID, Model: modelID,
+		}
+	}
+	capability, err := validateMediaInspectInvocation(currentContract, asset.Modality, asset.DetectedMIMEType, asset.FileType)
+	if err != nil {
+		return result, err
+	}
+	if int64(len(payload)) != asset.Size || capability.MaxBytes > 0 && asset.Size > capability.MaxBytes {
+		return result, errors.New("media asset exceeds the current run limit or failed its size check")
+	}
+	output, err := mediaInspectResult(asset, capability, currentContract)
+	if err != nil {
+		return result, err
+	}
+	result.Output = output
+	result.Media = &tool.MediaPayload{
+		AssetID: asset.ID, Modality: asset.Modality, MIMEType: asset.DetectedMIMEType, FileType: asset.FileType,
+		DigestSHA256: asset.DigestSHA256, Size: asset.Size, Bytes: append([]byte(nil), payload...),
+	}
+	return result, nil
+}
+
+func resolveProviderMediaWorkspacePath(workspaceCtx runWorkspaceContext, requested string) (string, error) {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return "", errors.New("media_inspect path is required")
+	}
+	base := strings.TrimSpace(workspaceCtx.WorkspacePath)
+	if base == "" {
+		return "", errors.New("media_inspect workspace path is unavailable")
+	}
+	candidate := requested
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(base, candidate)
+	}
+	candidate, err := filepath.Abs(filepath.Clean(candidate))
+	if err != nil {
+		return "", fmt.Errorf("resolve media path: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", fmt.Errorf("resolve media path symlinks: %w", err)
+	}
+	roots := normalizeExecutionRoots(workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
+	if !runPathWithinRoots(roots, resolved) {
+		return "", fmt.Errorf("media path %q escapes workspace scope", requested)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("stat media path: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("media_inspect path must be a regular file")
+	}
+	return resolved, nil
 }
 
 func (s *Service) rejectProviderManagedCheckpointRunFollowup(config providerToolInvokerConfig, call tool.Call) error {

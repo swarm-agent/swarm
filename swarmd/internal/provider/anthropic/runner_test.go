@@ -1,6 +1,8 @@
 package anthropic
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -21,7 +23,7 @@ func TestAnthropicExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
 		{"role": "assistant", "content": "epoch assistant"},
 		{"role": "user", "content": "epoch follow-up"},
 	}
-	messages, err := buildAnthropicMessages(input)
+	messages, err := buildAnthropicMessages(input, provideriface.SessionMediaContract{})
 	if err != nil {
 		t.Fatalf("build messages: %v", err)
 	}
@@ -340,11 +342,142 @@ func mustAnthropicStreamEvent(t *testing.T, raw string) anthropicapi.MessageStre
 	return event
 }
 
+func TestAnthropicMediaDeclarationIsImageInputOnly(t *testing.T) {
+	declaration := anthropicMediaDeclaration(pebblestore.AuthCredentialRecord{
+		AccountScopeID: "account-test", Provider: "anthropic", ID: "primary", Type: pebblestore.AuthTypeAPI,
+	})
+	if declaration.AdapterID != anthropicMediaAdapterID || declaration.ProviderID != "anthropic" || declaration.ProviderSurface != anthropicMediaProviderSurface || declaration.CredentialSurface != anthropicMediaCredentialSurface || declaration.CredentialFingerprint == "" {
+		t.Fatalf("declaration identity = %+v", declaration)
+	}
+	if len(declaration.Inputs) != 1 {
+		t.Fatalf("inputs = %+v, want one image input", declaration.Inputs)
+	}
+	image := declaration.Inputs[0]
+	if image.Modality != "image" || image.Semantics != pebblestore.ModelCatalogMediaSemanticsNative || image.MaxBytes != anthropicImageMaxBytes || image.MaxCount != anthropicImageMaxCount {
+		t.Fatalf("image capability = %+v", image)
+	}
+	if got := strings.Join(image.MIMETypes, ","); got != "image/gif,image/jpeg,image/png,image/webp" {
+		t.Fatalf("MIME types = %q", got)
+	}
+	if got := strings.Join(image.ContentTypes, ","); got != "image" {
+		t.Fatalf("content types = %q", got)
+	}
+}
+
+func TestBuildAnthropicMessagesMaterializesNativeImageInOriginalOrder(t *testing.T) {
+	payload := anthropicTestImagePayload("image/png", []byte("image-bytes"))
+	messages, err := buildAnthropicMessages([]map[string]any{{
+		"role": "user",
+		"content": []map[string]any{
+			{"type": "input_text", "text": "before"},
+			{"type": "session_media", "media": payload},
+			{"type": "input_text", "text": "after"},
+		},
+	}}, anthropicTestMediaContract(2))
+	if err != nil {
+		t.Fatalf("build messages: %v", err)
+	}
+	encoded := mustMarshalJSON(t, messages)
+	want := `[{"role":"user","content":[{"text":"before","type":"text"},{"source":{"data":"aW1hZ2UtYnl0ZXM=","media_type":"image/png","type":"base64"},"type":"image"},{"text":"after","type":"text"}]}]`
+	if encoded != want {
+		t.Fatalf("messages = %s, want %s", encoded, want)
+	}
+	for _, forbidden := range []string{payload.AssetID, payload.DigestSHA256, "session_media", "file_id", "url"} {
+		assertNotContains(t, encoded, forbidden)
+	}
+}
+
+func TestBuildAnthropicMessagesRejectsInvalidMedia(t *testing.T) {
+	valid := anthropicTestImagePayload("image/png", []byte("image-bytes"))
+	cases := []struct {
+		name     string
+		role     string
+		contract provideriface.SessionMediaContract
+		media    any
+	}{
+		{name: "absent contract", role: "user", contract: provideriface.SessionMediaContract{}, media: valid},
+		{name: "wrong surface", role: "user", contract: func() provideriface.SessionMediaContract { c := anthropicTestMediaContract(1); c.ProviderSurface = "other"; return c }(), media: valid},
+		{name: "unsupported MIME", role: "user", contract: anthropicTestMediaContract(1), media: anthropicTestImagePayload("image/svg+xml", []byte("svg"))},
+		{name: "unsupported modality", role: "user", contract: anthropicTestMediaContract(1), media: func() provideriface.SessionMediaPayload { p := valid; p.Modality = "audio"; return p }()},
+		{name: "forged digest", role: "user", contract: anthropicTestMediaContract(1), media: func() provideriface.SessionMediaPayload { p := valid; p.DigestSHA256 = strings.Repeat("0", 64); return p }()},
+		{name: "wrong size", role: "user", contract: anthropicTestMediaContract(1), media: func() provideriface.SessionMediaPayload { p := valid; p.Size++; return p }()},
+		{name: "missing asset identity", role: "user", contract: anthropicTestMediaContract(1), media: func() provideriface.SessionMediaPayload { p := valid; p.AssetID = ""; return p }()},
+		{name: "provider processed semantics", role: "user", contract: func() provideriface.SessionMediaContract { c := anthropicTestMediaContract(1); c.Capabilities[0].Semantics = pebblestore.ModelCatalogMediaSemanticsProviderProcessed; return c }(), media: valid},
+		{name: "undeclared content type", role: "user", contract: func() provideriface.SessionMediaContract { c := anthropicTestMediaContract(1); c.Capabilities[0].ContentTypes = []string{"input_image"}; return c }(), media: valid},
+		{name: "denied capability", role: "user", contract: func() provideriface.SessionMediaContract { c := anthropicTestMediaContract(1); c.Capabilities[0].State = provideriface.MediaCapabilityStateDenied; return c }(), media: valid},
+		{name: "assistant placement", role: "assistant", contract: anthropicTestMediaContract(1), media: valid},
+		{name: "ambiguous placement", role: "", contract: anthropicTestMediaContract(1), media: valid},
+		{name: "malformed payload", role: "user", contract: anthropicTestMediaContract(1), media: map[string]any{"url": "https://example.invalid/image.png"}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := buildAnthropicMessages([]map[string]any{{
+				"role": test.role,
+				"content": []map[string]any{{"type": "session_media", "media": test.media}},
+			}}, test.contract)
+			if err == nil {
+				t.Fatal("error = nil")
+			}
+			if strings.Contains(err.Error(), string(valid.Bytes)) || strings.Contains(err.Error(), valid.AssetID) || strings.Contains(err.Error(), valid.DigestSHA256) {
+				t.Fatalf("error disclosed media material: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildAnthropicMessagesRejectsRawMediaContent(t *testing.T) {
+	for _, itemType := range []string{"image", "input_image", "input_file", "audio", "video"} {
+		t.Run(itemType, func(t *testing.T) {
+			_, err := buildAnthropicMessages([]map[string]any{{
+				"role": "user",
+				"content": []map[string]any{{"type": itemType, "url": "https://example.invalid/media"}},
+			}}, anthropicTestMediaContract(1))
+			if err == nil || !strings.Contains(err.Error(), "authorized session media") {
+				t.Fatalf("error = %v, want raw-media rejection", err)
+			}
+		})
+	}
+}
+
+func TestBuildAnthropicMessagesEnforcesImageCountAcrossMessages(t *testing.T) {
+	payload := anthropicTestImagePayload("image/jpeg", []byte("image"))
+	_, err := buildAnthropicMessages([]map[string]any{
+		{"role": "user", "content": []map[string]any{{"type": "session_media", "media": payload}}},
+		{"role": "user", "content": []map[string]any{{"type": "session_media", "media": payload}}},
+	}, anthropicTestMediaContract(1))
+	if err == nil || !strings.Contains(err.Error(), "outside the authorized") {
+		t.Fatalf("error = %v, want count rejection", err)
+	}
+}
+
+func anthropicTestImagePayload(mimeType string, body []byte) provideriface.SessionMediaPayload {
+	digest := sha256.Sum256(body)
+	return provideriface.SessionMediaPayload{
+		AssetID: "media-test", Modality: "image", MIMEType: mimeType,
+		DigestSHA256: hex.EncodeToString(digest[:]), Size: int64(len(body)), Bytes: body,
+	}
+}
+
+func anthropicTestMediaContract(maxCount int) provideriface.SessionMediaContract {
+	return provideriface.SessionMediaContract{
+		ProviderID: "anthropic", ProviderSurface: anthropicMediaProviderSurface,
+		CredentialSurface: anthropicMediaCredentialSurface, AdapterID: anthropicMediaAdapterID,
+		Hash: "contract-hash",
+		Capabilities: []provideriface.MediaContractCapability{{
+			Modality: "image", State: provideriface.MediaCapabilityStateAllowed,
+			Semantics: pebblestore.ModelCatalogMediaSemanticsNative,
+			MIMETypes: []string{"image/gif", "image/jpeg", "image/png", "image/webp"},
+			ContentTypes: []string{"image"}, MaxBytes: anthropicImageMaxBytes, MaxCount: maxCount,
+		}},
+	}
+}
+
 func TestBuildAnthropicContentBlocksDoNotEmitPerMessageCacheControls(t *testing.T) {
+	mediaCount := 0
 	blocks, err := buildAnthropicContentBlocks([]any{
 		map[string]any{"type": "input_text", "text": "hello"},
 		map[string]any{"type": "text", "text": "world"},
-	})
+	}, "user", provideriface.SessionMediaContract{}, &mediaCount)
 	if err != nil {
 		t.Fatalf("build blocks: %v", err)
 	}

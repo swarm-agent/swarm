@@ -23,6 +23,7 @@ import (
 
 	"swarm-refactor/swarmtui/internal/buildinfo"
 	"swarm-refactor/swarmtui/internal/client"
+	"swarm-refactor/swarmtui/internal/copyblock"
 	"swarm-refactor/swarmtui/internal/model"
 	"swarm-refactor/swarmtui/internal/ui"
 	"swarm-refactor/swarmtui/internal/ui/v3chat"
@@ -237,12 +238,13 @@ type App struct {
 	settingsLabel       string
 	keybinds            *ui.KeyBindings
 
-	lastReloadAt time.Time
-	reloadCh     chan homeReloadResult
-	reloading    atomic.Bool
-	authLoginCh  chan authLoginResult
-	authLogging  atomic.Bool
-	codexPending *codexCodeLoginState
+	lastReloadAt              time.Time
+	reloadCh                  chan homeReloadResult
+	reloading                 atomic.Bool
+	homeWorkspaceBootstrapped atomic.Bool
+	authLoginCh               chan authLoginResult
+	authLogging               atomic.Bool
+	codexPending              *codexCodeLoginState
 
 	voiceCaptureSeq        int64
 	voiceCapture           activeVoiceCapture
@@ -2311,25 +2313,33 @@ func (a *App) showHelp() {
 
 func (a *App) handleCopyCommand(args []string) {
 	a.home.ClearCommandOverlay()
-	if a.chat == nil {
+	isV3Chat := a.route == "v3chat" && a.v3Chat != nil
+	if !isV3Chat && a.chat == nil {
 		a.home.SetStatus("/copy is available in chat sessions only")
 		return
 	}
 	payload := ""
 	successStatus := "copied chat snapshot to clipboard"
 	if len(args) > 0 {
-		index, ok := ui.ParseCopyBlockIndexArg(args)
+		index, ok := copyblock.ParseIndexArg(args)
 		if !ok {
 			a.home.SetStatus("usage: /copy [number]")
 			return
 		}
-		copyText, ok := a.chat.CopyBlockText(index)
+		copyText := ""
+		if isV3Chat {
+			copyText, ok = a.v3Chat.CopyBlockText(index)
+		} else {
+			copyText, ok = a.chat.CopyBlockText(index)
+		}
 		if !ok {
 			a.home.SetStatus(fmt.Sprintf("/copy %d not found", index))
 			return
 		}
 		payload = copyText
-		successStatus = ui.CopyBlockPreviewStatus(index, copyText)
+		successStatus = copyblock.PreviewStatus(index, copyText)
+	} else if isV3Chat {
+		payload = a.v3Chat.ClipboardText()
 	} else {
 		payload = a.chat.ClipboardText()
 	}
@@ -2341,6 +2351,9 @@ func (a *App) handleCopyCommand(args []string) {
 	}
 
 	a.home.SetStatus(successStatus)
+	if isV3Chat {
+		a.v3Chat.SetStatus(successStatus)
+	}
 	a.showToast(ui.ToastSuccess, successStatus)
 }
 

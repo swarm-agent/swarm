@@ -82,47 +82,25 @@ func (s *Server) withDesktopLocalSession(next http.Handler) http.Handler {
 }
 
 func shouldUseDesktopLocalSessionAuth(r *http.Request) bool {
-	return isAllowedDesktopRequestHost(r) && isSameOriginBrowserRequest(r) && isLocalDesktopBrowserRequest(r)
+	if !isSameOriginBrowserRequest(r) {
+		return false
+	}
+	if _, ok := admittedDesktopOrigin(r); ok {
+		return true
+	}
+	return requestHasCanonicalLocalDesktopAuthority(r) && isLocalDesktopBrowserRequest(r)
 }
 
 func shouldAllowDesktopLocalSessionBootstrapRequest(r *http.Request) bool {
-	return (isAllowedDesktopRequestHost(r) && isSameOriginBrowserRequest(r) && isLocalDesktopBrowserRequest(r)) || isLocalTransportRequest(r)
+	return shouldUseDesktopLocalSessionAuth(r) || isLocalTransportRequest(r)
 }
 
-func isAllowedDesktopRequestHost(r *http.Request) bool {
-	host := strings.TrimSpace(requestHost(r))
-	if host == "" {
+func requestHasCanonicalLocalDesktopAuthority(r *http.Request) bool {
+	if r == nil || strings.TrimSpace(r.Header.Get("X-Forwarded-Host")) != "" {
 		return false
 	}
-	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
-		host = parsedHost
-	} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
-		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
-	}
-	host = strings.TrimSuffix(strings.TrimSpace(host), ".")
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	if ip.IsLoopback() {
-		return true
-	}
-	for _, candidate := range detectLANAddresses() {
-		candidateIP := net.ParseIP(strings.TrimSpace(candidate))
-		if candidateIP != nil && candidateIP.Equal(ip) {
-			return true
-		}
-	}
-	for _, candidate := range detectTailscale().IPs {
-		candidateIP := net.ParseIP(strings.TrimSpace(candidate))
-		if candidateIP != nil && candidateIP.Equal(ip) {
-			return true
-		}
-	}
-	return false
+	host, err := normalizeRequestAuthority(requestHost(r))
+	return err == nil && isCanonicalLocalDesktopHost(host)
 }
 
 func isLocalDesktopBrowserRequest(r *http.Request) bool {
@@ -142,16 +120,6 @@ func isLocalDesktopBrowserRequest(r *http.Request) bool {
 			if candidateIP.Equal(ip) {
 				return true
 			}
-		}
-	}
-	tailscale := detectTailscale()
-	for _, candidate := range tailscale.IPs {
-		candidateIP := net.ParseIP(strings.TrimSpace(candidate))
-		if candidateIP == nil {
-			continue
-		}
-		if candidateIP.Equal(ip) {
-			return true
 		}
 	}
 	return false
@@ -362,5 +330,5 @@ func isLocalAdministrativeRequest(r *http.Request) bool {
 	if isLocalTransportRequest(r) {
 		return true
 	}
-	return isAllowedDesktopRequestHost(r) && isSameOriginBrowserRequest(r) && isLocalDesktopBrowserRequest(r)
+	return isSameOriginBrowserRequest(r) && requestHasCanonicalLocalDesktopAuthority(r) && isLocalDesktopBrowserRequest(r)
 }

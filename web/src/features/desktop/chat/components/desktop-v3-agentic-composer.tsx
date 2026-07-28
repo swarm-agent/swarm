@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
-import { AlertTriangle, ArrowUp, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Square, X } from 'lucide-react'
+import { AlertTriangle, ArrowUp, FileImage, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Paperclip, Square, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
+import type { DesktopV3MediaCapability, DesktopV3MediaReference } from '../../state/desktop-v3-cache-types'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
 import { submitDesktopComposer } from '../services/composer-submit'
 import {
@@ -120,7 +121,9 @@ export interface DesktopV3AgenticComposerProps {
   canStop?: boolean
   submitLabel?: string
   error?: string | null
-  onSubmit: (draft: string) => void | Promise<void>
+  onSubmit: (draft: string, attachments: DesktopV3MediaReference[]) => void | Promise<void>
+  mediaCapability?: DesktopV3MediaCapability | null
+  onUploadAttachment?: (file: File, signal: AbortSignal) => Promise<DesktopV3MediaReference>
   onStop?: () => void | Promise<void>
   mode: DesktopSessionMode
   onModeSelect?: (mode: DesktopSessionMode) => void
@@ -210,6 +213,8 @@ export function DesktopV3AgenticComposer({
   submitLabel: _submitLabel,
   error,
   onSubmit,
+  mediaCapability = null,
+  onUploadAttachment,
   onStop,
   mode,
   onModeSelect,
@@ -260,6 +265,8 @@ export function DesktopV3AgenticComposer({
 }: DesktopV3AgenticComposerProps) {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const uploadAbortRef = useRef<AbortController | null>(null)
   const dictationEnabledRef = useRef(false)
   const dictationCanRunRef = useRef(false)
   const dictationRestartTimerRef = useRef<number | null>(null)
@@ -282,7 +289,13 @@ export function DesktopV3AgenticComposer({
   const [agentSetupProfileId, setAgentSetupProfileId] = useState<string | null | undefined>(undefined)
   const [createProfileSignal, setCreateProfileSignal] = useState(0)
   const [primedTaskMode, setPrimedTaskMode] = useState<DesktopComposerTaskMode | null>(null)
+  const [attachments, setAttachments] = useState<DesktopV3MediaReference[]>([])
+  const [uploadingAttachment, setUploadingAttachment] = useState(false)
+  const [attachmentError, setAttachmentError] = useState<string | null>(null)
 
+  const effectiveMediaCapability = mediaCapability?.status === 'available' && mediaCapability.contract_token && mediaCapability.capabilities.length > 0
+    ? mediaCapability
+    : null
   const composerDisabled = disabled
   const showDictationButton = true
   const dictationButtonDisabled = composerDisabled || !dictationSupported
@@ -410,6 +423,8 @@ export function DesktopV3AgenticComposer({
       resizeTextareaElement(textarea)
     }
     onDraftChange('')
+    setAttachments([])
+    setAttachmentError(null)
   }, [clearDictationRestartTimer, clearFinalFlushTimer, onDraftChange, resizeTextareaElement])
 
   const startRecognition = useCallback(() => {
@@ -557,11 +572,12 @@ export function DesktopV3AgenticComposer({
       draft: submittedDraft,
       canStop,
       clear: clearComposerForSubmit,
+      attachments,
       onSubmit,
       onStop,
       onSlashCommand,
     })
-  }, [canStop, clearComposerForSubmit, dictationComposer, onSlashCommand, onStop, onSubmit, primedTaskMode])
+  }, [attachments, canStop, clearComposerForSubmit, dictationComposer, onSlashCommand, onStop, onSubmit, primedTaskMode])
 
   const handleMentionInsert = useCallback((agent: string) => {
     const trimmedStartLength = draft.length - draft.replace(/^[\s\t\r\n]+/, '').length
@@ -651,12 +667,49 @@ export function DesktopV3AgenticComposer({
     }
   }, [canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, onDraftChange, slashCommands, slashPalette.active, slashPalette.hasArguments, slashSelectionIndex])
 
+  const handleAttachmentFiles = useCallback(async (files: File[]) => {
+    if (files.length === 0) return
+    if (!effectiveMediaCapability || !onUploadAttachment) {
+      const reasons = mediaCapability?.denial_reasons?.filter(Boolean) ?? []
+      setAttachmentError(reasons.length > 0
+        ? `Attachments are unavailable: ${reasons.join('; ')}.`
+        : 'Attachments are unavailable for the current model, credential, agent, or session mode.')
+      return
+    }
+    const maxCount = Math.min(...effectiveMediaCapability.capabilities.map((capability) => capability.max_count || 1))
+    if (attachments.length + files.length > maxCount) {
+      setAttachmentError(`This model allows at most ${maxCount} attachments per message.`)
+      return
+    }
+    setAttachmentError(null)
+    setUploadingAttachment(true)
+    const controller = new AbortController()
+    uploadAbortRef.current = controller
+    try {
+      const uploaded: DesktopV3MediaReference[] = []
+      for (const file of files) uploaded.push(await onUploadAttachment(file, controller.signal))
+      setAttachments((current) => [...current, ...uploaded])
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : 'Attachment upload failed.')
+    } finally {
+      if (uploadAbortRef.current === controller) uploadAbortRef.current = null
+      setUploadingAttachment(false)
+    }
+  }, [attachments.length, effectiveMediaCapability, onUploadAttachment])
+
+  useEffect(() => {
+    if (!effectiveMediaCapability && attachments.length > 0) {
+      setAttachmentError('Attachment capability changed. Remove the existing attachments or restore the supported model and credential.')
+    }
+  }, [attachments.length, effectiveMediaCapability])
+
   const handleDragOver = useCallback((event: ReactDragEvent<HTMLTextAreaElement>) => {
     const hasTodo = Array.from(event.dataTransfer.types).includes(TODO_DRAG_MIME) || Array.from(event.dataTransfer.types).includes('text/plain')
-    if (!hasTodo) return
+    const hasFiles = Boolean(effectiveMediaCapability) && Array.from(event.dataTransfer.types).includes('Files')
+    if (!hasTodo && !hasFiles) return
     event.preventDefault()
     event.dataTransfer.dropEffect = 'copy'
-  }, [])
+  }, [effectiveMediaCapability])
 
   const hasContextUsagePercent = typeof contextUsagePercent === 'number' && Number.isFinite(contextUsagePercent)
   const normalizedContextUsagePercent = clampContextUsagePercent(contextUsagePercent)
@@ -785,7 +838,22 @@ export function DesktopV3AgenticComposer({
                 }}
                 onKeyDown={handleKeyDown}
                 onDragOver={handleDragOver}
-                onDrop={onDropTodo}
+                onDrop={(event) => {
+                  if (effectiveMediaCapability && event.dataTransfer.files.length > 0) {
+                    event.preventDefault()
+                    void handleAttachmentFiles(Array.from(event.dataTransfer.files))
+                    return
+                  }
+                  onDropTodo?.(event)
+                }}
+                onPaste={(event) => {
+                  if (!effectiveMediaCapability) return
+                  const files = Array.from(event.clipboardData.files)
+                  if (files.length > 0) {
+                    event.preventDefault()
+                    void handleAttachmentFiles(files)
+                  }
+                }}
                 placeholder={placeholder}
                 aria-label={inputLabel}
                 className="max-h-[50vh] !min-h-[32px] resize-none overflow-y-hidden !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]"
@@ -794,6 +862,19 @@ export function DesktopV3AgenticComposer({
               />
             </div>
           </div>
+          {attachments.length > 0 ? (
+            <div className="flex flex-wrap gap-2 border-t border-[var(--app-border)] px-4 py-2" data-testid="desktop-media-attachments">
+              {attachments.map((attachment, index) => (
+                <span key={`${attachment.asset_id}:${index}`} className="inline-flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]">
+                  <FileImage size={13} aria-hidden="true" />
+                  <span>{attachment.file_type?.toUpperCase() || attachment.mime_type}</span>
+                  <span className="text-[var(--app-text-muted)]">{Math.ceil(attachment.size / 1024)} KB</span>
+                  <button type="button" aria-label="Remove attachment" onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X size={13} /></button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {attachmentError ? <div className="border-t border-[var(--app-warning-border)] px-4 py-2 text-xs text-[var(--app-warning)]" role="alert">{attachmentError}</div> : null}
           {mentionPaletteIsActive ? (
             <div className="border-t border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2 text-[11px] text-[var(--app-text-muted)]">
               Use ↑/↓ to choose a subagent, Tab or Enter to insert, then continue typing your task.
@@ -801,6 +882,15 @@ export function DesktopV3AgenticComposer({
           ) : null}
           <div className="flex min-w-0 items-center gap-2 overflow-visible bg-transparent px-4 py-3 text-[11px]" data-composer-bottom-row>
             <DesktopComposerActionMenu disabled={composerDisabled} onPrimeTask={handlePrimeTask} />
+            {effectiveMediaCapability ? (
+              <>
+                <input ref={fileInputRef} type="file" hidden multiple accept={effectiveMediaCapability.capabilities.flatMap((capability) => capability.mime_types ?? []).join(',')} onChange={(event) => { void handleAttachmentFiles(Array.from(event.target.files ?? [])); event.target.value = '' }} />
+                <button type="button" className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[var(--app-text-muted)] hover:text-[var(--app-text)] disabled:opacity-50" disabled={composerDisabled || uploadingAttachment} onClick={() => fileInputRef.current?.click()} aria-label="Attach media" title="Attach media">
+                  {uploadingAttachment ? <LoaderCircle size={15} className="animate-spin" /> : <Paperclip size={15} />}
+                </button>
+                {uploadingAttachment ? <button type="button" className="text-xs text-[var(--app-warning)]" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button> : null}
+              </>
+            ) : null}
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {primedTaskMode ? taskModeIndicator() : showModePicker ? (

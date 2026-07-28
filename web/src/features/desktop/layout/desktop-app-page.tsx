@@ -13,7 +13,7 @@ import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import type { DesktopNotificationCenterRecord, DesktopSessionRecord } from '../types/realtime'
-import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../chat/types/chat'
+import type { DesktopSessionPlanRecord } from '../chat/types/chat'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
 import { buildWorkspaceRouteSlugMap, resolveWorkspaceBySlug, workspaceRouteSlugBase } from '../../workspaces/launcher/services/workspace-route'
@@ -42,7 +42,7 @@ import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
 import { createDesktopV3CreateOnlySessionOperation, createDesktopV3NewSessionOperation, startDesktopV3CreateOnlySession, startNewDesktopV3Session } from '../session-v3/new-session-flow'
-import { DesktopPlanModal, type DesktopPlanRecoveryInput } from '../chat/components/desktop-plan-modal'
+import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
 import { preferenceFromModelProfile } from '../chat/services/model-profiles'
@@ -63,7 +63,7 @@ import { selectSession } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../state/desktop-v3-session-api'
-import { archiveDesktopV3Sessions, jumpDesktopPlanToRevisionCheckpoint, restartDesktopPlanFromRevision, restoreDesktopPlanRevision, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
+import { archiveDesktopV3Sessions } from '../session-v3/plan-execution-api'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned, updateSessionV3Title } from '../session-v3/api'
 import { sessionWorkspaceBindingId } from '../services/session-workspace'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
@@ -74,6 +74,7 @@ import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-
 import { SearchChatsModal } from '../session-search/search-chats-modal'
 import type { DesktopSessionSearchItem } from '../session-search/session-search-api'
 import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortcuts/components/desktop-quick-actions-modal'
+import { DesktopWorkspacePicker } from '../shortcuts/components/desktop-workspace-picker'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { buildReviewWorktreeFixPrompt, resolveReviewWorktreeRepairAgent, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
 import {
@@ -2597,12 +2598,10 @@ export function DesktopAppPage() {
   const [gitCommitBusy, setGitCommitBusy] = useState(false)
   const [gitCommitError, setGitCommitError] = useState<string | null>(null)
   const [planModal, setPlanModal] = useState<PlanModalState | null>(null)
-  const [planModalLoading, setPlanModalLoading] = useState(false)
-  const [planModalSaving, setPlanModalSaving] = useState(false)
-  const [planModalExecuting, setPlanModalExecuting] = useState(false)
   const [planModalError, setPlanModalError] = useState<string | null>(null)
   const [quickSettingsTab, setQuickSettingsTab] = useState<QuickSettingsTabID | null>(null)
   const [quickActionsOpen, setQuickActionsOpen] = useState(false)
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
   const [sessionModeCommand, setSessionModeCommand] = useState<DesktopSessionModeCommand | null>(null)
   const [gitRealtimeErrors, setGitRealtimeErrors] = useState<Record<string, string>>({})
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
@@ -3404,7 +3403,6 @@ export function DesktopAppPage() {
 
   const chatWorkspacePath = selectedWorkspace?.path || ''
   const planModalPlan = useDesktopV3CacheSelector((state) => planModal?.sessionId ? (state.plansBySession[planModal.sessionId] ?? null) : null) as DesktopSessionPlanRecord | null
-  const planModalRevisions = useDesktopV3CacheSelector((state) => planModal?.sessionId ? (state.planRevisionsBySession[planModal.sessionId] ?? []) : []) as DesktopSessionPlanRevisionRecord[]
 
   const handleOpenWorkspace = useCallback((wsPath: string, wsName: string) => {
     setMobileSidebarOpen(false)
@@ -3754,11 +3752,9 @@ export function DesktopAppPage() {
     const normalizedSessionId = sessionId.trim()
     if (!normalizedSessionId) return
     setPlanModal({ sessionId: normalizedSessionId })
-    setPlanModalLoading(true)
     setPlanModalError(null)
     void fetchAndApplyDesktopV3PlanSnapshot(normalizedSessionId)
       .catch((error) => setPlanModalError(error instanceof Error ? error.message : String(error)))
-      .finally(() => setPlanModalLoading(false))
   }, [])
 
   const handleCopyPlanText = useCallback(async (text: string): Promise<boolean> => {
@@ -3769,61 +3765,6 @@ export function DesktopAppPage() {
       return false
     }
   }, [])
-
-  const handleRestorePlanRevisionModal = useCallback(async (revision: DesktopSessionPlanRevisionRecord, input: DesktopPlanRecoveryInput = {}) => {
-    const sessionId = planModal?.sessionId.trim() ?? ''
-    if (!sessionId || !planModalPlan?.id) return
-    setPlanModalSaving(true)
-    setPlanModalError(null)
-    try {
-      const payload = {
-        planId: planModalPlan.id,
-        version: revision.version,
-        checkpointId: input.checkpointId,
-        executionGranularity: input.executionGranularity,
-        continuationPolicy: input.continuationPolicy,
-        continueAutomatically: input.continueAutomatically,
-        restart: input.restart,
-        start: input.start,
-        skipPrior: input.skipPrior,
-      }
-      if (input.skipPrior) {
-        await jumpDesktopPlanToRevisionCheckpoint(sessionId, payload)
-      } else if (input.start || input.restart || input.checkpointId) {
-        await restartDesktopPlanFromRevision(sessionId, payload)
-      } else {
-        await restoreDesktopPlanRevision(sessionId, payload)
-      }
-      await fetchAndApplyDesktopV3PlanSnapshot(sessionId)
-      if (input.start) setPlanModal(null)
-    } catch (error) {
-      setPlanModalError(error instanceof Error ? error.message : String(error))
-      throw error
-    } finally {
-      setPlanModalSaving(false)
-    }
-  }, [planModal?.sessionId, planModalPlan?.id])
-
-  const handleApproveStartPlanModal = useCallback(async (input: { checkpointId?: string; executionGranularity: 'checkpointed'; continueAutomatically: true; continuationPolicy: 'automatic' }) => {
-    const sessionId = planModal?.sessionId.trim() ?? ''
-    if (!sessionId || !planModalPlan?.id) return
-    setPlanModalExecuting(true)
-    setPlanModalError(null)
-    try {
-      await startDesktopPlanCheckpointed(sessionId, planModalPlan.id, {
-        checkpointId: input.checkpointId,
-        executionGranularity: 'checkpointed',
-        continuationPolicy: 'automatic',
-        continueAutomatically: true,
-      })
-      setPlanModal(null)
-    } catch (error) {
-      setPlanModalError(error instanceof Error ? error.message : String(error))
-      throw error
-    } finally {
-      setPlanModalExecuting(false)
-    }
-  }, [planModal?.sessionId, planModalPlan?.id])
 
   const handleOpenSettingsTab = useCallback((tab: SettingsTabID | 'agents') => {
     if (tab === 'agents') {
@@ -3974,6 +3915,17 @@ export function DesktopAppPage() {
     setMobileSidebarOpen(false)
   }, [])
 
+  const handleOpenWorkspacePicker = useCallback(() => {
+    setWorkspacePickerOpen(true)
+    setMobileSidebarOpen(false)
+    setWorkspaceDropdownOpen(false)
+  }, [])
+
+  const handleSelectWorkspaceFromPicker = useCallback((workspace: WorkspaceEntry) => {
+    setWorkspacePickerOpen(false)
+    handleOpenWorkspace(workspace.path, workspace.workspaceName)
+  }, [handleOpenWorkspace])
+
   const canStartNewSession = Boolean(topWorkspacePath)
   const canReturnToPreviousChat = Boolean(previousChatSessionId && sessionById.has(previousChatSessionId))
   useEffect(() => {
@@ -4001,6 +3953,13 @@ export function DesktopAppPage() {
       const insideDialog = Boolean(element?.closest('[role="dialog"]'))
       const insideChatComposer = shortcutTargetIsChatComposer(target)
       const targetBlocksDesktopShortcuts = shortcutTargetBlocksDesktopShortcuts(target)
+      const normalizedKey = event.key.toLowerCase()
+      const normalizedCode = event.code.toLowerCase()
+      if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && (normalizedKey === 'w' || normalizedCode === 'keyw') && !insideDialog) {
+        event.preventDefault()
+        handleOpenWorkspacePicker()
+        return
+      }
       if (desktopShortcutMatches(event, 'n') && (!targetBlocksDesktopShortcuts || insideChatComposer)) {
         event.preventDefault()
         if (topWorkspacePath) handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel)
@@ -4043,7 +4002,7 @@ export function DesktopAppPage() {
 
     window.addEventListener('keydown', handleDesktopShortcut)
     return () => window.removeEventListener('keydown', handleDesktopShortcut)
-  }, [handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleStartNewSessionInWorkspace, topWorkspaceLabel, topWorkspacePath])
+  }, [handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleOpenWorkspacePicker, handleStartNewSessionInWorkspace, topWorkspaceLabel, topWorkspacePath])
 
   const quickActions = useMemo<DesktopQuickActionItem[]>(() => [
     {
@@ -4055,6 +4014,20 @@ export function DesktopAppPage() {
       enabled: true,
       icon: Keyboard,
       onRun: handleOpenQuickActions,
+    },
+    {
+      id: 'workspace-picker',
+      label: 'Switch workspace',
+      description: 'Open the numbered workspace picker and press 1–9 or 0 to switch.',
+      keys: ['Alt', 'W'],
+      availability: 'Available anywhere in Desktop unless another modal owns the shortcut.',
+      enabled: topWorkspaceOptions.length > 0,
+      disabledReason: 'No workspaces are available.',
+      icon: Folder,
+      onRun: () => {
+        setQuickActionsOpen(false)
+        handleOpenWorkspacePicker()
+      },
     },
     {
       id: 'new-session',
@@ -4134,7 +4107,7 @@ export function DesktopAppPage() {
         }
       },
     },
-  ], [canReturnToPreviousChat, canStartNewSession, handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleStartNewSessionInWorkspace, latestNeedsApprovalSession, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, topWorkspaceLabel, topWorkspacePath])
+  ], [canReturnToPreviousChat, canStartNewSession, handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleOpenWorkspacePicker, handleStartNewSessionInWorkspace, latestNeedsApprovalSession, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, topWorkspaceLabel, topWorkspaceOptions.length, topWorkspacePath])
 
 
   const runDesktopUpdate = useCallback(async () => {
@@ -5069,6 +5042,14 @@ export function DesktopAppPage() {
         onOpenShortcutsSettings={() => handleOpenSettingsTab('shortcuts')}
       />
 
+      <DesktopWorkspacePicker
+        open={workspacePickerOpen}
+        workspaces={topWorkspaceOptions}
+        currentWorkspacePath={topWorkspacePath}
+        onClose={() => setWorkspacePickerOpen(false)}
+        onSelect={handleSelectWorkspaceFromPicker}
+      />
+
       <SearchChatsModal
         open={searchModalOpen}
         onOpenChange={setSearchModalOpen}
@@ -5110,17 +5091,11 @@ export function DesktopAppPage() {
       <DesktopPlanModal
         open={Boolean(planModal)}
         plan={planModalPlan}
-        revisions={planModalRevisions}
-        historyLoading={planModalLoading}
-        saving={planModalSaving}
-        executing={planModalExecuting}
         error={planModalError}
         onOpenChange={(open) => {
           if (!open) setPlanModal(null)
         }}
         onCopy={handleCopyPlanText}
-        onRestoreRevision={handleRestorePlanRevisionModal}
-        onApproveStart={handleApproveStartPlanModal}
       />
 
       {todoModal ? (

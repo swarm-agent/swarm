@@ -69,10 +69,9 @@ const (
 	SessionDeployOverLimitAsk  SessionDeployOverLimitAction = "ask"
 	SessionDeployOverLimitDeny SessionDeployOverLimitAction = "deny"
 
-	// These are validation safety bounds, not orchestration defaults. Account policy
-	// remains authoritative within them and can support substantial refactor waves.
+	// This is a validation safety bound, not an orchestration default. Account policy
+	// remains authoritative within it and can support substantial refactor waves.
 	MaxSubagentWaveSize = 256
-	MaxSubagentDepth    = 16
 )
 
 // SessionDeployPolicy controls only durable manage-sessions deployment. It is
@@ -89,15 +88,14 @@ type PlanAcceptancePolicy struct {
 	Mode CapabilityPolicyMode `json:"mode"`
 }
 
-// SubagentPolicy is the single account-scoped delegation policy. Launches share one
-// budget regardless of child purpose (for example Finder or Clone).
+// SubagentPolicy is the single account-scoped delegation policy. Each accepted
+// parent task call consumes one automatic wave; child count is governed separately
+// by ActiveChildLimit regardless of child purpose (for example Finder or Coder).
 type SubagentPolicy struct {
 	Mode                          SubagentOrchestrationMode `json:"mode"`
 	AutomaticLaunchesPerParentRun int                       `json:"automatic_launches_per_parent_run"`
 	ActiveChildLimit              int                       `json:"active_child_limit"`
 	OverBudgetAction              SubagentOverBudgetAction  `json:"over_budget_action"`
-	AbsoluteWaveMaximum           int                       `json:"absolute_wave_maximum"`
-	MaxDepth                      int                       `json:"max_depth"`
 	RequireWriteIsolation         bool                      `json:"require_write_isolation"`
 }
 
@@ -156,8 +154,6 @@ func DefaultSubagentPolicy() SubagentPolicy {
 		AutomaticLaunchesPerParentRun: 5,
 		ActiveChildLimit:              5,
 		OverBudgetAction:              SubagentOverBudgetAsk,
-		AbsoluteWaveMaximum:           16,
-		MaxDepth:                      2,
 		RequireWriteIsolation:         true,
 	}
 }
@@ -174,22 +170,16 @@ func ValidateSubagentPolicy(policy SubagentPolicy) error {
 		return fmt.Errorf("unsupported subagent over-budget action %q", policy.OverBudgetAction)
 	}
 	if policy.AutomaticLaunchesPerParentRun < 0 {
-		return fmt.Errorf("automatic launches per parent run cannot be negative")
+		return fmt.Errorf("automatic waves per parent run cannot be negative")
 	}
 	if policy.ActiveChildLimit < 1 {
 		return fmt.Errorf("active child limit must be at least 1")
-	}
-	if policy.AbsoluteWaveMaximum < 1 || policy.AbsoluteWaveMaximum > MaxSubagentWaveSize {
-		return fmt.Errorf("absolute wave maximum must be between 1 and %d", MaxSubagentWaveSize)
 	}
 	if policy.ActiveChildLimit > MaxSubagentWaveSize {
 		return fmt.Errorf("active child limit cannot exceed %d", MaxSubagentWaveSize)
 	}
 	if policy.AutomaticLaunchesPerParentRun > MaxSubagentWaveSize {
-		return fmt.Errorf("automatic launches per parent run cannot exceed %d", MaxSubagentWaveSize)
-	}
-	if policy.MaxDepth < 0 || policy.MaxDepth > MaxSubagentDepth {
-		return fmt.Errorf("subagent delegation depth must be between 0 and %d", MaxSubagentDepth)
+		return fmt.Errorf("automatic waves per parent run cannot exceed %d", MaxSubagentWaveSize)
 	}
 	return nil
 }

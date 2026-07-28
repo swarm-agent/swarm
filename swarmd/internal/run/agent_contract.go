@@ -37,7 +37,8 @@ func (s *Service) listAgentToolDefinitionsForAccount(accountScopeID string) []to
 	if s == nil || s.tools == nil {
 		return nil
 	}
-	definitions := s.tools.Definitions()
+	definitions := append([]tool.Definition(nil), s.tools.Definitions()...)
+	definitions = append(definitions, staticMediaInspectToolDefinition())
 	customDefinitions := s.customAgentToolDefinitionsForAccount(accountScopeID)
 	out := make([]tool.Definition, 0, len(definitions)+len(customDefinitions))
 	out = append(out, definitions...)

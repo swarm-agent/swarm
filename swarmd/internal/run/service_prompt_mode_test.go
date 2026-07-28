@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -87,6 +88,32 @@ func TestModeCapabilityInstructionsUseInjectedPlanPresenceInsteadOfGetActiveProb
 	}
 	if strings.Contains(instructions, "If an active plan exists, use plan_manage get-active to inspect it") {
 		t.Fatalf("auto instructions still encourage get-active as a startup probe\n--- instructions ---\n%s", instructions)
+	}
+}
+
+func TestSubagentPolicyInstructionsUseSimplifiedContract(t *testing.T) {
+	instructions := subagentPolicyInstructions(permission.DefaultSubagentPolicy())
+	for _, want := range []string{
+		"- mode: bounded",
+		"- automatic_launches_per_parent_run: 5",
+		"- active_child_limit: 5",
+		"- over_budget_action: ask",
+		"- require_write_isolation: true",
+		"- delegation_scope: parent sessions only; child sessions cannot invoke task delegation",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("subagent policy instructions missing %q:\n%s", want, instructions)
+		}
+	}
+	for _, want := range []string{"wave/task-call budget", "each accepted task call consumes one wave regardless of child count", "hard ceiling for both one task call and aggregate active children"} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("subagent policy instructions do not explain independent wave and concurrency semantics; missing %q:\n%s", want, instructions)
+		}
+	}
+	for _, removed := range []string{"absolute_wave_maximum", "max_depth"} {
+		if strings.Contains(instructions, removed) {
+			t.Fatalf("subagent policy instructions still contain removed field %q:\n%s", removed, instructions)
+		}
 	}
 }
 
@@ -181,19 +208,31 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 		"valid only from the parent conversation, never from a provider-managed checkpoint run",
 		"do not call or retry request_followup_checkpoint: the backend rejects it",
 		"never claim the checkpoint was added after a failed tool result",
-		"classify it before choosing a lifecycle action",
-		"same deliverable",
+		"classify it by its effect on the deliverable contract",
+		"not by whether it is phrased as an imperative",
+		"choose the least disruptive valid route",
+		"inquiry or guidance only means answer or acknowledge without plan mutation",
+		"localized additive patch that preserves the checkpoint objective and acceptance criteria means add_subtask",
+		"Make the hero headline blue",
+		"Add 8px below the card title",
+		"checkpoint redefinition that invalidates the objective or acceptance criteria means restart_checkpoint",
+		"independently shippable work or a separate review/failure boundary means request_followup_checkpoint",
+		"preserving checkpoint identity and attempt history",
 		"complete replacement checkpoint_title, tasks, acceptance_criteria, and notes",
 		"call resolve_blocked_checkpoint with start_next=true",
 		"the same checkpoint resumes in a fresh provider run",
 		"never completes the blocked checkpoint and never selects a later checkpoint",
 		"leave the checkpoint blocked and explain the exact resolution still needed",
 		"Never restart an unchanged checkpoint merely to clear a block",
-		"independent deliverable or separate task",
+		"plan_manage localized-feedback example",
+		`"action":"add_subtask"`,
+		"continuing the same non-blocked/non-failed checkpoint without resetting its attempt history",
 		"plan_manage requirement-changing restart example",
-		"plain restart without change_request only for a true retry with unchanged requirements",
+		"use restart only when feedback invalidates the current objective or acceptance criteria",
+		"Use no plan mutation for inquiry/guidance, add_subtask for localized additive edits, and request_followup_checkpoint for independently shippable work",
 		"do not call resolve_blocked_checkpoint first",
 		"Failed checkpoints remain stopped",
+		"Never use add_subtask to clear a blocked or failed checkpoint",
 		"use manage-sessions deploy; do not use the task tool",
 		"suggest a short worktree_name",
 		"leave managed worktree isolation enabled by default",
