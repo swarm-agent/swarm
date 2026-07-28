@@ -286,7 +286,7 @@ func buildChatCompletionMessages(req provideriface.Request) ([]map[string]any, e
 			}
 		}
 		role, _ := stringField(item, "role")
-		content, ok, err := buildOpenRouterMessageContent(item["content"], req, mediaCounts)
+		content, ok, err := buildOpenRouterMessageContent(item["content"], role, req, mediaCounts)
 		if err != nil {
 			return nil, err
 		}

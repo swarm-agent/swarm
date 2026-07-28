@@ -14,9 +14,9 @@ import (
 )
 
 const (
-	openRouterMediaAdapterID         = "openrouter-chat-completions-v1"
-	openRouterMediaProviderSurface   = "chat_completions"
-	openRouterMediaCredentialSurface = "openrouter_api_key"
+	openRouterMediaAdapterID         = provideriface.MediaAdapterIDOpenRouterChatCompletionsV1
+	openRouterMediaProviderSurface   = provideriface.MediaProviderSurfaceOpenRouterChatCompletions
+	openRouterMediaCredentialSurface = provideriface.MediaCredentialSurfaceOpenRouterAPIKey
 	openRouterMaxImageBytes    int64 = 20 << 20
 	openRouterMaxImageCount          = 20
 )
@@ -65,7 +65,7 @@ func validateOpenRouterMediaSurface(contract provideriface.SessionMediaContract)
 	return nil
 }
 
-func buildOpenRouterMessageContent(content any, req provideriface.Request, counts map[string]int) (any, bool, error) {
+func buildOpenRouterMessageContent(content any, role string, req provideriface.Request, counts map[string]int) (any, bool, error) {
 	switch typed := content.(type) {
 	case string:
 		text := strings.TrimSpace(typed)
@@ -75,9 +75,9 @@ func buildOpenRouterMessageContent(content any, req provideriface.Request, count
 		for i := range typed {
 			items[i] = typed[i]
 		}
-		return buildOpenRouterContentItems(items, req, counts)
+		return buildOpenRouterContentItems(items, role, req, counts)
 	case []any:
-		return buildOpenRouterContentItems(typed, req, counts)
+		return buildOpenRouterContentItems(typed, role, req, counts)
 	case nil:
 		return nil, false, nil
 	default:
@@ -85,7 +85,7 @@ func buildOpenRouterMessageContent(content any, req provideriface.Request, count
 	}
 }
 
-func buildOpenRouterContentItems(items []any, req provideriface.Request, counts map[string]int) (any, bool, error) {
+func buildOpenRouterContentItems(items []any, role string, req provideriface.Request, counts map[string]int) (any, bool, error) {
 	out := make([]map[string]any, 0, len(items))
 	for _, raw := range items {
 		item, ok := raw.(map[string]any)
@@ -103,6 +103,9 @@ func buildOpenRouterContentItems(items []any, req provideriface.Request, counts 
 				out = append(out, map[string]any{"type": "text", "text": text})
 			}
 		case "session_media":
+			if !strings.EqualFold(strings.TrimSpace(role), "user") {
+				return nil, false, errors.New("OpenRouter image content is only implemented for user messages")
+			}
 			payload, err := openRouterSessionMediaPayload(item["media"])
 			if err != nil {
 				return nil, false, err
