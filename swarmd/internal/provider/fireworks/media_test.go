@@ -29,8 +29,8 @@ func fireworksTestPayload(modality, mimeType, fileType string, body []byte) prov
 
 func fireworksTestContract(capability provideriface.MediaContractCapability) provideriface.SessionMediaContract {
 	return provideriface.SessionMediaContract{
-		ProviderID:        "fireworks",
-		ProviderSurface:   fireworksMediaProviderSurface,
+		ProviderID:            "fireworks",
+		ProviderSurface:       fireworksMediaProviderSurface,
 		CredentialSurface:     fireworksMediaCredentialSurface,
 		CredentialFingerprint: "credential-fingerprint",
 		AdapterID:             fireworksMediaAdapterID,
@@ -132,18 +132,47 @@ func TestBuildFireworksChatCompletionRequestRejectsInvalidMedia(t *testing.T) {
 		content  []map[string]any
 	}{
 		{name: "missing contract", contract: provideriface.SessionMediaContract{}, content: []map[string]any{{"type": "session_media", "media": valid}}},
-		{name: "cross surface", contract: func() provideriface.SessionMediaContract { c := validContract; c.ProviderSurface = "responses_api"; return c }(), content: []map[string]any{{"type": "session_media", "media": valid}}},
+		{name: "cross surface", contract: func() provideriface.SessionMediaContract {
+			c := validContract
+			c.ProviderSurface = "responses_api"
+			return c
+		}(), content: []map[string]any{{"type": "session_media", "media": valid}}},
 		{name: "missing credential fingerprint", contract: func() provideriface.SessionMediaContract { c := validContract; c.CredentialFingerprint = ""; return c }(), content: []map[string]any{{"type": "session_media", "media": valid}}},
 		{name: "unsupported modality", contract: validContract, content: []map[string]any{{"type": "session_media", "media": fireworksTestPayload("video", "image/png", "png", []byte("video"))}}},
-		{name: "unsupported mime", contract: func() provideriface.SessionMediaContract { c := validContract; c.Capabilities = append([]provideriface.MediaContractCapability(nil), validContract.Capabilities...); c.Capabilities[0].MIMETypes = []string{"image/svg+xml"}; c.Capabilities[0].FileTypes = []string{"svg"}; return c }(), content: []map[string]any{{"type": "session_media", "media": fireworksTestPayload("image", "image/svg+xml", "svg", []byte("svg"))}}},
-		{name: "unsupported file type", contract: func() provideriface.SessionMediaContract { c := validContract; c.Capabilities = append([]provideriface.MediaContractCapability(nil), validContract.Capabilities...); c.Capabilities[0].FileTypes = []string{"exe"}; return c }(), content: []map[string]any{{"type": "session_media", "media": fireworksTestPayload("image", "image/png", "exe", []byte("image"))}}},
+		{name: "unsupported mime", contract: func() provideriface.SessionMediaContract {
+			c := validContract
+			c.Capabilities = append([]provideriface.MediaContractCapability(nil), validContract.Capabilities...)
+			c.Capabilities[0].MIMETypes = []string{"image/svg+xml"}
+			c.Capabilities[0].FileTypes = []string{"svg"}
+			return c
+		}(), content: []map[string]any{{"type": "session_media", "media": fireworksTestPayload("image", "image/svg+xml", "svg", []byte("svg"))}}},
+		{name: "unsupported file type", contract: func() provideriface.SessionMediaContract {
+			c := validContract
+			c.Capabilities = append([]provideriface.MediaContractCapability(nil), validContract.Capabilities...)
+			c.Capabilities[0].FileTypes = []string{"exe"}
+			return c
+		}(), content: []map[string]any{{"type": "session_media", "media": fireworksTestPayload("image", "image/png", "exe", []byte("image"))}}},
 		{name: "oversize", contract: fireworksTestContract(fireworksTestImageCapability(4, 1)), content: []map[string]any{{"type": "session_media", "media": fireworksTestPayload("image", "image/png", "png", []byte("image"))}}},
-		{name: "wrong semantics", contract: func() provideriface.SessionMediaContract { c := validContract; c.Capabilities = append([]provideriface.MediaContractCapability(nil), validContract.Capabilities...); c.Capabilities[0].Semantics = pebblestore.ModelCatalogMediaSemanticsClientProcessed; return c }(), content: []map[string]any{{"type": "session_media", "media": valid}}},
-		{name: "wrong content type", contract: func() provideriface.SessionMediaContract { c := validContract; c.Capabilities = append([]provideriface.MediaContractCapability(nil), validContract.Capabilities...); c.Capabilities[0].ContentTypes = []string{"input_image"}; return c }(), content: []map[string]any{{"type": "session_media", "media": valid}}},
+		{name: "wrong semantics", contract: func() provideriface.SessionMediaContract {
+			c := validContract
+			c.Capabilities = append([]provideriface.MediaContractCapability(nil), validContract.Capabilities...)
+			c.Capabilities[0].Semantics = pebblestore.ModelCatalogMediaSemanticsClientProcessed
+			return c
+		}(), content: []map[string]any{{"type": "session_media", "media": valid}}},
+		{name: "wrong content type", contract: func() provideriface.SessionMediaContract {
+			c := validContract
+			c.Capabilities = append([]provideriface.MediaContractCapability(nil), validContract.Capabilities...)
+			c.Capabilities[0].ContentTypes = []string{"input_image"}
+			return c
+		}(), content: []map[string]any{{"type": "session_media", "media": valid}}},
 		{name: "provider-exceeding byte limit", contract: fireworksTestContract(fireworksTestImageCapability(fireworksMaxImageBytes+1, 1)), content: []map[string]any{{"type": "session_media", "media": valid}}},
 		{name: "provider-exceeding count limit", contract: fireworksTestContract(fireworksTestImageCapability(1024, fireworksMaxImageCount+1)), content: []map[string]any{{"type": "session_media", "media": valid}}},
 		{name: "too many", contract: validContract, content: []map[string]any{{"type": "session_media", "media": valid}, {"type": "session_media", "media": valid}}},
-		{name: "forged digest", contract: validContract, content: []map[string]any{{"type": "session_media", "media": func() provideriface.SessionMediaPayload { p := valid; p.DigestSHA256 = strings.Repeat("0", 64); return p }()}}},
+		{name: "forged digest", contract: validContract, content: []map[string]any{{"type": "session_media", "media": func() provideriface.SessionMediaPayload {
+			p := valid
+			p.DigestSHA256 = strings.Repeat("0", 64)
+			return p
+		}()}}},
 		{name: "malformed payload", contract: validContract, content: []map[string]any{{"type": "session_media", "media": map[string]any{"url": "https://example.invalid/image.png"}}}},
 		{name: "user url", contract: validContract, content: []map[string]any{{"type": "image_url", "image_url": map[string]any{"url": "https://example.invalid/image.png"}}}},
 		{name: "audio block", contract: validContract, content: []map[string]any{{"type": "input_audio", "audio": "data:audio/wav;base64,AAAA"}}},

@@ -164,23 +164,63 @@ func TestBuildChatCompletionRequestRejectsUnimplementedOrMalformedMedia(t *testi
 		edit func(*provideriface.Request)
 	}{
 		{name: "absent capability", edit: func(req *provideriface.Request) { req.MediaContract.Capabilities = nil }},
-		{name: "unsupported MIME", edit: func(req *provideriface.Request) { media := openRouterTestImage([]byte("svg"), "image/svg+xml"); req.Input[0]["content"] = []map[string]any{{"type": "session_media", "media": media}} }},
-		{name: "unsupported modality", edit: func(req *provideriface.Request) { media := valid; media.Modality = "audio"; req.Input[0]["content"] = []map[string]any{{"type": "session_media", "media": media}} }},
-		{name: "unsupported semantics", edit: func(req *provideriface.Request) { req.MediaContract.Capabilities[0].Semantics = pebblestore.ModelCatalogMediaSemanticsProviderProcessed }},
+		{name: "unsupported MIME", edit: func(req *provideriface.Request) {
+			media := openRouterTestImage([]byte("svg"), "image/svg+xml")
+			req.Input[0]["content"] = []map[string]any{{"type": "session_media", "media": media}}
+		}},
+		{name: "unsupported modality", edit: func(req *provideriface.Request) {
+			media := valid
+			media.Modality = "audio"
+			req.Input[0]["content"] = []map[string]any{{"type": "session_media", "media": media}}
+		}},
+		{name: "unsupported semantics", edit: func(req *provideriface.Request) {
+			req.MediaContract.Capabilities[0].Semantics = pebblestore.ModelCatalogMediaSemanticsProviderProcessed
+		}},
 		{name: "missing configuration identity", edit: func(req *provideriface.Request) { req.ProviderConfigurationHash = "" }},
-		{name: "forged digest", edit: func(req *provideriface.Request) { media := valid; media.DigestSHA256 = strings.Repeat("0", 64); req.Input[0]["content"] = []map[string]any{{"type": "session_media", "media": media}} }},
-		{name: "forged size", edit: func(req *provideriface.Request) { media := valid; media.Size++; req.Input[0]["content"] = []map[string]any{{"type": "session_media", "media": media}} }},
-		{name: "missing asset identity", edit: func(req *provideriface.Request) { media := valid; media.AssetID = ""; req.Input[0]["content"] = []map[string]any{{"type": "session_media", "media": media}} }},
-		{name: "malformed payload", edit: func(req *provideriface.Request) { req.Input[0]["content"] = []map[string]any{{"type": "session_media", "media": map[string]any{"url": "https://example.invalid/image.png"}}} }},
-		{name: "direct URL", edit: func(req *provideriface.Request) { req.Input[0]["content"] = []map[string]any{{"type": "image_url", "image_url": map[string]any{"url": "https://example.invalid/image.png"}}} }},
-		{name: "local path", edit: func(req *provideriface.Request) { req.Input[0]["content"] = []map[string]any{{"type": "input_image", "path": "asset.png"}} }},
-		{name: "file", edit: func(req *provideriface.Request) { req.Input[0]["content"] = []map[string]any{{"type": "file", "file": map[string]any{"file_data": "data:application/pdf;base64,AA=="}}} }},
-		{name: "audio", edit: func(req *provideriface.Request) { req.Input[0]["content"] = []map[string]any{{"type": "input_audio", "input_audio": map[string]any{"data": "AA==", "format": "wav"}}} }},
-		{name: "video", edit: func(req *provideriface.Request) { req.Input[0]["content"] = []map[string]any{{"type": "video_url", "video_url": map[string]any{"url": "https://example.invalid/video.mp4"}}} }},
-		{name: "generation bypass", edit: func(req *provideriface.Request) { req.Input[0]["content"] = []map[string]any{{"type": "image_generation", "prompt": "generate"}} }},
+		{name: "forged digest", edit: func(req *provideriface.Request) {
+			media := valid
+			media.DigestSHA256 = strings.Repeat("0", 64)
+			req.Input[0]["content"] = []map[string]any{{"type": "session_media", "media": media}}
+		}},
+		{name: "forged size", edit: func(req *provideriface.Request) {
+			media := valid
+			media.Size++
+			req.Input[0]["content"] = []map[string]any{{"type": "session_media", "media": media}}
+		}},
+		{name: "missing asset identity", edit: func(req *provideriface.Request) {
+			media := valid
+			media.AssetID = ""
+			req.Input[0]["content"] = []map[string]any{{"type": "session_media", "media": media}}
+		}},
+		{name: "malformed payload", edit: func(req *provideriface.Request) {
+			req.Input[0]["content"] = []map[string]any{{"type": "session_media", "media": map[string]any{"url": "https://example.invalid/image.png"}}}
+		}},
+		{name: "direct URL", edit: func(req *provideriface.Request) {
+			req.Input[0]["content"] = []map[string]any{{"type": "image_url", "image_url": map[string]any{"url": "https://example.invalid/image.png"}}}
+		}},
+		{name: "local path", edit: func(req *provideriface.Request) {
+			req.Input[0]["content"] = []map[string]any{{"type": "input_image", "path": "asset.png"}}
+		}},
+		{name: "file", edit: func(req *provideriface.Request) {
+			req.Input[0]["content"] = []map[string]any{{"type": "file", "file": map[string]any{"file_data": "data:application/pdf;base64,AA=="}}}
+		}},
+		{name: "audio", edit: func(req *provideriface.Request) {
+			req.Input[0]["content"] = []map[string]any{{"type": "input_audio", "input_audio": map[string]any{"data": "AA==", "format": "wav"}}}
+		}},
+		{name: "video", edit: func(req *provideriface.Request) {
+			req.Input[0]["content"] = []map[string]any{{"type": "video_url", "video_url": map[string]any{"url": "https://example.invalid/video.mp4"}}}
+		}},
+		{name: "generation bypass", edit: func(req *provideriface.Request) {
+			req.Input[0]["content"] = []map[string]any{{"type": "image_generation", "prompt": "generate"}}
+		}},
 		{name: "assistant image", edit: func(req *provideriface.Request) { req.Input[0]["role"] = "assistant" }},
-		{name: "count exceeded", edit: func(req *provideriface.Request) { req.MediaContract.Capabilities[0].MaxCount = 1; req.Input[0]["content"] = []map[string]any{{"type": "session_media", "media": valid}, {"type": "session_media", "media": valid}} }},
-		{name: "adapter size ceiling exceeded", edit: func(req *provideriface.Request) { req.MediaContract.Capabilities[0].MaxBytes = openRouterMaxImageBytes + 1 }},
+		{name: "count exceeded", edit: func(req *provideriface.Request) {
+			req.MediaContract.Capabilities[0].MaxCount = 1
+			req.Input[0]["content"] = []map[string]any{{"type": "session_media", "media": valid}, {"type": "session_media", "media": valid}}
+		}},
+		{name: "adapter size ceiling exceeded", edit: func(req *provideriface.Request) {
+			req.MediaContract.Capabilities[0].MaxBytes = openRouterMaxImageBytes + 1
+		}},
 		{name: "cross surface", edit: func(req *provideriface.Request) { req.MediaContract.ProviderSurface = "responses_api" }},
 		{name: "catalog alias is not runtime surface", edit: func(req *provideriface.Request) { req.MediaContract.ProviderSurface = "chat_completions" }},
 	}

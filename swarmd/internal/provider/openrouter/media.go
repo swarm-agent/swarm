@@ -14,11 +14,11 @@ import (
 )
 
 const (
-	openRouterMediaAdapterID         = provideriface.MediaAdapterIDOpenRouterChatCompletionsV1
-	openRouterMediaProviderSurface   = provideriface.MediaProviderSurfaceOpenRouterChatCompletions
-	openRouterMediaCredentialSurface = provideriface.MediaCredentialSurfaceOpenRouterAPIKey
-	openRouterMaxImageBytes    int64 = 20 << 20
-	openRouterMaxImageCount          = 20
+	openRouterMediaAdapterID               = provideriface.MediaAdapterIDOpenRouterChatCompletionsV1
+	openRouterMediaProviderSurface         = provideriface.MediaProviderSurfaceOpenRouterChatCompletions
+	openRouterMediaCredentialSurface       = provideriface.MediaCredentialSurfaceOpenRouterAPIKey
+	openRouterMaxImageBytes          int64 = 20 << 20
+	openRouterMaxImageCount                = 20
 )
 
 var openRouterImageMIMETypes = []string{"image/gif", "image/jpeg", "image/png", "image/webp"}
