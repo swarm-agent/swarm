@@ -1,6 +1,7 @@
 package permission
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -128,7 +129,9 @@ func (s *Service) UpdateSubagentPolicyMapForAccount(accountScopeID string, input
 		return nil, err
 	}
 	var subagents SubagentPolicy
-	if err := json.Unmarshal(encoded, &subagents); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&subagents); err != nil {
 		return nil, err
 	}
 	_, err = s.UpdateSubagentPolicyForAccount(accountScopeID, subagents)

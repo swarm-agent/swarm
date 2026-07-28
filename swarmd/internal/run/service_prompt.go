@@ -9,6 +9,7 @@ import (
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
 	modelruntime "swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -337,23 +338,25 @@ func normalizeInstructionDiscoveryRoots(roots []string) []string {
 	return out
 }
 
+func subagentPolicyInstructions(subagents permission.SubagentPolicy) string {
+	return strings.TrimSpace(strings.Join([]string{
+		"Current backend orchestration policy (account-scoped):",
+		"- mode: " + string(subagents.Mode),
+		fmt.Sprintf("- automatic_launches_per_parent_run: %d (cumulative approval-free wave/task-call budget for this parent run; each accepted task call consumes one wave regardless of child count)", subagents.AutomaticLaunchesPerParentRun),
+		fmt.Sprintf("- active_child_limit: %d (hard ceiling for both one task call and aggregate active children; completed children release this capacity)", subagents.ActiveChildLimit),
+		"- over_budget_action: " + string(subagents.OverBudgetAction),
+		fmt.Sprintf("- require_write_isolation: %t", subagents.RequireWriteIsolation),
+		"- delegation_scope: parent sessions only; child sessions cannot invoke task delegation",
+		"These values are loaded when runtime instructions are composed. Backend reservation enforcement remains authoritative if policy changes during an active run.",
+	}, "\n"))
+}
+
 func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.WorkspaceScope, discoveryRoots []string, agentProfile pebblestore.AgentProfile, userInstructions string) string {
 	blocks := make([]string, 0, 6)
 	blocks = append(blocks, masterHarnessPromptWithScope(scope))
 	if s.permissions != nil {
 		if policy, err := s.permissions.CurrentPolicyForAccount(scope.Principal.AccountScopeID); err == nil {
-			subagents := policy.Subagents
-			blocks = append(blocks, strings.TrimSpace(strings.Join([]string{
-				"Current backend orchestration policy (account-scoped):",
-				"- mode: " + string(subagents.Mode),
-				fmt.Sprintf("- automatic_launches_per_parent_run: %d (cumulative approval-free launch budget for this parent run; completed children still count, preventing repeated automatic spawning loops)", subagents.AutomaticLaunchesPerParentRun),
-				fmt.Sprintf("- active_child_limit: %d (concurrent active-child ceiling for this parent run; completed children release this capacity)", subagents.ActiveChildLimit),
-				"- over_budget_action: " + string(subagents.OverBudgetAction),
-				fmt.Sprintf("- absolute_wave_maximum: %d", subagents.AbsoluteWaveMaximum),
-				fmt.Sprintf("- max_depth: %d", subagents.MaxDepth),
-				fmt.Sprintf("- require_write_isolation: %t", subagents.RequireWriteIsolation),
-				"These values are loaded when runtime instructions are composed. Backend reservation enforcement remains authoritative if policy changes during an active run.",
-			}, "\n")))
+			blocks = append(blocks, subagentPolicyInstructions(policy.Subagents))
 		}
 	}
 

@@ -76,6 +76,18 @@ test('request explainer UI and its supporting code are removed', () => {
   assert.doesNotMatch(settingsSource, /explainTool|explainArguments|explainResult|explaining/)
 })
 
+test('subagent settings expose an automatic wave budget and independent concurrency ceiling', () => {
+  assert.match(settingsSource, />Automatic waves per run</)
+  assert.match(settingsSource, /number of task-call waves a parent can start without asking/)
+  assert.match(settingsSource, /Every accepted task call consumes one wave, regardless of how many children it starts/)
+  assert.match(settingsSource, />Concurrent subagents</)
+  assert.match(settingsSource, />When the limit is reached</)
+  assert.match(settingsSource, /hard ceiling for both one task call and all currently active children/)
+  assert.match(settingsSource, /Only parent sessions can delegate; child sessions cannot start their own subagents/)
+  assert.doesNotMatch(settingsSource, /Largest single wave|Delegation depth/)
+  assert.doesNotMatch(settingsSource, /absolute_wave_maximum|max_depth|MAX_SUBAGENT_DEPTH/)
+})
+
 test('session mutation settings keep commit, archive, and unarchive policies isolated', () => {
   const rules: PermissionRule[] = [
     { id: 'commit', kind: 'tool', decision: 'allow', tool: 'session_commit' },

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -87,6 +88,32 @@ func TestModeCapabilityInstructionsUseInjectedPlanPresenceInsteadOfGetActiveProb
 	}
 	if strings.Contains(instructions, "If an active plan exists, use plan_manage get-active to inspect it") {
 		t.Fatalf("auto instructions still encourage get-active as a startup probe\n--- instructions ---\n%s", instructions)
+	}
+}
+
+func TestSubagentPolicyInstructionsUseSimplifiedContract(t *testing.T) {
+	instructions := subagentPolicyInstructions(permission.DefaultSubagentPolicy())
+	for _, want := range []string{
+		"- mode: bounded",
+		"- automatic_launches_per_parent_run: 5",
+		"- active_child_limit: 5",
+		"- over_budget_action: ask",
+		"- require_write_isolation: true",
+		"- delegation_scope: parent sessions only; child sessions cannot invoke task delegation",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("subagent policy instructions missing %q:\n%s", want, instructions)
+		}
+	}
+	for _, want := range []string{"wave/task-call budget", "each accepted task call consumes one wave regardless of child count", "hard ceiling for both one task call and aggregate active children"} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("subagent policy instructions do not explain independent wave and concurrency semantics; missing %q:\n%s", want, instructions)
+		}
+	}
+	for _, removed := range []string{"absolute_wave_maximum", "max_depth"} {
+		if strings.Contains(instructions, removed) {
+			t.Fatalf("subagent policy instructions still contain removed field %q:\n%s", removed, instructions)
+		}
 	}
 }
 

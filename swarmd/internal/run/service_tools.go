@@ -749,15 +749,15 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				decisions[i].Result.Error = decisions[i].Err.Error()
 				continue
 			}
-			depth := 0
-			if session, ok, _ := s.sessions.GetSession(sessionID); ok {
-				if parentID := strings.TrimSpace(mapString(session.Metadata, "task_parent_session_id")); parentID != "" {
-					depth = 2
+			delegated := false
+			if s.sessions != nil {
+				if session, ok, _ := s.sessions.GetSession(sessionID); ok {
+					delegated = strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "lineage_kind")), "delegated_subagent")
 				}
 			}
 			reserved, reserveErr := s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
 				SessionID: sessionID, AccountScopeID: accountScopeID, RunID: runID, CallID: callID,
-				ManifestHash: manifest.ManifestHash, LaunchCount: manifest.LaunchCount, Depth: depth,
+				ManifestHash: manifest.ManifestHash, LaunchCount: manifest.LaunchCount, Delegated: delegated,
 			})
 			if reserveErr != nil {
 				decisions[i].Err = reserveErr
