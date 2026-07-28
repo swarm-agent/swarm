@@ -15,7 +15,7 @@ func TestBuildChatCompletionRequestUsesLineageScopedSessionID(t *testing.T) {
 	if lifecycle.ContextMode != provideriface.ExecutionEpochContextStatelessFullInput || !lifecycle.EpochScopedSessionAffinity || !lifecycle.Valid() {
 		t.Fatalf("lifecycle = %+v, want valid stateless epoch-scoped affinity", lifecycle)
 	}
-	payload := buildChatCompletionRequest(provideriface.Request{
+	payload, err := buildChatCompletionRequest(provideriface.Request{
 		SessionID:          "durable-session",
 		ExecutionEpochID:   "epoch-a",
 		ProviderLineageID:  "provider-lineage-a",
@@ -27,11 +27,14 @@ func TestBuildChatCompletionRequestUsesLineageScopedSessionID(t *testing.T) {
 			"content": "hello",
 		}},
 	})
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
 	wantSessionID := "swarm-lineage-" + provideriface.ShortProviderLineageKey("openrouter-epoch", "epoch-a", "affinity-epoch-a")
 	if payload.SessionID != wantSessionID {
 		t.Fatalf("session_id = %q, want epoch-scoped affinity key %q", payload.SessionID, wantSessionID)
 	}
-	otherEpoch := buildChatCompletionRequest(provideriface.Request{
+	otherEpoch, err := buildChatCompletionRequest(provideriface.Request{
 		SessionID:          "durable-session",
 		ExecutionEpochID:   "epoch-b",
 		ProviderLineageID:  "provider-lineage-b",
@@ -39,6 +42,9 @@ func TestBuildChatCompletionRequestUsesLineageScopedSessionID(t *testing.T) {
 		Model:              "openai/gpt-test",
 		Input:              []map[string]any{{"role": "user", "content": "hello"}},
 	})
+	if err != nil {
+		t.Fatalf("build other epoch request: %v", err)
+	}
 	if otherEpoch.SessionID == payload.SessionID {
 		t.Fatalf("new epoch reused sticky session_id %q", payload.SessionID)
 	}
@@ -48,7 +54,7 @@ func TestBuildChatCompletionRequestUsesLineageScopedSessionID(t *testing.T) {
 }
 
 func TestOpenRouterExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
-	payload := buildChatCompletionRequest(provideriface.Request{
+	payload, err := buildChatCompletionRequest(provideriface.Request{
 		Model:        "openai/gpt-test",
 		Instructions: "current instructions",
 		Input: []map[string]any{
@@ -57,6 +63,9 @@ func TestOpenRouterExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) 
 			{"role": "user", "content": "epoch follow-up"},
 		},
 	})
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
@@ -75,7 +84,7 @@ func TestOpenRouterExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) 
 }
 
 func TestBuildChatCompletionRequestOmitsSessionIDWithoutLineage(t *testing.T) {
-	payload := buildChatCompletionRequest(provideriface.Request{
+	payload, err := buildChatCompletionRequest(provideriface.Request{
 		SessionID: "durable-session",
 		Model:     "openai/gpt-test",
 		Input: []map[string]any{{
@@ -83,13 +92,16 @@ func TestBuildChatCompletionRequestOmitsSessionIDWithoutLineage(t *testing.T) {
 			"content": "hello",
 		}},
 	})
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
 	if payload.SessionID != "" {
 		t.Fatalf("session_id = %q, want omitted without provider lineage", payload.SessionID)
 	}
 }
 
 func TestBuildChatCompletionRequestMapsReasoningAndServiceTierFromCatalog(t *testing.T) {
-	payload := buildChatCompletionRequest(provideriface.Request{
+	payload, err := buildChatCompletionRequest(provideriface.Request{
 		Model:       "openai/gpt-test",
 		Thinking:    "xhigh",
 		ServiceTier: "fast",
@@ -107,6 +119,9 @@ func TestBuildChatCompletionRequestMapsReasoningAndServiceTierFromCatalog(t *tes
 			"content": "hello",
 		}},
 	})
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
 	if !reflect.DeepEqual(payload.Reasoning, map[string]any{"effort": "xhigh"}) {
 		t.Fatalf("reasoning = %#v, want effort xhigh", payload.Reasoning)
 	}

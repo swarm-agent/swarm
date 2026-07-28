@@ -58,7 +58,10 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	payload := buildChatCompletionRequest(req)
+	payload, err := buildChatCompletionRequest(req)
+	if err != nil {
+		return provideriface.Response{}, err
+	}
 	decoded, err := r.client.CreateChatCompletion(ctx, record.APIKey, payload)
 	if err != nil {
 		return provideriface.Response{}, err
@@ -85,7 +88,10 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	payload := buildChatCompletionRequest(req)
+	payload, err := buildChatCompletionRequest(req)
+	if err != nil {
+		return provideriface.Response{}, err
+	}
 	toolState := newOpenRouterToolCallConstructionState()
 	reasoningByKey := make(map[string]string, 4)
 	decoded, err := r.client.CreateChatCompletionStream(ctx, record.APIKey, payload, func(chunk chatCompletionChunk) error {
@@ -144,10 +150,14 @@ func (r *Runner) activeCredential(ctx context.Context) (pebblestore.AuthCredenti
 	return record, nil
 }
 
-func buildChatCompletionRequest(req provideriface.Request) chatCompletionRequest {
+func buildChatCompletionRequest(req provideriface.Request) (chatCompletionRequest, error) {
+	messages, err := buildChatCompletionMessages(req)
+	if err != nil {
+		return chatCompletionRequest{}, err
+	}
 	out := chatCompletionRequest{
 		Model:       strings.TrimSpace(req.Model),
-		Messages:    buildChatCompletionMessages(req),
+		Messages:    messages,
 		Reasoning:   openRouterReasoningForRequest(req),
 		ServiceTier: openRouterServiceTierForRequest(req),
 		SessionID:   openRouterSessionID(req),
@@ -174,7 +184,7 @@ func buildChatCompletionRequest(req provideriface.Request) chatCompletionRequest
 			out.ParallelToolCalls = &parallel
 		}
 	}
-	return out
+	return out, nil
 }
 
 func openRouterReasoningForRequest(req provideriface.Request) map[string]any {
@@ -252,8 +262,12 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func buildChatCompletionMessages(req provideriface.Request) []map[string]any {
+func buildChatCompletionMessages(req provideriface.Request) ([]map[string]any, error) {
+	if err := validateOpenRouterMediaSurface(req.MediaContract); err != nil {
+		return nil, err
+	}
 	messages := make([]map[string]any, 0, len(req.Input)+1)
+	mediaCounts := make(map[string]int)
 	if instructions := strings.TrimSpace(req.Instructions); instructions != "" {
 		messages = append(messages, map[string]any{
 			"role":    "system",
@@ -272,8 +286,11 @@ func buildChatCompletionMessages(req provideriface.Request) []map[string]any {
 			}
 		}
 		role, _ := stringField(item, "role")
-		content := extractMessageText(item["content"])
-		if strings.TrimSpace(content) == "" {
+		content, ok, err := buildOpenRouterMessageContent(item["content"], req, mediaCounts)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
 			continue
 		}
 		mappedRole := "user"
@@ -285,7 +302,7 @@ func buildChatCompletionMessages(req provideriface.Request) []map[string]any {
 			"content": content,
 		})
 	}
-	return messages
+	return messages, nil
 }
 
 func mapFunctionCallMessage(item map[string]any) map[string]any {
