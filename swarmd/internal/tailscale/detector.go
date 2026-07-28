@@ -16,8 +16,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -153,6 +151,12 @@ func (e *SchemaError) Error() string {
 func (e *SchemaError) Unwrap() error { return e.Err }
 
 // Detector performs and caches read-only Tailscale inspection.
+type refreshCall struct {
+	done     chan struct{}
+	snapshot Snapshot
+	err      error
+}
+
 type Detector struct {
 	listener       Listener
 	runner         Runner
@@ -167,7 +171,9 @@ type Detector struct {
 	cachedAt   time.Time
 	hasCache   bool
 	generation uint64
-	group      singleflight.Group
+
+	refreshMu sync.Mutex
+	refreshes map[uint64]*refreshCall
 }
 
 // NewDetector returns a read-only detector for the effective desktop listener.
@@ -206,6 +212,7 @@ func NewDetector(cfg Config) (*Detector, error) {
 		commandTimeout: cfg.CommandTimeout,
 		cacheTTL:       cfg.CacheTTL,
 		now:            cfg.Now,
+		refreshes:      make(map[uint64]*refreshCall),
 	}, nil
 }
 
@@ -244,24 +251,39 @@ func (d *Detector) Snapshot(ctx context.Context, mode RefreshMode) (Snapshot, er
 	}
 
 	generation := d.cacheGeneration()
-	result := d.group.DoChan("snapshot", func() (any, error) {
-		snapshot, err := d.detect(context.WithoutCancel(ctx))
-		if err != nil {
-			return Snapshot{}, err
-		}
-		d.storeCache(snapshot, generation)
-		return snapshot, nil
-	})
-
+	call := d.startRefresh(ctx, generation)
 	select {
 	case <-ctx.Done():
 		return Snapshot{}, ctx.Err()
-	case call := <-result:
-		if call.Err != nil {
-			return Snapshot{}, call.Err
+	case <-call.done:
+		if call.err != nil {
+			return Snapshot{}, call.err
 		}
-		return call.Val.(Snapshot), nil
+		return cloneSnapshot(call.snapshot), nil
 	}
+}
+
+func (d *Detector) startRefresh(ctx context.Context, generation uint64) *refreshCall {
+	d.refreshMu.Lock()
+	if call := d.refreshes[generation]; call != nil {
+		d.refreshMu.Unlock()
+		return call
+	}
+	call := &refreshCall{done: make(chan struct{})}
+	d.refreshes[generation] = call
+	d.refreshMu.Unlock()
+
+	go func() {
+		call.snapshot, call.err = d.detect(context.WithoutCancel(ctx))
+		if call.err == nil {
+			d.storeCache(call.snapshot, generation)
+		}
+		d.refreshMu.Lock()
+		delete(d.refreshes, generation)
+		close(call.done)
+		d.refreshMu.Unlock()
+	}()
+	return call
 }
 
 func (d *Detector) loadCache() (Snapshot, bool) {
@@ -356,12 +378,24 @@ func (d *Detector) run(ctx context.Context, args ...string) ([]byte, error) {
 	return output, nil
 }
 
-func (d *Detector) remediation() string {
+// EffectiveTarget returns the exact local HTTP target that a verified Serve
+// route must proxy to. It is available even when CLI inspection fails.
+func (d *Detector) EffectiveTarget() string {
 	host := d.listener.Host
 	if isLoopbackAlias(host) {
 		host = "127.0.0.1"
 	}
-	return "tailscale serve --bg http://" + net.JoinHostPort(host, strconv.Itoa(d.listener.Port))
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(d.listener.Port))
+}
+
+// RemediationCommand returns a user-run command for configuring Serve. The
+// detector never executes this command.
+func (d *Detector) RemediationCommand() string {
+	return "tailscale serve --bg " + d.EffectiveTarget()
+}
+
+func (d *Detector) remediation() string {
+	return d.RemediationCommand()
 }
 
 func normalizeListener(listener Listener) (Listener, error) {

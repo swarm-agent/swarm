@@ -14,12 +14,12 @@ import (
 )
 
 type Store struct {
-	db               *pebble.DB
-	path             string
-	sessionMutations *sessionMutationCoordinator
-	modelProfilesMu         sync.Mutex
-	swarmProfilesMu         sync.Mutex
-	tailscaleAllowlistMu    sync.Mutex
+	db                   *pebble.DB
+	path                 string
+	sessionMutations     *sessionMutationCoordinator
+	modelProfilesMu      sync.Mutex
+	swarmProfilesMu      sync.Mutex
+	tailscaleAllowlistMu sync.Mutex
 }
 
 func Open(path string) (*Store, error) {

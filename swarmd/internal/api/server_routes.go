@@ -89,6 +89,9 @@ func (s *Server) registerProviderRoutes(mux *http.ServeMux) {
 
 func (s *Server) registerWorkspaceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/ui/settings", s.handleUISettings)
+	mux.HandleFunc(TailscaleSettingsPath, s.handleTailscaleSettings)
+	mux.HandleFunc(TailscaleSettingsApprovePath, s.handleTailscaleSettingsApprove)
+	mux.HandleFunc(TailscaleSettingsRevokePath, s.handleTailscaleSettingsRevoke)
 	mux.HandleFunc("/v1/workspace/resolve", s.handleWorkspaceResolve)
 	mux.HandleFunc("/v1/workspace/select", s.handleWorkspaceSelect)
 	mux.HandleFunc("/v1/workspace/current", s.handleWorkspaceCurrent)

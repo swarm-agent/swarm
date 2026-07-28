@@ -48,6 +48,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	"swarm/packages/swarmd/internal/tailscale"
 	"swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool"
 	topologyruntime "swarm/packages/swarmd/internal/topology"
@@ -452,6 +453,27 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetSwarmStore(swarmStore)
 	apiServer.SetUpdateService(updateSvc)
 	apiServer.SetTopologyService(topologySvc)
+	if cfg.DesktopPort > 0 {
+		listenHost, _, err := net.SplitHostPort(cfg.ListenAddr)
+		if err != nil {
+			bgCancel()
+			_ = secretStore.Close()
+			_ = store.Close()
+			_ = lk.Release()
+			return nil, fmt.Errorf("configure tailscale verifier desktop listener: %w", err)
+		}
+		detector, err := tailscale.NewDetector(tailscale.Config{
+			Listener: tailscale.Listener{Host: listenHost, Port: cfg.DesktopPort},
+		})
+		if err != nil {
+			bgCancel()
+			_ = secretStore.Close()
+			_ = store.Close()
+			_ = lk.Release()
+			return nil, fmt.Errorf("configure tailscale verifier: %w", err)
+		}
+		apiServer.SetTailscaleServePolicy(pebblestore.NewTailscaleServeAllowlistStore(store), detector)
+	}
 
 	localTransportRuntimeName := ""
 

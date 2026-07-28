@@ -126,21 +126,23 @@ type Server struct {
 	codexOAuthMu       sync.Mutex
 	codexOAuthSessions map[string]*codexOAuthSession
 
-	shuttingDown          atomic.Bool
-	activeRunMu           sync.Mutex
-	runCtx                context.Context
-	runCancel             context.CancelFunc
-	runWG                 sync.WaitGroup
-	activeRuns            atomic.Int32
-	requestStop           func(reason string)
-	desktopLocalSessions  *desktopLocalSessionManager
-	identityService       *identity.Service
-	identitySessions      *identity.SessionService
-	gitRealtime           *gitRealtimeManager
-	swarmStore            *pebblestore.SwarmStore
-	reviewCommitMu        sync.Mutex
-	reviewCommitActive    map[string]string
-	reviewAutoArchiveOnce sync.Once
+	shuttingDown           atomic.Bool
+	activeRunMu            sync.Mutex
+	runCtx                 context.Context
+	runCancel              context.CancelFunc
+	runWG                  sync.WaitGroup
+	activeRuns             atomic.Int32
+	requestStop            func(reason string)
+	desktopLocalSessions   *desktopLocalSessionManager
+	identityService        *identity.Service
+	identitySessions       *identity.SessionService
+	gitRealtime            *gitRealtimeManager
+	swarmStore             *pebblestore.SwarmStore
+	tailscaleServePolicy   *pebblestore.TailscaleServeAllowlistStore
+	tailscaleServeDetector tailscaleServeDetector
+	reviewCommitMu         sync.Mutex
+	reviewCommitActive     map[string]string
+	reviewAutoArchiveOnce  sync.Once
 }
 
 type aiTaskEnqueuer interface {
@@ -623,13 +625,14 @@ func (s *Server) LocalTransportHandler() http.Handler {
 
 func (s *Server) DesktopHandler() http.Handler {
 	apiHandler := s.withDesktopLocalSession(s.withAuth(s.withVaultGate(s.withJSON(s.apiMux()))))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	desktopSurface := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if shouldServeDesktopAsset(r) {
 			s.withDesktopLocalSession(s.withDesktopAssets(http.NotFoundHandler())).ServeHTTP(w, r)
 			return
 		}
 		apiHandler.ServeHTTP(w, r)
 	})
+	return s.withDesktopBoundary(desktopSurface)
 }
 
 func (s *Server) handleDesktopStream(w http.ResponseWriter, r *http.Request) {
@@ -3876,6 +3879,13 @@ func isSameOriginBrowserRequest(r *http.Request) bool {
 	if r == nil {
 		return false
 	}
+	if admission, ok := admittedDesktopOrigin(r); ok {
+		if !browserHeadersMatchAdmittedOrigin(r, admission.origin) {
+			return false
+		}
+		site := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")))
+		return site == "same-origin" || site == "same-site" || site == "none"
+	}
 	if !requestURLMatchesHeaderOrigin(r, r.Header.Get("Origin")) {
 		return false
 	}
@@ -3922,7 +3932,7 @@ func requestScheme(r *http.Request) string {
 	if r == nil {
 		return "http"
 	}
-	if strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+	if admission, ok := admittedDesktopOrigin(r); ok && admission.tailscaleServe && exactSingleHeaderValue(r.Header, "X-Forwarded-Proto", "https") {
 		return "https"
 	}
 	if r.TLS != nil {

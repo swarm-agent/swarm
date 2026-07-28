@@ -10,7 +10,7 @@ func TestNormalizeTailscaleServeOrigin(t *testing.T) {
 	t.Parallel()
 
 	valid := map[string]string{
-		"https://desk.tailnet.ts.net":  "https://desk.tailnet.ts.net",
+		"https://desk.tailnet.ts.net":    "https://desk.tailnet.ts.net",
 		" HTTPS://DESK.TAILNET.TS.NET/ ": "https://desk.tailnet.ts.net",
 	}
 	for input, want := range valid {

@@ -85,8 +85,8 @@ func newTestDetector(t *testing.T, runner Runner, now func() time.Time) *Detecto
 
 func successfulRunner() *scriptedRunner {
 	return &scriptedRunner{outputs: map[string][]byte{
-		"status --json":         []byte(testStatusJSON),
-		"serve status --json":   []byte(testServeJSON),
+		"status --json":        []byte(testStatusJSON),
+		"serve status --json":  []byte(testServeJSON),
 		"funnel status --json": []byte(testFunnelOffJSON),
 	}, errors: map[string]error{}}
 }
