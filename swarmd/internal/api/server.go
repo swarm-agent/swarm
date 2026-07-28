@@ -734,14 +734,25 @@ func (s *Server) handleWorktrees(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		managed, err := s.worktrees.ListManagedForPrincipal(principal, workspacePath)
+		warning := ""
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
+			warning = worktreeruntime.DetachedWorkspaceFallbackWarning(err)
+			if warning == "" {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			// A workspace does not need to be a Git repository to host a session.
+			// Report worktrees as effectively disabled so ordinary TUI session
+			// creation stays in the selected directory without requesting an
+			// allocation that cannot exist.
+			config.Enabled = false
+			managed = []worktreeruntime.ManagedWorktree{}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":        true,
 			"worktrees": config,
 			"managed":   managed,
+			"warning":   warning,
 		})
 	case http.MethodPost:
 		var req struct {

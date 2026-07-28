@@ -23,6 +23,7 @@ type fakeWorktreeService struct {
 	config          worktreeruntime.Config
 	allocation      worktreeruntime.Allocation
 	managed         []worktreeruntime.ManagedWorktree
+	managedErr      error
 	prune           worktreeruntime.PruneResult
 	attachBranch    *string
 	allocationErr   error
@@ -233,7 +234,7 @@ func (f *fakeWorktreeService) AttachBranch(workspacePath, sessionID, title strin
 }
 
 func (f *fakeWorktreeService) ListManaged(workspacePath string) ([]worktreeruntime.ManagedWorktree, error) {
-	return f.managed, nil
+	return f.managed, f.managedErr
 }
 
 func (f *fakeWorktreeService) ListManagedForPrincipal(principal identity.Principal, workspacePath string) ([]worktreeruntime.ManagedWorktree, error) {
@@ -292,6 +293,33 @@ func newTestWorkspaceService(t *testing.T, path string) (*workspaceruntime.Servi
 		t.Fatalf("add workspace: %v", err)
 	}
 	return workspaceSvc, path
+}
+
+func TestHandleWorktreesAllowsNonGitWorkspace(t *testing.T) {
+	workspaceSvc, workspacePath := newTestWorkspaceService(t, t.TempDir())
+	s := &Server{workspace: workspaceSvc, worktrees: &fakeWorktreeService{
+		config:     worktreeruntime.Config{Enabled: true},
+		managedErr: fmt.Errorf("resolve git common dir: git rev-parse --git-common-dir: fatal: not a git repository"),
+	}}
+	req := withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/worktrees?workspace_path="+workspacePath, nil))
+	rr := httptest.NewRecorder()
+
+	s.handleWorktrees(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var got struct {
+		OK        bool                              `json:"ok"`
+		Worktrees worktreeruntime.Config            `json:"worktrees"`
+		Managed   []worktreeruntime.ManagedWorktree `json:"managed"`
+		Warning   string                            `json:"warning"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !got.OK || got.Worktrees.Enabled || len(got.Managed) != 0 || got.Warning == "" {
+		t.Fatalf("unexpected non-git response: %+v", got)
+	}
 }
 
 func TestHandleWorktreesIncludesManagedInventory(t *testing.T) {
