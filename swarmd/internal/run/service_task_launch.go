@@ -699,6 +699,9 @@ func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call
 		}
 		return marshalPayload(payload)
 	case "manage_skill":
+		if !permission.ShouldApproveManageSkillMutation(arguments) {
+			return arguments, nil
+		}
 		payload, err := s.buildManageSkillPermissionPayload(sessionID, call)
 		if err != nil {
 			return "", err
@@ -1910,7 +1913,14 @@ func (s *Service) buildManageSkillPermissionPayload(sessionID string, call tool.
 	if err := json.Unmarshal([]byte(strings.TrimSpace(previewOutput)), &payload); err != nil {
 		return nil, fmt.Errorf("manage-skill preview output invalid: %w", err)
 	}
-	payload["approved_arguments"] = cloneGenericMap(args)
+	approved := cloneGenericMap(args)
+	approved["confirm"] = true
+	if change, ok := payload["change"].(map[string]any); ok {
+		if revision := strings.TrimSpace(mapString(change, "expected_revision")); revision != "" {
+			approved["expected_revision"] = revision
+		}
+	}
+	payload["approved_arguments"] = approved
 	return payload, nil
 }
 
@@ -2015,15 +2025,10 @@ func manageSkillApprovalArguments(payload map[string]any) map[string]any {
 		return nil
 	}
 	if approved, ok := payload["approved_arguments"].(map[string]any); ok {
-		args := cloneGenericMap(approved)
-		action := strings.ToLower(strings.TrimSpace(mapString(payload, "action")))
-		if action != "" {
-			args["action"] = action
-		}
-		if _, ok := args["confirm"]; !ok {
-			args["confirm"] = mapBool(payload, "confirm")
-		}
-		return args
+		return cloneGenericMap(approved)
+	}
+	if _, legacyPreview := payload["change"].(map[string]any); !legacyPreview {
+		return cloneGenericMap(payload)
 	}
 
 	action := strings.ToLower(strings.TrimSpace(mapString(payload, "action")))

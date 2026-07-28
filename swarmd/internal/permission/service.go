@@ -1485,7 +1485,7 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 	case "task":
 		return "task_launch"
 	case "manage_skill":
-		if changes, ok := manageSkillPermissionChangeCount(toolArguments); ok && changes > 0 {
+		if ShouldApproveManageSkillMutation(toolArguments) {
 			return "skill_change"
 		}
 		return "manage_skill"
@@ -1526,6 +1526,15 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 		return "tool"
 	default:
 		return toolName
+	}
+}
+
+func ShouldApproveManageSkillMutation(toolArguments string) bool {
+	switch manageAction(toolArguments) {
+	case "update", "delete", "remove":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1657,35 +1666,6 @@ func normalizePlanManageAction(action string, op string, payload map[string]any)
 func mapStringAny(value any) string {
 	text, _ := value.(string)
 	return text
-}
-
-func manageSkillPermissionChangeCount(toolArguments string) (int, bool) {
-	toolArguments = strings.TrimSpace(toolArguments)
-	if toolArguments == "" {
-		return 0, false
-	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(toolArguments), &payload); err != nil {
-		return 0, false
-	}
-	change, ok := payload["change"]
-	if !ok {
-		return 0, false
-	}
-	switch typed := change.(type) {
-	case map[string]any:
-		return 1, true
-	case []any:
-		count := 0
-		for _, item := range typed {
-			if _, ok := item.(map[string]any); ok {
-				count++
-			}
-		}
-		return count, true
-	default:
-		return 0, false
-	}
 }
 
 func manageThemePermissionChangeCount(toolArguments string) (int, bool) {

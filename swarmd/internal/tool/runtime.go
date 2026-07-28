@@ -925,7 +925,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-skill",
-			Description: "Inspect and manage workspace skills under .agents/skills; call with {\"action\":\"inspect\"} for usage details; supports inspect/list/get/create/update/delete, and create/update/delete return approval-ready previews unless confirm=true",
+			Description: "Inspect and manage workspace skills under .agents/skills; call with {\"action\":\"inspect\"} for usage details; supports inspect/list/get/create/update/delete; create applies immediately, while update/delete return approval-ready previews unless confirm=true",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -5800,7 +5800,9 @@ func executeManageSkill(scope WorkspaceScope, args map[string]any) (string, erro
 	case "get", "read":
 		return manageSkillGet(scope, args)
 	case "create":
-		return manageSkillChange(scope, args, false, confirm)
+		createArgs := cloneMapStringAny(args)
+		createArgs["expected_revision"] = manageSkillMissingRevision
+		return manageSkillApplyChange(scope, createArgs, false)
 	case "update":
 		return manageSkillChange(scope, args, true, confirm)
 	case "delete", "remove":
