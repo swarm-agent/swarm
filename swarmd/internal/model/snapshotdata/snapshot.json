@@ -2,8 +2,8 @@
   "schema_version": "2026-06-09.1",
   "api_version": "v1",
   "snapshot_schema_version": "2026-07-01.1",
-  "snapshot_id": "swarm-models-v1-1e44e8cdb9a01f89",
-  "snapshot_version": "1e44e8cdb9a01f89",
+  "snapshot_id": "swarm-models-v1-4e0072557685b5a2",
+  "snapshot_version": "4e0072557685b5a2",
   "generated_at": "2026-07-27T15:48:05.616Z",
   "model_count": 586,
   "provider_count": 7,
@@ -9193,8 +9193,7 @@
         ],
         "unsupported_swarm_settings": [
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "codex_models_manager_models_json",
@@ -9695,8 +9694,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "codex_models_manager_models_json",
@@ -10248,8 +10246,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "codex_models_manager_models_json",
@@ -10782,8 +10779,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "codex_models_manager_models_json",
@@ -11343,9 +11339,7 @@
             "notes": null
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "codex_models_manager_models_json",
           "openai_api_reasoning_docs"
@@ -11856,8 +11850,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "default_swarm_setting": "low",
         "provider_parameter": "reasoning_effort",
@@ -11915,13 +11908,6 @@
             "swarm_setting": "max",
             "provider_value": "max",
             "effective_provider_value": "max",
-            "behavior": "effort",
-            "notes": null
-          },
-          {
-            "swarm_setting": "ultra",
-            "provider_value": "ultra",
-            "effective_provider_value": "ultra",
             "behavior": "effort",
             "notes": null
           }
@@ -12452,8 +12438,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "default_swarm_setting": "medium",
         "provider_parameter": "reasoning_effort",
@@ -12511,13 +12496,6 @@
             "swarm_setting": "max",
             "provider_value": "max",
             "effective_provider_value": "max",
-            "behavior": "effort",
-            "notes": null
-          },
-          {
-            "swarm_setting": "ultra",
-            "provider_value": "ultra",
-            "effective_provider_value": "ultra",
             "behavior": "effort",
             "notes": null
           }
@@ -63051,8 +63029,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "off",
-          "ultra"
+          "off"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -63423,8 +63400,7 @@
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
-              "off",
-              "ultra"
+              "off"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -63560,8 +63536,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -63928,8 +63903,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -64098,9 +64072,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -64472,9 +64444,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": true,
@@ -64651,9 +64621,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -65024,9 +64992,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": true,
@@ -65183,8 +65149,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -65563,8 +65528,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -65720,8 +65684,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -66109,8 +66072,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -66268,8 +66230,7 @@
         ],
         "unsupported_swarm_settings": [
           "medium",
-          "xhigh",
-          "ultra"
+          "xhigh"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -66634,8 +66595,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "medium",
-              "xhigh",
-              "ultra"
+              "xhigh"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -66812,9 +66772,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -67193,9 +67151,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": true,
@@ -67366,8 +67322,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -67736,8 +67691,7 @@
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -67892,8 +67846,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -68274,8 +68227,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -68827,8 +68779,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -69182,8 +69133,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -69300,8 +69250,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -69651,8 +69600,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -69769,8 +69717,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -70120,8 +70067,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -72382,8 +72328,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -72742,8 +72687,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -72872,8 +72816,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -73232,8 +73175,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -75981,8 +75923,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "off",
-          "ultra"
+          "off"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -76353,8 +76294,7 @@
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
-              "off",
-              "ultra"
+              "off"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -76490,8 +76430,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -76858,8 +76797,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -76987,8 +76925,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -77351,8 +77288,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -77480,8 +77416,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -77848,8 +77783,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -77977,8 +77911,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -78345,8 +78278,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -78507,8 +78439,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "xhigh",
-          "ultra"
+          "xhigh"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -78882,8 +78813,7 @@
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
-              "xhigh",
-              "ultra"
+              "xhigh"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -79061,9 +78991,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -79434,9 +79362,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": false,
@@ -79613,9 +79539,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -79985,9 +79909,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": false,
@@ -80164,9 +80086,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -80538,9 +80458,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": false,
@@ -80717,9 +80635,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -81089,9 +81005,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": false,
@@ -81268,9 +81182,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -81642,9 +81554,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": true,
@@ -81821,9 +81731,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -82193,9 +82101,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": true,
@@ -82331,8 +82237,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -82706,8 +82611,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -82835,8 +82739,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -83213,8 +83116,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -83375,8 +83277,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "xhigh",
-          "ultra"
+          "xhigh"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -83750,8 +83651,7 @@
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
-              "xhigh",
-              "ultra"
+              "xhigh"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -83927,9 +83827,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -84300,9 +84198,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": true,
@@ -84427,8 +84323,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -84795,8 +84690,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -86665,8 +86559,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -87019,8 +86912,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -88861,8 +88753,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -89228,8 +89119,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -89357,8 +89247,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -89724,8 +89613,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -89879,8 +89767,7 @@
         ],
         "unsupported_swarm_settings": [
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -90255,8 +90142,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -90417,8 +90303,7 @@
         ],
         "unsupported_swarm_settings": [
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -90790,8 +90675,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -95692,8 +95576,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -96054,8 +95937,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -97495,8 +97377,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -97856,8 +97737,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -99801,8 +99681,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -100164,8 +100043,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -100282,8 +100160,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -100647,8 +100524,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -100765,8 +100641,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -101131,8 +101006,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -101258,8 +101132,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -101612,8 +101485,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -101739,8 +101611,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -102104,8 +101975,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -102231,8 +102101,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -102601,8 +102470,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -102729,8 +102597,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -103095,8 +102962,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -103239,8 +103105,7 @@
         "unsupported_swarm_settings": [
           "low",
           "medium",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -103614,8 +103479,7 @@
             "unsupported_swarm_settings": [
               "low",
               "medium",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -103763,8 +103627,7 @@
         "unsupported_swarm_settings": [
           "low",
           "medium",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -104137,8 +104000,7 @@
             "unsupported_swarm_settings": [
               "low",
               "medium",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -104699,8 +104561,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -105073,8 +104934,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -105193,8 +105053,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -105556,8 +105415,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": null,
             "source_ids": [
@@ -105685,8 +105543,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -106056,8 +105913,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -106178,8 +106034,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -106558,8 +106413,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -106679,8 +106533,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -107053,8 +106906,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -107175,8 +107027,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -107555,8 +107406,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -107712,8 +107562,7 @@
         ],
         "unsupported_swarm_settings": [
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -108092,8 +107941,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -108219,8 +108067,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -108582,8 +108429,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -108702,8 +108548,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -109067,8 +108912,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -109206,8 +109050,7 @@
           "low",
           "medium",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -109565,8 +109408,7 @@
               "low",
               "medium",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -109710,8 +109552,7 @@
           "low",
           "medium",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -110076,8 +109917,7 @@
               "low",
               "medium",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -110239,8 +110079,7 @@
         ],
         "unsupported_swarm_settings": [
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -110619,8 +110458,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -110766,8 +110604,7 @@
           "low",
           "medium",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -111124,8 +110961,7 @@
               "low",
               "medium",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -111287,8 +111123,7 @@
         ],
         "unsupported_swarm_settings": [
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -111666,8 +111501,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -112283,8 +112117,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -112672,8 +112505,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -112827,8 +112659,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -113212,8 +113043,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -113368,8 +113198,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -113748,8 +113577,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -113906,8 +113734,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -114286,8 +114113,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -114444,8 +114270,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -114824,8 +114649,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -118456,8 +118280,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -118825,8 +118648,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -118955,8 +118777,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -119321,8 +119142,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -119451,8 +119271,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -119823,8 +119642,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -119953,8 +119771,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -120314,8 +120131,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -124445,8 +124261,7 @@
         ],
         "unsupported_swarm_settings": [
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -124811,8 +124626,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -125834,8 +125648,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -126199,8 +126012,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -126337,8 +126149,7 @@
           "off",
           "low",
           "medium",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -126706,8 +126517,7 @@
               "off",
               "low",
               "medium",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -132462,8 +132272,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -132821,8 +132630,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -136473,8 +136281,7 @@
         ],
         "unsupported_swarm_settings": [
           "off",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -136849,8 +136656,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "off",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -140842,8 +140648,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -141202,8 +141007,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -141320,8 +141124,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -141683,8 +141486,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -142230,8 +142032,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -142591,8 +142392,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -142709,8 +142509,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -143079,8 +142878,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -143197,8 +142995,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -143566,8 +143363,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -143695,8 +143491,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -144067,8 +143862,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -149888,8 +149682,7 @@
           "low",
           "medium",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -150257,8 +150050,7 @@
               "low",
               "medium",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -152155,8 +151947,7 @@
           "low",
           "medium",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -152524,8 +152315,7 @@
               "low",
               "medium",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -156171,8 +155961,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -156538,8 +156327,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -156667,8 +156455,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -157037,8 +156824,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -157166,8 +156952,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -157537,8 +157322,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -157657,8 +157441,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -158027,8 +157810,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -158181,8 +157963,7 @@
         ],
         "unsupported_swarm_settings": [
           "medium",
-          "xhigh",
-          "ultra"
+          "xhigh"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -158547,8 +158328,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "medium",
-              "xhigh",
-              "ultra"
+              "xhigh"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -159542,8 +159322,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -159905,8 +159684,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -160033,8 +159811,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -160395,8 +160172,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -161390,8 +161166,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -161743,8 +161518,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -161870,8 +161644,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -162223,8 +161996,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -163645,8 +163417,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -164011,8 +163782,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -164138,8 +163908,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -164493,8 +164262,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -164623,8 +164391,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -164985,8 +164752,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -165131,8 +164897,7 @@
         "unsupported_swarm_settings": [
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -165504,8 +165269,7 @@
             "unsupported_swarm_settings": [
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -165655,8 +165419,7 @@
         "unsupported_swarm_settings": [
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -166019,8 +165782,7 @@
             "unsupported_swarm_settings": [
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -166170,8 +165932,7 @@
         "unsupported_swarm_settings": [
           "low",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -166542,8 +166303,7 @@
             "unsupported_swarm_settings": [
               "low",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -166693,8 +166453,7 @@
         "unsupported_swarm_settings": [
           "low",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -167055,8 +166814,7 @@
             "unsupported_swarm_settings": [
               "low",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -167190,8 +166948,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -167546,8 +167303,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -167676,8 +167432,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -168033,8 +167788,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -168160,8 +167914,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -168517,8 +168270,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -177404,8 +177156,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -177773,8 +177524,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -178330,8 +178080,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -178686,8 +178435,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -178807,8 +178555,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -179174,8 +178921,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -179295,8 +179041,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -179662,8 +179407,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -179810,8 +179554,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -180179,8 +179922,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -180334,8 +180076,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -180703,8 +180444,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -180841,8 +180581,7 @@
           "low",
           "medium",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -181202,8 +180941,7 @@
               "low",
               "medium",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -181361,8 +181099,7 @@
         ],
         "unsupported_swarm_settings": [
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -181730,8 +181467,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -182322,8 +182058,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -182688,8 +182423,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -182848,8 +182582,7 @@
         ],
         "unsupported_swarm_settings": [
           "off",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -183215,8 +182948,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "off",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -183375,8 +183107,7 @@
         ],
         "unsupported_swarm_settings": [
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -183741,8 +183472,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -183910,8 +183640,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -184280,8 +184009,7 @@
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -184880,8 +184608,7 @@
         ],
         "unsupported_swarm_settings": [
           "off",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -185244,8 +184971,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "off",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -185398,8 +185124,7 @@
         "unsupported_swarm_settings": [
           "off",
           "low",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -185761,8 +185486,7 @@
             "unsupported_swarm_settings": [
               "off",
               "low",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -186371,8 +186095,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -186741,8 +186464,7 @@
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -186912,8 +186634,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -187290,8 +187011,7 @@
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -187463,8 +187183,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -187839,8 +187558,7 @@
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -188011,8 +187729,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -188381,8 +188098,7 @@
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -188553,8 +188269,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -188923,8 +188638,7 @@
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -189079,8 +188793,7 @@
         "unsupported_swarm_settings": [
           "off",
           "low",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -189453,8 +189166,7 @@
             "unsupported_swarm_settings": [
               "off",
               "low",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -189622,8 +189334,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -190000,8 +189711,7 @@
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -190156,8 +189866,7 @@
         "unsupported_swarm_settings": [
           "off",
           "low",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -190529,8 +190238,7 @@
             "unsupported_swarm_settings": [
               "off",
               "low",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -190706,9 +190414,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -191087,9 +190793,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": true,
@@ -191268,9 +190972,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -191649,9 +191351,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": true,
@@ -191830,9 +191530,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -192211,9 +191909,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": true,
@@ -192392,9 +192088,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -192773,9 +192467,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": true,
@@ -192954,9 +192646,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -193335,9 +193025,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": true,
@@ -193516,9 +193204,7 @@
             "notes": "Set reasoning.effort=max; this exact effort appears in the model's live supported_efforts list."
           }
         ],
-        "unsupported_swarm_settings": [
-          "ultra"
-        ],
+        "unsupported_swarm_settings": [],
         "source_ids": [
           "openrouter_models_api",
           "openrouter_reasoning_tokens_docs"
@@ -193897,9 +193583,7 @@
             "supports_budget_tokens": null,
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "ultra"
-            ],
+            "unsupported_swarm_settings": [],
             "live_metadata": {
               "mandatory": false,
               "default_enabled": true,
@@ -196700,8 +196384,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -197072,8 +196755,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -197223,8 +196905,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -197594,8 +197275,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -197745,8 +197425,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -198114,8 +197793,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -198238,8 +197916,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -198596,8 +198273,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -198725,8 +198401,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -199087,8 +198762,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -199216,8 +198890,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -199568,8 +199241,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -199697,8 +199369,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -200052,8 +199723,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -200181,8 +199851,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -200548,8 +200217,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -200676,8 +200344,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -201038,8 +200705,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -201168,8 +200834,7 @@
           "low",
           "medium",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -201530,8 +201195,7 @@
               "low",
               "medium",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -201663,8 +201327,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -202021,8 +201684,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -202150,8 +201812,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -202505,8 +202166,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -202634,8 +202294,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -203001,8 +202660,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -203132,8 +202790,7 @@
           "low",
           "medium",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -203494,8 +203151,7 @@
               "low",
               "medium",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -206669,8 +206325,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -207049,8 +206704,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": null,
             "source_ids": [
@@ -207170,8 +206824,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -207550,8 +207203,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": null,
             "source_ids": [
@@ -208091,8 +207743,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -208455,8 +208106,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": null,
             "source_ids": [
@@ -209436,8 +209086,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -209797,8 +209446,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -211224,8 +210872,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -211578,8 +211225,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -212127,8 +211773,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -212484,8 +212129,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -212612,8 +212256,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -212965,8 +212608,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -213092,8 +212734,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -213449,8 +213090,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -213577,8 +213217,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -213933,8 +213572,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -214061,8 +213699,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -214419,8 +214056,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -214547,8 +214183,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -214903,8 +214538,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -215031,8 +214665,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -215388,8 +215021,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -215516,8 +215148,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -215872,8 +215503,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -218613,8 +218243,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -218978,8 +218607,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -219105,8 +218733,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -219472,8 +219099,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -220036,8 +219662,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -220398,8 +220023,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -220525,8 +220149,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -220878,8 +220501,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -221434,8 +221056,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -221798,8 +221419,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -221925,8 +221545,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -222291,8 +221910,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -222848,8 +222466,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -223200,8 +222817,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -223327,8 +222943,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -223689,8 +223304,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -223816,8 +223430,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -224176,8 +223789,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -226508,8 +226120,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -226884,8 +226495,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -227886,8 +227496,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -228262,8 +227871,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -228389,8 +227997,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -228761,8 +228368,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -229318,8 +228924,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -229682,8 +229287,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -230245,8 +229849,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -230611,8 +230214,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -231176,8 +230778,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -231540,8 +231141,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -232541,8 +232141,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -232899,8 +232498,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -233028,8 +232626,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -233399,8 +232996,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -233528,8 +233124,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -233899,8 +233494,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -234028,8 +233622,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -234400,8 +233993,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -234529,8 +234121,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -234900,8 +234491,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -235029,8 +234619,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -235400,8 +234989,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -235529,8 +235117,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -235889,8 +235476,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -236018,8 +235604,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -236387,8 +235972,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -236516,8 +236100,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -236883,8 +236466,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -237012,8 +236594,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -237384,8 +236965,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -237514,8 +237094,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -237882,8 +237461,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -238012,8 +237590,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -238379,8 +237956,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -238506,8 +238082,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -238871,8 +238446,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -239001,8 +238575,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -239375,8 +238948,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -239502,8 +239074,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -239867,8 +239438,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -239996,8 +239566,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -240363,8 +239932,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -245188,8 +244756,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -245553,8 +245120,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -245671,8 +245237,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -246033,8 +245598,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -247040,8 +246604,7 @@
         "unsupported_swarm_settings": [
           "off",
           "low",
-          "medium",
-          "ultra"
+          "medium"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -247411,8 +246974,7 @@
             "unsupported_swarm_settings": [
               "off",
               "low",
-              "medium",
-              "ultra"
+              "medium"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -252341,8 +251903,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -252700,8 +252261,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -252860,8 +252420,7 @@
         ],
         "unsupported_swarm_settings": [
           "off",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -253220,8 +252779,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "off",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -253345,8 +252903,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -253703,8 +253260,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -253850,8 +253406,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -254227,8 +253782,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -254360,8 +253914,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -254712,8 +254265,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -254857,8 +254409,7 @@
         "unsupported_swarm_settings": [
           "medium",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -255231,8 +254782,7 @@
             "unsupported_swarm_settings": [
               "medium",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -255383,8 +254933,7 @@
         "unsupported_swarm_settings": [
           "medium",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -255747,8 +255296,7 @@
             "unsupported_swarm_settings": [
               "medium",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -258536,8 +258084,7 @@
           }
         ],
         "unsupported_swarm_settings": [
-          "xhigh",
-          "ultra"
+          "xhigh"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -258912,8 +258459,7 @@
             "supports_effort_levels": true,
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
-              "xhigh",
-              "ultra"
+              "xhigh"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -259486,8 +259032,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -259845,8 +259390,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -260404,8 +259948,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -260778,8 +260321,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -260934,8 +260476,7 @@
         ],
         "unsupported_swarm_settings": [
           "off",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -261312,8 +260853,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "off",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -261475,8 +261015,7 @@
         ],
         "unsupported_swarm_settings": [
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -261858,8 +261397,7 @@
             "supports_reasoning_content": true,
             "unsupported_swarm_settings": [
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -262013,8 +261551,7 @@
         "unsupported_swarm_settings": [
           "off",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -262395,8 +261932,7 @@
             "unsupported_swarm_settings": [
               "off",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true,
@@ -262522,8 +262058,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -262898,8 +262433,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": true
@@ -265223,8 +264757,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -265597,8 +265130,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -265724,8 +265256,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -266094,8 +265625,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -266221,8 +265751,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -266578,8 +266107,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -266705,8 +266233,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -267066,8 +266593,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -267194,8 +266720,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -267556,8 +267081,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -267683,8 +267207,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -268051,8 +267574,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -268180,8 +267702,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -268544,8 +268065,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false
@@ -268671,8 +268191,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -269041,8 +268560,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -269169,8 +268687,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -269536,8 +269053,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -269664,8 +269180,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -270031,8 +269546,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -270159,8 +269673,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -270519,8 +270032,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -270647,8 +270159,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -271017,8 +270528,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -271162,8 +270672,7 @@
         "unsupported_swarm_settings": [
           "low",
           "medium",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -271537,8 +271046,7 @@
             "unsupported_swarm_settings": [
               "low",
               "medium",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
@@ -271672,8 +271180,7 @@
           "medium",
           "high",
           "xhigh",
-          "max",
-          "ultra"
+          "max"
         ],
         "source_ids": [
           "openrouter_models_api",
@@ -272034,8 +271541,7 @@
               "medium",
               "high",
               "xhigh",
-              "max",
-              "ultra"
+              "max"
             ],
             "live_metadata": {
               "mandatory": false,
