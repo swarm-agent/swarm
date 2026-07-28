@@ -231,6 +231,9 @@ func appendTextSegment(segments []Segment, text string) []Segment {
 
 func tagLabel(openTag string) string {
 	match := attrPattern.FindStringSubmatch(openTag)
+	if len(match) == 0 {
+		return ""
+	}
 	for _, candidate := range match[2:] {
 		if candidate = strings.TrimSpace(candidate); candidate != "" {
 			return candidate
