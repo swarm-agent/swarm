@@ -587,12 +587,17 @@ func CoderAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.Age
 }
 
 func DesignerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
-	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: DesignerAgentID, Mode: ModeSubagent, Description: "Compiled reusable UI and design implementation subagent",
 		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
 		Prompt: DesignerAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, DefaultSessionMode: pebblestore.AgentDefaultSessionModeAuto, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
-		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: DesignerAgentToolContract(), Enabled: true, Protected: true,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: DesignerAgentToolContract(), Enabled: true,
 	})
+	// AgentProfile normalization only preserves the legacy persisted memory agent's
+	// protection bit. Designer is compiled rather than persisted, so restore its
+	// immutable identity marker after normalizing the rest of the profile.
+	profile.Protected = true
+	return profile
 }
 
 func AISidechatAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
