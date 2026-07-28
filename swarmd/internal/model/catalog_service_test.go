@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -160,7 +161,7 @@ func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 	}
 }
 
-func TestDecodeSwarmSnapshotRecordsPreservesPilotMediaAndDeniesOthers(t *testing.T) {
+func TestDecodeSwarmSnapshotRecordsPreservesReviewedMediaAndDeniesOthers(t *testing.T) {
 	records, _, err := decodeSwarmSnapshotRecords(pinnedSwarmSnapshotJSON, 1000, 2000, catalogSourcePinned, "etag-media")
 	if err != nil {
 		t.Fatalf("decode embedded snapshot media: %v", err)
@@ -188,13 +189,87 @@ func TestDecodeSwarmSnapshotRecordsPreservesPilotMediaAndDeniesOthers(t *testing
 	assertMediaDirection(t, codex.Media.Inputs, "pdf", pebblestore.ModelCatalogMediaStateUnknown, pebblestore.ModelCatalogMediaSemanticsClientProcessed, []string{"application/pdf"}, []string{"pdf"})
 
 	for _, record := range records {
+		if !catalogMediaProviderEnabled(record.Provider) && record.Media != nil {
+			t.Fatalf("unreviewed provider %q unexpectedly has media capability: %+v", record.Provider, record.Media)
+		}
 		if record.Provider != "openai" && record.Provider != "codex" && record.Media != nil {
-			t.Fatalf("non-pilot provider %q unexpectedly has media capability: %+v", record.Provider, record.Media)
+			for _, input := range record.Media.Inputs {
+				if input.Modality != "image" {
+					t.Fatalf("reviewed provider %q hydrated non-image input: %+v", record.Provider, record.Media)
+				}
+			}
+			if len(record.Media.Outputs) != 0 {
+				t.Fatalf("reviewed provider %q hydrated media output: %+v", record.Provider, record.Media)
+			}
 		}
 	}
 }
 
-func TestDecodeSwarmSnapshotRecordsRejectsContradictoryPilotMedia(t *testing.T) {
+func TestCatalogMediaSurfaceAliasesRemainProviderScoped(t *testing.T) {
+	for _, test := range []struct{ provider, catalogSurface, runtimeSurface string }{
+		{"google", "generate_content", provideriface.MediaProviderSurfaceGoogleGenerateContent},
+		{"anthropic", "messages", provideriface.MediaProviderSurfaceAnthropicMessages},
+		{"fireworks", "chat_completions", provideriface.MediaProviderSurfaceFireworksChatCompletions},
+		{"openrouter", "chat_completions", provideriface.MediaProviderSurfaceOpenRouterChatCompletions},
+	} {
+		if !catalogMediaSurfaceAliasMatches(test.provider, test.catalogSurface, test.runtimeSurface) {
+			t.Fatalf("provider-scoped surface alias rejected: %+v", test)
+		}
+	}
+	if catalogMediaSurfaceAliasMatches("google", "messages", provideriface.MediaProviderSurfaceGoogleGenerateContent) {
+		t.Fatal("cross-provider surface alias matched Google")
+	}
+	var googleModel swarmSnapshotModel
+	if err := json.Unmarshal([]byte(`{"provider_id":"google","model_id":"vision","capabilities":{"supports_image_input":true}}`), &googleModel); err != nil {
+		t.Fatalf("decode Google model fixture: %v", err)
+	}
+	media, err := snapshotModelMediaCapabilities(swarmSnapshot{}, "google", googleModel)
+	if err != nil || media == nil {
+		t.Fatalf("hydrate Google MIME fallback: media=%+v err=%v", media, err)
+	}
+	assertMediaDirection(t, media.Inputs, "image", pebblestore.ModelCatalogMediaStateSupported, pebblestore.ModelCatalogMediaSemanticsNative, []string{"image/heic", "image/heif", "image/jpeg", "image/png", "image/webp"}, nil)
+}
+
+func TestSnapshotModelMediaCapabilitiesHydratesReviewedImageProvidersOnly(t *testing.T) {
+	for _, test := range []struct {
+		provider, surface, credential string
+	}{
+		{"google", "gemini_generate_content", "google_api_key"},
+		{"anthropic", "anthropic_messages", "anthropic_api_key"},
+		{"fireworks", "fireworks_chat_completions", "fireworks_api_key"},
+		{"openrouter", "openrouter_chat_completions", "openrouter_api_key"},
+	} {
+		var model swarmSnapshotModel
+		modelJSON := []byte(`{"provider_id":"` + test.provider + `","model_id":"vision-model","capabilities":{"supports_image_input":true},"provider_specific":{"` + test.provider + `":{"multimodal":{"api_surface":"` + test.surface + `","image":{"input":true,"supported_input_media_types":["image/png"]}}}}}`)
+		if err := json.Unmarshal(modelJSON, &model); err != nil {
+			t.Fatalf("decode %s fixture: %v", test.provider, err)
+		}
+		media, err := snapshotModelMediaCapabilities(swarmSnapshot{}, test.provider, model)
+		if err != nil {
+			t.Fatalf("hydrate %s media: %v", test.provider, err)
+		}
+		if media == nil || media.ProviderSurface != test.surface || media.CredentialSurface != test.credential {
+			t.Fatalf("%s media surface = %+v", test.provider, media)
+		}
+		assertMediaDirection(t, media.Inputs, "image", pebblestore.ModelCatalogMediaStateSupported, pebblestore.ModelCatalogMediaSemanticsNative, []string{"image/png"}, nil)
+	}
+	unreviewed, err := snapshotModelMediaCapabilities(swarmSnapshot{}, "exa", swarmSnapshotModel{ProviderID: "exa", ModelID: "vision"})
+	if err != nil || unreviewed != nil {
+		t.Fatalf("unreviewed provider media = %+v err=%v", unreviewed, err)
+	}
+}
+
+func TestSnapshotModelMediaCapabilitiesRejectsReviewedSurfaceContradiction(t *testing.T) {
+	var model swarmSnapshotModel
+	if err := json.Unmarshal([]byte(`{"provider_id":"google","model_id":"vision","capabilities":{"supports_image_input":true},"provider_specific":{"google":{"multimodal":{"api_surface":"messages","image":{"input":true,"supported_input_media_types":["image/png"]}}}}}`), &model); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	if _, err := snapshotModelMediaCapabilities(swarmSnapshot{}, "google", model); err == nil {
+		t.Fatal("contradictory Google catalog surface was accepted")
+	}
+}
+
+func TestDecodeSwarmSnapshotRecordsRejectsContradictoryReviewedMedia(t *testing.T) {
 	payload := []byte(`{
 		"snapshot_id":"snapshot-contradictory",
 		"snapshot_version":"v-contradictory",
@@ -213,7 +288,7 @@ func TestDecodeSwarmSnapshotRecordsRejectsContradictoryPilotMedia(t *testing.T) 
 	}
 }
 
-func TestCatalogPilotMediaRoundTripsWithMatchingProvenanceAndAliases(t *testing.T) {
+func TestCatalogReviewedMediaRoundTripsWithMatchingProvenanceAndAliases(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "catalog.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -557,7 +632,7 @@ func TestRefreshUsesSnapshotVersionAndSkipsUnchangedSnapshot(t *testing.T) {
 	}
 }
 
-func TestRefreshFailureRetainsPilotMediaAndMarksCacheFallback(t *testing.T) {
+func TestRefreshFailureRetainsReviewedMediaAndMarksCacheFallback(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "catalog.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -586,7 +661,7 @@ func TestRefreshFailureRetainsPilotMediaAndMarksCacheFallback(t *testing.T) {
 	}
 }
 
-func TestDecodeSwarmSnapshotRecordsUnknownFieldsDoNotBroadenPilotMedia(t *testing.T) {
+func TestDecodeSwarmSnapshotRecordsUnknownFieldsDoNotBroadenReviewedMedia(t *testing.T) {
 	payload := []byte(`{
 		"snapshot_id":"snapshot-unknown",
 		"snapshot_version":"v-unknown",

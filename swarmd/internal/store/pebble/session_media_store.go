@@ -89,6 +89,17 @@ func SessionMediaBlobPrefix(accountScopeID, sessionID string) string {
 	return fmt.Sprintf("v3/session_media/blobs/%s/%s/", keyPart(accountScopeID), keyPart(sessionID))
 }
 
+// Keep this storage-layer guard explicit: the store cannot import orchestration
+// policy without creating a package cycle, and unknown providers must fail closed.
+func sessionMediaAssetProviderEnabled(providerID string) bool {
+	switch strings.ToLower(strings.TrimSpace(providerID)) {
+	case "openai", "codex", "google", "anthropic", "fireworks", "openrouter":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *SessionStore) PutSessionMediaAsset(input PutSessionMediaAssetInput) (SessionMediaAsset, bool, error) {
 	if s == nil || s.store == nil {
 		return SessionMediaAsset{}, false, errors.New("session store is not configured")
@@ -107,8 +118,8 @@ func (s *SessionStore) PutSessionMediaAsset(input PutSessionMediaAssetInput) (Se
 	if input.Modality == "" || input.DeclaredMIMEType == "" || input.ContractHash == "" {
 		return SessionMediaAsset{}, false, errors.New("media asset modality, declared MIME type, and contract hash are required")
 	}
-	if input.ProviderID != "openai" && input.ProviderID != "codex" {
-		return SessionMediaAsset{}, false, errors.New("media assets are restricted to the OpenAI/Codex pilot")
+	if !sessionMediaAssetProviderEnabled(input.ProviderID) {
+		return SessionMediaAsset{}, false, errors.New("media assets are restricted to reviewed conversational provider surfaces")
 	}
 	if input.Reader == nil {
 		return SessionMediaAsset{}, false, errors.New("media asset body is required")

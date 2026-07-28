@@ -26,6 +26,18 @@ const (
 	MediaAdapterIDCodexChatGPTV1        = "codex-chatgpt-v1"
 	MediaProviderSurfaceCodexChatGPT    = "chatgpt_codex"
 	MediaCredentialSurfaceCodexOAuth    = "codex_oauth"
+	MediaAdapterIDGoogleGenerateContentV1         = "google-generate-content-v1"
+	MediaProviderSurfaceGoogleGenerateContent     = "gemini_generate_content"
+	MediaCredentialSurfaceGoogleAPIKey            = "google_api_key"
+	MediaAdapterIDAnthropicMessagesV1              = "anthropic-messages-v1"
+	MediaProviderSurfaceAnthropicMessages          = "anthropic_messages"
+	MediaCredentialSurfaceAnthropicAPIKey          = "anthropic_api_key"
+	MediaAdapterIDFireworksChatCompletionsV1       = "fireworks-chat-completions-v1"
+	MediaProviderSurfaceFireworksChatCompletions   = "fireworks_chat_completions"
+	MediaCredentialSurfaceFireworksAPIKey          = "fireworks_api_key"
+	MediaAdapterIDOpenRouterChatCompletionsV1      = "openrouter-chat-completions-v1"
+	MediaProviderSurfaceOpenRouterChatCompletions  = "openrouter_chat_completions"
+	MediaCredentialSurfaceOpenRouterAPIKey         = "openrouter_api_key"
 )
 
 // MediaAdapterCapability is an adapter's exact, implemented admission ceiling.

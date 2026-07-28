@@ -30,6 +30,19 @@ func putTestMedia(t *testing.T, sessions *SessionStore, account, session string)
 	return asset
 }
 
+func TestSessionMediaAssetProviderAllowlistIsExplicit(t *testing.T) {
+	for _, providerID := range []string{"openai", "codex", "google", "anthropic", "fireworks", "openrouter"} {
+		if !sessionMediaAssetProviderEnabled(providerID) {
+			t.Fatalf("reviewed provider %q is not enabled", providerID)
+		}
+	}
+	for _, providerID := range []string{"exa", "copilot", "ollama", "unknown"} {
+		if sessionMediaAssetProviderEnabled(providerID) {
+			t.Fatalf("unreviewed provider %q is enabled", providerID)
+		}
+	}
+}
+
 func TestSessionMediaAssetDedupOwnershipSpoofingQuotaAndGC(t *testing.T) {
 	_, sessions := openSessionMediaTestStore(t)
 	asset := putTestMedia(t, sessions, "account-a", "session-a")

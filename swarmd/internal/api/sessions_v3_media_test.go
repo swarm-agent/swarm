@@ -40,15 +40,15 @@ func TestSessionMediaAllowedCapabilityAcceptsImageExtensionWhenContractUsesMIMEO
 	}
 }
 
-func TestProjectSessionsV3MediaCapabilityFailsClosedForNonPilotProviders(t *testing.T) {
-	for _, providerID := range []string{"anthropic", "gemini", "openrouter", "ollama", "bedrock"} {
+func TestProjectSessionsV3MediaCapabilityFailsClosedForUnreviewedProviders(t *testing.T) {
+	for _, providerID := range []string{"exa", "copilot", "gemini", "ollama", "bedrock"} {
 		projection := projectSessionsV3MediaCapability(provideriface.SessionMediaContract{
 			Version: 1, ProviderID: providerID, Hash: "forged",
 			Capabilities:  []provideriface.MediaContractCapability{{Modality: "image", State: provideriface.MediaCapabilityStateDenied}},
-			DenialReasons: []string{"provider is outside the OpenAI/Codex pilot"},
+			DenialReasons: []string{"provider has no reviewed conversational media surface"},
 		})
 		if projection.Status != "unavailable" || projection.ContractToken != "" || len(projection.Capabilities) != 0 {
-			t.Fatalf("non-pilot provider %q projected media: %+v", providerID, projection)
+			t.Fatalf("unreviewed provider %q projected media: %+v", providerID, projection)
 		}
 	}
 }

@@ -7,7 +7,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestCompileSessionMediaContractPilotIntersectionAndDenials(t *testing.T) {
+func TestCompileSessionMediaContractReviewedIntersectionAndDenials(t *testing.T) {
 	boolFalse := false
 	baseCatalog := func(provider, model, surface, credential, semantics string) *pebblestore.ModelCatalogRecord {
 		return &pebblestore.ModelCatalogRecord{
@@ -39,7 +39,7 @@ func TestCompileSessionMediaContractPilotIntersectionAndDenials(t *testing.T) {
 		{"agent denial", SessionMediaContractInput{ProviderID: "openai", Model: "gpt", Catalog: baseCatalog("openai", "gpt", "responses_api", "openai_api_key", pebblestore.ModelCatalogMediaSemanticsNative), CatalogMeta: baseMeta, Adapter: openAIAdapter, AgentAuthorized: boolFalse, ExecutionMode: "auto", WorkspaceScope: "/workspace", SessionScope: "session"}, false},
 		{"execution mode denial", SessionMediaContractInput{ProviderID: "openai", Model: "gpt", Catalog: baseCatalog("openai", "gpt", "responses_api", "openai_api_key", pebblestore.ModelCatalogMediaSemanticsNative), CatalogMeta: baseMeta, Adapter: openAIAdapter, AgentAuthorized: true, ExecutionMode: "read", WorkspaceScope: "/workspace", SessionScope: "session"}, false},
 		{"adapter missing", SessionMediaContractInput{ProviderID: "openai", Model: "gpt", Catalog: baseCatalog("openai", "gpt", "responses_api", "openai_api_key", pebblestore.ModelCatalogMediaSemanticsNative), CatalogMeta: baseMeta, AgentAuthorized: true, ExecutionMode: "auto", WorkspaceScope: "/workspace", SessionScope: "session"}, false},
-		{"non pilot", SessionMediaContractInput{ProviderID: "anthropic", Model: "claude", AgentAuthorized: true, ExecutionMode: "auto", WorkspaceScope: "/workspace", SessionScope: "session"}, false},
+		{"reviewed provider without facts", SessionMediaContractInput{ProviderID: "anthropic", Model: "claude", AgentAuthorized: true, ExecutionMode: "auto", WorkspaceScope: "/workspace", SessionScope: "session"}, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -51,6 +51,40 @@ func TestCompileSessionMediaContractPilotIntersectionAndDenials(t *testing.T) {
 				t.Fatalf("contract hash is empty")
 			}
 		})
+	}
+}
+
+func TestConversationalMediaProviderAllowlistIsExplicit(t *testing.T) {
+	for _, providerID := range []string{"openai", "codex", "google", "anthropic", "fireworks", "openrouter"} {
+		if !SessionMediaProviderEnabled(providerID) {
+			t.Fatalf("reviewed provider %q is not enabled", providerID)
+		}
+	}
+	for _, providerID := range []string{"exa", "copilot", "ollama", "bedrock", "unknown"} {
+		if SessionMediaProviderEnabled(providerID) {
+			t.Fatalf("unreviewed provider %q is enabled", providerID)
+		}
+	}
+	forged := provideriface.MediaAdapterDeclaration{AdapterID: "forged", ProviderID: "google", ProviderSurface: provideriface.MediaProviderSurfaceGoogleGenerateContent, CredentialSurface: provideriface.MediaCredentialSurfaceGoogleAPIKey}
+	if conversationalMediaSurfaceMatches("google", forged) {
+		t.Fatal("forged Google adapter ID matched the reviewed surface")
+	}
+}
+
+func TestCompileSessionMediaContractAllowsReviewedGoogleSurface(t *testing.T) {
+	catalog := &pebblestore.ModelCatalogRecord{Provider: "google", Model: "gemini-vision", SourceSnapshotID: "snap", SourceSnapshotVersion: "v1", Media: &pebblestore.ModelCatalogMediaCapabilities{
+		State: pebblestore.ModelCatalogMediaStateSupported, ProviderSurface: provideriface.MediaProviderSurfaceGoogleGenerateContent, CredentialSurface: provideriface.MediaCredentialSurfaceGoogleAPIKey,
+		Inputs: []pebblestore.ModelCatalogMediaDirection{{Modality: "image", State: pebblestore.ModelCatalogMediaStateSupported, Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}}},
+	}}
+	adapter := provideriface.MediaAdapterDeclaration{AdapterID: provideriface.MediaAdapterIDGoogleGenerateContentV1, ProviderID: "google", ProviderSurface: provideriface.MediaProviderSurfaceGoogleGenerateContent, CredentialSurface: provideriface.MediaCredentialSurfaceGoogleAPIKey, CredentialFingerprint: "credential", Inputs: []provideriface.MediaAdapterCapability{{Modality: "image", Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}, ContentTypes: []string{"inline_data"}, MaxBytes: 1024, MaxCount: 1}}}
+	contract := CompileSessionMediaContract(SessionMediaContractInput{ProviderID: "google", Model: "gemini-vision", Catalog: catalog, CatalogMeta: &pebblestore.ModelCatalogMeta{SnapshotID: "snap", SnapshotVersion: "v1"}, Adapter: adapter, AgentAuthorized: true, ExecutionMode: "auto", WorkspaceScope: "/workspace", SessionScope: "session"})
+	if !SessionMediaContractAllows(contract, "image", "image/png", "") {
+		t.Fatalf("reviewed Google contract denied image: %+v", contract)
+	}
+	adapter.AdapterID = "forged"
+	forged := CompileSessionMediaContract(SessionMediaContractInput{ProviderID: "google", Model: "gemini-vision", Catalog: catalog, CatalogMeta: &pebblestore.ModelCatalogMeta{SnapshotID: "snap", SnapshotVersion: "v1"}, Adapter: adapter, AgentAuthorized: true, ExecutionMode: "auto", WorkspaceScope: "/workspace", SessionScope: "session"})
+	if SessionMediaContractAllows(forged, "image", "image/png", "") {
+		t.Fatalf("forged Google surface admitted image: %+v", forged)
 	}
 }
 
@@ -69,8 +103,8 @@ func TestSessionMediaContractAllowsImageExtensionWhenMIMEIsAuthoritative(t *test
 	}
 }
 
-func TestCompileSessionMediaContractEveryNonPilotProviderIsTextOnly(t *testing.T) {
-	for _, providerID := range []string{"anthropic", "gemini", "openrouter", "ollama", "bedrock"} {
+func TestCompileSessionMediaContractEveryUnreviewedProviderIsTextOnly(t *testing.T) {
+	for _, providerID := range []string{"gemini", "ollama", "bedrock", "exa", "copilot"} {
 		contract := CompileSessionMediaContract(SessionMediaContractInput{
 			ProviderID: providerID, Model: "multimodal", AgentAuthorized: true, ExecutionMode: "auto", WorkspaceScope: "/workspace", SessionScope: "session",
 			Catalog:     &pebblestore.ModelCatalogRecord{Provider: providerID, Model: "multimodal", Source: "live", SourceSnapshotID: "snapshot", SourceSnapshotVersion: "v1", Media: &pebblestore.ModelCatalogMediaCapabilities{State: pebblestore.ModelCatalogMediaStateSupported, ProviderSurface: "forged", CredentialSurface: "forged", Inputs: []pebblestore.ModelCatalogMediaDirection{{Modality: "image", State: pebblestore.ModelCatalogMediaStateSupported, Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}}}}},
@@ -78,14 +112,14 @@ func TestCompileSessionMediaContractEveryNonPilotProviderIsTextOnly(t *testing.T
 			Adapter:     provideriface.MediaAdapterDeclaration{AdapterID: "forged", ProviderID: providerID, ProviderSurface: "forged", CredentialSurface: "forged", CredentialFingerprint: "forged", Inputs: []provideriface.MediaAdapterCapability{{Modality: "image", Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}, ContentTypes: []string{"input_image"}, MaxBytes: 1024, MaxCount: 1}}},
 		})
 		if SessionMediaContractAllows(contract, "image", "image/png", "") || len(allowedSessionMediaCapabilities(contract)) != 0 {
-			t.Fatalf("non-pilot provider %q admitted media: %+v", providerID, contract)
+			t.Fatalf("unreviewed provider %q admitted media: %+v", providerID, contract)
 		}
 	}
 }
 
 func TestCompileSessionMediaContractStableHashAndLineageInputs(t *testing.T) {
 	catalog := &pebblestore.ModelCatalogRecord{Provider: "openai", Model: "gpt-a", Source: "live", SourceSnapshotID: "snap-a", SourceSnapshotVersion: "v1", Media: &pebblestore.ModelCatalogMediaCapabilities{State: pebblestore.ModelCatalogMediaStateSupported, ProviderSurface: "responses_api", CredentialSurface: "openai_api_key", Inputs: []pebblestore.ModelCatalogMediaDirection{{Modality: "image", State: pebblestore.ModelCatalogMediaStateSupported, Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png", "image/jpeg"}}}}}
-	input := SessionMediaContractInput{ProviderID: "openai", Model: "gpt-a", Catalog: catalog, CatalogMeta: &pebblestore.ModelCatalogMeta{SnapshotID: "snap-a", SnapshotVersion: "v1"}, Adapter: provideriface.MediaAdapterDeclaration{AdapterID: "adapter-a", ProviderID: "openai", ProviderSurface: "responses_api", CredentialSurface: "openai_api_key", CredentialFingerprint: "cred", Inputs: []provideriface.MediaAdapterCapability{{Modality: "image", Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/jpeg", "image/png"}, ContentTypes: []string{"input_image"}, MaxBytes: 1, MaxCount: 1}}}, AgentAuthorized: true, ExecutionMode: "auto", WorkspaceScope: "/workspace", SessionScope: "session"}
+	input := SessionMediaContractInput{ProviderID: "openai", Model: "gpt-a", Catalog: catalog, CatalogMeta: &pebblestore.ModelCatalogMeta{SnapshotID: "snap-a", SnapshotVersion: "v1"}, Adapter: provideriface.MediaAdapterDeclaration{AdapterID: provideriface.MediaAdapterIDOpenAIResponsesV1, ProviderID: "openai", ProviderSurface: "responses_api", CredentialSurface: "openai_api_key", CredentialFingerprint: "cred", Inputs: []provideriface.MediaAdapterCapability{{Modality: "image", Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/jpeg", "image/png"}, ContentTypes: []string{"input_image"}, MaxBytes: 1, MaxCount: 1}}}, AgentAuthorized: true, ExecutionMode: "auto", WorkspaceScope: "/workspace", SessionScope: "session"}
 	first := CompileSessionMediaContract(input)
 	input.Adapter.Inputs[0].MIMETypes = []string{"image/png", "image/jpeg"}
 	second := CompileSessionMediaContract(input)

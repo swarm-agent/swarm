@@ -14,6 +14,38 @@ import (
 
 const SessionMediaContractVersion = 1
 
+type conversationalMediaSurface struct {
+	adapterID         string
+	providerSurface   string
+	credentialSurface string
+}
+
+// conversationalMediaProviders is the closed registry shared by declaration
+// resolution and contract compilation. Provider adapters still must declare the
+// exact registered surface; membership alone never grants a capability.
+var conversationalMediaProviders = map[string]conversationalMediaSurface{
+	"anthropic":  {provideriface.MediaAdapterIDAnthropicMessagesV1, provideriface.MediaProviderSurfaceAnthropicMessages, provideriface.MediaCredentialSurfaceAnthropicAPIKey},
+	"codex":      {provideriface.MediaAdapterIDCodexChatGPTV1, provideriface.MediaProviderSurfaceCodexChatGPT, provideriface.MediaCredentialSurfaceCodexOAuth},
+	"fireworks":  {provideriface.MediaAdapterIDFireworksChatCompletionsV1, provideriface.MediaProviderSurfaceFireworksChatCompletions, provideriface.MediaCredentialSurfaceFireworksAPIKey},
+	"google":     {provideriface.MediaAdapterIDGoogleGenerateContentV1, provideriface.MediaProviderSurfaceGoogleGenerateContent, provideriface.MediaCredentialSurfaceGoogleAPIKey},
+	"openai":     {provideriface.MediaAdapterIDOpenAIResponsesV1, provideriface.MediaProviderSurfaceOpenAIResponses, provideriface.MediaCredentialSurfaceOpenAIAPIKey},
+	"openrouter": {provideriface.MediaAdapterIDOpenRouterChatCompletionsV1, provideriface.MediaProviderSurfaceOpenRouterChatCompletions, provideriface.MediaCredentialSurfaceOpenRouterAPIKey},
+}
+
+// SessionMediaProviderEnabled reports membership in the closed reviewed registry.
+// A provider still needs matching catalog facts and an exact adapter declaration.
+func SessionMediaProviderEnabled(providerID string) bool {
+	_, ok := conversationalMediaProviders[strings.ToLower(strings.TrimSpace(providerID))]
+	return ok
+}
+
+func conversationalMediaSurfaceMatches(providerID string, declaration provideriface.MediaAdapterDeclaration) bool {
+	surface, ok := conversationalMediaProviders[strings.ToLower(strings.TrimSpace(providerID))]
+	return ok && strings.TrimSpace(declaration.AdapterID) == surface.adapterID &&
+		strings.TrimSpace(declaration.ProviderSurface) == surface.providerSurface &&
+		strings.TrimSpace(declaration.CredentialSurface) == surface.credentialSurface
+}
+
 // SessionMediaContractInput contains only backend-resolved facts. Credential
 // material is deliberately absent; adapters expose a non-secret fingerprint.
 type SessionMediaContractInput struct {
@@ -30,7 +62,7 @@ type SessionMediaContractInput struct {
 
 func ResolveMediaAdapterDeclaration(ctx context.Context, providerID string, runner provideriface.Runner) provideriface.MediaAdapterDeclaration {
 	providerID = strings.ToLower(strings.TrimSpace(providerID))
-	if providerID != "openai" && providerID != "codex" {
+	if !SessionMediaProviderEnabled(providerID) {
 		return provideriface.MediaAdapterDeclaration{}
 	}
 	declared, ok := runner.(provideriface.MediaCapabilityRunner)
@@ -38,7 +70,7 @@ func ResolveMediaAdapterDeclaration(ctx context.Context, providerID string, runn
 		return provideriface.MediaAdapterDeclaration{}
 	}
 	declaration, err := declared.MediaCapabilityDeclaration(ctx)
-	if err != nil {
+	if err != nil || !strings.EqualFold(strings.TrimSpace(declaration.ProviderID), providerID) || !conversationalMediaSurfaceMatches(providerID, declaration) {
 		return provideriface.MediaAdapterDeclaration{}
 	}
 	return declaration
@@ -72,8 +104,8 @@ func CompileSessionMediaContract(input SessionMediaContractInput) provideriface.
 			contract.DenialReasons = append(contract.DenialReasons, reason)
 		}
 	}
-	if contract.ProviderID != "openai" && contract.ProviderID != "codex" {
-		deny("provider is outside the OpenAI/Codex pilot")
+	if !SessionMediaProviderEnabled(contract.ProviderID) {
+		deny("provider has no reviewed conversational media surface")
 	}
 	if contract.Model == "" {
 		deny("resolved model is missing")
@@ -101,6 +133,8 @@ func CompileSessionMediaContract(input SessionMediaContractInput) provideriface.
 	}
 	if !strings.EqualFold(strings.TrimSpace(input.Adapter.ProviderID), contract.ProviderID) || contract.AdapterID == "" {
 		deny("adapter does not implement the resolved provider")
+	} else if !conversationalMediaSurfaceMatches(contract.ProviderID, input.Adapter) {
+		deny("adapter does not match the reviewed provider media surface")
 	}
 	if contract.CredentialFingerprint == "" {
 		deny("active credential surface is unresolved")

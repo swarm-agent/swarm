@@ -175,8 +175,8 @@ func (s *Server) sessionsV3MediaContract(principal identity.Principal, session p
 		return provideriface.SessionMediaContract{}, err
 	}
 	contract := resolved.MediaContract
-	if contract.ProviderID != "openai" && contract.ProviderID != "codex" {
-		return provideriface.SessionMediaContract{}, errors.New("media admission is restricted to the OpenAI/Codex pilot")
+	if !runruntime.SessionMediaProviderEnabled(contract.ProviderID) {
+		return provideriface.SessionMediaContract{}, errors.New("media admission is restricted to reviewed conversational provider surfaces")
 	}
 	return contract, nil
 }

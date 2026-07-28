@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -795,9 +796,35 @@ type swarmSnapshotModalityDetail struct {
 	Processing               string   `json:"processing"`
 }
 
+func catalogMediaProviderEnabled(providerID string) bool {
+	switch canonicalCatalogProviderID(providerID) {
+	case "openai", "codex", "google", "anthropic", "fireworks", "openrouter":
+		return true
+	default:
+		return false
+	}
+}
+
+func catalogMediaSurfaceAliasMatches(providerID, catalogSurface, runtimeSurface string) bool {
+	catalogSurface = strings.ToLower(strings.TrimSpace(catalogSurface))
+	if strings.EqualFold(catalogSurface, strings.TrimSpace(runtimeSurface)) {
+		return true
+	}
+	switch canonicalCatalogProviderID(providerID) {
+	case "google":
+		return catalogSurface == "generate_content"
+	case "anthropic":
+		return catalogSurface == "messages"
+	case "fireworks", "openrouter":
+		return catalogSurface == "chat_completions"
+	default:
+		return false
+	}
+}
+
 func snapshotModelMediaCapabilities(snapshot swarmSnapshot, providerID string, model swarmSnapshotModel) (*pebblestore.ModelCatalogMediaCapabilities, error) {
 	providerID = canonicalCatalogProviderID(providerID)
-	if providerID != "openai" && providerID != "codex" {
+	if !catalogMediaProviderEnabled(providerID) {
 		return nil, nil
 	}
 
@@ -819,13 +846,25 @@ func snapshotModelMediaCapabilities(snapshot swarmSnapshot, providerID string, m
 	credentialSurface := ""
 	switch providerID {
 	case "openai":
-		surface = "responses_api"
-		credentialSurface = "openai_api_key"
+		surface = provideriface.MediaProviderSurfaceOpenAIResponses
+		credentialSurface = provideriface.MediaCredentialSurfaceOpenAIAPIKey
 	case "codex":
-		surface = "chatgpt_codex"
-		credentialSurface = "codex_oauth"
+		surface = provideriface.MediaProviderSurfaceCodexChatGPT
+		credentialSurface = provideriface.MediaCredentialSurfaceCodexOAuth
+	case "google":
+		surface = provideriface.MediaProviderSurfaceGoogleGenerateContent
+		credentialSurface = provideriface.MediaCredentialSurfaceGoogleAPIKey
+	case "anthropic":
+		surface = provideriface.MediaProviderSurfaceAnthropicMessages
+		credentialSurface = provideriface.MediaCredentialSurfaceAnthropicAPIKey
+	case "fireworks":
+		surface = provideriface.MediaProviderSurfaceFireworksChatCompletions
+		credentialSurface = provideriface.MediaCredentialSurfaceFireworksAPIKey
+	case "openrouter":
+		surface = provideriface.MediaProviderSurfaceOpenRouterChatCompletions
+		credentialSurface = provideriface.MediaCredentialSurfaceOpenRouterAPIKey
 	}
-	if modelPresent && strings.TrimSpace(modelFacts.APISurface) != "" && !strings.EqualFold(strings.TrimSpace(modelFacts.APISurface), surface) {
+	if modelPresent && strings.TrimSpace(modelFacts.APISurface) != "" && !catalogMediaSurfaceAliasMatches(providerID, modelFacts.APISurface, surface) {
 		return nil, fmt.Errorf("provider surface %q contradicts %q", modelFacts.APISurface, surface)
 	}
 
@@ -856,6 +895,12 @@ func snapshotModelMediaCapabilities(snapshot swarmSnapshot, providerID string, m
 		providerFacts.Image.AcceptedMediaTypes,
 		providerFacts.ImageInputMediaTypes,
 	)
+	if providerID == "google" && len(imageMIMETypes) == 0 && (boolPtrValue(model.Capabilities.SupportsImageInput) || boolPtrValue(modelFacts.Image.Input)) {
+		// Google's current snapshot nests the exact generateContent MIME contract
+		// deeper than the legacy structural decoder. Apply it only after this exact
+		// model has independently affirmed image input.
+		imageMIMETypes = []string{"image/heic", "image/heif", "image/jpeg", "image/png", "image/webp"}
+	}
 
 	inputFacts := []struct {
 		modality   string
@@ -873,6 +918,11 @@ func snapshotModelMediaCapabilities(snapshot swarmSnapshot, providerID string, m
 		{"video", model.Capabilities.SupportsVideoInput, modelFacts.Video, inputSemantics, nil, nil},
 	}
 	for _, fact := range inputFacts {
+		// Newly reviewed conversational surfaces intentionally hydrate image input
+		// only. OpenAI/Codex retain their previously reviewed file/PDF vocabulary.
+		if providerID != "openai" && providerID != "codex" && fact.modality != "image" {
+			continue
+		}
 		state, err := reconcileSnapshotMediaState("input", fact.modality, fact.capability, fact.detail.Input, inputModalities, unsupported)
 		if err != nil {
 			return nil, err
@@ -894,6 +944,9 @@ func snapshotModelMediaCapabilities(snapshot swarmSnapshot, providerID string, m
 		{"video", model.Capabilities.SupportsVideoOutput, modelFacts.Video.Output},
 	}
 	for _, fact := range outputFacts {
+		if providerID != "openai" && providerID != "codex" {
+			continue
+		}
 		state, err := reconcileSnapshotMediaState("output", fact.modality, fact.capability, fact.detail, outputModalities, unsupported)
 		if err != nil {
 			return nil, err

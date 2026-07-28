@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +32,7 @@ const (
 	maxStreamEvents            = 16_384
 	maxStreamOutputBytes       = 4 << 20
 	maxStreamToolArgumentBytes = 1 << 20
+	maxInlineRequestBytes      = 20 << 20
 )
 
 var googleAPIKeyQueryPattern = regexp.MustCompile(`(?i)([?&]key=)[^&#\s]+`)
@@ -39,7 +43,8 @@ type Runner struct {
 }
 
 type googleAuth struct {
-	APIKey string
+	APIKey      string
+	Fingerprint string
 }
 
 type googleContent struct {
@@ -49,10 +54,16 @@ type googleContent struct {
 
 type googlePart struct {
 	Text                  string                  `json:"text,omitempty"`
+	InlineData            *googleInlineData       `json:"inlineData,omitempty"`
 	FunctionCall          *googleFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse      *googleFunctionResponse `json:"functionResponse,omitempty"`
 	ThoughtSignature      string                  `json:"thoughtSignature,omitempty"`
 	ThoughtSignatureSnake string                  `json:"thought_signature,omitempty"`
+}
+
+type googleInlineData struct {
+	MIMEType string `json:"mimeType"`
+	Data     string `json:"data"`
 }
 
 type googleFunctionCall struct {
@@ -141,6 +152,29 @@ func (r *Runner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycle
 	}
 }
 
+func (r *Runner) MediaCapabilityDeclaration(ctx context.Context) (provideriface.MediaAdapterDeclaration, error) {
+	auth, err := r.ensureAuth(ctx)
+	if err != nil {
+		return provideriface.MediaAdapterDeclaration{}, err
+	}
+	return provideriface.MediaAdapterDeclaration{
+		AdapterID:             provideriface.MediaAdapterIDGoogleGenerateContentV1,
+		ProviderID:            "google",
+		ProviderSurface:       provideriface.MediaProviderSurfaceGoogleGenerateContent,
+		CredentialSurface:     provideriface.MediaCredentialSurfaceGoogleAPIKey,
+		CredentialFingerprint: auth.Fingerprint,
+		Inputs: []provideriface.MediaAdapterCapability{{
+			Modality: "image", Semantics: pebblestore.ModelCatalogMediaSemanticsNative,
+			MIMETypes: []string{"image/heic", "image/heif", "image/jpeg", "image/png", "image/webp"},
+			// Keep one immutable asset below the documented 20 MB total request limit
+			// after base64 expansion; buildGoogleRequest enforces the exact payload total.
+			// The shared durable message ceiling is intentionally narrower than Google's
+			// documented 3,600-file model ceiling.
+			ContentTypes: []string{"inline_data"}, MaxBytes: 14 << 20, MaxCount: pebblestore.SessionMediaDefaultMaxCount,
+		}},
+	}, nil
+}
+
 func (r *Runner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	return r.createResponse(ctx, req)
 }
@@ -161,8 +195,14 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 	if err != nil {
 		return provideriface.Response{}, err
 	}
+	if err := validateGoogleMediaSurface(req.MediaContract); err != nil {
+		return provideriface.Response{}, err
+	}
 
-	requestPayload := buildGoogleRequest(req)
+	requestPayload, err := buildGoogleRequest(req)
+	if err != nil {
+		return provideriface.Response{}, err
+	}
 	raw, err := json.Marshal(requestPayload)
 	if err != nil {
 		return provideriface.Response{}, fmt.Errorf("marshal google request: %w", err)
@@ -215,8 +255,14 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	if err != nil {
 		return provideriface.Response{}, err
 	}
+	if err := validateGoogleMediaSurface(req.MediaContract); err != nil {
+		return provideriface.Response{}, err
+	}
 
-	requestPayload := buildGoogleRequest(req)
+	requestPayload, err := buildGoogleRequest(req)
+	if err != nil {
+		return provideriface.Response{}, err
+	}
 	raw, err := json.Marshal(requestPayload)
 	if err != nil {
 		return provideriface.Response{}, fmt.Errorf("marshal google request: %w", err)
@@ -268,6 +314,9 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 }
 
 func (r *Runner) ensureAuth(ctx context.Context) (googleAuth, error) {
+	if r == nil || r.authStore == nil {
+		return googleAuth{}, errors.New("google runner auth store is not configured")
+	}
 	principal, principalOK := identity.PrincipalFromContext(ctx)
 	if !principalOK {
 		return googleAuth{}, identity.ErrPrincipalRequired
@@ -280,15 +329,18 @@ func (r *Runner) ensureAuth(ctx context.Context) (googleAuth, error) {
 		return googleAuth{}, errors.New("google auth is not configured")
 	}
 	if apiKey := strings.TrimSpace(record.APIKey); apiKey != "" {
-		return googleAuth{APIKey: apiKey}, nil
+		fingerprint := sha256.Sum256([]byte(strings.Join([]string{record.AccountScopeID, "google", record.ID, record.Type}, "\x00")))
+		return googleAuth{APIKey: apiKey, Fingerprint: hex.EncodeToString(fingerprint[:16])}, nil
 	}
 	return googleAuth{}, errors.New("google api key is required")
 }
 
-func buildGoogleRequest(req provideriface.Request) googleRequest {
-	out := googleRequest{
-		Contents: buildGoogleContents(req.Input),
+func buildGoogleRequest(req provideriface.Request) (googleRequest, error) {
+	contents, err := buildGoogleContents(req)
+	if err != nil {
+		return googleRequest{}, err
 	}
+	out := googleRequest{Contents: contents}
 	if strings.TrimSpace(req.Instructions) != "" {
 		out.SystemInstruction = &googleContent{
 			Parts: []googlePart{{Text: strings.TrimSpace(req.Instructions)}},
@@ -317,7 +369,14 @@ func buildGoogleRequest(req provideriface.Request) googleRequest {
 			}
 		}
 	}
-	return out
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		return googleRequest{}, fmt.Errorf("marshal google request for size validation: %w", err)
+	}
+	if len(encoded) > maxInlineRequestBytes {
+		return googleRequest{}, errors.New("google inline request exceeds the 20 MB request limit")
+	}
+	return out, nil
 }
 
 func googleThinkingConfigForRequest(req provideriface.Request) *googleThinkingConfig {
@@ -492,8 +551,10 @@ func sanitizeGoogleToolSchemaValue(value any) any {
 	}
 }
 
-func buildGoogleContents(input []map[string]any) []googleContent {
+func buildGoogleContents(req provideriface.Request) ([]googleContent, error) {
+	input := req.Input
 	contents := make([]googleContent, 0, len(input))
+	mediaCounts := map[string]int{}
 	callNameByID := make(map[string]string, 32)
 
 	for i := 0; i < len(input); i++ {
@@ -571,20 +632,141 @@ func buildGoogleContents(input []map[string]any) []googleContent {
 		}
 
 		role, _ := stringField(item, "role")
-		text := extractInputText(item["content"])
-		if strings.TrimSpace(text) == "" {
-			continue
-		}
 		googleRole := "user"
 		if strings.EqualFold(strings.TrimSpace(role), "assistant") {
 			googleRole = "model"
 		}
-		contents = append(contents, googleContent{
-			Role:  googleRole,
-			Parts: []googlePart{{Text: text}},
-		})
+		parts, err := googleMessageParts(req, item["content"], googleRole, mediaCounts)
+		if err != nil {
+			return nil, err
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		contents = append(contents, googleContent{Role: googleRole, Parts: parts})
 	}
-	return contents
+	return contents, nil
+}
+
+func googleMessageParts(req provideriface.Request, content any, role string, mediaCounts map[string]int) ([]googlePart, error) {
+	if text, ok := content.(string); ok {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return nil, nil
+		}
+		return []googlePart{{Text: text}}, nil
+	}
+	contentParts, ok := googleInputContentMaps(content)
+	if !ok {
+		return nil, errors.New("google message content is malformed")
+	}
+	parts := make([]googlePart, 0, len(contentParts))
+	for _, part := range contentParts {
+		typeName, _ := stringField(part, "type")
+		typeName = strings.ToLower(strings.TrimSpace(typeName))
+		switch typeName {
+		case "input_text", "output_text", "text":
+			text, _ := stringField(part, "text")
+			text = strings.TrimSpace(text)
+			if text != "" {
+				parts = append(parts, googlePart{Text: text})
+			}
+		case "session_media":
+			if role != "user" {
+				return nil, errors.New("google media input is only valid in user messages")
+			}
+			payload, ok := part["media"].(provideriface.SessionMediaPayload)
+			if !ok {
+				return nil, errors.New("google media input is malformed")
+			}
+			if err := validateGoogleMediaPayload(req, payload, mediaCounts); err != nil {
+				return nil, err
+			}
+			parts = append(parts, googlePart{InlineData: &googleInlineData{MIMEType: strings.ToLower(strings.TrimSpace(payload.MIMEType)), Data: base64.StdEncoding.EncodeToString(payload.Bytes)}})
+		default:
+			return nil, fmt.Errorf("google message content type %q is not implemented", typeName)
+		}
+	}
+	return parts, nil
+}
+
+func googleInputContentMaps(value any) ([]map[string]any, bool) {
+	switch typed := value.(type) {
+	case []map[string]any:
+		return typed, true
+	case []any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, value := range typed {
+			part, ok := value.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, part)
+		}
+		return out, true
+	case nil:
+		return nil, true
+	default:
+		return nil, false
+	}
+}
+
+func validateGoogleMediaPayload(req provideriface.Request, payload provideriface.SessionMediaPayload, counts map[string]int) error {
+	contract := req.MediaContract
+	if contract.Hash == "" || req.ProviderConfigurationHash == "" ||
+		!strings.EqualFold(strings.TrimSpace(contract.ProviderID), "google") ||
+		contract.ProviderSurface != provideriface.MediaProviderSurfaceGoogleGenerateContent ||
+		contract.CredentialSurface != provideriface.MediaCredentialSurfaceGoogleAPIKey ||
+		contract.AdapterID != provideriface.MediaAdapterIDGoogleGenerateContentV1 {
+		return errors.New("google media contract does not match the active API-key generateContent surface")
+	}
+	if len(payload.Bytes) == 0 || payload.Size <= 0 || int64(len(payload.Bytes)) != payload.Size || strings.TrimSpace(payload.AssetID) == "" || strings.TrimSpace(payload.DigestSHA256) == "" {
+		return errors.New("google media payload failed immutable size or identity validation")
+	}
+	digest := sha256.Sum256(payload.Bytes)
+	if !strings.EqualFold(hex.EncodeToString(digest[:]), strings.TrimSpace(payload.DigestSHA256)) {
+		return errors.New("google media payload failed immutable digest validation")
+	}
+	if !strings.EqualFold(strings.TrimSpace(payload.Modality), "image") {
+		return errors.New("google media payload modality is not implemented")
+	}
+	for _, capability := range contract.Capabilities {
+		if capability.State != provideriface.MediaCapabilityStateAllowed || !strings.EqualFold(capability.Modality, payload.Modality) {
+			continue
+		}
+		if !strings.EqualFold(capability.Semantics, pebblestore.ModelCatalogMediaSemanticsNative) ||
+			!googleStringAllowed(capability.ContentTypes, "inline_data") ||
+			!googleStringAllowed(capability.MIMETypes, payload.MIMEType) ||
+			strings.TrimSpace(payload.FileType) != "" || capability.MaxBytes <= 0 || payload.Size > capability.MaxBytes {
+			break
+		}
+		counts[capability.Modality]++
+		if capability.MaxCount <= 0 || counts[capability.Modality] > capability.MaxCount {
+			return errors.New("google media payload exceeds the active contract count limit")
+		}
+		return nil
+	}
+	return errors.New("google media payload is denied by the active contract")
+}
+
+func googleStringAllowed(values []string, expected string) bool {
+	expected = strings.ToLower(strings.TrimSpace(expected))
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), expected) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateGoogleMediaSurface(contract provideriface.SessionMediaContract) error {
+	if strings.TrimSpace(contract.Hash) == "" {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(contract.ProviderID), "google") || contract.ProviderSurface != provideriface.MediaProviderSurfaceGoogleGenerateContent || contract.CredentialSurface != provideriface.MediaCredentialSurfaceGoogleAPIKey || contract.AdapterID != provideriface.MediaAdapterIDGoogleGenerateContentV1 {
+		return errors.New("media contract does not match the active Google API-key generateContent surface")
+	}
+	return nil
 }
 
 func extractGoogleThoughtSignature(item map[string]any) string {
