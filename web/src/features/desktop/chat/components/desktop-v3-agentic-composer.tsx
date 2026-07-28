@@ -602,7 +602,7 @@ export function DesktopV3AgenticComposer({
       return
     }
     void onSlashCommand?.(command, draft)
-    if (command.action.kind === 'open-model-picker' || command.action.kind === 'toggle-fast') {
+    if (command.action.kind === 'open-model-picker') {
       openAgentSetup(currentAgent)
       onDraftChange('')
       return

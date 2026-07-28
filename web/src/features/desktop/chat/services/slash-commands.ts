@@ -9,7 +9,6 @@ export type DesktopSlashCommandAction =
   | { kind: 'open-workspace-launcher' }
   | { kind: 'open-model-picker' }
   | { kind: 'open-codex-usage' }
-  | { kind: 'toggle-fast' }
   | { kind: 'open-commit-modal' }
   | { kind: 'open-plan-modal' }
   | { kind: 'open-quick-actions' }
@@ -124,16 +123,6 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/codex', 'View five-hour and weekly usage', 'Use available usage-limit resets'],
     state: 'ready',
     action: { kind: 'open-codex-usage' },
-  },
-  {
-    id: 'fast',
-    command: '/fast',
-    aliases: [],
-    hint: 'Toggle Codex Fast for the current chat or draft',
-    actionLabel: 'Toggle Codex Fast',
-    tips: ['Available on Codex gpt-5.4/gpt-5.5', 'Alias tip: /codex fast', 'Use the model picker for gpt-5.4 1m context'],
-    state: 'ready',
-    action: { kind: 'toggle-fast' },
   },
   {
     id: 'mcp',
