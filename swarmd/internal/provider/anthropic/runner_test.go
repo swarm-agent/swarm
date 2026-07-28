@@ -401,6 +401,7 @@ func TestBuildAnthropicMessagesRejectsInvalidMedia(t *testing.T) {
 		{name: "unsupported modality", role: "user", contract: anthropicTestMediaContract(1), media: func() provideriface.SessionMediaPayload { p := valid; p.Modality = "audio"; return p }()},
 		{name: "forged digest", role: "user", contract: anthropicTestMediaContract(1), media: func() provideriface.SessionMediaPayload { p := valid; p.DigestSHA256 = strings.Repeat("0", 64); return p }()},
 		{name: "wrong size", role: "user", contract: anthropicTestMediaContract(1), media: func() provideriface.SessionMediaPayload { p := valid; p.Size++; return p }()},
+		{name: "missing asset identity", role: "user", contract: anthropicTestMediaContract(1), media: func() provideriface.SessionMediaPayload { p := valid; p.AssetID = ""; return p }()},
 		{name: "provider processed semantics", role: "user", contract: func() provideriface.SessionMediaContract { c := anthropicTestMediaContract(1); c.Capabilities[0].Semantics = pebblestore.ModelCatalogMediaSemanticsProviderProcessed; return c }(), media: valid},
 		{name: "undeclared content type", role: "user", contract: func() provideriface.SessionMediaContract { c := anthropicTestMediaContract(1); c.Capabilities[0].ContentTypes = []string{"input_image"}; return c }(), media: valid},
 		{name: "denied capability", role: "user", contract: func() provideriface.SessionMediaContract { c := anthropicTestMediaContract(1); c.Capabilities[0].State = provideriface.MediaCapabilityStateDenied; return c }(), media: valid},

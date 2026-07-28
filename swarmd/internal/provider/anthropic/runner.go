@@ -24,9 +24,9 @@ const (
 	promptCachingBeta = anthropicapi.AnthropicBetaPromptCaching2024_07_31
 	usageSource       = "anthropic_api_usage"
 
-	anthropicMediaAdapterID         = "anthropic-messages-v1"
-	anthropicMediaProviderSurface   = "messages_api"
-	anthropicMediaCredentialSurface = "anthropic_api_key"
+	anthropicMediaAdapterID         = provideriface.MediaAdapterIDAnthropicMessagesV1
+	anthropicMediaProviderSurface   = provideriface.MediaProviderSurfaceAnthropicMessages
+	anthropicMediaCredentialSurface = provideriface.MediaCredentialSurfaceAnthropicAPIKey
 	anthropicImageMaxBytes          = int64(7_864_320) // Largest raw payload whose padded base64 is at most 10 MiB.
 	anthropicImageMaxCount          = 100              // Safe ceiling across 200k-context API models.
 )
@@ -572,8 +572,8 @@ func validateAnthropicImagePayload(contract provideriface.SessionMediaContract, 
 	if !containsFold([]string{"image/gif", "image/jpeg", "image/png", "image/webp"}, mimeType) {
 		return provideriface.MediaContractCapability{}, errors.New("anthropic image MIME type is unsupported")
 	}
-	if len(payload.Bytes) == 0 || payload.Size != int64(len(payload.Bytes)) || payload.Size > anthropicImageMaxBytes {
-		return provideriface.MediaContractCapability{}, errors.New("anthropic image payload size is invalid")
+	if strings.TrimSpace(payload.AssetID) == "" || len(payload.Bytes) == 0 || payload.Size <= 0 || payload.Size != int64(len(payload.Bytes)) || payload.Size > anthropicImageMaxBytes {
+		return provideriface.MediaContractCapability{}, errors.New("anthropic image payload identity or size is invalid")
 	}
 	digest := sha256.Sum256(payload.Bytes)
 	if !strings.EqualFold(strings.TrimSpace(payload.DigestSHA256), hex.EncodeToString(digest[:])) {
