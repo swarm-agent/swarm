@@ -81,6 +81,7 @@ const (
 	KeySwarmGroupBySwarmPrefix                     = "swarm/group_membership_by_swarm/"
 	KeySwarmDesktopTargetCurrent                   = "swarm/desktop_target/current" // legacy global current target; retained for explicit migration only.
 	KeySwarmDesktopTargetCurrentAccountPrefix      = "swarm/desktop_target/current_by_account/"
+	KeyTailscaleServeAllowlistDefault               = "tailscale/serve_allowlist/default"
 	KeyTopologyRuntimePrefix                       = "topology/runtime/" // legacy global prefix; retained for explicit migration only.
 	KeyTopologyRuntimeAccountPrefix                = "topology/runtime_by_account/"
 	KeyTopologyRuntimePlacementPrefix              = "topology/runtime_placement/" // legacy global prefix; retained for explicit migration only.
