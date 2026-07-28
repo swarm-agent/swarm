@@ -103,7 +103,7 @@ func TestSanitizeFireworksToolParametersDefaultsEmptyObjectSchema(t *testing.T) 
 }
 
 func TestFireworksExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
-	payload := buildChatCompletionRequest(provideriface.Request{
+	payload, err := buildChatCompletionRequest(provideriface.Request{
 		Model:        "accounts/fireworks/models/test",
 		Instructions: "current instructions",
 		Input: []map[string]any{
@@ -112,6 +112,9 @@ func TestFireworksExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
 			{"role": "user", "content": "epoch follow-up"},
 		},
 	})
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
@@ -130,7 +133,7 @@ func TestFireworksExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
 }
 
 func TestBuildChatCompletionRequestTaskToolHasNoNestedCombinators(t *testing.T) {
-	req := buildChatCompletionRequest(provideriface.Request{
+	req, err := buildChatCompletionRequest(provideriface.Request{
 		Model: "test-model",
 		Tools: []provideriface.ToolDefinition{{
 			Name: "task",
@@ -155,6 +158,9 @@ func TestBuildChatCompletionRequestTaskToolHasNoNestedCombinators(t *testing.T) 
 			},
 		}},
 	})
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
 	if len(req.Tools) != 1 {
 		t.Fatalf("tool count = %d, want 1", len(req.Tools))
 	}
@@ -170,15 +176,18 @@ func TestBuildChatCompletionRequestTaskToolHasNoNestedCombinators(t *testing.T) 
 }
 
 func TestBuildChatCompletionRequestMapsThinkingToReasoningEffort(t *testing.T) {
-	req := buildChatCompletionRequest(provideriface.Request{
+	req, err := buildChatCompletionRequest(provideriface.Request{
 		Model:    "test-model",
 		Thinking: "high",
 	})
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
 	if req.ReasoningEffort != "" {
 		t.Fatalf("reasoning_effort = %q, want omitted without snapshot mapping", req.ReasoningEffort)
 	}
 
-	req = buildChatCompletionRequest(provideriface.Request{
+	req, err = buildChatCompletionRequest(provideriface.Request{
 		Model:    "glm-5p2",
 		Thinking: "xhigh",
 		ModelCatalog: pebblestore.ModelCatalogRecord{
@@ -191,11 +200,14 @@ func TestBuildChatCompletionRequestMapsThinkingToReasoningEffort(t *testing.T) {
 			},
 		},
 	})
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
 	if req.ReasoningEffort != "max" {
 		t.Fatalf("snapshot reasoning_effort = %q, want max", req.ReasoningEffort)
 	}
 
-	req = buildChatCompletionRequest(provideriface.Request{
+	req, err = buildChatCompletionRequest(provideriface.Request{
 		Model:    "glm-5p2",
 		Thinking: "off",
 		ModelCatalog: pebblestore.ModelCatalogRecord{
@@ -206,13 +218,19 @@ func TestBuildChatCompletionRequestMapsThinkingToReasoningEffort(t *testing.T) {
 			},
 		},
 	})
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
 	if req.ReasoningEffort != "none" {
 		t.Fatalf("snapshot disabled reasoning_effort = %q, want none", req.ReasoningEffort)
 	}
 }
 
 func TestApplyServingResolutionUsesFireworksResourceNameAndPriorityTier(t *testing.T) {
-	payload := buildChatCompletionRequest(provideriface.Request{Model: "glm-5p2"})
+	payload, err := buildChatCompletionRequest(provideriface.Request{Model: "glm-5p2"})
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
 	serving := ResolveServingTier(provideriface.Request{Model: "glm-5p2", ServiceTier: "priority"}, ServingConfig{
 		ModelID:        "accounts/fireworks/models/glm-5p2",
 		SupportedTiers: []string{"standard", "priority"},

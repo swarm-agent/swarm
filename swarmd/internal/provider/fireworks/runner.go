@@ -63,7 +63,13 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	payload := buildChatCompletionRequest(req)
+	if err := validateFireworksMediaSurface(req.MediaContract); err != nil {
+		return provideriface.Response{}, err
+	}
+	payload, err := buildChatCompletionRequest(req)
+	if err != nil {
+		return provideriface.Response{}, err
+	}
 	applyServingResolutionToPayload(&payload, serving)
 	fireworksDebugEvent("request", map[string]any{
 		"transport":        "sync",
@@ -113,7 +119,13 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	payload := buildChatCompletionRequest(req)
+	if err := validateFireworksMediaSurface(req.MediaContract); err != nil {
+		return provideriface.Response{}, err
+	}
+	payload, err := buildChatCompletionRequest(req)
+	if err != nil {
+		return provideriface.Response{}, err
+	}
 	applyServingResolutionToPayload(&payload, serving)
 	fireworksDebugEvent("request", map[string]any{
 		"transport":        "stream",
@@ -195,10 +207,14 @@ func (r *Runner) activeCredential(ctx context.Context) (pebblestore.AuthCredenti
 	return record, nil
 }
 
-func buildChatCompletionRequest(req provideriface.Request) chatCompletionRequest {
+func buildChatCompletionRequest(req provideriface.Request) (chatCompletionRequest, error) {
+	messages, err := buildChatCompletionMessages(req)
+	if err != nil {
+		return chatCompletionRequest{}, err
+	}
 	out := chatCompletionRequest{
 		Model:           strings.TrimSpace(req.Model),
-		Messages:        buildChatCompletionMessages(req),
+		Messages:        messages,
 		ReasoningEffort: fireworksReasoningEffortForRequest(req),
 	}
 	if len(req.Tools) > 0 {
@@ -223,7 +239,7 @@ func buildChatCompletionRequest(req provideriface.Request) chatCompletionRequest
 			out.ParallelToolCalls = &parallel
 		}
 	}
-	return out
+	return out, nil
 }
 
 func applyServingResolutionToPayload(payload *chatCompletionRequest, serving requestServingResolution) {
@@ -241,8 +257,9 @@ func applyServingResolutionToPayload(payload *chatCompletionRequest, serving req
 	}
 }
 
-func buildChatCompletionMessages(req provideriface.Request) []map[string]any {
+func buildChatCompletionMessages(req provideriface.Request) ([]map[string]any, error) {
 	messages := make([]map[string]any, 0, len(req.Input)+1)
+	media := fireworksMediaRequestState{}
 	if instructions := strings.TrimSpace(req.Instructions); instructions != "" {
 		messages = append(messages, map[string]any{
 			"role":    "system",
@@ -258,23 +275,30 @@ func buildChatCompletionMessages(req provideriface.Request) []map[string]any {
 			case "function_call_output":
 				messages = append(messages, mapFunctionOutputMessage(item))
 				continue
+			case "message", "":
+				// Continue through normal message handling.
+			default:
+				return nil, errors.New("fireworks input contains an unsupported item type")
 			}
 		}
 		role, _ := stringField(item, "role")
-		content := extractMessageText(item["content"])
-		if strings.TrimSpace(content) == "" {
-			continue
-		}
 		mappedRole := "user"
 		if strings.EqualFold(strings.TrimSpace(role), "assistant") {
 			mappedRole = "assistant"
+		}
+		content, present, err := materializeFireworksMessageContent(req, mappedRole, item["content"], &media)
+		if err != nil {
+			return nil, err
+		}
+		if !present {
+			continue
 		}
 		messages = append(messages, map[string]any{
 			"role":    mappedRole,
 			"content": content,
 		})
 	}
-	return messages
+	return messages, nil
 }
 
 func mapFunctionCallMessage(item map[string]any) map[string]any {
