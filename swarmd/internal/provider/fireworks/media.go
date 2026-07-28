@@ -30,23 +30,24 @@ var fireworksImageMIMETypes = []string{
 	"image/x-portable-pixmap",
 }
 
+var fireworksImageFileTypes = []string{"bmp", "gif", "jpeg", "jpg", "png", "ppm", "tif", "tiff"}
+
 func (r *Runner) MediaCapabilityDeclaration(ctx context.Context) (provideriface.MediaAdapterDeclaration, error) {
 	record, err := r.activeCredential(ctx)
 	if err != nil {
 		return provideriface.MediaAdapterDeclaration{}, err
 	}
-	fingerprint := sha256.Sum256([]byte(strings.Join([]string{record.AccountScopeID, record.Provider, record.ID, record.Type}, "\x00")))
 	return provideriface.MediaAdapterDeclaration{
 		AdapterID:             fireworksMediaAdapterID,
 		ProviderID:            "fireworks",
 		ProviderSurface:       fireworksMediaProviderSurface,
 		CredentialSurface:     fireworksMediaCredentialSurface,
-		CredentialFingerprint: hex.EncodeToString(fingerprint[:16]),
+		CredentialFingerprint: fireworksCredentialFingerprint(record.AccountScopeID, record.Provider, record.ID, record.Type),
 		Inputs: []provideriface.MediaAdapterCapability{{
 			Modality:     "image",
 			Semantics:    pebblestore.ModelCatalogMediaSemanticsNative,
 			MIMETypes:    append([]string(nil), fireworksImageMIMETypes...),
-			FileTypes:    []string{"bmp", "gif", "jpeg", "jpg", "png", "ppm", "tif", "tiff"},
+			FileTypes:    append([]string(nil), fireworksImageFileTypes...),
 			ContentTypes: []string{"image_url"},
 			MaxBytes:     fireworksMaxImageBytes,
 			MaxCount:     fireworksMaxImageCount,
@@ -61,6 +62,7 @@ func validateFireworksMediaSurface(contract provideriface.SessionMediaContract) 
 	if !strings.EqualFold(strings.TrimSpace(contract.ProviderID), "fireworks") ||
 		contract.ProviderSurface != fireworksMediaProviderSurface ||
 		contract.CredentialSurface != fireworksMediaCredentialSurface ||
+		strings.TrimSpace(contract.CredentialFingerprint) == "" ||
 		contract.AdapterID != fireworksMediaAdapterID {
 		return errors.New("media contract does not match the active Fireworks API-key Chat Completions surface")
 	}
@@ -70,6 +72,11 @@ func validateFireworksMediaSurface(contract provideriface.SessionMediaContract) 
 type fireworksMediaRequestState struct {
 	imageCount int
 	totalBytes int64
+}
+
+func fireworksCredentialFingerprint(accountScopeID, providerID, credentialID, credentialType string) string {
+	fingerprint := sha256.Sum256([]byte(strings.Join([]string{accountScopeID, providerID, credentialID, credentialType}, "\x00")))
+	return hex.EncodeToString(fingerprint[:16])
 }
 
 func materializeFireworksMessageContent(req provideriface.Request, role string, raw any, state *fireworksMediaRequestState) (any, bool, error) {
@@ -168,6 +175,17 @@ func validateFireworksImagePayload(contract provideriface.SessionMediaContract, 
 	if strings.TrimSpace(contract.Hash) == "" {
 		return provideriface.MediaContractCapability{}, errors.New("fireworks media contract is unavailable")
 	}
+	if !strings.EqualFold(strings.TrimSpace(payload.Modality), "image") {
+		return provideriface.MediaContractCapability{}, errors.New("fireworks media modality is not implemented")
+	}
+	mimeType := strings.ToLower(strings.TrimSpace(payload.MIMEType))
+	if !fireworksContains(fireworksImageMIMETypes, mimeType) {
+		return provideriface.MediaContractCapability{}, errors.New("fireworks image MIME type is not implemented")
+	}
+	fileType := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(payload.FileType), "."))
+	if fileType != "" && !fireworksContains(fireworksImageFileTypes, fileType) {
+		return provideriface.MediaContractCapability{}, errors.New("fireworks image file type is not implemented")
+	}
 	if len(payload.Bytes) == 0 || payload.Size <= 0 || int64(len(payload.Bytes)) != payload.Size || strings.TrimSpace(payload.AssetID) == "" || strings.TrimSpace(payload.DigestSHA256) == "" {
 		return provideriface.MediaContractCapability{}, errors.New("fireworks media payload failed immutable size or identity validation")
 	}
@@ -182,10 +200,12 @@ func validateFireworksImagePayload(contract provideriface.SessionMediaContract, 
 		if capability.Semantics != pebblestore.ModelCatalogMediaSemanticsNative || !fireworksContains(capability.ContentTypes, "image_url") {
 			break
 		}
-		if !fireworksContains(capability.MIMETypes, payload.MIMEType) || capability.MaxBytes <= 0 || payload.Size > capability.MaxBytes || capability.MaxCount <= 0 {
+		if !fireworksContains(capability.MIMETypes, mimeType) ||
+			capability.MaxBytes <= 0 || capability.MaxBytes > fireworksMaxImageBytes || payload.Size > capability.MaxBytes ||
+			capability.MaxCount <= 0 || capability.MaxCount > fireworksMaxImageCount {
 			break
 		}
-		if len(capability.FileTypes) > 0 && strings.TrimSpace(payload.FileType) != "" && !fireworksContains(capability.FileTypes, payload.FileType) {
+		if len(capability.FileTypes) > 0 && fileType != "" && !fireworksContains(capability.FileTypes, fileType) {
 			break
 		}
 		return capability, nil

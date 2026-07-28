@@ -63,7 +63,7 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	if err := validateFireworksMediaSurface(req.MediaContract); err != nil {
+	if err := validateFireworksMediaContractForCredential(req.MediaContract, record); err != nil {
 		return provideriface.Response{}, err
 	}
 	payload, err := buildChatCompletionRequest(req)
@@ -119,7 +119,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	if err := validateFireworksMediaSurface(req.MediaContract); err != nil {
+	if err := validateFireworksMediaContractForCredential(req.MediaContract, record); err != nil {
 		return provideriface.Response{}, err
 	}
 	payload, err := buildChatCompletionRequest(req)
@@ -190,6 +190,20 @@ func emitFireworksReasoningSnapshot(onEvent func(provideriface.StreamEvent), rea
 		DeltaMode:    provideriface.StreamEventDeltaModeReplace,
 		ReasoningKey: reasoningKey,
 	})
+}
+
+func validateFireworksMediaContractForCredential(contract provideriface.SessionMediaContract, record pebblestore.AuthCredentialRecord) error {
+	if err := validateFireworksMediaSurface(contract); err != nil {
+		return err
+	}
+	if strings.TrimSpace(contract.Hash) == "" {
+		return nil
+	}
+	activeFingerprint := fireworksCredentialFingerprint(record.AccountScopeID, record.Provider, record.ID, record.Type)
+	if contract.CredentialFingerprint != activeFingerprint {
+		return errors.New("media contract does not match the active Fireworks credential")
+	}
+	return nil
 }
 
 func (r *Runner) activeCredential(ctx context.Context) (pebblestore.AuthCredentialRecord, error) {
@@ -281,10 +295,13 @@ func buildChatCompletionMessages(req provideriface.Request) ([]map[string]any, e
 				return nil, errors.New("fireworks input contains an unsupported item type")
 			}
 		}
-		role, _ := stringField(item, "role")
-		mappedRole := "user"
-		if strings.EqualFold(strings.TrimSpace(role), "assistant") {
-			mappedRole = "assistant"
+		role, rolePresent := stringField(item, "role")
+		if !rolePresent && item["role"] != nil {
+			return nil, errors.New("fireworks message role is malformed")
+		}
+		mappedRole, err := mapFireworksMessageRole(role)
+		if err != nil {
+			return nil, err
 		}
 		content, present, err := materializeFireworksMessageContent(req, mappedRole, item["content"], &media)
 		if err != nil {
@@ -299,6 +316,17 @@ func buildChatCompletionMessages(req provideriface.Request) ([]map[string]any, e
 		})
 	}
 	return messages, nil
+}
+
+func mapFireworksMessageRole(role string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "", "user":
+		return "user", nil
+	case "assistant":
+		return "assistant", nil
+	default:
+		return "", errors.New("fireworks message role is not implemented")
+	}
 }
 
 func mapFunctionCallMessage(item map[string]any) map[string]any {
