@@ -79,6 +79,69 @@ func addPlanCheckpointSubtask(doc *pebblestore.SessionPlanDocument, op PlanDocum
 	return nil
 }
 
+func replacePlanCheckpointSubtasks(doc *pebblestore.SessionPlanDocument, op PlanDocumentPatchOperation) error {
+	checkpoint, err := planSubtaskCheckpoint(doc, op)
+	if err != nil {
+		return err
+	}
+	if err := ensurePlanCheckpointAllowsSubtaskResume(checkpoint); err != nil {
+		return err
+	}
+	if len(op.Subtasks) == 0 {
+		return errors.New("replace_subtasks requires a non-empty complete subtasks list")
+	}
+	replacement := make([]pebblestore.SessionPlanSubtask, len(op.Subtasks))
+	seen := make(map[string]struct{}, len(op.Subtasks))
+	activeID := ""
+	for i := range op.Subtasks {
+		subtask := op.Subtasks[i]
+		subtask.ID = strings.TrimSpace(subtask.ID)
+		if subtask.ID == "" {
+			subtask.ID = fmt.Sprintf("task-%d", i+1)
+		}
+		if _, exists := seen[subtask.ID]; exists {
+			return fmt.Errorf("replace_subtasks contains duplicate subtask id %q", subtask.ID)
+		}
+		seen[subtask.ID] = struct{}{}
+		subtask.Title = strings.TrimSpace(subtask.Title)
+		if subtask.Title == "" {
+			return fmt.Errorf("replace_subtasks subtask %q requires title", subtask.ID)
+		}
+		subtask.Status = normalizePlanSubtaskStatus(subtask.Status)
+		if subtask.Status != PlanSubtaskStatusPending && subtask.Status != PlanSubtaskStatusInProgress && subtask.Status != PlanSubtaskStatusCompleted {
+			return fmt.Errorf("replace_subtasks subtask %q status %q is not supported", subtask.ID, subtask.Status)
+		}
+		if subtask.Status == PlanSubtaskStatusInProgress {
+			if activeID != "" {
+				return errors.New("replace_subtasks permits at most one in_progress subtask")
+			}
+			activeID = subtask.ID
+			if subtask.StartedAt == 0 {
+				subtask.StartedAt = op.StartedAt
+			}
+		}
+		subtask.Order = i + 1
+		replacement[i] = subtask
+	}
+	if activeID == "" {
+		for i := range replacement {
+			if replacement[i].Status == PlanSubtaskStatusPending {
+				replacement[i].Status = PlanSubtaskStatusInProgress
+				replacement[i].StartedAt = op.StartedAt
+				activeID = replacement[i].ID
+				break
+			}
+		}
+	}
+	if activeID == "" {
+		return errors.New("replace_subtasks requires at least one pending or in_progress actionable subtask")
+	}
+	checkpoint.Subtasks = replacement
+	checkpoint.ActiveSubtaskID = activeID
+	resumeCheckpointForSubtask(doc, checkpoint, op)
+	return nil
+}
+
 func updatePlanCheckpointSubtask(doc *pebblestore.SessionPlanDocument, op PlanDocumentPatchOperation) error {
 	checkpoint, err := planSubtaskCheckpoint(doc, op)
 	if err != nil {

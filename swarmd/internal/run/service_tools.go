@@ -1927,6 +1927,8 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 		action = "mark_failed"
 	case "add-subtask", "add_subtask", "create-subtask", "create_subtask", "upsert-subtask", "upsert_subtask":
 		action = "add_subtask"
+	case "replace-subtasks", "replace_subtasks", "set-subtasks", "set_subtasks":
+		action = "replace_subtasks"
 	case "update-subtask", "update_subtask", "patch-subtask", "patch_subtask":
 		action = "update_subtask"
 	case "remove-subtask", "remove_subtask", "delete-subtask", "delete_subtask":
@@ -2215,7 +2217,7 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 			"details_truncated": false,
 		}
 		return marshalPlanManagePayload(payload)
-	case "patch", "update_section", "update_info", "update_execution_policy", "update_execution_state", "upsert_checkpoint", "update_checkpoint", "start_checkpoint", "continue_checkpoint", "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed", "remove_checkpoint", "reorder_checkpoints", "set_active_checkpoint", "add_subtask", "update_subtask", "remove_subtask", "reorder_subtasks", "focus_subtask", "complete_subtask":
+	case "patch", "update_section", "update_info", "update_execution_policy", "update_execution_state", "upsert_checkpoint", "update_checkpoint", "start_checkpoint", "continue_checkpoint", "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed", "remove_checkpoint", "reorder_checkpoints", "set_active_checkpoint", "add_subtask", "replace_subtasks", "update_subtask", "remove_subtask", "reorder_subtasks", "focus_subtask", "complete_subtask":
 		planID := strings.TrimSpace(mapString(args, "plan_id"))
 		if planID == "" {
 			planID = strings.TrimSpace(mapString(args, "id"))
@@ -2246,6 +2248,19 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 		}
 		if documentPatch != nil && documentPatch.Operation == "" {
 			documentPatch.Operation = action
+		}
+		if documentPatch != nil && isTrustedSubtaskResumeAction(action) {
+			if lifecycleRun.Inline {
+				if err := applyTrustedSubtaskResumeOwnership(documentPatch, lifecycleRun); err != nil {
+					return "", err
+				}
+			} else {
+				// Ownership is lifecycle context, never model input. Direct/user-driven
+				// subtask edits may resume work but cannot claim a provider run.
+				documentPatch.RunID = ""
+				documentPatch.RunSessionID = ""
+				documentPatch.ParentSessionID = ""
+			}
 		}
 		if lifecycleRun.Inline && documentPatch != nil && isPlanCheckpointOutcomeAction(action, documentPatch) {
 			if err := s.requireProviderManagedFinalCheckpointHandoff(sessionID, planID, action, documentPatch); err != nil {
@@ -2745,6 +2760,31 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		}
 	}
 	return marshalPlanManagePayload(payload)
+}
+
+func isTrustedSubtaskResumeAction(action string) bool {
+	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(action)), "-", "_") {
+	case "add_subtask", "update_subtask", "focus_subtask", "replace_subtasks":
+		return true
+	default:
+		return false
+	}
+}
+
+func applyTrustedSubtaskResumeOwnership(patch *sessionruntime.PlanDocumentPatch, lifecycleRun planLifecycleRunContext) error {
+	if patch == nil {
+		return errors.New("trusted subtask resume requires a document patch")
+	}
+	runID := strings.TrimSpace(lifecycleRun.RunID)
+	runSessionID := strings.TrimSpace(lifecycleRun.RunSessionID)
+	parentSessionID := strings.TrimSpace(lifecycleRun.ParentSessionID)
+	if runID == "" || runSessionID == "" || parentSessionID == "" {
+		return errors.New("trusted subtask resume requires complete provider lifecycle ownership")
+	}
+	patch.RunID = runID
+	patch.RunSessionID = runSessionID
+	patch.ParentSessionID = parentSessionID
+	return nil
 }
 
 func isPlanCheckpointOutcomeAction(action string, patch *sessionruntime.PlanDocumentPatch) bool {

@@ -1678,6 +1678,63 @@ func TestExecutePlanManageNeedsReviewAndBlockedStopAdvancement(t *testing.T) {
 	}
 }
 
+func TestProviderManagedSubtaskReplacementTransfersOwnershipAndAllowsCompletion(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-replan", "Replan", "# Replan", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Title: "Replan", Info: pebblestore.SessionPlanInfo{Goal: "Finish same checkpoint"},
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateWaitingReview, ActiveAttemptID: "cp-1:attempt-1", CurrentRunID: "old-run", CurrentSessionID: sessionID, ParentSessionID: sessionID},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Same contract", Objective: "Finish same contract", AcceptanceCriteria: []string{"Contract complete"}, Status: sessionruntime.PlanCheckpointStatusCompleted, AttemptID: "cp-1:attempt-1", RunID: "old-run", SessionID: sessionID, Subtasks: []pebblestore.SessionPlanSubtask{{ID: "stale", Title: "Obsolete", Status: sessionruntime.PlanSubtaskStatusCompleted}}, Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "cp-1:attempt-1", CheckpointID: "cp-1", Status: sessionruntime.PlanCheckpointStatusCompleted, RunID: "old-run", SessionID: sessionID, ParentSessionID: sessionID}}}},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-test", AccountScopeID: "account-test"}
+	invoker := runSvc.NewProviderManagedToolInvoker(ProviderManagedToolInvokerConfig{SessionID: sessionID, PermissionSessionID: sessionID, RunID: "new-run", Step: 1, SessionMode: sessionruntime.ModeAuto, Principal: principal, ProviderManagedV3: true, ApplySessionMutation: func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		if input.UserID == "" {
+			input.UserID = principal.UserID
+		}
+		if input.AccountScopeID == "" {
+			input.AccountScopeID = principal.AccountScopeID
+		}
+		return sessionSvc.ApplySessionMutation(input)
+	}})
+	added, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "add", Name: "plan_manage", Arguments: `{"action":"add_subtask","checkpoint_id":"cp-1","subtask":{"id":"temporary","title":"Temporary additive work"}}`})
+	if err != nil || added.Error != "" {
+		t.Fatalf("add_subtask failed: result=%#v err=%v", added, err)
+	}
+	addedPlan, ok, err := sessionSvc.GetActivePlan(sessionID)
+	if err != nil || !ok || addedPlan.Document == nil || addedPlan.Document.Checkpoints[0].RunID != "new-run" || addedPlan.Document.ExecutionState.CurrentRunID != "new-run" {
+		t.Fatalf("add_subtask did not transfer trusted ownership: ok=%v err=%v plan=%#v", ok, err, addedPlan.Document)
+	}
+	replaced, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "replace", Name: "plan_manage", Arguments: `{"action":"replace_subtasks","checkpoint_id":"cp-1","subtasks":[{"id":"new-task","title":"Revised work"}]}`})
+	if err != nil || replaced.Error != "" {
+		t.Fatalf("replace_subtasks failed: result=%#v err=%v", replaced, err)
+	}
+	plan, ok, err := sessionSvc.GetActivePlan(sessionID)
+	if err != nil || !ok || plan.Document == nil {
+		t.Fatalf("get replanned state: ok=%v err=%v", ok, err)
+	}
+	checkpoint := plan.Document.Checkpoints[0]
+	if checkpoint.RunID != "new-run" || plan.Document.ExecutionState.CurrentRunID != "new-run" || len(checkpoint.Subtasks) != 1 || checkpoint.Subtasks[0].ID != "new-task" {
+		t.Fatalf("trusted ownership/checklist not transferred: %#v", plan.Document)
+	}
+	completed, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "complete", Name: "plan_manage", Arguments: `{"action":"complete_subtask","checkpoint_id":"cp-1","subtask_id":"new-task","complete_checkpoint":true,"report":"done","result":"done","handoff_overview":"Replanned work is complete.","recommendation":{"decision":"ship","action":"review","reason":"complete","action_state":"ready"}}`})
+	if err != nil || completed.Error != "" {
+		t.Fatalf("completion under transferred ownership failed: result=%#v err=%v", completed, err)
+	}
+
+	foreign := runSvc.NewProviderManagedToolInvoker(ProviderManagedToolInvokerConfig{SessionID: sessionID, PermissionSessionID: sessionID, RunID: "foreign-run", Step: 2, SessionMode: sessionruntime.ModeAuto, Principal: principal, ProviderManagedV3: true})
+	result, err := foreign.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "foreign", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"cp-1","report":"foreign","handoff_overview":"Foreign completion."}`})
+	if err != nil || !strings.Contains(result.Error, "does not own the active run") {
+		t.Fatalf("foreign completion was not rejected: result=%#v err=%v", result, err)
+	}
+}
+
 func TestProviderManagedPlanManageLifecycleMessageFollowsToolCompletion(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()

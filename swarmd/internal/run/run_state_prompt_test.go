@@ -35,7 +35,7 @@ func TestDurableRunStateInstructionsUsesActivePlanInsteadOfTranscript(t *testing
 		`"next_lifecycle_action":"continue_or_start_next_checkpoint"`, "Do not trust old transcript",
 		"Do not call plan_manage get-active merely to determine whether a plan exists", "An active plan exists; the injected plan and checkpoint fields are authoritative",
 		"Classify new feedback by impact on the deliverable contract", "choose the least disruptive valid route", "regardless of whether the user used an imperative sentence",
-		"inquiry or guidance only means respond without plan mutation", "localized additive patch that preserves the objective and acceptance criteria means add_subtask", "continue the same checkpoint and attempt",
+		"inquiry or guidance only means respond without plan mutation", "localized additive patch whose existing checklist remains valid means add_subtask", "continue the same checkpoint and attempt", "feedback that supersedes the current checklist means replace_subtasks with the complete authoritative list",
 		"redefinition that invalidates the objective or acceptance criteria means restart_checkpoint with change_request and complete replacement title/tasks/acceptance_criteria/notes",
 		"independently shippable work or a separate review/failure boundary means request_followup_checkpoint", "Why is the hero headline blue?", "Make the hero headline blue", "Also build an email template",
 		"preserve checkpoint identity and attempt history", "Do not use add_subtask to clear blocked or failed state",

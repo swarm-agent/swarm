@@ -101,7 +101,7 @@ func TestPlanToolDefinitionsExposeCanonicalInfoFieldTypes(t *testing.T) {
 
 func TestPlanManageDefinitionRequiresRequirementAwareRestartSelection(t *testing.T) {
 	definition := mustFindDefinition(t, "plan_manage")
-	if !containsAll(definition.Description, "Classify feedback by impact on the current deliverable contract", "least disruptive valid route", "inquiry or guidance only means no plan mutation", "localized additive refinement", "add_subtask", "invalidates its objective or acceptance criteria", "complete replacement title/tasks/acceptance_criteria/notes", "independently shippable work", "request_followup_checkpoint", "Imperative wording alone does not make feedback a redefinition") {
+	if !containsAll(definition.Description, "Classify feedback by impact on the current deliverable contract", "least disruptive valid route", "inquiry or guidance only means no plan mutation", "localized additive refinement", "add_subtask", "replace_subtasks", "complete authoritative list", "invalidates its objective or acceptance criteria", "complete replacement title/tasks/acceptance_criteria/notes", "independently shippable work", "request_followup_checkpoint", "Imperative wording alone does not make feedback a redefinition") {
 		t.Fatalf("plan_manage description does not define requirement-aware restart selection: %q", definition.Description)
 	}
 	params, ok := definition.Parameters["properties"].(map[string]any)
@@ -109,16 +109,20 @@ func TestPlanManageDefinitionRequiresRequirementAwareRestartSelection(t *testing
 		t.Fatalf("plan_manage properties type = %T", definition.Parameters["properties"])
 	}
 	actionDescription, _ := params["action"].(map[string]any)["description"].(string)
-	if !containsAll(actionDescription, "Before mutating a plan for user feedback", "inquiry/guidance only requires no mutation", "localized additive feedback", "uses add_subtask and continues the same checkpoint/attempt", "invalidates the current objective or acceptance criteria", "independently shippable work or a separate review/failure boundary") {
+	if !containsAll(actionDescription, "Before mutating a plan for user feedback", "inquiry/guidance only requires no mutation", "localized additive feedback", "uses add_subtask and continues the same checkpoint/attempt", "replace_subtasks", "complete authoritative list", "invalidates the current objective or acceptance criteria", "independently shippable work or a separate review/failure boundary") {
 		t.Fatalf("plan_manage action description does not classify redirected work: %q", actionDescription)
 	}
 	changeRequestDescription, _ := params["change_request"].(map[string]any)["description"].(string)
-	if !containsAll(changeRequestDescription, "restart_checkpoint", "invalidates the current checkpoint objective or acceptance criteria", "atomically replaces the checkpoint definition", "localized additive refinements use add_subtask instead") {
+	if !containsAll(changeRequestDescription, "restart_checkpoint", "invalidates the current checkpoint objective or acceptance criteria", "atomically replaces the checkpoint definition", "localized additive refinements use add_subtask") {
 		t.Fatalf("plan_manage change_request description does not require replacement on redirect: %q", changeRequestDescription)
 	}
 	subtaskDescription, _ := params["subtask"].(map[string]any)["description"].(string)
-	if !containsAll(subtaskDescription, "add_subtask is the canonical route", "bounded same-deliverable refinement", "preserves the objective and acceptance criteria", "keeps the checkpoint boundary and attempt history", "must not clear blocked or failed state") {
+	if !containsAll(subtaskDescription, "add_subtask", "existing checklist remains valid", "keeps the checkpoint boundary and attempt history", "must not clear blocked or failed state") {
 		t.Fatalf("plan_manage subtask description does not define localized feedback routing: %q", subtaskDescription)
+	}
+	subtasksDescription, _ := params["subtasks"].(map[string]any)["description"].(string)
+	if !containsAll(subtasksDescription, "Complete authoritative subtask list", "replace_subtasks", "Omitted stale subtasks are removed atomically", "checkpoint contract and attempt history are preserved") {
+		t.Fatalf("plan_manage subtasks description does not define authoritative replacement: %q", subtasksDescription)
 	}
 }
 
