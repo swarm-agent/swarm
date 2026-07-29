@@ -53,12 +53,12 @@ import (
 )
 
 type codexOAuthSession struct {
-	CodeVerifier   string
-	State          string
-	UserID         string
-	AccountScopeID string
-	Provider       string
-	Label          string
+	CodeVerifier        string
+	State               string
+	UserID              string
+	AccountScopeID      string
+	Provider            string
+	Label               string
 	Active              bool
 	Method              string
 	AuthURL             string
@@ -67,10 +67,10 @@ type codexOAuthSession struct {
 	ExpiresAt           time.Time
 	DeviceAuthorization *codex.DeviceAuthorization
 	Status              string
-	Error          string
-	Credential     *auth.CredentialStatus
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	Error               string
+	Credential          *auth.CredentialStatus
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 const (
