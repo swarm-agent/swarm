@@ -940,6 +940,7 @@ export function DesktopV3AgenticComposer({
         onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSetupInitialAgent || currentAgent) : undefined}
         onConfirmAgentSettings={onConfirmAgentSettings}
         onSetDefaultModelProfile={onModelProfileSetDefault}
+        onReorderModelProfiles={onModelProfileReorder}
         modelProfiles={modelProfiles}
         activeModelProfile={activeModelProfile}
         initialModelProfileId={agentSetupProfileId}

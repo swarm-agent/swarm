@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, GitBranch, Lightbulb, Lock, Plus, Settings2, Star, Zap, ZapOff } from 'lucide-react'
+import { ChevronDown, ChevronUp, GitBranch, GripVertical, Lightbulb, Lock, Plus, Settings2, Star, Zap, ZapOff } from 'lucide-react'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileInput, ModelProfileRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
@@ -56,6 +56,7 @@ interface AgentModelControlProps {
   onOpenAgentSettings?: () => void
   onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
   onSetDefaultModelProfile?: (profileId: string) => void | Promise<void>
+  onReorderModelProfiles?: (profileIds: string[]) => void | Promise<void>
   modelProfiles?: ModelProfileRecord[]
   activeModelProfile?: ActiveModelProfileState
   initialModelProfileId?: string | null
@@ -102,15 +103,6 @@ function agentLabel(profile: AgentProfileRecord): string {
   return displayAgentName(profile.name)
 }
 
-function agentModeLabel(profile: AgentProfileRecord): string {
-  switch (agentMode(profile)) {
-    case 'primary': return 'Primary'
-    case 'subagent': return 'Subagent'
-    case 'background': return 'Background'
-    default: return profile.mode || 'Agent'
-  }
-}
-
 function modelBehaviorLabel(profile: AgentProfileRecord | null): string {
   if (!profile) return 'Single model'
   if (profile.modelMode === 'split' && isPlanCapableAgent(profile)) return 'Split plan/action models'
@@ -129,11 +121,7 @@ function savedProfileModelLabels(profile: ModelProfileRecord): string[] {
 
 function savedProfileSelectionLabel(selection: ModelProfileRecord['single']): string {
   if (!selection) return 'Unavailable selection'
-  return [
-    [selection.provider.trim(), selection.model.trim()].filter(Boolean).join('/') || 'Default model',
-    selection.thinking.trim() ? `thinking ${selection.thinking.trim()}` : '',
-    selection.serviceTier.trim(),
-  ].filter(Boolean).join(' · ')
+  return [selection.provider.trim(), selection.model.trim()].filter(Boolean).join('/') || 'Default model'
 }
 
 function isPlanCapableAgent(profile: AgentProfileRecord | null): boolean {
@@ -148,6 +136,10 @@ function isPlanCapableAgent(profile: AgentProfileRecord | null): boolean {
 
 function selectedDraftMode(profile: AgentProfileRecord | null): DraftMode {
   return profile?.modelMode === 'split' && isPlanCapableAgent(profile) ? 'split' : 'single'
+}
+
+function modelProfileAvailableForAgent(profile: ModelProfileRecord, agent: AgentProfileRecord | null): boolean {
+  return profile.modelMode === 'single' || isPlanCapableAgent(agent)
 }
 
 function modelOptionFor(provider: string, model: string, modelOptions: ModelOptionRecord[], contextMode = ''): ModelOptionRecord | null {
@@ -310,6 +302,7 @@ export function AgentModelControl({
   onOpenAgentSettings,
   onConfirmAgentSettings,
   onSetDefaultModelProfile,
+  onReorderModelProfiles,
   modelProfiles = [],
   activeModelProfile,
   initialModelProfileId,
@@ -387,9 +380,13 @@ export function AgentModelControl({
   const [draftProfileName, setDraftProfileName] = useState('')
   const [draftMakeDefault, setDraftMakeDefault] = useState(false)
   const [defaultingProfileId, setDefaultingProfileId] = useState('')
+  const [reorderingProfileId, setReorderingProfileId] = useState('')
+  const [draggedProfileId, setDraggedProfileId] = useState('')
   const [editingProfileId, setEditingProfileId] = useState('')
   const [baseline, setBaseline] = useState('')
+  const [profileNameFocusSignal, setProfileNameFocusSignal] = useState(0)
   const initializedOpenRef = useRef(false)
+  const profileNameInputRef = useRef<HTMLInputElement | null>(null)
   const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'finder' && (!isCompiledSystemAgent(agent.name) || agent.name === SWARM_AGENT_NAME)), compactProfile, finderProfile, coderProfile, designerProfile], [agents, coderProfile, compactProfile, designerProfile, finderProfile])
   const activeProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? selectableAgents.find((agent) => agent.name === currentAgent) ?? null
   const [draftAgentName, setDraftAgentName] = useState(activeProfile?.name ?? selectedPrimaryAgent)
@@ -416,10 +413,9 @@ export function AgentModelControl({
     ]
     return sections.filter((section) => section.profiles.length > 0)
   }, [selectableAgents])
+  const compatibleModelProfiles = modelProfiles.filter((profile) => modelProfileAvailableForAgent(profile, draftProfile))
   const displayedModelProfileId = editingProfileId
-    || (activeModelProfile?.source === 'saved' ? activeModelProfile.profileId : '')
-    || modelProfiles.find((profile) => profile.isDefault)?.profileId
-    || ''
+  const displayedModelProfile = compatibleModelProfiles.find((profile) => profile.profileId === displayedModelProfileId) ?? null
   const selectedModelLabel = selectedModel
     ? `${selectedModel.provider}/${displayModelName(selectedModel.provider, selectedModel.model, selectedModel.contextMode)}`
     : 'No resolved model'
@@ -430,8 +426,14 @@ export function AgentModelControl({
   const SelectedServiceTierIcon = normalizedSelectedServiceTier ? Zap : ZapOff
 
   useEffect(() => {
-    if (openSignal > 0 || createModelProfileSignal > 0) setOpen(true)
-  }, [createModelProfileSignal, openSignal])
+    if (openSignal > 0) setOpen(true)
+  }, [openSignal])
+
+  useEffect(() => {
+    if (createModelProfileSignal <= 0) return
+    setOpen(true)
+    setProfileNameFocusSignal((current) => current + 1)
+  }, [createModelProfileSignal])
 
   useEffect(() => {
     if (!open) {
@@ -444,12 +446,13 @@ export function AgentModelControl({
       ?? selectableAgents.find((agent) => agent.name === selectedPrimaryAgent)
       ?? activeProfile
     const requestedProfileId = resolveInitialModelProfileId(initialModelProfileId, activeModelProfile, modelProfiles)
-    const saved = requestedProfileId ? modelProfiles.find((candidate) => candidate.profileId === requestedProfileId) ?? null : null
+    const requestedSaved = requestedProfileId ? modelProfiles.find((candidate) => candidate.profileId === requestedProfileId) ?? null : null
+    const saved = requestedSaved && modelProfileAvailableForAgent(requestedSaved, profile) ? requestedSaved : null
     const nextMode: DraftMode = saved?.modelMode ?? selectedDraftMode(profile)
     const single = saved?.single ? { ...saved.single } : singleDraftFromProfile(profile, selectedModel, selectedServiceTier, selectedThinking)
     const plan = saved?.plan ? { ...saved.plan } : splitDraftFromProfile(profile, 'plan', selectedModel, selectedServiceTier, selectedThinking)
     const auto = saved?.auto ? { ...saved.auto } : splitDraftFromProfile(profile, 'auto', selectedModel, selectedServiceTier, selectedThinking)
-    const name = saved?.name ?? (activeModelProfile?.source === 'saved' ? `${activeModelProfile.name} copy` : '')
+    const name = saved?.name ?? (initialModelProfileId === '' ? '' : activeModelProfile?.source === 'saved' ? `${activeModelProfile.name} copy` : '')
     const makeDefault = saved ? false : modelProfiles.length === 0
     setDraftAgentName(profile?.name ?? selectedPrimaryAgent)
     setDraftSessionMode(profile?.defaultSessionMode ?? mode)
@@ -463,6 +466,14 @@ export function AgentModelControl({
     setBaseline(JSON.stringify({ name, makeDefault, sessionMode: profile?.defaultSessionMode ?? mode, mode: nextMode, single, plan, auto }))
     setError(null)
   }, [activeModelProfile, activeProfile, initialAgentName, initialModelProfileId, mode, modelProfiles, open, selectableAgents, selectedModel, selectedPrimaryAgent, selectedServiceTier, selectedThinking])
+
+  useEffect(() => {
+    if (!open || profileNameFocusSignal <= 0) return
+    const input = profileNameInputRef.current
+    if (!input) return
+    input.focus()
+    input.setSelectionRange(0, 0)
+  }, [open, profileNameFocusSignal])
 
   function chooseAgent(profile: AgentProfileRecord) {
     if (customized && !window.confirm('Discard the unsaved profile changes and switch agents?')) return
@@ -496,8 +507,45 @@ export function AgentModelControl({
     }
   }
 
-  function chooseModelProfile(saved: ModelProfileRecord | null) {
-    if (customized && !window.confirm('Discard the unsaved changes and switch profiles?')) return
+  async function persistModelProfileOrder(profileId: string, ordered: ModelProfileRecord[]) {
+    if (!onReorderModelProfiles || saving || busy) return
+    setReorderingProfileId(profileId)
+    setError(null)
+    try {
+      await onReorderModelProfiles(ordered.map((profile) => profile.profileId))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setReorderingProfileId('')
+    }
+  }
+
+  function moveModelProfileByOffset(profileId: string, offset: -1 | 1) {
+    const visibleIndex = compatibleModelProfiles.findIndex((profile) => profile.profileId === profileId)
+    const target = compatibleModelProfiles[visibleIndex + offset]
+    if (visibleIndex < 0 || !target) return
+    const ordered = [...modelProfiles]
+    const from = ordered.findIndex((profile) => profile.profileId === profileId)
+    const to = ordered.findIndex((profile) => profile.profileId === target.profileId)
+    ;[ordered[from], ordered[to]] = [ordered[to], ordered[from]]
+    void persistModelProfileOrder(profileId, ordered)
+  }
+
+  function dropModelProfile(targetProfileId: string) {
+    if (!draggedProfileId || draggedProfileId === targetProfileId || !onReorderModelProfiles) return
+    const ordered = [...modelProfiles]
+    const from = ordered.findIndex((profile) => profile.profileId === draggedProfileId)
+    const to = ordered.findIndex((profile) => profile.profileId === targetProfileId)
+    if (from < 0 || to < 0) return
+    const [moved] = ordered.splice(from, 1)
+    ordered.splice(to, 0, moved)
+    setDraggedProfileId('')
+    void persistModelProfileOrder(draggedProfileId, ordered)
+  }
+
+  function chooseModelProfile(saved: ModelProfileRecord | null): boolean {
+    if (saved && !modelProfileAvailableForAgent(saved, draftProfile)) return false
+    if (customized && !window.confirm('Discard the unsaved changes and switch profiles?')) return false
     const profile = draftProfile ?? activeProfile
     const nextMode: DraftMode = saved?.modelMode ?? selectedDraftMode(profile)
     const single = saved?.single ? { ...saved.single } : singleDraftFromProfile(profile, selectedModel, selectedServiceTier, selectedThinking)
@@ -516,6 +564,12 @@ export function AgentModelControl({
     setEditingProfileId(saved?.profileId ?? '')
     setBaseline(JSON.stringify({ name, makeDefault, sessionMode, mode: nextMode, single, plan, auto }))
     setError(null)
+    return true
+  }
+
+  function createNewModelProfile() {
+    if (!chooseModelProfile(null)) return
+    setProfileNameFocusSignal((current) => current + 1)
   }
 
   function selectProvider(target: 'single' | 'plan' | 'auto', provider: string) {
@@ -625,75 +679,72 @@ export function AgentModelControl({
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto min-[780px]:grid min-[780px]:grid-cols-[280px_minmax(0,1fr)] min-[780px]:overflow-hidden">
-          <div className="min-h-0 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] min-[780px]:border-b-0 min-[780px]:border-r">
+        <div aria-label="Agent setup sections" className="min-h-0 flex-1 overflow-y-auto min-[900px]:grid min-[900px]:grid-cols-[240px_280px_minmax(0,1fr)] min-[900px]:overflow-hidden">
+          <aside aria-label="Agents" className="flex min-h-0 flex-col border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] min-[900px]:border-b-0 min-[900px]:border-r">
             <div className="border-b border-[var(--app-border)] px-4 py-3">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent</div>
-              <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Profiles use the current agent. Switch only when needed.</div>
+              <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Select the agent to configure.</div>
             </div>
-            <div className="max-h-44 space-y-3 overflow-y-auto p-3 min-[480px]:max-h-56 min-[780px]:max-h-[660px]">
+            <div className="max-h-44 space-y-3 overflow-y-auto p-3 min-[480px]:max-h-56 min-[900px]:max-h-none min-[900px]:flex-1">
               {agentSections.map((section) => (
                 <section key={section.label}>
                   <div className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{section.label}</div>
-                  <div className="grid gap-1 min-[480px]:grid-cols-2 min-[780px]:grid-cols-1">
+                  <div className="grid gap-1 min-[480px]:grid-cols-2 min-[900px]:grid-cols-1">
                     {section.profiles.map((profile) => {
                       const selected = profile.name === draftAgentName
-                      return (
-                        <button key={profile.name} type="button" onClick={() => chooseAgent(profile)} aria-pressed={selected} className={`group flex w-full items-start gap-2 rounded-lg border px-2.5 py-2 text-left text-xs transition min-[480px]:items-center ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}>
-                          <span className="min-w-0 flex-1 truncate font-semibold">{agentLabel(profile)}</span>
-                          <span className="max-w-[48%] shrink-0 text-right text-[10px] leading-4 text-[var(--app-text-subtle)]">{agentModeLabel(profile)} · {modelBehaviorLabel(profile)}</span>
-                        </button>
-                      )
+                      return <button key={profile.name} type="button" onClick={() => chooseAgent(profile)} aria-pressed={selected} className={`group flex w-full items-center rounded-lg border px-2.5 py-2 text-left text-xs transition ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}><span className="min-w-0 flex-1 truncate font-semibold">{agentLabel(profile)}</span></button>
                     })}
                   </div>
                 </section>
               ))}
             </div>
-          </div>
+          </aside>
 
-          <div className="min-h-0 p-4 min-[780px]:overflow-y-auto min-[780px]:p-5">
-            {!draftProfile || !isSystemUtility(draftProfile.name) || modelProfiles.length > 0 ? <section aria-label="Saved model profiles" className="mb-4">
-              <div className="mb-2 flex flex-col items-stretch gap-3 sm:flex-row sm:items-end sm:justify-between">
-                <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Saved profiles</div>
-                  <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Single-model and plan/action profiles are shown together in your saved order.</div>
-                </div>
-                {!draftProfile || !isSystemUtility(draftProfile.name) ? <button type="button" onClick={() => chooseModelProfile(null)} className="inline-flex min-h-10 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] sm:min-h-0 sm:py-1.5"><Plus size={12} />New profile</button> : null}
+          <section aria-label="Saved model profiles" className="flex min-h-0 flex-col border-b border-[var(--app-border)] bg-[var(--app-surface)] min-[900px]:border-b-0 min-[900px]:border-r">
+            <div className="flex items-center justify-between gap-2 border-b border-[var(--app-border)] px-4 py-3">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Saved profiles</div>
+                <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Choose a model preset.</div>
               </div>
-              {modelProfiles.length ? (
-                <div className="grid max-h-[310px] gap-2 overflow-y-auto pr-1">
-                  {modelProfiles.map((profile) => {
-                    const selected = displayedModelProfileId === profile.profileId
-                    const settingDefault = defaultingProfileId === profile.profileId
-                    return <div key={profile.profileId} className={`flex min-w-0 items-center rounded-lg border bg-[var(--app-surface)] transition ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)] shadow-sm' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
-                      <button type="button" onClick={() => chooseModelProfile(profile)} aria-pressed={selected} className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5 text-left">
-                        <span className="min-w-0 flex-1 truncate text-sm font-semibold leading-5 text-[var(--app-text)]">{profile.name}</span>
-                        <span className="hidden min-w-0 flex-[2] items-center gap-2 text-xs leading-4 text-[var(--app-text-subtle)] sm:flex">
-                          {savedProfileModelLabels(profile).map((label) => <span key={label} className="min-w-0 flex-1 truncate">{label}</span>)}
-                        </span>
-                      </button>
-                      {!draftProfile || !isSystemUtility(draftProfile.name) ? <button
-                        type="button"
-                        disabled={busy || saving || settingDefault || profile.isDefault || !onSetDefaultModelProfile}
-                        onClick={() => { void makeModelProfileDefault(profile) }}
-                        aria-label={profile.isDefault ? `${profile.name} is the account default` : `Make ${profile.name} the account default`}
-                        aria-pressed={profile.isDefault}
-                        title={profile.isDefault ? 'Account default' : 'Make account default'}
-                        className={`mr-1.5 rounded-md p-1.5 transition disabled:cursor-default ${profile.isDefault ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)] hover:bg-[var(--app-surface)] hover:text-[var(--app-primary)] disabled:opacity-50'}`}
-                      >
-                        <Star size={14} fill={profile.isDefault ? 'currentColor' : 'none'} />
-                      </button> : null}
-                    </div>
-                  })}
+              {!draftProfile || !isSystemUtility(draftProfile.name) ? <button type="button" onClick={createNewModelProfile} className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)]"><Plus size={12} />New</button> : null}
+            </div>
+            <div className="grid max-h-52 content-start gap-2 overflow-y-auto p-3 min-[900px]:max-h-none min-[900px]:flex-1">
+              {compatibleModelProfiles.length > 0 ? compatibleModelProfiles.map((profile) => {
+                const selected = displayedModelProfileId === profile.profileId
+                const profileIndex = compatibleModelProfiles.findIndex((candidate) => candidate.profileId === profile.profileId)
+                const reordering = reorderingProfileId === profile.profileId
+                return <div key={profile.profileId} draggable={Boolean(onReorderModelProfiles) && !busy && !saving} onDragStart={() => setDraggedProfileId(profile.profileId)} onDragEnd={() => setDraggedProfileId('')} onDragOver={(event) => { if (draggedProfileId) event.preventDefault() }} onDrop={() => dropModelProfile(profile.profileId)} className={`group flex min-w-0 items-center rounded-lg border bg-[var(--app-surface)] transition ${selected ? 'border-[var(--app-primary)] shadow-sm' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
+                  {onReorderModelProfiles ? <span className="ml-1 cursor-grab p-1 text-[var(--app-text-subtle)]" title="Drag to reorder"><GripVertical size={14} /></span> : null}
+                  <button type="button" onClick={() => chooseModelProfile(profile)} aria-pressed={selected} className="min-w-0 flex-1 px-2 py-2.5 text-left">
+                    <span className="block truncate text-sm font-semibold leading-5 text-[var(--app-text)]">{profile.name}</span>
+                    <span className="mt-1 grid gap-0.5 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+                      {savedProfileModelLabels(profile).map((label) => <span key={label} className="block truncate">{label}</span>)}
+                    </span>
+                  </button>
+                  {onSetDefaultModelProfile ? <button type="button" disabled={busy || saving || defaultingProfileId === profile.profileId || profile.isDefault} onClick={() => { void makeModelProfileDefault(profile) }} aria-label={profile.isDefault ? `${profile.name} is the account default` : `Make ${profile.name} the account default`} aria-pressed={profile.isDefault} title={profile.isDefault ? 'Account default' : 'Make account default'} className={`shrink-0 rounded-md p-1.5 transition disabled:cursor-default ${profile.isDefault ? 'text-[var(--app-primary)] opacity-100' : 'text-[var(--app-text-subtle)] opacity-0 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 disabled:opacity-50'}`}><Star size={14} fill={profile.isDefault ? 'currentColor' : 'none'} /></button> : null}
+                  {onReorderModelProfiles ? <span className="grid shrink-0 pr-1">
+                    <button type="button" disabled={busy || saving || reordering || profileIndex <= 0} onClick={() => moveModelProfileByOffset(profile.profileId, -1)} aria-label={`Move ${profile.name} up`} title="Move up" className="rounded p-0.5 text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-25"><ChevronUp size={12} /></button>
+                    <button type="button" disabled={busy || saving || reordering || profileIndex < 0 || profileIndex === compatibleModelProfiles.length - 1} onClick={() => moveModelProfileByOffset(profile.profileId, 1)} aria-label={`Move ${profile.name} down`} title="Move down" className="rounded p-0.5 text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-25"><ChevronDown size={12} /></button>
+                  </span> : null}
                 </div>
-              ) : <button type="button" onClick={() => chooseModelProfile(null)} className="w-full rounded-xl border border-dashed border-[var(--app-border)] px-4 py-4 text-left text-xs text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]">No saved profiles yet. Create your first profile.</button>}
-            </section> : null}
+              }) : <button type="button" onClick={createNewModelProfile} className="rounded-lg border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 text-left text-xs text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]">No compatible saved profiles yet. Create your first profile.</button>}
+            </div>
+          </section>
+
+          <section aria-label="Selected profile settings" className="min-h-0 p-4 min-[900px]:overflow-y-auto min-[900px]:p-5">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Profile settings</div>
+                <div className="mt-1 truncate text-sm font-semibold text-[var(--app-text)]">{displayedModelProfile?.name || draftProfileName || 'New profile'}</div>
+              </div>
+              {displayedModelProfile && (!draftProfile || !isSystemUtility(draftProfile.name)) ? <button type="button" disabled={busy || saving || defaultingProfileId === displayedModelProfile.profileId || displayedModelProfile.isDefault || !onSetDefaultModelProfile} onClick={() => { void makeModelProfileDefault(displayedModelProfile) }} aria-label={displayedModelProfile.isDefault ? `${displayedModelProfile.name} is the account default` : `Make ${displayedModelProfile.name} the account default`} aria-pressed={displayedModelProfile.isDefault} title={displayedModelProfile.isDefault ? 'Account default' : 'Make account default'} className={`shrink-0 rounded-md p-1.5 transition disabled:cursor-default ${displayedModelProfile.isDefault ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] disabled:opacity-50'}`}><Star size={14} fill={displayedModelProfile.isDefault ? 'currentColor' : 'none'} /></button> : null}
+            </div>
 
             {!draftProfile || !isSystemUtility(draftProfile.name) ? (
               <div className="mb-4 grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 sm:p-4">
                 <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
                   Profile name
-                  <input value={draftProfileName} onChange={(event) => setDraftProfileName(event.target.value)} placeholder="Name this model setup" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm font-normal normal-case tracking-normal text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+                  <input ref={profileNameInputRef} value={draftProfileName} onChange={(event) => setDraftProfileName(event.target.value)} placeholder="Name this model setup" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm font-normal normal-case tracking-normal text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
                 </label>
                 {editingModelProfile ? <div className="text-[11px] text-[var(--app-text-muted)]">{editingModelProfile.isDefault ? 'Editing your account default profile. Saving updates it everywhere; continuing for this chat only leaves it unchanged.' : 'Editing a saved profile. Saving updates it everywhere; continuing for this chat only leaves it unchanged.'}</div> : null}
                 {customized ? <div className="text-[11px] font-semibold text-[var(--app-warning)]">Unsaved changes — choose whether to update the saved profile or use this draft only in the current chat.</div> : null}
@@ -741,11 +792,11 @@ export function AgentModelControl({
             ) : null}
 
             {effectiveDraftMode === 'single' ? (
-              <ModelDraftEditor title={draftProfile && isSystemUtility(draftProfile.name) ? `${displayAgentName(draftProfile.name)} model` : 'Single model'} draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
+              <ModelDraftEditor className="mt-4" title={draftProfile && isSystemUtility(draftProfile.name) ? `${displayAgentName(draftProfile.name)} model` : 'Single model'} draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
             ) : (
-              <div className="mt-4 grid gap-3">
-                <ModelDraftEditor title="Plan model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('plan', provider)} onModelChange={(model) => selectModel('plan', model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
-                <ModelDraftEditor title="Action model" draft={autoDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('auto', provider)} onModelChange={(model) => selectModel('auto', model)} onThinkingChange={(thinking) => setAutoDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setAutoDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
+              <div aria-label="Plan and action model cards" className="mt-4 grid gap-3 min-[1100px]:grid-cols-2">
+                <ModelDraftEditor compact title="Plan agent model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('plan', provider)} onModelChange={(model) => selectModel('plan', model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
+                <ModelDraftEditor compact title="Action agent model" draft={autoDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('auto', provider)} onModelChange={(model) => selectModel('auto', model)} onThinkingChange={(thinking) => setAutoDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setAutoDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
               </div>
             )}
             {thinkingTagsEnabled !== undefined && onThinkingTagsToggle ? (
@@ -754,7 +805,7 @@ export function AgentModelControl({
               </div>
             ) : null}
             {error ? <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
-          </div>
+          </section>
         </div>
 
         <div className="grid shrink-0 grid-cols-2 gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:flex sm:flex-wrap sm:items-center sm:justify-end sm:px-5 sm:py-4">
@@ -830,9 +881,9 @@ function SessionModeChoices({ value, onChange, className = '' }: { value: Deskto
 
 function ModelPolicyChoices({ value, splitModeAllowed, onChange, className = '' }: { value: DraftMode; splitModeAllowed: boolean; onChange: (value: DraftMode) => void; className?: string }) {
   return (
-    <div role="group" aria-label="Agent model policy" className={`grid shrink-0 grid-cols-2 gap-1 rounded-lg bg-transparent p-1 ${className}`}>
+    <div role="group" aria-label="Agent model policy" className={`grid shrink-0 ${splitModeAllowed ? 'grid-cols-2' : 'grid-cols-1'} gap-1 rounded-lg bg-transparent p-1 ${className}`}>
       <CompactChoice selected={value === 'single'} label="Single" onClick={() => onChange('single')} />
-      <CompactChoice selected={value === 'split'} label="Split" onClick={() => { if (splitModeAllowed) onChange('split') }} disabled={!splitModeAllowed} />
+      {splitModeAllowed ? <CompactChoice selected={value === 'split'} label="Split" onClick={() => onChange('split')} /> : null}
     </div>
   )
 }
@@ -886,6 +937,8 @@ function CompactChoice({ selected, label, onClick, disabled = false }: { selecte
 
 function ModelDraftEditor({
   title,
+  className = '',
+  compact = false,
   draft,
   providers,
   modelOptions,
@@ -896,6 +949,8 @@ function ModelDraftEditor({
   onServiceTierChange,
 }: {
   title: string
+  className?: string
+  compact?: boolean
   draft: ModelDraft
   providers: string[]
   modelOptions: ModelOptionRecord[]
@@ -913,9 +968,9 @@ function ModelDraftEditor({
   const thinkingOptions = thinkingOptionsForOption(selectedOption)
   const normalizedThinking = thinkingOptions.includes(normalizeThinking(draft.thinking)) ? normalizeThinking(draft.thinking) : defaultThinkingForOption(selectedOption)
   return (
-    <div className="mt-4 rounded-xl border border-[var(--app-border)] p-3 sm:p-4">
+    <div className={`rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 sm:p-4 ${className}`}>
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]"><GitBranch size={14} />{title}</div>
-      <div className="grid gap-3 sm:grid-cols-2 min-[1100px]:grid-cols-[minmax(130px,0.7fr)_minmax(220px,1.4fr)_minmax(130px,0.7fr)_minmax(130px,0.7fr)]">
+      <div className={`grid gap-3 sm:grid-cols-2 ${compact ? '' : 'min-[1100px]:grid-cols-[minmax(130px,0.7fr)_minmax(220px,1.4fr)_minmax(130px,0.7fr)_minmax(130px,0.7fr)]'}`}>
         <SelectField label="Provider" value={draft.provider} onChange={onProviderChange} options={providers.map((provider) => ({ label: provider, value: provider }))} placeholder="Choose provider" />
         <ModelSelectField label="Model" value={selectedOption ? modelOptionKey(selectedOption) : ''} onChange={onModelChange} options={choices} placeholder="Choose model" disabled={!draft.provider.trim()} />
         <SelectField label="Thinking" value={normalizedThinking} onChange={onThinkingChange} options={thinkingOptions.map((option) => ({ label: option, value: option }))} disabled={!selectedOption || thinkingOptions.length <= 1} />
