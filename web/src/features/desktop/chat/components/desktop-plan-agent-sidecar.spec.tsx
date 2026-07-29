@@ -52,6 +52,8 @@ assert.match(markup, />Plan</, "expected Plan-only sidebar heading");
 assert.doesNotMatch(markup, /Plan &amp; AI/, "AI tabs must be absent from the MVP sidebar");
 assert.doesNotMatch(markup, /Ask AI/, "AI sidechat controls must be absent");
 assert.match(markup, /data-testid="desktop-plan-agent-scroller"/, "Plan conversation should use the shared sticky-bottom scroller");
+assert.match(source, /h-\[88dvh\][\s\S]*max-h-\[88dvh\][\s\S]*min-\[1300px\]:h-auto/, "mobile Plan popout should have a bounded dynamic-viewport height while desktop keeps its flexible sidebar height");
+assert.match(source, /touch-pan-y[\s\S]*overflow-y-auto[\s\S]*overscroll-contain[\s\S]*-webkit-overflow-scrolling:touch/, "mobile Plan conversation should explicitly support touch scrolling");
 assert.match(markup, /data-testid="desktop-plan-agent-tail-anchor"/, "Plan conversation should expose the shared CSS tail anchor");
 assert.doesNotMatch(markup, /Jump to latest Plan message/, "jump control remains hidden while initially pinned");
 assert.match(markup, /Saved edits update the parent approval card live\./, "plan edits should advertise live parent updates");
