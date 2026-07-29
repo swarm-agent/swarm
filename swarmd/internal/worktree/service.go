@@ -71,6 +71,28 @@ type Allocation struct {
 	WorkspaceID   string `json:"workspace_id,omitempty"`
 }
 
+// RequestedWorktreeNameConflictError marks an exact requested branch/worktree
+// name that cannot be allocated because it is already in use.
+type RequestedWorktreeNameConflictError struct {
+	WorktreeName string
+	Cause        error
+}
+
+func (e *RequestedWorktreeNameConflictError) Error() string {
+	name := strings.TrimSpace(e.WorktreeName)
+	if e.Cause == nil {
+		return fmt.Sprintf("worktree name %q is already taken", name)
+	}
+	return fmt.Sprintf("worktree name %q is already taken: %v", name, e.Cause)
+}
+
+func (e *RequestedWorktreeNameConflictError) Unwrap() error { return e.Cause }
+
+func IsRequestedWorktreeNameConflict(err error) bool {
+	var conflict *RequestedWorktreeNameConflictError
+	return errors.As(err, &conflict)
+}
+
 type TaskWorkspaceState struct {
 	WorkspacePath string `json:"workspace_path"`
 	BranchName    string `json:"branch_name"`
@@ -313,12 +335,15 @@ func (s *Service) allocateSessionWorkspaceWithBranchMode(workspacePath string, u
 		return Allocation{}, err
 	}
 	if _, statErr := os.Stat(worktreePath); statErr == nil {
-		return Allocation{}, fmt.Errorf("target worktree path %q already exists", worktreePath)
+		return Allocation{}, &RequestedWorktreeNameConflictError{WorktreeName: branchName, Cause: fmt.Errorf("target worktree path %q already exists", worktreePath)}
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return Allocation{}, fmt.Errorf("check target worktree path: %w", statErr)
 	}
 	if _, err := runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch); err != nil {
 		_ = os.RemoveAll(worktreePath)
+		if isRequestedWorktreeNameGitConflict(err) {
+			return Allocation{}, &RequestedWorktreeNameConflictError{WorktreeName: branchName, Cause: err}
+		}
 		return Allocation{}, fmt.Errorf("create session worktree: %w", err)
 	}
 	if err := os.Chmod(worktreePath, appstorage.PrivateDirPerm); err != nil {
@@ -1201,6 +1226,14 @@ func runGitWithEnv(path string, env []string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), output)
 	}
 	return output, nil
+}
+
+func isRequestedWorktreeNameGitConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "already exists") || strings.Contains(text, "already checked out")
 }
 
 func runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch string) (string, error) {

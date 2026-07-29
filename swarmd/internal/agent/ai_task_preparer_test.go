@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -19,6 +20,9 @@ func TestAITaskPreparerUsesSwarmAutoModelAndReadOnlyTools(t *testing.T) {
 		if !ok || tool.Enabled == nil || !*tool.Enabled {
 			t.Fatalf("expected %s to be enabled", name)
 		}
+	}
+	if prompt := AITaskPreparerAgentPrompt(); !strings.Contains(prompt, "3-5 word title") || !strings.Contains(prompt, "guidance rather than a hard word-count restriction") {
+		t.Fatalf("preparer prompt title guidance = %q", prompt)
 	}
 	for _, name := range []string{"write", "edit", "bash", "manage_todos", "manage_sessions", "manage_agent", "plan_manage"} {
 		if tool, ok := profile.ToolContract.Tools[name]; ok && tool.Enabled != nil && *tool.Enabled {

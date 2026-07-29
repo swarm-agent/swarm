@@ -139,9 +139,20 @@ func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, us
 
 func marshalAITaskPreparation(value any) string { raw, _ := json.Marshal(value); return string(raw) }
 
-// PrepareAITaskMetadata invokes Compact exactly once with no tools, no session
-// state, and no mutation capability. Only the validated metadata object escapes.
+// PrepareAITaskMetadata invokes Compact once with no tools, no session state,
+// and no mutation capability. Only the validated metadata object escapes.
 func (s *Service) PrepareAITaskMetadata(ctx context.Context, taskID, request string, basePreference pebblestore.ModelPreference, principal identity.Principal) (AITaskPreparation, error) {
+	return s.prepareAITaskMetadata(ctx, taskID, request, basePreference, principal, "")
+}
+
+// PrepareAITaskMetadataRetry requests one replacement after a taken worktree
+// name. It is intentionally a separate fresh call rather than hidden parsing or
+// deterministic renaming so the preparer can choose a meaningful alternative.
+func (s *Service) PrepareAITaskMetadataRetry(ctx context.Context, taskID, request string, basePreference pebblestore.ModelPreference, principal identity.Principal, takenWorktreeName string) (AITaskPreparation, error) {
+	return s.prepareAITaskMetadata(ctx, taskID, request, basePreference, principal, takenWorktreeName)
+}
+
+func (s *Service) prepareAITaskMetadata(ctx context.Context, taskID, request string, basePreference pebblestore.ModelPreference, principal identity.Principal, takenWorktreeName string) (AITaskPreparation, error) {
 	if !principal.Valid() {
 		return AITaskPreparation{}, identity.ErrPrincipalRequired
 	}
@@ -161,13 +172,17 @@ func (s *Service) PrepareAITaskMetadata(ctx context.Context, taskID, request str
 	if !ok {
 		return AITaskPreparation{}, fmt.Errorf("AI task Compact provider %q is not runnable", providerID)
 	}
-	instructions := strings.TrimSpace(strings.Join([]string{
+	instructionParts := []string{
 		profile.Prompt,
 		"AI-task metadata-only case. Return exactly one JSON object with only title and worktree_name.",
-		"title: a concise user-visible task title, at most 120 characters.",
+		"title: a concise user-visible task title, preferably 3-5 words; this is guidance, not a hard word-count restriction. The existing 120-character response limit still applies.",
 		"worktree_name: a short lowercase branch seed using letters, digits, and hyphens.",
-		"Do not rewrite, summarize, or return an execution prompt. Do not include markdown or explanation.",
-	}, "\n"))
+	}
+	if takenWorktreeName = strings.TrimSpace(takenWorktreeName); takenWorktreeName != "" {
+		instructionParts = append(instructionParts, fmt.Sprintf("The worktree name %q is already taken. Choose a different worktree_name; do not return %q again.", takenWorktreeName, takenWorktreeName))
+	}
+	instructionParts = append(instructionParts, "Do not rewrite, summarize, or return an execution prompt. Do not include markdown or explanation.")
+	instructions := strings.TrimSpace(strings.Join(instructionParts, "\n"))
 	lineage := provideriface.ShortProviderLineageKey("ai_task_metadata", taskID, compactModel.Preference.Model, compactModel.Preference.Thinking, instructions)
 	req := provideriface.Request{
 		ProviderLineageID: lineage, ProviderCacheKey: providerScopedKey("cache", lineage), SessionAffinityKey: providerScopedKey("affinity", lineage),

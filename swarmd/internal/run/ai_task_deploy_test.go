@@ -132,6 +132,8 @@ type principalCapturingAITaskRunner struct {
 	id                   string
 	principal            identity.Principal
 	request              provideriface.Request
+	requests             []provideriface.Request
+	responses            []string
 	calls                int
 	convertedServiceTier string
 }
@@ -149,9 +151,14 @@ func (r *principalCapturingAITaskRunner) CreateResponse(ctx context.Context, req
 		return provideriface.Response{}, identity.ErrPrincipalRequired
 	}
 	r.principal, r.request = principal, req
+	r.requests = append(r.requests, req)
 	r.calls++
 	r.convertedServiceTier = codex.ToRequest(req).ServiceTier
-	return provideriface.Response{Text: `{"title":"Fix trusted task","worktree_name":"fix-trusted-task"}`}, nil
+	response := `{"title":"Fix trusted task","worktree_name":"fix-trusted-task"}`
+	if len(r.responses) >= r.calls {
+		response = r.responses[r.calls-1]
+	}
+	return provideriface.Response{Text: response}, nil
 }
 
 func (r *principalCapturingAITaskRunner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
@@ -210,7 +217,7 @@ func TestPrepareAITaskMetadataPropagatesTrustedPrincipalToCompact(t *testing.T) 
 	if runner.request.BoundaryReason != "ai_task_metadata" || !runner.request.ForceFreshProviderContext || runner.request.NativeContinuationAllowed {
 		t.Fatalf("Compact request boundary = %#v", runner.request)
 	}
-	if !strings.Contains(runner.request.Instructions, "only title and worktree_name") {
+	if !strings.Contains(runner.request.Instructions, "only title and worktree_name") || !strings.Contains(runner.request.Instructions, "preferably 3-5 words") || !strings.Contains(runner.request.Instructions, "not a hard word-count restriction") {
 		t.Fatalf("Compact metadata instructions = %q", runner.request.Instructions)
 	}
 	if len(runner.request.Input) != 1 {
@@ -218,6 +225,34 @@ func TestPrepareAITaskMetadataPropagatesTrustedPrincipalToCompact(t *testing.T) 
 	}
 	if _, err := svc.PrepareAITaskMetadata(context.Background(), "task-2", "request", pebblestore.ModelPreference{Provider: "codex"}, identity.Principal{}); !errors.Is(err, identity.ErrPrincipalRequired) {
 		t.Fatalf("untrusted preparation error = %v, want %v", err, identity.ErrPrincipalRequired)
+	}
+}
+
+func TestPrepareAITaskMetadataRetryNamesTakenWorktreeInSecondPrompt(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	runner := &principalCapturingAITaskRunner{responses: []string{
+		`{"title":"First task title","worktree_name":"taken-worktree"}`,
+		`{"title":"Alternate task title","worktree_name":"alternate-worktree"}`,
+	}}
+	svc.providers = registry.New()
+	svc.providers.RegisterRunner(runner)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account"}
+
+	first, err := svc.PrepareAITaskMetadata(context.Background(), "task-retry", "request", pebblestore.ModelPreference{Provider: "codex"}, principal)
+	if err != nil {
+		t.Fatalf("prepare first metadata: %v", err)
+	}
+	second, err := svc.PrepareAITaskMetadataRetry(context.Background(), "task-retry", "request", pebblestore.ModelPreference{Provider: "codex"}, principal, first.WorktreeName)
+	if err != nil {
+		t.Fatalf("prepare retry metadata: %v", err)
+	}
+	if runner.calls != 2 || second.WorktreeName != "alternate-worktree" {
+		t.Fatalf("retry preparation=%#v calls=%d", second, runner.calls)
+	}
+	if len(runner.requests) != 2 || strings.Contains(runner.requests[0].Instructions, "already taken") || !strings.Contains(runner.requests[1].Instructions, `"taken-worktree" is already taken`) || !strings.Contains(runner.requests[1].Instructions, `do not return "taken-worktree" again`) {
+		t.Fatalf("retry instructions=%#v", runner.requests)
 	}
 }
 

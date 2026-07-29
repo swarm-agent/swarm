@@ -11,6 +11,7 @@ import (
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 type recordingAITaskV2Store struct {
@@ -135,6 +136,79 @@ func TestAITaskV2SourceHasNoPollingOrOldWorkerDependency(t *testing.T) {
 		if strings.Contains(string(retired), forbidden) {
 			t.Fatalf("retired worker remains operational via %q", forbidden)
 		}
+	}
+}
+
+func TestExecuteAITaskV2RetriesTakenWorktreeOnce(t *testing.T) {
+	initial := AITaskPreparation{Title: "Initial Task Title", WorktreeName: "taken-name"}
+	replacement := AITaskPreparation{Title: "Alternate Task Title", WorktreeName: "alternate-name"}
+	var deployed, prompted, persisted []string
+	got, err := executeAITaskV2WithWorktreeRetry(
+		initial,
+		func(candidate AITaskPreparation) error {
+			deployed = append(deployed, candidate.WorktreeName)
+			if len(deployed) == 1 {
+				return &worktreeruntime.RequestedWorktreeNameConflictError{WorktreeName: candidate.WorktreeName, Cause: errors.New("preused worktree")}
+			}
+			return nil
+		},
+		func(taken string) (AITaskPreparation, error) {
+			prompted = append(prompted, taken)
+			return replacement, nil
+		},
+		func(candidate AITaskPreparation) error {
+			persisted = append(persisted, candidate.WorktreeName)
+			return nil
+		},
+	)
+	if err != nil || got != replacement {
+		t.Fatalf("retry got=%#v err=%v", got, err)
+	}
+	if strings.Join(deployed, ",") != "taken-name,alternate-name" || strings.Join(prompted, ",") != "taken-name" || strings.Join(persisted, ",") != "alternate-name" {
+		t.Fatalf("deployed=%v prompted=%v persisted=%v", deployed, prompted, persisted)
+	}
+}
+
+func TestExecuteAITaskV2FailsAfterSecondTakenWorktree(t *testing.T) {
+	initial := AITaskPreparation{Title: "Initial Task Title", WorktreeName: "taken-name"}
+	deployCalls, promptCalls := 0, 0
+	_, err := executeAITaskV2WithWorktreeRetry(
+		initial,
+		func(candidate AITaskPreparation) error {
+			deployCalls++
+			return &worktreeruntime.RequestedWorktreeNameConflictError{WorktreeName: candidate.WorktreeName, Cause: errors.New("preused worktree")}
+		},
+		func(taken string) (AITaskPreparation, error) {
+			promptCalls++
+			if taken != "taken-name" {
+				t.Fatalf("taken name=%q", taken)
+			}
+			return AITaskPreparation{Title: "Alternate Task Title", WorktreeName: "also-taken"}, nil
+		},
+		func(AITaskPreparation) error { return nil },
+	)
+	if err == nil || !strings.Contains(err.Error(), "failed after 2 attempts") || !isNonRetryableAITaskV2Error(err) {
+		t.Fatalf("terminal retry error=%v", err)
+	}
+	if deployCalls != 2 || promptCalls != 1 {
+		t.Fatalf("deploy calls=%d prompt calls=%d", deployCalls, promptCalls)
+	}
+}
+
+func TestExecuteAITaskV2SameReplacementStillUsesSecondAttempt(t *testing.T) {
+	initial := AITaskPreparation{Title: "Initial Task Title", WorktreeName: "taken-name"}
+	deployCalls := 0
+	_, err := executeAITaskV2WithWorktreeRetry(
+		initial,
+		func(candidate AITaskPreparation) error {
+			deployCalls++
+			return &worktreeruntime.RequestedWorktreeNameConflictError{WorktreeName: candidate.WorktreeName}
+		},
+		func(string) (AITaskPreparation, error) { return initial, nil },
+		func(AITaskPreparation) error { return nil },
+	)
+	if err == nil || !strings.Contains(err.Error(), "failed after 2 attempts") || deployCalls != 2 {
+		t.Fatalf("same-name retry calls=%d err=%v", deployCalls, err)
 	}
 }
 
