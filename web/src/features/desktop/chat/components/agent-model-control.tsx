@@ -903,19 +903,15 @@ function PrimaryAgentControlRow({
 }) {
   return (
     <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 lg:grid-cols-2 lg:gap-4">
-      <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_176px] sm:items-center">
-        <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Default session mode</div>
-          <div className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">How new sessions start</div>
-        </div>
+      <div className="grid min-w-0 gap-2">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Default session mode</div>
         <SessionModeChoices value={sessionMode} onChange={onSessionModeChange} />
+        <div className="text-[11px] text-[var(--app-text-muted)]">How new sessions start</div>
       </div>
-      <div className="grid min-w-0 gap-2 border-t border-[var(--app-border)] pt-3 sm:grid-cols-[minmax(0,1fr)_176px] sm:items-center lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
-        <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
-          <div className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">One model or split by mode</div>
-        </div>
+      <div className="grid min-w-0 gap-2 border-t border-[var(--app-border)] pt-3 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
         <ModelPolicyChoices value={modelMode} splitModeAllowed={splitModeAllowed} onChange={onModelModeChange} />
+        <div className="text-[11px] text-[var(--app-text-muted)]">One model or split by mode</div>
       </div>
     </div>
   )
