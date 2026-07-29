@@ -25,10 +25,13 @@ test('updateSessionV3DesktopSidebarPinned posts the UI pin metadata key', async 
     globalThis.fetch = originalFetch
   }
 
-  assert.deepEqual(calls, [{
-    url: '/v3/sessions/session-1/metadata',
-    body: { metadata: { custom: 'kept', [DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY]: true } },
-  }])
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0]?.url, '/v3/sessions/session-1/metadata')
+  assert.match(String((calls[0]?.body as Record<string, unknown>)?.client_request_id), /^desktop-sidebar-pin:[0-9a-f-]{36}$/)
+  assert.deepEqual((calls[0]?.body as Record<string, unknown>)?.metadata, {
+    custom: 'kept',
+    [DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY]: true,
+  })
 })
 
 test('sessionV3MetadataSettingsMutationResponse maps metadata mutation onto settings result shape', () => {

@@ -259,6 +259,7 @@ export async function updateSessionV3DesktopSidebarPinned(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      client_request_id: `desktop-sidebar-pin:${crypto.randomUUID()}`,
       metadata: {
         ...currentMetadata,
         [DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY]: pinned,
