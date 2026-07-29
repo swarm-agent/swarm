@@ -102,7 +102,6 @@ type Snapshot struct {
 	DetectedAt  time.Time `json:"detected_at"`
 	SelfDNSName string    `json:"self_dns_name"`
 	SelfOrigin  string    `json:"self_origin"`
-	OwnerLogin  string    `json:"owner_login,omitempty"`
 	Routes      []Route   `json:"routes"`
 	Remediation string    `json:"remediation,omitempty"`
 }
@@ -351,12 +350,10 @@ func (d *Detector) detect(ctx context.Context) (Snapshot, error) {
 		return Snapshot{}, &SchemaError{Command: "status", Err: fmt.Errorf("Self.DNSName: %w", err)}
 	}
 	selfOrigin := "https://" + selfDNS
-	ownerLogin := status.ownerLogin()
 	snapshot := Snapshot{
 		DetectedAt:  d.now().UTC(),
 		SelfDNSName: selfDNS,
 		SelfOrigin:  selfOrigin,
-		OwnerLogin:  ownerLogin,
 		Remediation: d.remediation(),
 	}
 	snapshot.Routes = classifyRoutes(selfDNS, d.listener, serve, funnel)
@@ -692,32 +689,13 @@ func unmarshalJSONObject(output []byte, target any) error {
 }
 
 type statusWire struct {
-	BackendState string                 `json:"BackendState"`
-	Self         *selfWire              `json:"Self"`
-	Users        map[string]userProfile `json:"User"`
+	BackendState string    `json:"BackendState"`
+	Self         *selfWire `json:"Self"`
 }
 
 type selfWire struct {
 	DNSName string `json:"DNSName"`
 	Online  bool   `json:"Online"`
-	UserID  uint64 `json:"UserID"`
-}
-
-type userProfile struct {
-	ID        uint64 `json:"ID"`
-	LoginName string `json:"LoginName"`
-}
-
-func (s statusWire) ownerLogin() string {
-	if s.Self == nil || s.Self.UserID == 0 {
-		return ""
-	}
-	key := strconv.FormatUint(s.Self.UserID, 10)
-	profile, ok := s.Users[key]
-	if !ok || profile.ID != s.Self.UserID {
-		return ""
-	}
-	return strings.TrimSpace(profile.LoginName)
 }
 
 type serveConfig struct {

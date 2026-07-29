@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const testStatusJSON = `{"BackendState":"Running","Self":{"DNSName":"swarm.tailnet.ts.net.","Online":true,"UserID":42},"User":{"42":{"ID":42,"LoginName":"owner@example.test"}}}`
+const testStatusJSON = `{"BackendState":"Running","Self":{"DNSName":"swarm.tailnet.ts.net.","Online":true}}`
 const testServeJSON = `{"TCP":{"443":{"HTTPS":true}},"Web":{"swarm.tailnet.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:5555"}}}}}`
 const testFunnelOffJSON = `{}`
 
@@ -116,32 +116,6 @@ func TestNormalizeHTTPSOrigin(t *testing.T) {
 			}
 			if got != test.want {
 				t.Fatalf("NormalizeHTTPSOrigin(%q) = %q, want %q", test.input, got, test.want)
-			}
-		})
-	}
-}
-
-func TestDetectorOwnerMetadataRequiresExactSelfUser(t *testing.T) {
-	tests := []struct {
-		name       string
-		statusJSON string
-		wantOwner  string
-	}{
-		{name: "exact self user", statusJSON: testStatusJSON, wantOwner: "owner@example.test"},
-		{name: "missing self user id", statusJSON: `{"BackendState":"Running","Self":{"DNSName":"swarm.tailnet.ts.net.","Online":true},"User":{"42":{"ID":42,"LoginName":"owner@example.test"}}}`},
-		{name: "missing user profile", statusJSON: `{"BackendState":"Running","Self":{"DNSName":"swarm.tailnet.ts.net.","Online":true,"UserID":42},"User":{}}`},
-		{name: "mismatched profile id", statusJSON: `{"BackendState":"Running","Self":{"DNSName":"swarm.tailnet.ts.net.","Online":true,"UserID":42},"User":{"42":{"ID":7,"LoginName":"owner@example.test"}}}`},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			runner := successfulRunner()
-			runner.outputs["status --json"] = []byte(test.statusJSON)
-			snapshot, err := newTestDetector(t, runner, time.Now).Snapshot(context.Background(), RequireFresh)
-			if err != nil {
-				t.Fatalf("Snapshot: %v", err)
-			}
-			if snapshot.OwnerLogin != test.wantOwner {
-				t.Fatalf("owner login = %q, want %q", snapshot.OwnerLogin, test.wantOwner)
 			}
 		})
 	}

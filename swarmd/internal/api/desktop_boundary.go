@@ -30,9 +30,6 @@ func (s *Server) withDesktopBoundary(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		admission, err := s.admitDesktopRequest(r)
 		if err != nil {
-			if s.tryTailscaleDesktopBootstrap(w, r) {
-				return
-			}
 			writeError(w, http.StatusForbidden, err)
 			return
 		}
