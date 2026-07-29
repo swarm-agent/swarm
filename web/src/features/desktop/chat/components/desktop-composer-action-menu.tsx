@@ -1,18 +1,35 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, ListChecks, ListTodo, Plus } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ListChecks, ListTodo, LoaderCircle, Minimize2, Paperclip, Plus } from 'lucide-react'
 
 export type DesktopComposerTaskMode = 'action' | 'plan'
 
 interface DesktopComposerActionMenuProps {
   disabled?: boolean
   onPrimeTask: (mode: DesktopComposerTaskMode) => void
+  onAttach?: () => void
+  attachDisabled?: boolean
+  attaching?: boolean
+  contextLabel?: string
+  contextTooltip?: string
+  onCompact?: () => void
+  compactDisabled?: boolean
 }
 
 type ComposerActionMenuView = 'root' | 'task'
 
 const TASK_EXPLANATION = 'Send your next message to a background agent in a managed worktree.'
 
-export function DesktopComposerActionMenu({ disabled = false, onPrimeTask }: DesktopComposerActionMenuProps) {
+export function DesktopComposerActionMenu({
+  disabled = false,
+  onPrimeTask,
+  onAttach,
+  attachDisabled = false,
+  attaching = false,
+  contextLabel = '',
+  contextTooltip = '',
+  onCompact,
+  compactDisabled = false,
+}: DesktopComposerActionMenuProps) {
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<ComposerActionMenuView>('root')
   const menuId = useId()
@@ -59,6 +76,18 @@ export function DesktopComposerActionMenu({ disabled = false, onPrimeTask }: Des
     onPrimeTask(mode)
   }
 
+  const attach = () => {
+    closeMenu()
+    onAttach?.()
+  }
+
+  const compact = () => {
+    closeMenu()
+    onCompact?.()
+  }
+
+  const showCompactAction = Boolean(contextLabel || contextTooltip || onCompact)
+
   return (
     <div ref={rootRef} className="relative shrink-0 self-end pb-0.5" data-testid="desktop-composer-action-menu">
       <button
@@ -83,23 +112,65 @@ export function DesktopComposerActionMenu({ disabled = false, onPrimeTask }: Des
           data-testid="desktop-composer-actions-menu"
         >
           {view === 'root' ? (
-            <button
-              type="button"
-              role="menuitem"
-              aria-haspopup="menu"
-              onClick={() => setView('task')}
-              className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]"
-              data-testid="desktop-composer-task-menu-item"
-            >
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--app-bg-alt)] text-[var(--app-primary)]">
-                <ListTodo size={16} aria-hidden="true" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block font-semibold">Task</span>
-                <span className="block text-[11px] leading-4 text-[var(--app-text-subtle)]">Run work in the background</span>
-              </span>
-              <ChevronRight size={16} className="shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />
-            </button>
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                aria-haspopup="menu"
+                onClick={() => setView('task')}
+                className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]"
+                data-testid="desktop-composer-task-menu-item"
+              >
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--app-bg-alt)] text-[var(--app-primary)]">
+                  <ListTodo size={16} aria-hidden="true" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block font-semibold">Task</span>
+                  <span className="block text-[11px] leading-4 text-[var(--app-text-subtle)]">Run work in the background</span>
+                </span>
+                <ChevronRight size={16} className="shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />
+              </button>
+
+              {onAttach ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={attach}
+                  disabled={attachDisabled || attaching}
+                  className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                  data-testid="desktop-composer-attach-menu-item"
+                >
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--app-bg-alt)] text-[var(--app-primary)]">
+                    {attaching ? <LoaderCircle size={16} className="animate-spin" aria-hidden="true" /> : <Paperclip size={16} aria-hidden="true" />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-semibold">Attach</span>
+                    <span className="block text-[11px] leading-4 text-[var(--app-text-subtle)]">Add media to this message</span>
+                  </span>
+                </button>
+              ) : null}
+
+              {showCompactAction ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={compact}
+                  disabled={compactDisabled || !onCompact}
+                  title={contextTooltip || 'Compact conversation'}
+                  aria-label={contextTooltip || 'Compact conversation'}
+                  className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                  data-testid="desktop-composer-compact-menu-item"
+                >
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--app-bg-alt)] text-[var(--app-primary)]">
+                    <Minimize2 size={16} aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-semibold">Compact</span>
+                    <span className="block text-[11px] leading-4 text-[var(--app-text-subtle)]">Context window · {contextLabel || 'unavailable'}</span>
+                  </span>
+                </button>
+              ) : null}
+            </>
           ) : (
             <div data-testid="desktop-composer-task-submenu">
               <button

@@ -11,20 +11,26 @@ test('Desktop V3 composer keeps its frame height stable when the input receives 
   assert.match(frameClass, /pb-\[calc\(0\.75rem\+var\(--app-safe-area-bottom\)\)\]/)
 })
 
-test('Desktop V3 composer hides compact controls unless the persisted preference is enabled', async () => {
+test('Desktop V3 composer keeps compact and attachment actions inside the plus menu', async () => {
   const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
+  const actions = await readFile(new URL('./desktop-composer-action-menu.tsx', import.meta.url), 'utf8')
 
-  assert.match(source, /showCompactButton = false/)
-  assert.equal((source.match(/showCompactButton && onCompact \? compactButton\(\) : null/g) ?? []).length, 2)
-  assert.doesNotMatch(source, /mobile.*plus|plus.*menu/i)
+  assert.doesNotMatch(source, /showCompactButton|onShowCompactButtonToggle/)
+  assert.match(source, /<DesktopComposerActionMenu[\s\S]*contextLabel=\{contextLabel\}[\s\S]*onCompact=\{onCompact/)
+  assert.match(source, /onAttach=\{effectiveMediaCapability \? \(\) => fileInputRef\.current\?\.click\(\) : undefined\}/)
+  assert.doesNotMatch(source, /aria-label="Attach media"/)
+  assert.match(actions, /data-testid="desktop-composer-attach-menu-item"/)
+  assert.match(actions, /<Paperclip size=\{16\}/)
+  assert.match(actions, /data-testid="desktop-composer-compact-menu-item"/)
+  assert.match(actions, /Context window · \{contextLabel \|\| 'unavailable'\}/)
 })
 
 test('Desktop V3 composer opens task actions from a borderless plus trigger and primes without submitting', async () => {
   const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
   const actions = await readFile(new URL('./desktop-composer-action-menu.tsx', import.meta.url), 'utf8')
 
-  assert.equal((source.match(/<DesktopComposerActionMenu disabled=\{composerDisabled\} onPrimeTask=\{handlePrimeTask\} \/>/g) ?? []).length, 1)
-  assert.match(source, /data-composer-bottom-row>\s*<DesktopComposerActionMenu disabled=\{composerDisabled\} onPrimeTask=\{handlePrimeTask\} \/>/)
+  assert.equal((source.match(/<DesktopComposerActionMenu/g) ?? []).length, 1)
+  assert.match(source, /data-composer-bottom-row>[\s\S]*?<DesktopComposerActionMenu/)
   assert.doesNotMatch(source, /data-composer-input-row>\s*<DesktopComposerActionMenu/)
   assert.match(source, /primedTaskMode === 'plan'[\s\S]*?`\/task plan \$\{visibleDraft\}`/)
   assert.match(source, /primedTaskMode === 'action'[\s\S]*?`\/task \$\{visibleDraft\}`/)
@@ -45,7 +51,7 @@ test('Desktop V3 composer opens task actions from a borderless plus trigger and 
   assert.match(actions, /aria-label=\{view === 'task' \? 'Task type' : 'Composer actions'\}/)
   assert.match(actions, /data-testid="desktop-composer-actions-menu"/)
   assert.match(actions, /data-testid="desktop-composer-task-submenu"/)
-  assert.equal((actions.match(/role="menuitem"/g) ?? []).length, 3)
+  assert.equal((actions.match(/role="menuitem"/g) ?? []).length, 5)
   assert.match(actions, /role="menuitem"[\s\S]*?primeTask\('action'\)[\s\S]*?>Action</)
   assert.match(actions, /role="menuitem"[\s\S]*?primeTask\('plan'\)[\s\S]*?>Plan</)
   assert.match(actions, /role="menuitem"[\s\S]*?className="flex w-full items-center/)

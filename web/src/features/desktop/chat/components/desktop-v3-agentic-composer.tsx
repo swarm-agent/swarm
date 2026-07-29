@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
-import { AlertTriangle, ArrowUp, FileImage, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Paperclip, Square, X } from 'lucide-react'
+import { AlertTriangle, ArrowUp, FileImage, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Square, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileRecord } from '../types/chat'
@@ -105,11 +105,6 @@ function speechRecognitionErrorMessage(error: string, message = ''): string {
   }
 }
 
-function clampContextUsagePercent(value?: number): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return 0
-  return Math.max(0, Math.min(100, value))
-}
-
 export interface DesktopV3AgenticComposerProps {
   draft: string
   onDraftChange: (draft: string) => void
@@ -159,12 +154,8 @@ export interface DesktopV3AgenticComposerProps {
   thinkingTagsEnabled?: boolean
   onThinkingTagsToggle?: (enabled: boolean) => void
   thinkingTagsBusy?: boolean
-  showCompactButton?: boolean
-  onShowCompactButtonToggle?: (enabled: boolean) => void
-  showCompactButtonBusy?: boolean
   contextLabel?: string
   contextTooltip?: string
-  contextUsagePercent?: number
   onCompact?: (draft: string) => void | Promise<void>
   compactDisabled?: boolean
   subagents?: string[]
@@ -250,12 +241,8 @@ export function DesktopV3AgenticComposer({
   thinkingTagsEnabled,
   onThinkingTagsToggle,
   thinkingTagsBusy = false,
-  showCompactButton = false,
-  onShowCompactButtonToggle,
-  showCompactButtonBusy = false,
   contextLabel,
   contextTooltip,
-  contextUsagePercent,
   onCompact,
   compactDisabled = false,
   subagents = [],
@@ -711,11 +698,6 @@ export function DesktopV3AgenticComposer({
     event.dataTransfer.dropEffect = 'copy'
   }, [effectiveMediaCapability])
 
-  const hasContextUsagePercent = typeof contextUsagePercent === 'number' && Number.isFinite(contextUsagePercent)
-  const normalizedContextUsagePercent = clampContextUsagePercent(contextUsagePercent)
-  const contextButtonLabel = hasContextUsagePercent
-    ? `${Math.round(normalizedContextUsagePercent)}%`
-    : contextLabel?.replace(/\s*ctx$/i, '') || ''
   const dictationButton = () => showDictationButton ? (
     <button
       type="button"
@@ -775,15 +757,6 @@ export function DesktopV3AgenticComposer({
       </button>
     </div>
   ) : null
-
-  const compactButton = () => (
-    <DesktopV3CompactButton
-      contextLabel={contextButtonLabel}
-      contextTooltip={contextTooltip}
-      disabled={compactDisabled || !onCompact}
-      onClick={() => { void onCompact?.(draft) }}
-    />
-  )
 
   return (
     <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-v3-agentic-composer">
@@ -881,16 +854,21 @@ export function DesktopV3AgenticComposer({
             </div>
           ) : null}
           <div className="flex min-w-0 items-center gap-2 overflow-visible bg-transparent px-4 py-3 text-[11px]" data-composer-bottom-row>
-            <DesktopComposerActionMenu disabled={composerDisabled} onPrimeTask={handlePrimeTask} />
             {effectiveMediaCapability ? (
-              <>
-                <input ref={fileInputRef} type="file" hidden multiple accept={effectiveMediaCapability.capabilities.flatMap((capability) => capability.mime_types ?? []).join(',')} onChange={(event) => { void handleAttachmentFiles(Array.from(event.target.files ?? [])); event.target.value = '' }} />
-                <button type="button" className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[var(--app-text-muted)] hover:text-[var(--app-text)] disabled:opacity-50" disabled={composerDisabled || uploadingAttachment} onClick={() => fileInputRef.current?.click()} aria-label="Attach media" title="Attach media">
-                  {uploadingAttachment ? <LoaderCircle size={15} className="animate-spin" /> : <Paperclip size={15} />}
-                </button>
-                {uploadingAttachment ? <button type="button" className="text-xs text-[var(--app-warning)]" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button> : null}
-              </>
+              <input ref={fileInputRef} type="file" hidden multiple accept={effectiveMediaCapability.capabilities.flatMap((capability) => capability.mime_types ?? []).join(',')} onChange={(event) => { void handleAttachmentFiles(Array.from(event.target.files ?? [])); event.target.value = '' }} />
             ) : null}
+            <DesktopComposerActionMenu
+              disabled={composerDisabled}
+              onPrimeTask={handlePrimeTask}
+              onAttach={effectiveMediaCapability ? () => fileInputRef.current?.click() : undefined}
+              attachDisabled={composerDisabled || uploadingAttachment}
+              attaching={uploadingAttachment}
+              contextLabel={contextLabel}
+              contextTooltip={contextTooltip}
+              onCompact={onCompact ? () => { void onCompact(draft) } : undefined}
+              compactDisabled={compactDisabled || !onCompact}
+            />
+            {uploadingAttachment ? <button type="button" className="text-xs text-[var(--app-warning)]" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button> : null}
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {primedTaskMode ? taskModeIndicator() : showModePicker ? (
@@ -908,7 +886,6 @@ export function DesktopV3AgenticComposer({
                     Needs auth!
                   </button>
                 ) : null}
-                {showCompactButton && onCompact ? compactButton() : null}
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
@@ -925,7 +902,6 @@ export function DesktopV3AgenticComposer({
                   <span className="min-w-0 truncate font-medium text-[var(--app-text-muted)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
                 )}
 
-                {showCompactButton && onCompact ? compactButton() : null}
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
@@ -949,9 +925,6 @@ export function DesktopV3AgenticComposer({
         thinkingTagsEnabled={thinkingTagsEnabled}
         onThinkingTagsToggle={onThinkingTagsToggle}
         thinkingTagsBusy={thinkingTagsBusy}
-        showCompactButton={showCompactButton}
-        onShowCompactButtonToggle={onShowCompactButtonToggle}
-        showCompactButtonBusy={showCompactButtonBusy}
         modelLocked={modelPickerDisabled || Boolean(modelLockNotice.trim())}
         modelLockNotice={modelPickerDisabledReason || modelLockNotice}
         triggerDetail={modelControlDetail}

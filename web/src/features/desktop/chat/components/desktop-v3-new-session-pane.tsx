@@ -3,9 +3,8 @@ import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import { draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
-import { normalizeDefaultNewSessionMode, normalizeShowCompactButton, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
+import { normalizeDefaultNewSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
-import { saveShowCompactButtonSetting } from '../../settings/swarm/mutations/save-show-compact-button-setting'
 import { getDesktopSessionCreateTarget, type DesktopChatRoute } from '../services/chat-routing'
 import { formatContextWindow, effectiveContextWindow, modelOptionKey } from '../services/model-options'
 import { preferenceFromModelProfile } from '../services/model-profiles'
@@ -150,7 +149,6 @@ export function DesktopV3NewSessionPane({
   const defaultMode = normalizeDefaultNewSessionMode(uiSettings?.chat?.default_new_session_mode)
   const initialMode = initialModeProp ?? defaultMode
   const thinkingTagsEnabled = normalizeThinkingTagsEnabled(uiSettings)
-  const showCompactButton = normalizeShowCompactButton(uiSettings)
 
   const writableRoutes = useMemo(
     () => routeOptions.filter((route) => {
@@ -179,7 +177,6 @@ export function DesktopV3NewSessionPane({
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
-  const [showCompactButtonSaving, setShowCompactButtonSaving] = useState(false)
   const [agentModelSaving, setAgentModelSaving] = useState(false)
   const [timerNow, setTimerNow] = useState(() => Date.now())
   const [mode, setMode] = useState<DesktopSessionMode>(initialMode)
@@ -466,20 +463,6 @@ export function DesktopV3NewSessionPane({
     }
   }
 
-  async function handleShowCompactButtonToggle(enabled: boolean) {
-    if (showCompactButtonSaving) return
-    setShowCompactButtonSaving(true)
-    setStartError(null)
-    try {
-      const updated = await saveShowCompactButtonSetting(enabled)
-      queryClient.setQueryData(uiSettingsQueryKey(), updated)
-    } catch (error) {
-      if (mountedRef.current) setStartError(error instanceof Error ? error.message : 'Failed to update compact button setting')
-    } finally {
-      if (mountedRef.current) setShowCompactButtonSaving(false)
-    }
-  }
-
   async function handleSubmit(submittedDraft = draft) {
     if (starting || !selectedRoute) return
 
@@ -655,9 +638,6 @@ export function DesktopV3NewSessionPane({
         thinkingTagsEnabled={thinkingTagsEnabled}
         onThinkingTagsToggle={(enabled) => { void handleThinkingTagsToggle(enabled) }}
         thinkingTagsBusy={thinkingTagsSaving}
-        showCompactButton={showCompactButton}
-        onShowCompactButtonToggle={(enabled) => { void handleShowCompactButtonToggle(enabled) }}
-        showCompactButtonBusy={showCompactButtonSaving}
         contextLabel={contextLabel}
         compactDisabled
         onSlashCommand={onSlashCommand}

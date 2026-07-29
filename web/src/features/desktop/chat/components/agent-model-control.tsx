@@ -67,9 +67,6 @@ interface AgentModelControlProps {
   thinkingTagsEnabled?: boolean
   onThinkingTagsToggle?: (enabled: boolean) => void
   thinkingTagsBusy?: boolean
-  showCompactButton?: boolean
-  onShowCompactButtonToggle?: (enabled: boolean) => void
-  showCompactButtonBusy?: boolean
 }
 
 type DraftMode = 'single' | 'split'
@@ -324,9 +321,6 @@ export function AgentModelControl({
   thinkingTagsEnabled,
   onThinkingTagsToggle,
   thinkingTagsBusy = false,
-  showCompactButton = false,
-  onShowCompactButtonToggle,
-  showCompactButtonBusy = false,
 }: AgentModelControlProps) {
   const queryClient = useQueryClient()
   const { data: uiSettings = {} } = useQuery(uiSettingsQueryOptions())
@@ -758,10 +752,9 @@ export function AgentModelControl({
                 <ModelDraftEditor title="Action model" draft={autoDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('auto', provider)} onModelChange={(model) => selectModel('auto', model)} onThinkingChange={(thinking) => setAutoDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setAutoDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
               </div>
             )}
-            {(thinkingTagsEnabled !== undefined && onThinkingTagsToggle) || onShowCompactButtonToggle ? (
-              <div className="mt-4 grid gap-2 border-t border-[var(--app-border)] pt-4 sm:grid-cols-2">
-                {thinkingTagsEnabled !== undefined && onThinkingTagsToggle ? <PreferenceSwitch label="Show thinking responses" checked={thinkingTagsEnabled} busy={thinkingTagsBusy} onToggle={onThinkingTagsToggle} /> : null}
-                {onShowCompactButtonToggle ? <PreferenceSwitch label="Show compact button" checked={showCompactButton} busy={showCompactButtonBusy} onToggle={onShowCompactButtonToggle} /> : null}
+            {thinkingTagsEnabled !== undefined && onThinkingTagsToggle ? (
+              <div className="mt-4 border-t border-[var(--app-border)] pt-4">
+                <PreferenceSwitch label="Show thinking responses" checked={thinkingTagsEnabled} busy={thinkingTagsBusy} onToggle={onThinkingTagsToggle} />
               </div>
             ) : null}
             {error ? <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
