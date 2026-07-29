@@ -1375,6 +1375,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   ) => void | Promise<void>;
   agentSettingsOpenSignal?: number;
   agentSettingsInitialAgent?: string;
+  composerFocusSignal?: number;
   onCompactingChange?: (sessionId: string, startedAt: number | null) => void;
   onArchivePlanSession?: (sessionId: string) => void;
   onOpenPlan?: () => void;
@@ -1462,6 +1463,7 @@ export function DesktopV3ExistingConversationPane({
   onSlashCommand,
   agentSettingsOpenSignal = 0,
   agentSettingsInitialAgent = "",
+  composerFocusSignal = 0,
   onCompactingChange,
   onArchivePlanSession,
   onOpenPlan,
@@ -2794,6 +2796,7 @@ export function DesktopV3ExistingConversationPane({
           <DesktopV3ExistingConversationComposer
             key={normalizedSessionId}
             initialDraft={storedOperation?.request.content ?? ""}
+            focusSignal={composerFocusSignal}
             hasStoredOperation={hasStoredOperation}
             canSubmitWithoutDraft={canSubmitWithoutDraft}
             controllerRef={composerControllerRef}

@@ -89,6 +89,7 @@ export interface DesktopV3NewSessionPaneProps {
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
   agentSettingsOpenSignal?: number
   agentSettingsInitialAgent?: string
+  composerFocusSignal?: number
 }
 
 export function completeDesktopV3NewSessionStarted(input: {
@@ -122,6 +123,7 @@ export function DesktopV3NewSessionPane({
   onSlashCommand,
   agentSettingsOpenSignal = 0,
   agentSettingsInitialAgent = '',
+  composerFocusSignal = 0,
 }: DesktopV3NewSessionPaneProps) {
   const navigate = useNavigate()
   const matchRoute = useMatchRoute()
@@ -562,6 +564,7 @@ export function DesktopV3NewSessionPane({
       </div>
       <DesktopV3AgenticComposer
         draft={draft}
+        focusSignal={composerFocusSignal}
         onDraftChange={setDraft}
         placeholder={`Message ${workspace.workspaceName || 'workspace'}…`}
         inputLabel="Start a new Desktop V3 session"

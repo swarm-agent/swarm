@@ -2602,6 +2602,7 @@ export function DesktopAppPage() {
   const [quickSettingsTab, setQuickSettingsTab] = useState<QuickSettingsTabID | null>(null)
   const [quickActionsOpen, setQuickActionsOpen] = useState(false)
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
+  const [composerFocusSignal, setComposerFocusSignal] = useState(0)
   const [sessionModeCommand, setSessionModeCommand] = useState<DesktopSessionModeCommand | null>(null)
   const [gitRealtimeErrors, setGitRealtimeErrors] = useState<Record<string, string>>({})
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
@@ -3923,6 +3924,7 @@ export function DesktopAppPage() {
   const handleSelectWorkspaceFromPicker = useCallback((workspace: WorkspaceEntry) => {
     setWorkspacePickerOpen(false)
     handleOpenWorkspace(workspace.path, workspace.workspaceName)
+    setComposerFocusSignal((current) => current + 1)
   }, [handleOpenWorkspace])
 
   const canStartNewSession = Boolean(topWorkspacePath)
@@ -4929,6 +4931,7 @@ export function DesktopAppPage() {
           <DesktopV3ExistingConversationPane
             key={`existing:${routeSessionId}`}
             sessionId={routeSessionId}
+            composerFocusSignal={composerFocusSignal}
             initialHydrateStatus={desktopInitialHydrate.status}
             renderedMessages={selectedDesktopV3Messages}
             messagesLoaded={selectedDesktopV3MessagesLoaded}
@@ -4998,6 +5001,7 @@ export function DesktopAppPage() {
             onModeCommandHandled={() => setSessionModeCommand(null)}
             workspace={routeWorkspace}
             workspaceSlug={routeWorkspaceSlug}
+            composerFocusSignal={composerFocusSignal}
             routeOptions={buildDesktopChatRouteOptions({
               hostSwarmName: swarmName,
               workspacePath: routeWorkspace.path,

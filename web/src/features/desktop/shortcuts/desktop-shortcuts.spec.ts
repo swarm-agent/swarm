@@ -12,6 +12,11 @@ test('workspace picker uses Alt+W', async () => {
   assert.match(desktopSource, /event\.altKey[^\n]*normalizedCode === 'keyw'/)
   assert.match(desktopSource, /handleOpenWorkspacePicker\(\)/)
   assert.match(desktopSource, /<DesktopWorkspacePicker/)
+  assert.match(desktopSource, /setComposerFocusSignal\(\(current\) => current \+ 1\)/)
+
+  const composerSource = await readFile(new URL('../chat/components/desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
+  assert.match(composerSource, /focusSignal <= 0/)
+  assert.match(composerSource, /textarea\.focus\(\)/)
 })
 
 test('workspace picker numbers select workspaces 1 through 10', () => {

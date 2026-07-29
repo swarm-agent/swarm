@@ -163,6 +163,7 @@ export interface DesktopV3AgenticComposerProps {
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
   onMentionSelect?: (agent: string) => void
   onDropTodo?: (event: ReactDragEvent<HTMLTextAreaElement>) => void
+  focusSignal?: number
 }
 
 export const DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME = "mx-auto grid w-full min-w-0 max-w-[70rem] gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5";
@@ -251,6 +252,7 @@ export function DesktopV3AgenticComposer({
   onSlashCommand,
   onMentionSelect,
   onDropTodo,
+  focusSignal = 0,
 }: DesktopV3AgenticComposerProps) {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -504,6 +506,18 @@ export function DesktopV3AgenticComposer({
   useEffect(() => {
     resizeComposerTextarea()
   }, [dictationComposer, resizeComposerTextarea])
+
+  useEffect(() => {
+    if (focusSignal <= 0 || composerDisabled || typeof window === 'undefined') return
+    const frame = window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current
+      if (!textarea) return
+      textarea.focus()
+      const cursorPosition = textarea.value.length
+      textarea.setSelectionRange(cursorPosition, cursorPosition)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [composerDisabled, focusSignal])
 
   useEffect(() => {
     if (!error) setDismissedComposerError(null)
