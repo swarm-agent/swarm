@@ -728,7 +728,7 @@ export function AgentModelControl({
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
                   <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Use one model everywhere or separate plan and action models.</div>
                 </div>
-                <ModelPolicyButton value={effectiveDraftMode} splitModeAllowed={splitModeAllowed} onChange={setDraftMode} />
+                <ModelPolicyChoices value={effectiveDraftMode} splitModeAllowed={splitModeAllowed} onChange={setDraftMode} />
               </div>
               {!splitModeAllowed ? <div className="mt-2 text-[11px] text-[var(--app-text-subtle)]">Split policy is available only for plan-capable agents.</div> : null}
             </div> : null}
@@ -828,8 +828,13 @@ function SessionModeChoices({ value, onChange, className = '' }: { value: Deskto
   )
 }
 
-function ModelPolicyButton({ value, splitModeAllowed, onChange }: { value: DraftMode; splitModeAllowed: boolean; onChange: (value: DraftMode) => void }) {
-  return <button type="button" onClick={() => onChange(value === 'split' ? 'single' : 'split')} disabled={!splitModeAllowed} aria-label="Agent model policy" className="rounded-lg border border-[var(--app-border)] px-3 py-2 text-sm font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-45">{value === 'split' ? 'Plan + action policy' : 'Single-model policy'}</button>
+function ModelPolicyChoices({ value, splitModeAllowed, onChange, className = '' }: { value: DraftMode; splitModeAllowed: boolean; onChange: (value: DraftMode) => void; className?: string }) {
+  return (
+    <div role="group" aria-label="Agent model policy" className={`grid shrink-0 grid-cols-2 gap-1 rounded-lg bg-transparent p-1 ${className}`}>
+      <CompactChoice selected={value === 'single'} label="Single" onClick={() => onChange('single')} />
+      <CompactChoice selected={value === 'split'} label="Split" onClick={() => { if (splitModeAllowed) onChange('split') }} disabled={!splitModeAllowed} />
+    </div>
+  )
 }
 
 function PrimaryAgentControlRow({
@@ -846,7 +851,7 @@ function PrimaryAgentControlRow({
   onModelModeChange: (value: DraftMode) => void
 }) {
   return (
-    <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3">
+    <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 lg:grid-cols-2 lg:gap-4">
       <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_176px] sm:items-center">
         <div className="min-w-0">
           <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Default session mode</div>
@@ -854,12 +859,12 @@ function PrimaryAgentControlRow({
         </div>
         <SessionModeChoices value={sessionMode} onChange={onSessionModeChange} />
       </div>
-      <div className="grid min-w-0 gap-2 border-t border-[var(--app-border)] pt-3 sm:grid-cols-[minmax(0,1fr)_176px] sm:items-center">
+      <div className="grid min-w-0 gap-2 border-t border-[var(--app-border)] pt-3 sm:grid-cols-[minmax(0,1fr)_176px] sm:items-center lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
         <div className="min-w-0">
           <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
-          <div className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">Controls whether this agent uses one model everywhere or separate models for planning and action.</div>
+          <div className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">One model or split by mode</div>
         </div>
-        <ModelPolicyButton value={modelMode} splitModeAllowed={splitModeAllowed} onChange={onModelModeChange} />
+        <ModelPolicyChoices value={modelMode} splitModeAllowed={splitModeAllowed} onChange={onModelModeChange} />
       </div>
     </div>
   )
