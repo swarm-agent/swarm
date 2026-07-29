@@ -144,13 +144,6 @@ func TestRenderSystemdServiceUnitIncludesStorageDirectives(t *testing.T) {
 		"Group=5678",
 		"Environment=SWARM_SYSTEMD_SCOPE=system",
 		"Environment=SWARM_SYSTEMD_UNIT=swarm.service",
-		"Environment=SWARMD_BASH_CONTAINMENT_POLICY=required",
-		"Delegate=cpu memory pids",
-		"PrivateTmp=yes",
-		"TemporaryFileSystem=/tmp:rw,nosuid,nodev,size=8G,mode=1777",
-		"TemporaryFileSystem=/var/tmp:rw,nosuid,nodev,size=8G,mode=1777",
-		"MemoryMax=90%",
-		"TasksMax=80%",
 		"Environment=SWARMD_DATA_DIR=" + dataRoot,
 		"Environment=SWARMD_CACHE_DIR=" + cacheRoot,
 		"Environment=SWARMD_RUNTIME_DIR=" + runtimeRoot,
@@ -163,7 +156,12 @@ func TestRenderSystemdServiceUnitIncludesStorageDirectives(t *testing.T) {
 			t.Fatalf("unit missing %q\n%s", needle, unit)
 		}
 	}
-	for _, forbidden := range []string{"$HOME", "XDG_", "/root", "/home/", "MemoryMax=2G", "TasksMax=512", "CPUQuota="} {
+	for _, forbidden := range []string{
+		"$HOME", "XDG_", "/root", "/home/",
+		"Delegate=", "PrivateTmp=", "TemporaryFileSystem=",
+		"MemoryMax=", "TasksMax=", "CPUQuota=",
+		"SWARMD_BASH_CONTAINMENT_POLICY", "SWARMD_COMMAND_TEMP_ROOT",
+	} {
 		if strings.Contains(unit, forbidden) {
 			t.Fatalf("unit contains forbidden path/env %q\n%s", forbidden, unit)
 		}

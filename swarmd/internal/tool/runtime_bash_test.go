@@ -3,10 +3,72 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestBashRunsInWorkspaceWithPrivateOSTempDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	payload, err := executeBashCommand(
+		context.Background(),
+		WorkspaceScope{PrimaryPath: workspace},
+		map[string]any{"timeout_ms": 1000},
+		`printf '%s\n%s\n%s\n%s\n' "$PWD" "$TMPDIR" "$TMP" "$TEMP"`,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("execute bash: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		t.Fatalf("decode bash payload: %v", err)
+	}
+	lines := strings.Fields(decoded["output"].(string))
+	if len(lines) != 4 {
+		t.Fatalf("bash environment output = %q", decoded["output"])
+	}
+	if lines[0] != workspace {
+		t.Fatalf("bash working directory = %q, want workspace %q", lines[0], workspace)
+	}
+	if lines[1] != lines[2] || lines[2] != lines[3] {
+		t.Fatalf("temporary environment differs: TMPDIR=%q TMP=%q TEMP=%q", lines[1], lines[2], lines[3])
+	}
+	if filepath.Dir(lines[1]) != filepath.Clean(os.TempDir()) {
+		t.Fatalf("command temp parent = %q, want OS temp %q", filepath.Dir(lines[1]), os.TempDir())
+	}
+	if _, err := os.Stat(lines[1]); !os.IsNotExist(err) {
+		t.Fatalf("command temp directory still exists after Bash completed: %v", err)
+	}
+}
+
+func TestCommandEnvironmentRemovesSecretsAndPreservesRuntimeContext(t *testing.T) {
+	tempDir := t.TempDir()
+	env := commandEnvironment([]string{
+		"PATH=/usr/bin", "HOME=/home/example", "LANG=C.UTF-8", "SHELL=/bin/bash",
+		"SWARMD_TOKEN=secret", "CODEX_API_KEY=secret", "DATABASE_PASSWORD=secret",
+		"AWS_SECRET_ACCESS_KEY=secret", "SESSION_COOKIE=secret", "TMPDIR=/shared",
+	}, tempDir)
+	joined := "\n" + strings.Join(env, "\n") + "\n"
+	for _, preserved := range []string{"PATH=/usr/bin", "HOME=/home/example", "LANG=C.UTF-8", "SHELL=/bin/bash"} {
+		if !strings.Contains(joined, "\n"+preserved+"\n") {
+			t.Fatalf("environment missing %q: %q", preserved, env)
+		}
+	}
+	for _, secret := range []string{"SWARMD_TOKEN", "CODEX_API_KEY", "DATABASE_PASSWORD", "AWS_SECRET_ACCESS_KEY", "SESSION_COOKIE"} {
+		if strings.Contains(joined, "\n"+secret+"=") {
+			t.Fatalf("environment leaked %s: %q", secret, env)
+		}
+	}
+	for _, tempName := range []string{"TMPDIR", "TMP", "TEMP"} {
+		if !strings.Contains(joined, "\n"+tempName+"="+tempDir+"\n") {
+			t.Fatalf("environment missing private %s: %q", tempName, env)
+		}
+	}
+}
 
 func TestBashKeepsLargeTextForOutputViewer(t *testing.T) {
 	workspace := t.TempDir()
