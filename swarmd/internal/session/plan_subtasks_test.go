@@ -2,6 +2,7 @@ package session
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -29,6 +30,29 @@ func TestPlanSubtasksNormalizeLegacyAndAdvanceWithoutCompletingCheckpoint(t *tes
 	}
 	if checkpoint.ActiveSubtaskID != "task-2" || checkpoint.Status != PlanCheckpointStatusInProgress {
 		t.Fatalf("completion crossed checkpoint boundary: %#v", checkpoint)
+	}
+}
+
+func TestPlanSubtaskCompletionRejectsLastTaskWithoutCheckpointCloseout(t *testing.T) {
+	doc, err := NormalizePlanDocumentForSave("plan-1", "Plan", &pebblestore.SessionPlanDocument{
+		ID: "plan-1", Title: "Plan", ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: "automatic", Shape: "checkpointed"}, Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Tasks: []string{"first", "second"}}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyPlanCheckpointStart(doc, PlanCheckpointStartOptions{CheckpointID: "cp-1", StartedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := completePlanCheckpointSubtask(doc, PlanDocumentPatchOperation{CheckpointID: "cp-1", SubtaskID: "task-1", CompletedAt: 2}); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := &doc.Checkpoints[0]
+	err = completePlanCheckpointSubtask(doc, PlanDocumentPatchOperation{CheckpointID: "cp-1", SubtaskID: "task-2", CompletedAt: 3})
+	if err == nil || !strings.Contains(err.Error(), "complete_checkpoint=true") {
+		t.Fatalf("expected formal checkpoint closeout error, got %v", err)
+	}
+	if checkpoint.Status != PlanCheckpointStatusInProgress || checkpoint.ActiveSubtaskID != "task-2" || checkpoint.Subtasks[1].Status != PlanSubtaskStatusInProgress {
+		t.Fatalf("rejected final subtask completion mutated checkpoint: %#v", checkpoint)
 	}
 }
 

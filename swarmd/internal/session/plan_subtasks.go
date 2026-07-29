@@ -172,13 +172,18 @@ func completePlanCheckpointSubtask(doc *pebblestore.SessionPlanDocument, op Plan
 		}
 		indexes = append(indexes, idx)
 	}
-	if op.CompleteCheckpoint {
-		for _, subtask := range checkpoint.Subtasks {
-			if subtask.Status == PlanSubtaskStatusCompleted || seen[subtask.ID] {
-				continue
-			}
+	allSubtasksCompleted := true
+	for _, subtask := range checkpoint.Subtasks {
+		if subtask.Status == PlanSubtaskStatusCompleted || seen[subtask.ID] {
+			continue
+		}
+		allSubtasksCompleted = false
+		if op.CompleteCheckpoint {
 			return fmt.Errorf("cannot complete checkpoint %q while subtask %q is %q; include every finished subtask in subtask_ids or keep checkpoint progress open", checkpoint.ID, subtask.ID, subtask.Status)
 		}
+	}
+	if allSubtasksCompleted && !op.CompleteCheckpoint {
+		return fmt.Errorf("cannot complete the final open subtask in checkpoint %q without formally closing the checkpoint; retry complete_subtask with complete_checkpoint=true and the terminal report, changed_files, validation, result, recommendation, and final handoff when required, or keep the final subtask open while acceptance work continues", checkpoint.ID)
 	}
 	for _, idx := range indexes {
 		checkpoint.Subtasks[idx].Status = PlanSubtaskStatusCompleted
