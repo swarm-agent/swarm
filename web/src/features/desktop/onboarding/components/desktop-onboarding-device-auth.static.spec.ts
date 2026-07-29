@@ -4,11 +4,13 @@ import test from 'node:test'
 
 const source = readFileSync(new URL('./desktop-onboarding-gate.tsx', import.meta.url), 'utf8')
 
-test('onboarding prefers device-code auth and retains explicit OAuth fallbacks', () => {
+test('onboarding recommends Codex setup by access locality and retains explicit OAuth fallbacks', () => {
+  assert.match(source, /recommendedCodexSetup = codexSetupRecommendation\(\)/)
   assert.match(source, /handleStartOAuth\('device'\)/)
-  assert.match(source, /Sign in with device code/)
-  assert.match(source, /Preferred · remote-friendly/)
-  assert.match(source, /Local browser fallback/)
+  assert.match(source, /Device Code/)
+  assert.match(source, /Recommended for remote setup/)
+  assert.match(source, /Local Setup/)
+  assert.match(source, /Recommended on this device/)
   assert.match(source, /Manual callback fallback/)
   assert.match(source, /<CodexDeviceCode session=\{oauthSession\}/)
 })

@@ -15,6 +15,7 @@ import { verifyAuthCredential } from '../../settings/mutations/verify-auth-crede
 import { listProviders } from '../../settings/queries/list-providers'
 import type { AuthMethod, CodexOAuthSession, ProviderStatus, StartCodexOAuthInput, UpsertAuthCredentialInput } from '../../settings/types/auth'
 import { CodexDeviceCode } from '../../settings/auth/components/codex-device-code'
+import { codexSetupRecommendation } from '../../settings/auth/codex-setup-recommendation'
 import { WorkspaceFolderTree } from '../../../workspaces/launcher/components/workspace-folder-tree'
 import { WorkspaceStatus } from '../../../workspaces/launcher/components/workspace-status'
 import { applyWorkspaceTheme } from '../../../workspaces/launcher/services/workspace-theme'
@@ -270,6 +271,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const providerAlreadyConnected = Boolean(selectedProvider && status.auth.activeProviders.includes(selectedProvider.id))
   const canStartOAuth = supportsCodexOAuth(selectedProvider)
   const canQuickAuthenticate = Boolean(selectedManualMethod || canStartOAuth)
+  const recommendedCodexSetup = codexSetupRecommendation()
   const providerSetupOptionCount = (selectedManualMethod ? 1 : 0) + (canStartOAuth ? 3 : 0)
   const showProviderSetupChoices = providerSetupOptionCount > 1
   const showCredentialSection = (providerSetupMode === 'api' || (!showProviderSetupChoices && Boolean(selectedManualMethod))) && Boolean(selectedManualMethod)
@@ -914,11 +916,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                         'rounded-lg border px-4 py-3 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60',
                                         providerSetupMode === 'oauth-device'
                                           ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)] text-[var(--app-text)]'
-                                          : 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_6%,transparent)] text-[var(--app-text)] hover:bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)]',
+                                          : recommendedCodexSetup === 'device'
+                                            ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_6%,transparent)] text-[var(--app-text)] hover:bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)]'
+                                            : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
                                       ].join(' ')}
                                     >
-                                      <span className="block font-semibold">{pendingAction === 'oauth-device' ? 'Preparing…' : 'Sign in with device code'}</span>
-                                      <span className="mt-1 block text-xs text-[var(--app-text-muted)]">Preferred · remote-friendly</span>
+                                      <span className="block font-semibold">{pendingAction === 'oauth-device' ? 'Preparing…' : 'Device Code'}</span>
+                                      {recommendedCodexSetup === 'device' ? <span className="mt-1 block text-xs text-[var(--app-text-muted)]">Recommended for remote setup</span> : null}
                                     </button>
                                     <button
                                       type="button"
@@ -931,10 +935,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                         'rounded-lg border px-4 py-3 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60',
                                         providerSetupMode === 'oauth-browser'
                                           ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)] text-[var(--app-text)]'
-                                          : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
+                                          : recommendedCodexSetup === 'browser'
+                                            ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_6%,transparent)] text-[var(--app-text)] hover:bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)]'
+                                            : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
                                       ].join(' ')}
                                     >
-                                      {pendingAction === 'oauth-browser' ? 'Opening…' : 'Local browser fallback'}
+                                      <span className="block font-semibold">{pendingAction === 'oauth-browser' ? 'Opening…' : 'Local Setup'}</span>
+                                      {recommendedCodexSetup === 'browser' ? <span className="mt-1 block text-xs text-[var(--app-text-muted)]">Recommended on this device</span> : null}
                                     </button>
                                     <button
                                       type="button"

@@ -22,6 +22,7 @@ import { listProviders } from '../../queries/list-providers'
 import type { AuthCredential, AuthMethod, CodexOAuthSession, ProviderStatus, StartCodexOAuthInput, UpsertAuthCredentialInput } from '../../types/auth'
 import { createPortal } from 'react-dom'
 import { CodexDeviceCode } from './codex-device-code'
+import { codexSetupRecommendation } from '../codex-setup-recommendation'
 
 type OAuthIntent = StartCodexOAuthInput['method']
 
@@ -245,6 +246,7 @@ export function AuthSettingsPage() {
     [availableMethods, selectedMethodKey],
   )
   const sortedCredentials = useMemo(() => sortCredentials(credentials), [credentials])
+  const recommendedCodexSetup = codexSetupRecommendation()
 
   useEffect(() => {
     if (!selectedProvider && providerOptions.length > 0) {
@@ -527,17 +529,20 @@ export function AuthSettingsPage() {
             {selectedMethod.credentialType === 'oauth' ? (
               <div className="grid gap-3 p-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]">
                 <div className="grid gap-2">
-                  <div className="flex flex-col gap-2 sm:flex-row">
-                    <Button className={authButtonAccentClass} onClick={() => void startOAuth('device')} disabled={saving}>
-                      <LogIn size={16} className="mr-2" /> Sign in with device code
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button className={recommendedCodexSetup === 'browser' ? authButtonAccentClass : authButtonNeutralClass} onClick={() => void startOAuth('browser')} disabled={saving}>
+                      <LogIn size={16} className="mr-2" /> Local Setup
                     </Button>
-                    <Badge tone="live">Preferred for remote access</Badge>
+                    {recommendedCodexSetup === 'browser' ? <Badge tone="live">Recommended on this device</Badge> : null}
                   </div>
-                  <p className="text-sm text-[var(--app-text-muted)]">Use a short one-time code without a localhost callback. Device sign-in will not silently switch methods if policy disables it.</p>
-                  <div className="flex flex-wrap gap-2">
-                    <Button className={authButtonNeutralClass} onClick={() => void startOAuth('browser')} disabled={saving}>
-                      Local browser fallback
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button className={recommendedCodexSetup === 'device' ? authButtonAccentClass : authButtonNeutralClass} onClick={() => void startOAuth('device')} disabled={saving}>
+                      Sign in with device code
                     </Button>
+                    {recommendedCodexSetup === 'device' ? <Badge tone="live">Recommended for remote setup</Badge> : null}
+                  </div>
+                  <p className="text-sm text-[var(--app-text-muted)]">Device code uses a short one-time code without a localhost callback. Device sign-in will not silently switch methods if policy disables it.</p>
+                  <div className="flex flex-wrap gap-2">
                     <Button className={authButtonNeutralClass} onClick={() => void startOAuth('manual')} disabled={saving}>
                       <Key size={16} className="mr-2" /> Manual callback fallback
                     </Button>
