@@ -59,10 +59,14 @@ type codexOAuthSession struct {
 	AccountScopeID string
 	Provider       string
 	Label          string
-	Active         bool
-	Method         string
-	AuthURL        string
-	Status         string
+	Active              bool
+	Method              string
+	AuthURL             string
+	VerificationURL     string
+	UserCode            string
+	ExpiresAt           time.Time
+	DeviceAuthorization *codex.DeviceAuthorization
+	Status              string
 	Error          string
 	Credential     *auth.CredentialStatus
 	CreatedAt      time.Time

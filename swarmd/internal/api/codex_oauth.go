@@ -15,18 +15,21 @@ import (
 	codexruntime "swarm/packages/swarmd/internal/provider/codex"
 )
 
-const codexOAuthSessionTTL = 10 * time.Minute
+const codexOAuthSessionTTL = 20 * time.Minute
 
 type codexOAuthSessionResponse struct {
-	SessionID  string                 `json:"session_id"`
-	Provider   string                 `json:"provider"`
-	Method     string                 `json:"method"`
-	Label      string                 `json:"label,omitempty"`
-	Active     bool                   `json:"active"`
-	AuthURL    string                 `json:"auth_url,omitempty"`
-	Status     string                 `json:"status"`
-	Error      string                 `json:"error,omitempty"`
-	Credential *auth.CredentialStatus `json:"credential,omitempty"`
+	SessionID       string                 `json:"session_id"`
+	Provider        string                 `json:"provider"`
+	Method          string                 `json:"method"`
+	Label           string                 `json:"label,omitempty"`
+	Active          bool                   `json:"active"`
+	AuthURL         string                 `json:"auth_url,omitempty"`
+	VerificationURL string                 `json:"verification_url,omitempty"`
+	UserCode        string                 `json:"user_code,omitempty"`
+	ExpiresAt       int64                  `json:"expires_at,omitempty"`
+	Status          string                 `json:"status"`
+	Error           string                 `json:"error,omitempty"`
+	Credential      *auth.CredentialStatus `json:"credential,omitempty"`
 }
 
 func (s *Server) handleCodexOAuthStart(w http.ResponseWriter, r *http.Request) {
@@ -68,16 +71,11 @@ func (s *Server) handleCodexOAuthStart(w http.ResponseWriter, r *http.Request) {
 	if method == "" {
 		method = "browser"
 	}
-	if method != "browser" && method != "manual" {
+	if method != "browser" && method != "manual" && method != "device" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported method %q", method))
 		return
 	}
 
-	login, err := codexruntime.StartOAuthLogin()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
 	sessionID, err := newCodexOAuthSessionID()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -86,26 +84,50 @@ func (s *Server) handleCodexOAuthStart(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	session := &codexOAuthSession{
-		CodeVerifier:   login.CodeVerifier,
-		State:          login.State,
 		UserID:         strings.TrimSpace(principal.UserID),
 		AccountScopeID: strings.TrimSpace(principal.AccountScopeID),
 		Provider:       provider,
 		Label:          strings.TrimSpace(req.Label),
 		Active:         req.Active,
 		Method:         method,
-		AuthURL:        login.AuthURL,
 		Status:         "waiting",
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	s.codexOAuthSet(sessionID, session)
-
-	if method == "browser" {
-		go s.awaitCodexOAuthBrowser(sessionID)
+	if method == "device" {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		authorization, deviceErr := codexruntime.RequestDeviceAuthorization(ctx)
+		cancel()
+		if deviceErr != nil {
+			writeError(w, http.StatusBadGateway, deviceErr)
+			return
+		}
+		session.VerificationURL = authorization.VerificationURL
+		session.UserCode = authorization.UserCode
+		session.ExpiresAt = authorization.ExpiresAt
+		session.DeviceAuthorization = &authorization
+	} else {
+		login, loginErr := codexruntime.StartOAuthLogin()
+		if loginErr != nil {
+			writeError(w, http.StatusInternalServerError, loginErr)
+			return
+		}
+		session.CodeVerifier = login.CodeVerifier
+		session.State = login.State
+		session.AuthURL = login.AuthURL
 	}
 
-	writeJSON(w, http.StatusOK, s.codexOAuthResponse(sessionID, *session))
+	s.codexOAuthSet(sessionID, session)
+	response := s.codexOAuthResponse(sessionID, *session)
+
+	switch method {
+	case "browser":
+		go s.awaitCodexOAuthBrowser(sessionID)
+	case "device":
+		go s.awaitCodexOAuthDevice(sessionID)
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleCodexOAuthStatus(w http.ResponseWriter, r *http.Request) {
@@ -177,6 +199,10 @@ func (s *Server) handleCodexOAuthComplete(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusOK, s.codexOAuthResponse(sessionID, session))
 		return
 	}
+	if session.Method == "device" {
+		writeError(w, http.StatusBadRequest, errors.New("device oauth sessions complete asynchronously; poll the status endpoint"))
+		return
+	}
 
 	callbackInput := strings.TrimSpace(req.CallbackInput)
 	if callbackInput == "" {
@@ -217,6 +243,28 @@ func (s *Server) handleCodexOAuthComplete(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) awaitCodexOAuthDevice(sessionID string) {
+	session, ok := s.codexOAuthGet(sessionID)
+	if !ok || session.DeviceAuthorization == nil {
+		return
+	}
+	s.codexOAuthUpdate(sessionID, func(next *codexOAuthSession) {
+		next.Status = "authorizing"
+	})
+	ctx, cancel := context.WithDeadline(context.Background(), session.ExpiresAt)
+	defer cancel()
+	tokens, err := codexruntime.CompleteDeviceAuthorization(ctx, *session.DeviceAuthorization)
+	if err != nil {
+		s.codexOAuthUpdate(sessionID, func(next *codexOAuthSession) {
+			next.Status = "error"
+			next.Error = err.Error()
+			next.DeviceAuthorization = nil
+		})
+		return
+	}
+	_, _ = s.finishCodexOAuthSession(sessionID, tokens)
 }
 
 func (s *Server) awaitCodexOAuthBrowser(sessionID string) {
@@ -279,6 +327,7 @@ func (s *Server) finishCodexOAuthSession(sessionID string, tokens codexruntime.O
 		next.Status = "success"
 		next.Error = ""
 		next.Credential = &captured
+		next.DeviceAuthorization = nil
 	})
 
 	session, _ = s.codexOAuthGet(sessionID)
@@ -293,17 +342,23 @@ func codexOAuthSessionMatchesPrincipal(session codexOAuthSession, principal iden
 }
 
 func (s *Server) codexOAuthResponse(sessionID string, session codexOAuthSession) codexOAuthSessionResponse {
-	return codexOAuthSessionResponse{
-		SessionID:  sessionID,
-		Provider:   session.Provider,
-		Method:     session.Method,
-		Label:      session.Label,
-		Active:     session.Active,
-		AuthURL:    session.AuthURL,
-		Status:     session.Status,
-		Error:      session.Error,
-		Credential: session.Credential,
+	response := codexOAuthSessionResponse{
+		SessionID:       sessionID,
+		Provider:        session.Provider,
+		Method:          session.Method,
+		Label:           session.Label,
+		Active:          session.Active,
+		AuthURL:         session.AuthURL,
+		VerificationURL: session.VerificationURL,
+		UserCode:        session.UserCode,
+		Status:          session.Status,
+		Error:           session.Error,
+		Credential:      session.Credential,
 	}
+	if !session.ExpiresAt.IsZero() {
+		response.ExpiresAt = session.ExpiresAt.UnixMilli()
+	}
+	return response
 }
 
 func (s *Server) codexOAuthGet(sessionID string) (codexOAuthSession, bool) {
