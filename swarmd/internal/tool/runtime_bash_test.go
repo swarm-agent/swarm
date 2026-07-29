@@ -10,8 +10,10 @@ import (
 	"testing"
 )
 
-func TestBashRunsInWorkspaceWithPrivateOSTempDirectory(t *testing.T) {
+func TestBashRunsInWorkspaceWithPrivateRunTempDirectory(t *testing.T) {
 	workspace := t.TempDir()
+	tempRoot := t.TempDir()
+	t.Setenv("TMPDIR", tempRoot)
 	payload, err := executeBashCommand(
 		context.Background(),
 		WorkspaceScope{PrimaryPath: workspace},
@@ -37,10 +39,39 @@ func TestBashRunsInWorkspaceWithPrivateOSTempDirectory(t *testing.T) {
 	if lines[1] != lines[2] || lines[2] != lines[3] {
 		t.Fatalf("temporary environment differs: TMPDIR=%q TMP=%q TEMP=%q", lines[1], lines[2], lines[3])
 	}
-	if filepath.Dir(lines[1]) != filepath.Clean(os.TempDir()) {
-		t.Fatalf("command temp parent = %q, want OS temp %q", filepath.Dir(lines[1]), os.TempDir())
+	if filepath.Dir(lines[1]) != filepath.Clean(tempRoot) {
+		t.Fatalf("command temp parent = %q, want run temp %q", filepath.Dir(lines[1]), tempRoot)
 	}
 	if _, err := os.Stat(lines[1]); !os.IsNotExist(err) {
+		t.Fatalf("command temp directory still exists after Bash completed: %v", err)
+	}
+}
+
+func TestBashUsesPlatformTempDirectoryWithoutEnvironmentSetup(t *testing.T) {
+	t.Setenv("TMPDIR", "")
+	payload, err := executeBashCommand(
+		context.Background(),
+		WorkspaceScope{PrimaryPath: t.TempDir()},
+		map[string]any{"timeout_ms": 1000},
+		`printf '%s\n%s\n%s\n' "$TMPDIR" "$TMP" "$TEMP"`,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("execute bash without TMPDIR: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		t.Fatalf("decode bash payload: %v", err)
+	}
+	lines := strings.Fields(decoded["output"].(string))
+	if len(lines) != 3 || lines[0] != lines[1] || lines[1] != lines[2] {
+		t.Fatalf("private temporary environment = %q", decoded["output"])
+	}
+	if filepath.Dir(lines[0]) != filepath.Clean(os.TempDir()) {
+		t.Fatalf("command temp parent = %q, want platform temp root %q", filepath.Dir(lines[0]), os.TempDir())
+	}
+	if _, err := os.Stat(lines[0]); !os.IsNotExist(err) {
 		t.Fatalf("command temp directory still exists after Bash completed: %v", err)
 	}
 }

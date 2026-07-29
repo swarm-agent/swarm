@@ -35,9 +35,12 @@ func executeBashCommand(parent context.Context, scope WorkspaceScope, args map[s
 		return "", errors.New("bash workspace path is required")
 	}
 
+	// This is disposable command scratch, not daemon state. Let Go select the
+	// platform temp root (honoring TMPDIR when supplied) so direct, desktop,
+	// container, and service launches all work without a service-manager contract.
 	tempDir, err := os.MkdirTemp("", "swarm-command-")
 	if err != nil {
-		return "", fmt.Errorf("create command temp directory: %w", err)
+		return "", fmt.Errorf("create private command temp directory: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 

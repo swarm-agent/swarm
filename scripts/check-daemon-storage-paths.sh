@@ -46,6 +46,7 @@ filter_allowed() {
   # - launcher.go intentionally resolves legacy user/XDG locations only for read-only stop diagnostics.
   # - lib-lane.sh still exposes lane metadata helpers for CLI/harness compatibility; daemon roots below in the same file are system paths.
   # - appstorage.go intentionally resolves XDG_DATA_HOME/UserHomeDir only for user-owned git worktree checkout storage.
+  # - runtime_bash_execution.go uses os.MkdirTemp("", ...) for disposable per-command scratch; Go honors TMPDIR when present and selects the platform temp root otherwise, independent of the service manager.
   # - local deploy workspace strings are mount targets or API route names, not Swarm-owned daemon storage roots.
   # Workspace path tokens require a lexical boundary so schema identifiers such as workspace_path are not mistaken for filesystem paths.
   grep -Ev \
@@ -57,6 +58,7 @@ filter_allowed() {
     -e '^scripts/lib-lane\.sh:[0-9]+:.*(swarm_xdg_|XDG_|\.local/state|\.local/share|\.config|migrate_legacy)' \
     -e '^swarmd/internal/worktree/service\.go:.*(workspaceruntime|migrateLegacyConfig|MigrateLegacyGlobalConfig)' \
     -e '^swarmd/internal/tool/runtime\.go:.*workspaceruntime' \
+    -e '^swarmd/internal/tool/runtime_bash_execution\.go:.*os\.MkdirTemp\("", "swarm-command-"\)' \
     -e '^swarmd/internal/run/service\.go:.*workspaceruntime' \
     -e '^internal/launcher/managed_dev_update\.go:.*(/v1/swarm/topology/workspace-bindings|source_workspace_path)' \
     -e '^swarmd/internal/store/pebble/(keys|auth_store|auth_vault|worktree_store)\.go:.*(legacy|migrat|Migrate)' \
