@@ -3870,6 +3870,10 @@ func (s *Server) isAuthExemptRequest(r *http.Request) bool {
 		return r.Method == http.MethodGet && shouldAllowDesktopLocalSessionBootstrapRequest(r)
 	case "/v1/onboarding":
 		return r.Method == http.MethodGet || (r.Method == http.MethodPost && s.allowsUnauthenticatedOnboardingPost(r))
+	case TailscaleOnboardingApprovalPath:
+		_, pending := pendingDesktopOrigin(r)
+		_, admitted := admittedDesktopOrigin(r)
+		return (pending || admitted) && (r.Method == http.MethodGet || (pending && r.Method == http.MethodPost))
 	default:
 		return false
 	}

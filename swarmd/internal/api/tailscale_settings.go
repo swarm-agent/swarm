@@ -76,10 +76,6 @@ func (s *Server) handleTailscaleSettingsApprove(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
-	if s.tailscaleServePolicy == nil || s.tailscaleServeDetector == nil {
-		writeError(w, http.StatusServiceUnavailable, errors.New("tailscale desktop policy is not configured"))
-		return
-	}
 	var request struct {
 		Origin string `json:"origin"`
 	}
@@ -87,33 +83,40 @@ func (s *Server) handleTailscaleSettingsApprove(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	origin, err := tailscale.NormalizeHTTPSOrigin(request.Origin)
+	response, status, err := s.approveTailscaleOrigin(r.Context(), request.Origin)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeError(w, status, err)
 		return
 	}
-	s.tailscaleServeDetector.Invalidate()
-	snapshot, err := s.tailscaleServeDetector.Snapshot(r.Context(), tailscale.RequireFresh)
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) approveTailscaleOrigin(ctx context.Context, rawOrigin string) (tailscaleSettingsResponse, int, error) {
+	if s == nil || s.tailscaleServePolicy == nil || s.tailscaleServeDetector == nil {
+		return tailscaleSettingsResponse{}, http.StatusServiceUnavailable, errors.New("tailscale desktop policy is not configured")
+	}
+	origin, err := tailscale.NormalizeHTTPSOrigin(rawOrigin)
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, errors.New("tailscale verification is unavailable: "+err.Error()))
-		return
+		return tailscaleSettingsResponse{}, http.StatusBadRequest, err
+	}
+	s.tailscaleServeDetector.Invalidate()
+	snapshot, err := s.tailscaleServeDetector.Snapshot(ctx, tailscale.RequireFresh)
+	if err != nil {
+		return tailscaleSettingsResponse{}, http.StatusServiceUnavailable, errors.New("tailscale verification is unavailable: " + err.Error())
 	}
 	route, found := snapshot.RouteForOrigin(origin)
 	if !found || route.Classification != tailscale.ClassificationVerifiedSwarmDesktop {
-		writeError(w, http.StatusConflict, errors.New("origin is not a freshly verified Swarm desktop Serve route"))
-		return
+		return tailscaleSettingsResponse{}, http.StatusConflict, errors.New("origin is not a freshly verified Swarm desktop Serve route")
 	}
 	if _, _, err := s.tailscaleServePolicy.Add(origin); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
+		return tailscaleSettingsResponse{}, http.StatusInternalServerError, err
 	}
 	s.tailscaleServeDetector.Invalidate()
 	response, err := s.tailscaleSettingsStatusFromSnapshot(snapshot)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
+		return tailscaleSettingsResponse{}, http.StatusInternalServerError, err
 	}
-	writeJSON(w, http.StatusOK, response)
+	return response, http.StatusOK, nil
 }
 
 func (s *Server) handleTailscaleSettingsRevoke(w http.ResponseWriter, r *http.Request) {

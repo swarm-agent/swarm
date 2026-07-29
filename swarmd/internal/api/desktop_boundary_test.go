@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -122,6 +123,60 @@ func TestDesktopBoundaryTailscaleAdmission(t *testing.T) {
 	}
 	if _, err := server.admitDesktopRequest(request()); err == nil {
 		t.Fatal("revoked origin was admitted")
+	}
+}
+
+func TestDesktopBoundaryAllowsExplicitTailscaleOnboardingApprovalOnly(t *testing.T) {
+	server, policy, _ := newDesktopBoundaryTailscaleServer(t)
+	const origin = "https://node.tailnet.ts.net"
+
+	request := func(method, path string) *http.Request {
+		req := httptest.NewRequest(method, origin+path, nil)
+		req.RemoteAddr = "127.0.0.1:43210"
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Referer", origin+"/")
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.Header.Set("X-Forwarded-Proto", "https")
+		req.Header.Set(tailscaleUserLoginHeader, "alice@example.test")
+		req.Header.Set(tailscaleUserNameHeader, "Alice")
+		req.Header.Set(tailscaleUserProfilePicHeader, "https://example.test/alice.png")
+		return req
+	}
+
+	protectedRec := httptest.NewRecorder()
+	server.DesktopHandler().ServeHTTP(protectedRec, request(http.MethodGet, "/v1/onboarding"))
+	if protectedRec.Code != http.StatusForbidden {
+		t.Fatalf("unapproved protected endpoint status=%d want=%d body=%s", protectedRec.Code, http.StatusForbidden, protectedRec.Body.String())
+	}
+
+	assetRec := httptest.NewRecorder()
+	server.withDesktopBoundary(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := pendingDesktopOrigin(r); !ok {
+			t.Fatal("static bootstrap request did not carry pending Tailscale origin")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(assetRec, request(http.MethodGet, "/"))
+	if assetRec.Code != http.StatusNoContent {
+		t.Fatalf("unapproved static bootstrap status=%d want=%d body=%s", assetRec.Code, http.StatusNoContent, assetRec.Body.String())
+	}
+
+	statusRec := httptest.NewRecorder()
+	server.DesktopHandler().ServeHTTP(statusRec, request(http.MethodGet, TailscaleOnboardingApprovalPath))
+	if statusRec.Code != http.StatusOK || !strings.Contains(statusRec.Body.String(), `"required":true`) || !strings.Contains(statusRec.Body.String(), origin) {
+		t.Fatalf("approval status=%d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+
+	approveRec := httptest.NewRecorder()
+	server.DesktopHandler().ServeHTTP(approveRec, request(http.MethodPost, TailscaleOnboardingApprovalPath))
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("approval status=%d body=%s", approveRec.Code, approveRec.Body.String())
+	}
+	record, ok, err := policy.Get()
+	if err != nil || !ok || !containsExactString(record.Origins, origin) {
+		t.Fatalf("approved policy record=%+v ok=%t err=%v", record, ok, err)
+	}
+	if _, err := server.admitDesktopRequest(request(http.MethodGet, "/v1/onboarding")); err != nil {
+		t.Fatalf("approved origin did not continue to onboarding: %v", err)
 	}
 }
 

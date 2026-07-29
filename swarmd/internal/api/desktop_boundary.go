@@ -19,7 +19,12 @@ const (
 
 type desktopBoundaryContextKey string
 
-const desktopAdmittedOriginKey desktopBoundaryContextKey = "desktop-admitted-origin"
+const (
+	desktopAdmittedOriginKey desktopBoundaryContextKey = "desktop-admitted-origin"
+	desktopPendingOriginKey  desktopBoundaryContextKey = "desktop-pending-origin"
+)
+
+var errTailscaleDesktopOriginNotApproved = errors.New("tailscale desktop origin is not approved")
 
 type desktopAdmission struct {
 	origin         string
@@ -30,6 +35,11 @@ func (s *Server) withDesktopBoundary(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		admission, err := s.admitDesktopRequest(r)
 		if err != nil {
+			if errors.Is(err, errTailscaleDesktopOriginNotApproved) && shouldAllowPendingTailscaleDesktopRequest(r) {
+				ctx := context.WithValue(r.Context(), desktopPendingOriginKey, admission)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 			writeError(w, http.StatusForbidden, err)
 			return
 		}
@@ -75,9 +85,7 @@ func (s *Server) admitDesktopRequest(r *http.Request) (desktopAdmission, error) 
 	if err != nil {
 		return desktopAdmission{}, errors.New("tailscale desktop policy is unreadable")
 	}
-	if !ok || !containsExactString(record.Origins, origin) {
-		return desktopAdmission{}, errors.New("tailscale desktop origin is not approved")
-	}
+	approved := ok && containsExactString(record.Origins, origin)
 	snapshot, err := s.tailscaleServeDetector.Snapshot(r.Context(), tailscale.UseCache)
 	if err != nil {
 		return desktopAdmission{}, errors.New("tailscale desktop route verification is unavailable")
@@ -92,7 +100,21 @@ func (s *Server) admitDesktopRequest(r *http.Request) (desktopAdmission, error) 
 	if !browserHeadersMatchAdmittedOrigin(r, origin) {
 		return desktopAdmission{}, errors.New("browser origin or referer does not match the admitted desktop origin")
 	}
-	return desktopAdmission{origin: origin, tailscaleServe: true}, nil
+	admission := desktopAdmission{origin: origin, tailscaleServe: true}
+	if !approved {
+		return admission, errTailscaleDesktopOriginNotApproved
+	}
+	return admission, nil
+}
+
+func shouldAllowPendingTailscaleDesktopRequest(r *http.Request) bool {
+	if shouldServeDesktopAsset(r) {
+		return true
+	}
+	if r == nil || r.URL.Path != TailscaleOnboardingApprovalPath {
+		return false
+	}
+	return r.Method == http.MethodGet || r.Method == http.MethodPost
 }
 
 func normalizeRequestAuthority(raw string) (string, error) {
@@ -254,4 +276,12 @@ func admittedDesktopOrigin(r *http.Request) (desktopAdmission, bool) {
 	}
 	admission, ok := r.Context().Value(desktopAdmittedOriginKey).(desktopAdmission)
 	return admission, ok && admission.origin != ""
+}
+
+func pendingDesktopOrigin(r *http.Request) (desktopAdmission, bool) {
+	if r == nil {
+		return desktopAdmission{}, false
+	}
+	admission, ok := r.Context().Value(desktopPendingOriginKey).(desktopAdmission)
+	return admission, ok && admission.origin != "" && admission.tailscaleServe
 }
