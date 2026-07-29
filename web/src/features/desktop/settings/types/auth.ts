@@ -170,6 +170,9 @@ export interface CodexOAuthSessionWire {
   label?: string
   active?: boolean
   auth_url?: string
+  verification_url?: string
+  user_code?: string
+  expires_at?: number
   status?: string
   error?: string
   credential?: AuthCredentialWire
@@ -182,6 +185,9 @@ export interface CodexOAuthSession {
   label: string
   active: boolean
   authURL: string
+  verificationURL: string
+  userCode: string
+  expiresAt: number
   status: string
   error: string
   credential?: AuthCredential
@@ -191,7 +197,7 @@ export interface StartCodexOAuthInput {
   provider?: string
   label?: string
   active: boolean
-  method: 'browser' | 'manual'
+  method: 'device' | 'browser' | 'manual'
 }
 
 export interface CompleteCodexOAuthInput {
@@ -280,6 +286,9 @@ export function mapCodexOAuthSession(record: CodexOAuthSessionWire): CodexOAuthS
     label: String(record.label ?? '').trim(),
     active: Boolean(record.active),
     authURL: String(record.auth_url ?? '').trim(),
+    verificationURL: String(record.verification_url ?? '').trim(),
+    userCode: String(record.user_code ?? '').trim(),
+    expiresAt: typeof record.expires_at === 'number' ? record.expires_at : 0,
     status: String(record.status ?? '').trim(),
     error: String(record.error ?? '').trim(),
     credential: record.credential ? mapAuthCredential(record.credential) : undefined,
