@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
@@ -78,9 +79,8 @@ type manageSessionsDeployInput struct {
 // execution identity from the stored profile that owns model preferences.
 // Swarm's compiled profile is model-less; its account row remains the model
 // selection authority without becoming executable identity metadata. Queued AI
-// tasks additionally preserve the account's active primary profile when it is a
-// plan/auto split profile, so a plan-mode task can switch to that profile's auto
-// lane after exit_plan_mode.
+// tasks execute as Swarm and use the session's explicit model binding or the
+// account's current default model profile.
 type manageSessionsDeployAgentResolution struct {
 	ExecutionProfile  pebblestore.AgentProfile
 	PreferenceProfile pebblestore.AgentProfile
@@ -99,14 +99,7 @@ func (r manageSessionsDeployAgentResolution) preferenceForMode(base pebblestore.
 	return applyAgentPreferenceOverridesForMode(base, source, mode)
 }
 
-func (s *Service) resolveQueuedAITaskDeployAgent(profiles map[string]pebblestore.AgentProfile, activeName string) (manageSessionsDeployAgentResolution, bool, error) {
-	activeName = strings.ToLower(strings.TrimSpace(activeName))
-	if active := profiles[activeName]; active.Enabled && active.Mode == agentruntime.ModePrimary && pebblestore.AgentProfileRuntimeMode(active) == pebblestore.AgentRuntimeModePlanAuto && pebblestore.AgentModelMode(active) == "split" && pebblestore.AgentSupportsSplitModel(active) {
-		if strings.EqualFold(active.Name, agentruntime.SwarmAgentID) {
-			return s.resolveManageSessionsDeployAgent(profiles, agentruntime.SwarmAgentID)
-		}
-		return manageSessionsDeployAgentResolution{ExecutionProfile: active, PreferenceProfile: active}, true, nil
-	}
+func (s *Service) resolveQueuedAITaskDeployAgent(profiles map[string]pebblestore.AgentProfile, _ string) (manageSessionsDeployAgentResolution, bool, error) {
 	return s.resolveManageSessionsDeployAgent(profiles, agentruntime.SwarmAgentID)
 }
 
@@ -306,8 +299,11 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 		}
 		preference := resolution.preferenceForMode(parent.Preference, input.Mode)
 		modelProfile := (*pebblestore.SessionModelProfileSnapshot)(nil)
-		if aiTask != nil && parent.ModelProfile != nil {
-			modelProfile = cloneManageSessionsDeployModelProfile(parent.ModelProfile)
+		if strings.EqualFold(profile.Name, agentruntime.SwarmAgentID) {
+			modelProfile, err = s.resolveSwarmDefaultModelProfile(parent.AccountScopeID, parent.ModelProfile, time.Now().UnixMilli())
+			if err != nil {
+				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] model profile: %w", i, err)
+			}
 			preference, err = manageSessionsDeployModelProfilePreference(modelProfile, input.Mode)
 			if err != nil {
 				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] model profile: %w", i, err)
@@ -349,22 +345,48 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 	return manifest, nil
 }
 
+func (s *Service) resolveSwarmDefaultModelProfile(accountScopeID string, bound *pebblestore.SessionModelProfileSnapshot, appliedAt int64) (*pebblestore.SessionModelProfileSnapshot, error) {
+	if bound != nil && !bound.UseAccountDefault {
+		return cloneManageSessionsDeployModelProfile(bound), nil
+	}
+	if s == nil || s.modelProfiles == nil {
+		return nil, errors.New("model profile service is not configured")
+	}
+	profile, ok, err := s.modelProfiles.GetDefaultForAccount(accountScopeID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errors.New("account has no default model profile")
+	}
+	return &pebblestore.SessionModelProfileSnapshot{
+		Source: pebblestore.SessionModelProfileSourceSaved, SavedProfileID: profile.ProfileID, UseAccountDefault: true,
+		Name: profile.Name, ModelMode: profile.ModelMode, Single: cloneManageSessionsDeployModelSelection(profile.Single),
+		Plan: cloneManageSessionsDeployModelSelection(profile.Plan), Auto: cloneManageSessionsDeployModelSelection(profile.Auto), AppliedAt: appliedAt,
+	}, nil
+}
+
+func cloneManageSessionsDeployModelSelection(selection *pebblestore.ModelProfileSelection) *pebblestore.ModelProfileSelection {
+	if selection == nil {
+		return nil
+	}
+	cloned := *selection
+	return &cloned
+}
+
 func cloneManageSessionsDeployModelProfile(profile *pebblestore.SessionModelProfileSnapshot) *pebblestore.SessionModelProfileSnapshot {
 	if profile == nil {
 		return nil
 	}
 	cloned := *profile
 	if profile.Single != nil {
-		selection := *profile.Single
-		cloned.Single = &selection
+		cloned.Single = cloneManageSessionsDeployModelSelection(profile.Single)
 	}
 	if profile.Plan != nil {
-		selection := *profile.Plan
-		cloned.Plan = &selection
+		cloned.Plan = cloneManageSessionsDeployModelSelection(profile.Plan)
 	}
 	if profile.Auto != nil {
-		selection := *profile.Auto
-		cloned.Auto = &selection
+		cloned.Auto = cloneManageSessionsDeployModelSelection(profile.Auto)
 	}
 	return &cloned
 }

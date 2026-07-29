@@ -492,7 +492,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		subagentProfile, err = cloneTaskAgentProfile(*trustedProfile)
 		launch.SourceAgentName = strings.TrimSpace(sourceAgentName)
 	} else {
-		subagentProfile, launch.VirtualTarget, launch.SourceAgentName, err = s.resolveTaskLaunchProfile(parentSession, requestedSubagent)
+		subagentProfile, launch.VirtualTarget, launch.SourceAgentName, err = s.resolveTaskLaunchProfileForMode(parentSession, requestedSubagent, effectiveTaskChildMode(sessionMode))
 	}
 	if err != nil {
 		return taskLaunchPrepared{}, err

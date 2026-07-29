@@ -20,14 +20,15 @@ const (
 )
 
 type SessionModelProfileSnapshot struct {
-	Source         string                 `json:"source"`
-	SavedProfileID string                 `json:"saved_profile_id,omitempty"`
-	Name           string                 `json:"name,omitempty"`
-	ModelMode      string                 `json:"model_mode"`
-	Single         *ModelProfileSelection `json:"single,omitempty"`
-	Plan           *ModelProfileSelection `json:"plan,omitempty"`
-	Auto           *ModelProfileSelection `json:"auto,omitempty"`
-	AppliedAt      int64                  `json:"applied_at"`
+	Source            string                 `json:"source"`
+	SavedProfileID    string                 `json:"saved_profile_id,omitempty"`
+	UseAccountDefault bool                   `json:"use_account_default,omitempty"`
+	Name              string                 `json:"name,omitempty"`
+	ModelMode         string                 `json:"model_mode"`
+	Single            *ModelProfileSelection `json:"single,omitempty"`
+	Plan              *ModelProfileSelection `json:"plan,omitempty"`
+	Auto              *ModelProfileSelection `json:"auto,omitempty"`
+	AppliedAt         int64                  `json:"applied_at"`
 }
 
 type SessionSnapshot struct {

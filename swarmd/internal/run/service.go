@@ -21,6 +21,7 @@ import (
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/privacy"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -103,6 +104,7 @@ var (
 type Service struct {
 	sessions                  *sessionruntime.Service
 	model                     *model.Service
+	modelProfiles             *modelprofile.Service
 	providers                 *registry.Registry
 	tools                     *tool.Runtime
 	permissions               *permission.Service
@@ -647,6 +649,12 @@ func (s *Service) SetWorkspaceService(workspaceSvc *workspaceruntime.Service) {
 		return
 	}
 	s.workspace = workspaceSvc
+}
+
+func (s *Service) SetModelProfileService(modelProfileSvc *modelprofile.Service) {
+	if s != nil {
+		s.modelProfiles = modelProfileSvc
+	}
 }
 
 func (s *Service) SetUISettingsService(uiSettingsSvc *uisettings.Service) {

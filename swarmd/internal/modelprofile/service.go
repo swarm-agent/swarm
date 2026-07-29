@@ -107,7 +107,18 @@ func (s *Service) ListState(ctx context.Context) (ListState, error) {
 }
 
 func (s *Service) GetDefault(ctx context.Context) (Profile, bool, error) {
-	state, err := s.ListState(ctx)
+	principal, err := requirePrincipal(ctx)
+	if err != nil {
+		return Profile{}, false, err
+	}
+	return s.GetDefaultForAccount(principal.AccountScopeID)
+}
+
+func (s *Service) GetDefaultForAccount(accountScopeID string) (Profile, bool, error) {
+	if s == nil || s.store == nil {
+		return Profile{}, false, ErrNotConfigured
+	}
+	state, err := s.store.ListStateForAccount(strings.TrimSpace(accountScopeID), 500)
 	if err != nil {
 		return Profile{}, false, err
 	}

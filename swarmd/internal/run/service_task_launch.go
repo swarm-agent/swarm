@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
@@ -1602,6 +1603,40 @@ func validatePlanSidechatTaskTargets(parentSession pebblestore.SessionSnapshot, 
 }
 
 func (s *Service) resolveTaskLaunchProfile(parentSession pebblestore.SessionSnapshot, requested string) (pebblestore.AgentProfile, bool, string, error) {
+	return s.resolveTaskLaunchProfileForMode(parentSession, requested, parentSession.Mode)
+}
+
+func (s *Service) resolveTaskLaunchProfileForMode(parentSession pebblestore.SessionSnapshot, requested, childMode string) (pebblestore.AgentProfile, bool, string, error) {
+	if strings.EqualFold(strings.TrimSpace(requested), agentruntime.SwarmAgentID) {
+		state, err := s.agents.ListStateForAccount(parentSession.AccountScopeID, 2000)
+		if err != nil {
+			return pebblestore.AgentProfile{}, false, "", err
+		}
+		profiles := make(map[string]pebblestore.AgentProfile, len(state.Profiles))
+		for _, profile := range state.Profiles {
+			profiles[strings.ToLower(strings.TrimSpace(profile.Name))] = profile
+		}
+		resolution, found, err := s.resolveManageSessionsDeployAgent(profiles, agentruntime.SwarmAgentID)
+		if err != nil {
+			return pebblestore.AgentProfile{}, false, "", err
+		}
+		if !found {
+			return pebblestore.AgentProfile{}, false, "", fmt.Errorf("Swarm agent is not configured")
+		}
+		modelProfile, err := s.resolveSwarmDefaultModelProfile(parentSession.AccountScopeID, parentSession.ModelProfile, time.Now().UnixMilli())
+		if err != nil {
+			return pebblestore.AgentProfile{}, false, "", err
+		}
+		preference, err := manageSessionsDeployModelProfilePreference(modelProfile, childMode)
+		if err != nil {
+			return pebblestore.AgentProfile{}, false, "", err
+		}
+		profile := resolution.ExecutionProfile
+		profile.ModelMode = pebblestore.ModelProfileModeSingle
+		profile.Provider, profile.Model, profile.Thinking = preference.Provider, preference.Model, preference.Thinking
+		profile.AutoServiceTier, profile.ContextMode = preference.ServiceTier, preference.ContextMode
+		return profile, false, "", nil
+	}
 	if !agentruntime.IsCoderAgentName(requested) {
 		profile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested)
 		return profile, false, "", err
@@ -1708,7 +1743,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		if s == nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q: run service is not configured", i, requested)
 		}
-		subagentProfile, virtualTarget, sourceAgentName, err := s.resolveTaskLaunchProfile(parentSession, requested)
+		subagentProfile, virtualTarget, sourceAgentName, err := s.resolveTaskLaunchProfileForMode(parentSession, requested, childMode)
 		if err != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q: %w", i, requested, err)
 		}

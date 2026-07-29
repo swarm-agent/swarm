@@ -208,6 +208,9 @@ func applyAgentPreferenceOverridesForMode(base pebblestore.ModelPreference, agen
 	}
 	base.Thinking = normalizeThinkingWithProvider(base.Provider, base.Thinking)
 	base.ServiceTier = modelruntime.NormalizeServiceTierForProvider(base.Provider, base.ServiceTier)
+	if contextMode := strings.TrimSpace(agentProfile.ContextMode); contextMode != "" {
+		base.ContextMode = contextMode
+	}
 	if !strings.EqualFold(strings.TrimSpace(base.Provider), "codex") || !strings.EqualFold(strings.TrimSpace(base.Model), "gpt-5.4") {
 		base.ContextMode = ""
 	}

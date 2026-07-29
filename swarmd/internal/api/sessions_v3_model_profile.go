@@ -59,7 +59,7 @@ func (s *Server) resolveSessionsV3ModelProfileChoice(ctx context.Context, choice
 		if !ok {
 			return nil, errors.New("account has no default model profile")
 		}
-		return sessionModelProfileSnapshotFromSaved(profile, appliedAt), nil
+		return sessionModelProfileSnapshotFromSavedDefault(profile, appliedAt), nil
 	}
 	if profileID := strings.TrimSpace(choice.SavedProfileID); profileID != "" {
 		profile, err := s.modelProfiles.Get(ctx, profileID)
@@ -77,6 +77,12 @@ func (s *Server) resolveSessionsV3ModelProfileChoice(ctx context.Context, choice
 		Source: pebblestore.SessionModelProfileSourceTemporary, Name: validated.Name, ModelMode: validated.ModelMode,
 		Single: cloneSessionModelSelection(validated.Single), Plan: cloneSessionModelSelection(validated.Plan), Auto: cloneSessionModelSelection(validated.Auto), AppliedAt: appliedAt,
 	}, nil
+}
+
+func sessionModelProfileSnapshotFromSavedDefault(profile modelprofile.Profile, appliedAt int64) *pebblestore.SessionModelProfileSnapshot {
+	snapshot := sessionModelProfileSnapshotFromSaved(profile, appliedAt)
+	snapshot.UseAccountDefault = true
+	return snapshot
 }
 
 func sessionModelProfileSnapshotFromSaved(profile modelprofile.Profile, appliedAt int64) *pebblestore.SessionModelProfileSnapshot {

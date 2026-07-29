@@ -57,6 +57,7 @@ type AgentProfile struct {
 	AutoModel           string             `json:"auto_model,omitempty"`
 	AutoThinking        string             `json:"auto_thinking,omitempty"`
 	AutoServiceTier     string             `json:"auto_service_tier,omitempty"`
+	ContextMode         string             `json:"context_mode,omitempty"`
 	Prompt              string             `json:"prompt"`
 	RuntimeMode         string             `json:"runtime_mode,omitempty"`
 	DefaultSessionMode  string             `json:"default_session_mode,omitempty"`

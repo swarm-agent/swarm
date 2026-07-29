@@ -178,8 +178,11 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 		}
 		preference := resolution.preferenceForMode(parent.Preference, proposal.Mode)
 		modelProfile := (*pebblestore.SessionModelProfileSnapshot)(nil)
-		if aiTask != nil && parent.ModelProfile != nil {
-			modelProfile = cloneManageSessionsDeployModelProfile(parent.ModelProfile)
+		if strings.EqualFold(profile.Name, agentruntime.SwarmAgentID) {
+			modelProfile, err = s.resolveSwarmDefaultModelProfile(parent.AccountScopeID, parent.ModelProfile, time.Now().UnixMilli())
+			if err != nil {
+				return "", fmt.Errorf("proposal %q model profile: %w", proposal.ID, err)
+			}
 			preference, err = manageSessionsDeployModelProfilePreference(modelProfile, proposal.Mode)
 			if err != nil {
 				return "", fmt.Errorf("proposal %q model profile: %w", proposal.ID, err)

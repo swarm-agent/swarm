@@ -11,6 +11,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelprofile"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -38,7 +39,7 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 	if err != nil {
 		t.Fatalf("resolve explicit default: %v", err)
 	}
-	if saved == nil || saved.Source != pebblestore.SessionModelProfileSourceSaved || saved.SavedProfileID != created.ProfileID || saved.Single.Model != "saved-model" || saved.Single.ContextMode != "full" {
+	if saved == nil || saved.Source != pebblestore.SessionModelProfileSourceSaved || saved.SavedProfileID != created.ProfileID || !saved.UseAccountDefault || saved.Single.Model != "saved-model" || saved.Single.ContextMode != "full" {
 		t.Fatalf("saved snapshot = %+v", saved)
 	}
 	selection.Model = "edited-model"
@@ -60,7 +61,7 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 	if err != nil {
 		t.Fatalf("resolve temporary: %v", err)
 	}
-	if temporary == nil || temporary.Source != pebblestore.SessionModelProfileSourceTemporary || temporary.SavedProfileID != "" || temporary.Plan.Model != "plan-model" || temporary.Auto.Model != "action-model" {
+	if temporary == nil || temporary.Source != pebblestore.SessionModelProfileSourceTemporary || temporary.SavedProfileID != "" || temporary.UseAccountDefault || temporary.Plan.Model != "plan-model" || temporary.Auto.Model != "action-model" {
 		t.Fatalf("temporary snapshot = %+v", temporary)
 	}
 	state, err := service.ListState(ctx)
