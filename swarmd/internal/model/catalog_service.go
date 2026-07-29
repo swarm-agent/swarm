@@ -815,7 +815,9 @@ func catalogMediaSurfaceAliasMatches(providerID, catalogSurface, runtimeSurface 
 		return catalogSurface == "generate_content"
 	case "anthropic":
 		return catalogSurface == "messages"
-	case "fireworks", "openrouter":
+	case "fireworks":
+		return catalogSurface == "chat_completions" || catalogSurface == "serverless_chat_completions"
+	case "openrouter":
 		return catalogSurface == "chat_completions"
 	default:
 		return false

@@ -185,7 +185,7 @@ func TestDecodeSwarmSnapshotRecordsPreservesReviewedMediaAndDeniesOthers(t *test
 		t.Fatalf("Codex media surface not preserved: %+v", codex.Media)
 	}
 	assertMediaDirection(t, codex.Media.Inputs, "image", pebblestore.ModelCatalogMediaStateSupported, pebblestore.ModelCatalogMediaSemanticsNative, []string{"image/gif", "image/jpeg", "image/png", "image/webp"}, nil)
-	assertMediaDirection(t, codex.Media.Inputs, "file", pebblestore.ModelCatalogMediaStateSupported, pebblestore.ModelCatalogMediaSemanticsClientProcessed, nil, []string{"document", "pdf", "presentation", "spreadsheet"})
+	assertMediaDirection(t, codex.Media.Inputs, "file", pebblestore.ModelCatalogMediaStateUnknown, pebblestore.ModelCatalogMediaSemanticsClientProcessed, nil, nil)
 	assertMediaDirection(t, codex.Media.Inputs, "pdf", pebblestore.ModelCatalogMediaStateUnknown, pebblestore.ModelCatalogMediaSemanticsClientProcessed, []string{"application/pdf"}, []string{"pdf"})
 
 	for _, record := range records {
@@ -210,6 +210,7 @@ func TestCatalogMediaSurfaceAliasesRemainProviderScoped(t *testing.T) {
 		{"google", "generate_content", provideriface.MediaProviderSurfaceGoogleGenerateContent},
 		{"anthropic", "messages", provideriface.MediaProviderSurfaceAnthropicMessages},
 		{"fireworks", "chat_completions", provideriface.MediaProviderSurfaceFireworksChatCompletions},
+		{"fireworks", "serverless_chat_completions", provideriface.MediaProviderSurfaceFireworksChatCompletions},
 		{"openrouter", "chat_completions", provideriface.MediaProviderSurfaceOpenRouterChatCompletions},
 	} {
 		if !catalogMediaSurfaceAliasMatches(test.provider, test.catalogSurface, test.runtimeSurface) {
@@ -218,6 +219,9 @@ func TestCatalogMediaSurfaceAliasesRemainProviderScoped(t *testing.T) {
 	}
 	if catalogMediaSurfaceAliasMatches("google", "messages", provideriface.MediaProviderSurfaceGoogleGenerateContent) {
 		t.Fatal("cross-provider surface alias matched Google")
+	}
+	if catalogMediaSurfaceAliasMatches("openrouter", "serverless_chat_completions", provideriface.MediaProviderSurfaceOpenRouterChatCompletions) {
+		t.Fatal("Fireworks serverless surface alias leaked to OpenRouter")
 	}
 	var googleModel swarmSnapshotModel
 	if err := json.Unmarshal([]byte(`{"provider_id":"google","model_id":"vision","capabilities":{"supports_image_input":true}}`), &googleModel); err != nil {

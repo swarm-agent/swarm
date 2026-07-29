@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	fireworksMediaAdapterID         = "fireworks-chat-completions-v1"
-	fireworksMediaProviderSurface   = "chat_completions"
-	fireworksMediaCredentialSurface = "fireworks_api_key"
+	fireworksMediaAdapterID         = provideriface.MediaAdapterIDFireworksChatCompletionsV1
+	fireworksMediaProviderSurface   = provideriface.MediaProviderSurfaceFireworksChatCompletions
+	fireworksMediaCredentialSurface = provideriface.MediaCredentialSurfaceFireworksAPIKey
 	fireworksMaxEncodedImageBytes   = 10 << 20
 	fireworksMaxImageBytes          = ((fireworksMaxEncodedImageBytes - 1) / 4) * 3
 	fireworksMaxImageCount          = 30
