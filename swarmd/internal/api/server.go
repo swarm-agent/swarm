@@ -3533,6 +3533,11 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if raw.Chat != nil && raw.Chat.ReviewAutoArchiveMinutes != nil {
+			if reconcileErr := s.reconcileSessionsV3ReviewAutoArchiveForAccount(r.Context(), time.Now(), accountScopeID); reconcileErr != nil {
+				log.Printf("warning: v3 review auto-archive reconciliation after settings update failed account=%q: %v", accountScopeID, reconcileErr)
+			}
+		}
 		writeJSON(w, http.StatusOK, saved)
 	default:
 		methodNotAllowed(w)

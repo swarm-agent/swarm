@@ -74,6 +74,78 @@ func TestSessionsV3ReviewArchiveDeadlineDisabledOrIncomplete(t *testing.T) {
 	}
 }
 
+func TestReconcileSessionV3ReviewAutoArchiveSchedulesNeedsReviewSession(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "review-auto-archive-reconcile.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	eventLog, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	sessionStore := pebblestore.NewSessionStore(store)
+	sessionSvc := sessionruntime.NewService(sessionStore, eventLog)
+	uiSettingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settings, err := uiSettingsSvc.GetForAccount("account-1")
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	settings.Chat.ReviewAutoArchiveMinutes = 15
+	if _, err := uiSettingsSvc.SetForAccount("account-1", settings); err != nil {
+		t.Fatalf("set settings: %v", err)
+	}
+
+	const nowUnixMs int64 = 1_000_000
+	session := pebblestore.SessionSnapshot{
+		ID:             "session-reconcile",
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Title:          "Review session",
+		Mode:           "auto",
+		CreatedAt:      nowUnixMs - time.Hour.Milliseconds(),
+		UpdatedAt:      nowUnixMs,
+		LastMessageAt:  nowUnixMs - time.Minute.Milliseconds(),
+	}
+	if err := sessionStore.CreateSession(session); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	planDocument := &pebblestore.SessionPlanDocument{
+		ID:     "plan-reconcile",
+		Title:  "Review plan",
+		Status: "approved",
+		ExecutionState: &pebblestore.SessionPlanExecutionState{
+			Status: "waiting_review",
+		},
+	}
+	if _, _, err := sessionSvc.SavePlanWithMetadata(session.ID, planDocument.ID, planDocument.Title, "", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: planDocument}); err != nil {
+		t.Fatalf("save plan: %v", err)
+	}
+
+	server := &Server{sessions: sessionSvc, uiSettings: uiSettingsSvc}
+	if err := server.reconcileSessionsV3ReviewAutoArchiveForAccount(context.Background(), time.UnixMilli(nowUnixMs), session.AccountScopeID); err != nil {
+		t.Fatalf("reconcile reviews: %v", err)
+	}
+
+	stored, found, err := sessionSvc.GetSession(session.ID)
+	if err != nil || !found {
+		t.Fatalf("get session found=%v err=%v", found, err)
+	}
+	wantDueAt := nowUnixMs + (15 * time.Minute).Milliseconds()
+	if got := sessionsV3MetadataInt64(stored.Metadata, "review_auto_archive_after"); got != wantDueAt {
+		t.Fatalf("stored deadline = %d, want %d", got, wantDueAt)
+	}
+	if got := sessionReviewDoneAt(stored); got != nowUnixMs {
+		t.Fatalf("review done at = %d, want %d", got, nowUnixMs)
+	}
+	if due, err := sessionSvc.ListDueReviewAutoArchives(wantDueAt, 10); err != nil || len(due) != 1 || due[0].SessionID != session.ID {
+		t.Fatalf("scheduled reviews = %+v err=%v", due, err)
+	}
+}
+
 func TestArchiveDueSessionsV3ReviewReindexesAfterNewActivity(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "review-auto-archive.pebble"))
 	if err != nil {
@@ -122,7 +194,9 @@ func TestArchiveDueSessionsV3ReviewReindexesAfterNewActivity(t *testing.T) {
 	}
 
 	server := &Server{sessions: sessionSvc, uiSettings: uiSettingsSvc}
-	server.archiveDueSessionsV3Review(context.Background(), time.UnixMilli(oldDueAt))
+	if err := server.archiveDueSessionsV3Review(context.Background(), time.UnixMilli(oldDueAt)); err != nil {
+		t.Fatalf("archive due reviews: %v", err)
+	}
 
 	stored, found, err := sessionSvc.GetSession(session.ID)
 	if err != nil || !found {
