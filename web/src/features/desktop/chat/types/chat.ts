@@ -232,6 +232,7 @@ export interface ModelProfileRecord {
   auto: ModelProfileSelectionRecord | null;
   createdAt: number;
   updatedAt: number;
+  sortOrder?: number;
   isDefault: boolean;
 }
 

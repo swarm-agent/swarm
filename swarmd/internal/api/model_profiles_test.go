@@ -54,6 +54,12 @@ func TestModelProfilesHTTPCRUDIsolationAndBulkDelete(t *testing.T) {
 	if listed["default_profile_id"] != secondID {
 		t.Fatalf("listed default_profile_id = %#v", listed["default_profile_id"])
 	}
+	modelProfileRequestJSON(t, server, accountOne, http.MethodPatch, modelProfilesPath, `{"profile_ids":["`+secondID+`","`+profileID+`"]}`, http.StatusOK)
+	reordered := modelProfileRequestJSON(t, server, accountOne, http.MethodGet, modelProfilesPath, "", http.StatusOK)
+	profiles := reordered["model_profiles"].([]any)
+	if profiles[0].(map[string]any)["profile_id"] != secondID || profiles[1].(map[string]any)["profile_id"] != profileID {
+		t.Fatalf("model_profiles order = %#v, want [%q %q]", profiles, secondID, profileID)
+	}
 
 	bulk := `{"profile_ids":["` + profileID + `","missing","` + profileID + `"]}`
 	response := modelProfileRequestJSON(t, server, accountOne, http.MethodPost, modelProfilesPath+"/bulk-delete", bulk, http.StatusOK)
@@ -76,7 +82,7 @@ func TestModelProfilesHTTPErrors(t *testing.T) {
 	modelProfileRequestJSON(t, server, principal, http.MethodPost, modelProfilesPath, `{`, http.StatusBadRequest)
 	modelProfileRequestJSON(t, server, principal, http.MethodPost, modelProfilesPath, `{}`, http.StatusBadRequest)
 	modelProfileRequestJSON(t, server, principal, http.MethodPost, modelProfilesPath+"/bulk-delete", `{"profile_ids":[]}`, http.StatusBadRequest)
-	modelProfileRequestJSON(t, server, principal, http.MethodPatch, modelProfilesPath, `{}`, http.StatusMethodNotAllowed)
+	modelProfileRequestJSON(t, server, principal, http.MethodPatch, modelProfilesPath, `{}`, http.StatusBadRequest)
 	modelProfileRequestJSON(t, server, principal, http.MethodPost, modelProfilesPath+"/unknown/extra", `{}`, http.StatusBadRequest)
 }
 

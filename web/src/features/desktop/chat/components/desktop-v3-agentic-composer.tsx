@@ -132,6 +132,7 @@ export interface DesktopV3AgenticComposerProps {
   onModelProfileSelect?: (profileId: string) => void | Promise<void>
   onModelProfileSetDefault?: (profileId: string) => void | Promise<void>
   onModelProfileDelete?: (profileId: string) => void | Promise<void>
+  onModelProfileReorder?: (profileIds: string[]) => void | Promise<void>
   modelProfilesLoading?: boolean
   modelProfilesError?: string | null
   onUseAgentModelDefault?: () => void | Promise<void>
@@ -219,6 +220,7 @@ export function DesktopV3AgenticComposer({
   onModelProfileSelect,
   onModelProfileSetDefault,
   onModelProfileDelete,
+  onModelProfileReorder,
   modelProfilesLoading = false,
   modelProfilesError = null,
   onUseAgentModelDefault: _onUseAgentModelDefault,
@@ -308,6 +310,11 @@ export function DesktopV3AgenticComposer({
     setAgentSetupProfileId('')
     setAgentSetupInitialAgent(currentAgent)
     setCreateProfileSignal((current) => current + 1)
+  }, [currentAgent])
+  const editModelProfile = useCallback((profileId: string) => {
+    setAgentSetupProfileId(profileId)
+    setAgentSetupInitialAgent(currentAgent)
+    setAgentSetupOpenSignal((current) => current + 1)
   }, [currentAgent])
   const dictationComposer = dictationEnabled
     ? appendDictationText(appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current), dictationInterimTranscriptRef.current)
@@ -872,7 +879,7 @@ export function DesktopV3AgenticComposer({
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {primedTaskMode ? taskModeIndicator() : showModePicker ? (
-                  <ProfileAgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} profiles={modelProfiles} activeProfile={activeModelProfile} mode={mode} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} modelDetail={modelControlDetail} renderTrigger={({ openPicker, open }) => renderComposerControl(openPicker, open)} onAgentSelect={onAgentSelect} onProfileSelect={onModelProfileSelect} onAddProfile={addModelProfile} onOpenAgentSetup={openAgentSetup} onSetDefault={async (profileId) => { if (!onModelProfileSetDefault) throw new Error('Default profile management is unavailable'); await onModelProfileSetDefault(profileId) }} onDeleteProfile={async (profileId) => { if (!onModelProfileDelete) throw new Error('Profile deletion is unavailable'); await onModelProfileDelete(profileId) }} />
+                  <ProfileAgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} profiles={modelProfiles} activeProfile={activeModelProfile} mode={mode} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} modelDetail={modelControlDetail} renderTrigger={({ openPicker, open }) => renderComposerControl(openPicker, open)} onAgentSelect={onAgentSelect} onProfileSelect={onModelProfileSelect} onAddProfile={addModelProfile} onOpenAgentSetup={openAgentSetup} onEditProfile={editModelProfile} onReorderProfiles={onModelProfileReorder} onSetDefault={async (profileId) => { if (!onModelProfileSetDefault) throw new Error('Default profile management is unavailable'); await onModelProfileSetDefault(profileId) }} onDeleteProfile={async (profileId) => { if (!onModelProfileDelete) throw new Error('Profile deletion is unavailable'); await onModelProfileDelete(profileId) }} />
                 ) : executionLabel ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
                     <span className="text-[var(--app-text-subtle)]">Execution:</span>
@@ -897,7 +904,7 @@ export function DesktopV3AgenticComposer({
             <div className="flex min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:hidden">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {primedTaskMode ? taskModeIndicator() : showModePicker ? (
-                  <ProfileAgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} profiles={modelProfiles} activeProfile={activeModelProfile} mode={mode} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} compact modelDetail={modelControlDetail} renderTrigger={({ openPicker, open }) => renderComposerControl(openPicker, open)} onAgentSelect={onAgentSelect} onProfileSelect={onModelProfileSelect} onAddProfile={addModelProfile} onOpenAgentSetup={openAgentSetup} onSetDefault={async (profileId) => { if (!onModelProfileSetDefault) throw new Error('Default profile management is unavailable'); await onModelProfileSetDefault(profileId) }} onDeleteProfile={async (profileId) => { if (!onModelProfileDelete) throw new Error('Profile deletion is unavailable'); await onModelProfileDelete(profileId) }} />
+                  <ProfileAgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} profiles={modelProfiles} activeProfile={activeModelProfile} mode={mode} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} compact modelDetail={modelControlDetail} renderTrigger={({ openPicker, open }) => renderComposerControl(openPicker, open)} onAgentSelect={onAgentSelect} onProfileSelect={onModelProfileSelect} onAddProfile={addModelProfile} onOpenAgentSetup={openAgentSetup} onEditProfile={editModelProfile} onReorderProfiles={onModelProfileReorder} onSetDefault={async (profileId) => { if (!onModelProfileSetDefault) throw new Error('Default profile management is unavailable'); await onModelProfileSetDefault(profileId) }} onDeleteProfile={async (profileId) => { if (!onModelProfileDelete) throw new Error('Profile deletion is unavailable'); await onModelProfileDelete(profileId) }} />
                 ) : (
                   <span className="min-w-0 truncate font-medium text-[var(--app-text-muted)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
                 )}

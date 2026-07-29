@@ -106,6 +106,17 @@ func (s *Service) ListState(ctx context.Context) (ListState, error) {
 	return ListState{Profiles: state.Profiles, DefaultProfileID: state.DefaultProfileID}, nil
 }
 
+func (s *Service) Reorder(ctx context.Context, profileIDs []string) ([]Profile, error) {
+	principal, err := requirePrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s == nil || s.store == nil {
+		return nil, ErrNotConfigured
+	}
+	return s.store.ReorderForAccount(principal.AccountScopeID, profileIDs)
+}
+
 func (s *Service) GetDefault(ctx context.Context) (Profile, bool, error) {
 	principal, err := requirePrincipal(ctx)
 	if err != nil {

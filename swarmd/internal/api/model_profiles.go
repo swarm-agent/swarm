@@ -30,6 +30,7 @@ type modelProfileResponse struct {
 	Auto      *pebblestore.ModelProfileSelection `json:"auto,omitempty"`
 	CreatedAt int64                              `json:"created_at"`
 	UpdatedAt int64                              `json:"updated_at"`
+	SortOrder int                                `json:"sort_order"`
 	IsDefault bool                               `json:"is_default"`
 }
 
@@ -39,6 +40,10 @@ type modelProfilesBulkDeleteRequest struct {
 
 type modelProfileDefaultRequest struct {
 	ProfileID string `json:"profile_id"`
+}
+
+type modelProfilesReorderRequest struct {
+	ProfileIDs []string `json:"profile_ids"`
 }
 
 func (s *Server) handleModelProfiles(w http.ResponseWriter, r *http.Request) {
@@ -58,6 +63,22 @@ func (s *Server) handleModelProfiles(w http.ResponseWriter, r *http.Request) {
 			out = append(out, modelProfileFromRecord(profile))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model_profiles": out, "default_profile_id": state.DefaultProfileID})
+	case http.MethodPatch:
+		var req modelProfilesReorderRequest
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		profiles, err := s.modelProfiles.Reorder(ctx, req.ProfileIDs)
+		if err != nil {
+			writeModelProfileError(w, err)
+			return
+		}
+		out := make([]modelProfileResponse, 0, len(profiles))
+		for _, profile := range profiles {
+			out = append(out, modelProfileFromRecord(profile))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model_profiles": out})
 	case http.MethodPost:
 		var req modelProfileRequest
 		if err := decodeJSON(r, &req); err != nil {
@@ -202,7 +223,7 @@ func (r modelProfileRequest) input() modelprofile.Input {
 }
 
 func modelProfileFromRecord(profile modelprofile.Profile) modelProfileResponse {
-	return modelProfileResponse{ProfileID: profile.ProfileID, Name: profile.Name, ModelMode: profile.ModelMode, Single: profile.Single, Plan: profile.Plan, Auto: profile.Auto, CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt, IsDefault: profile.IsDefault}
+	return modelProfileResponse{ProfileID: profile.ProfileID, Name: profile.Name, ModelMode: profile.ModelMode, Single: profile.Single, Plan: profile.Plan, Auto: profile.Auto, CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt, SortOrder: profile.SortOrder, IsDefault: profile.IsDefault}
 }
 
 func parseModelProfileID(path string) (string, error) {

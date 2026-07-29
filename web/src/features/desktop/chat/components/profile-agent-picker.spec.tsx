@@ -3,7 +3,6 @@ import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { profilePickerAgentSections, profileTriggerDisplay } from './profile-agent-picker'
 import { modelProfileDraftIsCustomized, resolveInitialModelProfileId } from './agent-model-control'
-import { canSwitchModelProfilePolicyGroup, initialModelProfilePolicyGroup, modelProfilesInPolicyGroup } from '../services/model-profile-groups'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelProfileRecord } from '../types/chat'
 
 const source = readFileSync(new URL('./profile-agent-picker.tsx', import.meta.url), 'utf8')
@@ -72,23 +71,15 @@ test('existing session selector restores the active profile from hydrated sessio
   assert.doesNotMatch(existingConversationSource, /activeModelProfileFromPolicy\(cachedAgentModelPolicy\)/)
 })
 
-test('profile policy groups default to the active policy, isolate choices, and only switch for Swarm', () => {
-  const singleProfile = savedProfile('single')
-  const splitProfile = { ...savedProfile('split'), profileId: 'profile-2', name: 'Plan and action' }
-  const swarm = { ...agent('swarm'), modelMode: 'single' as const }
-  const finder = { ...agent('system-finder', 'subagent'), modelMode: 'single' as const }
-
-  assert.equal(initialModelProfilePolicyGroup(swarm, activeSaved('split')), 'split')
-  assert.equal(initialModelProfilePolicyGroup(finder, activeSaved('split')), 'single')
-  assert.deepEqual(modelProfilesInPolicyGroup([singleProfile, splitProfile], 'split').map((profile) => profile.profileId), ['profile-2'])
-  assert.deepEqual(modelProfilesInPolicyGroup([singleProfile, splitProfile], 'single').map((profile) => profile.profileId), ['profile-1'])
-  assert.equal(canSwitchModelProfilePolicyGroup(swarm), true)
-  assert.equal(canSwitchModelProfilePolicyGroup(finder), false)
-  assert.match(source, /profileGroupSwitchable \? <PolicyGroupSwitch/)
-  assert.match(source, /visibleProfiles\.map/)
-  assert.match(setupSource, /profileGroupSwitchable \? <SetupProfileGroupSwitch/)
-  assert.match(setupSource, /visibleModelProfiles\.map/)
+test('profile menus combine single and plan-action profiles without policy group switches', () => {
+  assert.match(source, /Saved profiles/)
+  assert.match(source, /profiles\.map/)
+  assert.match(source, /max-h-\[310px\].*overflow-y-auto/)
+  assert.doesNotMatch(source, /PolicyGroupSwitch|visibleProfiles/)
+  assert.match(setupSource, /Saved profiles/)
+  assert.match(setupSource, /modelProfiles\.map/)
   assert.match(setupSource, /chooseModelProfile\(profile\)/)
+  assert.doesNotMatch(setupSource, /SetupProfileGroupSwitch|visibleModelProfiles/)
 })
 
 test('profile picker exposes model summaries, star default management, direct row application, and confirmed deletion', () => {
@@ -101,7 +92,10 @@ test('profile picker exposes model summaries, star default management, direct ro
   assert.match(source, /fill=\{profile\.isDefault \? 'currentColor' : 'none'\}/)
   assert.match(source, /Make .* the account default/)
   assert.match(source, /aria-label=\{`Apply \$\{profile\.name\}`\}/)
-  assert.doesNotMatch(source, /Pencil/)
+  assert.match(source, /Pencil/)
+  assert.match(source, /aria-label=\{`Edit \$\{profile\.name\}`\}/)
+  assert.match(source, /GripVertical/)
+  assert.match(source, /onReorderProfiles/)
   assert.match(source, /window\.confirm/)
   assert.match(source, /Delete profile/)
 })
@@ -128,8 +122,7 @@ test('agent setup offers explicit chat-only and persisted outcomes for saved pro
   assert.match(setupSource, /onSetDefaultModelProfile\(profile\.profileId\)/)
   assert.match(setupSource, /fill=\{profile\.isDefault \? 'currentColor' : 'none'\}/)
   assert.doesNotMatch(setupSource, /type="checkbox" checked=\{draftMakeDefault\}/)
-  assert.match(setupSource, /modelProfilePolicyGroupLabel\(effectiveDraftMode\)/)
-  assert.match(setupSource, /Profiles are grouped by model policy to keep the current setup clear/)
+  assert.match(setupSource, /Single-model and plan\/action profiles are shown together in your saved order/)
   assert.match(setupSource, /<div className="grid gap-2">/)
   assert.match(setupSource, /rounded-lg border bg-\[var\(--app-surface\)\] transition/)
   assert.match(setupSource, /text-sm font-semibold leading-5/)

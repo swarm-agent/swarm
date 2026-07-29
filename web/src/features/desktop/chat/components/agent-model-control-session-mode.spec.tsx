@@ -29,8 +29,10 @@ test('plan is a toggle control rather than a desktop mode picker', () => {
 test('Agent Setup presents the default auto value as Action and owns model policy', () => {
   assert.match(settingsSource, /Default session mode/)
   assert.match(settingsSource, /Agent model policy/)
-  assert.match(settingsSource, /label="Single"/)
-  assert.match(settingsSource, /label="Split"/)
+  assert.match(settingsSource, /ModelPolicyButton/)
+  assert.match(settingsSource, /Single-model policy/)
+  assert.match(settingsSource, /Plan \+ action policy/)
+  assert.doesNotMatch(settingsSource, /function ModelPolicyChoices/)
   assert.match(settingsSource, /label="Action" onClick=\{\(\) => setDraftSessionMode\('auto'\)\}/)
   assert.match(settingsSource, /Plan model/)
   assert.match(settingsSource, /Action model/)

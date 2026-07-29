@@ -9,7 +9,6 @@ import { uiSettingsQueryOptions } from '../../../queries/query-options'
 import { saveSystemAgentSettings } from '../../settings/swarm/mutations/save-system-agent-settings'
 import { normalizeCoderAgentSettings, normalizeCompactAgentSettings, normalizeDesignerAgentSettings, normalizeFinderAgentSettings } from '../../settings/swarm/types/swarm-settings'
 import { displayAgentName } from '../services/agent-display'
-import { canSwitchModelProfilePolicyGroup, modelProfilePolicyGroupLabel, modelProfilesInPolicyGroup, type ModelProfilePolicyGroup } from '../services/model-profile-groups'
 
 export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
   | 'defaultSessionMode'
@@ -403,8 +402,6 @@ export function AgentModelControl({
   const providers = useMemo(() => providerOptions(modelOptions), [modelOptions])
   const splitModeAllowed = isPlanCapableAgent(draftProfile)
   const effectiveDraftMode: DraftMode = draftMode === 'split' && !splitModeAllowed ? 'single' : draftMode
-  const visibleModelProfiles = modelProfilesInPolicyGroup(modelProfiles, effectiveDraftMode)
-  const profileGroupSwitchable = canSwitchModelProfilePolicyGroup(draftProfile)
   const agentSections = useMemo(() => {
     const swarmProfile = selectableAgents.find((agent) => agent.name === SWARM_AGENT_NAME)
     const primaryProfiles = selectableAgents.filter((agent) => agentMode(agent) === 'primary' && !isCompiledSystemAgent(agent.name))
@@ -655,18 +652,17 @@ export function AgentModelControl({
           </div>
 
           <div className="min-h-0 p-4 min-[780px]:overflow-y-auto min-[780px]:p-5">
-            {!draftProfile || !isSystemUtility(draftProfile.name) || visibleModelProfiles.length > 0 ? <section aria-label="Saved model profiles" className="mb-4">
+            {!draftProfile || !isSystemUtility(draftProfile.name) || modelProfiles.length > 0 ? <section aria-label="Saved model profiles" className="mb-4">
               <div className="mb-2 flex flex-col items-stretch gap-3 sm:flex-row sm:items-end sm:justify-between">
                 <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{modelProfilePolicyGroupLabel(effectiveDraftMode)} profiles</div>
-                  <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Profiles are grouped by model policy to keep the current setup clear.</div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Saved profiles</div>
+                  <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Single-model and plan/action profiles are shown together in your saved order.</div>
                 </div>
                 {!draftProfile || !isSystemUtility(draftProfile.name) ? <button type="button" onClick={() => chooseModelProfile(null)} className="inline-flex min-h-10 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] sm:min-h-0 sm:py-1.5"><Plus size={12} />New profile</button> : null}
               </div>
-              {profileGroupSwitchable ? <SetupProfileGroupSwitch value={effectiveDraftMode} onChange={setDraftMode} /> : null}
-              {visibleModelProfiles.length ? (
-                <div className="grid gap-2">
-                  {visibleModelProfiles.map((profile) => {
+              {modelProfiles.length ? (
+                <div className="grid max-h-[310px] gap-2 overflow-y-auto pr-1">
+                  {modelProfiles.map((profile) => {
                     const selected = displayedModelProfileId === profile.profileId
                     const settingDefault = defaultingProfileId === profile.profileId
                     return <div key={profile.profileId} className={`flex min-w-0 items-center rounded-lg border bg-[var(--app-surface)] transition ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)] shadow-sm' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
@@ -690,7 +686,7 @@ export function AgentModelControl({
                     </div>
                   })}
                 </div>
-              ) : <button type="button" onClick={() => chooseModelProfile(null)} className="w-full rounded-xl border border-dashed border-[var(--app-border)] px-4 py-4 text-left text-xs text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]">No {modelProfilePolicyGroupLabel(effectiveDraftMode).toLowerCase()} profiles yet. Create one in this group.</button>}
+              ) : <button type="button" onClick={() => chooseModelProfile(null)} className="w-full rounded-xl border border-dashed border-[var(--app-border)] px-4 py-4 text-left text-xs text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]">No saved profiles yet. Create your first profile.</button>}
             </section> : null}
 
             {!draftProfile || !isSystemUtility(draftProfile.name) ? (
@@ -732,7 +728,7 @@ export function AgentModelControl({
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
                   <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Use one model everywhere or separate plan and action models.</div>
                 </div>
-                <ModelPolicyChoices value={effectiveDraftMode} splitModeAllowed={splitModeAllowed} onChange={setDraftMode} />
+                <ModelPolicyButton value={effectiveDraftMode} splitModeAllowed={splitModeAllowed} onChange={setDraftMode} />
               </div>
               {!splitModeAllowed ? <div className="mt-2 text-[11px] text-[var(--app-text-subtle)]">Split policy is available only for plan-capable agents.</div> : null}
             </div> : null}
@@ -804,14 +800,6 @@ export function AgentModelControl({
   )
 }
 
-function SetupProfileGroupSwitch({ value, onChange }: { value: ModelProfilePolicyGroup; onChange: (value: ModelProfilePolicyGroup) => void }) {
-  return (
-    <div role="group" aria-label="Profile policy type" className="mb-2 grid max-w-sm grid-cols-2 gap-1 rounded-lg border border-[var(--app-border)] p-1">
-      {(['split', 'single'] as const).map((group) => <CompactChoice key={group} selected={value === group} label={modelProfilePolicyGroupLabel(group)} onClick={() => onChange(group)} />)}
-    </div>
-  )
-}
-
 function PreferenceSwitch({ label, checked, busy, onToggle }: { label: string; checked: boolean; busy: boolean; onToggle: (enabled: boolean) => void }) {
   return (
     <div className="flex min-h-14 items-center justify-between gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text-muted)]">
@@ -840,13 +828,8 @@ function SessionModeChoices({ value, onChange, className = '' }: { value: Deskto
   )
 }
 
-function ModelPolicyChoices({ value, splitModeAllowed, onChange, className = '' }: { value: DraftMode; splitModeAllowed: boolean; onChange: (value: DraftMode) => void; className?: string }) {
-  return (
-    <div role="group" aria-label="Agent model policy" className={`grid shrink-0 grid-cols-2 gap-1 rounded-lg bg-transparent p-1 ${className}`}>
-      <CompactChoice selected={value === 'single'} label="Single" onClick={() => onChange('single')} />
-      <CompactChoice selected={value === 'split'} label="Split" onClick={() => { if (splitModeAllowed) onChange('split') }} disabled={!splitModeAllowed} />
-    </div>
-  )
+function ModelPolicyButton({ value, splitModeAllowed, onChange }: { value: DraftMode; splitModeAllowed: boolean; onChange: (value: DraftMode) => void }) {
+  return <button type="button" onClick={() => onChange(value === 'split' ? 'single' : 'split')} disabled={!splitModeAllowed} aria-label="Agent model policy" className="rounded-lg border border-[var(--app-border)] px-3 py-2 text-sm font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-45">{value === 'split' ? 'Plan + action policy' : 'Single-model policy'}</button>
 }
 
 function PrimaryAgentControlRow({
@@ -863,7 +846,7 @@ function PrimaryAgentControlRow({
   onModelModeChange: (value: DraftMode) => void
 }) {
   return (
-    <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 lg:grid-cols-2 lg:gap-4">
+    <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3">
       <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_176px] sm:items-center">
         <div className="min-w-0">
           <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Default session mode</div>
@@ -871,12 +854,12 @@ function PrimaryAgentControlRow({
         </div>
         <SessionModeChoices value={sessionMode} onChange={onSessionModeChange} />
       </div>
-      <div className="grid min-w-0 gap-2 border-t border-[var(--app-border)] pt-3 sm:grid-cols-[minmax(0,1fr)_176px] sm:items-center lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+      <div className="grid min-w-0 gap-2 border-t border-[var(--app-border)] pt-3 sm:grid-cols-[minmax(0,1fr)_176px] sm:items-center">
         <div className="min-w-0">
           <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
-          <div className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">One model or split by mode</div>
+          <div className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">Controls whether this agent uses one model everywhere or separate models for planning and action.</div>
         </div>
-        <ModelPolicyChoices value={modelMode} splitModeAllowed={splitModeAllowed} onChange={onModelModeChange} />
+        <ModelPolicyButton value={modelMode} splitModeAllowed={splitModeAllowed} onChange={onModelModeChange} />
       </div>
     </div>
   )

@@ -25,6 +25,7 @@ type ProfileWire = {
   auto?: SelectionWire | null
   created_at?: unknown
   updated_at?: unknown
+  sort_order?: unknown
   is_default?: unknown
 }
 
@@ -53,6 +54,7 @@ function profileFromWire(value: ProfileWire): ModelProfileRecord {
     auto: selectionFromWire(value.auto),
     createdAt: typeof value.created_at === 'number' ? value.created_at : 0,
     updatedAt: typeof value.updated_at === 'number' ? value.updated_at : 0,
+    sortOrder: typeof value.sort_order === 'number' ? value.sort_order : 0,
     isDefault: value.is_default === true,
   }
 }
@@ -85,6 +87,13 @@ export async function fetchModelProfiles(signal?: AbortSignal): Promise<ModelPro
     profiles: profiles.map((profile) => ({ ...profile, isDefault: profile.profileId === defaultProfileId || profile.isDefault })),
     defaultProfileId,
   }
+}
+
+export async function reorderModelProfiles(profileIds: string[]): Promise<ModelProfileRecord[]> {
+  const response = await requestJson<{ model_profiles?: ProfileWire[] }>('/v1/model-profiles', {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile_ids: profileIds }),
+  })
+  return Array.isArray(response.model_profiles) ? response.model_profiles.map(profileFromWire) : []
 }
 
 export async function createModelProfile(input: ModelProfileInput): Promise<ModelProfileRecord> {

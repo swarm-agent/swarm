@@ -8,7 +8,7 @@ import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thi
 import { getDesktopSessionCreateTarget, type DesktopChatRoute } from '../services/chat-routing'
 import { formatContextWindow, effectiveContextWindow, modelOptionKey } from '../services/model-options'
 import { preferenceFromModelProfile } from '../services/model-profiles'
-import { createModelProfile, deleteModelProfile, invalidateModelProfiles, setDefaultModelProfile, updateModelProfile } from '../queries/model-profile-queries'
+import { createModelProfile, deleteModelProfile, invalidateModelProfiles, reorderModelProfiles, setDefaultModelProfile, updateModelProfile } from '../queries/model-profile-queries'
 import { preferenceFromAgentModelLock, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import { resolveDesktopV3StartupAgent } from '../services/desktop-startup-agent'
 import type { ActiveModelProfileState, AgentStateRecord, ModelProfileChoice, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
@@ -581,6 +581,10 @@ export function DesktopV3NewSessionPane({
         modelProfilesError={modelProfilesQuery.error instanceof Error ? modelProfilesQuery.error.message : null}
         onModelProfileSetDefault={async (profileId) => {
           await setDefaultModelProfile(profileId)
+          await invalidateModelProfiles(queryClient)
+        }}
+        onModelProfileReorder={async (profileIds) => {
+          await reorderModelProfiles(profileIds)
           await invalidateModelProfiles(queryClient)
         }}
         onModelProfileDelete={async (profileId) => {

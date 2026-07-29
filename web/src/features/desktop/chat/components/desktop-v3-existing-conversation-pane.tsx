@@ -91,7 +91,7 @@ import {
   preferenceFromModelProfile,
   preferenceFromModelProfileMetadata,
 } from "../services/model-profiles";
-import { createModelProfile, deleteModelProfile, invalidateModelProfiles, setDefaultModelProfile, updateModelProfile } from "../queries/model-profile-queries";
+import { createModelProfile, deleteModelProfile, invalidateModelProfiles, reorderModelProfiles, setDefaultModelProfile, updateModelProfile } from "../queries/model-profile-queries";
 import {
   preferenceFromAgentModelLock,
   resolveDesktopV3AgentModelLock,
@@ -2837,6 +2837,10 @@ export function DesktopV3ExistingConversationPane({
             modelProfilesError={modelProfilesQuery.error instanceof Error ? modelProfilesQuery.error.message : null}
             onModelProfileSetDefault={async (profileId) => {
               await setDefaultModelProfile(profileId);
+              await invalidateModelProfiles(queryClient);
+            }}
+            onModelProfileReorder={async (profileIds) => {
+              await reorderModelProfiles(profileIds);
               await invalidateModelProfiles(queryClient);
             }}
             onModelProfileDelete={async (profileId) => {

@@ -36,6 +36,7 @@ type ModelProfileRecord struct {
 	Auto           *ModelProfileSelection `json:"auto,omitempty"`
 	CreatedAt      int64                  `json:"created_at"`
 	UpdatedAt      int64                  `json:"updated_at"`
+	SortOrder      int                    `json:"sort_order,omitempty"`
 	IsDefault      bool                   `json:"-"`
 }
 
@@ -129,7 +130,10 @@ func (s *ModelProfileStore) listUnlocked(accountScopeID string, limit int) ([]Mo
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(out, func(i, j int) bool {
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].SortOrder != out[j].SortOrder {
+			return out[i].SortOrder < out[j].SortOrder
+		}
 		left, right := NormalizeModelProfileName(out[i].Name), NormalizeModelProfileName(out[j].Name)
 		if left != right {
 			return left < right
@@ -173,6 +177,15 @@ func (s *ModelProfileStore) putForAccount(record ModelProfileRecord, onlyIfEmpty
 		return ModelProfileRecord{}, errModelProfileAccountNotEmpty
 	}
 	existing, exists := findModelProfile(profiles, record.ProfileID)
+	if !exists && len(profiles) > 0 {
+		maxOrder := profiles[0].SortOrder
+		for _, profile := range profiles[1:] {
+			if profile.SortOrder > maxOrder {
+				maxOrder = profile.SortOrder
+			}
+		}
+		record.SortOrder = maxOrder + 1
+	}
 	nameKey := KeyModelProfileNameForAccount(record.AccountScopeID, NormalizeModelProfileName(record.Name))
 	indexedID, indexed, err := s.store.GetBytes(nameKey)
 	if err != nil {
@@ -241,6 +254,59 @@ func (s *ModelProfileStore) SetDefaultForAccount(accountScopeID, profileID strin
 	}
 	record.IsDefault = true
 	return record, nil
+}
+
+func (s *ModelProfileStore) ReorderForAccount(accountScopeID string, profileIDs []string) ([]ModelProfileRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("model profile store is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope id is required")
+	}
+	s.store.modelProfilesMu.Lock()
+	defer s.store.modelProfilesMu.Unlock()
+	profiles, err := s.listUnlocked(accountScopeID, 500)
+	if err != nil {
+		return nil, err
+	}
+	if len(profileIDs) != len(profiles) {
+		return nil, errors.New("profile_ids must include every model profile exactly once")
+	}
+	byID := make(map[string]ModelProfileRecord, len(profiles))
+	for _, profile := range profiles {
+		byID[profile.ProfileID] = profile
+	}
+	ordered := make([]ModelProfileRecord, 0, len(profiles))
+	seen := make(map[string]struct{}, len(profiles))
+	for index, rawID := range profileIDs {
+		profileID := strings.TrimSpace(rawID)
+		profile, ok := byID[profileID]
+		if !ok {
+			return nil, ErrModelProfileNotFound
+		}
+		if _, duplicate := seen[profileID]; duplicate {
+			return nil, errors.New("profile_ids must include every model profile exactly once")
+		}
+		seen[profileID] = struct{}{}
+		profile.SortOrder = index
+		ordered = append(ordered, profile)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	for _, profile := range ordered {
+		payload, err := json.Marshal(profile)
+		if err != nil {
+			return nil, fmt.Errorf("marshal model profile: %w", err)
+		}
+		if err := batch.Set([]byte(KeyModelProfileForAccount(accountScopeID, profile.ProfileID)), payload, nil); err != nil {
+			return nil, err
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return nil, err
+	}
+	return ordered, nil
 }
 
 func (s *ModelProfileStore) DeleteForAccount(accountScopeID, profileID string) (bool, error) {
