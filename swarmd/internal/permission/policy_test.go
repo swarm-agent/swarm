@@ -443,6 +443,91 @@ func TestUpdateBashApprovalProfilePersistsPerAccountAndPreservesCapabilities(t *
 	}
 }
 
+func TestManageSkillPolicySeparatesCreateFromPersistentMutationApproval(t *testing.T) {
+	policy := DefaultPolicy()
+	for action, want := range map[string]PolicyDecision{
+		"inspect": PolicyDecisionAllow,
+		"list":    PolicyDecisionAllow,
+		"get":     PolicyDecisionAllow,
+		"create":  PolicyDecisionAllow,
+		"update":  PolicyDecisionAsk,
+		"delete":  PolicyDecisionAsk,
+	} {
+		t.Run(action, func(t *testing.T) {
+			got := ExplainPolicy(sessionruntime.ModeAuto, "manage-skill", `{"action":"`+action+`","skill":"example"}`, policy)
+			if got.Decision != want {
+				t.Fatalf("%s decision = %+v, want %s", action, got, want)
+			}
+		})
+	}
+
+	updateArgs := `{"action":"update","skill":"example","content":"updated"}`
+	rule, ok := policyRuleFromToolCall("manage-skill", updateArgs, PolicyDecisionAllow)
+	if !ok || rule.Kind != PolicyRuleKindTool || rule.Tool != "skill_change" {
+		t.Fatalf("persistent update rule = %+v ok=%t, want skill_change tool rule", rule, ok)
+	}
+	policy.Rules = append(policy.Rules, rule)
+	for _, action := range []string{"update", "delete"} {
+		got := ExplainPolicy(sessionruntime.ModeAuto, "manage-skill", `{"action":"`+action+`","skill":"example"}`, policy)
+		if got.Decision != PolicyDecisionAllow || got.Source != "rule" {
+			t.Fatalf("persistent %s authorization = %+v, want rule allow", action, got)
+		}
+	}
+	if got := ExplainPolicy(sessionruntime.ModeAuto, "manage-agent", `{"action":"update","agent":"example"}`, policy); got.Decision == PolicyDecisionAllow {
+		t.Fatalf("skill mutation rule broadened to manage-agent: %+v", got)
+	}
+}
+
+func TestResolveManageSkillAlwaysAllowPersistsMatchingMutationRule(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "permission-manage-skill.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	session, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID: "session-manage-skill", Title: "Manage Skill", WorkspacePath: "/workspace", WorkspaceName: "workspace", Mode: sessionruntime.ModeAuto,
+		UserID: "user-a", AccountScopeID: "account-a", Preference: &pebblestore.ModelPreference{Provider: "test", Model: "test", Thinking: "medium"},
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	svc := NewService(pebblestore.NewPermissionStore(store), events, nil)
+	svc.SetSessionResolver(sessionSvc)
+	pending, err := svc.CreatePending(CreateInput{
+		SessionID: session.ID, RunID: "run-1", CallID: "call-1", ToolName: "manage-skill",
+		ToolArguments: `{"action":"update","skill":"example","change":{"expected_revision":"revision-token"},"approved_arguments":{"action":"update","skill":"example","content":"updated","confirm":true,"expected_revision":"revision-token"}}`,
+		Requirement:   "skill_change", Mode: sessionruntime.ModeAuto,
+	})
+	if err != nil {
+		t.Fatalf("create pending: %v", err)
+	}
+	resolved, savedRule, err := svc.ResolveWithPolicyAndArguments(session.ID, pending.ID, ActionAllowAlways, "ok", "")
+	if err != nil {
+		t.Fatalf("resolve always allow: %v", err)
+	}
+	if resolved.Status != pebblestore.PermissionStatusApproved || savedRule == nil || savedRule.Tool != "skill_change" {
+		t.Fatalf("resolved=%+v savedRule=%+v, want approved skill_change rule", resolved, savedRule)
+	}
+	if !strings.Contains(resolved.ApprovedArguments, `"expected_revision":"revision-token"`) {
+		t.Fatalf("resolved approved arguments = %s, want revision token", resolved.ApprovedArguments)
+	}
+	auth, err := svc.AuthorizeToolCall(AuthorizationInput{
+		SessionID: session.ID, AccountScopeID: "account-a", RunID: "run-2", CallID: "call-2", ToolName: "manage-skill",
+		ToolArguments: `{"action":"delete","skill":"example","change":{"expected_revision":"next-revision"},"approved_arguments":{"action":"delete","skill":"example","confirm":true,"expected_revision":"next-revision"}}`, Mode: sessionruntime.ModeAuto,
+	})
+	if err != nil {
+		t.Fatalf("authorize later delete: %v", err)
+	}
+	if auth.Decision != AuthorizationApprove || auth.Source != "rule" {
+		t.Fatalf("later delete authorization = %+v, want persisted rule approval", auth)
+	}
+}
+
 func TestResolveWithPolicyAndArgumentsPersistsRuleForSessionAccount(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "permission-policy-account.pebble"))
 	if err != nil {

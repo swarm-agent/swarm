@@ -398,6 +398,9 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	} else if toolName == "plan_manage" && IsPlanAcceptanceLifecycleRequirement(PlanManageLifecycleRequirement(toolArguments)) {
 		toolName = "plan_acceptance"
 	}
+	if toolName == "manage_skill" && ShouldApproveManageSkillMutation(toolArguments) {
+		toolName = "skill_change"
+	}
 	if toolName == "manage_sessions" {
 		switch {
 		case ShouldApproveManageSessionsDeploy(toolArguments):
@@ -1179,6 +1182,8 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		}
 		return PolicyDecisionAllow
 	case "manage_skill":
+		return PolicyDecisionAllow
+	case "skill_change":
 		if bypass {
 			return PolicyDecisionAllow
 		}

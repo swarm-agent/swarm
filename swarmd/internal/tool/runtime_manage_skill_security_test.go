@@ -57,6 +57,53 @@ func TestManageSkillRejectsSymlinkedSkillDirectoryAndFile(t *testing.T) {
 	}
 }
 
+func TestManageSkillCreateUpdateDeleteLifecycle(t *testing.T) {
+	workspace := t.TempDir()
+	scope := WorkspaceScope{PrimaryPath: workspace}
+	created := skillFixture("example", "created")
+	createOutput, err := executeManageSkill(scope, map[string]any{"action": "create", "skill": "example", "content": created})
+	if err != nil {
+		t.Fatalf("create skill: %v", err)
+	}
+	if !strings.Contains(createOutput, `"action":"create"`) || !strings.Contains(createOutput, `"applied":true`) || strings.Contains(createOutput, "proposed_create") {
+		t.Fatalf("create output = %s, want directly applied create", createOutput)
+	}
+	path := filepath.Join(workspace, ".agents", "skills", "example", "SKILL.md")
+	assertFileContent(t, path, created)
+
+	updated := skillFixture("example", "updated")
+	updateArgs := map[string]any{"action": "update", "skill": "example", "content": updated}
+	updateProposal, err := executeManageSkill(scope, updateArgs)
+	if err != nil {
+		t.Fatalf("propose update: %v", err)
+	}
+	updateArgs["confirm"] = true
+	updateArgs["expected_revision"] = proposalRevision(t, updateProposal)
+	updateOutput, err := executeManageSkill(scope, updateArgs)
+	if err != nil {
+		t.Fatalf("apply update: %v", err)
+	}
+	if !strings.Contains(updateOutput, `"action":"update"`) || !strings.Contains(updateOutput, `"applied":true`) {
+		t.Fatalf("update output = %s, want applied update", updateOutput)
+	}
+	assertFileContent(t, path, updated)
+
+	deleteProposal, err := executeManageSkill(scope, map[string]any{"action": "delete", "skill": "example"})
+	if err != nil {
+		t.Fatalf("propose delete: %v", err)
+	}
+	deleteOutput, err := executeManageSkill(scope, map[string]any{"action": "delete", "skill": "example", "confirm": true, "expected_revision": proposalRevision(t, deleteProposal)})
+	if err != nil {
+		t.Fatalf("apply delete: %v", err)
+	}
+	if !strings.Contains(deleteOutput, `"action":"delete"`) || !strings.Contains(deleteOutput, `"applied":true`) {
+		t.Fatalf("delete output = %s, want applied delete", deleteOutput)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("deleted skill still exists: %v", err)
+	}
+}
+
 func TestManageSkillConfirmRejectsStaleUpdateAndDelete(t *testing.T) {
 	workspace := t.TempDir()
 	root := filepath.Join(workspace, ".agents", "skills", "example")

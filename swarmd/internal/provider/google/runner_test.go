@@ -87,15 +87,27 @@ func TestBuildGoogleRequestRejectsForgedAndUnsupportedMedia(t *testing.T) {
 		Capabilities: []provideriface.MediaContractCapability{{Modality: "image", State: provideriface.MediaCapabilityStateAllowed, Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}, ContentTypes: []string{"inline_data"}, MaxBytes: 1024, MaxCount: 1}},
 	}
 	for _, test := range []struct {
-		name string
+		name   string
 		mutate func(*provideriface.SessionMediaPayload, *provideriface.SessionMediaContract)
 	}{
-		{"forged digest", func(payload *provideriface.SessionMediaPayload, _ *provideriface.SessionMediaContract) { payload.DigestSHA256 = strings.Repeat("0", 64) }},
-		{"unsupported MIME", func(payload *provideriface.SessionMediaPayload, _ *provideriface.SessionMediaContract) { payload.MIMEType = "image/svg+xml" }},
-		{"file semantics", func(payload *provideriface.SessionMediaPayload, _ *provideriface.SessionMediaContract) { payload.FileType = "png" }},
-		{"audio modality", func(payload *provideriface.SessionMediaPayload, _ *provideriface.SessionMediaContract) { payload.Modality = "audio" }},
-		{"cross surface", func(_ *provideriface.SessionMediaPayload, contract *provideriface.SessionMediaContract) { contract.ProviderID = "openai" }},
-		{"missing credential fingerprint", func(_ *provideriface.SessionMediaPayload, contract *provideriface.SessionMediaContract) { contract.CredentialFingerprint = "" }},
+		{"forged digest", func(payload *provideriface.SessionMediaPayload, _ *provideriface.SessionMediaContract) {
+			payload.DigestSHA256 = strings.Repeat("0", 64)
+		}},
+		{"unsupported MIME", func(payload *provideriface.SessionMediaPayload, _ *provideriface.SessionMediaContract) {
+			payload.MIMEType = "image/svg+xml"
+		}},
+		{"file semantics", func(payload *provideriface.SessionMediaPayload, _ *provideriface.SessionMediaContract) {
+			payload.FileType = "png"
+		}},
+		{"audio modality", func(payload *provideriface.SessionMediaPayload, _ *provideriface.SessionMediaContract) {
+			payload.Modality = "audio"
+		}},
+		{"cross surface", func(_ *provideriface.SessionMediaPayload, contract *provideriface.SessionMediaContract) {
+			contract.ProviderID = "openai"
+		}},
+		{"missing credential fingerprint", func(_ *provideriface.SessionMediaPayload, contract *provideriface.SessionMediaContract) {
+			contract.CredentialFingerprint = ""
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			payload := basePayload

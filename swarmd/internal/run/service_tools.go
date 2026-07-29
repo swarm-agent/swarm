@@ -823,7 +823,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				}
 			}
 			planAcceptance := canonical == "exit_plan_mode" || (canonical == "plan_manage" && permission.IsPlanAcceptanceLifecycleRequirement(permission.PlanManageLifecycleRequirement(toolCalls[i].Arguments)))
-			if canonical == "task" || planAcceptance || (canonical == "manage_sessions" && (isCanonicalManageSessionsMutation(permission.ManageSessionsAction(toolCalls[i].Arguments)) || permission.ManageSessionsAction(toolCalls[i].Arguments) == "deploy")) {
+			if canonical == "task" || canonical == "manage_skill" || planAcceptance || (canonical == "manage_sessions" && (isCanonicalManageSessionsMutation(permission.ManageSessionsAction(toolCalls[i].Arguments)) || permission.ManageSessionsAction(toolCalls[i].Arguments) == "deploy")) {
 				var permissionPayload map[string]any
 				if json.Unmarshal([]byte(permissionArguments), &permissionPayload) == nil {
 					if approved, ok := permissionPayload["approved_arguments"].(map[string]any); ok {
@@ -1109,47 +1109,31 @@ func (s *Service) executeEditPendingPlanTool(sessionID, arguments string) (strin
 	return string(output), nil
 }
 
-func (s *Service) executeManageSkillTool(sessionID string, call tool.Call, feedback string) (string, error) {
-	feedback = strings.TrimSpace(feedback)
-	if feedback != "" {
-		var payload map[string]any
-		if err := json.Unmarshal([]byte(feedback), &payload); err != nil {
-			return "", fmt.Errorf("approved manage-skill payload invalid: %w", err)
-		}
-		args := manageSkillApprovalArguments(payload)
-		if len(args) == 0 {
-			return "", errors.New("approved manage-skill payload missing approved arguments")
-		}
-		session, ok, err := s.sessions.GetSession(sessionID)
-		if err != nil {
-			return "", err
-		}
-		if !ok {
-			return "", fmt.Errorf("session %q not found", sessionID)
-		}
-		scope := buildPermissionWorkspaceScope(session)
-		raw, err := json.Marshal(args)
-		if err != nil {
-			return "", err
-		}
-		if s.tools != nil {
-			output, err := s.tools.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, tool.Call{CallID: call.CallID, Name: call.Name, Arguments: string(raw)})
-			if err != nil {
-				return output, err
-			}
-			return output, nil
-		}
-		output, err := tool.ExecuteForWorkspaceScope(context.Background(), scope, tool.Call{CallID: call.CallID, Name: call.Name, Arguments: string(raw)})
-		if err != nil {
-			return output, err
-		}
-		return output, nil
-	}
-
+func (s *Service) executeManageSkillTool(sessionID string, call tool.Call, approvedArguments string) (string, error) {
 	arguments := strings.TrimSpace(call.Arguments)
 	if arguments == "" {
 		arguments = "{}"
 	}
+	approvedArguments = strings.TrimSpace(approvedArguments)
+	if approvedArguments != "" {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(approvedArguments), &payload); err != nil {
+			return "", fmt.Errorf("approved manage-skill payload invalid: %w", err)
+		}
+		args := manageSkillApprovalArguments(payload)
+		if len(args) == 0 {
+			if permission.ShouldApproveManageSkillMutation(arguments) {
+				return "", errors.New("approved manage-skill payload missing approved arguments")
+			}
+		} else {
+			raw, err := json.Marshal(args)
+			if err != nil {
+				return "", err
+			}
+			arguments = string(raw)
+		}
+	}
+
 	session, ok, err := s.sessions.GetSession(sessionID)
 	if err != nil {
 		return "", err
@@ -4325,6 +4309,9 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 		}
 		return toolName, false
 	case "manage_skill":
+		if !permission.ShouldApproveManageSkillMutation(arguments) {
+			return "manage_skill", false
+		}
 		if bypass {
 			return "skill_change", false
 		}

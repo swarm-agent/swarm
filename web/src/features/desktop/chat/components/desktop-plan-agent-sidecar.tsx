@@ -295,14 +295,14 @@ export function DesktopPlanAgentSidecar({
       data-embedded={embedded ? "true" : "false"}
     >
       <aside className={embedded
-        ? "absolute inset-x-0 bottom-0 flex max-h-[88vh] min-h-0 min-w-0 flex-col rounded-t-2xl bg-[var(--app-surface)] shadow-2xl min-[1300px]:static min-[1300px]:max-h-none min-[1300px]:flex-1 min-[1300px]:rounded-none min-[1300px]:shadow-none"
+        ? "absolute inset-x-0 bottom-0 flex h-[88dvh] max-h-[88dvh] min-h-0 min-w-0 flex-col overflow-hidden rounded-t-2xl bg-[var(--app-surface)] shadow-2xl min-[1300px]:static min-[1300px]:h-auto min-[1300px]:max-h-none min-[1300px]:flex-1 min-[1300px]:rounded-none min-[1300px]:shadow-none"
         : "absolute inset-x-0 bottom-0 flex max-h-[88vh] flex-col rounded-t-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-2xl md:inset-y-0 md:right-0 md:max-h-none md:w-[28rem] md:rounded-none md:rounded-l-2xl"}>
         <header className="flex items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-3">
           <div className="font-semibold">Plan</div>
           {onClose ? <Button type="button" variant="ghost" size="sm" className={embedded ? "h-9 w-9 px-0 min-[1300px]:hidden" : "h-9 w-9 px-0"} aria-label="Close Plan" onClick={onClose}><X size={18} /></Button> : null}
         </header>
         <div className="relative min-h-0 flex-1 overflow-hidden">
-          <div ref={scrollContainerRef} className="h-full min-h-0 overflow-x-hidden overflow-y-auto p-4 [scrollbar-gutter:stable]" data-testid="desktop-plan-agent-scroller" tabIndex={0}>
+          <div ref={scrollContainerRef} className="h-full min-h-0 touch-pan-y overflow-x-hidden overflow-y-auto overscroll-contain p-4 [-webkit-overflow-scrolling:touch] [scrollbar-gutter:stable]" data-testid="desktop-plan-agent-scroller" tabIndex={0}>
             <div ref={contentRef} className="flex min-h-full min-w-0 flex-col gap-5 [&>*:not(:last-child)]:[overflow-anchor:none]">
               <div className="rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-3 text-sm leading-5">Ask about the plan or request changes conversationally. Saved edits update the parent approval card live.</div>
               {sidechat.busy && renderItems.length === 0 ? <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><Loader2 className="animate-spin" size={16} />Opening durable Plan sidechat…</div> : null}

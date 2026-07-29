@@ -29,15 +29,13 @@ function testCodexOpensUsageWithoutChangingModels(): void {
   assert((models?.action as DesktopSlashCommandAction | undefined)?.kind === 'open-model-picker', 'expected /models to keep opening model picker')
 }
 
-function testFastCommandIsReady(): void {
-  const fast = getDesktopSlashCommands().find((command) => command.command === '/fast')
-  assert(Boolean(fast), 'expected /fast command to exist')
-  assert(fast?.state === 'ready', 'expected /fast command to be ready')
-  assert((fast?.action as DesktopSlashCommandAction | undefined)?.kind === 'toggle-fast', 'expected /fast to toggle Fast')
+function testFastCommandIsRetired(): void {
+  const commands = getDesktopSlashCommands()
+  assert(commands.every((command) => command.command !== '/fast'), 'expected /fast command to be absent')
 
   const palette = buildDesktopSlashPaletteState('/fast')
-  assert(palette.exactMatch?.id === 'fast', 'expected /fast to match fast command')
-  assert(palette.exactMatch?.state === 'ready', 'expected /fast exact match to be ready')
+  assert(palette.exactMatch === null, 'expected /fast not to resolve to a desktop command')
+  assert(palette.matches.length === 0, 'expected /fast not to be suggested')
 }
 
 function testMCPCommandIsDeferredAndExaRequiresAPIKey(): void {
@@ -96,7 +94,7 @@ function main(): void {
   testPlanCommandIsReady()
   testSlashPaletteMatchesPlan()
   testCodexOpensUsageWithoutChangingModels()
-  testFastCommandIsReady()
+  testFastCommandIsRetired()
   testMCPCommandIsDeferredAndExaRequiresAPIKey()
   testTaskCommandAcceptsFullArguments()
   testTaskCommandParsesModeDirective()
