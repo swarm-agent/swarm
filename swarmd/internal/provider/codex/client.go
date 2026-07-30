@@ -53,7 +53,9 @@ const (
 	transportRetryAttempts                     = 2
 	transportRetryBaseDelay                    = 300 * time.Millisecond
 	startedWebsocketStreamRetryLimit           = 3
-	defaultWebsocketFirstFrameTimeout          = 30 * time.Second
+	websocketIdleTimeoutAttempts               = 3
+	defaultWebsocketIdleTimeout                = 5 * time.Minute
+	websocketWriteTimeout                      = 30 * time.Second
 	maxPromptCacheKeyLength                    = 64
 	codexTransportMetadataKey                  = "_swarm_transport"
 	codexConnectedViaWSMetadataKey             = "_swarm_connected_via_websocket"
@@ -62,22 +64,22 @@ const (
 )
 
 var (
-	errWebsocketStreamStarted     = errors.New("websocket stream interrupted after payload started")
-	errWebsocketRetryFresh        = errors.New("websocket request requires a fresh connection")
-	errWebsocketFirstFrameTimeout = errors.New("websocket first provider frame timed out")
+	errWebsocketStreamStarted = errors.New("websocket stream interrupted after payload started")
+	errWebsocketRetryFresh    = errors.New("websocket request requires a fresh connection")
+	errWebsocketIdleTimeout   = errors.New("codex websocket stream idle timeout")
 )
 
 type Client struct {
-	authStore                  *pebblestore.AuthStore
-	httpClient                 *http.Client
-	earlyExpiry                time.Duration
-	sendWSFn                   func(context.Context, pebblestore.CodexAuthRecord, []byte, func(StreamEvent)) (map[string]any, int, error)
-	responsesAPIURL            string
-	responsesWSURL             string
-	websocketFirstFrameTimeout time.Duration
-	wsMu                       sync.Mutex
-	wsSessions                 map[string]*cachedWebsocketSession
-	diagnostics                *longsessiondiag.Recorder
+	authStore            *pebblestore.AuthStore
+	httpClient           *http.Client
+	earlyExpiry          time.Duration
+	sendWSFn             func(context.Context, pebblestore.CodexAuthRecord, []byte, func(StreamEvent)) (map[string]any, int, error)
+	responsesAPIURL      string
+	responsesWSURL       string
+	websocketIdleTimeout time.Duration
+	wsMu                 sync.Mutex
+	wsSessions           map[string]*cachedWebsocketSession
+	diagnostics          *longsessiondiag.Recorder
 }
 
 type startedWebsocketStreamError struct {
@@ -353,11 +355,11 @@ func NewClient(authStore *pebblestore.AuthStore) *Client {
 		authStore: authStore,
 		// Long-running response streams must be governed by per-request contexts
 		// (run service deadlines), not a global client timeout.
-		httpClient:                 &http.Client{},
-		earlyExpiry:                5 * time.Minute,
-		responsesAPIURL:            openAIResponsesURL,
-		websocketFirstFrameTimeout: defaultWebsocketFirstFrameTimeout,
-		wsSessions:                 make(map[string]*cachedWebsocketSession),
+		httpClient:           &http.Client{},
+		earlyExpiry:          5 * time.Minute,
+		responsesAPIURL:      openAIResponsesURL,
+		websocketIdleTimeout: defaultWebsocketIdleTimeout,
+		wsSessions:           make(map[string]*cachedWebsocketSession),
 	}
 }
 
@@ -464,11 +466,11 @@ func estimatedJSONBytes(value any) int64 {
 	return walk(value, 0)
 }
 
-func (c *Client) effectiveWebsocketFirstFrameTimeout() time.Duration {
-	if c != nil && c.websocketFirstFrameTimeout > 0 {
-		return c.websocketFirstFrameTimeout
+func (c *Client) effectiveWebsocketIdleTimeout() time.Duration {
+	if c != nil && c.websocketIdleTimeout > 0 {
+		return c.websocketIdleTimeout
 	}
-	return defaultWebsocketFirstFrameTimeout
+	return defaultWebsocketIdleTimeout
 }
 
 func (c *Client) cachedWebsocketSession(sessionID string) *cachedWebsocketSession {
@@ -1188,10 +1190,25 @@ func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRe
 		var wsDecoded map[string]any
 		var wsStatus int
 		var wsErr error
+		idleTimeouts := 0
 		for startedRetry := 0; ; startedRetry++ {
 			streamEmitter.beginAttempt()
 			wsDecoded, wsStatus, wsErr = c.sendWebsocketRequest(ctx, record, req, streamEmitter.emit)
-			if wsErr == nil || !errors.Is(wsErr, errWebsocketStreamStarted) {
+			if wsErr == nil {
+				break
+			}
+			if errors.Is(wsErr, errWebsocketIdleTimeout) {
+				idleTimeouts++
+				if idleTimeouts >= websocketIdleTimeoutAttempts {
+					return nil, 0, exhaustedWebsocketIdleTimeoutError(wsErr, idleTimeouts)
+				}
+				if err := sleepWithContext(ctx, transportRetryBaseDelay*time.Duration(idleTimeouts)); err != nil {
+					return nil, 0, err
+				}
+				startedRetry--
+				continue
+			}
+			if !errors.Is(wsErr, errWebsocketStreamStarted) {
 				break
 			}
 			if !shouldRetryStartedWebsocketStream(wsErr) || startedRetry >= startedWebsocketStreamRetryLimit {
@@ -1210,9 +1227,6 @@ func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRe
 					return nil, 0, err
 				}
 				continue
-			}
-			if errors.Is(wsErr, errWebsocketFirstFrameTimeout) {
-				return nil, 0, exhaustedWebsocketFirstFrameTimeoutError(wsErr, attempt)
 			}
 			if record.Type != pebblestore.CodexAuthTypeOAuth && !errors.Is(wsErr, errWebsocketStreamStarted) {
 				return c.sendOpenAIResponsesRequest(ctx, record, req, streamEmitter.emit)
@@ -1258,10 +1272,25 @@ func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, p
 		var wsDecoded map[string]any
 		var wsStatus int
 		var wsErr error
+		idleTimeouts := 0
 		for startedRetry := 0; ; startedRetry++ {
 			streamEmitter.beginAttempt()
 			wsDecoded, wsStatus, wsErr = sendWS(ctx, record, payload, streamEmitter.emit)
-			if wsErr == nil || !errors.Is(wsErr, errWebsocketStreamStarted) {
+			if wsErr == nil {
+				break
+			}
+			if errors.Is(wsErr, errWebsocketIdleTimeout) {
+				idleTimeouts++
+				if idleTimeouts >= websocketIdleTimeoutAttempts {
+					return nil, 0, exhaustedWebsocketIdleTimeoutError(wsErr, idleTimeouts)
+				}
+				if err := sleepWithContext(ctx, transportRetryBaseDelay*time.Duration(idleTimeouts)); err != nil {
+					return nil, 0, err
+				}
+				startedRetry--
+				continue
+			}
+			if !errors.Is(wsErr, errWebsocketStreamStarted) {
 				break
 			}
 			if !shouldRetryStartedWebsocketStream(wsErr) || startedRetry >= startedWebsocketStreamRetryLimit {
@@ -1280,9 +1309,6 @@ func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, p
 					return nil, 0, err
 				}
 				continue
-			}
-			if errors.Is(wsErr, errWebsocketFirstFrameTimeout) {
-				return nil, 0, exhaustedWebsocketFirstFrameTimeoutError(wsErr, attempt)
 			}
 			return nil, 0, wsErr
 		}
@@ -1661,14 +1687,14 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 		return nil, 0, err
 	}
 
-	firstFrameTimeout := c.effectiveWebsocketFirstFrameTimeout()
+	idleTimeout := c.effectiveWebsocketIdleTimeout()
 	writeMessage := func(activeConn *websocket.Conn, encoded []byte, initialConnection bool) error {
 		if activeConn == nil {
 			return errors.New("websocket connection is unavailable")
 		}
 		activeConn.SetReadLimit(maxCodexResponseBodyBytes)
 		if initialConnection {
-			if err := activeConn.SetWriteDeadline(time.Now().Add(firstFrameTimeout)); err != nil {
+			if err := activeConn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout)); err != nil {
 				return fmt.Errorf("set initial websocket request deadline: %w", err)
 			}
 		}
@@ -1732,16 +1758,13 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 	state := &streamDecodeState{}
 	stopCancelWatch := watchCodexWebsocketCancel(ctx, conn)
 	defer stopCancelWatch()
-	if initialConnection {
-		if err := conn.SetReadDeadline(time.Now().Add(firstFrameTimeout)); err != nil {
+	for {
+		if err := conn.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
 			if session != nil {
 				closeCachedWebsocketSessionLocked(session)
 			}
-			return nil, 0, fmt.Errorf("set initial websocket first-frame deadline: %w", err)
+			return nil, 0, fmt.Errorf("set websocket idle deadline: %w", err)
 		}
-	}
-	waitingForFirstFrame := initialConnection
-	for {
 		messageType, message, err := conn.ReadMessage()
 		if err != nil {
 			if session != nil {
@@ -1750,8 +1773,8 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 			if ctxErr := contextErr(ctx); ctxErr != nil {
 				return nil, 0, ctxErr
 			}
-			if waitingForFirstFrame && websocketTimeoutError(err) {
-				timeoutErr := fmt.Errorf("%w after %s", errWebsocketFirstFrameTimeout, firstFrameTimeout)
+			if websocketTimeoutError(err) {
+				timeoutErr := fmt.Errorf("%w after %s", errWebsocketIdleTimeout, idleTimeout)
 				providerdiagnostics.LogWebsocketErrorContext(ctx, "codex", "responses.websocket", timeoutErr)
 				return nil, 0, timeoutErr
 			}
@@ -1760,16 +1783,6 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 			}
 			return nil, 0, fmt.Errorf("read websocket response: %w", err)
 		}
-		if waitingForFirstFrame {
-			waitingForFirstFrame = false
-			if err := conn.SetReadDeadline(time.Time{}); err != nil {
-				if session != nil {
-					closeCachedWebsocketSessionLocked(session)
-				}
-				return nil, 0, fmt.Errorf("clear websocket first-frame deadline: %w", err)
-			}
-		}
-
 		if messageType != websocket.TextMessage {
 			if messageType == websocket.BinaryMessage {
 				if session != nil {
@@ -1847,8 +1860,8 @@ func websocketTimeoutError(err error) bool {
 	return errors.As(err, &timeout) && timeout.Timeout()
 }
 
-func exhaustedWebsocketFirstFrameTimeoutError(err error, attempts int) error {
-	return fmt.Errorf("codex websocket first-frame timeout exhausted after %d attempts: %w", attempts, err)
+func exhaustedWebsocketIdleTimeoutError(err error, attempts int) error {
+	return fmt.Errorf("codex timed out %d times in a row: %w", attempts, err)
 }
 
 func dialCodexWebsocket(ctx context.Context, wsURL string, headers http.Header) (*websocket.Conn, map[string]any, int, error) {

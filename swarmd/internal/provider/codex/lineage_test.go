@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -829,7 +830,7 @@ func TestOpenAIAPIKeyResponsesWebsocketFreshEpochReusesSocketAndRotatesChain(t *
 	}
 }
 
-func TestCodexFirstFrameTimeoutOnlyAppliesToInitialConnection(t *testing.T) {
+func TestCodexWebsocketIdleTimeoutReconnectsTwiceThenFails(t *testing.T) {
 	var connections atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -839,17 +840,16 @@ func TestCodexFirstFrameTimeoutOnlyAppliesToInitialConnection(t *testing.T) {
 		}
 		connections.Add(1)
 		defer conn.Close()
-		for requestNumber := 1; requestNumber <= 2; requestNumber++ {
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		// Prove the idle deadline applies after provider activity, not only while
+		// waiting for the first frame. The client must reset it for the next read.
+		if err := conn.WriteJSON(map[string]any{"type": "response.created"}); err != nil {
+			return
+		}
+		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
-				return
-			}
-			if requestNumber == 2 {
-				// Reused transports may remain quiet longer than the initial-connect
-				// guard. The deadline must not be reactivated for this continuation.
-				time.Sleep(200 * time.Millisecond)
-			}
-			completed := map[string]any{"type": "response.completed", "response": map[string]any{"id": fmt.Sprintf("resp-%d", requestNumber), "model": "gpt-5.4", "output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "ok"}}}}}}
-			if err := conn.WriteJSON(completed); err != nil {
 				return
 			}
 		}
@@ -858,9 +858,9 @@ func TestCodexFirstFrameTimeoutOnlyAppliesToInitialConnection(t *testing.T) {
 
 	client := NewClient(nil)
 	client.responsesWSURL = "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
-	client.websocketFirstFrameTimeout = 100 * time.Millisecond
+	client.websocketIdleTimeout = 50 * time.Millisecond
 	record := pebblestore.CodexAuthRecord{Provider: "codex", Type: pebblestore.CodexAuthTypeOAuth, AccountScopeID: "account-a", ID: "credential-a", AccountID: "chatgpt-a", AccessToken: "token"}
-	request := Request{
+	_, err := client.CreateResponseWithAuth(context.Background(), record, Request{
 		ProviderLineageID:    "lineage-a",
 		ProviderCacheKey:     "cache-a",
 		SessionAffinityKey:   "chain-a",
@@ -869,29 +869,18 @@ func TestCodexFirstFrameTimeoutOnlyAppliesToInitialConnection(t *testing.T) {
 		ReuseTransport:       true,
 		Model:                "gpt-5.4",
 		Input:                []map[string]any{{"role": "user", "content": "first"}},
+	})
+	if err == nil {
+		t.Fatal("idle websocket request error = nil, want timeout exhaustion")
 	}
-	first, err := client.CreateResponseWithAuth(context.Background(), record, request)
-	if err != nil {
-		t.Fatalf("initial request: %v", err)
+	if got := connections.Load(); got != websocketIdleTimeoutAttempts {
+		t.Fatalf("websocket connections = %d, want %d total attempts", got, websocketIdleTimeoutAttempts)
 	}
-	if first.ID != "resp-1" {
-		t.Fatalf("initial response id = %q, want resp-1", first.ID)
+	if !strings.Contains(err.Error(), "codex timed out 3 times in a row") {
+		t.Fatalf("idle websocket error = %q, want explicit three-timeout message", err)
 	}
-
-	request.Input = []map[string]any{
-		{"role": "user", "content": "first"},
-		{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "ok"}}},
-		{"role": "user", "content": "second"},
-	}
-	second, err := client.CreateResponseWithAuth(context.Background(), record, request)
-	if err != nil {
-		t.Fatalf("reused transport continuation: %v", err)
-	}
-	if second.ID != "resp-2" {
-		t.Fatalf("continuation response id = %q, want resp-2", second.ID)
-	}
-	if got := connections.Load(); got != 1 {
-		t.Fatalf("websocket connections = %d, want one initial connection", got)
+	if !errors.Is(err, errWebsocketIdleTimeout) {
+		t.Fatalf("idle websocket error = %v, want idle timeout cause", err)
 	}
 }
 
