@@ -2,6 +2,7 @@ package run
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -24,6 +25,20 @@ func TestResolveAgentToolContractUsesSavedBuiltInContracts(t *testing.T) {
 		}
 		if strings.TrimSpace(resolved.RawPreset) == "" && len(profile.ToolContract.Tools) == 0 {
 			t.Fatalf("%s resolved without persisted preset or explicit tools: %+v", name, resolved)
+		}
+		if name == agentruntime.SwarmAgentID {
+			if _, configured := profile.ToolContract.Tools["manage_todos"]; configured {
+				t.Fatalf("Swarm tool contract still configures manage_todos: %+v", profile.ToolContract)
+			}
+			if todo := resolved.Tools["manage_todos"]; todo.Enabled || slices.Contains(resolved.AvailableTools, "manage_todos") {
+				t.Fatalf("Swarm resolved toolkit advertises manage_todos: %+v", resolved)
+			}
+			if plan := resolved.Tools["plan_manage"]; !plan.Enabled || !slices.Contains(resolved.AvailableTools, "plan_manage") {
+				t.Fatalf("Swarm resolved toolkit omits plan_manage: %+v", resolved)
+			}
+			if !slices.ContainsFunc(svc.ListAgentToolDefinitions(), func(definition tool.Definition) bool { return definition.Name == "manage_todos" }) {
+				t.Fatal("shared tool inventory no longer implements manage_todos")
+			}
 		}
 	}
 }
