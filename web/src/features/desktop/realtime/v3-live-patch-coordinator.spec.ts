@@ -11,7 +11,7 @@ import { normalizeRealtimeEventFrame } from '../state/desktop-v3-cache-wire'
 
 const encoder = new TextEncoder()
 
-test('Desktop V3 provider construction patches commit immediately for tool-start UI', () => {
+test('Desktop V3 rejects provider construction live patches that bypass durable ordering', () => {
   let state = createEmptyDesktopV3CacheState()
   let commits = 0
   const coordinator = new DesktopV3LivePatchCoordinator({
@@ -39,13 +39,13 @@ test('Desktop V3 provider construction patches commit immediately for tool-start
   })
   coordinator.accept(livePatch({
     stream_id: 'provider-tool:run-a:step:1:event:1',
-    stream_kind: 'provider_tool_call',
+    stream_kind: 'provider_tool_call' as never,
     text,
     offset_end: encoder.encode(text).byteLength,
   }), 1)
-  assert.equal(commits, 1)
+  assert.equal(commits, 0)
   assert.equal(coordinator.debugSnapshotForTests().scheduled, false)
-  assert.equal(selectDesktopToolActivities(state, 'session-a', 'run-a')[0]?.phase, 'constructing')
+  assert.equal(selectDesktopToolActivities(state, 'session-a', 'run-a').length, 0)
 })
 
 test('Desktop V3 ten thousand patches commit once per animation frame', () => {

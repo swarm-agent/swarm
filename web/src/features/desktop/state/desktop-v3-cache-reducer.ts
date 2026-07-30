@@ -3034,8 +3034,12 @@ function applyLiveRunOverlayFromEvent(
   // Hydration and repair may replay tool lifecycle records after newer unrelated
   // output. Tool reconciliation is identity/phase monotonic, so allow those
   // records through while retaining the strict cursor guard for text streams.
-  const toolLifecycleEvent = event.eventType.startsWith('session.tool.')
-    || event.eventType.startsWith('session.provider_tool_call.')
+  const toolLifecycleEvent = event.eventType.startsWith('session.provider_tool_call.')
+    || event.eventType === 'session.tool.started'
+    || event.eventType === 'session.tool.completed'
+    || event.eventType === 'session.tool.failed'
+    || event.eventType === 'session.tool.cancelled'
+    || event.eventType === 'session.tool.canceled'
   if (eventSeq > 0 && eventSeq <= priorEventSeq && !toolLifecycleEvent) {
     return
   }
@@ -3244,9 +3248,9 @@ export function applyToolLifecycleToRun(
   const timelineCandidate = eventSeq > 0
     ? eventSeq
     : tool.timelineSeq ?? liveRun.lastEventSeqSeen ?? 0
-  tool.timelineSeq = isExecutionTerminal
-    ? Math.max(tool.timelineSeq ?? 0, timelineCandidate, liveRun.timelineFloor ?? 0)
-    : Math.max(tool.timelineSeq ?? timelineCandidate, liveRun.timelineFloor ?? 0)
+  // The durable construction event is the activity's immutable causal anchor.
+  // Runtime lifecycle and replay repair update the same card without moving it.
+  tool.timelineSeq = Math.max(tool.timelineSeq ?? timelineCandidate, liveRun.timelineFloor ?? 0)
   const preferredKey = callId ? `call:${callId}` : key
   if (preferredKey !== key) {
     const existingAtPreferredKey = activities[preferredKey]
@@ -3682,21 +3686,6 @@ function cloneToolActivityForMutation(tool: DesktopToolActivity): DesktopToolAct
 function applyLivePatchToRun(state: DesktopV3CacheState, run: LiveRunOverlay, patch: SessionV3RealtimeLivePatchWire): void {
   run.status = run.status === 'pending_executor' ? 'running' : run.status
   const updatedAt = patch.recorded_at
-  if (patch.stream_kind === 'provider_tool_call') {
-    const payload = parseJsonRecord(patch.text)
-    if (!payload || stringValue(payload.path_id) !== 'run.v3.provider-tool-construction.v1') return
-    const eventType = stringValue(payload.type)
-    if (!eventType.startsWith('session.provider_tool_call.')) return
-    const constructionUpdatedAt = finiteNumberValue(payload.recorded_at) ?? updatedAt
-    applyToolLifecycleToRun(run, {
-      ...payload,
-      run_id: stringValue(payload.run_id) || patch.run_id,
-      step: finiteNumberValue(payload.step) ?? patch.step,
-      step_id: stringValue(payload.step_id) || patch.step_id,
-      recorded_at: constructionUpdatedAt,
-    }, eventType, 0, constructionUpdatedAt)
-    return
-  }
   const existingDraft = run.assistantDraft
   if (existingDraft?.streamId === patch.stream_id) {
     if (existingDraft.livePaused) return

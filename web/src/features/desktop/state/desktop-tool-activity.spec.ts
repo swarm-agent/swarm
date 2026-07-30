@@ -1,12 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { applyDesktopV3LivePatchBatch, applyToolLifecycleToRun, createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop-v3-cache-reducer'
+import { applyToolLifecycleToRun, createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop-v3-cache-reducer'
 import { selectDesktopToolActivities } from './desktop-v3-cache-selectors'
 import type { CacheEvent, DesktopToolActivity, DesktopToolActivityPhase, DesktopToolActivitySemanticKind, LiveRunOverlay } from './desktop-v3-cache-types'
-import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
-
-const encoder = new TextEncoder()
 const sessionId = 'session-tool-activity'
 const runId = 'run-tool-activity'
 
@@ -17,33 +14,6 @@ function run(): LiveRunOverlay {
     status: 'running',
     toolActivitiesById: {},
     toolCallsByCallId: {},
-  }
-}
-
-function providerPatch(type: string, payload: Record<string, unknown>, eventIndex: number): SessionV3RealtimeLivePatchWire {
-  const text = JSON.stringify({
-    path_id: 'run.v3.provider-tool-construction.v1',
-    type,
-    run_id: runId,
-    step: 2,
-    event_index: eventIndex,
-    recorded_at: 2_000 + eventIndex,
-    ...payload,
-  })
-  return {
-    session_id: sessionId,
-    run_id: runId,
-    stream_id: `provider-tool:${runId}:step:2:event:${eventIndex}`,
-    stream_kind: 'provider_tool_call',
-    operation: 'append',
-    step: 2,
-    step_id: 'provider-step-2',
-    live_seq_start: 1,
-    live_seq_end: 1,
-    offset_start: 0,
-    offset_end: encoder.encode(text).byteLength,
-    text,
-    recorded_at: 2_000 + eventIndex,
   }
 }
 
@@ -124,31 +94,6 @@ function durableToolEvent(
     },
   }
 }
-
-test('construction live patch exists before execution output and repairs late fields', () => {
-  let state = createEmptyDesktopV3CacheState()
-  state = applyDesktopV3LivePatchBatch(state, [
-    providerPatch('session.provider_tool_call.started', { call_id: 'call-edit', output_index: 0 }, 1),
-  ])
-  let selected = selectDesktopToolActivities(state, sessionId, runId)
-  assert.equal(selected.length, 1)
-  assert.equal(selected[0].phase, 'constructing')
-  assert.equal(selected[0].label, 'Starting tool')
-  assert.equal(selected[0].provenance.providerConstruction, true)
-
-  state = applyDesktopV3LivePatchBatch(state, [
-    providerPatch('session.provider_tool_call.arguments.delta', { call_id: 'call-edit', output_index: 0, arguments_delta: '{"path":' }, 2),
-    providerPatch('session.provider_tool_call.arguments.snapshot', { call_id: 'call-edit', output_index: 0, tool_name: 'edit', arguments_snapshot: '{"path":"a.ts"}' }, 3),
-    providerPatch('session.provider_tool_call.arguments.delta', { call_id: 'call-edit', output_index: 0, arguments_delta: '{"path":' }, 2),
-    providerPatch('session.provider_tool_call.completed', { call_id: 'call-edit', output_index: 0, tool_name: 'edit', arguments: '{"path":"a.ts"}', status: 'completed' }, 4),
-  ])
-  selected = selectDesktopToolActivities(state, sessionId, runId)
-  assert.equal(selected.length, 1)
-  assert.equal(selected[0].phase, 'ready')
-  assert.equal(selected[0].argumentsText, '{"path":"a.ts"}')
-  assert.equal(selected[0].semanticKind, 'edit')
-  assert.equal(selected[0].label, 'Editing')
-})
 
 test('edit, plan_manage, and task fixtures reconcile construction into one runtime card and explicit terminals', () => {
   for (const [index, fixture] of toolLifecycleFixtures.entries()) {
@@ -253,18 +198,7 @@ test('runtime failures and cancellations expose explicit terminal phases', () =>
 })
 
 test('reconnect repair and stale construction replay leave one non-running card per call', () => {
-  let state = createEmptyDesktopV3CacheState()
-  state = applyDesktopV3LivePatchBatch(state, toolLifecycleFixtures.map((fixture, index) => providerPatch(
-    'session.provider_tool_call.started',
-    { call_id: fixture.callId, output_index: index },
-    index + 1,
-  )))
-
-  const beforeRepair = selectDesktopToolActivities(state, sessionId, runId)
-  assert.equal(beforeRepair.length, toolLifecycleFixtures.length)
-  assert.ok(beforeRepair.every((tool) => tool.phase === 'constructing'))
-  assert.ok(beforeRepair.every((tool) => tool.outputText === undefined))
-
+  const state = createEmptyDesktopV3CacheState()
   const repairEvents = toolLifecycleFixtures.flatMap((fixture, index) => {
     const startedSeq = 10 + index
     const terminalSeq = 20 + index
@@ -287,23 +221,25 @@ test('reconnect repair and stale construction replay leave one non-running card 
     runId,
     events: repairEvents.reverse(),
   })
-  state = applyDesktopV3LivePatchBatch(state, toolLifecycleFixtures.flatMap((fixture, index) => [
-    providerPatch(
-      'session.provider_tool_call.arguments.snapshot',
-      {
+  desktopV3CacheReducer(state, {
+    type: 'liveRun.mergeRepairEvents',
+    sessionId,
+    runId,
+    events: toolLifecycleFixtures.flatMap((fixture, index) => [
+      durableToolEvent('session.provider_tool_call.started', {
+        call_id: fixture.callId,
+        output_index: index,
+        event_index: (index * 2) + 1,
+      }, 30 + (index * 2)),
+      durableToolEvent('session.provider_tool_call.arguments.snapshot', {
         call_id: fixture.callId,
         output_index: index,
         tool_name: fixture.toolName,
         arguments_snapshot: fixture.argumentsText,
-      },
-      index + 10,
-    ),
-    providerPatch(
-      'session.provider_tool_call.started',
-      { call_id: fixture.callId, output_index: index },
-      index + 1,
-    ),
-  ]))
+        event_index: (index * 2) + 2,
+      }, 31 + (index * 2)),
+    ]),
+  })
 
   const repairedRun = state.liveRunsBySession[sessionId][runId]
   const repaired = selectDesktopToolActivities(state, sessionId, runId)
@@ -343,7 +279,7 @@ test('reordered hydration and terminal repair converge monotonically', () => {
 
   const tool = activity(liveRun)
   assert.equal(tool.phase, 'completed')
-  assert.equal(tool.timelineSeq, 8)
+  assert.equal(tool.timelineSeq, 5)
   assert.equal(tool.semanticKind, 'plan')
   assert.equal(tool.argumentsText, '{"action":"start_session_checkpoint"}')
   assert.equal(tool.provenance.providerConstruction, true)

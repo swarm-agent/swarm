@@ -7,9 +7,9 @@ This contract defines how a conversational provider adapter reports a model-auth
 Provider construction and Swarm tool execution are distinct lifecycles:
 
 1. The provider adapter emits construction events while the model is assembling a call.
-2. The V3 executor persists them as ordered `session.provider_tool_call.*` mutations and publishes `provider_tool_call` live patches as a low-latency accelerator.
+2. The V3 executor persists them as ordered `session.provider_tool_call.*` mutations on the same durable event timeline as preceding reasoning.
 3. Swarm runtime execution emits `session.tool.started`, `session.tool.delta`, and a terminal `session.tool.completed`, `session.tool.failed`, or `session.tool.cancelled` event.
-4. Desktop reconciles both lifecycles into one provider-neutral activity by stable identity. Durable V3 events, projections, replay, and reconnect hydration remain authoritative; live patches and websocket memory are never recovery authority.
+4. Desktop reconciles both lifecycles into one provider-neutral activity by stable identity. Durable V3 events, projections, replay, and reconnect hydration remain authoritative; provider tool construction must not use an unsequenced live-patch bypass.
 
 Construction completion means the provider finished constructing arguments. It does **not** mean the tool executed successfully. Failure and cancellation are runtime terminal states unless a future provider-neutral construction-failure event is explicitly added.
 
@@ -50,7 +50,8 @@ An adapter may use deltas, snapshots, or both. Deltas are append-only. Snapshots
 - Persist construction through the canonical V3 mutation path as `session.provider_tool_call.started`, `.arguments.delta`, `.arguments.snapshot`, and `.completed`.
 - Include run ID, step, event index, call ID, optional output index, tool name when known, arguments, provider/model, status, timestamps, and adapter metadata.
 - Use deterministic idempotency identity so replay or retry cannot create duplicate durable construction records.
-- Publish `provider_tool_call` live patches only as an accelerator; reconnect and cursor-gap repair must replay or hydrate durable records.
+- Deliver provider construction only through ordered durable realtime events. Before the first construction start in a provider step, complete any active reasoning record so the durable sequence naturally places the tool below that thinking.
+- Reconnect and cursor-gap repair replay or hydrate those same durable records; they must not reopen completed reasoning or re-anchor an existing tool row.
 - Reconcile `session.tool.*` runtime events into the same Desktop activity using call ID/tool instance identity first and bounded run/step/output fallback only when unambiguous.
 - Terminal runtime phases are monotonic. Late or stale construction replay must enrich identity/arguments but must never return a completed, failed, or cancelled card to a pulsing phase.
 - Desktop semantic presentation (`edit`, `plan_manage`, `task`, or generic) is derived after provider-neutral normalization. Adding a provider adapter requires no React rendering change.
@@ -59,7 +60,7 @@ An adapter may use deltas, snapshots, or both. Deltas are append-only. Snapshots
 
 A new adapter is conformant when focused fixtures prove:
 
-- start appears before execution output for edit, plan, task/subagent, and generic calls;
+- start appears after preceding reasoning and before execution output for edit, plan, task/subagent, and generic calls;
 - argument-first and terminal-first native shapes repair to ordered start/arguments/completion events;
 - repeated native snapshots do not duplicate start or completion;
 - parallel calls remain distinct;

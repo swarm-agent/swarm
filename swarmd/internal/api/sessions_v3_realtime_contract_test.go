@@ -328,6 +328,27 @@ func TestV3RealtimeLivePatchContractRoundTrip(t *testing.T) {
 	}
 }
 
+func TestV3RealtimeLivePatchContractRejectsProviderToolBypass(t *testing.T) {
+	patch := V3RealtimeLivePatch{
+		SessionID:    "session-a",
+		RunID:        "run-a",
+		StreamID:     "provider-tool:run-a:step:1:event:1",
+		StreamKind:   "provider_tool_call",
+		Operation:    "append",
+		Step:         1,
+		StepID:       "step-1",
+		LiveSeqStart: 1,
+		LiveSeqEnd:   1,
+		OffsetStart:  0,
+		OffsetEnd:    2,
+		Text:         "{}",
+		RecordedAt:   12345,
+	}
+	if err := ValidateV3RealtimeLiveMessage(NewV3RealtimeLiveMessage(patch)); err == nil {
+		t.Fatalf("provider tool live bypass passed validation")
+	}
+}
+
 func TestV3RealtimeLivePatchContractRejectsInvalidOffsets(t *testing.T) {
 	patch := V3RealtimeLivePatch{
 		SessionID:    "session-a",

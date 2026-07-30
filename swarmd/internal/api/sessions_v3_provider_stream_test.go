@@ -87,6 +87,12 @@ func TestV3ProviderToolConstructionPersistsIdentityMetadataAndTimestamps(t *test
 		index := 4
 		startedAt := time.Now().UnixMilli() - 5
 		base := provideriface.StreamEvent{ToolCallID: "call-construction", ToolCallIndex: &index, ToolName: "edit", ProviderID: "codex", Model: "gpt-test", StartedAtUnixMs: startedAt, Metadata: map[string]any{"provider_item_id": "fc-construction"}}
+		onEvent(provideriface.StreamEvent{
+			Type:         provideriface.StreamEventReasoningSummaryDelta,
+			Delta:        "inspect the relevant files",
+			DeltaMode:    provideriface.StreamEventDeltaModeReplace,
+			ReasoningKey: "summary-1",
+		})
 		started := base
 		started.Type = provideriface.StreamEventToolCallStarted
 		started.Status = "started"
@@ -117,10 +123,25 @@ func TestV3ProviderToolConstructionPersistsIdentityMetadataAndTimestamps(t *test
 		t.Fatalf("list events: %v", err)
 	}
 	var construction []pebblestore.V3SessionEvent
+	var causalOrder []string
 	for _, event := range events {
+		if strings.HasPrefix(event.EventType, "session.reasoning.") || strings.HasPrefix(event.EventType, "session.provider_tool_call.") {
+			causalOrder = append(causalOrder, event.EventType)
+		}
 		if strings.HasPrefix(event.EventType, "session.provider_tool_call.") {
 			construction = append(construction, event)
 		}
+	}
+	wantCausalOrder := []string{
+		"session.reasoning.started",
+		"session.reasoning.delta",
+		"session.reasoning.completed",
+		"session.provider_tool_call.started",
+		"session.provider_tool_call.arguments.delta",
+		"session.provider_tool_call.completed",
+	}
+	if fmt.Sprint(causalOrder) != fmt.Sprint(wantCausalOrder) {
+		t.Fatalf("reasoning/tool causal order = %v, want %v", causalOrder, wantCausalOrder)
 	}
 	if len(construction) != 3 {
 		t.Fatalf("construction events = %d, want 3: %+v", len(construction), construction)
@@ -197,11 +218,8 @@ func TestV3ProviderToolConstructionPersistsIdentityMetadataAndTimestamps(t *test
 			}
 		}
 	}
-	if constructionPatches != 3 {
-		t.Fatalf("construction live patches = %d, want 3: %+v", constructionPatches, patches)
-	}
-	if len(patches) == 0 || patches[0].StreamKind != "provider_tool_call" || !strings.Contains(patches[0].Text, "session.provider_tool_call.started") {
-		t.Fatalf("first construction patch = %+v", patches)
+	if constructionPatches != 0 {
+		t.Fatalf("provider construction bypassed durable reasoning order with %d live patches: %+v", constructionPatches, patches)
 	}
 	outbox, err := sessionSvc.ListRealtimeOutboxForSessionAfterEndpoint(created.ID, 0, 50)
 	if err != nil {
@@ -464,7 +482,7 @@ func TestV3ProviderHotCallbackHasNoDurableCalls(t *testing.T) {
 			t.Fatalf("Handle contains forbidden durable/blocking symbol %q", forbidden)
 		}
 	}
-	for _, required := range []string{"v3LiveHub.publish", "TryAppendAssistant", "TryRecordProviderToolConstruction"} {
+	for _, required := range []string{"TryAppendAssistant", "TryRecordProviderToolConstruction", "completeActiveReasoningLocked"} {
 		if !strings.Contains(handleBody, required) {
 			t.Fatalf("Handle missing required symbol %q", required)
 		}

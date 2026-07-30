@@ -251,10 +251,8 @@ func ValidateV3RealtimeLiveMessage(message V3RealtimeLiveMessage) error {
 	if live.Text == "" {
 		return errors.New("v3 realtime live requires text")
 	}
-	switch strings.TrimSpace(live.StreamKind) {
-	case "assistant_text", "provider_tool_call":
-	default:
-		return errors.New("v3 realtime live stream_kind must be assistant_text or provider_tool_call")
+	if strings.TrimSpace(live.StreamKind) != "assistant_text" {
+		return errors.New("v3 realtime live stream_kind must be assistant_text")
 	}
 	if strings.TrimSpace(live.Operation) != "append" {
 		return errors.New("v3 realtime live operation must be append")

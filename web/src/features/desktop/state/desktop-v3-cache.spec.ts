@@ -2379,6 +2379,74 @@ test('progressive live answer prefixes reconcile to one assistant row and one re
   ])
 })
 
+test('durable provider tool construction follows reasoning without later row movement', () => {
+  const state = bootstrappedState()
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.started', {
+      reasoning_key: 'summary-1',
+      step: 1,
+      step_id: 'step-1',
+    }, 3, 'cursor-causal-reasoning-start'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.delta', {
+      reasoning_key: 'summary-1',
+      step: 1,
+      step_id: 'step-1',
+      delta: 'inspect the relevant files',
+      delta_mode: 'replace',
+    }, 4, 'cursor-causal-reasoning-delta'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.completed', {
+      reasoning_key: 'summary-1',
+      step: 1,
+      step_id: 'step-1',
+      summary: 'inspect the relevant files',
+    }, 5, 'cursor-causal-reasoning-complete'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.provider_tool_call.started', {
+      call_id: 'call-causal',
+      event_index: 1,
+      step: 1,
+      step_id: 'step-1',
+      tool_name: 'search',
+    }, 6, 'cursor-causal-provider-tool'),
+  })
+
+  const signature = () => buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+    .filter((item) => (item.type === 'message' && item.message.role === 'reasoning') || item.type === 'live-tool')
+    .map((item) => item.type === 'message'
+      ? `reasoning:${item.message.content}:${item.timelineSeq ?? item.message.global_seq}`
+      : `tool:${item.tool.callId}:${item.timelineSeq}`)
+
+  assert.deepEqual(signature(), [
+    'reasoning:inspect the relevant files:5',
+    'tool:call-causal:6',
+  ])
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.started', {
+      call_id: 'call-causal',
+      tool_instance_id: 'tool-causal',
+      step: 1,
+      step_id: 'step-1',
+      tool_name: 'search',
+    }, 7, 'cursor-causal-tool-start'),
+  })
+
+  assert.deepEqual(signature(), [
+    'reasoning:inspect the relevant files:5',
+    'tool:call-causal:6',
+  ])
+  const run = state.liveRunsBySession[sessionA.id]['run-live']
+  assert.equal(run.reasoning, undefined)
+  assert.equal(run.reasoningByKey, undefined)
+  assert.equal(run.toolActivitiesById?.['call:call-causal']?.phase, 'running')
+})
+
 test('realtime stream objects retain backend ordering sequence on live overlays', () => {
   const state = bootstrappedState()
 
@@ -2663,7 +2731,7 @@ test('realtime session.tool.delta appends output and terminal event replaces fin
   assert.equal(tool.outputText, '{"summary":"done"}')
   assert.equal(tool.status, 'completed')
   assert.equal(tool.durationMs, 42)
-  assert.equal(tool.timelineSeq, 7)
+  assert.equal(tool.timelineSeq, 5)
 })
 
 test('realtime terminal tool event keeps completed live tool after later assistant text', () => {
@@ -2696,8 +2764,8 @@ test('realtime terminal tool event keeps completed live tool after later assista
     .map((item) => item.type === 'live-assistant' ? `assistant:${item.content}` : `tool:${item.tool.callId}`)
 
   assert.deepEqual(rendered, [
-    'assistant:after write start',
     'tool:call-write',
+    'assistant:after write start',
   ])
 })
 
