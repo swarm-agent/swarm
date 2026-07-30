@@ -1920,7 +1920,7 @@ export function buildStructuredToolMessage(
       );
   const taskRows =
     toolName.toLowerCase() === "task"
-      ? buildTaskToolRows(outputJson ?? argumentsJson, input.taskStream)
+      ? buildTaskToolRows(outputJson, input.taskStream)
       : [];
   const error = String(input.error ?? "").trim();
 
