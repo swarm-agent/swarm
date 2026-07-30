@@ -310,14 +310,15 @@ func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte
 
 type openRouterStreamState struct {
 	merged            chatCompletionResponse
-	toolCalls         map[int]*chatCompletionToolCall
+	toolCalls         map[openRouterToolCallKey]*chatCompletionToolCall
+	toolCallOrder     []openRouterToolCallKey
 	eventCount        int
 	outputBytes       int
 	toolArgumentBytes int
 }
 
 func newOpenRouterStreamState() *openRouterStreamState {
-	return &openRouterStreamState{toolCalls: make(map[int]*chatCompletionToolCall)}
+	return &openRouterStreamState{toolCalls: make(map[openRouterToolCallKey]*chatCompletionToolCall)}
 }
 
 func (s *openRouterStreamState) apply(chunk chatCompletionChunk) error {
@@ -380,20 +381,22 @@ func (s *openRouterStreamState) apply(chunk chatCompletionChunk) error {
 				choice.Message.ReasoningDetails = append(choice.Message.ReasoningDetails, next.Delta.ReasoningDetails...)
 			}
 			for _, delta := range next.Delta.ToolCalls {
-				call := s.toolCalls[delta.Index]
+				key := openRouterToolCallKey{choiceIndex: next.Index, toolIndex: delta.Index}
+				call := s.toolCalls[key]
 				if call == nil {
 					call = &chatCompletionToolCall{}
-					s.toolCalls[delta.Index] = call
+					s.toolCalls[key] = call
+					s.toolCallOrder = append(s.toolCallOrder, key)
 				}
 				if strings.TrimSpace(delta.ID) != "" {
-					call.ID = delta.ID
+					call.ID = mergeOpenRouterToolCallField(call.ID, delta.ID)
 				}
 				if strings.TrimSpace(delta.Type) != "" {
 					call.Type = delta.Type
 				}
 				if delta.Function != nil {
 					if delta.Function.Name != "" {
-						call.Function.Name += delta.Function.Name
+						call.Function.Name = mergeOpenRouterToolCallField(call.Function.Name, delta.Function.Name)
 					}
 					if delta.Function.Arguments != "" {
 						call.Function.Arguments += delta.Function.Arguments
@@ -406,16 +409,10 @@ func (s *openRouterStreamState) apply(chunk chatCompletionChunk) error {
 		}
 	}
 	if len(s.toolCalls) > 0 {
-		maxIndex := -1
-		for index := range s.toolCalls {
-			if index > maxIndex {
-				maxIndex = index
-			}
-		}
-		calls := make([]chatCompletionToolCall, 0, maxIndex+1)
-		for i := 0; i <= maxIndex; i++ {
-			call, ok := s.toolCalls[i]
-			if !ok || call == nil {
+		calls := make([]chatCompletionToolCall, 0, len(s.toolCallOrder))
+		for _, key := range s.toolCallOrder {
+			call := s.toolCalls[key]
+			if call == nil {
 				continue
 			}
 			calls = append(calls, *call)
