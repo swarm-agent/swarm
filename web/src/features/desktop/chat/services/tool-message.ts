@@ -43,6 +43,7 @@ interface StructuredToolMessageInput {
   error?: string;
   durationMs?: number;
   state?: StructuredToolMessage["state"];
+  lifecycleStatus?: string;
 }
 
 const MAX_STRUCTURED_OUTPUT_PARSE_BYTES = 1_000_000;
@@ -1954,6 +1955,7 @@ export function buildStructuredToolMessage(
     durationMs: typeof input.durationMs === "number" ? input.durationMs : 0,
     summary,
     state: input.state ?? (error ? "error" : "done"),
+    lifecycleStatus: String(input.lifecycleStatus ?? "").trim(),
     editDiff,
     searchData,
     webSearchData,

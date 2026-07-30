@@ -860,8 +860,10 @@ function renderItemTimelineSeq(item: DesktopV3RenderItem): number {
 }
 
 function committedToolRenderKey(message: MessageSnapshot): string {
-  const identity = metadataString(message.metadata, "tool_instance_id")
-    || metadataString(message.metadata, "call_id");
+  const identity = metadataString(message.metadata, "call_id")
+    || message.toolMessage?.callId?.trim()
+    || metadataString(message.metadata, "tool_instance_id")
+    || message.toolMessage?.toolInstanceId?.trim();
   return identity ? `live-tool:${identity}` : "";
 }
 
@@ -1219,6 +1221,7 @@ export function buildDesktopV3LiveRunRenderItems(
   options: {
     assistantMessages?: Set<string>;
     reasoningMessages?: Set<string>;
+    committedToolKeys?: Set<string>;
   } = {},
 ): DesktopV3RenderItem[] {
   const items: DesktopV3RenderItem[] = [];
@@ -1259,9 +1262,11 @@ export function buildDesktopV3LiveRunRenderItems(
     });
   }
   for (const tool of Object.values(run.toolCallsByCallId)) {
+    const id = `live-tool:${tool.callId || tool.toolInstanceId}`;
+    if (options.committedToolKeys?.has(id)) continue;
     items.push({
       type: "live-tool",
-      id: `live-tool:${tool.toolInstanceId || tool.callId}`,
+      id,
       tool,
       timelineSeq: tool.timelineSeq,
     });
@@ -1305,6 +1310,9 @@ export function buildDesktopV3ConversationRenderItems(
   );
   const assistantMessages = canonicalContentSet(visibleCommittedMessages, "assistant");
   const reasoningMessages = canonicalContentSet(visibleCommittedMessages, "reasoning");
+  const committedToolKeys = new Set<string>(
+    visibleCommittedMessages.map(committedToolRenderKey).filter((key): key is string => Boolean(key)),
+  );
   const items: DesktopV3RenderItem[] = [
     ...visibleCommittedMessages.map((message) =>
       isDesktopV3PlanExecutionBreakMessage(message)
@@ -1333,6 +1341,7 @@ export function buildDesktopV3ConversationRenderItems(
       ...buildDesktopV3LiveRunRenderItems(run, {
         assistantMessages,
         reasoningMessages,
+        committedToolKeys,
       }),
     );
   }
@@ -3765,15 +3774,22 @@ function DesktopV3LiveToolCall({
   tool: LiveRunOverlay["toolCallsByCallId"][string];
   taskChildActions?: TaskChildCardActions;
 }) {
+  const providerReady = Boolean(
+    tool.toolInstanceId?.startsWith("provider-tool:")
+      && !tool.outputText?.trim()
+      && !tool.errorText?.trim(),
+  );
   const state: ToolMessageState =
     tool.status === "failed" || tool.status === "error"
       ? "error"
-      : tool.status === "completed" ||
-          tool.status === "done" ||
-          tool.status === "cancelled" ||
-          tool.status === "canceled"
-        ? "done"
-        : "running";
+      : providerReady
+        ? "running"
+        : tool.status === "completed" ||
+            tool.status === "done" ||
+            tool.status === "cancelled" ||
+            tool.status === "canceled"
+          ? "done"
+          : "running";
   const output = tool.outputText ?? "";
   const args = tool.argumentsText ?? "";
   const error = tool.errorText?.trim() || (state === "error" ? output : "");
@@ -3787,6 +3803,7 @@ function DesktopV3LiveToolCall({
     error,
     durationMs: tool.durationMs,
     state,
+    lifecycleStatus: tool.status,
     taskStream: tool.taskStream,
   });
   if (parsed && tool.timelineSeq) parsed.timelineSeq = tool.timelineSeq;

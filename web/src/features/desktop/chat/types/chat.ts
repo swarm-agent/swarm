@@ -175,6 +175,7 @@ export interface StructuredToolMessage {
   durationMs: number;
   summary: string;
   state: ToolMessageState;
+  lifecycleStatus?: string;
   timelineSeq?: number;
   editDiff: EditDiffPreview | null;
   searchData?: SearchToolData | null;

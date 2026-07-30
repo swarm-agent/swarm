@@ -21,6 +21,8 @@ import { stopSubagentSessionV3Run } from "../../session-v3/api";
 import { getToolTheme, type ToolState } from "../services/tool-theme";
 import { ToolSyntaxLine, inferToolSyntaxLanguage, pathFromToolSummary } from "../services/tool-syntax";
 import { displayAgentName } from "../services/agent-display";
+import { toolActivityStartSummary } from "../services/tool-activity";
+import { ToolActivityShell } from "./tool-activity-shell";
 
 interface ChatMarkdownProps {
   content: string;
@@ -2001,6 +2003,33 @@ export function ToolMessageView({
   taskChildActions?: TaskChildCardActions;
 }) {
   const normalizedToolName = toolMessage.tool.trim().toLowerCase();
+  const lifecycleStatus = toolMessage.lifecycleStatus?.trim().toLowerCase() ?? "";
+  const hasStructuredTaskRows = normalizedToolName === "task" && toolMessage.taskRows.length > 0;
+  const activityOnly = toolMessage.state === "running"
+    && !hasStructuredTaskRows
+    && !toolMessage.output.trim()
+    && !toolMessage.completedOutput.trim()
+    && !toolMessage.error.trim();
+  const terminalWithoutResult = (toolMessage.state === "error"
+    || ["cancelled", "canceled", "interrupted"].includes(lifecycleStatus))
+    && !hasStructuredTaskRows
+    && !toolMessage.output.trim()
+    && !toolMessage.completedOutput.trim();
+  if (activityOnly || terminalWithoutResult) {
+    const errorBody = toolMessage.error.trim();
+    return (
+      <div className={cn(isGroupItem ? "py-1.5" : "mb-2 min-w-0 py-1.5", "w-full")}>
+        <ToolActivityShell
+          toolMessage={toolMessage}
+          lifecycleStatus={lifecycleStatus}
+          summary={toolActivityStartSummary(toolMessage)}
+          bodyClassName="px-3 py-2 text-[12px] text-[var(--app-danger)]"
+        >
+          {errorBody || null}
+        </ToolActivityShell>
+      </div>
+    );
+  }
   if (normalizedToolName === "bash") {
     return <BashToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
   }
@@ -2041,7 +2070,6 @@ export function ToolMessageView({
     ? summary.replace(toolMessage.target, "").replace(/\s+in\s+(?=\()/, " ").trim()
     : summary;
   const showPreview = normalizedTool !== 'thinking' || thinkingTagsEnabled;
-  const isWindup = !isTask && state === "running" && !toolMessage.output.trim() && !toolMessage.error.trim();
   if (isExitPlanMode) return <ExitPlanModeToolView toolMessage={toolMessage} />;
   if (isPlanManage) return <PlanManageToolView toolMessage={toolMessage} />;
   const hasBody = Boolean(
@@ -2094,7 +2122,6 @@ export function ToolMessageView({
               ) : null}
             </div>
             <div className="flex shrink-0 items-center gap-1.5 pt-0.5 text-[10px] text-[var(--app-text-subtle)]">
-              {isWindup ? <span>starting…</span> : null}
               {toolMessage.durationMs > 0 ? <span>{formatDuration(toolMessage.durationMs)}</span> : null}
               {!isTask ? (
                 <StateIcon
