@@ -526,7 +526,7 @@ type fireworksToolCallConstructionState struct {
 	providerModel string
 	calls         map[fireworksToolCallKey]*fireworksToolCallConstruction
 	callsByChoice map[int][]fireworksToolCallKey
-	nextOutput     int
+	nextOutput    int
 }
 
 func newFireworksToolCallConstructionState(models ...string) *fireworksToolCallConstructionState {

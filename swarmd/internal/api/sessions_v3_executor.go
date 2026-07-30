@@ -847,20 +847,20 @@ func (e *sessionV3Executor) recordProviderToolConstructionEvent(job sessionV3Exe
 		}
 	}
 	payload := map[string]any{
-		"path_id":       "run.v3.provider-tool-construction.v1",
-		"type":          eventType,
-		"run_id":        strings.TrimSpace(job.RunID),
-		"epoch_id":      strings.TrimSpace(job.EpochID),
-		"step":          step,
-		"step_id":       sessionV3ProviderToolStepID(step),
-		"event_index":   eventIndex,
-		"call_id":       callID,
-		"tool_name":     toolName,
-		"provider":      strings.TrimSpace(event.ProviderID),
-		"model":         strings.TrimSpace(event.Model),
-		"recorded_at":   recordedAt,
-		"started_at":    startedAt,
-		"status":        status,
+		"path_id":     "run.v3.provider-tool-construction.v1",
+		"type":        eventType,
+		"run_id":      strings.TrimSpace(job.RunID),
+		"epoch_id":    strings.TrimSpace(job.EpochID),
+		"step":        step,
+		"step_id":     sessionV3ProviderToolStepID(step),
+		"event_index": eventIndex,
+		"call_id":     callID,
+		"tool_name":   toolName,
+		"provider":    strings.TrimSpace(event.ProviderID),
+		"model":       strings.TrimSpace(event.Model),
+		"recorded_at": recordedAt,
+		"started_at":  startedAt,
+		"status":      status,
 	}
 	if event.ToolCallIndex != nil {
 		payload["output_index"] = *event.ToolCallIndex

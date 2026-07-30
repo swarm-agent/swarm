@@ -25,7 +25,7 @@ func TestEmitFireworksToolCallConstructionEventsFromStreamingDeltas(t *testing.T
 					Arguments: `{"path"`,
 				},
 			}}},
-		}}, collectFireworksConstructionEvents(&events))
+		}}}, collectFireworksConstructionEvents(&events))
 	emitFireworksToolCallConstructionEvents(state, chatCompletionChunk{Choices: []chatCompletionChoice{{
 		Index: 0,
 		Delta: &chatCompletionMessageDelta{ToolCalls: []chatCompletionToolCallDelta{{

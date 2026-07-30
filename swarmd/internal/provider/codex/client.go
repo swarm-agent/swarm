@@ -2180,18 +2180,18 @@ func parseEventStream(body []byte) (map[string]any, error) {
 }
 
 type streamDecodeState struct {
-	completedResponse       map[string]any
-	lastObject              map[string]any
-	outputText              string
-	reasoningSummary        map[string]string
-	reasoningOrder          []string
-	outputItems             []map[string]any
-	outputItemsDone         []map[string]any
-	outputItemPos           map[string]int
-	outputItemDonePos       map[string]int
-	imageGenerationResults  map[string]string
-	imageGenerationPartials []map[string]any
-	imageGenerationFinals   []map[string]any
+	completedResponse        map[string]any
+	lastObject               map[string]any
+	outputText               string
+	reasoningSummary         map[string]string
+	reasoningOrder           []string
+	outputItems              []map[string]any
+	outputItemsDone          []map[string]any
+	outputItemPos            map[string]int
+	outputItemDonePos        map[string]int
+	imageGenerationResults   map[string]string
+	imageGenerationPartials  []map[string]any
+	imageGenerationFinals    []map[string]any
 	toolCallArguments        map[string]string
 	toolCallSnapshots        map[string]string
 	toolCallStarted          map[string]struct{}
@@ -2199,11 +2199,11 @@ type streamDecodeState struct {
 	toolCallPendingArguments map[string][]StreamEvent
 	toolCallPendingComplete  map[string]StreamEvent
 	toolCallsByIndex         map[int]StreamEvent
-	rawEvents               []map[string]any
-	sawPayload              bool
-	streamBytes             int
-	streamEvents            int
-	decodeErr               error
+	rawEvents                []map[string]any
+	sawPayload               bool
+	streamBytes              int
+	streamEvents             int
+	decodeErr                error
 }
 
 func processResponseStreamEvent(eventName string, payload string, state *streamDecodeState, onEvent func(StreamEvent)) {
