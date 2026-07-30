@@ -725,6 +725,13 @@ func (s *Service) ListActiveLifecycles(limit int) ([]pebblestore.SessionLifecycl
 	return s.store.ListActiveSessionLifecycles(limit)
 }
 
+func (s *Service) ListReviewAutoArchiveCandidates(accountScopeID string) ([]pebblestore.SessionReviewAutoArchiveCandidate, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListSessionReviewAutoArchiveCandidates(accountScopeID)
+}
+
 func (s *Service) ListSessions(limit int) ([]pebblestore.SessionSnapshot, error) {
 	sessions, err := s.store.ListSessions(limit)
 	if err != nil {

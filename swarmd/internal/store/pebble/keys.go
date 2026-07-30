@@ -900,6 +900,10 @@ func KeySessionPlanActive(sessionID string) string {
 	return fmt.Sprintf("session_plan_active/%s", keyPart(sessionID))
 }
 
+func SessionPlanActivePrefix() string {
+	return "session_plan_active/"
+}
+
 func KeySessionPlanActiveByAccount(accountScopeID, sessionID string) string {
 	return fmt.Sprintf("session_plan_active_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
 }

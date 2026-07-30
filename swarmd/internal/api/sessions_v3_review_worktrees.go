@@ -786,31 +786,22 @@ func (s *Server) reconcileSessionsV3ReviewAutoArchiveForAccount(ctx context.Cont
 	if s == nil || s.sessions == nil || s.uiSettings == nil {
 		return errors.New("review auto-archive reconciliation is not configured")
 	}
-	var (
-		sessions []pebblestore.SessionSnapshot
-		err      error
-	)
-	accountScopeID = strings.TrimSpace(accountScopeID)
-	if accountScopeID == "" {
-		sessions, err = s.sessions.ListSessions(sessionsV3ReviewWorktreeLimit)
-	} else {
-		sessions, err = s.sessions.ListSessionsForAccount(accountScopeID, sessionsV3ReviewWorktreeLimit)
-	}
+	candidates, err := s.sessions.ListReviewAutoArchiveCandidates(strings.TrimSpace(accountScopeID))
 	if err != nil {
 		return err
 	}
-	for _, session := range sessions {
+	for _, candidate := range candidates {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err := s.reconcileSessionV3ReviewAutoArchive(session, now); err != nil {
+		if err := s.reconcileSessionV3ReviewAutoArchive(candidate.Session, candidate.NeedsReview, now); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Server) reconcileSessionV3ReviewAutoArchive(session pebblestore.SessionSnapshot, now time.Time) error {
+func (s *Server) reconcileSessionV3ReviewAutoArchive(session pebblestore.SessionSnapshot, needsReview bool, now time.Time) error {
 	delay, err := s.reviewAutoArchiveDelay(session.AccountScopeID)
 	if err != nil {
 		return errors.New("load review auto-archive setting for account " + session.AccountScopeID + ": " + err.Error())
@@ -825,12 +816,14 @@ func (s *Server) reconcileSessionV3ReviewAutoArchive(session pebblestore.Session
 		_, _, err = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
 		return err
 	}
-	needsReview, err := s.sessionNeedsReview(session.ID)
-	if err != nil {
-		return err
-	}
 	if !needsReview {
-		return nil
+		if scheduled == 0 {
+			return nil
+		}
+		metadata := cloneStringAnyMap(session.Metadata)
+		delete(metadata, "review_auto_archive_after")
+		_, _, err = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
+		return err
 	}
 	doneAt := sessionReviewDoneAt(session)
 	if doneAt <= 0 {
