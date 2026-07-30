@@ -6,7 +6,7 @@
 // should send only the setting section they intend to change.
 
 export const DEFAULT_SWARM_NAME = 'Local'
-export const DEFAULT_GLOBAL_THEME_ID = 'crimson'
+export const DEFAULT_GLOBAL_THEME_ID = 'tide'
 export const DEFAULT_SIDEBAR_HIDE_INACTIVE_HOURS = 12
 export const REVIEW_AUTO_ARCHIVE_MINUTES = Array.from({ length: 12 }, (_, index) => (index + 1) * 5)
 
