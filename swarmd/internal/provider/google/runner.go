@@ -869,8 +869,8 @@ type googleStreamAccumulator struct {
 
 type googleStreamCandidateState struct {
 	pendingThoughtSignature string
-	callIndexByID            map[string]int
-	callIndexByFingerprint   map[string]int
+	callIndexByID           map[string]int
+	callIndexByFingerprint  map[string]int
 }
 
 func newGoogleStreamAccumulator(modelID string) *googleStreamAccumulator {
@@ -960,10 +960,14 @@ func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(prov
 			a.emitToolCallConstructionEvents(logicalIndex, call, onEvent)
 			chunkCallPosition++
 		}
-		if strings.TrimSpace(candidate.FinishReason) != "" {
+		if finishReason := strings.TrimSpace(candidate.FinishReason); finishReason != "" {
 			sawFinishReason = true
 			a.finishedCandidates[candidateIndex] = true
-			a.completeToolCallConstructionEvents(candidateIndex, candidate.FinishReason, onEvent)
+			if googleFinishReasonCompletesToolConstruction(finishReason) {
+				a.completeToolCallConstructionEvents(candidateIndex, finishReason, onEvent)
+			} else if a.hasGoogleToolCallConstruction(candidateIndex) {
+				return fmt.Errorf("google stream stopped before tool-call construction completed: finish_reason=%s", finishReason)
+			}
 		}
 	}
 	if sawFinishReason && allCandidatesFinished {
@@ -1271,6 +1275,22 @@ func (a *googleStreamAccumulator) googleToolCallEvent(eventType provideriface.St
 		event.Arguments = state.arguments[index]
 	}
 	return event
+}
+
+func googleFinishReasonCompletesToolConstruction(finishReason string) bool {
+	return strings.EqualFold(strings.TrimSpace(finishReason), "STOP")
+}
+
+func (a *googleStreamAccumulator) hasGoogleToolCallConstruction(candidateIndex int) bool {
+	if a == nil || a.toolState == nil {
+		return false
+	}
+	for _, index := range a.toolState.order {
+		if googleMetadataCandidateIndex(a.toolState.metadata[index], -1) == candidateIndex && !a.toolState.seenCompleted[index] {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *googleStreamAccumulator) completeToolCallConstructionEvents(candidateIndex int, finishReason string, onEvent func(provideriface.StreamEvent)) {

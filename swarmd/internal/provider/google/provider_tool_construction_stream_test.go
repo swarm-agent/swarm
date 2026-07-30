@@ -174,6 +174,27 @@ func TestGoogleGenerateContentStreamDoesNotCompleteBeforeFinishReason(t *testing
 	}
 }
 
+func TestGoogleGenerateContentStreamRejectsInterruptedToolConstruction(t *testing.T) {
+	for _, finishReason := range []string{"MAX_TOKENS", "SAFETY", "MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL"} {
+		t.Run(finishReason, func(t *testing.T) {
+			acc := newGoogleStreamAccumulator("gemini-test")
+			var events []provideriface.StreamEvent
+			err := acc.applyPayload(`{"candidates":[{"index":0,"finishReason":"`+finishReason+`","content":{"parts":[{"functionCall":{"id":"call_1","name":"read","args":{"path":"a"}}}]}}]}`, func(event provideriface.StreamEvent) {
+				if event.Type == provideriface.StreamEventToolCallStarted || event.Type == provideriface.StreamEventToolCallArgumentsSnapshot || event.Type == provideriface.StreamEventToolCallCompleted {
+					events = append(events, event)
+				}
+			})
+			if err == nil {
+				t.Fatalf("finishReason %q did not fail incomplete construction", finishReason)
+			}
+			assertGoogleConstructionTypes(t, events, []provideriface.StreamEventType{
+				provideriface.StreamEventToolCallStarted,
+				provideriface.StreamEventToolCallArgumentsSnapshot,
+			})
+		})
+	}
+}
+
 func collectGoogleConstructionEvents(t *testing.T, acc *googleStreamAccumulator, payloads ...string) []provideriface.StreamEvent {
 	t.Helper()
 	var events []provideriface.StreamEvent
