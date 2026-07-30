@@ -2179,10 +2179,13 @@ type streamDecodeState struct {
 	imageGenerationResults  map[string]string
 	imageGenerationPartials []map[string]any
 	imageGenerationFinals   []map[string]any
-	toolCallArguments       map[string]string
-	toolCallStarted         map[string]struct{}
-	toolCallCompleted       map[string]struct{}
-	toolCallsByIndex        map[int]StreamEvent
+	toolCallArguments        map[string]string
+	toolCallSnapshots        map[string]string
+	toolCallStarted          map[string]struct{}
+	toolCallCompleted        map[string]struct{}
+	toolCallPendingArguments map[string][]StreamEvent
+	toolCallPendingComplete  map[string]StreamEvent
+	toolCallsByIndex         map[int]StreamEvent
 	rawEvents               []map[string]any
 	sawPayload              bool
 	streamBytes             int
@@ -2352,7 +2355,7 @@ func emitToolCallOutputItemEvent(eventName string, state *streamDecodeState, ite
 	if onEvent == nil || len(item) == 0 || !isToolCallOutputItem(item) {
 		return
 	}
-	streamEvent := streamEventToolCallFromOutputItem(item, event)
+	streamEvent := mergeToolCallEventWithState(state, streamEventToolCallFromOutputItem(item, event))
 	rememberToolCallEvent(state, streamEvent)
 	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
 		return
@@ -2362,18 +2365,13 @@ func emitToolCallOutputItemEvent(eventName string, state *streamDecodeState, ite
 		return
 	}
 	ensureToolCallStarted(state, key, streamEvent, onEvent)
+	flushPendingToolCallArguments(state, key, streamEvent, onEvent)
 	if toolCallCompletedSeen(state, key) {
 		return
 	}
 
 	snapshot := strings.TrimSpace(streamEvent.ArgumentsSnapshot)
-	if snapshot != "" {
-		if state != nil {
-			if state.toolCallArguments == nil {
-				state.toolCallArguments = make(map[string]string, 4)
-			}
-			state.toolCallArguments[key] = snapshot
-		}
+	if snapshot != "" && rememberToolCallSnapshot(state, key, snapshot) {
 		onEvent(StreamEvent{
 			Type:              StreamEventToolCallArgumentsSnapshot,
 			ToolCallID:        streamEvent.ToolCallID,
@@ -2384,6 +2382,11 @@ func emitToolCallOutputItemEvent(eventName string, state *streamDecodeState, ite
 		})
 	}
 
+	if pending, ok := takePendingToolCallCompletion(state, key); ok {
+		streamEvent = mergeToolCallEvents(streamEvent, pending)
+		emitCompletedToolCall(state, key, streamEvent, onEvent)
+		return
+	}
 	if strings.EqualFold(strings.TrimSpace(eventName), "response.output_item.done") || strings.EqualFold(strings.TrimSpace(asString(item["status"])), "completed") {
 		emitCompletedToolCall(state, key, streamEvent, onEvent)
 	}
@@ -2394,14 +2397,10 @@ func emitToolCallArgumentsDeltaEvent(state *streamDecodeState, event map[string]
 		return
 	}
 	streamEvent := mergeToolCallEventWithState(state, streamEventToolCallFromArgumentEvent(event))
-	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
-		return
-	}
 	key := toolCallStreamKey(streamEvent)
 	if key == "" {
 		return
 	}
-	ensureToolCallStarted(state, key, streamEvent, onEvent)
 
 	delta := firstNonEmpty(
 		asString(event["delta"]),
@@ -2417,7 +2416,7 @@ func emitToolCallArgumentsDeltaEvent(state *streamDecodeState, event map[string]
 		}
 		state.toolCallArguments[key] += delta
 	}
-	onEvent(StreamEvent{
+	deltaEvent := StreamEvent{
 		Type:           StreamEventToolCallArgumentsDelta,
 		ToolCallID:     streamEvent.ToolCallID,
 		ToolCallIndex:  cloneIntPtr(streamEvent.ToolCallIndex),
@@ -2425,7 +2424,15 @@ func emitToolCallArgumentsDeltaEvent(state *streamDecodeState, event map[string]
 		ArgumentsDelta: delta,
 		Delta:          delta,
 		Metadata:       cloneMapAny(streamEvent.Metadata),
-	})
+	}
+	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
+		rememberToolCallEvent(state, streamEvent)
+		rememberPendingToolCallArgument(state, key, deltaEvent)
+		return
+	}
+	ensureToolCallStarted(state, key, streamEvent, onEvent)
+	rememberToolCallEvent(state, streamEvent)
+	onEvent(deltaEvent)
 }
 
 func emitToolCallCompletedEvent(state *streamDecodeState, event map[string]any, onEvent func(StreamEvent)) {
@@ -2433,14 +2440,18 @@ func emitToolCallCompletedEvent(state *streamDecodeState, event map[string]any, 
 		return
 	}
 	streamEvent := mergeToolCallEventWithState(state, streamEventToolCallFromArgumentEvent(event))
-	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
-		return
-	}
 	key := toolCallStreamKey(streamEvent)
 	if key == "" {
 		return
 	}
+	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
+		rememberToolCallEvent(state, streamEvent)
+		rememberPendingToolCallCompletion(state, key, streamEvent)
+		return
+	}
 	ensureToolCallStarted(state, key, streamEvent, onEvent)
+	rememberToolCallEvent(state, streamEvent)
+	flushPendingToolCallArguments(state, key, streamEvent, onEvent)
 	if streamEvent.Arguments == "" && state != nil && state.toolCallArguments != nil {
 		streamEvent.Arguments = strings.TrimSpace(state.toolCallArguments[key])
 	}
@@ -2525,6 +2536,66 @@ func streamEventToolCallFromOutputItem(item map[string]any, event map[string]any
 	}
 }
 
+func rememberToolCallSnapshot(state *streamDecodeState, key, snapshot string) bool {
+	if state == nil {
+		return true
+	}
+	if state.toolCallSnapshots == nil {
+		state.toolCallSnapshots = make(map[string]string, 4)
+	}
+	if state.toolCallSnapshots[key] == snapshot {
+		return false
+	}
+	state.toolCallSnapshots[key] = snapshot
+	if state.toolCallArguments == nil {
+		state.toolCallArguments = make(map[string]string, 4)
+	}
+	state.toolCallArguments[key] = snapshot
+	return true
+}
+
+func rememberPendingToolCallArgument(state *streamDecodeState, key string, event StreamEvent) {
+	if state == nil || key == "" {
+		return
+	}
+	if state.toolCallPendingArguments == nil {
+		state.toolCallPendingArguments = make(map[string][]StreamEvent, 4)
+	}
+	state.toolCallPendingArguments[key] = append(state.toolCallPendingArguments[key], event)
+}
+
+func flushPendingToolCallArguments(state *streamDecodeState, key string, identity StreamEvent, onEvent func(StreamEvent)) {
+	if state == nil || state.toolCallPendingArguments == nil || key == "" || onEvent == nil {
+		return
+	}
+	pending := state.toolCallPendingArguments[key]
+	delete(state.toolCallPendingArguments, key)
+	for _, event := range pending {
+		onEvent(mergeToolCallEvents(identity, event))
+	}
+}
+
+func rememberPendingToolCallCompletion(state *streamDecodeState, key string, event StreamEvent) {
+	if state == nil || key == "" {
+		return
+	}
+	if state.toolCallPendingComplete == nil {
+		state.toolCallPendingComplete = make(map[string]StreamEvent, 4)
+	}
+	state.toolCallPendingComplete[key] = mergeToolCallEvents(state.toolCallPendingComplete[key], event)
+}
+
+func takePendingToolCallCompletion(state *streamDecodeState, key string) (StreamEvent, bool) {
+	if state == nil || state.toolCallPendingComplete == nil || key == "" {
+		return StreamEvent{}, false
+	}
+	event, ok := state.toolCallPendingComplete[key]
+	if ok {
+		delete(state.toolCallPendingComplete, key)
+	}
+	return event, ok
+}
+
 func streamEventToolCallFromArgumentEvent(event map[string]any) StreamEvent {
 	arguments := strings.TrimSpace(firstNonEmpty(
 		asString(event["arguments"]),
@@ -2533,7 +2604,10 @@ func streamEventToolCallFromArgumentEvent(event map[string]any) StreamEvent {
 		asString(event["input_done"]),
 	))
 	return StreamEvent{
-		ToolCallID:    toolCallIDFromMaps(event),
+		// Responses API argument events identify the output item with item_id;
+		// that value is not the stable function call_id. output_index remains the
+		// repair key until an output item reveals call_id and name.
+		ToolCallID:    strings.TrimSpace(firstNonEmpty(asString(event["call_id"]), asString(event["id"]))),
 		ToolCallIndex: intPointerFromAny(firstPresentValue(event, nil, "output_index", "item_index")),
 		ToolName:      toolCallNameFromMap(event),
 		Arguments:     arguments,
@@ -2548,7 +2622,7 @@ func rememberToolCallEvent(state *streamDecodeState, event StreamEvent) {
 	if state.toolCallsByIndex == nil {
 		state.toolCallsByIndex = make(map[int]StreamEvent, 4)
 	}
-	state.toolCallsByIndex[*event.ToolCallIndex] = event
+	state.toolCallsByIndex[*event.ToolCallIndex] = mergeToolCallEvents(state.toolCallsByIndex[*event.ToolCallIndex], event)
 }
 
 func mergeToolCallEventWithState(state *streamDecodeState, event StreamEvent) StreamEvent {
@@ -2559,15 +2633,33 @@ func mergeToolCallEventWithState(state *streamDecodeState, event StreamEvent) St
 	if !ok {
 		return event
 	}
-	if known.ToolCallID != "" {
+	return mergeToolCallEvents(known, event)
+}
+
+func mergeToolCallEvents(known, event StreamEvent) StreamEvent {
+	if event.ToolCallID == "" {
 		event.ToolCallID = known.ToolCallID
+	}
+	if event.ToolCallIndex == nil {
+		event.ToolCallIndex = cloneIntPtr(known.ToolCallIndex)
 	}
 	if event.ToolName == "" {
 		event.ToolName = known.ToolName
 	}
-	if event.Metadata == nil {
-		event.Metadata = cloneMapAny(known.Metadata)
+	if event.Arguments == "" {
+		event.Arguments = known.Arguments
 	}
+	if event.ArgumentsSnapshot == "" {
+		event.ArgumentsSnapshot = known.ArgumentsSnapshot
+	}
+	mergedMetadata := cloneMapAny(known.Metadata)
+	if mergedMetadata == nil && len(event.Metadata) > 0 {
+		mergedMetadata = make(map[string]any, len(event.Metadata))
+	}
+	for key, value := range event.Metadata {
+		mergedMetadata[key] = value
+	}
+	event.Metadata = mergedMetadata
 	return event
 }
 
@@ -2602,11 +2694,13 @@ func toolCallNameFromMap(item map[string]any) string {
 }
 
 func toolCallStreamKey(event StreamEvent) string {
-	if event.ToolCallID != "" {
-		return "id:" + event.ToolCallID
-	}
+	// output_index is stable across output-item and argument event shapes, while
+	// item_id can precede and differ from the eventual function call_id.
 	if event.ToolCallIndex != nil {
 		return fmt.Sprintf("idx:%d", *event.ToolCallIndex)
+	}
+	if event.ToolCallID != "" {
+		return "id:" + event.ToolCallID
 	}
 	if event.ToolName != "" {
 		return "name:" + event.ToolName
@@ -2624,6 +2718,9 @@ func toolCallEventMetadata(item map[string]any, event map[string]any) map[string
 	}
 	if eventType := strings.TrimSpace(asString(event["type"])); eventType != "" {
 		metadata["provider_event_type"] = eventType
+	}
+	if itemID := strings.TrimSpace(asString(event["item_id"])); itemID != "" {
+		metadata["provider_item_id"] = itemID
 	}
 	if outputIndex, ok := asInt64(firstPresentValue(event, item, "output_index")); ok {
 		metadata["provider_output_index"] = outputIndex

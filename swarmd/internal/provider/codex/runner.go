@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
+	"sync"
+	"time"
 
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -82,7 +84,7 @@ func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.
 	if err := validateRunnerMediaSurface(req.MediaContract, "codex", provideriface.MediaProviderSurfaceCodexChatGPT, provideriface.MediaCredentialSurfaceCodexOAuth, provideriface.MediaAdapterIDCodexChatGPTV1); err != nil {
 		return provideriface.Response{}, err
 	}
-	out, err := r.client.CreateResponseStreaming(ctx, ToRequest(req), ToProviderStreamEventCallback(onEvent))
+	out, err := r.client.CreateResponseStreaming(ctx, ToRequest(req), ToProviderStreamEventCallbackWithContext(onEvent, "codex", req.Model))
 	if err != nil {
 		return provideriface.Response{}, err
 	}
@@ -100,9 +102,44 @@ func validateRunnerMediaSurface(contract provideriface.SessionMediaContract, pro
 }
 
 func ToProviderStreamEventCallback(onEvent func(provideriface.StreamEvent)) func(StreamEvent) {
+	return ToProviderStreamEventCallbackWithContext(onEvent, "codex", "")
+}
+
+func ToProviderStreamEventCallbackWithContext(onEvent func(provideriface.StreamEvent), providerID, model string) func(StreamEvent) {
+	providerID = strings.TrimSpace(providerID)
+	model = strings.TrimSpace(model)
+	var mu sync.Mutex
+	var startedAtByKey = make(map[string]int64, 4)
 	return func(event StreamEvent) {
 		if onEvent == nil {
 			return
+		}
+		now := int64(0)
+		startedAt := int64(0)
+		status := ""
+		switch event.Type {
+		case StreamEventToolCallStarted:
+			status = "started"
+		case StreamEventToolCallArgumentsDelta, StreamEventToolCallArgumentsSnapshot:
+			status = "building"
+		case StreamEventToolCallCompleted:
+			status = "completed"
+		}
+		if status != "" {
+			now = time.Now().UnixMilli()
+			key := toolCallStreamKey(event)
+			mu.Lock()
+			startedAt = startedAtByKey[key]
+			if event.Type == StreamEventToolCallStarted || startedAt == 0 {
+				startedAt = now
+				if key != "" {
+					startedAtByKey[key] = startedAt
+				}
+			}
+			if event.Type == StreamEventToolCallCompleted && key != "" {
+				delete(startedAtByKey, key)
+			}
+			mu.Unlock()
 		}
 		switch event.Type {
 		case StreamEventOutputTextDelta:
@@ -126,21 +163,31 @@ func ToProviderStreamEventCallback(onEvent func(provideriface.StreamEvent)) func
 			})
 		case StreamEventToolCallStarted:
 			onEvent(provideriface.StreamEvent{
-				Type:          provideriface.StreamEventToolCallStarted,
-				ToolCallID:    event.ToolCallID,
-				ToolCallIndex: cloneIntPtr(event.ToolCallIndex),
-				ToolName:      event.ToolName,
-				Metadata:      cloneMapStringAny(event.Metadata),
+				Type:             provideriface.StreamEventToolCallStarted,
+				ToolCallID:       event.ToolCallID,
+				ToolCallIndex:    cloneIntPtr(event.ToolCallIndex),
+				ToolName:         event.ToolName,
+				ProviderID:       providerID,
+				Model:            model,
+				RecordedAtUnixMs: now,
+				StartedAtUnixMs:  startedAt,
+				Status:           status,
+				Metadata:         cloneMapStringAny(event.Metadata),
 			})
 		case StreamEventToolCallArgumentsDelta:
 			onEvent(provideriface.StreamEvent{
-				Type:           provideriface.StreamEventToolCallArgumentsDelta,
-				Delta:          event.Delta,
-				ToolCallID:     event.ToolCallID,
-				ToolCallIndex:  cloneIntPtr(event.ToolCallIndex),
-				ToolName:       event.ToolName,
-				ArgumentsDelta: event.ArgumentsDelta,
-				Metadata:       cloneMapStringAny(event.Metadata),
+				Type:             provideriface.StreamEventToolCallArgumentsDelta,
+				Delta:            event.Delta,
+				ToolCallID:       event.ToolCallID,
+				ToolCallIndex:    cloneIntPtr(event.ToolCallIndex),
+				ToolName:         event.ToolName,
+				ArgumentsDelta:   event.ArgumentsDelta,
+				ProviderID:       providerID,
+				Model:            model,
+				RecordedAtUnixMs: now,
+				StartedAtUnixMs:  startedAt,
+				Status:           status,
+				Metadata:         cloneMapStringAny(event.Metadata),
 			})
 		case StreamEventToolCallArgumentsSnapshot:
 			onEvent(provideriface.StreamEvent{
@@ -150,16 +197,26 @@ func ToProviderStreamEventCallback(onEvent func(provideriface.StreamEvent)) func
 				ToolName:          event.ToolName,
 				Arguments:         event.Arguments,
 				ArgumentsSnapshot: event.ArgumentsSnapshot,
+				ProviderID:        providerID,
+				Model:             model,
+				RecordedAtUnixMs:  now,
+				StartedAtUnixMs:   startedAt,
+				Status:            status,
 				Metadata:          cloneMapStringAny(event.Metadata),
 			})
 		case StreamEventToolCallCompleted:
 			onEvent(provideriface.StreamEvent{
-				Type:          provideriface.StreamEventToolCallCompleted,
-				ToolCallID:    event.ToolCallID,
-				ToolCallIndex: cloneIntPtr(event.ToolCallIndex),
-				ToolName:      event.ToolName,
-				Arguments:     event.Arguments,
-				Metadata:      cloneMapStringAny(event.Metadata),
+				Type:             provideriface.StreamEventToolCallCompleted,
+				ToolCallID:       event.ToolCallID,
+				ToolCallIndex:    cloneIntPtr(event.ToolCallIndex),
+				ToolName:         event.ToolName,
+				Arguments:        event.Arguments,
+				ProviderID:       providerID,
+				Model:            model,
+				RecordedAtUnixMs: now,
+				StartedAtUnixMs:  startedAt,
+				Status:           status,
+				Metadata:         cloneMapStringAny(event.Metadata),
 			})
 		}
 	}

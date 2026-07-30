@@ -346,6 +346,11 @@ type StreamEvent struct {
 	Arguments         string
 	ArgumentsDelta    string
 	ArgumentsSnapshot string
+	ProviderID        string
+	Model             string
+	RecordedAtUnixMs  int64
+	StartedAtUnixMs   int64
+	Status            string
 	Metadata          map[string]any
 }
 

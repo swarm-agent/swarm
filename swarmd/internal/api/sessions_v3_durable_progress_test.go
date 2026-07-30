@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 )
 
@@ -63,6 +64,11 @@ func (w *sessionsV3DurableProgressRecordingWriter) RecordReasoningEvent(job sess
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.reasoning = append(w.reasoning, eventType+":"+delta+":"+deltaMode+":"+summary)
+	return sessionruntime.SessionMutationResult{}, nil
+}
+
+func (w *sessionsV3DurableProgressRecordingWriter) RecordProviderToolConstructionEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, event provideriface.StreamEvent) (sessionruntime.SessionMutationResult, error) {
+	w.maybeBlock()
 	return sessionruntime.SessionMutationResult{}, nil
 }
 

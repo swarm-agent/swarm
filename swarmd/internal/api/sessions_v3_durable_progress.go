@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 )
 
@@ -36,6 +37,7 @@ type sessionV3DurableProgressWriter interface {
 	RecordRunPhase(job sessionV3ExecutorJob, phase RunPhase, eventType string) (sessionruntime.SessionMutationResult, error)
 	RecordRunProgress(job sessionV3ExecutorJob, progress sessionV3AssistantProgress, deltaIndex int) (sessionruntime.SessionMutationResult, error)
 	RecordReasoningEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, reasoningKey string, delta string, deltaMode string, summary string) (sessionruntime.SessionMutationResult, error)
+	RecordProviderToolConstructionEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, event provideriface.StreamEvent) (sessionruntime.SessionMutationResult, error)
 }
 
 type sessionV3ExecutorDurableProgressWriter struct {
@@ -52,6 +54,10 @@ func (w sessionV3ExecutorDurableProgressWriter) RecordRunProgress(job sessionV3E
 
 func (w sessionV3ExecutorDurableProgressWriter) RecordReasoningEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, reasoningKey string, delta string, deltaMode string, summary string) (sessionruntime.SessionMutationResult, error) {
 	return w.exec.recordReasoningEvent(job, eventType, step, eventIndex, reasoningKey, delta, deltaMode, summary)
+}
+
+func (w sessionV3ExecutorDurableProgressWriter) RecordProviderToolConstructionEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, event provideriface.StreamEvent) (sessionruntime.SessionMutationResult, error) {
+	return w.exec.recordProviderToolConstructionEvent(job, eventType, step, eventIndex, event)
 }
 
 type sessionV3AssistantAcceptedEnd struct {
@@ -96,6 +102,7 @@ const (
 	sessionV3DurableProgressItemReasoningDelta    sessionV3DurableProgressItemKind = "reasoning_delta"
 	sessionV3DurableProgressItemReasoningStarted  sessionV3DurableProgressItemKind = "reasoning_started"
 	sessionV3DurableProgressItemReasoningComplete sessionV3DurableProgressItemKind = "reasoning_completed"
+	sessionV3DurableProgressItemProviderTool      sessionV3DurableProgressItemKind = "provider_tool"
 )
 
 type sessionV3DurableProgressItem struct {
@@ -108,6 +115,8 @@ type sessionV3DurableProgressItem struct {
 	Step         int
 	ReasoningKey string
 	Summary      string
+	ProviderTool *provideriface.StreamEvent
+	EventIndex   int
 }
 
 type sessionV3DurableProgressEpoch struct {
@@ -264,6 +273,38 @@ func (s *sessionV3DurableProgressSink) TryAppendAssistant(progress sessionV3Assi
 	if agg.Bytes >= s.assistantFlushMaxBytesLocked() {
 		agg.FlushRequested = true
 	}
+	s.signalLocked()
+	return nil
+}
+
+func (s *sessionV3DurableProgressSink) TryRecordProviderToolConstruction(step, eventIndex int, event provideriface.StreamEvent) error {
+	if s == nil {
+		return nil
+	}
+	if step <= 0 || eventIndex <= 0 {
+		return errors.New("v3 provider tool construction ordering identity is required")
+	}
+	eventType := sessionV3ProviderToolConstructionEventType(event.Type)
+	if eventType == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.callbackErrLocked(); err != nil {
+		return err
+	}
+	if err := s.reserveControlLocked(1); err != nil {
+		return err
+	}
+	s.sealAllCurrentLocked()
+	if err := s.callbackErrLocked(); err != nil {
+		return err
+	}
+	if err := s.reserveSealedEpochsLocked(1); err != nil {
+		return err
+	}
+	cloned := cloneSessionV3ProviderToolStreamEvent(event)
+	s.addControlEpochLocked(sessionV3DurableProgressItem{Kind: sessionV3DurableProgressItemProviderTool, EventType: eventType, Step: step, EventIndex: eventIndex, ProviderTool: &cloned})
 	s.signalLocked()
 	return nil
 }
@@ -726,6 +767,13 @@ func (s *sessionV3DurableProgressSink) persistEpoch(epoch sessionV3DurableProgre
 			}
 		case sessionV3DurableProgressItemReasoningComplete:
 			if _, err := s.writer.RecordReasoningEvent(s.job, "session.reasoning.completed", item.Step, 0, item.ReasoningKey, "", "", item.Summary); err != nil {
+				return err
+			}
+		case sessionV3DurableProgressItemProviderTool:
+			if item.ProviderTool == nil {
+				continue
+			}
+			if _, err := s.writer.RecordProviderToolConstructionEvent(s.job, item.EventType, item.Step, item.EventIndex, *item.ProviderTool); err != nil {
 				return err
 			}
 		}

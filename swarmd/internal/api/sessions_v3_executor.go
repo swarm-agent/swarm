@@ -813,6 +813,96 @@ func (e *sessionV3Executor) recordRunProgress(job sessionV3ExecutorJob, progress
 	})
 }
 
+func (e *sessionV3Executor) recordProviderToolConstructionEvent(job sessionV3ExecutorJob, eventType string, step, eventIndex int, event provideriface.StreamEvent) (sessionruntime.SessionMutationResult, error) {
+	if e.isRunCanceled(job) {
+		return sessionruntime.SessionMutationResult{}, context.Canceled
+	}
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" || step <= 0 || eventIndex <= 0 {
+		return sessionruntime.SessionMutationResult{}, errors.New("v3 provider tool construction identity is incomplete")
+	}
+	callID := strings.TrimSpace(event.ToolCallID)
+	toolName := strings.TrimSpace(event.ToolName)
+	if callID == "" && event.ToolCallIndex == nil {
+		return sessionruntime.SessionMutationResult{}, errors.New("v3 provider tool construction call identity is required")
+	}
+	now := time.Now().UnixMilli()
+	recordedAt := event.RecordedAtUnixMs
+	if recordedAt <= 0 {
+		recordedAt = now
+	}
+	startedAt := event.StartedAtUnixMs
+	if startedAt <= 0 {
+		startedAt = recordedAt
+	}
+	status := strings.TrimSpace(event.Status)
+	if status == "" {
+		switch event.Type {
+		case provideriface.StreamEventToolCallStarted:
+			status = "started"
+		case provideriface.StreamEventToolCallCompleted:
+			status = "completed"
+		default:
+			status = "building"
+		}
+	}
+	payload := map[string]any{
+		"path_id":       "run.v3.provider-tool-construction.v1",
+		"type":          eventType,
+		"run_id":        strings.TrimSpace(job.RunID),
+		"epoch_id":      strings.TrimSpace(job.EpochID),
+		"step":          step,
+		"step_id":       sessionV3ProviderToolStepID(step),
+		"event_index":   eventIndex,
+		"call_id":       callID,
+		"tool_name":     toolName,
+		"provider":      strings.TrimSpace(event.ProviderID),
+		"model":         strings.TrimSpace(event.Model),
+		"recorded_at":   recordedAt,
+		"started_at":    startedAt,
+		"status":        status,
+	}
+	if event.ToolCallIndex != nil {
+		payload["output_index"] = *event.ToolCallIndex
+	}
+	if arguments := strings.TrimSpace(event.Arguments); arguments != "" {
+		payload["arguments"] = arguments
+	}
+	if event.ArgumentsDelta != "" {
+		payload["arguments_delta"] = event.ArgumentsDelta
+	}
+	if snapshot := strings.TrimSpace(event.ArgumentsSnapshot); snapshot != "" {
+		payload["arguments_snapshot"] = snapshot
+	}
+	if len(event.Metadata) > 0 {
+		payload["metadata"] = cloneSessionsV3Metadata(event.Metadata)
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, err
+	}
+	intent := sessionV3RunIntentForJob(job, sessionruntime.RunIntentRunning, now)
+	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, "", eventType, string(raw))
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, err
+	}
+	clientRequestID := sessionV3ProviderToolConstructionClientRequestID(eventType, job.RunID, step, callID, event.ToolCallIndex, eventIndex)
+	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       job.SessionID,
+		UserID:          job.Principal.UserID,
+		AccountScopeID:  job.Principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       eventType,
+		EventPayload:    raw,
+		RunIntent:       &intent,
+		NowUnixMs:       now,
+	})
+}
+
 func sessionV3ReasoningEventID(step int, reasoningKey string) string {
 	if step <= 0 {
 		step = 1
@@ -4421,6 +4511,16 @@ func sessionV3ProviderToolEventClientRequestID(eventType, runID string, step int
 		return fmt.Sprintf("v3-executor-%s-%s-%04d-%s-%04d", label, strings.TrimSpace(runID), step, callID, deltaIndex)
 	}
 	return fmt.Sprintf("v3-executor-%s-%s-%04d-%s", label, strings.TrimSpace(runID), step, callID)
+}
+
+func sessionV3ProviderToolConstructionClientRequestID(eventType, runID string, step int, callID string, outputIndex *int, eventIndex int) string {
+	identity := strings.TrimSpace(callID)
+	if identity == "" && outputIndex != nil {
+		identity = fmt.Sprintf("output-%d", *outputIndex)
+	}
+	label := strings.NewReplacer(".", "_", "/", "_", " ", "_").Replace(strings.TrimSpace(eventType))
+	identity = strings.NewReplacer(".", "_", "/", "_", " ", "_", ":", "_").Replace(identity)
+	return fmt.Sprintf("v3-executor-%s-%s-%04d-%s-%04d", label, strings.TrimSpace(runID), step, identity, eventIndex)
 }
 
 func sessionV3ReasoningEventClientRequestID(eventType, runID string, step int, reasoningKey string, deltaIndex int) string {

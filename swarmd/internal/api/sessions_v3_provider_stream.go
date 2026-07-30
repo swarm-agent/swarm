@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -95,9 +96,10 @@ type sessionV3ProviderStreamState struct {
 	streamEventCount           int
 	progressErr                error
 
-	activeReasoningKey string
-	reasoningByKey     map[string]string
-	reasoningOrder     []string
+	activeReasoningKey     string
+	reasoningByKey         map[string]string
+	reasoningOrder         []string
+	providerToolEventIndex int
 }
 
 func newSessionV3ProviderStreamState(exec *sessionV3Executor, job sessionV3ExecutorJob, sink *sessionV3DurableProgressSink, step int) *sessionV3ProviderStreamState {
@@ -153,7 +155,110 @@ func (s *sessionV3ProviderStreamState) Handle(event provideriface.StreamEvent) {
 		s.progressErr = s.sink.TryAppendAssistant(durable)
 	case provideriface.StreamEventReasoningSummaryDelta:
 		s.handleReasoningLocked(event)
+	case provideriface.StreamEventToolCallStarted,
+		provideriface.StreamEventToolCallArgumentsDelta,
+		provideriface.StreamEventToolCallArgumentsSnapshot,
+		provideriface.StreamEventToolCallCompleted:
+		s.providerToolEventIndex++
+		s.progressErr = s.sink.TryRecordProviderToolConstruction(s.tracker.Step, s.providerToolEventIndex, event)
+		if s.progressErr == nil && s.exec != nil && s.exec.server != nil && s.exec.server.v3LiveHub != nil {
+			s.exec.server.v3LiveHub.publish(s.job.Principal.AccountScopeID, sessionV3ProviderToolConstructionLivePatch(s.job, s.tracker.Step, s.providerToolEventIndex, event))
+		}
 	}
+}
+
+// sessionV3ProviderToolConstructionLivePatch is a low-latency accelerator.
+// Durable recovery remains authoritative through session.provider_tool_call.*
+// events and their realtime outbox records.
+func sessionV3ProviderToolConstructionLivePatch(job sessionV3ExecutorJob, step, eventIndex int, event provideriface.StreamEvent) V3RealtimeLivePatch {
+	status := strings.TrimSpace(event.Status)
+	if status == "" {
+		switch event.Type {
+		case provideriface.StreamEventToolCallStarted:
+			status = "started"
+		case provideriface.StreamEventToolCallCompleted:
+			status = "completed"
+		default:
+			status = "building"
+		}
+	}
+	recordedAt := event.RecordedAtUnixMs
+	if recordedAt <= 0 {
+		recordedAt = time.Now().UnixMilli()
+	}
+	startedAt := event.StartedAtUnixMs
+	if startedAt <= 0 {
+		startedAt = recordedAt
+	}
+	metadata := cloneSessionsV3Metadata(event.Metadata)
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["path_id"] = "run.v3.provider-tool-construction.v1"
+	metadata["type"] = sessionV3ProviderToolConstructionEventType(event.Type)
+	metadata["run_id"] = strings.TrimSpace(job.RunID)
+	metadata["step"] = step
+	metadata["event_index"] = eventIndex
+	metadata["call_id"] = strings.TrimSpace(event.ToolCallID)
+	metadata["tool_name"] = strings.TrimSpace(event.ToolName)
+	metadata["provider"] = strings.TrimSpace(event.ProviderID)
+	metadata["model"] = strings.TrimSpace(event.Model)
+	metadata["status"] = status
+	metadata["recorded_at"] = recordedAt
+	metadata["started_at"] = startedAt
+	if event.ToolCallIndex != nil {
+		metadata["output_index"] = *event.ToolCallIndex
+	}
+	if event.Arguments != "" {
+		metadata["arguments"] = event.Arguments
+	}
+	if event.ArgumentsDelta != "" {
+		metadata["arguments_delta"] = event.ArgumentsDelta
+	}
+	if event.ArgumentsSnapshot != "" {
+		metadata["arguments_snapshot"] = event.ArgumentsSnapshot
+	}
+	raw, _ := json.Marshal(metadata)
+	return V3RealtimeLivePatch{
+		SessionID:    strings.TrimSpace(job.SessionID),
+		RunID:        strings.TrimSpace(job.RunID),
+		StreamID:     fmt.Sprintf("provider-tool:%s:step:%d:event:%d", strings.TrimSpace(job.RunID), step, eventIndex),
+		StreamKind:   "provider_tool_call",
+		Operation:    "append",
+		Step:         step,
+		StepID:       sessionV3ProviderToolStepID(step),
+		LiveSeqStart: 1,
+		LiveSeqEnd:   1,
+		OffsetStart:  0,
+		OffsetEnd:    uint64(len(raw)),
+		Text:         string(raw),
+		RecordedAt:   recordedAt,
+	}
+}
+
+func sessionV3ProviderToolConstructionEventType(eventType provideriface.StreamEventType) string {
+	switch eventType {
+	case provideriface.StreamEventToolCallStarted:
+		return "session.provider_tool_call.started"
+	case provideriface.StreamEventToolCallArgumentsDelta:
+		return "session.provider_tool_call.arguments.delta"
+	case provideriface.StreamEventToolCallArgumentsSnapshot:
+		return "session.provider_tool_call.arguments.snapshot"
+	case provideriface.StreamEventToolCallCompleted:
+		return "session.provider_tool_call.completed"
+	default:
+		return ""
+	}
+}
+
+func cloneSessionV3ProviderToolStreamEvent(event provideriface.StreamEvent) provideriface.StreamEvent {
+	cloned := event
+	if event.ToolCallIndex != nil {
+		index := *event.ToolCallIndex
+		cloned.ToolCallIndex = &index
+	}
+	cloned.Metadata = cloneSessionsV3Metadata(event.Metadata)
+	return cloned
 }
 
 func (s *sessionV3ProviderStreamState) handleReasoningLocked(event provideriface.StreamEvent) {
