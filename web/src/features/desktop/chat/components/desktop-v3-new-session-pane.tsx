@@ -12,6 +12,7 @@ import { createModelProfile, deleteModelProfile, invalidateModelProfiles, reorde
 import { preferenceFromAgentModelLock, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import { resolveDesktopV3StartupAgent } from '../services/desktop-startup-agent'
 import type { ActiveModelProfileState, AgentStateRecord, ModelProfileChoice, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
+import type { DesktopV3MediaReference } from '../../state/desktop-v3-cache-types'
 import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
@@ -19,15 +20,19 @@ import { listAuthCredentials } from '../../settings/queries/list-auth-credential
 import { desktopProviderNeedsAuth } from '../services/auth-needs'
 import type { DesktopSlashCommand } from '../services/slash-commands'
 import {
+  appendFirstDesktopV3Message,
   clearDesktopV3NewSessionOperation,
   createDesktopV3NewSessionOperation,
   desktopV3NewSessionOperationMatchesRoute,
   loadDesktopV3NewSessionOperation,
   persistDesktopV3NewSessionOperation,
+  startDesktopV3CreateOnlySession,
   startNewDesktopV3Session,
   type DesktopV3NewSessionOperation,
   type DesktopV3NewSessionPreference,
 } from '../../session-v3/new-session-flow'
+import { getDesktopV3MediaCapability, uploadDesktopV3MediaAsset } from '../../session-v3/write-api'
+import { admitComposerFile, modelMediaCapability } from '../services/composer-attachments'
 
 const EMPTY_AGENT_STATE: AgentStateRecord = {
   profiles: [],
@@ -465,7 +470,58 @@ export function DesktopV3NewSessionPane({
     }
   }
 
-  async function handleSubmit(submittedDraft = draft) {
+  function createCurrentOperation(prompt: string): DesktopV3NewSessionOperation {
+    if (!selectedRoute) throw new Error('Select a writable route before starting the session')
+    const agentName = selectedAgentName
+    if (!agentName) throw new Error('New Desktop V3 session requires agent_name')
+    if (!selectedModelAvailable) throw new Error('Select a model before starting the session')
+    if (!effectivePreference.thinking.trim()) throw new Error('Select a thinking level before starting the session')
+    return createDesktopV3NewSessionOperation({
+      workspacePath: workspace.path,
+      workspaceName: workspace.workspaceName,
+      route: selectedRoute,
+      prompt,
+      mode,
+      agentName,
+      preference: preferenceForRequest(effectivePreference),
+      modelProfileChoice: effectiveModelProfileChoice,
+      sessionMetadata: { source: 'desktop-v3', workspace_path: workspace.path },
+      messageMetadata: { source: 'desktop-v3' },
+      worktree: pendingWorktreeBranch ? { mode: 'on', branchName: pendingWorktreeBranch } : undefined,
+    })
+  }
+
+  async function ensureSessionForAttachment(): Promise<DesktopV3NewSessionOperation> {
+    const operation = operationRef.current ?? createCurrentOperation(draft.trim() || 'Please review the attached file(s).')
+    operationRef.current = operation
+    persistDesktopV3NewSessionOperation(operation)
+    await startDesktopV3CreateOnlySession({ operation, shouldSelectSession: () => false })
+    return operation
+  }
+
+  async function uploadFirstMessageAttachment(file: File, signal: AbortSignal): Promise<DesktopV3MediaReference> {
+    const operation = await ensureSessionForAttachment()
+    const capability = await getDesktopV3MediaCapability(operation.sessionId)
+    const admission = admitComposerFile(file, capability)
+    if (admission.kind !== 'media' || !capability.contract_token) {
+      throw new Error('This file type is not supported by the selected model and credential.')
+    }
+    const declaredMIME = admission.mimeType || (admission.fileType
+      ? (admission.capability.mime_types ?? []).find((value) => value.toLowerCase().endsWith(`/${admission.fileType === 'jpg' ? 'jpeg' : admission.fileType}`))
+      : undefined)
+    if (!declaredMIME) throw new Error('The browser could not determine a supported media type for this attachment.')
+    return uploadDesktopV3MediaAsset({
+      sessionId: operation.sessionId,
+      file,
+      mimeType: declaredMIME,
+      modality: admission.capability.modality,
+      fileType: admission.fileType,
+      contractToken: capability.contract_token,
+      signal,
+    })
+  }
+
+  async function handleSubmit(submittedDraft = draft, attachments: DesktopV3MediaReference[] = []) {
     if (starting || !selectedRoute) return
 
     setStarting(true)
@@ -477,46 +533,14 @@ export function DesktopV3NewSessionPane({
         operationRef.current = null
       }
       const reusableOperation = operationRef.current
-      const operation = reusableOperation ?? (() => {
-        const agentName = selectedAgentName
-        if (!agentName) {
-          throw new Error('New Desktop V3 session requires agent_name')
-        }
-        if (!selectedModelAvailable) {
-          throw new Error('Select a model before starting the session')
-        }
-        if (!preference.thinking.trim()) {
-          throw new Error('Select a thinking level before starting the session')
-        }
-        return createDesktopV3NewSessionOperation({
-          workspacePath: workspace.path,
-          workspaceName: workspace.workspaceName,
-          route: selectedRoute,
-          prompt: submittedDraft,
-          mode,
-          agentName,
-          preference: preferenceForRequest(effectivePreference),
-          modelProfileChoice: effectiveModelProfileChoice,
-          sessionMetadata: {
-            source: 'desktop-v3',
-            workspace_path: workspace.path,
-          },
-          messageMetadata: {
-            source: 'desktop-v3',
-          },
-          worktree: pendingWorktreeBranch
-            ? { mode: 'on', branchName: pendingWorktreeBranch }
-            : undefined,
-        })
-      })()
+      const operation = reusableOperation
+        ? { ...reusableOperation, firstMessageRequest: { ...reusableOperation.firstMessageRequest, content: submittedDraft.trim() } }
+        : createCurrentOperation(submittedDraft)
       operationRef.current = operation
       setDraft('')
       persistDesktopV3NewSessionOperation(operation)
 
-      await startNewDesktopV3Session({
-        operation,
-        shouldSelectSession: () => mountedRef.current,
-        onSessionStarted: () => {
+      const onSessionStarted = () => {
           completeDesktopV3NewSessionStarted({
             workspacePath: workspace.path,
             operation,
@@ -533,8 +557,12 @@ export function DesktopV3NewSessionPane({
               })
             },
           })
-        },
-      })
+        }
+      if (reusableOperation) {
+        await appendFirstDesktopV3Message({ operation, media: attachments, onSessionStarted })
+      } else {
+        await startNewDesktopV3Session({ operation, shouldSelectSession: () => mountedRef.current, onSessionStarted })
+      }
     } catch (error) {
       if (mountedRef.current) {
         setStartError(error instanceof Error ? error.message : String(error))
@@ -547,7 +575,7 @@ export function DesktopV3NewSessionPane({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-[var(--app-bg)]" data-testid="desktop-v3-new-session-pane">
+    <div className="relative flex min-h-0 flex-1 flex-col bg-[var(--app-bg)]" data-desktop-chat-drop-zone data-testid="desktop-v3-new-session-pane">
       <DesktopV3ChatHeader
         title="New conversation"
         workspaceName={workspace.workspaceName || workspace.path}
@@ -573,6 +601,8 @@ export function DesktopV3NewSessionPane({
         canSubmit={canSubmit}
         error={startError || unsupportedReason}
         onSubmit={handleSubmit}
+        mediaCapability={modelMediaCapability(selectedModelOption)}
+        onUploadAttachment={uploadFirstMessageAttachment}
         mode={mode}
         onModeSelect={handleModeSelect}
         currentAgent={selectedAgentName || agentState.activePrimary || 'Agent'}

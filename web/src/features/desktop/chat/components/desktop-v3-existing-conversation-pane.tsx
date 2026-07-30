@@ -120,6 +120,7 @@ import {
   stopSessionV3Run,
 } from "../../session-v3/api";
 import { getDesktopV3MediaCapability, uploadDesktopV3MediaAsset } from "../../session-v3/write-api";
+import { admitComposerFile } from "../services/composer-attachments";
 import {
   clearDesktopV3ExistingMessageOperation,
   continueDesktopV3Conversation,
@@ -2614,7 +2615,8 @@ export function DesktopV3ExistingConversationPane({
 
   return (
     <div
-      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-bg)]"
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-bg)]"
+      data-desktop-chat-drop-zone
       data-testid="desktop-v3-existing-conversation-pane"
     >
       <DesktopV3ChatHeader
@@ -2809,19 +2811,11 @@ export function DesktopV3ExistingConversationPane({
             mediaCapability={mediaCapability}
             onUploadAttachment={async (file, signal) => {
               const capability = await getDesktopV3MediaCapability(normalizedSessionId);
-              const fileType = file.name.includes('.') ? file.name.split('.').pop()?.toLowerCase() : undefined;
-              const browserMIME = file.type.trim().toLowerCase();
-              const inferredMIME = fileType ? ({ gif: 'image/gif', jpeg: 'image/jpeg', jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp' } as Record<string, string>)[fileType] : undefined;
-              const mimeType = browserMIME || inferredMIME || '';
-              const admitted = capability.status === 'available' && capability.contract_token
-                ? capability.capabilities.find((candidate) => {
-                    const acceptsMIME = mimeType !== '' && (candidate.mime_types ?? []).some((value) => value.toLowerCase() === mimeType);
-                    const acceptsFileType = Boolean(fileType && (candidate.file_types ?? []).some((value) => value.replace(/^\./, '').toLowerCase() === fileType));
-                    return acceptsMIME || acceptsFileType;
-                  })
-                : null;
-              if (!admitted || !capability.contract_token) throw new Error('This file type is not supported by the current model and credential.');
-              if (admitted.max_bytes > 0 && file.size > admitted.max_bytes) throw new Error(`This attachment exceeds the ${Math.ceil(admitted.max_bytes / (1024 * 1024))} MB limit.`);
+              const admission = admitComposerFile(file, capability);
+              if (admission.kind !== 'media' || !capability.contract_token) throw new Error('This file type is not supported as media by the current model and credential.');
+              const admitted = admission.capability;
+              const fileType = admission.fileType;
+              const mimeType = admission.mimeType;
               const declaredMIME = mimeType || (fileType ? (admitted.mime_types ?? []).find((value) => value.toLowerCase().endsWith(`/${fileType === 'jpg' ? 'jpeg' : fileType}`)) : undefined);
               if (!declaredMIME) throw new Error('The browser could not determine a supported media type for this attachment.');
               return uploadDesktopV3MediaAsset({ sessionId: normalizedSessionId, file, mimeType: declaredMIME, modality: admitted.modality, fileType, contractToken: capability.contract_token, signal });

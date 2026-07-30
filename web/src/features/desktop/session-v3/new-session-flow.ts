@@ -377,6 +377,56 @@ export async function startDesktopV3CreateOnlySession(input: {
   }
 }
 
+export async function appendFirstDesktopV3Message(input: {
+  operation: DesktopV3NewSessionOperation
+  media?: DesktopV3AppendMessageRequest['media']
+  onSessionStarted?: (sessionId: string) => void
+}): Promise<SessionMessageMutationResponse> {
+  const operation = input.operation
+  const firstMessageRequest = input.media?.length
+    ? { ...operation.firstMessageRequest, media: input.media }
+    : operation.firstMessageRequest
+  flowDeps.dispatch({
+    type: 'pendingUser.upsert',
+    input: {
+      clientRequestId: firstMessageRequest.client_request_id,
+      messageId: firstMessageRequest.message_id,
+      sessionId: operation.sessionId,
+      content: firstMessageRequest.content,
+      metadata: firstMessageRequest.metadata,
+      runId: firstMessageRequest.run_id,
+      createdAt: operation.createdAt,
+    },
+  })
+
+  let rawMessage: SessionMessageMutationResponse | MessageMutationConflictResponse
+  try {
+    rawMessage = await flowDeps.postAppendMessage(operation.sessionId, firstMessageRequest)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    flowDeps.dispatch(messageMutationResponseToAction(
+      { ok: false, error: message },
+      firstMessageRequest.client_request_id,
+      firstMessageRequest.message_id,
+    ))
+    throw error
+  }
+  flowDeps.dispatch(messageMutationResponseToAction(
+    rawMessage,
+    firstMessageRequest.client_request_id,
+    firstMessageRequest.message_id,
+  ))
+  if (rawMessage.ok === false) {
+    throw new Error(rawMessage.error || rawMessage.error_code || 'Desktop V3 first message failed')
+  }
+  const firstRunStatus = acceptedRunPhase(rawMessage)
+  if (firstRunStatus !== 'accepted' && firstRunStatus !== 'pending_executor') {
+    throw new Error(`Desktop V3 first run was not accepted: ${firstRunStatus || 'missing phase'}`)
+  }
+  input.onSessionStarted?.(operation.sessionId)
+  return rawMessage
+}
+
 export async function startNewDesktopV3Session(input: {
   operation: DesktopV3NewSessionOperation
   shouldSelectSession?: () => boolean
@@ -388,48 +438,10 @@ export async function startNewDesktopV3Session(input: {
     shouldSelectSession: input.shouldSelectSession,
   })
 
-  flowDeps.dispatch({
-    type: 'pendingUser.upsert',
-    input: {
-      clientRequestId: operation.firstMessageRequest.client_request_id,
-      messageId: operation.firstMessageRequest.message_id,
-      sessionId: operation.sessionId,
-      content: operation.firstMessageRequest.content,
-      metadata: operation.firstMessageRequest.metadata,
-      runId: operation.firstMessageRequest.run_id,
-      createdAt: operation.createdAt,
-    },
+  const rawMessage = await appendFirstDesktopV3Message({
+    operation,
+    onSessionStarted: input.onSessionStarted,
   })
-
-  let rawMessage: SessionMessageMutationResponse | MessageMutationConflictResponse
-  try {
-    rawMessage = await flowDeps.postAppendMessage(operation.sessionId, operation.firstMessageRequest)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    flowDeps.dispatch(messageMutationResponseToAction(
-      { ok: false, error: message },
-      operation.firstMessageRequest.client_request_id,
-      operation.firstMessageRequest.message_id,
-    ))
-    throw error
-  }
-
-  flowDeps.dispatch(messageMutationResponseToAction(
-    rawMessage,
-    operation.firstMessageRequest.client_request_id,
-    operation.firstMessageRequest.message_id,
-  ))
-
-  if (rawMessage.ok === false) {
-    throw new Error(rawMessage.error || rawMessage.error_code || 'Desktop V3 first message failed')
-  }
-  const firstRunStatus = acceptedRunPhase(rawMessage)
-  if (firstRunStatus !== 'accepted' && firstRunStatus !== 'pending_executor') {
-    throw new Error(`Desktop V3 first run was not accepted: ${firstRunStatus || 'missing phase'}`)
-  }
-
-  // Only now may the new-session pane unmount and become Path B.
-  input.onSessionStarted?.(operation.sessionId)
 
   return {
     sessionId: operation.sessionId,

@@ -145,7 +145,7 @@ export function DesktopComposerActionMenu({
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block font-semibold">Attach</span>
-                    <span className="block text-[11px] leading-4 text-[var(--app-text-subtle)]">Add media to this message</span>
+                    <span className="block text-[11px] leading-4 text-[var(--app-text-subtle)]">Add images, Markdown, or code/text files</span>
                   </span>
                 </button>
               ) : null}

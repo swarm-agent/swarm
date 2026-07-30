@@ -662,6 +662,21 @@ interface ModelContextModeWire {
   default?: boolean;
 }
 
+interface ModelMediaDirectionWire {
+  modality?: string;
+  state?: string;
+  semantics?: string;
+  mime_types?: string[] | null;
+  file_types?: string[] | null;
+}
+
+interface ModelMediaCapabilitiesWire {
+  state?: string;
+  provider_surface?: string;
+  credential_surface?: string;
+  inputs?: ModelMediaDirectionWire[] | null;
+}
+
 interface ModelCatalogRecordWire {
   provider?: string;
   model?: string;
@@ -675,6 +690,7 @@ interface ModelCatalogRecordWire {
   default_service_tier?: string | null;
   service_tier_mappings?: ModelServiceTierMappingWire[] | null;
   context_modes?: ModelContextModeWire[] | null;
+  media?: ModelMediaCapabilitiesWire | null;
 }
 
 interface CatalogResponseWire {
@@ -2203,6 +2219,26 @@ function normalizeServiceTierMappings(value: unknown): ModelServiceTierMappingRe
     .filter((item): item is ModelServiceTierMappingRecord => Boolean(item));
 }
 
+function normalizeModelMedia(value: unknown): ModelOptionRecord['media'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as ModelMediaCapabilitiesWire;
+  const inputs = Array.isArray(raw.inputs)
+    ? raw.inputs.map((item) => ({
+        modality: String(item?.modality ?? '').trim().toLowerCase(),
+        state: String(item?.state ?? 'unknown').trim().toLowerCase(),
+        semantics: String(item?.semantics ?? '').trim().toLowerCase(),
+        mimeTypes: normalizeServiceTiers(item?.mime_types),
+        fileTypes: normalizeServiceTiers(item?.file_types).map((fileType) => fileType.replace(/^\./, '')),
+      })).filter((item) => item.modality)
+    : [];
+  return {
+    state: String(raw.state ?? 'unknown').trim().toLowerCase(),
+    providerSurface: String(raw.provider_surface ?? '').trim(),
+    credentialSurface: String(raw.credential_surface ?? '').trim(),
+    inputs,
+  };
+}
+
 function normalizeContextModes(value: unknown): ModelContextModeRecord[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -2287,6 +2323,7 @@ export async function fetchModelOptions(
         defaultServiceTier: "",
         serviceTierMappings: [],
         contextModes: [],
+        media: null,
         thinkingOptions: [],
         defaultThinking: "",
         thinkingProviderParameter: "",
@@ -2321,6 +2358,7 @@ export async function fetchModelOptions(
           defaultServiceTier: String(record.default_service_tier ?? "").trim().toLowerCase(),
           serviceTierMappings: normalizeServiceTierMappings(record.service_tier_mappings),
           contextModes: normalizeContextModes(record.context_modes),
+          media: normalizeModelMedia(record.media),
           thinkingOptions: normalizeServiceTiers(record.thinking_options),
           defaultThinking: String(record.default_thinking ?? "").trim().toLowerCase(),
           thinkingProviderParameter: String(record.thinking_provider_parameter ?? "").trim(),
@@ -2339,6 +2377,7 @@ export async function fetchModelOptions(
         defaultServiceTier: String(record.default_service_tier ?? "").trim().toLowerCase(),
         serviceTierMappings: normalizeServiceTierMappings(record.service_tier_mappings),
         contextModes: normalizeContextModes(record.context_modes),
+        media: normalizeModelMedia(record.media) ?? current.media,
         thinkingOptions: normalizeServiceTiers(record.thinking_options),
         defaultThinking: String(record.default_thinking ?? "").trim().toLowerCase(),
         thinkingProviderParameter: String(record.thinking_provider_parameter ?? "").trim(),

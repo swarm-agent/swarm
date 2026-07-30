@@ -440,6 +440,21 @@ export interface ModelContextModeRecord {
   default?: boolean;
 }
 
+export interface ModelMediaDirectionRecord {
+  modality: string;
+  state: 'supported' | 'unsupported' | 'unknown' | string;
+  semantics: string;
+  mimeTypes: string[];
+  fileTypes: string[];
+}
+
+export interface ModelMediaCapabilitiesRecord {
+  state: 'supported' | 'unsupported' | 'unknown' | string;
+  providerSurface: string;
+  credentialSurface: string;
+  inputs: ModelMediaDirectionRecord[];
+}
+
 export interface ModelOptionRecord {
   key: string;
   provider: string;
@@ -458,6 +473,7 @@ export interface ModelOptionRecord {
   defaultServiceTier: string;
   serviceTierMappings: ModelServiceTierMappingRecord[];
   contextModes: ModelContextModeRecord[];
+  media?: ModelMediaCapabilitiesRecord | null;
 }
 
 export interface DesktopSessionPlanInfo {
