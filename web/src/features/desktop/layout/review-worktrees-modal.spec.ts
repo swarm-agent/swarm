@@ -98,6 +98,22 @@ describe('review worktrees modal helpers', () => {
     ], 'swarm'))).toBe('')
   })
 
+  it('keeps archive-after-success controls inside commit and integration panels', async () => {
+    const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./review-worktrees-modal.tsx', import.meta.url), 'utf8'))
+    const commitPanelStart = source.indexOf('{commitCandidate ? (')
+    const commitPanelEnd = source.indexOf('{reviewingSelection', commitPanelStart)
+    const commitPanel = source.slice(commitPanelStart, commitPanelEnd)
+    const integrationPanelStart = source.indexOf('{integrateCandidate ? (')
+    const integrationPanel = source.slice(integrationPanelStart)
+
+    expect(commitPanel).toContain('Archive session after integration')
+    expect(commitPanel).toContain('disabled={committing || !commitIntegrateAfter}')
+    expect(commitPanel).toContain('commitReviewChanges(!commitCandidate.current_checkout && commitIntegrateAfter, commitArchiveAfter)')
+    expect(integrationPanel).toContain('checked={integrationArchiveAfter}')
+    expect(source).toContain('archiveSessionIds: [candidate.session_id]')
+    expect(source).toContain('archiveSessionIds: [integrateCandidate.session_id]')
+  })
+
   it('keeps integration details hidden until requested', () => {
     const error = 'CONFLICT (content): Merge conflict in web/src/app.tsx\nlong diagnostics'
     expect(reviewWorktreeIntegrationFailureDisplay(error, false)).toEqual({

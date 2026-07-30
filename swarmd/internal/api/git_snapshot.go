@@ -40,10 +40,34 @@ func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if err := s.populateSessionGitCommits(context.Background(), principal, strings.TrimSpace(r.URL.Query().Get("session_id")), workspacePath, limit, &snapshot); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":     true,
 		"status": snapshot,
 	})
+}
+
+func (s *Server) populateSessionGitCommits(ctx context.Context, principal identity.Principal, sessionID, workspacePath string, limit int, snapshot *gitstatus.Snapshot) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || snapshot == nil || s == nil || s.sessions == nil {
+		return nil
+	}
+	session, found, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return err
+	}
+	if !found || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) || !session.WorktreeEnabled {
+		return nil
+	}
+	baseRef := strings.TrimSpace(session.WorktreeBaseBranch)
+	if baseCommit := strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "base_commit")); baseCommit != "" {
+		baseRef = baseCommit
+	}
+	snapshot.SessionCommits = gitstatus.ListCommitsSince(ctx, workspacePath, baseRef, limit)
+	return nil
 }
 
 func (s *Server) resolveSessionGitWorkspacePath(principal identity.Principal, sessionID string) (string, bool, error) {

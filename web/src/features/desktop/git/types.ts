@@ -44,6 +44,7 @@ export interface GitSnapshot {
   files: GitFileStatus[]
   remotes?: GitRemote[]
   recent_commits?: GitCommit[]
+  session_commits?: GitCommit[]
   refreshed_at: string
   duration_ms: number
 }

@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, ListChecks, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -77,6 +77,7 @@ import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortc
 import { DesktopWorkspacePicker } from '../shortcuts/components/desktop-workspace-picker'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { buildReviewWorktreeFixPrompt, resolveReviewWorktreeRepairAgent, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
+import { reviewDesktopV3Worktrees } from '../session-v3/review-worktrees-api'
 import {
   loadDesktopMainSidebarMode,
   saveDesktopMainSidebarMode,
@@ -191,6 +192,18 @@ interface GitCommitModalState {
   workspacePath: string
   sessionId: string
   files: GitFileStatus[]
+  worktree?: boolean
+  targetWorkspacePath?: string
+  targetBranch?: string
+  canIntegrate?: boolean
+}
+
+interface GitIntegrateModalState {
+  sessionId: string
+  workspacePath: string
+  worktreeBranch: string
+  targetBranch: string
+  integrationComplete?: boolean
 }
 
 interface GitPanelState {
@@ -2597,6 +2610,12 @@ export function DesktopAppPage() {
   const [gitCommitMessage, setGitCommitMessage] = useState('')
   const [gitCommitBusy, setGitCommitBusy] = useState(false)
   const [gitCommitError, setGitCommitError] = useState<string | null>(null)
+  const [gitCommitIntegrate, setGitCommitIntegrate] = useState(false)
+  const [gitCommitArchive, setGitCommitArchive] = useState(false)
+  const [gitIntegrateModal, setGitIntegrateModal] = useState<GitIntegrateModalState | null>(null)
+  const [gitIntegrateBusy, setGitIntegrateBusy] = useState(false)
+  const [gitIntegrateArchive, setGitIntegrateArchive] = useState(false)
+  const [gitIntegrateError, setGitIntegrateError] = useState<string | null>(null)
   const [planModal, setPlanModal] = useState<PlanModalState | null>(null)
   const [planModalError, setPlanModalError] = useState<string | null>(null)
   const [quickSettingsTab, setQuickSettingsTab] = useState<QuickSettingsTabID | null>(null)
@@ -3111,6 +3130,21 @@ export function DesktopAppPage() {
     refetchOnWindowFocus: true,
   })
   const gitSnapshot = gitStatusQuery.data?.status ?? null
+  const activeSessionWorktree = Boolean(activeGitSession?.worktreeEnabled && selectedGitWorkspacePath)
+  const activeSessionCommits = activeSessionWorktree ? gitSnapshot?.session_commits ?? [] : []
+  const activeSessionTargetBranch = activeGitSession?.worktreeBaseBranch?.trim() || 'target branch'
+  const activeSessionTargetWorkspacePath = activeGitSession ? desktopSidebarWorkspacePathForSession(activeGitSession, workspacePathByBindingId) : ''
+  const gitReviewQuery = useQuery({
+    queryKey: ['session-worktree-review', selectedGitSessionId, activeSessionTargetWorkspacePath, gitSnapshot?.head_oid ?? '', gitSnapshot?.clean ?? false],
+    queryFn: () => reviewDesktopV3Worktrees({ workspacePath: activeSessionTargetWorkspacePath, graceHours: 1 }),
+    enabled: activeSessionWorktree && activeSessionTargetWorkspacePath !== '',
+    staleTime: 2_000,
+    refetchOnWindowFocus: true,
+  })
+  const activeSessionReviewCandidate = activeSessionWorktree
+    ? [...(gitReviewQuery.data?.retained ?? []), ...(gitReviewQuery.data?.done ?? [])].find((item) => item.session_id === selectedGitSessionId) ?? null
+    : null
+  const activeSessionIntegrateEligible = Boolean(activeSessionReviewCandidate?.integrate_eligible)
 
   useEffect(() => {
     if (!selectedGitWorkspacePath || document.visibilityState === 'hidden') return
@@ -4436,38 +4470,119 @@ export function DesktopAppPage() {
     })
   }, [])
 
+  const integrateSessionWorktree = async (input: GitIntegrateModalState) => {
+    await reviewDesktopV3Worktrees({
+      workspacePath: input.workspacePath,
+      integrateSessionIds: [input.sessionId],
+      graceHours: 1,
+    })
+  }
+
+  const archiveIntegratedSession = async (input: GitIntegrateModalState) => {
+    await reviewDesktopV3Worktrees({
+      workspacePath: input.workspacePath,
+      archiveSessionIds: [input.sessionId],
+      graceHours: 1,
+    })
+    handleArchivePlanSession(input.sessionId)
+  }
+
   const handleGitCommit = async () => {
+    const modal = gitCommitModal
     const message = gitCommitMessage.trim()
-    if (!gitCommitModal || gitCommitBusy || !message) return
+    if (!modal || gitCommitBusy || !message) return
 
     setGitCommitBusy(true)
     setGitCommitError(null)
+    let commitSucceeded = false
+    const integration = modal.worktree && gitCommitIntegrate && modal.canIntegrate && modal.targetWorkspacePath
+      ? {
+          sessionId: modal.sessionId,
+          workspacePath: modal.targetWorkspacePath,
+          worktreeBranch: activeGitSession?.worktreeBranch?.trim() || gitSnapshot?.branch || 'worktree',
+          targetBranch: modal.targetBranch || activeSessionTargetBranch,
+        }
+      : null
     try {
       await commitWorkspaceChanges({
-        workspacePath: gitCommitModal.workspacePath,
-        sessionId: gitCommitModal.sessionId,
+        workspacePath: modal.workspacePath,
+        sessionId: modal.sessionId,
         message,
         all: true,
       })
+      commitSucceeded = true
       setGitCommitModal(null)
       setGitCommitMessage('')
-      setDesktopToast({ message: 'Changes committed successfully.', tone: 'success' })
-      await queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] })
+      if (integration) {
+        setGitIntegrateModal(integration)
+        setGitIntegrateArchive(gitCommitArchive)
+        setGitIntegrateError(null)
+        setGitIntegrateBusy(true)
+        await integrateSessionWorktree(integration)
+        const integrated = { ...integration, integrationComplete: true }
+        setGitIntegrateModal(integrated)
+        if (gitCommitArchive) await archiveIntegratedSession(integrated)
+        setGitIntegrateModal(null)
+        setDesktopToast({ message: gitCommitArchive ? 'Changes committed, integrated, and session archived.' : 'Changes committed and integrated successfully.', tone: 'success' })
+      } else {
+        setDesktopToast({ message: 'Changes committed successfully.', tone: 'success' })
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+      ])
     } catch (error) {
-      setGitCommitError(error instanceof Error ? error.message : String(error))
+      const message = error instanceof Error ? error.message : String(error)
+      if (commitSucceeded && integration) {
+        setGitIntegrateError(message)
+      } else {
+        setGitCommitError(message)
+      }
     } finally {
       setGitCommitBusy(false)
+      setGitIntegrateBusy(false)
+    }
+  }
+
+  const handleGitIntegrate = async () => {
+    const modal = gitIntegrateModal
+    if (!modal || gitIntegrateBusy) return
+    setGitIntegrateBusy(true)
+    setGitIntegrateError(null)
+    try {
+      const integrated = modal.integrationComplete ? modal : { ...modal, integrationComplete: true }
+      if (!modal.integrationComplete) {
+        await integrateSessionWorktree(modal)
+        setGitIntegrateModal(integrated)
+      }
+      if (gitIntegrateArchive) await archiveIntegratedSession(integrated)
+      setGitIntegrateModal(null)
+      setDesktopToast({ message: gitIntegrateArchive ? 'Worktree integrated and session archived.' : 'Worktree integrated successfully.', tone: 'success' })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+      ])
+    } catch (error) {
+      setGitIntegrateError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setGitIntegrateBusy(false)
     }
   }
 
   const planSidebarGitPanel = selectedGitSessionId && selectedGitWorkspacePath ? (
-    <section data-testid="desktop-plan-git-sidebar" className="flex min-h-[160px] min-w-0 flex-1 flex-col overflow-hidden" data-plan-git-layout="protected">
+    <section data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-col overflow-hidden" data-plan-git-layout="protected">
       <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
         <GitBranch size={13} />
         <span className="min-w-0 flex-1 truncate">{gitSnapshot?.branch || 'Git changes'}</span>
         {gitSnapshot?.has_git ? <span>{gitSnapshot.dirty_count}</span> : null}
-        <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={() => { void gitStatusQuery.refetch() }} aria-label="Refresh Git status" title="Refresh Git status"><RefreshCcw size={12} className={cn(gitStatusQuery.isFetching && 'animate-spin')} /></button>
+        <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={() => { void Promise.all([gitStatusQuery.refetch(), gitReviewQuery.refetch()]) }} aria-label="Refresh Git status" title="Refresh Git status"><RefreshCcw size={12} className={cn((gitStatusQuery.isFetching || gitReviewQuery.isFetching) && 'animate-spin')} /></button>
       </div>
+      {activeSessionWorktree ? (
+        <div className="mt-2 shrink-0" data-plan-git-session-commits>
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]"><GitCommitHorizontal size={11} />Session commits <span className="ml-auto">{activeSessionCommits.length}</span></div>
+          {activeSessionCommits.length > 0 ? <div className="mt-1 max-h-28 overflow-y-auto rounded-lg border border-[var(--app-border)] [scrollbar-gutter:stable]">{activeSessionCommits.map((commit) => <div key={commit.hash} className="flex min-w-0 items-start gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className="shrink-0 font-mono text-[var(--app-primary)]">{commit.short_hash}</span><span className="min-w-0 flex-1 truncate text-[var(--app-text-muted)]" title={commit.subject}>{commit.subject}</span></div>)}</div> : <div className="mt-1 text-[10px] text-[var(--app-text-subtle)]">No commits yet.</div>}
+        </div>
+      ) : null}
       <div className="min-h-0 shrink overflow-hidden">
         {gitRealtimeErrors[selectedGitWorkspacePath] || gitStatusQuery.error instanceof Error ? <div className="mt-2 text-xs text-[var(--app-warning)]">{gitRealtimeErrors[selectedGitWorkspacePath] || (gitStatusQuery.error as Error).message}</div>
           : gitStatusQuery.isPending ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Loading scoped changes…</div>
@@ -4475,7 +4590,8 @@ export function DesktopAppPage() {
           : gitSnapshot.files.length === 0 ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Clean working tree.</div>
           : <div className="mt-2 h-[calc(100%-0.5rem)] overflow-y-auto rounded-lg border border-[var(--app-border)] [scrollbar-gutter:stable]" data-plan-git-file-list>{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span></div>)}</div>}
       </div>
-      {gitSnapshot?.has_git && gitSnapshot.files.length > 0 ? <button type="button" className="mt-3 w-full shrink-0 rounded-lg border border-[var(--app-border)] px-2 py-1.5 text-xs text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]" data-plan-git-commit onClick={() => { setGitCommitMessage(''); setGitCommitError(null); setGitCommitModal({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files }) }}>Commit all changes…</button> : null}
+      {gitSnapshot?.has_git && gitSnapshot.files.length > 0 ? <button type="button" className="mt-3 w-full shrink-0 rounded-lg border border-[var(--app-border)] px-2 py-1.5 text-xs text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]" data-plan-git-commit onClick={() => { setGitCommitMessage(''); setGitCommitError(null); setGitCommitIntegrate(false); setGitCommitArchive(false); setGitCommitModal({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files, worktree: activeSessionWorktree, targetWorkspacePath: activeSessionTargetWorkspacePath, targetBranch: activeSessionTargetBranch, canIntegrate: Boolean(activeSessionReviewCandidate?.commit_eligible && activeSessionTargetWorkspacePath) }) }}>Commit all changes…</button> : null}
+      {activeSessionIntegrateEligible && activeSessionReviewCandidate ? <button type="button" className="mt-2 inline-flex w-full shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] px-2 py-1.5 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)]" data-plan-git-integrate onClick={() => { setGitIntegrateArchive(false); setGitIntegrateError(null); setGitIntegrateModal({ sessionId: selectedGitSessionId, workspacePath: activeSessionTargetWorkspacePath, worktreeBranch: activeSessionReviewCandidate.worktree_branch || gitSnapshot?.branch || 'worktree', targetBranch: activeSessionReviewCandidate.target_branch || activeSessionTargetBranch }) }}><GitMerge size={12} />Integrate into {activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}…</button> : null}
     </section>
   ) : null
 
@@ -5310,8 +5426,20 @@ export function DesktopAppPage() {
             <div><div className="text-sm font-semibold text-[var(--app-text)]">Commit all changes</div><div className="mt-1 text-xs text-[var(--app-text-subtle)]">This explicitly stages and commits all {gitCommitModal.files.length} shown files, including untracked files.</div></div>
             <div className="max-h-48 overflow-y-auto border border-[var(--app-border)] font-mono text-xs">{gitCommitModal.files.map((file) => <div key={`${file.kind}:${file.path}`} className="flex gap-2 border-b border-[var(--app-border)] px-2 py-1 last:border-0"><span className="text-[var(--app-text-subtle)]">{gitFileStatusLabel(file)}</span><span className="truncate">{file.path}</span></div>)}</div>
             <label className="grid gap-1 text-xs text-[var(--app-text-muted)]"><span>Commit message</span><input autoFocus value={gitCommitMessage} onChange={(event) => setGitCommitMessage(event.target.value)} className="h-10 border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[var(--app-text)] outline-none" /></label>
+            {gitCommitModal.worktree && gitCommitModal.canIntegrate ? <div className="grid gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-xs"><label className="flex items-start gap-2 text-[var(--app-text)]"><input type="checkbox" className="mt-0.5" checked={gitCommitIntegrate} disabled={gitCommitBusy} onChange={(event) => { const checked = event.target.checked; setGitCommitIntegrate(checked); if (!checked) setGitCommitArchive(false) }} /><span><strong>Integrate into {gitCommitModal.targetBranch || 'target branch'}</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">After the commit succeeds, safely apply this worktree’s missing commit stack to the target checkout.</span></span></label><label className={cn('flex items-start gap-2', gitCommitIntegrate ? 'text-[var(--app-text)]' : 'text-[var(--app-text-subtle)]')}><input type="checkbox" className="mt-0.5" checked={gitCommitArchive} disabled={gitCommitBusy || !gitCommitIntegrate} onChange={(event) => setGitCommitArchive(event.target.checked)} /><span><strong>Archive session after integration</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">Only archives after the backend verifies integration succeeded.</span></span></label></div> : null}
             {gitCommitError ? <div className="text-xs text-[var(--app-warning)]">{gitCommitError}</div> : null}
-            <div className="flex justify-end gap-2"><Button variant="ghost" disabled={gitCommitBusy} onClick={() => setGitCommitModal(null)}>Cancel</Button><Button type="submit" disabled={gitCommitBusy || !gitCommitMessage.trim()}>{gitCommitBusy ? 'Committing…' : 'Commit all changes'}</Button></div>
+            <div className="flex justify-end gap-2"><Button variant="ghost" disabled={gitCommitBusy} onClick={() => setGitCommitModal(null)}>Cancel</Button><Button type="submit" disabled={gitCommitBusy || !gitCommitMessage.trim()}>{gitCommitBusy ? gitCommitIntegrate ? 'Committing and integrating…' : 'Committing…' : gitCommitIntegrate ? 'Commit and integrate' : 'Commit all changes'}</Button></div>
+          </form>
+        </DialogPanel>
+      </Dialog> : null}
+      {gitIntegrateModal ? <Dialog>
+        <DialogBackdrop onClick={() => { if (!gitIntegrateBusy) setGitIntegrateModal(null) }} />
+        <DialogPanel className="w-[min(520px,100%)] gap-4">
+          <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void handleGitIntegrate() }}>
+            <div><div className="text-sm font-semibold text-[var(--app-text)]">{gitIntegrateModal.integrationComplete ? `Integration into ${gitIntegrateModal.targetBranch} complete` : `Integrate ${gitIntegrateModal.worktreeBranch} into ${gitIntegrateModal.targetBranch}`}</div><div className="mt-1 text-xs text-[var(--app-text-subtle)]">{gitIntegrateModal.integrationComplete ? 'The commit stack is integrated. Retry only the remaining archive step.' : 'Swarm preflights the complete missing commit stack and leaves the target unchanged if integration conflicts.'}</div></div>
+            <label className="flex items-start gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-xs text-[var(--app-text)]"><input type="checkbox" className="mt-0.5" checked={gitIntegrateArchive} disabled={gitIntegrateBusy} onChange={(event) => setGitIntegrateArchive(event.target.checked)} /><span><strong>Archive session after integration</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">Only archives after the backend verifies the worktree is integrated.</span></span></label>
+            {gitIntegrateError ? <div className="rounded-lg border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-3 text-xs text-[var(--app-danger)]">{gitIntegrateError}</div> : null}
+            <div className="flex justify-end gap-2"><Button variant="ghost" disabled={gitIntegrateBusy} onClick={() => setGitIntegrateModal(null)}>Cancel</Button><Button type="submit" disabled={gitIntegrateBusy}>{gitIntegrateBusy ? gitIntegrateModal.integrationComplete ? 'Archiving…' : 'Integrating…' : gitIntegrateModal.integrationComplete ? 'Archive session' : gitIntegrateError ? 'Try integration again' : 'Integrate commits'}</Button></div>
           </form>
         </DialogPanel>
       </Dialog> : null}

@@ -5,6 +5,8 @@ function normalizeGitSnapshot(snapshot: GitSnapshot): GitSnapshot {
   return {
     ...snapshot,
     files: Array.isArray(snapshot.files) ? snapshot.files : [],
+    recent_commits: Array.isArray(snapshot.recent_commits) ? snapshot.recent_commits : [],
+    session_commits: Array.isArray(snapshot.session_commits) ? snapshot.session_commits : [],
   }
 }
 

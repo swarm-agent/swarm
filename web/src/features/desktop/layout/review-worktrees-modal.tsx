@@ -103,6 +103,8 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
   const [commitCandidate, setCommitCandidate] = useState<ReviewWorktreeCandidate | null>(null)
   const [commitFiles, setCommitFiles] = useState<GitFileStatus[]>([])
   const [commitMessage, setCommitMessage] = useState('')
+  const [commitIntegrateAfter, setCommitIntegrateAfter] = useState(false)
+  const [commitArchiveAfter, setCommitArchiveAfter] = useState(false)
   const [openingCommit, setOpeningCommit] = useState(false)
   const [committing, setCommitting] = useState(false)
   const [batchCommitting, setBatchCommitting] = useState(false)
@@ -111,6 +113,8 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
   const [integrateCandidate, setIntegrateCandidate] = useState<ReviewWorktreeCandidate | null>(null)
   const [integrating, setIntegrating] = useState(false)
   const [integrationSucceeded, setIntegrationSucceeded] = useState(false)
+  const [integrationArchiveAfter, setIntegrationArchiveAfter] = useState(false)
+  const [integrationArchiveError, setIntegrationArchiveError] = useState('')
   const [integrationFailure, setIntegrationFailure] = useState<ReviewWorktreeIntegrationFailure | null>(null)
   const [showIntegrationError, setShowIntegrationError] = useState(false)
   const [error, setError] = useState('')
@@ -227,6 +231,8 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
       if (!response.status.has_git || response.status.files.length === 0) throw new Error('No committable changes were found. Recheck worktrees and try again.')
       setCommitFiles(response.status.files)
       setCommitMessage('')
+      setCommitIntegrateAfter(false)
+      setCommitArchiveAfter(false)
       setCommitCandidate(candidate)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not load the changed-file list.')
@@ -234,7 +240,7 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
       setOpeningCommit(false)
     }
   }
-  const commitReviewChanges = async (integrateAfterCommit: boolean) => {
+  const commitReviewChanges = async (integrateAfterCommit: boolean, archiveAfterIntegration = false) => {
     const candidate = commitCandidate
     const worktreePath = candidate?.worktree_path
     if (!candidate?.commit_eligible || !worktreePath || !commitMessage.trim()) return
@@ -244,14 +250,23 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
       : new Set<string>()
     setCommitting(true)
     setError('')
+    let commitSucceeded = false
+    let integrateSucceeded = false
     try {
       await commitWorkspaceChanges({ workspacePath: worktreePath, sessionId: candidate.session_id, message: commitMessage, all: true })
+      commitSucceeded = true
       if (commitAndIntegrate) {
         await reviewDesktopV3Worktrees({ workspacePath, integrateSessionIds: [candidate.session_id], graceHours: 1 })
+        integrateSucceeded = true
+        if (archiveAfterIntegration) {
+          await reviewDesktopV3Worktrees({ workspacePath, archiveSessionIds: [candidate.session_id], graceHours: 1 })
+        }
       }
       setCommitCandidate(null)
       setCommitFiles([])
       setCommitMessage('')
+      setCommitIntegrateAfter(false)
+      setCommitArchiveAfter(false)
       const next = await refresh(false)
       if (next && waitingIDs.size > 0) setReleasedAfterCommit(next.done.filter((item) => waitingIDs.has(item.session_id)))
     } catch (cause) {
@@ -262,12 +277,21 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
           : candidate.current_checkout
             ? 'Could not commit the current checkout.'
             : 'Could not commit the worktree.'
-      if (commitAndIntegrate) {
-        const failure: ReviewWorktreeIntegrationFailure = { candidate, error: failureMessage, operation: 'commit_and_integrate' }
-        if (repairFixAvailable && onAskSwarmFix) {
-          await onAskSwarmFix(failure)
+      if (commitSucceeded && commitAndIntegrate) {
+        setCommitCandidate(null)
+        setCommitFiles([])
+        setCommitMessage('')
+        setCommitIntegrateAfter(false)
+        setCommitArchiveAfter(false)
+        setIntegrateCandidate(candidate)
+        setIntegrationArchiveAfter(archiveAfterIntegration)
+        setIntegrationSucceeded(integrateSucceeded)
+        if (integrateSucceeded) {
+          setIntegrationArchiveError(failureMessage)
+          setIntegrationFailure(null)
         } else {
-          setError(`${failureMessage}\n\nSwarm repair is unavailable because no eligible repair agent or Desktop V3 route is configured.`)
+          setIntegrationArchiveError('')
+          setIntegrationFailure({ candidate, error: failureMessage, operation: 'commit_and_integrate' })
         }
       } else {
         setError(failureMessage)
@@ -321,17 +345,26 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
     setIntegrating(true)
     setError('')
     setIntegrationFailure(null)
+    setIntegrationArchiveError('')
     setShowIntegrationError(false)
+    let integrated = integrationSucceeded
     try {
-      await reviewDesktopV3Worktrees({ workspacePath, integrateSessionIds: [integrateCandidate.session_id], graceHours: 1 })
+      if (!integrated) {
+        await reviewDesktopV3Worktrees({ workspacePath, integrateSessionIds: [integrateCandidate.session_id], graceHours: 1 })
+        integrated = true
+        setIntegrationSucceeded(true)
+      }
+      if (integrationArchiveAfter) {
+        await reviewDesktopV3Worktrees({ workspacePath, archiveSessionIds: [integrateCandidate.session_id], graceHours: 1 })
+      }
       await refresh(false)
-      setIntegrationSucceeded(true)
     } catch (cause) {
-      setIntegrationFailure({
-        candidate: integrateCandidate,
-        error: cause instanceof Error ? cause.message : 'Could not integrate the worktree.',
-        operation: 'integrate',
-      })
+      const failureMessage = cause instanceof Error ? cause.message : integrated ? 'Could not archive the integrated session.' : 'Could not integrate the worktree.'
+      if (integrated) {
+        setIntegrationArchiveError(failureMessage)
+      } else {
+        setIntegrationFailure({ candidate: integrateCandidate, error: failureMessage, operation: 'integrate' })
+      }
     } finally {
       setIntegrating(false)
     }
@@ -341,11 +374,15 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
     setIntegrateCandidate(null)
     setIntegrationSucceeded(false)
     setIntegrationFailure(null)
+    setIntegrationArchiveAfter(false)
+    setIntegrationArchiveError('')
     setShowIntegrationError(false)
   }
   const openIntegrateReview = (candidate: ReviewWorktreeCandidate) => {
     setIntegrationSucceeded(false)
     setIntegrationFailure(null)
+    setIntegrationArchiveAfter(false)
+    setIntegrationArchiveError('')
     setShowIntegrationError(false)
     setIntegrateCandidate(candidate)
   }
@@ -402,7 +439,8 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
               <p className="mt-1 text-xs text-[var(--app-text-subtle)]">{commitCandidate.current_checkout ? <>This stages all {commitFiles.length} shown changes and creates one commit in <strong>{commitCandidate.worktree_branch || 'the current branch'}</strong>. It does not archive anything until the commit succeeds and Swarm rechecks the waiting sessions.</> : <>This stages all {commitFiles.length} shown changes and creates one commit in <strong>{commitCandidate.worktree_branch || 'the worktree branch'}</strong>. Choose <strong>Commit only</strong> to leave it there for review, or <strong>Commit and integrate</strong> to safely cherry-pick it into <strong>{commitCandidate.target_branch || 'the target branch'}</strong> in the same action. If either step of the combined action fails, Swarm starts a repair session with the complete error.</>}</p>
               <div className="mt-3 max-h-48 overflow-y-auto rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] font-mono text-xs" aria-label="Changed files">{commitFiles.map((file) => <div key={`${file.kind}:${file.path}`} className="flex min-w-0 gap-2 border-b border-[var(--app-border)] px-2.5 py-1.5 last:border-0"><span className="shrink-0 text-[var(--app-text-subtle)]">{gitFileStatusLabel(file)}</span><span className="truncate" title={file.path}>{file.path}</span></div>)}</div>
               <label className="mt-3 block text-xs font-medium text-[var(--app-text)]">Commit message<input className="mt-1 w-full rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 font-normal" value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="Describe these changes" autoFocus /></label>
-              <div className="mt-3 flex flex-wrap justify-end gap-2"><button type="button" className="rounded-md border border-[var(--app-border)] px-3 py-1.5 text-xs" disabled={committing} onClick={() => { setCommitCandidate(null); setCommitFiles([]); setCommitMessage('') }}>Cancel</button>{!commitCandidate.current_checkout ? <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-border)] px-3 py-1.5 text-xs text-[var(--app-text)] disabled:opacity-50" disabled={committing || commitFiles.length === 0 || !commitMessage.trim()} onClick={() => void commitReviewChanges(false)}>{committing ? <LoaderCircle size={13} className="animate-spin" /> : <GitCommitHorizontal size={13} />}Commit only</button> : null}<button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-primary)] bg-transparent px-3 py-1.5 text-xs font-semibold text-[var(--app-primary)] disabled:opacity-50" disabled={committing || commitFiles.length === 0 || !commitMessage.trim()} onClick={() => void commitReviewChanges(!commitCandidate.current_checkout)}>{committing ? <LoaderCircle size={13} className="animate-spin" /> : <GitCommitHorizontal size={13} />}{commitCandidate.current_checkout ? 'Commit changes' : 'Commit and integrate'}</button></div>
+              {!commitCandidate.current_checkout ? <div className="mt-3 grid gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-xs"><label className="flex items-start gap-2 text-[var(--app-text)]"><input className="mt-0.5" type="checkbox" checked={commitIntegrateAfter} disabled={committing} onChange={(event) => { const checked = event.target.checked; setCommitIntegrateAfter(checked); if (!checked) setCommitArchiveAfter(false) }} /><span><strong>Integrate into {commitCandidate.target_branch || 'target'}</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">Safely integrate the worktree after the commit succeeds.</span></span></label><label className={cn('flex items-start gap-2', commitIntegrateAfter ? 'text-[var(--app-text)]' : 'text-[var(--app-text-subtle)]')}><input className="mt-0.5" type="checkbox" checked={commitArchiveAfter} disabled={committing || !commitIntegrateAfter} onChange={(event) => setCommitArchiveAfter(event.target.checked)} /><span><strong>Archive session after integration</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">Only archives after integration is verified.</span></span></label></div> : null}
+              <div className="mt-3 flex flex-wrap justify-end gap-2"><button type="button" className="rounded-md border border-[var(--app-border)] px-3 py-1.5 text-xs" disabled={committing} onClick={() => { setCommitCandidate(null); setCommitFiles([]); setCommitMessage(''); setCommitIntegrateAfter(false); setCommitArchiveAfter(false) }}>Cancel</button><button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-primary)] bg-transparent px-3 py-1.5 text-xs font-semibold text-[var(--app-primary)] disabled:opacity-50" disabled={committing || commitFiles.length === 0 || !commitMessage.trim()} onClick={() => void commitReviewChanges(!commitCandidate.current_checkout && commitIntegrateAfter, commitArchiveAfter)}>{committing ? <LoaderCircle size={13} className="animate-spin" /> : <GitCommitHorizontal size={13} />}{commitCandidate.current_checkout ? 'Commit changes' : commitIntegrateAfter ? 'Commit and integrate' : 'Commit only'}</button></div>
             </section>
           ) : null}
           {reviewingSelection && archiveCandidates.length > 0 ? (
@@ -419,23 +457,25 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
           <div className="absolute inset-0 z-20 flex items-center justify-center p-4 max-sm:items-end max-sm:p-0" role="alertdialog" aria-modal="true" aria-labelledby="integrate-worktree-title">
             <button type="button" className="absolute inset-0 bg-[var(--app-backdrop)]" aria-label="Close integration confirmation" disabled={integrating} onClick={closeIntegrateReview} />
             <section className="relative z-10 w-[min(520px,100%)] rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5 shadow-2xl max-sm:max-h-[90dvh] max-sm:overflow-y-auto max-sm:rounded-b-none max-sm:pb-[calc(var(--app-safe-area-bottom)+1.25rem)]">
-              {integrationSucceeded ? (
+              {integrationSucceeded && !integrationArchiveError ? (
                 <>
                   <div className="flex items-start gap-3">
                     <CheckCircle2 size={20} className="mt-0.5 shrink-0 text-[var(--app-success)]" />
                     <div>
                       <h3 id="integrate-worktree-title" className="text-sm font-semibold text-[var(--app-text)]">Integrated into {integrateCandidate.target_branch || 'target'}</h3>
-                      <p className="mt-1 text-xs text-[var(--app-text-subtle)]"><strong>{integrateCandidate.worktree_branch || integrateCandidate.title || 'The worktree'}</strong> was integrated successfully. The chat is now in Done and was not archived.</p>
+                      <p className="mt-1 text-xs text-[var(--app-text-subtle)]"><strong>{integrateCandidate.worktree_branch || integrateCandidate.title || 'The worktree'}</strong> was integrated successfully. {integrationArchiveAfter ? 'The session was archived after the safety recheck.' : 'The chat is now in Done and was not archived.'}</p>
                     </div>
                   </div>
                   <div className="mt-4 flex justify-end"><button type="button" className="rounded-md border border-[var(--app-primary)] bg-transparent px-3 py-1.5 text-xs font-semibold text-[var(--app-primary)]" onClick={closeIntegrateReview} autoFocus>Done</button></div>
                 </>
               ) : (
                 <>
-                  <h3 id="integrate-worktree-title" className="text-sm font-semibold text-[var(--app-text)]">Integrate {integrateCandidate.worktree_branch} into {integrateCandidate.target_branch}</h3>
-                  <p className="mt-1 text-xs text-[var(--app-text-subtle)]">Swarm preflights the full commit stack and leaves the target unchanged on conflict. Success moves this chat into Done; it is not archived immediately.</p>
+                  <h3 id="integrate-worktree-title" className="text-sm font-semibold text-[var(--app-text)]">{integrationSucceeded ? `Archive integrated session` : `Integrate ${integrateCandidate.worktree_branch} into ${integrateCandidate.target_branch}`}</h3>
+                  <p className="mt-1 text-xs text-[var(--app-text-subtle)]">{integrationSucceeded ? 'The worktree is integrated. Retry only the remaining archive step.' : 'Swarm preflights the full commit stack and leaves the target unchanged on conflict.'}</p>
+                  <label className="mt-3 flex items-start gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-xs text-[var(--app-text)]"><input className="mt-0.5" type="checkbox" checked={integrationArchiveAfter} disabled={integrating} onChange={(event) => setIntegrationArchiveAfter(event.target.checked)} /><span><strong>Archive session after integration</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">Only archives after integration is verified.</span></span></label>
+                  {integrationArchiveError ? <div className="mt-3 rounded-lg border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-3 text-xs text-[var(--app-danger)]" role="alert">{integrationArchiveError}</div> : null}
                   {integrationFailure ? (() => { const display = reviewWorktreeIntegrationFailureDisplay(integrationFailure.error, showIntegrationError, integrationFailure.operation); return <div className="mt-3 rounded-lg border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-3" role="alert"><p className="text-xs font-medium text-[var(--app-danger)]">Integration failed</p><p className="mt-1 text-xs text-[var(--app-text-subtle)]">{display.summary}</p>{display.fullError ? <pre className="mt-3 max-h-52 overflow-auto whitespace-pre-wrap rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-2.5 text-xs text-[var(--app-text)]">{display.fullError}</pre> : null}<div className="mt-3 flex flex-wrap gap-2"><button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-border)] px-2.5 py-1.5 text-xs text-[var(--app-text)]" onClick={() => setShowIntegrationError((current) => !current)}>{showIntegrationError ? <EyeOff size={13} /> : <Eye size={13} />}{showIntegrationError ? 'Hide Error' : 'Show Error'}</button>{repairFixAvailable && onAskSwarmFix ? <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-primary)] bg-transparent px-2.5 py-1.5 text-xs font-semibold text-[var(--app-primary)]" onClick={askSwarmToFixIntegration}><Bot size={13} />Ask Swarm to fix this</button> : null}</div></div> })() : null}
-                  <div className="mt-4 flex justify-end gap-2"><button type="button" className="rounded-md border border-[var(--app-border)] px-3 py-1.5 text-xs" disabled={integrating} onClick={closeIntegrateReview} autoFocus>Cancel</button><button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-primary)] bg-transparent px-3 py-1.5 text-xs font-semibold text-[var(--app-primary)] disabled:opacity-50" disabled={integrating} onClick={() => void integrateWorktree()}>{integrating ? <LoaderCircle size={13} className="animate-spin" /> : <GitMerge size={13} />}{integrationFailure ? 'Try integration again' : 'Confirm integration'}</button></div>
+                  <div className="mt-4 flex justify-end gap-2"><button type="button" className="rounded-md border border-[var(--app-border)] px-3 py-1.5 text-xs" disabled={integrating} onClick={closeIntegrateReview} autoFocus>Cancel</button><button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-primary)] bg-transparent px-3 py-1.5 text-xs font-semibold text-[var(--app-primary)] disabled:opacity-50" disabled={integrating} onClick={() => void integrateWorktree()}>{integrating ? <LoaderCircle size={13} className="animate-spin" /> : <GitMerge size={13} />}{integrationSucceeded ? 'Try archive again' : integrationFailure ? 'Try integration again' : 'Confirm integration'}</button></div>
                 </>
               )}
             </section>

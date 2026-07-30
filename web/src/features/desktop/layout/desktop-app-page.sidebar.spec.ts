@@ -78,11 +78,31 @@ test('plan Git commit form submits on Enter through the shared commit handler an
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
   assert.match(handlerSource, /await commitWorkspaceChanges/)
   assert.match(handlerSource, /setDesktopToast\(\{ message: 'Changes committed successfully\.', tone: 'success' \}\)/)
+  assert.match(handlerSource, /commitSucceeded && integration/)
+  assert.match(handlerSource, /setGitIntegrateError\(message\)/)
   assert.ok(modalStart >= 0 && modalEnd > modalStart)
   assert.match(modalSource, /<form[^>]*onSubmit=/)
   assert.match(modalSource, /void handleGitCommit\(\)/)
   assert.match(modalSource, /<Button type="submit"/)
+  assert.match(modalSource, /Archive session after integration/)
+  assert.match(modalSource, /disabled=\{gitCommitBusy \|\| !gitCommitIntegrate\}/)
+  assert.match(modalSource, /gitIntegrateModal[\s\S]*void handleGitIntegrate\(\)/)
   assert.equal((modalSource.match(/commitWorkspaceChanges/g) ?? []).length, 0)
+})
+
+test('plan Git sidebar renders session-scoped worktree commits and an integration action', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const panelStart = source.indexOf('const planSidebarGitPanel =')
+  const panelEnd = source.indexOf('const focusedSidebarContent =', panelStart)
+  const panelSource = source.slice(panelStart, panelEnd)
+
+  assert.ok(panelStart >= 0 && panelEnd > panelStart)
+  assert.match(source, /activeSessionCommits = activeSessionWorktree \? gitSnapshot\?\.session_commits/)
+  assert.match(panelSource, /data-plan-git-session-commits/)
+  assert.match(panelSource, /Session commits/)
+  assert.match(panelSource, /commit\.short_hash/)
+  assert.match(panelSource, /data-plan-git-integrate/)
+  assert.match(panelSource, /Integrate into/)
 })
 
 test('main sidebar focus mode stays collapsed without adding a top bar or touching the plan sidebar', async () => {

@@ -399,6 +399,7 @@ func (r *gitRealtimeRepo) refresh(scope gitwatch.Scope) bool {
 	if !includeDetails && r.generation > 0 {
 		snapshot.Remotes = r.snapshot.Remotes
 		snapshot.RecentCommits = r.snapshot.RecentCommits
+		snapshot.SessionCommits = r.snapshot.SessionCommits
 	}
 	if r.generation == 0 || gitSnapshotFingerprint(snapshot) != gitSnapshotFingerprint(r.snapshot) {
 		r.generation++
@@ -531,5 +532,9 @@ func (s *Server) handleGitRealtime(w http.ResponseWriter, r *http.Request) {
 	repo.renewLease()
 	repo.waitForChange(r.Context(), r.URL.Query().Get("watch_token"), gitRealtimeLongPoll)
 	snapshot, token, diagnostics := repo.current()
+	if err := s.populateSessionGitCommits(r.Context(), principal, strings.TrimSpace(r.URL.Query().Get("session_id")), workspacePath, 12, &snapshot); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, gitRealtimeResponse{OK: true, WorkspacePath: gitstatus.NormalizePath(workspacePath), WatchToken: token, Status: snapshot, Diagnostics: diagnostics})
 }

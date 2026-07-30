@@ -269,9 +269,22 @@ func (s *Server) allocateSessionCreateDetachedWorkspace(createOptions *sessionru
 	if allocErr != nil {
 		return "", allocErr
 	}
+	applySessionCreateWorktreeAllocation(createOptions, allocation)
+	return "", nil
+}
+
+func applySessionCreateWorktreeAllocation(createOptions *sessionruntime.CreateSessionOptions, allocation worktreeruntime.Allocation) {
+	if createOptions == nil {
+		return
+	}
 	createOptions.WorkspacePath = allocation.WorkspacePath
 	createOptions.Worktree = &sessionruntime.CreateSessionWorktree{RootPath: allocation.WorkspacePath, BaseBranch: allocation.BaseBranch, BranchName: allocation.BranchName, WorkspaceID: allocation.WorkspaceID}
-	return "", nil
+	if baseCommit := strings.TrimSpace(allocation.BaseCommit); baseCommit != "" {
+		if createOptions.Metadata == nil {
+			createOptions.Metadata = make(map[string]any)
+		}
+		createOptions.Metadata["base_commit"] = baseCommit
+	}
 }
 
 func missingCanonicalWorktreeSessionFields(session pebblestore.SessionSnapshot) []string {
