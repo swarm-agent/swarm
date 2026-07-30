@@ -641,6 +641,17 @@ func applyLivePatch(state State, patch *client.V3RealtimeLivePatch) State {
 	if patch == nil || strings.TrimSpace(patch.StreamID) == "" {
 		return state
 	}
+	if strings.EqualFold(strings.TrimSpace(patch.StreamKind), "provider_tool_call") {
+		var payload map[string]json.RawMessage
+		if json.Unmarshal([]byte(patch.Text), &payload) != nil {
+			return state
+		}
+		eventType := rawString(payload, "type")
+		if eventType == "" {
+			return state
+		}
+		return applyToolEvent(state, clientSessionV3Event{EventType: eventType, Timestamp: patch.RecordedAt}, payload)
+	}
 	key := liveKey(patch.RunID, patch.StreamID)
 	current := state.Live[key]
 	if patch.LiveSeqEnd <= current.LiveSeqEnd {

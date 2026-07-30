@@ -73,6 +73,9 @@ func buildToolPresentation(tool ToolTimelineItem) toolPresentation {
 	if strings.TrimSpace(presentation.Summary) == "" {
 		presentation.Summary = name
 	}
+	if isToolActive(tool.Status) && len(presentation.Lines) == 0 && presentation.Kind == "" {
+		presentation.Summary = activeToolSummary(tool.Name, presentation.Summary)
+	}
 	return presentation
 }
 
@@ -83,6 +86,31 @@ func normalizeToolDisplayName(name string) string {
 		return "tool"
 	}
 	return name
+}
+
+func isToolActive(status string) bool {
+	switch canonicalToolStatus(status) {
+	case "constructing", "ready", "running":
+		return true
+	default:
+		return false
+	}
+}
+
+func activeToolSummary(name, fallback string) string {
+	switch normalizeToolDisplayName(name) {
+	case "edit":
+		return "editing…"
+	case "plan-manage", "exit-plan-mode":
+		return "planning…"
+	case "task":
+		return "launching subagents…"
+	default:
+		if fallback = strings.TrimSpace(fallback); fallback != "" {
+			return fallback + "…"
+		}
+		return "working…"
+	}
 }
 
 func parseToolObject(value string) map[string]any {
@@ -504,7 +532,11 @@ func presentWebTool(name string, arguments, output map[string]any) toolPresentat
 func presentPlanManageTool(tool ToolTimelineItem, arguments, output map[string]any) toolPresentation {
 	payload := planToolPayload(tool, arguments, output)
 	if payload == nil {
-		return toolPresentation{Summary: "plan", Kind: "plan"}
+		summary := "plan"
+		if toolStatusRank(tool.Status) < 3 {
+			summary = "planning…"
+		}
+		return toolPresentation{Summary: summary, Kind: "plan"}
 	}
 	document := planDocumentFromToolPayload(payload)
 	plan := toolObject(payload, "plan")
@@ -885,7 +917,9 @@ func presentTaskTool(tool ToolTimelineItem, output map[string]any) toolPresentat
 		})
 	}
 	summary := "subagent stream"
-	if launchCount > 0 {
+	if len(rows) == 0 && toolStatusRank(tool.Status) < 3 {
+		summary = "launching subagents…"
+	} else if launchCount > 0 {
 		summary += " · " + toolCountLabel(launchCount, "subagent", "subagents")
 	}
 	return toolPresentation{Summary: summary, Kind: "task", TaskRows: rows}

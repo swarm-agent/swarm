@@ -109,6 +109,35 @@ func TestToolPresentationPlanManageUnwrapsDurableHistoryEnvelope(t *testing.T) {
 	}
 }
 
+func TestProviderToolStartPresentationsUseSpecializedActivityCopy(t *testing.T) {
+	cases := []struct {
+		name string
+		tool ToolTimelineItem
+		want string
+	}{
+		{name: "edit", tool: ToolTimelineItem{Name: "edit", Status: "constructing"}, want: "editing…"},
+		{name: "plan", tool: ToolTimelineItem{Name: "plan_manage", Status: "constructing"}, want: "planning…"},
+		{name: "task", tool: ToolTimelineItem{Name: "task", Status: "constructing"}, want: "launching subagents…"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			presentation := buildToolPresentation(tc.tool)
+			if presentation.Summary != tc.want {
+				t.Fatalf("activity summary = %q, want %q", presentation.Summary, tc.want)
+			}
+			rows := NewPage(nil, testPageStyles()).renderToolRows(tc.tool, 60, testPageStyles())
+			var rendered strings.Builder
+			for _, row := range rows {
+				rendered.WriteString(row.text)
+				rendered.WriteByte('\n')
+			}
+			if text := rendered.String(); !strings.Contains(strings.ToLower(text), strings.ToLower(tc.want)) {
+				t.Fatalf("activity rows missing %q:\n%s", tc.want, text)
+			}
+		})
+	}
+}
+
 func TestToolPresentationEditShowsBoundedDiff(t *testing.T) {
 	tool := ToolTimelineItem{
 		Name:   "edit",

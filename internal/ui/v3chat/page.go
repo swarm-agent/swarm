@@ -2479,12 +2479,12 @@ func (p *Page) renderAssistantRows(content string, width int, styles PageStyles)
 }
 
 func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyles) []renderRow {
-	status := strings.ToLower(strings.TrimSpace(tool.Status))
+	status := canonicalToolStatus(tool.Status)
 	symbol, headerStyle := "•", styles.Accent
 	switch status {
-	case "completed", "done", "success":
+	case "completed":
 		symbol, headerStyle = "✓", styles.Success
-	case "failed", "error", "cancelled", "canceled":
+	case "failed", "cancelled":
 		symbol, headerStyle = "✕", styles.Error
 	}
 

@@ -435,6 +435,93 @@ func TestToolEventsProjectOrderedLiveStateAndDurableMessageReplacesIt(t *testing
 	}
 }
 
+func TestProviderToolConstructionLivePatchReconcilesRuntimeAndKeepsTerminalState(t *testing.T) {
+	construction, _ := json.Marshal(map[string]any{
+		"type": "session.provider_tool_call.started", "run_id": "run", "step": 1, "event_index": 1,
+		"output_index": 0, "call_id": "call-edit", "tool_name": "edit", "status": "started", "recorded_at": int64(100),
+	})
+	state := Reduce(NewState(), RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "live.patch", Live: &client.V3RealtimeLivePatch{
+		RunID: "run", StreamID: "provider-tool:run:step:1:event:1", StreamKind: "provider_tool_call", Operation: "append",
+		LiveSeqStart: 1, LiveSeqEnd: 1, OffsetStart: 0, OffsetEnd: uint64(len(construction)), Text: string(construction), RecordedAt: 100,
+	}}})
+	tool := state.Tools["call-edit"]
+	if tool.Name != "edit" || tool.Status != "constructing" || !tool.ProviderConstruction || tool.RuntimeExecution {
+		t.Fatalf("construction tool = %#v", tool)
+	}
+
+	snapshot, _ := json.Marshal(map[string]any{
+		"run_id": "run", "step": 1, "event_index": 2, "output_index": 0, "call_id": "call-edit", "tool_name": "edit",
+		"arguments_snapshot": `{"path":"main.go"}`, "status": "building", "recorded_at": int64(101),
+	})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{Seq: 2, EventType: "session.provider_tool_call.arguments.snapshot", Payload: snapshot, TsUnixMS: 101}}})
+
+	running, _ := json.Marshal(map[string]any{
+		"run_id": "run", "step": 1, "call_id": "call-edit", "tool_instance_id": "step-1:call-edit", "tool_name": "edit", "status": "running",
+	})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{Seq: 3, EventType: "session.tool.started", Payload: running, TsUnixMS: 102}}})
+	tool = state.Tools["call-edit"]
+	if len(state.Tools) != 1 || tool.Arguments != `{"path":"main.go"}` || tool.Status != "running" || !tool.RuntimeExecution || tool.GlobalSeq != 2 {
+		t.Fatalf("reconciled running tool = %#v tools=%#v", tool, state.Tools)
+	}
+
+	failed, _ := json.Marshal(map[string]any{
+		"run_id": "run", "step": 1, "call_id": "call-edit", "tool_instance_id": "step-1:call-edit", "tool_name": "edit", "status": "failed", "error": "edit failed",
+	})
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{Seq: 4, EventType: "session.tool.failed", Payload: failed, TsUnixMS: 103}}})
+
+	stale, _ := json.Marshal(map[string]any{
+		"run_id": "run", "step": 1, "event_index": 1, "output_index": 0, "call_id": "call-edit", "tool_name": "edit", "status": "started",
+	})
+	state = applyEvent(state, client.SessionV3Event{Seq: 5, EventType: "session.provider_tool_call.started", Payload: stale, TsUnixMS: 99})
+	tool = state.Tools["call-edit"]
+	if len(state.Tools) != 1 || tool.Status != "failed" || tool.Error != "edit failed" || tool.Arguments != `{"path":"main.go"}` {
+		t.Fatalf("stale construction regressed terminal = %#v tools=%#v", tool, state.Tools)
+	}
+}
+
+func TestProviderToolRuntimeTerminalStatesDoNotRegressOnConstructionReplay(t *testing.T) {
+	cases := []struct {
+		name      string
+		eventType string
+		status    string
+	}{
+		{name: "success", eventType: "session.tool.completed", status: "completed"},
+		{name: "failure", eventType: "session.tool.failed", status: "failed"},
+		{name: "cancelled", eventType: "session.tool.cancelled", status: "cancelled"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			started, _ := json.Marshal(map[string]any{
+				"run_id": "run", "step": 1, "event_index": 1, "output_index": 0, "call_id": "call-plan", "tool_name": "plan_manage", "status": "started",
+			})
+			state := applyEvent(NewState(), client.SessionV3Event{Seq: 1, EventType: "session.provider_tool_call.started", Payload: started})
+			terminal, _ := json.Marshal(map[string]any{
+				"run_id": "run", "step": 1, "call_id": "call-plan", "tool_instance_id": "step-1:call-plan", "tool_name": "plan_manage", "status": tc.status,
+			})
+			state = applyEvent(state, client.SessionV3Event{Seq: 2, EventType: tc.eventType, Payload: terminal})
+			state = applyEvent(state, client.SessionV3Event{Seq: 3, EventType: "session.provider_tool_call.started", Payload: started})
+			if tool := state.Tools["call-plan"]; len(state.Tools) != 1 || tool.Status != tc.status {
+				t.Fatalf("terminal replay state = %#v tools=%#v", tool, state.Tools)
+			}
+		})
+	}
+}
+
+func TestProviderToolConstructionWithoutCallIDRepairsByOutputIndex(t *testing.T) {
+	first, _ := json.Marshal(map[string]any{
+		"run_id": "run", "step": 2, "event_index": 1, "output_index": 3, "tool_name": "task", "status": "started",
+	})
+	state := applyEvent(NewState(), client.SessionV3Event{Seq: 1, EventType: "session.provider_tool_call.started", Payload: first})
+	completed, _ := json.Marshal(map[string]any{
+		"run_id": "run", "step": 2, "event_index": 2, "output_index": 3, "call_id": "call-task", "tool_name": "task", "arguments": `{"prompt":"inspect"}`, "status": "completed",
+	})
+	state = applyEvent(state, client.SessionV3Event{Seq: 2, EventType: "session.provider_tool_call.completed", Payload: completed})
+	tool := state.Tools["call-task"]
+	if len(state.Tools) != 1 || tool.CallID != "call-task" || tool.Status != "ready" || tool.Arguments != `{"prompt":"inspect"}` {
+		t.Fatalf("repaired construction = %#v tools=%#v", tool, state.Tools)
+	}
+}
+
 func TestAssistantAndToolEventsRetainCanonicalTimelineSequences(t *testing.T) {
 	assistantPayload, _ := json.Marshal(map[string]any{"run_id": "run", "stream_id": "assistant:run", "delta": "before"})
 	toolPayload, _ := json.Marshal(map[string]any{"run_id": "run", "call_id": "call", "tool_name": "bash", "arguments": `{"command":"pwd"}`})

@@ -12,18 +12,26 @@ import (
 // by the rest of the transcript. A durable role=tool message replaces the live
 // projection once it arrives.
 type ToolTimelineItem struct {
-	ID             string
-	CallID         string
-	ToolInstanceID string
-	GlobalSeq      uint64
-	Name           string
-	Arguments      string
-	Output         string
-	Error          string
-	Status         string
-	DurationMS     int64
-	CreatedAt      int64
-	TaskStream     *TaskStreamState
+	ID                    string
+	CallID                string
+	ToolInstanceID        string
+	GlobalSeq             uint64
+	Name                  string
+	Arguments             string
+	Output                string
+	Error                 string
+	Status                string
+	DurationMS            int64
+	CreatedAt             int64
+	Step                  int
+	StepID                string
+	OutputIndex           int
+	HasOutputIndex        bool
+	ProviderEventIndex    int64
+	HasProviderEventIndex bool
+	ProviderConstruction  bool
+	RuntimeExecution      bool
+	TaskStream            *TaskStreamState
 }
 
 type TaskStreamState struct {
@@ -83,26 +91,54 @@ func applyToolEvent(state State, event clientSessionV3Event, payload map[string]
 	if !isToolTimelineEvent(eventType) {
 		return state
 	}
+	construction := strings.HasPrefix(eventType, "session.provider_tool_call.")
 	callID := rawString(payload, "call_id", "tool_call_id")
-	if callID == "" {
+	toolInstanceID := rawString(payload, "tool_instance_id")
+	step := int(rawInt64(payload, "step"))
+	stepID := rawString(payload, "step_id")
+	outputIndex, hasOutputIndex := rawOptionalInt(payload, "output_index")
+	key := findToolTimelineKey(state.Tools, callID, toolInstanceID, step, stepID, outputIndex, hasOutputIndex, construction)
+	if key == "" {
 		return state
 	}
-	item := state.Tools[callID]
-	if item.CallID == "" {
-		item = ToolTimelineItem{ID: "live-tool:" + callID, CallID: callID, CreatedAt: event.Timestamp}
-	}
-	item.GlobalSeq = maxUint64(item.GlobalSeq, event.Seq)
-	item.ToolInstanceID = firstNonEmpty(rawString(payload, "tool_instance_id"), item.ToolInstanceID)
-	item.Name = firstNonEmpty(rawString(payload, "tool_name"), item.Name, "tool")
-	item.CreatedAt = firstPositiveInt64(item.CreatedAt, rawInt64(payload, "recorded_at"), event.Timestamp)
 
-	arguments := rawString(payload, "arguments", "arguments_snapshot")
-	argumentsDelta := rawString(payload, "arguments_delta")
-	if arguments != "" {
-		item.Arguments = arguments
-	} else if argumentsDelta != "" {
-		item.Arguments += argumentsDelta
+	item := state.Tools[key]
+	if item.ID == "" {
+		item = ToolTimelineItem{ID: "live-tool:" + key, CreatedAt: event.Timestamp}
 	}
+	item.CallID = firstNonEmpty(callID, item.CallID)
+	item.ToolInstanceID = firstNonEmpty(toolInstanceID, item.ToolInstanceID)
+	item.Name = firstNonEmpty(rawString(payload, "tool_name"), item.Name, "tool")
+	item.CreatedAt = firstPositiveInt64(item.CreatedAt, rawInt64(payload, "started_at"), rawInt64(payload, "recorded_at"), event.Timestamp)
+	item.Step = firstPositiveInt(item.Step, step)
+	item.StepID = firstNonEmpty(stepID, item.StepID)
+	if hasOutputIndex {
+		item.OutputIndex, item.HasOutputIndex = outputIndex, true
+	}
+	item.ProviderConstruction = item.ProviderConstruction || construction
+	item.RuntimeExecution = item.RuntimeExecution || !construction
+	if item.GlobalSeq == 0 && event.Seq != 0 {
+		item.GlobalSeq = event.Seq
+	}
+
+	providerEventIndex, hasProviderEventIndex := rawOptionalInt64(payload, "event_index")
+	freshConstruction := !construction || !hasProviderEventIndex || !item.HasProviderEventIndex || providerEventIndex > item.ProviderEventIndex
+	arguments := rawString(payload, "arguments", "arguments_snapshot")
+	argumentsDelta := rawText(payload, "arguments_delta")
+	if freshConstruction {
+		if arguments != "" {
+			item.Arguments = arguments
+		} else if argumentsDelta != "" {
+			item.Arguments += argumentsDelta
+		}
+	}
+	if construction && hasProviderEventIndex {
+		if !item.HasProviderEventIndex || providerEventIndex > item.ProviderEventIndex {
+			item.ProviderEventIndex = providerEventIndex
+		}
+		item.HasProviderEventIndex = true
+	}
+
 	if eventType == "session.tool.delta" {
 		delta := firstNonEmptyRaw(
 			rawText(payload, "output"),
@@ -114,7 +150,7 @@ func applyToolEvent(state State, event clientSessionV3Event, payload map[string]
 			// Non-task progress remains byte-for-byte so Bash behaves like a live terminal.
 			item.Output += delta
 		}
-	} else {
+	} else if !construction {
 		output := firstNonEmptyRaw(rawText(payload, "completed_output"), rawText(payload, "raw_output"), rawText(payload, "output"))
 		outputDelta := firstNonEmptyRaw(rawText(payload, "output_delta"), rawText(payload, "delta"))
 		if output != "" {
@@ -127,12 +163,21 @@ func applyToolEvent(state State, event clientSessionV3Event, payload map[string]
 	if duration := rawInt64(payload, "duration_ms"); duration != 0 {
 		item.DurationMS = duration
 	}
-	item.Status = toolEventStatus(eventType, rawString(payload, "status"), item.Error)
+	item.Status = mergeToolEventStatus(item.Status, toolEventStatus(eventType, rawString(payload, "status"), item.Error), construction)
+
+	preferredKey := key
+	if callID != "" {
+		preferredKey = callID
+	}
+	if preferredKey != key {
+		delete(state.Tools, key)
+	}
 	if hasDurableToolMessage(state.Messages, item) {
-		delete(state.Tools, callID)
+		delete(state.Tools, preferredKey)
 		return state
 	}
-	state.Tools[callID] = item
+	item.ID = "live-tool:" + preferredKey
+	state.Tools[preferredKey] = item
 	return boundLiveTools(state)
 }
 
@@ -155,21 +200,77 @@ func isToolTimelineEvent(eventType string) bool {
 }
 
 func toolEventStatus(eventType, payloadStatus, errorText string) string {
-	if payloadStatus = strings.ToLower(strings.TrimSpace(payloadStatus)); payloadStatus != "" {
-		return payloadStatus
-	}
+	payloadStatus = strings.ToLower(strings.TrimSpace(payloadStatus))
 	switch eventType {
-	case "session.tool.completed", "session.provider_tool_call.completed":
+	case "session.tool.completed":
 		return "completed"
 	case "session.tool.failed":
 		return "failed"
 	case "session.tool.cancelled", "session.tool.canceled":
 		return "cancelled"
+	case "session.tool.started", "session.tool.delta":
+		return "running"
+	case "session.provider_tool_call.completed":
+		return "ready"
+	case "session.provider_tool_call.started", "session.provider_tool_call.arguments.delta", "session.provider_tool_call.arguments.snapshot":
+		return "constructing"
 	default:
 		if strings.TrimSpace(errorText) != "" {
 			return "failed"
 		}
+		if payloadStatus != "" {
+			return payloadStatus
+		}
 		return "running"
+	}
+}
+
+func mergeToolEventStatus(existing, incoming string, construction bool) string {
+	existing = canonicalToolStatus(existing)
+	incoming = canonicalToolStatus(incoming)
+	if existing == "" {
+		return incoming
+	}
+	if toolStatusRank(existing) > toolStatusRank(incoming) {
+		return existing
+	}
+	if toolStatusRank(existing) == 3 && (construction || toolStatusRank(incoming) == 3) {
+		return existing
+	}
+	return incoming
+}
+
+func canonicalToolStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "started", "building", "constructing":
+		return "constructing"
+	case "ready":
+		return "ready"
+	case "pending", "active", "in_progress", "running":
+		return "running"
+	case "done", "success", "completed":
+		return "completed"
+	case "error", "failed":
+		return "failed"
+	case "canceled", "cancelled":
+		return "cancelled"
+	default:
+		return strings.ToLower(strings.TrimSpace(status))
+	}
+}
+
+func toolStatusRank(status string) int {
+	switch canonicalToolStatus(status) {
+	case "constructing":
+		return 0
+	case "ready":
+		return 1
+	case "running":
+		return 2
+	case "completed", "failed", "cancelled":
+		return 3
+	default:
+		return 0
 	}
 }
 
@@ -282,6 +383,94 @@ func anyInt(value any) int {
 	}
 }
 
+func findToolTimelineKey(tools map[string]ToolTimelineItem, callID, toolInstanceID string, step int, stepID string, outputIndex int, hasOutputIndex, construction bool) string {
+	if callID != "" {
+		if _, ok := tools[callID]; ok {
+			return callID
+		}
+		for key, item := range tools {
+			if item.CallID == callID || (toolInstanceID != "" && item.ToolInstanceID == toolInstanceID) {
+				return key
+			}
+		}
+		if hasOutputIndex {
+			if key := findToolTimelineOutputKey(tools, step, stepID, outputIndex); key != "" {
+				return key
+			}
+		}
+		if !construction {
+			if key := findUniqueConstructionToolKey(tools, step, stepID); key != "" {
+				return key
+			}
+		}
+		return callID
+	}
+	if toolInstanceID != "" {
+		for key, item := range tools {
+			if item.ToolInstanceID == toolInstanceID {
+				return key
+			}
+		}
+		return "instance:" + toolInstanceID
+	}
+	if construction && hasOutputIndex {
+		if key := findToolTimelineOutputKey(tools, step, stepID, outputIndex); key != "" {
+			return key
+		}
+		return fmt.Sprintf("construction:%s:output-%d", toolStepKey(step, stepID), outputIndex)
+	}
+	return ""
+}
+
+func findToolTimelineOutputKey(tools map[string]ToolTimelineItem, step int, stepID string, outputIndex int) string {
+	for key, item := range tools {
+		if item.ProviderConstruction && !item.RuntimeExecution && item.HasOutputIndex && item.OutputIndex == outputIndex && sameToolTimelineStep(item, step, stepID) {
+			return key
+		}
+	}
+	return ""
+}
+
+func findUniqueConstructionToolKey(tools map[string]ToolTimelineItem, step int, stepID string) string {
+	match := ""
+	for key, item := range tools {
+		if !item.ProviderConstruction || item.RuntimeExecution || !sameToolTimelineStep(item, step, stepID) {
+			continue
+		}
+		if match != "" {
+			return ""
+		}
+		match = key
+	}
+	return match
+}
+
+func sameToolTimelineStep(item ToolTimelineItem, step int, stepID string) bool {
+	if step > 0 && item.Step > 0 {
+		return step == item.Step
+	}
+	return stepID != "" && item.StepID != "" && stepID == item.StepID
+}
+
+func toolStepKey(step int, stepID string) string {
+	if step > 0 {
+		return fmt.Sprintf("step-%d", step)
+	}
+	if stepID != "" {
+		return stepID
+	}
+	return "step-0"
+}
+
+func firstPositiveInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
 func hasDurableToolMessage(messages []Message, item ToolTimelineItem) bool {
 	for _, message := range messages {
 		durable, ok := parseToolMessage(message)
@@ -319,9 +508,25 @@ func rawText(payload map[string]json.RawMessage, keys ...string) string {
 }
 
 func rawInt64(payload map[string]json.RawMessage, key string) int64 {
-	var value int64
-	_ = json.Unmarshal(payload[key], &value)
+	value, _ := rawOptionalInt64(payload, key)
 	return value
+}
+
+func rawOptionalInt(payload map[string]json.RawMessage, key string) (int, bool) {
+	value, ok := rawOptionalInt64(payload, key)
+	return int(value), ok
+}
+
+func rawOptionalInt64(payload map[string]json.RawMessage, key string) (int64, bool) {
+	raw, ok := payload[key]
+	if !ok || len(raw) == 0 {
+		return 0, false
+	}
+	var value int64
+	if json.Unmarshal(raw, &value) == nil {
+		return value, true
+	}
+	return 0, false
 }
 
 func firstNonEmptyRaw(values ...string) string {

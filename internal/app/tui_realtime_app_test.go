@@ -74,6 +74,33 @@ func TestTUIV3ToolEventsProjectInAuthoritativeOrderWithoutStoredDuplicate(t *tes
 	}
 }
 
+func TestTUIV3ProviderConstructionEventsProjectBeforeRuntimeWithoutStoredDuplicate(t *testing.T) {
+	messages := []client.SessionMessage{{
+		ID: "msg-tool", SessionID: "session-1", GlobalSeq: 4, Role: "tool",
+		Content:   `{"path_id":"run.v3.provider-tool-result.v1","tool_name":"edit","call_id":"call-edit","completed_output":"done"}`,
+		CreatedAt: 400,
+	}}
+	events := []client.SessionV3Event{
+		toolRealtimeEvent("provider-start", 1, 100, "session.provider_tool_call.started", map[string]any{
+			"run_id": "run-1", "step": 1, "event_index": 1, "output_index": 0, "call_id": "call-edit", "tool_name": "edit", "status": "started",
+		}),
+		toolRealtimeEvent("provider-args", 2, 200, "session.provider_tool_call.completed", map[string]any{
+			"run_id": "run-1", "step": 1, "event_index": 2, "output_index": 0, "call_id": "call-edit", "tool_name": "edit", "arguments": `{"path":"main.go"}`, "status": "completed",
+		}),
+		toolRealtimeEvent("runtime-complete", 4, 400, "session.tool.completed", map[string]any{
+			"run_id": "run-1", "call_id": "call-edit", "tool_instance_id": "step-1:call-edit", "tool_name": "edit", "status": "completed", "output": "done",
+		}),
+	}
+
+	got := chatMessagesFromClient(messages, events)
+	if ids := chatMessageRecordIDs(got); !reflect.DeepEqual(ids, []string{"v3-tool-event:provider-start", "v3-tool-event:provider-args", "v3-tool-event:runtime-complete"}) {
+		t.Fatalf("provider construction projection order = %#v", ids)
+	}
+	if !strings.Contains(got[0].Content, "session.provider_tool_call.started") || !strings.Contains(got[1].Content, `\"path\":\"main.go\"`) {
+		t.Fatalf("provider construction payloads = %#v", got[:2])
+	}
+}
+
 func toolRealtimeEvent(id string, seq uint64, at int64, eventType string, payload map[string]any) client.SessionV3Event {
 	raw, _ := json.Marshal(payload)
 	return client.SessionV3Event{ID: id, SessionID: "session-1", Seq: seq, EventType: eventType, Payload: raw, TsUnixMS: at}
