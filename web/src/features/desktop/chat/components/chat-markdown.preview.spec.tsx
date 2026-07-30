@@ -280,6 +280,34 @@ function testBashOutputIndexBoundsPreviewWithoutChangingCanonicalOutput(): void 
   assert(bashCopyText(output) === output, "copy-all must preserve canonical output byte-for-byte");
 }
 
+function testRunningBashUsesDedicatedStreamingCard(): void {
+  const command = "for i in 1 2 3; do echo line-$i; sleep 1; done";
+  const startedMessage = buildStructuredToolMessage({
+    tool: "bash",
+    callId: "call_bash_started",
+    argumentsText: JSON.stringify({ command }),
+    state: "running",
+    lifecycleStatus: "started",
+  });
+  const streamingMessage = buildStructuredToolMessage({
+    tool: "bash",
+    callId: "call_bash_streaming",
+    argumentsText: JSON.stringify({ command }),
+    outputText: "line-1",
+    state: "running",
+    lifecycleStatus: "running",
+  });
+  assert(Boolean(startedMessage && streamingMessage), "expected running bash tool messages");
+
+  const startedMarkup = renderToolMarkup(startedMessage!);
+  const streamingMarkup = renderToolMarkup(streamingMessage!);
+  assert(startedMarkup.includes("Waiting for output…"), "tool.start should render the bash card before output arrives");
+  assert(startedMarkup.includes("running"), "tool.start should identify bash as running");
+  assert(streamingMarkup.includes("line-1"), "streaming bash output should render immediately");
+  assert(streamingMarkup.includes("streaming"), "bash should visibly identify active streamed output");
+  assert(streamingMarkup.includes('aria-label="Copy Bash output"'), "streaming bash should keep its output controls");
+}
+
 function testBashToolUsesDedicatedFullWidthCard(): void {
   const command = "for i in {1..80}; do echo line-$i; done";
   const output = Array.from({ length: 80 }, (_, index) => `line-${index + 1}`).join("\n");
@@ -697,6 +725,7 @@ function main(): void {
   testTaskActivityPrefersSummaryOnlyForActiveRows();
   testBashCopyUsesOutputOnly();
   testBashOutputIndexBoundsPreviewWithoutChangingCanonicalOutput();
+  testRunningBashUsesDedicatedStreamingCard();
   testBashToolUsesDedicatedFullWidthCard();
   testManageThemeBatchShowsGeneratedMetadata();
   testManageSessionsUsesRelativeDesktopNavigation();

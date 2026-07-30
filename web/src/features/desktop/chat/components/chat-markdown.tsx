@@ -158,10 +158,10 @@ function downloadBashOutput(output: string): void {
   URL.revokeObjectURL(url);
 }
 
-function bashStatusLabel(state: ToolState): string {
+function bashStatusLabel(state: ToolState, hasOutput: boolean): string {
   switch (state) {
     case "running":
-      return "running";
+      return hasOutput ? "streaming" : "running";
     case "error":
       return "error";
     default:
@@ -243,7 +243,7 @@ function BashToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToo
   }, []);
 
   const accentWash = toolAccentWash(toolTheme.color, 14);
-  const statusText = bashStatusLabel(state);
+  const statusText = bashStatusLabel(state, Boolean(output));
   const exitCode = toolMessage.bashData?.exitCode;
   const previewPrefix = outputIndex.previewStartsMidLine ? "…" : "";
 
@@ -2015,6 +2015,9 @@ export function ToolMessageView({
     && !hasStructuredTaskRows
     && !toolMessage.output.trim()
     && !toolMessage.completedOutput.trim();
+  if (normalizedToolName === "bash") {
+    return <BashToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
+  }
   if (activityOnly || terminalWithoutResult) {
     const errorBody = toolMessage.error.trim();
     return (
@@ -2029,9 +2032,6 @@ export function ToolMessageView({
         </ToolActivityShell>
       </div>
     );
-  }
-  if (normalizedToolName === "bash") {
-    return <BashToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
   }
   if (normalizedToolName === "websearch" && toolMessage.webSearchData) {
     return <WebSearchToolCard toolMessage={toolMessage} data={toolMessage.webSearchData} isGroupItem={isGroupItem} />;
