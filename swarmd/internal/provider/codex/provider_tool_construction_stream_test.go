@@ -1,6 +1,8 @@
 package codex
 
 import (
+	"fmt"
+	"strconv"
 	"testing"
 
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -35,6 +37,48 @@ func TestParseEventStreamEmitsFunctionCallConstructionLifecycle(t *testing.T) {
 	}
 	if events[3].Arguments != `{"path":"file.txt"}` {
 		t.Fatalf("completed arguments = %q", events[3].Arguments)
+	}
+}
+
+func TestParseEventStreamMapsEditPlanAndTaskConstructionWithoutPresentationBranches(t *testing.T) {
+	calls := []struct {
+		index     int
+		itemID    string
+		callID    string
+		toolName  string
+		arguments string
+	}{
+		{index: 0, itemID: "fc_edit", callID: "call_edit", toolName: "edit", arguments: `{"path":"web/src/app.tsx"}`},
+		{index: 1, itemID: "fc_plan", callID: "call_plan", toolName: "plan_manage", arguments: `{"action":"complete_checkpoint","checkpoint_id":"cp-1"}`},
+		{index: 2, itemID: "fc_task", callID: "call_task", toolName: "task", arguments: `{"description":"Inspect lifecycle"}`},
+	}
+
+	stream := ""
+	for _, call := range calls {
+		stream += "event: response.output_item.added\n" +
+			"data: {\"type\":\"response.output_item.added\",\"output_index\":" + fmt.Sprint(call.index) + ",\"item\":{\"type\":\"function_call\",\"id\":\"" + call.itemID + "\",\"call_id\":\"" + call.callID + "\",\"name\":\"" + call.toolName + "\",\"arguments\":\"\"}}\n\n" +
+			"event: response.function_call_arguments.done\n" +
+			"data: {\"type\":\"response.function_call_arguments.done\",\"output_index\":" + fmt.Sprint(call.index) + ",\"item_id\":\"" + call.itemID + "\",\"arguments\":" + strconv.Quote(call.arguments) + "}\n\n" +
+			"event: response.output_item.done\n" +
+			"data: {\"type\":\"response.output_item.done\",\"output_index\":" + fmt.Sprint(call.index) + ",\"item\":{\"type\":\"function_call\",\"id\":\"" + call.itemID + "\",\"call_id\":\"" + call.callID + "\",\"name\":\"" + call.toolName + "\",\"arguments\":" + strconv.Quote(call.arguments) + "}}\n\n"
+	}
+	stream += completedResponseEvent()
+
+	events := parseConstructionEvents(t, stream)
+	if len(events) != len(calls)*2 {
+		t.Fatalf("events len = %d, want %d: %#v", len(events), len(calls)*2, events)
+	}
+	for i, call := range calls {
+		got := events[i*2 : i*2+2]
+		assertConstructionTypes(t, got, []StreamEventType{StreamEventToolCallStarted, StreamEventToolCallCompleted})
+		for j, event := range got {
+			if event.ToolCallID != call.callID || event.ToolName != call.toolName || event.ToolCallIndex == nil || *event.ToolCallIndex != call.index {
+				t.Fatalf("call[%d] event[%d] identity = %#v", i, j, event)
+			}
+		}
+		if got[1].Arguments != call.arguments {
+			t.Fatalf("call[%d] completed arguments=%q", i, got[1].Arguments)
+		}
 	}
 }
 
