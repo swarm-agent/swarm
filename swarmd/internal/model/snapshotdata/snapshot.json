@@ -2,13 +2,27 @@
   "schema_version": "2026-06-09.1",
   "api_version": "v1",
   "snapshot_schema_version": "2026-07-01.1",
-  "snapshot_id": "swarm-models-v1-4e0072557685b5a2",
-  "snapshot_version": "4e0072557685b5a2",
-  "generated_at": "2026-07-27T15:48:05.616Z",
-  "model_count": 586,
+  "snapshot_id": "swarm-models-v1-8d6b56cd70bf9175",
+  "snapshot_version": "8d6b56cd70bf9175",
+  "generated_at": "2026-07-30T11:28:01Z",
+  "model_count": 587,
   "provider_count": 7,
   "hydrated_provider_count": 6,
   "definitions": {
+    "recommendation_roles": {
+      "compatibility_modes": [
+        "plan",
+        "auto",
+        "utility"
+      ],
+      "agent_defaults": [
+        "compact",
+        "finder",
+        "coder",
+        "designer"
+      ],
+      "compact_semantics": "compact selects the model used by Swarm's compact agent role. It does not configure Anthropic prompt or context compaction."
+    },
     "anthropic": {
       "serving_tiers": {
         "standard": {
@@ -1213,41 +1227,41 @@
         "fast": "off"
       },
       "utility": {
-        "model": "gemini-3.5-flash-lite",
+        "model": "gemini-3.6-flash",
         "thinking": "medium",
         "fast": "off"
       }
     },
     "fireworks": {
       "plan": {
-        "model": "accounts/fireworks/models/glm-5p2",
-        "thinking": "xhigh",
+        "model": "accounts/fireworks/models/kimi-k3",
+        "thinking": "max",
         "fast": "off"
       },
       "auto": {
-        "model": "accounts/fireworks/models/glm-5p2",
+        "model": "accounts/fireworks/models/kimi-k3",
         "thinking": "high",
         "fast": "off"
       },
       "utility": {
-        "model": "accounts/fireworks/models/deepseek-v4-flash",
+        "model": "accounts/fireworks/models/glm-5p2",
         "thinking": "high",
         "fast": "off"
       }
     },
     "openrouter": {
       "plan": {
-        "model": "moonshotai/kimi-k3",
-        "thinking": "max",
+        "model": "openai/gpt-5.6-sol",
+        "thinking": "xhigh",
         "fast": "off"
       },
       "auto": {
-        "model": "moonshotai/kimi-k3",
+        "model": "openai/gpt-5.6-sol",
         "thinking": "high",
         "fast": "off"
       },
       "utility": {
-        "model": "google/gemini-3.6-flash",
+        "model": "openai/gpt-5.6-luna",
         "thinking": "medium",
         "fast": "off"
       }
@@ -1269,6 +1283,26 @@
         "model": "gpt-5.6-luna",
         "thinking": "high",
         "fast": "off"
+      },
+      "compact": {
+        "model": "gpt-5.6-luna",
+        "thinking": "medium",
+        "fast": "off"
+      },
+      "finder": {
+        "model": "gpt-5.6-luna",
+        "thinking": "medium",
+        "fast": "off"
+      },
+      "coder": {
+        "model": "gpt-5.6-sol",
+        "thinking": "high",
+        "fast": "off"
+      },
+      "designer": {
+        "model": "gpt-5.6-sol",
+        "thinking": "medium",
+        "fast": "off"
       }
     },
     "openai": {
@@ -1284,6 +1318,26 @@
       },
       "utility": {
         "model": "gpt-5.6-luna",
+        "thinking": "medium",
+        "fast": "off"
+      },
+      "compact": {
+        "model": "gpt-5.6-luna",
+        "thinking": "medium",
+        "fast": "off"
+      },
+      "finder": {
+        "model": "gpt-5.6-luna",
+        "thinking": "medium",
+        "fast": "off"
+      },
+      "coder": {
+        "model": "gpt-5.6-sol",
+        "thinking": "high",
+        "fast": "off"
+      },
+      "designer": {
+        "model": "gpt-5.6-sol",
         "thinking": "medium",
         "fast": "off"
       }
@@ -1303,6 +1357,26 @@
         "model": "claude-sonnet-5",
         "thinking": "medium",
         "fast": "off"
+      },
+      "compact": {
+        "model": "claude-haiku-4-5-20251001",
+        "thinking": "off",
+        "fast": "off"
+      },
+      "finder": {
+        "model": "claude-sonnet-5",
+        "thinking": "medium",
+        "fast": "off"
+      },
+      "coder": {
+        "model": "claude-opus-5",
+        "thinking": "high",
+        "fast": "off"
+      },
+      "designer": {
+        "model": "claude-sonnet-5",
+        "thinking": "high",
+        "fast": "off"
       }
     },
     "google": {
@@ -1317,42 +1391,102 @@
         "fast": "off"
       },
       "utility": {
+        "model": "gemini-3.6-flash",
+        "thinking": "medium",
+        "fast": "off"
+      },
+      "compact": {
         "model": "gemini-3.5-flash-lite",
         "thinking": "medium",
+        "fast": "off"
+      },
+      "finder": {
+        "model": "gemini-3.6-flash",
+        "thinking": "low",
+        "fast": "off"
+      },
+      "coder": {
+        "model": "gemini-3.6-flash",
+        "thinking": "high",
+        "fast": "off"
+      },
+      "designer": {
+        "model": "gemini-3.6-flash",
+        "thinking": "high",
         "fast": "off"
       }
     },
     "fireworks": {
       "plan": {
-        "model": "accounts/fireworks/models/glm-5p2",
-        "thinking": "xhigh",
+        "model": "accounts/fireworks/models/kimi-k3",
+        "thinking": "max",
         "fast": "off"
       },
       "auto": {
-        "model": "accounts/fireworks/models/glm-5p2",
+        "model": "accounts/fireworks/models/kimi-k3",
         "thinking": "high",
         "fast": "off"
       },
       "utility": {
-        "model": "accounts/fireworks/models/deepseek-v4-flash",
+        "model": "accounts/fireworks/models/glm-5p2",
+        "thinking": "high",
+        "fast": "off"
+      },
+      "compact": {
+        "model": "accounts/fireworks/models/glm-5p2",
+        "thinking": "high",
+        "fast": "off"
+      },
+      "finder": {
+        "model": "accounts/fireworks/models/glm-5p2",
+        "thinking": "high",
+        "fast": "off"
+      },
+      "coder": {
+        "model": "accounts/fireworks/models/kimi-k3",
+        "thinking": "high",
+        "fast": "off"
+      },
+      "designer": {
+        "model": "accounts/fireworks/models/kimi-k3",
         "thinking": "high",
         "fast": "off"
       }
     },
     "openrouter": {
       "plan": {
-        "model": "moonshotai/kimi-k3",
-        "thinking": "max",
+        "model": "openai/gpt-5.6-sol",
+        "thinking": "xhigh",
         "fast": "off"
       },
       "auto": {
-        "model": "moonshotai/kimi-k3",
+        "model": "openai/gpt-5.6-sol",
         "thinking": "high",
         "fast": "off"
       },
       "utility": {
+        "model": "openai/gpt-5.6-luna",
+        "thinking": "medium",
+        "fast": "off"
+      },
+      "compact": {
+        "model": "google/gemini-3.5-flash-lite",
+        "thinking": "medium",
+        "fast": "off"
+      },
+      "finder": {
         "model": "google/gemini-3.6-flash",
         "thinking": "medium",
+        "fast": "off"
+      },
+      "coder": {
+        "model": "openai/gpt-5.6-sol",
+        "thinking": "high",
+        "fast": "off"
+      },
+      "designer": {
+        "model": "moonshotai/kimi-k3",
+        "thinking": "high",
         "fast": "off"
       }
     }
@@ -1377,6 +1511,26 @@
         "utility": {
           "model": "claude-sonnet-5",
           "thinking": "medium",
+          "fast": "off"
+        },
+        "compact": {
+          "model": "claude-haiku-4-5-20251001",
+          "thinking": "off",
+          "fast": "off"
+        },
+        "finder": {
+          "model": "claude-sonnet-5",
+          "thinking": "medium",
+          "fast": "off"
+        },
+        "coder": {
+          "model": "claude-opus-5",
+          "thinking": "high",
+          "fast": "off"
+        },
+        "designer": {
+          "model": "claude-sonnet-5",
+          "thinking": "high",
           "fast": "off"
         }
       },
@@ -1481,6 +1635,26 @@
           "model": "gpt-5.6-luna",
           "thinking": "high",
           "fast": "off"
+        },
+        "compact": {
+          "model": "gpt-5.6-luna",
+          "thinking": "medium",
+          "fast": "off"
+        },
+        "finder": {
+          "model": "gpt-5.6-luna",
+          "thinking": "medium",
+          "fast": "off"
+        },
+        "coder": {
+          "model": "gpt-5.6-sol",
+          "thinking": "high",
+          "fast": "off"
+        },
+        "designer": {
+          "model": "gpt-5.6-sol",
+          "thinking": "medium",
+          "fast": "off"
         }
       },
       "model_count": 7,
@@ -1553,22 +1727,42 @@
       "auth_required_for_hydration": true,
       "recommendations": {
         "plan": {
-          "model": "accounts/fireworks/models/glm-5p2",
-          "thinking": "xhigh",
+          "model": "accounts/fireworks/models/kimi-k3",
+          "thinking": "max",
           "fast": "off"
         },
         "auto": {
-          "model": "accounts/fireworks/models/glm-5p2",
+          "model": "accounts/fireworks/models/kimi-k3",
           "thinking": "high",
           "fast": "off"
         },
         "utility": {
-          "model": "accounts/fireworks/models/deepseek-v4-flash",
+          "model": "accounts/fireworks/models/glm-5p2",
+          "thinking": "high",
+          "fast": "off"
+        },
+        "compact": {
+          "model": "accounts/fireworks/models/glm-5p2",
+          "thinking": "high",
+          "fast": "off"
+        },
+        "finder": {
+          "model": "accounts/fireworks/models/glm-5p2",
+          "thinking": "high",
+          "fast": "off"
+        },
+        "coder": {
+          "model": "accounts/fireworks/models/kimi-k3",
+          "thinking": "high",
+          "fast": "off"
+        },
+        "designer": {
+          "model": "accounts/fireworks/models/kimi-k3",
           "thinking": "high",
           "fast": "off"
         }
       },
-      "model_count": 19,
+      "model_count": 20,
       "sources": [
         {
           "source_id": "fireworks_serverless_models_api",
@@ -1652,8 +1846,28 @@
           "fast": "off"
         },
         "utility": {
+          "model": "gemini-3.6-flash",
+          "thinking": "medium",
+          "fast": "off"
+        },
+        "compact": {
           "model": "gemini-3.5-flash-lite",
           "thinking": "medium",
+          "fast": "off"
+        },
+        "finder": {
+          "model": "gemini-3.6-flash",
+          "thinking": "low",
+          "fast": "off"
+        },
+        "coder": {
+          "model": "gemini-3.6-flash",
+          "thinking": "high",
+          "fast": "off"
+        },
+        "designer": {
+          "model": "gemini-3.6-flash",
+          "thinking": "high",
           "fast": "off"
         }
       },
@@ -1779,6 +1993,26 @@
           "model": "gpt-5.6-luna",
           "thinking": "medium",
           "fast": "off"
+        },
+        "compact": {
+          "model": "gpt-5.6-luna",
+          "thinking": "medium",
+          "fast": "off"
+        },
+        "finder": {
+          "model": "gpt-5.6-luna",
+          "thinking": "medium",
+          "fast": "off"
+        },
+        "coder": {
+          "model": "gpt-5.6-sol",
+          "thinking": "high",
+          "fast": "off"
+        },
+        "designer": {
+          "model": "gpt-5.6-sol",
+          "thinking": "medium",
+          "fast": "off"
         }
       },
       "model_count": 47,
@@ -1827,18 +2061,38 @@
       "auth_required_for_hydration": false,
       "recommendations": {
         "plan": {
-          "model": "moonshotai/kimi-k3",
-          "thinking": "max",
+          "model": "openai/gpt-5.6-sol",
+          "thinking": "xhigh",
           "fast": "off"
         },
         "auto": {
-          "model": "moonshotai/kimi-k3",
+          "model": "openai/gpt-5.6-sol",
           "thinking": "high",
           "fast": "off"
         },
         "utility": {
+          "model": "openai/gpt-5.6-luna",
+          "thinking": "medium",
+          "fast": "off"
+        },
+        "compact": {
+          "model": "google/gemini-3.5-flash-lite",
+          "thinking": "medium",
+          "fast": "off"
+        },
+        "finder": {
           "model": "google/gemini-3.6-flash",
           "thinking": "medium",
+          "fast": "off"
+        },
+        "coder": {
+          "model": "openai/gpt-5.6-sol",
+          "thinking": "high",
+          "fast": "off"
+        },
+        "designer": {
+          "model": "moonshotai/kimi-k3",
+          "thinking": "high",
           "fast": "off"
         }
       },
@@ -1908,7 +2162,7 @@
       "provider_id": "fireworks",
       "provider_display_name": "Fireworks AI",
       "source_url": "https://fireworks.ai/models?modelTypes=Serverless",
-      "model_count": 19,
+      "model_count": 20,
       "path": "/v1/models/fireworks.json"
     },
     {
@@ -9255,7 +9509,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -9322,7 +9576,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -9345,7 +9599,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -9569,7 +9823,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-27T15:48:05.616Z"
+      "updated_at": "2026-07-30T11:28:01Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -9757,7 +10011,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -9824,7 +10078,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -9847,7 +10101,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10121,7 +10375,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-27T15:48:05.616Z"
+      "updated_at": "2026-07-30T11:28:01Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -10308,7 +10562,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10375,7 +10629,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10398,7 +10652,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10654,7 +10908,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-27T15:48:05.616Z"
+      "updated_at": "2026-07-30T11:28:01Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -10842,7 +11096,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10909,7 +11163,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10932,7 +11186,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -11206,7 +11460,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-27T15:48:05.616Z"
+      "updated_at": "2026-07-30T11:28:01Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -11401,7 +11655,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -11468,7 +11722,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -11491,7 +11745,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -11778,7 +12032,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-27T15:48:05.616Z"
+      "updated_at": "2026-07-30T11:28:01Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -11974,7 +12228,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12041,7 +12295,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12064,7 +12318,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12366,7 +12620,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-27T15:48:05.616Z"
+      "updated_at": "2026-07-30T11:28:01Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -12562,7 +12816,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12629,7 +12883,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12652,7 +12906,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-27T15:48:05.616Z",
+          "fetched_at": "2026-07-30T11:28:01Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12932,7 +13186,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-27T15:48:05.616Z"
+      "updated_at": "2026-07-30T11:28:01Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -14521,7 +14775,8 @@
             "supported": true,
             "supported_tiers": [
               "standard",
-              "priority"
+              "priority",
+              "fast"
             ],
             "default_tier": "standard",
             "provider_parameter": "service_tier",
@@ -14549,7 +14804,18 @@
               },
               "notes": "Fireworks provider-native Priority serving selected with service_tier=priority on the base model path. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
             },
-            "fast": null,
+            "fast": {
+              "tier": "fast",
+              "provider_parameter": "model",
+              "provider_value": "accounts/fireworks/routers/glm-5p1-fast",
+              "request_model_path": "accounts/fireworks/routers/glm-5p1-fast",
+              "pricing": {
+                "uncached_input_price_per_million_tokens": 2.8,
+                "cached_input_price_per_million_tokens": 0.52,
+                "output_price_per_million_tokens": 8.8
+              },
+              "notes": "Fireworks Fast serving is selected by changing the request model ID to this provider-published Fast router path; it is a separate serving path, not a thinking level."
+            },
             "pricing_unit": "USD_per_1m_tokens",
             "source_ids": [
               "fireworks_serverless_pricing_docs",
@@ -15663,7 +15929,8 @@
             "supported": true,
             "supported_tiers": [
               "standard",
-              "priority"
+              "priority",
+              "fast"
             ],
             "default_tier": "standard",
             "provider_parameter": "service_tier",
@@ -15691,7 +15958,18 @@
               },
               "notes": "Fireworks provider-native Priority serving selected with service_tier=priority on the base model path. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
             },
-            "fast": null,
+            "fast": {
+              "tier": "fast",
+              "provider_parameter": "model",
+              "provider_value": "accounts/fireworks/routers/glm-5p2-fast",
+              "request_model_path": "accounts/fireworks/routers/glm-5p2-fast",
+              "pricing": {
+                "uncached_input_price_per_million_tokens": 2.1,
+                "cached_input_price_per_million_tokens": 0.21,
+                "output_price_per_million_tokens": 6.6
+              },
+              "notes": "Fireworks Fast serving is selected by changing the request model ID to this provider-published Fast router path; it is a separate serving path, not a thinking level."
+            },
             "pricing_unit": "USD_per_1m_tokens",
             "source_ids": [
               "fireworks_serverless_pricing_docs",
@@ -17902,7 +18180,8 @@
             "supported": true,
             "supported_tiers": [
               "standard",
-              "priority"
+              "priority",
+              "fast"
             ],
             "default_tier": "standard",
             "provider_parameter": "service_tier",
@@ -17930,7 +18209,18 @@
               },
               "notes": "Fireworks provider-native Priority serving selected with service_tier=priority on the base model path. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
             },
-            "fast": null,
+            "fast": {
+              "tier": "fast",
+              "provider_parameter": "model",
+              "provider_value": "accounts/fireworks/routers/kimi-k2p6-fast",
+              "request_model_path": "accounts/fireworks/routers/kimi-k2p6-fast",
+              "pricing": {
+                "uncached_input_price_per_million_tokens": 2,
+                "cached_input_price_per_million_tokens": 0.3,
+                "output_price_per_million_tokens": 8
+              },
+              "notes": "Fireworks Fast serving is selected by changing the request model ID to this provider-published Fast router path; it is a separate serving path, not a thinking level."
+            },
             "pricing_unit": "USD_per_1m_tokens",
             "source_ids": [
               "fireworks_serverless_pricing_docs",
@@ -18909,7 +19199,8 @@
             "supported": true,
             "supported_tiers": [
               "standard",
-              "priority"
+              "priority",
+              "fast"
             ],
             "default_tier": "standard",
             "provider_parameter": "service_tier",
@@ -18937,7 +19228,18 @@
               },
               "notes": "Fireworks provider-native Priority serving selected with service_tier=priority on the base model path. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
             },
-            "fast": null,
+            "fast": {
+              "tier": "fast",
+              "provider_parameter": "model",
+              "provider_value": "accounts/fireworks/routers/kimi-k2p7-code-fast",
+              "request_model_path": "accounts/fireworks/routers/kimi-k2p7-code-fast",
+              "pricing": {
+                "uncached_input_price_per_million_tokens": 1.9,
+                "cached_input_price_per_million_tokens": 0.38,
+                "output_price_per_million_tokens": 8
+              },
+              "notes": "Fireworks Fast serving is selected by changing the request model ID to this provider-published Fast router path; it is a separate serving path, not a thinking level."
+            },
             "pricing_unit": "USD_per_1m_tokens",
             "source_ids": [
               "fireworks_serverless_pricing_docs",
@@ -19583,28 +19885,72 @@
         "supports_parallel_tool_calls": true,
         "supports_structured_outputs": null,
         "supports_json_mode": null,
-        "supports_reasoning": null,
+        "supports_reasoning": true,
         "supports_embeddings": false,
         "supports_batch": null,
         "supports_fine_tuning": true,
         "supports_caching": null
       },
       "thinking": {
-        "supported": null,
-        "control_kind": "unknown",
-        "supported_swarm_settings": [],
-        "default_swarm_setting": null,
-        "provider_parameter": null,
-        "provider_supported_values": [],
-        "provider_default_value": null,
-        "can_disable": null,
-        "supports_budget_tokens": null,
-        "supports_effort_levels": null,
-        "supports_reasoning_content": null,
-        "swarm_setting_mappings": [],
-        "unsupported_swarm_settings": [],
-        "source_ids": [],
-        "notes": null
+        "supported": true,
+        "control_kind": "effort",
+        "supported_swarm_settings": [
+          "off",
+          "low",
+          "high",
+          "max"
+        ],
+        "default_swarm_setting": "max",
+        "provider_parameter": "reasoning_effort",
+        "provider_supported_values": [
+          "low",
+          "high",
+          "max",
+          false
+        ],
+        "provider_default_value": "max",
+        "can_disable": true,
+        "supports_budget_tokens": false,
+        "supports_effort_levels": true,
+        "supports_reasoning_content": true,
+        "swarm_setting_mappings": [
+          {
+            "swarm_setting": "off",
+            "provider_value": false,
+            "effective_provider_value": false,
+            "behavior": "disabled",
+            "notes": "Copies the applicable OpenRouter Kimi K3 compatibility control and sends reasoning_effort=false to disable reasoning."
+          },
+          {
+            "swarm_setting": "low",
+            "provider_value": "low",
+            "effective_provider_value": "low",
+            "behavior": "effort",
+            "notes": "Copies the applicable OpenRouter Kimi K3 compatibility control for Fireworks validation."
+          },
+          {
+            "swarm_setting": "high",
+            "provider_value": "high",
+            "effective_provider_value": "high",
+            "behavior": "effort",
+            "notes": "Copies the applicable OpenRouter Kimi K3 compatibility control for Fireworks validation."
+          },
+          {
+            "swarm_setting": "max",
+            "provider_value": "max",
+            "effective_provider_value": "max",
+            "behavior": "effort",
+            "notes": "Copies the applicable OpenRouter Kimi K3 compatibility control for Fireworks validation."
+          }
+        ],
+        "unsupported_swarm_settings": [
+          "medium",
+          "xhigh"
+        ],
+        "source_ids": [
+          "fireworks_chat_completions_reasoning_docs"
+        ],
+        "notes": "Swarm compatibility mapping copied from the current OpenRouter Kimi K3 record as requested: off, low, high, and max with max as the default. This is an explicit cross-provider compatibility mapping for Fireworks validation, not a claim that Fireworks publishes model-specific Kimi K3 reasoning-effort documentation."
       },
       "limits": {
         "context_window_tokens": 1048576,
@@ -19628,6 +19974,7 @@
         "supported_parameters": [
           "max_tokens",
           "parallel_tool_calls",
+          "reasoning_effort",
           "service_tier",
           "stream",
           "temperature",
@@ -19916,7 +20263,8 @@
             "supported": true,
             "supported_tiers": [
               "standard",
-              "priority"
+              "priority",
+              "fast"
             ],
             "default_tier": "standard",
             "provider_parameter": "service_tier",
@@ -19944,16 +20292,56 @@
               },
               "notes": "Fireworks provider-native Priority serving selected with service_tier=priority on the base model path. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
             },
-            "fast": null,
+            "fast": {
+              "tier": "fast",
+              "provider_parameter": "model",
+              "provider_value": "accounts/fireworks/routers/kimi-k3-fast",
+              "request_model_path": "accounts/fireworks/routers/kimi-k3-fast",
+              "pricing": {
+                "uncached_input_price_per_million_tokens": 4.5,
+                "cached_input_price_per_million_tokens": 0.45,
+                "output_price_per_million_tokens": 22.5
+              },
+              "notes": "Fireworks Fast serving is selected by changing the request model ID to this Fast router path; it is not selected with service_tier=priority."
+            },
             "pricing_unit": "USD_per_1m_tokens",
             "source_ids": [
               "fireworks_serverless_pricing_docs",
               "fireworks_serverless_serving_paths_docs",
               "fireworks_app_model_pages"
             ],
-            "notes": "Kimi K3 serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
+            "notes": "Kimi K3 serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID. Kimi K3 supports Fireworks Standard and Priority on the base model path. Fast is the separate provider-published accounts/fireworks/routers/kimi-k3-fast route with its own pricing; it is a serving path, not a thinking level. Fireworks serverless pricing docs and first-party model pages publish Standard, Priority, and Fast prices. The pricing docs identify Priority availability as source-of-truth where they conflict with rendered app pages."
           },
-          "reasoning_effort": null,
+          "reasoning_effort": {
+            "control_kind": "effort",
+            "supported_swarm_settings": [
+              "off",
+              "low",
+              "high",
+              "max"
+            ],
+            "default_swarm_setting": "max",
+            "provider_parameter": "reasoning_effort",
+            "provider_supported_values": [
+              "low",
+              "high",
+              "max",
+              false
+            ],
+            "provider_default_value": "max",
+            "can_disable": true,
+            "supports_budget_tokens": false,
+            "supports_effort_levels": true,
+            "supports_reasoning_content": true,
+            "unsupported_swarm_settings": [
+              "medium",
+              "xhigh"
+            ],
+            "source_ids": [
+              "fireworks_chat_completions_reasoning_docs"
+            ],
+            "note": "Swarm compatibility mapping copied from the current OpenRouter Kimi K3 record as requested: off, low, high, and max with max as the default. This is an explicit cross-provider compatibility mapping for Fireworks validation, not a claim that Fireworks publishes model-specific Kimi K3 reasoning-effort documentation."
+          },
           "model_library": {
             "source_url": "https://fireworks.ai/models/fireworks/kimi-k3",
             "fetched_at": "2026-07-27T15:46:50.342Z",
@@ -20038,6 +20426,574 @@
         },
         "reviewed_at": null,
         "notes": "Fireworks entry hydrated from the current Fireworks model library. Context/input limits are scraped from the model library; provider-native Standard/Priority serving metadata is documented in provider_specific.fireworks.serving, while Fast router rows are separate model entries."
+      },
+      "updated_at": "2026-07-27T15:46:50.342Z"
+    },
+    {
+      "schema_version": "2026-06-09.1",
+      "catalog_id": "fireworks/kimi-k3-fast",
+      "provider_id": "fireworks",
+      "provider_display_name": "Fireworks AI",
+      "model_id": "kimi-k3-fast",
+      "display_name": "Kimi K3 Fast",
+      "description": "Kimi K3 is Kimi’s most capable flagship model to date, with 2.8 trillion parameters. It is built on Kimi Delta Attention (KDA), a hybrid linear attention mechanism, and Attention Residuals, with native visual understanding and a 1M-token context window. It is the world’s first open-source model in the 3-trillion-parameter class, designed for frontier intelligence scenarios including long-horizon coding, knowledge work, and reasoning.",
+      "family": "kimi",
+      "external_ids": {
+        "provider_canonical_slug": "accounts/fireworks/routers/kimi-k3-fast",
+        "hugging_face_id": "moonshotai/Kimi-K3",
+        "upstream_model_id": "accounts/fireworks/models/kimi-k3"
+      },
+      "lifecycle": {
+        "created_at": "2026-07-19T00:00:00.000Z",
+        "created_at_unix_seconds": 1784419200,
+        "release_date": null,
+        "knowledge_cutoff": null,
+        "deprecation_date": null,
+        "expiration_date": null
+      },
+      "availability_status": "available",
+      "architecture": {
+        "source_modality": "multimodal->text",
+        "tokenizer": null,
+        "instruct_type": null,
+        "parameter_count": 2810000000000,
+        "active_parameter_count": null
+      },
+      "modalities": {
+        "input": [
+          "image",
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "supports_text_input": true,
+        "supports_text_output": true,
+        "supports_image_input": true,
+        "supports_image_output": false,
+        "supports_audio_input": false,
+        "supports_audio_output": false,
+        "supports_video_input": false,
+        "supports_video_output": false,
+        "supports_file_input": false,
+        "supports_pdf_input": false,
+        "supports_voice": false,
+        "supports_tools": true,
+        "supports_parallel_tool_calls": true,
+        "supports_structured_outputs": null,
+        "supports_json_mode": null,
+        "supports_reasoning": true,
+        "supports_embeddings": false,
+        "supports_batch": null,
+        "supports_fine_tuning": true,
+        "supports_caching": null
+      },
+      "thinking": {
+        "supported": true,
+        "control_kind": "effort",
+        "supported_swarm_settings": [
+          "off",
+          "low",
+          "high",
+          "max"
+        ],
+        "default_swarm_setting": "max",
+        "provider_parameter": "reasoning_effort",
+        "provider_supported_values": [
+          "low",
+          "high",
+          "max",
+          false
+        ],
+        "provider_default_value": "max",
+        "can_disable": true,
+        "supports_budget_tokens": false,
+        "supports_effort_levels": true,
+        "supports_reasoning_content": true,
+        "swarm_setting_mappings": [
+          {
+            "swarm_setting": "off",
+            "provider_value": false,
+            "effective_provider_value": false,
+            "behavior": "disabled",
+            "notes": "Copies the applicable OpenRouter Kimi K3 compatibility control and sends reasoning_effort=false to disable reasoning."
+          },
+          {
+            "swarm_setting": "low",
+            "provider_value": "low",
+            "effective_provider_value": "low",
+            "behavior": "effort",
+            "notes": "Copies the applicable OpenRouter Kimi K3 compatibility control for Fireworks validation."
+          },
+          {
+            "swarm_setting": "high",
+            "provider_value": "high",
+            "effective_provider_value": "high",
+            "behavior": "effort",
+            "notes": "Copies the applicable OpenRouter Kimi K3 compatibility control for Fireworks validation."
+          },
+          {
+            "swarm_setting": "max",
+            "provider_value": "max",
+            "effective_provider_value": "max",
+            "behavior": "effort",
+            "notes": "Copies the applicable OpenRouter Kimi K3 compatibility control for Fireworks validation."
+          }
+        ],
+        "unsupported_swarm_settings": [
+          "medium",
+          "xhigh"
+        ],
+        "source_ids": [
+          "fireworks_chat_completions_reasoning_docs"
+        ],
+        "notes": "Swarm compatibility mapping copied from the current OpenRouter Kimi K3 record as requested: off, low, high, and max with max as the default. This is an explicit cross-provider compatibility mapping for Fireworks validation, not a claim that Fireworks publishes model-specific Kimi K3 reasoning-effort documentation."
+      },
+      "limits": {
+        "context_window_tokens": 1048576,
+        "max_input_tokens": 1048576,
+        "max_output_tokens": null,
+        "max_reasoning_tokens": null
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_price_per_million_tokens": 4.5,
+        "output_price_per_million_tokens": 22.5,
+        "cached_input_price_per_million_tokens": 0.45,
+        "reasoning_price_per_million_tokens": null,
+        "image_input_price": null,
+        "image_output_price": null,
+        "audio_input_price": null,
+        "audio_output_price": null,
+        "is_free": null
+      },
+      "parameters": {
+        "supported_parameters": [
+          "max_tokens",
+          "parallel_tool_calls",
+          "reasoning_effort",
+          "stream",
+          "temperature",
+          "tool_choice",
+          "tools",
+          "top_k",
+          "top_p"
+        ],
+        "default_parameters": {},
+        "supported_voices": null
+      },
+      "routing": {
+        "routed_through_provider_id": "fireworks",
+        "upstream_provider_ids": [
+          "fireworks"
+        ],
+        "top_provider_context_window_tokens": 1048576,
+        "top_provider_max_output_tokens": null,
+        "top_provider_is_moderated": null,
+        "per_request_limits": null
+      },
+      "links": {
+        "details_url": "https://fireworks.ai/models/fireworks/kimi-k3",
+        "docs_url": "https://docs.fireworks.ai/models/overview",
+        "pricing_url": "https://docs.fireworks.ai/serverless/pricing",
+        "endpoint_url": "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue"
+      },
+      "sources": [
+        {
+          "source_id": "fireworks_model_library",
+          "source_url": "https://fireworks.ai/models",
+          "source_kind": "official_docs",
+          "fetched_at": "2026-07-27T15:46:50.342Z",
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "architecture",
+            "availability_status",
+            "capabilities",
+            "catalog_id",
+            "description",
+            "display_name",
+            "external_ids",
+            "lifecycle",
+            "limits",
+            "links",
+            "modalities",
+            "model_id",
+            "parameters",
+            "provider_id",
+            "provider_specific.fireworks",
+            "routing"
+          ]
+        },
+        {
+          "source_id": "fireworks_serverless_models_api",
+          "source_url": "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue",
+          "source_kind": "official_api",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "missing",
+          "fields": [
+            "architecture",
+            "availability_status",
+            "capabilities",
+            "catalog_id",
+            "description",
+            "display_name",
+            "external_ids",
+            "lifecycle",
+            "limits",
+            "links",
+            "modalities",
+            "model_id",
+            "parameters",
+            "provider_id",
+            "provider_specific.fireworks",
+            "routing"
+          ]
+        },
+        {
+          "source_id": "fireworks_vision_models_docs",
+          "source_url": "https://docs.fireworks.ai/guides/querying-vision-language-models",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "architecture.source_modality",
+            "capabilities.supports_audio_input",
+            "capabilities.supports_audio_output",
+            "capabilities.supports_file_input",
+            "capabilities.supports_image_input",
+            "capabilities.supports_image_output",
+            "capabilities.supports_pdf_input",
+            "capabilities.supports_text_input",
+            "capabilities.supports_text_output",
+            "capabilities.supports_video_input",
+            "capabilities.supports_video_output",
+            "modalities",
+            "provider_specific.fireworks.multimodal"
+          ]
+        },
+        {
+          "source_id": "fireworks_chat_completions_api_reference",
+          "source_url": "https://docs.fireworks.ai/api-reference/post-chatcompletions",
+          "source_kind": "official_api",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "provider_specific.fireworks.multimodal.image"
+          ]
+        },
+        {
+          "source_id": "fireworks_video_audio_inputs_docs",
+          "source_url": "https://docs.fireworks.ai/guides/video-audio-inputs",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "architecture.source_modality",
+            "capabilities.supports_audio_input",
+            "capabilities.supports_audio_output",
+            "capabilities.supports_file_input",
+            "capabilities.supports_image_input",
+            "capabilities.supports_image_output",
+            "capabilities.supports_pdf_input",
+            "capabilities.supports_text_input",
+            "capabilities.supports_text_output",
+            "capabilities.supports_video_input",
+            "capabilities.supports_video_output",
+            "modalities",
+            "provider_specific.fireworks.multimodal"
+          ]
+        },
+        {
+          "source_id": "fireworks_document_inlining_docs",
+          "source_url": "https://docs.fireworks.ai/firesearch/inline-multimodal",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "architecture.source_modality",
+            "capabilities.supports_audio_input",
+            "capabilities.supports_audio_output",
+            "capabilities.supports_file_input",
+            "capabilities.supports_image_input",
+            "capabilities.supports_image_output",
+            "capabilities.supports_pdf_input",
+            "capabilities.supports_text_input",
+            "capabilities.supports_text_output",
+            "capabilities.supports_video_input",
+            "capabilities.supports_video_output",
+            "modalities",
+            "provider_specific.fireworks.multimodal"
+          ]
+        },
+        {
+          "source_id": "fireworks_recommended_models_docs",
+          "source_url": "https://docs.fireworks.ai/guides/recommended-models",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "swarm.labels.best_for_vision"
+          ]
+        },
+        {
+          "source_id": "fireworks_chat_completions_reasoning_docs",
+          "source_url": "https://docs.fireworks.ai/api-reference/post-chatcompletions",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "missing",
+          "fields": [
+            "capabilities.supports_reasoning",
+            "parameters.supported_parameters",
+            "provider_specific.fireworks.reasoning_effort",
+            "thinking"
+          ]
+        },
+        {
+          "source_id": "fireworks_serverless_pricing_docs",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "pricing",
+            "provider_specific.fireworks.serving",
+            "provider_specific.fireworks.serving.fast.pricing",
+            "provider_specific.fireworks.serving.priority.pricing",
+            "provider_specific.fireworks.serving.standard.pricing"
+          ]
+        },
+        {
+          "source_id": "fireworks_serverless_serving_paths_docs",
+          "source_url": "https://docs.fireworks.ai/serverless/serving-paths",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "pricing",
+            "provider_specific.fireworks.serving",
+            "provider_specific.fireworks.serving.fast.pricing",
+            "provider_specific.fireworks.serving.priority.pricing",
+            "provider_specific.fireworks.serving.standard.pricing"
+          ]
+        },
+        {
+          "source_id": "fireworks_app_model_pages",
+          "source_url": "https://fireworks.ai/models/fireworks/kimi-k3",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "limits.context_window_tokens",
+            "limits.max_input_tokens",
+            "limits.max_output_tokens",
+            "pricing",
+            "provider_specific.fireworks.serving"
+          ]
+        }
+      ],
+      "provider_specific": {
+        "fireworks": {
+          "resource_name": "accounts/fireworks/routers/kimi-k3-fast",
+          "request_model_path": "accounts/fireworks/routers/kimi-k3-fast",
+          "account_id": "fireworks",
+          "kind": "BASE_MODEL",
+          "state": "READY",
+          "public": true,
+          "supports_serverless": true,
+          "supports_lora": true,
+          "multimodal": {
+            "api_surface": "serverless_chat_completions",
+            "text": {
+              "input": true,
+              "output": true
+            },
+            "image": {
+              "input": true,
+              "output": false,
+              "contract_inheritance": "provider",
+              "model_overrides": null,
+              "note": "This image-capable Serverless model inherits definitions.multimodal.image unchanged."
+            },
+            "file": {
+              "input": false,
+              "semantics": "The current Fireworks Serverless model contract has no generic file/document input capability. File-upload assets may transport supported images through mm_file://, but transport does not make arbitrary files model inputs."
+            },
+            "pdf": {
+              "input": false,
+              "processing": "PDFs are not native model inputs. Fireworks documents client-side conversion of PDF pages to supported images before sending image_url parts."
+            },
+            "audio": {
+              "input": false,
+              "output": false,
+              "serverless_note": "Fireworks documents audio-capable models only on dedicated deployments; none are current Serverless catalog entries."
+            },
+            "video": {
+              "input": false,
+              "output": false,
+              "serverless_note": "Fireworks documents video-capable models only on dedicated deployments; none are current Serverless catalog entries."
+            },
+            "output_note": "Current Fireworks Serverless chat/VLM entries generate text; image, audio, and video generation APIs/models are outside this catalog.",
+            "source_ids": [
+              "fireworks_app_model_pages",
+              "fireworks_vision_models_docs",
+              "fireworks_chat_completions_api_reference",
+              "fireworks_video_audio_inputs_docs",
+              "fireworks_document_inlining_docs"
+            ]
+          },
+          "use_hf_apply_chat_template": null,
+          "serving": {
+            "supported": true,
+            "supported_tiers": [
+              "standard"
+            ],
+            "default_tier": "standard",
+            "provider_parameter": null,
+            "standard": {
+              "tier": "standard",
+              "provider_parameter": null,
+              "provider_value": null,
+              "request_model_path": "accounts/fireworks/routers/kimi-k3-fast",
+              "pricing": {
+                "uncached_input_price_per_million_tokens": 4.5,
+                "cached_input_price_per_million_tokens": 0.45,
+                "output_price_per_million_tokens": 22.5
+              },
+              "notes": "Fireworks Standard serving; default path when service_tier is omitted."
+            },
+            "priority": null,
+            "fast": null,
+            "pricing_unit": "USD_per_1m_tokens",
+            "source_ids": [
+              "fireworks_serverless_pricing_docs",
+              "fireworks_serverless_serving_paths_docs",
+              "fireworks_app_model_pages"
+            ],
+            "notes": "Kimi K3 Fast serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
+          },
+          "reasoning_effort": {
+            "control_kind": "effort",
+            "supported_swarm_settings": [
+              "off",
+              "low",
+              "high",
+              "max"
+            ],
+            "default_swarm_setting": "max",
+            "provider_parameter": "reasoning_effort",
+            "provider_supported_values": [
+              "low",
+              "high",
+              "max",
+              false
+            ],
+            "provider_default_value": "max",
+            "can_disable": true,
+            "supports_budget_tokens": false,
+            "supports_effort_levels": true,
+            "supports_reasoning_content": true,
+            "unsupported_swarm_settings": [
+              "medium",
+              "xhigh"
+            ],
+            "source_ids": [
+              "fireworks_chat_completions_reasoning_docs"
+            ],
+            "note": "Swarm compatibility mapping copied from the current OpenRouter Kimi K3 record as requested: off, low, high, and max with max as the default. This is an explicit cross-provider compatibility mapping for Fireworks validation, not a claim that Fireworks publishes model-specific Kimi K3 reasoning-effort documentation."
+          },
+          "model_library": {
+            "source_url": "https://fireworks.ai/models/fireworks/kimi-k3",
+            "fetched_at": "2026-07-27T15:46:50.342Z",
+            "list_url": "https://fireworks.ai/models?modelTypes=Serverless",
+            "list_tags": [
+              "Vision"
+            ],
+            "provider_name": "Moonshot AI",
+            "supports_reranking": false,
+            "standard_pricing_from_detail_page": {
+              "uncached_input_price_per_million_tokens": 3,
+              "cached_input_price_per_million_tokens": 0.3,
+              "output_price_per_million_tokens": 15
+            }
+          },
+          "serverless_serving": {
+            "priority_supported": false,
+            "standard_request_model_path": "accounts/fireworks/routers/kimi-k3-fast",
+            "priority_request_model_path": null,
+            "fast_router_id": null,
+            "fast_request_model_path": null,
+            "standard_pricing": {
+              "uncached_input_price_per_million_tokens": 4.5,
+              "cached_input_price_per_million_tokens": 0.45,
+              "output_price_per_million_tokens": 22.5
+            },
+            "priority_pricing": null,
+            "fast_pricing": null,
+            "pricing_source_label": "Kimi K3",
+            "fast_pricing_source_label": "Kimi K3 Fast"
+          },
+          "base_model_details": {
+            "parameterCount": "2810000000000",
+            "moe": true,
+            "modelType": "kimi"
+          },
+          "conversation_config": null,
+          "default_sampling_params": null,
+          "training_context_length": null,
+          "default_draft_model": null,
+          "default_draft_token_count": null,
+          "imported_from": "moonshotai/Kimi-K3",
+          "cluster": null,
+          "calibrated": false,
+          "tuning": {
+            "tunable": true,
+            "supervised_lora_tunable": null,
+            "supervised_full_parameter_tunable": null,
+            "rl_tunable": null,
+            "rl_lora_tunable": null,
+            "rl_full_parameter_tunable": null
+          },
+          "pricing_enrichment_status": "fireworks_model_library_scrape",
+          "note": "Fireworks Fast router entry. Use this full request_model_path as the model value; do not send service_tier=priority for this entry.",
+          "base_model_resource_name": "accounts/fireworks/models/kimi-k3",
+          "base_model_id": "kimi-k3"
+        }
+      },
+      "swarm": {
+        "routing_roles": [],
+        "labels": {
+          "best_for_coding": null,
+          "best_for_reasoning": null,
+          "best_for_fast_chat": true,
+          "best_for_vision": null,
+          "best_for_voice": false,
+          "best_for_image_generation": false,
+          "best_for_low_cost": null
+        },
+        "measurements": {
+          "time_to_first_token_ms": null,
+          "output_tokens_per_second": null,
+          "reliability_score": null,
+          "sample_count": null,
+          "measured_at": null
+        },
+        "reviewed_at": null,
+        "notes": "Fireworks Fast router model for Kimi K3. Use provider_specific.fireworks.request_model_path as the request model path."
       },
       "updated_at": "2026-07-27T15:46:50.342Z"
     },
