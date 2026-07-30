@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -450,6 +451,50 @@ func TestCreateSendAndRealtimeSequenceProjectsVisibleCanonicalState(t *testing.T
 	}
 	if cursor, seq := SelectCursor(state); cursor != "cursor-3" || seq != 2 {
 		t.Fatalf("cursor state = %q/%d", cursor, seq)
+	}
+}
+
+func TestCanonicalRuntimeProviderToolStartRendersVisibleToolRow(t *testing.T) {
+	text, err := json.Marshal(map[string]any{
+		"type": "session.provider_tool_call.started", "run_id": "run-1", "step": 1, "step_id": "step-1", "event_index": 1,
+		"output_index": 0, "call_id": "call-edit", "tool_name": "edit", "status": "started", "recorded_at": int64(100),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &fakeTransport{
+		created: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s"}, SnapshotEndpointCursor: "cursor-1"},
+		streamFrames: []client.V3RealtimeFrame{{
+			Kind: "live.patch",
+			Live: &client.V3RealtimeLivePatch{
+				SessionID: "s", RunID: "run-1", StreamID: "provider-tool:run-1:step:1:event:1", StreamKind: "provider_tool_call", Operation: "append",
+				Step: 1, StepID: "step-1", LiveSeqStart: 1, LiveSeqEnd: 1, OffsetStart: 0, OffsetEnd: uint64(len(text)), Text: string(text), RecordedAt: 100,
+			},
+		}},
+	}
+	runtime := NewRuntime(transport, nil, nil)
+	if err := runtime.Hydrate(context.Background(), "s", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Stop()
+
+	state := runtime.Store().Snapshot()
+	tools := SelectLiveTools(state)
+	if len(tools) != 1 || tools[0].CallID != "call-edit" || tools[0].Name != "edit" || tools[0].Status != "constructing" {
+		t.Fatalf("canonical runtime tools = %#v", tools)
+	}
+	page := NewPage(runtime, testPageStyles())
+	rows := page.renderRows(state, 80, testPageStyles())
+	var rendered strings.Builder
+	for _, row := range rows {
+		rendered.WriteString(row.text)
+		rendered.WriteByte('\n')
+	}
+	if got := rendered.String(); !strings.Contains(got, "• edit") || !strings.Contains(got, "editing…") {
+		t.Fatalf("canonical provider tool start was not visible:\n%s", got)
 	}
 }
 
