@@ -1308,8 +1308,8 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	}
 	var enqueueJob *sessionV3ExecutorJob
 	if !result.Replayed && result.RunIntent != nil && result.RunIntent.Status == sessionruntime.RunIntentPendingExecutor && s.v3SessionExecutor != nil {
-		enqueueJob = &sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: result.RunIntent.RunID}
-		if checkpointJob, ok, err := s.sessionsV3ActiveCheckpointMessageRunJob(principal, sessionID, result.RunIntent.RunID); err != nil {
+		enqueueJob = &sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: result.RunIntent.RunID, EpochID: result.RunIntent.EpochID}
+		if checkpointJob, ok, err := s.sessionsV3ActiveCheckpointMessageRunJob(principal, sessionID, result.RunIntent.RunID, result.RunIntent.EpochID); err != nil {
 			return result, nil, err
 		} else if ok {
 			enqueueJob = &checkpointJob
@@ -1318,8 +1318,8 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	return result, enqueueJob, nil
 }
 
-func (s *Server) sessionsV3ActiveCheckpointMessageRunJob(principal identity.Principal, sessionID, runID string) (sessionV3ExecutorJob, bool, error) {
-	job := sessionV3ExecutorJob{Principal: principal, SessionID: strings.TrimSpace(sessionID), RunID: strings.TrimSpace(runID)}
+func (s *Server) sessionsV3ActiveCheckpointMessageRunJob(principal identity.Principal, sessionID, runID, epochID string) (sessionV3ExecutorJob, bool, error) {
+	job := sessionV3ExecutorJob{Principal: principal, SessionID: strings.TrimSpace(sessionID), RunID: strings.TrimSpace(runID), EpochID: strings.TrimSpace(epochID)}
 	if s == nil || s.sessions == nil || job.SessionID == "" || job.RunID == "" {
 		return job, false, nil
 	}

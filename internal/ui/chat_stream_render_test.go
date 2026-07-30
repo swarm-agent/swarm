@@ -378,6 +378,52 @@ func TestV3ToolLifecycleMessagesUpdateOneTimelineEntryWithActualResult(t *testin
 	}
 }
 
+func TestV3ProviderToolConstructionLifecycleRendersOneVisibleToolEntry(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-test"})
+	page.SetMessages([]ChatMessageRecord{
+		{
+			ID:        "provider-started",
+			SessionID: "session-test",
+			GlobalSeq: 2,
+			Role:      "tool",
+			Content:   `{"type":"session.provider_tool_call.started","tool_name":"edit","call_id":"call-edit","output_index":0,"status":"started"}`,
+			Metadata:  map[string]any{"v3_tool_event": true},
+			CreatedAt: 200,
+		},
+		{
+			ID:        "provider-completed",
+			SessionID: "session-test",
+			GlobalSeq: 3,
+			Role:      "tool",
+			Content:   `{"type":"session.provider_tool_call.completed","tool_name":"edit","call_id":"call-edit","output_index":0,"arguments":"{\"path\":\"main.go\"}","status":"completed"}`,
+			Metadata:  map[string]any{"v3_tool_event": true},
+			CreatedAt: 300,
+		},
+	})
+
+	if len(page.toolStream) != 1 {
+		t.Fatalf("provider construction lifecycle should reduce to one tool stream entry, got %#v", page.toolStream)
+	}
+	entry := page.toolStream[0]
+	if entry.EntryKey != "call-edit" || entry.ToolName != "edit" || entry.State != "running" || entry.StartedArguments != `{"path":"main.go"}` {
+		t.Fatalf("provider construction tool entry = %#v", entry)
+	}
+	managed := make([]chatMessageItem, 0, len(page.timeline))
+	for _, item := range page.timeline {
+		if isManagedToolTimelineMessage(item) {
+			managed = append(managed, item)
+		}
+	}
+	if len(managed) != 1 || managed[0].ToolState != "running" || !strings.Contains(managed[0].Text, "edit") {
+		t.Fatalf("provider construction lifecycle was not rendered as one visible active tool: %#v", page.timeline)
+	}
+	for _, item := range page.timeline {
+		if strings.Contains(item.Text, "session.provider_tool_call") {
+			t.Fatalf("provider construction leaked raw event JSON instead of tool UI: %#v", page.timeline)
+		}
+	}
+}
+
 func TestV3ToolFailedMessageRendersActualError(t *testing.T) {
 	page := NewChatPage(ChatPageOptions{SessionID: "session-test"})
 	page.SetMessages([]ChatMessageRecord{{
