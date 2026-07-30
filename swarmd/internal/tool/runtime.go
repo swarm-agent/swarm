@@ -991,17 +991,35 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-theme",
-			Description: "Inspect and manage builtin/custom themes. Create requires theme_id (or content.id), name (or content.name), and content.palette (or base_theme_id for inherited palette). Mutating actions preview unless confirm=true. create/update can atomically apply with apply_to=workspace|account|global|none; workspace apply defaults to the active workspace when available.",
+			Description: "Inspect and manage builtin/custom themes. create_batch previews or creates up to 8 themes in one confirmation-safe call for comparison, with optional apply_theme_id selection. Create requires theme_id (or content.id), name (or content.name), and content.palette (or base_theme_id for inherited palette). Mutating actions preview unless confirm=true. create/update can atomically apply with apply_to=workspace|account|global|none; workspace apply defaults to the active workspace when available.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":         map[string]any{"type": "string", "description": "Action: inspect|list|get|create|update|delete|set"},
+					"action":         map[string]any{"type": "string", "description": "Action: inspect|list|get|create|create_batch|update|delete|set"},
 					"theme_id":       map[string]any{"type": "string", "description": "Theme id for get/update/delete/set/create; create also accepts content.id"},
 					"name":           map[string]any{"type": "string", "description": "Theme display name for create/update; create also accepts content.name"},
 					"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path for workspace-scoped operations; defaults to current/active workspace scope when applying to workspace"},
 					"apply_to":       map[string]any{"type": "string", "description": "Optional apply target for create/update/set: workspace|account|global|none. Create defaults to workspace when an active workspace exists; set defaults to active workspace when available; account/global changes account settings."},
 					"base_theme_id":  map[string]any{"type": "string", "description": "Optional builtin/custom base theme id for create/update; allows inherited palette when content.palette is omitted"},
-					"confirm":        map[string]any{"type": "boolean", "description": "Set true after approval to apply the proposed change; with create+apply this applies both save and scope assignment in one confirmed call"},
+					"apply_theme_id": map[string]any{"type": "string", "description": "For create_batch only, optional id from themes to apply after all themes are created; requires apply_to=workspace|account|global"},
+					"themes": map[string]any{
+						"type":        "array",
+						"description": "For create_batch, 1 to 8 theme payloads. Each item requires id or theme_id, name, and palette (or base_theme_id).",
+						"minItems":    1,
+						"maxItems":    8,
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"id":            map[string]any{"type": "string"},
+								"theme_id":      map[string]any{"type": "string"},
+								"name":          map[string]any{"type": "string"},
+								"base_theme_id": map[string]any{"type": "string"},
+								"palette":       manageThemePaletteSchema(),
+							},
+							"additionalProperties": false,
+						},
+					},
+					"confirm": map[string]any{"type": "boolean", "description": "Set true after approval to apply the proposed change; create_batch applies all selected preview items atomically to saved settings"},
 					"content": map[string]any{
 						"type":        "object",
 						"description": "Theme payload for create/update. For create provide id or top-level theme_id, name or top-level name, and palette object unless base_theme_id supplies an inherited palette.",
@@ -1010,37 +1028,7 @@ func (r *Runtime) Definitions() []Definition {
 							"theme_id":      map[string]any{"type": "string"},
 							"name":          map[string]any{"type": "string"},
 							"base_theme_id": map[string]any{"type": "string"},
-							"palette": map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"background":       map[string]any{"type": "string"},
-									"panel":            map[string]any{"type": "string"},
-									"element":          map[string]any{"type": "string"},
-									"border":           map[string]any{"type": "string"},
-									"border_active":    map[string]any{"type": "string"},
-									"text":             map[string]any{"type": "string"},
-									"text_muted":       map[string]any{"type": "string"},
-									"primary":          map[string]any{"type": "string"},
-									"secondary":        map[string]any{"type": "string"},
-									"accent":           map[string]any{"type": "string"},
-									"success":          map[string]any{"type": "string"},
-									"warning":          map[string]any{"type": "string"},
-									"error":            map[string]any{"type": "string"},
-									"prompt":           map[string]any{"type": "string"},
-									"prompt_cursor_bg": map[string]any{"type": "string"},
-									"prompt_cursor_fg": map[string]any{"type": "string"},
-									"code_background":  map[string]any{"type": "string"},
-									"code_text":        map[string]any{"type": "string"},
-									"code_keyword":     map[string]any{"type": "string"},
-									"code_type":        map[string]any{"type": "string"},
-									"code_string":      map[string]any{"type": "string"},
-									"code_number":      map[string]any{"type": "string"},
-									"code_comment":     map[string]any{"type": "string"},
-									"code_function":    map[string]any{"type": "string"},
-									"code_operator":    map[string]any{"type": "string"},
-								},
-								"additionalProperties": false,
-							},
+							"palette":       manageThemePaletteSchema(),
 						},
 						"additionalProperties": false,
 					},
@@ -5873,6 +5861,8 @@ func (r *Runtime) executeManageTheme(scope WorkspaceScope, args map[string]any) 
 		return r.manageThemeGet(scope, args)
 	case "create":
 		return r.manageThemeUpsert(scope, args, false, confirm)
+	case "create_batch", "create-batch":
+		return r.manageThemeCreateBatch(scope, args, confirm)
 	case "update":
 		return r.manageThemeUpsert(scope, args, true, confirm)
 	case "delete", "remove":

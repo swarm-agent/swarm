@@ -29,7 +29,7 @@ func (r *Runtime) manageThemeInspect(scope WorkspaceScope, args map[string]any) 
 		"builtin_themes":       manageThemeBuiltinThemeMaps(),
 		"custom_themes":        manageThemeCustomThemeMaps(settings.Theme.CustomThemes),
 		"workspace":            workspaceSummary,
-		"supported_actions":    []string{"inspect", "list", "get", "create", "update", "delete", "set"},
+		"supported_actions":    []string{"inspect", "list", "get", "create", "create_batch", "update", "delete", "set"},
 		"action_contracts":     manageThemeActionContracts(scope),
 		"path_id":              toolPathID("manage-theme"),
 		"summary":              fmt.Sprintf("loaded %d custom themes", len(settings.Theme.CustomThemes)),
@@ -67,6 +67,156 @@ func (r *Runtime) manageThemeGet(scope WorkspaceScope, args map[string]any) (str
 		"details_truncated":    false,
 		"prompt_injection_tag": "tool_output_untrusted",
 		"safety":               buildUntrustedSafety(""),
+	}
+	return manageThemeEncodeResponse(response)
+}
+
+const manageThemeBatchLimit = 8
+
+func (r *Runtime) manageThemeCreateBatch(scope WorkspaceScope, args map[string]any, confirm bool) (string, error) {
+	settings, err := r.manageThemeSettings(scope)
+	if err != nil {
+		return "", err
+	}
+	rawThemes, ok := args["themes"].([]any)
+	if !ok || len(rawThemes) == 0 {
+		return "", errors.New("manage-theme create_batch requires themes with 1 to 8 theme payloads")
+	}
+	if len(rawThemes) > manageThemeBatchLimit {
+		return "", fmt.Errorf("manage-theme create_batch accepts at most %d themes", manageThemeBatchLimit)
+	}
+
+	nextThemes := append([]uisettings.ThemeCustomTheme(nil), settings.Theme.CustomThemes...)
+	created := make([]uisettings.ThemeCustomTheme, 0, len(rawThemes))
+	changes := make([]map[string]any, 0, len(rawThemes)+1)
+	seen := make(map[string]struct{}, len(rawThemes))
+	for index, rawTheme := range rawThemes {
+		content, ok := rawTheme.(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("manage-theme create_batch themes[%d] must be an object", index)
+		}
+		content = cloneStringAnyMap(content)
+		themeID := manageThemeNormalizeID(firstNonEmptyString(asString(content["id"]), asString(content["theme_id"])))
+		name := strings.TrimSpace(asString(content["name"]))
+		_, hasPalette := content["palette"]
+		baseThemeExplicit := strings.TrimSpace(asString(content["base_theme_id"])) != ""
+		if themeID == "" || name == "" || (!hasPalette && !baseThemeExplicit) {
+			return "", fmt.Errorf("manage-theme create_batch themes[%d] requires id or theme_id, name, and palette (or base_theme_id)", index)
+		}
+		if _, duplicate := seen[themeID]; duplicate {
+			return "", fmt.Errorf("manage-theme create_batch contains duplicate theme id %q", themeID)
+		}
+		seen[themeID] = struct{}{}
+		if manageThemeCustomThemeIndex(nextThemes, themeID) >= 0 {
+			return "", fmt.Errorf("theme %q already exists; use update", themeID)
+		}
+		if _, builtin := manageThemeBuiltinByID(themeID); builtin {
+			return "", fmt.Errorf("theme %q conflicts with builtin theme id", themeID)
+		}
+		baseThemeID := manageThemeNormalizeID(firstNonEmptyString(
+			asString(content["base_theme_id"]),
+			asString(settings.Theme.ActiveID),
+			sharedtheme.DefaultThemeID(),
+		))
+		baseTheme, _, err := manageThemeLookup(nextThemes, baseThemeID)
+		if err != nil {
+			return "", fmt.Errorf("manage-theme base theme %q not found for themes[%d]: %w", baseThemeID, index, err)
+		}
+		afterTheme, err := manageThemeUpsertRecord(themeID, content, baseTheme)
+		if err != nil {
+			return "", fmt.Errorf("manage-theme create_batch themes[%d]: %w", index, err)
+		}
+		nextThemes = append(nextThemes, afterTheme)
+		created = append(created, afterTheme)
+		changes = append(changes, map[string]any{
+			"kind":      "theme_change",
+			"target":    "custom_theme",
+			"operation": "create",
+			"theme_id":  afterTheme.ID,
+			"before":    nil,
+			"after":     manageThemeRecordMap(afterTheme, "custom"),
+		})
+	}
+
+	applyThemeID := manageThemeNormalizeID(asString(args["apply_theme_id"]))
+	applyTo, err := manageThemeNormalizeApplyTo(asString(args["apply_to"]))
+	if err != nil {
+		return "", err
+	}
+	if applyThemeID == "" && applyTo != "" && applyTo != "none" {
+		return "", errors.New("manage-theme create_batch apply_to requires apply_theme_id from the batch")
+	}
+	if applyThemeID != "" {
+		if _, included := seen[applyThemeID]; !included {
+			return "", fmt.Errorf("manage-theme create_batch apply_theme_id %q must identify a theme in themes", applyThemeID)
+		}
+		if applyTo == "" || applyTo == "none" {
+			return "", errors.New("manage-theme create_batch apply_theme_id requires apply_to=workspace, account, or global")
+		}
+	}
+
+	settings.Theme.CustomThemes = nextThemes
+	applyArgs := cloneStringAnyMap(args)
+	applyArgs["apply_to"] = applyTo
+	applyPlan := manageThemeApplyPlan{target: "none"}
+	if applyThemeID != "" {
+		applyPlan, err = r.manageThemeBuildApplyPlan(scope, applyArgs, settings, applyThemeID, false)
+		if err != nil {
+			return "", err
+		}
+		if applyPlan.change != nil {
+			changes = append(changes, applyPlan.change)
+		}
+	}
+
+	themeNames := manageThemeNames(created)
+	change := map[string]any{
+		"kind":      "theme_change",
+		"operation": "create_batch",
+		"changes":   changes,
+	}
+	if confirm {
+		if applyPlan.target == "account" || applyPlan.target == "global" {
+			settings.Theme.ActiveID = applyThemeID
+		}
+		var workspaceResolution any
+		saved, err := r.manageThemeSaveSettings(scope, settings)
+		if err != nil {
+			return "", err
+		}
+		if applyPlan.target == "workspace" {
+			resolution, err := r.themeWorkspace.SetThemeIDForPrincipal(scope.Principal, applyPlan.workspacePath, applyThemeID)
+			if err != nil {
+				rollbackSettings := saved
+				rollbackThemes := rollbackSettings.Theme.CustomThemes[:len(rollbackSettings.Theme.CustomThemes)-len(created)]
+				rollbackSettings.Theme.CustomThemes = append([]uisettings.ThemeCustomTheme(nil), rollbackThemes...)
+				if _, rollbackErr := r.manageThemeSaveSettings(scope, rollbackSettings); rollbackErr != nil {
+					return "", fmt.Errorf("%w; theme batch rollback failed: %v", err, rollbackErr)
+				}
+				return "", err
+			}
+			workspaceResolution = resolution
+		}
+		response := manageThemeBatchResponse("ok", created, themeNames, change)
+		response["applied"] = true
+		response["apply_to"] = applyPlan.responseTarget()
+		response["global_theme_id"] = manageThemeNormalizeID(saved.Theme.ActiveID)
+		response["account_scope_id"] = r.manageThemeAccountScopeID(scope)
+		response["custom_themes"] = manageThemeCustomThemeMaps(saved.Theme.CustomThemes)
+		response["summary"] = manageThemeBatchSummary("generated", themeNames, applyPlan)
+		if workspaceResolution != nil {
+			response["workspace"] = workspaceResolution
+		}
+		return manageThemeEncodeResponse(response)
+	}
+
+	response := manageThemeBatchResponse("proposed_create_batch", created, themeNames, change)
+	response["applied"] = false
+	response["apply_to"] = applyPlan.responseTarget()
+	response["approved_arguments"] = cloneStringAnyMap(args)
+	response["summary"] = manageThemeBatchSummary("will generate", themeNames, applyPlan)
+	if applyPlan.workspacePath != "" {
+		response["workspace_path"] = applyPlan.workspacePath
 	}
 	return manageThemeEncodeResponse(response)
 }
@@ -562,6 +712,54 @@ func manageThemeUpsertSummary(prefix, action, themeID string, applyPlan manageTh
 	}
 }
 
+func manageThemeBatchResponse(status string, created []uisettings.ThemeCustomTheme, names []string, change map[string]any) map[string]any {
+	return map[string]any{
+		"status":               status,
+		"action":               "create_batch",
+		"generated_count":      len(created),
+		"generated_names":      append([]string(nil), names...),
+		"themes":               manageThemeCustomThemeMaps(created),
+		"change":               change,
+		"path_id":              toolPathID("manage-theme"),
+		"details_truncated":    false,
+		"prompt_injection_tag": "tool_output_untrusted",
+		"safety":               buildUntrustedSafety(manageThemeSafetyText(change)),
+	}
+}
+
+func manageThemeNames(themes []uisettings.ThemeCustomTheme) []string {
+	names := make([]string, 0, len(themes))
+	for _, theme := range themes {
+		names = append(names, strings.TrimSpace(theme.Name))
+	}
+	return names
+}
+
+func manageThemeBatchSummary(prefix string, names []string, applyPlan manageThemeApplyPlan) string {
+	summary := fmt.Sprintf("%s %d themes: %s", prefix, len(names), strings.Join(names, ", "))
+	switch applyPlan.target {
+	case "workspace":
+		return fmt.Sprintf("%s; applied %s to workspace", summary, applyPlan.themeID)
+	case "account", "global":
+		return fmt.Sprintf("%s; applied %s to %s", summary, applyPlan.themeID, applyPlan.target)
+	default:
+		return summary
+	}
+}
+
+func manageThemePaletteSchema() map[string]any {
+	properties := map[string]any{}
+	for _, key := range []string{
+		"background", "panel", "element", "border", "border_active", "text", "text_muted",
+		"primary", "secondary", "accent", "success", "warning", "error", "prompt",
+		"prompt_cursor_bg", "prompt_cursor_fg", "code_background", "code_text", "code_keyword",
+		"code_type", "code_string", "code_number", "code_comment", "code_function", "code_operator",
+	} {
+		properties[key] = map[string]any{"type": "string"}
+	}
+	return map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
+}
+
 func manageThemeCreateUsage() string {
 	return "manage-theme create requires theme_id or content.id, name or content.name, and content.palette object (or base_theme_id for an inherited palette); to create and apply in one call use apply_to=workspace|account|global|none with confirm=true"
 }
@@ -569,6 +767,11 @@ func manageThemeCreateUsage() string {
 func manageThemeActionContracts(scope WorkspaceScope) map[string]any {
 	activeWorkspace := strings.TrimSpace(scope.PrimaryPath)
 	return map[string]any{
+		"create_batch": map[string]any{
+			"required": []string{"action=create_batch", "themes with 1 to 8 items", "each item: id or theme_id, name, and palette (or base_theme_id)"},
+			"optional": []string{"apply_theme_id with apply_to=workspace|account|global", "workspace_path", "confirm"},
+			"safety":   "confirm=false previews the complete batch; confirm=true persists all themes in one settings mutation",
+		},
 		"create": map[string]any{
 			"required": []string{"action=create", "theme_id or content.id", "name or content.name", "content.palette object (or base_theme_id for inherited palette)"},
 			"optional": []string{"base_theme_id", "apply_to=workspace|account|global|none", "workspace_path", "confirm"},

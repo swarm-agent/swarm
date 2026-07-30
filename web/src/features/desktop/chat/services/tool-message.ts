@@ -523,6 +523,20 @@ function summarizeToolOutput(
     case "plan-manage": {
       return summarizePlanManageToolOutput(effective);
     }
+    case "manage_theme":
+    case "manage-theme": {
+      const action = jsonStr(effective, "action").replace(/_/g, " ");
+      const generatedNames = jsonStrArray(effective, "generated_names");
+      const generatedCount = jsonNum(effective, "generated_count") || generatedNames.length;
+      const resultSummary = jsonStr(effective, "summary");
+      if (generatedCount > 0) {
+        const count = countLabel(generatedCount, "theme", "themes");
+        const names = generatedNames.length > 0 ? `: ${generatedNames.join(", ")}` : "";
+        return `theme generated ${count}${names}`;
+      }
+      if (resultSummary) return `theme · ${resultSummary}`;
+      return action ? `theme ${action}` : "theme";
+    }
     case "manage_todos":
     case "manage-todos": {
       const todoData = extractTodoToolData(effective);
@@ -1317,12 +1331,18 @@ function extractPreviewLines(
       }
       return out;
     }
-    case "manage_todos": {
+    case "manage_theme":
+    case "manage-theme": {
       const out: string[] = [];
-      for (const line of buildManageTodosPreviewLines(effective, 6)) {
-        pushPreviewLine(out, line, 6);
-      }
+      const names = jsonStrArray(effective, "generated_names");
+      const count = jsonNum(effective, "generated_count") || names.length;
+      if (count > 0) pushPreviewLine(out, `Generated ${countLabel(count, "theme", "themes")}.`, 8);
+      for (const name of names) pushPreviewLine(out, name, 8);
+      if (out.length === 0) pushPreviewLine(out, jsonStr(effective, "summary"), 8);
       return out;
+    }
+    case "manage_todos": {
+      return buildManageTodosPreviewLines(effective, 6);
     }
     case "plan_manage":
     case "plan-manage":

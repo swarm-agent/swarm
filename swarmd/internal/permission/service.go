@@ -1683,6 +1683,15 @@ func manageThemePermissionChangeCount(toolArguments string) (int, bool) {
 	}
 	switch typed := change.(type) {
 	case map[string]any:
+		if changes, ok := typed["changes"].([]any); ok {
+			count := 0
+			for _, item := range changes {
+				if _, ok := item.(map[string]any); ok {
+					count++
+				}
+			}
+			return count, true
+		}
 		return 1, true
 	case []any:
 		count := 0

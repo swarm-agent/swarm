@@ -306,6 +306,27 @@ function testBashToolUsesDedicatedFullWidthCard(): void {
   assert(!markup.includes("odd:bg"), "bash output should not use striped preview rows");
 }
 
+function testManageThemeBatchShowsGeneratedMetadata(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage-theme",
+    callId: "call_manage_theme_batch",
+    argumentsText: JSON.stringify({ action: "create_batch" }),
+    outputText: JSON.stringify({
+      status: "ok",
+      action: "create_batch",
+      generated_count: 3,
+      generated_names: ["Dawn", "Dusk", "Aurora"],
+      summary: "generated 3 themes: Dawn, Dusk, Aurora",
+    }),
+  });
+  assert(Boolean(message), "expected structured manage-theme message");
+
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("theme") && markup.includes("generated 3 themes: Dawn, Dusk, Aurora"), "expected generated count and names in the visible tool header");
+  assert(markup.includes("Generated 3 themes.") && markup.includes("Dawn") && markup.includes("Dusk") && markup.includes("Aurora"), "expected concise result metadata lines");
+  assert(!markup.includes("&quot;generated_count&quot;"), "manage-theme should not expose raw result JSON");
+}
+
 function testManageSessionsUsesRelativeDesktopNavigation(): void {
   const sessionId = "session-123";
   const href = `/workspace-abc/${sessionId}`;
@@ -677,6 +698,7 @@ function main(): void {
   testBashCopyUsesOutputOnly();
   testBashOutputIndexBoundsPreviewWithoutChangingCanonicalOutput();
   testBashToolUsesDedicatedFullWidthCard();
+  testManageThemeBatchShowsGeneratedMetadata();
   testManageSessionsUsesRelativeDesktopNavigation();
   testManageSessionsDeployRendersNavigableResultsAndHonestFailures();
   testManageSessionsReviewWorktreesHydratesCandidates();

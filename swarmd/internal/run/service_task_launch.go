@@ -2039,6 +2039,22 @@ func (s *Service) buildManageThemePermissionPayload(sessionID string, call tool.
 	if workspacePath := strings.TrimSpace(mapString(args, "workspace_path")); workspacePath != "" {
 		payload["workspace_path"] = workspacePath
 	}
+	if action == "create_batch" || action == "create-batch" {
+		if themes, ok := args["themes"].([]any); ok {
+			payload["generated_count"] = len(themes)
+			names := make([]string, 0, len(themes))
+			for _, item := range themes {
+				theme, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				if name := strings.TrimSpace(mapString(theme, "name")); name != "" {
+					names = append(names, name)
+				}
+			}
+			payload["generated_names"] = names
+		}
+	}
 	if confirm {
 		payload["approved_arguments"] = cloneGenericMap(args)
 		return payload, nil

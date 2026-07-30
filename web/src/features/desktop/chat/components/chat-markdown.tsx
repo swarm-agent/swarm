@@ -1475,6 +1475,8 @@ function shouldRenderPreviewAsPlain(toolName: string): boolean {
   switch (toolName.trim().toLowerCase()) {
     case "manage_todos":
     case "manage-todos":
+    case "manage_theme":
+    case "manage-theme":
     case "manage-sessions":
     case "manage_sessions":
     case "websearch":
