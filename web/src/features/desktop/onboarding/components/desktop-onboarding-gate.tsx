@@ -16,6 +16,7 @@ import { listProviders } from '../../settings/queries/list-providers'
 import type { AuthMethod, CodexOAuthSession, ProviderStatus, StartCodexOAuthInput, UpsertAuthCredentialInput } from '../../settings/types/auth'
 import { CodexDeviceCode } from '../../settings/auth/components/codex-device-code'
 import { codexSetupRecommendation } from '../../settings/auth/codex-setup-recommendation'
+import { DEFAULT_GLOBAL_THEME_ID } from '../../settings/swarm/types/swarm-settings'
 import { WorkspaceFolderTree } from '../../../workspaces/launcher/components/workspace-folder-tree'
 import { WorkspaceStatus } from '../../../workspaces/launcher/components/workspace-status'
 import { applyWorkspaceTheme } from '../../../workspaces/launcher/services/workspace-theme'
@@ -35,7 +36,6 @@ type OnboardingView = OnboardingStep | 'setup'
 const SWARM_MARK_SRC = '/favicon.svg'
 const STEP_TRANSITION_MS = 180
 const ONBOARDING_READY_HOLD_MS = 1_000
-const ONBOARDING_THEME_ID = 'crimson'
 
 const ONBOARDING_STEPS: Record<OnboardingStep, { stepLabel: string; title: string; subtitle: string }> = {
   identity: {
@@ -308,7 +308,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
         : 'Skip for now'
 
   useEffect(() => {
-    applyWorkspaceTheme(ONBOARDING_THEME_ID)
+    applyWorkspaceTheme(DEFAULT_GLOBAL_THEME_ID)
   }, [])
 
   useEffect(() => {
