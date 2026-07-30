@@ -327,6 +327,11 @@ func TestGoogleStreamEmitsToolCallConstructionLifecycle(t *testing.T) {
 	if events[2].Arguments != `{"city":"Paris"}` {
 		t.Fatalf("completed arguments = %q, want JSON args", events[2].Arguments)
 	}
+	for i, event := range events {
+		if event.ProviderID != "google" || event.Model != "gemini-3.5-flash" || event.StartedAtUnixMs == 0 || event.RecordedAtUnixMs == 0 {
+			t.Fatalf("event[%d] normalization context = %+v", i, event)
+		}
+	}
 	metadataJSON, _ := json.Marshal(events[2].Metadata)
 	if string(metadataJSON) == "null" || !strings.Contains(string(metadataJSON), "sig-123") {
 		t.Fatalf("completed metadata = %s, want thought signature preserved", metadataJSON)

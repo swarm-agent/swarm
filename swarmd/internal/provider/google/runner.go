@@ -122,6 +122,7 @@ type googleResponse struct {
 }
 
 type googleCandidate struct {
+	Index        int           `json:"index,omitempty"`
 	Content      googleContent `json:"content"`
 	FinishReason string        `json:"finishReason"`
 }
@@ -853,23 +854,44 @@ func parseGoogleResponse(resp googleResponse) provideriface.Response {
 }
 
 type googleStreamAccumulator struct {
-	modelID                 string
-	merged                  googleResponse
-	text                    string
-	functionCalls           []provideriface.FunctionCall
+	modelID            string
+	merged             googleResponse
+	text               string
+	functionCalls      []provideriface.FunctionCall
+	candidateStates    map[int]*googleStreamCandidateState
+	finishedCandidates map[int]bool
+	toolState          *googleToolCallConstructionState
+	finished           bool
+	eventCount         int
+	outputBytes        int
+	toolArgumentBytes  int
+}
+
+type googleStreamCandidateState struct {
 	pendingThoughtSignature string
-	toolState               *googleToolCallConstructionState
-	finished                bool
-	eventCount              int
-	outputBytes             int
-	toolArgumentBytes       int
+	callIndexByID            map[string]int
+	callIndexByFingerprint   map[string]int
 }
 
 func newGoogleStreamAccumulator(modelID string) *googleStreamAccumulator {
 	return &googleStreamAccumulator{
-		modelID:   strings.TrimSpace(modelID),
-		toolState: newGoogleToolCallConstructionState(),
+		modelID:            strings.TrimSpace(modelID),
+		candidateStates:    make(map[int]*googleStreamCandidateState),
+		finishedCandidates: make(map[int]bool),
+		toolState:          newGoogleToolCallConstructionState(),
 	}
+}
+
+func (a *googleStreamAccumulator) candidateState(candidateIndex int) *googleStreamCandidateState {
+	if state := a.candidateStates[candidateIndex]; state != nil {
+		return state
+	}
+	state := &googleStreamCandidateState{
+		callIndexByID:          make(map[string]int),
+		callIndexByFingerprint: make(map[string]int),
+	}
+	a.candidateStates[candidateIndex] = state
+	return state
 }
 
 func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(provideriface.StreamEvent)) error {
@@ -889,42 +911,72 @@ func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(prov
 	if len(decoded.Candidates) == 0 {
 		return nil
 	}
-	candidate := decoded.Candidates[0]
-	functionCallSequence := 0
-	for _, part := range candidate.Content.Parts {
-		partThoughtSignature := partThoughtSignatureValue(part)
-		if part.Text != "" {
-			a.outputBytes += len(part.Text)
-			if a.outputBytes > maxStreamOutputBytes {
-				return errors.New("google stream output limit exceeded")
-			}
-			a.text += part.Text
-			if onEvent != nil {
-				onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: part.Text})
-			}
+	sawFinishReason := false
+	allCandidatesFinished := true
+	for _, candidate := range decoded.Candidates {
+		if strings.TrimSpace(candidate.FinishReason) == "" {
+			allCandidatesFinished = false
 		}
-		if part.FunctionCall == nil {
-			if partThoughtSignature != "" {
-				a.pendingThoughtSignature = partThoughtSignature
-			}
-			continue
-		}
-		functionCallSequence++
-		if partThoughtSignature == "" {
-			partThoughtSignature = strings.TrimSpace(a.pendingThoughtSignature)
-		}
-		a.pendingThoughtSignature = ""
-		call := buildGoogleFunctionCall(part, functionCallSequence, partThoughtSignature)
-		a.toolArgumentBytes += len(call.Arguments)
-		if a.toolArgumentBytes > maxStreamToolArgumentBytes {
-			return errors.New("google stream tool argument limit exceeded")
-		}
-		a.upsertFunctionCall(call)
-		a.emitToolCallConstructionEvents(functionCallSequence-1, call, onEvent)
 	}
-	if strings.TrimSpace(candidate.FinishReason) != "" {
+	for _, candidate := range decoded.Candidates {
+		candidateIndex := candidate.Index
+		candidateState := a.candidateState(candidateIndex)
+		chunkCallPosition := 0
+		for partPosition, part := range candidate.Content.Parts {
+			partThoughtSignature := partThoughtSignatureValue(part)
+			if part.Text != "" {
+				a.outputBytes += len(part.Text)
+				if a.outputBytes > maxStreamOutputBytes {
+					return errors.New("google stream output limit exceeded")
+				}
+				a.text += part.Text
+				if onEvent != nil {
+					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: part.Text})
+				}
+			}
+			if part.FunctionCall == nil {
+				if partThoughtSignature != "" {
+					candidateState.pendingThoughtSignature = partThoughtSignature
+				}
+				continue
+			}
+			if partThoughtSignature == "" {
+				partThoughtSignature = strings.TrimSpace(candidateState.pendingThoughtSignature)
+			}
+			candidateState.pendingThoughtSignature = ""
+			logicalIndex, partIndex := a.googleStreamToolCallIndex(candidateIndex, partPosition, chunkCallPosition, part)
+			call := buildGoogleFunctionCall(part, logicalIndex+1, partThoughtSignature)
+			call.Metadata = mergeGoogleFunctionCallMetadata(call.Metadata, googleStreamFunctionCallMetadata(candidateIndex, partIndex))
+			if part.FunctionCall != nil && strings.TrimSpace(part.FunctionCall.ID) != "" {
+				call.Metadata = mergeGoogleFunctionCallMetadata(call.Metadata, map[string]any{
+					"google": map[string]any{"synthetic_call_id": false},
+				})
+			}
+			a.toolArgumentBytes += len(call.Arguments)
+			if a.toolArgumentBytes > maxStreamToolArgumentBytes {
+				return errors.New("google stream tool argument limit exceeded")
+			}
+			a.upsertFunctionCall(logicalIndex, call)
+			a.emitToolCallConstructionEvents(logicalIndex, call, onEvent)
+			chunkCallPosition++
+		}
+		if strings.TrimSpace(candidate.FinishReason) != "" {
+			sawFinishReason = true
+			a.finishedCandidates[candidateIndex] = true
+			a.completeToolCallConstructionEvents(candidateIndex, candidate.FinishReason, onEvent)
+		}
+	}
+	if sawFinishReason && allCandidatesFinished {
+		for _, index := range a.toolState.order {
+			candidateIndex := googleMetadataCandidateIndex(a.toolState.metadata[index], -1)
+			if candidateIndex >= 0 && !a.finishedCandidates[candidateIndex] {
+				allCandidatesFinished = false
+				break
+			}
+		}
+	}
+	if sawFinishReason && allCandidatesFinished {
 		a.finished = true
-		a.completeToolCallConstructionEvents(candidate.FinishReason, onEvent)
 	}
 	return nil
 }
@@ -1030,101 +1082,239 @@ func mergeGoogleResponses(base, next googleResponse) googleResponse {
 	return base
 }
 
-func (a *googleStreamAccumulator) upsertFunctionCall(call provideriface.FunctionCall) {
-	callKey := strings.TrimSpace(call.CallID)
-	if callKey == "" {
-		a.functionCalls = append(a.functionCalls, call)
-		return
+func (a *googleStreamAccumulator) googleStreamToolCallIndex(candidateIndex, partPosition, chunkCallPosition int, part googlePart) (int, int) {
+	state := a.candidateState(candidateIndex)
+	callID := ""
+	if part.FunctionCall != nil {
+		callID = strings.TrimSpace(part.FunctionCall.ID)
 	}
-	for i := len(a.functionCalls) - 1; i >= 0; i-- {
-		if strings.TrimSpace(a.functionCalls[i].CallID) != callKey {
-			continue
+	if callID != "" {
+		if logicalIndex, ok := state.callIndexByID[callID]; ok {
+			return logicalIndex, googleMetadataPartIndex(a.toolState.metadata[logicalIndex], partPosition)
 		}
-		a.functionCalls[i] = mergeGoogleProviderFunctionCall(a.functionCalls[i], call)
-		return
 	}
-	a.functionCalls = append(a.functionCalls, call)
+	fingerprint := googleFunctionCallFingerprint(part, chunkCallPosition)
+	if logicalIndex, ok := state.callIndexByFingerprint[fingerprint]; ok {
+		if callID != "" {
+			state.callIndexByID[callID] = logicalIndex
+		}
+		return logicalIndex, googleMetadataPartIndex(a.toolState.metadata[logicalIndex], partPosition)
+	}
+	if callID != "" {
+		if logicalIndex, ok := state.callIndexByFingerprint[googleFunctionCallFingerprintWithoutID(part, chunkCallPosition)]; ok {
+			state.callIndexByID[callID] = logicalIndex
+			state.callIndexByFingerprint[fingerprint] = logicalIndex
+			return logicalIndex, googleMetadataPartIndex(a.toolState.metadata[logicalIndex], partPosition)
+		}
+	}
+	// GenerateContent emits each functionCall as one complete Part. Therefore a
+	// candidate-local fingerprint is a safe repeated-chunk repair key, while the
+	// globally allocated index keeps candidates and parallel calls distinct.
+	logicalIndex := len(a.toolState.order)
+	state.callIndexByFingerprint[fingerprint] = logicalIndex
+	if callID == "" {
+		state.callIndexByFingerprint[googleFunctionCallFingerprintWithoutID(part, chunkCallPosition)] = logicalIndex
+	} else {
+		state.callIndexByID[callID] = logicalIndex
+	}
+	return logicalIndex, partPosition
+}
+
+func googleFunctionCallFingerprint(part googlePart, chunkCallPosition int) string {
+	if part.FunctionCall == nil {
+		return fmt.Sprintf("missing:%d", chunkCallPosition)
+	}
+	return strings.Join([]string{
+		strings.TrimSpace(part.FunctionCall.ID),
+		googleFunctionCallFingerprintWithoutID(part, chunkCallPosition),
+	}, "\x00")
+}
+
+func googleFunctionCallFingerprintWithoutID(part googlePart, chunkCallPosition int) string {
+	if part.FunctionCall == nil {
+		return fmt.Sprintf("missing:%d", chunkCallPosition)
+	}
+	encoded, _ := json.Marshal(part.FunctionCall.Args)
+	return strings.Join([]string{
+		strings.TrimSpace(part.FunctionCall.Name),
+		string(encoded),
+		fmt.Sprint(chunkCallPosition),
+	}, "\x00")
+}
+
+func googleMetadataPartIndex(metadata map[string]any, fallback int) int {
+	google, ok := metadata["google"].(map[string]any)
+	if !ok {
+		return fallback
+	}
+	switch value := google["part_index"].(type) {
+	case int:
+		return value
+	case float64:
+		return int(value)
+	default:
+		return fallback
+	}
+}
+
+func googleStreamFunctionCallMetadata(candidateIndex, partIndex int) map[string]any {
+	return map[string]any{"google": map[string]any{
+		"candidate_index": candidateIndex,
+		"part_index":      partIndex,
+	}}
+}
+
+func (a *googleStreamAccumulator) upsertFunctionCall(logicalIndex int, call provideriface.FunctionCall) {
+	for len(a.functionCalls) <= logicalIndex {
+		a.functionCalls = append(a.functionCalls, provideriface.FunctionCall{})
+	}
+	a.functionCalls[logicalIndex] = mergeGoogleProviderFunctionCall(a.functionCalls[logicalIndex], call)
 }
 
 type googleToolCallConstructionState struct {
-	seenStarted   map[int]bool
-	seenCompleted map[int]bool
-	arguments     map[int]string
-	ids           map[int]string
-	names         map[int]string
-	metadata      map[int]map[string]any
+	seenStarted     map[int]bool
+	seenCompleted   map[int]bool
+	arguments       map[int]string
+	emittedSnapshot map[int]string
+	ids             map[int]string
+	names           map[int]string
+	metadata        map[int]map[string]any
+	startedAt       map[int]int64
+	recordedAt      map[int]int64
+	order           []int
 }
 
 func newGoogleToolCallConstructionState() *googleToolCallConstructionState {
 	return &googleToolCallConstructionState{
-		seenStarted:   make(map[int]bool),
-		seenCompleted: make(map[int]bool),
-		arguments:     make(map[int]string),
-		ids:           make(map[int]string),
-		names:         make(map[int]string),
-		metadata:      make(map[int]map[string]any),
+		seenStarted:     make(map[int]bool),
+		seenCompleted:   make(map[int]bool),
+		arguments:       make(map[int]string),
+		emittedSnapshot: make(map[int]string),
+		ids:             make(map[int]string),
+		names:           make(map[int]string),
+		metadata:        make(map[int]map[string]any),
+		startedAt:       make(map[int]int64),
+		recordedAt:      make(map[int]int64),
 	}
 }
 
 func (a *googleStreamAccumulator) emitToolCallConstructionEvents(index int, call provideriface.FunctionCall, onEvent func(provideriface.StreamEvent)) {
-	if a == nil || a.toolState == nil || onEvent == nil {
+	if a == nil || a.toolState == nil {
 		return
 	}
 	state := a.toolState
-	if callID := strings.TrimSpace(call.CallID); callID != "" {
+	if callID := googleNativeFunctionCallID(call); callID != "" {
 		state.ids[index] = callID
 	}
 	if name := strings.TrimSpace(call.Name); name != "" {
 		state.names[index] = name
 	}
 	if metadata := cloneGoogleMetadataMap(call.Metadata); len(metadata) > 0 {
-		state.metadata[index] = metadata
+		state.metadata[index] = mergeGoogleFunctionCallMetadata(state.metadata[index], metadata)
+		if google, ok := state.metadata[index]["google"].(map[string]any); ok {
+			if synthetic, present := google["synthetic_call_id"].(bool); present && !synthetic {
+				delete(google, "synthetic_call_id")
+			}
+		}
 	}
 	if !state.seenStarted[index] {
 		state.seenStarted[index] = true
-		onEvent(provideriface.StreamEvent{
-			Type:          provideriface.StreamEventToolCallStarted,
-			ToolCallID:    state.ids[index],
-			ToolCallIndex: intPointer(index),
-			ToolName:      state.names[index],
-			Metadata:      cloneGoogleMetadataMap(state.metadata[index]),
-		})
+		state.order = append(state.order, index)
+		now := state.nextRecordedAt(index)
+		state.startedAt[index] = now
+		if onEvent != nil {
+			onEvent(a.googleToolCallEvent(provideriface.StreamEventToolCallStarted, index, now, "started"))
+		}
 	}
 	arguments := strings.TrimSpace(call.Arguments)
 	if arguments == "" {
 		return
 	}
 	state.arguments[index] = arguments
-	onEvent(provideriface.StreamEvent{
-		Type:              provideriface.StreamEventToolCallArgumentsSnapshot,
-		ToolCallID:        state.ids[index],
-		ToolCallIndex:     intPointer(index),
-		ToolName:          state.names[index],
-		ArgumentsSnapshot: arguments,
-		Metadata:          cloneGoogleMetadataMap(state.metadata[index]),
-	})
+	if state.emittedSnapshot[index] == arguments {
+		return
+	}
+	state.emittedSnapshot[index] = arguments
+	recordedAt := state.nextRecordedAt(index)
+	if onEvent != nil {
+		onEvent(a.googleToolCallEvent(provideriface.StreamEventToolCallArgumentsSnapshot, index, recordedAt, "building"))
+	}
 }
 
-func (a *googleStreamAccumulator) completeToolCallConstructionEvents(finishReason string, onEvent func(provideriface.StreamEvent)) {
-	if a == nil || a.toolState == nil || onEvent == nil {
+func (state *googleToolCallConstructionState) nextRecordedAt(index int) int64 {
+	now := time.Now().UnixMilli()
+	if previous := state.recordedAt[index]; previous > 0 && now <= previous {
+		now = previous + 1
+	}
+	state.recordedAt[index] = now
+	return now
+}
+
+func (a *googleStreamAccumulator) googleToolCallEvent(eventType provideriface.StreamEventType, index int, recordedAt int64, status string) provideriface.StreamEvent {
+	state := a.toolState
+	event := provideriface.StreamEvent{
+		Type:             eventType,
+		ToolCallID:       state.ids[index],
+		ToolCallIndex:    intPointer(index),
+		ToolName:         state.names[index],
+		ProviderID:       "google",
+		Model:            a.modelID,
+		RecordedAtUnixMs: recordedAt,
+		StartedAtUnixMs:  state.startedAt[index],
+		Status:           status,
+		Metadata:         cloneGoogleMetadataMap(state.metadata[index]),
+	}
+	switch eventType {
+	case provideriface.StreamEventToolCallArgumentsSnapshot:
+		event.ArgumentsSnapshot = state.arguments[index]
+	case provideriface.StreamEventToolCallCompleted:
+		event.Arguments = state.arguments[index]
+	}
+	return event
+}
+
+func (a *googleStreamAccumulator) completeToolCallConstructionEvents(candidateIndex int, finishReason string, onEvent func(provideriface.StreamEvent)) {
+	if a == nil || a.toolState == nil {
 		return
 	}
 	state := a.toolState
-	for index := range state.seenStarted {
-		if state.seenCompleted[index] {
+	for _, index := range state.order {
+		if state.seenCompleted[index] || googleMetadataCandidateIndex(state.metadata[index], candidateIndex) != candidateIndex {
 			continue
 		}
 		state.seenCompleted[index] = true
-		onEvent(provideriface.StreamEvent{
-			Type:          provideriface.StreamEventToolCallCompleted,
-			ToolCallID:    state.ids[index],
-			ToolCallIndex: intPointer(index),
-			ToolName:      state.names[index],
-			Arguments:     strings.TrimSpace(state.arguments[index]),
-			Metadata: mergeGoogleFunctionCallMetadata(state.metadata[index], map[string]any{
-				"google": map[string]any{"finish_reason": strings.TrimSpace(finishReason)},
-			}),
+		state.metadata[index] = mergeGoogleFunctionCallMetadata(state.metadata[index], map[string]any{
+			"google": map[string]any{"finish_reason": strings.TrimSpace(finishReason)},
 		})
+		recordedAt := state.nextRecordedAt(index)
+		if onEvent != nil {
+			onEvent(a.googleToolCallEvent(provideriface.StreamEventToolCallCompleted, index, recordedAt, "completed"))
+		}
+	}
+}
+
+func googleNativeFunctionCallID(call provideriface.FunctionCall) string {
+	google, ok := call.Metadata["google"].(map[string]any)
+	if ok {
+		if synthetic, _ := google["synthetic_call_id"].(bool); synthetic {
+			return ""
+		}
+	}
+	return strings.TrimSpace(call.CallID)
+}
+
+func googleMetadataCandidateIndex(metadata map[string]any, fallback int) int {
+	google, ok := metadata["google"].(map[string]any)
+	if !ok {
+		return fallback
+	}
+	switch value := google["candidate_index"].(type) {
+	case int:
+		return value
+	case float64:
+		return int(value)
+	default:
+		return fallback
 	}
 }
 
