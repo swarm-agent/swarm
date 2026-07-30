@@ -352,7 +352,7 @@ export interface SessionV3RealtimeLivePatchWire {
   run_id: string
   epoch_id?: string
   stream_id: string
-  stream_kind: 'assistant_text'
+  stream_kind: 'assistant_text' | 'provider_tool_call'
   operation: 'append'
   step: number
   step_id: string

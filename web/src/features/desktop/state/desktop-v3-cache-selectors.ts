@@ -1,7 +1,7 @@
 import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord, TaskToolRow } from '../chat/types/chat'
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
 import { safeString } from '../permissions/services/desktop-permission-normalization'
-import type { DesktopPermissionSummary, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
+import type { DesktopPermissionSummary, DesktopToolActivity, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
 import type { WorkspaceTodoItem } from '../../workspaces/todos/types'
 import { isDesktopV3NavigationHiddenRecord, isDesktopV3NavigationHiddenSession } from './desktop-v3-session-visibility'
 
@@ -475,6 +475,27 @@ export function selectLiveRuns(state: DesktopV3CacheState, sessionId: string): L
   })
 }
 
+export function selectDesktopToolActivities(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  runId?: string,
+): DesktopToolActivity[] {
+  const runs = state.liveRunsBySession[sessionId] ?? {}
+  const selectedRun = runId ? runs[runId] : undefined
+  const selectedRuns: LiveRunOverlay[] = runId ? (selectedRun ? [selectedRun] : []) : Object.values(runs)
+  return selectedRuns.flatMap((run) => Object.values(run.toolActivitiesById ?? {}))
+    .map(cloneToolActivity)
+    .sort((left, right) => {
+      const leftSeq = left.timelineSeq ?? 0
+      const rightSeq = right.timelineSeq ?? 0
+      if (leftSeq !== rightSeq) return leftSeq - rightSeq
+      const leftCreated = left.createdAt ?? left.updatedAt
+      const rightCreated = right.createdAt ?? right.updatedAt
+      if (leftCreated !== rightCreated) return leftCreated - rightCreated
+      return left.activityId.localeCompare(right.activityId)
+    })
+}
+
 export function selectSessionRunIntents(state: DesktopV3CacheState, sessionId: string): V3SessionRunIntent[] {
   return Object.values(state.runIntentsBySession[sessionId] ?? {}).sort((left, right) => {
     const leftSeq = typeof left.event_seq === 'number' ? left.event_seq : 0
@@ -641,11 +662,32 @@ function cloneNotification(notification: DesktopNotificationCenterRecord): Deskt
   return { ...notification }
 }
 
+function cloneToolActivity(tool: DesktopToolActivity): DesktopToolActivity {
+  return {
+    ...tool,
+    activityId: tool.activityId,
+    phase: tool.phase,
+    semanticKind: tool.semanticKind,
+    label: tool.label,
+    provenance: { ...tool.provenance },
+    taskStream: tool.taskStream ? {
+      ...tool.taskStream,
+      launchesByKey: Object.fromEntries(
+        Object.entries(tool.taskStream.launchesByKey).map(([launchKey, launch]) => [launchKey, { ...launch }]),
+      ),
+      launchOrder: [...tool.taskStream.launchOrder],
+    } : undefined,
+  }
+}
+
 function cloneLiveRun(run: LiveRunOverlay): LiveRunOverlay {
   return {
     ...run,
     assistantDraft: run.assistantDraft ? { ...run.assistantDraft } : undefined,
     assistantSegments: run.assistantSegments?.map((segment) => ({ ...segment })),
+    toolActivitiesById: run.toolActivitiesById ? Object.fromEntries(
+      Object.entries(run.toolActivitiesById).map(([activityId, tool]) => [activityId, cloneToolActivity(tool)]),
+    ) : undefined,
     toolCallsByCallId: Object.fromEntries(
       Object.entries(run.toolCallsByCallId).map(([callId, tool]) => [callId, {
         ...tool,

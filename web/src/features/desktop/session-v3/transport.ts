@@ -1035,7 +1035,7 @@ export function requireSessionV3RealtimeLivePatch(
   if (frameSessionId(frame) !== sessionId) {
     throw new Error('live.patch top-level session_id must match payload session_id')
   }
-  if (patch.stream_kind !== 'assistant_text' || patch.operation !== 'append') {
+  if ((patch.stream_kind !== 'assistant_text' && patch.stream_kind !== 'provider_tool_call') || patch.operation !== 'append') {
     throw new Error('live.patch uses unsupported stream kind or operation')
   }
   if (!isPositiveInteger(patch.step)) {

@@ -1,4 +1,4 @@
-import { buildStructuredToolMessage, parseStructuredToolMessage } from "./tool-message";
+import { buildStructuredToolMessage, describeToolActivity, parseStructuredToolMessage } from "./tool-message";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {
@@ -1090,7 +1090,19 @@ function testWebToolsRetainStructuredArgumentsWhileRunning(): void {
   assert(fetch?.webFetchData?.urls.length === 2, "running fetch should retain argument URLs");
 }
 
+function testProviderNeutralToolActivityDescriptors(): void {
+  assert(describeToolActivity('edit').kind === 'edit', 'edit should use edit semantics');
+  assert(describeToolActivity('edit').activeLabel === 'Editing', 'edit should expose active label');
+  assert(describeToolActivity('plan_manage').kind === 'plan', 'plan_manage should use plan semantics');
+  assert(describeToolActivity('plan').activeLabel === 'Planning', 'plan should expose planning label');
+  assert(describeToolActivity('task').kind === 'task', 'task should use subagent semantics');
+  assert(describeToolActivity('task').activeLabel === 'Launching subagents', 'task should expose launch label');
+  assert(describeToolActivity('custom_tool').kind === 'generic', 'unknown tool should stay generic');
+  assert(describeToolActivity('custom_tool').activeLabel === 'Running Custom Tool', 'generic label should be presentation ready');
+}
+
 function main(): void {
+  testProviderNeutralToolActivityDescriptors();
   testExitPlanApprovedShowsMetadata();
   testExitPlanDeniedPermissionShowsFeedbackAndPlan();
   testExitPlanDefaultApprovalFeedbackIsHidden();

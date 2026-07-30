@@ -45,6 +45,7 @@ interface PendingLiveAppend {
   sessionId: string
   runId: string
   streamId: string
+  streamKind: SessionV3RealtimeLivePatchWire['stream_kind']
   step: number
   stepId: string
   liveSeqStart: number
@@ -108,6 +109,11 @@ export class DesktopV3LivePatchCoordinator {
     if (generation !== this.generation) return
 
     const key = livePatchKey(patch)
+    if (patch.stream_kind !== 'assistant_text' && patch.stream_kind !== 'provider_tool_call') return
+    if (patch.stream_kind === 'provider_tool_call') {
+      this.commitImmediatePatch(patch)
+      return
+    }
     if (this.committedStreamTombstones.has(key) || this.pausedStreams.has(key)) return
 
     const existingPending = this.pending.get(key)
@@ -200,6 +206,17 @@ export class DesktopV3LivePatchCoordinator {
     }
   }
 
+  private commitImmediatePatch(patch: SessionV3RealtimeLivePatchWire): void {
+    if (!parseProviderConstructionPatch(patch)) return
+    const action: DesktopV3CacheAction = {
+      type: 'realtime.applyLivePatchBatch',
+      patches: [patch],
+    }
+    const previous = this.deps.getSnapshot()
+    const next = applyDesktopV3LivePatchBatch(previous, [patch])
+    this.deps.commitSnapshot(previous, next, [action])
+  }
+
   private appendToPending(pending: PendingLiveAppend, patch: SessionV3RealtimeLivePatchWire): void {
     let appendedBytes = 0
     try {
@@ -279,7 +296,7 @@ export class DesktopV3LivePatchCoordinator {
         session_id: pending.sessionId,
         run_id: pending.runId,
         stream_id: pending.streamId,
-        stream_kind: 'assistant_text',
+        stream_kind: pending.streamKind,
         operation: 'append',
         step: pending.step,
         step_id: pending.stepId,
@@ -302,6 +319,23 @@ export class DesktopV3LivePatchCoordinator {
   }
 }
 
+function parseProviderConstructionPatch(patch: SessionV3RealtimeLivePatchWire): Record<string, unknown> | null {
+  if (patch.operation !== 'append' || patch.live_seq_start !== 1 || patch.live_seq_end !== 1 || patch.offset_start !== 0) return null
+  if (textEncoder.encode(patch.text).byteLength !== patch.offset_end) return null
+  try {
+    const parsed = JSON.parse(patch.text) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const record = parsed as Record<string, unknown>
+    const pathId = typeof record.path_id === 'string' ? record.path_id.trim() : ''
+    const type = typeof record.type === 'string' ? record.type.trim() : ''
+    return pathId === 'run.v3.provider-tool-construction.v1' && type.startsWith('session.provider_tool_call.')
+      ? record
+      : null
+  } catch {
+    return null
+  }
+}
+
 export function livePatchKey(patch: Pick<SessionV3RealtimeLivePatchWire, 'session_id' | 'run_id' | 'stream_id'>): string {
   return `${patch.session_id}\u0000${patch.run_id}\u0000${patch.stream_id}`
 }
@@ -313,6 +347,7 @@ function createPendingAppend(patch: SessionV3RealtimeLivePatchWire): PendingLive
     sessionId: patch.session_id,
     runId: patch.run_id,
     streamId: patch.stream_id,
+    streamKind: patch.stream_kind,
     step: patch.step,
     stepId: patch.step_id,
     liveSeqStart: patch.live_seq_start,

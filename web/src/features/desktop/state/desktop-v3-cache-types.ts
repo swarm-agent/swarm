@@ -748,6 +748,45 @@ export interface PendingUserMessage {
   error?: string
 }
 
+export type DesktopToolActivityPhase = 'constructing' | 'ready' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type DesktopToolActivitySemanticKind = 'edit' | 'plan' | 'task' | 'generic'
+
+export interface DesktopToolActivityProvenance {
+  providerConstruction: boolean
+  runtimeExecution: boolean
+  provider?: string
+  model?: string
+  providerStartedAt?: number
+  executionStartedAt?: number
+}
+
+export interface DesktopToolActivity {
+  activityId: string
+  callId: string
+  step?: number
+  stepId?: string
+  outputIndex?: number
+  toolInstanceId?: string
+  toolName?: string
+  toolIdentity?: string
+  toolRunCount?: number
+  toolDisplay?: string
+  argumentsText?: string
+  outputText?: string
+  taskStream?: LiveTaskToolStreamState
+  errorText?: string
+  durationMs?: number
+  phase: DesktopToolActivityPhase
+  semanticKind: DesktopToolActivitySemanticKind
+  label: string
+  status?: string
+  createdAt?: number
+  updatedAt: number
+  timelineSeq?: number
+  providerEventIndex?: number
+  provenance: DesktopToolActivityProvenance
+}
+
 export interface LiveTaskToolStreamState {
   pathId: string
   streamVersion: number
@@ -802,6 +841,9 @@ export interface LiveRunOverlay {
     durableOffsetEnd?: number
     livePaused?: boolean
   }>
+  /** Provider-neutral construction/execution reconciliation keyed by stable activity identity. */
+  toolActivitiesById?: Record<string, DesktopToolActivity>
+  /** Compatibility projection for existing tool-card consumers, keyed by call id. */
   toolCallsByCallId: Record<
     string,
     {

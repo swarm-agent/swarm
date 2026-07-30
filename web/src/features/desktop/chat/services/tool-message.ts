@@ -47,6 +47,31 @@ interface StructuredToolMessageInput {
 
 const MAX_STRUCTURED_OUTPUT_PARSE_BYTES = 1_000_000;
 const MAX_PREVIEW_LINES = 12;
+
+export type ToolActivitySemanticKind = "edit" | "plan" | "task" | "generic";
+
+export interface ToolActivityDescriptor {
+  kind: ToolActivitySemanticKind;
+  label: string;
+  activeLabel: string;
+}
+
+export function describeToolActivity(toolName: string): ToolActivityDescriptor {
+  const normalized = String(toolName ?? "").trim().toLowerCase().replace(/-/g, "_");
+  if (normalized === "edit" || normalized === "write") {
+    return { kind: "edit", label: "Edit", activeLabel: "Editing" };
+  }
+  if (normalized === "plan" || normalized === "plan_manage" || normalized === "exit_plan_mode") {
+    return { kind: "plan", label: "Plan", activeLabel: "Planning" };
+  }
+  if (normalized === "task" || normalized === "subagent" || normalized === "launch_subagent") {
+    return { kind: "task", label: "Subagents", activeLabel: "Launching subagents" };
+  }
+  const label = normalized
+    ? normalized.split("_").filter(Boolean).map((part) => part[0]?.toUpperCase() + part.slice(1)).join(" ")
+    : "Tool";
+  return { kind: "generic", label, activeLabel: normalized ? `Running ${label}` : "Starting tool" };
+}
 const MAX_PREVIEW_SCAN_BYTES = 32_000;
 const MAX_PREVIEW_LINE_BYTES = 2_000;
 

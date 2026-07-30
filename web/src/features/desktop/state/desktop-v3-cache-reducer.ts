@@ -3,6 +3,8 @@ import type {
   DesktopNotificationSummaryWire,
   DesktopNotificationWire,
   DesktopPermissionSummary,
+  DesktopToolActivity,
+  DesktopToolActivityPhase,
   DesktopV3CacheAction,
   DesktopV3CacheState,
   LiveRunOverlay,
@@ -33,7 +35,7 @@ import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, Deskt
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktopPendingPermissions, normalizeDesktopPermissionSummary, normalizeDesktopPermissionSummaries, safeString } from '../permissions/services/desktop-permission-normalization'
 import { normalizeDesktopSessionPlan } from '../chat/services/session-plan-record'
-import { parseStructuredToolMessage } from '../chat/services/tool-message'
+import { describeToolActivity, parseStructuredToolMessage } from '../chat/services/tool-message'
 import { assertDesktopV3RealtimeFrame, assertDesktopV3SnapshotIdentities, decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
 import { isDesktopV3NavigationHiddenRecord } from './desktop-v3-session-visibility'
 import { mergeWorkspaceAITaskMonotonic } from '../../workspaces/todos/ai-task-reconciliation'
@@ -2597,6 +2599,16 @@ function shouldReplayDurableHydratedEvent(eventType: string): boolean {
     case 'session.reasoning.completed':
     case 'session.reasoning.failed':
     case 'session.reasoning.error':
+    case 'session.provider_tool_call.started':
+    case 'session.provider_tool_call.arguments.delta':
+    case 'session.provider_tool_call.arguments.snapshot':
+    case 'session.provider_tool_call.completed':
+    case 'session.tool.started':
+    case 'session.tool.delta':
+    case 'session.tool.completed':
+    case 'session.tool.failed':
+    case 'session.tool.cancelled':
+    case 'session.tool.canceled':
     case 'session.execution_epoch.started':
     case 'session.execution_epoch.completed':
     case 'session.execution_epoch.boundary':
@@ -2859,6 +2871,14 @@ function reconcileCommittedToolMessage(run: LiveRunOverlay, message: MessageSnap
       delete run.toolCallsByCallId[existingCallId]
     }
   }
+
+  const activities = run.toolActivitiesById
+  if (!activities) return
+  for (const [activityId, tool] of Object.entries(activities)) {
+    const callMatches = Boolean(callId) && tool.callId === callId
+    const instanceMatches = Boolean(toolInstanceId) && tool.toolInstanceId === toolInstanceId
+    if (callMatches || instanceMatches) delete activities[activityId]
+  }
 }
 
 function reconcileCommittedReasoningMessage(run: LiveRunOverlay, message: MessageSnapshot): void {
@@ -2931,6 +2951,7 @@ function createLiveRunOverlay(sessionId: string, runId: string): LiveRunOverlay 
     sessionId,
     runId,
     status: 'pending_executor',
+    toolActivitiesById: {},
     toolCallsByCallId: {},
   }
 }
@@ -3010,7 +3031,12 @@ function applyLiveRunOverlayFromEvent(
   const liveRun = ensureLiveRunOverlay(state, sessionId, runId)
   applyPendingUserRunTimelineFloorToRun(state, sessionId, liveRun)
   const priorEventSeq = liveRun.lastEventSeqSeen ?? 0
-  if (eventSeq > 0 && eventSeq <= priorEventSeq) {
+  // Hydration and repair may replay tool lifecycle records after newer unrelated
+  // output. Tool reconciliation is identity/phase monotonic, so allow those
+  // records through while retaining the strict cursor guard for text streams.
+  const toolLifecycleEvent = event.eventType.startsWith('session.tool.')
+    || event.eventType.startsWith('session.provider_tool_call.')
+  if (eventSeq > 0 && eventSeq <= priorEventSeq && !toolLifecycleEvent) {
     return
   }
   liveRun.lastEventSeqSeen = Math.max(priorEventSeq, eventSeq)
@@ -3081,78 +3107,340 @@ function applyLiveRunOverlayFromEvent(
       if (liveRun.assistantDraft?.content) {
         flushLiveAssistantDraftToSegment(liveRun)
       }
-      const providerToolConstruction = event.eventType.startsWith('session.provider_tool_call.')
-      const callId = stringValue(payload.call_id) || stringValue(payload.tool_call_id)
-      if (!callId) {
-        return
-      }
-
-      const isStarted = event.eventType === 'session.tool.started' || event.eventType === 'session.provider_tool_call.started'
-      const isDelta = event.eventType === 'session.tool.delta' || event.eventType === 'session.provider_tool_call.arguments.delta'
-      const isArgumentsSnapshot = event.eventType === 'session.provider_tool_call.arguments.snapshot'
-      const isFailed = event.eventType === 'session.tool.failed'
-      const isCancelled = event.eventType === 'session.tool.cancelled' || event.eventType === 'session.tool.canceled'
-      const isTerminal = event.eventType === 'session.tool.completed' || event.eventType === 'session.provider_tool_call.completed' || isFailed || isCancelled
-      const toolInstanceId = providerToolConstruction ? `provider-tool:${callId}` : stringValue(payload.tool_instance_id)
-      const tool = liveRun.toolCallsByCallId[callId] ?? {
-        callId,
-        createdAt: updatedAt,
-        updatedAt,
-      }
-
-      tool.stepId = stringValue(payload.step_id) || tool.stepId
-      tool.toolInstanceId = toolInstanceId || tool.toolInstanceId
-      tool.toolName = stringValue(payload.tool_name) || tool.toolName
-      tool.toolIdentity = stringValue(payload.tool_identity) || tool.toolIdentity
-      tool.toolRunCount = numberValue(payload.tool_run_count) || tool.toolRunCount
-      tool.toolDisplay = stringValue(payload.tool_display) || tool.toolDisplay
-
-      const argumentsText = stringValue(payload.arguments) || stringValue(payload.arguments_snapshot)
-      const argumentsDelta = stringValue(payload.arguments_delta)
-      const outputText = stringValue(payload.output)
-      const outputDelta = stringValue(payload.output_delta) || stringValue(payload.delta)
-      const rawOutput = stringValue(payload.raw_output)
-      const completedOutput = stringValue(payload.completed_output)
-      const errorText = stringValue(payload.error)
-
-      if (isStarted && argumentsText) {
-        tool.argumentsText = argumentsText
-      } else if (argumentsDelta) {
-        tool.argumentsText = `${tool.argumentsText ?? ''}${argumentsDelta}`
-      } else if ((isArgumentsSnapshot || !isDelta) && argumentsText) {
-        tool.argumentsText = argumentsText
-      }
-
-      if (isDelta && outputText && applyTaskStreamPatch(tool, outputText, updatedAt)) {
-        // Task stream v2 is native keyed state; do not mirror patch JSON into outputText.
-      } else if (rawOutput || completedOutput) {
-        tool.outputText = rawOutput || completedOutput
-      } else if (isTerminal && outputText) {
-        tool.outputText = outputText
-      } else if (isDelta && outputText && isTaskStreamSnapshotOutput(tool.toolName, outputText)) {
-        tool.outputText = outputText
-      } else if (outputDelta || (isDelta && outputText)) {
-        tool.outputText = `${tool.outputText ?? ''}${outputDelta || outputText}`
-      } else if (isStarted && outputText) {
-        tool.outputText = outputText
-      }
-
-      tool.errorText = errorText || tool.errorText
-      tool.durationMs = numberValue(payload.duration_ms) || tool.durationMs
-      tool.status = stringValue(payload.status) || (isFailed ? 'failed' : isCancelled ? 'cancelled' : isTerminal ? 'completed' : 'running')
-      tool.updatedAt = updatedAt
-      tool.timelineSeq = Math.max(
-        isTerminal && eventSeq > 0 ? eventSeq : tool.timelineSeq || eventSeq,
-        liveRun.timelineFloor ?? 0,
-      )
-
-      liveRun.toolCallsByCallId[callId] = tool
+      applyToolLifecycleToRun(liveRun, payload, event.eventType, eventSeq, updatedAt)
       return
     }
 
     default:
       return
   }
+}
+
+const TOOL_PHASE_RANK: Record<DesktopToolActivityPhase, number> = {
+  constructing: 0,
+  ready: 1,
+  running: 2,
+  completed: 3,
+  failed: 3,
+  cancelled: 3,
+}
+
+export function applyToolLifecycleToRun(
+  liveRun: LiveRunOverlay,
+  payload: Record<string, unknown>,
+  eventType: string,
+  eventSeq: number,
+  updatedAt: number,
+): void {
+  const activities = liveRun.toolActivitiesById ??= {}
+  const construction = eventType.startsWith('session.provider_tool_call.')
+  const lifecycleType = eventType.startsWith('session.tool.') || construction
+  if (!lifecycleType) return
+  const callId = stringValue(payload.call_id) || stringValue(payload.tool_call_id)
+  const toolInstanceId = construction ? '' : stringValue(payload.tool_instance_id)
+  const step = finiteNumberValue(payload.step)
+  const stepId = stringValue(payload.step_id)
+  const outputIndex = finiteNumberValue(payload.output_index)
+  const key = findToolActivityKey(liveRun, { callId, toolInstanceId, step, stepId, outputIndex, construction })
+  if (!key) return
+
+  const current = activities[key]
+  const identityCallId = callId || current?.callId || key
+  const toolName = stringValue(payload.tool_name) || current?.toolName || ''
+  const descriptor = describeToolActivity(toolName)
+  const descriptorIsKnown = Boolean(toolName)
+  const incomingPhase = toolActivityPhase(eventType, stringValue(payload.status))
+  const phase = mergeToolActivityPhase(existingToolPhase(current), incomingPhase, construction)
+  const argumentsSnapshot = stringValue(payload.arguments_snapshot) || stringValue(payload.arguments)
+  const argumentsDelta = stringValue(payload.arguments_delta)
+  const outputText = stringValue(payload.output)
+  const outputDelta = stringValue(payload.output_delta) || stringValue(payload.delta)
+  const rawOutput = stringValue(payload.raw_output) || stringValue(payload.completed_output)
+  const isExecutionDelta = eventType === 'session.tool.delta'
+  const isExecutionTerminal = eventType === 'session.tool.completed'
+    || eventType === 'session.tool.failed'
+    || eventType === 'session.tool.cancelled'
+    || eventType === 'session.tool.canceled'
+  const providerEventIndex = finiteNumberValue(payload.event_index)
+
+  const tool: DesktopToolActivity = current ?? {
+    activityId: key,
+    callId: identityCallId,
+    phase,
+    semanticKind: descriptor.kind,
+    label: descriptor.activeLabel,
+    createdAt: updatedAt,
+    updatedAt,
+    provenance: { providerConstruction: false, runtimeExecution: false },
+  }
+
+  tool.callId = identityCallId
+  tool.step = step ?? tool.step
+  tool.stepId = stepId || tool.stepId
+  tool.outputIndex = outputIndex ?? tool.outputIndex
+  tool.toolInstanceId = toolInstanceId || tool.toolInstanceId
+  tool.toolName = toolName || tool.toolName
+  tool.toolIdentity = stringValue(payload.tool_identity) || tool.toolIdentity
+  tool.toolRunCount = numberValue(payload.tool_run_count) || tool.toolRunCount
+  tool.toolDisplay = stringValue(payload.tool_display) || tool.toolDisplay
+  tool.phase = phase
+  if (descriptorIsKnown || !tool.semanticKind) tool.semanticKind = descriptor.kind
+  const effectiveLabel = descriptorIsKnown ? descriptor.label : tool.label || descriptor.label
+  const effectiveActiveLabel = descriptorIsKnown ? descriptor.activeLabel : tool.label || descriptor.activeLabel
+  tool.label = phase === 'completed'
+    ? effectiveLabel
+    : phase === 'failed'
+      ? `${effectiveLabel} failed`
+      : phase === 'cancelled'
+        ? `${effectiveLabel} cancelled`
+        : effectiveActiveLabel
+  const incomingStatus = stringValue(payload.status)
+  const incomingStatusPhase = incomingStatus ? toolActivityPhase(eventType, incomingStatus) : incomingPhase
+  tool.status = phase === incomingStatusPhase && incomingStatus ? incomingStatus : phase
+  tool.updatedAt = Math.max(tool.updatedAt, updatedAt)
+  const previousProviderEventIndex = tool.providerEventIndex
+  const provenance = tool.provenance
+  tool.provenance = {
+    ...provenance,
+    providerConstruction: provenance.providerConstruction || construction,
+    runtimeExecution: provenance.runtimeExecution || !construction,
+    provider: stringValue(payload.provider) || provenance.provider,
+    model: stringValue(payload.model) || provenance.model,
+    providerStartedAt: construction
+      ? numberValue(payload.started_at) || provenance.providerStartedAt || updatedAt
+      : provenance.providerStartedAt,
+    executionStartedAt: !construction && eventType === 'session.tool.started'
+      ? numberValue(payload.started_at) || provenance.executionStartedAt || updatedAt
+      : provenance.executionStartedAt,
+  }
+
+  const providerUpdateIsFresh = !construction
+    || (providerEventIndex === undefined
+      ? previousProviderEventIndex === undefined
+      : providerEventIndex > (previousProviderEventIndex ?? 0))
+  if (argumentsSnapshot && providerUpdateIsFresh) {
+    tool.argumentsText = argumentsSnapshot
+  } else if (argumentsDelta && shouldAppendProviderArguments(previousProviderEventIndex, providerEventIndex)) {
+    tool.argumentsText = `${tool.argumentsText ?? ''}${argumentsDelta}`
+  }
+  tool.providerEventIndex = Math.max(previousProviderEventIndex ?? 0, providerEventIndex ?? 0) || undefined
+
+  const compatibilityTool = (callId ? liveRun.toolCallsByCallId[callId] : undefined) ?? tool
+  if (isExecutionDelta && outputText && applyTaskStreamPatch(compatibilityTool, outputText, updatedAt)) {
+    tool.taskStream = compatibilityTool.taskStream
+    // Native task lifecycle state is retained separately from textual output.
+  } else if (rawOutput || (isExecutionTerminal && outputText)) {
+    tool.outputText = rawOutput || outputText
+  } else if (isExecutionDelta && outputText && isTaskStreamSnapshotOutput(tool.toolName, outputText)) {
+    tool.outputText = outputText
+  } else if (outputDelta || (isExecutionDelta && outputText)) {
+    tool.outputText = `${tool.outputText ?? ''}${outputDelta || outputText}`
+  } else if (eventType === 'session.tool.started' && outputText) {
+    tool.outputText = outputText
+  }
+
+  tool.errorText = stringValue(payload.error) || tool.errorText
+  tool.durationMs = numberValue(payload.duration_ms) || tool.durationMs
+  const timelineCandidate = eventSeq > 0
+    ? eventSeq
+    : tool.timelineSeq ?? liveRun.lastEventSeqSeen ?? 0
+  tool.timelineSeq = isExecutionTerminal
+    ? Math.max(tool.timelineSeq ?? 0, timelineCandidate, liveRun.timelineFloor ?? 0)
+    : Math.max(tool.timelineSeq ?? timelineCandidate, liveRun.timelineFloor ?? 0)
+  const preferredKey = callId ? `call:${callId}` : key
+  if (preferredKey !== key) {
+    const existingAtPreferredKey = activities[preferredKey]
+    if (existingAtPreferredKey && existingAtPreferredKey !== tool) {
+      mergeToolActivityRecord(tool, existingAtPreferredKey)
+    }
+    delete activities[key]
+  }
+  tool.activityId = preferredKey
+  activities[preferredKey] = tool
+  removeDuplicateToolActivities(liveRun, preferredKey, tool)
+  refreshToolActivityPresentation(tool)
+  if (TOOL_PHASE_RANK[tool.phase] === 3 && toolActivityPhase('', tool.status ?? '') !== tool.phase) {
+    tool.status = tool.phase
+  }
+  if (callId) liveRun.toolCallsByCallId[callId] = compatibilityToolActivity(tool)
+}
+
+function refreshToolActivityPresentation(tool: DesktopToolActivity): void {
+  const descriptor = describeToolActivity(tool.toolName ?? '')
+  tool.semanticKind = descriptor.kind
+  tool.label = tool.phase === 'completed'
+    ? descriptor.label
+    : tool.phase === 'failed'
+      ? `${descriptor.label} failed`
+      : tool.phase === 'cancelled'
+        ? `${descriptor.label} cancelled`
+        : descriptor.activeLabel
+}
+
+function compatibilityToolActivity(tool: DesktopToolActivity): LiveRunOverlay['toolCallsByCallId'][string] {
+  const constructionOnly = tool.provenance.providerConstruction && !tool.provenance.runtimeExecution
+  return {
+    callId: tool.callId,
+    stepId: tool.stepId,
+    toolInstanceId: tool.toolInstanceId || (constructionOnly && tool.callId ? `provider-tool:${tool.callId}` : undefined),
+    toolName: tool.toolName,
+    toolIdentity: tool.toolIdentity,
+    toolRunCount: tool.toolRunCount,
+    toolDisplay: tool.toolDisplay,
+    argumentsText: tool.argumentsText,
+    outputText: tool.outputText,
+    taskStream: tool.taskStream,
+    errorText: tool.errorText,
+    durationMs: tool.durationMs,
+    status: constructionOnly ? (tool.phase === 'ready' ? 'completed' : 'running') : tool.status,
+    createdAt: tool.createdAt,
+    updatedAt: tool.updatedAt,
+    timelineSeq: tool.timelineSeq,
+  }
+}
+
+function shouldAppendProviderArguments(previousEventIndex: number | undefined, eventIndex: number | undefined): boolean {
+  return eventIndex === undefined || eventIndex > (previousEventIndex ?? 0)
+}
+
+function findToolActivityKey(
+  run: LiveRunOverlay,
+  input: { callId: string; toolInstanceId: string; step?: number; stepId: string; outputIndex?: number; construction: boolean },
+): string {
+  if (input.callId) {
+    const byCall = Object.entries(run.toolActivitiesById ?? {}).find(([, tool]) => tool.callId === input.callId)
+    if (byCall) return byCall[0]
+    const byInstance = input.toolInstanceId
+      ? Object.entries(run.toolActivitiesById ?? {}).find(([, tool]) => tool.toolInstanceId === input.toolInstanceId)
+      : undefined
+    if (byInstance) return byInstance[0]
+    if (input.outputIndex !== undefined) {
+      const byOutput = findConstructionActivityByFallback(run, input)
+      if (byOutput) return byOutput[0]
+    }
+    if (!input.construction) {
+      const uniqueStepCandidate = findUniqueConstructionActivityForStep(run, input)
+      if (uniqueStepCandidate) return uniqueStepCandidate[0]
+    }
+    return `call:${input.callId}`
+  }
+  if (input.toolInstanceId) {
+    const byInstance = Object.entries(run.toolActivitiesById ?? {}).find(([, tool]) => tool.toolInstanceId === input.toolInstanceId)
+    if (byInstance) return byInstance[0]
+    if (input.outputIndex !== undefined) {
+      const byOutput = findConstructionActivityByFallback(run, input)
+      if (byOutput) return byOutput[0]
+    }
+    return `instance:${input.toolInstanceId}`
+  }
+  if (input.construction && input.outputIndex !== undefined) {
+    const byOutput = findConstructionActivityByFallback(run, input)
+    if (byOutput) return byOutput[0]
+    return `construction:${input.step !== undefined ? `step-${input.step}` : input.stepId || 'step-0'}:output-${input.outputIndex}`
+  }
+  return ''
+}
+
+function findConstructionActivityByFallback(
+  run: LiveRunOverlay,
+  input: { step?: number; stepId: string; outputIndex?: number },
+): [string, DesktopToolActivity] | undefined {
+  if (input.outputIndex === undefined) return undefined
+  return Object.entries(run.toolActivitiesById ?? {}).find(([key, tool]) => (
+    key.startsWith('construction:')
+    && tool.provenance.providerConstruction
+    && !tool.provenance.runtimeExecution
+    && tool.outputIndex === input.outputIndex
+    && sameToolStep(tool, input.step, input.stepId)
+  ))
+}
+
+function findUniqueConstructionActivityForStep(
+  run: LiveRunOverlay,
+  input: { step?: number; stepId: string },
+): [string, DesktopToolActivity] | undefined {
+  const matches = Object.entries(run.toolActivitiesById ?? {}).filter(([, tool]) => {
+    const provenance = tool.provenance
+    return tool.activityId.startsWith('construction:')
+      && provenance.providerConstruction
+      && !provenance.runtimeExecution
+      && sameToolStep(tool, input.step, input.stepId)
+  })
+  return matches.length === 1 ? matches[0] : undefined
+}
+
+function sameToolStep(tool: DesktopToolActivity, step: number | undefined, stepId: string): boolean {
+  if (step !== undefined && tool.step !== undefined) return step === tool.step
+  if (stepId && tool.stepId) return stepId === tool.stepId
+  return false
+}
+
+function removeDuplicateToolActivities(run: LiveRunOverlay, keepKey: string, keep: DesktopToolActivity): void {
+  const activities = run.toolActivitiesById
+  if (!activities) return
+  for (const [key, candidate] of Object.entries(activities)) {
+    if (key === keepKey) continue
+    const stableMatch = Boolean(keep.callId) && keep.callId === candidate.callId
+    const instanceMatch = Boolean(keep.toolInstanceId) && keep.toolInstanceId === candidate.toolInstanceId
+    if (!stableMatch && !instanceMatch) continue
+    mergeToolActivityRecord(keep, candidate)
+    delete activities[key]
+  }
+}
+
+function mergeToolActivityRecord(keep: DesktopToolActivity, candidate: DesktopToolActivity): void {
+  const candidateProvenance = candidate.provenance
+  const keepProvenance = keep.provenance
+  keep.provenance = {
+    ...candidateProvenance,
+    ...keepProvenance,
+    providerConstruction: candidateProvenance.providerConstruction || keepProvenance.providerConstruction,
+    runtimeExecution: candidateProvenance.runtimeExecution || keepProvenance.runtimeExecution,
+  }
+  keep.callId ||= candidate.callId
+  keep.step ??= candidate.step
+  keep.stepId ||= candidate.stepId
+  keep.outputIndex ??= candidate.outputIndex
+  keep.toolInstanceId ||= candidate.toolInstanceId
+  keep.toolName ||= candidate.toolName
+  keep.toolIdentity ||= candidate.toolIdentity
+  keep.toolRunCount ||= candidate.toolRunCount
+  keep.toolDisplay ||= candidate.toolDisplay
+  keep.argumentsText ||= candidate.argumentsText
+  keep.outputText ||= candidate.outputText
+  keep.taskStream ||= candidate.taskStream
+  keep.errorText ||= candidate.errorText
+  keep.durationMs ||= candidate.durationMs
+  keep.createdAt = Math.min(keep.createdAt ?? candidate.createdAt ?? keep.updatedAt, candidate.createdAt ?? keep.createdAt ?? candidate.updatedAt)
+  keep.updatedAt = Math.max(keep.updatedAt, candidate.updatedAt)
+  keep.timelineSeq = Math.max(keep.timelineSeq ?? 0, candidate.timelineSeq ?? 0) || undefined
+  keep.providerEventIndex = Math.max(keep.providerEventIndex ?? 0, candidate.providerEventIndex ?? 0) || undefined
+  keep.phase = mergeToolActivityPhase(keep.phase, candidate.phase, candidate.provenance.providerConstruction && !candidate.provenance.runtimeExecution)
+}
+
+function existingToolPhase(tool: DesktopToolActivity | undefined): DesktopToolActivityPhase | undefined {
+  return tool?.phase
+}
+
+function toolActivityPhase(eventType: string, status: string): DesktopToolActivityPhase {
+  if (eventType === 'session.tool.failed' || status === 'failed' || status === 'error') return 'failed'
+  if (eventType === 'session.tool.cancelled' || eventType === 'session.tool.canceled' || status === 'cancelled' || status === 'canceled') return 'cancelled'
+  if (eventType === 'session.tool.completed') return 'completed'
+  if (eventType === 'session.tool.started' || eventType === 'session.tool.delta') return 'running'
+  if (eventType === 'session.provider_tool_call.completed' || status === 'completed' || status === 'ready') return 'ready'
+  return 'constructing'
+}
+
+function mergeToolActivityPhase(
+  existing: DesktopToolActivityPhase | undefined,
+  incoming: DesktopToolActivityPhase,
+  construction: boolean,
+): DesktopToolActivityPhase {
+  if (!existing) return incoming
+  if (TOOL_PHASE_RANK[existing] > TOOL_PHASE_RANK[incoming]) return existing
+  if (TOOL_PHASE_RANK[existing] === 3 && construction) return existing
+  if (TOOL_PHASE_RANK[existing] === 3 && TOOL_PHASE_RANK[incoming] === 3) return existing
+  return incoming
 }
 
 type LiveAssistantDraft = NonNullable<LiveRunOverlay['assistantDraft']>
@@ -3345,6 +3633,9 @@ export function applyDesktopV3LivePatchBatch(
           ...existing,
           assistantDraft: existing.assistantDraft ? { ...existing.assistantDraft } : undefined,
           assistantSegments: existing.assistantSegments ? existing.assistantSegments.map((segment) => ({ ...segment })) : undefined,
+          toolActivitiesById: existing.toolActivitiesById ? Object.fromEntries(
+            Object.entries(existing.toolActivitiesById).map(([activityId, tool]) => [activityId, cloneToolActivityForMutation(tool)]),
+          ) : undefined,
           toolCallsByCallId: Object.fromEntries(
             Object.entries(existing.toolCallsByCallId).map(([callId, tool]) => [callId, { ...tool }]),
           ),
@@ -3357,6 +3648,7 @@ export function applyDesktopV3LivePatchBatch(
           sessionId,
           runId,
           status: 'running',
+          toolActivitiesById: {},
           toolCallsByCallId: {},
         }
       clonedRuns.add(cloneKey)
@@ -3373,9 +3665,38 @@ export function applyDesktopV3LivePatchBatch(
   return nextState
 }
 
+function cloneToolActivityForMutation(tool: DesktopToolActivity): DesktopToolActivity {
+  return {
+    ...tool,
+    provenance: { ...tool.provenance },
+    taskStream: tool.taskStream ? {
+      ...tool.taskStream,
+      launchesByKey: Object.fromEntries(
+        Object.entries(tool.taskStream.launchesByKey).map(([launchKey, launch]) => [launchKey, { ...launch }]),
+      ),
+      launchOrder: [...tool.taskStream.launchOrder],
+    } : undefined,
+  }
+}
+
 function applyLivePatchToRun(state: DesktopV3CacheState, run: LiveRunOverlay, patch: SessionV3RealtimeLivePatchWire): void {
   run.status = run.status === 'pending_executor' ? 'running' : run.status
   const updatedAt = patch.recorded_at
+  if (patch.stream_kind === 'provider_tool_call') {
+    const payload = parseJsonRecord(patch.text)
+    if (!payload || stringValue(payload.path_id) !== 'run.v3.provider-tool-construction.v1') return
+    const eventType = stringValue(payload.type)
+    if (!eventType.startsWith('session.provider_tool_call.')) return
+    const constructionUpdatedAt = finiteNumberValue(payload.recorded_at) ?? updatedAt
+    applyToolLifecycleToRun(run, {
+      ...payload,
+      run_id: stringValue(payload.run_id) || patch.run_id,
+      step: finiteNumberValue(payload.step) ?? patch.step,
+      step_id: stringValue(payload.step_id) || patch.step_id,
+      recorded_at: constructionUpdatedAt,
+    }, eventType, 0, constructionUpdatedAt)
+    return
+  }
   const existingDraft = run.assistantDraft
   if (existingDraft?.streamId === patch.stream_id) {
     if (existingDraft.livePaused) return
@@ -3487,6 +3808,7 @@ function ensureLiveRunOverlay(
     sessionId,
     runId,
     status: 'running',
+    toolActivitiesById: {},
     toolCallsByCallId: {},
   }
   return state.liveRunsBySession[sessionId][runId]
