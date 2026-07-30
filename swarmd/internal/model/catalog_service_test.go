@@ -726,6 +726,15 @@ func TestProviderLevelRecommendationsHydrateRecommendedDefaults(t *testing.T) {
 	if utilityRec.Role != "utility" || utilityRec.Thinking != "medium" {
 		t.Fatalf("utility recommendation = %+v, want utility/medium", utilityRec)
 	}
+	subagents, ok, err := catalog.RecommendedRoleDefaults("anthropic", "compact", "finder", "coder", "designer")
+	if err != nil || !ok {
+		t.Fatalf("subagent recommendations ok=%v err=%v", ok, err)
+	}
+	for role, modelID := range map[string]string{"compact": "claude-haiku-4-5", "finder": "claude-sonnet-5", "coder": "claude-opus-4-8", "designer": "claude-sonnet-5"} {
+		if subagents[role].Model != modelID {
+			t.Fatalf("%s recommendation model = %q, want %q", role, subagents[role].Model, modelID)
+		}
+	}
 }
 
 func providerRecommendationsPayload() []byte {
@@ -734,14 +743,18 @@ func providerRecommendationsPayload() []byte {
 		"snapshot_id":"snapshot-provider-recs",
 		"snapshot_version":"v-provider-recs",
 		"generated_at":"2026-07-01T00:00:00Z",
-		"model_count":2,
+		"model_count":3,
 		"provider_count":1,
 		"hydrated_provider_count":1,
 		"recommendations":{
 			"anthropic":{
 				"plan":{"model":"claude-opus-4-8","thinking":"xhigh"},
 				"auto":{"model":"claude-sonnet-5","thinking":"high"},
-				"utility":{"model":"claude-sonnet-5","thinking":"medium"}
+				"utility":{"model":"claude-sonnet-5","thinking":"medium"},
+				"compact":{"model":"claude-haiku-4-5","thinking":"off"},
+				"finder":{"model":"claude-sonnet-5","thinking":"medium"},
+				"coder":{"model":"claude-opus-4-8","thinking":"high"},
+				"designer":{"model":"claude-sonnet-5","thinking":"high"}
 			}
 		},
 		"models":[
@@ -750,6 +763,14 @@ func providerRecommendationsPayload() []byte {
 				"provider_id":"anthropic",
 				"model_id":"claude-opus-4-8",
 				"display_name":"Claude Opus 4.8",
+				"capabilities":{"supports_reasoning":true},
+				"limits":{"context_window_tokens":200000,"max_output_tokens":64000}
+			},
+			{
+				"catalog_id":"anthropic/claude-haiku-4-5",
+				"provider_id":"anthropic",
+				"model_id":"claude-haiku-4-5",
+				"display_name":"Claude Haiku 4.5",
 				"capabilities":{"supports_reasoning":true},
 				"limits":{"context_window_tokens":200000,"max_output_tokens":64000}
 			},

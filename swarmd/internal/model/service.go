@@ -427,6 +427,13 @@ func (s *Service) RecommendedCatalogDefaults(providerID string) (pebblestore.Mod
 	return s.catalog.RecommendedDefaults(providerID)
 }
 
+func (s *Service) RecommendedCatalogRoleDefaults(providerID string, roles ...string) (map[string]pebblestore.ModelCatalogRecord, bool, error) {
+	if s.catalog == nil {
+		return nil, false, nil
+	}
+	return s.catalog.RecommendedRoleDefaults(providerID, roles...)
+}
+
 func (s *Service) RefreshCatalog(ctx context.Context) (CatalogRefreshResult, error) {
 	if s.catalog == nil {
 		return CatalogRefreshResult{}, errors.New("model catalog is not configured")

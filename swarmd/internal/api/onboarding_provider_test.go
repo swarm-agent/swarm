@@ -63,7 +63,10 @@ func seedOnboardingProviderRecommendations(t *testing.T, catalogStore *pebblesto
 	records := []pebblestore.ModelCatalogRecord{
 		{Provider: providerID, Model: "snapshot-main-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "auto", Thinking: "high"}}, Source: "test"},
 		{Provider: providerID, Model: "snapshot-plan-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "plan", Thinking: "xhigh"}}, Source: "test"},
-		{Provider: providerID, Model: "snapshot-utility-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "utility", Thinking: "medium"}}, Source: "test"},
+		{Provider: providerID, Model: "snapshot-compact-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "compact", Thinking: "low"}}, Source: "test"},
+		{Provider: providerID, Model: "snapshot-finder-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "finder", Thinking: "medium"}}, Source: "test"},
+		{Provider: providerID, Model: "snapshot-coder-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "coder", Thinking: "high"}}, Source: "test"},
+		{Provider: providerID, Model: "snapshot-designer-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "designer", Thinking: "medium"}}, Source: "test"},
 	}
 	if err := catalogStore.ReplaceSnapshot(records, pebblestore.ModelCatalogMeta{LiveSnapshotVersion: "test-snapshot", ExpiresAt: 4102444800000, RecordCount: len(records), SourceURL: "test://catalog"}); err != nil {
 		t.Fatalf("seed catalog recommendations: %v", err)
@@ -131,14 +134,8 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 	if swarmProfile.RuntimeMode != pebblestore.AgentRuntimeModePlanAuto || swarmProfile.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto {
 		t.Fatalf("swarm plan/auto runtime defaults not restored: %+v", *swarmProfile)
 	}
-	for _, profile := range agents.Profiles {
-		name := strings.ToLower(strings.TrimSpace(profile.Name))
-		if name != "finder" && name != "memory" && name != "parallel" {
-			continue
-		}
-		if profile.Provider != "openai" || profile.Model != "snapshot-utility-model" || profile.Thinking != "medium" {
-			t.Fatalf("utility agent %q not hydrated from snapshot: %+v", name, profile)
-		}
+	if len(agents.Profiles) != 1 {
+		t.Fatalf("onboarding persisted unexpected utility agent rows: %+v", agents.Profiles)
 	}
 	pref, err := server.model.GetPreferenceForAccount(principal.AccountScopeID)
 	if err != nil {
@@ -162,11 +159,42 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 	if err != nil {
 		t.Fatalf("get onboarding system-agent settings: %v", err)
 	}
-	if uiSettings.Agents.Compact != uiSettings.Agents.Finder || uiSettings.Agents.Designer != uiSettings.Agents.Finder {
-		t.Fatalf("utility system-agent onboarding settings differ: Compact=%+v Finder=%+v Designer=%+v", uiSettings.Agents.Compact, uiSettings.Agents.Finder, uiSettings.Agents.Designer)
+	wantSystemAgents := map[string]struct {
+		got      uisettings.CompactAgentSettings
+		model    string
+		thinking string
+	}{
+		"compact":  {uiSettings.Agents.Compact, "snapshot-compact-model", "low"},
+		"finder":   {uiSettings.Agents.Finder, "snapshot-finder-model", "medium"},
+		"coder":    {uiSettings.Agents.Coder, "snapshot-coder-model", "high"},
+		"designer": {uiSettings.Agents.Designer, "snapshot-designer-model", "medium"},
 	}
-	if configured := uiSettings.Agents.Compact; configured.Provider != "openai" || configured.Model != "snapshot-utility-model" || configured.Thinking != "medium" {
-		t.Fatalf("Compact/Finder system-agent settings not hydrated from snapshot: %+v", configured)
+	for name, want := range wantSystemAgents {
+		if want.got.Provider != "openai" || want.got.Model != want.model || want.got.Thinking != want.thinking {
+			t.Fatalf("%s onboarding settings = %+v, want openai/%s/%s", name, want.got, want.model, want.thinking)
+		}
+	}
+}
+
+func TestOnboardingProviderCredentialRejectsLaterCredentialWithoutOverwritingPreferences(t *testing.T) {
+	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: true, message: "ok"})
+	if _, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{Provider: "openai", Type: "api", APIKey: "sk-first"}); err != nil {
+		t.Fatalf("accept first onboarding credential: %v", err)
+	}
+	before, err := server.uiSettings.GetForAccount(principal.AccountScopeID)
+	if err != nil {
+		t.Fatalf("read first onboarding settings: %v", err)
+	}
+
+	if _, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{Provider: "openai", Type: "api", APIKey: "sk-second"}); err == nil || !strings.Contains(err.Error(), "zero existing credentials") {
+		t.Fatalf("second onboarding credential error = %v, want zero-existing-credentials rejection", err)
+	}
+	after, err := server.uiSettings.GetForAccount(principal.AccountScopeID)
+	if err != nil {
+		t.Fatalf("read settings after rejected credential: %v", err)
+	}
+	if after.Agents != before.Agents {
+		t.Fatalf("later onboarding credential overwrote subagent preferences: before=%+v after=%+v", before.Agents, after.Agents)
 	}
 }
 
@@ -202,7 +230,7 @@ func TestOnboardingProviderCredentialHydratesPreferredProviderEvenWhenStatusIsNo
 	if err != nil {
 		t.Fatalf("accept fireworks onboarding provider credential: %v", err)
 	}
-	if status.AutoDefaults == nil || !status.AutoDefaults.Applied || status.AutoDefaults.Provider != "fireworks" || status.AutoDefaults.Model != "snapshot-main-model" || status.AutoDefaults.UtilityModel != "snapshot-utility-model" {
+	if status.AutoDefaults == nil || !status.AutoDefaults.Applied || status.AutoDefaults.Provider != "fireworks" || status.AutoDefaults.Model != "snapshot-main-model" || status.AutoDefaults.UtilityModel != "" {
 		t.Fatalf("fireworks defaults not applied from catalog: %+v", status.AutoDefaults)
 	}
 }
@@ -218,7 +246,7 @@ func TestOnboardingProviderCredentialHydratesProviderFromSnapshotWithoutLegacyDe
 	if err != nil {
 		t.Fatalf("accept snapshot-only onboarding provider credential: %v", err)
 	}
-	if status.AutoDefaults == nil || !status.AutoDefaults.Applied || status.AutoDefaults.Provider != "snapshot-only" || status.AutoDefaults.Model != "snapshot-main-model" || status.AutoDefaults.UtilityModel != "snapshot-utility-model" {
+	if status.AutoDefaults == nil || !status.AutoDefaults.Applied || status.AutoDefaults.Provider != "snapshot-only" || status.AutoDefaults.Model != "snapshot-main-model" || status.AutoDefaults.UtilityModel != "" {
 		t.Fatalf("snapshot-only defaults not applied from catalog: %+v", status.AutoDefaults)
 	}
 	agents, err := server.agents.ListStateForAccount(principal.AccountScopeID, 2000)

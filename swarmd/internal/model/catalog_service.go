@@ -342,37 +342,57 @@ func (s *CatalogService) List(providerID string, limit int) ([]pebblestore.Model
 }
 
 func (s *CatalogService) RecommendedDefaults(providerID string) (pebblestore.ModelCatalogRecord, pebblestore.ModelCatalogRecord, pebblestore.ModelCatalogRecord, bool, error) {
+	recommended, ok, err := s.RecommendedRoleDefaults(providerID, "auto", "plan", "utility")
+	if err != nil || !ok {
+		return pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, false, err
+	}
+	return recommended["auto"], recommended["plan"], recommended["utility"], true, nil
+}
+
+// RecommendedRoleDefaults returns the catalog record carrying each requested
+// provider-level recommendation. It is the canonical lookup for onboarding
+// roles that have independent model recommendations.
+func (s *CatalogService) RecommendedRoleDefaults(providerID string, roles ...string) (map[string]pebblestore.ModelCatalogRecord, bool, error) {
 	providerID = canonicalCatalogProviderID(providerID)
-	if providerID == "" {
-		return pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, false, nil
+	if providerID == "" || len(roles) == 0 {
+		return nil, false, nil
+	}
+	wanted := make(map[string]struct{}, len(roles))
+	for _, role := range roles {
+		role = strings.ToLower(strings.TrimSpace(role))
+		if role == "main" {
+			role = "auto"
+		}
+		if role != "" {
+			wanted[role] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return nil, false, nil
 	}
 	records, err := s.store.ListProvider(providerID, 2000)
 	if err != nil {
-		return pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, false, err
+		return nil, false, err
 	}
-	var main, plan, utility pebblestore.ModelCatalogRecord
+	out := make(map[string]pebblestore.ModelCatalogRecord, len(wanted))
 	for _, record := range records {
 		for _, rec := range record.Recommendations {
-			switch strings.ToLower(strings.TrimSpace(rec.Role)) {
-			case "main", "auto":
-				if strings.TrimSpace(main.Model) == "" {
-					main = record
-				}
-			case "plan":
-				if strings.TrimSpace(plan.Model) == "" {
-					plan = record
-				}
-			case "utility":
-				if strings.TrimSpace(utility.Model) == "" {
-					utility = record
-				}
+			role := strings.ToLower(strings.TrimSpace(rec.Role))
+			if role == "main" {
+				role = "auto"
 			}
+			if _, needed := wanted[role]; !needed || strings.TrimSpace(out[role].Model) != "" {
+				continue
+			}
+			out[role] = record
 		}
 	}
-	if strings.TrimSpace(main.Model) == "" || strings.TrimSpace(plan.Model) == "" || strings.TrimSpace(utility.Model) == "" {
-		return pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, false, nil
+	for role := range wanted {
+		if strings.TrimSpace(out[role].Model) == "" {
+			return nil, false, nil
+		}
 	}
-	return main, plan, utility, true, nil
+	return out, true, nil
 }
 
 func (s *CatalogService) Meta() (pebblestore.ModelCatalogMeta, bool, error) {

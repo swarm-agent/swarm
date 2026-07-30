@@ -73,16 +73,13 @@ type UpsertInput struct {
 }
 
 type DefaultModelHydrationInput struct {
-	Provider          string
-	PrimaryModel      string
-	PrimaryThinking   string
-	PlanModel         string
-	PlanThinking      string
-	AutoModel         string
-	AutoThinking      string
-	UtilityModel      string
-	UtilityThinking   string
-	UtilityAgentNames []string
+	Provider        string
+	PrimaryModel    string
+	PrimaryThinking string
+	PlanModel       string
+	PlanThinking    string
+	AutoModel       string
+	AutoThinking    string
 }
 
 type DefaultModelHydrationResult struct {
@@ -174,18 +171,9 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input 
 	input.PlanThinking = strings.TrimSpace(input.PlanThinking)
 	input.AutoModel = strings.TrimSpace(input.AutoModel)
 	input.AutoThinking = strings.TrimSpace(input.AutoThinking)
-	input.UtilityModel = strings.TrimSpace(input.UtilityModel)
-	input.UtilityThinking = strings.TrimSpace(input.UtilityThinking)
-	if strings.EqualFold(input.UtilityThinking, "off") {
-		input.UtilityThinking = ""
+	if input.Provider == "" || input.PrimaryModel == "" || input.PlanModel == "" || input.AutoModel == "" {
+		return DefaultModelHydrationResult{}, errors.New("hydrated default agents require provider and main, plan, and auto models")
 	}
-	if input.Provider == "" || input.PrimaryModel == "" || input.PlanModel == "" || input.AutoModel == "" || input.UtilityModel == "" {
-		return DefaultModelHydrationResult{}, errors.New("hydrated default agents require provider and main, plan, auto, utility models")
-	}
-	// Compact and Finder are compiled system agents whose snapshot-selected
-	// utility model is persisted through UI settings by the onboarding caller.
-	// Hydration therefore remains valid when there are no mutable utility rows.
-	utilityNames := normalizeDefaultUtilityAgentNames(input.UtilityAgentNames)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -203,7 +191,7 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input 
 	}
 
 	now := time.Now().UnixMilli()
-	seen := make(map[string]struct{}, len(utilityNames)+1)
+	seen := make(map[string]struct{}, 1)
 	result := DefaultModelHydrationResult{}
 	for _, profile := range defaultProfiles(now) {
 		name := normalizeName(profile.Name)
@@ -218,16 +206,7 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input 
 			profile.AutoThinking = input.AutoThinking
 			result.Agents = append(result.Agents, name)
 		default:
-			if _, ok := utilityNames[name]; !ok {
-				continue
-			}
-			profile.Provider = input.Provider
-			profile.Model = input.UtilityModel
-			profile.Thinking = input.UtilityThinking
-			result.Agents = append(result.Agents, name)
-			if strings.EqualFold(strings.TrimSpace(profile.Mode), ModeSubagent) {
-				result.Subagents = append(result.Subagents, name)
-			}
+			continue
 		}
 		profile = pebblestore.NormalizeAgentProfile(profile)
 		if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
@@ -241,21 +220,8 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input 
 	if _, ok := seen["swarm"]; !ok {
 		return DefaultModelHydrationResult{}, errors.New("hydrated default agents missing swarm profile")
 	}
-	for name := range utilityNames {
-		if _, ok := seen[name]; !ok {
-			return DefaultModelHydrationResult{}, fmt.Errorf("hydrated default agents missing utility profile %q", name)
-		}
-	}
 	if err := s.setActivePrimaryForAccountLocked(accountScopeID, "swarm"); err != nil {
 		return DefaultModelHydrationResult{}, err
-	}
-	for purpose, profileName := range defaultSubagentAssignments() {
-		if _, ok := utilityNames[normalizeName(profileName)]; !ok {
-			continue
-		}
-		if err := s.setActiveSubagentForAccountLocked(accountScopeID, purpose, profileName); err != nil {
-			return DefaultModelHydrationResult{}, err
-		}
 	}
 	if hasVersion {
 		version++
