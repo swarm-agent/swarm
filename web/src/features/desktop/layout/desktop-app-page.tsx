@@ -4495,6 +4495,7 @@ export function DesktopAppPage() {
     setGitCommitBusy(true)
     setGitCommitError(null)
     let commitSucceeded = false
+    const archiveAfterCommit = !modal.worktree && Boolean(modal.sessionId) && gitCommitArchive
     const integration = modal.worktree && gitCommitIntegrate && modal.canIntegrate && modal.targetWorkspacePath
       ? {
           sessionId: modal.sessionId,
@@ -4524,6 +4525,10 @@ export function DesktopAppPage() {
         if (gitCommitArchive) await archiveIntegratedSession(integrated)
         setGitIntegrateModal(null)
         setDesktopToast({ message: gitCommitArchive ? 'Changes committed, integrated, and session archived.' : 'Changes committed and integrated successfully.', tone: 'success' })
+      } else if (archiveAfterCommit) {
+        await archiveDesktopV3Sessions([modal.sessionId])
+        handleArchivePlanSession(modal.sessionId)
+        setDesktopToast({ message: 'Changes committed and session archived.', tone: 'success' })
       } else {
         setDesktopToast({ message: 'Changes committed successfully.', tone: 'success' })
       }
@@ -4535,6 +4540,8 @@ export function DesktopAppPage() {
       const message = error instanceof Error ? error.message : String(error)
       if (commitSucceeded && integration) {
         setGitIntegrateError(message)
+      } else if (commitSucceeded && archiveAfterCommit) {
+        setDesktopToast({ message: `Changes committed, but the session could not be archived: ${message}`, tone: 'error' })
       } else {
         setGitCommitError(message)
       }
@@ -5427,6 +5434,7 @@ export function DesktopAppPage() {
             <div className="max-h-48 overflow-y-auto border border-[var(--app-border)] font-mono text-xs">{gitCommitModal.files.map((file) => <div key={`${file.kind}:${file.path}`} className="flex gap-2 border-b border-[var(--app-border)] px-2 py-1 last:border-0"><span className="text-[var(--app-text-subtle)]">{gitFileStatusLabel(file)}</span><span className="truncate">{file.path}</span></div>)}</div>
             <label className="grid gap-1 text-xs text-[var(--app-text-muted)]"><span>Commit message</span><input autoFocus value={gitCommitMessage} onChange={(event) => setGitCommitMessage(event.target.value)} className="h-10 border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[var(--app-text)] outline-none" /></label>
             {gitCommitModal.worktree && gitCommitModal.canIntegrate ? <div className="grid gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-xs"><label className="flex items-start gap-2 text-[var(--app-text)]"><input type="checkbox" className="mt-0.5" checked={gitCommitIntegrate} disabled={gitCommitBusy} onChange={(event) => { const checked = event.target.checked; setGitCommitIntegrate(checked); if (!checked) setGitCommitArchive(false) }} /><span><strong>Integrate into {gitCommitModal.targetBranch || 'target branch'}</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">After the commit succeeds, safely apply this worktree’s missing commit stack to the target checkout.</span></span></label><label className={cn('flex items-start gap-2', gitCommitIntegrate ? 'text-[var(--app-text)]' : 'text-[var(--app-text-subtle)]')}><input type="checkbox" className="mt-0.5" checked={gitCommitArchive} disabled={gitCommitBusy || !gitCommitIntegrate} onChange={(event) => setGitCommitArchive(event.target.checked)} /><span><strong>Archive session after integration</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">Only archives after the backend verifies integration succeeded.</span></span></label></div> : null}
+            {!gitCommitModal.worktree && gitCommitModal.sessionId ? <label className="flex items-start gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-xs text-[var(--app-text)]"><input type="checkbox" className="mt-0.5" checked={gitCommitArchive} disabled={gitCommitBusy} onChange={(event) => setGitCommitArchive(event.target.checked)} /><span><strong>Archive session after commit</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">Archives this chat only after the commit succeeds.</span></span></label> : null}
             {gitCommitError ? <div className="text-xs text-[var(--app-warning)]">{gitCommitError}</div> : null}
             <div className="flex justify-end gap-2"><Button variant="ghost" disabled={gitCommitBusy} onClick={() => setGitCommitModal(null)}>Cancel</Button><Button type="submit" disabled={gitCommitBusy || !gitCommitMessage.trim()}>{gitCommitBusy ? gitCommitIntegrate ? 'Committing and integrating…' : 'Committing…' : gitCommitIntegrate ? 'Commit and integrate' : 'Commit all changes'}</Button></div>
           </form>
@@ -5453,6 +5461,7 @@ export function DesktopAppPage() {
           if (!gitPanel || files.length === 0) return
           setGitCommitMessage('')
           setGitCommitError(null)
+          setGitCommitArchive(false)
           setGitCommitModal({ workspacePath: gitPanel.workspacePath, sessionId: '', files })
           setGitPanel(null)
         }}

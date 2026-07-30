@@ -41,7 +41,7 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
-  if (isStaticShellAsset(url.pathname) || isVersionedViteAsset(url.pathname)) {
+  if (isStaticShellAsset(url.pathname)) {
     event.respondWith(cacheFirst(request))
   }
 })
@@ -106,10 +106,6 @@ function safeSwarmRoute(value) {
 
 function isStaticShellAsset(pathname) {
   return SHELL_ASSETS.includes(pathname)
-}
-
-function isVersionedViteAsset(pathname) {
-  return /^\/assets\/.+-[A-Za-z0-9_-]+\.[A-Za-z0-9]+$/.test(pathname)
 }
 
 async function cacheFirst(request) {

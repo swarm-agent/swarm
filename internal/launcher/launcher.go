@@ -2241,26 +2241,12 @@ func copyDir(sourceDir, targetDir string) error {
 		if info.IsDir() {
 			return os.MkdirAll(targetPath, info.Mode().Perm())
 		}
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-			return err
-		}
-		sourceFile, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer sourceFile.Close()
-		targetFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
-		if err != nil {
-			return err
-		}
-		if _, err := io.Copy(targetFile, sourceFile); err != nil {
-			_ = targetFile.Close()
-			return err
-		}
-		return targetFile.Close()
+		return copyFile(path, targetPath)
 	})
 }
 
+// copyFile writes through a sibling temporary file so readers never observe a
+// partially copied runtime asset during an install or update.
 func copyFile(sourcePath, targetPath string) error {
 	info, err := os.Stat(sourcePath)
 	if err != nil {
