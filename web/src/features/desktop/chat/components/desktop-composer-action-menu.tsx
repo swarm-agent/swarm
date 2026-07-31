@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, ListChecks, ListTodo, LoaderCircle, Minimize2, Paperclip, Plus, Zap } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ListChecks, ListTodo, LoaderCircle, Minimize2, Paperclip, Plus, Sparkles, Zap } from 'lucide-react'
 import { fetchWorkspaceActions, type WorkspaceAction } from '../../../workspaces/actions/types'
+import { fetchWorkspaceSkills, type WorkspaceSkill } from '../services/workspace-skills'
 
 export type DesktopComposerTaskMode = 'action' | 'plan'
 
@@ -16,9 +17,10 @@ interface DesktopComposerActionMenuProps {
   compactDisabled?: boolean
   workspacePath?: string
   onActionSelect?: (action: WorkspaceAction) => void
+  onSkillSelect?: (skill: WorkspaceSkill) => void
 }
 
-type ComposerActionMenuView = 'root' | 'task' | 'actions'
+type ComposerActionMenuView = 'root' | 'task' | 'actions' | 'skills'
 
 const TASK_EXPLANATION = 'Send your next message to a background agent in a managed worktree.'
 
@@ -34,6 +36,7 @@ export function DesktopComposerActionMenu({
   compactDisabled = false,
   workspacePath = '',
   onActionSelect,
+  onSkillSelect,
 }: DesktopComposerActionMenuProps) {
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<ComposerActionMenuView>('root')
@@ -43,6 +46,10 @@ export function DesktopComposerActionMenu({
   const [actionsLoading, setActionsLoading] = useState(false)
   const [actionsError, setActionsError] = useState('')
   const [actionsRequest, setActionsRequest] = useState(0)
+  const [skills, setSkills] = useState<WorkspaceSkill[]>([])
+  const [skillsLoading, setSkillsLoading] = useState(false)
+  const [skillsError, setSkillsError] = useState('')
+  const [skillsRequest, setSkillsRequest] = useState(0)
 
   const closeMenu = useCallback(() => {
     setOpen(false)
@@ -86,6 +93,22 @@ export function DesktopComposerActionMenu({
       })
     return () => controller.abort()
   }, [actionsRequest, open, view, workspacePath])
+
+  useEffect(() => {
+    if (!open || view !== 'skills' || !workspacePath.trim()) return
+    const controller = new AbortController()
+    setSkillsLoading(true)
+    setSkillsError('')
+    void fetchWorkspaceSkills(workspacePath, controller.signal)
+      .then(setSkills)
+      .catch((error) => {
+        if (!controller.signal.aborted) setSkillsError(error instanceof Error ? error.message : 'Could not load Skills.')
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setSkillsLoading(false)
+      })
+    return () => controller.abort()
+  }, [open, skillsRequest, view, workspacePath])
 
   const toggleMenu = () => {
     if (open) {
@@ -132,7 +155,7 @@ export function DesktopComposerActionMenu({
         <div
           id={menuId}
           role="menu"
-          aria-label={view === 'task' ? 'Task type' : view === 'actions' ? 'Workspace Actions' : 'Composer actions'}
+          aria-label={view === 'task' ? 'Task type' : view === 'actions' ? 'Workspace Actions' : view === 'skills' ? 'Workspace Skills' : 'Composer actions'}
           className="absolute bottom-full left-0 z-40 mb-2 w-[min(18rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1.5 shadow-[var(--shadow-panel)]"
           data-testid="desktop-composer-actions-menu"
         >
@@ -153,6 +176,26 @@ export function DesktopComposerActionMenu({
                   <span className="min-w-0 flex-1">
                     <span className="block font-semibold">Actions</span>
                     <span className="block text-[11px] leading-4 text-[var(--app-text-subtle)]">Run a saved workspace script</span>
+                  </span>
+                  <ChevronRight size={16} className="shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />
+                </button>
+              ) : null}
+
+              {workspacePath.trim() && onSkillSelect ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-haspopup="menu"
+                  onClick={() => setView('skills')}
+                  className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]"
+                  data-testid="desktop-composer-skills-menu-item"
+                >
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--app-bg-alt)] text-[var(--app-primary)]">
+                    <Sparkles size={16} aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-semibold">Skills</span>
+                    <span className="block text-[11px] leading-4 text-[var(--app-text-subtle)]">Guide the AI with a saved skill</span>
                   </span>
                   <ChevronRight size={16} className="shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />
                 </button>
@@ -252,6 +295,28 @@ export function DesktopComposerActionMenu({
                   <span className="block text-[11px] leading-4 text-[var(--app-text-subtle)]">Start the work right away</span>
                 </span>
               </button>
+            </div>
+          ) : view === 'skills' ? (
+            <div data-testid="desktop-composer-skills-submenu">
+              <button type="button" onClick={() => setView('root')} className="mb-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-[var(--app-text-muted)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:bg-[var(--app-surface-hover)]" aria-label="Back to composer actions">
+                <ChevronLeft size={15} aria-hidden="true" />
+                <span>Skills</span>
+              </button>
+              {skillsLoading ? (
+                <div className="flex items-center gap-2 px-2.5 py-4 text-xs text-[var(--app-text-muted)]" role="status"><LoaderCircle size={15} className="animate-spin" />Loading Skills…</div>
+              ) : skillsError ? (
+                <div className="px-2.5 py-3" role="alert">
+                  <p className="text-xs text-[var(--app-danger)]">{skillsError}</p>
+                  <button type="button" onClick={() => setSkillsRequest((value) => value + 1)} className="mt-2 text-xs font-semibold text-[var(--app-primary)]">Try again</button>
+                </div>
+              ) : skills.length === 0 ? (
+                <p className="px-2.5 py-4 text-xs text-[var(--app-text-muted)]">No Skills are available for this workspace.</p>
+              ) : skills.map((skill) => (
+                <button key={skill.canonicalName} type="button" role="menuitem" onClick={() => { closeMenu(); onSkillSelect?.(skill) }} className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--app-bg-alt)] text-[var(--app-primary)]"><Sparkles size={15} aria-hidden="true" /></span>
+                  <span className="min-w-0 flex-1"><span className="block truncate font-semibold">{skill.name}</span>{skill.description ? <span className="block truncate text-[11px] text-[var(--app-text-subtle)]">{skill.description}</span> : null}</span>
+                </button>
+              ))}
             </div>
           ) : (
             <div data-testid="desktop-composer-actions-submenu">

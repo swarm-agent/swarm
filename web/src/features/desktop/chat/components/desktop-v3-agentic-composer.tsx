@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { AlertTriangle, ArrowUp, FileCode2, FileImage, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Square, UploadCloud, X } from 'lucide-react'
+import { AlertTriangle, ArrowUp, FileCode2, FileImage, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Sparkles, Square, UploadCloud, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileRecord } from '../types/chat'
@@ -28,6 +28,7 @@ import { DesktopSlashCommandPanel } from './desktop-slash-command-panel'
 import { DesktopComposerActionMenu, type DesktopComposerTaskMode } from './desktop-composer-action-menu'
 import { DesktopWorkspaceActionPanel } from './desktop-workspace-action-panel'
 import type { WorkspaceAction } from '../../../workspaces/actions/types'
+import type { WorkspaceSkill } from '../services/workspace-skills'
 
 const DICTATION_RESTART_DELAY_MS = 180
 const DICTATION_FINAL_FLUSH_MS = 450
@@ -309,6 +310,7 @@ export function DesktopV3AgenticComposer({
   const [fileDropZone, setFileDropZone] = useState<HTMLElement | null>(null)
   const [filesDraggingOverChat, setFilesDraggingOverChat] = useState(false)
   const [selectedWorkspaceAction, setSelectedWorkspaceAction] = useState<WorkspaceAction | null>(null)
+  const [selectedWorkspaceSkill, setSelectedWorkspaceSkill] = useState<WorkspaceSkill | null>(null)
 
   const effectiveMediaCapability = mediaCapability?.status === 'available' && mediaCapability.capabilities.length > 0
     ? mediaCapability
@@ -447,6 +449,7 @@ export function DesktopV3AgenticComposer({
     onDraftChange('')
     setAttachments([])
     setTextAttachments([])
+    setSelectedWorkspaceSkill(null)
     setAttachmentError(null)
   }, [clearDictationRestartTimer, clearFinalFlushTimer, onDraftChange, resizeTextareaElement])
 
@@ -607,11 +610,17 @@ export function DesktopV3AgenticComposer({
       visibleDraft,
     )
     const attachmentDraft = textAttachmentDraft.trim() || (attachments.length > 0 ? 'Please review the attached file(s).' : textAttachmentDraft)
+    const skillInstruction = selectedWorkspaceSkill
+      ? `Use the skill-use tool to load "${selectedWorkspaceSkill.canonicalName}" before executing this request.`
+      : ''
+    const skillDraft = skillInstruction
+      ? `${skillInstruction}${attachmentDraft.trim() ? `\n\n${attachmentDraft}` : ''}`
+      : attachmentDraft
     const submittedDraft = primedTaskMode === 'plan'
-      ? `/task plan ${attachmentDraft}`
+      ? `/task plan ${skillDraft}`
       : primedTaskMode === 'action'
-        ? `/task ${attachmentDraft}`
-        : attachmentDraft
+        ? `/task ${skillDraft}`
+        : skillDraft
     await submitDesktopComposer({
       draft: submittedDraft,
       canStop,
@@ -621,7 +630,7 @@ export function DesktopV3AgenticComposer({
       onStop,
       onSlashCommand,
     })
-  }, [attachments, canStop, clearComposerForSubmit, dictationComposer, onSlashCommand, onStop, onSubmit, primedTaskMode, textAttachments, uploadingAttachment])
+  }, [attachments, canStop, clearComposerForSubmit, dictationComposer, onSlashCommand, onStop, onSubmit, primedTaskMode, selectedWorkspaceSkill, textAttachments, uploadingAttachment])
 
   const handleMentionInsert = useCallback((agent: string) => {
     const trimmedStartLength = draft.length - draft.replace(/^[\s\t\r\n]+/, '').length
@@ -714,9 +723,9 @@ export function DesktopV3AgenticComposer({
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      if (canSubmit || attachments.length > 0 || textAttachments.length > 0 || canStop) handleSubmitClick()
+      if (canSubmit || attachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill || canStop) handleSubmitClick()
     }
-  }, [attachments.length, canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, onDraftChange, slashCommands, slashPalette.active, slashPalette.hasArguments, slashSelectionIndex, textAttachments.length])
+  }, [attachments.length, canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, onDraftChange, selectedWorkspaceSkill, slashCommands, slashPalette.active, slashPalette.hasArguments, slashSelectionIndex, textAttachments.length])
 
   const handleAttachmentFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return
@@ -995,8 +1004,16 @@ export function DesktopV3AgenticComposer({
               />
             </div>
           </div>
-          {attachments.length > 0 || textAttachments.length > 0 ? (
+          {attachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill ? (
             <div className="flex flex-wrap gap-2 border-t border-[var(--app-border)] px-4 py-2" data-testid="desktop-media-attachments">
+              {selectedWorkspaceSkill ? (
+                <span className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]" data-testid="desktop-composer-selected-skill">
+                  <Sparkles size={13} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                  <span className="max-w-48 truncate font-medium" title={selectedWorkspaceSkill.description || selectedWorkspaceSkill.name}>{selectedWorkspaceSkill.name}</span>
+                  <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--app-text-muted)]">Skill</span>
+                  <button type="button" aria-label={`Remove ${selectedWorkspaceSkill.name} skill`} onClick={() => setSelectedWorkspaceSkill(null)}><X size={13} /></button>
+                </span>
+              ) : null}
               {attachments.map((attachment, index) => (
                 <span key={`${attachment.asset_id}:${index}`} className="inline-flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]">
                   <FileImage size={13} aria-hidden="true" />
@@ -1036,6 +1053,7 @@ export function DesktopV3AgenticComposer({
               compactDisabled={compactDisabled || !onCompact}
               workspacePath={workspacePath}
               onActionSelect={setSelectedWorkspaceAction}
+              onSkillSelect={setSelectedWorkspaceSkill}
             />
             {uploadingAttachment ? <button type="button" className="text-xs text-[var(--app-warning)]" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button> : null}
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
@@ -1058,7 +1076,7 @@ export function DesktopV3AgenticComposer({
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
-                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && textAttachments.length === 0) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <ArrowUp size={22} strokeWidth={2.25} className="shrink-0" />}
                 </Button>
               </div>
@@ -1074,7 +1092,7 @@ export function DesktopV3AgenticComposer({
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
-                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && textAttachments.length === 0) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <ArrowUp size={22} strokeWidth={2.25} className="shrink-0" />}
                 </Button>
               </div>
