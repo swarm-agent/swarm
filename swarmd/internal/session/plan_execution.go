@@ -1328,6 +1328,58 @@ func ApplyPlanCheckpointReviewAcceptance(doc *pebblestore.SessionPlanDocument, o
 	return SummarizePlanExecution(doc), nil
 }
 
+// ReactivatePausedPlanForUserMessage makes a paused checkpoint processable by
+// the new parent turn and assigns that turn a new attempt while preserving the
+// paused attempt in history. The provider that receives the message owns the
+// decision to continue, refine, or redirect the durable plan.
+func ReactivatePausedPlanForUserMessage(doc *pebblestore.SessionPlanDocument, runID, runSessionID, parentSessionID string, startedAt int64) (PlanExecutionSummary, bool, error) {
+	if doc == nil || doc.ExecutionState == nil || normalizePlanExecutionStateStatus(doc.ExecutionState.Status) != PlanExecutionStatePaused {
+		return SummarizePlanExecution(doc), false, nil
+	}
+	checkpointID := strings.TrimSpace(doc.ActiveCheckpointID)
+	idx := findPlanCheckpointIndex(doc.Checkpoints, checkpointID)
+	if checkpointID == "" || idx < 0 {
+		return PlanExecutionSummary{}, false, errors.New("paused plan has no active checkpoint to reactivate")
+	}
+	checkpoint := &doc.Checkpoints[idx]
+	if normalizePlanCheckpointStatusForSave(checkpoint.Status) != PlanCheckpointStatusPaused {
+		return PlanExecutionSummary{}, false, fmt.Errorf("paused plan active checkpoint %q is %q", checkpointID, checkpoint.Status)
+	}
+	runID = strings.TrimSpace(runID)
+	runSessionID = strings.TrimSpace(runSessionID)
+	parentSessionID = strings.TrimSpace(parentSessionID)
+	if runID == "" || runSessionID == "" || parentSessionID == "" {
+		return PlanExecutionSummary{}, false, errors.New("paused plan reactivation requires complete run ownership")
+	}
+	attemptID := fmt.Sprintf("%s:attempt-%d", checkpointID, len(checkpoint.Attempts)+1)
+	checkpoint.Status = PlanCheckpointStatusInProgress
+	checkpoint.CompletedAt = 0
+	checkpoint.AttemptID = attemptID
+	checkpoint.RunID = runID
+	checkpoint.SessionID = runSessionID
+	for i := range checkpoint.Subtasks {
+		if checkpoint.Subtasks[i].Status == PlanSubtaskStatusInProgress {
+			checkpoint.Subtasks[i].Status = PlanSubtaskStatusPending
+			checkpoint.Subtasks[i].CompletedAt = 0
+		}
+	}
+	checkpoint.ActiveSubtaskID = ""
+	upsertPlanCheckpointAttempt(checkpoint, pebblestore.SessionPlanCheckpointAttempt{ID: attemptID, CheckpointID: checkpointID, Status: PlanCheckpointStatusInProgress, RunID: runID, SessionID: runSessionID, ParentSessionID: parentSessionID, StartedAt: startedAt})
+	doc.ExecutionState.Status = PlanExecutionStateInProgress
+	doc.ExecutionState.ActiveAttemptID = attemptID
+	doc.ExecutionState.CurrentRunID = runID
+	doc.ExecutionState.CurrentSessionID = runSessionID
+	doc.ExecutionState.ParentSessionID = parentSessionID
+	doc.ExecutionState.CompletedAt = 0
+	if startedAt > 0 {
+		doc.ExecutionState.UpdatedAt = startedAt
+	}
+	if err := ValidatePlanDocument(doc); err != nil {
+		return PlanExecutionSummary{}, false, err
+	}
+	return SummarizePlanExecution(doc), true, nil
+}
+
 func ApplyPlanCheckpointReset(doc *pebblestore.SessionPlanDocument, options PlanCheckpointResetOptions) (PlanExecutionSummary, error) {
 	if doc == nil {
 		return PlanExecutionSummary{}, errors.New("plan document is required")

@@ -1214,6 +1214,21 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 	}
 }
 
+func cloneSessionsV3PlanDocument(doc *pebblestore.SessionPlanDocument) (*pebblestore.SessionPlanDocument, error) {
+	if doc == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+	var clone pebblestore.SessionPlanDocument
+	if err := json.Unmarshal(raw, &clone); err != nil {
+		return nil, err
+	}
+	return &clone, nil
+}
+
 func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID string, req sessionsV3MessageRequest) (sessionruntime.SessionMutationResult, *sessionV3ExecutorJob, error) {
 	session, found, err := s.requireSessionV3Access(principal, sessionID)
 	if err != nil {
@@ -1256,8 +1271,29 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
 	var followupEpoch *pebblestore.BeginExecutionEpochResult
+	var reactivatedPlanSave *sessionruntime.PreparedPlanSave
 	if plan, ok, planErr := s.sessions.GetActivePlan(sessionID); planErr != nil {
 		return sessionruntime.SessionMutationResult{}, nil, planErr
+	} else if ok && plan.Document != nil && plan.Document.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(plan.Document.ExecutionState.Status), sessionruntime.PlanExecutionStatePaused) {
+		doc, cloneErr := cloneSessionsV3PlanDocument(plan.Document)
+		if cloneErr != nil {
+			return sessionruntime.SessionMutationResult{}, nil, cloneErr
+		}
+		if _, changed, reactivateErr := sessionruntime.ReactivatePausedPlanForUserMessage(doc, runIntent.RunID, sessionID, sessionID, now); reactivateErr != nil {
+			return sessionruntime.SessionMutationResult{}, nil, reactivateErr
+		} else if changed {
+			prepared, prepareErr := s.sessions.PreparePlanSaveWithMetadata(sessionID, plan.ID, plan.Title, plan.Plan, plan.Status, plan.ApprovalState, true, sessionruntime.PlanSaveMetadata{UpdateSummary: "Reactivated paused checkpoint for user message", UpdateScope: strings.TrimSpace(doc.ActiveCheckpointID), UpdateKind: "resume_paused_user_message", RevisionKind: sessionruntime.PlanRevisionKindExecution, Checkpoint: true, Document: doc})
+			if prepareErr != nil {
+				return sessionruntime.SessionMutationResult{}, nil, prepareErr
+			}
+			reactivatedPlanSave = &prepared
+			runIntent.PlanID = strings.TrimSpace(plan.ID)
+			runIntent.CheckpointID = strings.TrimSpace(doc.ActiveCheckpointID)
+			runIntent.AttemptID = strings.TrimSpace(doc.ExecutionState.ActiveAttemptID)
+			runIntent.RunSessionID = sessionID
+			runIntent.ParentSessionID = sessionID
+			runIntent.ResumeContext = true
+		}
 	} else if ok && plan.Document != nil && plan.Document.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(plan.Document.ExecutionState.Status), sessionruntime.PlanExecutionStateWaitingReview) {
 		epochResult, epochErr := s.sessions.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{
 			SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
@@ -1289,7 +1325,7 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 		}
 		result = sessionruntime.SessionMutationResult{SessionID: sessionID, PrimarySeq: epochResult.TriggerEvent.Seq, FirstSeq: epochResult.TriggerEvent.Seq, LastSeq: epochResult.TriggerEvent.Seq, EventIDs: []string{epochResult.TriggerEvent.ID}, PayloadHash: payloadHash, Event: *epochResult.TriggerEvent, Message: epochResult.TriggerMessage, RunIntent: &intent, Projection: epochResult.Projection, RealtimeOutbox: epochResult.TriggerOutbox, Replayed: epochResult.Replayed}
 	} else {
-		result, err = s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		mutation := sessionruntime.SessionMutationInput{
 			SessionID:       sessionID,
 			UserID:          principal.UserID,
 			AccountScopeID:  principal.AccountScopeID,
@@ -1301,7 +1337,12 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 			Message:         &message,
 			RunIntent:       runIntent,
 			NowUnixMs:       now,
-		})
+		}
+		if reactivatedPlanSave != nil {
+			prepared := *reactivatedPlanSave
+			mutation.PlanSave = &pebblestore.V3PlanSaveMutation{Plan: prepared.Plan, ArchivedRevision: prepared.ArchivedRevision, Activate: prepared.Activate, ExpectedParentVersion: prepared.Plan.ParentRevision}
+		}
+		result, err = s.applySessionV3PrimaryMutation(mutation)
 	}
 	if err != nil {
 		return result, nil, err
@@ -1337,7 +1378,7 @@ func (s *Server) sessionsV3ActiveCheckpointMessageRunJob(principal identity.Prin
 	if !strings.EqualFold(strings.TrimSpace(doc.ExecutionPolicy.Shape), sessionruntime.PlanExecutionShapeCheckpointed) {
 		return job, false, nil
 	}
-	if doc.ExecutionState == nil || strings.TrimSpace(doc.ExecutionState.LastCheckpointID) == "" {
+	if doc.ExecutionState == nil {
 		return job, false, nil
 	}
 	stateStatus := strings.TrimSpace(doc.ExecutionState.Status)
@@ -1365,18 +1406,19 @@ func (s *Server) sessionsV3ActiveCheckpointMessageRunJob(principal identity.Prin
 	}
 	if activeRun, ok, err := s.sessions.GetSessionActiveRunIntent(job.SessionID); err != nil {
 		return job, false, err
-	} else if ok && strings.TrimSpace(activeRun.RunID) != "" && strings.TrimSpace(activeRun.RunID) != job.RunID {
-		switch strings.TrimSpace(activeRun.Status) {
-		case sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning:
-			return job, false, nil
+	} else if ok {
+		if strings.TrimSpace(activeRun.RunID) != "" && strings.TrimSpace(activeRun.RunID) != job.RunID {
+			switch strings.TrimSpace(activeRun.Status) {
+			case sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning:
+				return job, false, nil
+			}
+		} else {
+			job.ResumeContext = activeRun.ResumeContext
 		}
 	}
 	job.PlanID = strings.TrimSpace(plan.ID)
 	job.CheckpointID = checkpointID
 	job.AttemptID = strings.TrimSpace(checkpoint.AttemptID)
-	if job.AttemptID == "" && doc.ExecutionState != nil {
-		job.AttemptID = strings.TrimSpace(doc.ExecutionState.ActiveAttemptID)
-	}
 	job.ParentSessionID = job.SessionID
 	if doc.ExecutionState != nil && strings.TrimSpace(doc.ExecutionState.ParentSessionID) != "" {
 		job.ParentSessionID = strings.TrimSpace(doc.ExecutionState.ParentSessionID)

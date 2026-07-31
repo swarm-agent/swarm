@@ -526,7 +526,11 @@ func (s *Service) planFollowupCheckpointApprovalRequired(sessionID, accountScope
 		return false, "", err
 	}
 	if !found {
-		return true, sessionruntime.PlanFollowupCheckpointPolicyRequireApproval, nil
+		// Execution normalizes request_followup_checkpoint without an active plan
+		// to the atomic auto-mode start_session_checkpoint path. Mirror that
+		// decision here so preflight cannot manufacture a plan-edit approval that
+		// the canonical lifecycle action does not require.
+		return false, sessionruntime.PlanFollowupCheckpointPolicyAutoStart, nil
 	}
 	globalDefault := ""
 	if s.followupCheckpointPolicyResolver != nil {

@@ -305,6 +305,26 @@ func TestValidatePlanDocumentRejectsUnresolvedCheckpointsBeforeActive(t *testing
 	}
 }
 
+func TestReactivatePausedPlanForUserMessagePreservesAttemptHistory(t *testing.T) {
+	doc := &pebblestore.SessionPlanDocument{
+		ID: "plan-paused-message", Title: "Paused message", ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStatePaused, LastCheckpointID: "cp-1", LastAttemptID: "cp-1:attempt-1", LastOutcome: PlanCheckpointStatusPaused},
+		ActiveCheckpointID: "cp-1",
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Current", Status: PlanCheckpointStatusPaused, AttemptID: "cp-1:attempt-1", RunID: "old-run", SessionID: "session-1", Subtasks: []pebblestore.SessionPlanSubtask{{ID: "task-1", Title: "Continue work", Status: PlanSubtaskStatusPending}}, Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "cp-1:attempt-1", CheckpointID: "cp-1", Status: PlanCheckpointStatusPaused, Outcome: PlanCheckpointStatusPaused, RunID: "old-run", SessionID: "session-1", ParentSessionID: "session-1"}}}},
+	}
+	summary, changed, err := ReactivatePausedPlanForUserMessage(doc, "message-run", "session-1", "session-1", 42)
+	if err != nil || !changed {
+		t.Fatalf("reactivate paused plan: changed=%t err=%v", changed, err)
+	}
+	checkpoint := doc.Checkpoints[0]
+	if checkpoint.Status != PlanCheckpointStatusInProgress || checkpoint.AttemptID != "cp-1:attempt-2" || checkpoint.RunID != "message-run" || len(checkpoint.Attempts) != 2 || checkpoint.Attempts[0].Status != PlanCheckpointStatusPaused || checkpoint.Attempts[1].Status != PlanCheckpointStatusInProgress {
+		t.Fatalf("reactivated checkpoint = %#v", checkpoint)
+	}
+	if doc.ExecutionState.Status != PlanExecutionStateInProgress || doc.ExecutionState.ActiveAttemptID != "cp-1:attempt-2" || doc.ExecutionState.CurrentRunID != "message-run" || summary.Paused || summary.NextCheckpointID != "cp-1" {
+		t.Fatalf("reactivated execution state = %#v summary=%#v", doc.ExecutionState, summary)
+	}
+}
+
 func TestPlanCheckpointCancellationPausesExactOwnedRunAndRestartResumes(t *testing.T) {
 	doc := &pebblestore.SessionPlanDocument{
 		ID:                 "plan-cancel",

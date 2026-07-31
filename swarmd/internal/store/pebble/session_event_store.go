@@ -416,6 +416,8 @@ type v3SessionEventReplayPayload struct {
 	Status        string                    `json:"status,omitempty"`
 	BlockedReason string                    `json:"blocked_reason,omitempty"`
 	Error         string                    `json:"error,omitempty"`
+	HasActivePlan bool                      `json:"has_active_plan,omitempty"`
+	ActivePlan    *SessionPlanSnapshot      `json:"active_plan,omitempty"`
 }
 
 func KeyV3SessionSequence(sessionID string) string {
@@ -2811,6 +2813,12 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 	if usageSummary.SessionID != "" {
 		summary := usageSummary
 		payload.UsageSummary = &summary
+	}
+	if input.PlanSave != nil {
+		plan := input.PlanSave.Plan
+		plan.Active = input.PlanSave.Activate
+		payload.HasActivePlan = input.PlanSave.Activate
+		payload.ActivePlan = &plan
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

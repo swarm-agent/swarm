@@ -6291,6 +6291,50 @@ func TestSessionsV3ProviderManagedPlanManageTerminalOutcomesUsePlanSavedOutbox(t
 	}
 }
 
+func TestSessionsV3UserMessageReactivatesPausedCheckpointForAgentDecision(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "paused-message-reactivate-create", "paused message reactivate")
+	_, _, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-paused-message", "Plan: paused message", "## Plan: paused message", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ID: "plan-paused-message", Title: "Plan: paused message", Info: pebblestore.SessionPlanInfo{Goal: "Continue after pause"}, ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState: &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStatePaused, LastCheckpointID: "cp-1", LastAttemptID: "cp-1:attempt-1", LastOutcome: sessionruntime.PlanCheckpointStatusPaused, ParentSessionID: created.ID}, ActiveCheckpointID: "cp-1",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Paused checkpoint", Objective: "Finish the work", Tasks: []string{"Continue work"}, AcceptanceCriteria: []string{"Work is finished"}, Status: sessionruntime.PlanCheckpointStatusPaused, Order: 1, AttemptID: "cp-1:attempt-1", RunID: "old-run", SessionID: created.ID, Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "cp-1:attempt-1", CheckpointID: "cp-1", Status: sessionruntime.PlanCheckpointStatusPaused, Outcome: sessionruntime.PlanCheckpointStatusPaused, RunID: "old-run", SessionID: created.ID, ParentSessionID: created.ID}}}},
+	}})
+	if err != nil {
+		t.Fatalf("save paused plan: %v", err)
+	}
+	result, enqueueJob, err := server.acceptSessionsV3Message(testPrincipal(), created.ID, sessionsV3MessageRequest{ClientRequestID: "paused-message-reactivate", IdempotencyKey: "paused-message-reactivate", Role: "user", Content: "continue"})
+	if err != nil || enqueueJob == nil || result.RunIntent == nil {
+		t.Fatalf("accept paused message: job=%#v result=%#v err=%v", enqueueJob, result, err)
+	}
+	if enqueueJob.PlanID != "plan-paused-message" || enqueueJob.CheckpointID != "cp-1" || enqueueJob.AttemptID != "cp-1:attempt-2" || !enqueueJob.ResumeContext {
+		t.Fatalf("paused message executor job = %#v", enqueueJob)
+	}
+
+	active, ok, err := sessionSvc.GetActivePlan(created.ID)
+	if err != nil || !ok || active.Document == nil || active.Document.ExecutionState == nil {
+		t.Fatalf("get reactivated plan: ok=%t err=%v plan=%#v", ok, err, active)
+	}
+	checkpoint := active.Document.Checkpoints[0]
+	if active.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateInProgress || checkpoint.Status != sessionruntime.PlanCheckpointStatusInProgress || checkpoint.RunID == "" || checkpoint.RunID == "old-run" || checkpoint.AttemptID != "cp-1:attempt-2" || len(checkpoint.Attempts) != 2 || checkpoint.Attempts[0].Status != sessionruntime.PlanCheckpointStatusPaused || checkpoint.Attempts[1].Status != sessionruntime.PlanCheckpointStatusInProgress {
+		t.Fatalf("reactivated paused plan = %#v", active.Document)
+	}
+	intent, ok, err := sessionSvc.GetSessionActiveRunIntent(created.ID)
+	if err != nil || !ok || intent.Status != sessionruntime.RunIntentPendingExecutor || intent.PlanID != "plan-paused-message" || intent.CheckpointID != "cp-1" || intent.AttemptID != "cp-1:attempt-2" || !intent.ResumeContext || intent.RunID != checkpoint.RunID {
+		t.Fatalf("paused message run intent = %#v ok=%t err=%v", intent, ok, err)
+	}
+	replay, err := sessionSvc.ReplaySessionEvents(created.ID, 0, 100)
+	if err != nil || len(replay.Events) == 0 {
+		t.Fatalf("replay paused message: events=%d err=%v", len(replay.Events), err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(replay.Events[len(replay.Events)-1].Payload, &payload); err != nil {
+		t.Fatalf("decode paused message event: %v", err)
+	}
+	if payload["active_plan"] == nil || payload["has_active_plan"] != true || payload["message"] == nil || payload["run_intent"] == nil {
+		t.Fatalf("paused message compound payload = %#v", payload)
+	}
+}
+
 func TestSessionsV3ExecutorUserContinuationResumesBlockedCheckpointBeforeAdvancing(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{}

@@ -35,9 +35,10 @@ func TestDurableRunStateInstructionsUsesActivePlanInsteadOfTranscript(t *testing
 		`"next_lifecycle_action":"continue_or_start_next_checkpoint"`, "Do not trust old transcript",
 		"Do not call plan_manage get-active merely to determine whether a plan exists", "An active plan exists; the injected plan and checkpoint fields are authoritative",
 		"Classify new feedback by impact on the deliverable contract", "choose the least disruptive valid route", "regardless of whether the user used an imperative sentence",
+		"backend has already made the paused checkpoint processable under this turn", "do not call resume_checkpoint or wait for the user to click Resume", "Treat a plain request to continue as authority to keep working in the same checkpoint",
 		"inquiry or guidance only means respond without plan mutation", "localized additive patch whose existing checklist remains valid means add_subtask", "continue the same checkpoint and attempt", `"action":"add_subtask","checkpoint_id":"cp-1","subtask":{"title":"Measure Swarm hosting capacity"}`, "subtask must be a JSON object with a non-empty title", "do not issue a partial call to discover the format", "feedback that supersedes the current checklist means replace_subtasks with the complete authoritative list",
 		"redefinition that invalidates the objective or acceptance criteria means restart_checkpoint with change_request and complete replacement title/tasks/acceptance_criteria/notes",
-		"independently shippable work or a separate review/failure boundary means request_followup_checkpoint", "Why is the hero headline blue?", "Make the hero headline blue", "Also build an email template",
+		"independently shippable work or a separate review/failure boundary means request_followup_checkpoint", "use request_new_plan with the current plan_id to replace the whole plan", "Why is the hero headline blue?", "Make the hero headline blue", "Also build an email template",
 		"preserve checkpoint identity and attempt history", "Do not use add_subtask to clear blocked or failed state",
 		"selected checkpoint's current objective governs its run", "earlier plan goals and checkpoint objectives are historical context", "objective is derived only from the current request",
 	} {
