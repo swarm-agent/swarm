@@ -46,6 +46,31 @@ func TestBootstrapFirstIdentityUsernameOnlyCreatesCanonicalRecords(t *testing.T)
 	}
 }
 
+func TestRenameCurrentUserUpdatesExistingRecordWithoutGeneratingID(t *testing.T) {
+	svc, store := newTestService(t, "user_existing", "acct_existing")
+	created, err := svc.BootstrapFirstIdentity("alice")
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+
+	updated, err := svc.RenameCurrentUser(ActorContext{UserID: created.User.ID, AccountScopeID: created.AccountScope.ID, User: created.User}, " Bob ")
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if updated.ID != created.User.ID || updated.Username != "bob" || updated.DisplayName != "bob" {
+		t.Fatalf("updated user = %+v", updated)
+	}
+	if byID, ok, err := store.GetUser(created.User.ID); err != nil || !ok || byID.ID != created.User.ID || byID.Username != "bob" {
+		t.Fatalf("user by id = %+v ok=%v err=%v", byID, ok, err)
+	}
+	if _, ok, err := store.GetUserByUsername("alice"); err != nil || ok {
+		t.Fatalf("old username index ok=%v err=%v", ok, err)
+	}
+	if byUsername, ok, err := store.GetUserByUsername("bob"); err != nil || !ok || byUsername.ID != created.User.ID {
+		t.Fatalf("renamed username lookup = %+v ok=%v err=%v", byUsername, ok, err)
+	}
+}
+
 func TestBootstrapFirstIdentityRejectsRebootstrapAndPartialState(t *testing.T) {
 	svc, _ := newTestService(t, "user_one", "acct_one", "user_two", "acct_two")
 	if _, err := svc.BootstrapFirstIdentity("alice"); err != nil {

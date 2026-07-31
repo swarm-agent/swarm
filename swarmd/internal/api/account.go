@@ -9,6 +9,10 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 )
 
+type accountUsernameUpdateRequest struct {
+	Username string `json:"username"`
+}
+
 type accountTeamUpgradeRequest struct {
 	TeamName string `json:"team_name"`
 	TeamID   string `json:"team_id,omitempty"`
@@ -19,6 +23,53 @@ type accountTeamSummary struct {
 	AccountScopeID string `json:"account_scope_id"`
 	DisplayName    string `json:"display_name"`
 	MembershipRole string `json:"membership_role"`
+}
+
+func (s *Server) handleAccountUsername(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		methodNotAllowed(w)
+		return
+	}
+	actor, ok := s.requireProductActor(w, r)
+	if !ok {
+		return
+	}
+	var req accountUsernameUpdateRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if s == nil || s.identityService == nil {
+		writeError(w, http.StatusInternalServerError, identity.ErrServiceNotConfigured)
+		return
+	}
+	updated, err := s.identityService.RenameCurrentUser(actor, req.Username)
+	if err != nil {
+		switch {
+		case errors.Is(err, identity.ErrUsernameAlreadyExists):
+			writeError(w, http.StatusConflict, err)
+		case errors.Is(err, identity.ErrUserRenameUnauthorized):
+			writeError(w, http.StatusForbidden, err)
+		default:
+			writeError(w, http.StatusBadRequest, err)
+		}
+		return
+	}
+	if s.events != nil {
+		if payload, err := json.Marshal(map[string]string{
+			"account_scope_id": updated.AccountScopeID,
+			"user_id":          updated.ID,
+			"username":         updated.Username,
+		}); err == nil {
+			_, _ = s.events.Append("identity:user:"+updated.ID, "identity.user.renamed", updated.ID, payload, "", "")
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":       true,
+		"userID":   updated.ID,
+		"user_id":  updated.ID,
+		"username": updated.Username,
+	})
 }
 
 func (s *Server) handleAccountTeamUpgrade(w http.ResponseWriter, r *http.Request) {

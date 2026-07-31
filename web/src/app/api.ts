@@ -77,6 +77,13 @@ export function getDesktopSessionIdentitySnapshot(): DesktopSessionIdentity | nu
   return desktopSessionIdentity
 }
 
+export function updateDesktopSessionUsername(username: string) {
+  const normalized = username.trim()
+  if (desktopSessionIdentity && normalized) {
+    desktopSessionIdentity = { ...desktopSessionIdentity, username: normalized }
+  }
+}
+
 export async function ensureDesktopSession(forceRefresh = false): Promise<DesktopSessionIdentity> {
   if (forceRefresh) {
     clearDesktopSession()
