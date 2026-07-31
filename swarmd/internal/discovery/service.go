@@ -17,10 +17,20 @@ import (
 	"swarm/packages/swarmd/internal/appstorage"
 )
 
-type Service struct{}
+type Service struct {
+	userHome string
+}
 
 func NewService() *Service {
-	return &Service{}
+	userHome, _ := os.UserHomeDir()
+	return NewServiceWithUserHome(userHome)
+}
+
+// NewServiceWithUserHome creates a discovery service with an explicit host-user
+// home. The home is a read-only skill source and is not added to workspace
+// authorization roots.
+func NewServiceWithUserHome(userHome string) *Service {
+	return &Service{userHome: strings.TrimSpace(userHome)}
 }
 
 func NormalizeSkillName(input string) string {
@@ -164,19 +174,35 @@ func (s *Service) ScanScope(primaryPath string, roots []string) (Report, error) 
 		appendRules(scanCursorRules(root, filepath.Join(".cursor", "rules")))
 	}
 
-	// Skill sources across ecosystems.
+	// Skill sources across ecosystems. Skill roots are separate from workspace
+	// authorization roots: shared user skills are read-only discovery inputs.
 	candidates := make([]SkillSource, 0, 128)
 	invalidSkills := make([]InvalidSkillSource, 0, 16)
+	skillRootSeen := make(map[string]struct{}, 16)
 	appendSkillScan := func(rootPath, relativePath, scope, origin string, precedence int) {
+		skillRootPath := filepath.Clean(filepath.Join(rootPath, relativePath))
+		if _, ok := skillRootSeen[skillRootPath]; ok {
+			return
+		}
+		skillRootSeen[skillRootPath] = struct{}{}
 		valid, invalid := scanSkillDir(rootPath, relativePath, scope, origin, precedence)
 		candidates = append(candidates, valid...)
 		invalidSkills = append(invalidSkills, invalid...)
 	}
-	appendSkillScan(swarmConfig, "skills", "managed", "swarm-managed-config-skills", precedenceGlobalCompatible)
-	for _, root := range scopeRoots {
-		appendSkillScan(root, filepath.Join(".agents", "skills"), "workspace-local", "agents-project-skills", precedenceWorkspaceLocal)
-		appendSkillScan(root, filepath.Join(".swarm", "skills"), "workspace-local", "swarm-project-skills", precedenceWorkspaceLocal)
+	workspaceRoots := workspaceSkillRoots(resolved, scopeRoots)
+	for index := len(workspaceRoots) - 1; index >= 0; index-- {
+		root := workspaceRoots[index]
+		appendSkillScan(root, filepath.Join(".agents", "skills"), "workspace-local", "agents-project-skills", precedenceWorkspaceLocal+index)
+		appendSkillScan(root, filepath.Join(".swarm", "skills"), "workspace-local", "swarm-project-skills", precedenceWorkspaceLocal+index)
 	}
+	if userHome := strings.TrimSpace(s.userHome); userHome != "" {
+		resolvedHome, resolveErr := resolvePath(userHome)
+		if resolveErr != nil {
+			return Report{}, fmt.Errorf("resolve user home for skill discovery: %w", resolveErr)
+		}
+		appendSkillScan(resolvedHome, filepath.Join(".agents", "skills"), "user-local", "agents-user-skills", precedenceUserLocal)
+	}
+	appendSkillScan(swarmConfig, "skills", "managed", "swarm-managed-config-skills", precedenceGlobalCompatible)
 
 	active, overrides := resolveSkillCandidates(candidates)
 	report.Skills = active
@@ -208,6 +234,66 @@ func resolvePath(input string) (string, error) {
 		return abs, nil
 	}
 	return resolved, nil
+}
+
+func workspaceSkillRoots(primary string, scopeRoots []string) []string {
+	primary = filepath.Clean(primary)
+	boundary := primary
+	for _, root := range scopeRoots {
+		root = filepath.Clean(root)
+		if !pathWithinRoot(root, primary) {
+			continue
+		}
+		if boundary == primary || pathWithinRoot(root, boundary) {
+			boundary = root
+		}
+	}
+
+	chain := make([]string, 0, 8)
+	for current := primary; ; current = filepath.Dir(current) {
+		chain = append(chain, current)
+		if current == boundary {
+			break
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+	}
+	for left, right := 0, len(chain)-1; left < right; left, right = left+1, right-1 {
+		chain[left], chain[right] = chain[right], chain[left]
+	}
+
+	seen := make(map[string]struct{}, len(chain)+len(scopeRoots))
+	out := make([]string, 0, len(chain)+len(scopeRoots))
+	add := func(root string) {
+		root = filepath.Clean(root)
+		if root == "" || root == "." {
+			return
+		}
+		if _, ok := seen[root]; ok {
+			return
+		}
+		seen[root] = struct{}{}
+		out = append(out, root)
+	}
+	for _, root := range scopeRoots {
+		if !pathWithinRoot(root, primary) {
+			add(root)
+		}
+	}
+	for _, root := range chain {
+		add(root)
+	}
+	return out
+}
+
+func pathWithinRoot(root, path string) bool {
+	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
 }
 
 func normalizeScopeRoots(primary string, roots []string) ([]string, error) {
